@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
@@ -96,6 +97,70 @@ async def read_until(call: tack.llm.LlmCall, last: Chunk, arrived: asyncio.Event
     async for chunk in call:
         if chunk == last:
             arrived.set()
+
+
+async def read_all(call: tack.llm.LlmCall) -> None:
+    async for _ in call:
+        pass
+
+
+async def drain_after_surviving_a_cancellation(llm: Llm) -> Finish:
+    """Read a call in a task that has swallowed a cancellation before."""
+    waiting = asyncio.Event()
+
+    async def read() -> Finish:
+        try:
+            waiting.set()
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            pass
+        _, finish = await drain(llm)
+        return finish
+
+    reader = asyncio.ensure_future(read())
+    await asyncio.wait_for(waiting.wait(), timeout=1)
+    reader.cancel()
+    return await asyncio.wait_for(reader, timeout=1)
+
+
+class Slow:
+    """A plain stream whose close waits to be released, and can then fail."""
+
+    def __init__(self, chunks: list[Chunk], *, fail: bool = False) -> None:
+        self.left = list(chunks)
+        self.fail = fail
+        self.closing = asyncio.Event()
+        self.release = asyncio.Event()
+        self.attempts = 0
+        self.closed = False
+
+    def __aiter__(self) -> "Slow":
+        return self
+
+    async def __anext__(self) -> Chunk:
+        if not self.left:
+            raise StopAsyncIteration
+        return self.left.pop(0)
+
+    async def aclose(self) -> None:
+        self.attempts += 1
+        self.closing.set()
+        try:
+            await self.release.wait()
+        finally:
+            if self.fail:
+                raise RuntimeError("close failed")
+        self.closed = True
+
+
+class Serving:
+    """An adapter that hands out one prepared stream."""
+
+    def __init__(self, prepared: AsyncIterator[Chunk]) -> None:
+        self.prepared = prepared
+
+    def stream(self, request: LlmRequest) -> AsyncIterator[Chunk]:
+        return self.prepared
 
 
 # Streaming
@@ -328,13 +393,56 @@ async def test_a_stream_that_goes_quiet_times_out(ctx: Context, llm: Llm) -> Non
 
 
 async def test_a_stream_that_goes_quiet_and_fails_to_close_still_times_out(
-    ctx: Context, llm: Llm
+    ctx: Context, llm: Llm, caplog: pytest.LogCaptureFixture
 ) -> None:
     llm.adapters.add(ctx, "fake", Fake(HELLO[:2], hang=True, fail_on_close=True))
 
-    _, finish = await drain(llm)
+    with caplog.at_level(logging.ERROR, logger="tack.llm"):
+        _, finish = await drain(llm)
 
     assert finish.failure == LlmFailure(message="no chunk arrived for 0.05 seconds", code="TIMEOUT")
+    assert "failed while its stream was being cancelled" in caplog.text
+    assert "close failed" in caplog.text
+
+
+async def test_a_stream_that_goes_quiet_times_out_in_a_task_that_survived_a_cancellation(
+    ctx: Context, llm: Llm
+) -> None:
+    llm.adapters.add(ctx, "fake", Fake(HELLO[:2], hang=True))
+
+    finish = await drain_after_surviving_a_cancellation(llm)
+
+    assert finish.failure == LlmFailure(message="no chunk arrived for 0.05 seconds", code="TIMEOUT")
+
+
+async def test_an_adapter_that_cancels_its_own_stream_is_a_failure_after_a_survived_cancellation(
+    ctx: Context, llm: Llm
+) -> None:
+    llm.adapters.add(ctx, "fake", Fake(HELLO[:2], then=asyncio.CancelledError()))
+
+    finish = await drain_after_surviving_a_cancellation(llm)
+
+    assert finish.failure == LlmFailure(
+        message="the adapter's stream was cancelled from inside", code="INTERNAL"
+    )
+
+
+async def test_something_that_is_no_chunk_is_a_failure(ctx: Context, llm: Llm) -> None:
+    class Adapter:
+        async def stream(self, request: LlmRequest) -> AsyncIterator[Chunk]:
+            yield HELLO[0]
+            yield cast("Chunk", "not a chunk")
+
+    llm.adapters.add(ctx, "fake", Adapter())
+
+    call = llm.call(REQUEST)
+    seen = [chunk async for chunk in call]
+
+    assert call.failure == LlmFailure(
+        message="a str object is not a chunk", code="MALFORMED_RESPONSE"
+    )
+    assert seen == [HELLO[0], call.finish]
+    assert call.message == AssistantMessage(content=())
 
 
 # The finish agrees with what arrived
@@ -471,26 +579,151 @@ async def test_a_failure_stays_a_failure_in_a_task_that_survived_a_cancellation(
     ctx: Context, llm: Llm
 ) -> None:
     error = RuntimeError("adapter bug")
-    error.__context__ = ValueError("an earlier error that was no cancellation")
+    error.__context__ = asyncio.CancelledError()
     llm.adapters.add(ctx, "fake", Fake([], then=error))
-    waiting = asyncio.Event()
 
-    async def read() -> LlmFailure | None:
-        try:
-            waiting.set()
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            pass
-        _, finish = await drain(llm)
-        return finish.failure
+    finish = await drain_after_surviving_a_cancellation(llm)
+
+    assert finish.failure == LlmFailure(message="RuntimeError: adapter bug", code="INTERNAL")
+
+
+async def test_a_cancellation_that_has_not_arrived_yet_is_left_to_arrive(
+    ctx: Context, llm: Llm
+) -> None:
+    class Stream:
+        def __aiter__(self) -> "Stream":
+            return self
+
+        async def __anext__(self) -> Chunk:
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            error = RuntimeError("adapter bug")
+            error.__context__ = ValueError("an earlier error that was no cancellation")
+            raise error
+
+    llm.adapters.add(ctx, "fake", Serving(Stream()))
+    call = llm.call(REQUEST)
+
+    async def read() -> None:
+        await read_all(call)
+        await asyncio.sleep(0)
 
     reader = asyncio.ensure_future(read())
-    await asyncio.wait_for(waiting.wait(), timeout=1)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
+
+    assert call.failure == LlmFailure(message="RuntimeError: adapter bug", code="INTERNAL")
+
+
+async def test_a_cancellation_while_the_stream_closes_gets_through_a_close_that_fails(
+    ctx: Context, llm: Llm, caplog: pytest.LogCaptureFixture
+) -> None:
+    stream = Slow(HELLO, fail=True)
+    llm.adapters.add(ctx, "fake", Serving(stream))
+    call = llm.call(REQUEST)
+
+    reader = asyncio.ensure_future(read_all(call))
+    await asyncio.wait_for(stream.closing.wait(), timeout=1)
     reader.cancel()
+    with caplog.at_level(logging.ERROR, logger="tack.llm"), pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
 
-    failure = await asyncio.wait_for(reader, timeout=1)
+    assert call.finish is None
+    assert call.chunks == HELLO[:-1]
+    assert "failed to close its stream" in caplog.text
+    assert "close failed" in caplog.text
 
-    assert failure == LlmFailure(message="RuntimeError: adapter bug", code="INTERNAL")
+
+async def test_a_close_that_was_cut_short_is_tried_again(ctx: Context, llm: Llm) -> None:
+    stream = Slow(HELLO)
+    llm.adapters.add(ctx, "fake", Serving(stream))
+    call = llm.call(REQUEST)
+    reader = asyncio.ensure_future(read_all(call))
+    await asyncio.wait_for(stream.closing.wait(), timeout=1)
+    reader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
+    assert not stream.closed
+
+    stream.release.set()
+    await asyncio.wait_for(call.aclose(), timeout=1)
+
+    assert stream.closed
+    assert stream.attempts == 2
+    await asyncio.wait_for(call.aclose(), timeout=1)
+    assert stream.attempts == 2
+
+
+async def test_leaving_a_call_after_a_cancellation_finishes_closing_the_stream(
+    ctx: Context, llm: Llm
+) -> None:
+    stream = Slow(HELLO)
+    llm.adapters.add(ctx, "fake", Serving(stream))
+    call = llm.call(REQUEST)
+
+    async def read() -> None:
+        async with call:
+            await read_all(call)
+
+    reader = asyncio.ensure_future(read())
+    await asyncio.wait_for(stream.closing.wait(), timeout=1)
+    stream.closing.clear()
+    reader.cancel()
+    await asyncio.wait_for(stream.closing.wait(), timeout=1)
+    stream.release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
+
+    assert stream.closed
+    assert stream.attempts == 2
+    assert call.finish is None
+
+
+async def test_a_finish_that_was_not_delivered_does_not_change_the_reply(
+    ctx: Context, llm: Llm
+) -> None:
+    stream = Slow([*TOOL_CALL, Finish(reason="max-tokens")])
+    llm.adapters.add(ctx, "fake", Serving(stream))
+    call = llm.call(REQUEST)
+    calls = (ToolCallBlock(call_id="call-1", name="read", arguments='{"path": "a.txt"}'),)
+
+    reader = asyncio.ensure_future(read_all(call))
+    await asyncio.wait_for(stream.closing.wait(), timeout=1)
+    assert call.message.tool_calls == calls
+    reader.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
+
+    assert call.finish is None
+    assert call.chunks == TOOL_CALL
+    assert call.message.tool_calls == calls
+
+
+async def test_an_adapter_that_cancels_its_own_close_does_not_spoil_the_reply(
+    ctx: Context, llm: Llm, caplog: pytest.LogCaptureFixture
+) -> None:
+    class Stream:
+        def __init__(self) -> None:
+            self.left = list(HELLO)
+
+        def __aiter__(self) -> "Stream":
+            return self
+
+        async def __anext__(self) -> Chunk:
+            return self.left.pop(0)
+
+        async def aclose(self) -> None:
+            raise asyncio.CancelledError
+
+    llm.adapters.add(ctx, "fake", Serving(Stream()))
+
+    with caplog.at_level(logging.ERROR, logger="tack.llm"):
+        seen, finish = await drain(llm)
+
+    assert seen == HELLO
+    assert finish == Finish(reason="stop")
+    assert "cancelled the closing of its stream from inside" in caplog.text
 
 
 # The service

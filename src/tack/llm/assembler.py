@@ -1,6 +1,7 @@
 """Folding a stream of chunks back into an assistant message."""
 
 from dataclasses import dataclass, field
+from typing import cast
 
 from pydantic import JsonValue
 
@@ -20,6 +21,16 @@ from tack.llm.types import (
     ToolCallDelta,
     Usage,
     UsageChunk,
+)
+
+_CHUNK_TYPES = (
+    BlockStart,
+    TextDelta,
+    ReasoningDelta,
+    ToolCallDelta,
+    BlockEnd,
+    UsageChunk,
+    Finish,
 )
 
 
@@ -60,8 +71,12 @@ class Assembler:
         """Take in the next chunk.
 
         Raises:
-            MalformedStreamError: The chunk cannot follow the ones before it.
+            MalformedStreamError: The chunk cannot follow the ones before it,
+                or it is no chunk at all. The assembler is unchanged.
         """
+        given = cast("object", chunk)
+        if not isinstance(given, _CHUNK_TYPES):
+            raise MalformedStreamError(f"a {type(given).__name__} object is not a chunk")
         if self.finish is not None:
             raise MalformedStreamError(f"a {chunk.type} chunk arrived after the finish")
         if isinstance(chunk, BlockStart):

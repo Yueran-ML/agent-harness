@@ -57,14 +57,15 @@ def _current_task() -> asyncio.Task[object]:
     return task
 
 
-def _replaced_a_cancellation(error: BaseException) -> bool:
+def _replaced_a_cancellation(error: BaseException, requests: int) -> bool:
     """Tell whether ``error`` was raised in place of a cancellation of this task.
 
-    That is the case when the task has been asked to cancel and the error arose
-    while a ``CancelledError`` was being handled, as happens when the cleanup
-    of an adapter fails.
+    ``requests`` is how often the task had been asked to cancel when the
+    operation began. The error replaced a cancellation if the task has been
+    asked again since, and the error arose while a ``CancelledError`` was being
+    handled, as happens when the cleanup of an adapter fails.
     """
-    if not _current_task().cancelling():
+    if _current_task().cancelling() <= requests:
         return False
     earlier = error.__context__
     while earlier is not None:
@@ -72,17 +73,6 @@ def _replaced_a_cancellation(error: BaseException) -> bool:
             return True
         earlier = earlier.__context__
     return False
-
-
-async def _close(stream: AsyncIterator[Chunk]) -> None:
-    """Close the stream of an adapter. A failure to close is logged, not raised."""
-    close = getattr(stream, "aclose", None)
-    if close is None:
-        return
-    try:
-        await close()
-    except Exception:
-        logger.exception("an adapter failed to close its stream")
 
 
 class LlmCall:
@@ -105,9 +95,15 @@ class LlmCall:
             async for chunk in call:
                 ...
 
-    While and after iterating, the attributes describe what has arrived so
-    far. They stay readable after a cancellation or an early close, in which
-    case there is no finish.
+    A failure to close is logged and changes nothing else. A cancellation of
+    the reader always gets through. One that arrives while the stream is
+    closing cuts the closing short, as it does with any awaited cleanup, and
+    :meth:`aclose` then tries again. An adapter whose cleanup must not be cut
+    short has to shield it.
+
+    While and after iterating, the attributes describe what has been delivered
+    so far. They stay readable after a cancellation or an early close, in
+    which case there is no finish.
 
     Attributes:
         chunks: Every chunk delivered so far.
@@ -119,6 +115,7 @@ class LlmCall:
         "_finish",
         "_idle_timeout",
         "_request",
+        "_source",
         "_stream",
         "chunks",
     )
@@ -131,6 +128,7 @@ class LlmCall:
         self._idle_timeout = idle_timeout
         self._assembler = Assembler()
         self._finish: Finish | None = None
+        self._source: AsyncIterator[Chunk] | None = None
         self._stream: AsyncGenerator[Chunk] | None = None
         self.chunks: list[Chunk] = []
 
@@ -161,9 +159,14 @@ class LlmCall:
         return self._stream
 
     async def aclose(self) -> None:
-        """Stop reading and close the adapter's stream."""
+        """Stop reading and close the adapter's stream.
+
+        Closing a second time does nothing, unless closing the adapter's
+        stream was cut short by a cancellation before: then it is tried again.
+        """
         if self._stream is not None:
             await self._stream.aclose()
+        await self._close_source()
 
     async def __aenter__(self) -> Self:
         return self
@@ -172,20 +175,24 @@ class LlmCall:
         await self.aclose()
 
     async def _run(self) -> AsyncGenerator[Chunk]:
-        stream = self._open()
-        if isinstance(stream, Finish):
-            finish = stream
+        opened = self._open()
+        if isinstance(opened, Finish):
+            ending = opened
         else:
+            self._source = opened
             try:
                 while True:
-                    chunk = await self._next(stream)
+                    chunk = await self._next(opened)
                     if isinstance(chunk, Finish):
                         break
                     self.chunks.append(chunk)
                     yield chunk
             finally:
-                await _close(stream)
-            finish = chunk
+                await self._close_source()
+            ending = chunk
+        # Only now does the finish count: a reader that was cancelled while the
+        # stream was closing has not seen it, and neither has the reply.
+        finish = self._settle(ending)
         self._finish = finish
         self.chunks.append(finish)
         yield finish
@@ -202,32 +209,67 @@ class LlmCall:
         except Exception as error:
             return self._failure(error, timed_out=False)
 
-    async def _next(self, stream: AsyncIterator[Chunk]) -> Chunk:
-        """Read one chunk. A finish is returned when the reply is over, however it ended."""
+    async def _next(self, source: AsyncIterator[Chunk]) -> Chunk:
+        """Read one chunk. A finish is returned when the stream is over, however it ended."""
+        task = _current_task()
+        requests = task.cancelling()
         watchdog = asyncio.timeout(self._idle_timeout)
         try:
             async with watchdog:
-                chunk = await anext(stream)
+                chunk = await anext(source)
         except asyncio.CancelledError:
-            if _current_task().cancelling():
+            if task.cancelling() > requests:
                 raise
             return _failed("INTERNAL", "the adapter's stream was cancelled from inside")
         except Exception as error:
-            if _replaced_a_cancellation(error):
+            if _replaced_a_cancellation(error, requests):
                 logger.error(
                     "an adapter failed while its stream was being cancelled", exc_info=error
                 )
                 raise asyncio.CancelledError from error
             return self._failure(error, timed_out=watchdog.expired())
+        if isinstance(chunk, Finish):
+            return chunk
         try:
             self._assembler.push(chunk)
         except MalformedStreamError as error:
             return _failed("MALFORMED_RESPONSE", str(error))
-        return self._settled(chunk) if isinstance(chunk, Finish) else chunk
+        return chunk
+
+    async def _close_source(self) -> None:
+        """Close the adapter's stream, unless that has been done.
+
+        A failure to close is logged, not raised. Only a cancellation of the
+        current task gets through. If it cut the closing short, the stream
+        counts as open, and the next call tries again.
+        """
+        source = self._source
+        if source is None:
+            return
+        close = getattr(source, "aclose", None)
+        if close is not None:
+            task = _current_task()
+            requests = task.cancelling()
+            try:
+                await close()
+            except asyncio.CancelledError:
+                if task.cancelling() > requests:
+                    raise
+                logger.error("an adapter cancelled the closing of its stream from inside")
+            except Exception as error:
+                logger.error("an adapter failed to close its stream", exc_info=error)
+                if _replaced_a_cancellation(error, requests):
+                    self._source = None
+                    raise asyncio.CancelledError from error
+        self._source = None
 
     def _failure(self, error: Exception, *, timed_out: bool) -> Finish:
         """Turn what reading a chunk raised into an error finish."""
         if timed_out:
+            if not isinstance(error, TimeoutError):
+                logger.error(
+                    "an adapter failed while its stream was being cancelled", exc_info=error
+                )
             return _failed("TIMEOUT", f"no chunk arrived for {self._idle_timeout:g} seconds")
         if isinstance(error, StopAsyncIteration):
             return _failed("STREAM_CLOSED", "the stream ended without a finish")
@@ -237,8 +279,9 @@ class LlmCall:
             return _failed("TIMEOUT", _describe(error))
         return _failed("INTERNAL", _describe(error))
 
-    def _settled(self, finish: Finish) -> Finish:
-        """Make the finish of the adapter agree with what arrived."""
+    def _settle(self, finish: Finish) -> Finish:
+        """Take in the finish that ended the stream and make it agree with what arrived."""
+        self._assembler.push(finish)
         if finish.reason == "error":
             return finish
         message = self._assembler.message()

@@ -10,6 +10,7 @@ from tack.llm import (
     CallConfig,
     Chunk,
     Finish,
+    FinishReason,
     LlmFailure,
     LlmRequest,
     Message,
@@ -79,11 +80,19 @@ def test_a_chunk_survives_a_json_round_trip(chunk: Chunk) -> None:
     assert adapter.validate_json(adapter.dump_json(chunk)) == chunk
 
 
-def test_a_finish_carries_a_failure_exactly_when_it_is_an_error() -> None:
+@pytest.mark.parametrize("reason", ["stop", "tool-calls", "max-tokens"])
+def test_a_finish_that_is_no_error_carries_no_failure(reason: FinishReason) -> None:
+    assert Finish(reason=reason).failure is None
+    with pytest.raises(ValidationError, match="carries a failure exactly when"):
+        Finish(reason=reason, failure=LlmFailure(message="slow down", code="RATE_LIMIT"))
+
+
+def test_a_finish_that_is_an_error_carries_a_failure() -> None:
+    failure = LlmFailure(message="slow down", code="RATE_LIMIT")
+
+    assert Finish(reason="error", failure=failure).failure == failure
     with pytest.raises(ValidationError, match="carries a failure exactly when"):
         Finish(reason="error")
-    with pytest.raises(ValidationError, match="carries a failure exactly when"):
-        Finish(reason="stop", failure=LlmFailure(message="slow down", code="RATE_LIMIT"))
 
 
 def test_a_request_survives_a_json_round_trip() -> None:

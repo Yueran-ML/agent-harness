@@ -1,5 +1,7 @@
 """The assembler folds a chunk stream back into an assistant message."""
 
+from typing import cast
+
 import pytest
 
 from tack.llm import (
@@ -69,6 +71,24 @@ def test_blocks_keep_the_order_of_their_indices() -> None:
             ToolCallBlock(call_id="call-1", name="read", arguments='{"path": "a.txt"}'),
         )
     )
+
+
+def test_blocks_are_ordered_by_index_in_whatever_order_they_begin() -> None:
+    chunks: list[Chunk] = [*text(1, "second"), *text(0, "first"), Finish(reason="stop")]
+
+    assert assemble(chunks).message() == AssistantMessage(
+        content=(TextBlock(text="first"), TextBlock(text="second"))
+    )
+
+
+def test_something_that_is_no_chunk_is_rejected_and_changes_nothing() -> None:
+    assembler = assemble(text(0, "kept"))
+
+    with pytest.raises(MalformedStreamError, match="a str object is not a chunk"):
+        assembler.push(cast("Chunk", "not a chunk"))
+
+    assert assembler.finish is None
+    assert assembler.message() == AssistantMessage(content=(TextBlock(text="kept"),))
 
 
 def test_interleaved_blocks_are_kept_apart() -> None:

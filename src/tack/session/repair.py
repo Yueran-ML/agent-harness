@@ -1,6 +1,7 @@
 """Closing a log that stops in the middle of a turn."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Literal
 
 from tack.llm.types import TextBlock, ToolMessage
@@ -24,6 +25,14 @@ _WHAT_HAPPENED = {
     "interrupted": "the run was interrupted",
     "forked": "the conversation was forked",
 }
+
+
+@dataclass(slots=True)
+class _Waiting:
+    """A tool call of the open turn that has no result yet."""
+
+    call_id: str
+    dispatched: bool = False
 
 
 def _result(call_id: str, was_dispatched: bool, reason: CloseReason) -> ToolResultEvent:
@@ -61,21 +70,20 @@ def closing_events(
     dispatched may or may not have taken effect: ``TOOL_OUTCOME_UNKNOWN``. A
     call that had not been dispatched did not run: ``TOOL_NOT_STARTED``.
 
+    Calls are matched with their results one by one and in order, not by id
+    alone: a model may use an id again in a later reply.
+
     Returns:
         The events to append, in order. The list is empty if no turn is open.
     """
     turn: int | None = None
     step: int | None = None
-    asked: dict[str, None] = {}
-    dispatched: set[str] = set()
-    answered: set[str] = set()
+    waiting: list[_Waiting] = []
     for event in events:
         data = event.data
         if isinstance(data, TurnStartEvent):
             turn, step = data.turn, None
-            asked.clear()
-            dispatched.clear()
-            answered.clear()
+            waiting.clear()
         elif isinstance(data, TurnEndEvent):
             turn = step = None
         elif isinstance(data, StepStartEvent):
@@ -83,18 +91,20 @@ def closing_events(
         elif isinstance(data, StepEndEvent):
             step = None
         elif isinstance(data, AssistantMessageEvent):
-            asked.update(dict.fromkeys(call.call_id for call in data.message.tool_calls))
+            waiting.extend(_Waiting(call.call_id) for call in data.message.tool_calls)
         elif isinstance(data, ToolCallEvent):
-            dispatched.add(data.call_id)
-        elif isinstance(data, ToolResultEvent):
-            answered.add(data.message.call_id)
+            for call in waiting:
+                if call.call_id == data.call_id and not call.dispatched:
+                    call.dispatched = True
+                    break
+        elif isinstance(data, ToolResultEvent) and not event.replaces:
+            for call in waiting:
+                if call.call_id == data.message.call_id:
+                    waiting.remove(call)
+                    break
     if turn is None:
         return []
-    closers: list[EventData] = [
-        _result(call_id, call_id in dispatched, reason)
-        for call_id in asked
-        if call_id not in answered
-    ]
+    closers: list[EventData] = [_result(call.call_id, call.dispatched, reason) for call in waiting]
     if step is not None:
         closers.append(StepEndEvent(turn=turn, step=step))
     closers.append(TurnEndEvent(turn=turn, reason=reason))

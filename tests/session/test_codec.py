@@ -1,9 +1,11 @@
 """The line format of a session file."""
 
+import datetime
 import json
 from typing import ClassVar
 
 import pytest
+from pydantic import ConfigDict
 
 from tack.llm import TextBlock, UserMessage
 from tack.session import (
@@ -219,3 +221,30 @@ def test_a_first_line_that_is_not_a_header_of_this_format_is_refused(
 ) -> None:
     with pytest.raises(UnreadableSessionError, match=complaint):
         decode_header(line)
+
+
+def test_an_event_with_strict_data_reads_back() -> None:
+    class Measured(EventData):
+        model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
+
+        event_type: ClassVar[str] = "test/measured"
+
+        values: tuple[int, ...]
+        on: datetime.date
+
+    event = SessionEvent(seq=0, time=1, data=Measured(values=(1, 2), on=datetime.date(2026, 10, 9)))
+
+    assert decode_event(encode_event(event), {"test/measured": Measured}) == event
+
+
+def test_an_unknown_event_is_written_back_exactly_as_it_was_read() -> None:
+    line = (
+        '{"type":"later/idea", "seq":4,"time":1000,'
+        '"data":{"word":"\\u0061","big":12345678901234567890123,"twice":1,"twice":2},'
+        '"ignorable":true}'
+    )
+
+    event = decode_event(line, KINDS)
+
+    assert encode_event(event) == line
+    assert encode_event(decode_event(line.encode(), KINDS)) == line

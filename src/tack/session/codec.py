@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import ClassVar, Literal, cast
 
-from pydantic import ConfigDict, JsonValue, ValidationError
+from pydantic import ConfigDict, JsonValue, PrivateAttr, ValidationError
 
 from tack.data import Data
 from tack.session.errors import UnreadableSessionError
@@ -39,7 +39,8 @@ class UnknownEvent(EventData):
     """An event of a type that nothing has registered, kept exactly as it was read.
 
     Only an event that was written as ignorable is kept this way. It takes no
-    part in anything, and it is written back unchanged when a log is copied.
+    part in anything. It remembers the line it was read from, and that line is
+    what is written when a log is copied, byte for byte.
     Each unknown type gets a subclass of its own, which carries the name.
     """
 
@@ -47,6 +48,8 @@ class UnknownEvent(EventData):
 
     event_type: ClassVar[str] = "unknown"
     ignorable: ClassVar[bool] = True
+
+    _line: str = PrivateAttr(default="")
 
 
 @functools.cache
@@ -111,6 +114,9 @@ def decode_header(line: str | bytes) -> SessionHeader:
 
 def encode_event(event: SessionEvent[EventData]) -> str:
     """Return the line that stores ``event``, without the line break."""
+    data = event.data
+    if isinstance(data, UnknownEvent):
+        return data._line  # pyright: ignore[reportPrivateUsage]
     parts = [
         f'"type":{json.dumps(event.type)}',
         f'"seq":{event.seq}',
@@ -176,10 +182,14 @@ def decode_event(
                 f"an event of the unknown type {parsed.type!r} carries a message "
                 "and cannot be skipped"
             )
-        data = _unknown(parsed.type).model_validate(parsed.data)
+        placeholder = _unknown(parsed.type).model_validate(parsed.data)
+        placeholder._line = line if isinstance(line, str) else line.decode()  # pyright: ignore[reportPrivateUsage]
+        data = placeholder
     else:
         try:
-            data = kind.model_validate(parsed.data)
+            # Read as JSON, the way append checked it: a strict model takes a JSON
+            # array for a tuple only this way.
+            data = kind.model_validate_json(json.dumps(parsed.data))
         except ValidationError as error:
             raise UnreadableSessionError(
                 f"the data of the {parsed.type} event is not well formed: {_summary(error)}"

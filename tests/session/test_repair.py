@@ -254,3 +254,78 @@ async def test_a_log_that_was_closed_needs_no_more_closing(ctx: Context, cut: in
     ]
     results = [data.message.call_id for data in everything if isinstance(data, ToolResultEvent)]
     assert sorted(results) == sorted(asked)
+
+
+async def test_a_call_id_that_is_used_again_in_a_later_step_counts_again(ctx: Context) -> None:
+    found = closers(
+        ctx,
+        TurnStartEvent(turn=1),
+        StepStartEvent(turn=1, step=1),
+        asking("same"),
+        dispatched("same"),
+        answered("same"),
+        StepEndEvent(turn=1, step=1),
+        StepStartEvent(turn=1, step=2),
+        asking("same"),
+    )
+
+    assert [type(data) for data in found] == [ToolResultEvent, StepEndEvent, TurnEndEvent]
+    first = found[0]
+    assert isinstance(first, ToolResultEvent)
+    assert first.message.call_id == "same"
+    assert first.error is not None
+    assert first.error.code == "TOOL_NOT_STARTED"
+
+
+async def test_two_calls_with_one_id_in_one_reply_each_need_a_result(ctx: Context) -> None:
+    found = closers(
+        ctx,
+        TurnStartEvent(turn=1),
+        StepStartEvent(turn=1, step=1),
+        asking("same", "same"),
+        dispatched("same"),
+        answered("same"),
+        dispatched("same"),
+    )
+
+    results = [data for data in found if isinstance(data, ToolResultEvent)]
+    assert len(results) == 1
+    assert results[0].error is not None
+    assert results[0].error.code == "TOOL_OUTCOME_UNKNOWN"
+
+
+async def test_a_result_that_takes_the_place_of_another_answers_no_new_call(ctx: Context) -> None:
+    session = log_of(
+        ctx,
+        TurnStartEvent(turn=1),
+        StepStartEvent(turn=1, step=1),
+        asking("same"),
+        dispatched("same"),
+        answered("same"),
+        StepEndEvent(turn=1, step=1),
+        StepStartEvent(turn=1, step=2),
+        asking("same"),
+    )
+    session.append(answered("same"), replaces=[4])
+
+    found = closing_events(session.events, "interrupted")
+
+    assert [type(data) for data in found] == [ToolResultEvent, StepEndEvent, TurnEndEvent]
+
+
+async def test_a_call_or_a_result_that_belongs_to_no_waiting_call_changes_nothing(
+    ctx: Context,
+) -> None:
+    found = closers(
+        ctx,
+        TurnStartEvent(turn=1),
+        StepStartEvent(turn=1, step=1),
+        asking("call-1"),
+        dispatched("stray"),
+        answered("stray"),
+    )
+
+    results = [data for data in found if isinstance(data, ToolResultEvent)]
+    assert [result.message.call_id for result in results] == ["call-1"]
+    assert results[0].error is not None
+    assert results[0].error.code == "TOOL_NOT_STARTED"

@@ -308,3 +308,21 @@ async def test_a_fork_closes_with_its_owner(
     await owner.dispose()
 
     assert made[0].closed
+
+
+async def test_a_fork_keeps_a_line_it_does_not_understand_byte_for_byte(
+    ctx: Context, sessions: Sessions, tmp_path: Path
+) -> None:
+    one_turn(sessions, ctx, tmp_path)
+    path = sessions.directory(tmp_path, "s-1") / SESSION_FILE
+    foreign = (
+        b'{"type":"later/idea", "seq":8,"time":5,'
+        b'"data":{"word":"\\u0061","twice":1,"twice":2},"ignorable":true}'
+    )
+    path.write_bytes(path.read_bytes() + foreign + b"\n")
+
+    fork = sessions.fork(ctx, tmp_path, "s-1", session_id="s-2")
+    fork.close()
+
+    copied = (sessions.directory(tmp_path, "s-2") / SESSION_FILE).read_bytes().split(b"\n")
+    assert copied[9] == foreign

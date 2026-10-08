@@ -7,6 +7,7 @@ import logging
 from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Protocol, Self
 
+from tack import cancellation
 from tack.kernel import Registry, ServiceKey
 from tack.llm.assembler import Assembler, MalformedStreamError
 from tack.llm.types import (
@@ -49,30 +50,6 @@ def _failed(code: str, message: str) -> Finish:
 def _describe(error: BaseException) -> str:
     text = str(error)
     return f"{type(error).__name__}: {text}" if text else type(error).__name__
-
-
-def _current_task() -> asyncio.Task[object]:
-    task = asyncio.current_task()
-    assert task is not None
-    return task
-
-
-def _replaced_a_cancellation(error: BaseException, requests: int) -> bool:
-    """Tell whether ``error`` was raised in place of a cancellation of this task.
-
-    ``requests`` is how often the task had been asked to cancel when the
-    operation began. The error replaced a cancellation if the task has been
-    asked again since, and the error arose while a ``CancelledError`` was being
-    handled, as happens when the cleanup of an adapter fails.
-    """
-    if _current_task().cancelling() <= requests:
-        return False
-    earlier = error.__context__
-    while earlier is not None:
-        if isinstance(earlier, asyncio.CancelledError):
-            return True
-        earlier = earlier.__context__
-    return False
 
 
 class LlmCall:
@@ -211,18 +188,17 @@ class LlmCall:
 
     async def _next(self, source: AsyncIterator[Chunk]) -> Chunk:
         """Read one chunk. A finish is returned when the stream is over, however it ended."""
-        task = _current_task()
-        requests = task.cancelling()
+        before = cancellation.requests()
         watchdog = asyncio.timeout(self._idle_timeout)
         try:
             async with watchdog:
                 chunk = await anext(source)
         except asyncio.CancelledError:
-            if task.cancelling() > requests:
+            if cancellation.requested_since(before):
                 raise
             return _failed("INTERNAL", "the adapter's stream was cancelled from inside")
         except Exception as error:
-            if _replaced_a_cancellation(error, requests):
+            if cancellation.replaced(error, before):
                 logger.error(
                     "an adapter failed while its stream was being cancelled", exc_info=error
                 )
@@ -248,17 +224,16 @@ class LlmCall:
             return
         close = getattr(source, "aclose", None)
         if close is not None:
-            task = _current_task()
-            requests = task.cancelling()
+            before = cancellation.requests()
             try:
                 await close()
             except asyncio.CancelledError:
-                if task.cancelling() > requests:
+                if cancellation.requested_since(before):
                     raise
                 logger.error("an adapter cancelled the closing of its stream from inside")
             except Exception as error:
                 logger.error("an adapter failed to close its stream", exc_info=error)
-                if _replaced_a_cancellation(error, requests):
+                if cancellation.replaced(error, before):
                     self._source = None
                     raise asyncio.CancelledError from error
         self._source = None

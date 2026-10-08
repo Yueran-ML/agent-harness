@@ -18,11 +18,11 @@
 
 | 结束时的指标 | 数值 |
 |---|---|
-| 测试 | 243 通过，另有 2 个只在 Python 3.12 及以上运行。在 Python 3.14 上实测 245 通过 |
+| 测试 | 245 通过，另有 3 个只在 Python 3.12 及以上运行。在 Python 3.14 上实测 248 通过 |
 | 覆盖率（行与分支） | 100% |
 | ruff、pyright 严格模式 | 零报错 |
-| 内核代码 | 8 个模块，2024 行 |
-| 测试代码 | 3778 行 |
+| 内核代码 | 8 个模块，2065 行 |
+| 测试代码 | 3862 行 |
 
 三平台持续集成的工作流已经写好。它要等推送到 GitHub 之后才会第一次运行。
 
@@ -113,7 +113,7 @@
 3. 插件使用未声明的服务会报错。子插件要用父插件提供的服务，也要在 `inject` 里声明，并且在父插件进入 `ACTIVE` 之后才加载。
 4. 服务被撤回期间名字保留，直到依赖方卸载完成。
 5. 新增 `FIBER_STATE_CHANGED` 事件和 `LifecycleError`。
-6. 内核为 2024 行，原设计估计约 600 行。多出来的部分主要在取消与重入的处理（`fiber.py`，761 行）和组合加载（`compose.py`，384 行）。
+6. 内核为 2065 行，原设计估计约 600 行。多出来的部分主要在取消与重入的处理（`fiber.py`，802 行）和组合加载（`compose.py`，384 行）。
 7. 清单条目用 `plugin` 字段写导入路径，层用 `extends` 引用另一个层。
 
 ## 任务总览
@@ -130,13 +130,13 @@
 | 8 | 依赖驱动的生命周期 | `fcdaf83` | 121 通过 | 100% |
 | 9 | 作用域 | `537ef79` | 131 通过 | 100% |
 | 10 | 生命周期的属性测试 | `a82d493` | 132 通过 | 100% |
-| 11 | 加固：取消、重入与撤回时的竞态 | `23dc710`、`48b6e14`、`7fc007d`、`af7af12`、`52b935e`、`2cdf22c` | 180 通过, 2 跳过 | 100% |
-| 12 | 组合：分层的插件清单 | `ed154d7`、`2cdf22c` | 239 通过, 2 跳过 | 100% |
-| 13 | 持续集成、README 与示例 | `eeb562d` | 243 通过, 2 跳过 | 100% |
+| 11 | 加固：取消、重入与撤回时的竞态 | `23dc710`、`48b6e14`、`7fc007d`、`af7af12`、`52b935e`、`2cdf22c`、`f6e5157` | 182 通过, 3 跳过 | 100% |
+| 12 | 组合：分层的插件清单 | `ed154d7`、`2cdf22c` | 241 通过, 3 跳过 | 100% |
+| 13 | 持续集成、README 与示例 | `eeb562d` | 245 通过, 3 跳过 | 100% |
 
 任务 1 到 10 各对应仓库里的一个提交。任务 11 到 13 的最终代码与仓库一致，但仓库里的提交是按复查的轮次分的，所以一个任务对应多个提交，`2cdf22c` 同时出现在任务 11 和任务 12 里。
 
-任务 11 是对照 Codex 的三轮只读复查完成的。三轮共 29 条意见，逐条核实后采纳了 27 条。未采纳的两条写在文末。
+任务 11 是对照 Codex 的四轮只读复查完成的。四轮共 32 条意见，逐条核实后采纳了 30 条。未采纳的两条写在文末。
 
 ---
 
@@ -411,7 +411,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`2 passed in 0.67s`
+- 全套测试：`2 passed in 0.68s`
 - 覆盖率合计：`100%`
 - ruff check：`All checks passed!`
 - ruff format：`3 files already formatted`
@@ -536,7 +536,7 @@ def test_misuse_errors_are_also_type_errors() -> None:
 
 Run: `uv run pytest tests/kernel/test_declarations.py -q --timeout=10`
 
-Expected: `1 error in 0.57s`，第一个错误是 `ModuleNotFoundError: No module named 'tack.kernel'`
+Expected: `1 error in 0.58s`，第一个错误是 `ModuleNotFoundError: No module named 'tack.kernel'`
 
 **Step 3: 写实现**
 
@@ -749,7 +749,7 @@ __all__ = [
 
 Run: `uv run pytest tests/kernel/test_declarations.py -q`
 
-Expected: `17 passed in 0.46s`
+Expected: `17 passed in 0.47s`
 
 然后跑全部检查：
 
@@ -1362,7 +1362,7 @@ class Context:
 
 Run: `uv run pytest tests/kernel/test_effects.py -q`
 
-Expected: `15 passed in 0.46s`
+Expected: `15 passed in 0.58s`
 
 然后跑全部检查：
 
@@ -1376,7 +1376,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`34 passed in 0.86s`
+- 全套测试：`34 passed in 0.76s`
 - 覆盖率合计：`95%`
 - ruff check：`All checks passed!`
 - ruff format：`12 files already formatted`
@@ -1595,7 +1595,7 @@ async def test_emit_closes_a_coroutine_returned_by_a_listener(
 
 Run: `uv run pytest tests/kernel/test_events_sync.py -q --timeout=10`
 
-Expected: `15 failed in 0.68s`，第一个错误是 `AttributeError: 'Context' object has no attribute 'on'`
+Expected: `15 failed in 0.80s`，第一个错误是 `AttributeError: 'Context' object has no attribute 'on'`
 
 **Step 3: 写实现**
 
@@ -1857,7 +1857,7 @@ Expected: `15 failed in 0.68s`，第一个错误是 `AttributeError: 'Context' o
 
 Run: `uv run pytest tests/kernel/test_events_sync.py -q`
 
-Expected: `15 passed in 0.57s`
+Expected: `15 passed in 0.49s`
 
 然后跑全部检查：
 
@@ -1871,7 +1871,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`49 passed in 0.93s`
+- 全套测试：`49 passed in 0.97s`
 - 覆盖率合计：`96%`
 - ruff check：`All checks passed!`
 - ruff format：`13 files already formatted`
@@ -2109,7 +2109,7 @@ async def test_async_dispatch_checks_the_mode(ctx: Context) -> None:
 
 Run: `uv run pytest tests/kernel/test_events_async.py -q --timeout=10`
 
-Expected: `13 failed in 0.65s`，第一个错误是 `AttributeError: 'Context' object has no attribute 'parallel'`
+Expected: `13 failed in 0.82s`，第一个错误是 `AttributeError: 'Context' object has no attribute 'parallel'`
 
 **Step 3: 写实现**
 
@@ -2276,7 +2276,7 @@ Expected: `13 failed in 0.65s`，第一个错误是 `AttributeError: 'Context' o
 
 Run: `uv run pytest tests/kernel/test_events_async.py -q`
 
-Expected: `13 passed in 0.50s`
+Expected: `13 passed in 0.55s`
 
 然后跑全部检查：
 
@@ -2290,7 +2290,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`62 passed in 0.98s`
+- 全套测试：`62 passed in 1.08s`
 - 覆盖率合计：`97%`
 - ruff check：`All checks passed!`
 - ruff format：`14 files already formatted`
@@ -2670,7 +2670,7 @@ def test_resolve_plugin_rejects_other_objects(candidate: object) -> None:
 
 Run: `uv run pytest tests/kernel/test_plugins.py -q --timeout=10`
 
-Expected: `1 error in 0.71s`，第一个错误是 `ImportError: cannot import name 'Plugin' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py)`
+Expected: `1 error in 0.72s`，第一个错误是 `ImportError: cannot import name 'Plugin' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py)`
 
 **Step 3: 写实现**
 
@@ -3130,7 +3130,7 @@ def resolve_plugin(candidate: object) -> Plugin:
 
 Run: `uv run pytest tests/kernel/test_plugins.py -q`
 
-Expected: `26 passed in 0.57s`
+Expected: `26 passed in 0.53s`
 
 然后跑全部检查：
 
@@ -3144,7 +3144,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`88 passed in 1.14s`
+- 全套测试：`88 passed in 1.61s`
 - 覆盖率合计：`99%`
 - ruff check：`All checks passed!`
 - ruff format：`16 files already formatted`
@@ -3370,8 +3370,8 @@ Expected:
 
 | 文件 | 结果 | 第一个错误 |
 |---|---|---|
-| `test_plugins.py` | 26 passed in 0.58s | — |
-| `test_services.py` | 12 failed in 1.74s | AttributeError: 'Context' object has no attribute 'provide' |
+| `test_plugins.py` | 26 passed in 0.65s | — |
+| `test_services.py` | 12 failed in 1.73s | AttributeError: 'Context' object has no attribute 'provide' |
 
 **Step 3: 写实现**
 
@@ -3543,7 +3543,7 @@ Expected:
 
 Run: `uv run pytest tests/kernel/test_plugins.py tests/kernel/test_services.py -q`
 
-Expected: `38 passed in 0.73s`
+Expected: `38 passed in 0.68s`
 
 然后跑全部检查：
 
@@ -3557,7 +3557,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`100 passed in 1.38s`
+- 全套测试：`100 passed in 1.76s`
 - 覆盖率合计：`99%`
 - ruff check：`All checks passed!`
 - ruff format：`17 files already formatted`
@@ -3969,7 +3969,7 @@ async def test_a_provider_below_its_dependent_does_not_deadlock(ctx: Context) ->
 
 Run: `uv run pytest tests/kernel/test_dependencies.py -q --timeout=10`
 
-Expected: `20 failed, 1 passed in 0.80s`，第一个错误是 `TypeError: Plugin.__init__() got an unexpected keyword argument 'inject'`
+Expected: `20 failed, 1 passed in 0.84s`，第一个错误是 `TypeError: Plugin.__init__() got an unexpected keyword argument 'inject'`
 
 **Step 3: 写实现**
 
@@ -4304,7 +4304,7 @@ Expected: `20 failed, 1 passed in 0.80s`，第一个错误是 `TypeError: Plugin
 
 Run: `uv run pytest tests/kernel/test_dependencies.py -q`
 
-Expected: `21 passed in 0.52s`
+Expected: `21 passed in 0.65s`
 
 然后跑全部检查：
 
@@ -4318,7 +4318,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`121 passed in 1.37s`
+- 全套测试：`121 passed in 1.73s`
 - 覆盖率合计：`100%`
 - ruff check：`All checks passed!`
 - ruff format：`18 files already formatted`
@@ -4543,7 +4543,7 @@ async def test_scopes_cannot_be_created_on_a_disposed_fiber() -> None:
 
 Run: `uv run pytest tests/kernel/test_scopes.py -q --timeout=10`
 
-Expected: `10 failed in 0.66s`，第一个错误是 `AttributeError: 'Context' object has no attribute 'scope'`
+Expected: `10 failed in 0.71s`，第一个错误是 `AttributeError: 'Context' object has no attribute 'scope'`
 
 **Step 3: 写实现**
 
@@ -4733,7 +4733,7 @@ Expected: `10 failed in 0.66s`，第一个错误是 `AttributeError: 'Context' o
 
 Run: `uv run pytest tests/kernel/test_scopes.py -q`
 
-Expected: `10 passed in 0.46s`
+Expected: `10 passed in 0.53s`
 
 然后跑全部检查：
 
@@ -4747,7 +4747,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`131 passed in 1.76s`
+- 全套测试：`131 passed in 1.98s`
 - 覆盖率合计：`100%`
 - ruff check：`All checks passed!`
 - ruff format：`19 files already formatted`
@@ -5018,7 +5018,7 @@ def test_plugins_are_active_exactly_when_their_services_are(scenario: Scenario) 
 
 Run: `uv run pytest tests/kernel/test_lifecycle_properties.py -q --timeout=10`
 
-Expected: `1 passed in 2.86s`
+Expected: `1 passed in 2.64s`
 
 **Step 3: 写实现**
 
@@ -5029,7 +5029,7 @@ Expected: `1 passed in 2.86s`
 
 Run: `uv run pytest tests/kernel/test_lifecycle_properties.py -q`
 
-Expected: `1 passed in 2.37s`
+Expected: `1 passed in 2.54s`
 
 然后跑全部检查：
 
@@ -5043,7 +5043,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`132 passed in 5.20s`
+- 全套测试：`132 passed in 5.10s`
 - 覆盖率合计：`100%`
 - ruff check：`All checks passed!`
 - ruff format：`20 files already formatted`
@@ -5083,6 +5083,7 @@ git commit -m "test(kernel): check lifecycle invariants on random plugin graphs"
 - 返回可等待对象的 disposer 改为在自己的任务里运行。调用方被取消时清理继续进行，父 Fiber 也不会抢在子 Fiber 之前完成卸载。
 - 内核给生命周期代码打标记。标记放在上下文变量里，所以这段代码启动的任务会继承它。标记在代码结束的那一刻失效。
 - 内核的任务一律显式设置标记。驱动任务不带标记。否则在 disposer 里启动的驱动会继承 disposer 的标记，卸载循环会空转而不让出事件循环。
+- disposer 可以返回一个早先创建的任务。这种任务有自己的上下文，继承不到标记，所以内核另外按任务身份查找标记。被返回的任务一结束，标记立即失效。
 - `waits_for(target, caller)` 计算 `target` 的卸载是否要等 `caller`。它沿两种关系展开：`target` 下面的 Fiber，以及注入了这些 Fiber 所持有服务的插件。
 - 撤回服务时名字保留到依赖方卸载完。这样同一个服务不会有两代同时存在，提供方的卸载也总能找到还在卸载的依赖方。
 - `settled()` 发现还有工作要做而驱动已经不在时，会重新启动驱动。被取消的驱动因此由下一个等待方接续。
@@ -5515,11 +5516,11 @@ async def test_a_cleanup_cancelled_after_it_started_is_reported(
 
 import asyncio
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 
 import pytest
 
-from tack.kernel import Context, Disposer, FiberState, Plugin
+from tack.kernel import Context, Disposer, EffectHandle, FiberState, Plugin
 
 pytestmark = pytest.mark.skipif(
     sys.version_info < (3, 12), reason="eager task factories arrived in Python 3.12"
@@ -5572,6 +5573,39 @@ async def test_a_plugin_loads_in_the_background_under_an_eager_task_factory() ->
     await fiber
 
     assert log == ["applied"]
+    await ctx.fiber.dispose()
+
+
+@pytest.mark.usefixtures("eager_tasks")
+async def test_a_disposer_that_disposes_its_own_handle_in_an_eager_task_is_still_waited_for() -> (
+    None
+):
+    ctx = Context()
+    gate = asyncio.Event()
+    log: list[str] = []
+    handles: list[EffectHandle] = []
+    spawned: list[asyncio.Future[None]] = []
+
+    async def cleanup() -> None:
+        await gate.wait()
+        log.append("cleaned up")
+
+    def undo() -> Awaitable[None]:
+        spawned.append(asyncio.ensure_future(handles[0].dispose()))
+        return cleanup()
+
+    handles.append(ctx.effect(lambda: undo))
+    waiter = asyncio.ensure_future(handles[0].dispose())
+    await asyncio.sleep(0)
+    try:
+        assert not waiter.done()
+        assert not handles[0].disposed
+    finally:
+        gate.set()
+    await asyncio.wait_for(waiter, timeout=1)
+
+    assert log == ["cleaned up"]
+    assert handles[0].disposed
     await ctx.fiber.dispose()
 ```
 
@@ -6122,6 +6156,57 @@ async def test_a_dependent_may_withdraw_the_service_it_injects_from_its_own_disp
     await asyncio.wait_for(handle.dispose(), timeout=1)
     assert handle.disposed
     await ctx.fiber.dispose()
+
+
+async def test_a_task_started_in_apply_and_returned_as_cleanup_may_dispose_its_fiber() -> None:
+    ctx = Context()
+    go = asyncio.Event()
+    log: list[str] = []
+
+    def apply(inner: Context, config: object) -> Disposer:
+        async def cleanup() -> None:
+            await go.wait()
+            await inner.fiber.dispose()
+            log.append("cleaned up")
+
+        task = asyncio.ensure_future(cleanup())
+
+        def undo() -> asyncio.Future[None]:
+            go.set()
+            return task
+
+        return undo
+
+    fiber = await ctx.plugin(Plugin("self", apply))
+
+    await asyncio.wait_for(fiber.dispose(), timeout=1)
+
+    assert log == ["cleaned up"]
+    assert fiber.state is FiberState.DISPOSED
+    await ctx.fiber.dispose()
+
+
+async def test_a_task_started_by_a_finished_cleanup_task_is_ordinary_code(ctx: Context) -> None:
+    outcomes: list[str] = []
+    tasks: list[asyncio.Future[None]] = []
+
+    async def after() -> None:
+        await ctx.settled()
+        outcomes.append("waited")
+
+    async def cleanup() -> None:
+        await asyncio.sleep(0)
+        tasks.append(asyncio.ensure_future(after()))
+
+    def undo() -> asyncio.Future[None]:
+        return asyncio.ensure_future(cleanup())
+
+    handle = ctx.effect(lambda: undo)
+
+    await asyncio.wait_for(handle.dispose(), timeout=1)
+    await asyncio.wait_for(tasks[0], timeout=1)
+
+    assert outcomes == ["waited"]
 ```
 
 新建 `tests/kernel/test_withdrawal.py`：
@@ -6840,13 +6925,13 @@ Expected:
 | 文件 | 结果 | 第一个错误 |
 |---|---|---|
 | `test_cancellation.py` | 有用例在 10 秒内没有结束 | — |
-| `test_dependencies.py` | 1 error in 0.59s | TypeError: type 'Plugin' is not subscriptable |
-| `test_eager_tasks.py` | 2 skipped in 0.43s | — |
-| `test_events_sync.py` | 3 failed, 15 passed, 1 error in 0.80s | RuntimeWarning: coroutine 'a_coroutine' was never awaited |
-| `test_fiber_states.py` | 1 error in 0.57s | ImportError: cannot import name 'FIBER_STATE_CHANGED' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py) |
-| `test_lifecycle_properties.py` | 1 error in 0.62s | TypeError: type 'Plugin' is not subscriptable |
-| `test_plugins.py` | 2 failed, 26 passed in 0.80s | Failed: DID NOT RAISE InvalidPluginError |
-| `test_reentrancy.py` | 1 error in 0.59s | ImportError: cannot import name 'LifecycleError' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py) |
+| `test_dependencies.py` | 1 error in 0.61s | TypeError: type 'Plugin' is not subscriptable |
+| `test_eager_tasks.py` | 3 skipped in 0.45s | — |
+| `test_events_sync.py` | 3 failed, 15 passed, 1 error in 0.70s | RuntimeWarning: coroutine 'a_coroutine' was never awaited |
+| `test_fiber_states.py` | 1 error in 0.60s | ImportError: cannot import name 'FIBER_STATE_CHANGED' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py) |
+| `test_lifecycle_properties.py` | 1 error in 0.68s | TypeError: type 'Plugin' is not subscriptable |
+| `test_plugins.py` | 2 failed, 26 passed in 0.81s | Failed: DID NOT RAISE InvalidPluginError |
+| `test_reentrancy.py` | 1 error in 0.60s | ImportError: cannot import name 'LifecycleError' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py) |
 | `test_scopes.py` | 10 passed in 0.49s | — |
 | `test_withdrawal.py` | 45 秒内没有结果，进程被强制结束 | — |
 
@@ -6983,9 +7068,10 @@ import enum
 import inspect
 import itertools
 import logging
+import weakref
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from tack.kernel.errors import InactiveEffectError, InvalidPluginError, KernelError
 from tack.kernel.events import EmitEvent, HookTable, run_emit
@@ -7063,15 +7149,48 @@ class Lifecycle:
     The mark is kept in a context variable, so a task started by that code
     inherits it. ``running`` turns false once the ``apply`` or the disposer has
     finished: a task that outlives it is ordinary code again.
+
+    The marked code may hand the kernel a future or a task of its own to wait
+    for. ``awaited`` is that future. The mark stops counting the moment it is
+    done, without waiting for the kernel to notice.
     """
 
     fiber: Fiber
     running: bool = True
+    awaited: asyncio.Future[Any] | None = None
+
+    @property
+    def live(self) -> bool:
+        """Whether the code this mark describes is still running."""
+        return self.running and not (self.awaited is not None and self.awaited.done())
+
+    def adopt(self, awaitable: object) -> None:
+        """Extend the mark to a future or task that the marked code returned.
+
+        A task that already existed runs in a context of its own, so it cannot
+        inherit the mark. It is looked up by identity instead.
+        """
+        if isinstance(awaitable, asyncio.Future):
+            self.awaited = cast("asyncio.Future[Any]", awaitable)
+        if isinstance(awaitable, asyncio.Task):
+            _adopted[cast("asyncio.Task[Any]", awaitable)] = self
 
 
 _lifecycle: contextvars.ContextVar[Lifecycle | None] = contextvars.ContextVar(
     "tack-lifecycle", default=None
 )
+
+_adopted: weakref.WeakKeyDictionary[asyncio.Task[Any], Lifecycle] = weakref.WeakKeyDictionary()
+
+
+def _current_mark() -> Lifecycle | None:
+    """Return the live lifecycle mark of the calling code, if it has one."""
+    task = asyncio.current_task()
+    adopted = None if task is None else _adopted.get(task)
+    if adopted is not None and adopted.live:
+        return adopted
+    mark = _lifecycle.get()
+    return mark if mark is not None and mark.live else None
 
 
 @dataclass(slots=True, eq=False)
@@ -7112,8 +7231,8 @@ class KernelState:
 
     def lifecycle_fiber(self) -> Fiber | None:
         """Return the fiber whose ``apply`` or disposer the caller is part of, if any."""
-        mark = _lifecycle.get()
-        if mark is None or not mark.running or mark.fiber._kernel is not self:
+        mark = _current_mark()
+        if mark is None or mark.fiber._kernel is not self:
             return None
         return mark.fiber
 
@@ -7251,6 +7370,7 @@ class EffectHandle:
 
     __slots__ = (
         "_awaitable",
+        "_begun",
         "_disposer",
         "_done",
         "_entered",
@@ -7272,6 +7392,7 @@ class EffectHandle:
         self._mark = Lifecycle(fiber)
         self._awaitable: Awaitable[None] | None = None
         self._pending: asyncio.Task[None] | None = None
+        self._begun = False
         self._entered = False
         self._done = False
 
@@ -7298,8 +7419,8 @@ class EffectHandle:
             await self._join()
 
     def _caller_is_waited_for(self) -> bool:
-        mark = _lifecycle.get()
-        if mark is None or not mark.running:
+        mark = _current_mark()
+        if mark is None:
             return False
         if mark is self._mark:
             return True
@@ -7309,7 +7430,9 @@ class EffectHandle:
         """Wait until the effect is undone, whoever is asking."""
         while not self._done:
             pending = self._pending
-            assert pending is not None
+            if pending is None:  # pragma: no cover - needs an eagerly started, unmarked task
+                # Asked while the disposer is still being called.
+                return
             if pending.done():
                 if self._entered:
                     self._finish()
@@ -7320,8 +7443,9 @@ class EffectHandle:
 
     def _begin(self) -> None:
         """Start undoing the effect without waiting for it."""
-        if self._done or self._pending is not None:
+        if self._begun:
             return
+        self._begun = True
         disposer, self._disposer = self._disposer, None
         token = _lifecycle.set(self._mark)
         try:
@@ -7332,6 +7456,7 @@ class EffectHandle:
         finally:
             _lifecycle.reset(token)
         if inspect.isawaitable(result):
+            self._mark.adopt(result)
             self._awaitable = result
             self._start()
         else:
@@ -7664,6 +7789,7 @@ class Fiber:
         try:
             result = plugin.apply(self.ctx, self.config)
             if inspect.isawaitable(result):
+                mark.adopt(result)
                 result = await result
             return result
         finally:
@@ -8027,7 +8153,7 @@ def resolve_plugin(candidate: object) -> Plugin[Any]:
 
 Run: `uv run pytest tests/kernel/test_cancellation.py tests/kernel/test_dependencies.py tests/kernel/test_eager_tasks.py tests/kernel/test_events_sync.py tests/kernel/test_fiber_states.py tests/kernel/test_lifecycle_properties.py tests/kernel/test_plugins.py tests/kernel/test_reentrancy.py tests/kernel/test_scopes.py tests/kernel/test_withdrawal.py -q`
 
-Expected: `121 passed, 2 skipped in 3.59s`
+Expected: `123 passed, 3 skipped in 3.23s`
 
 然后跑全部检查：
 
@@ -8041,7 +8167,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`180 passed, 2 skipped in 5.85s`
+- 全套测试：`182 passed, 3 skipped in 5.36s`
 - 覆盖率合计：`100%`
 - ruff check：`All checks passed!`
 - ruff format：`25 files already formatted`
@@ -8641,7 +8767,7 @@ Expected:
 | 文件 | 结果 | 第一个错误 |
 |---|---|---|
 | `test_compose_layers.py` | 1 error in 0.60s | ImportError: cannot import name 'Change' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py) |
-| `test_compose_mount.py` | 1 error in 0.58s | ImportError: cannot import name 'Entry' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py) |
+| `test_compose_mount.py` | 1 error in 0.59s | ImportError: cannot import name 'Entry' from 'tack.kernel' (F:\agent harness\agent-harness\src\tack\kernel\__init__.py) |
 
 **Step 3: 写实现**
 
@@ -9116,7 +9242,7 @@ def mount(
 
 Run: `uv run pytest tests/kernel/test_compose_layers.py tests/kernel/test_compose_mount.py -q`
 
-Expected: `59 passed in 0.60s`
+Expected: `59 passed in 0.56s`
 
 然后跑全部检查：
 
@@ -9130,7 +9256,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`239 passed, 2 skipped in 5.64s`
+- 全套测试：`241 passed, 3 skipped in 5.78s`
 - 覆盖率合计：`100%`
 - ruff check：`All checks passed!`
 - ruff format：`34 files already formatted`
@@ -9274,7 +9400,7 @@ Expected:
 
 | 文件 | 结果 | 第一个错误 |
 |---|---|---|
-| `test_public_api.py` | 2 passed in 0.43s | — |
+| `test_public_api.py` | 2 passed in 0.46s | — |
 | `test_examples.py` | 2 failed in 0.56s | FileNotFoundError: [Errno 2] No such file or directory: 'F:\\agent harness\\agent-harness\\examples\\kernel_demo.py' |
 
 **Step 3: 写实现**
@@ -9461,7 +9587,7 @@ jobs:
 
 Run: `uv run pytest tests/kernel/test_public_api.py tests/test_examples.py -q`
 
-Expected: `4 passed in 0.43s`
+Expected: `4 passed in 0.45s`
 
 然后跑全部检查：
 
@@ -9475,7 +9601,7 @@ uv run coverage report
 
 Expected:
 
-- 全套测试：`243 passed, 2 skipped in 6.40s`
+- 全套测试：`245 passed, 3 skipped in 6.21s`
 - 覆盖率合计：`100%`
 - ruff check：`All checks passed!`
 - ruff format：`37 files already formatted`

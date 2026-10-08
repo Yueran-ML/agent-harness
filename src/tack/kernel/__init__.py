@@ -1,5 +1,6 @@
 """The plugin kernel: contexts, services, effects, events, and plugin instances."""
 
+from tack.kernel.context import Context
 from tack.kernel.errors import (
     CompositionError,
     EventModeError,
@@ -24,16 +25,22 @@ from tack.kernel.events import (
     WaterfallEvent,
     WaterfallListener,
 )
+from tack.kernel.fiber import Disposer, EffectHandle, Fiber, FiberState
 from tack.kernel.services import ServiceKey
 
 __all__ = [
     "BailEvent",
     "BailListener",
     "CompositionError",
+    "Context",
+    "Disposer",
+    "EffectHandle",
     "EmitEvent",
     "EmitListener",
     "Event",
     "EventModeError",
+    "Fiber",
+    "FiberState",
     "InactiveEffectError",
     "InvalidPluginError",
     "KernelError",

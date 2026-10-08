@@ -165,6 +165,7 @@ class Session:
 
         The log keeps its own copy of ``data``, read back from the JSON it
         would be stored as. Later changes to ``data`` do not reach the log.
+        The copy must be left as it is: it is the log.
 
         An event that carries a message becomes the last message the model
         sees. With ``replaces`` it instead takes the place of the messages of
@@ -175,9 +176,10 @@ class Session:
         The event is written to the store first. It is in the log, and is
         announced, only if the store took it.
 
-        Observers of :data:`SESSION_EVENT` are told before this method
-        returns, in the order of the log. An event that an observer appends
-        is announced after the current one.
+        Observers of :data:`SESSION_EVENT` are told in the order of the log,
+        before this method returns. The one exception is an event that an
+        observer appends: it is announced after the current one, by which
+        time the call of the observer has returned.
 
         Raises:
             SessionClosedError: The session is closed.

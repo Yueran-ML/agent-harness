@@ -186,9 +186,19 @@ tests/   benchmarks/   docs/   examples/plugins/
 {"type": "tool/call", "seq": 42, "time": 1791234567890, "data": {...}}
 ```
 
-`seq` 等于追加时的日志长度。可选字段 `ignorable`。产生消息的事件另带 `surface_op` 和 `source_event_seqs`。
+`seq` 等于追加时的日志长度。可选字段 `ignorable`。模型可见的事件另带 `surface_op`，替换型的还带 `source_event_seqs`。
 
-`append()` 在入口处校验：数据必须能无损序列化为 JSON，快照后冻结，再校验消息面约束，然后同步通知观察者。观察者抛异常被隔离。坏事件当场失败。
+每种事件是一个 pydantic 数据类，类上写明事件名和是否 `ignorable`。事件类型要先在会话服务里注册，插件用 `sessions.declare(ctx, 类)` 注册自己的类型，注册随插件卸载撤销。
+
+`append()` 在入口处依次做五件事。
+
+1. 检查事件类型已注册。
+2. 把数据写成 JSON 再读回。读回的副本与原数据不相等就拒绝。日志保存的是这份副本，调用方之后改动原对象不影响日志。
+3. 校验消息面约束。
+4. 写入存储。存储拒收时事件不进日志，也不通知任何人。
+5. 按日志顺序同步通知观察者。观察者抛异常被隔离。观察者在通知里追加的事件排在当前事件之后通知。
+
+事件的字段是冻结的。Python 拦不住对字段里列表和字典的修改，所以约定集合字段一律用元组，事件进日志后不再改动。
 
 ### 5.2 核心事件
 
@@ -197,9 +207,9 @@ tests/   benchmarks/   docs/   examples/plugins/
 | `turn/start`、`turn/end` | 回合号；`turn/end` 带 `reason` 和可选 `detail` | 否 |
 | `step/start`、`step/end` | 回合号、步号 | 否 |
 | `system/message` | 渲染后的系统提示，消息面的第 0 个节点 | 是 |
-| `user/message` | 人的输入、注入的上下文、压缩摘要，靠 `source.kind` 区分 | 是 |
-| `assistant/message` | 装配后的内容块、用量、原始分片流、可选 `interrupted` | 是，空内容除外 |
-| `assistant/attempt` | 失败、重试、取消的尝试，只存分片流 | 否 |
+| `user/message` | 人的输入、注入的上下文、压缩摘要，靠 `source` 区分 | 是 |
+| `assistant/message` | 装配后的回复、用量、结束原因。结束原因为空表示回复被取消打断 | 是，空内容除外 |
+| `assistant/attempt` | 失败的尝试，存已到达的内容、用量和失败原因 | 否 |
 | `tool/call` | `call_id`、`name`、模型原样产出的参数字符串 | 否 |
 | `tool/result` | 结果内容、可选 `error{code, reason}`、可选 `meta` | 是 |
 | `request/header` | 调用配置和工具模式的完整快照，含提供方、模型、上下文窗口、采样参数 | 否 |
@@ -213,15 +223,21 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 `surface_op` 只有两种：`"append"` 和 `{"op": "replace", "start_seq", "end_seq"}`。替换用一个新节点顶替一段现有节点，必须在 `source_event_seqs` 里列出全部被遮蔽的节点。
 
-`derive_messages(session)` 沿节点顺序把事件投影成消息。纯尾部增长是增量的，出现替换时才重建。压缩和工具结果裁剪都只做替换，原始事件永远留在日志里。
+事件是否进消息面由它的数据类决定，`for_model()` 返回消息的事件才是节点。调用方写 `session.append(data, replaces=[...])` 做替换，被替换的节点必须在当前消息面上相邻，并按当前顺序列出。只有带消息的事件才能替换别的节点。
+
+`session.messages` 是当前消息面上的消息，`session.surface` 是对应事件的 `seq`。两者随追加和替换增量维护，也可以按顺序重放全部事件重建，性质测试检查两种算法结果一致。压缩和工具结果裁剪都只做替换，原始事件永远留在日志里。
 
 ### 5.4 持久化
 
 - 路径：`<TACK_HOME>/sessions/<规范化的工作目录>/<会话 id>/session.v1.jsonl`。
 - 首行是头：`type: "session"`、`version`、`id`、`created_at`、`cwd`、可选 `parent_session`。之后一事件一行。
-- 每条事件追加后写入并刷新缓冲。模型请求前、工具体执行前、回合结束时各做一次落盘屏障。
-- 同一会话只允许一个写者。
-- 读到不认识且未标 `ignorable` 的事件，拒绝加载。读到未来版本，拒绝加载。
+- 每条事件追加后写入并刷新缓冲。模型请求前、工具体执行前、回合结束时各做一次落盘屏障，即 `await session.flush()`。
+- 新会话在写入第一条事件之前不落盘。
+- 同一会话只允许一个写者，靠操作系统对会话目录里 `lock` 文件的锁保证。进程退出时锁自动释放。
+- 写入或落盘失败一次后，这个文件不再接受写入。有洞的日志比中断的日志更糟。
+- 读到不认识且未标 `ignorable` 的事件，拒绝加载。读到别的格式版本，拒绝加载。不认识但标了 `ignorable` 的事件原样保留，复制日志时原样写回。
+- 行格式有误、`seq` 不连续、消息面对不上，都拒绝加载，错误信息给出文件和行号。
+- 最后一行没有换行符，说明写到一半进程就死了。这一行不读，续写时把它截掉。
 
 只有一个格式版本，不做迁移链。
 
@@ -253,6 +269,8 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 所有失败归一成 `LlmFailure{message, code, status?, retry_after_ms?, request_id?}`。适配器可以抛 `LlmError`，也可以发错误结束分片，运行时对外统一成结束分片。无论适配器做了什么，一次调用的分片流都以恰好一个结束分片收尾，适配器的流在这个分片送达之前已经关闭。
 
+读取方的取消不会被吞掉。关闭适配器的流时出错只记日志。取消恰好落在关闭过程中时，关闭被打断，`call.aclose()` 会再关一次。运行时不把关闭放到别的任务里做保护，因为跨任务关闭生成器会弄坏在生成器里持有任务级状态的适配器。清理不能被打断的适配器要自己做保护。
+
 运行时还让结束分片与实际到达的内容一致。原因为 `tool-calls` 时回复里一定有工具调用，原因为 `stop` 时一定没有，不管提供方报的是哪一个。
 
 错误码：`AUTH`、`QUOTA`、`RATE_LIMIT`、`CONTEXT_WINDOW_EXCEEDED`、`INVALID_REQUEST`、`SERVER`、`HTTP_<状态码>`、`TRANSPORT`、`TIMEOUT`、`STREAM_CLOSED`、`MALFORMED_RESPONSE`、`EMPTY_RESPONSE`、`INTERNAL`。
@@ -271,7 +289,7 @@ tests/   benchmarks/   docs/   examples/plugins/
 | `openai_chat` | Chat Completions，SSE | DeepSeek、Ollama 的 `/v1`、vLLM 及其他兼容服务 |
 | `ollama` | Ollama 原生 `/api/chat` | 本地模型。能在每次请求里显式写出 `num_ctx`、`seed`、`repeat_penalty` 等采样参数 |
 | `scripted` | 无 | 测试。构造时给一个脚本数组，每次调用消费下一项，记录收到的每个请求 |
-| `replay` | 无 | 测试。从录制的会话日志里取出每次调用的分片流当脚本 |
+| `replay` | 无 | 测试。从录制的会话日志里取出每次调用的回复，重新拆成分片当脚本 |
 
 `anthropic_messages` 放在第 6 阶段之后。DeepSeek Harness 的官方适配器走这个格式，Tack 先做 Chat 格式是因为本地模型都用它。
 

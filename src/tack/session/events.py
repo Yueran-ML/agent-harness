@@ -27,6 +27,11 @@ from tack.llm.types import (
 class EventData(Data):
     """Base of what a session event carries. Each subclass is one event type.
 
+    An event in a log is never changed. The fields of the event are frozen,
+    but Python does not stop a change to a list or a mapping that a field
+    holds, so declare collections as tuples and leave JSON values alone. A
+    change would make the session disagree with its file.
+
     Attributes:
         event_type: The name of the type, such as ``tool/call``. A log file
             records it with every event of the type.

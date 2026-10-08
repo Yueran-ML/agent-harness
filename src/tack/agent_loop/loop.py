@@ -9,17 +9,39 @@ from typing import Literal
 from tack import cancellation
 from tack.agent import (
     INBOX,
+    PRE_STEP,
+    REQUEST,
+    REQUEST_ERROR,
     STREAM,
+    TURN_STOPPING,
     Agent,
     AgentSpec,
     CancelCause,
+    Enter,
+    ErrorDecision,
+    GiveUp,
+    Reject,
+    RequestDraft,
+    RequestFailure,
+    StepDecision,
+    StepInfo,
     StreamFrame,
+    TurnStopping,
     claim_for_step,
     claim_for_turn,
     clear_inbox,
 )
 from tack.kernel import Context
-from tack.llm import Llm, LlmFailure, LlmRequest, SystemMessage, TextBlock, ToolCallBlock
+from tack.llm import (
+    CallConfig,
+    Llm,
+    LlmCall,
+    LlmFailure,
+    LlmRequest,
+    SystemMessage,
+    TextBlock,
+    ToolCallBlock,
+)
 from tack.session import (
     TURN,
     AssistantAttemptEvent,
@@ -66,6 +88,18 @@ _HEADER: Projection[RequestHeaderEvent | None] = Projection("request-header", No
 def _describe(error: BaseException) -> str:
     text = str(error)
     return f"{type(error).__name__}: {text}" if text else type(error).__name__
+
+
+async def _enter(info: StepInfo) -> StepDecision:
+    return Enter()
+
+
+async def _as_drafted(draft: RequestDraft) -> CallConfig:
+    return draft.config
+
+
+async def _give_up(failure: RequestFailure) -> ErrorDecision:
+    return GiveUp()
 
 
 class _RequestError(Exception):
@@ -199,10 +233,10 @@ class LoopAgent(Agent):
         turn = TURN.of(session).turn + 1
         session.append(TurnStartEvent(turn=turn))
         reason: TurnEndReason
-        detail: str | None = None
+        detail: str | None
         cancelled_by_others = False
         try:
-            reason = await self._steps(turn)
+            reason, detail = await self._steps(turn)
         except asyncio.CancelledError:
             reason, detail = "aborted", self._cause or "disposed"
             # A cancellation that this agent asked for ends here. Any other one goes on.
@@ -218,7 +252,7 @@ class LoopAgent(Agent):
         if cancelled_by_others:
             raise asyncio.CancelledError
 
-    async def _steps(self, turn: int) -> TurnEndReason:
+    async def _steps(self, turn: int) -> tuple[TurnEndReason, str | None]:
         """Run the steps of a turn and return why the turn ends."""
         session = self.session
         step = 0
@@ -228,17 +262,25 @@ class LoopAgent(Agent):
             claimed = claim_for_turn(session) if step == 0 else claim_for_step(session)
             for item in claimed:
                 session.append(UserMessageEvent(message=item.message, source=item.source))
+            decision = await self.ctx.waterfall(PRE_STEP, StepInfo(self, turn, step + 1), _enter)
+            if isinstance(decision, Reject):
+                return "blocked", decision.reason
             step += 1
             session.append(StepStartEvent(turn=turn, step=step))
             try:
-                ended = await self._request(turn, step)
+                ended = await self._step(turn, step)
             finally:
                 session.append(StepEndEvent(turn=turn, step=step))
             if ended == "tools":
                 continue
             cut_off = cut_off or ended == "max-tokens"
+            if INBOX.of(session).next_step:
+                continue
+            # The turn would end here. A listener that steers the agent keeps it going.
+            reason: TurnEndReason = "max-tokens" if cut_off else "completed"
+            await self.ctx.serial(TURN_STOPPING, TurnStopping(self, turn, reason))
             if not INBOX.of(session).next_step:
-                return "max-tokens" if cut_off else "completed"
+                return reason, None
 
     def _reconcile_system_message(self) -> None:
         """Make the first message the model sees the instructions of the spec."""
@@ -257,10 +299,48 @@ class LoopAgent(Agent):
         elif first.data.message != wanted:
             session.append(SystemMessageEvent(message=wanted), replaces=[first.seq])
 
-    async def _request(self, turn: int, step: int) -> _StepEnd:
-        """Ask the model once, write the reply down, and return how the step ended."""
+    async def _step(self, turn: int, step: int) -> _StepEnd:
+        """Ask the model, carry out the tool calls of its reply, and return how the step ended."""
         session = self.session
-        config = self.spec.model
+        attempt = 0
+        while True:
+            attempt += 1
+            call = await self._request(turn, step, attempt)
+            finish = call.finish
+            assert finish is not None
+            if finish.failure is None:
+                break
+            session.append(
+                AssistantAttemptEvent(
+                    message=call.message, usage=call.usage, failure=finish.failure
+                )
+            )
+            failed = RequestFailure(self, turn, step, attempt, finish.failure)
+            decision = await self.ctx.waterfall(REQUEST_ERROR, failed, _give_up)
+            if isinstance(decision, GiveUp):
+                raise _RequestError(finish.failure)
+        assert finish.reason != "error"
+        message = call.message
+        session.append(
+            AssistantMessageEvent(message=message, usage=call.usage, finish_reason=finish.reason)
+        )
+        if finish.reason == "max-tokens":
+            return "max-tokens"
+        if not message.tool_calls:
+            return "stop"
+        concluded = await self._run_tools(message.tool_calls)
+        return "concluded" if concluded else "tools"
+
+    async def _request(self, turn: int, step: int, attempt: int) -> LlmCall:
+        """Ask the model once and return the call when its reply is over.
+
+        The request is derived from the log. If the reader is cancelled, what
+        had arrived of the reply is written down before the cancellation
+        goes on.
+        """
+        session = self.session
+        draft = RequestDraft(self, turn, step, attempt, self.spec.model)
+        config = await self.ctx.waterfall(REQUEST, draft, _as_drafted)
         schemas = self._tools.schemas()
         header = _HEADER.of(session)
         if header is None or header.config != config or header.tools != schemas:
@@ -281,26 +361,7 @@ class LoopAgent(Agent):
                 for asked in message.tool_calls:
                     session.append(self._not_run(asked).to_event())
                 raise
-        finish = call.finish
-        assert finish is not None
-        if finish.failure is not None:
-            session.append(
-                AssistantAttemptEvent(
-                    message=call.message, usage=call.usage, failure=finish.failure
-                )
-            )
-            raise _RequestError(finish.failure)
-        assert finish.reason != "error"
-        message = call.message
-        session.append(
-            AssistantMessageEvent(message=message, usage=call.usage, finish_reason=finish.reason)
-        )
-        if finish.reason == "max-tokens":
-            return "max-tokens"
-        if not message.tool_calls:
-            return "stop"
-        concluded = await self._run_tools(message.tool_calls)
-        return "concluded" if concluded else "tools"
+        return call
 
     # Tool calls
 

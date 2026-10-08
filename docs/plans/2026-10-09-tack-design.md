@@ -378,40 +378,48 @@ turn/end{reason}
 ### 8.1 定义
 
 ```python
-define_tool(
+Tool(
     name="read",
     description="...",
     parameters=ReadArgs,            # pydantic 模型，生成给模型看的 JSON Schema
-    execute=read_file,              # async (args, exec) -> 规范值
-    render=render_read,             # (args, value) -> 模型可见的内容块
-    timeout_ms=None,
-    is_concurrency_safe=lambda a: True,
-    finalize_content=None,
+    execute=read_file,              # async (args, run) -> 值
+    render=render_read,             # (args, value) -> 模型读到的文本，缺省用 str(value)
+    timeout_seconds=None,           # 缺省用工具服务的时限
+    concurrency_safe=True,          # 布尔值，或 (args) -> bool
 )
 ```
 
-发给模型的模式用显式白名单构造，宿主字段不泄漏。`exec` 句柄提供 `signal`、`defer_context(text)`、`conclude_turn()`、`agent`、`session`。
+发给模型的模式只含名字、描述和参数的 JSON Schema，宿主字段不泄漏。pydantic 自动加的 `title` 会被去掉，它对模型没用，却每次请求都占 token。
 
-`ctx.tools.register(tool)` 注册，注册是 effect。`ctx.tools.restrict(allow, deny)` 按 Agent 作用域过滤，被过滤的工具既不出现在提示里，也拒绝执行。
+模型给的参数是一段 JSON 文本。`tool.parse()` 把它读成参数模型。不是合法 JSON、不是对象、字段对不上，都抛 `ToolFailure(code="INVALID_ARGS")`，消息逐字段说明问题，模型据此改正。工具体自己也抛 `ToolFailure` 来报告调用没成功。
+
+`run` 句柄提供 `call_id`、`cwd`、`session` 和 `conclude_turn()`。取消靠任务取消，不传信号对象。`defer_context`、`agent`、`finalize_content` 在用到它们的阶段再加。
+
+`tools.add(ctx, 工具)` 注册，注册是 effect。按 Agent 作用域过滤工具放到第 6 阶段，和子代理一起做。
 
 ### 8.2 执行管线
 
 | 阶段 | 形态 | 能做什么 |
 |---|---|---|
 | 记录 `tool/call` | 循环在派发前追加 | 审计和界面先看到调用 |
-| `tools/pre-execute` | waterfall | 返回 `allow`、`deny`、`cancel`、`ask`。`ask` 交给 `ctx.approval` |
-| 守卫 | 注册的函数 | 只能返回拒绝理由，没有"允许"这个返回值 |
-| `tools/execute` | 环绕式 waterfall | 超时、度量 |
-| 工具体 | `execute` | 产出规范值 |
-| `tools/post-execute` | waterfall | `accept`（可替换内容，可附加上下文）或 `block`（变成错误结果） |
-| `finalize_content` | 工具自带回调 | 最后一道只改内容的不变式，每种结局恰好调用一次 |
-| `tools/result` | emit | 观察冻结后的最终结果 |
+| 查工具、读参数 | `tools.begin()` | 工具不存在或参数对不上时，调用当场得到错误结果 |
+| `tools/pre-execute` | waterfall | 返回 `Allow` 或 `Deny`。第 3 阶段加 `ask`，交给 `ctx.approval` |
+| 守卫 | 注册的函数 | 第 3 阶段。只能返回拒绝理由，没有"允许"这个返回值 |
+| `tools/execute` | 环绕式 waterfall | 度量、包装。时限由管线自带，包住整条环绕链 |
+| 工具体 | `execute` | 产出值，再由 `render` 变成模型读到的文本 |
+| `tools/post-execute` | waterfall | `Accept`（可替换文本）或 `Block`（变成错误结果） |
+| `tools/result` | emit | 每次调用恰好通知一次最终结果 |
 | 记录 `tool/result` | 循环按模型顺序追加 | |
 
-两条不变式：
+一次调用在管线里是一个 `PendingCall`，分两步走。`authorize()` 问前置检查，`execute()` 跑工具并检查结果。循环按模型顺序对每个调用先走第一步，可并行的调用再让第二步重叠。没走第一步就走第二步时，管线自己先补上检查。
+
+三条不变式：
 
 - 参数一旦记录就不能被改写。历史、审计、界面和执行必须一致。
-- 一切失败都变成结构化的错误结果返回给模型，回合不中断。错误码：`UNKNOWN_TOOL`、`INVALID_ARGS`、`TOOL_ERROR`、`TOOL_TIMEOUT`、`DENIED`、`APPROVAL_REJECTED`、`APPROVAL_UNAVAILABLE`、`ABORTED_BEFORE_DISPATCH`。
+- 一切失败都变成结构化的错误结果返回给模型，回合不中断。检查本身出错时调用不执行，结果检查出错时结果不放行。
+- 只有调用方自己被取消才会向外抛。这时工具被停下，调用没有结果，由循环补一条。工具清理时出错不会吞掉取消，工具内部自己触发的取消算工具出错。
+
+错误码：`UNKNOWN_TOOL`、`INVALID_ARGS`、`TOOL_ERROR`、`TOOL_TIMEOUT`、`DENIED`、`CHECK_FAILED`、`RESULT_BLOCKED`、`ABORTED_BEFORE_DISPATCH`，第 3 阶段加 `APPROVAL_REJECTED`、`APPROVAL_UNAVAILABLE`。工具可以用 `ToolFailure` 带上自己的错误码。
 
 ### 8.3 并行
 

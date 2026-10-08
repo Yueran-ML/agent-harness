@@ -9,10 +9,22 @@ cleanup fails while a cancellation is passing through it.
 The answers come from counting how often the task has been asked to cancel.
 Take the count with :func:`requests` before the operation, and compare after.
 A count that is merely above zero says nothing: a task that swallowed a
-cancellation long ago keeps it.
+cancellation long ago keeps it. :func:`guard` does all of this for one
+awaitable.
 """
 
 import asyncio
+import logging
+from collections.abc import Awaitable
+from typing import TypeVar
+
+ResultT = TypeVar("ResultT")
+
+logger = logging.getLogger("tack.cancellation")
+
+
+class CancelledFromInside(Exception):  # noqa: N818 - named after what happened
+    """Awaited code ended with a ``CancelledError`` that was not meant for the current task."""
 
 
 def current_task() -> asyncio.Task[object]:
@@ -48,3 +60,26 @@ def replaced(error: BaseException, before: int) -> bool:
             return True
         earlier = earlier.__context__
     return False
+
+
+async def guard(awaitable: Awaitable[ResultT]) -> ResultT:
+    """Await code that is not ours, and let only a real cancellation through as one.
+
+    A result and an ordinary error get through unchanged. Two cases are put
+    right. A ``CancelledError`` that the awaited code produced by itself
+    becomes :class:`CancelledFromInside`, which is an ordinary error. An error
+    that took the place of a cancellation of the current task is logged, and
+    the cancellation is raised again in its stead.
+    """
+    before = requests()
+    try:
+        return await awaitable
+    except asyncio.CancelledError as error:
+        if requested_since(before):
+            raise
+        raise CancelledFromInside from error
+    except Exception as error:
+        if replaced(error, before):
+            logger.error("an error took the place of a cancellation", exc_info=error)
+            raise asyncio.CancelledError from error
+        raise

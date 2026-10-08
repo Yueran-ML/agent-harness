@@ -7,10 +7,15 @@ ordinary error may have taken the place of a cancellation, as happens when a
 cleanup fails while a cancellation is passing through it.
 
 The answers come from counting how often the task has been asked to cancel.
-Take the count with :func:`requests` before the operation, and compare after.
-A count that is merely above zero says nothing: a task that swallowed a
-cancellation long ago keeps it. :func:`guard` does all of this for one
-awaitable.
+Take the count before the operation, and compare after. A count that is merely
+above zero says nothing: a task that swallowed a cancellation long ago keeps
+it.
+
+One more case has to be kept apart. A request that was made while the task was
+running has not been delivered yet. It arrives where the task next waits, and
+it is as real as any other. So the count is taken with
+:func:`settled_requests`, which lets such a request arrive first.
+:func:`guard` does all of this for one awaitable.
 """
 
 import asyncio
@@ -36,6 +41,17 @@ def current_task() -> asyncio.Task[object]:
 
 def requests() -> int:
     """Return how often the current task has been asked to cancel so far."""
+    return current_task().cancelling()
+
+
+async def settled_requests() -> int:
+    """Return the count of :func:`requests`, once a request that is on its way has arrived.
+
+    This waits for a moment first. A cancellation that was asked for while the
+    task was running arrives during that wait, as the ``CancelledError`` that
+    it is. What is counted afterwards has all been delivered.
+    """
+    await asyncio.sleep(0)
     return current_task().cancelling()
 
 
@@ -70,8 +86,18 @@ async def guard(awaitable: Awaitable[ResultT]) -> ResultT:
     becomes :class:`CancelledFromInside`, which is an ordinary error. An error
     that took the place of a cancellation of the current task is logged, and
     the cancellation is raised again in its stead.
+
+    A cancellation that was asked for before the guard began arrives before
+    ``awaitable`` is started.
     """
-    before = requests()
+    try:
+        before = await settled_requests()
+    except BaseException:
+        # A coroutine that is never awaited would complain when it is collected.
+        close = getattr(awaitable, "close", None)
+        if close is not None:
+            close()
+        raise
     try:
         return await awaitable
     except asyncio.CancelledError as error:

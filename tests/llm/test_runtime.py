@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 import tack.llm
+from tack import cancellation
 from tack.kernel import Context, Plugin, RegistryConflictError
 from tack.llm import (
     LLM,
@@ -762,3 +763,66 @@ async def test_the_idle_timeout_must_be_positive(ctx: Context, seconds: float) -
         await fiber
 
     assert ctx.get(LLM) is None
+
+
+# Cancellations that are asked for while the reader is running
+
+
+async def test_a_reader_that_is_asked_to_stop_between_two_chunks_stops(
+    ctx: Context, llm: Llm
+) -> None:
+    llm.adapters.add(ctx, "fake", Fake(HELLO[:2], hang=True))
+    call = llm.call(REQUEST)
+
+    async def read() -> None:
+        async for chunk in call:
+            if chunk == HELLO[1]:
+                cancellation.current_task().cancel()
+
+    reader = asyncio.ensure_future(read())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
+
+    assert call.finish is None
+    assert call.chunks == HELLO[:2]
+
+
+async def test_a_reader_that_is_asked_to_stop_before_the_first_chunk_stops(
+    ctx: Context, llm: Llm
+) -> None:
+    adapter = Fake(HELLO)
+    llm.adapters.add(ctx, "fake", adapter)
+    call = llm.call(REQUEST)
+
+    async def read() -> None:
+        cancellation.current_task().cancel()
+        await read_all(call)
+
+    reader = asyncio.ensure_future(read())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
+
+    assert call.chunks == []
+
+
+async def test_leaving_a_call_does_not_swallow_a_cancellation_that_is_on_its_way(
+    ctx: Context, llm: Llm
+) -> None:
+    stream = Slow(HELLO)
+    llm.adapters.add(ctx, "fake", Serving(stream))
+    call = llm.call(REQUEST)
+
+    async def read() -> None:
+        async with call:
+            async for chunk in call:
+                if chunk == HELLO[1]:
+                    cancellation.current_task().cancel()
+                    break
+
+    reader = asyncio.ensure_future(read())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
+
+    stream.release.set()
+    await asyncio.wait_for(call.aclose(), timeout=1)
+    assert stream.closed

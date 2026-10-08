@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import gc
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -136,3 +137,63 @@ async def test_a_request_that_has_not_been_delivered_does_not_count_as_replaced(
     # Before Python 3.13 the request stays pending after uncancel(): let it arrive here.
     with contextlib.suppress(asyncio.CancelledError):
         await asyncio.sleep(0)
+
+
+async def test_a_cancellation_that_was_asked_for_before_the_guard_began_gets_through() -> None:
+    async def work() -> str:
+        cancellation.current_task().cancel()
+        return await guard(wait_forever())
+
+    task = asyncio.ensure_future(work())
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+    assert task.cancelled()
+
+
+async def test_a_guard_that_never_began_leaves_no_coroutine_behind() -> None:
+    began: list[bool] = []
+
+    async def never() -> str:
+        began.append(True)
+        return "done"
+
+    async def work() -> str:
+        cancellation.current_task().cancel()
+        return await guard(never())
+
+    task = asyncio.ensure_future(work())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+    gc.collect()
+
+    assert began == []
+
+
+async def test_the_count_can_be_taken_once_a_request_on_its_way_has_arrived() -> None:
+    async def later() -> int:
+        return await cancellation.settled_requests()
+
+    async def at_once() -> int:
+        cancellation.current_task().cancel()
+        return await cancellation.settled_requests()
+
+    cancelled = asyncio.ensure_future(at_once())
+
+    assert await later() == 0
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(cancelled, timeout=1)
+
+
+async def test_a_guard_that_never_began_leaves_a_task_it_was_given_alone() -> None:
+    inner = asyncio.ensure_future(value())
+
+    async def work() -> str:
+        cancellation.current_task().cancel()
+        return await guard(inner)
+
+    task = asyncio.ensure_future(work())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert await inner == "done"

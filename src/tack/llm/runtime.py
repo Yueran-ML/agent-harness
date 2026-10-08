@@ -92,6 +92,7 @@ class LlmCall:
         "_finish",
         "_idle_timeout",
         "_request",
+        "_seen",
         "_source",
         "_stream",
         "chunks",
@@ -107,6 +108,7 @@ class LlmCall:
         self._finish: Finish | None = None
         self._source: AsyncIterator[Chunk] | None = None
         self._stream: AsyncGenerator[Chunk] | None = None
+        self._seen = -1
         self.chunks: list[Chunk] = []
 
     @property
@@ -189,6 +191,11 @@ class LlmCall:
     async def _next(self, source: AsyncIterator[Chunk]) -> Chunk:
         """Read one chunk. A finish is returned when the stream is over, however it ended."""
         before = cancellation.requests()
+        if before != self._seen:
+            # The reader was asked to cancel since the last chunk, perhaps while it was
+            # running. A request that is on its way has to arrive before the count is taken.
+            before = await cancellation.settled_requests()
+        self._seen = before
         watchdog = asyncio.timeout(self._idle_timeout)
         try:
             async with watchdog:
@@ -224,7 +231,7 @@ class LlmCall:
             return
         close = getattr(source, "aclose", None)
         if close is not None:
-            before = cancellation.requests()
+            before = await cancellation.settled_requests()
             try:
                 await close()
             except asyncio.CancelledError:

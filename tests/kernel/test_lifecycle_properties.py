@@ -2,19 +2,30 @@
 
 Each generated scenario declares a few services and a few plugins. Every
 service has one owner: the root context, one of the plugins, or nobody. Every
-plugin injects some of the services. A scenario then plays a random sequence of
-steps against a real kernel and checks, each time the kernel comes to rest,
-that the kernel is exactly where the declarations say it should be.
+plugin injects some of the services, and may be slow to load or to clean up. A
+scenario then plays a random sequence of steps against a real kernel and
+checks, each time the kernel comes to rest, that the kernel is exactly where
+the declarations say it should be.
 """
 
 import asyncio
 from collections import Counter
 from dataclasses import dataclass
 
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tack.kernel import Context, Disposer, EffectHandle, Fiber, FiberState, Plugin, ServiceKey
+from tack.kernel import (
+    Context,
+    Disposer,
+    EffectHandle,
+    Fiber,
+    FiberState,
+    Plugin,
+    ServiceConflictError,
+    ServiceKey,
+)
 
 ROOT = -1
 NOBODY = -2
@@ -30,6 +41,8 @@ class Scenario:
     """The owner of each service: a plugin index, ``ROOT`` or ``NOBODY``."""
     injects: tuple[frozenset[int], ...]
     """The services each plugin injects."""
+    slow: tuple[tuple[bool, bool], ...]
+    """Whether each plugin yields to the event loop while loading and while cleaning up."""
     steps: tuple[tuple[str, int], ...]
 
 
@@ -39,12 +52,19 @@ PLUGIN_ACTIONS = ("add", "dispose", "dispose_later")
 ACTIONS = (
     *("add",) * 5,
     *("provide",) * 3,
-    *("withdraw",) * 2,
-    *("dispose",) * 2,
+    "withdraw",
+    "withdraw_later",
+    "dispose",
     "dispose_later",
-    "yield",
+    *("yield",) * 3,
     "settle",
 )
+
+
+async def linger() -> None:
+    """Stay unfinished for a few turns of the event loop."""
+    for _ in range(4):
+        await asyncio.sleep(0)
 
 
 @st.composite
@@ -55,6 +75,7 @@ def scenarios(draw: st.DrawFn) -> Scenario:
     owners = tuple(draw(owner) for _ in range(service_count))
     services = st.integers(min_value=0, max_value=service_count - 1)
     injects = tuple(frozenset(draw(st.sets(services, max_size=2))) for _ in range(plugin_count))
+    slow = tuple(draw(st.tuples(st.booleans(), st.booleans())) for _ in range(plugin_count))
     raw_steps = draw(
         st.lists(
             st.tuples(st.sampled_from(ACTIONS), st.integers(min_value=0, max_value=11)),
@@ -66,7 +87,7 @@ def scenarios(draw: st.DrawFn) -> Scenario:
         (action, number % (plugin_count if action in PLUGIN_ACTIONS else service_count))
         for action, number in raw_steps
     )
-    return Scenario(owners, injects, steps)
+    return Scenario(owners, injects, slow, steps)
 
 
 class Run:
@@ -79,6 +100,7 @@ class Run:
         self.fibers: dict[int, Fiber] = {}
         self.retired: list[Fiber] = []
         self.handles: dict[int, EffectHandle] = {}
+        self.withdrawals: dict[int, asyncio.Future[None]] = {}
         self.tokens: dict[int, Token] = {}
         self.seen: dict[int, dict[int, Token]] = {}
         self.loaded: set[int] = set()
@@ -93,17 +115,22 @@ class Run:
     def plugin(self, index: int) -> Plugin:
         provides = [s for s, owner in enumerate(self.scenario.owners) if owner == index]
         injects = sorted(self.scenario.injects[index])
+        slow_to_load, slow_to_clean_up = self.scenario.slow[index]
 
-        def apply(ctx: Context, config: object) -> Disposer:
+        async def apply(ctx: Context, config: object) -> Disposer:
             self.seen[index] = {s: ctx.use(self.keys[s]) for s in injects}
+            self.loaded.add(index)
+            self.loads[index] += 1
+            if slow_to_load:
+                await linger()
             for service in provides:
                 token = Token()
                 ctx.provide(self.keys[service], token)
                 self.tokens[service] = token
-            self.loaded.add(index)
-            self.loads[index] += 1
 
-            def undo() -> None:
+            async def undo() -> None:
+                # A plugin counts as loaded until its cleanup has finished, so
+                # a provider that starts cleaning up during it is caught here.
                 for service in provides:
                     for dependent in self.dependents_of(service):
                         if dependent != index and dependent in self.loaded:
@@ -111,6 +138,9 @@ class Run:
                                 f"plugin {index} cleaned up while its dependent "
                                 f"{dependent} was still loaded"
                             )
+                if slow_to_clean_up:
+                    await linger()
+                for service in provides:
                     del self.tokens[service]
                 self.loaded.discard(index)
                 self.unloads[index] += 1
@@ -118,6 +148,28 @@ class Run:
             return undo
 
         return Plugin(f"plugin-{index}", apply, inject=tuple(self.keys[s] for s in injects))
+
+    async def withdraw(self, service: int, handle: EffectHandle) -> None:
+        await handle.dispose()
+        del self.tokens[service]
+        for dependent in self.dependents_of(service):
+            if dependent in self.loaded:
+                self.violations.append(
+                    f"service {service} was withdrawn while its dependent "
+                    f"{dependent} was still loaded"
+                )
+
+    def provide(self, service: int) -> None:
+        if self.scenario.owners[service] != ROOT or service in self.handles:
+            return
+        withdrawal = self.withdrawals.get(service)
+        if withdrawal is not None and not withdrawal.done():
+            with pytest.raises(ServiceConflictError):
+                self.ctx.provide(self.keys[service], Token())
+            return
+        token = Token()
+        self.handles[service] = self.ctx.provide(self.keys[service], token)
+        self.tokens[service] = token
 
     async def step(self, action: str, target: int) -> None:
         if action == "add":
@@ -136,21 +188,16 @@ class Run:
                 else:
                     self.pending.append(disposal)
         elif action == "provide":
-            if self.scenario.owners[target] == ROOT and target not in self.handles:
-                token = Token()
-                self.handles[target] = self.ctx.provide(self.keys[target], token)
-                self.tokens[target] = token
-        elif action == "withdraw":
+            self.provide(target)
+        elif action in ("withdraw", "withdraw_later"):
             handle = self.handles.pop(target, None)
             if handle is not None:
-                await handle.dispose()
-                del self.tokens[target]
-                for dependent in self.dependents_of(target):
-                    if dependent in self.loaded:
-                        self.violations.append(
-                            f"service {target} was withdrawn while its dependent "
-                            f"{dependent} was still loaded"
-                        )
+                withdrawal = asyncio.ensure_future(self.withdraw(target, handle))
+                self.withdrawals[target] = withdrawal
+                if action == "withdraw":
+                    await withdrawal
+                else:
+                    self.pending.append(withdrawal)
         elif action == "yield":
             await asyncio.sleep(0)
         else:

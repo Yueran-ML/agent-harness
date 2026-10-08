@@ -10,4 +10,4 @@ patch:
         config:
           model:
             provider: deepseek
-            model: ${TACK_MODEL:-deepseek-chat}
+            model: ${TACK_MODEL:-deepseek-flash}

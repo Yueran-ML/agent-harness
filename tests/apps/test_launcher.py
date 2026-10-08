@@ -136,7 +136,7 @@ def test_the_run_can_be_followed_as_lines_of_json(
             "id": "s-1",
             "cwd": str(work),
             "provider": "deepseek",
-            "model": "deepseek-chat",
+            "model": "deepseek-flash",
         },
         {"type": "status", "turn": 1, "step": 1},
         {"type": "text", "text": "I will look."},

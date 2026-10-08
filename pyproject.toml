@@ -105,6 +105,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 timeout = 30
 xfail_strict = true
+markers = ["live: talks to a real model service and needs its API key"]
 filterwarnings = ["error"]
 
 [tool.coverage.run]

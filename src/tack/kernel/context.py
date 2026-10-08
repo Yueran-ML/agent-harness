@@ -8,6 +8,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any, overload
 
+from tack.kernel.errors import ServiceConflictError, ServiceUnavailableError
 from tack.kernel.events import (
     BailEvent,
     BailListener,
@@ -30,8 +31,9 @@ from tack.kernel.events import (
     run_serial,
     run_waterfall,
 )
-from tack.kernel.fiber import Disposer, EffectHandle, Fiber, KernelState
+from tack.kernel.fiber import Disposer, EffectHandle, Fiber, KernelState, Provision
 from tack.kernel.plugin import resolve_plugin
+from tack.kernel.services import ServiceKey, ServiceT
 
 
 class Context:
@@ -84,6 +86,49 @@ class Context:
         self._kernel.fibers[fiber.uid] = fiber
         fiber._refresh()
         return fiber
+
+    def provide(self, key: ServiceKey[ServiceT], value: ServiceT) -> EffectHandle:
+        """Offer ``value`` as the service named by ``key``.
+
+        The service is withdrawn when the owning fiber unloads or the returned
+        handle is disposed. Other fibers see it once the owning fiber is active.
+
+        Raises:
+            ServiceConflictError: Another provider already holds the name.
+            InactiveEffectError: The owning fiber is not loaded.
+        """
+        services = self._kernel.services
+        fiber = self.fiber
+
+        def withdraw() -> None:
+            del services[key]
+
+        def setup() -> Disposer:
+            existing = services.get(key)
+            if existing is not None:
+                raise ServiceConflictError(
+                    f"service {key.name!r} is already provided by {existing.fiber.name!r}"
+                )
+            services[key] = Provision(key, value, fiber)
+            return withdraw
+
+        return self.effect(setup)
+
+    def get(self, key: ServiceKey[ServiceT]) -> ServiceT | None:
+        """Return the service named by ``key``, or ``None`` if it is not available."""
+        provision = self._kernel.lookup(key, self.fiber)
+        return None if provision is None else provision.value
+
+    def use(self, key: ServiceKey[ServiceT]) -> ServiceT:
+        """Return the service named by ``key``.
+
+        Raises:
+            ServiceUnavailableError: No active plugin provides the service.
+        """
+        provision = self._kernel.lookup(key, self.fiber)
+        if provision is None:
+            raise ServiceUnavailableError(f"service {key.name!r} is not available")
+        return provision.value
 
     def fibers(self) -> tuple[Fiber, ...]:
         """Return every plugin fiber that has not been disposed, oldest first."""

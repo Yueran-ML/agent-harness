@@ -264,7 +264,7 @@ async def test_a_plugin_disposed_while_loading_never_becomes_active(ctx: Context
         return lambda: log.append("undone")
 
     fiber = ctx.plugin(Plugin("demo", apply))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), timeout=1)
     disposal = asyncio.ensure_future(fiber.dispose())
     await asyncio.sleep(0)
     assert fiber.state is FiberState.LOADING

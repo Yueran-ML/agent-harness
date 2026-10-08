@@ -15,13 +15,15 @@ import enum
 import inspect
 import itertools
 import logging
-from collections.abc import Awaitable, Callable, Generator
+from collections.abc import Awaitable, Callable, Generator, Iterator
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from pydantic import ValidationError
 
 from tack.kernel.errors import InactiveEffectError, InvalidPluginError
 from tack.kernel.events import HookTable
+from tack.kernel.services import ServiceKey
 
 if TYPE_CHECKING:
     from tack.kernel.context import Context
@@ -47,20 +49,47 @@ class FiberState(enum.Enum):
     DISPOSED = "disposed"
 
 
+@dataclass(slots=True, eq=False)
+class Provision:
+    """A service value and the fiber that provides it."""
+
+    key: ServiceKey[Any]
+    value: Any
+    fiber: Fiber
+
+
 class KernelState:
     """State shared by every fiber and context of one application."""
 
-    __slots__ = ("_uids", "drivers", "fibers", "hooks")
+    __slots__ = ("_uids", "drivers", "fibers", "hooks", "services")
 
     def __init__(self) -> None:
         self._uids = itertools.count()
         self.drivers: set[asyncio.Task[None]] = set()
         self.fibers: dict[int, Fiber] = {}
         self.hooks = HookTable()
+        self.services: dict[ServiceKey[Any], Provision] = {}
 
     def next_uid(self) -> int:
         """Return a fiber identifier that has not been used before."""
         return next(self._uids)
+
+    def lookup(self, key: ServiceKey[Any], viewer: Fiber) -> Provision | None:
+        """Return the provision of ``key`` if ``viewer`` can see it.
+
+        A service is visible to everyone while its provider is active. The
+        provider itself and the fibers below it also see the service while the
+        provider is loading or unloading.
+        """
+        provision = self.services.get(key)
+        if provision is None:
+            return None
+        provider = provision.fiber
+        if provider.state is FiberState.ACTIVE:
+            return provision
+        if any(fiber is provider for fiber in viewer.lineage()):
+            return provision
+        return None
 
 
 class EffectHandle:
@@ -183,6 +212,13 @@ class Fiber:
 
     def __repr__(self) -> str:
         return f"<Fiber {self.name!r} #{self.uid} {self.state.value}>"
+
+    def lineage(self) -> Iterator[Fiber]:
+        """Yield this fiber, then its parent, and so on up to the root."""
+        fiber: Fiber | None = self
+        while fiber is not None:
+            yield fiber
+            fiber = fiber.parent
 
     def __await__(self) -> Generator[Any, None, Fiber]:
         return self._ready().__await__()

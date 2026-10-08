@@ -14,10 +14,12 @@ from tack.kernel import (
     KernelError,
     ParallelEvent,
     Plugin,
+    ServiceKey,
 )
 
 PING = EmitEvent[str]("test/ping")
 FLUSH = ParallelEvent[str]("test/flush")
+CLOCK = ServiceKey[int]("clock")
 
 
 def nothing(ctx: Context, config: object) -> None:
@@ -197,16 +199,17 @@ async def test_a_load_whose_driver_was_cancelled_is_rolled_back(ctx: Context) ->
         await fiber
 
 
-async def test_a_driver_cancelled_before_it_ran_does_not_block_waiters(ctx: Context) -> None:
+async def test_a_driver_cancelled_before_it_ran_is_replaced_for_the_next_waiter(
+    ctx: Context,
+) -> None:
     fiber = ctx.plugin(Plugin("unlucky", nothing))
     driver_of(fiber).cancel()
 
-    await asyncio.wait_for(fiber.settled(), timeout=1)
-    await asyncio.wait_for(ctx.settled(), timeout=1)
     assert fiber.state is FiberState.PENDING
+    await asyncio.wait_for(fiber.settled(), timeout=1)
 
-    await asyncio.wait_for(fiber.dispose(), timeout=1)
-    assert fiber.state is FiberState.DISPOSED
+    # Whoever waits next starts the load again.
+    assert fiber.state is FiberState.ACTIVE
 
 
 async def test_a_disposer_may_return_a_future() -> None:
@@ -271,3 +274,93 @@ async def test_cancelling_a_parallel_dispatch_cancels_its_listeners(ctx: Context
         await dispatch
 
     assert cancelled == ["x"]
+
+
+async def test_a_withdrawal_outlasts_a_dependent_whose_driver_was_cancelled(ctx: Context) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    log: list[str] = []
+
+    def apply(inner: Context, config: object) -> None:
+        inner.use(CLOCK)
+        inner.effect(lambda: lambda: log.append("older"))
+
+        async def newer() -> None:
+            started.set()
+            await release.wait()
+            log.append("newer")
+
+        inner.effect(lambda: newer)
+
+    handle = ctx.provide(CLOCK, 1)
+    fiber = await ctx.plugin(Plugin("dependent", apply, inject=(CLOCK,)))
+
+    withdrawal = asyncio.ensure_future(handle.dispose())
+    await asyncio.wait_for(started.wait(), timeout=1)
+    driver_of(fiber).cancel()
+    await a_few_turns()
+    try:
+        assert not withdrawal.done()
+    finally:
+        release.set()
+    await asyncio.wait_for(withdrawal, timeout=1)
+
+    assert log == ["newer", "older"]
+    assert fiber.state is FiberState.PENDING
+
+
+async def test_a_rollback_survives_a_cleanup_that_cancels_itself(ctx: Context) -> None:
+    started = asyncio.Event()
+    log: list[str] = []
+
+    async def cancelled_cleanup() -> None:
+        raise asyncio.CancelledError
+
+    async def apply(inner: Context, config: object) -> None:
+        inner.effect(lambda: lambda: log.append("older"))
+        inner.effect(lambda: cancelled_cleanup)
+        started.set()
+        await asyncio.Event().wait()
+
+    fiber = ctx.plugin(Plugin("slow", apply))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    driver_of(fiber).cancel()
+    await asyncio.wait_for(fiber.settled(), timeout=1)
+
+    assert log == ["older"]
+    assert fiber.state is FiberState.FAILED
+
+
+async def test_a_cleanup_cancelled_before_it_ran_is_run_for_the_next_waiter(ctx: Context) -> None:
+    release = asyncio.Event()
+    log: list[str] = []
+
+    def apply(inner: Context, config: object) -> None:
+        inner.use(CLOCK)
+
+        async def undo() -> None:
+            await release.wait()
+            log.append("dependent cleaned")
+
+        inner.effect(lambda: undo)
+
+    handle = ctx.provide(CLOCK, 1)
+    await ctx.plugin(Plugin("dependent", apply, inject=(CLOCK,)))
+
+    def cancel_the_release_before_it_starts() -> None:
+        name = f"tack-effect-{ctx.fiber.uid}"
+        next(task for task in asyncio.all_tasks() if task.get_name() == name).cancel()
+
+    caller = asyncio.ensure_future(handle.dispose())
+    asyncio.get_running_loop().call_soon(cancel_the_release_before_it_starts)
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert not handle.disposed
+
+    release.set()
+    await asyncio.wait_for(handle.dispose(), timeout=1)
+
+    assert handle.disposed
+    assert log == ["dependent cleaned"]
+    ctx.provide(CLOCK, 2)

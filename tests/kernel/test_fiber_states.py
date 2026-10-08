@@ -9,6 +9,7 @@ from tack.kernel import (
     FIBER_STATE_CHANGED,
     Context,
     Disposer,
+    EmitEvent,
     FiberState,
     FiberStateChange,
     Plugin,
@@ -16,6 +17,7 @@ from tack.kernel import (
 )
 
 CLOCK = ServiceKey[int]("clock")
+PING = EmitEvent[str]("test/ping")
 
 PENDING = FiberState.PENDING
 LOADING = FiberState.LOADING
@@ -135,3 +137,27 @@ async def test_a_failing_state_listener_does_not_disturb_the_lifecycle(
 
     assert fiber.state is ACTIVE
     assert "observer broke" in caplog.text
+
+
+async def test_an_observer_that_raises_cancelled_error_cannot_corrupt_a_load(
+    ctx: Context,
+) -> None:
+    log: list[str] = []
+
+    def observe(change: FiberStateChange) -> None:
+        if change.fiber.name == "victim" and change.current is LOADING:
+            inner = change.fiber.ctx
+            inner.effect(lambda: lambda: log.append("cleaned"))
+            inner.on(PING, log.append)
+            raise asyncio.CancelledError
+
+    ctx.on(FIBER_STATE_CHANGED, observe)
+
+    fiber = await ctx.plugin(Plugin("victim", nothing))
+    assert fiber.state is ACTIVE
+
+    await fiber.dispose()
+    ctx.emit(PING, "after")
+
+    assert log == ["cleaned"]
+    assert fiber.state is DISPOSED

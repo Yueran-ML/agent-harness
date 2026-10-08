@@ -11,7 +11,10 @@ from tack.kernel import (
     FiberState,
     LifecycleError,
     Plugin,
+    ServiceKey,
 )
+
+CLOCK = ServiceKey[int]("clock")
 
 
 async def test_a_plugin_can_dispose_itself_from_its_own_disposer(ctx: Context) -> None:
@@ -160,4 +163,103 @@ async def test_the_application_wide_wait_is_refused_inside_a_disposer(
 
     assert fiber.state is FiberState.DISPOSED
     assert "LifecycleError" in caplog.text
+    await ctx.fiber.dispose()
+
+
+async def test_a_disposer_may_dispose_its_fiber_through_a_task() -> None:
+    ctx = Context()
+
+    def apply(inner: Context, config: object) -> Disposer:
+        def undo() -> asyncio.Future[None]:
+            return asyncio.ensure_future(inner.fiber.dispose())
+
+        return undo
+
+    fiber = await ctx.plugin(Plugin("self", apply))
+
+    await asyncio.wait_for(fiber.dispose(), timeout=1)
+
+    assert fiber.state is FiberState.DISPOSED
+    await ctx.fiber.dispose()
+
+
+async def test_the_application_wide_wait_is_refused_in_a_task_spawned_by_apply() -> None:
+    ctx = Context()
+
+    async def apply(inner: Context, config: object) -> None:
+        await asyncio.gather(inner.settled())
+
+    fiber = ctx.plugin(Plugin("waiter", apply))
+    await asyncio.wait_for(fiber.settled(), timeout=1)
+
+    assert fiber.state is FiberState.FAILED
+    assert isinstance(fiber.error, LifecycleError)
+    await ctx.fiber.dispose()
+
+
+async def test_a_task_that_outlives_apply_may_wait_for_the_application(ctx: Context) -> None:
+    go = asyncio.Event()
+    outcomes: list[str] = []
+    tasks: list[asyncio.Future[None]] = []
+
+    async def background(inner: Context) -> None:
+        await go.wait()
+        await inner.settled()
+        outcomes.append("waited")
+
+    def apply(inner: Context, config: object) -> None:
+        tasks.append(asyncio.ensure_future(background(inner)))
+
+    await ctx.plugin(Plugin("spawner", apply))
+
+    go.set()
+    await asyncio.wait_for(tasks[0], timeout=1)
+
+    assert outcomes == ["waited"]
+
+
+async def test_a_dependent_may_dispose_its_provider_from_its_own_disposer() -> None:
+    ctx = Context()
+    log: list[str] = []
+
+    def provider(inner: Context, config: object) -> None:
+        inner.provide(CLOCK, 1)
+
+    provider_fiber = await ctx.plugin(Plugin("provider", provider))
+
+    def dependent(inner: Context, config: object) -> Disposer:
+        async def undo() -> None:
+            await provider_fiber.dispose()
+            log.append("dependent undone")
+
+        return undo
+
+    dependent_fiber = await ctx.plugin(Plugin("dependent", dependent, inject=(CLOCK,)))
+
+    await asyncio.wait_for(provider_fiber.dispose(), timeout=1)
+
+    assert log == ["dependent undone"]
+    assert provider_fiber.state is FiberState.DISPOSED
+    assert dependent_fiber.state is FiberState.PENDING
+    await ctx.fiber.dispose()
+
+
+async def test_disposing_a_dependent_that_disposes_its_provider_does_not_hang() -> None:
+    ctx = Context()
+
+    def provider(inner: Context, config: object) -> None:
+        inner.provide(CLOCK, 1)
+
+    provider_fiber = await ctx.plugin(Plugin("provider", provider))
+
+    def dependent(inner: Context, config: object) -> Disposer:
+        return provider_fiber.dispose
+
+    dependent_fiber = await ctx.plugin(Plugin("dependent", dependent, inject=(CLOCK,)))
+
+    await asyncio.wait_for(dependent_fiber.dispose(), timeout=1)
+    await asyncio.wait_for(ctx.settled(), timeout=1)
+
+    assert dependent_fiber.state is FiberState.DISPOSED
+    assert provider_fiber.state is FiberState.DISPOSED
     await ctx.fiber.dispose()

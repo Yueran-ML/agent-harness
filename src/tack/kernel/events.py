@@ -184,11 +184,15 @@ class HookTable:
 
 
 def run_emit(hooks: Sequence[Hook], event: Event, payload: object) -> None:
-    """Call every listener, logging the ones that fail."""
+    """Call every listener, logging the ones that fail.
+
+    A listener that raises ``CancelledError`` is logged like any other. Nothing
+    is awaited here, so that error cannot be a cancellation of the caller.
+    """
     for hook in hooks:
         try:
             result = hook.callback(payload)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             logger.exception("a listener of %r failed", event.name)
             continue
         if inspect.iscoroutine(result):

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 import pytest
@@ -193,3 +194,21 @@ async def test_bail_refuses_a_coroutine_as_an_answer(ctx: Context) -> None:
 
     with pytest.raises(EventModeError, match="returned a coroutine"):
         ctx.bail(ASK, "four")
+
+
+async def test_emit_isolates_a_listener_that_raises_cancelled_error(
+    ctx: Context, caplog: pytest.LogCaptureFixture
+) -> None:
+    log: list[str] = []
+
+    def cancelled(payload: str) -> None:
+        raise asyncio.CancelledError
+
+    ctx.on(PING, cancelled)
+    ctx.on(PING, log.append)
+
+    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+        ctx.emit(PING, "x")
+
+    assert log == ["x"]
+    assert "test/ping" in caplog.text

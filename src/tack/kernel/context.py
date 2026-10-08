@@ -207,17 +207,24 @@ class Context:
         """Wait until no plugin in the application is loading or unloading.
 
         Raises:
-            LifecycleError: Called from an ``apply`` or a disposer. The caller
-                would be waiting for itself, directly or through another
-                plugin that waits for it.
+            LifecycleError: Called from an ``apply`` or a disposer, or from a
+                task one of them started and is still running alongside. The
+                caller would be waiting for itself, directly or through
+                another plugin that waits for it.
         """
         kernel = self._kernel
-        if kernel.in_lifecycle_code():
+        if kernel.lifecycle_fiber() is not None:
             raise LifecycleError(
                 "settled() cannot be awaited while a plugin loads or unloads: "
                 "the caller would be waiting for itself"
             )
-        while pending := [driver for driver in kernel.drivers if not driver.done()]:
+        while True:
+            for fiber in tuple(kernel.fibers.values()):
+                # Carry on any work whose driver was cancelled part-way.
+                fiber._kick()
+            pending = [driver for driver in kernel.drivers if not driver.done()]
+            if not pending:
+                return
             await asyncio.wait(pending)
 
     def effect(self, setup: Callable[[], Disposer | None]) -> EffectHandle:

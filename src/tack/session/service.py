@@ -1,14 +1,15 @@
 """The session service: where sessions are created and reopened."""
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from tack.kernel import Context, Registry, ServiceKey
 from tack.session.codec import SessionHeader
 from tack.session.errors import SessionError
-from tack.session.events import EventData
+from tack.session.events import EndSeedEvent, EventData, SessionEvent
 from tack.session.log import Session, now_ms
+from tack.session.repair import CloseReason, closing_events
 from tack.session.store import (
     SessionFile,
     StoredSession,
@@ -82,21 +83,57 @@ class Sessions:
         Raises:
             ValueError: The id cannot name a directory.
         """
-        created = self.clock()
-        identity = new_session_id(created) if session_id is None else check_session_id(session_id)
-        store: SessionFile | None = None
-        if self.root is not None:
-            header = SessionHeader(
-                id=identity,
-                created_at=created,
-                cwd=os.path.abspath(cwd),  # noqa: PTH100
-                parent_session=parent,
-            )
-            store = SessionFile.create(self.directory(cwd, identity), header)
-        return self._adopt(ctx, Session(ctx, identity, self.kinds, clock=self._now, store=store))
+        return self._start(ctx, cwd, session_id, parent, ())
+
+    def fork(
+        self,
+        ctx: Context,
+        cwd: str | Path,
+        source: Session | str,
+        *,
+        upto: int | None = None,
+        session_id: str | None = None,
+    ) -> Session:
+        """Start a session that continues from a copy of another one.
+
+        The new session begins with the events of ``source``, which are copied
+        as they are and not announced. After them it gets a
+        ``session/end-seed`` event, and a turn that the copy leaves open is
+        closed with the reason ``forked``. The source is not changed.
+
+        Args:
+            ctx: The context of the owner of the new session.
+            cwd: The working directory that both sessions belong to.
+            source: The session to copy: one that is open, or the id of a
+                stored one.
+            upto: The position of the last event to copy. By default every
+                event is copied.
+            session_id: The id of the new session. One is made up by default.
+
+        Raises:
+            ValueError: ``upto`` is not a position in the source, or an id
+                cannot name a directory.
+            UnreadableSessionError: The stored source cannot be loaded.
+        """
+        events: Sequence[SessionEvent[EventData]]
+        if isinstance(source, Session):
+            parent, events = source.id, source.events
+        else:
+            parent, events = source, self.read(cwd, source).events
+        if upto is not None:
+            if not 0 <= upto < len(events):
+                raise ValueError(f"the session {parent!r} has no event {upto}")
+            events = events[: upto + 1]
+        session = self._start(ctx, cwd, session_id, parent, events)
+        self._take_over(session, inherited=True, reason="forked")
+        return session
 
     def resume(self, ctx: Context, cwd: str | Path, session_id: str) -> Session:
         """Reopen a stored session to go on writing it. It belongs to the fiber of ``ctx``.
+
+        The session gets a ``session/end-seed`` event, which marks where this
+        lifetime begins. A turn that a crash left open is closed with the
+        reason ``interrupted``.
 
         Raises:
             SessionError: Sessions are kept in memory.
@@ -109,7 +146,9 @@ class Sessions:
         session = Session(
             ctx, store.header.id, self.kinds, clock=self._now, store=store, events=events
         )
-        return self._adopt(ctx, session)
+        self._adopt(ctx, session)
+        self._take_over(session, inherited=False, reason="interrupted")
+        return session
 
     def read(self, cwd: str | Path, session_id: str) -> StoredSession:
         """Read a stored session without opening it for writing.
@@ -124,6 +163,37 @@ class Sessions:
 
     def _now(self) -> int:
         return self.clock()
+
+    def _start(
+        self,
+        ctx: Context,
+        cwd: str | Path,
+        session_id: str | None,
+        parent: str | None,
+        events: Sequence[SessionEvent[EventData]],
+    ) -> Session:
+        """Start a session that begins with ``events``, and store those first."""
+        created = self.clock()
+        identity = new_session_id(created) if session_id is None else check_session_id(session_id)
+        store: SessionFile | None = None
+        if self.root is not None:
+            header = SessionHeader(
+                id=identity,
+                created_at=created,
+                cwd=os.path.abspath(cwd),  # noqa: PTH100
+                parent_session=parent,
+            )
+            store = SessionFile.create(self.directory(cwd, identity), header)
+            for event in events:
+                store.write(event)
+        session = Session(ctx, identity, self.kinds, clock=self._now, store=store, events=events)
+        return self._adopt(ctx, session)
+
+    def _take_over(self, session: Session, *, inherited: bool, reason: CloseReason) -> None:
+        """Mark what ``session`` holds as taken over, and close a turn that it leaves open."""
+        session.append(EndSeedEvent(inherited=inherited))
+        for data in closing_events(session.events, reason):
+            session.append(data)
 
     def _adopt(self, ctx: Context, session: Session) -> Session:
         ctx.effect(lambda: session.close)

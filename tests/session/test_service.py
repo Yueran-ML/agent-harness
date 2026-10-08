@@ -119,15 +119,16 @@ async def test_a_session_can_be_resumed_and_continued(
     first = sessions.create(ctx, tmp_path, session_id="s-1")
     first.append(TurnStartEvent(turn=1))
     first.append(said("hello"))
+    first.append(TurnEndEvent(turn=1, reason="completed"))
     first.close()
 
     second = sessions.resume(ctx, tmp_path, "s-1")
-    event = second.append(TurnEndEvent(turn=1, reason="completed"))
+    event = second.append(TurnStartEvent(turn=2))
 
     assert second.id == "s-1"
-    assert list(second.events[:2]) == list(first.events)
+    assert list(second.events[:3]) == list(first.events)
     assert second.messages == first.messages
-    assert event.seq == 2
+    assert event.seq == 4
     second.close()
     stored = read_session(sessions.directory(tmp_path, "s-1"), sessions.kinds)
     assert stored.events == list(second.events)
@@ -168,7 +169,7 @@ async def test_a_session_closes_when_its_owner_unloads(
     with pytest.raises(SessionClosedError):
         session.append(TurnEndEvent(turn=1, reason="completed"))
     resumed = sessions.resume(ctx, tmp_path, "s-1")
-    assert len(resumed) == 1
+    assert resumed.events[0].data == TurnStartEvent(turn=1)
 
 
 async def test_a_plugin_can_bring_event_types_that_leave_with_it(

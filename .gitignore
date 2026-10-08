@@ -1,6 +1,3 @@
-# 第三方参考仓库的本地克隆，只读，不入库
-_reference/
-
 # Python
 __pycache__/
 *.py[cod]

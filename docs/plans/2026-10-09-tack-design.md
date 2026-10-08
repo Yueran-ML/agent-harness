@@ -32,7 +32,8 @@ Tack 是一个能安装、能日常使用、做得扎实的开源 harness。它�
 
 | 事项 | 决定 |
 |---|---|
-| 项目名 | Tack。导入包名 `tack`，命令 `tack`。发行包名在发布前查重后确定 |
+| 项目名 | Tack。导入包名 `tack`，命令 `tack`，发行包名 `tack-harness` |
+| 仓库 | `github.com/Yueran-ML/agent-harness`。本地只做提交，推送由作者用 GitHub Desktop 完成 |
 | 实现路线 | 对齐 DeepSeek Harness，参考 Claude Code 和 Codex，取其精华 |
 | 重心 | 偏工程 |
 | 界面 | 先终端 CLI，后补 Web，Web 要好看 |
@@ -664,10 +665,12 @@ Qwen2.5 和 Llama 的各量化档在验收基准上的成功率，标出哪些�
 | 现有的 Ollama 读的是 C 盘空目录 | 基准阶段单独起一个指向 D 盘的实例 |
 | DeepSeek 思考模式下采样参数不生效 | 基准中记录每次请求的完整配置；是否关闭思考在基准阶段决定 |
 | 规模约一万行，周期数周 | 每个阶段结束都能运行和演示 |
-| PyPI 上 `tack` 这个名字可能已被占用 | 发布前查重，必要时发行包改名，导入名不变 |
+| PyPI 上 `tack` 已被一个 2017 年的占位包占用（版本 0.0.0） | 发行包名用 `tack-harness`，导入名仍是 `tack`。发布前再确认一次名字可用 |
 | 本地小模型在手工任务上可能几乎全错 | 任务分难度档；先在 Qwen2.5-7B 上试跑，把难度调到可区分的范围 |
 
 ## 17. 参考资料
+
+两个参考仓库的本地克隆放在本仓库目录之外（`../_reference/`），只读，不入库。
 
 - `docs/research/dsh-digest.md`：DeepSeek Harness，提交 `5badb15`。
 - `docs/research/codex-digest.md`：Codex CLI，提交 `8c818cbed`。

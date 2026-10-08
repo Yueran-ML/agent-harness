@@ -11,6 +11,7 @@ undone when that fiber unloads.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import enum
 import inspect
 import itertools
@@ -21,7 +22,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 
 from pydantic import ValidationError
 
-from tack.kernel.errors import InactiveEffectError, InvalidPluginError
+from tack.kernel.errors import InactiveEffectError, InvalidPluginError, KernelError
 from tack.kernel.events import HookTable
 from tack.kernel.services import ServiceKey
 
@@ -36,6 +37,20 @@ Disposer: TypeAlias = Callable[[], Awaitable[None] | None]
 
 Epoch: TypeAlias = tuple[int, ...]
 """Identifies the set of providers a fiber is loaded against."""
+
+
+def _being_cancelled() -> bool:
+    """Return whether the current task itself has been asked to cancel.
+
+    A ``CancelledError`` also surfaces when the awaited work was cancelled.
+    This tells the two apart.
+    """
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
+
+
+async def _drain(awaitable: Awaitable[None]) -> None:
+    await awaitable
 
 
 class FiberState(enum.Enum):
@@ -67,7 +82,7 @@ class Provision:
 class KernelState:
     """State shared by every fiber and context of one application."""
 
-    __slots__ = ("_uids", "drivers", "fibers", "hooks", "services")
+    __slots__ = ("_uids", "drivers", "fibers", "hooks", "services", "working")
 
     def __init__(self) -> None:
         self._uids = itertools.count()
@@ -75,10 +90,37 @@ class KernelState:
         self.fibers: dict[int, Fiber] = {}
         self.hooks = HookTable()
         self.services: dict[ServiceKey[Any], Provision] = {}
+        self.working: dict[asyncio.Task[Any], Fiber] = {}
 
     def next_uid(self) -> int:
         """Return a fiber identifier that has not been used before."""
         return next(self._uids)
+
+    @contextlib.contextmanager
+    def working_for(self, fiber: Fiber) -> Generator[None]:
+        """Mark the current task as running the ``apply`` of ``fiber``."""
+        task = asyncio.current_task()
+        assert task is not None
+        self.working[task] = fiber
+        try:
+            yield
+        finally:
+            del self.working[task]
+
+    def in_lifecycle_code(self) -> bool:
+        """Return whether the current task is running an ``apply`` or a disposer."""
+        return asyncio.current_task() in self.working
+
+    def inside(self, fiber: Fiber) -> bool:
+        """Return whether the current task is loading or cleaning up ``fiber``.
+
+        This is also true while it runs the ``apply`` or a disposer of a fiber
+        below ``fiber``. Such code must not wait for ``fiber`` to settle: the
+        fiber cannot settle before that code returns.
+        """
+        task = asyncio.current_task()
+        worker = None if task is None else self.working.get(task)
+        return worker is not None and any(above is fiber for above in worker.lineage())
 
     def lookup(self, key: ServiceKey[Any], viewer: Fiber) -> Provision | None:
         """Return the provision of ``key`` if ``viewer`` can see it.
@@ -157,39 +199,72 @@ class KernelState:
 
 
 class EffectHandle:
-    """A registered effect. Disposing the handle undoes the effect once."""
+    """A registered effect. Disposing the handle undoes the effect once.
 
-    __slots__ = ("_completion", "_disposer", "_fiber")
+    A disposer that returns an awaitable is driven by a task of its own, so
+    that cancelling whoever asked for the disposal does not interrupt the
+    cleanup.
+    """
+
+    __slots__ = ("_disposer", "_done", "_fiber", "_pending")
 
     def __init__(self, fiber: Fiber, disposer: Disposer | None) -> None:
         self._fiber = fiber
         self._disposer = disposer
-        self._completion: asyncio.Future[None] | None = None
+        self._pending: asyncio.Task[None] | None = None
+        self._done = False
 
     @property
     def disposed(self) -> bool:
         """Whether the effect has been undone."""
-        return self._completion is not None and self._completion.done()
+        return self._done
 
     async def dispose(self) -> None:
-        """Undo the effect.
+        """Undo the effect and wait until that is finished.
 
-        The first call runs the disposer and re-raises whatever it raises. A
-        call that arrives later, or while the disposer is still running, waits
-        for that one run and returns.
+        Only the first call runs the disposer. A caller that waits for it
+        receives the error it raises, if any. A call made after it has finished
+        returns at once, and so does a call made from inside the disposer.
         """
-        if self._completion is not None:
-            await asyncio.shield(self._completion)
+        self._begin()
+        pending = self._pending
+        if pending is None or pending is asyncio.current_task():
             return
-        completion = self._completion = asyncio.get_running_loop().create_future()
+        if pending.done():
+            self._settle(pending)
+            return
+        await asyncio.shield(pending)
+
+    def _begin(self) -> None:
+        """Start undoing the effect without waiting for it."""
+        if self._done or self._pending is not None:
+            return
+        disposer, self._disposer = self._disposer, None
+        result: Awaitable[None] | None = None
         try:
-            if self._disposer is not None:
-                result = self._disposer()
-                if inspect.isawaitable(result):
-                    await result
-        finally:
+            if disposer is not None:
+                result = disposer()
+        except BaseException:
+            self._finish()
+            raise
+        if not inspect.isawaitable(result):
+            self._finish()
+            return
+        fiber = self._fiber
+        coroutine = result if inspect.iscoroutine(result) else _drain(result)
+        task = asyncio.get_running_loop().create_task(coroutine, name=f"tack-effect-{fiber.uid}")
+        self._pending = task
+        fiber._kernel.working[task] = fiber
+        task.add_done_callback(self._settle)
+
+    def _settle(self, task: asyncio.Task[None]) -> None:
+        self._fiber._kernel.working.pop(task, None)
+        self._finish()
+
+    def _finish(self) -> None:
+        if not self._done:
+            self._done = True
             self._fiber._forget(self)
-            completion.set_result(None)
 
 
 class Fiber:
@@ -310,17 +385,39 @@ class Fiber:
         return handle
 
     async def dispose(self) -> None:
-        """Unload the fiber for good and wait until its effects are undone."""
-        if self._handle is None:
-            self._retire()
+        """Unload the fiber for good and wait until its effects are undone.
+
+        Cancelling the caller does not interrupt the unload. Called from the
+        fiber's own ``apply`` or disposers, or from those of a fiber below it,
+        this requests the disposal and returns: the fiber cannot finish
+        unloading before that code returns.
+        """
+        self._retire()
+        handle = self._handle
+        if self._kernel.inside(self):
+            if handle is not None:
+                handle._begin()
+            return
+        if handle is None:
+            await self._until_disposed()
         else:
-            await self._handle.dispose()
-        await self.settled()
+            await handle.dispose()
 
     async def settled(self) -> None:
-        """Wait until no load or unload of this fiber is in flight."""
-        while (driver := self._driver) is not None and driver is not asyncio.current_task():
-            await asyncio.shield(driver)
+        """Wait until no load or unload of this fiber is in flight.
+
+        Cancelling the caller does not interrupt the load or unload. Called
+        from the fiber's own ``apply`` or disposers, or from those of a fiber
+        below it, this returns at once.
+        """
+        if self._kernel.inside(self):
+            return
+        while (driver := self._live_driver()) is not None:
+            try:
+                await asyncio.shield(driver)
+            except asyncio.CancelledError:
+                if _being_cancelled():
+                    raise
 
     async def _ready(self) -> Fiber:
         await self.settled()
@@ -334,13 +431,16 @@ class Fiber:
                 f"cannot register an effect on {self.name!r} while it is {self.state.value}"
             )
 
-    async def _dispose_owned(self) -> None:
+    async def _until_disposed(self) -> None:
         self._retire()
-        await self.settled()
+        while True:
+            # Start a driver again if an earlier one was cancelled part-way.
+            self._kick()
+            if self.state is FiberState.DISPOSED:
+                return
+            await self.settled()
 
     def _retire(self) -> None:
-        if self._disposed:
-            return
         self._disposed = True
         self._refresh()
 
@@ -368,8 +468,17 @@ class Fiber:
             return self._loaded != self._wanted
         return self._wanted is not None and self._wanted != self._failed
 
+    def _live_driver(self) -> asyncio.Task[None] | None:
+        driver = self._driver
+        if driver is not None and driver.done():
+            # Cancelled before it could run, so it never cleared itself.
+            self._driver = None
+            self._kernel.drivers.discard(driver)
+            return None
+        return driver
+
     def _kick(self) -> None:
-        if self._driver is not None:
+        if self._live_driver() is not None:
             return
         if not self._needs_work():
             self._rest()
@@ -401,9 +510,10 @@ class Fiber:
         self._set_state(FiberState.LOADING)
         self._loaded = epoch
         try:
-            result = plugin.apply(self.ctx, self.config)
-            if inspect.isawaitable(result):
-                result = await result
+            with self._kernel.working_for(self):
+                result = plugin.apply(self.ctx, self.config)
+                if inspect.isawaitable(result):
+                    result = await result
             if result is not None:
                 returned: object = result
                 if not callable(returned):
@@ -412,11 +522,18 @@ class Fiber:
                         "apply must return a disposer or None"
                     )
                 self._effects.append(EffectHandle(self, result))
-        except Exception as error:
+        except (Exception, asyncio.CancelledError) as error:
+            interrupted = isinstance(error, asyncio.CancelledError) and _being_cancelled()
             logger.error("plugin %r failed to load", self.name, exc_info=error)
-            self.error = error
+            if isinstance(error, Exception):
+                self.error = error
+            else:
+                self.error = KernelError(f"plugin {self.name!r} was cancelled while loading")
             self._failed = epoch
             await self._unload()
+            if interrupted:
+                self._rest()
+                raise
             return
         if self._wanted == epoch:
             self._set_state(FiberState.ACTIVE)
@@ -431,6 +548,10 @@ class Fiber:
         while self._effects:
             try:
                 await self._effects[-1].dispose()
+            except asyncio.CancelledError:
+                if _being_cancelled():
+                    raise
+                logger.error("an effect of %r was cancelled while cleaning up", self.name)
             except Exception:
                 logger.exception("an effect of %r failed to clean up", self.name)
 

@@ -9,6 +9,10 @@ class InactiveEffectError(KernelError):
     """An effect was registered on a plugin instance that is not loaded."""
 
 
+class LifecycleError(KernelError):
+    """Code that runs while a plugin loads or unloads asked for something impossible there."""
+
+
 class ServiceConflictError(KernelError):
     """A service was provided while another provider already holds its name."""
 

@@ -213,7 +213,9 @@ async def run_parallel(hooks: Sequence[Hook], event: Event, payload: object) -> 
         except Exception:
             logger.exception("a listener of %r failed", event.name)
 
-    await asyncio.gather(*(call(hook) for hook in hooks))
+    outcomes = await asyncio.gather(*(call(hook) for hook in hooks), return_exceptions=True)
+    if any(isinstance(outcome, asyncio.CancelledError) for outcome in outcomes):
+        logger.error("a listener of %r was cancelled", event.name)
 
 
 async def run_serial(hooks: Sequence[Hook], payload: object) -> Any:

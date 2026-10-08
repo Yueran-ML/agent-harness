@@ -9,6 +9,7 @@ from collections.abc import Callable
 from typing import Any, overload
 
 from tack.kernel.errors import (
+    LifecycleError,
     ServiceConflictError,
     ServiceNotInjectedError,
     ServiceUnavailableError,
@@ -90,7 +91,7 @@ class Context:
         parent._require_loaded()
         fiber = Fiber(self._kernel, parent)
         scoped = Context._owned_by(self._kernel, fiber, key)
-        fiber._handle = parent.effect(lambda: fiber._dispose_owned)
+        fiber._handle = parent.effect(lambda: fiber._until_disposed)
         return scoped
 
     def plugin(self, plugin: object, config: object = None) -> Fiber:
@@ -116,7 +117,7 @@ class Context:
         parent._require_loaded()
         fiber = Fiber(self._kernel, parent, spec, config)
         Context._owned_by(self._kernel, fiber, self.scope_key)
-        fiber._handle = parent.effect(lambda: fiber._dispose_owned)
+        fiber._handle = parent.effect(lambda: fiber._until_disposed)
         self._kernel.fibers[fiber.uid] = fiber
         fiber._refresh()
         return fiber
@@ -186,10 +187,20 @@ class Context:
         return tuple(self._kernel.fibers.values())
 
     async def settled(self) -> None:
-        """Wait until no plugin in the application is loading or unloading."""
-        drivers = self._kernel.drivers
-        current = asyncio.current_task()
-        while pending := [driver for driver in drivers if driver is not current]:
+        """Wait until no plugin in the application is loading or unloading.
+
+        Raises:
+            LifecycleError: Called from an ``apply`` or a disposer. The caller
+                would be waiting for itself, directly or through another
+                plugin that waits for it.
+        """
+        kernel = self._kernel
+        if kernel.in_lifecycle_code():
+            raise LifecycleError(
+                "settled() cannot be awaited while a plugin loads or unloads: "
+                "the caller would be waiting for itself"
+            )
+        while pending := [driver for driver in kernel.drivers if not driver.done()]:
             await asyncio.wait(pending)
 
     def effect(self, setup: Callable[[], Disposer | None]) -> EffectHandle:

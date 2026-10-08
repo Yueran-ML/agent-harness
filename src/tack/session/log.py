@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeVar
 
 from tack.kernel import Context, EmitEvent
+from tack.llm.types import Message
 from tack.session.errors import InvalidEventError, SessionClosedError
 from tack.session.events import EventData, SessionEvent
+from tack.session.surface import Surface
 
 DataT = TypeVar("DataT", bound=EventData)
 
@@ -50,7 +52,17 @@ class Session:
         id: The id of the session.
     """
 
-    __slots__ = ("_announcing", "_clock", "_closed", "_ctx", "_events", "_kinds", "_outbox", "id")
+    __slots__ = (
+        "_announcing",
+        "_clock",
+        "_closed",
+        "_ctx",
+        "_events",
+        "_kinds",
+        "_outbox",
+        "_surface",
+        "id",
+    )
 
     def __init__(
         self,
@@ -65,6 +77,7 @@ class Session:
         self._kinds = kinds
         self._clock = clock
         self._events: list[SessionEvent[EventData]] = []
+        self._surface = Surface()
         self._outbox: deque[SessionEvent[EventData]] = deque()
         self._announcing = False
         self._closed = False
@@ -81,6 +94,16 @@ class Session:
         return self._events
 
     @property
+    def messages(self) -> tuple[Message, ...]:
+        """The messages that the model sees, derived from the log."""
+        return self._surface.messages
+
+    @property
+    def surface(self) -> tuple[int, ...]:
+        """The positions in the log of the events behind :attr:`messages`, in the same order."""
+        return self._surface.seqs
+
+    @property
     def closed(self) -> bool:
         """Whether the session has stopped taking events."""
         return self._closed
@@ -89,11 +112,17 @@ class Session:
         """Stop taking events. The events that are in the log stay readable."""
         self._closed = True
 
-    def append(self, data: DataT) -> SessionEvent[DataT]:
+    def append(self, data: DataT, *, replaces: Iterable[int] = ()) -> SessionEvent[DataT]:
         """Append an event and announce it.
 
         The log keeps its own copy of ``data``, read back from the JSON it
         would be stored as. Later changes to ``data`` do not reach the log.
+
+        An event that carries a message becomes the last message the model
+        sees. With ``replaces`` it instead takes the place of the messages of
+        the listed events, which must be neighbours in what the model sees
+        now and must be listed in that order. Nothing is removed from the
+        log.
 
         Observers of :data:`SESSION_EVENT` are told before this method
         returns, in the order of the log. An event that an observer appends
@@ -102,8 +131,8 @@ class Session:
         Raises:
             SessionClosedError: The session is closed.
             InvalidEventError: The event type is not registered with this
-                session, or the data is not the same after a round trip
-                through JSON. The log is unchanged.
+                session, the data is not the same after a round trip through
+                JSON, or ``replaces`` does not fit. The log is unchanged.
         """
         if self._closed:
             raise SessionClosedError(f"the session {self.id!r} is closed")
@@ -123,7 +152,20 @@ class Session:
             raise InvalidEventError(f"a {name} event cannot be written as JSON: {error}") from error
         if snapshot != data:
             raise InvalidEventError(f"a {name} event does not survive being written as JSON")
-        event = SessionEvent(seq=len(self._events), time=self._clock(), data=snapshot)
+        replaced = tuple(replaces)
+        on_surface = snapshot.for_model() is not None
+        if replaced:
+            if not on_surface:
+                raise InvalidEventError(f"a {name} event is no message and cannot replace any")
+            self._surface.locate(replaced)
+        event = SessionEvent(
+            seq=len(self._events),
+            time=self._clock(),
+            data=snapshot,
+            on_surface=on_surface,
+            replaces=replaced,
+        )
+        self._surface.apply(event)
         self._events.append(event)
         self._outbox.append(event)
         self._announce()

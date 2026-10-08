@@ -15,6 +15,7 @@ from tack.llm.types import (
     AssistantMessage,
     CallConfig,
     LlmFailure,
+    Message,
     SystemMessage,
     ToolMessage,
     ToolSchema,
@@ -43,6 +44,10 @@ class EventData(Data):
         if not isinstance(getattr(cls, "event_type", None), str):
             raise TypeError(f"{cls.__name__} does not name its event type")
 
+    def for_model(self) -> Message | None:
+        """Return the message that this event adds to what the model sees, if any."""
+        return None
+
 
 DataT_co = TypeVar("DataT_co", bound=EventData, covariant=True)
 
@@ -56,11 +61,16 @@ class SessionEvent(Generic[DataT_co]):
             the event was appended.
         time: When the event was appended, in milliseconds since the epoch.
         data: What happened.
+        on_surface: Whether the event carries a message that the model sees.
+        replaces: The events whose messages this one takes the place of, as
+            the model sees it. They stay in the log.
     """
 
     seq: int
     time: int
     data: DataT_co
+    on_surface: bool = False
+    replaces: tuple[int, ...] = ()
 
     @property
     def type(self) -> str:
@@ -117,6 +127,10 @@ class SystemMessageEvent(EventData):
 
     message: SystemMessage
 
+    def for_model(self) -> Message:
+        """Return the system message."""
+        return self.message
+
 
 class UserMessageEvent(EventData):
     """Input for the model in the role of the user.
@@ -129,6 +143,10 @@ class UserMessageEvent(EventData):
 
     message: UserMessage
     source: str = "user"
+
+    def for_model(self) -> Message:
+        """Return the user message."""
+        return self.message
 
 
 class AssistantMessageEvent(EventData):
@@ -148,6 +166,10 @@ class AssistantMessageEvent(EventData):
     def interrupted(self) -> bool:
         """Whether the reply was cut short by a cancellation."""
         return self.finish_reason is None
+
+    def for_model(self) -> Message | None:
+        """Return the reply, unless it has no content."""
+        return self.message if self.message.content else None
 
 
 class AssistantAttemptEvent(EventData):
@@ -196,6 +218,10 @@ class ToolResultEvent(EventData):
     message: ToolMessage
     error: ToolError | None = None
     meta: dict[str, JsonValue] | None = None
+
+    def for_model(self) -> Message:
+        """Return the result as the model sees it."""
+        return self.message
 
 
 class RequestHeaderEvent(EventData):

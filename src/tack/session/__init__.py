@@ -21,6 +21,7 @@ from tack.session.events import (
     UserMessageEvent,
 )
 from tack.session.log import SESSION_EVENT, Committed, Session, now_ms
+from tack.session.surface import Surface
 
 __all__ = [
     "CORE_EVENTS",
@@ -38,6 +39,7 @@ __all__ = [
     "SessionEvent",
     "StepEndEvent",
     "StepStartEvent",
+    "Surface",
     "SystemMessageEvent",
     "ToolCallEvent",
     "ToolError",

@@ -45,6 +45,7 @@ from tack.session.events import (
     UserMessageEvent,
 )
 from tack.session.log import SESSION_EVENT, Committed, Session, SessionStore, now_ms
+from tack.session.repair import CloseReason, closing_events
 from tack.session.service import SESSIONS, Sessions
 from tack.session.store import SessionFile, StoredSession, read_session
 from tack.session.surface import Surface
@@ -56,6 +57,7 @@ __all__ = [
     "SESSION_EVENT",
     "AssistantAttemptEvent",
     "AssistantMessageEvent",
+    "CloseReason",
     "Committed",
     "Config",
     "EndSeedEvent",
@@ -87,6 +89,7 @@ __all__ = [
     "UnreadableSessionError",
     "UserMessageEvent",
     "apply",
+    "closing_events",
     "decode_event",
     "decode_header",
     "encode_event",

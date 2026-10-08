@@ -4,7 +4,7 @@ This module is a plugin. Loading it registers the loop with the agent service,
 under the name ``default`` unless its config says otherwise.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tack.agent import AGENTS, Agent, AgentSpec
 from tack.agent_loop.loop import LoopAgent
@@ -31,9 +31,12 @@ class Config(BaseModel):
     Attributes:
         name: The name under which the loop is registered. An agent whose
             spec names it is driven by this loop.
+        max_parallel_tool_calls: How many tool calls of one reply may run
+            beside each other, if their tools say that this is safe.
     """
 
     name: str = "default"
+    max_parallel_tool_calls: int = Field(default=10, ge=1)
 
 
 def apply(ctx: Context, config: Config) -> None:
@@ -42,6 +45,6 @@ def apply(ctx: Context, config: Config) -> None:
     tools = ctx.use(TOOLS)
 
     def make(scope: Context, spec: AgentSpec, session: Session) -> Agent:
-        return LoopAgent(scope, spec, session, llm, tools)
+        return LoopAgent(scope, spec, session, llm, tools, config.max_parallel_tool_calls)
 
     ctx.use(AGENTS).loops.add(ctx, config.name, make)

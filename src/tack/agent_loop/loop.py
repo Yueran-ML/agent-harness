@@ -19,7 +19,7 @@ from tack.agent import (
     clear_inbox,
 )
 from tack.kernel import Context
-from tack.llm import Llm, LlmFailure, LlmRequest, SystemMessage, TextBlock
+from tack.llm import Llm, LlmFailure, LlmRequest, SystemMessage, TextBlock, ToolCallBlock
 from tack.session import (
     TURN,
     AssistantAttemptEvent,
@@ -32,17 +32,26 @@ from tack.session import (
     StepEndEvent,
     StepStartEvent,
     SystemMessageEvent,
+    ToolCallEvent,
     TurnEndEvent,
     TurnEndReason,
     TurnStartEvent,
     UserMessageEvent,
 )
-from tack.tools import Tools
+from tack.tools import PendingCall, ToolOutcome, ToolRun, Tools
 
 logger = logging.getLogger("tack.agent_loop")
 
-_StepEnd = Literal["stop", "max-tokens"]
-"""How a step ended: the model was done, or its reply was cut off by the token limit."""
+_StepEnd = Literal["stop", "max-tokens", "tools", "concluded"]
+"""How a step ended.
+
+The model was done, its reply was cut off by the token limit, its tool calls
+were carried out and it has to be asked again, or one of the tools asked for
+the turn to end.
+"""
+
+_NOT_RUN = "The turn was cancelled before this call ran."
+_CUT_SHORT = "The call was cancelled while it ran. It may have taken effect in part."
 
 
 def _last_header(
@@ -77,11 +86,18 @@ class LoopAgent(Agent):
     """
 
     def __init__(
-        self, ctx: Context, spec: AgentSpec, session: Session, llm: Llm, tools: Tools
+        self,
+        ctx: Context,
+        spec: AgentSpec,
+        session: Session,
+        llm: Llm,
+        tools: Tools,
+        max_parallel_tool_calls: int,
     ) -> None:
         super().__init__(ctx, spec, session)
         self._llm = llm
         self._tools = tools
+        self._max_parallel = max_parallel_tool_calls
         self._wake = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
@@ -218,6 +234,8 @@ class LoopAgent(Agent):
                 ended = await self._request(turn, step)
             finally:
                 session.append(StepEndEvent(turn=turn, step=step))
+            if ended == "tools":
+                continue
             cut_off = cut_off or ended == "max-tokens"
             if not INBOX.of(session).next_step:
                 return "max-tokens" if cut_off else "completed"
@@ -255,11 +273,13 @@ class LoopAgent(Agent):
                     self.ctx.emit(STREAM, StreamFrame(self, turn, step, chunk))
             except asyncio.CancelledError:
                 # The reply was cut short: what had arrived is kept, marked as interrupted.
+                # The tool calls it holds are not carried out, but each gets its result.
+                message = call.message
                 session.append(
-                    AssistantMessageEvent(
-                        message=call.message, usage=call.usage, finish_reason=None
-                    )
+                    AssistantMessageEvent(message=message, usage=call.usage, finish_reason=None)
                 )
+                for asked in message.tool_calls:
+                    session.append(self._not_run(asked).to_event())
                 raise
         finish = call.finish
         assert finish is not None
@@ -271,9 +291,107 @@ class LoopAgent(Agent):
             )
             raise _RequestError(finish.failure)
         assert finish.reason != "error"
+        message = call.message
         session.append(
-            AssistantMessageEvent(
-                message=call.message, usage=call.usage, finish_reason=finish.reason
-            )
+            AssistantMessageEvent(message=message, usage=call.usage, finish_reason=finish.reason)
         )
-        return "max-tokens" if finish.reason == "max-tokens" else "stop"
+        if finish.reason == "max-tokens":
+            return "max-tokens"
+        if not message.tool_calls:
+            return "stop"
+        concluded = await self._run_tools(message.tool_calls)
+        return "concluded" if concluded else "tools"
+
+    # Tool calls
+
+    def _begin(self, call: ToolCallBlock) -> PendingCall:
+        """Write a tool call down and take it up."""
+        session = self.session
+        session.append(
+            ToolCallEvent(call_id=call.call_id, name=call.name, arguments=call.arguments)
+        )
+        return self._tools.begin(self.ctx, call, ToolRun(call.call_id, self.cwd, session))
+
+    def _not_run(self, call: ToolCallBlock) -> ToolOutcome:
+        """Write down a tool call that will not be carried out, and return its result."""
+        pending = self._begin(call)
+        return pending.outcome or pending.fail("ABORTED_BEFORE_DISPATCH", _NOT_RUN)
+
+    async def _run_tools(self, calls: tuple[ToolCallBlock, ...]) -> bool:
+        """Carry out the tool calls of a reply. Return whether a tool asked for the turn to end.
+
+        The calls are taken up in the order of the model, and the checks of
+        each are asked before the next one is looked at. Calls that are safe
+        beside each other then overlap, up to a limit. A call that is not
+        waits until nothing else runs, and nothing starts until it is done.
+
+        The results are written in the order of the model, each as soon as
+        all before it are in. If the turn is cancelled, the tools that run
+        are stopped, and every call still gets a result.
+        """
+        session = self.session
+        pendings: list[PendingCall | None] = [None] * len(calls)
+        outcomes: dict[int, ToolOutcome] = {}
+        running: dict[asyncio.Task[ToolOutcome], int] = {}
+        started: set[int] = set()
+        written = 0
+
+        def write() -> None:
+            nonlocal written
+            while written in outcomes:
+                session.append(outcomes[written].to_event())
+                written += 1
+
+        def finished(task: asyncio.Task[ToolOutcome]) -> None:
+            index = running.pop(task)
+            if not task.cancelled():
+                outcomes[index] = task.result()
+                write()
+
+        async def until_running(count: int) -> None:
+            while len(running) > count:
+                await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+
+        try:
+            for index, call in enumerate(calls):
+                pending = pendings[index] = self._begin(call)
+                await pending.authorize()
+                if pending.outcome is not None:
+                    outcomes[index] = pending.outcome
+                    write()
+                elif pending.concurrency_safe:
+                    await until_running(self._max_parallel - 1)
+                    await session.flush()
+                    started.add(index)
+                    task = asyncio.ensure_future(pending.execute())
+                    running[task] = index
+                    task.add_done_callback(finished)
+                else:
+                    await until_running(0)
+                    await session.flush()
+                    started.add(index)
+                    outcomes[index] = await pending.execute()
+                    write()
+            await until_running(0)
+        except asyncio.CancelledError:
+            stopping = list(running)
+            for task in stopping:
+                task.cancel()
+            if stopping:
+                await asyncio.wait(stopping)
+            for index, call in enumerate(calls):
+                if index in outcomes:
+                    continue
+                pending = pendings[index]
+                if pending is None:
+                    write()
+                    outcomes[index] = self._not_run(call)
+                elif index in started:
+                    outcomes[index] = pending.outcome or pending.fail("TOOL_CANCELLED", _CUT_SHORT)
+                else:
+                    outcomes[index] = pending.outcome or pending.fail(
+                        "ABORTED_BEFORE_DISPATCH", _NOT_RUN
+                    )
+            write()
+            raise
+        return any(outcome.concludes_turn for outcome in outcomes.values())

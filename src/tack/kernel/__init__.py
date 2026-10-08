@@ -20,6 +20,7 @@ from tack.kernel.errors import (
     InvalidPluginError,
     KernelError,
     LifecycleError,
+    RegistryConflictError,
     ServiceConflictError,
     ServiceNotInjectedError,
     ServiceUnavailableError,
@@ -47,6 +48,7 @@ from tack.kernel.fiber import (
     FiberStateChange,
 )
 from tack.kernel.plugin import Apply, ApplyResult, Plugin, resolve_plugin
+from tack.kernel.registry import Registry
 from tack.kernel.services import ServiceKey
 
 __all__ = [
@@ -79,6 +81,8 @@ __all__ = [
     "ParallelEvent",
     "ParallelListener",
     "Plugin",
+    "Registry",
+    "RegistryConflictError",
     "SerialEvent",
     "SerialListener",
     "ServiceConflictError",

@@ -18,6 +18,8 @@ EXPORTS = {
     "resolve_plugin",
     # Services
     "ServiceKey",
+    # Registries
+    "Registry",
     # Events
     "BailEvent",
     "BailListener",
@@ -49,6 +51,7 @@ EXPORTS = {
     "InvalidPluginError",
     "KernelError",
     "LifecycleError",
+    "RegistryConflictError",
     "ServiceConflictError",
     "ServiceNotInjectedError",
     "ServiceUnavailableError",

@@ -25,6 +25,10 @@ class ServiceNotInjectedError(KernelError):
     """A plugin used a service that it did not declare in ``inject``."""
 
 
+class RegistryConflictError(KernelError):
+    """An entry was added to a registry under a name that is taken."""
+
+
 class EventModeError(KernelError, TypeError):
     """An event was dispatched or subscribed in a way its kind does not allow."""
 

@@ -77,6 +77,7 @@ class Session:
     """
 
     __slots__ = (
+        "__weakref__",
         "_announcing",
         "_clock",
         "_closed",

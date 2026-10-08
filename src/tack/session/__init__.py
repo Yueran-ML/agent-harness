@@ -45,6 +45,7 @@ from tack.session.events import (
     UserMessageEvent,
 )
 from tack.session.log import SESSION_EVENT, Committed, Session, SessionStore, now_ms
+from tack.session.projection import TURN, USAGE, Projection, TurnState, UsageTotal
 from tack.session.repair import CloseReason, closing_events
 from tack.session.service import SESSIONS, Sessions
 from tack.session.store import SessionFile, StoredSession, read_session
@@ -55,6 +56,8 @@ __all__ = [
     "FORMAT_VERSION",
     "SESSIONS",
     "SESSION_EVENT",
+    "TURN",
+    "USAGE",
     "AssistantAttemptEvent",
     "AssistantMessageEvent",
     "CloseReason",
@@ -63,6 +66,7 @@ __all__ = [
     "EndSeedEvent",
     "EventData",
     "InvalidEventError",
+    "Projection",
     "RequestHeaderEvent",
     "Session",
     "SessionClosedError",
@@ -85,8 +89,10 @@ __all__ = [
     "TurnEndEvent",
     "TurnEndReason",
     "TurnStartEvent",
+    "TurnState",
     "UnknownEvent",
     "UnreadableSessionError",
+    "UsageTotal",
     "UserMessageEvent",
     "apply",
     "closing_events",

@@ -251,7 +251,11 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 ### 5.6 状态投影
 
-`ctx.session_projections.register(key, init, apply)` 注册一个纯同步的折叠单元。注册表订阅一次会话事件，把每条已提交事件喂给所有单元。不关心该事件的单元返回同一引用。inbox、待办、用量、重试计数都用它。
+`Projection(name, initial, apply)` 是一个纯同步的折叠单元。`apply(state, event)` 返回新状态，不改传入的状态，不关心该事件时返回同一引用。`projection.of(session)` 给出该会话当前的状态。状态在被读取时才计算，每条事件对每个会话只折叠一次，恢复出来的会话从第一条事件折起。
+
+会话包自带两个投影：`TURN` 给出回合号、步号和是否在回合中，`USAGE` 给出累计调用次数和 token 用量。inbox、待办、重试计数用同一种办法各自定义。
+
+面向前端的投影注册表放到第 10 阶段，和第一个需要它的前端一起做。
 
 ## 6. 模型接入
 

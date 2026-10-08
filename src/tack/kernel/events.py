@@ -96,9 +96,10 @@ _PLAIN_LISTENER_MODES = frozenset({"emit", "bail"})
 
 @dataclass(slots=True, eq=False)
 class Hook:
-    """One registered listener."""
+    """One registered listener, and the scope it was registered in, if any."""
 
     callback: Callable[..., Any]
+    scope_key: object | None = None
 
 
 class HookTable:
@@ -149,8 +150,14 @@ class HookTable:
         if not hooks:
             del self._hooks[event.name]
 
-    def select(self, event: Event, kind: type[Event]) -> tuple[Hook, ...]:
+    def select(
+        self, event: Event, kind: type[Event], scope_key: object | None = None
+    ) -> tuple[Hook, ...]:
         """Return the listeners one dispatch of ``event`` should reach.
+
+        A dispatch made outside every scope reaches all listeners. A dispatch
+        made in a scope reaches the listeners of that scope and those
+        registered outside every scope.
 
         The result is a snapshot: listeners added or removed while the dispatch
         runs do not change who it reaches.
@@ -161,7 +168,12 @@ class HookTable:
         if not isinstance(event, kind):
             raise EventModeError(f"{event!r} is dispatched with {event.mode}(), not {kind.mode}()")
         self.declare(event)
-        return tuple(self._hooks.get(event.name, ()))
+        hooks = self._hooks.get(event.name, ())
+        if scope_key is None:
+            return tuple(hooks)
+        return tuple(
+            hook for hook in hooks if hook.scope_key is None or hook.scope_key is scope_key
+        )
 
 
 def run_emit(hooks: Sequence[Hook], event: Event, payload: object) -> None:

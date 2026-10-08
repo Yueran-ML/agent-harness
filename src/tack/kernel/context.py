@@ -45,23 +45,53 @@ class Context:
 
     Everything registered through a context belongs to the fiber that owns the
     context and is undone when that fiber unloads. Calling ``Context()``
-    creates the root context of a new application.
+    creates the root context of a new application. The kernel is driven by
+    asyncio and must be used from within a running event loop.
+
+    Attributes:
+        fiber: The fiber that owns what is registered through this context.
+        scope_key: The object identifying the scope this context belongs to,
+            or ``None`` outside every scope.
     """
 
-    __slots__ = ("_kernel", "fiber")
+    __slots__ = ("_kernel", "fiber", "scope_key")
 
     def __init__(self) -> None:
         self._kernel = KernelState()
         self.fiber = Fiber(self._kernel, None)
         self.fiber.ctx = self
+        self.scope_key: object | None = None
 
     @classmethod
-    def _owned_by(cls, kernel: KernelState, fiber: Fiber) -> Context:
+    def _owned_by(cls, kernel: KernelState, fiber: Fiber, scope_key: object | None) -> Context:
         ctx = cls.__new__(cls)
         ctx._kernel = kernel
         ctx.fiber = fiber
+        ctx.scope_key = scope_key
         fiber.ctx = ctx
         return ctx
+
+    def scope(self, key: object) -> Context:
+        """Create a scope identified by ``key`` and return its context.
+
+        Listeners registered through the returned context, and by plugins
+        loaded through it, hear only the events dispatched in the same scope
+        and those dispatched outside every scope. Events dispatched through it
+        reach those listeners and the ones registered outside every scope. A
+        scope created inside another scope replaces the key.
+
+        The scope is disposed with the owning fiber, or earlier by disposing
+        the ``fiber`` of the returned context.
+
+        Raises:
+            InactiveEffectError: The owning fiber is not loaded.
+        """
+        parent = self.fiber
+        parent._require_loaded()
+        fiber = Fiber(self._kernel, parent)
+        scoped = Context._owned_by(self._kernel, fiber, key)
+        fiber._handle = parent.effect(lambda: fiber._dispose_owned)
+        return scoped
 
     def plugin(self, plugin: object, config: object = None) -> Fiber:
         """Load ``plugin`` as a child of the owning fiber.
@@ -85,7 +115,7 @@ class Context:
         parent = self.fiber
         parent._require_loaded()
         fiber = Fiber(self._kernel, parent, spec, config)
-        Context._owned_by(self._kernel, fiber)
+        Context._owned_by(self._kernel, fiber, self.scope_key)
         fiber._handle = parent.effect(lambda: fiber._dispose_owned)
         self._kernel.fibers[fiber.uid] = fiber
         fiber._refresh()
@@ -230,7 +260,7 @@ class Context:
             InactiveEffectError: The owning fiber is not loaded.
         """
         hooks = self._kernel.hooks
-        hook = Hook(listener)
+        hook = Hook(listener, self.scope_key)
 
         def setup() -> Disposer:
             hooks.add(event, hook, prepend=prepend)
@@ -238,26 +268,29 @@ class Context:
 
         return self.effect(setup)
 
+    def _select(self, event: Event, kind: type[Event]) -> tuple[Hook, ...]:
+        return self._kernel.hooks.select(event, kind, self.scope_key)
+
     def emit(self, event: EmitEvent[PayloadT], payload: PayloadT) -> None:
         """Notify every listener of ``event``.
 
         A listener that raises is logged and does not stop the others.
         """
-        run_emit(self._kernel.hooks.select(event, EmitEvent), event, payload)
+        run_emit(self._select(event, EmitEvent), event, payload)
 
     def bail(self, event: BailEvent[PayloadT, ResultT], payload: PayloadT) -> ResultT | None:
         """Ask each listener in turn and return the first answer that is not ``None``.
 
         A listener that raises stops the dispatch and the error reaches the caller.
         """
-        return run_bail(self._kernel.hooks.select(event, BailEvent), payload)
+        return run_bail(self._select(event, BailEvent), payload)
 
     async def parallel(self, event: ParallelEvent[PayloadT], payload: PayloadT) -> None:
         """Run every listener of ``event`` concurrently and wait for all of them.
 
         A listener that raises is logged and does not stop the others.
         """
-        await run_parallel(self._kernel.hooks.select(event, ParallelEvent), event, payload)
+        await run_parallel(self._select(event, ParallelEvent), event, payload)
 
     async def serial(
         self, event: SerialEvent[PayloadT, ResultT], payload: PayloadT
@@ -266,7 +299,7 @@ class Context:
 
         A listener that raises stops the dispatch and the error reaches the caller.
         """
-        return await run_serial(self._kernel.hooks.select(event, SerialEvent), payload)
+        return await run_serial(self._select(event, SerialEvent), payload)
 
     async def waterfall(
         self,
@@ -281,5 +314,4 @@ class Context:
         different payload on, call ``next`` again to retry, or return without
         calling it to short-circuit. Errors reach the caller.
         """
-        hooks = self._kernel.hooks.select(event, WaterfallEvent)
-        return await run_waterfall(hooks, payload, final)
+        return await run_waterfall(self._select(event, WaterfallEvent), payload, final)

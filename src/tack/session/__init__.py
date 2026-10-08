@@ -1,6 +1,22 @@
 """The session log: typed events, appended once and never changed."""
 
-from tack.session.errors import InvalidEventError, SessionClosedError, SessionError
+from tack.session.codec import (
+    FORMAT_VERSION,
+    SessionHeader,
+    UnknownEvent,
+    decode_event,
+    decode_header,
+    encode_event,
+    encode_header,
+)
+from tack.session.errors import (
+    InvalidEventError,
+    SessionClosedError,
+    SessionError,
+    SessionLockedError,
+    SessionStoreError,
+    UnreadableSessionError,
+)
 from tack.session.events import (
     CORE_EVENTS,
     AssistantAttemptEvent,
@@ -25,6 +41,7 @@ from tack.session.surface import Surface
 
 __all__ = [
     "CORE_EVENTS",
+    "FORMAT_VERSION",
     "SESSION_EVENT",
     "AssistantAttemptEvent",
     "AssistantMessageEvent",
@@ -37,6 +54,9 @@ __all__ = [
     "SessionClosedError",
     "SessionError",
     "SessionEvent",
+    "SessionHeader",
+    "SessionLockedError",
+    "SessionStoreError",
     "StepEndEvent",
     "StepStartEvent",
     "Surface",
@@ -47,6 +67,12 @@ __all__ = [
     "TurnEndEvent",
     "TurnEndReason",
     "TurnStartEvent",
+    "UnknownEvent",
+    "UnreadableSessionError",
     "UserMessageEvent",
+    "decode_event",
+    "decode_header",
+    "encode_event",
+    "encode_header",
     "now_ms",
 ]

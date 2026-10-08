@@ -269,6 +269,7 @@ async def play(scenario: Scenario) -> None:
     await run.finish()
 
 
+@pytest.mark.timeout(120)
 @settings(max_examples=300, deadline=None)
 @given(scenarios())
 def test_plugins_are_active_exactly_when_their_services_are(scenario: Scenario) -> None:

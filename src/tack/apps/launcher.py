@@ -1,0 +1,187 @@
+"""The command line of Tack.
+
+``tack run TASK`` builds the program from layers, which are lists of plugin
+entries: first the profile, then the patch of the user, then the patches named
+on the command line, and last what the command line itself asks for. The
+entry called ``frontend`` provides what is then run.
+"""
+
+import argparse
+import asyncio
+import contextlib
+import logging
+import os
+import sys
+from collections.abc import Mapping, Sequence
+from importlib import resources
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+import tack
+from tack.apps import FRONTEND
+from tack.kernel import CompositionError, Context, Entry, Layer, flatten, mount, parse_layer
+
+__all__ = ["main"]
+
+_FRONTEND = "frontend"
+_INTERRUPTED = 130
+
+
+class _UsageError(Exception):
+    """The command line asks for something that cannot be done."""
+
+
+def _bundles() -> list[str]:
+    """Return the names of the profiles that come with Tack."""
+    files = resources.files("tack.bundles").iterdir()
+    return sorted(file.name.removesuffix(".yml") for file in files if file.name.endswith(".yml"))
+
+
+def _bundle(name: str) -> Layer:
+    """Return the profile that comes with Tack under ``name``."""
+    if name not in _bundles():
+        raise KeyError(name)
+    text = resources.files("tack.bundles").joinpath(f"{name}.yml").read_text(encoding="utf-8")
+    return parse_layer(text, source=f"profile {name}")
+
+
+def _file_layer(path: Path) -> Layer:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise _UsageError(f"{path} cannot be read: {error.strerror}") from error
+    return parse_layer(text, source=str(path))
+
+
+def _profile(name: str) -> Layer:
+    """Return the first layer: a file if ``name`` is the path of one, or else a named profile."""
+    path = Path(name)
+    if path.is_file():
+        return _file_layer(path)
+    try:
+        return _bundle(name)
+    except KeyError:
+        known = ", ".join(_bundles())
+        raise _UsageError(
+            f"there is no profile {name!r}. The profiles that come with Tack are: {known}"
+        ) from None
+
+
+def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
+    """Work out the plugin entries that the command line asks for."""
+    layers = [_profile(args.profile)]
+    mine = home / "config.yml"
+    if mine.is_file():
+        layers.append(_file_layer(mine))
+    layers.extend(_file_layer(Path(patch)) for patch in args.patch)
+    entries = flatten(layers, lookup=_bundle)
+    for position, entry in enumerate(entries):
+        if entry.id == _FRONTEND:
+            config: dict[str, Any] = dict(entry.config or {})
+            config.update(
+                task=args.task,
+                cwd=str(Path(args.cwd).resolve()),
+                json_lines=args.json,
+                session_id=args.session_id,
+            )
+            if args.model is not None:
+                config["model"] = {**config.get("model", {}), "model": args.model}
+            entries[position] = entry.model_copy(update={"config": config})
+            return entries
+    raise _UsageError(
+        f"the profile has no entry {_FRONTEND!r}, so there is nothing to run the task"
+    )
+
+
+def _dump(entries: Sequence[Entry]) -> str:
+    """Return the entries as YAML, with the references to the environment as they were written."""
+    plain = [
+        entry.model_dump(exclude_defaults=True) | {"id": entry.id, "plugin": entry.plugin}
+        for entry in entries
+    ]
+    ordered = [
+        {key: item[key] for key in ("id", "plugin", "config", "disabled") if key in item}
+        for item in plain
+    ]
+    return yaml.safe_dump(ordered, sort_keys=False, allow_unicode=True)
+
+
+async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
+    """Load the entries, run the frontend, and unload everything again."""
+    root = Context()
+    try:
+        composition = mount(root, entries, env=env)
+        await root.settled()
+        problems = composition.problems()
+        if problems:
+            for problem in problems:
+                print(f"tack: {problem}", file=sys.stderr)
+            return 2
+        return await root.use(FRONTEND).run()
+    finally:
+        await root.fiber.dispose()
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="tack", description="A plugin-based agent harness.")
+    parser.add_argument("--version", action="version", version=f"tack {tack.__version__}")
+    commands = parser.add_subparsers(dest="command", metavar="COMMAND")
+    run = commands.add_parser("run", help="run one task and print the answer")
+    run.add_argument("task", metavar="TASK", help="what the agent is asked to do")
+    run.add_argument(
+        "--profile",
+        default="headless",
+        metavar="NAME",
+        help="the profile to load: a name that comes with Tack, or the path of a file",
+    )
+    run.add_argument(
+        "--patch",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="a file of changes to the profile; may be given several times",
+    )
+    run.add_argument("--model", metavar="ID", help="the model to use")
+    run.add_argument("--cwd", default=".", metavar="DIR", help="the working directory of the agent")
+    run.add_argument("--session-id", metavar="ID", help="the session to start or to continue")
+    run.add_argument("--json", action="store_true", help="report the run as lines of JSON")
+    run.add_argument(
+        "--dump-config",
+        action="store_true",
+        help="print the plugin entries that would be loaded, and stop",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the command line and return the exit code of the program."""
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_usage(sys.stderr)
+        return 2
+    for stream in (sys.stdout, sys.stderr):
+        # Text goes out as UTF-8 also where the system would choose something else.
+        with contextlib.suppress(AttributeError, ValueError):
+            stream.reconfigure(encoding="utf-8", errors="replace")  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+    env = dict(os.environ)
+    env.setdefault("TACK_HOME", str(Path.home() / ".tack"))
+    log = logging.getLogger("tack")
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter("tack: %(message)s"))
+    log.addHandler(handler)
+    try:
+        entries = _entries(args, Path(env["TACK_HOME"]))
+        if args.dump_config:
+            sys.stdout.write(_dump(entries))
+            return 0
+        return asyncio.run(_run(entries, env))
+    except (_UsageError, CompositionError) as error:
+        print(f"tack: {error}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return _INTERRUPTED
+    finally:
+        log.removeHandler(handler)

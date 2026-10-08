@@ -1,0 +1,13 @@
+# What `tack run` loads: the minimal program, retries for requests that fail
+# for a passing reason, and the frontend that runs one task.
+extends: minimal
+patch:
+  - insert:
+      - id: retry
+        plugin: tack.retry
+      - id: frontend
+        plugin: tack.apps.headless
+        config:
+          model:
+            provider: deepseek
+            model: ${TACK_MODEL:-deepseek-chat}

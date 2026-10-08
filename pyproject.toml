@@ -27,6 +27,9 @@ dependencies = [
   "pyyaml>=6.0.2",
 ]
 
+[project.scripts]
+tack = "tack.apps.launcher:main"
+
 [project.urls]
 Repository = "https://github.com/Yueran-ML/agent-harness"
 
@@ -107,6 +110,7 @@ filterwarnings = ["error"]
 [tool.coverage.run]
 branch = true
 source_pkgs = ["tack"]
+omit = ["*/tack/__main__.py"]  # two lines, run by a test in a process of its own
 
 [tool.coverage.report]
 fail_under = 90

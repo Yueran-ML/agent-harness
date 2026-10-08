@@ -1,0 +1,26 @@
+# The smallest program that can run a task: a session log, a model, the tool
+# pipeline with one tool that only reads, and the loop.
+- insert:
+    - id: session
+      plugin: tack.session
+      config:
+        root: ${TACK_HOME}/sessions
+    - id: llm
+      plugin: tack.llm
+    - id: model
+      plugin: tack.llm.adapters.openai_chat
+      config:
+        provider: deepseek
+        base_url: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+        api_key_env: DEEPSEEK_API_KEY
+        reasoning_style: deepseek
+    - id: tools
+      plugin: tack.tools
+      config:
+        timeout_seconds: 120
+    - id: tool-read
+      plugin: tack.builtin_tools.read
+    - id: agent
+      plugin: tack.agent
+    - id: agent-loop
+      plugin: tack.agent_loop

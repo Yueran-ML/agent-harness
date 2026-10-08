@@ -149,8 +149,17 @@ def test_only_the_first_layer_may_extend() -> None:
 def test_a_layer_cannot_extend_itself_through_others() -> None:
     known = layers(one="extends: two", two="extends: one")
 
-    with pytest.raises(CompositionError, match="one -> two -> one"):
+    with pytest.raises(CompositionError, match="two -> one -> two"):
         flatten([known["one"]], known.__getitem__)
+
+
+def test_the_source_of_a_layer_is_not_mistaken_for_a_layer_name() -> None:
+    base = parse_layer("- insert: [{id: x, plugin: demo.x}]", source="actual-base.yml")
+    child = parse_layer("extends: base", source="base")
+
+    entries = flatten([child], {"base": base}.__getitem__)
+
+    assert [entry.id for entry in entries] == ["x"]
 
 
 def test_extending_an_unknown_layer_is_an_error() -> None:
@@ -172,6 +181,8 @@ def test_extending_an_unknown_layer_is_an_error() -> None:
         ("- {insert: [], id: llm}", "id"),
         ("- insert: [{id: llm}]", "plugin"),
         ("- {disabled: true}", "id"),
+        ("- {id: llm, plugin: null}", "leave it out"),
+        ("- {id: llm, disabled: null}", "leave it out"),
         ("extends: base\nextra: 1", "extra"),
     ],
 )
@@ -216,3 +227,24 @@ def test_interpolate_keeps_an_escaped_dollar_sign() -> None:
 def test_interpolate_names_the_missing_variable() -> None:
     with pytest.raises(CompositionError, match="environment variable 'MODEL' is not set"):
         interpolate({"model": "${MODEL}"}, {})
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "${}",
+        "${1X}",
+        "${ NAME }",
+        "${NAME",
+        "${NAME:-{}}",
+        "${NAME:-$$5}",
+        "${NAME:-${OTHER}}",
+    ],
+)
+def test_interpolate_rejects_a_reference_it_cannot_read(text: str) -> None:
+    with pytest.raises(CompositionError, match="reference"):
+        interpolate(text, {"NAME": "value", "OTHER": "other"})
+
+
+def test_interpolate_leaves_a_lone_dollar_sign_alone() -> None:
+    assert interpolate("costs $5 or 5$", {}) == "costs $5 or 5$"

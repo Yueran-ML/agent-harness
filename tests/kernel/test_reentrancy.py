@@ -263,3 +263,114 @@ async def test_disposing_a_dependent_that_disposes_its_provider_does_not_hang() 
     assert dependent_fiber.state is FiberState.DISPOSED
     assert provider_fiber.state is FiberState.DISPOSED
     await ctx.fiber.dispose()
+
+
+async def a_few_turns() -> None:
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+
+async def test_a_disposer_that_disposes_its_fiber_and_carries_on_does_not_stall_the_loop() -> None:
+    ctx = Context()
+    log: list[str] = []
+
+    async def undo() -> None:
+        await ctx.fiber.dispose()
+        await asyncio.sleep(0)
+        log.append("undone")
+
+    handle = ctx.effect(lambda: undo)
+
+    await asyncio.wait_for(handle.dispose(), timeout=1)
+    await asyncio.wait_for(ctx.fiber.dispose(), timeout=1)
+
+    assert log == ["undone"]
+    assert ctx.fiber.state is FiberState.DISPOSED
+
+
+async def test_a_provider_waits_for_a_dependent_that_disposed_it_while_loading() -> None:
+    ctx = Context()
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    log: list[str] = []
+
+    def provider(inner: Context, config: object) -> Disposer:
+        inner.provide(CLOCK, 1)
+        return lambda: log.append("provider cleaned up")
+
+    provider_fiber = await ctx.plugin(Plugin("provider", provider))
+
+    async def dependent(inner: Context, config: object) -> Disposer:
+        inner.use(CLOCK)
+        await provider_fiber.dispose()
+        entered.set()
+        await gate.wait()
+        return lambda: log.append("dependent cleaned up")
+
+    ctx.plugin(Plugin("dependent", dependent, inject=(CLOCK,)))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    await a_few_turns()
+    try:
+        assert log == []
+    finally:
+        gate.set()
+    await asyncio.wait_for(ctx.settled(), timeout=1)
+
+    assert log == ["dependent cleaned up", "provider cleaned up"]
+    await ctx.fiber.dispose()
+
+
+async def test_a_task_started_by_a_disposer_waits_normally_once_the_disposer_has_returned() -> None:
+    ctx = Context()
+    release = asyncio.Event()
+    log: list[str] = []
+    tasks: list[asyncio.Future[None]] = []
+
+    async def older() -> None:
+        await release.wait()
+        log.append("older")
+
+    async def after() -> None:
+        await ctx.fiber.dispose()
+        log.append(f"after returned while {ctx.fiber.state.value}")
+
+    async def undo() -> None:
+        tasks.append(asyncio.ensure_future(after()))
+
+    ctx.effect(lambda: older)
+    handle = ctx.effect(lambda: undo)
+
+    await handle.dispose()
+    await a_few_turns()
+    try:
+        assert log == []
+    finally:
+        release.set()
+    await asyncio.wait_for(tasks[0], timeout=1)
+
+    assert log == ["older", "after returned while disposed"]
+
+
+async def test_a_dependent_may_withdraw_the_service_it_injects_from_its_own_disposer() -> None:
+    ctx = Context()
+    log: list[str] = []
+    handle = ctx.provide(CLOCK, 1)
+
+    def apply(inner: Context, config: object) -> Disposer:
+        async def undo() -> None:
+            await handle.dispose()
+            log.append("undone")
+
+        return undo
+
+    fiber = await ctx.plugin(Plugin("dependent", apply, inject=(CLOCK,)))
+
+    await asyncio.wait_for(fiber.dispose(), timeout=1)
+    await asyncio.wait_for(ctx.settled(), timeout=1)
+
+    assert log == ["undone"]
+    assert fiber.state is FiberState.DISPOSED
+    assert ctx.get(CLOCK) is None
+    await asyncio.wait_for(handle.dispose(), timeout=1)
+    assert handle.disposed
+    await ctx.fiber.dispose()

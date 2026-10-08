@@ -26,7 +26,15 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Annotated, Any, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Discriminator, PrivateAttr, Tag, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    PrivateAttr,
+    Tag,
+    ValidationError,
+    model_validator,
+)
 
 from tack.kernel.context import Context
 from tack.kernel.errors import CompositionError, InvalidPluginError
@@ -75,6 +83,13 @@ class Change(BaseModel):
     plugin: str | None = None
     config: Any = None
     disabled: bool | None = None
+
+    @model_validator(mode="after")
+    def _only_config_may_be_null(self) -> Change:
+        for name in ("plugin", "disabled"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} cannot be null; leave it out to keep what the entry has")
+        return self
 
 
 def _kind_of(operation: object) -> str:
@@ -169,15 +184,16 @@ def flatten(layers: Sequence[Layer], lookup: Callable[[str], Layer] | None = Non
 def _ancestors(layer: Layer, lookup: Callable[[str], Layer] | None) -> list[Layer]:
     """Return the layers that ``layer`` extends, nearest first."""
     ancestors: list[Layer] = []
-    names = [layer.source]
+    visited: list[str] = []
     current = layer
     while current.extends is not None:
         name = current.extends
-        names.append(name)
-        if name in names[:-1]:
+        if name in visited:
+            circle = " -> ".join([*visited[visited.index(name) :], name])
             raise CompositionError(
-                f"{layer.source}: the layers extend one another in a circle: {' -> '.join(names)}"
+                f"{layer.source}: the layers extend one another in a circle: {circle}"
             )
+        visited.append(name)
         try:
             if lookup is None:
                 raise KeyError(name)
@@ -204,18 +220,17 @@ def _apply(entries: list[Entry], layer: Layer) -> list[Entry]:
         position = positions.get(operation.id)
         if position is None:
             raise CompositionError(f"{layer.source}: there is no entry {operation.id!r} to change")
-        changes: dict[str, Any] = {}
-        if "config" in operation.model_fields_set:
-            changes["config"] = operation.config
-        if operation.plugin is not None:
-            changes["plugin"] = operation.plugin
-        if operation.disabled is not None:
-            changes["disabled"] = operation.disabled
+        changes = {name: getattr(operation, name) for name in operation.model_fields_set}
+        del changes["id"]
         result[position] = result[position].model_copy(update=changes)
     return result
 
 
-_REFERENCE = re.compile(r"\$\$|\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}")
+_REFERENCE = re.compile(
+    r"\$\$"
+    r"|\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^{}$]*))?\}"
+    r"|(?P<malformed>\$\{)"
+)
 
 
 def interpolate(value: Any, env: Mapping[str, str]) -> Any:
@@ -223,15 +238,23 @@ def interpolate(value: Any, env: Mapping[str, str]) -> Any:
 
     ``${NAME}`` becomes the value of the variable, ``${NAME:-default}`` falls
     back to the default when the variable is not set, and ``$$`` is a literal
-    dollar sign. Mappings and lists are searched all the way down. Everything
+    dollar sign. A default is taken as written and cannot contain braces or
+    dollar signs. Mappings and lists are searched all the way down. Everything
     that is not a string is returned unchanged.
 
     Raises:
-        CompositionError: A variable is not set and has no default.
+        CompositionError: A variable is not set and has no default, or a
+            ``${`` does not start a reference of one of these forms.
     """
     if isinstance(value, str):
 
         def fill(match: re.Match[str]) -> str:
+            if match["malformed"] is not None:
+                raise CompositionError(
+                    f"cannot read the variable reference in {value!r}: write ${{NAME}} or "
+                    "${NAME:-default}, without braces or dollar signs in the default, "
+                    "and $$ for a dollar sign"
+                )
             name = match["name"]
             if name is None:
                 return "$"
@@ -262,11 +285,18 @@ def import_plugin(path: str) -> Plugin[Any]:
         CompositionError: The module cannot be imported, the attribute does not
             exist, or what was found is not a plugin.
     """
-    module_name, _, attribute = path.partition(":")
+    module_name, colon, attribute = path.partition(":")
+    if not module_name or module_name.startswith(".") or (colon and not attribute):
+        raise CompositionError(
+            f"{path!r} is not an import path: write 'package.module' or 'package.module:attribute'"
+        )
     try:
         target: object = importlib.import_module(module_name)
-    except ImportError as error:
-        raise CompositionError(f"cannot import {module_name!r}: {error}") from error
+    except Exception as error:
+        # Importing runs the module, which may raise anything.
+        raise CompositionError(
+            f"cannot import {module_name!r}: {type(error).__name__}: {error}"
+        ) from error
     if attribute:
         if not hasattr(target, attribute):
             raise CompositionError(f"module {module_name!r} has no attribute {attribute!r}")
@@ -300,17 +330,18 @@ class Composition:
         problems: list[str] = []
         for entry_id, fiber in self.fibers.items():
             label = f"{entry_id} ({self._entries[entry_id].plugin})"
+            state = fiber.state
             missing = [repr(key.name) for key in fiber.missing]
-            if fiber.state is FiberState.ACTIVE:
+            if state is FiberState.ACTIVE:
                 continue
-            if fiber.state is FiberState.FAILED:
+            if state is FiberState.FAILED:
                 error = fiber.error
                 problems.append(f"{label} failed: {type(error).__name__}: {error}")
-            elif missing:
+            elif state is FiberState.PENDING and missing:
                 noun = "service" if len(missing) == 1 else "services"
                 problems.append(f"{label} is waiting for the {noun} {', '.join(missing)}")
             else:
-                problems.append(f"{label} is {fiber.state.value}")
+                problems.append(f"{label} is {state.value}")
         return problems
 
 

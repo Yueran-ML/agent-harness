@@ -3,7 +3,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from tack.kernel import (
     Context,
@@ -334,3 +334,20 @@ def test_pyright_rejects_a_config_model_that_apply_does_not_accept() -> None:
     plugin = Plugin("mismatched", apply, config=Other)  # pyright: ignore[reportArgumentType]
 
     assert plugin.config is Other
+
+
+async def test_a_config_validator_that_raises_anything_fails_the_fiber(ctx: Context) -> None:
+    class Fussy(BaseModel):
+        number: int
+
+        @field_validator("number", mode="before")
+        @classmethod
+        def reject(cls, value: object) -> object:
+            raise TypeError(f"cannot read {value!r}")
+
+    fiber = ctx.plugin(Plugin("fussy", nothing, config=Fussy), {"number": "many"})
+
+    assert fiber.state is FiberState.FAILED
+    assert isinstance(fiber.error, TypeError)
+    with pytest.raises(TypeError, match="cannot read 'many'"):
+        await fiber

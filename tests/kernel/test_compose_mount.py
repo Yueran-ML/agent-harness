@@ -127,6 +127,11 @@ def test_import_plugin_accepts_a_module_or_an_attribute() -> None:
         ("compose_demo.extras:nowhere", "has no attribute 'nowhere'"),
         ("compose_demo.extras:not_a_plugin", "is not a plugin"),
         ("compose_demo.keys", "is not a plugin"),
+        ("compose_demo.explodes", "cannot import 'compose_demo.explodes': RuntimeError"),
+        ("", "is not an import path"),
+        (":apply", "is not an import path"),
+        (".relative", "is not an import path"),
+        ("compose_demo.clock:", "is not an import path"),
     ],
 )
 def test_import_plugin_explains_what_it_could_not_use(path: str, complaint: str) -> None:
@@ -149,4 +154,27 @@ async def test_problems_list_every_missing_service(ctx: Context) -> None:
 
     assert composition.problems() == [
         "needy (compose_demo.extras:needy) is waiting for the services 'clock', 'store'"
+    ]
+
+
+async def test_problems_report_a_disposed_entry_even_if_it_injects_services(ctx: Context) -> None:
+    composition = mount(ctx, [Entry(id="needy", plugin="compose_demo.extras:needy")])
+    await ctx.settled()
+
+    await composition.fibers["needy"].dispose()
+
+    assert composition.problems() == ["needy (compose_demo.extras:needy) is disposed"]
+
+
+async def test_a_config_that_cannot_be_validated_does_not_stop_the_other_entries(
+    ctx: Context,
+) -> None:
+    fussy = Entry(id="fussy", plugin="compose_demo.extras:fussy", config={"number": "many"})
+
+    composition = mount(ctx, [CLOCK, fussy])
+    await ctx.settled()
+
+    assert composition.fibers["clock"].state is FiberState.ACTIVE
+    assert composition.problems() == [
+        "fussy (compose_demo.extras:fussy) failed: TypeError: cannot read 'many'"
     ]

@@ -364,3 +364,30 @@ async def test_a_cleanup_cancelled_before_it_ran_is_run_for_the_next_waiter(ctx:
     assert handle.disposed
     assert log == ["dependent cleaned"]
     ctx.provide(CLOCK, 2)
+
+
+async def test_a_cleanup_cancelled_after_it_started_is_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ctx = Context()
+    started = asyncio.Event()
+
+    async def undo() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    handle = ctx.effect(lambda: undo)
+    waiter = asyncio.ensure_future(handle.dispose())
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    name = f"tack-effect-{ctx.fiber.uid}"
+    next(task for task in asyncio.all_tasks() if task.get_name() == name).cancel()
+    with (
+        caplog.at_level(logging.ERROR, logger="tack.kernel"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await waiter
+
+    assert "was cancelled before it finished" in caplog.text
+    assert handle.disposed
+    await asyncio.wait_for(ctx.fiber.dispose(), timeout=1)

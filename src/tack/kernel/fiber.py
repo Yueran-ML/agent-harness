@@ -8,7 +8,9 @@ Loads, unloads and asynchronous cleanups run in tasks that belong to the
 kernel. Cancelling a caller that waits for one of them never interrupts it. If
 one of those tasks is itself cancelled, as ``asyncio.run`` does on exit to
 whatever is still running, the fiber keeps a truthful state, and the next
-caller that waits for it resumes the interrupted work.
+caller that waits for it resumes the interrupted work. One thing cannot be
+resumed: a cleanup that had already started when its task was cancelled. It is
+reported in the log and counts as done.
 """
 
 # Fibers, effect handles and the shared kernel state reach into one another.
@@ -25,8 +27,6 @@ import logging
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypeAlias
-
-from pydantic import ValidationError
 
 from tack.kernel.errors import InactiveEffectError, InvalidPluginError, KernelError
 from tack.kernel.events import EmitEvent, HookTable, run_emit
@@ -56,14 +56,20 @@ def _being_cancelled() -> bool:
 
 
 def _spawn(
-    coroutine: Coroutine[Any, Any, None], name: str, context: contextvars.Context | None = None
+    coroutine: Coroutine[Any, Any, None], name: str, mark: Lifecycle | None = None
 ) -> asyncio.Task[None]:
     """Start a task that belongs to the kernel.
+
+    The task runs under ``mark``, or under no lifecycle mark when none is
+    given. It must not inherit the mark of whatever code happened to start it:
+    a driver started from inside a disposer is not part of that disposer.
 
     The task is created directly instead of through the loop's task factory,
     so it never starts to run before this function returns. The kernel records
     each task right after creating it and relies on that order.
     """
+    context = contextvars.copy_context()
+    context.run(_lifecycle.set, mark)
     return asyncio.Task(coroutine, loop=asyncio.get_running_loop(), name=name, context=context)
 
 
@@ -183,6 +189,12 @@ class KernelState:
         caller = self.lifecycle_fiber()
         return caller is not None and self.waits_for(target, caller)
 
+    def withdrawal_waits_for(self, key: ServiceKey[Any], caller: Fiber) -> bool:
+        """Return whether withdrawing ``key`` cannot finish before ``caller`` has settled."""
+        return any(
+            fiber.injects(key) and self.waits_for(fiber, caller) for fiber in self.fibers.values()
+        )
+
     def lookup(self, key: ServiceKey[Any], viewer: Fiber) -> Provision | None:
         """Return the provision of ``key`` if ``viewer`` can see it.
 
@@ -278,11 +290,26 @@ class EffectHandle:
     cleanup.
     """
 
-    __slots__ = ("_awaitable", "_disposer", "_done", "_entered", "_fiber", "_mark", "_pending")
+    __slots__ = (
+        "_awaitable",
+        "_disposer",
+        "_done",
+        "_entered",
+        "_fiber",
+        "_mark",
+        "_pending",
+        "_waits_for",
+    )
 
-    def __init__(self, fiber: Fiber, disposer: Disposer | None) -> None:
+    def __init__(
+        self,
+        fiber: Fiber,
+        disposer: Disposer | None,
+        waits_for: Callable[[Fiber], bool] | None = None,
+    ) -> None:
         self._fiber = fiber
         self._disposer = disposer
+        self._waits_for = waits_for
         self._mark = Lifecycle(fiber)
         self._awaitable: Awaitable[None] | None = None
         self._pending: asyncio.Task[None] | None = None
@@ -299,20 +326,38 @@ class EffectHandle:
 
         Only the first call runs the disposer. A caller that waits for it
         receives the error it raises, if any. A call made after it has finished
-        returns at once. So does a call made by the disposer itself, or by a
-        task the disposer started, while it runs.
+        returns at once.
+
+        An ``apply`` or a disposer that this cleanup itself waits for cannot
+        wait for it in turn. Called from such code, this starts the cleanup and
+        returns. That is the case for the disposer itself, and for the code of
+        a plugin whose unloading the cleanup waits for: withdrawing a service
+        waits for the plugins that inject it.
         """
         self._begin()
-        pending = self._pending
-        if pending is None or _lifecycle.get() is self._mark:
-            return
-        if pending.done():
-            if self._entered:
-                self._finish()
-                return
-            # Cancelled before its first step: the cleanup has yet to run.
-            pending = self._start()
-        await asyncio.shield(pending)
+        if not self._caller_is_waited_for():
+            await self._join()
+
+    def _caller_is_waited_for(self) -> bool:
+        mark = _lifecycle.get()
+        if mark is None or not mark.running:
+            return False
+        if mark is self._mark:
+            return True
+        return self._waits_for is not None and self._waits_for(mark.fiber)
+
+    async def _join(self) -> None:
+        """Wait until the effect is undone, whoever is asking."""
+        while not self._done:
+            pending = self._pending
+            assert pending is not None
+            if pending.done():
+                if self._entered:
+                    self._finish()
+                    return
+                # Cancelled before its first step: the cleanup has yet to run.
+                pending = self._start()
+            await asyncio.shield(pending)
 
     def _begin(self) -> None:
         """Start undoing the effect without waiting for it."""
@@ -336,20 +381,26 @@ class EffectHandle:
     def _start(self) -> asyncio.Task[None]:
         awaitable = self._awaitable
         assert awaitable is not None
-        context = contextvars.copy_context()
-        context.run(_lifecycle.set, self._mark)
-        task = _spawn(self._run(awaitable), f"tack-effect-{self._fiber.uid}", context)
+        task = _spawn(self._run(awaitable), f"tack-effect-{self._fiber.uid}", self._mark)
         self._pending = task
         task.add_done_callback(self._settle)
         return task
 
     async def _run(self, awaitable: Awaitable[None]) -> None:
         self._entered = True
-        await awaitable
+        try:
+            await awaitable
+        finally:
+            # A task the disposer started must be ordinary code from here on,
+            # even if it runs before this task is seen to have finished.
+            self._mark.running = False
 
     def _settle(self, task: asyncio.Task[None]) -> None:
-        if self._entered:
-            self._finish()
+        if not self._entered:
+            return
+        if task.cancelled():
+            logger.error("a cleanup of %r was cancelled before it finished", self._fiber.name)
+        self._finish()
 
     def _finish(self) -> None:
         if self._done:
@@ -430,7 +481,8 @@ class Fiber:
         elif plugin.config is not None:
             try:
                 self.config = plugin.config.model_validate({} if config is None else config)
-            except ValidationError as error:
+            except Exception as error:
+                # Usually a ValidationError, but a validator may raise anything.
                 logger.error("plugin %r has an invalid config: %s", plugin.name, error)
                 self.error = error
                 self._broken = True
@@ -466,14 +518,24 @@ class Fiber:
     def __await__(self) -> Generator[Any, None, Fiber]:
         return self._ready().__await__()
 
-    def effect(self, setup: Callable[[], Disposer | None]) -> EffectHandle:
+    def effect(
+        self,
+        setup: Callable[[], Disposer | None],
+        *,
+        waits_for: Callable[[Fiber], bool] | None = None,
+    ) -> EffectHandle:
         """Run ``setup`` now and keep the disposer it returns.
+
+        Args:
+            setup: Performs a registration and returns what undoes it.
+            waits_for: For the kernel's own effects: tells whether undoing
+                this one waits for a given fiber to settle.
 
         Raises:
             InactiveEffectError: The fiber is not loaded. ``setup`` is not run.
         """
         self._require_loaded()
-        handle = EffectHandle(self, setup())
+        handle = EffectHandle(self, setup(), waits_for)
         self._effects.append(handle)
         return handle
 
@@ -490,14 +552,10 @@ class Fiber:
         """
         self._retire()
         handle = self._handle
-        if self._kernel.would_wait_for_itself(self):
-            if handle is not None:
-                handle._begin()
-            return
-        if handle is None:
-            await self._until_disposed()
-        else:
+        if handle is not None:
             await handle.dispose()
+        elif not self._kernel.would_wait_for_itself(self):
+            await self._until_disposed()
 
     async def settled(self) -> None:
         """Wait until this fiber has no loading or unloading left to do.
@@ -661,12 +719,16 @@ class Fiber:
 
     async def _undo_effects(self) -> None:
         while self._effects:
+            handle = self._effects[-1]
             try:
-                await self._effects[-1].dispose()
+                handle._begin()
+                await handle._join()
             except asyncio.CancelledError:
                 if _being_cancelled():
                     raise
-                logger.error("an effect of %r was cancelled while cleaning up", self.name)
+                if handle._pending is None:
+                    # A task reports its own cancellation when it settles.
+                    logger.error("a cleanup of %r was cancelled before it finished", self.name)
             except Exception:
                 logger.exception("an effect of %r failed to clean up", self.name)
 

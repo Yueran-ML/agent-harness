@@ -91,8 +91,16 @@ class Context:
         parent._require_loaded()
         fiber = Fiber(self._kernel, parent)
         scoped = Context._owned_by(self._kernel, fiber, key)
-        fiber._handle = parent.effect(lambda: fiber._until_disposed)
+        self._own(fiber)
         return scoped
+
+    def _own(self, child: Fiber) -> None:
+        """Make the owning fiber dispose ``child`` when it unloads."""
+        kernel = self._kernel
+        child._handle = self.fiber.effect(
+            lambda: child._until_disposed,
+            waits_for=lambda caller: kernel.waits_for(child, caller),
+        )
 
     def plugin(self, plugin: object, config: object = None) -> Fiber:
         """Load ``plugin`` as a child of the owning fiber.
@@ -117,7 +125,7 @@ class Context:
         parent._require_loaded()
         fiber = Fiber(self._kernel, parent, spec, config)
         Context._owned_by(self._kernel, fiber, self.scope_key)
-        fiber._handle = parent.effect(lambda: fiber._until_disposed)
+        self._own(fiber)
         self._kernel.fibers[fiber.uid] = fiber
         fiber._refresh()
         return fiber
@@ -169,7 +177,9 @@ class Context:
             kernel.notify(key)
             return withdraw
 
-        return self.effect(setup)
+        return self.fiber.effect(
+            setup, waits_for=lambda caller: kernel.withdrawal_waits_for(key, caller)
+        )
 
     def get(self, key: ServiceKey[ServiceT]) -> ServiceT | None:
         """Return the service named by ``key``, or ``None`` if it is not available.

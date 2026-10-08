@@ -26,9 +26,12 @@ from tack.kernel.events import (
     WaterfallListener,
 )
 from tack.kernel.fiber import Disposer, EffectHandle, Fiber, FiberState
+from tack.kernel.plugin import Apply, ApplyResult, Plugin, resolve_plugin
 from tack.kernel.services import ServiceKey
 
 __all__ = [
+    "Apply",
+    "ApplyResult",
     "BailEvent",
     "BailListener",
     "CompositionError",
@@ -47,6 +50,7 @@ __all__ = [
     "Next",
     "ParallelEvent",
     "ParallelListener",
+    "Plugin",
     "SerialEvent",
     "SerialListener",
     "ServiceConflictError",
@@ -55,4 +59,5 @@ __all__ = [
     "ServiceUnavailableError",
     "WaterfallEvent",
     "WaterfallListener",
+    "resolve_plugin",
 ]

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any, overload
 
@@ -30,6 +31,7 @@ from tack.kernel.events import (
     run_waterfall,
 )
 from tack.kernel.fiber import Disposer, EffectHandle, Fiber, KernelState
+from tack.kernel.plugin import resolve_plugin
 
 
 class Context:
@@ -46,6 +48,53 @@ class Context:
         self._kernel = KernelState()
         self.fiber = Fiber(self._kernel, None)
         self.fiber.ctx = self
+
+    @classmethod
+    def _owned_by(cls, kernel: KernelState, fiber: Fiber) -> Context:
+        ctx = cls.__new__(cls)
+        ctx._kernel = kernel
+        ctx.fiber = fiber
+        fiber.ctx = ctx
+        return ctx
+
+    def plugin(self, plugin: object, config: object = None) -> Fiber:
+        """Load ``plugin`` as a child of the owning fiber.
+
+        The plugin loads in the background, so this must be called while an
+        event loop is running. Await the returned fiber to wait for the load
+        and to receive its error if it fails. The child is disposed when the
+        owning fiber unloads.
+
+        Args:
+            plugin: A :class:`Plugin`, a module or object with ``apply``, or a
+                bare callable.
+            config: The raw config. It is validated against the plugin's config
+                model when the plugin has one.
+
+        Raises:
+            InvalidPluginError: ``plugin`` is not a plugin.
+            InactiveEffectError: The owning fiber is not loaded.
+        """
+        spec = resolve_plugin(plugin)
+        parent = self.fiber
+        parent._require_loaded()
+        fiber = Fiber(self._kernel, parent, spec, config)
+        Context._owned_by(self._kernel, fiber)
+        fiber._handle = parent.effect(lambda: fiber._dispose_owned)
+        self._kernel.fibers[fiber.uid] = fiber
+        fiber._refresh()
+        return fiber
+
+    def fibers(self) -> tuple[Fiber, ...]:
+        """Return every plugin fiber that has not been disposed, oldest first."""
+        return tuple(self._kernel.fibers.values())
+
+    async def settled(self) -> None:
+        """Wait until no plugin in the application is loading or unloading."""
+        drivers = self._kernel.drivers
+        current = asyncio.current_task()
+        while pending := [driver for driver in drivers if driver is not current]:
+            await asyncio.wait(pending)
 
     def effect(self, setup: Callable[[], Disposer | None]) -> EffectHandle:
         """Run ``setup`` now and undo it when the owning fiber unloads.

@@ -15,14 +15,17 @@ import enum
 import inspect
 import itertools
 import logging
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, TypeAlias
+from collections.abc import Awaitable, Callable, Generator
+from typing import TYPE_CHECKING, Any, TypeAlias
 
-from tack.kernel.errors import InactiveEffectError
+from pydantic import ValidationError
+
+from tack.kernel.errors import InactiveEffectError, InvalidPluginError
 from tack.kernel.events import HookTable
 
 if TYPE_CHECKING:
     from tack.kernel.context import Context
+    from tack.kernel.plugin import Plugin
 
 logger = logging.getLogger("tack.kernel")
 
@@ -47,11 +50,12 @@ class FiberState(enum.Enum):
 class KernelState:
     """State shared by every fiber and context of one application."""
 
-    __slots__ = ("_uids", "drivers", "hooks")
+    __slots__ = ("_uids", "drivers", "fibers", "hooks")
 
     def __init__(self) -> None:
         self._uids = itertools.count()
         self.drivers: set[asyncio.Task[None]] = set()
+        self.fibers: dict[int, Fiber] = {}
         self.hooks = HookTable()
 
     def next_uid(self) -> int:
@@ -96,42 +100,92 @@ class EffectHandle:
 
 
 class Fiber:
-    """The owner of a set of effects.
+    """One instance of a plugin, and the owner of everything it registered.
 
-    Disposing a fiber undoes its effects in reverse order of registration, one
-    at a time, and waits for each to finish.
+    A fiber loads by calling its plugin's ``apply`` and unloads by undoing the
+    effects registered since, in reverse order and one at a time. Loading and
+    unloading run in the background; ``await fiber`` waits for them and raises
+    the error of a failed load.
+
+    The root fiber and scope fibers have no plugin. They are active from the
+    moment they are created until they are disposed.
+
+    Attributes:
+        uid: A number unique within the application.
+        parent: The fiber whose context created this one, or ``None`` for the root.
+        plugin: The plugin this fiber is an instance of, if any.
+        config: The validated config handed to ``apply``.
+        error: Why the most recent load failed, if it did.
+        state: Where the fiber is in its lifecycle.
+        ctx: The context whose registrations this fiber owns.
     """
 
     __slots__ = (
+        "_broken",
         "_disposed",
         "_driver",
         "_effects",
+        "_failed",
+        "_handle",
         "_kernel",
         "_loaded",
         "_wanted",
+        "config",
         "ctx",
+        "error",
         "parent",
+        "plugin",
         "state",
         "uid",
     )
 
     ctx: Context
 
-    def __init__(self, kernel: KernelState, parent: Fiber | None) -> None:
+    def __init__(
+        self,
+        kernel: KernelState,
+        parent: Fiber | None,
+        plugin: Plugin | None = None,
+        config: object = None,
+    ) -> None:
         self.uid = kernel.next_uid()
         self.parent = parent
-        self.state = FiberState.ACTIVE
+        self.plugin = plugin
+        self.config: Any = config
+        self.error: Exception | None = None
+        self.state = FiberState.PENDING
         self._kernel = kernel
         self._effects: list[EffectHandle] = []
-        self._wanted: Epoch | None = ()
-        self._loaded: Epoch | None = ()
+        self._wanted: Epoch | None = None
+        self._loaded: Epoch | None = None
+        self._failed: Epoch | None = None
         self._driver: asyncio.Task[None] | None = None
+        self._handle: EffectHandle | None = None
         self._disposed = False
+        self._broken = False
+        if plugin is None:
+            self._wanted = self._loaded = ()
+            self.state = FiberState.ACTIVE
+        elif plugin.config is not None:
+            try:
+                self.config = plugin.config.model_validate({} if config is None else config)
+            except ValidationError as error:
+                logger.error("plugin %r has an invalid config: %s", plugin.name, error)
+                self.error = error
+                self._broken = True
 
     @property
     def name(self) -> str:
         """A short label for logs and error messages."""
-        return "root"
+        if self.plugin is not None:
+            return self.plugin.name
+        return "root" if self.parent is None else "scope"
+
+    def __repr__(self) -> str:
+        return f"<Fiber {self.name!r} #{self.uid} {self.state.value}>"
+
+    def __await__(self) -> Generator[Any, None, Fiber]:
+        return self._ready().__await__()
 
     def effect(self, setup: Callable[[], Disposer | None]) -> EffectHandle:
         """Run ``setup`` now and keep the disposer it returns.
@@ -139,17 +193,17 @@ class Fiber:
         Raises:
             InactiveEffectError: The fiber is not loaded. ``setup`` is not run.
         """
-        if self.state not in (FiberState.LOADING, FiberState.ACTIVE):
-            raise InactiveEffectError(
-                f"cannot register an effect on {self.name!r} while it is {self.state.value}"
-            )
+        self._require_loaded()
         handle = EffectHandle(self, setup())
         self._effects.append(handle)
         return handle
 
     async def dispose(self) -> None:
         """Unload the fiber for good and wait until its effects are undone."""
-        self._retire()
+        if self._handle is None:
+            self._retire()
+        else:
+            await self._handle.dispose()
         await self.settled()
 
     async def settled(self) -> None:
@@ -157,18 +211,46 @@ class Fiber:
         while (driver := self._driver) is not None and driver is not asyncio.current_task():
             await asyncio.shield(driver)
 
+    async def _ready(self) -> Fiber:
+        await self.settled()
+        if self.state is FiberState.FAILED and self.error is not None:
+            raise self.error
+        return self
+
+    def _require_loaded(self) -> None:
+        if self.state not in (FiberState.LOADING, FiberState.ACTIVE):
+            raise InactiveEffectError(
+                f"cannot register an effect on {self.name!r} while it is {self.state.value}"
+            )
+
+    async def _dispose_owned(self) -> None:
+        self._retire()
+        await self.settled()
+
     def _retire(self) -> None:
         if self._disposed:
             return
         self._disposed = True
+        self._kernel.fibers.pop(self.uid, None)
         self._refresh()
 
+    def _compute_epoch(self) -> Epoch | None:
+        if self._disposed or self._broken:
+            return None
+        return ()
+
     def _refresh(self) -> None:
-        self._wanted = None if self._disposed else ()
+        wanted = self._compute_epoch()
+        if wanted != self._wanted:
+            self._wanted = wanted
+            self._failed = None
+            self.error = None
         self._kick()
 
     def _needs_work(self) -> bool:
-        return self._loaded is not None and self._loaded != self._wanted
+        if self._loaded is not None:
+            return self._loaded != self._wanted
+        return self._wanted is not None and self._wanted != self._failed
 
     def _kick(self) -> None:
         if self._driver is not None:
@@ -184,13 +266,44 @@ class Fiber:
     async def _drive(self) -> None:
         try:
             while self._needs_work():
-                await self._unload()
+                if self._loaded is not None:
+                    await self._unload()
+                else:
+                    await self._load()
+            self._rest()
         finally:
             driver = self._driver
             self._driver = None
             if driver is not None:
                 self._kernel.drivers.discard(driver)
-            self._rest()
+
+    async def _load(self) -> None:
+        plugin = self.plugin
+        epoch = self._wanted
+        assert plugin is not None
+        assert epoch is not None
+        self._set_state(FiberState.LOADING)
+        self._loaded = epoch
+        try:
+            result = plugin.apply(self.ctx, self.config)
+            if inspect.isawaitable(result):
+                result = await result
+            if result is not None:
+                returned: object = result
+                if not callable(returned):
+                    raise InvalidPluginError(
+                        f"plugin {self.name!r} returned {returned!r}; "
+                        "apply must return a disposer or None"
+                    )
+                self._effects.append(EffectHandle(self, result))
+        except Exception as error:
+            logger.error("plugin %r failed to load", self.name, exc_info=error)
+            self.error = error
+            self._failed = epoch
+            await self._unload()
+            return
+        if self._wanted == epoch:
+            self._set_state(FiberState.ACTIVE)
 
     async def _unload(self) -> None:
         self._set_state(FiberState.UNLOADING)
@@ -216,6 +329,8 @@ class Fiber:
             self._set_state(FiberState.ACTIVE)
         elif self._disposed:
             self._set_state(FiberState.DISPOSED)
+        elif self.error is not None:
+            self._set_state(FiberState.FAILED)
         else:
             self._set_state(FiberState.PENDING)
 

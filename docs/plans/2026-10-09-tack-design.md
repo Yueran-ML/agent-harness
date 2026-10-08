@@ -1,7 +1,7 @@
 # Tack 设计文档
 
 日期：2026-10-09
-状态：四个部分均已由作者确认，待写实施计划。
+状态：四个部分均已由作者确认。第 1 阶段已完成，第 3.4 节和第 4 节已按实现结果修订。
 
 Tack 是一个用 Python 从零实现的插件化 Agent harness。实现路线对齐 DeepSeek Harness，并吸收 Claude Code 和 Codex CLI 的做法。本文是实施计划的依据。
 
@@ -124,7 +124,7 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 ### 3.4 组合清单
 
-应用由 YAML 清单组合出来，清单是插件条目的列表。
+应用由 YAML 清单组合出来，清单是插件条目的列表。条目有四个字段：`id`、`plugin`、`config`、`disabled`。`plugin` 是导入路径，写成 `package.module` 或 `package.module:attribute`。
 
 | 清单 | 内容 | 用途 |
 |---|---|---|
@@ -136,34 +136,44 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 补丁按 `id` 定位条目，可以整体替换它的 `config`、把它设为 `disabled`，或插入新条目。叠加顺序是清单、用户目录下的补丁、命令行 `--patch`。
 
+清单和补丁是同一种格式，叫做层。一层是一组操作：`insert` 插入条目，带 `id` 的操作修改已有条目。一层可以用 `extends` 写明它建立在哪一层之上。配置里的字符串可以用 `${NAME}` 和 `${NAME:-default}` 引用环境变量。
+
 ## 4. 内核
 
-内核是 Cordis 五个概念的 Python 复刻，约 600 行。
+内核是 Cordis 五个概念的 Python 复刻，共 8 个模块、约 2000 行。它的精确语义以 `2026-10-09-tack-stage1-kernel.md` 里的"内核语义速查"为准。
 
 ### 4.1 概念
 
-1. 上下文是服务仓库。`ctx.provide(name, service)` 注册服务，`ctx.get(name)` 可选获取，`ctx.<name>` 直接访问。
-2. 插件声明依赖。插件是带 `apply(ctx, config)` 的可调用对象或模块，可带 `name`、`inject`、`Config`。`inject` 里的服务没到齐，插件实例停在挂起状态。某个依赖消失时，依赖它的插件自动卸载，依赖回来后自动重新加载。
-3. 事件带类型。每个事件在声明时固定分发方式，用错方式调用直接报错。
-4. 五种分发方式。`emit` 同步广播，忽略返回值。`parallel` 并发执行并等待全部结束。`serial` 按序等待，第一个非空返回值胜出。`bail` 是同步版的 `serial`。`waterfall` 是环绕式中间件，监听器收到 `next`，不调用 `next()` 即短路。
+1. 上下文是服务仓库。服务名是带类型的 `ServiceKey[T]`。`ctx.provide(KEY, service)` 注册服务，`ctx.use(KEY)` 取必需的服务，`ctx.get(KEY)` 取可选的服务。
+2. 插件声明依赖。插件是带 `apply(ctx, config)` 的可调用对象或模块，可带 `name`、`inject`、`Config`。`inject` 里的服务没到齐，插件实例停在挂起状态。某个依赖消失时，依赖它的插件自动卸载，依赖回来后自动重新加载。插件只能 `use` 自己提供的服务，或者自己及外层插件声明过的服务。
+3. 事件带类型。每个事件在声明时固定分发方式，只带一个载荷对象，用错方式调用直接报错。
+4. 五种分发方式。`emit` 同步广播，忽略返回值。`parallel` 并发执行并等待全部结束。`serial` 按序等待，第一个非空返回值胜出。`bail` 是同步版的 `serial`。`waterfall` 是环绕式中间件，监听器收到载荷和 `next`。调用 `next(payload)` 继续，不调用即短路，多次调用即重试。
 5. 注册可撤销。`ctx.effect(fn)` 执行 `fn` 并收集它返回的撤销函数。`ctx.on()`、`ctx.provide()`、`ctx.plugin()` 本身都是 effect。
 
 ### 4.2 插件实例
 
-`ctx.plugin(plugin, config)` 返回一个 `Fiber`。状态为 `PENDING`、`LOADING`、`ACTIVE`、`FAILED`、`UNLOADING`、`DISPOSED`。`await fiber.dispose()` 逆序撤销全部 effect，递归卸载子插件，等清理真正结束后才返回。处于 `UNLOADING` 时拒绝新建 effect。
+`ctx.plugin(plugin, config)` 返回一个 `Fiber`。状态为 `PENDING`、`LOADING`、`ACTIVE`、`FAILED`、`UNLOADING`、`DISPOSED`。`await fiber.dispose()` 逆序撤销全部 effect，递归卸载子插件，等清理真正结束后才返回。处于 `UNLOADING` 时拒绝新建 effect。每次状态变化都发出 `FIBER_STATE_CHANGED` 事件。
 
-配置用 pydantic 模型校验。校验失败时插件实例进入 `FAILED`，启动器打印错误并以非零码退出。
+配置用 pydantic 模型校验，校验在创建 `Fiber` 时进行。校验失败时插件实例进入 `FAILED`，启动器打印错误并以非零码退出。
 
 ### 4.3 作用域
 
-每个 Agent 有自己的作用域上下文 `agent.ctx`。经它做的注册只对该 Agent 可见，随 Agent 销毁撤销。事件分发时可带作用域目标，只放行全局监听器和作用域匹配的监听器。子代理靠这个得到不同的工具集。
+每个 Agent 有自己的作用域上下文 `agent.ctx`，由 `ctx.scope(key)` 创建。经它做的注册只对该 Agent 可见，随 Agent 销毁撤销。经带作用域的上下文分发事件时，只放行全局监听器和作用域匹配的监听器。子代理靠这个得到不同的工具集。
 
 ### 4.4 监听器异常
 
 `emit` 和 `parallel` 的监听器抛异常时，分发器记录日志并继续，不影响其他监听器。`serial`、`bail`、`waterfall` 是决策链，异常向调用方传播。
 
-### 4.5 与 Cordis 的差异
+### 4.5 取消与重入
 
+- 等待方被取消不会打断加载、卸载或清理。异步的清理在内核自己的任务里进行。
+- 提供方卸载前，先等依赖它的插件卸载完。服务被撤回期间名字保留，直到依赖方卸载完成。
+- `apply` 和 disposer 不能等待一个正在等它们的 Fiber。这种情况下 `dispose()` 只发出请求，`settled()` 立即返回，应用级的 `ctx.settled()` 抛 `LifecycleError`。
+
+### 4.6 与 Cordis 的差异
+
+- 服务访问用带类型的键和 `use`、`get`，不用属性访问。
+- 每个事件只带一个载荷对象。
 - 不做文件监听式热重载。保留运行时卸载和重新挂载的能力，测试需要它。
 - 卸载时严格逆序、逐个等待。Cordis 的顶层撤销函数是逆序启动、并发执行。
 - 不做 `intercept` 配置叠加、mixin、Proxy 属性魔法、`!!js` 表达式。清单里只支持环境变量插值。

@@ -1,0 +1,111 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tack-harness"
+version = "0.1.0.dev0"
+description = "A plugin-based agent harness for Python."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Yueran Ma" }]
+keywords = ["agent", "harness", "llm", "tool-calling"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Typing :: Typed",
+]
+dependencies = [
+  "pydantic>=2.9",
+  "pyyaml>=6.0.2",
+]
+
+[project.urls]
+Repository = "https://github.com/Yueran-ML/agent-harness"
+
+[dependency-groups]
+dev = [
+  "coverage>=7.6",
+  "hypothesis>=6.115",
+  "pyright>=1.1.400",
+  "pytest>=8.3",
+  "pytest-asyncio>=1.0",
+  "pytest-timeout>=2.3",
+  "ruff>=0.9",
+  "types-pyyaml>=6.0.12",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tack"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = [
+  "E",     # pycodestyle errors
+  "W",     # pycodestyle warnings
+  "F",     # pyflakes
+  "I",     # import order
+  "N",     # naming
+  "D",     # docstrings
+  "UP",    # modern syntax
+  "B",     # likely bugs
+  "C4",    # comprehensions
+  "SIM",   # simplifications
+  "PT",    # pytest style
+  "PTH",   # pathlib over os.path
+  "PERF",  # performance pitfalls
+  "ASYNC", # asyncio pitfalls
+  "RUF",   # ruff-specific rules
+]
+ignore = [
+  "D105", # magic methods need no docstring
+  "D107", # __init__ is documented on the class
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.11"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+minversion = "8.3"
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+timeout = 30
+xfail_strict = true
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+branch = true
+source_pkgs = ["tack"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "@overload",
+  "raise NotImplementedError",
+]

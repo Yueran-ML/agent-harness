@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, overload
 
 from tack.kernel.errors import (
@@ -127,28 +127,45 @@ class Context:
 
         The service is withdrawn when the owning fiber unloads or the returned
         handle is disposed. Other fibers see it once the owning fiber is active.
-        Plugins that inject the service load when it appears. When it is
-        withdrawn they unload first, and the withdrawal waits for them.
+        Plugins that inject the service load when it appears.
+
+        Withdrawing makes the service unavailable at once and then waits for
+        the plugins that inject it to unload. The name stays taken until they
+        have, so a replacement can be provided only after the withdrawal has
+        finished.
 
         Raises:
-            ServiceConflictError: Another provider already holds the name.
+            ServiceConflictError: Another provider holds the name, or the name
+                is still being withdrawn.
             InactiveEffectError: The owning fiber is not loaded.
         """
         kernel = self._kernel
-        fiber = self.fiber
+        provision = Provision(key, value, self.fiber, kernel.next_uid())
 
-        async def withdraw() -> None:
-            del kernel.services[key]
+        def withdraw() -> Awaitable[None] | None:
+            provision.withdrawn = True
             kernel.notify(key)
-            await kernel.dependents_settled(key, fiber)
+            if not kernel.has_unsettled_dependents(key):
+                del kernel.services[key]
+                return None
+            return release_the_name()
+
+        async def release_the_name() -> None:
+            try:
+                await kernel.dependents_settled(key)
+            finally:
+                del kernel.services[key]
 
         def setup() -> Disposer:
             existing = kernel.services.get(key)
             if existing is not None:
-                raise ServiceConflictError(
-                    f"service {key.name!r} is already provided by {existing.fiber.name!r}"
+                problem = (
+                    "still being withdrawn by" if existing.withdrawn else "already provided by"
                 )
-            kernel.services[key] = Provision(key, value, fiber, kernel.next_uid())
+                raise ServiceConflictError(
+                    f"service {key.name!r} is {problem} {existing.fiber.name!r}"
+                )
+            kernel.services[key] = provision
             kernel.notify(key)
             return withdraw
 

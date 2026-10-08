@@ -329,39 +329,3 @@ def test_inject_must_be_a_list_of_service_keys(inject: object) -> None:
 
     with pytest.raises(InvalidPluginError, match="list of service keys"):
         resolve_plugin(SimpleNamespace(name="module", apply=apply, inject=inject))
-
-
-async def test_a_provider_below_its_dependent_does_not_deadlock(ctx: Context) -> None:
-    """An unloading plugin must not wait for itself through a service of its child."""
-    gate = asyncio.Event()
-    unloading = asyncio.Event()
-    child_contexts: list[Context] = []
-
-    def child(inner: Context, config: object) -> None:
-        child_contexts.append(inner)
-
-    async def parent(inner: Context, config: object) -> None:
-        await inner.plugin(Plugin("child", child))
-
-        async def slow() -> None:
-            unloading.set()
-            await gate.wait()
-
-        inner.effect(lambda: slow)
-
-    handle = ctx.provide(CLOCK, Clock(1))
-    parent_fiber = await ctx.plugin(Plugin("parent", parent, inject=(CLOCK,)))
-    child_fiber = child_contexts[0].fiber
-
-    withdrawal = asyncio.ensure_future(handle.dispose())
-    await asyncio.wait_for(unloading.wait(), timeout=1)
-    assert parent_fiber.state is FiberState.UNLOADING
-    child_contexts[0].provide(CLOCK, Clock(2))
-
-    gate.set()
-    await asyncio.wait_for(withdrawal, timeout=1)
-    await ctx.settled()
-
-    assert child_fiber.state is FiberState.DISPOSED
-    assert parent_fiber.state is FiberState.PENDING
-    assert ctx.get(CLOCK) is None

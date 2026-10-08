@@ -71,12 +71,17 @@ class Provision:
     ``serial`` is unique to this act of providing. A dependent records the
     serials it loaded against, so it reloads whenever a service is provided
     anew, even by the same fiber.
+
+    ``withdrawn`` is set when the provider starts to withdraw the service. The
+    service is unavailable from then on, but the provision keeps its name
+    until every dependent has finished unloading.
     """
 
     key: ServiceKey[Any]
     value: Any
     fiber: Fiber
     serial: int
+    withdrawn: bool = False
 
 
 class KernelState:
@@ -127,10 +132,11 @@ class KernelState:
 
         A service is visible to everyone while its provider is active. The
         provider itself and the fibers below it also see the service while the
-        provider is loading or unloading.
+        provider is loading or unloading. Nobody sees a service that is being
+        withdrawn.
         """
         provision = self.services.get(key)
-        if provision is None:
+        if provision is None or provision.withdrawn:
             return None
         provider = provision.fiber
         if provider.state is FiberState.ACTIVE:
@@ -140,9 +146,11 @@ class KernelState:
         return None
 
     def available(self, key: ServiceKey[Any]) -> Provision | None:
-        """Return the provision of ``key`` if its provider is active."""
+        """Return the provision of ``key`` if dependents may load against it."""
         provision = self.services.get(key)
-        if provision is None or provision.fiber.state is not FiberState.ACTIVE:
+        if provision is None or provision.withdrawn:
+            return None
+        if provision.fiber.state is not FiberState.ACTIVE:
             return None
         return provision
 
@@ -180,22 +188,33 @@ class KernelState:
             if provision.fiber is provider:
                 self.notify(provision.key)
 
-    async def dependents_settled(self, key: ServiceKey[Any], provider: Fiber) -> None:
+    def has_unsettled_dependents(self, key: ServiceKey[Any]) -> bool:
+        """Return whether a fiber that injects ``key`` is loading or unloading."""
+        return any(
+            fiber.injects(key) and fiber._live_driver() is not None
+            for fiber in self.fibers.values()
+        )
+
+    async def dependents_settled(self, key: ServiceKey[Any]) -> None:
         """Wait until the fibers that inject ``key`` have finished changing state.
 
-        The provider and the fibers above it are not waited for. One of them
-        may be the very fiber whose unload is waiting here.
+        Call this only while ``key`` is unavailable. A dependent then has
+        nothing to load against, so waiting for it to settle is waiting for it
+        to unload.
         """
-        above = set(provider.lineage())
         for fiber in tuple(self.fibers.values()):
-            if fiber.injects(key) and fiber not in above:
+            if fiber.injects(key):
                 await fiber.settled()
 
     async def all_dependents_settled(self, provider: Fiber) -> None:
-        """Wait for the dependents of every service that ``provider`` provides."""
+        """Wait for the dependents of every service that ``provider`` holds.
+
+        This includes services the provider has begun to withdraw and whose
+        dependents are still unloading.
+        """
         for provision in tuple(self.services.values()):
             if provision.fiber is provider:
-                await self.dependents_settled(provision.key, provider)
+                await self.dependents_settled(provision.key)
 
 
 class EffectHandle:

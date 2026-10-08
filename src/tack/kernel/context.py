@@ -8,7 +8,11 @@ import asyncio
 from collections.abc import Callable
 from typing import Any, overload
 
-from tack.kernel.errors import ServiceConflictError, ServiceUnavailableError
+from tack.kernel.errors import (
+    ServiceConflictError,
+    ServiceNotInjectedError,
+    ServiceUnavailableError,
+)
 from tack.kernel.events import (
     BailEvent,
     BailListener,
@@ -92,30 +96,40 @@ class Context:
 
         The service is withdrawn when the owning fiber unloads or the returned
         handle is disposed. Other fibers see it once the owning fiber is active.
+        Plugins that inject the service load when it appears. When it is
+        withdrawn they unload first, and the withdrawal waits for them.
 
         Raises:
             ServiceConflictError: Another provider already holds the name.
             InactiveEffectError: The owning fiber is not loaded.
         """
-        services = self._kernel.services
+        kernel = self._kernel
         fiber = self.fiber
 
-        def withdraw() -> None:
-            del services[key]
+        async def withdraw() -> None:
+            del kernel.services[key]
+            kernel.notify(key)
+            await kernel.dependents_settled(key, fiber)
 
         def setup() -> Disposer:
-            existing = services.get(key)
+            existing = kernel.services.get(key)
             if existing is not None:
                 raise ServiceConflictError(
                     f"service {key.name!r} is already provided by {existing.fiber.name!r}"
                 )
-            services[key] = Provision(key, value, fiber)
+            kernel.services[key] = Provision(key, value, fiber, kernel.next_uid())
+            kernel.notify(key)
             return withdraw
 
         return self.effect(setup)
 
     def get(self, key: ServiceKey[ServiceT]) -> ServiceT | None:
-        """Return the service named by ``key``, or ``None`` if it is not available."""
+        """Return the service named by ``key``, or ``None`` if it is not available.
+
+        Use this for a service the caller can do without. Nothing unloads the
+        caller when such a service goes away, so ask again each time instead of
+        keeping the result.
+        """
         provision = self._kernel.lookup(key, self.fiber)
         return None if provision is None else provision.value
 
@@ -123,9 +137,16 @@ class Context:
         """Return the service named by ``key``.
 
         Raises:
+            ServiceNotInjectedError: The caller is inside a plugin, and neither
+                that plugin nor an enclosing one injects or provides the service.
             ServiceUnavailableError: No active plugin provides the service.
         """
-        provision = self._kernel.lookup(key, self.fiber)
+        kernel = self._kernel
+        if not kernel.declared(key, self.fiber):
+            raise ServiceNotInjectedError(
+                f"{self.fiber.name!r} uses service {key.name!r} without declaring it in inject"
+            )
+        provision = kernel.lookup(key, self.fiber)
         if provision is None:
             raise ServiceUnavailableError(f"service {key.name!r} is not available")
         return provision.value

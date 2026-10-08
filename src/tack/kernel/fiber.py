@@ -51,11 +51,17 @@ class FiberState(enum.Enum):
 
 @dataclass(slots=True, eq=False)
 class Provision:
-    """A service value and the fiber that provides it."""
+    """A service value and the fiber that provides it.
+
+    ``serial`` is unique to this act of providing. A dependent records the
+    serials it loaded against, so it reloads whenever a service is provided
+    anew, even by the same fiber.
+    """
 
     key: ServiceKey[Any]
     value: Any
     fiber: Fiber
+    serial: int
 
 
 class KernelState:
@@ -90,6 +96,64 @@ class KernelState:
         if any(fiber is provider for fiber in viewer.lineage()):
             return provision
         return None
+
+    def available(self, key: ServiceKey[Any]) -> Provision | None:
+        """Return the provision of ``key`` if its provider is active."""
+        provision = self.services.get(key)
+        if provision is None or provision.fiber.state is not FiberState.ACTIVE:
+            return None
+        return provision
+
+    def declared(self, key: ServiceKey[Any], viewer: Fiber) -> bool:
+        """Return whether ``viewer`` is entitled to rely on ``key``.
+
+        A plugin may rely on a service that it provides itself, and on one that
+        it or an enclosing plugin injects: the kernel unloads the plugin before
+        an injected service goes away. Code outside every plugin may rely on
+        any service.
+        """
+        provision = self.services.get(key)
+        provider = None if provision is None else provision.fiber
+        in_own_plugin = True
+        inside_a_plugin = False
+        for fiber in viewer.lineage():
+            if in_own_plugin and fiber is provider:
+                return True
+            if fiber.plugin is not None:
+                if key in fiber.plugin.inject:
+                    return True
+                in_own_plugin = False
+                inside_a_plugin = True
+        return not inside_a_plugin
+
+    def notify(self, key: ServiceKey[Any]) -> None:
+        """Re-evaluate every fiber that injects ``key``."""
+        for fiber in tuple(self.fibers.values()):
+            if fiber.injects(key):
+                fiber._refresh()
+
+    def announce(self, provider: Fiber) -> None:
+        """Re-evaluate every fiber that injects a service of ``provider``."""
+        for provision in tuple(self.services.values()):
+            if provision.fiber is provider:
+                self.notify(provision.key)
+
+    async def dependents_settled(self, key: ServiceKey[Any], provider: Fiber) -> None:
+        """Wait until the fibers that inject ``key`` have finished changing state.
+
+        The provider and the fibers above it are not waited for. One of them
+        may be the very fiber whose unload is waiting here.
+        """
+        above = set(provider.lineage())
+        for fiber in tuple(self.fibers.values()):
+            if fiber.injects(key) and fiber not in above:
+                await fiber.settled()
+
+    async def all_dependents_settled(self, provider: Fiber) -> None:
+        """Wait for the dependents of every service that ``provider`` provides."""
+        for provision in tuple(self.services.values()):
+            if provision.fiber is provider:
+                await self.dependents_settled(provision.key, provider)
 
 
 class EffectHandle:
@@ -220,6 +284,17 @@ class Fiber:
             yield fiber
             fiber = fiber.parent
 
+    def injects(self, key: ServiceKey[Any]) -> bool:
+        """Return whether this fiber's plugin requires ``key``."""
+        return self.plugin is not None and key in self.plugin.inject
+
+    @property
+    def missing(self) -> tuple[ServiceKey[Any], ...]:
+        """The injected services that are not available right now."""
+        inject = () if self.plugin is None else self.plugin.inject
+        available = self._kernel.available
+        return tuple(key for key in inject if available(key) is None)
+
     def __await__(self) -> Generator[Any, None, Fiber]:
         return self._ready().__await__()
 
@@ -267,13 +342,18 @@ class Fiber:
         if self._disposed:
             return
         self._disposed = True
-        self._kernel.fibers.pop(self.uid, None)
         self._refresh()
 
     def _compute_epoch(self) -> Epoch | None:
         if self._disposed or self._broken:
             return None
-        return ()
+        serials: list[int] = []
+        for key in () if self.plugin is None else self.plugin.inject:
+            provision = self._kernel.available(key)
+            if provision is None:
+                return None
+            serials.append(provision.serial)
+        return tuple(serials)
 
     def _refresh(self) -> None:
         wanted = self._compute_epoch()
@@ -310,7 +390,7 @@ class Fiber:
         finally:
             driver = self._driver
             self._driver = None
-            if driver is not None:
+            if driver is not None:  # pragma: no branch - always set while driving
                 self._kernel.drivers.discard(driver)
 
     async def _load(self) -> None:
@@ -343,6 +423,7 @@ class Fiber:
 
     async def _unload(self) -> None:
         self._set_state(FiberState.UNLOADING)
+        await self._kernel.all_dependents_settled(self)
         await self._undo_effects()
         self._loaded = None
 
@@ -357,13 +438,14 @@ class Fiber:
         effects = self._effects
         if effects and effects[-1] is handle:
             effects.pop()
-        elif handle in effects:
+        elif handle in effects:  # pragma: no branch - a handle is forgotten once
             effects.remove(handle)
 
     def _rest(self) -> None:
         if self._loaded is not None:
             self._set_state(FiberState.ACTIVE)
         elif self._disposed:
+            self._kernel.fibers.pop(self.uid, None)
             self._set_state(FiberState.DISPOSED)
         elif self.error is not None:
             self._set_state(FiberState.FAILED)
@@ -371,4 +453,9 @@ class Fiber:
             self._set_state(FiberState.PENDING)
 
     def _set_state(self, state: FiberState) -> None:
+        previous = self.state
+        if previous is state:
+            return
         self.state = state
+        if FiberState.ACTIVE in (previous, state):
+            self._kernel.announce(self)

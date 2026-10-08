@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from pydantic import BaseModel
 
 from tack.kernel.errors import InvalidPluginError
+from tack.kernel.services import ServiceKey
 
 if TYPE_CHECKING:
     from tack.kernel.context import Context
@@ -27,21 +28,25 @@ class Plugin:
         apply: Called with the plugin's own context and its config each time
             the plugin loads. It may be a coroutine function. It may return a
             disposer, which runs first when the plugin unloads.
+        inject: The services the plugin requires. The plugin loads only while
+            all of them are available, unloads when one is withdrawn, and
+            loads again when it returns.
         config: A pydantic model that the raw config is validated against, or
             ``None`` to hand the raw config to ``apply`` unchanged.
     """
 
     name: str
     apply: Apply
-    config: type[BaseModel] | None = None
+    inject: tuple[ServiceKey[Any], ...] = field(default=(), kw_only=True)
+    config: type[BaseModel] | None = field(default=None, kw_only=True)
 
 
 def resolve_plugin(candidate: object) -> Plugin:
     """Turn any accepted plugin shape into a :class:`Plugin`.
 
     Three shapes are accepted: a :class:`Plugin`; a module or object with an
-    ``apply`` callable and optional ``name`` and ``Config`` attributes; and a
-    bare callable, which is its own ``apply``.
+    ``apply`` callable and optional ``name``, ``inject`` and ``Config``
+    attributes; and a bare callable, which is its own ``apply``.
 
     Raises:
         InvalidPluginError: ``candidate`` has none of these shapes.
@@ -61,4 +66,14 @@ def resolve_plugin(candidate: object) -> Plugin:
     config = getattr(candidate, "Config", None)
     if config is not None and not (isinstance(config, type) and issubclass(config, BaseModel)):
         raise InvalidPluginError(f"the Config of plugin {name!r} must be a pydantic model")
-    return Plugin(name, cast("Apply", apply), config)
+    declared: object = getattr(candidate, "inject", ())
+    if not isinstance(declared, list | tuple):
+        raise InvalidPluginError(f"the inject of plugin {name!r} must be a list of service keys")
+    inject: list[ServiceKey[Any]] = []
+    for key in cast("Sequence[object]", declared):
+        if not isinstance(key, ServiceKey):
+            raise InvalidPluginError(
+                f"the inject of plugin {name!r} must be a list of service keys"
+            )
+        inject.append(cast("ServiceKey[Any]", key))
+    return Plugin(name, cast("Apply", apply), inject=tuple(inject), config=config)

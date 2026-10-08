@@ -6,8 +6,8 @@ import logging
 import pytest
 
 from support.loop import SYSTEM, Harness, assistant, idle, types, user
-from tack.agent import INBOX, Inbox, InboxItem
-from tack.llm import AssistantMessage, Usage
+from tack.agent import INBOX, STREAM, Inbox, InboxItem, StreamFrame
+from tack.llm import AssistantMessage, TextDelta, Usage
 from tack.llm.adapters.scripted import Reply
 from tack.session import (
     AssistantMessageEvent,
@@ -388,3 +388,82 @@ async def test_history_without_instructions_gets_none_later(
 
     assert harness.model.requests[1].messages[0] == user("Say hello.")
     assert "has history without instructions" in caplog.text
+
+
+# Cancellations that a listener asks for while the turn is running
+
+
+async def test_a_listener_that_cancels_while_a_reply_streams_stops_the_turn(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Hello!"), Reply(text="never"))
+
+    def enough(frame: StreamFrame) -> None:
+        if isinstance(frame.chunk, TextDelta):
+            frame.agent.cancel("budget")
+
+    agent.ctx.on(STREAM, enough)
+    agent.followup("Say hello.")
+    await idle(agent)
+
+    assert types(agent.session)[-3:] == ["assistant/message", "step/end", "turn/end"]
+    assert agent.session.events[-3].data == AssistantMessageEvent(
+        message=assistant("Hello!"), usage=Usage(), finish_reason=None
+    )
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="budget")
+    assert "assistant/attempt" not in types(agent.session)
+    assert len(harness.model.requests) == 1
+
+
+# After the end
+
+
+async def test_an_agent_that_was_closed_is_at_rest(harness: Harness) -> None:
+    agent = await harness.agent(Reply(text="thinking", hold=True))
+    agent.followup("Think.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    await asyncio.wait_for(agent.close(), timeout=5)
+
+    await asyncio.wait_for(agent.when_idle(), timeout=1)
+    agent.wake()
+    await asyncio.wait_for(agent.when_idle(), timeout=1)
+
+
+async def test_an_agent_whose_tasks_were_cancelled_from_outside_is_at_rest(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="thinking", hold=True))
+    agent.followup("Think.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+    others = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+
+    for task in others:
+        task.cancel()
+    await asyncio.gather(*others, return_exceptions=True)
+
+    await asyncio.wait_for(agent.when_idle(), timeout=1)
+    agent.wake()
+    await asyncio.wait_for(agent.when_idle(), timeout=1)
+
+
+async def test_a_task_that_is_kept_through_a_cancellation_is_not_started_by_an_earlier_wake(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Done."))
+    await asyncio.sleep(0)
+
+    agent.followup("Keep for later.")
+    agent.cancel(keep_inbox=True)
+    await idle(agent)
+    await asyncio.sleep(0.02)
+
+    assert harness.model.requests == []
+    assert INBOX.of(agent.session) == Inbox(next_turn=(InboxItem(message=user("Keep for later.")),))
+    assert "turn/start" not in types(agent.session)
+
+    agent.wake()
+    await idle(agent)
+
+    assert len(harness.model.requests) == 1
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")

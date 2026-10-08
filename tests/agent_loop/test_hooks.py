@@ -354,3 +354,45 @@ async def test_a_turn_can_be_cancelled_while_a_listener_decides(harness: Harness
     assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
     assert "step/start" not in types(agent.session)
     assert harness.model.requests == []
+
+
+# Listeners that give no answer
+
+
+async def test_a_listener_that_gives_no_answer_before_a_step_keeps_the_step_from_beginning(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="never"))
+
+    async def forgetful(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        await proceed(info)
+        return None  # type: ignore[return-value]
+
+    agent.ctx.on(PRE_STEP, forgetful)
+    agent.followup("Do it.")
+    await idle(agent)
+
+    assert agent.session.events[-1].data == TurnEndEvent(
+        turn=1, reason="blocked", detail="a listener of agent/pre-step gave no decision"
+    )
+    assert harness.model.requests == []
+
+
+async def test_a_listener_that_gives_no_answer_to_a_failure_lets_the_failure_stand(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(failure=BUSY), Reply(text="never"))
+
+    async def forgetful(
+        failed: RequestFailure, proceed: Next[RequestFailure, ErrorDecision]
+    ) -> ErrorDecision:
+        return None  # type: ignore[return-value]
+
+    agent.ctx.on(REQUEST_ERROR, forgetful)
+    agent.followup("Say hello.")
+    await idle(agent)
+
+    assert agent.session.events[-1].data == TurnEndEvent(
+        turn=1, reason="error", detail="SERVER: overloaded"
+    )
+    assert len(harness.model.requests) == 1

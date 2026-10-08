@@ -7,12 +7,14 @@ from pydantic import BaseModel
 
 import tack.agent_loop
 from support.loop import SYSTEM, Harness, idle, types, user
-from tack.agent import Agent
+from tack.agent import INBOX, Agent
 from tack.kernel import Next
 from tack.llm import AssistantMessage, TextBlock, ToolCallBlock, ToolMessage
 from tack.llm.adapters.scripted import Call, Reply
 from tack.session import (
+    SESSION_EVENT,
     AssistantMessageEvent,
+    Committed,
     EventData,
     SessionEvent,
     StepStartEvent,
@@ -483,3 +485,124 @@ async def test_a_new_turn_after_a_cancellation_sends_a_history_that_holds_togeth
     answered = [message.call_id for message in messages if isinstance(message, ToolMessage)]
     assert answered == [call.call_id for call in asked.tool_calls]
     assert messages[-1] == user("Say hello.")
+
+
+# Review round 6
+
+
+async def test_a_listener_that_cancels_as_a_tool_call_is_written_stops_the_turn(
+    harness: Harness, board: Board
+) -> None:
+    agent = await harness.agent(Reply(calls=shared("a")), Reply(text="never"))
+
+    def at_dispatch(committed: Committed) -> None:
+        if committed.event.type == "tool/call":
+            agent.cancel("budget")
+
+    agent.ctx.on(SESSION_EVENT, at_dispatch)
+    agent.followup("Do a.")
+    await idle(agent)
+
+    assert results(agent) == [
+        ("call-1", "The turn was cancelled before this call ran.", "ABORTED_BEFORE_DISPATCH")
+    ]
+    assert board.log == []
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="budget")
+    assert len(harness.model.requests) == 1
+
+
+async def test_every_call_gets_its_result_even_if_the_turn_is_cancelled_twice(
+    harness: Harness,
+) -> None:
+    began = asyncio.Event()
+    cleaning = asyncio.Event()
+    gate = asyncio.Event()
+
+    running: list[str] = []
+
+    async def linger(args: Args, run: ToolRun) -> str:
+        running.append(run.call_id)
+        if len(running) == 2:
+            began.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await gate.wait()
+        return "never"
+
+    harness.tools.add(
+        harness.ctx,
+        Tool(
+            name="linger",
+            description="Take long to stop.",
+            parameters=Args,
+            execute=linger,
+            concurrency_safe=True,
+        ),
+    )
+    agent = await harness.agent(
+        Reply(calls=(Call(name="linger"), Call(name="linger"))), Reply(text="never")
+    )
+    agent.followup("Linger twice.")
+    await asyncio.wait_for(began.wait(), timeout=5)
+    agent.cancel()
+    await asyncio.wait_for(cleaning.wait(), timeout=5)
+    (turn,) = [
+        task
+        for task in asyncio.all_tasks()
+        if getattr(task.get_coro(), "__qualname__", "") == "LoopAgent._turn"
+    ]
+
+    turn.cancel()
+    await idle(agent)
+
+    assert [(call_id, code) for call_id, _, code in results(agent)] == [
+        ("call-1", "TOOL_CANCELLED"),
+        ("call-2", "TOOL_CANCELLED"),
+    ]
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
+
+    gate.set()
+    await asyncio.sleep(0.02)
+
+    assert len(results(agent)) == 2
+
+
+async def test_a_turn_that_a_tool_ended_does_not_go_on_for_context_that_waits(
+    harness: Harness, board: Board
+) -> None:
+    agent = await harness.agent(Reply(calls=(Call(name="finish"),), hold=True), Reply(text="never"))
+    agent.followup("Hand over.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    agent.inject("Context for later.")
+    harness.model.release()
+    await idle(agent)
+
+    assert len(harness.model.requests) == 1
+    assert [item.message for item in INBOX.of(agent.session).next_step] == [
+        user("Context for later.")
+    ]
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+
+
+async def test_a_steer_that_arrives_while_a_tool_ends_the_turn_opens_the_next_turn(
+    harness: Harness, board: Board
+) -> None:
+    agent = await harness.agent(
+        Reply(calls=(Call(name="finish"),), hold=True), Reply(text="On it.")
+    )
+    agent.followup("Hand over.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    agent.steer("Wait, one more thing.")
+    harness.model.release()
+    await idle(agent)
+
+    ends = [e.data for e in agent.session.events if isinstance(e.data, TurnEndEvent)]
+    assert ends == [
+        TurnEndEvent(turn=1, reason="completed"),
+        TurnEndEvent(turn=2, reason="completed"),
+    ]
+    assert harness.model.requests[1].messages[-1] == user("Wait, one more thing.")

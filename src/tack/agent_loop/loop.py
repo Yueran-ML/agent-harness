@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal
+from typing import Literal, cast
 
 from tack import cancellation
 from tack.agent import (
@@ -23,6 +23,7 @@ from tack.agent import (
     Reject,
     RequestDraft,
     RequestFailure,
+    Retry,
     StepDecision,
     StepInfo,
     StreamFrame,
@@ -147,8 +148,9 @@ class LoopAgent(Agent):
 
     def wake(self) -> None:
         """Tell the agent that input may be waiting for it."""
-        if self._closing or self._failure is not None:
+        if self._closing or self._failure is not None or self._driver.done():
             return
+        self._halted = False
         self._idle.clear()
         self._wake.set()
 
@@ -190,24 +192,28 @@ class LoopAgent(Agent):
         await asyncio.gather(self._driver, return_exceptions=True)
 
     async def _drive(self) -> None:
-        while True:
-            await self._wake.wait()
-            self._wake.clear()
-            if self._closing:
-                return
-            try:
-                await self._run_turns()
-            except Exception as error:
-                logger.exception("the agent %r has stopped", self.id)
-                self._failure = error
-                self._idle.set()
-                return
-            if not self._wake.is_set():
-                self._idle.set()
+        try:
+            while True:
+                await self._wake.wait()
+                self._wake.clear()
+                if self._closing:
+                    return
+                # A wake that a cancellation has taken back since is not acted on.
+                if not self._halted:
+                    try:
+                        await self._run_turns()
+                    except Exception as error:
+                        logger.exception("the agent %r has stopped", self.id)
+                        self._failure = error
+                        return
+                if not self._wake.is_set():
+                    self._idle.set()
+        finally:
+            # However the driver ends, nobody is left waiting for an agent that is gone.
+            self._idle.set()
 
     async def _run_turns(self) -> None:
         """Run a turn for the input that waits, and then one for every further task."""
-        self._halted = False
         first = True
         while not self._closing and not self._halted:
             inbox = INBOX.of(self.session)
@@ -262,9 +268,15 @@ class LoopAgent(Agent):
             claimed = claim_for_turn(session) if step == 0 else claim_for_step(session)
             for item in claimed:
                 session.append(UserMessageEvent(message=item.message, source=item.source))
-            decision = await self.ctx.waterfall(PRE_STEP, StepInfo(self, turn, step + 1), _enter)
+            decision = cast(
+                "object",
+                await self.ctx.waterfall(PRE_STEP, StepInfo(self, turn, step + 1), _enter),
+            )
             if isinstance(decision, Reject):
                 return "blocked", decision.reason
+            if not isinstance(decision, Enter):
+                # No answer is no permission.
+                return "blocked", "a listener of agent/pre-step gave no decision"
             step += 1
             session.append(StepStartEvent(turn=turn, step=step))
             try:
@@ -273,6 +285,9 @@ class LoopAgent(Agent):
                 session.append(StepEndEvent(turn=turn, step=step))
             if ended == "tools":
                 continue
+            if ended == "concluded":
+                # A tool asked for the turn to end. Input that waits stays for the next turn.
+                return "completed", None
             cut_off = cut_off or ended == "max-tokens"
             if INBOX.of(session).next_step:
                 continue
@@ -316,8 +331,9 @@ class LoopAgent(Agent):
                 )
             )
             failed = RequestFailure(self, turn, step, attempt, finish.failure)
-            decision = await self.ctx.waterfall(REQUEST_ERROR, failed, _give_up)
-            if isinstance(decision, GiveUp):
+            decision = cast("object", await self.ctx.waterfall(REQUEST_ERROR, failed, _give_up))
+            if not isinstance(decision, Retry):
+                # Only an explicit answer makes the request again.
                 raise _RequestError(finish.failure)
         assert finish.reason != "error"
         message = call.message
@@ -438,21 +454,27 @@ class LoopAgent(Agent):
             stopping = list(running)
             for task in stopping:
                 task.cancel()
-            if stopping:
-                await asyncio.wait(stopping)
-            for index, call in enumerate(calls):
-                if index in outcomes:
-                    continue
-                pending = pendings[index]
-                if pending is None:
-                    write()
-                    outcomes[index] = self._not_run(call)
-                elif index in started:
-                    outcomes[index] = pending.outcome or pending.fail("TOOL_CANCELLED", _CUT_SHORT)
-                else:
-                    outcomes[index] = pending.outcome or pending.fail(
-                        "ABORTED_BEFORE_DISPATCH", _NOT_RUN
-                    )
-            write()
+            try:
+                if stopping:
+                    await asyncio.wait(stopping)
+            finally:
+                # Whether or not the tools have come to rest, every call gets its result
+                # now: a second cancellation must not leave a call without one.
+                for index, call in enumerate(calls):
+                    if index in outcomes:
+                        continue
+                    pending = pendings[index]
+                    if pending is None:
+                        write()
+                        outcomes[index] = self._not_run(call)
+                    elif index in started:
+                        outcomes[index] = pending.outcome or pending.fail(
+                            "TOOL_CANCELLED", _CUT_SHORT
+                        )
+                    else:
+                        outcomes[index] = pending.outcome or pending.fail(
+                            "ABORTED_BEFORE_DISPATCH", _NOT_RUN
+                        )
+                write()
             raise
         return any(outcome.concludes_turn for outcome in outcomes.values())

@@ -4,6 +4,7 @@ An event is declared once, as a module-level constant of one of five kinds. The
 kind fixes how the event is dispatched. Every event carries a single payload.
 """
 
+import asyncio
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Sequence
@@ -187,3 +188,45 @@ def run_bail(hooks: Sequence[Hook], payload: object) -> Any:
         if result is not None:
             return result
     return None
+
+
+async def run_parallel(hooks: Sequence[Hook], event: Event, payload: object) -> None:
+    """Run every listener concurrently and wait for all, logging the ones that fail."""
+
+    async def call(hook: Hook) -> None:
+        try:
+            result = hook.callback(payload)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.exception("a listener of %r failed", event.name)
+
+    await asyncio.gather(*(call(hook) for hook in hooks))
+
+
+async def run_serial(hooks: Sequence[Hook], payload: object) -> Any:
+    """Await each listener in turn and return the first answer that is not ``None``."""
+    for hook in hooks:
+        result = hook.callback(payload)
+        if inspect.isawaitable(result):
+            result = await result
+        if result is not None:
+            return result
+    return None
+
+
+async def run_waterfall(
+    hooks: Sequence[Hook], payload: Any, final: Callable[[Any], Awaitable[Any]]
+) -> Any:
+    """Run the listeners as middleware around ``final``, outermost first."""
+
+    async def step(index: int, value: Any) -> Any:
+        if index == len(hooks):
+            return await final(value)
+
+        def following(later: Any) -> Awaitable[Any]:
+            return step(index + 1, later)
+
+        return await hooks[index].callback(value, following)
+
+    return await step(0, payload)

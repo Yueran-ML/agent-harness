@@ -14,10 +14,20 @@ from tack.kernel.events import (
     EmitListener,
     Event,
     Hook,
+    Next,
+    ParallelEvent,
+    ParallelListener,
     PayloadT,
     ResultT,
+    SerialEvent,
+    SerialListener,
+    WaterfallEvent,
+    WaterfallListener,
     run_bail,
     run_emit,
+    run_parallel,
+    run_serial,
+    run_waterfall,
 )
 from tack.kernel.fiber import Disposer, EffectHandle, Fiber, KernelState
 
@@ -64,6 +74,33 @@ class Context:
         prepend: bool = False,
     ) -> EffectHandle: ...
 
+    @overload
+    def on(
+        self,
+        event: ParallelEvent[PayloadT],
+        listener: ParallelListener[PayloadT],
+        *,
+        prepend: bool = False,
+    ) -> EffectHandle: ...
+
+    @overload
+    def on(
+        self,
+        event: SerialEvent[PayloadT, ResultT],
+        listener: SerialListener[PayloadT, ResultT],
+        *,
+        prepend: bool = False,
+    ) -> EffectHandle: ...
+
+    @overload
+    def on(
+        self,
+        event: WaterfallEvent[PayloadT, ResultT],
+        listener: WaterfallListener[PayloadT, ResultT],
+        *,
+        prepend: bool = False,
+    ) -> EffectHandle: ...
+
     def on(
         self, event: Event, listener: Callable[..., Any], *, prepend: bool = False
     ) -> EffectHandle:
@@ -99,3 +136,35 @@ class Context:
         A listener that raises stops the dispatch and the error reaches the caller.
         """
         return run_bail(self._kernel.hooks.select(event, BailEvent), payload)
+
+    async def parallel(self, event: ParallelEvent[PayloadT], payload: PayloadT) -> None:
+        """Run every listener of ``event`` concurrently and wait for all of them.
+
+        A listener that raises is logged and does not stop the others.
+        """
+        await run_parallel(self._kernel.hooks.select(event, ParallelEvent), event, payload)
+
+    async def serial(
+        self, event: SerialEvent[PayloadT, ResultT], payload: PayloadT
+    ) -> ResultT | None:
+        """Await each listener in turn and return the first answer that is not ``None``.
+
+        A listener that raises stops the dispatch and the error reaches the caller.
+        """
+        return await run_serial(self._kernel.hooks.select(event, SerialEvent), payload)
+
+    async def waterfall(
+        self,
+        event: WaterfallEvent[PayloadT, ResultT],
+        payload: PayloadT,
+        final: Next[PayloadT, ResultT],
+    ) -> ResultT:
+        """Run the listeners of ``event`` as middleware around ``final``.
+
+        The first listener is outermost. Each listener receives the payload and
+        a ``next`` function that runs the rest of the chain; it may pass a
+        different payload on, call ``next`` again to retry, or return without
+        calling it to short-circuit. Errors reach the caller.
+        """
+        hooks = self._kernel.hooks.select(event, WaterfallEvent)
+        return await run_waterfall(hooks, payload, final)

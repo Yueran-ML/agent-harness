@@ -83,6 +83,7 @@ convention = "google"
 include = ["src", "tests"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
+reportUnnecessaryTypeIgnoreComment = true
 venvPath = "."
 venv = ".venv"
 

@@ -4,8 +4,15 @@ An event is declared once, as a module-level constant of one of five kinds. The
 kind fixes how the event is dispatched. Every event carries a single payload.
 """
 
-from collections.abc import Awaitable, Callable
-from typing import ClassVar, Generic, TypeAlias, TypeVar
+import inspect
+import logging
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from typing import Any, ClassVar, Generic, TypeAlias, TypeVar
+
+from tack.kernel.errors import EventModeError
+
+logger = logging.getLogger("tack.kernel")
 
 PayloadT = TypeVar("PayloadT")
 ResultT = TypeVar("ResultT")
@@ -81,3 +88,102 @@ SerialListener: TypeAlias = Callable[[PayloadT], Awaitable[ResultT | None] | Res
 BailListener: TypeAlias = Callable[[PayloadT], ResultT | None]
 Next: TypeAlias = Callable[[PayloadT], Awaitable[ResultT]]
 WaterfallListener: TypeAlias = Callable[[PayloadT, Next[PayloadT, ResultT]], Awaitable[ResultT]]
+
+
+_PLAIN_LISTENER_MODES = frozenset({"emit", "bail"})
+
+
+@dataclass(slots=True, eq=False)
+class Hook:
+    """One registered listener."""
+
+    callback: Callable[..., Any]
+
+
+class HookTable:
+    """The listeners of every event, and the kind each event name belongs to."""
+
+    __slots__ = ("_hooks", "_kinds")
+
+    def __init__(self) -> None:
+        self._hooks: dict[str, list[Hook]] = {}
+        self._kinds: dict[str, type[Event]] = {}
+
+    def declare(self, event: Event) -> None:
+        """Record the kind of ``event``.
+
+        Raises:
+            EventModeError: The name is already in use by an event of another kind.
+        """
+        declared = self._kinds.setdefault(event.name, type(event))
+        if declared is not type(event):
+            raise EventModeError(
+                f"event {event.name!r} is already declared as {declared.__name__}, "
+                f"not {type(event).__name__}"
+            )
+
+    def add(self, event: Event, hook: Hook, *, prepend: bool) -> None:
+        """Register ``hook`` after the existing listeners, or before them.
+
+        Raises:
+            EventModeError: The event name belongs to another kind, or the
+                listener is a coroutine function and the event does not await
+                its listeners.
+        """
+        self.declare(event)
+        if event.mode in _PLAIN_LISTENER_MODES and inspect.iscoroutinefunction(hook.callback):
+            raise EventModeError(
+                f"{event!r} takes plain functions as listeners, not coroutine functions"
+            )
+        hooks = self._hooks.setdefault(event.name, [])
+        if prepend:
+            hooks.insert(0, hook)
+        else:
+            hooks.append(hook)
+
+    def remove(self, event: Event, hook: Hook) -> None:
+        """Unregister ``hook``."""
+        hooks = self._hooks[event.name]
+        hooks.remove(hook)
+        if not hooks:
+            del self._hooks[event.name]
+
+    def select(self, event: Event, kind: type[Event]) -> tuple[Hook, ...]:
+        """Return the listeners one dispatch of ``event`` should reach.
+
+        The result is a snapshot: listeners added or removed while the dispatch
+        runs do not change who it reaches.
+
+        Raises:
+            EventModeError: ``event`` is not of ``kind``.
+        """
+        if not isinstance(event, kind):
+            raise EventModeError(f"{event!r} is dispatched with {event.mode}(), not {kind.mode}()")
+        self.declare(event)
+        return tuple(self._hooks.get(event.name, ()))
+
+
+def run_emit(hooks: Sequence[Hook], event: Event, payload: object) -> None:
+    """Call every listener, logging the ones that fail."""
+    for hook in hooks:
+        try:
+            result = hook.callback(payload)
+        except Exception:
+            logger.exception("a listener of %r failed", event.name)
+            continue
+        if inspect.iscoroutine(result):
+            result.close()
+            logger.error(
+                "a listener of %r returned a coroutine; %s listeners must be plain functions",
+                event.name,
+                event.mode,
+            )
+
+
+def run_bail(hooks: Sequence[Hook], payload: object) -> Any:
+    """Return the first answer that is not ``None``."""
+    for hook in hooks:
+        result = hook.callback(payload)
+        if result is not None:
+            return result
+    return None

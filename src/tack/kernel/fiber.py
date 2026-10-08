@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, TypeAlias
 
 from tack.kernel.errors import InactiveEffectError
+from tack.kernel.events import HookTable
 
 if TYPE_CHECKING:
     from tack.kernel.context import Context
@@ -46,11 +47,12 @@ class FiberState(enum.Enum):
 class KernelState:
     """State shared by every fiber and context of one application."""
 
-    __slots__ = ("_uids", "drivers")
+    __slots__ = ("_uids", "drivers", "hooks")
 
     def __init__(self) -> None:
         self._uids = itertools.count()
         self.drivers: set[asyncio.Task[None]] = set()
+        self.hooks = HookTable()
 
     def next_uid(self) -> int:
         """Return a fiber identifier that has not been used before."""

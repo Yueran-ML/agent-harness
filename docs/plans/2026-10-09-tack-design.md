@@ -244,18 +244,21 @@ tests/   benchmarks/   docs/   examples/plugins/
 - 消息角色：`system`、`user`、`assistant`、`tool`。
 - 内容块：`text`、`reasoning`、`tool-call`。`reasoning` 块可带适配器私有的 `replay_state`，下次请求原样带回，只交还给产生它的适配器。
 - 流式分片：`block-start`、`text-delta`、`reasoning-delta`、`tool-call-delta`、`block-end`、`usage`、`finish`。
-- 结束原因：`stop`、`tool-calls`、`max-tokens`、`aborted`、`error`。
+- 结束原因：`stop`、`tool-calls`、`max-tokens`、`error`。结束分片带 `failure` 当且仅当原因是 `error`。
 - 用量字段互不重叠：`input_tokens` 只含未命中缓存的输入，`cache_read_tokens`、`cache_write_tokens`、`output_tokens` 单列。
 
-适配器只需实现 `stream(request, signal)`，产出分片。共享的装配器把分片折回内容块。结束原因为 `max-tokens` 时丢弃全部工具调用，因为被截断的调用不安全。工具参数全程保持原始字符串。
+适配器只需实现 `stream(request)`，返回一个产出分片的异步迭代器。取消不用信号对象。读取方的任务被取消或提前离开时，运行时关闭这个迭代器，这次调用没有结束分片。共享的装配器把分片折回内容块。结束原因为 `max-tokens` 时丢弃全部工具调用，因为被截断的调用不安全。工具参数全程保持原始字符串。
 
 ### 6.2 失败与重试
 
-所有失败归一成 `LlmFailure{message, code, status?, retry_after_ms?, request_id?}`。适配器可以抛异常，也可以发错误结束分片，运行时对外统一成结束分片。
+所有失败归一成 `LlmFailure{message, code, status?, retry_after_ms?, request_id?}`。适配器可以抛 `LlmError`，也可以发错误结束分片，运行时对外统一成结束分片。无论适配器做了什么，一次调用的分片流都以恰好一个结束分片收尾，适配器的流在这个分片送达之前已经关闭。
 
-错误码：`AUTH`、`QUOTA`、`RATE_LIMIT`、`CONTEXT_WINDOW_EXCEEDED`、`INVALID_REQUEST`、`SERVER`、`HTTP_<状态码>`、`TRANSPORT`、`ABORTED`、`TIMEOUT`、`STREAM_CLOSED`、`MALFORMED_RESPONSE`、`EMPTY_RESPONSE`。
+运行时还让结束分片与实际到达的内容一致。原因为 `tool-calls` 时回复里一定有工具调用，原因为 `stop` 时一定没有，不管提供方报的是哪一个。
 
-- 正常结束但没有内容块，算 `EMPTY_RESPONSE`。
+错误码：`AUTH`、`QUOTA`、`RATE_LIMIT`、`CONTEXT_WINDOW_EXCEEDED`、`INVALID_REQUEST`、`SERVER`、`HTTP_<状态码>`、`TRANSPORT`、`TIMEOUT`、`STREAM_CLOSED`、`MALFORMED_RESPONSE`、`EMPTY_RESPONSE`、`INTERNAL`。
+
+- 结束原因不是 `error` 但没有内容块，算 `EMPTY_RESPONSE`。
+- 适配器抛出 `LlmError` 以外的异常，算 `INTERNAL`。流没有结束分片就断了，算 `STREAM_CLOSED`。分片顺序违反协议，算 `MALFORMED_RESPONSE`。
 - 流空闲看门狗默认 300 秒，只在等待下一个分片时计时。
 - 适配器内部不重试。重试是独立插件，挂在"请求出错"拦截点上。
 - 默认策略：最多 5 次，只重试 `EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`，指数退避 0.5 到 10 秒，抖动 10%，提供方给出的等待时间在上限内优先。

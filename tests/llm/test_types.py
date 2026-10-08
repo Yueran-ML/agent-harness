@@ -7,9 +7,11 @@ from tack.llm import (
     AssistantMessage,
     BlockEnd,
     BlockStart,
+    CallConfig,
     Chunk,
     Finish,
     LlmFailure,
+    LlmRequest,
     Message,
     ReasoningBlock,
     ReasoningDelta,
@@ -19,6 +21,7 @@ from tack.llm import (
     ToolCallBlock,
     ToolCallDelta,
     ToolMessage,
+    ToolSchema,
     Usage,
     UsageChunk,
     UserMessage,
@@ -74,6 +77,46 @@ def test_a_chunk_survives_a_json_round_trip(chunk: Chunk) -> None:
     adapter: TypeAdapter[Chunk] = TypeAdapter(Chunk)
 
     assert adapter.validate_json(adapter.dump_json(chunk)) == chunk
+
+
+def test_a_finish_carries_a_failure_exactly_when_it_is_an_error() -> None:
+    with pytest.raises(ValidationError, match="carries a failure exactly when"):
+        Finish(reason="error")
+    with pytest.raises(ValidationError, match="carries a failure exactly when"):
+        Finish(reason="stop", failure=LlmFailure(message="slow down", code="RATE_LIMIT"))
+
+
+def test_a_request_survives_a_json_round_trip() -> None:
+    request = LlmRequest(
+        config=CallConfig(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            max_output_tokens=4096,
+            temperature=0.0,
+            reasoning="high",
+            options={"thinking": {"type": "enabled"}},
+        ),
+        messages=tuple(MESSAGES),
+        tools=(
+            ToolSchema(
+                name="read",
+                description="Read a file.",
+                parameters={"type": "object", "properties": {"path": {"type": "string"}}},
+            ),
+        ),
+    )
+
+    assert LlmRequest.model_validate_json(request.model_dump_json()) == request
+
+
+def test_a_call_config_leaves_everything_but_the_model_to_the_provider() -> None:
+    config = CallConfig(provider="deepseek", model="deepseek-v4-flash")
+
+    assert config.model_dump(exclude_none=True) == {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "options": {},
+    }
 
 
 def test_the_vocabulary_is_immutable() -> None:

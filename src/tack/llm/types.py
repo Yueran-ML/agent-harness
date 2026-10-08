@@ -4,9 +4,9 @@ Everything here is plain data. A message is what a model sees, a chunk is one
 piece of a streamed reply, and a failure is what went wrong with a call.
 """
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 
 class Data(BaseModel):
@@ -125,7 +125,7 @@ class LlmFailure(Data):
     request_id: str | None = None
 
 
-FinishReason = Literal["stop", "tool-calls", "max-tokens", "aborted", "error"]
+FinishReason = Literal["stop", "tool-calls", "max-tokens", "error"]
 BlockKind = Literal["text", "reasoning", "tool-call"]
 
 
@@ -179,14 +179,69 @@ class UsageChunk(Data):
 
 
 class Finish(Data):
-    """The reply is over. ``failure`` is set when the reason is ``error``."""
+    """The reply is over. ``failure`` is set exactly when the reason is ``error``."""
 
     type: Literal["finish"] = "finish"
     reason: FinishReason
     failure: LlmFailure | None = None
+
+    @model_validator(mode="after")
+    def _failure_goes_with_error(self) -> Self:
+        if (self.reason == "error") != (self.failure is not None):
+            raise ValueError("a finish carries a failure exactly when its reason is 'error'")
+        return self
 
 
 Chunk = Annotated[
     BlockStart | TextDelta | ReasoningDelta | ToolCallDelta | BlockEnd | UsageChunk | Finish,
     Field(discriminator="type"),
 ]
+
+
+class ToolSchema(Data):
+    """What a model is told about one tool.
+
+    ``parameters`` is a JSON Schema object describing the arguments.
+    """
+
+    name: str
+    description: str
+    parameters: dict[str, JsonValue]
+
+
+class CallConfig(Data):
+    """Everything about one call that is not the conversation.
+
+    A field left as ``None`` is not sent, and the provider's default applies.
+    The whole config is written to the session log with each request, so a
+    run can be reproduced from the log.
+
+    Attributes:
+        provider: The name under which the adapter is registered.
+        model: The model identifier, in the provider's own spelling.
+        context_window: The size of the model's context window, in tokens.
+        max_output_tokens: The limit on the length of the reply.
+        temperature: The sampling temperature.
+        top_p: The nucleus sampling threshold.
+        seed: The sampling seed, for providers that honour one.
+        reasoning: How much the model should reason before it answers.
+        options: Further settings that only one adapter understands.
+    """
+
+    provider: str
+    model: str
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    seed: int | None = None
+    reasoning: Literal["off", "low", "high", "max"] | None = None
+    options: dict[str, JsonValue] = Field(default_factory=dict[str, JsonValue])
+
+
+class LlmRequest(Data):
+    """One call to a model: the config, the conversation, and the tools on offer."""
+
+    config: CallConfig
+    messages: tuple[Message, ...]
+    tools: tuple[ToolSchema, ...] = ()

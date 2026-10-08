@@ -1,17 +1,26 @@
-"""Model access: the shared vocabulary, the stream assembler, and the adapters."""
+"""Model access: the shared vocabulary, the stream assembler, and the model service.
 
+This module is a plugin. Loading it provides :data:`LLM`.
+"""
+
+from pydantic import BaseModel, Field
+
+from tack.kernel import Context
 from tack.llm.assembler import Assembler, MalformedStreamError
+from tack.llm.runtime import LLM, Llm, LlmAdapter, LlmCall, LlmError
 from tack.llm.types import (
     AssistantBlock,
     AssistantMessage,
     BlockEnd,
     BlockKind,
     BlockStart,
+    CallConfig,
     Chunk,
     Data,
     Finish,
     FinishReason,
     LlmFailure,
+    LlmRequest,
     Message,
     ReasoningBlock,
     ReasoningDelta,
@@ -21,23 +30,32 @@ from tack.llm.types import (
     ToolCallBlock,
     ToolCallDelta,
     ToolMessage,
+    ToolSchema,
     Usage,
     UsageChunk,
     UserMessage,
 )
 
 __all__ = [
+    "LLM",
     "Assembler",
     "AssistantBlock",
     "AssistantMessage",
     "BlockEnd",
     "BlockKind",
     "BlockStart",
+    "CallConfig",
     "Chunk",
+    "Config",
     "Data",
     "Finish",
     "FinishReason",
+    "Llm",
+    "LlmAdapter",
+    "LlmCall",
+    "LlmError",
     "LlmFailure",
+    "LlmRequest",
     "MalformedStreamError",
     "Message",
     "ReasoningBlock",
@@ -48,7 +66,28 @@ __all__ = [
     "ToolCallBlock",
     "ToolCallDelta",
     "ToolMessage",
+    "ToolSchema",
     "Usage",
     "UsageChunk",
     "UserMessage",
+    "apply",
+    "name",
 ]
+
+name = "llm"
+
+
+class Config(BaseModel):
+    """The config of the model service.
+
+    Attributes:
+        idle_timeout_seconds: How long a stream may stay silent between two
+            chunks before the call fails with ``TIMEOUT``.
+    """
+
+    idle_timeout_seconds: float = Field(default=300.0, gt=0)
+
+
+def apply(ctx: Context, config: Config) -> None:
+    """Provide the model service."""
+    ctx.provide(LLM, Llm(config.idle_timeout_seconds))

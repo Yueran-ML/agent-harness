@@ -2,11 +2,11 @@
 
 import asyncio
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 
 import pytest
 
-from tack.kernel import Context, Disposer, FiberState, Plugin
+from tack.kernel import Context, Disposer, EffectHandle, FiberState, Plugin
 
 pytestmark = pytest.mark.skipif(
     sys.version_info < (3, 12), reason="eager task factories arrived in Python 3.12"
@@ -59,4 +59,37 @@ async def test_a_plugin_loads_in_the_background_under_an_eager_task_factory() ->
     await fiber
 
     assert log == ["applied"]
+    await ctx.fiber.dispose()
+
+
+@pytest.mark.usefixtures("eager_tasks")
+async def test_a_disposer_that_disposes_its_own_handle_in_an_eager_task_is_still_waited_for() -> (
+    None
+):
+    ctx = Context()
+    gate = asyncio.Event()
+    log: list[str] = []
+    handles: list[EffectHandle] = []
+    spawned: list[asyncio.Future[None]] = []
+
+    async def cleanup() -> None:
+        await gate.wait()
+        log.append("cleaned up")
+
+    def undo() -> Awaitable[None]:
+        spawned.append(asyncio.ensure_future(handles[0].dispose()))
+        return cleanup()
+
+    handles.append(ctx.effect(lambda: undo))
+    waiter = asyncio.ensure_future(handles[0].dispose())
+    await asyncio.sleep(0)
+    try:
+        assert not waiter.done()
+        assert not handles[0].disposed
+    finally:
+        gate.set()
+    await asyncio.wait_for(waiter, timeout=1)
+
+    assert log == ["cleaned up"]
+    assert handles[0].disposed
     await ctx.fiber.dispose()

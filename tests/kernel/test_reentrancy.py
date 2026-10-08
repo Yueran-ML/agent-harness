@@ -374,3 +374,54 @@ async def test_a_dependent_may_withdraw_the_service_it_injects_from_its_own_disp
     await asyncio.wait_for(handle.dispose(), timeout=1)
     assert handle.disposed
     await ctx.fiber.dispose()
+
+
+async def test_a_task_started_in_apply_and_returned_as_cleanup_may_dispose_its_fiber() -> None:
+    ctx = Context()
+    go = asyncio.Event()
+    log: list[str] = []
+
+    def apply(inner: Context, config: object) -> Disposer:
+        async def cleanup() -> None:
+            await go.wait()
+            await inner.fiber.dispose()
+            log.append("cleaned up")
+
+        task = asyncio.ensure_future(cleanup())
+
+        def undo() -> asyncio.Future[None]:
+            go.set()
+            return task
+
+        return undo
+
+    fiber = await ctx.plugin(Plugin("self", apply))
+
+    await asyncio.wait_for(fiber.dispose(), timeout=1)
+
+    assert log == ["cleaned up"]
+    assert fiber.state is FiberState.DISPOSED
+    await ctx.fiber.dispose()
+
+
+async def test_a_task_started_by_a_finished_cleanup_task_is_ordinary_code(ctx: Context) -> None:
+    outcomes: list[str] = []
+    tasks: list[asyncio.Future[None]] = []
+
+    async def after() -> None:
+        await ctx.settled()
+        outcomes.append("waited")
+
+    async def cleanup() -> None:
+        await asyncio.sleep(0)
+        tasks.append(asyncio.ensure_future(after()))
+
+    def undo() -> asyncio.Future[None]:
+        return asyncio.ensure_future(cleanup())
+
+    handle = ctx.effect(lambda: undo)
+
+    await asyncio.wait_for(handle.dispose(), timeout=1)
+    await asyncio.wait_for(tasks[0], timeout=1)
+
+    assert outcomes == ["waited"]

@@ -24,9 +24,10 @@ import enum
 import inspect
 import itertools
 import logging
+import weakref
 from collections.abc import Awaitable, Callable, Coroutine, Generator, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias, cast
 
 from tack.kernel.errors import InactiveEffectError, InvalidPluginError, KernelError
 from tack.kernel.events import EmitEvent, HookTable, run_emit
@@ -104,15 +105,48 @@ class Lifecycle:
     The mark is kept in a context variable, so a task started by that code
     inherits it. ``running`` turns false once the ``apply`` or the disposer has
     finished: a task that outlives it is ordinary code again.
+
+    The marked code may hand the kernel a future or a task of its own to wait
+    for. ``awaited`` is that future. The mark stops counting the moment it is
+    done, without waiting for the kernel to notice.
     """
 
     fiber: Fiber
     running: bool = True
+    awaited: asyncio.Future[Any] | None = None
+
+    @property
+    def live(self) -> bool:
+        """Whether the code this mark describes is still running."""
+        return self.running and not (self.awaited is not None and self.awaited.done())
+
+    def adopt(self, awaitable: object) -> None:
+        """Extend the mark to a future or task that the marked code returned.
+
+        A task that already existed runs in a context of its own, so it cannot
+        inherit the mark. It is looked up by identity instead.
+        """
+        if isinstance(awaitable, asyncio.Future):
+            self.awaited = cast("asyncio.Future[Any]", awaitable)
+        if isinstance(awaitable, asyncio.Task):
+            _adopted[cast("asyncio.Task[Any]", awaitable)] = self
 
 
 _lifecycle: contextvars.ContextVar[Lifecycle | None] = contextvars.ContextVar(
     "tack-lifecycle", default=None
 )
+
+_adopted: weakref.WeakKeyDictionary[asyncio.Task[Any], Lifecycle] = weakref.WeakKeyDictionary()
+
+
+def _current_mark() -> Lifecycle | None:
+    """Return the live lifecycle mark of the calling code, if it has one."""
+    task = asyncio.current_task()
+    adopted = None if task is None else _adopted.get(task)
+    if adopted is not None and adopted.live:
+        return adopted
+    mark = _lifecycle.get()
+    return mark if mark is not None and mark.live else None
 
 
 @dataclass(slots=True, eq=False)
@@ -153,8 +187,8 @@ class KernelState:
 
     def lifecycle_fiber(self) -> Fiber | None:
         """Return the fiber whose ``apply`` or disposer the caller is part of, if any."""
-        mark = _lifecycle.get()
-        if mark is None or not mark.running or mark.fiber._kernel is not self:
+        mark = _current_mark()
+        if mark is None or mark.fiber._kernel is not self:
             return None
         return mark.fiber
 
@@ -292,6 +326,7 @@ class EffectHandle:
 
     __slots__ = (
         "_awaitable",
+        "_begun",
         "_disposer",
         "_done",
         "_entered",
@@ -313,6 +348,7 @@ class EffectHandle:
         self._mark = Lifecycle(fiber)
         self._awaitable: Awaitable[None] | None = None
         self._pending: asyncio.Task[None] | None = None
+        self._begun = False
         self._entered = False
         self._done = False
 
@@ -339,8 +375,8 @@ class EffectHandle:
             await self._join()
 
     def _caller_is_waited_for(self) -> bool:
-        mark = _lifecycle.get()
-        if mark is None or not mark.running:
+        mark = _current_mark()
+        if mark is None:
             return False
         if mark is self._mark:
             return True
@@ -350,7 +386,9 @@ class EffectHandle:
         """Wait until the effect is undone, whoever is asking."""
         while not self._done:
             pending = self._pending
-            assert pending is not None
+            if pending is None:  # pragma: no cover - needs an eagerly started, unmarked task
+                # Asked while the disposer is still being called.
+                return
             if pending.done():
                 if self._entered:
                     self._finish()
@@ -361,8 +399,9 @@ class EffectHandle:
 
     def _begin(self) -> None:
         """Start undoing the effect without waiting for it."""
-        if self._done or self._pending is not None:
+        if self._begun:
             return
+        self._begun = True
         disposer, self._disposer = self._disposer, None
         token = _lifecycle.set(self._mark)
         try:
@@ -373,6 +412,7 @@ class EffectHandle:
         finally:
             _lifecycle.reset(token)
         if inspect.isawaitable(result):
+            self._mark.adopt(result)
             self._awaitable = result
             self._start()
         else:
@@ -705,6 +745,7 @@ class Fiber:
         try:
             result = plugin.apply(self.ctx, self.config)
             if inspect.isawaitable(result):
+                mark.adopt(result)
                 result = await result
             return result
         finally:

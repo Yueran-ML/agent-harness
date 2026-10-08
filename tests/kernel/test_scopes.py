@@ -26,6 +26,10 @@ class Agent:
     """Stands in for whatever object identifies a scope."""
 
 
+def nothing(ctx: Context, config: object) -> None:
+    return None
+
+
 async def test_a_scope_is_active_as_soon_as_it_is_created(ctx: Context) -> None:
     agent = Agent()
 
@@ -119,7 +123,7 @@ async def test_disposing_a_scope_undoes_what_was_registered_through_it(ctx: Cont
     scoped.on(PING, log.append)
     scoped.effect(lambda: lambda: log.append("effect undone"))
     scoped.provide(NOTES, ["a note"])
-    fiber = await scoped.plugin(Plugin("inside", lambda inner, config: None))
+    fiber = await scoped.plugin(Plugin("inside", nothing))
     assert ctx.use(NOTES) == ["a note"]
 
     await scoped.fiber.dispose()

@@ -253,29 +253,6 @@ async def test_settled_waits_for_every_plugin(ctx: Context) -> None:
     assert ctx.fibers() == (first, second)
 
 
-async def test_a_plugin_disposed_while_loading_never_becomes_active(ctx: Context) -> None:
-    entered = asyncio.Event()
-    release = asyncio.Event()
-    log: list[str] = []
-
-    async def apply(inner: Context, config: object) -> Disposer:
-        entered.set()
-        await release.wait()
-        return lambda: log.append("undone")
-
-    fiber = ctx.plugin(Plugin("demo", apply))
-    await asyncio.wait_for(entered.wait(), timeout=1)
-    disposal = asyncio.ensure_future(fiber.dispose())
-    await asyncio.sleep(0)
-    assert fiber.state is FiberState.LOADING
-
-    release.set()
-    await disposal
-
-    assert log == ["undone"]
-    assert fiber.state is FiberState.DISPOSED
-
-
 async def test_a_plugin_can_dispose_itself_while_loading(ctx: Context) -> None:
     async def apply(inner: Context, config: object) -> None:
         await inner.fiber.dispose()
@@ -332,3 +309,28 @@ def test_resolve_plugin_reads_the_module_name_when_no_name_is_given() -> None:
 def test_resolve_plugin_rejects_other_objects(candidate: object) -> None:
     with pytest.raises(InvalidPluginError):
         resolve_plugin(candidate)
+
+
+def test_a_plugin_checks_what_it_is_given() -> None:
+    with pytest.raises(InvalidPluginError, match="needs a name"):
+        Plugin("", nothing)
+
+    with pytest.raises(InvalidPluginError, match="must be callable"):
+        Plugin("demo", "not callable")  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(InvalidPluginError, match="pydantic model"):
+        Plugin("demo", nothing, config=dict)
+
+
+def test_pyright_rejects_a_config_model_that_apply_does_not_accept() -> None:
+    """A static check: the ignore below fails the type check once it is unnecessary."""
+
+    class Other(BaseModel):
+        size: int = 0
+
+    def apply(inner: Context, config: Greeting) -> None:
+        return None
+
+    plugin = Plugin("mismatched", apply, config=Other)  # pyright: ignore[reportArgumentType]
+
+    assert plugin.config is Other

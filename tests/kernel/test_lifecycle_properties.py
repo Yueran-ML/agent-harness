@@ -112,7 +112,7 @@ class Run:
     def dependents_of(self, service: int) -> list[int]:
         return [p for p, injects in enumerate(self.scenario.injects) if service in injects]
 
-    def plugin(self, index: int) -> Plugin:
+    def plugin(self, index: int) -> Plugin[object]:
         provides = [s for s, owner in enumerate(self.scenario.owners) if owner == index]
         injects = sorted(self.scenario.injects[index])
         slow_to_load, slow_to_clean_up = self.scenario.slow[index]

@@ -311,7 +311,7 @@ class Context:
 
         A listener that raises stops the dispatch and the error reaches the caller.
         """
-        return run_bail(self._select(event, BailEvent), payload)
+        return run_bail(self._select(event, BailEvent), event, payload)
 
     async def parallel(self, event: ParallelEvent[PayloadT], payload: PayloadT) -> None:
         """Run every listener of ``event`` concurrently and wait for all of them.

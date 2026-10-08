@@ -25,7 +25,7 @@ STORE = ServiceKey[dict[str, int]]("store")
 INDEX = ServiceKey[list[str]]("index")
 
 
-def consumer(log: list[str]) -> Plugin:
+def consumer(log: list[str]) -> Plugin[object]:
     """A plugin that needs the clock and records each load and unload."""
 
     def apply(ctx: Context, config: object) -> Disposer:
@@ -36,7 +36,7 @@ def consumer(log: list[str]) -> Plugin:
     return Plugin("consumer", apply, inject=(CLOCK,))
 
 
-def clock_provider(now: int, log: list[str] | None = None) -> Plugin:
+def clock_provider(now: int, log: list[str] | None = None) -> Plugin[object]:
     def apply(ctx: Context, config: object) -> Disposer:
         ctx.provide(CLOCK, Clock(now))
         return lambda: None if log is None else log.append(f"provider {now} cleanup")
@@ -323,9 +323,21 @@ async def test_inject_is_read_from_a_module_like_plugin(ctx: Context) -> None:
 
 
 @pytest.mark.parametrize("inject", ["clock", [CLOCK, "store"], {CLOCK}])
-def test_inject_must_be_a_list_of_service_keys(inject: object) -> None:
+def test_inject_must_be_a_list_or_tuple_of_service_keys(inject: object) -> None:
     def apply(inner: Context, config: object) -> None:
         return None
 
-    with pytest.raises(InvalidPluginError, match="list of service keys"):
+    with pytest.raises(InvalidPluginError, match="list or tuple of service keys"):
         resolve_plugin(SimpleNamespace(name="module", apply=apply, inject=inject))
+
+    with pytest.raises(InvalidPluginError, match="list or tuple of service keys"):
+        Plugin("direct", apply, inject=inject)  # pyright: ignore[reportArgumentType]
+
+
+def test_inject_given_as_a_list_is_kept_as_a_tuple() -> None:
+    def apply(inner: Context, config: object) -> None:
+        return None
+
+    plugin = Plugin("direct", apply, inject=[CLOCK])  # pyright: ignore[reportArgumentType]
+
+    assert plugin.inject == (CLOCK,)

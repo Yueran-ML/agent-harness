@@ -26,11 +26,19 @@ from tack.kernel.events import (
     WaterfallEvent,
     WaterfallListener,
 )
-from tack.kernel.fiber import Disposer, EffectHandle, Fiber, FiberState
+from tack.kernel.fiber import (
+    FIBER_STATE_CHANGED,
+    Disposer,
+    EffectHandle,
+    Fiber,
+    FiberState,
+    FiberStateChange,
+)
 from tack.kernel.plugin import Apply, ApplyResult, Plugin, resolve_plugin
 from tack.kernel.services import ServiceKey
 
 __all__ = [
+    "FIBER_STATE_CHANGED",
     "Apply",
     "ApplyResult",
     "BailEvent",
@@ -45,6 +53,7 @@ __all__ = [
     "EventModeError",
     "Fiber",
     "FiberState",
+    "FiberStateChange",
     "InactiveEffectError",
     "InvalidPluginError",
     "KernelError",

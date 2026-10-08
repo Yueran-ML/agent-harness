@@ -150,24 +150,46 @@ async def test_one_name_cannot_be_declared_as_two_kinds(ctx: Context) -> None:
         ctx.bail(BailEvent[str, int]("test/twice"), "x")
 
 
-async def test_emit_events_reject_coroutine_functions_as_listeners(ctx: Context) -> None:
-    async def listener(payload: str) -> None:
-        return None
+async def a_coroutine(payload: str) -> int:
+    return len(payload)
 
+
+class AsyncCallable:
+    async def __call__(self, payload: str) -> int:
+        return len(payload)
+
+
+@pytest.mark.parametrize("listener", [a_coroutine, AsyncCallable()], ids=["function", "object"])
+async def test_events_that_do_not_await_reject_async_listeners(
+    ctx: Context, listener: object
+) -> None:
     with pytest.raises(EventModeError, match="plain functions"):
         ctx.on(PING, listener)  # pyright: ignore[reportArgumentType, reportCallIssue]
 
+    with pytest.raises(EventModeError, match="plain functions"):
+        ctx.on(ASK, listener)  # pyright: ignore[reportArgumentType, reportCallIssue]
 
-async def test_emit_closes_a_coroutine_returned_by_a_listener(
+
+async def test_emit_closes_a_coroutine_returned_by_a_plain_listener(
     ctx: Context, caplog: pytest.LogCaptureFixture
 ) -> None:
-    class AsyncCallable:
-        async def __call__(self, payload: str) -> None:
-            return None
+    def sneaky(payload: str) -> None:
+        return a_coroutine(payload)  # pyright: ignore[reportReturnType]
 
-    ctx.on(PING, AsyncCallable())  # pyright: ignore[reportArgumentType, reportCallIssue]
+    ctx.on(PING, sneaky)
 
     with caplog.at_level(logging.ERROR, logger="tack.kernel"):
         ctx.emit(PING, "x")
 
     assert "returned a coroutine" in caplog.text
+
+
+async def test_bail_refuses_a_coroutine_as_an_answer(ctx: Context) -> None:
+    def sneaky(payload: str) -> int | None:
+        return a_coroutine(payload)  # pyright: ignore[reportReturnType]
+
+    ctx.on(ASK, sneaky)
+    ctx.on(ASK, lambda payload: 7)
+
+    with pytest.raises(EventModeError, match="returned a coroutine"):
+        ctx.bail(ASK, "four")

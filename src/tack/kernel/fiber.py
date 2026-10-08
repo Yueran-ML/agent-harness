@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 from pydantic import ValidationError
 
 from tack.kernel.errors import InactiveEffectError, InvalidPluginError, KernelError
-from tack.kernel.events import HookTable
+from tack.kernel.events import EmitEvent, HookTable, run_emit
 from tack.kernel.services import ServiceKey
 
 if TYPE_CHECKING:
@@ -62,6 +62,19 @@ class FiberState(enum.Enum):
     FAILED = "failed"
     UNLOADING = "unloading"
     DISPOSED = "disposed"
+
+
+@dataclass(frozen=True, slots=True)
+class FiberStateChange:
+    """The payload of :data:`FIBER_STATE_CHANGED`."""
+
+    fiber: Fiber
+    previous: FiberState
+    current: FiberState
+
+
+FIBER_STATE_CHANGED: EmitEvent[FiberStateChange] = EmitEvent("kernel/fiber-state-changed")
+"""Emitted, outside every scope, each time a fiber enters a new state."""
 
 
 @dataclass(slots=True, eq=False)
@@ -332,7 +345,7 @@ class Fiber:
         self,
         kernel: KernelState,
         parent: Fiber | None,
-        plugin: Plugin | None = None,
+        plugin: Plugin[Any] | None = None,
         config: object = None,
     ) -> None:
         self.uid = kernel.next_uid()
@@ -599,3 +612,5 @@ class Fiber:
         self.state = state
         if FiberState.ACTIVE in (previous, state):
             self._kernel.announce(self)
+        listeners = self._kernel.hooks.select(FIBER_STATE_CHANGED, EmitEvent)
+        run_emit(listeners, FIBER_STATE_CHANGED, FiberStateChange(self, previous, state))

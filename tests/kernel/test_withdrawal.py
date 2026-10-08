@@ -18,6 +18,10 @@ CLOCK = ServiceKey[int]("clock")
 STORE = ServiceKey[int]("store")
 
 
+def nothing(ctx: Context, config: object) -> None:
+    return None
+
+
 async def a_few_turns() -> None:
     for _ in range(5):
         await asyncio.sleep(0)
@@ -117,7 +121,7 @@ async def test_a_withdrawal_cannot_be_overtaken_by_a_dependent_providing_the_nam
         inner.provide(STORE, inner.use(CLOCK))
 
     first = await ctx.plugin(Plugin("first", provide_store, inject=(CLOCK,)))
-    second = await ctx.plugin(Plugin("second", lambda inner, config: None, inject=(STORE,)))
+    second = await ctx.plugin(Plugin("second", nothing, inject=(STORE,)))
 
     withdrawal = asyncio.ensure_future(old.dispose())
     await asyncio.sleep(0)

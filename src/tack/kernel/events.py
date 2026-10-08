@@ -94,6 +94,13 @@ WaterfallListener: TypeAlias = Callable[[PayloadT, Next[PayloadT, ResultT]], Awa
 _PLAIN_LISTENER_MODES = frozenset({"emit", "bail"})
 
 
+def _is_async(callback: Callable[..., Any]) -> bool:
+    """Return whether calling ``callback`` produces a coroutine."""
+    return inspect.iscoroutinefunction(callback) or inspect.iscoroutinefunction(
+        type(callback).__call__
+    )
+
+
 @dataclass(slots=True, eq=False)
 class Hook:
     """One registered listener, and the scope it was registered in, if any."""
@@ -133,7 +140,7 @@ class HookTable:
                 its listeners.
         """
         self.declare(event)
-        if event.mode in _PLAIN_LISTENER_MODES and inspect.iscoroutinefunction(hook.callback):
+        if event.mode in _PLAIN_LISTENER_MODES and _is_async(hook.callback):
             raise EventModeError(
                 f"{event!r} takes plain functions as listeners, not coroutine functions"
             )
@@ -193,10 +200,20 @@ def run_emit(hooks: Sequence[Hook], event: Event, payload: object) -> None:
             )
 
 
-def run_bail(hooks: Sequence[Hook], payload: object) -> Any:
-    """Return the first answer that is not ``None``."""
+def run_bail(hooks: Sequence[Hook], event: Event, payload: object) -> Any:
+    """Return the first answer that is not ``None``.
+
+    Raises:
+        EventModeError: A listener answered with a coroutine.
+    """
     for hook in hooks:
         result = hook.callback(payload)
+        if inspect.iscoroutine(result):
+            result.close()
+            raise EventModeError(
+                f"a listener of {event.name!r} returned a coroutine; "
+                f"{event.mode} listeners must be plain functions"
+            )
         if result is not None:
             return result
     return None

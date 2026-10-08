@@ -20,6 +20,10 @@ PING = EmitEvent[str]("test/ping")
 FLUSH = ParallelEvent[str]("test/flush")
 
 
+def nothing(ctx: Context, config: object) -> None:
+    return None
+
+
 async def a_few_turns() -> None:
     """Let every task that is ready to run take several steps."""
     for _ in range(5):
@@ -194,7 +198,7 @@ async def test_a_load_whose_driver_was_cancelled_is_rolled_back(ctx: Context) ->
 
 
 async def test_a_driver_cancelled_before_it_ran_does_not_block_waiters(ctx: Context) -> None:
-    fiber = ctx.plugin(Plugin("unlucky", lambda inner, config: None))
+    fiber = ctx.plugin(Plugin("unlucky", nothing))
     driver_of(fiber).cancel()
 
     await asyncio.wait_for(fiber.settled(), timeout=1)

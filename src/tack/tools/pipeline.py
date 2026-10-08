@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -162,6 +162,10 @@ class PendingCall:
     value. A call never raises, except for a cancellation of the caller, which
     stops the tool and leaves the call without an outcome.
 
+    A call has one outcome, the first that it is given. A check counts only
+    if it answers: one that fails, or answers nothing, keeps the tool from
+    running and its result from getting through.
+
     Attributes:
         call: The call as the model wrote it.
         concurrency_safe: Whether the call may run beside other calls of the
@@ -200,41 +204,49 @@ class PendingCall:
         return self._outcome
 
     def fail(self, code: str, text: str) -> ToolOutcome:
-        """End the call with an error result, without running the tool.
+        """End the call with an error result, without waiting for the tool.
+
+        If the tool is running, it is not stopped by this, but whatever it
+        does from here on no longer changes the outcome.
 
         Raises:
             RuntimeError: The call has an outcome already.
         """
         if self._outcome is not None:
             raise RuntimeError(f"the call {self.call.call_id!r} has an outcome already")
-        return self._settle(
-            ToolOutcome(call=self.call, text=text, error=ToolError(code=code, reason=text))
-        )
+        return self._fail(code, text)
 
     async def authorize(self) -> None:
         """Ask the checks whether the call may run. Asking again does nothing.
 
         A refusal ends the call with an error result. So does a check that
-        fails: a call that cannot be checked does not run.
+        fails or gives no answer: a call that cannot be checked does not run.
         """
         invocation = self._invocation
         if self._authorized or self._outcome is not None or invocation is None:
             return
         try:
-            decision = await cancellation.guard(
-                self._ctx.waterfall(PRE_EXECUTE, invocation, _allow)
+            decision = cast(
+                "object",
+                await cancellation.guard(self._ctx.waterfall(PRE_EXECUTE, invocation, _allow)),
             )
         except Exception as error:
             logger.error("a check of a call of the tool %r failed", self.call.name, exc_info=error)
-            self.fail(
+            self._fail(
                 "CHECK_FAILED",
                 f"The call could not be checked and did not run: {_describe(error)}",
             )
             return
-        if isinstance(decision, Deny):
-            self.fail(decision.code, f"The call was not allowed: {decision.reason}")
-            return
-        self._authorized = True
+        if isinstance(decision, Allow):
+            self._authorized = True
+        elif isinstance(decision, Deny):
+            self._fail(decision.code, f"The call was not allowed: {decision.reason}")
+        else:
+            logger.error("a check of a call of the tool %r gave no decision", self.call.name)
+            self._fail(
+                "CHECK_FAILED",
+                "The call could not be checked and did not run: a check gave no decision",
+            )
 
     async def execute(self) -> ToolOutcome:
         """Run the tool and return how the call ended.
@@ -254,51 +266,71 @@ class PendingCall:
                 value = await cancellation.guard(
                     self._ctx.waterfall(EXECUTE, invocation, _run_tool)
                 )
-            text = str(value) if tool.render is None else tool.render(invocation.args, value)
+            try:
+                text = str(value) if tool.render is None else tool.render(invocation.args, value)
+            except asyncio.CancelledError as error:
+                # Rendering does not wait, so no cancellation of ours can arrive in it.
+                raise cancellation.CancelledFromInside from error
         except Exception as error:
             return self._failed(tool.name, error, timed_out=timer.expired())
         executed = Executed(invocation, value, text or "(no output)")
         try:
-            verdict = await cancellation.guard(self._ctx.waterfall(POST_EXECUTE, executed, _accept))
+            verdict = cast(
+                "object",
+                await cancellation.guard(self._ctx.waterfall(POST_EXECUTE, executed, _accept)),
+            )
         except Exception as error:
             logger.error(
                 "a check of a result of the tool %r failed", self.call.name, exc_info=error
             )
-            return self.fail(
+            return self._fail(
                 "CHECK_FAILED",
                 "The result of the call could not be checked and is withheld: " + _describe(error),
             )
+        if isinstance(verdict, Accept):
+            return self._settle(
+                ToolOutcome(
+                    call=self.call,
+                    text=verdict.text or "(no output)",
+                    value=value,
+                    concludes_turn=invocation.run.concludes_turn,
+                )
+            )
         if isinstance(verdict, Block):
-            return self.fail(
+            return self._fail(
                 "RESULT_BLOCKED", f"The result of the call is withheld: {verdict.reason}"
             )
-        return self._settle(
-            ToolOutcome(
-                call=self.call,
-                text=verdict.text or "(no output)",
-                value=value,
-                concludes_turn=invocation.run.concludes_turn,
-            )
+        logger.error("a check of a result of the tool %r gave no verdict", self.call.name)
+        return self._fail(
+            "CHECK_FAILED",
+            "The result of the call could not be checked and is withheld: a check gave no verdict",
         )
 
     def _failed(self, name: str, error: Exception, *, timed_out: bool) -> ToolOutcome:
         """Turn what running the tool raised into an error result."""
         if timed_out:
-            return self.fail(
+            return self._fail(
                 "TOOL_TIMEOUT",
                 f"The tool {name} did not finish within {self._timeout:g} seconds and was stopped.",
             )
         if isinstance(error, ToolFailure):
-            return self.fail(error.code, str(error))
+            return self._fail(error.code, str(error))
         if isinstance(error, cancellation.CancelledFromInside):
-            return self.fail("TOOL_ERROR", f"The tool {name} was cancelled from inside.")
+            return self._fail("TOOL_ERROR", f"The tool {name} was cancelled from inside.")
         logger.error("the tool %r failed", name, exc_info=error)
-        return self.fail("TOOL_ERROR", f"The tool {name} failed: {_describe(error)}")
+        return self._fail("TOOL_ERROR", f"The tool {name} failed: {_describe(error)}")
+
+    def _fail(self, code: str, text: str) -> ToolOutcome:
+        return self._settle(
+            ToolOutcome(call=self.call, text=text, error=ToolError(code=code, reason=text))
+        )
 
     def _settle(self, outcome: ToolOutcome) -> ToolOutcome:
-        self._outcome = outcome
-        self._ctx.emit(RESULT, outcome)
-        return outcome
+        """Give the call its outcome and announce it. The first outcome stays."""
+        if self._outcome is None:
+            self._outcome = outcome
+            self._ctx.emit(RESULT, outcome)
+        return self._outcome
 
 
 class Tools:
@@ -354,6 +386,17 @@ class Tools:
             unfit = PendingCall(ctx, call, None, None, True)
             unfit.fail(failure.code, str(failure))
             return unfit
+        except Exception as error:
+            # The model of the parameters is broken: one of its validators raised.
+            logger.error(
+                "the arguments of the tool %r could not be checked", tool.name, exc_info=error
+            )
+            broken = PendingCall(ctx, call, None, None, True)
+            broken.fail(
+                "TOOL_ERROR",
+                f"The arguments of the tool {tool.name} could not be checked: {_describe(error)}",
+            )
+            return broken
         try:
             safe = tool.is_concurrency_safe(args)
         except Exception:

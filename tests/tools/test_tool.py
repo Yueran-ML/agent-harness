@@ -1,10 +1,11 @@
 """A tool: what a model is told about it, and how its arguments are read."""
 
+import datetime
 from pathlib import Path
 from typing import cast
 
 import pytest
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from tack.kernel import Context
 from tack.llm import ToolSchema
@@ -203,3 +204,22 @@ async def test_a_run_tells_a_tool_about_its_call(ctx: Context, tmp_path: Path) -
     assert not run.concludes_turn
     run.conclude_turn()
     assert run.concludes_turn
+
+
+def test_arguments_are_read_as_json_so_that_strict_parameters_work() -> None:
+    class Strict(BaseModel):
+        model_config = ConfigDict(strict=True)
+
+        when: datetime.date
+        points: tuple[int, ...]
+
+    async def plot(args: Strict, run: ToolRun) -> str:
+        return "ok"
+
+    tool = Tool(name="plot", description="Plot.", parameters=Strict, execute=plot)
+
+    args = tool.parse('{"when": "2026-10-09", "points": [1, 2]}')
+
+    assert args == Strict(when=datetime.date(2026, 10, 9), points=(1, 2))
+    with pytest.raises(ToolFailure, match=r"points\.0"):
+        tool.parse('{"when": "2026-10-09", "points": ["1"]}')

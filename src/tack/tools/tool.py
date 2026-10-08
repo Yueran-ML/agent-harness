@@ -151,8 +151,9 @@ class Tool(Generic[ArgsT, ValueT]):
             ToolFailure: The arguments are not a JSON object, or they do not
                 fit the parameters. The code is ``INVALID_ARGS``.
         """
+        text = arguments if arguments.strip() else "{}"
         try:
-            given: object = json.loads(arguments) if arguments.strip() else {}
+            given: object = json.loads(text)
         except ValueError as error:
             raise ToolFailure(
                 f"The arguments are not valid JSON: {error}", code="INVALID_ARGS"
@@ -163,7 +164,9 @@ class Tool(Generic[ArgsT, ValueT]):
                 f"The arguments must be a JSON object, not {kind}.", code="INVALID_ARGS"
             )
         try:
-            return self.parameters.model_validate(given)
+            # Validated as JSON, not as Python objects: a strict model takes a JSON
+            # array for a tuple and a JSON string for a date only this way.
+            return self.parameters.model_validate_json(text)
         except ValidationError as error:
             problems = "\n".join(
                 f"- {'.'.join(str(part) for part in problem['loc'])}: {problem['msg']}"

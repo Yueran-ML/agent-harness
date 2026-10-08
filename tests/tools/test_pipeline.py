@@ -6,9 +6,10 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 import tack.tools
+from tack import cancellation
 from tack.kernel import Context, Next, Plugin, RegistryConflictError
 from tack.llm import TextBlock, ToolCallBlock, ToolMessage
 from tack.session import ToolError, ToolResultEvent
@@ -795,3 +796,133 @@ async def test_a_tool_leaves_with_the_plugin_that_brought_it(
 async def test_allow_is_what_a_check_answers_when_it_has_no_objection() -> None:
     assert Allow() == Allow()
     assert Deny(reason="no").code == "DENIED"
+
+
+# Faults of the code around a call
+
+
+async def test_parameters_whose_validation_crashes_are_an_error_result(
+    ctx: Context, tools: Tools, run: ToolRun, caplog: pytest.LogCaptureFixture
+) -> None:
+    class Fussy(BaseModel):
+        text: str
+
+        @field_validator("text")
+        @classmethod
+        def broken(cls, value: str) -> str:
+            raise TypeError("validator bug")
+
+    async def work(args: Fussy, run: ToolRun) -> str:
+        return "never"
+
+    tools.add(ctx, Tool(name="fussy", description="Fuss.", parameters=Fussy, execute=work))
+    seen: list[ToolOutcome] = []
+    ctx.on(RESULT, seen.append)
+
+    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+        outcome = await tools.run(ctx, call("fussy", '{"text": "hi"}'), run)
+
+    assert outcome.error == ToolError(
+        code="TOOL_ERROR",
+        reason="The arguments of the tool fussy could not be checked: TypeError: validator bug",
+    )
+    assert seen == [outcome]
+    assert "validator bug" in caplog.text
+
+
+async def test_a_rendering_that_raises_a_cancellation_is_an_error_result(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    def render(args: EchoArgs, value: str) -> str:
+        raise asyncio.CancelledError
+
+    tools.add(ctx, tool("echo", journal.echo, render=render))
+
+    outcome = await asyncio.wait_for(tools.run(ctx, call("echo"), run), timeout=1)
+
+    assert outcome.error == ToolError(
+        code="TOOL_ERROR", reason="The tool echo was cancelled from inside."
+    )
+
+
+async def test_a_check_that_gives_no_answer_keeps_the_tool_from_running(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    async def forgetful(invocation: Invocation, proceed: Next[Invocation, Decision]) -> Decision:
+        await proceed(invocation)
+        return None  # type: ignore[return-value]
+
+    tools.add(ctx, tool("echo", journal.echo))
+    ctx.on(PRE_EXECUTE, forgetful)
+
+    outcome = await tools.run(ctx, call("echo"), run)
+
+    assert outcome.error == ToolError(
+        code="CHECK_FAILED",
+        reason="The call could not be checked and did not run: a check gave no decision",
+    )
+    assert journal.ran == []
+
+
+async def test_a_check_of_the_result_that_gives_no_answer_withholds_the_result(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    async def forgetful(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
+        return None  # type: ignore[return-value]
+
+    tools.add(ctx, tool("echo", journal.echo))
+    ctx.on(POST_EXECUTE, forgetful)
+    seen: list[ToolOutcome] = []
+    ctx.on(RESULT, seen.append)
+
+    outcome = await tools.run(ctx, call("echo"), run)
+
+    assert outcome.error == ToolError(
+        code="CHECK_FAILED",
+        reason="The result of the call could not be checked and is withheld: "
+        "a check gave no verdict",
+    )
+    assert seen == [outcome]
+
+
+async def test_a_tool_that_goes_on_after_it_was_given_up_does_not_change_the_outcome(
+    ctx: Context, tools: Tools, run: ToolRun
+) -> None:
+    release = asyncio.Event()
+    began = asyncio.Event()
+
+    async def stubborn(args: EchoArgs, run: ToolRun) -> str:
+        began.set()
+        await release.wait()
+        return "late"
+
+    tools.add(ctx, tool("stubborn", stubborn))
+    seen: list[ToolOutcome] = []
+    ctx.on(RESULT, seen.append)
+    pending = tools.begin(ctx, call("stubborn"), run)
+    running = asyncio.ensure_future(pending.execute())
+    await asyncio.wait_for(began.wait(), timeout=1)
+
+    given_up = pending.fail("TOOL_CANCELLED", "The call was cancelled while it ran.")
+    release.set()
+    late = await asyncio.wait_for(running, timeout=1)
+
+    assert late is given_up
+    assert pending.outcome is given_up
+    assert seen == [given_up]
+
+
+async def test_a_cancellation_that_is_on_its_way_stops_a_call_before_its_tool_runs(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    tools.add(ctx, tool("hang", journal.hang))
+
+    async def work() -> ToolOutcome:
+        cancellation.current_task().cancel()
+        return await tools.run(ctx, call("hang"), run)
+
+    task = asyncio.ensure_future(work())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+
+    assert not journal.started.is_set()

@@ -14,6 +14,7 @@ from tack.agent.agent import (
     AgentSpec,
     CancelCause,
 )
+from tack.agent.events import STREAM, StreamFrame
 from tack.agent.inbox import (
     INBOX,
     Inbox,
@@ -31,6 +32,7 @@ from tack.session import SESSIONS
 __all__ = [
     "AGENTS",
     "INBOX",
+    "STREAM",
     "Agent",
     "AgentError",
     "AgentFactory",
@@ -41,6 +43,7 @@ __all__ = [
     "InboxItem",
     "InboxSplicedEvent",
     "Queue",
+    "StreamFrame",
     "apply",
     "claim_for_step",
     "claim_for_turn",

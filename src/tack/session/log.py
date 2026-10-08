@@ -6,7 +6,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 from tack.kernel import Context, EmitEvent
 from tack.llm.types import Message
@@ -34,6 +34,22 @@ SESSION_EVENT: EmitEvent[Committed] = EmitEvent("session/event")
 """Emitted for every event once it is in the log."""
 
 
+class SessionStore(Protocol):
+    """Where a session keeps its events beyond the life of the process."""
+
+    def write(self, event: SessionEvent[EventData]) -> None:
+        """Store ``event``, or raise ``SessionStoreError`` if that cannot be done."""
+        ...
+
+    async def flush(self) -> None:
+        """Wait until everything written so far is safe from a crash of the machine."""
+        ...
+
+    def close(self) -> None:
+        """Let go of whatever the store holds."""
+        ...
+
+
 class Session:
     """An append-only log of typed events, the single source of truth of a conversation.
 
@@ -47,6 +63,14 @@ class Session:
         session_id: The id of the session.
         kinds: The event types that the log accepts, by name.
         clock: Tells the time in milliseconds since the epoch.
+        store: Where the events are kept. Without one the session lives in
+            memory only.
+        events: The events that the session starts with, as read from a store.
+            They are not announced.
+
+    Raises:
+        InvalidEventError: ``events`` are not numbered from zero without a
+            gap, or their messages do not add up.
 
     Attributes:
         id: The id of the session.
@@ -60,6 +84,7 @@ class Session:
         "_events",
         "_kinds",
         "_outbox",
+        "_store",
         "_surface",
         "id",
     )
@@ -71,13 +96,23 @@ class Session:
         kinds: Mapping[str, type[EventData]],
         *,
         clock: Callable[[], int] = now_ms,
+        store: SessionStore | None = None,
+        events: Iterable[SessionEvent[EventData]] = (),
     ) -> None:
         self.id = session_id
         self._ctx = ctx
         self._kinds = kinds
         self._clock = clock
+        self._store = store
         self._events: list[SessionEvent[EventData]] = []
         self._surface = Surface()
+        for event in events:
+            if event.seq != len(self._events):
+                raise InvalidEventError(
+                    f"event {event.seq} stands where event {len(self._events)} belongs"
+                )
+            self._surface.apply(event)
+            self._events.append(event)
         self._outbox: deque[SessionEvent[EventData]] = deque()
         self._announcing = False
         self._closed = False
@@ -109,8 +144,21 @@ class Session:
         return self._closed
 
     def close(self) -> None:
-        """Stop taking events. The events that are in the log stay readable."""
+        """Stop taking events and close the store. The events in the log stay readable."""
+        if self._closed:
+            return
         self._closed = True
+        if self._store is not None:
+            self._store.close()
+
+    async def flush(self) -> None:
+        """Wait until every event appended so far is safe from a crash of the machine.
+
+        Raises:
+            SessionStoreError: The store could not make them safe.
+        """
+        if self._store is not None:
+            await self._store.flush()
 
     def append(self, data: DataT, *, replaces: Iterable[int] = ()) -> SessionEvent[DataT]:
         """Append an event and announce it.
@@ -124,6 +172,9 @@ class Session:
         now and must be listed in that order. Nothing is removed from the
         log.
 
+        The event is written to the store first. It is in the log, and is
+        announced, only if the store took it.
+
         Observers of :data:`SESSION_EVENT` are told before this method
         returns, in the order of the log. An event that an observer appends
         is announced after the current one.
@@ -133,6 +184,8 @@ class Session:
             InvalidEventError: The event type is not registered with this
                 session, the data is not the same after a round trip through
                 JSON, or ``replaces`` does not fit. The log is unchanged.
+            SessionStoreError: The store did not take the event. The log is
+                unchanged.
         """
         if self._closed:
             raise SessionClosedError(f"the session {self.id!r} is closed")
@@ -165,6 +218,8 @@ class Session:
             on_surface=on_surface,
             replaces=replaced,
         )
+        if self._store is not None:
+            self._store.write(event)
         self._surface.apply(event)
         self._events.append(event)
         self._outbox.append(event)

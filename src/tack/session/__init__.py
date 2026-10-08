@@ -1,5 +1,13 @@
-"""The session log: typed events, appended once and never changed."""
+"""The session log: typed events, appended once and never changed.
 
+This module is a plugin. Loading it provides :data:`SESSIONS`.
+"""
+
+from pathlib import Path
+
+from pydantic import BaseModel
+
+from tack.kernel import Context
 from tack.session.codec import (
     FORMAT_VERSION,
     SessionHeader,
@@ -36,16 +44,20 @@ from tack.session.events import (
     TurnStartEvent,
     UserMessageEvent,
 )
-from tack.session.log import SESSION_EVENT, Committed, Session, now_ms
+from tack.session.log import SESSION_EVENT, Committed, Session, SessionStore, now_ms
+from tack.session.service import SESSIONS, Sessions
+from tack.session.store import SessionFile, StoredSession, read_session
 from tack.session.surface import Surface
 
 __all__ = [
     "CORE_EVENTS",
     "FORMAT_VERSION",
+    "SESSIONS",
     "SESSION_EVENT",
     "AssistantAttemptEvent",
     "AssistantMessageEvent",
     "Committed",
+    "Config",
     "EndSeedEvent",
     "EventData",
     "InvalidEventError",
@@ -54,11 +66,15 @@ __all__ = [
     "SessionClosedError",
     "SessionError",
     "SessionEvent",
+    "SessionFile",
     "SessionHeader",
     "SessionLockedError",
+    "SessionStore",
     "SessionStoreError",
+    "Sessions",
     "StepEndEvent",
     "StepStartEvent",
+    "StoredSession",
     "Surface",
     "SystemMessageEvent",
     "ToolCallEvent",
@@ -70,9 +86,32 @@ __all__ = [
     "UnknownEvent",
     "UnreadableSessionError",
     "UserMessageEvent",
+    "apply",
     "decode_event",
     "decode_header",
     "encode_event",
     "encode_header",
+    "name",
     "now_ms",
+    "read_session",
 ]
+
+name = "session"
+
+
+class Config(BaseModel):
+    """The config of the session service.
+
+    Attributes:
+        root: The directory under which sessions are stored. Without it,
+            sessions live in memory only.
+    """
+
+    root: Path | None = None
+
+
+def apply(ctx: Context, config: Config) -> None:
+    """Provide the session service and register the core event types."""
+    sessions = Sessions(config.root)
+    ctx.provide(SESSIONS, sessions)
+    sessions.declare(ctx, *CORE_EVENTS)

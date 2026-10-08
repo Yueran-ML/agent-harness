@@ -13,13 +13,13 @@ from typing import Literal, cast
 
 from pydantic import BaseModel, Field, JsonValue
 
+from tack.data import Data
 from tack.kernel import Context
 from tack.llm.runtime import LLM, LlmError
 from tack.llm.types import (
     BlockEnd,
     BlockStart,
     Chunk,
-    Data,
     Finish,
     LlmFailure,
     LlmRequest,

@@ -6,13 +6,9 @@ piece of a streamed reply, and a failure is what went wrong with a call.
 
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, model_validator
 
-
-class Data(BaseModel):
-    """Base of the vocabulary: immutable, and strict about unknown fields."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
+from tack.data import Data
 
 
 class TextBlock(Data):

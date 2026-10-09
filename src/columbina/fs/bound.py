@@ -53,7 +53,7 @@ import stat
 import sys
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal
@@ -127,6 +127,12 @@ def _listed(entry: "os.DirEntry[str]") -> Listed:
         else "other"
     )
     return Listed(entry.name, kind, status.st_size, status.st_mtime_ns)
+
+
+def _some(found: Iterator["os.DirEntry[str]"], at_most: int) -> tuple[list[Listed], bool]:
+    """Return the first entries that a directory hands over, and whether it holds more."""
+    listed = [_listed(entry) for entry in itertools.islice(found, at_most)]
+    return listed, next(found, None) is not None
 
 
 def _one_entry(left: Path, right: Path) -> bool:
@@ -266,9 +272,9 @@ if sys.platform == "win32":  # pragma: windows only
         def status(self, name: str) -> os.stat_result:
             return (self.path / name).lstat()
 
-        def entries(self) -> list[Listed]:
+        def entries(self, at_most: int) -> tuple[list[Listed], bool]:
             with os.scandir(self.path) as found:
-                return [_listed(entry) for entry in found]
+                return _some(found, at_most)
 
         def create(self, name: str) -> int:
             return os.open(self.path / name, _CREATE_FLAGS, 0o666)
@@ -369,9 +375,9 @@ else:  # pragma: posix only
         def status(self, name: str) -> os.stat_result:
             return os.stat(name, dir_fd=self._descriptor, follow_symlinks=False)
 
-        def entries(self) -> list[Listed]:
+        def entries(self, at_most: int) -> tuple[list[Listed], bool]:
             with os.scandir(self._descriptor) as found:
-                return [_listed(entry) for entry in found]
+                return _some(found, at_most)
 
         def create(self, name: str) -> int:
             return os.open(name, _CREATE_FLAGS, 0o666, dir_fd=self._descriptor)
@@ -565,10 +571,21 @@ def replace(
         return written
 
 
-def listing(path: Path) -> list[Listed]:
+def listing(path: Path, at_most: int = sys.maxsize) -> tuple[list[Listed], bool]:
     """List the directory at a path that has no link on its way, by name.
 
     The directory is held open while it is listed, and asked where it is.
+
+    Args:
+        path: Where the directory is.
+        at_most: How many entries to take. A directory can hold more of them
+            than anybody has a use for, and each one costs a question to the
+            system. Which ones are taken, of a directory that holds more, is
+            up to the system.
+
+    Returns:
+        The entries, by name, and whether the directory holds more than
+        these.
 
     Raises:
         MovedError: What the path led to when it was opened is somewhere else.
@@ -576,6 +593,7 @@ def listing(path: Path) -> list[Listed]:
     """
     held = _Held(path)
     try:
-        return sorted(held.entries(), key=lambda entry: entry.name)
+        listed, more = held.entries(at_most)
+        return sorted(listed, key=lambda entry: entry.name), more
     finally:
         held.close()

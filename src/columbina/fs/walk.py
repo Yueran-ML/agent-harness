@@ -124,7 +124,10 @@ async def walk(
     while waiting:
         directory, names = waiting.popleft()
         try:
-            listed = await asyncio.to_thread(bound.listing, directory.path)
+            # One entry more than may be looked at, so that it shows if there are more.
+            listed, more = await asyncio.to_thread(
+                bound.listing, directory.path, limit - tally.entries + 1
+            )
         except OSError:
             # It was removed meanwhile, or this user may not list it, or it has moved.
             tally.unreadable += 1
@@ -153,3 +156,7 @@ async def walk(
                 waiting.append((where, led))
             else:
                 yield Found(where, led, entry.size, entry.modified_ns, permit)
+        if more:
+            # The directory holds entries that were not asked for.
+            tally.cut_short = True
+            return

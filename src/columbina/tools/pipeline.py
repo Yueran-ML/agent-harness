@@ -239,8 +239,10 @@ class PendingCall:
         self._ctx = ctx
         self._tools = tools
         self._invocation = invocation
-        # The arguments as the model wrote them, which no listener gets its hands on.
-        self._written = None if invocation is None else invocation.args.model_copy(deep=True)
+        # The values of the arguments as the model wrote them, which no listener gets its
+        # hands on. A copy of the object would also copy what a tool keeps beside its
+        # arguments, and not everything can be copied.
+        self._written = None if invocation is None else invocation.args.model_dump()
         self._timeout = timeout
         self._authorized = False
         self._outcome: ToolOutcome | None = None
@@ -294,7 +296,7 @@ class PendingCall:
                 "CHECK_FAILED",
                 "The call could not be checked and did not run: a check gave no decision",
             )
-        elif invocation.args != self._written:
+        elif invocation.args.model_dump() != self._written:
             # The guards judge what will run, and that is what the model wrote.
             logger.error(
                 "a listener of tools/pre-execute changed the arguments of a call of the tool %r",
@@ -366,7 +368,7 @@ class PendingCall:
                     "The call did not run: a listener of tools/execute passed on another call "
                     "than the one that was checked",
                 )
-            if invocation.args != self._written:
+            if invocation.args.model_dump() != self._written:
                 raise _NotRunError(
                     "CHECK_FAILED",
                     "The call did not run: something changed the arguments of the call after "
@@ -547,7 +549,20 @@ class Tools:
         # The tool is told what the checks are told, so that it can tell if it finds another.
         aimed = ToolRun(run.call_id, run.cwd, run.session, target)
         invocation = Invocation(tool, call, args, aimed, target)
-        return PendingCall(ctx, call, invocation, timeout, safe, self)
+        try:
+            return PendingCall(ctx, call, invocation, timeout, safe, self)
+        except (Exception, asyncio.CancelledError) as error:
+            # Without the arguments put aside, nothing could tell whether they were changed.
+            logger.error(
+                "the arguments of the tool %r could not be put aside", tool.name, exc_info=error
+            )
+            unkept = PendingCall(ctx, call, None, None, True, self)
+            unkept.fail(
+                "TOOL_ERROR",
+                f"The arguments of the tool {tool.name} could not be put aside for the "
+                f"checks: {_describe(error)}",
+            )
+            return unkept
 
     async def run(self, ctx: Context, call: ToolCallBlock, run: ToolRun) -> ToolOutcome:
         """Take a call through the whole pipeline and return how it ended."""

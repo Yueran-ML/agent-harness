@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from columbina import process
-from columbina.builtin_tools import grep
+from columbina.builtin_tools import grep, grep_worker
 from columbina.fs import Access, Refuse, bound, locate
 from columbina.fs.walk import Found
 from columbina.kernel import Context
@@ -374,11 +374,11 @@ async def test_a_file_that_has_grown_since_it_was_listed_is_not_taken_in_beyond_
     monkeypatch.setattr(grep, "MAX_FILE_BYTES", MIB)
     really_list: Any = bound.listing
 
-    def listing(path: Path) -> Any:
+    def listing(path: Path, *limits: int) -> Any:
+        listed, more = really_list(path, *limits)
         return [
-            bound.Listed(entry.name, entry.kind, 0, entry.modified_ns)
-            for entry in really_list(path)
-        ]
+            bound.Listed(entry.name, entry.kind, 0, entry.modified_ns) for entry in listed
+        ], more
 
     monkeypatch.setattr(bound, "listing", listing)
 
@@ -452,7 +452,7 @@ async def test_a_file_that_is_somewhere_else_by_the_time_it_is_opened_counts_as_
     assert await lines(desk, "needle") == ["a.txt:1:needle", "[1 file could not be read.]"]
 
 
-async def test_a_search_without_a_file_that_it_could_look_into_starts_no_process(
+async def test_a_search_without_a_file_that_it_could_look_into_still_has_its_pattern_looked_at(
     desk: Desk, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     put(desk, "image.bin", b"\x00needle")
@@ -462,7 +462,17 @@ async def test_a_search_without_a_file_that_it_could_look_into_starts_no_process
         "No line matches needle in ..",
         "[1 file was not searched, because it does not look like text.]",
     ]
-    assert started == []
+    assert started == [0]
+
+
+@pytest.mark.parametrize("path", [".", "empty", "image.bin"])
+async def test_a_pattern_that_is_no_pattern_is_an_error_wherever_it_is_looked_for(
+    desk: Desk, path: str
+) -> None:
+    put(desk, "image.bin", b"\x00needle")
+    (desk.work / "empty").mkdir()
+
+    assert (await failed(desk, "(needle", path=path))[0] == "INVALID_PATTERN"
 
 
 # What a search may not see
@@ -651,35 +661,123 @@ async def test_a_search_whose_time_is_up_before_it_matches_starts_no_process(
     assert started == []
 
 
-async def test_the_time_of_a_search_is_one_for_all_it_reads(
+async def test_the_time_of_a_search_counts_while_it_looks_for_files_too(
     desk: Desk, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     put(desk, "a.txt", "needle\n")
+    monkeypatch.setattr(grep, "SECONDS", 0.2)
+    really_list: Any = bound.listing
+
+    def slowly(path: Path, *limits: int) -> Any:
+        time.sleep(1.0)
+        return really_list(path, *limits)
+
+    monkeypatch.setattr(bound, "listing", slowly)
+    started = count_the_processes(monkeypatch)
+    began = time.monotonic()
+
+    code, text = await failed(desk, "needle")
+
+    assert code == "SEARCH_TIMEOUT"
+    assert text.startswith("The search took longer than 0.2 seconds and was stopped.")
+    assert time.monotonic() - began < 0.9
+    assert started == []
+
+
+async def test_the_time_of_a_search_counts_while_it_reads_files_too(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    put(desk, "a.txt", "needle\n")
+    monkeypatch.setattr(grep, "SECONDS", 0.2)
+    really_open: Any = bound.open_for_reading
+
+    def slowly(path: Path) -> Any:
+        time.sleep(1.0)
+        return really_open(path)
+
+    monkeypatch.setattr(bound, "open_for_reading", slowly)
+    began = time.monotonic()
+
+    assert (await failed(desk, "needle", path="a.txt"))[0] == "SEARCH_TIMEOUT"
+    assert time.monotonic() - began < 0.9
+
+
+async def test_files_that_hold_more_than_their_directory_said_do_not_fill_a_batch_beyond_its_size(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("a", "b", "c", "d", "e"):
+        put(desk, f"{name}.txt", f"needle of {name}\n" + "x" * 100)
+    monkeypatch.setattr(grep, "BATCH_BYTES", 150)
+    really_list: Any = bound.listing
+
+    def listing(path: Path, *limits: int) -> Any:
+        listed, more = really_list(path, *limits)
+        return [
+            bound.Listed(entry.name, entry.kind, 0, entry.modified_ns) for entry in listed
+        ], more
+
+    monkeypatch.setattr(bound, "listing", listing)
+    started = count_the_processes(monkeypatch)
+
+    found = await lines(desk, "^needle")
+
+    assert found == [f"{name}.txt:1:needle of {name}" for name in ("a", "b", "c", "d", "e")]
+    # Each file holds 112 bytes: two fill a batch, whatever the directory said.
+    assert started == [2, 2, 1]
+
+
+async def test_a_search_that_has_enough_stops_among_files_that_held_more_than_was_said(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    put(desk, "a.txt", numbered(250))
     put(desk, "b.txt", "needle\n")
-    monkeypatch.setattr(grep, "BATCH_BYTES", 1)
-    monkeypatch.setattr(grep, "SECONDS", 30.0)
-    given: list[float] = []
-    really_run: Any = process.run
+    put(desk, "c.txt", "needle\n")
+    monkeypatch.setattr(grep, "BATCH_BYTES", 100)
+    really_list: Any = bound.listing
 
-    async def running(argv: Any, **options: Any) -> Any:
-        given.append(options["timeout_seconds"])
-        await asyncio.sleep(0.3)
-        return await really_run(argv, **options)
+    def listing(path: Path, *limits: int) -> Any:
+        listed, more = really_list(path, *limits)
+        return [
+            bound.Listed(entry.name, entry.kind, 0, entry.modified_ns) for entry in listed
+        ], more
 
-    monkeypatch.setattr(process, "run", running)
+    monkeypatch.setattr(bound, "listing", listing)
+    opened = watch_what_is_opened(monkeypatch)
 
-    await lines(desk, "needle")
+    found = await lines(desk, "needle")
 
-    assert len(given) == 2
-    assert 29 < given[0] <= 30
-    assert given[1] < given[0] - 0.3
+    assert found[249:] == ["a.txt:250:needle 250", CUT]
+    assert opened == ["a.txt"]
+
+
+async def test_a_search_that_has_read_enough_stops_among_files_that_held_more_than_was_said(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    half = "needle\n" + "x" * (MIB // 2)
+    for name in ("a", "b", "c"):
+        put(desk, f"{name}.txt", half)
+    monkeypatch.setattr(grep, "BATCH_BYTES", 1000)
+    monkeypatch.setattr(grep, "MAX_BYTES", MIB)
+    really_list: Any = bound.listing
+
+    def listing(path: Path, *limits: int) -> Any:
+        listed, more = really_list(path, *limits)
+        return [
+            bound.Listed(entry.name, entry.kind, 0, entry.modified_ns) for entry in listed
+        ], more
+
+    monkeypatch.setattr(bound, "listing", listing)
+
+    assert await lines(desk, "needle$") == [
+        "a.txt:1:needle",
+        "b.txt:1:needle",
+        "[The search stopped after 1 MiB of text, so there may be more. Search a narrower path.]",
+    ]
 
 
 def stand_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: str) -> None:
     """Put a program of the test in the place of the process that matches."""
-    program = tmp_path / "stand_in.py"
-    program.write_text(script, encoding="utf-8")
-    monkeypatch.setattr(grep, "_WORKER", program)
+    monkeypatch.setattr(grep, "_PROGRAM", script)
 
 
 DONE = 'print(\'{"done": true, "files": 1, "cut": false}\')'
@@ -739,13 +837,13 @@ async def test_the_matching_process_is_started_with_nothing_but_python(
     desk: Desk, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     put(desk, "a.txt", "hay\n")
-    # A module beside the program, named like one of Python. It must not be taken for that.
-    (tmp_path / "json.py").write_text("def dumps(value):\n    return 'not the json of Python'\n")
+    # A file of the working directory, named like a module of Python. It must not be loaded.
+    put(desk, "json.py", "def dumps(value):\n    return 'not the json of Python'\n")
     stand_in(
         tmp_path,
         monkeypatch,
         "import json, sys\n"
-        "print(json.dumps({'done': True, 'files': 1, 'cut': False}))\n"
+        "print(json.dumps({'done': True, 'files': 2, 'cut': False}))\n"
         "print(json.dumps({'isolated': sys.flags.isolated, 'no_site': sys.flags.no_site}))\n",
     )
     said: list[str] = []
@@ -761,9 +859,29 @@ async def test_the_matching_process_is_started_with_nothing_but_python(
     await desk.call("grep", pattern="needle")
 
     assert said == [
-        '{"done": true, "files": 1, "cut": false}',
+        '{"done": true, "files": 2, "cut": false}',
         '{"isolated": 1, "no_site": 1}',
     ]
+
+
+async def test_what_the_matching_process_runs_is_what_was_loaded_and_no_file(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A tool that writes files could change a file. It cannot change what was read before.
+    put(desk, "a.txt", "needle\n")
+    commands: list[list[str]] = []
+    really_run: Any = process.run
+
+    async def running(argv: Any, **options: Any) -> Any:
+        commands.append(list(argv))
+        return await really_run(argv, **options)
+
+    monkeypatch.setattr(process, "run", running)
+
+    assert await lines(desk, "needle") == ["a.txt:1:needle"]
+
+    program = Path(grep_worker.__file__).read_text(encoding="utf-8")
+    assert commands == [[sys.executable, "-I", "-S", "-c", program]]
 
 
 async def test_a_matching_process_that_says_more_than_it_may_is_an_error(
@@ -807,10 +925,10 @@ async def test_a_search_that_is_cancelled_leaves_no_process_behind(
     stand_in(
         tmp_path,
         monkeypatch,
-        "import os, sys, time\n"
-        "with open(sys.argv[0] + '.pid', 'w') as note:\n"
+        "import os, time\n"
+        f"with open({str(note) + '.part'!r}, 'w') as note:\n"
         "    note.write(str(os.getpid()))\n"
-        f"os.replace(sys.argv[0] + '.pid', {str(note)!r})\n"
+        f"os.replace({str(note) + '.part'!r}, {str(note)!r})\n"
         "time.sleep(600)\n",
     )
     calling = asyncio.create_task(desk.call("grep", pattern="needle"))
@@ -881,11 +999,12 @@ async def test_reading_stops_at_the_next_file_when_the_search_was_given_up(desk:
     assert load(files, stopped) == (
         [("a.txt", b"needle\n"), ("b.txt", b"needle\n")],
         Counter(),
+        2,
     )
 
     stopped.set()
 
-    assert load(files, stopped) == ([], Counter())
+    assert load(files, stopped) == ([], Counter(), 0)
 
 
 # What the checks and the model are told

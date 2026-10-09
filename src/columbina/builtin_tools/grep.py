@@ -10,14 +10,19 @@ cancelled. A pattern that a model writes can keep the matcher of Python busy
 for longer than anybody will wait, and while it is busy, nothing else in its
 process runs. In a process of its own it holds up nobody.
 
-That process is ``grep_worker.py``, run by its path with ``-I -S``. So it
-loads nothing but what comes with Python, and the modules that lie beside it,
-some of which are named like modules of the standard library, are not taken
-for those.
+That process runs the program of ``grep_worker.py``. The program is read
+when this module is loaded and handed to Python as text, with ``-I -S``. So
+what runs is what was loaded, whatever becomes of the file: the tools that
+write files cannot make a search run something else. And it loads nothing but
+what comes with Python: neither what is installed beside it nor what lies in
+the working directory, where a file may well be named like a module of the
+standard library.
 
-A search is bounded in what it looks at. A file that is large, or that does
-not look like text, is passed over, and so is everything beyond a total. What
-was passed over is said, so that the model does not take silence for absence.
+A search is bounded in what it looks at and in the time it takes. A file that
+is large, or that does not look like text, is passed over, and so is
+everything beyond a total. What was passed over is said, so that the model
+does not take silence for absence. The time is one for the whole search:
+finding the files, reading them and matching.
 """
 
 import asyncio
@@ -84,7 +89,8 @@ SECONDS = 20.0
 
 _SNIFF_BYTES = 8192
 _OUTPUT_BYTES = 2 * _MIB
-_WORKER = Path(__file__).with_name("grep_worker.py")
+_PROGRAM = Path(__file__).with_name("grep_worker.py").read_text(encoding="utf-8")
+"""The program of the matching process, as it was when this module was loaded."""
 
 _Unread = Literal["large", "not text", "unreadable"]
 """Why a file was not searched."""
@@ -143,6 +149,7 @@ class _Search:
             shows, with files or lines left that it did not look at.
         out_of_room: Whether the search stopped because it had read as much
             as it may, with files left.
+        asked: Whether a matching process has been asked anything yet.
     """
 
     lines: list[str] = field(default_factory=list[str])
@@ -150,6 +157,7 @@ class _Search:
     unread: Counter[_Unread] = field(default_factory=Counter[_Unread])
     cut: bool = False
     out_of_room: bool = False
+    asked: bool = False
 
 
 async def _only(found: Found) -> AsyncGenerator[Found, None]:
@@ -158,18 +166,24 @@ async def _only(found: Found) -> AsyncGenerator[Found, None]:
 
 def _load(
     files: Sequence[Found], stopped: threading.Event
-) -> tuple[list[tuple[str, bytes]], Counter[_Unread]]:
-    """Read the files of a batch, and give up as soon as ``stopped`` is set.
+) -> tuple[list[tuple[str, bytes]], Counter[_Unread], int]:
+    """Read files until a batch is full, and give up as soon as ``stopped`` is set.
+
+    How much a batch holds is counted by what was read. What a directory says
+    about the size of a file may be less than the file holds by now.
 
     Returns:
-        The path and the content of every file to search, and how many files
-        are not searched, by the reason.
+        The path and the content of every file to search, how many files are
+        not searched, by the reason, and how many of the files were taken.
     """
     texts: list[tuple[str, bytes]] = []
     unread: Counter[_Unread] = Counter()
+    taken = 0
+    size = 0
     for found in files:
-        if stopped.is_set():
+        if stopped.is_set() or size >= BATCH_BYTES:
             break
+        taken += 1
         try:
             with found.permit.open() as opened:
                 content = opened.file.read(_SNIFF_BYTES)
@@ -185,7 +199,8 @@ def _load(
             unread["large"] += 1
         else:
             texts.append((found.where.relative, content))
-    return texts, unread
+            size += len(content)
+    return texts, unread, taken
 
 
 def _request(args: GrepArgs, room: int, texts: Sequence[tuple[str, bytes]]) -> bytes:
@@ -214,32 +229,25 @@ def _broken(done: process.Completed) -> ToolFailure:
 
 
 async def _match(
-    args: GrepArgs,
-    cwd: Path,
-    texts: Sequence[tuple[str, bytes]],
-    search: _Search,
-    deadline: float,
+    args: GrepArgs, cwd: Path, texts: Sequence[tuple[str, bytes]], search: _Search
 ) -> None:
-    """Have the lines of a batch of files matched, and add those that match to the search."""
-    left = deadline - asyncio.get_running_loop().time()
-    done = None
-    if left > 0:
-        try:
-            done = await process.run(
-                [sys.executable, "-I", "-S", str(_WORKER)],
-                cwd=cwd,
-                stdin=_request(args, MAX_MATCHES - len(search.lines), texts),
-                timeout_seconds=left,
-                max_output_bytes=_OUTPUT_BYTES,
-            )
-        except OSError as error:
-            raise ToolFailure(f"The search failed: {error}", code="SEARCH_FAILED") from error
-    if done is None or done.timed_out:
-        raise ToolFailure(
-            f"The search took longer than {SECONDS:g} seconds and was stopped. Use a "
-            "simpler pattern, or search a narrower path.",
-            code="SEARCH_TIMEOUT",
+    """Have the lines of a batch of files matched, and add those that match to the search.
+
+    A batch of no files is of use too: the process says whether the pattern
+    is one.
+    """
+    search.asked = True
+    try:
+        # The time of the whole search is watched by the caller, who stops this when it is up.
+        done = await process.run(
+            [sys.executable, "-I", "-S", "-c", _PROGRAM],
+            cwd=cwd,
+            stdin=_request(args, MAX_MATCHES - len(search.lines), texts),
+            timeout_seconds=SECONDS,
+            max_output_bytes=_OUTPUT_BYTES,
         )
+    except OSError as error:
+        raise ToolFailure(f"The search failed: {error}", code="SEARCH_FAILED") from error
     try:
         answers = [_Answer.model_validate_json(line) for line in done.output.splitlines()]
     except ValueError:
@@ -342,39 +350,55 @@ def grep_tool(fs: Fs) -> Tool[GrepArgs, str]:
         stopped = threading.Event()
 
         async def look() -> None:
-            """Read the files that wait, and have their lines matched."""
+            """Read the files that wait, batch by batch, and have their lines matched."""
             waiting = list(batch)
             batch.clear()
-            texts, unread = await asyncio.to_thread(_load, waiting, stopped)
-            search.unread.update(unread)
-            if texts:
-                search.searched_bytes += sum(len(content) for _, content in texts)
-                await _match(args, run.cwd, texts, search, deadline)
+            while waiting and not (search.cut or search.out_of_room):
+                texts, unread, taken = await asyncio.to_thread(_load, waiting, stopped)
+                del waiting[:taken]
+                search.unread.update(unread)
+                if texts:
+                    search.searched_bytes += sum(len(content) for _, content in texts)
+                    await _match(args, run.cwd, texts, search)
+                if waiting:
+                    # The files held more than their directories said, so some are left.
+                    search.cut = search.cut or len(search.lines) >= MAX_MATCHES
+                    search.out_of_room = search.searched_bytes >= MAX_BYTES
 
         try:
-            size = 0
-            led_to, fits = files(args, run, tally)
-            # The walk is closed here, and not whenever the collector comes by.
-            async with aclosing(led_to):
-                async for found in led_to:
-                    if fits is not None and not fits(found.below):
-                        continue
-                    if len(search.lines) >= MAX_MATCHES:
-                        search.cut = True
-                        break
-                    if search.searched_bytes >= MAX_BYTES:
-                        search.out_of_room = True
-                        break
-                    if found.size > MAX_FILE_BYTES:
-                        search.unread["large"] += 1
-                        continue
-                    batch.append(found)
-                    size += found.size
-                    if size >= BATCH_BYTES:
-                        size = 0
-                        await look()
-            if batch:
-                await look()
+            async with asyncio.timeout_at(deadline):
+                size = 0
+                led_to, fits = files(args, run, tally)
+                # The walk is closed here, and not whenever the collector comes by.
+                async with aclosing(led_to):
+                    async for found in led_to:
+                        if fits is not None and not fits(found.below):
+                            continue
+                        if len(search.lines) >= MAX_MATCHES:
+                            search.cut = True
+                            break
+                        if search.searched_bytes >= MAX_BYTES:
+                            search.out_of_room = True
+                            break
+                        if found.size > MAX_FILE_BYTES:
+                            search.unread["large"] += 1
+                            continue
+                        batch.append(found)
+                        size += found.size
+                        if size >= BATCH_BYTES:
+                            size = 0
+                            await look()
+                if batch:
+                    await look()
+                if not search.asked:
+                    # Nothing was there to search. The pattern is looked at all the same.
+                    await _match(args, run.cwd, [], search)
+        except TimeoutError:
+            raise ToolFailure(
+                f"The search took longer than {SECONDS:g} seconds and was stopped. Use a "
+                "simpler pattern, or search a narrower path.",
+                code="SEARCH_TIMEOUT",
+            ) from None
         finally:
             # A thread cannot be cancelled. It is told to stop, and does so at its next file.
             stopped.set()

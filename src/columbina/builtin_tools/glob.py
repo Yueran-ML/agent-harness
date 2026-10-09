@@ -17,11 +17,11 @@ import fnmatch
 import re
 import sys
 from collections.abc import Callable
-from functools import cache
 
 from pydantic import BaseModel, Field
 
 from columbina.fs import FS, Access, Fs
+from columbina.fs.patterns import sequence_fits
 from columbina.fs.walk import Found, Tally, remarks, walk
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
@@ -92,19 +92,7 @@ def matcher(pattern: str) -> Callable[[tuple[str, ...]], bool]:
     fits = [None if part == "**" else re.compile(fnmatch.translate(part), flags) for part in names]
 
     def matches(path: tuple[str, ...]) -> bool:
-        @cache
-        def from_here(at: int, part: int) -> bool:
-            if part == len(fits):
-                return at == len(path)
-            fit = fits[part]
-            if fit is None:
-                # Any number of directories, also none.
-                return from_here(at, part + 1) or (at < len(path) and from_here(at + 1, part))
-            if at == len(path) or fit.match(path[at]) is None:
-                return False
-            return from_here(at + 1, part + 1)
-
-        return from_here(0, 0)
+        return sequence_fits(fits, path, lambda fit, name: fit.match(name) is not None)
 
     return matches
 

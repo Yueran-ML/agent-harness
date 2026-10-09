@@ -1,6 +1,7 @@
 """The glob tool: files by the pattern of their paths."""
 
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,14 @@ def test_a_pattern_with_many_stars_does_not_take_long_on_a_long_name() -> None:
     assert not matches(("a" * 250,))
     assert not matches(tuple(["a" * 50] * 40))
     assert time.monotonic() - began < 2
+
+
+def test_a_pattern_of_many_parts_and_a_path_of_many_names_are_matched_all_the_same() -> None:
+    depth = sys.getrecursionlimit() * 2
+
+    assert matcher("**/" * depth + "*.py")(("a.py",))
+    assert matcher("**/*.py")((*["d"] * depth, "a.py"))
+    assert not matcher("**/*.py")((*["d"] * depth, "a.txt"))
 
 
 # What the tool lists
@@ -203,10 +212,10 @@ def locked(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
     """Make the directories with the given names ones that cannot be listed."""
     really_list: Any = bound.listing
 
-    def listing(path: Path) -> Any:
+    def listing(path: Path, *limits: int) -> Any:
         if path.name in names:
             raise PermissionError(13, "Permission denied")
-        return really_list(path)
+        return really_list(path, *limits)
 
     monkeypatch.setattr(bound, "listing", listing)
 

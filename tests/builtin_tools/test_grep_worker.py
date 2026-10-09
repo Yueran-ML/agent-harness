@@ -224,13 +224,13 @@ def test_a_line_is_cut_out_between_characters_and_not_within_one() -> None:
     assert answers == [hit(0, 1, letter), hit(0, 2, letter + letter), done(1)]
 
 
-async def test_the_file_runs_by_its_path_with_nothing_but_python(tmp_path: Path) -> None:
+async def test_the_program_runs_as_text_that_is_handed_to_python(tmp_path: Path) -> None:
     # Byte 0x1a ends a text file for some programs on Windows. Here it is a byte like any other.
     content = b"one\x1a needle\r\ntwo\r\n"
-    worker = Path(grep_worker.__file__)
+    program = Path(grep_worker.__file__).read_text(encoding="utf-8")
 
     ran = await process.run(
-        [sys.executable, "-I", "-S", str(worker)],
+        [sys.executable, "-I", "-S", "-c", program],
         cwd=tmp_path,
         stdin=asked("needle", content),
         timeout_seconds=20,
@@ -244,10 +244,10 @@ async def test_the_file_runs_by_its_path_with_nothing_but_python(tmp_path: Path)
 
 
 async def test_the_exit_code_tells_a_pattern_that_cannot_be_used(tmp_path: Path) -> None:
-    worker = Path(grep_worker.__file__)
+    program = Path(grep_worker.__file__).read_text(encoding="utf-8")
 
     ran = await process.run(
-        [sys.executable, "-I", "-S", str(worker)],
+        [sys.executable, "-I", "-S", "-c", program],
         cwd=tmp_path,
         stdin=asked("(", b"(\n"),
         timeout_seconds=20,

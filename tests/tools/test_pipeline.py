@@ -4,11 +4,12 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import threading
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, PrivateAttr, ValidationError, field_validator, model_serializer
 
 import columbina.tools
 from columbina import cancellation
@@ -1510,3 +1511,61 @@ async def test_a_cancellation_that_is_on_its_way_stops_a_call_before_its_tool_ru
         await asyncio.wait_for(task, timeout=1)
 
     assert not journal.started.is_set()
+
+
+# Arguments that a tool keeps something beside
+
+
+class Keeping(BaseModel):
+    """Arguments beside which a tool keeps something that cannot be copied."""
+
+    name: str = ""
+    _lock: Any = PrivateAttr(default_factory=threading.Lock)
+
+
+class Unsayable(BaseModel):
+    """Arguments whose values cannot be written down."""
+
+    name: str = ""
+
+    @model_serializer
+    def refuse(self) -> dict[str, str]:
+        raise RuntimeError("these arguments are not for writing down")
+
+
+async def test_what_a_tool_keeps_beside_its_arguments_does_not_keep_a_call_from_running(
+    ctx: Context, tools: Tools, run: ToolRun
+) -> None:
+    async def greet(args: Keeping, run: ToolRun) -> str:
+        return f"Hello, {args.name}."
+
+    tools.add(ctx, Tool(name="greet", description="Greet.", parameters=Keeping, execute=greet))
+
+    outcome = await tools.run(ctx, call("greet", '{"name": "you"}'), run)
+
+    assert outcome.error is None
+    assert outcome.text == "Hello, you."
+
+
+async def test_arguments_that_cannot_be_put_aside_are_an_error_of_the_call(
+    ctx: Context, tools: Tools, run: ToolRun, caplog: pytest.LogCaptureFixture
+) -> None:
+    ran: list[str] = []
+
+    async def greet(args: Unsayable, run: ToolRun) -> str:
+        ran.append(args.name)
+        return "Hello."
+
+    tools.add(ctx, Tool(name="greet", description="Greet.", parameters=Unsayable, execute=greet))
+
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
+        outcome = await tools.run(ctx, call("greet", '{"name": "you"}'), run)
+
+    assert outcome.error is not None
+    assert outcome.error.code == "TOOL_ERROR"
+    assert outcome.text.startswith(
+        "The arguments of the tool greet could not be put aside for the checks: "
+    )
+    assert "these arguments are not for writing down" in outcome.text
+    assert ran == []
+    assert "could not be put aside" in caplog.text

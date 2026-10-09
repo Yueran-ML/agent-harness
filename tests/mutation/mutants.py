@@ -37,6 +37,7 @@ WALK = "src/columbina/fs/walk.py"
 GLOB = "src/columbina/builtin_tools/glob.py"
 APPROVAL = "src/columbina/approval/__init__.py"
 GREP = "src/columbina/builtin_tools/grep.py"
+PATTERNS = "src/columbina/fs/patterns.py"
 GREP_WORKER = "src/columbina/builtin_tools/grep_worker.py"
 
 
@@ -565,13 +566,13 @@ _TOOLS = (
     mutant(
         "arguments that were changed before the guards are judged all the same",
         PIPELINE,
-        "        elif invocation.args != self._written:",
+        "        elif invocation.args.model_dump() != self._written:",
         "        elif False:",
     ),
     mutant(
         "arguments that were changed after the checks are run all the same",
         PIPELINE,
-        "            if invocation.args != self._written:",
+        "            if invocation.args.model_dump() != self._written:",
         "            if False:",
     ),
     mutant(
@@ -1216,9 +1217,46 @@ _SEARCH = (
     ),
     mutant(
         "two stars stand for one directory at least",
-        GLOB,
-        "                return from_here(at, part + 1) or (at < len(path) and from_here(at + 1, part))",
-        "                return at < len(path) and from_here(at + 1, part + 1)",
+        PATTERNS,
+        "    reached = _with_none_skipped(parts, {0})",
+        "    reached = {0}",
+    ),
+    mutant(
+        "two stars in the middle stand for one directory at least",
+        PATTERNS,
+        "        reached = _with_none_skipped(parts, onward)",
+        "        reached = onward",
+    ),
+    mutant(
+        "two stars stand for one directory at most",
+        PATTERNS,
+        "                # The name is one more of those that this part stands for.\n"
+        "                onward.add(at)\n",
+        "                onward.add(at + 1)\n",
+    ),
+    mutant(
+        "a path fits a pattern that it only fits the beginning of",
+        PATTERNS,
+        "    return len(parts) in reached",
+        "    return bool(reached)",
+    ),
+    mutant(
+        "a directory is listed whole, however much of it is of use",
+        BOUND,
+        "    listed = [_listed(entry) for entry in itertools.islice(found, at_most)]",
+        "    listed = [_listed(entry) for entry in found]",
+    ),
+    mutant(
+        "a directory that holds more than was taken is not said to",
+        WALK,
+        "        if more:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a walk asks for all of a directory",
+        WALK,
+        "                bound.listing, directory.path, limit - tally.entries + 1\n",
+        "                bound.listing, directory.path\n",
     ),
     mutant(
         "a pattern may step out of the directory that is searched",
@@ -1318,8 +1356,8 @@ _GREP = (
     mutant(
         "a search that left files does not say that there may be more",
         GREP,
-        "                        search.cut = True\n                        break\n",
-        "                        break\n",
+        "                            search.cut = True\n                            break\n",
+        "                            break\n",
     ),
     mutant(
         "a search reads more than it may",
@@ -1384,8 +1422,56 @@ _GREP = (
     mutant(
         "reading goes on after the search was given up",
         GREP,
-        "        if stopped.is_set():\n            break\n",
+        "        if stopped.is_set() or size >= BATCH_BYTES:",
+        "        if size >= BATCH_BYTES:",
+    ),
+    mutant(
+        "a batch takes whatever the files hold",
+        GREP,
+        "        if stopped.is_set() or size >= BATCH_BYTES:",
+        "        if stopped.is_set():",
+    ),
+    mutant(
+        "what a batch holds is not counted",
+        GREP,
+        "            size += len(content)\n    return texts, unread, taken",
+        "    return texts, unread, taken",
+    ),
+    mutant(
+        "files that a batch left are forgotten",
+        GREP,
+        "            while waiting and not (search.cut or search.out_of_room):",
+        "            if waiting:",
+    ),
+    mutant(
+        "a search with enough lines goes on among the files that a batch left",
+        GREP,
+        "                    search.cut = search.cut or len(search.lines) >= MAX_MATCHES\n",
         "",
+    ),
+    mutant(
+        "a search that read enough goes on among the files that a batch left",
+        GREP,
+        "                    search.out_of_room = search.searched_bytes >= MAX_BYTES\n",
+        "",
+    ),
+    mutant(
+        "a pattern is not looked at when there is nothing to search",
+        GREP,
+        "                if not search.asked:",
+        "                if False:",
+    ),
+    mutant(
+        "a search does not note that it has asked",
+        GREP,
+        "    search.asked = True\n",
+        "",
+    ),
+    mutant(
+        "the time of a search does not count while it finds and reads",
+        GREP,
+        "            async with asyncio.timeout_at(deadline):",
+        "            async with asyncio.timeout_at(None):",
     ),
     mutant(
         "a search that ends does not tell its reading to stop",
@@ -1394,40 +1480,22 @@ _GREP = (
         "            pass\n",
     ),
     mutant(
-        "the matching process is started with what lies beside it",
+        "the matching process is started with what lies in the working directory",
         GREP,
-        '                [sys.executable, "-I", "-S", str(_WORKER)],',
-        '                [sys.executable, "-S", str(_WORKER)],',
+        '            [sys.executable, "-I", "-S", "-c", _PROGRAM],',
+        '            [sys.executable, "-S", "-c", _PROGRAM],',
     ),
     mutant(
         "the matching process is started with what is installed",
         GREP,
-        '                [sys.executable, "-I", "-S", str(_WORKER)],',
-        '                [sys.executable, "-I", str(_WORKER)],',
+        '            [sys.executable, "-I", "-S", "-c", _PROGRAM],',
+        '            [sys.executable, "-I", "-c", _PROGRAM],',
     ),
     mutant(
         "every batch may show as many lines as the whole search",
         GREP,
-        "                stdin=_request(args, MAX_MATCHES - len(search.lines), texts),",
-        "                stdin=_request(args, MAX_MATCHES, texts),",
-    ),
-    mutant(
-        "every batch gets the whole time of the search",
-        GREP,
-        "                timeout_seconds=left,",
-        "                timeout_seconds=SECONDS,",
-    ),
-    mutant(
-        "a search whose time is up starts a process all the same",
-        GREP,
-        "    if left > 0:",
-        "    if True:",
-    ),
-    mutant(
-        "a search that was stopped is not said to have taken too long",
-        GREP,
-        "    if done is None or done.timed_out:",
-        "    if done is None:",
+        "            stdin=_request(args, MAX_MATCHES - len(search.lines), texts),",
+        "            stdin=_request(args, MAX_MATCHES, texts),",
     ),
     mutant(
         "a pattern that cannot be used counts as a search that failed",
@@ -1662,7 +1730,15 @@ _APPROVAL = (
 
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
-    "search": MutantSet(("tests/fs/test_walk.py", "tests/builtin_tools/test_glob.py"), _SEARCH),
+    "search": MutantSet(
+        (
+            "tests/fs/test_walk.py",
+            "tests/fs/test_patterns.py",
+            "tests/fs/test_bound.py",
+            "tests/builtin_tools/test_glob.py",
+        ),
+        _SEARCH,
+    ),
     "grep": MutantSet(
         ("tests/builtin_tools/test_grep.py", "tests/builtin_tools/test_grep_worker.py"), _GREP
     ),

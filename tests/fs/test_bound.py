@@ -176,8 +176,9 @@ def test_a_directory_is_listed_by_name_with_what_each_entry_is(work: Path) -> No
     (work / "room").mkdir()
     link_directory(work / "door", work / "room")
 
-    listed = bound.listing(work)
+    listed, more = bound.listing(work)
 
+    assert not more
     assert [(entry.name, entry.kind) for entry in listed] == [
         ("a.txt", "file"),
         ("door", "link"),
@@ -187,6 +188,20 @@ def test_a_directory_is_listed_by_name_with_what_each_entry_is(work: Path) -> No
     ]
     last = listed[-1]
     assert (last.size, last.modified_ns) == (5, (work / "z.txt").stat().st_mtime_ns)
+
+
+def test_of_a_directory_that_holds_more_than_was_asked_for_a_part_is_listed(work: Path) -> None:
+    for name in ("a", "b", "c", "d"):
+        (work / name).write_text(name)
+
+    some, more = bound.listing(work, 3)
+    exactly, no_more = bound.listing(work, 4)
+    nothing, at_all = bound.listing(work, 0)
+
+    assert (len(some), more) == (3, True)
+    assert [entry.name for entry in some] == sorted(entry.name for entry in some)
+    assert ([entry.name for entry in exactly], no_more) == (["a", "b", "c", "d"], False)
+    assert (nothing, at_all) == ([], True)
 
 
 def test_a_directory_that_is_somewhere_else_by_now_is_not_listed(swapped: Path) -> None:

@@ -161,6 +161,45 @@ async def test_a_walk_stops_when_it_has_looked_at_as_much_as_it_may(
     assert tally == Tally(entries=3, cut_short=True)
 
 
+async def test_a_walk_does_not_have_a_directory_listed_beyond_what_it_may_look_at(
+    fs: Fs, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked: list[int] = []
+    really_list: Any = bound.listing
+
+    def listing(path: Path, at_most: int) -> Any:
+        asked.append(at_most)
+        return really_list(path, at_most)
+
+    monkeypatch.setattr(bound, "listing", listing)
+
+    found, tally = await found_in(fs, session, work, limit=3)
+
+    # Four entries lie at the top. One more than may be looked at is asked for.
+    assert asked == [4]
+    assert found == ["a.txt"]
+    assert tally.cut_short
+
+
+async def test_a_walk_says_that_it_stopped_when_a_directory_held_more_than_it_took(
+    fs: Fs, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The entries that were taken did not use up what the walk may look at: one is a link.
+    link_directory(work / "again", work / "sub")
+    really_list: Any = bound.listing
+
+    def listing(path: Path, at_most: int) -> Any:
+        listed, _ = really_list(path)
+        return [entry for entry in listed if entry.name in ("a.txt", "again")], True
+
+    monkeypatch.setattr(bound, "listing", listing)
+
+    found, tally = await found_in(fs, session, work, limit=3)
+
+    assert found == ["a.txt"]
+    assert tally == Tally(entries=1, cut_short=True)
+
+
 async def test_a_walk_that_looked_at_everything_was_not_cut_short(
     fs: Fs, session: Session, work: Path
 ) -> None:
@@ -174,10 +213,10 @@ async def test_a_directory_that_cannot_be_listed_is_counted_and_passed(
 ) -> None:
     really_list: Any = bound.listing
 
-    def listing(path: Path) -> Any:
+    def listing(path: Path, *limits: int) -> Any:
         if path.name == "sub":
             raise PermissionError(13, "Permission denied")
-        return really_list(path)
+        return really_list(path, *limits)
 
     monkeypatch.setattr(bound, "listing", listing)
 
@@ -195,8 +234,8 @@ async def test_a_directory_that_became_a_link_while_the_walk_was_under_way_is_no
     (outside / "secret.txt").write_text("s")
     really_list: Any = bound.listing
 
-    def listing(path: Path) -> Any:
-        listed = really_list(path)
+    def listing(path: Path, *limits: int) -> Any:
+        listed = really_list(path, *limits)
         if path.name == "work":
             # The walk has seen that sub is a directory. Now sub becomes a link.
             shutil.rmtree(work / "sub")
@@ -219,11 +258,11 @@ async def test_a_walk_that_is_cancelled_lists_no_further_directory(
     go_on = threading.Event()
     really_list: Any = bound.listing
 
-    def listing(path: Path) -> Any:
+    def listing(path: Path, *limits: int) -> Any:
         listed.append(path.name)
         began.set()
         go_on.wait(timeout=10)
-        return really_list(path)
+        return really_list(path, *limits)
 
     monkeypatch.setattr(bound, "listing", listing)
     walking = asyncio.ensure_future(found_in(fs, session, work))

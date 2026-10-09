@@ -39,6 +39,7 @@ APPROVAL = "src/columbina/approval/__init__.py"
 GREP = "src/columbina/builtin_tools/grep.py"
 SHELL = "src/columbina/builtin_tools/shell.py"
 PATTERNS = "src/columbina/fs/patterns.py"
+PROMPT = "src/columbina/system_prompt/__init__.py"
 RULES = "src/columbina/permissions/rules.py"
 COMMANDS = "src/columbina/permissions/commands.py"
 PERMISSIONS = "src/columbina/permissions/__init__.py"
@@ -2081,8 +2082,63 @@ _SHELL = (
     ),
 )
 
+_PROMPT = (
+    mutant(
+        "sections come by their names, whatever their numbers",
+        PROMPT,
+        "key=lambda item: (item[1].order, item[0])",
+        "key=lambda item: item[0]",
+    ),
+    mutant(
+        "sections come in the order in which they were added",
+        PROMPT,
+        "        ordered = tuple(sorted(self.sections.items(), "
+        "key=lambda item: (item[1].order, item[0])))",
+        "        ordered = tuple(self.sections.items())",
+    ),
+    mutant(
+        "a section without text leaves a gap",
+        PROMPT,
+        '        text = "\\n\\n".join(part for part in parts if part)',
+        '        text = "\\n\\n".join(parts)',
+    ),
+    mutant(
+        "the text of the spec is left out",
+        PROMPT,
+        "        parts = [base.strip(), *(section.text.strip() for _, section in ordered)]",
+        "        parts = [section.text.strip() for _, section in ordered]",
+    ),
+    mutant(
+        "an answer of a listener that is no text is used",
+        PROMPT,
+        "        if not isinstance(answer, str):",
+        "        if False:",
+    ),
+    mutant(
+        "the instructions are asked for at every step",
+        LOOP,
+        "            if step == 0:\n                try:\n"
+        "                    await self._reconcile_system_message()",
+        "            if True:\n                try:\n"
+        "                    await self._reconcile_system_message()",
+    ),
+    mutant(
+        "the loop does not ask the system prompt service",
+        LOOP,
+        "        if assembling is not None:",
+        "        if False:",
+    ),
+    mutant(
+        "a turn whose instructions failed leaves its input in the inbox",
+        LOOP,
+        "                    opening = error\n",
+        "                    raise\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
+    "prompt": MutantSet(("tests/system_prompt", "tests/agent_loop/test_turns.py"), _PROMPT),
     "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),
     "permissions": MutantSet(("tests/permissions",), _PERMISSIONS),
     "search": MutantSet(

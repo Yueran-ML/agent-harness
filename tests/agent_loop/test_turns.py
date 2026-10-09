@@ -4,7 +4,9 @@ import asyncio
 
 from pydantic import BaseModel
 
-from columbina.agent import AGENTS, STREAM, InboxItem, StreamFrame, enqueue
+import columbina.system_prompt
+from columbina.agent import AGENTS, INBOX, STREAM, InboxItem, StreamFrame, enqueue
+from columbina.kernel import Next
 from columbina.llm import (
     BlockStart,
     CallConfig,
@@ -15,7 +17,7 @@ from columbina.llm import (
     TextBlock,
     Usage,
 )
-from columbina.llm.adapters.scripted import Reply
+from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import (
     TURN,
     USAGE,
@@ -30,6 +32,7 @@ from columbina.session import (
     TurnState,
     UserMessageEvent,
 )
+from columbina.system_prompt import SYSTEM_PROMPT, SYSTEM_PROMPT_ASSEMBLE, Draft, Section
 from columbina.tools import Tool, ToolRun
 from support.loop import MODEL, SYSTEM, Harness, assistant, idle, types, user
 
@@ -372,3 +375,126 @@ async def test_closing_an_agent_at_rest_ends_it(harness: Harness) -> None:
 
     assert agent.session.closed
     assert list(harness.ctx.use(AGENTS).live) == []
+
+
+# The system prompt service
+
+
+async def test_what_plugins_add_to_the_instructions_follows_those_of_the_spec(
+    harness: Harness,
+) -> None:
+    await harness.ctx.plugin(columbina.system_prompt)
+    harness.ctx.use(SYSTEM_PROMPT).sections.add(
+        harness.ctx, "files", Section("Read a file before you write it.")
+    )
+    agent = await harness.agent(Reply(text="Hello!"))
+
+    agent.followup("Say hello.")
+    await idle(agent)
+
+    assert harness.model.requests[0].messages[0] == SystemMessage(
+        content=(TextBlock(text="You are helpful.\n\nRead a file before you write it."),)
+    )
+
+
+async def test_instructions_that_only_plugins_give_are_instructions_too(harness: Harness) -> None:
+    await harness.ctx.plugin(columbina.system_prompt)
+    harness.ctx.use(SYSTEM_PROMPT).sections.add(harness.ctx, "files", Section("Read first."))
+    agent = await harness.agent(Reply(text="Hello!"), system_prompt="")
+
+    agent.followup("Say hello.")
+    await idle(agent)
+
+    assert harness.model.requests[0].messages[0] == SystemMessage(
+        content=(TextBlock(text="Read first."),)
+    )
+
+
+async def test_instructions_that_change_between_turns_take_the_place_of_the_old_ones(
+    harness: Harness,
+) -> None:
+    await harness.ctx.plugin(columbina.system_prompt)
+    sections = harness.ctx.use(SYSTEM_PROMPT).sections
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."), Reply(text="Three."))
+    agent.followup("First.")
+    await idle(agent)
+
+    added = sections.add(harness.ctx, "late", Section("Added later."))
+    agent.followup("Second.")
+    await idle(agent)
+    await added.dispose()
+    agent.followup("Third.")
+    await idle(agent)
+
+    longer = SystemMessage(content=(TextBlock(text="You are helpful.\n\nAdded later."),))
+    assert [request.messages[0] for request in harness.model.requests] == [SYSTEM, longer, SYSTEM]
+    assert types(agent.session).count("system/message") == 3
+    assert [len(request.messages) for request in harness.model.requests] == [2, 4, 6]
+
+
+async def test_instructions_that_stay_the_same_are_not_written_again(harness: Harness) -> None:
+    await harness.ctx.plugin(columbina.system_prompt)
+    harness.ctx.use(SYSTEM_PROMPT).sections.add(harness.ctx, "files", Section("Read first."))
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
+
+    agent.followup("First.")
+    await idle(agent)
+    agent.followup("Second.")
+    await idle(agent)
+
+    assert types(agent.session).count("system/message") == 1
+
+
+async def test_the_instructions_are_asked_for_once_in_a_turn(harness: Harness) -> None:
+    asked: list[str] = []
+
+    async def counting(draft: Draft, proceed: Next[Draft, str]) -> str:
+        asked.append(draft.base)
+        return await proceed(draft)
+
+    class NoArgs(BaseModel):
+        pass
+
+    async def nothing(args: NoArgs, run: ToolRun) -> str:
+        return "done"
+
+    await harness.ctx.plugin(columbina.system_prompt)
+    harness.ctx.on(SYSTEM_PROMPT_ASSEMBLE, counting)
+    harness.tools.add(
+        harness.ctx,
+        Tool(name="nothing", description="Do nothing.", parameters=NoArgs, execute=nothing),
+    )
+    agent = await harness.agent(
+        Reply(calls=(Call(name="nothing"),)),
+        Reply(calls=(Call(name="nothing"),)),
+        Reply(text="Done."),
+    )
+
+    agent.followup("Do nothing, twice.")
+    await idle(agent)
+
+    assert len(harness.model.requests) == 3
+    assert asked == ["You are helpful."]
+
+
+async def test_instructions_that_cannot_be_put_together_end_the_turn_and_take_the_input(
+    harness: Harness,
+) -> None:
+    async def failing(draft: Draft, proceed: Next[Draft, str]) -> str:
+        raise RuntimeError("no instructions today")
+
+    await harness.ctx.plugin(columbina.system_prompt)
+    harness.ctx.on(SYSTEM_PROMPT_ASSEMBLE, failing)
+    agent = await harness.agent(Reply(text="Never said."))
+
+    agent.followup("Say hello.")
+    await idle(agent)
+
+    ends = [event.data for event in agent.session.events if isinstance(event.data, TurnEndEvent)]
+    assert [(end.reason, end.detail) for end in ends] == [
+        ("error", "RuntimeError: no instructions today")
+    ]
+    assert harness.model.requests == []
+    assert "user/message" in types(agent.session)
+    assert not INBOX.of(agent.session).next_turn
+    assert not INBOX.of(agent.session).next_step

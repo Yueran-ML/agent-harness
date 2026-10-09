@@ -63,6 +63,7 @@ from columbina.session import (
     TurnStartEvent,
     UserMessageEvent,
 )
+from columbina.system_prompt import SYSTEM_PROMPT, SYSTEM_PROMPT_ASSEMBLE
 from columbina.tools import PendingCall, ToolOutcome, ToolRun, Tools
 
 logger = logging.getLogger("columbina.agent_loop")
@@ -268,9 +269,18 @@ class LoopAgent(Agent):
         step = 0
         cut_off = False
         while True:
-            self._reconcile_system_message()
+            opening: Exception | None = None
+            if step == 0:
+                try:
+                    await self._reconcile_system_message()
+                except Exception as error:
+                    # The input is taken all the same. Left in the inbox, it would begin
+                    # another turn at once, and that one would fail the same way.
+                    opening = error
             for item in self._claim(first_step=step == 0):
                 session.append(UserMessageEvent(message=item.message, source=item.source))
+            if opening is not None:
+                raise opening
             decision = cast(
                 "object",
                 await self._heard(
@@ -328,12 +338,22 @@ class LoopAgent(Agent):
         """
         return await cancellation.guard(answer, what=f"a listener of {event.name}")
 
-    def _reconcile_system_message(self) -> None:
-        """Make the first message the model sees the instructions of the spec."""
+    async def _reconcile_system_message(self) -> None:
+        """Make the first message the model sees the instructions of this turn.
+
+        They are the instructions of the spec, with what plugins add to them
+        if the system prompt service is there. They are asked for once, when
+        a turn begins: the beginning of a conversation that stays the same is
+        what a provider can keep from one request to the next.
+        """
         session = self.session
-        if not self.spec.system_prompt:
+        prompt = self.spec.system_prompt
+        assembling = self.ctx.get(SYSTEM_PROMPT)
+        if assembling is not None:
+            prompt = await self._heard(SYSTEM_PROMPT_ASSEMBLE, assembling.render(self.ctx, prompt))
+        if not prompt:
             return
-        wanted = SystemMessage(content=(TextBlock(text=self.spec.system_prompt),))
+        wanted = SystemMessage(content=(TextBlock(text=prompt),))
         if not session.surface:
             session.append(SystemMessageEvent(message=wanted))
             return

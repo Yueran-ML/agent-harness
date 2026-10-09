@@ -70,6 +70,7 @@ HEADLESS = "src/columbina/apps/headless.py"
 SESSION_STORE = "src/columbina/session/store.py"
 SESSION_SERVICE = "src/columbina/session/service.py"
 UNSEEN = "src/columbina/unseen.py"
+TOKEN_METER = "src/columbina/token_meter/__init__.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -4512,6 +4513,201 @@ _UNSEEN = (
     ),
 )
 
+_METER = (
+    mutant(
+        "a space costs what a letter costs",
+        TOKEN_METER,
+        '    "space": 0.15,\n',
+        '    "space": 0.24,\n',
+    ),
+    mutant(
+        "a digit costs what a letter costs",
+        TOKEN_METER,
+        '    "digit": 0.50,\n',
+        '    "digit": 0.24,\n',
+    ),
+    mutant(
+        "a sign costs what a letter costs",
+        TOKEN_METER,
+        '    "sign": 0.70,\n',
+        '    "sign": 0.24,\n',
+    ),
+    mutant(
+        "a letter in a long run costs what any letter costs",
+        TOKEN_METER,
+        '    "dense": 0.85,\n',
+        '    "dense": 0.24,\n',
+    ),
+    mutant(
+        "a wide character costs a whole token",
+        TOKEN_METER,
+        '    "wide": 0.62,\n',
+        '    "wide": 1.0,\n',
+    ),
+    mutant(
+        "a run of letters and digits is long one character later",
+        TOKEN_METER,
+        "DENSE_RUN = 24\n",
+        "DENSE_RUN = 25\n",
+    ),
+    mutant(
+        "a run of letters and digits is long one character sooner",
+        TOKEN_METER,
+        "DENSE_RUN = 24\n",
+        "DENSE_RUN = 23\n",
+    ),
+    mutant(
+        "a message costs nothing beside its content",
+        TOKEN_METER,
+        "PER_MESSAGE = 3\n",
+        "PER_MESSAGE = 0\n",
+    ),
+    mutant(
+        "declaring tools costs nothing beside what is written about them",
+        TOKEN_METER,
+        "TOOLS_DECLARED = 210\n",
+        "TOOLS_DECLARED = 0\n",
+    ),
+    mutant(
+        "a part of a token counts as none",
+        TOKEN_METER,
+        "    return -(-hundredths // 100)\n",
+        "    return hundredths // 100\n",
+    ),
+    mutant(
+        "the digits of a long run count as its letters too",
+        TOKEN_METER,
+        "    dense = sum(len(run) - _without(run, _DIGITS) for run in _RUN.findall(raw))\n",
+        "    dense = sum(len(run) for run in _RUN.findall(raw))\n",
+    ),
+    mutant(
+        "no run of letters and digits is long",
+        TOKEN_METER,
+        "    dense = sum(len(run) - _without(run, _DIGITS) for run in _RUN.findall(raw))\n",
+        "    dense = 0\n",
+    ),
+    mutant(
+        "a letter counts as a sign",
+        TOKEN_METER,
+        '        "sign": len(raw) - beyond - digits - spaces - letters,\n',
+        '        "sign": len(raw) - beyond - digits - spaces - dense,\n',
+    ),
+    mutant(
+        "a character beyond ASCII counts as a sign as well",
+        TOKEN_METER,
+        '        "sign": len(raw) - beyond - digits - spaces - letters,\n',
+        '        "sign": len(raw) - digits - spaces - letters,\n',
+    ),
+    mutant(
+        "a wide character counts as another one as well",
+        TOKEN_METER,
+        '        "other": beyond - wide,\n',
+        '        "other": beyond,\n',
+    ),
+    mutant(
+        "no character is wide",
+        TOKEN_METER,
+        '    wide = 0 if not beyond else len(text) - len(_WIDE.sub("", text))\n',
+        "    wide = 0\n",
+    ),
+    mutant(
+        "the reasoning of a reply is not counted",
+        TOKEN_METER,
+        "            total += estimate(block.text)\n",
+        "            total += estimate(block.text) if isinstance(block, TextBlock) else 0\n",
+    ),
+    mutant(
+        "the arguments of a call are not counted",
+        TOKEN_METER,
+        "    return estimate(block.name) + estimate(block.arguments) + estimate(block.call_id)\n",
+        "    return estimate(block.name) + estimate(block.call_id)\n",
+    ),
+    mutant(
+        "the id of the call is not counted with a result",
+        TOKEN_METER,
+        "    if isinstance(message, ToolMessage):\n        total += estimate(message.call_id)\n",
+        "",
+    ),
+    mutant(
+        "no tools cost what declaring tools costs",
+        TOKEN_METER,
+        "    if not tools:\n        return 0\n",
+        "",
+    ),
+    mutant(
+        "what is said about a tool is not counted",
+        TOKEN_METER,
+        '            {"name": tool.name, "description": tool.description, "parameters": tool.parameters}\n',
+        '            {"name": tool.name, "parameters": tool.parameters}\n',
+    ),
+    mutant(
+        "the tools are not counted with the messages",
+        TOKEN_METER,
+        "        estimated = ledger.messages + ledger.tools\n",
+        "        estimated = ledger.messages\n",
+    ),
+    mutant(
+        "the count for one model is applied to another",
+        TOKEN_METER,
+        "        rate = ledger.rate if ledger.rate_of == ledger.model else None\n",
+        "        rate = ledger.rate\n",
+    ),
+    mutant(
+        "the estimate is not put right by what the provider counted",
+        TOKEN_METER,
+        "            tokens=estimated if rate is None else round(estimated * rate),\n",
+        "            tokens=estimated,\n",
+    ),
+    mutant(
+        "a reply that was cut short tells what its request held",
+        TOKEN_METER,
+        "        if isinstance(data, AssistantMessageEvent) and data.finish_reason is not None:\n",
+        "        if isinstance(data, AssistantMessageEvent):\n",
+    ),
+    mutant(
+        "what came from the cache was not sent",
+        TOKEN_METER,
+        "            sent = (\n                data.usage.input_tokens\n                + data.usage.cache_read_tokens\n                + data.usage.cache_write_tokens\n            )\n",
+        "            sent = data.usage.input_tokens\n",
+    ),
+    mutant(
+        "the tools were not a part of what the provider counted",
+        TOKEN_METER,
+        "            before = ledger.messages + ledger.tools\n",
+        "            before = ledger.messages\n",
+    ),
+    mutant(
+        "a count of a third of the estimate is believed",
+        TOKEN_METER,
+        "_BELIEVED = (0.5, 2.0)\n",
+        "_BELIEVED = (0.3, 2.0)\n",
+    ),
+    mutant(
+        "a count of three times the estimate is believed",
+        TOKEN_METER,
+        "_BELIEVED = (0.5, 2.0)\n",
+        "_BELIEVED = (0.5, 3.0)\n",
+    ),
+    mutant(
+        "a count that is not believed takes the one before it away",
+        TOKEN_METER,
+        "            if _BELIEVED[0] <= rate <= _BELIEVED[1]:\n                ledger.rate, ledger.rate_of = rate, ledger.model\n",
+        "            believed = _BELIEVED[0] <= rate <= _BELIEVED[1]\n            ledger.rate, ledger.rate_of = (rate, ledger.model) if believed else (None, None)\n",
+    ),
+    mutant(
+        "a message that was replaced goes on counting",
+        TOKEN_METER,
+        "                ledger.messages -= ledger.prices.pop(seq)\n",
+        "                ledger.prices.pop(seq)\n",
+    ),
+    mutant(
+        "the header of a request does not say which model counts",
+        TOKEN_METER,
+        "            ledger.model = (data.config.provider, data.config.model)\n",
+        '            ledger.model = (data.config.provider, "")\n',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -4582,5 +4778,6 @@ SETS: dict[str, MutantSet] = {
     "grants": MutantSet(("tests/permissions",), _GRANTS),
     "chat": MutantSet(("tests/apps", "tests/test_package.py"), _CHAT),
     "unseen": MutantSet(("tests/test_unseen.py", "tests/apps/test_terminal_text.py"), _UNSEEN),
+    "meter": MutantSet(("tests/token_meter",), _METER),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

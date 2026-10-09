@@ -1,7 +1,9 @@
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from hypothesis import settings
 
 import columbina.agent
 import columbina.agent_loop
@@ -15,6 +17,12 @@ from columbina.llm.adapters.scripted import Scripted
 from columbina.session import SESSIONS
 from columbina.tools import TOOLS
 from support.loop import Harness
+
+# Tests that draw their cases at random find more over time, because every run draws others.
+# Whoever needs the same answer from every run asks for the same cases: the check of the
+# mutants does, since a fault that is found in one run and missed in the next says nothing.
+settings.register_profile("steady", derandomize=True)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 @pytest.fixture

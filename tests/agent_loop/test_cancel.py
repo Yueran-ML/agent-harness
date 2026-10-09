@@ -4,20 +4,22 @@ import asyncio
 import logging
 
 import pytest
+from pydantic import BaseModel
 
 from columbina.agent import INBOX, STREAM, Inbox, InboxItem, InboxSplicedEvent, StreamFrame
 from columbina.llm import AssistantMessage, TextDelta, Usage
-from columbina.llm.adapters.scripted import Reply
+from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import (
     SESSION_EVENT,
     AssistantMessageEvent,
     Committed,
     SessionStoreError,
+    StepEndEvent,
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
 )
-from columbina.tools import Tools
+from columbina.tools import Tool, ToolRun, Tools
 from support.loop import STOPPED, SYSTEM, Harness, assistant, from_a_source, idle, types, user
 
 # Input that arrives while a turn runs
@@ -510,3 +512,41 @@ async def test_a_task_that_is_kept_through_a_cancellation_is_not_started_by_an_e
 
     assert len(harness.model.requests) == 1
     assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+
+
+async def test_a_turn_that_is_cancelled_between_two_steps_takes_no_input_for_the_next_one(
+    harness: Harness,
+) -> None:
+    class Nothing(BaseModel):
+        pass
+
+    async def look(args: Nothing, run: ToolRun) -> str:
+        return "seen"
+
+    harness.tools.add(
+        harness.ctx, Tool(name="look", description="Look.", parameters=Nothing, execute=look)
+    )
+    agent = await harness.agent(Reply(calls=(Call(name="look"),)), Reply(text="never asked for"))
+
+    def at_the_end_of_the_step(committed: Committed) -> None:
+        # A step that called a tool is followed by the next one without a pause in between,
+        # so the turn has not yet come to know that it is cancelled when that one begins.
+        if isinstance(committed.event.data, StepEndEvent):
+            agent.steer("One more thing.")
+            agent.cancel(keep_inbox=True)
+
+    agent.ctx.on(SESSION_EVENT, at_the_end_of_the_step)
+    agent.followup("Look.")
+    await idle(agent)
+
+    heard = [
+        event.data.message
+        for event in agent.session.events
+        if isinstance(event.data, UserMessageEvent) and not from_a_source(event.data)
+    ]
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
+    assert heard == [user("Look.")]
+    assert INBOX.of(agent.session) == Inbox(
+        next_step=(InboxItem(message=user("One more thing."), source="steer"),)
+    )
+    assert len(harness.model.requests) == 1

@@ -17,6 +17,14 @@ The exit code is 0 if every mutant was found.
 The script changes files under ``src`` while it runs. It refuses to start if
 ``src`` has changes that are not committed, so that ``git checkout -- src``
 always puts things right should it be killed half way.
+
+Tests that draw their cases at random draw the same cases in every run here,
+so a mutant is found by every run or by none. One that only a lucky draw
+finds shows as missed, and then it gets a test of its own.
+
+A mutant that takes the tidying up out of the code does what it says: the set
+``process`` leaves a few processes of the tests behind, some of them
+suspended. Nothing but the task manager ends those.
 """
 
 import os
@@ -68,7 +76,10 @@ def run(tests: tuple[str, ...], storage: str) -> int | None:
     """Run the tests and return the exit code of pytest, or ``None`` after too long a time."""
     command = [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *tests]
     # Examples that fail against a mutant are of no use to later runs of the real code.
-    environment = os.environ | {"HYPOTHESIS_STORAGE_DIRECTORY": storage}
+    environment = os.environ | {
+        "HYPOTHESIS_STORAGE_DIRECTORY": storage,
+        "HYPOTHESIS_PROFILE": "steady",
+    }
     try:
         done = subprocess.run(
             command,

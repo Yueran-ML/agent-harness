@@ -40,17 +40,23 @@ import stat
 import sys
 import time
 from collections.abc import Generator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Literal
 
 __all__ = [
     "ChangedError",
+    "Listed",
     "MovedError",
     "NotAFileError",
     "NotShownError",
+    "listing",
     "open_for_reading",
     "replace",
 ]
+
+_JUNCTION = 0xA0000003
+"""What Windows marks a directory with that stands for another directory."""
 
 
 class MovedError(OSError):
@@ -67,6 +73,41 @@ class NotShownError(Exception):
 
 class ChangedError(Exception):
     """The file is no longer in the state in which it was seen."""
+
+
+@dataclass(frozen=True, slots=True)
+class Listed:
+    """An entry of a directory.
+
+    Attributes:
+        name: The name of the entry.
+        kind: Whether it is a file, a directory, a link to something, or
+            something else, such as a pipe.
+        size: Its size in bytes.
+        modified_ns: When it was last changed, in nanoseconds.
+    """
+
+    name: str
+    kind: Literal["file", "directory", "link", "other"]
+    size: int
+    modified_ns: int
+
+
+def _listed(entry: "os.DirEntry[str]") -> Listed:
+    status = entry.stat(follow_symlinks=False)
+    mode = status.st_mode
+    # A directory that stands for another one is a link too, whatever the system calls it.
+    link = stat.S_ISLNK(mode) or getattr(status, "st_reparse_tag", 0) == _JUNCTION
+    kind: Literal["file", "directory", "link", "other"] = (
+        "link"
+        if link
+        else "directory"
+        if stat.S_ISDIR(mode)
+        else "file"
+        if stat.S_ISREG(mode)
+        else "other"
+    )
+    return Listed(entry.name, kind, status.st_size, status.st_mtime_ns)
 
 
 def _one_entry(left: Path, right: Path) -> bool:
@@ -206,6 +247,10 @@ if sys.platform == "win32":  # pragma: windows only
         def status(self, name: str) -> os.stat_result:
             return (self.path / name).lstat()
 
+        def entries(self) -> list[Listed]:
+            with os.scandir(self.path) as found:
+                return [_listed(entry) for entry in found]
+
         def create(self, name: str) -> int:
             return os.open(self.path / name, _CREATE_FLAGS, 0o666)
 
@@ -297,6 +342,10 @@ else:  # pragma: posix only
 
         def status(self, name: str) -> os.stat_result:
             return os.stat(name, dir_fd=self._descriptor, follow_symlinks=False)
+
+        def entries(self) -> list[Listed]:
+            with os.scandir(self._descriptor) as found:
+                return [_listed(entry) for entry in found]
 
         def create(self, name: str) -> int:
             return os.open(name, _CREATE_FLAGS, 0o666, dir_fd=self._descriptor)
@@ -440,3 +489,19 @@ def replace(path: Path, data: bytes, seen: tuple[int, int] | None) -> os.stat_re
             raise
         directory.sync()
         return directory.status(name)
+
+
+def listing(path: Path) -> list[Listed]:
+    """List the directory at a path that has no link on its way, by name.
+
+    The directory is held open while it is listed, and asked where it is.
+
+    Raises:
+        MovedError: What the path led to when it was opened is somewhere else.
+        OSError: The directory cannot be listed.
+    """
+    held = _Held(path)
+    try:
+        return sorted(held.entries(), key=lambda entry: entry.name)
+    finally:
+        held.close()

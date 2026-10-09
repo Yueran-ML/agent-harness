@@ -33,6 +33,8 @@ BOUND = "src/columbina/fs/bound.py"
 SANDBOX = "src/columbina/sandbox/__init__.py"
 WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
+WALK = "src/columbina/fs/walk.py"
+GLOB = "src/columbina/builtin_tools/glob.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1006,7 +1008,121 @@ _FILES = (
     ),
 )
 
+_SEARCH = (
+    mutant(
+        "the seam is not asked about what a walk comes upon",
+        WALK,
+        '            if fs.judge(Access(session, cwd, where, "read", tool, named=False)) is not None:',
+        "            if False:",
+    ),
+    mutant(
+        "what a walk comes upon counts as named by the call",
+        WALK,
+        '            if fs.judge(Access(session, cwd, where, "read", tool, named=False)) is not None:',
+        '            if fs.judge(Access(session, cwd, where, "read", tool)) is not None:',
+    ),
+    mutant(
+        "the history of a repository is walked",
+        WALK,
+        '            if entry.kind == "directory" and entry.name in SKIPPED:',
+        "            if False:",
+    ),
+    mutant(
+        "a link is handed on like a file",
+        WALK,
+        '            if entry.kind not in ("file", "directory"):',
+        "            if False:",
+    ),
+    mutant(
+        "a walk looks at one entry more than it may",
+        WALK,
+        "            if tally.entries >= limit:",
+        "            if tally.entries > limit:",
+    ),
+    mutant(
+        "a walk that stopped early does not say so",
+        WALK,
+        "                tally.cut_short = True\n",
+        "",
+    ),
+    mutant(
+        "a directory that cannot be listed ends the walk",
+        WALK,
+        "            tally.unreadable += 1\n            continue\n",
+        "            tally.unreadable += 1\n            return\n",
+    ),
+    mutant(
+        "a walk goes down before it goes on",
+        WALK,
+        "        directory, names = waiting.popleft()",
+        "        directory, names = waiting.pop()",
+    ),
+    mutant(
+        "a pattern of one name is looked for at the top only",
+        GLOB,
+        '    if len(names) == 1:\n        names = ["**", *names]\n',
+        "",
+    ),
+    mutant(
+        "two stars stand for one directory at least",
+        GLOB,
+        "                return from_here(at, part + 1) or (at < len(path) and from_here(at + 1, part))",
+        "                return at < len(path) and from_here(at + 1, part + 1)",
+    ),
+    mutant(
+        "a pattern may step out of the directory that is searched",
+        GLOB,
+        '    if ".." in names:',
+        "    if False:",
+    ),
+    mutant(
+        "the file that was changed first comes first",
+        GLOB,
+        "    newest = sorted(matched, key=lambda found: (-found.modified_ns, found.where.relative))",
+        "    newest = sorted(matched, key=lambda found: (found.modified_ns, found.where.relative))",
+    ),
+    mutant(
+        "more than a hundred files are listed",
+        GLOB,
+        "    lines = [found.where.relative for found in newest[:MAX_RESULTS]]",
+        "    lines = [found.where.relative for found in newest]",
+    ),
+    mutant(
+        "what was kept from the search is not mentioned",
+        GLOB,
+        "    if tally.refused:",
+        "    if False:",
+    ),
+    mutant(
+        "a search does not say that it stopped early",
+        GLOB,
+        "    if tally.cut_short:",
+        "    if False:",
+    ),
+    mutant(
+        "a file is searched as if it were a directory",
+        GLOB,
+        "        if not root.path.is_dir():",
+        "        if False:",
+    ),
+    mutant(
+        "a search goes ahead where the directory leads elsewhere than it did",
+        GLOB,
+        "        if root.relative != run.target:",
+        "        if False:",
+    ),
+    on_windows(
+        mutant(
+            "upper and lower case count on a disk that takes them for one",
+            GLOB,
+            "    flags = re.IGNORECASE if IGNORES_CASE else 0",
+            "    flags = 0",
+        )
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
+    "search": MutantSet(("tests/fs/test_walk.py", "tests/builtin_tools/test_glob.py"), _SEARCH),
     "files": MutantSet(
         ("tests/builtin_tools/test_write.py", "tests/builtin_tools/test_edit.py"), _FILES
     ),

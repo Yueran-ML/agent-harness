@@ -169,6 +169,40 @@ def test_two_spellings_are_one_place_if_they_name_the_same_entries(work: Path) -
     assert not same(str(work / "sub" / "a.txt"), str(work / "sub" / "deeper" / "a.txt"))
 
 
+def test_a_directory_is_listed_by_name_with_what_each_entry_is(work: Path) -> None:
+    (work / "z.txt").write_bytes(b"12345")
+    (work / "a.txt").write_bytes(b"1")
+    (work / "sub").mkdir()
+    (work / "room").mkdir()
+    link_directory(work / "door", work / "room")
+
+    listed = bound.listing(work)
+
+    assert [(entry.name, entry.kind) for entry in listed] == [
+        ("a.txt", "file"),
+        ("door", "link"),
+        ("room", "directory"),
+        ("sub", "directory"),
+        ("z.txt", "file"),
+    ]
+    last = listed[-1]
+    assert (last.size, last.modified_ns) == (5, (work / "z.txt").stat().st_mtime_ns)
+
+
+def test_a_directory_that_is_somewhere_else_by_now_is_not_listed(swapped: Path) -> None:
+    with pytest.raises(MovedError):
+        bound.listing(swapped.parent)
+
+
+def test_what_is_no_directory_cannot_be_listed(work: Path) -> None:
+    (work / "a.txt").write_text("a")
+
+    with pytest.raises(OSError, match=r"a\.txt"):
+        bound.listing(work / "a.txt")
+    with pytest.raises(FileNotFoundError):
+        bound.listing(work / "nowhere")
+
+
 def test_a_link_and_what_it_leads_to_are_not_the_same_entry(work: Path) -> None:
     # The link lies beside what it leads to, so the two ways part at one name only.
     (work / "room").mkdir()

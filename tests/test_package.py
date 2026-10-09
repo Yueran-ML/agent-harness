@@ -7,14 +7,10 @@ from importlib.metadata import version
 import pytest
 
 import columbina
-from columbina.kernel import Layer, flatten, import_plugin, parse_layer
+from columbina.kernel import flatten, import_plugin
+from support.launch import bundle
 
 BUNDLES = ["base", "headless", "minimal"]
-
-
-def bundle(name: str) -> Layer:
-    text = resources.files("columbina.bundles").joinpath(f"{name}.yml").read_text(encoding="utf-8")
-    return parse_layer(text, source=name)
 
 
 def test_version_matches_the_installed_distribution() -> None:

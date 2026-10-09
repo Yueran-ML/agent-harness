@@ -1,0 +1,11 @@
+# How this run was made: with the plugins that `columbina run` loaded in stage 2,
+# which were the minimal program and retries.
+#
+#   columbina run "What is the codename of release 0.1? It is written in notes.txt.
+#   Answer with the codename only." --cwd COPY --session-id deepseek-read
+profile:
+  extends: minimal
+  patch:
+    - insert:
+        - id: retry
+          plugin: columbina.retry

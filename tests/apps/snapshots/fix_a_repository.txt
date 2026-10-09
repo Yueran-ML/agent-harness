@@ -1,0 +1,38 @@
+request 1 to deepseek/deepseek-flash, tools: read, write, edit, glob, grep, shell
+1 system
+    text: "You are Columbina, an agent that works in a directory on the user's machine. Use the tools you are given to look at what is there before you answer or change anything. After a change, check that it does what it should, if you have a way to check. If a call is refused because it is not allowed, do not try to get the same thing done another way: say in your answer what was not allowed. When the task is done, say briefly what you found or did."
+2 user
+    text: '<context source="instructions">\nThese files hold instructions for work in this directory. They come from the widest to the most specific one, and where two of them disagree, the later one counts.\n\n==> AGENTS.md <==\n# Notes for agents\n\nRun `python check.py` to check your work. It prints `ok` when everything is right.\n</context>'
+3 user
+    text: '<context source="runtime">\napproval: ask. A call that needs a yes is put to the user, if somebody is there to ask.\ncommands are held: not at all. A command can do whatever the user of this machine can do.\ncommands are run by: the shell of this platform\nsandbox mode: workspace-write. Files in the working directory can be written, except in .git and .columbina. Outside it no file can be read or written.\nworking directory: /work\n</context>'
+4 user
+    text: 'check.py fails. Find the mistake in calc.py and fix it, and make sure that `python check.py` prints ok.'
+
+request 2 to deepseek/deepseek-flash, tools: read, write, edit, glob, grep, shell
+    as request 1 up to message 4
+5 assistant
+    text: 'I will run the check first.'
+    call shell '{"command": "python check.py"}' as call-1
+6 tool, result of call-1
+    text: 'mean([1.0, 2.0, 3.0]) is 3.0, expected 2.0\n[exit code 1]'
+
+request 3 to deepseek/deepseek-flash, tools: read, write, edit, glob, grep, shell
+    as request 2 up to message 6
+7 assistant
+    call read '{"path": "calc.py"}' as call-2
+8 tool, result of call-2
+    text: '     1\t"""A small calculator."""\n     2\t\n     3\t\n     4\tdef mean(values: list[float]) -> float:\n     5\t    """Return the mean of the values."""\n     6\t    return sum(values) / (len(values) - 1)'
+
+request 4 to deepseek/deepseek-flash, tools: read, write, edit, glob, grep, shell
+    as request 3 up to message 8
+9 assistant
+    call edit '{"path": "calc.py", "old": "(len(values) - 1)", "new": "len(values)"}' as call-3
+10 tool, result of call-3
+    text: 'Replaced 1 occurrence in calc.py.'
+
+request 5 to deepseek/deepseek-flash, tools: read, write, edit, glob, grep, shell
+    as request 4 up to message 10
+11 assistant
+    call shell '{"command": "python check.py"}' as call-4
+12 tool, result of call-4
+    text: 'ok\n[exit code 0]'

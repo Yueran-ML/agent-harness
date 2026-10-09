@@ -1,6 +1,7 @@
 """Running ``columbina run`` in a test: a profile with a scripted model, and what a run leaves."""
 
 import json
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -8,12 +9,13 @@ import yaml
 
 from columbina.agent import InboxSplicedEvent
 from columbina.approval import ApprovalAskedEvent, ApprovalDecidedEvent, ApprovalPolicyEvent
+from columbina.kernel import Layer, parse_layer
 from columbina.retry import RetryEvent
 from columbina.sandbox import SandboxModeEvent
 from columbina.session import CORE_EVENTS, EventData, StoredSession, read_session
 from columbina.session.store import workspace_key
 
-__all__ = ["KINDS", "lines", "profile", "stored"]
+__all__ = ["KINDS", "bundle", "lines", "profile", "stored"]
 
 KINDS: dict[str, type[EventData]] = {
     kind.event_type: kind
@@ -28,6 +30,15 @@ KINDS: dict[str, type[EventData]] = {
     )
 }
 """The kinds of events that a test reads from a stored session. The others are passed over."""
+
+
+def bundle(name: str) -> Layer:
+    """Return the bundle that comes with the package under a name."""
+    file = resources.files("columbina.bundles").joinpath(f"{name}.yml")
+    try:
+        return parse_layer(file.read_text(encoding="utf-8"), source=f"bundle {name}")
+    except FileNotFoundError:
+        raise KeyError(name) from None
 
 
 def profile(

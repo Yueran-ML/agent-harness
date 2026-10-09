@@ -1,0 +1,18 @@
+# How this run was made: with the base program, and a rule that allows the one
+# command which the notes for agents name.
+#
+#   columbina run "check.py fails. Find the mistake in calc.py and fix it, and make
+#   sure that `python check.py` prints ok." --cwd COPY --session-id deepseek-fix
+#   --allow "run(python check.py)"
+#
+# The model called the tool powershell, which only Windows has, so the run can
+# happen again on Windows only.
+platform: win32
+profile:
+  extends: base
+  patch:
+    - id: permissions
+      config:
+        preset: workspace-write
+        allow:
+          - run(python check.py)

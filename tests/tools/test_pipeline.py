@@ -988,6 +988,25 @@ async def test_a_tool_that_cannot_say_what_a_call_acts_on_does_not_run(
     assert "target bug" in caplog.text
 
 
+async def test_a_tool_can_refuse_a_call_when_it_says_what_the_call_acts_on(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    def target(args: EchoArgs, run: ToolRun) -> str:
+        raise ToolFailure("This is no path that is used here.", code="INVALID_PATH")
+
+    asked: list[str] = []
+    tools.add(ctx, tool("echo", journal.echo, target=target))
+    tools.guards.add(ctx, "watching", content(asked, "watching"))
+
+    outcome = await tools.run(ctx, call("echo"), run)
+
+    assert outcome.error == ToolError(
+        code="INVALID_PATH", reason="This is no path that is used here."
+    )
+    assert asked == []
+    assert journal.ran == []
+
+
 # What runs is what was checked
 
 

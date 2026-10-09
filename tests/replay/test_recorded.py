@@ -13,6 +13,7 @@ from pathlib import Path
 
 import columbina.agent
 import columbina.agent_loop
+import columbina.fs
 import columbina.llm
 import columbina.retry
 import columbina.session
@@ -51,6 +52,7 @@ async def test_a_recorded_run_happens_again_event_by_event(ctx: Context, tmp_pat
     await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
     await ctx.plugin(columbina.llm)
     await ctx.plugin(columbina.tools)
+    await ctx.plugin(columbina.fs)
     await ctx.plugin(read)
     await ctx.plugin(columbina.agent)
     await ctx.plugin(columbina.agent_loop)

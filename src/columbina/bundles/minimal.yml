@@ -18,6 +18,8 @@
       plugin: columbina.tools
       config:
         timeout_seconds: 120
+    - id: fs
+      plugin: columbina.fs
     - id: tool-read
       plugin: columbina.builtin_tools.read
     - id: agent

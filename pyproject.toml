@@ -87,6 +87,7 @@ convention = "google"
 ]
 "tests/mutation/mutants.py" = ["E501"]  # the text of source lines, kept whole
 "examples/**" = ["D"]
+"src/columbina/fs/paths.py" = ["PTH"]  # a path is walked there name by name, as text
 
 [tool.pyright]
 include = ["src", "tests", "examples"]

@@ -309,6 +309,7 @@ def test_the_composition_can_be_printed_instead_of_run(
         "llm",
         "model",
         "tools",
+        "fs",
         "tool-read",
         "agent",
         "agent-loop",

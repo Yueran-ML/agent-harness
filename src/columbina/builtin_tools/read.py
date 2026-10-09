@@ -5,23 +5,27 @@ This module is a plugin. Loading it registers the tool ``read``.
 A read is bounded however large the file is and however long its lines are.
 It holds little more in memory than it returns, it looks at no more than the
 first ``_SCAN_BYTES`` of the file, and it stops when its caller is cancelled.
+
+The file is found, allowed and opened through the seam of the file system. A
+file that was read is one that the model has been shown, which the seam
+remembers for the tools that write.
 """
 
 import asyncio
 import codecs
 import threading
 from dataclasses import dataclass
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from columbina.fs import FS, Access, Fingerprint, Fs, Permit, locate
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
-__all__ = ["READ", "ReadArgs", "apply", "inject", "name"]
+__all__ = ["ReadArgs", "apply", "inject", "name", "read_tool"]
 
 name = "tool-read"
-inject = (TOOLS,)
+inject = (TOOLS, FS)
 
 MAX_LINES = 2000
 MAX_LINE_CHARACTERS = 2000
@@ -160,14 +164,16 @@ class _Part:
         lines: How many lines were seen.
         complete: Whether the file was read to its end. If not, it has at
             least ``lines`` lines.
+        fingerprint: The state of the file when it was opened.
     """
 
     shown: list[str]
     lines: int
     complete: bool
+    fingerprint: Fingerprint
 
 
-def _load(path: Path, offset: int, limit: int, stopped: threading.Event) -> _Part | None:
+def _load(permit: Permit, offset: int, limit: int, stopped: threading.Event) -> _Part | None:
     """Read ``limit`` lines of the file after the first ``offset``.
 
     The file is read piece by piece, as far as ``_SCAN_BYTES`` and no further,
@@ -179,7 +185,8 @@ def _load(path: Path, offset: int, limit: int, stopped: threading.Event) -> _Par
     reader = _Reader(offset, limit)
     scanned = 0
     complete = False
-    with path.open("rb") as file:
+    with permit.open() as opened:
+        file = opened.file
         while scanned < _SCAN_BYTES and not stopped.is_set():
             chunk = file.read(min(_CHUNK_BYTES, _SCAN_BYTES - scanned))
             if not chunk:
@@ -196,7 +203,7 @@ def _load(path: Path, offset: int, limit: int, stopped: threading.Event) -> _Par
     if reader.open:
         reader.end_line(cut_short=not complete)
         seen += 1
-    return _Part(reader.shown, seen, complete)
+    return _Part(reader.shown, seen, complete, opened.fingerprint)
 
 
 def _amount(size: int) -> str:
@@ -218,49 +225,51 @@ def _note(part: _Part, offset: int) -> str | None:
     return f"[lines {first} to {last} of at least {part.lines}.{read_on} {looked_at}]"
 
 
-async def _read(args: ReadArgs, run: ToolRun) -> str:
-    root = run.cwd.resolve()
-    target = (root / args.path).resolve()
-    if not target.is_relative_to(root):
-        raise ToolFailure(
-            f"The path {args.path} is outside the working directory. "
-            "Only files inside it can be read.",
-            code="OUTSIDE_WORKING_DIRECTORY",
-        )
-    if target.is_dir():
-        raise ToolFailure(f"{args.path} is a directory, not a file.", code="NOT_A_FILE")
-    stopped = threading.Event()
-    try:
-        part = await asyncio.to_thread(_load, target, args.offset, args.limit, stopped)
-    except FileNotFoundError:
-        raise ToolFailure(f"There is no file {args.path}.", code="NOT_FOUND") from None
-    except OSError as error:
-        raise ToolFailure(f"{args.path} cannot be read: {error}") from error
-    finally:
-        # A thread cannot be cancelled. It is told to stop, and does so at its next piece.
-        stopped.set()
-    if part is None:
-        raise ToolFailure(f"{args.path} does not look like a text file.", code="NOT_TEXT")
-    if part.lines == 0:
-        return "(the file is empty)"
-    note = _note(part, args.offset)
-    return "\n".join(part.shown if note is None else [*part.shown, note])
+def _target(args: ReadArgs, run: ToolRun) -> str:
+    return locate(run.cwd, args.path).relative
 
 
-READ = Tool(
-    name="read",
-    description=(
-        "Read a text file of the working directory. The lines come back with their numbers. "
-        f"At most {MAX_LINES} lines are returned at once: pass offset and limit to read a "
-        "long file in parts."
-    ),
-    parameters=ReadArgs,
-    execute=_read,
-    concurrency_safe=True,
-)
-"""The read tool."""
+def read_tool(fs: Fs) -> Tool[ReadArgs, str]:
+    """Make the read tool, which reaches files through ``fs``."""
+
+    async def read(args: ReadArgs, run: ToolRun) -> str:
+        where = locate(run.cwd, args.path)
+        permit = fs.permit(Access(run.session, run.cwd, where, "read", "read"))
+        if where.path.is_dir():
+            raise ToolFailure(f"{args.path} is a directory, not a file.", code="NOT_A_FILE")
+        stopped = threading.Event()
+        try:
+            part = await asyncio.to_thread(_load, permit, args.offset, args.limit, stopped)
+        except FileNotFoundError:
+            raise ToolFailure(f"There is no file {args.path}.", code="NOT_FOUND") from None
+        except OSError as error:
+            raise ToolFailure(f"{args.path} cannot be read: {error}") from error
+        finally:
+            # A thread cannot be cancelled. It is told to stop, and does so at its next piece.
+            stopped.set()
+        if part is None:
+            raise ToolFailure(f"{args.path} does not look like a text file.", code="NOT_TEXT")
+        fs.shown(permit, part.fingerprint)
+        if part.lines == 0:
+            return "(the file is empty)"
+        note = _note(part, args.offset)
+        return "\n".join(part.shown if note is None else [*part.shown, note])
+
+    return Tool(
+        name="read",
+        description=(
+            "Read a text file of the working directory. The lines come back with their "
+            f"numbers. At most {MAX_LINES} lines are returned at once: pass offset and limit "
+            "to read a long file in parts."
+        ),
+        parameters=ReadArgs,
+        execute=read,
+        concurrency_safe=True,
+        effect="read",
+        target=_target,
+    )
 
 
 def apply(ctx: Context, config: object) -> None:
     """Register the read tool."""
-    ctx.use(TOOLS).add(ctx, READ)
+    ctx.use(TOOLS).add(ctx, read_tool(ctx.use(FS)))

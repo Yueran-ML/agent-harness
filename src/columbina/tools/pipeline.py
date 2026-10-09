@@ -491,6 +491,11 @@ class Tools:
             return broken
         try:
             target = None if tool.target is None else tool.target(args, run)
+        except ToolFailure as failure:
+            # The tool knows what the call acts on, and says that it will not act on it.
+            refused = PendingCall(ctx, call, None, None, True, self)
+            refused.fail(failure.code, str(failure))
+            return refused
         except (Exception, asyncio.CancelledError) as error:
             # Without knowing what a call acts on, no check can judge it.
             logger.error("the tool %r could not say what a call acts on", tool.name, exc_info=error)

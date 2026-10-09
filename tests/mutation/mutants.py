@@ -11,7 +11,9 @@ Left out on purpose are mutants that change nothing that can be observed. One
 example: counting the lines after the wanted ones on the slow path of the
 reader instead of the fast one. Another: not waiting for the rest of the
 output of a program that has ended. The event loop hands over what was on its
-way before the run goes on, though nothing says that it must.
+way before the run goes on, though nothing says that it must. A third: asking
+again where an open file is after the system has said that it is elsewhere.
+The second look agrees with the first unless a link is put back between them.
 
 A mutant of code that only one platform runs says which. On another platform
 no test can notice it, and ``mutate.py`` passes it over.
@@ -25,6 +27,9 @@ CANCELLATION = "src/columbina/cancellation.py"
 READ = "src/columbina/builtin_tools/read.py"
 PROCESS = "src/columbina/process.py"
 PIPELINE = "src/columbina/tools/pipeline.py"
+SEAM = "src/columbina/fs/__init__.py"
+PATHS = "src/columbina/fs/paths.py"
+BOUND = "src/columbina/fs/bound.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,9 +329,9 @@ _READ = (
     mutant(
         "the thread is not told to stop",
         READ,
-        "        # A thread cannot be cancelled. It is told to stop, and does so at its next piece.\n"
-        "        stopped.set()\n",
-        "        pass\n",
+        "            # A thread cannot be cancelled. It is told to stop, and does so at its next piece.\n"
+        "            stopped.set()\n",
+        "            pass\n",
     ),
     mutant(
         "the thread does not listen",
@@ -533,10 +538,191 @@ _TOOLS = (
     ),
 )
 
+_FS = (
+    mutant(
+        "the refusal of a restriction is passed over",
+        SEAM,
+        "            if isinstance(refusal, Refuse):\n                return refusal\n",
+        "",
+    ),
+    mutant(
+        "anything in the working directory may be written",
+        SEAM,
+        '        if access.kind == "read" and where.inside:',
+        "        if where.inside:",
+    ),
+    mutant(
+        "anything may be read, wherever it is",
+        SEAM,
+        '        if access.kind == "read" and where.inside:',
+        '        if access.kind == "read":',
+    ),
+    mutant(
+        "a grant allows by any answer that is not nothing",
+        SEAM,
+        '                if cast("object", grant(access)) is True:',
+        "                if grant(access):",
+    ),
+    mutant(
+        "a restriction that fails lets the access through",
+        SEAM,
+        '                logger.error("the restriction %r of file access failed", name, exc_info=error)\n'
+        "                return Refuse(\n"
+        '                    f"The access could not be checked and did not happen: {_describe(error)}",\n'
+        '                    "CHECK_FAILED",\n'
+        "                )\n",
+        '                logger.error("the restriction %r of file access failed", name, exc_info=error)\n'
+        "                continue\n",
+    ),
+    mutant(
+        "an answer of a restriction that is no refusal lets the access through",
+        SEAM,
+        "            if refusal is not None:\n"
+        '                logger.error("the restriction %r of file access gave no refusal", name)\n',
+        "            if False:\n"
+        '                logger.error("the restriction %r of file access gave no refusal", name)\n',
+    ),
+    mutant(
+        "an access that was refused gets a permit all the same",
+        SEAM,
+        "        if refusal is not None:\n"
+        "            raise ToolFailure(refusal.reason, code=refusal.code)\n",
+        "",
+    ),
+    mutant(
+        "a permit to write opens for reading",
+        SEAM,
+        '        if self.access.kind != "read":\n'
+        '            raise ValueError("this permit is not for reading")\n',
+        "",
+    ),
+    on_windows(
+        mutant(
+            "a file is remembered by the spelling of its path",
+            SEAM,
+            "    return os.path.normcase(path)",
+            "    return str(path)",
+        )
+    ),
+    mutant(
+        "no path means the working directory",
+        PATHS,
+        "    if not written.strip():\n"
+        '        raise ToolFailure("No path was given.", code="INVALID_PATH")\n',
+        "",
+    ),
+    mutant(
+        "a path that climbs out counts as inside",
+        PATHS,
+        "    if path.is_relative_to(base):",
+        "    if True:",
+    ),
+    on_windows(
+        mutant(
+            "a path that names another machine is handed to the system",
+            PATHS,
+            "        if _begins_with_two_slashes(written):\n"
+            '            raise _refused(written, "a path that begins with two slashes names another machine.")\n',
+            "",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a link that leads to another machine is followed",
+            PATHS,
+            "            if _leads_away(target):\n"
+            '                raise _refused(written, "a link on the way leads to another machine.")\n',
+            "",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a step back is taken from the text of the path",
+            PATHS,
+            "    joined = os.path.join(root, written)\n",
+            "    joined = os.path.normpath(os.path.join(root, written))\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "links are followed in a circle for ever",
+            PATHS,
+            "            if links > _MAX_LINKS:",
+            "            if False:",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a device with an ending to its name is a file",
+            PATHS,
+            '            if part.split(".")[0].rstrip(" ").upper() in _DEVICES:',
+            "            if part.upper() in _DEVICES:",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a name may end with a dot",
+            PATHS,
+            '            if part[-1] in ". ":',
+            '            if part[-1] == " ":',
+        )
+    ),
+    on_windows(
+        mutant(
+            "a name may hold a colon",
+            PATHS,
+            '            if ":" in part:\n'
+            '                raise _refused(written, "a colon inside a name is not allowed.")\n',
+            "",
+        )
+    ),
+    mutant(
+        "what was opened is not looked at again",
+        BOUND,
+        "        if not _is_at(descriptor, path):\n"
+        '            raise MovedError(f"{path} was somewhere else when it was opened")\n',
+        "",
+    ),
+    mutant(
+        "a device is read like a file",
+        BOUND,
+        "        if not stat.S_ISREG(status.st_mode):\n"
+        '            raise NotAFileError(f"{path} is not a regular file")\n',
+        "",
+    ),
+    mutant(
+        "a file that is refused stays open",
+        BOUND,
+        "    except BaseException:\n        os.close(descriptor)\n        raise\n",
+        "    except BaseException:\n        raise\n",
+    ),
+    on_windows(
+        mutant(
+            "another case of a name is another file",
+            BOUND,
+            "        return os.path.normcase(one) == os.path.normcase(other)",
+            "        return one == other",
+        )
+    ),
+    mutant(
+        "without an answer, any file at the place will do",
+        BOUND,
+        "    return os.path.samestat(os.fstat(descriptor), named) and _spelled_alike(still, str(expected))",
+        "    return _spelled_alike(still, str(expected))",
+    ),
+    mutant(
+        "without an answer, the same file will do wherever the path leads now",
+        BOUND,
+        "    return os.path.samestat(os.fstat(descriptor), named) and _spelled_alike(still, str(expected))",
+        "    return os.path.samestat(os.fstat(descriptor), named)",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "loop": MutantSet(("tests/agent_loop", "tests/agent", "tests/test_cancellation.py"), _LOOP),
     "tools": MutantSet(("tests/tools",), _TOOLS),
     "read": MutantSet(("tests/builtin_tools",), _READ),
     "process": MutantSet(("tests/test_process.py",), _PROCESS),
+    "fs": MutantSet(("tests/fs", "tests/builtin_tools"), _FS),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

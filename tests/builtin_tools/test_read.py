@@ -2,27 +2,33 @@
 
 import asyncio
 import codecs
+import shutil
 import tempfile
 import threading
 import tracemalloc
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
 import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
+import columbina.fs
 import columbina.tools
 from columbina.builtin_tools import read
+from columbina.fs import FS, Access, Fingerprint, Permit, Refuse, locate
 from columbina.kernel import Context
 from columbina.llm import ToolCallBlock
 from columbina.session import CORE_EVENTS, Session
-from columbina.tools import TOOLS, ToolOutcome, ToolRun, Tools
+from columbina.tools import TOOLS, Deny, Invocation, ToolOutcome, ToolRun, Tools
+from support.links import link_directory
 
 
 @pytest.fixture
 async def tools(ctx: Context) -> Tools:
     await ctx.plugin(columbina.tools)
+    await ctx.plugin(columbina.fs)
     await ctx.plugin(read)
     return ctx.use(TOOLS)
 
@@ -38,6 +44,12 @@ async def call(ctx: Context, tools: Tools, work: Path, arguments: str) -> ToolOu
     session = Session(ctx, "s-1", {kind.event_type: kind for kind in CORE_EVENTS})
     asked = ToolCallBlock(call_id="call-1", name="read", arguments=arguments)
     return await tools.run(ctx, asked, ToolRun(call_id="call-1", cwd=work, session=session))
+
+
+def allowed(path: Path) -> Permit:
+    """A permit to read a file, for the tests that read without the tool around them."""
+    where = locate(path.parent, path.name)
+    return Permit(Access(cast("Session", None), path.parent, where, "read", "read"))
 
 
 def arguments(path: str | Path, **more: int) -> str:
@@ -108,7 +120,7 @@ async def test_a_file_that_is_not_there_is_an_error_that_says_so(
 async def test_a_file_that_cannot_be_opened_is_an_error_that_says_why(
     ctx: Context, tools: Tools, work: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def locked(path: Path, offset: int, limit: int, stopped: threading.Event) -> None:
+    def locked(permit: Permit, offset: int, limit: int, stopped: threading.Event) -> None:
         raise PermissionError(13, "Permission denied")
 
     (work / "locked.txt").write_text("x", encoding="utf-8")
@@ -242,7 +254,7 @@ def test_a_read_holds_little_in_memory_however_long_a_line_is(tmp_path: Path) ->
 
     tracemalloc.start()
     try:
-        part = read._load(wide, 0, 10, threading.Event())  # pyright: ignore[reportPrivateUsage]
+        part = read._load(allowed(wide), 0, 10, threading.Event())  # pyright: ignore[reportPrivateUsage]
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -433,7 +445,7 @@ async def test_a_read_that_is_cancelled_tells_its_thread_to_stop(
     told: list[bool] = []
     done = threading.Event()
 
-    def slow(path: Path, offset: int, limit: int, stopped: threading.Event) -> None:
+    def slow(permit: Permit, offset: int, limit: int, stopped: threading.Event) -> None:
         began.set()
         told.append(stopped.wait(timeout=5))
         done.set()
@@ -462,7 +474,7 @@ def test_a_thread_that_is_told_to_stop_reads_no_further(
 
     monkeypatch.setattr(read, "_CHUNK_BYTES", 100)
 
-    part = read._load(hundred, 0, 2000, AfterThreePieces())  # pyright: ignore[reportPrivateUsage]
+    part = read._load(allowed(hundred), 0, 2000, AfterThreePieces())  # pyright: ignore[reportPrivateUsage]
 
     assert part is not None
     assert (len(part.shown), part.lines, part.complete) == (30, 30, False)
@@ -561,8 +573,111 @@ def test_reading_in_pieces_finds_what_reading_at_once_would(
             MAX_LINE_CHARACTERS=CHARACTERS_OF_A_LINE,
             MAX_BYTES=size_limit,
         ):
-            part = read._load(path, offset, limit, threading.Event())  # pyright: ignore[reportPrivateUsage]
+            part = read._load(allowed(path), offset, limit, threading.Event())  # pyright: ignore[reportPrivateUsage]
 
     assert part is not None
     expected = simply(content, offset, limit, looked_at, size_limit)
     assert (part.shown, part.lines, part.complete) == expected
+
+
+# Through the seam of the file system
+
+
+async def test_a_file_that_was_read_is_one_that_the_model_was_shown(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "notes.txt").write_text("first\n", encoding="utf-8")
+    session = Session(ctx, "s-9", {kind.event_type: kind for kind in CORE_EVENTS})
+    asked = ToolCallBlock(call_id="call-1", name="read", arguments=arguments("notes.txt"))
+
+    outcome = await tools.run(ctx, asked, ToolRun(call_id="call-1", cwd=work, session=session))
+
+    status = (work / "notes.txt").stat()
+    assert outcome.error is None
+    assert ctx.use(FS).seen(session, locate(work, "notes.txt").path) == Fingerprint(
+        status.st_size, status.st_mtime_ns
+    )
+
+
+async def test_a_file_that_could_not_be_shown_is_not_remembered(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "blob.bin").write_bytes(bytes([0, 1, 2]))
+    session = Session(ctx, "s-9", {kind.event_type: kind for kind in CORE_EVENTS})
+    asked = ToolCallBlock(call_id="call-1", name="read", arguments=arguments("blob.bin"))
+
+    outcome = await tools.run(ctx, asked, ToolRun(call_id="call-1", cwd=work, session=session))
+
+    assert outcome.error is not None
+    assert outcome.error.code == "NOT_TEXT"
+    assert ctx.use(FS).seen(session, locate(work, "blob.bin").path) is None
+
+
+async def test_a_restriction_of_the_seam_keeps_a_file_from_being_read(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    def closed(access: Access) -> Refuse | None:
+        return Refuse("The notes are closed.", "CLOSED") if access.tool == "read" else None
+
+    (work / "notes.txt").write_text("a secret", encoding="utf-8")
+    ctx.use(FS).restrictions.add(ctx, "closed", closed)
+
+    outcome = await call(ctx, tools, work, arguments("notes.txt"))
+
+    assert outcome.error is not None
+    assert outcome.error.code == "CLOSED"
+    assert outcome.text == "The notes are closed."
+
+
+async def test_a_read_says_which_file_it_acts_on_by_the_place_of_the_file(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    seen: list[str | None] = []
+
+    async def watching(context: Context, invocation: Invocation) -> Deny | None:
+        seen.append(invocation.target)
+        return None
+
+    (work / "sub").mkdir()
+    (work / "notes.txt").write_text("n", encoding="utf-8")
+    tools.guards.add(ctx, "watching", watching)
+
+    await call(ctx, tools, work, arguments("sub/../notes.txt"))
+    await call(ctx, tools, work, arguments(work / "notes.txt"))
+
+    assert seen == ["notes.txt", "notes.txt"]
+
+
+async def test_a_path_that_is_not_used_here_is_refused_under_its_own_code(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    outcome = await call(ctx, tools, work, arguments("notes" + chr(0) + ".txt"))
+
+    assert outcome.error is not None
+    assert outcome.error.code == "INVALID_PATH"
+    assert "no path can contain" in outcome.text
+
+
+async def test_a_file_that_is_elsewhere_by_the_time_it_is_opened_is_not_read(
+    ctx: Context, tools: Tools, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (work / "d").mkdir()
+    (work / "d" / "notes.txt").write_text("inside", encoding="utf-8")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "notes.txt").write_text("a secret", encoding="utf-8")
+    load: Any = vars(read)["_load"]
+
+    def swapping(permit: Permit, offset: int, limit: int, stopped: threading.Event) -> Any:
+        # The file was allowed. Now its directory becomes a link that leads out.
+        shutil.rmtree(work / "d")
+        link_directory(work / "d", outside)
+        return load(permit, offset, limit, stopped)
+
+    monkeypatch.setattr(read, "_load", swapping)
+
+    outcome = await call(ctx, tools, work, arguments("d/notes.txt"))
+
+    assert outcome.error is not None
+    assert outcome.error.code == "MOVED"
+    assert "a secret" not in outcome.text

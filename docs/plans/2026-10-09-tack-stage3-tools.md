@@ -4,11 +4,13 @@
 
 **Goal:** 让 `tack run` 能在一个小仓库里读文件、改文件、跑命令验证，并且每一个有副作用的动作都经过权限检查。
 
-**Architecture:** 文件工具经过一个文件系统接缝，读和写各有一个意图事件，沙箱模式和"先读后写"都挂在上面。命令工具经过子进程运行器和沙箱接缝。工具管线新增一层守卫，权限规则和审批放在守卫里，别的监听器绕不过去。系统提示由段落注册表拼出，会变的事实和指令文件作为用户角色的上下文消息在回合开始时写入日志。
+**Architecture:** 文件工具经过一个文件系统接缝。接缝先判断一次访问能不能做，通过后发一张许可，文件只能经许可打开和替换。判断分两类：限制只能拒绝，每一条都要问到；放宽另行登记。命令工具经过子进程运行器和沙箱接缝。工具管线新增一层守卫，权限规则和审批放在守卫里，别的监听器绕不过去。系统提示由段落注册表拼出，会变的事实和指令文件作为用户角色的上下文消息在回合开始时写入日志。
 
 **Tech Stack:** 与第 2 阶段相同，不增加运行依赖。Windows 上的命令工具用系统自带的 Windows PowerShell 5.1，其他平台用 bash。
 
 设计依据是 `docs/plans/2026-10-09-tack-design.md` 的第 8.4、8.5、9、10.1 到 10.3 节。本计划与这些章节不一致的地方列在"与设计文档的差异"一节，阶段结束时把设计文档改成一致。
+
+本计划在任务 1 完成后请 Codex 复查过一次，共 12 条意见。处理结果列在文末的"计划复查记录"里，正文已经按结果改过。
 
 ---
 
@@ -24,50 +26,65 @@
 
 本阶段做的：`write`、`edit`、`glob`、`grep`、命令工具，文件系统接缝，沙箱模式，审批，权限规则，子进程运行器，沙箱接缝和 `none` 提供者，系统提示服务，上下文消息（运行时上下文、指令文件、打断说明），`base` 清单，命令行的 `--permission` 和 `--allow`。
 
-本阶段不做的：`todo_write`、`skill`、`subagent`、`ask_user_question`、`apply_patch`、`web_fetch`，结果级的溢出存盘，ripgrep 后端，容器沙箱，交互式的审批界面，系统提示里的变量。它们各自属于后面的阶段。
+本阶段不做的：`todo_write`、`skill`、`subagent`、`ask_user_question`、`apply_patch`、`web_fetch`，结果级的溢出存盘，ripgrep 后端，容器沙箱，交互式的审批界面，系统提示里的变量，带登记的后台进程。它们各自属于后面的阶段。
 
 ## 约定
 
 - 仓库根目录是 `F:\agent harness\agent-harness`。分支是 `stage-3-tools`，结束时快进合并到 `main`。不执行 `git push`。
 - 每个任务的顺序是：写测试，看它失败，写实现，看它通过，过闸门，提交。闸门是 `ruff check`、`ruff format --check`、`pyright`、带覆盖率的 `pytest`。
 - 本计划给出每个任务的文件、对外接口和要写的测试。实现代码在执行时写，不在计划里预先写全。接口在实现中如有调整，在阶段记录里说明。
-- 大约每小时请 Codex 在只读快照上复查一次。它的每条意见先写成会失败的测试，属实才修改。
+- 大约每两小时请 Codex 在只读快照上复查一次。复查在后台进行，等结果期间继续做不受它影响的任务。它的每条意见先核实，属实才修改；能写成测试的先写成会失败的测试。
 - 同一时间只跑一个 pytest 会话。多个会话共用临时目录，会互相拖慢并造成假的失败。
 - 带反斜杠的脚本和测试文件用编辑工具写，不用 shell 的 heredoc。
+- 只在一种平台上运行的代码要标明平台，覆盖率在它能运行的平台上统计。标注的做法在任务 3 里定下来。本机只有 Windows，POSIX 一侧的代码要等 CI 第一次运行才得到验证，所以这一侧写得尽量短。
 
 ## 设计决定
 
-下面十条是本阶段要定下来的事。每条给出决定和理由。
+下面十四条是本阶段要定下来的事。每条给出决定和理由。
 
-**1. 权限检查放在守卫里。** 工具管线在 `tools/pre-execute` 之后新增守卫。守卫是登记的函数，只能返回拒绝，没有"允许"这个返回值。管线在 waterfall 放行之后依次运行全部守卫，第一个拒绝生效。权限规则和审批放在一个守卫里。理由：waterfall 的监听器可以不调用 `next` 就返回放行，排在外层的监听器因此能跳过内层。守卫不在这条链上，谁也跳不过它。
+**1. 权限检查放在守卫里，并且与执行绑在一起。** 工具管线在 `tools/pre-execute` 之后新增守卫。守卫是登记的函数，只能返回拒绝，没有"允许"这个返回值。管线在 waterfall 放行之后依次运行全部守卫，第一个拒绝生效。权限规则和审批放在一个守卫里。检查紧挨着执行：循环先等到这次调用可以运行，再问检查，问完立刻执行。执行的必须是检查过的那一次调用，`tools/execute` 的监听器换了别的调用往下传时，工具不运行。调用开始之后工具被卸载的，这次调用不再执行。理由：waterfall 的监听器可以不调用 `next` 就返回放行，排在外层的监听器因此能跳过内层。守卫不在这条链上，谁也跳不过它。检查和执行之间隔得越久，检查时依据的状态就越可能已经变了。
 
-**2. 工具自己说明它动什么。** `Tool` 增加两个字段。`effect` 取 `none`、`read`、`write`、`run`，说明一次调用对外界做什么。`target` 是一个函数，返回规则可以匹配的文本：文件工具返回路径，命令工具返回命令。理由：规则的写法是 `工具名(匹配串)`，匹配串对的是什么，只有工具自己知道。
+**2. 工具自己说明它动什么。** `Tool` 增加两个字段。`effect` 取 `none`、`read`、`write`、`run`，说明一次调用对外界做什么。`target` 是一个函数，返回规则可以匹配的文本：文件工具返回定位之后的路径，命令工具返回命令。理由：规则的写法是 `工具名(匹配串)`，匹配串对的是什么，只有工具自己知道。
 
-**3. 文件工具的边界。** 文件工具可以写任何路径，由策略决定放不放行。读：工作目录之内放行，之外只在 `danger-full-access` 模式下放行。写：`read-only` 一律拒绝；`workspace-write` 只放行工作目录之内和系统临时目录；`danger-full-access` 全部放行。`.git` 和 `.tack` 目录在前两种模式下不可写。路径先解析符号链接再判断。理由：与设计第 9.2 节一致。工作目录之外的读在本阶段不提供"询问后放行"，等交互界面有了再加。
+**3. 文件访问默认只许读工作目录，其余靠登记的放宽。** 接缝自己的规则只有一条：读工作目录之内的文件可以。写任何地方、读工作目录之外，都要有一条登记的放宽说可以才行。沙箱模式就是这样的放宽：`read-only` 不放宽任何东西；`workspace-write` 放宽工作目录之内的写，`.git` 和 `.tack` 目录除外；`danger-full-access` 全部放宽。路径先解析符号链接和目录联接再判断。理由：这样没有沙箱插件时什么也写不了，少装一个插件只会更严，不会更松。工作目录之外的读在本阶段不提供"询问后放行"，等交互界面有了再加。
 
-**4. 先读后写挂在文件系统接缝上。** 读成功后记下文件的指纹，即大小和修改时间。写和改之前比对：没读过就拒绝，读后变了也拒绝并提示重读。Agent 自己写入后更新指纹。新建文件不需要先读。记录按会话存在内存里，恢复会话后要重读。理由：设计第 8.4 节，做法取自 DeepSeek Harness。
+**4. 限制只能拒绝，每一条都要问到。** 除了放宽，接缝还有登记的限制。限制对一次访问返回拒绝或者不表态，接缝把所有限制都问一遍，有一条拒绝就拒绝。放宽压不过限制。权限规则里针对文件的拒绝就登记成限制。理由：与守卫同理。如果限制和放宽排在同一条 waterfall 上，一个放行工作目录之外某个目录的插件，就会顺带跳过排在它里面的限制。
 
-**5. 审批只有一次性授权。** `approval.ask()` 的结果是封闭集合：`allowed-once`、`rejected`、`cancelled`、`unavailable`。审批策略为 `never` 时不问任何人，直接 `rejected`。没有应答者、应答者出错或答非所问，都算 `unavailable`。只有 `allowed-once` 放行。理由：设计第 9.5 节。无界面模式没有应答者，所以需要审批的动作在那里一律不执行。
+**5. 许可与实际的读写绑在一起，先读后写在替换的那一刻比对。** `Fs.permit()` 判断通过后发一张许可，文件只能经许可打开或替换。打开之后按句柄取文件的最终路径，与判断时的路径不同就拒绝。替换经上级目录的句柄完成：POSIX 上用 `dir_fd`，Windows 上在操作期间持有不允许删除共享的目录句柄。读工具把文件给模型看过之后，接缝记下文件的指纹，即大小和修改时间。替换之前比对：已有的文件没给模型看过就拒绝，看过之后变了也拒绝并提示重读。Agent 自己写入后更新指纹。新建文件不需要先读。记录按会话存在内存里，恢复会话后要重读。理由：先读后写取自设计第 8.4 节，做法取自 DeepSeek Harness。判断和打开之间，目录可以被换成指向工作目录之外的联接或符号链接；命令被沙箱关住以后，这是从沙箱里影响宿主文件的一条路，所以读写要落在判断过的那个位置上。
 
-**6. 规则的来源有三处，项目文件不能放宽。** 用户目录的 `<TACK_HOME>/permissions.yml` 可以写 `deny`、`ask`、`allow`。项目的 `.tack/permissions.yml` 只认 `deny` 和 `ask`，里面的 `allow` 被忽略并记一条警告。命令行的 `--allow` 是本次运行的允许规则。求值顺序固定为 `deny`、`ask`、`allow`，首个命中生效。理由：克隆下来的仓库不应该能替用户批准命令。
+**6. 审批只有一次性授权。** `approval.ask()` 的结果是封闭集合：`allowed-once`、`rejected`、`cancelled`、`unavailable`。审批策略为 `never` 时不问任何人，直接 `rejected`。没有应答者、应答者出错或答非所问，都算 `unavailable`。只有 `allowed-once` 放行。理由：设计第 9.5 节。无界面模式没有应答者，所以需要审批的动作在那里一律不执行。
 
-**7. 没有规则命中时的默认。** `none` 和 `read` 放行。`write` 放行，范围由第 3 条的文件策略把关。`run` 在 `danger-full-access` 模式下放行，在沙箱强度为 `full` 时放行，其余情况要审批。理由：沙箱强度为 `none` 时命令无法被约束，设计第 9.3 节要求这时一律审批或命中允许规则。
+**7. 规则的来源有三处，项目文件不能放宽。** 用户目录的 `<TACK_HOME>/permissions.yml` 可以写 `deny`、`ask`、`allow`。项目的 `.tack/permissions.yml` 只认 `deny` 和 `ask`，里面的 `allow` 被忽略并记一条警告。命令行的 `--allow` 是本次运行的允许规则。求值顺序固定为 `deny`、`ask`、`allow`，首个命中生效。理由：克隆下来的仓库不应该能替用户批准命令。
 
-**8. Windows 上的命令工具叫 `powershell`。** 这台机器和多数 Windows 机器只有 Windows PowerShell 5.1，没有 PowerShell 7。工具名在同一平台上要稳定，规则才写得下去。工具描述写明版本和它与 bash 的主要差别。其他平台的工具叫 `bash`。
+**8. 文件规则在文件被碰到的地方生效。** 针对文件的规则在两处求值。守卫处对的是调用点名的路径，三种规则都算，命中 `ask` 就走审批。接缝处对的是工具实际碰到的每一个文件：命中 `deny` 的拒绝；搜索途中遇到的文件命中 `ask` 的跳过，不为它单独询问。两处匹配的都是定位之后的同一种路径写法。`glob` 和 `grep` 在结果里说明跳过了多少个文件。理由：`grep` 的调用只点名一个起点目录，守卫看不到它一路读了哪些文件。拒绝规则要挡得住，只能在接缝上逐个文件判断。
 
-**9. 上下文消息是一种机制。** 指令文件、运行时上下文和打断说明都是用户角色的消息，由登记的来源在回合开始时给出文本。文本与日志里上一次写的不同才写新消息。来源声明变化时是追加还是原位替换。理由：三者的写入时机和去重规则相同，分三处实现会各有各的边角。
+**9. 没有规则命中时的默认。** `none` 和 `read` 放行。`write` 放行，范围由接缝把关。`run` 在 `danger-full-access` 模式下放行，其余情况要审批。理由：本阶段唯一的沙箱提供者强度为 `none`，命令无法被约束，设计第 9.3 节要求这时一律审批或命中允许规则。"沙箱强度为 `full` 时免审批"留到第 7 阶段，和真实的提供者一起做，那时要把放行的依据和实际准备好的约束绑在一起。
 
-**10. 回复被打断后给模型一句说明。** 上一回合以 `aborted` 或 `interrupted` 结束时，下一回合开始先写一条说明。理由：第 2 阶段的请求快照显示，被打断的回复后面直接跟着新的用户消息，模型看不出发生过什么。Codex 和 Claude Code 都写这样一条说明。
+**10. 命令的允许规则只对看得懂的命令生效。** 拆分器只认一种简单的形状：若干条简单命令，用 `&&`、`||`、`;`、`|` 或换行连接，每条简单命令由普通的词和不含展开的引号串组成。命令里出现这个形状之外的写法，拆分器就不拆，表示这条命令它看不懂。这样的写法包括变量和命令替换、反引号、圆括号、花括号、重定向、单个 `&`、here-string、转义符和没有闭合的引号。看不懂的命令，允许规则对它不生效，结果至少是询问。拒绝规则和询问规则照样按整条文本匹配。看得懂的命令逐段判断，取最严格的结果。bash 和 PowerShell 各有一个拆分器，由命令工具登记给权限服务。理由：允许规则按文本放行，`powershell(Write-Output *)` 不应该放行 `Write-Output "$(Get-Content 某个文件)"`。命令规则仍然不是安全边界，文档照旧写明，但放行的范围必须是拆分器确实看懂的那部分。
+
+**11. Windows 上的命令工具叫 `powershell`。** 这台机器和多数 Windows 机器只有 Windows PowerShell 5.1，没有 PowerShell 7。工具名在同一平台上要稳定，规则才写得下去。工具描述写明版本和它与 bash 的主要差别。其他平台的工具叫 `bash`。命令工具依赖沙箱服务和权限服务，少了任何一个它就不加载。
+
+**12. 一条命令启动的进程不比它活得久。** 命令正常结束、超时、调用方被取消，三种情况下它启动的进程都被停下。Windows 上进程一创建就在一个作业对象里，POSIX 上在新的会话和进程组里。进程是否退出由事件循环的退出通知判断，不依赖管道关闭。进程退出后管道最多再读 2 秒。理由：没有登记的后台进程会占着端口和文件，在 Windows 上还会让后面的清理失败。基准要连续跑很多任务，不能留尾巴。想留一个进程给后面的命令用，要等带登记的后台运行，那是以后的事。
+
+**13. `grep` 的正则在另一个进程里匹配。** 遍历、权限判断和读文件都在主进程里做，文件内容经管道交给一个只做匹配的子进程，时限到了或调用被取消就杀掉它。理由：Python 的 `re` 在匹配时不放开 GIL，一条回溯很久的正则会让整个事件循环停住，时限和取消都生效不了。把每行截短限制不了回溯。
+
+**14. 上下文消息是一种机制，来源分三种。** 指令文件、运行时上下文和打断说明都是用户角色的消息，由登记的来源在回合开始时给出文本。来源声明自己属于哪一种。`replace` 和 `append` 是常驻的文本，与日志里这个来源上一次的文本不同才写，前者顶替旧消息，后者追加。`note` 是对一件事的说明，来源每给一次就写一次。上一回合以 `aborted` 或 `interrupted` 结束时，打断说明这个来源给出一条 `note`。来源出错时，这一回合照常认领输入，然后以 `error` 结束，不向模型发请求。理由：三者的写入时机相同，分三处实现会各有各的边角。打断说明的文本每次都一样，按文本去重会吞掉第二次打断。来源出错时如果不认领输入，输入留在收件箱里，循环会立刻再开一个回合，没完没了。第 2 阶段的请求快照显示，被打断的回复后面直接跟着新的用户消息，模型看不出发生过什么，Codex 和 Claude Code 都写这样一条说明。
 
 ## 与设计文档的差异
 
 1. 子进程模块叫 `tack.process`，不叫 `tack.subprocess`，避免与标准库同名。
 2. Windows 上的命令工具叫 `powershell`，不叫 `pwsh`。
-3. `grep` 和 `glob` 本阶段只有纯 Python 实现。ripgrep 后端以后作为优化加入。
+3. `grep` 和 `glob` 本阶段只有纯 Python 实现。ripgrep 后端以后作为优化加入。`grep` 的匹配在子进程里做。
 4. 审批策略的状态放在 `tack.approval`，沙箱模式的状态放在 `tack.sandbox`，预设和规则放在 `tack.permissions`。设计里没有写明归属。
 5. 系统提示本阶段没有变量，只有段落。
 6. 项目级规则文件里的 `allow` 不生效。设计里没有这条限制。
 7. 新增打断说明。
+8. 文件系统接缝没有意图事件。访问由登记的限制和放宽判断，文件经许可打开和替换。先读后写是替换时的比对，不是事件的监听器。
+9. 文件工具在 `workspace-write` 模式下不写系统临时目录。文件工具读不回那里的文件，测试用的工作目录本身也在临时目录里。命令需要的临时空间属于第 7 阶段的沙箱配置。
+10. 命令正常结束时，它留下的进程也被停下。设计只写了超时和取消。
+11. 规则不实现为 `tools/pre-execute` 的监听器，实现为守卫和接缝上的限制。
+12. `tools/execute` 的监听器不能换掉要执行的调用。
+13. "沙箱强度为 `full` 时免审批"推迟到第 7 阶段。
 
 ## 模块与接口
 
@@ -88,19 +105,21 @@ class Tools:
     guards: Registry[Guard]        # 按登记顺序运行，第一个拒绝生效
 ```
 
-守卫拿到的上下文是发起这次调用的那一个，也就是 Agent 的上下文，审批的询问经它分发。守卫抛异常或返回别的东西时，调用以 `CHECK_FAILED` 结束，不执行。守卫经 `cancellation.guard` 等待。`target` 抛异常时同样以 `CHECK_FAILED` 结束。
+守卫拿到的上下文是发起这次调用的那一个，也就是 Agent 的上下文，审批的询问经它分发。守卫抛异常或返回别的东西时，调用以 `CHECK_FAILED` 结束，不执行。守卫经 `cancellation.guard` 等待。`target` 抛异常时调用以 `TOOL_ERROR` 结束。
+
+`PendingCall` 在问检查之前和执行之前各核对一次：这个工具还登记在工具服务里。不在了就以 `UNKNOWN_TOOL` 结束。`tools/execute` 链的最后一环只执行管线交给它的那一个 `Invocation`，收到别的就报错，调用以 `CHECK_FAILED` 结束。
 
 ### `tack.fs`（新建，插件，提供 `FS`）
 
 ```python
 @dataclass(frozen=True, slots=True)
 class Located:
-    path: Path          # 绝对路径，符号链接已解析
+    path: Path          # 绝对路径，符号链接和目录联接已解析
     written: str        # 模型写的原样
     inside: bool        # 是否在工作目录之内
     relative: str       # 在内时是相对工作目录的 POSIX 路径，在外时是绝对的 POSIX 路径
 
-def locate(cwd: Path, written: str) -> Located: ...
+def locate(cwd: Path, written: str) -> Located      # 不是普通路径的写法抛 ToolFailure，错误码 INVALID_PATH
 
 @dataclass(frozen=True, slots=True)
 class Access:
@@ -108,24 +127,44 @@ class Access:
     cwd: Path
     where: Located
     kind: Literal["read", "write"]
-
-@dataclass(frozen=True, slots=True)
-class Permit: ...
+    tool: str           # 发起访问的工具名
+    named: bool = True  # 调用点名的路径为真，搜索途中遇到的为假
 
 @dataclass(frozen=True, slots=True)
 class Refuse:
     reason: str
     code: str
 
-FS_ACCESS: WaterfallEvent[Access, Permit | Refuse]      # "fs/access"
-FS_OBSERVED: EmitEvent[Observed]                        # "fs/observed"，读或写成功之后
+Grant = Callable[[Access], bool]                    # 放宽：说可以，或者不表态
+Restriction = Callable[[Access], Refuse | None]     # 限制：拒绝，或者不表态
+
+@dataclass(frozen=True, slots=True)
+class Fingerprint:
+    size: int
+    modified_ns: int
+
+class Opened:                                       # 上下文管理器，离开时关闭文件
+    file: BinaryIO
+    fingerprint: Fingerprint                        # 打开那一刻的指纹
+
+class Permit:                                       # 只由 Fs.permit 发放
+    access: Access
+    def open(self) -> Opened                        # 阻塞，在工作线程里调用。只用于读的许可
+    def replace(self, data: bytes) -> None          # 阻塞，在工作线程里调用。只用于写的许可
 
 class Fs:
-    async def check(self, access: Access) -> None       # 拒绝时抛 ToolFailure，不作答也算拒绝
-    def observed(self, session: Session, path: Path) -> None
+    grants: Registry[Grant]
+    restrictions: Registry[Restriction]
+    def judge(self, access: Access) -> Refuse | None    # 不抛异常，给遍历用
+    def permit(self, access: Access) -> Permit          # 被拒时抛 ToolFailure
+    def shown(self, permit: Permit, fingerprint: Fingerprint) -> None   # 模型看到了这个版本
 ```
 
-没有监听器时的默认：工作目录之内放行，之外拒绝，错误码 `OUTSIDE_WORKING_DIRECTORY`。
+判断的顺序：先问全部限制，有拒绝就拒绝；再看接缝自己的规则，读工作目录之内的放行；再问放宽，有一条说可以就放行；都没有就拒绝。最后这一步的错误码，路径在工作目录之外是 `OUTSIDE_WORKING_DIRECTORY`，在内而不可写是 `NOT_WRITABLE`。限制和放宽都是不等待的普通函数，只读内存里的状态，所以遍历可以对每个文件都问一遍。限制出错算拒绝，放宽出错算没有放宽，两者都记日志。
+
+`locate` 拒绝的写法：空串，含 NUL，Windows 上盘符之后还有冒号的（备用数据流），Windows 的设备名和设备路径。Windows 上大小写不同的同一路径算同一个。
+
+`Permit.open` 打开后按句柄取最终路径，与 `where.path` 不同就关闭并抛 `ToolFailure`，错误码 `MOVED`。`Permit.replace` 先打开上级目录并同样核对，再比对指纹，然后在这个目录里写临时文件并改名，最后记下新指纹。缺少的上级目录逐级创建，每一级都核对。比对不过的错误码是 `NOT_READ` 和 `CHANGED_SINCE_READ`。已有文件的权限位保留。
 
 ### `tack.sandbox`（新建，插件，提供 `SANDBOX`）
 
@@ -136,25 +175,26 @@ Strength = Literal["none", "partial", "full"]
 class SandboxModeEvent(EventData):          # "sandbox/mode"，可跳过
     mode: Mode
 
+class SandboxProvider(Protocol):
+    strength: Strength
+    def confine(self, argv: Sequence[str], *, mode: Mode, cwd: Path) -> Sequence[str]: ...
+
 @dataclass(frozen=True, slots=True)
 class Confined:
     argv: tuple[str, ...]
     strength: Strength
-
-class SandboxProvider(Protocol):
-    def confine(self, argv: Sequence[str], *, mode: Mode, cwd: Path) -> Confined: ...
 
 class Sandbox:
     providers: Registry[SandboxProvider]
     def mode(self, session: Session) -> Mode
     def set_mode(self, session: Session, mode: Mode) -> None
     def confine(self, argv: Sequence[str], *, session: Session, cwd: Path) -> Confined
-    def strength(self) -> Strength           # 当前提供者能做到的强度
+    def strength(self) -> Strength           # 当前提供者声明的强度
 ```
 
-配置项 `mode` 是新会话的默认值，`provider` 选提供者，默认 `none`。没有可用提供者时 `confine` 抛 `SandboxUnavailableError`。`none` 提供者原样返回命令，强度为 `none`。
+配置项 `mode` 是新会话的默认值，`provider` 选提供者，默认 `none`。没有可用提供者时 `confine` 抛 `SandboxUnavailableError`。`none` 提供者原样返回命令，强度为 `none`。强度是提供者声明的，`confine` 做不到就抛错，不返回一个更弱的结果。
 
-本模块还登记 `fs/access` 的监听器，执行设计决定第 3 条。
+本模块向 `FS` 登记一条放宽和一条限制，两者出自同一张表，执行设计决定第 3 条。限制的作用是给出讲得清原因的拒绝：只读模式下的写是 `READ_ONLY`，受保护目录是 `PROTECTED`。
 
 ### `tack.approval`（新建，插件，提供 `APPROVAL`）
 
@@ -188,7 +228,7 @@ class Approval:
     async def ask(self, ctx: Context, request: ApprovalRequest) -> Outcome
 ```
 
-### `tack.permissions`（新建，插件）
+### `tack.permissions`（新建，插件，提供 `PERMISSIONS`）
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -198,7 +238,13 @@ class Rule:
 
 def parse_rule(text: str) -> Rule
 def matches(rule: Rule, tool: Tool, target: str | None) -> bool
-def split_command(command: str) -> list[str]     # 按 && || ; | 和换行拆开，引号内的不拆
+
+Splitter = Callable[[str], tuple[str, ...] | None]      # 看不懂时返回 None
+def split_bash(command: str) -> tuple[str, ...] | None
+def split_powershell(command: str) -> tuple[str, ...] | None
+
+class Permissions:
+    splitters: Registry[Splitter]       # 按工具名登记，命令工具登记自己的
 
 class Config(BaseModel):
     preset: Literal["read-only", "workspace-write", "full-access"] = "workspace-write"
@@ -208,9 +254,11 @@ class Config(BaseModel):
     allow: tuple[str, ...] = ()
 ```
 
-匹配规则：`effect` 为 `run` 的工具，`*` 匹配任意字符。其他工具把匹配串当作路径模式，`*` 不跨目录，`**` 跨目录。复合命令逐段判断，取最严格的结果，顺序是拒绝、询问、放行。没有任何规则命中的那一段按默认处理。
+匹配规则：`effect` 为 `run` 的工具，`*` 匹配任意字符。其他工具把匹配串当作路径模式，`*` 不跨目录，`**` 跨目录，Windows 上不分大小写。通配匹配自己逐字符做，不经过 `re`，最坏情况是模式长度乘文本长度。
 
-插件加载时做三件事：登记守卫；在每个会话的第一步之前把预设对应的沙箱模式和审批策略写进日志（日志里已经有就不写）；项目规则文件在第一次用到某个工作目录时读入。
+命令的求值按设计决定第 10 条。`run` 工具没有登记拆分器时，带匹配串的允许规则对它不生效。
+
+插件加载时做四件事。登记守卫。向 `FS` 登记一条限制，执行设计决定第 8 条。在每个会话的第一步之前把预设对应的沙箱模式和审批策略写进日志，日志里已经有就不写。在同一个时机读入这个工作目录的项目规则文件；规则还没读入就被问到时，限制和守卫都拒绝。
 
 守卫的错误码：规则拒绝是 `DENIED`，审批被拒是 `APPROVAL_REJECTED`，没有人能审批是 `APPROVAL_UNAVAILABLE`，审批被取消是 `APPROVAL_CANCELLED`。
 
@@ -219,10 +267,10 @@ class Config(BaseModel):
 ```python
 @dataclass(frozen=True, slots=True)
 class Completed:
-    exit_code: int | None       # 被停下时为 None
+    exit_code: int | None       # 超时被停下时为 None
     timed_out: bool
-    output: str                 # 标准输出和标准错误合在一起，按到达顺序
-    omitted_bytes: int          # 中段被丢弃的字节数
+    output: str                 # 标准输出和标准错误合在一起，按写入顺序
+    omitted_bytes: int          # 没有出现在 output 里的字节数
 
 async def run(
     argv: Sequence[str],
@@ -237,7 +285,7 @@ async def run(
 def cleaned(env: Mapping[str, str]) -> dict[str, str]    # 去掉名字里带 KEY、PASSWORD、SECRET、TOKEN 的变量
 ```
 
-超出上限时保留头尾各一半，中间插入一行说明丢弃了多少字节。超时和调用方被取消时杀掉整棵进程树。进程退出后最多再等 2 秒读管道，防止孙进程占着管道不放。
+超出上限时保留头尾各一半，中间插入一行说明丢弃了多少字节，截断处不留半个字符。`run` 返回或抛出时，这条命令启动的进程都已经被停下，做法见设计决定第 12 条。停不下来的进程不会让 `run` 一直等：等它退出有上限，读管道也有上限。
 
 ### `tack.builtin_tools`（新建五个工具）
 
@@ -249,11 +297,13 @@ def cleaned(env: Mapping[str, str]) -> dict[str, str]    # 去掉名字里带 KE
 | `grep` | `pattern`、`path="."`、`glob=null`、`ignore_case=false` | `read` | 是 |
 | `bash` 或 `powershell` | `command`、`timeout_seconds=null` | `run` | 否 |
 
+文件工具的 `target` 返回 `locate` 给出的 `relative`，与接缝上匹配规则用的写法相同。
+
 `edit` 的错误码：`NOT_FOUND`、`NOT_TEXT`、`NO_CHANGE`（`old` 与 `new` 相同）、`NO_MATCH`、`AMBIGUOUS`（多处匹配又没给 `replace_all`）。文件用 CRLF 换行而 `old` 用 LF 时，按文件的换行再匹配一次，写回时保持文件原来的换行。
 
-`glob` 按修改时间从新到旧，最多 100 条。`grep` 最多 250 条，每条是 `路径:行号:内容`。两者都跳过 `.git` 目录，跳过不像文本的文件，对扫描的文件数设上限，超限时在结果里说明。
+`glob` 按修改时间从新到旧，最多 100 条。`grep` 最多 250 条，每条是 `路径:行号:内容`。两者都跳过 `.git` 目录，不跟随符号链接和目录联接，对扫描的文件数和字节数设上限，超限时在结果里说明。遍历一次扫一个目录，扫描在工作线程里做，判断在事件循环里做。`grep` 跳过不像文本的文件，读文件经许可，匹配在子进程里做。子进程只用标准库，用 `-I -S` 启动，从标准输入收模式和文件内容，往标准输出写命中的行。正则写错时子进程报告，工具返回 `INVALID_PATTERN`。搜索超过时限返回 `SEARCH_TIMEOUT`。
 
-命令工具的结果是输出加一行状态。状态行写退出码，或者写超时后被停下。命令跑完但退出码非零不算工具出错，起不来才算。
+命令工具的结果是输出加一行状态。状态行写退出码，或者写超时后被停下。命令跑完但退出码非零不算工具出错，起不来才算。工具描述写明：每次调用是一个新进程，它启动的进程在它结束时一并结束。
 
 ### `tack.system_prompt`（新建，插件，提供 `SYSTEM_PROMPT`）
 
@@ -279,15 +329,15 @@ class SystemPrompt:
 class ContextSource:
     render: Callable[[Agent], Awaitable[str | None]]
     order: int = 0
-    on_change: Literal["append", "replace"] = "append"
+    kind: Literal["replace", "append", "note"] = "append"
 
 class Agents:
     context: Registry[ContextSource]
 ```
 
-循环在每个回合的第一步之前、认领输入之前，按 `order` 逐个询问来源。来源给出的文本与日志里这个来源上一次的文本不同，就写一条 `user/message`，`source` 是 `context/<名字>`。`on_change` 为 `replace` 时新消息顶替旧消息。来源返回 `None` 时不写。来源抛异常时回合以 `error` 结束。
+循环在每个回合的第一步之前，按 `order` 逐个询问来源，全部问完再写。写的规则见设计决定第 14 条。写下的消息是 `user/message`，`source` 是 `context/<名字>`，排在这一回合的输入之前。来源返回 `None` 时不写。有来源抛异常时，一条上下文消息也不写，输入照常认领，回合以 `error` 结束。
 
-三个来源：`instructions`（`order` 0，`replace`）、`runtime`（`order` 100，`append`）、`interruption`（`order` 200，`append`，只在上一回合被打断时有内容）。
+三个来源：`instructions`（`order` 0，`replace`）、`runtime`（`order` 100，`append`）、`interruption`（`order` 200，`note`）。
 
 ### `tack.context.instructions`（新建，插件）
 
@@ -295,27 +345,29 @@ class Agents:
 
 ## 任务
 
-每个任务一个或几个提交。表后的各节给出文件和测试要点。
+每个任务一个或几个提交。任务按执行顺序编号，表后的各节给出文件和测试要点。复查之后任务重新编过号，任务 1 不变。
 
 | # | 任务 | 依赖 |
 |---|---|---|
-| 1 | 工具的 `effect`、`target` 和守卫 | |
-| 2 | 文件系统接缝，`read` 改为经过它 | 1 |
-| 3 | 沙箱模式与沙箱接缝 | 2 |
-| 4 | 先读后写 | 2 |
-| 5 | `write` 和 `edit` | 2、4 |
-| 6 | `glob` 和 `grep` | 2 |
-| 7 | 审批 | |
-| 8 | 权限规则与守卫 | 1、3、7 |
-| 9 | 子进程运行器 | |
-| 10 | 命令工具 | 3、8、9 |
-| 11 | 系统提示 | |
-| 12 | 上下文消息与打断说明 | |
-| 13 | 运行时上下文的事实 | 3、7、10、12 |
-| 14 | 指令文件 | 12 |
-| 15 | `base` 清单与命令行参数 | 1 到 14 |
-| 16 | 端到端：脚本化、真实运行、回放 | 15 |
-| 17 | 文档同步与阶段记录 | 16 |
+| 1 | 工具的 `effect`、`target` 和守卫（已完成） | |
+| 2 | 检查与执行绑定 | 1 |
+| 3 | 子进程运行器 | |
+| 4 | 文件系统接缝：定位、判断、许可、受约束的打开 | 1 |
+| 5 | 受约束的替换与先读后写 | 4 |
+| 6 | 沙箱模式与沙箱接缝 | 4 |
+| 7 | `write` 和 `edit` | 5、6 |
+| 8 | 遍历与 `glob` | 4 |
+| 9 | `grep` 与匹配进程 | 3、8 |
+| 10 | 审批 | |
+| 11 | 权限规则、守卫与接缝上的限制 | 2、4、6、10 |
+| 12 | 命令工具 | 3、6、11 |
+| 13 | 系统提示 | |
+| 14 | 上下文消息与打断说明 | |
+| 15 | 运行时上下文的事实 | 6、10、12、14 |
+| 16 | 指令文件 | 14 |
+| 17 | `base` 清单与命令行参数 | 1 到 16 |
+| 18 | 端到端：脚本化、真实运行、回放 | 17 |
+| 19 | 文档同步与阶段记录 | 18 |
 
 ### Task 1: 工具的 `effect`、`target` 和守卫
 
@@ -323,93 +375,107 @@ class Agents:
 
 **测试要点。** 守卫的拒绝使调用得到错误结果，工具不执行。waterfall 的监听器不调用 `next` 就放行时，守卫仍然运行。几个守卫按登记顺序运行，第一个拒绝之后的不再运行。守卫抛异常、返回别的东西、自己抛出取消，都以 `CHECK_FAILED` 结束。贡献守卫的插件卸载后守卫消失。`effect` 的默认值是 `none`。
 
-### Task 2: 文件系统接缝
+### Task 2: 检查与执行绑定
 
-**Files:** 新建 `src/tack/fs/__init__.py`。修改 `src/tack/builtin_tools/read.py`、`src/tack/bundles/minimal.yml`。测试 `tests/fs/test_fs.py`，修改 `tests/builtin_tools/test_read.py`。
+**Files:** 修改 `src/tack/tools/pipeline.py`、`src/tack/agent_loop/loop.py`。测试 `tests/tools/test_pipeline.py`、`tests/agent_loop/test_tools.py`。变异体的锚点随之更新。
 
-**测试要点。** `locate` 对相对路径、绝对路径、`..`、指向工作目录之外的符号链接和目录联接给出正确的 `inside`。Windows 上大小写不同的同一路径算在内。没有监听器时工作目录之内放行、之外拒绝。监听器可以拒绝之内的，也可以放行之外的。监听器不作答算拒绝。`read` 成功后发出 `fs/observed`。`read` 原有的测试全部保持通过。
+**测试要点。** `tools/execute` 的监听器把另一个 `Invocation` 往下传时，工具不运行，结果是 `CHECK_FAILED`。监听器照原样往下传、包住执行、自己给出结果，三种都照常。调用开始之后、检查之前工具被卸载，调用以 `UNKNOWN_TOOL` 结束，守卫不被问到。检查之后、执行之前工具被卸载，同样不执行。循环里，一个独占的调用要等前面的调用都跑完才问它的检查；检查通过之后到工具开始运行之间，循环不等待别的东西。第 2 阶段的循环测试和性质测试全部保持通过。
 
-### Task 3: 沙箱模式与沙箱接缝
+### Task 3: 子进程运行器
+
+**Files:** 新建 `src/tack/process.py`。测试 `tests/test_process.py`。覆盖率的平台标注在这个任务里定下来，涉及 `pyproject.toml`、闸门脚本和 CI 的工作流。
+
+**测试要点。** 用 `sys.executable -c` 当子进程，不依赖任何外部命令。退出码原样给出。标准输出和标准错误按写入顺序合并。输出超限时保留头尾并说明丢弃的字节数，恰好等于上限时不丢，截断处不留半个字符。超时后进程和它启动的进程都不在了。调用方被取消后同样。进程正常结束后，它留下的进程也不在了，哪怕留下的进程占着管道。留下的进程停不掉时，读管道到时限为止，调用照常返回；这一条在测试里把停进程的函数换成空的来模拟。进程自己停不掉时，等它退出也有上限。环境变量的清洗。输出不是 UTF-8 时用替换字符。给了输入的进程读得到输入，不读输入的进程不会卡住。
+
+### Task 4: 文件系统接缝
+
+**Files:** 新建 `src/tack/fs/__init__.py`、`src/tack/fs/bound.py`。修改 `src/tack/builtin_tools/read.py`、`src/tack/bundles/minimal.yml`。测试 `tests/fs/test_locate.py`、`tests/fs/test_fs.py`、`tests/fs/test_bound.py`，修改 `tests/builtin_tools/test_read.py`。
+
+**测试要点。** `locate` 对相对路径、绝对路径、`..`、指向工作目录之外的符号链接和目录联接给出正确的 `inside`。Windows 上大小写不同的同一路径、短文件名、末尾带点或空格的写法，都定位到同一个文件。备用数据流、设备名和设备路径被拒绝。没有任何登记时，读工作目录之内放行，其余全部拒绝，错误码各自正确。放宽可以放行之外的读和之内的写。限制可以拒绝之内的读。限制拒绝的访问，放宽救不回来。排在前面的放宽说了可以，后面的限制仍然被问到。限制出错算拒绝，放宽出错算没有放宽。经许可打开的文件就是判断过的那个：许可发出之后把上级目录换成指向外面的联接，`open` 抛 `MOVED`，外面的文件没有被读到。`read` 经接缝读文件，读成功后接缝记下指纹。`read` 原有的测试全部保持通过。
+
+### Task 5: 受约束的替换与先读后写
+
+**Files:** 修改 `src/tack/fs/__init__.py`、`src/tack/fs/bound.py`。测试 `tests/fs/test_replace.py`。
+
+**先做试验。** 在这台机器上确认：持有一个不允许删除共享的目录句柄时，这个目录和它的各级上级目录都不能被改名或删除。结论写进模块的说明。试验不成立时，改为写完之后按句柄核对临时文件的位置。
+
+**测试要点。** 没给模型看过的已有文件不能替换，错误码 `NOT_READ`。看过之后可以。看过之后文件被别的进程改了，拒绝，错误码 `CHANGED_SINCE_READ`。Agent 自己替换过之后可以接着再替换。新建文件不需要先读，缺少的上级目录被创建。两个会话的记录互不相干。替换是原子的：写到一半出错时原文件不变，目录里不留临时文件。许可发出之后把上级目录换成指向外面的联接，`replace` 抛 `MOVED`，外面没有多出文件。替换期间上级目录换不掉，这一条在 Windows 上直接测，在 POSIX 上测文件落在原来那个目录里。已有文件的权限位保留。目标是目录时报错。
+
+### Task 6: 沙箱模式与沙箱接缝
 
 **Files:** 新建 `src/tack/sandbox/__init__.py`。测试 `tests/sandbox/test_sandbox.py`。
 
-**测试要点。** 模式默认取配置，`set_mode` 写一条 `sandbox/mode`，恢复的会话读回同一个模式。三种模式下读和写的放行表，逐格测试，包括临时目录和 `.git`、`.tack`。没有提供者时 `confine` 抛错。`none` 提供者原样返回命令。没有这个插件也能读带 `sandbox/mode` 的会话。
+**测试要点。** 模式默认取配置，`set_mode` 写一条 `sandbox/mode`，恢复的会话读回同一个模式。三种模式下读和写的放行表，逐格测试，包括 `.git` 和 `.tack`。性质测试：随机的模式、路径和访问种类，接缝的结论与一个照定义写的参照实现一致。只读模式和受保护目录的拒绝各有自己的错误码和说明。没有提供者时 `confine` 抛错。`none` 提供者原样返回命令。没有这个插件时什么也写不了。没有这个插件也能读带 `sandbox/mode` 的会话。
 
-### Task 4: 先读后写
-
-**Files:** 新建 `src/tack/fs/observation.py`。测试 `tests/fs/test_observation.py`。
-
-**测试要点。** 没读过的已有文件不能写。读过之后可以。读后文件被别的进程改了，拒绝并提示重读。Agent 自己写过之后可以接着再写。新建文件不需要先读。两个会话的记录互不相干。
-
-### Task 5: `write` 和 `edit`
+### Task 7: `write` 和 `edit`
 
 **Files:** 新建 `src/tack/builtin_tools/write.py`、`src/tack/builtin_tools/edit.py`。测试 `tests/builtin_tools/test_write.py`、`tests/builtin_tools/test_edit.py`。
 
-**测试要点。** `write` 新建文件和缺少的上级目录，覆盖已有文件，内容按原样写入不改换行，写入是先写临时文件再改名。`edit` 的五个错误码各一条测试。唯一匹配时只改那一处。`replace_all` 改全部。CRLF 文件用 LF 的 `old` 能匹配，写回后仍是 CRLF。文件不是 UTF-8 时拒绝。两个工具都经过文件系统接缝：只读模式下被拒，受保护的目录被拒。
+**测试要点。** `write` 新建文件和缺少的上级目录，覆盖已有文件，内容按原样写入不改换行。`edit` 的五个错误码各一条测试。唯一匹配时只改那一处。`replace_all` 改全部。CRLF 文件用 LF 的 `old` 能匹配，写回后仍是 CRLF。文件不是 UTF-8 时拒绝。两个工具都经过接缝：只读模式下被拒，受保护的目录被拒，没读过的文件被拒。调用被取消时，磁盘上要么是旧内容要么是新内容。
 
-### Task 6: `glob` 和 `grep`
+### Task 8: 遍历与 `glob`
 
-**Files:** 新建 `src/tack/builtin_tools/glob.py`、`src/tack/builtin_tools/grep.py`、`src/tack/fs/walk.py`。测试 `tests/builtin_tools/test_glob.py`、`tests/builtin_tools/test_grep.py`、`tests/fs/test_walk.py`。
+**Files:** 新建 `src/tack/fs/walk.py`、`src/tack/builtin_tools/glob.py`。测试 `tests/fs/test_walk.py`、`tests/builtin_tools/test_glob.py`。
 
-**测试要点。** `glob` 的 `**`、`*`、`?` 和字符集。结果按修改时间从新到旧，超过 100 条时截断并说明。`grep` 给出路径、行号和内容，`glob` 参数限定文件，`ignore_case` 生效，正则写错时返回 `INVALID_PATTERN`。两者跳过 `.git`，跳过不像文本的文件，不走出工作目录，不跟随指向外面的符号链接。扫描的文件数有上限。调用方被取消时遍历的线程停下。
+**测试要点。** 遍历对每个遇到的文件和目录都问接缝，`named` 为假。被拒的目录不进去，被拒的文件不给出，两者都计数。遍历不跟随符号链接和目录联接，跳过 `.git`。扫描的条目数有上限。调用方被取消时遍历停下。`glob` 的 `**`、`*`、`?` 和字符集，Windows 上不分大小写。结果按修改时间从新到旧，超过 100 条时截断并说明。结果里说明跳过了多少个文件。星号很多的模式配上很长的文件名，匹配仍然很快。
 
-### Task 7: 审批
+### Task 9: `grep` 与匹配进程
+
+**Files:** 新建 `src/tack/builtin_tools/grep.py`、`src/tack/builtin_tools/grep_worker.py`。测试 `tests/builtin_tools/test_grep.py`、`tests/builtin_tools/test_grep_worker.py`。
+
+**测试要点。** `grep` 给出路径、行号和内容。`glob` 参数限定文件。`ignore_case` 生效。正则写错时返回 `INVALID_PATTERN`。跳过不像文本的文件。超过 250 条时截断并说明。很长的行只给出开头并说明。命中拒绝规则的文件读不到，这一条用一条登记的限制来测。回溯很久的正则：搜索在时限到达时返回 `SEARCH_TIMEOUT`，其间事件循环照常运转，一个每隔几十毫秒记一次时间的任务没有被卡住。调用被取消时匹配进程不在了。匹配进程单独测：协议的每一种消息，输入中途断掉时它自己退出。
+
+### Task 10: 审批
 
 **Files:** 新建 `src/tack/approval/__init__.py`。测试 `tests/approval/test_approval.py`。
 
 **测试要点。** 策略为 `never` 时不调用应答者，结果是 `rejected`。没有应答者是 `unavailable`。应答者抛异常、返回集合之外的值，是 `unavailable`。应答者返回四个值之一时原样给出。每次询问写一对事件，`never` 也写。等待期间调用方被取消，取消照常传播，日志里补一条 `cancelled` 的决定。策略写进日志，恢复后读回。
 
-### Task 8: 权限规则与守卫
+### Task 11: 权限规则、守卫与接缝上的限制
 
-**Files:** 新建 `src/tack/permissions/__init__.py`、`src/tack/permissions/rules.py`。测试 `tests/permissions/test_rules.py`、`tests/permissions/test_guard.py`。
+**Files:** 新建 `src/tack/permissions/__init__.py`、`src/tack/permissions/rules.py`、`src/tack/permissions/commands.py`。测试 `tests/permissions/test_rules.py`、`tests/permissions/test_commands.py`、`tests/permissions/test_guard.py`。
 
-**测试要点。** 规则的解析和写错时的报错。路径模式和命令模式的匹配，各一组表格测试。复合命令的拆分，引号内的分隔符不拆。求值顺序：同时命中 `deny` 和 `allow` 时拒绝，同时命中 `ask` 和 `allow` 时询问。默认表按 `effect`、沙箱模式和强度逐格测试。项目文件里的 `allow` 不生效并记警告。预设在第一步之前写进日志，恢复的会话不重复写。守卫的四个错误码。性质测试：随机的规则集和调用，守卫的结论与一个直接照定义写的参照实现一致。
+**测试要点。** 规则的解析和写错时的报错。路径模式和命令模式的匹配，各一组表格测试。星号很多的模式配上很长的文本，匹配仍然很快。两种 shell 的拆分各一组表格测试：命令替换、变量、反引号、脚本块、圆括号、here-string、转义符、重定向、单个 `&`、没有闭合的引号，都判为看不懂；单引号里的这些字符不算。性质测试两条：由普通的词和五种连接符生成的命令，拆出的各段与生成时的一致；在引号之外插入任何一个特殊字符，结果都是看不懂。看不懂的命令命中允许规则时仍然要审批，命中拒绝规则时被拒。看得懂的命令逐段判断，有一段没被允许就要审批。没有登记拆分器的 `run` 工具，带匹配串的允许规则不生效。求值顺序：同时命中 `deny` 和 `allow` 时拒绝，同时命中 `ask` 和 `allow` 时询问。默认表按 `effect` 和沙箱模式逐格测试。项目文件里的 `allow` 不生效并记警告。预设在第一步之前写进日志，恢复的会话不重复写。守卫的四个错误码。接缝上的限制：命中拒绝规则的文件，任何工具经接缝都碰不到，换一种写法指向同一个文件也一样；搜索途中命中询问规则的文件被拒。规则还没读入时守卫和限制都拒绝。性质测试：随机的规则集和调用，守卫的结论与一个直接照定义写的参照实现一致。
 
-### Task 9: 子进程运行器
-
-**Files:** 新建 `src/tack/process.py`。测试 `tests/test_process.py`。
-
-**测试要点。** 用 `sys.executable -c` 当子进程，不依赖任何外部命令。退出码原样给出。标准输出和标准错误按到达顺序合并。输出超限时保留头尾并说明丢弃的字节数，恰好等于上限时不丢。超时后进程和它的子进程都不在了。调用方被取消后同样。孙进程占着管道时不会一直等。环境变量的清洗。输出不是 UTF-8 时用替换字符。
-
-### Task 10: 命令工具
+### Task 12: 命令工具
 
 **Files:** 新建 `src/tack/builtin_tools/shell.py`。测试 `tests/builtin_tools/test_shell.py`。
 
-**先做试验。** 在这台机器上试出 Windows PowerShell 5.1 的调用方式，要满足四条：中文输出不乱码；原生命令的退出码传得出来；出错的 cmdlet 给出非零退出码；标准错误是普通文本，不是 CLIXML。候选做法是 `-EncodedCommand` 和临时脚本文件加 `-File`。试验的结论写进模块的说明。
+**先做试验。** 在这台机器上试出 Windows PowerShell 5.1 的调用方式，要满足七条：中文输出不乱码；原生命令的退出码传得出来；出错的 cmdlet 给出非零退出码；标准错误是普通文本，不是 CLIXML；100 KiB 的命令能执行，或者有一个写明的长度上限并在超过时给出清楚的错误；工作目录和脚本路径里带空格时照常；调用被取消之后不留临时文件。候选做法是 `-EncodedCommand`、临时脚本文件加 `-File`、从标准输入读脚本。`-EncodedCommand` 受命令行 32767 个字符的限制，一万多个字符的命令就会超。试验的结论写进模块的说明。
 
-**测试要点。** 命令在工作目录里执行。退出码写在状态行。超时写在状态行，进程被停下。`timeout_seconds` 超过上限时按上限。输出超限时截断。命令起不来时是工具出错。环境里的密钥不传给命令。`target` 返回命令本身。按平台各有一组测试，另一平台的那组跳过。
+**测试要点。** 命令在工作目录里执行。退出码写在状态行。超时写在状态行，进程被停下。`timeout_seconds` 超过上限时按上限。输出超限时截断。命令起不来时是工具出错。环境里的密钥不传给命令。`target` 返回命令本身。命令启动的进程在命令结束后不在了。工具向权限服务登记自己的拆分器。没有权限插件或沙箱插件时命令工具不加载。权限插件卸载后命令工具跟着卸载。按平台各有一组测试，另一平台的那组跳过。
 
-### Task 11: 系统提示
+### Task 13: 系统提示
 
 **Files:** 新建 `src/tack/system_prompt/__init__.py`。修改 `src/tack/agent_loop/loop.py`。测试 `tests/system_prompt/test_system_prompt.py`、`tests/agent_loop/test_turns.py`。
 
 **测试要点。** 段落按 `order` 再按名字排序。`system-prompt/assemble` 的监听器可以改写结果。没有这个服务时循环直接用 `AgentSpec.system_prompt`。段落变了，下一回合的 `system/message` 顶替旧的。文本没变就不写新事件。
 
-### Task 12: 上下文消息与打断说明
+### Task 14: 上下文消息与打断说明
 
 **Files:** 修改 `src/tack/agent/agent.py`、`src/tack/agent_loop/loop.py`。测试 `tests/agent_loop/test_context.py`，更新快照 `tests/agent_loop/snapshots/a_session.txt`。
 
-**测试要点。** 来源的文本在回合开始时写成用户消息，排在这一回合的输入之前。文本没变不重复写。`append` 追加，`replace` 顶替。来源返回 `None` 不写。来源抛异常时回合以 `error` 结束。上一回合被取消后，下一回合的请求里有打断说明。上一回合正常结束时没有。性质测试的不变量保持成立：历史只增不改这一条要为 `replace` 来源放宽。
+**测试要点。** 来源的文本在回合开始时写成用户消息，排在这一回合的输入之前。`replace` 和 `append` 的文本没变不重复写，前者顶替，后者追加。`note` 每给一次写一次。来源返回 `None` 不写。来源抛异常时：只有一个以 `error` 结束的回合，没有向模型发请求，输入在日志里而不在收件箱里，`when_idle()` 完成。上一回合被取消后，下一回合的请求里有打断说明。连续两次打断，各有一条说明，重新打开会话之后也一样。上一回合正常结束时没有。性质测试的不变量保持成立：历史只增不改这一条要为 `replace` 来源放宽。
 
-### Task 13: 运行时上下文的事实
+### Task 15: 运行时上下文的事实
 
 **Files:** 修改 `src/tack/agent_loop/__init__.py`、`src/tack/sandbox/__init__.py`、`src/tack/approval/__init__.py`、`src/tack/builtin_tools/shell.py`。测试 `tests/agent_loop/test_context.py`。
 
 **测试要点。** 快照里有工作目录、沙箱模式、审批策略、沙箱强度和命令工具的种类。模式变了，下一回合追加新快照。没变就不追加。贡献事实的插件卸载后，它的那一行消失。
 
-### Task 14: 指令文件
+### Task 16: 指令文件
 
 **Files:** 新建 `src/tack/context/__init__.py`、`src/tack/context/instructions.py`。测试 `tests/context/test_instructions.py`。
 
-**测试要点。** 用户级文件在前，项目根到工作目录的链由宽到窄。没有 `.git` 时只看工作目录。内容相同的文件只出现一次。超预算时先丢更宽的文件，最后截断最具体的并说明。包裹标签的字面量被转义。文件变了，下一回合发一条顶替的消息。文件没了，发一条说明。没有任何指令文件时不写消息。
+**测试要点。** 用户级文件在前，项目根到工作目录的链由宽到窄。没有 `.git` 时只看工作目录。内容相同的文件只出现一次。超预算时先丢更宽的文件，最后截断最具体的并说明。包裹标签的字面量被转义。文件变了，下一回合发一条顶替的消息。文件没了，发一条说明。没有任何指令文件时不写消息。文件读不了时按任务 14 的规定结束回合。
 
-### Task 15: `base` 清单与命令行参数
+### Task 17: `base` 清单与命令行参数
 
 **Files:** 新建 `src/tack/bundles/base.yml`。修改 `src/tack/bundles/headless.yml`、`src/tack/apps/launcher.py`、`src/tack/apps/headless.py`。测试 `tests/apps/test_launcher.py`、`tests/apps/test_headless.py`、`tests/test_package.py`。
 
-**测试要点。** `--dump-config` 列出 `base` 的全部条目。`--permission` 改 `permissions` 条目的预设，没给时不动。`--allow` 可以给多次。清单里没有 `permissions` 条目而用了这两个参数时报错，退出码 2。每个产品可见的插件有一条经真实清单加载的测试。
+**测试要点。** `--dump-config` 列出 `base` 的全部条目。`--permission` 改 `permissions` 条目的预设，没给时不动。`--allow` 可以给多次。清单里没有 `permissions` 条目而用了这两个参数时报错，退出码 2。每个产品可见的插件有一条经真实清单加载的测试。从 `base` 里去掉权限插件或沙箱插件，命令工具不出现在给模型的工具表里。
 
-### Task 16: 端到端
+### Task 18: 端到端
 
 **Files:** 新建 `tests/apps/test_fix_a_repository.py`、`tests/fixtures/recorded/deepseek-fix/`、`tests/live/test_deepseek_fix.py`。修改 `tests/replay/test_recorded.py`，让它对夹具目录下的每个录制各跑一遍。
 
@@ -417,7 +483,7 @@ class Agents:
 
 **测试要点。** 脚本化的模型依次读、改、跑命令、回答。测试在运行结束后自己再执行一次 `check.py` 并断言通过。没有允许规则时命令不执行，结果的错误码是 `APPROVAL_UNAVAILABLE`。请求快照记下模型看到的指令文件、运行时上下文和每个工具的结果。真实运行的那条测试没有密钥时跳过。
 
-### Task 17: 文档同步与阶段记录
+### Task 19: 文档同步与阶段记录
 
 更新设计文档的第 3.3、8、9、10 节和 README。写 `docs/plans/<日期>-tack-stage3-record.md`，做法与第 2 阶段的记录相同：任务对应的提交，重新测量的测试数和覆盖率，复查记录，变异检查的结果。
 
@@ -425,16 +491,38 @@ class Agents:
 
 - 文件工具和权限用真实的临时目录测试，不模拟文件系统。
 - 命令工具用 `sys.executable` 当被执行的程序，三个平台都能跑。
-- 策略类的代码配性质测试，与照定义写的参照实现对比。本阶段有两处：规则求值，文件访问的放行表。
+- 策略类的代码配性质测试，与照定义写的参照实现对比。本阶段有三处：规则求值，文件访问的放行表，命令的拆分。
+- 把目录换成联接的测试在 Windows 上用目录联接，不需要管理员权限；在 POSIX 上用符号链接。
 - 循环的性质测试加上工具真的写文件的情形，检查取消之后磁盘上没有半截的文件。
-- 新代码照例做变异检查。先加 `permissions` 和 `process` 两组变异体。
+- 新代码照例做变异检查。先加 `permissions`、`process` 和 `fs` 三组变异体。
 
 ## 风险
 
 | 事项 | 处理 |
 |---|---|
-| Windows PowerShell 5.1 的输出编码和退出码行为不直观 | 任务 10 先做试验，把结论写成测试 |
-| 杀进程树在 Windows 上靠 `taskkill /T`，父进程先死的孙进程杀不到 | 读管道设 2 秒上限，保证工具不会一直等。容器沙箱在第 7 阶段解决隔离 |
-| 命令规则按文本匹配，绕得过去 | 文档写明它不是安全边界 |
-| 模型写的正则可能回溯很久，Python 的 `re` 停不下来 | 每行截到 2000 字符再匹配，工具的时限兜底 |
-| 本阶段代码量可能接近第 2 阶段 | 任务 1 到 10 完成后先合并一次，再做 11 到 17 |
+| Windows PowerShell 5.1 的输出编码和退出码行为不直观 | 任务 12 先做试验，把结论写成测试 |
+| 作业对象和目录句柄要用 `ctypes` 调系统接口，原型写错不容易看出来 | 每个调用都声明参数和返回类型，返回值逐个检查，失败时进程不留下 |
+| 由别的系统服务代为启动的进程不在作业里，停不到 | 读管道和等退出都有上限。容器沙箱在第 7 阶段解决隔离 |
+| 命令规则按文本匹配，绕得过去 | 允许规则只对拆分器看得懂的命令生效。文档写明它不是安全边界 |
+| POSIX 一侧的代码本机跑不了 | 写得尽量短，用法只取文档写明的；CI 第一次运行后按结果修 |
+| 接缝把路径解析到文件上，硬链接分辨不出来 | 文档写明。硬链接要有对目标的访问权才建得出来 |
+| 本阶段代码量超过第 2 阶段 | 任务 1 到 12 完成后先合并一次，再做 13 到 19 |
+
+## 计划复查记录
+
+任务 1 完成后，Codex 在提交 77a5f2c 的只读快照上复查了这份计划，共 12 条意见。逐条对照代码核实后，11 条采纳，1 条部分采纳。
+
+| # | 意见 | 核实 | 处理 |
+|---|---|---|---|
+| 1 | `fs/access` 是 waterfall，外层监听器放行就跳过了沙箱限制和先读后写 | 属实，与守卫要解决的是同一个问题 | 接缝不用事件，改成登记的限制和放宽。设计决定 3、4 |
+| 2 | 少装或卸掉策略插件会让限制变成默许，已经开始的调用也不会失效 | 属实 | 写默认不放行；命令工具依赖沙箱和权限服务；调用执行前核对工具还在。设计决定 1、3、11 |
+| 3 | 允许规则会放行拆分器没看的可执行写法，例如双引号里的命令替换 | 属实 | 允许规则只对看得懂的命令生效。设计决定 10 |
+| 4 | 递归搜索只点名起点，拒绝子目录的规则挡不住 | 属实 | 规则在接缝上对每个文件求值，访问带上工具名。设计决定 8 |
+| 5 | 判断和打开之间目录可以被换掉，读写落到别处 | 属实。本阶段命令不受约束，这条路没有多给什么；第 7 阶段起有意义 | 现在就做：许可、按句柄核对、经目录句柄替换。设计决定 5 |
+| 6 | 检查过的不一定是执行的：`tools/execute` 能换调用；守卫看的强度和实际的约束可以不同；检查与执行之间有等待 | 第一点和第三点属实。第二点成立，但本阶段没有强度不为 `none` 的提供者 | 执行绑定到检查过的调用，检查挪到紧挨执行。强度免审批推迟到第 7 阶段。设计决定 1、9 |
+| 7 | 进程树停不干净：父进程先退出的后代留着；等退出可能被管道拖住 | 属实。Python 3.11 的 `Process.wait()` 要等管道断开 | 作业对象和进程组；命令结束时一并停下；用退出通知判断退出。设计决定 12 |
+| 8 | 行截断限制不了正则回溯，匹配占着 GIL，取消不了 | 属实 | 匹配放进可以杀掉的子进程。设计决定 13 |
+| 9 | 上下文来源出错时输入没被认领，循环会不停地开出错的回合 | 属实，回合驱动在收件箱非空时立刻再开一个回合 | 出错时照常认领输入再结束。设计决定 14 |
+| 10 | 接缝没有调用方的上下文，从插件的上下文分发会让别的 Agent 的监听器听到 | 属实，内核的作用域规则如此 | 接缝不分发事件，访问带着会话。设计决定 3、4 |
+| 11 | `-EncodedCommand` 有长度上限，试验没有把它列进去 | 属实 | 长度、带空格的路径和取消后的清理加进试验条件。任务 12 |
+| 12 | 按文本去重会吞掉第二次打断说明 | 属实 | 来源分三种，`note` 每次都写。设计决定 14 |

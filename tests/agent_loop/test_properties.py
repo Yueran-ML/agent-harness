@@ -9,7 +9,7 @@ inside a listener while the turn is running, and checks what is left behind.
 import asyncio
 import logging
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from itertools import pairwise
 from pathlib import Path
 
@@ -67,6 +67,7 @@ class Bench:
     def __init__(self) -> None:
         self.shared = 0
         self.alone = 0
+        self.concluded: set[str] = set()
         self.problems: list[str] = []
         self.on_start: Callable[[], None] = lambda: None
 
@@ -103,6 +104,7 @@ class Bench:
         if self.shared or self.alone:
             self.problems.append("a call that must be alone began beside another")
         run.conclude_turn()
+        self.concluded.add(run.call_id)
         return "done"
 
     def tools(self) -> tuple[Tool[Args, str], ...]:
@@ -204,14 +206,20 @@ def conversation_problems(messages: Sequence[Message]) -> list[str]:
     return problems
 
 
-def log_problems(events: Sequence[SessionEvent[EventData]]) -> list[str]:
-    """Say what is wrong with the structure of a session log."""
+def log_problems(
+    events: Sequence[SessionEvent[EventData]], ended_by: Collection[str] = ()
+) -> list[str]:
+    """Say what is wrong with the structure of a session log.
+
+    ``ended_by`` holds the ids of the calls whose tool asked for its turn to end.
+    """
     problems: list[str] = []
     turn: int | None = None
     step: int | None = None
     last_turn = 0
     last_step = 0
     cause = False
+    ended = False
     dispatched: list[str] = []
     for event in events:
         data = event.data
@@ -222,6 +230,7 @@ def log_problems(events: Sequence[SessionEvent[EventData]]) -> list[str]:
             if data.turn != last_turn + 1:
                 problems.append(f"{where}: turn {data.turn} follows turn {last_turn}")
             turn, last_turn, last_step, dispatched = data.turn, data.turn, 0, []
+            ended = False
         elif isinstance(data, TurnEndEvent):
             if turn != data.turn or step is not None:
                 problems.append(f"{where}: does not close the open turn cleanly")
@@ -231,6 +240,8 @@ def log_problems(events: Sequence[SessionEvent[EventData]]) -> list[str]:
                 problems.append(f"{where}: a step that does not follow")
             if data.step > 1 and not cause:
                 problems.append(f"{where}: a further step without new input or tool results")
+            if ended:
+                problems.append(f"{where}: a further step after a tool had ended the turn")
             step = last_step = data.step
             cause = False
         elif isinstance(data, StepEndEvent):
@@ -244,6 +255,7 @@ def log_problems(events: Sequence[SessionEvent[EventData]]) -> list[str]:
                 dispatched.append(data.call_id)
             elif isinstance(data, ToolResultEvent):
                 cause = True
+                ended = ended or (data.error is None and data.message.call_id in ended_by)
                 if data.message.call_id not in dispatched:
                     problems.append(f"{where}: a result without a call that was written down")
         elif isinstance(data, UserMessageEvent):
@@ -303,7 +315,7 @@ class Run:
         events = session.events
         assert self.problems == []
         assert self.bench.problems == []
-        assert log_problems(events) == []
+        assert log_problems(events, self.bench.concluded) == []
         assert conversation_problems(session.messages) == []
         for number, request in enumerate(self.model.requests):
             assert conversation_problems(request.messages) == [], f"request {number}"
@@ -550,6 +562,19 @@ def test_the_checks_of_these_tests_find_what_they_look_for() -> None:
         )
         != []
     )
+    two_steps = events(
+        TurnStartEvent(turn=1),
+        StepStartEvent(turn=1, step=1),
+        ToolCallEvent(call_id="a", name="x", arguments="{}"),
+        ToolResultEvent(message=answer),
+        StepEndEvent(turn=1, step=1),
+        StepStartEvent(turn=1, step=2),
+        StepEndEvent(turn=1, step=2),
+        TurnEndEvent(turn=1, reason="completed"),
+    )
+    assert log_problems(two_steps) == []
+    assert log_problems(two_steps, ended_by={"b"}) == []
+    assert log_problems(two_steps, ended_by={"a"}) != []
 
 
 async def test_an_input_that_is_lost_is_noticed_also_after_a_cancellation_that_dropped_others() -> (

@@ -54,7 +54,9 @@ class Config(BaseModel):
     Attributes:
         script: What the user does, step by step.
         answer: The key that answers every question, or nothing if the steps
-            of the script answer the questions.
+            of the script answer the questions. Where a question does not offer
+            this key, the answer is a yes for this once: a real model decides
+            what is asked about, and not every call can be allowed for longer.
         seconds: How long a step waits.
         rows: The height of the window of the terminal.
         columns: Its width.
@@ -108,7 +110,9 @@ async def _answer(config: Config, keys: PipeInput, screen: Screen) -> None:
         asked = printed.count(_ASKED)
         closed = sum(printed.count(mark) for mark in _ANSWERED)
         if asked > answered and closed >= answered:
-            keys.send_text(config.answer)
+            question = printed[printed.rindex(_ASKED) :]
+            offered = f"\n  {config.answer}  " in question
+            keys.send_text(config.answer if offered else "y")
             answered += 1
         await asyncio.sleep(0.05)
 

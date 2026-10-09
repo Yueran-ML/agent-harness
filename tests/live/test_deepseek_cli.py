@@ -3,8 +3,9 @@
 The conversation is the one of ``tests/apps/cli``: the program that
 ``columbina`` starts without a command, with a script at the terminal. Here
 the model is the real one, so the script cannot know what will be on the
-screen and when. It gives the task, says yes to every question for the rest
-of the session, and leaves when the agent is at rest.
+screen and when. It gives the task and says yes to every question, for the
+rest of the session where that is offered and for this once where it is
+not. It leaves when the agent is at rest.
 
 The run costs a few thousand tokens. Run it with::
 
@@ -19,7 +20,7 @@ import yaml
 
 from columbina.apps.launcher import main
 from support import user as at_the_terminal
-from support.scenario import CHECK, TASK, check, fresh
+from support.scenario import TASK, check, fresh
 
 pytestmark = [
     pytest.mark.live,
@@ -57,7 +58,8 @@ def test_a_repository_is_mended_in_a_conversation(repository: Path, tmp_path: Pa
     shown = "".join(at_the_terminal.SCREENS[-1].printed).replace("\r\n", "\n")
     assert code == 0
     assert check(repository) == (0, "ok\n")
-    # The model ran the check, which nobody had allowed before, and was asked about it once.
-    assert f"    {CHECK}\n" in shown
-    assert "(allowed, and not asked about again in this session)\n" in shown
-    assert "    ok\n    [exit code 0]\n" in shown
+    # Which command the model runs to see that the check passes is up to the model. Nobody
+    # had allowed any, so it was asked about, and the answer was a yes.
+    assert " asks for a yes:\n" in shown
+    assert "(allowed, " in shown
+    assert "(not allowed)" not in shown

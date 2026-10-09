@@ -596,14 +596,6 @@ _FS = (
         '            raise ValueError("this permit is not for reading")\n',
         "",
     ),
-    on_windows(
-        mutant(
-            "a file is remembered by the spelling of its path",
-            SEAM,
-            "    return os.path.normcase(path)",
-            "    return str(path)",
-        )
-    ),
     mutant(
         "no path means the working directory",
         PATHS,
@@ -614,8 +606,16 @@ _FS = (
     mutant(
         "a path that climbs out counts as inside",
         PATHS,
-        "    if path.is_relative_to(base):",
+        "    if path.parts[: len(top)] == top:",
         "    if True:",
+    ),
+    on_windows(
+        mutant(
+            "names are compared after their case was lowered",
+            PATHS,
+            "    if path.parts[: len(top)] == top:",
+            "    if path.is_relative_to(Path(root)):",
+        )
     ),
     on_windows(
         mutant(
@@ -630,25 +630,41 @@ _FS = (
         mutant(
             "a link that leads to another machine is followed",
             PATHS,
-            "            if _leads_away(target):\n"
-            '                raise _refused(written, "a link on the way leads to another machine.")\n',
+            "                if _leads_away(target):\n"
+            '                    raise _refused(written, "a link on the way leads to another machine.")\n',
             "",
         )
     ),
     on_windows(
         mutant(
-            "a step back is taken from the text of the path",
+            "behind the prefix that switches the usual reading off, everything is a disk",
             PATHS,
-            "    joined = os.path.join(root, written)\n",
-            "    joined = os.path.normpath(os.path.join(root, written))\n",
+            '            return not (_on_a_drive(rest) or rest.upper().startswith("VOLUME{"))',
+            "            return False",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a volume without a letter counts as another machine",
+            PATHS,
+            '            return not (_on_a_drive(rest) or rest.upper().startswith("VOLUME{"))',
+            "            return not _on_a_drive(rest)",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a step back is left in the path that is walked",
+            PATHS,
+            "        pending = os.path.normpath(joined)",
+            "        pending = joined",
         )
     ),
     on_windows(
         mutant(
             "links are followed in a circle for ever",
             PATHS,
-            "            if links > _MAX_LINKS:",
-            "            if False:",
+            "        for _ in range(_MAX_LINKS + 1):",
+            "        while True:",
         )
     ),
     on_windows(
@@ -700,9 +716,21 @@ _FS = (
         mutant(
             "another case of a name is another file",
             BOUND,
-            "        return os.path.normcase(_plain(one)) == os.path.normcase(_plain(other))",
+            "        return _plain(one) == _plain(other) or _same_entries(_plain(one), _plain(other))",
             "        return _plain(one) == _plain(other)",
         )
+    ),
+    mutant(
+        "a link counts as the place that it leads to",
+        BOUND,
+        "            if not os.path.samestat(left.lstat(), right.lstat()):",
+        "            if not os.path.samestat(left.stat(), right.stat()):",
+    ),
+    mutant(
+        "two paths of different depth may be one place",
+        BOUND,
+        "    if len(first.parts) != len(second.parts):\n        return False\n",
+        "",
     ),
     mutant(
         "without an answer, any file at the place will do",

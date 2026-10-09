@@ -158,8 +158,54 @@ def test_another_file_at_the_place_is_not_the_open_file(
         os.close(descriptor)
 
 
+def test_two_spellings_are_one_place_if_they_name_the_same_entries(work: Path) -> None:
+    (work / "sub").mkdir()
+    (work / "sub" / "a.txt").write_text("a")
+    same: Any = vars(bound)["_same_entries"]
+
+    assert same(str(work / "sub" / "a.txt"), str(work / "sub" / "a.txt"))
+    assert not same(str(work / "sub" / "a.txt"), str(work / "sub" / "b.txt"))
+    assert not same(str(work / "sub" / "a.txt"), str(work / "a.txt"))
+    assert not same(str(work / "sub" / "a.txt"), str(work / "sub" / "deeper" / "a.txt"))
+
+
+def test_a_link_and_what_it_leads_to_are_not_the_same_entry(work: Path, tmp_path: Path) -> None:
+    outside = real(tmp_path) / "out" / "side"
+    outside.mkdir(parents=True)
+    (outside / "a.txt").write_text("a")
+    link_directory(work / "door", outside)
+    same: Any = vars(bound)["_same_entries"]
+
+    # Both spellings reach the same file, as deep down, and yet they are two ways.
+    assert (work / "door" / "a.txt").samefile(outside / "a.txt")
+    assert not same(str(work / "door" / "a.txt"), str(outside / "a.txt"))
+
+
 if sys.platform == "win32":
     BACK = chr(92)
+
+    def test_names_that_are_one_only_in_lower_case_are_not_the_same_place(
+        tmp_path: Path,
+    ) -> None:
+        small = real(tmp_path) / ("i" + chr(0x307))
+        capital = real(tmp_path) / chr(0x130)
+        small.mkdir()
+        capital.mkdir()
+        (small / "a.txt").write_text("the one that was checked")
+        (capital / "a.txt").write_text("another")
+        is_at: Any = vars(bound)["_is_at"]
+        descriptor = os.open(capital / "a.txt", os.O_RDONLY)
+        try:
+            assert is_at(descriptor, capital / "a.txt")
+            assert not is_at(descriptor, small / "a.txt")
+        finally:
+            os.close(descriptor)
+
+    def test_another_case_of_a_name_is_the_same_entry(work: Path) -> None:
+        (work / "Notes.txt").write_text("n")
+        same: Any = vars(bound)["_same_entries"]
+
+        assert same(str(work / "Notes.txt"), str(work / "NOTES.TXT"))
 
     def test_the_case_of_a_name_does_not_make_a_file_another_file(work: Path) -> None:
         (work / "Notes.txt").write_text("n")

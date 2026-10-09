@@ -3,6 +3,7 @@
 import os
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -153,7 +154,7 @@ if sys.platform == "win32":
     BACK = chr(92)
     VERBATIM = BACK * 2 + "?" + BACK
 
-    def faked(monkeypatch: pytest.MonkeyPatch, links: dict[Path, str]) -> None:
+    def faked(monkeypatch: pytest.MonkeyPatch, links: Mapping[Path | str, str]) -> None:
         """Make the given paths links for the walk, without making them on the disk."""
         table = {os.path.normcase(path): target for path, target in links.items()}
 
@@ -168,6 +169,21 @@ if sys.platform == "win32":
         where = locate(work, "NOTES.TXT")
 
         assert (where.inside, where.relative) == (True, "Notes.txt")
+
+    def test_two_names_that_are_one_only_in_lower_case_are_two_directories(
+        tmp_path: Path,
+    ) -> None:
+        # Python lowers the capital I with a dot to an i and a dot above. The disk does not.
+        small = tmp_path / ("i" + chr(0x307))
+        capital = tmp_path / chr(0x130)
+        small.mkdir()
+        capital.mkdir()
+        (capital / "secret.txt").write_text("s")
+
+        where = locate(small, "../" + chr(0x130) + "/secret.txt")
+
+        assert not where.inside
+        assert where.path == real(capital / "secret.txt")
 
     def test_the_case_of_the_working_directory_does_not_count(work: Path) -> None:
         (work / "a.txt").write_text("a")
@@ -249,6 +265,9 @@ if sys.platform == "win32":
             VERBATIM + "UNC" + BACK + "evil" + BACK + "share",
             VERBATIM + "unc" + BACK + "evil" + BACK + "share",
             BACK * 2 + "." + BACK + "pipe" + BACK + "evil",
+            VERBATIM + "GLOBALROOT" + BACK + "Device" + BACK + "Mup" + BACK + "evil" + BACK + "s",
+            VERBATIM + "pipe" + BACK + "evil",
+            VERBATIM + "Device" + BACK + "HarddiskVolume1",
         ],
     )
     def test_a_link_that_leads_to_another_machine_is_not_followed(
@@ -282,7 +301,36 @@ if sys.platform == "win32":
         with pytest.raises(ToolFailure, match="leads to another machine"):
             locate(work, "docs/next/readme.md")
 
-    def test_a_step_back_after_a_link_starts_from_where_the_link_led(
+    def test_a_step_back_is_taken_from_the_text_before_any_link_is_followed(
+        work: Path, tmp_path: Path
+    ) -> None:
+        # This is how Windows reads a path, unlike the systems where a step back leaves
+        # the place that a link led to.
+        elsewhere = tmp_path / "elsewhere"
+        (elsewhere / "deep").mkdir(parents=True)
+        (elsewhere / "bait.txt").write_text("where the link leads")
+        (work / "bait.txt").write_text("in the working directory")
+        link_directory(work / "docs", elsewhere / "deep")
+
+        where = locate(work, "docs/../bait.txt")
+
+        assert (where.inside, where.relative) == (True, "bait.txt")
+        assert where.path.read_text() == "in the working directory"
+
+    def test_the_links_that_are_looked_at_are_those_that_the_system_will_follow(
+        work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        elsewhere = real(tmp_path) / "elsewhere"
+        faked(
+            monkeypatch,
+            {real(work) / "docs": str(elsewhere / "deep"), real(work) / "bait": "//evil/share"},
+        )
+
+        # After the step back, bait is the one in the working directory, and it leads away.
+        with pytest.raises(ToolFailure, match="leads to another machine"):
+            locate(work, "docs/../bait/readme.md")
+
+    def test_a_link_beside_the_target_of_another_is_not_on_the_way(
         work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         elsewhere = real(tmp_path) / "elsewhere"
@@ -291,9 +339,33 @@ if sys.platform == "win32":
             {real(work) / "docs": str(elsewhere / "deep"), elsewhere / "bait": "//evil/share"},
         )
 
-        # Taken as text, docs/../bait would be a harmless name in the working directory.
+        where = locate(work, "docs/../bait/readme.md")
+
+        assert (where.inside, where.relative) == (True, "bait/readme.md")
+
+    def test_a_link_to_a_volume_without_a_letter_is_followed_like_one_to_a_drive(
+        work: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        volume = VERBATIM + "Volume{01234567-89ab-cdef-0123-456789abcdef}"
+        faked(
+            monkeypatch,
+            {
+                str(real(work) / "docs"): volume + BACK + "data",
+                volume + BACK + "data" + BACK + "next": "//evil/share",
+            },
+        )
+
         with pytest.raises(ToolFailure, match="leads to another machine"):
-            locate(work, "docs/../bait/readme.md")
+            locate(work, "docs/next/readme.md")
+
+    def test_a_link_to_a_volume_without_a_letter_is_no_reason_to_refuse(
+        work: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        volume = VERBATIM + "Volume{01234567-89ab-cdef-0123-456789abcdef}"
+        faked(monkeypatch, {str(real(work) / "docs"): volume + BACK + "data"})
+
+        # The link is not on the disk, so the system finds the path where it was written.
+        assert locate(work, "docs/readme.md").inside
 
     def test_links_that_lead_in_a_circle_are_given_up(
         work: Path, monkeypatch: pytest.MonkeyPatch

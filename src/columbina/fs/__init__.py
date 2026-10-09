@@ -30,7 +30,6 @@ reads before it writes.
 """
 
 import logging
-import os
 import threading
 import weakref
 from collections.abc import Callable
@@ -252,7 +251,8 @@ def _describe(error: BaseException) -> str:
 
 
 def _key(path: Path) -> str:
-    return os.path.normcase(path)
+    # The paths come from locate(), which has given them the spelling of the system.
+    return str(path)
 
 
 class Fs:

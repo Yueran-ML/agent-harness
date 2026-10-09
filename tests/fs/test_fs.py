@@ -435,9 +435,10 @@ if sys.platform == "win32":
     ) -> None:
         permit = fs.permit(access("read", "a.txt"))
         fs.shown(permit, Fingerprint(6, 1000))
-        shouted = Path(str(permit.access.where.path).upper())
 
-        assert fs.seen(session, shouted) == Fingerprint(6, 1000)
+        # However the path is written, it is found under the name that is on the disk.
+        assert fs.seen(session, access("read", "A.TXT").where.path) == Fingerprint(6, 1000)
+        assert fs.seen(session, access("read", "./sub/../a.TXT").where.path) == Fingerprint(6, 1000)
 
 
 def test_the_service_is_what_the_plugin_provides(fs: Fs) -> None:

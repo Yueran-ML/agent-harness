@@ -6,10 +6,17 @@ on what was opened. An open file knows where it is: Windows, Linux and macOS
 each have a way to ask. If the answer is not the place that was checked, the
 file is closed again and nobody reads it.
 
-Where the system has no such way, or its answer cannot be compared letter by
-letter, the open file is compared with the file that the path names now. That
-catches a replacement that stays in place, though not one that is undone at
-just the right moment.
+The answer of the system and the place that was checked may be spelled
+differently and still be one place: in another case, or with an accent stored
+another way. Whether they are is not decided by lowering the case, which no
+two systems do alike. Two spellings are one place if they name the same entry
+of the same directory at every level, and that is asked of the disk. A link
+and what it leads to are two entries, so a path that goes through a link is
+not the place it ends in.
+
+Where the system has no way to say where an open file is, the open file is
+compared with the file that the path names now. That catches a replacement
+that stays in place, though not one that is undone at just the right moment.
 
 Only regular files are opened. A pipe or a device is refused, and it is
 opened in a way that does not wait for whatever is at its other end.
@@ -31,7 +38,6 @@ import secrets
 import stat
 import sys
 import time
-import unicodedata
 from collections.abc import Generator
 from pathlib import Path
 from typing import BinaryIO
@@ -60,6 +66,27 @@ class NotShownError(Exception):
 
 class ChangedError(Exception):
     """The file is no longer in the state in which it was seen."""
+
+
+def _same_entries(one: str, other: str) -> bool:
+    """Tell whether two spellings of a path name the same entries, level by level.
+
+    A link is an entry of its own, so it is not the same as what it leads to.
+    """
+    first, second = Path(one), Path(other)
+    if len(first.parts) != len(second.parts):
+        return False
+    levels = zip((first, *first.parents), (second, *second.parents), strict=True)
+    for left, right in levels:
+        if str(left) == str(right):
+            # From here up the two are spelled alike.
+            return True
+        try:
+            if not os.path.samestat(left.lstat(), right.lstat()):
+                return False
+        except OSError:
+            return False
+    return True
 
 
 if sys.platform == "win32":  # pragma: windows only
@@ -127,7 +154,7 @@ if sys.platform == "win32":  # pragma: windows only
         return _where_of(msvcrt.get_osfhandle(descriptor))
 
     def _spelled_alike(one: str, other: str) -> bool:
-        return os.path.normcase(_plain(one)) == os.path.normcase(_plain(other))
+        return _plain(one) == _plain(other) or _same_entries(_plain(one), _plain(other))
 
     def _open(path: Path) -> int:
         try:
@@ -212,7 +239,7 @@ else:  # pragma: posix only
     _OPEN_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC
     _CREATE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
     _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
-    _EXACT = sys.platform == "linux"
+    _EXACT = sys.platform in ("linux", "darwin")
 
     def _where(descriptor: int) -> str | None:
         """Ask the system where an open file is."""
@@ -229,13 +256,10 @@ else:  # pragma: posix only
         return None
 
     def _spelled_alike(one: str, other: str) -> bool:
-        if sys.platform == "linux":
-            return one == other
-        # Names are stored in a form of their own there, and their case does not count.
-        return (
-            unicodedata.normalize("NFC", one).casefold()
-            == unicodedata.normalize("NFC", other).casefold()
-        )
+        if one == other:
+            return True
+        # Linux tells every spelling from every other. Elsewhere the disk decides.
+        return sys.platform != "linux" and _same_entries(one, other)
 
     def _open(path: Path) -> int:
         return os.open(path, _OPEN_FLAGS)

@@ -35,6 +35,7 @@ WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
 WALK = "src/columbina/fs/walk.py"
 GLOB = "src/columbina/builtin_tools/glob.py"
+APPROVAL = "src/columbina/approval/__init__.py"
 GREP = "src/columbina/builtin_tools/grep.py"
 GREP_WORKER = "src/columbina/builtin_tools/grep_worker.py"
 
@@ -1426,7 +1427,99 @@ _GREP = (
     ),
 )
 
+_APPROVAL = (
+    mutant(
+        "with the policy never somebody is asked all the same",
+        APPROVAL,
+        '        if self.policy(request.session) == "never":',
+        "        if False:",
+    ),
+    mutant(
+        "a listener that fails takes the caller down with it",
+        APPROVAL,
+        '            logger.error("a listener of %r failed", APPROVAL_ASK.name, exc_info=error)\n'
+        '            return "unavailable"\n',
+        "            raise\n",
+    ),
+    mutant(
+        "nobody to ask counts as a yes",
+        APPROVAL,
+        '            # Nobody is there to answer.\n            return "unavailable"\n',
+        '            return "allowed-once"\n',
+    ),
+    mutant(
+        "an answer that is none of the four is passed on",
+        APPROVAL,
+        "        if not isinstance(answer, str) or answer not in _OUTCOMES:",
+        "        if False:",
+    ),
+    mutant(
+        "an answer that only says it is one of the four is passed on",
+        APPROVAL,
+        "        if not isinstance(answer, str) or answer not in _OUTCOMES:",
+        "        if answer not in _OUTCOMES:",
+    ),
+    mutant(
+        "a question is not written into the log",
+        APPROVAL,
+        "        session.append(\n"
+        "            ApprovalAskedEvent(call_id=request.call_id, tool=request.tool, "
+        "summary=request.summary)\n"
+        "        )\n",
+        "",
+    ),
+    mutant(
+        "an answer is not written into the log",
+        APPROVAL,
+        "            session.append(ApprovalDecidedEvent(call_id=request.call_id, outcome=outcome))",
+        "            pass",
+    ),
+    mutant(
+        "a question that was cut short is written down as one that nobody could answer",
+        APPROVAL,
+        '        outcome: Outcome = "cancelled"',
+        '        outcome: Outcome = "unavailable"',
+    ),
+    mutant(
+        "a policy is written again though the log names it",
+        APPROVAL,
+        "        if _POLICY.of(session) != policy:",
+        "        if True:",
+    ),
+    mutant(
+        "the policy of the config counts though the log names another",
+        APPROVAL,
+        "        return _POLICY.of(session) or self._default",
+        "        return self._default",
+    ),
+    mutant(
+        "the policy in the log is not read back",
+        APPROVAL,
+        "    return data.policy if isinstance(data, ApprovalPolicyEvent) else policy",
+        "    return policy",
+    ),
+    mutant(
+        "a program without approval cannot read a log that names a policy",
+        APPROVAL,
+        '    event_type: ClassVar[str] = "approval/policy"\n    ignorable: ClassVar[bool] = True',
+        '    event_type: ClassVar[str] = "approval/policy"\n    ignorable: ClassVar[bool] = False',
+    ),
+    mutant(
+        "a program without approval cannot read a log that holds a question",
+        APPROVAL,
+        '    event_type: ClassVar[str] = "approval/asked"\n    ignorable: ClassVar[bool] = True',
+        '    event_type: ClassVar[str] = "approval/asked"\n    ignorable: ClassVar[bool] = False',
+    ),
+    mutant(
+        "a program without approval cannot read a log that holds an answer",
+        APPROVAL,
+        '    event_type: ClassVar[str] = "approval/decided"\n    ignorable: ClassVar[bool] = True',
+        '    event_type: ClassVar[str] = "approval/decided"\n    ignorable: ClassVar[bool] = False',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
+    "approval": MutantSet(("tests/approval",), _APPROVAL),
     "search": MutantSet(("tests/fs/test_walk.py", "tests/builtin_tools/test_glob.py"), _SEARCH),
     "grep": MutantSet(
         ("tests/builtin_tools/test_grep.py", "tests/builtin_tools/test_grep_worker.py"), _GREP

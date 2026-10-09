@@ -76,7 +76,15 @@ def test_a_message_is_a_line_for_its_role_and_a_line_for_each_block() -> None:
 def test_a_request_without_tools_says_so() -> None:
     rendered = render_request(asking("hi"))
 
-    assert rendered == "to deepseek/deepseek-flash, tools: none\n1 user\n    text: 'hi'"
+    assert rendered == "to deepseek/deepseek-flash, no tools\n1 user\n    text: 'hi'"
+
+
+def test_no_tools_and_a_tool_called_none_are_told_apart() -> None:
+    bare = asking("hi")
+    named = bare.model_copy(update={"tools": (tool("none"),)})
+
+    assert render_request(bare).splitlines()[0] == "to deepseek/deepseek-flash, no tools"
+    assert render_request(named).splitlines()[0] == "to deepseek/deepseek-flash, tools: none"
 
 
 def test_what_would_not_show_is_written_as_an_escape() -> None:
@@ -155,18 +163,18 @@ def test_a_request_that_only_adds_to_the_one_before_is_written_as_what_it_adds()
     grown = said("one", "two", "three")
 
     assert render_requests([said("one"), grown, grown]).split("\n") == [
-        "request 1 to deepseek/deepseek-flash, tools: none",
+        "request 1 to deepseek/deepseek-flash, no tools",
         "1 user",
         "    text: 'one'",
         "",
-        "request 2 to deepseek/deepseek-flash, tools: none",
+        "request 2 to deepseek/deepseek-flash, no tools",
         "    as request 1 up to message 1",
         "2 user",
         "    text: 'two'",
         "3 user",
         "    text: 'three'",
         "",
-        "request 3 to deepseek/deepseek-flash, tools: none",
+        "request 3 to deepseek/deepseek-flash, no tools",
         "    as request 2 up to message 3",
     ]
 
@@ -175,13 +183,13 @@ def test_a_request_that_changes_what_was_said_is_written_in_full() -> None:
     rendered = render_requests([said("one", "two"), said("one", "TWO", "three"), said("one")])
 
     assert rendered.split("\n") == [
-        "request 1 to deepseek/deepseek-flash, tools: none",
+        "request 1 to deepseek/deepseek-flash, no tools",
         "1 user",
         "    text: 'one'",
         "2 user",
         "    text: 'two'",
         "",
-        "request 2 to deepseek/deepseek-flash, tools: none",
+        "request 2 to deepseek/deepseek-flash, no tools",
         "1 user",
         "    text: 'one'",
         "2 user",
@@ -189,7 +197,7 @@ def test_a_request_that_changes_what_was_said_is_written_in_full() -> None:
         "3 user",
         "    text: 'three'",
         "",
-        "request 3 to deepseek/deepseek-flash, tools: none",
+        "request 3 to deepseek/deepseek-flash, no tools",
         "1 user",
         "    text: 'one'",
     ]
@@ -201,7 +209,7 @@ def test_every_request_names_its_model_and_its_tools() -> None:
     )
 
     assert rendered.split("\n") == [
-        "request 1 to deepseek/deepseek-flash, tools: none",
+        "request 1 to deepseek/deepseek-flash, no tools",
         "1 user",
         "    text: 'one'",
         "",
@@ -215,6 +223,6 @@ def test_every_request_names_its_model_and_its_tools() -> None:
 def test_requests_without_messages_are_written_without_any() -> None:
     assert render_requests([]) == ""
     assert render_requests([said(), said()]) == (
-        "request 1 to deepseek/deepseek-flash, tools: none\n\n"
-        "request 2 to deepseek/deepseek-flash, tools: none"
+        "request 1 to deepseek/deepseek-flash, no tools\n\n"
+        "request 2 to deepseek/deepseek-flash, no tools"
     )

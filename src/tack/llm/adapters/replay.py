@@ -87,7 +87,8 @@ def replies_of(events: Sequence[SessionEvent[EventData]]) -> list[list[Chunk]]:
     """Return the replies that a session records, each as the chunks of one call.
 
     A call that failed is replayed as the same failure, after what had arrived
-    of it.
+    of it. An event that takes the place of earlier ones is passed over: it
+    rewrites what the model is shown, and the model was not asked for it.
 
     Raises:
         ValueError: The session holds a reply that was interrupted. When it
@@ -96,6 +97,8 @@ def replies_of(events: Sequence[SessionEvent[EventData]]) -> list[list[Chunk]]:
     replies: list[list[Chunk]] = []
     for event in events:
         data = event.data
+        if event.replaces:
+            continue
         if isinstance(data, AssistantAttemptEvent):
             finish = Finish(reason="error", failure=data.failure)
             replies.append(_chunks(data.message, data.usage, finish))

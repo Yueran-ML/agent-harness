@@ -17,6 +17,7 @@ from tack.llm import (
     LlmRequest,
     ReasoningBlock,
     TextBlock,
+    TextDelta,
     ToolCallBlock,
     Usage,
     UserMessage,
@@ -113,6 +114,30 @@ def test_a_reply_that_was_interrupted_cannot_be_replayed() -> None:
 
     with pytest.raises(ValueError, match="event 1 is a reply that was interrupted"):
         replies_of(events(TurnStartEvent(turn=1), interrupted))
+
+
+def test_a_message_that_takes_the_place_of_a_reply_is_no_reply_of_the_model() -> None:
+    def said(text: str, *, cut_short: bool = False) -> AssistantMessageEvent:
+        message = AssistantMessage(content=(TextBlock(text=text),))
+        reason = None if cut_short else "stop"
+        return AssistantMessageEvent(message=message, usage=Usage(), finish_reason=reason)
+
+    log = [
+        SessionEvent(seq=0, time=0, data=said("the first answer"), on_surface=True),
+        # History was rewritten here, for example to shorten it. The model was not asked.
+        SessionEvent(
+            seq=1, time=0, data=said("a shorter first answer"), on_surface=True, replaces=(0,)
+        ),
+        SessionEvent(seq=2, time=0, data=said("the second answer"), on_surface=True),
+        SessionEvent(
+            seq=3, time=0, data=said("cut short", cut_short=True), on_surface=True, replaces=(2,)
+        ),
+    ]
+
+    replies = replies_of(log)
+
+    texts = ["".join(c.text for c in chunks if isinstance(c, TextDelta)) for chunks in replies]
+    assert texts == ["the first answer", "the second answer"]
 
 
 async def test_the_plugin_answers_with_the_replies_of_a_stored_session(

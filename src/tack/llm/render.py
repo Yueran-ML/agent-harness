@@ -22,8 +22,10 @@ def _name(text: str) -> str:
 
 def _target(request: LlmRequest) -> str:
     config = request.config
-    tools = ", ".join(_name(tool.name) for tool in request.tools) or "none"
-    return f"to {_name(config.provider)}/{_name(config.model)}, tools: {tools}"
+    names = ", ".join(_name(tool.name) for tool in request.tools)
+    # Said in other words, so that no tools cannot be taken for a tool of some name.
+    tools = f"tools: {names}" if request.tools else "no tools"
+    return f"to {_name(config.provider)}/{_name(config.model)}, {tools}"
 
 
 def _heading(number: int, message: Message) -> str:

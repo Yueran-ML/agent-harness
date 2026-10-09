@@ -1,10 +1,9 @@
-# What `columbina run` loads: the minimal program, retries for requests that fail
-# for a passing reason, and the frontend that runs one task.
-extends: minimal
+# What `columbina run` loads: the base program and the frontend that runs one
+# task. Nobody is there to be asked, so a call that needs a yes does not run
+# unless a rule allows it.
+extends: base
 patch:
   - insert:
-      - id: retry
-        plugin: columbina.retry
       - id: frontend
         plugin: columbina.apps.headless
         config:

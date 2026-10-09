@@ -451,7 +451,7 @@ async def test_a_project_can_refuse_and_ask_and_cannot_allow(
         assert await at.code("read", path="config/app.yml") == "APPROVAL_UNAVAILABLE"
 
     assert at.ran == []
-    assert "hold 2 allow rules, which a project cannot give" in caplog.text
+    assert "hold rules under allow, which a project cannot give" in caplog.text
     assert caplog.text.count("which a project cannot give") == 1
 
 

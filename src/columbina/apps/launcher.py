@@ -7,6 +7,10 @@ entry called ``frontend`` provides what is then run.
 
 The command line changes only what it names. A setting that it leaves open
 stays as the layers before it have it.
+
+What the agent may do is the business of the entry called ``permissions``:
+``--permission`` names its preset, and each ``--allow`` adds a rule to the
+rules that it has.
 """
 
 import argparse
@@ -18,17 +22,19 @@ import sys
 from collections.abc import Mapping, Sequence
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, get_args
 
 import yaml
 
 import columbina
 from columbina.apps import FRONTEND
 from columbina.kernel import CompositionError, Context, Entry, Layer, flatten, mount, parse_layer
+from columbina.permissions import Preset
 
 __all__ = ["main"]
 
 _FRONTEND = "frontend"
+_PERMISSIONS = "permissions"
 _INTERRUPTED = 130
 
 
@@ -72,6 +78,40 @@ def _profile(name: str) -> Layer:
         ) from None
 
 
+def _config_of(entry: Entry) -> dict[str, Any]:
+    """Return a copy of the config of an entry, which the command line is about to add to."""
+    config: object = entry.config
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise _UsageError(f"the config of the entry {entry.id!r} is not a mapping")
+    return dict(cast("dict[str, Any]", config))
+
+
+def _permit(entries: list[Entry], args: argparse.Namespace) -> None:
+    """Hand the preset and the rules of the command line to the entry of the permissions."""
+    if args.permission is None and not args.allow:
+        return
+    for position, entry in enumerate(entries):
+        if entry.id == _PERMISSIONS and not entry.disabled:
+            config = _config_of(entry)
+            if args.permission is not None:
+                config["preset"] = args.permission
+            if args.allow:
+                rules: object = config.get("allow") or []
+                if not isinstance(rules, list):
+                    raise _UsageError(
+                        f"the entry {_PERMISSIONS!r} has rules under 'allow' that are not a list"
+                    )
+                config["allow"] = [*cast("list[object]", rules), *args.allow]
+            entries[position] = entry.model_copy(update={"config": config})
+            return
+    raise _UsageError(
+        f"the profile has no entry {_PERMISSIONS!r}, or it is disabled, so --permission and "
+        "--allow have nothing to change"
+    )
+
+
 def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
     """Work out the plugin entries that the command line asks for."""
     layers = [_profile(args.profile)]
@@ -80,13 +120,14 @@ def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
         layers.append(_file_layer(mine))
     layers.extend(_file_layer(Path(patch)) for patch in args.patch)
     entries = flatten(layers, lookup=_bundle)
+    _permit(entries, args)
     for position, entry in enumerate(entries):
         if entry.id == _FRONTEND:
             if entry.disabled:
                 raise _UsageError(
                     f"the entry {_FRONTEND!r} is disabled, so there is nothing to run the task"
                 )
-            config: dict[str, Any] = dict(entry.config or {})
+            config = _config_of(entry)
             config["task"] = args.task
             if args.cwd is not None:
                 config["cwd"] = str(Path(args.cwd).resolve())
@@ -168,6 +209,19 @@ def _parser() -> argparse.ArgumentParser:
         help="the working directory of the agent; the current directory if nothing names one",
     )
     run.add_argument("--session-id", metavar="ID", help="the session to start or to continue")
+    run.add_argument(
+        "--permission",
+        choices=get_args(Preset),
+        help="how much the agent may do without anybody being asked",
+    )
+    run.add_argument(
+        "--allow",
+        action="append",
+        default=[],
+        metavar="RULE",
+        help="a rule that lets calls go ahead, such as 'run(git status*)'; "
+        "may be given several times",
+    )
     run.add_argument(
         "--json",
         action=argparse.BooleanOptionalAction,

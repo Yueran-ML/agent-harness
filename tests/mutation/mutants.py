@@ -44,6 +44,8 @@ GREP = "src/columbina/builtin_tools/grep.py"
 SHELL = "src/columbina/builtin_tools/shell.py"
 PATTERNS = "src/columbina/fs/patterns.py"
 RUNTIME = "src/columbina/context/runtime.py"
+LAUNCHER = "src/columbina/apps/launcher.py"
+BASE_BUNDLE = "src/columbina/bundles/base.yml"
 INSTRUCTIONS = "src/columbina/context/instructions.py"
 PROMPT = "src/columbina/system_prompt/__init__.py"
 RULES = "src/columbina/permissions/rules.py"
@@ -2467,9 +2469,115 @@ _INSTRUCTIONS = (
     ),
 )
 
+_BASE = (
+    mutant(
+        "the preset of the command line is not handed on",
+        LAUNCHER,
+        '                config["preset"] = args.permission',
+        "                pass",
+    ),
+    mutant(
+        "permissions that were given no preset lose the one they have",
+        LAUNCHER,
+        "            if args.permission is not None:",
+        "            if True:",
+    ),
+    mutant(
+        "the rules of the command line take the place of those of the profile",
+        LAUNCHER,
+        '                config["allow"] = [*cast("list[object]", rules), *args.allow]',
+        '                config["allow"] = [*args.allow]',
+    ),
+    mutant(
+        "the rules of the command line come before those of the profile",
+        LAUNCHER,
+        '                config["allow"] = [*cast("list[object]", rules), *args.allow]',
+        '                config["allow"] = [*args.allow, *cast("list[object]", rules)]',
+    ),
+    mutant(
+        "permissions get an empty list of rules when the command line gives none",
+        LAUNCHER,
+        "            if args.allow:",
+        "            if True:",
+    ),
+    mutant(
+        "a preset is handed to permissions that are switched off",
+        LAUNCHER,
+        "        if entry.id == _PERMISSIONS and not entry.disabled:",
+        "        if entry.id == _PERMISSIONS:",
+    ),
+    mutant(
+        "a preset with nowhere to go is dropped without a word",
+        LAUNCHER,
+        '    raise _UsageError(\n        f"the profile has no entry {_PERMISSIONS!r}, or it is',
+        '    return\n    raise _UsageError(\n        f"the profile has no entry {_PERMISSIONS!r}, or it is',
+    ),
+    mutant(
+        "rules under allow that are no list are taken apart letter by letter",
+        LAUNCHER,
+        "                if not isinstance(rules, list):",
+        "                if False:",
+    ),
+    mutant(
+        "a config that is no mapping is taken for an empty one",
+        LAUNCHER,
+        "    if not isinstance(config, dict):",
+        "    if False:",
+    ),
+    mutant(
+        "a session of the base program may write anywhere",
+        BASE_BUNDLE,
+        "          preset: workspace-write",
+        "          preset: full-access",
+    ),
+    mutant(
+        "the rules of the user are not read",
+        BASE_BUNDLE,
+        "          user_file: ${COLUMBINA_HOME}/permissions.yml",
+        "          deny: []",
+    ),
+    mutant(
+        "the instructions of the user are not read",
+        BASE_BUNDLE,
+        "          user_file: ${COLUMBINA_HOME}/AGENTS.md",
+        "          max_bytes: 65536",
+    ),
+    mutant(
+        "the base program has no tool that runs commands",
+        BASE_BUNDLE,
+        "        plugin: columbina.builtin_tools.shell",
+        "        plugin: columbina.builtin_tools.shell\n        disabled: true",
+    ),
+    mutant(
+        "the base program has no tool that searches in files",
+        BASE_BUNDLE,
+        "        plugin: columbina.builtin_tools.grep",
+        "        plugin: columbina.builtin_tools.grep\n        disabled: true",
+    ),
+    mutant(
+        "the model is not told where it runs",
+        BASE_BUNDLE,
+        "        plugin: columbina.context.runtime",
+        "        plugin: columbina.context.runtime\n        disabled: true",
+    ),
+    mutant(
+        "a request that fails for a passing reason is not made again",
+        BASE_BUNDLE,
+        "      - id: retry\n        plugin: columbina.retry",
+        "      - id: retry\n        plugin: columbina.retry\n        disabled: true",
+    ),
+    mutant(
+        "plugins have nowhere to add to the system prompt",
+        BASE_BUNDLE,
+        "        plugin: columbina.system_prompt",
+        "        plugin: columbina.system_prompt\n        disabled: true",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
+    "base": MutantSet(("tests/apps", "tests/test_package.py"), _BASE),
     "instructions": MutantSet(("tests/context",), _INSTRUCTIONS),
     "context": MutantSet(("tests/agent_loop",), _CONTEXT),
     "prompt": MutantSet(("tests/system_prompt", "tests/agent_loop/test_turns.py"), _PROMPT),

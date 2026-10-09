@@ -1,7 +1,6 @@
 """The command line: ``columbina run`` loads a profile, runs one task, and reports."""
 
 import asyncio
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,48 +10,8 @@ import yaml
 
 import columbina
 from columbina.apps.launcher import main
-from columbina.session import CORE_EVENTS, TurnEndEvent, read_session
-from columbina.session.store import workspace_key
-
-KINDS = {kind.event_type: kind for kind in CORE_EVENTS}
-
-
-@pytest.fixture
-def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A data directory for Columbina that is thrown away after the test, and no API key."""
-    directory = tmp_path / "home"
-    monkeypatch.setenv("COLUMBINA_HOME", str(directory))
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.delenv("COLUMBINA_MODEL", raising=False)
-    return directory
-
-
-@pytest.fixture
-def work(tmp_path: Path) -> Path:
-    directory = tmp_path / "work"
-    directory.mkdir()
-    (directory / "notes.txt").write_text("The answer is 42.\n", encoding="utf-8")
-    return directory
-
-
-def profile(
-    tmp_path: Path, *replies: dict[str, Any], extra: list[dict[str, Any]] | None = None
-) -> str:
-    """Write a profile that is the headless bundle with a scripted model, and return its path."""
-    scripted = {
-        "id": "model",
-        "plugin": "columbina.llm.adapters.scripted",
-        "config": {"provider": "deepseek", "replies": list(replies)},
-    }
-    layer = {"extends": "headless", "patch": [scripted, *(extra or [])]}
-    path = tmp_path / "profile.yml"
-    path.write_text(yaml.safe_dump(layer, sort_keys=False), encoding="utf-8")
-    return str(path)
-
-
-def lines(text: str) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in text.splitlines()]
-
+from columbina.session import TurnEndEvent
+from support.launch import lines, profile, stored
 
 READ_THEN_ANSWER: tuple[dict[str, Any], ...] = (
     {"text": "I will look.", "calls": [{"name": "read", "arguments": {"path": "notes.txt"}}]},
@@ -96,19 +55,12 @@ def test_the_run_leaves_a_session_behind(
         ]
     )
 
-    stored = read_session(home / "sessions" / workspace_key(work) / "s-1", KINDS | _more_kinds())
-    types = [event.type for event in stored.events]
+    left = stored(home, work)
+    types = [event.type for event in left.events]
     assert types.count("tool/call") == 1
     assert types.count("tool/result") == 1
-    assert stored.events[-1].data == TurnEndEvent(turn=1, reason="completed")
-    assert stored.header.cwd == str(work)
-
-
-def _more_kinds() -> dict[str, Any]:
-    from columbina.agent import InboxSplicedEvent
-    from columbina.retry import RetryEvent
-
-    return {kind.event_type: kind for kind in (InboxSplicedEvent, RetryEvent)}
+    assert left.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+    assert left.header.cwd == str(work)
 
 
 def test_the_run_can_be_followed_as_lines_of_json(
@@ -250,8 +202,8 @@ def test_a_session_can_be_continued_by_its_id(
     assert code == 0
     assert captured[0]["id"] == "s-1"
     assert captured[1] == {"type": "status", "turn": 2, "step": 1}
-    stored = read_session(home / "sessions" / workspace_key(work) / "s-1", KINDS | _more_kinds())
-    ends = [event.data for event in stored.events if isinstance(event.data, TurnEndEvent)]
+    left = stored(home, work)
+    ends = [event.data for event in left.events if isinstance(event.data, TurnEndEvent)]
     assert ends == [
         TurnEndEvent(turn=1, reason="completed"),
         TurnEndEvent(turn=2, reason="completed"),
@@ -313,6 +265,17 @@ def test_the_composition_can_be_printed_instead_of_run(
         "tool-read",
         "agent",
         "agent-loop",
+        "sandbox",
+        "approval",
+        "permissions",
+        "tool-write",
+        "tool-edit",
+        "tool-glob",
+        "tool-grep",
+        "tool-shell",
+        "system-prompt",
+        "context-instructions",
+        "context-runtime",
         "retry",
         "frontend",
     ]
@@ -322,12 +285,88 @@ def test_the_composition_can_be_printed_instead_of_run(
         "config": {"root": "${COLUMBINA_HOME}/sessions"},
     }
     assert entries["model"]["config"]["api_key_env"] == "DEEPSEEK_API_KEY"
+    assert entries["permissions"] == {
+        "id": "permissions",
+        "plugin": "columbina.permissions",
+        "config": {"preset": "workspace-write", "user_file": "${COLUMBINA_HOME}/permissions.yml"},
+    }
+    assert entries["context-instructions"]["config"] == {"user_file": "${COLUMBINA_HOME}/AGENTS.md"}
     assert entries["frontend"]["config"] == {
         "model": {"provider": "deepseek", "model": "deepseek-fast"},
         "task": "Do it.",
         "cwd": str(work),
     }
     assert not home.exists()
+
+
+def test_the_command_line_names_the_preset_and_adds_rules_that_allow(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(
+        [
+            "run",
+            "Do it.",
+            "--cwd",
+            str(work),
+            "--permission",
+            "read-only",
+            "--allow",
+            "run(git status*)",
+            "--allow",
+            "grep",
+            "--dump-config",
+        ]
+    )
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert entries["permissions"]["config"] == {
+        "preset": "read-only",
+        "user_file": "${COLUMBINA_HOME}/permissions.yml",
+        "allow": ["run(git status*)", "grep"],
+    }
+
+
+def test_the_rules_of_the_command_line_come_after_those_of_the_profile(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mine = {
+        "id": "permissions",
+        "config": {"preset": "full-access", "allow": ["read(/etc/hosts)"], "deny": ["read(.env)"]},
+    }
+    chosen = profile(tmp_path, extra=[mine])
+
+    main(
+        [
+            "run",
+            "Do it.",
+            "--profile",
+            chosen,
+            "--cwd",
+            str(work),
+            "--allow",
+            "grep",
+            "--dump-config",
+        ]
+    )
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert entries["permissions"]["config"] == {
+        "preset": "full-access",
+        "allow": ["read(/etc/hosts)", "grep"],
+        "deny": ["read(.env)"],
+    }
+
+
+def test_a_preset_can_be_named_for_permissions_that_have_no_config(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chosen = profile(tmp_path, extra=[{"id": "permissions", "config": None}])
+
+    run = ["run", "Do it.", "--profile", chosen, "--cwd", str(work)]
+    main([*run, "--permission", "full-access", "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert entries["permissions"]["config"] == {"preset": "full-access"}
 
 
 CHOSEN_BY_THE_PROFILE = {
@@ -472,7 +511,7 @@ def test_a_profile_that_does_not_exist_is_refused(
     assert captured.out == ""
     assert captured.err == (
         "columbina: there is no profile 'nowhere'. The profiles that come with Columbina are: "
-        "headless, minimal\n"
+        "base, headless, minimal\n"
     )
 
 
@@ -485,6 +524,103 @@ def test_a_profile_without_a_frontend_cannot_run_a_task(
     assert capsys.readouterr().err == (
         "columbina: the profile has no entry 'frontend', so there is nothing to run the task\n"
     )
+
+
+WITHOUT_PERMISSIONS = [
+    {"id": "tool-shell", "disabled": True},
+    {"id": "permissions", "disabled": True},
+]
+
+
+@pytest.mark.parametrize("asked", [["--permission", "read-only"], ["--allow", "grep"]])
+@pytest.mark.parametrize("extends", ["headless", "minimal"])
+def test_a_preset_or_a_rule_needs_permissions_to_go_to(
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    asked: list[str],
+    extends: str,
+) -> None:
+    # In one profile the permissions are switched off, the other never had them.
+    without = profile(
+        tmp_path,
+        {"text": "never"},
+        extends=extends,
+        extra=WITHOUT_PERMISSIONS if extends == "headless" else [],
+    )
+
+    code = main(["run", "Do it.", "--profile", without, "--cwd", str(work), *asked])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "columbina: the profile has no entry 'permissions', or it is disabled, so --permission "
+        "and --allow have nothing to change\n"
+    )
+
+
+def test_a_preset_that_does_not_exist_is_refused(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main(["run", "Do it.", "--cwd", str(work), "--permission", "everything"])
+
+    assert stopped.value.code == 2
+    assert "'read-only', 'workspace-write', 'full-access'" in capsys.readouterr().err
+
+
+def test_a_rule_that_cannot_be_read_stops_the_run(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        [
+            "run",
+            "Do it.",
+            "--profile",
+            profile(tmp_path, {"text": "never"}),
+            "--cwd",
+            str(work),
+            "--allow",
+            "read(notes.txt",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert "columbina: permissions (columbina.permissions) failed: " in captured.err
+    assert "read(notes.txt" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("entry", "config", "said"),
+    [
+        ("permissions", ["grep"], "the config of the entry 'permissions' is not a mapping"),
+        (
+            "permissions",
+            {"allow": "grep"},
+            "the entry 'permissions' has rules under 'allow' that are not a list",
+        ),
+        ("frontend", "deepseek", "the config of the entry 'frontend' is not a mapping"),
+    ],
+)
+def test_a_config_that_the_command_line_cannot_add_to_is_refused(
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    entry: str,
+    config: object,
+    said: str,
+) -> None:
+    odd = profile(tmp_path, {"text": "never"}, extra=[{"id": entry, "config": config}])
+
+    code = main(["run", "Do it.", "--profile", odd, "--cwd", str(work), "--allow", "glob"])
+
+    assert code == 2
+    assert capsys.readouterr().err == f"columbina: {said}\n"
 
 
 def test_a_frontend_that_is_switched_off_cannot_run_a_task(

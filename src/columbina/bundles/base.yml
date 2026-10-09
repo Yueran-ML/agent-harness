@@ -1,0 +1,39 @@
+# What every frontend builds on: the minimal program, the tools that change
+# files and run commands, what keeps those tools in check, and what a model is
+# told before it begins.
+extends: minimal
+patch:
+  - insert:
+      # What a call may do, and who is asked about it.
+      - id: sandbox
+        plugin: columbina.sandbox
+      - id: approval
+        plugin: columbina.approval
+      - id: permissions
+        plugin: columbina.permissions
+        config:
+          preset: workspace-write
+          user_file: ${COLUMBINA_HOME}/permissions.yml
+      # The tools beside the one that reads.
+      - id: tool-write
+        plugin: columbina.builtin_tools.write
+      - id: tool-edit
+        plugin: columbina.builtin_tools.edit
+      - id: tool-glob
+        plugin: columbina.builtin_tools.glob
+      - id: tool-grep
+        plugin: columbina.builtin_tools.grep
+      - id: tool-shell
+        plugin: columbina.builtin_tools.shell
+      # What the model is told when a conversation and a turn begin.
+      - id: system-prompt
+        plugin: columbina.system_prompt
+      - id: context-instructions
+        plugin: columbina.context.instructions
+        config:
+          user_file: ${COLUMBINA_HOME}/AGENTS.md
+      - id: context-runtime
+        plugin: columbina.context.runtime
+      # A request that fails for a passing reason is made again.
+      - id: retry
+        plugin: columbina.retry

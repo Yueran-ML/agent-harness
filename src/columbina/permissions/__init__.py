@@ -347,9 +347,8 @@ def _project_rules(cwd: Path) -> RuleSet | _Unreadable:
     if held.allow:
         # A repository does not approve its own commands.
         logger.warning(
-            "%s hold %d allow rules, which a project cannot give. They were passed over",
+            "%s hold rules under allow, which a project cannot give, so they were passed over",
             source,
-            len(held.allow),
         )
     return RuleSet(held.deny, held.ask)
 

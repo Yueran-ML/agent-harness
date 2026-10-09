@@ -4,14 +4,14 @@ Columbina is a plugin-based agent harness written in Python. Every capability is
 the model adapter, the tool registry, the session log, and the agent loop itself.
 
 **Status:** early development. `columbina run` gives one task to an agent and prints the
-answer. The agent talks to a model over the OpenAI Chat Completions protocol, and it has
-one tool so far, which reads files. Tools that write files and run commands, permissions
-and an interactive interface come next.
+answer. The agent talks to a model over the OpenAI Chat Completions protocol. It reads,
+searches and changes the files of its working directory and runs commands, and what a
+call may do is decided before it runs. An interactive interface comes next.
 
 Columbina 是一个用 Python 写的插件化 Agent harness。模型适配、工具注册、会话日志和 Agent
-循环都是插件。项目处于早期开发阶段。`columbina run` 已经可以把一个任务交给 Agent 并打印回答。
-模型走 OpenAI Chat Completions 协议，默认接 DeepSeek，目前只有一个读文件的工具。
-写文件和执行命令的工具、权限控制和交互界面是接下来的工作。
+循环都是插件。项目处于早期开发阶段。`columbina run` 已经可以把一个任务交给 Agent：它在工作目录里
+读文件、搜索、改文件、执行命令，每次调用能做什么在执行之前判定。模型走 OpenAI Chat Completions
+协议，默认接 DeepSeek。交互界面是接下来的工作。
 
 ## Running a task
 
@@ -52,9 +52,11 @@ shortened. The session that the run left behind is kept in
 
 | Option | What it does |
 |---|---|
-| `--cwd DIR` | The working directory of the agent. The read tool stays inside it. |
+| `--cwd DIR` | The working directory of the agent. No file outside it is touched unless the session has full access. |
 | `--model ID` | The model to use. The default is `deepseek-flash`, or `COLUMBINA_MODEL` if it is set. |
 | `--session-id ID` | The session to start. If a session with this id exists, it is continued. |
+| `--permission PRESET` | How much the agent may do: `read-only`, `workspace-write`, which is the default, or `full-access`. |
+| `--allow RULE` | A rule that lets calls go ahead, such as `run(git status*)`. It may be given several times. |
 | `--json`, `--no-json` | Report the run as lines of JSON, or print the answer alone. |
 | `--profile NAME` | The profile to load: a name that comes with Columbina, or the path of a file. |
 | `--patch FILE` | A file of changes to the profile. It may be given several times. |
@@ -68,6 +70,53 @@ Sessions are stored under `~/.columbina/sessions`. The environment variable `COL
 `~/.columbina` somewhere else. A session is one file of JSON lines to which events are only
 ever appended.
 
+## Changing files and running commands
+
+The agent has six tools: `read`, `write`, `edit`, `glob`, `grep`, and a tool that runs
+commands, which is called `powershell` on Windows and `bash` elsewhere.
+
+```console
+$ uv run columbina run 'check.py fails. Find the mistake in calc.py and fix it, and make sure that `python check.py` prints ok.' --allow 'run(python check.py)'
+Fixed. In `calc.py`, `mean` was dividing the sum by `len(values) - 1` (that is, it computed a mean over one too few items, and blew up with `ZeroDivisionError` on a single value). It now divides by `len(values)`, and `python check.py` prints `ok`.
+```
+
+This is a real run against `deepseek-flash`, in a directory with a calculator, a check
+that failed, and an `AGENTS.md` that says how the check is run. The model read both
+files at once, changed one line and ran the check. That took four requests with 1158
+input tokens and 350 output tokens, and another 7680 input tokens were answered from
+the cache of the provider. The run is kept in `tests/fixtures/recorded/deepseek-fix`.
+
+What a call may do is decided before it runs.
+
+| `--permission` | Files | Commands |
+|---|---|---|
+| `read-only` | Nothing is written. | A rule or a yes is needed. |
+| `workspace-write` | Files in the working directory are written, except in `.git` and `.columbina`. Nothing outside it is read or written. | A rule or a yes is needed. |
+| `full-access` | Files anywhere are read and written. | They run. |
+
+`columbina run` has nobody to ask. A command that needs a yes does not run there, and
+the model is told why. A rule lets it run: `--allow "run(python check.py)"` allows this
+one command and no other.
+
+A rule is the name of a tool, or the name with a pattern: `grep`, `read(.env)`,
+`write(docs/**)`. The names `read`, `write` and `run` stand for every tool that does
+that, so a rule against reading a file also keeps a search from opening it. Rules that
+are meant to stay go into `~/.columbina/permissions.yml`, under `deny`, `ask` and `allow`. A
+project brings its own in `.columbina/permissions.yml`, but only rules that refuse or
+ask: a repository that somebody cloned does not approve its own commands.
+
+A rule about commands goes by the text of a command. One that allows counts only for
+commands of a plain shape, without variables, substitutions or redirections. Such rules
+are a convenience and not a boundary. Nothing confines a command yet, and whatever it
+does, it does as the user. A sandbox in a container is planned.
+
+A file is changed only after the model has read it, and only while it is still as the
+model saw it.
+
+`AGENTS.md` and `CLAUDE.md` are given to the model when a turn begins: first
+`~/.columbina/AGENTS.md`, then the files from the root of the repository down to the working
+directory. A link in the place of such a file is not followed.
+
 ## How it is built
 
 - **The session log is the only source of truth.** Whatever the model is sent has been
@@ -80,6 +129,16 @@ ever appended.
 - **Tools** run through a pipeline with a check before the call, a wrapper around it
   and a check of its result. Whatever goes wrong becomes an error result that the model
   reads. Every call gets exactly one result, also when the turn is cancelled.
+- **Files** are reached through one seam. It decides about every access, and a file is
+  then opened or replaced at the place that was decided about, also when a directory on
+  the way has been swapped for a link in between. Restrictions can only refuse, and
+  nothing that loosens the default overrules one.
+- **Permissions** are a guard of the tool pipeline, which no other plugin can skip, and
+  a restriction at the seam, which holds for every file that a search opens on its way.
+- **What the model is told** beside the conversation has three parts: a system prompt
+  put together from sections, the instruction files, and the facts about the run. The
+  last two are messages at the beginning of a turn. The beginning of a conversation
+  stays as it is, so a provider can answer from its cache.
 - **The agent loop** works in turns and steps. Input can be queued as a task, steered
   into a running turn, or attached as context. Four interception points let plugins
   decide whether a step begins, how a request is made, what happens after a failure,
@@ -155,10 +214,12 @@ are these kinds:
   scripted model.
 - **Property tests** hand the agent random tasks, steers and cancellations, and check
   what is left in the log.
-- **Replay tests** play a recorded run again and compare the log event by event.
+- **Replay tests** play every recorded run again, with the plugins it had and with
+  tools that really run, and compare the log event by event.
 - **Request snapshots** keep what the model was sent as text, in
-  `tests/agent_loop/snapshots` and beside each recording. Run the tests with
-  `COLUMBINA_UPDATE_SNAPSHOTS=1` to write them anew after a change that was meant.
+  `tests/agent_loop/snapshots`, in `tests/apps/snapshots` and beside each recording. Run
+  the tests with `COLUMBINA_UPDATE_SNAPSHOTS=1` to write them anew after a change that
+  was meant.
 
 Two more things are run by hand:
 

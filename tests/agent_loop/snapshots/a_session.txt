@@ -1,0 +1,69 @@
+request 1 to scripted/script, tools: look, remove, build
+1 system
+    text: 'You are helpful.'
+2 user
+    text: 'Look at a.txt and b.txt, then tidy up.'
+
+request 2 to scripted/script, tools: look, remove, build
+    as request 1 up to message 2
+3 assistant
+    reasoning: 'Two files first.'
+    text: 'I will look around.'
+    call look '{"path": "a.txt"}' as call-1
+    call look '{"path": "b.txt"}' as call-2
+    call remove '{"path": "c.txt"}' as call-3
+    call look '{"path": "secret.txt"}' as call-4
+    call look '{"path": ' as call-5
+    call open '{"path": "d.txt"}' as call-6
+4 tool, result of call-1
+    text: 'a.txt has 3 lines'
+5 tool, result of call-2
+    text: 'b.txt has 3 lines'
+6 tool, failed result of call-3
+    text: 'c.txt is in use'
+7 tool, failed result of call-4
+    text: 'The call was not allowed: secrets stay closed'
+8 tool, failed result of call-5
+    text: 'The arguments are not valid JSON: Expecting value: line 1 column 10 (char 9)'
+9 tool, failed result of call-6
+    text: "There is no tool named 'open'. The tools are: look, remove, build."
+
+request 3 to scripted/script, tools: look, remove, build
+    as request 2 up to message 9
+10 assistant
+    text: 'Two files are there. The rest could not be done.'
+11 user
+    text: 'The user has a.txt open.'
+12 user
+    text: 'Summarise it.'
+
+request 4 to scripted/script, tools: look, remove, build
+    as request 3 up to message 12
+13 assistant
+    text: 'Summarising a.txt.'
+14 user
+    text: 'Keep it short.'
+
+request 5 to scripted/script, tools: look, remove, build
+    as request 4 up to message 14
+15 assistant
+    text: 'It is short.'
+16 user
+    text: 'Explain the build.'
+
+request 6 to scripted/script, tools: look, remove, build
+    as request 5 up to message 16
+17 assistant
+    reasoning: 'This will take a while.'
+    text: 'First, '
+18 user
+    text: 'Build it.'
+
+request 7 to scripted/script, tools: look, remove, build
+    as request 6 up to message 18
+19 assistant
+    call build '{}' as call-7
+20 tool, failed result of call-7
+    text: 'The call was cancelled while it ran. It may have taken effect in part.'
+21 user
+    text: 'Go on.'

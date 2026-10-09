@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from tack.kernel import Context
 from tack.llm.assembler import Assembler, MalformedStreamError
+from tack.llm.render import render_request, render_requests
 from tack.llm.runtime import LLM, Llm, LlmAdapter, LlmCall, LlmError
 from tack.llm.types import (
     AssistantBlock,
@@ -70,6 +71,8 @@ __all__ = [
     "UserMessage",
     "apply",
     "name",
+    "render_request",
+    "render_requests",
 ]
 
 name = "llm"

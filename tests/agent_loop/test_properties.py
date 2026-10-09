@@ -10,6 +10,7 @@ import asyncio
 import logging
 import tempfile
 from collections.abc import Callable, Sequence
+from itertools import pairwise
 from pathlib import Path
 
 from hypothesis import HealthCheck, given, settings
@@ -303,6 +304,10 @@ class Run:
         assert conversation_problems(session.messages) == []
         for number, request in enumerate(self.model.requests):
             assert conversation_problems(request.messages) == [], f"request {number}"
+        for number, (earlier, later) in enumerate(pairwise(self.model.requests), start=1):
+            # Nothing rewrites what the model was sent before: a conversation only grows.
+            kept = later.messages[: len(earlier.messages)] == earlier.messages
+            assert kept, f"request {number} does not begin with what request {number - 1} held"
         assert closing_events(events, "interrupted") == []
         state = TURN.of(session)
         assert not state.in_turn

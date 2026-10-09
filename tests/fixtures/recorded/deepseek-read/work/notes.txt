@@ -1,0 +1,5 @@
+Release notes
+=============
+
+The codename of release 0.1 is "Halyard".
+It ships the kernel and the agent loop.

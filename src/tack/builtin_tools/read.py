@@ -8,6 +8,7 @@ first ``_SCAN_BYTES`` of the file, and it stops when its caller is cancelled.
 """
 
 import asyncio
+import codecs
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,10 +30,8 @@ _MIB = 1024 * 1024
 _SCAN_BYTES = 64 * _MIB
 _CHUNK_BYTES = 64 * 1024
 _SNIFF_BYTES = 8192
-_LINE_BYTES = 4 * MAX_LINE_CHARACTERS
-"""How much of a line is kept: enough for ``MAX_LINE_CHARACTERS`` characters of UTF-8."""
-_INSIDE_A_CHARACTER = bytes(range(0x80, 0xC0))
-"""The bytes of UTF-8 that go on with a character and do not begin one."""
+_Utf8 = codecs.getincrementaldecoder("utf-8")
+"""Decodes a line that arrives in pieces. A piece may end in the middle of a character."""
 
 
 class ReadArgs(BaseModel):
@@ -50,9 +49,10 @@ class ReadArgs(BaseModel):
 class _Reader:
     """Takes a file piece by piece and keeps the lines that were asked for.
 
-    Each kept line is numbered and cut to size as soon as it ends. Of a line
-    that is longer than is kept, only the beginning is held, and the rest is
-    counted as it passes. Lines that were not asked for are only counted.
+    Each kept line is numbered and cut to size as soon as it ends. A wanted
+    line is decoded as it passes. Of one that is longer than is shown, only
+    the beginning is held, and the characters after it are counted. Lines
+    that were not asked for are only counted, and are not decoded.
 
     Attributes:
         shown: The lines to return.
@@ -61,6 +61,7 @@ class _Reader:
     """
 
     __slots__ = (
+        "_decoder",
         "_end",
         "_first",
         "_head",
@@ -79,7 +80,8 @@ class _Reader:
         self._first = offset
         self._end = offset + limit
         self._size = 0
-        self._head = bytearray()
+        self._decoder = _Utf8(errors="replace")
+        self._head = ""
         self._passed = 0
         self._returned = False
 
@@ -107,17 +109,19 @@ class _Reader:
                 count as a line that ended.
         """
         if self._wanted():
+            if not cut_short:
+                # Bytes at the end that begin a character and do not finish it are shown too.
+                self._take(b"", final=True)
             if self._returned:
                 # A carriage return at the end belongs to the line break, and is not shown.
                 if self._passed:
                     self._passed -= 1
                 else:
-                    del self._head[-1:]
-            text = self._head.decode("utf-8", errors="replace")
-            more = len(text) - MAX_LINE_CHARACTERS + self._passed
-            if more > 0:
-                counted = f"at least {more}" if cut_short else str(more)
-                text = f"{text[:MAX_LINE_CHARACTERS]} [{counted} more characters]"
+                    self._head = self._head[:-1]
+            text = self._head
+            if self._passed:
+                counted = f"at least {self._passed}" if cut_short else str(self._passed)
+                text = f"{text} [{counted} more characters]"
             numbered = f"{self.lines + 1:>6}\t{text}"
             self._size += len(numbered.encode()) + 1
             if self.shown and self._size > MAX_BYTES:
@@ -125,7 +129,8 @@ class _Reader:
                 self._end = self.lines
             else:
                 self.shown.append(numbered)
-            self._head.clear()
+            self._decoder.reset()
+            self._head = ""
             self._passed = 0
             self._returned = False
         if not cut_short:
@@ -134,14 +139,17 @@ class _Reader:
     def _wanted(self) -> bool:
         return self._first <= self.lines < self._end
 
-    def _take(self, piece: bytes) -> None:
+    def _take(self, piece: bytes, *, final: bool = False) -> None:
         """Add a piece to the line that is open, if that line is wanted."""
-        if not piece or not self._wanted():
+        if not self._wanted():
             return
-        room = max(_LINE_BYTES - len(self._head), 0)
-        self._head += piece[:room]
-        self._passed += len(piece[room:].translate(None, _INSIDE_A_CHARACTER))
-        self._returned = piece.endswith(b"\r")
+        text = self._decoder.decode(piece, final)
+        if not text:
+            return
+        room = MAX_LINE_CHARACTERS - len(self._head)
+        self._head += text[:room]
+        self._passed += max(len(text) - room, 0)
+        self._returned = text.endswith("\r")
 
 
 @dataclass(frozen=True, slots=True)

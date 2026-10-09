@@ -206,8 +206,8 @@ _READ = (
         "                if self._passed:\n"
         "                    self._passed -= 1\n"
         "                else:\n"
-        "                    del self._head[-1:]\n",
-        "                del self._head[-1:]\n",
+        "                    self._head = self._head[:-1]\n",
+        "                self._head = self._head[:-1]\n",
     ),
     mutant(
         "a return is kept in a line that was cut short",
@@ -218,26 +218,45 @@ _READ = (
     mutant(
         "the note of a long line counts one character too many",
         READ,
-        "more = len(text) - MAX_LINE_CHARACTERS + self._passed",
-        "more = len(text) - MAX_LINE_CHARACTERS + self._passed + 1",
+        "        self._passed += max(len(text) - room, 0)\n",
+        "        self._passed += max(len(text) - room + 1, 0)\n",
     ),
     mutant(
         "a line that was cut short is said to be whole",
         READ,
-        'counted = f"at least {more}" if cut_short else str(more)',
-        "counted = str(more)",
+        'counted = f"at least {self._passed}" if cut_short else str(self._passed)',
+        "counted = str(self._passed)",
     ),
     mutant(
         "an empty piece forgets the return before it",
         READ,
-        "        if not piece or not self._wanted():\n            return\n",
-        "        if not self._wanted():\n            return\n",
+        "        if not text:\n            return\n",
+        "",
     ),
     mutant(
         "a return in the middle of a line is remembered",
         READ,
-        '        self._returned = piece.endswith(b"\\r")\n',
-        '        self._returned = self._returned or piece.endswith(b"\\r")\n',
+        '        self._returned = text.endswith("\\r")\n',
+        '        self._returned = self._returned or text.endswith("\\r")\n',
+    ),
+    mutant(
+        "a character that the line ends inside of is not shown",
+        READ,
+        '                self._take(b"", final=True)\n',
+        "                pass\n",
+    ),
+    mutant(
+        "a character that a cut line ends inside of is shown as broken",
+        READ,
+        "            if not cut_short:\n"
+        "                # Bytes at the end that begin a character and do not finish it are shown too.\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "bytes of one line are left in the decoder for the next",
+        READ,
+        "            self._decoder.reset()\n",
+        "",
     ),
     mutant(
         "the size limit is off by one",
@@ -264,16 +283,10 @@ _READ = (
         '            self._take(chunk[start:])\n            self.open = not chunk.endswith(b"\\n")\n',
     ),
     mutant(
-        "bytes are counted instead of characters",
+        "the head may grow beyond what is shown",
         READ,
-        "self._passed += len(piece[room:].translate(None, _INSIDE_A_CHARACTER))",
-        "self._passed += len(piece[room:])",
-    ),
-    mutant(
-        "the head may grow beyond what is kept",
-        READ,
-        "        room = max(_LINE_BYTES - len(self._head), 0)\n",
-        "        room = _LINE_BYTES\n",
+        "        self._head += text[:room]\n",
+        "        self._head += text\n",
     ),
     mutant(
         "a line that ends is not counted after the output is full",
@@ -288,10 +301,10 @@ _READ = (
         "            complete = False\n",
     ),
     mutant(
-        "the state of a line leaks into the next",
+        "the count of a line leaks into the next",
         READ,
-        "            self._head.clear()\n            self._passed = 0\n            self._returned = False\n",
-        "            self._head.clear()\n            self._returned = False\n",
+        '            self._head = ""\n            self._passed = 0\n            self._returned = False\n',
+        '            self._head = ""\n            self._returned = False\n',
     ),
     mutant(
         "the thread is not told to stop",

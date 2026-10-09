@@ -1,6 +1,7 @@
 """The read tool: text files of the working directory, with line numbers and limits."""
 
 import asyncio
+import codecs
 import tempfile
 import threading
 import tracemalloc
@@ -200,6 +201,20 @@ async def test_a_long_line_of_wide_characters_is_cut_at_a_character(
     outcome = await call(ctx, tools, work, arguments("wide.txt"))
 
     assert outcome.text == "     1\t" + "好" * 2000 + " [1000 more characters]"
+
+
+async def test_bytes_that_are_no_text_count_as_the_characters_they_are_shown_as(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    # Each of the hundred bytes is shown as one replacement character.
+    raw = b"a" * 8000 + b"\x80" * 100
+    (work / "odd.txt").write_bytes(raw + b"\n")
+
+    outcome = await call(ctx, tools, work, arguments("odd.txt"))
+
+    left_out = len(raw.decode("utf-8", errors="replace")) - 2000
+    assert left_out == 6100
+    assert outcome.text == "     1\t" + "a" * 2000 + f" [{left_out} more characters]"
 
 
 async def test_the_line_break_of_windows_is_not_counted_as_a_character(
@@ -471,7 +486,6 @@ PIECES = [
     b"\x80",
     b"\xe5\xa5",
 ]
-KEPT_OF_A_LINE = 12
 CHARACTERS_OF_A_LINE = 5
 
 
@@ -488,11 +502,10 @@ def simply(content: bytes, offset: int, limit: int, looked_at: int, size_limit: 
         if not offset <= index < offset + limit:
             continue
         cut_short = not complete and ends_inside_a_line and index == len(lines) - 1
-        raw = raw.removesuffix(b"\r")
-        head, rest = raw[:KEPT_OF_A_LINE], raw[KEPT_OF_A_LINE:]
-        text = head.decode("utf-8", errors="replace")
-        begun_in_the_rest = sum(1 for byte in rest if not 0x80 <= byte < 0xC0)
-        more = len(text) - CHARACTERS_OF_A_LINE + begun_in_the_rest
+        # A line that was cut short may end inside a character, which is then not shown yet.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        text = decoder.decode(raw, final=not cut_short).removesuffix("\r")
+        more = len(text) - CHARACTERS_OF_A_LINE
         if more > 0:
             counted = f"at least {more}" if cut_short else str(more)
             text = f"{text[:CHARACTERS_OF_A_LINE]} [{counted} more characters]"
@@ -523,7 +536,6 @@ def test_reading_in_pieces_finds_what_reading_at_once_would(
             read,
             _CHUNK_BYTES=piece,
             _SCAN_BYTES=looked_at,
-            _LINE_BYTES=KEPT_OF_A_LINE,
             MAX_LINE_CHARACTERS=CHARACTERS_OF_A_LINE,
             MAX_BYTES=size_limit,
         ):

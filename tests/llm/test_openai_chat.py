@@ -542,7 +542,7 @@ async def test_a_service_that_repeats_the_name_and_the_id_in_every_event_is_unde
     )
 
 
-async def test_a_tool_call_is_passed_on_as_soon_as_its_name_and_id_are_known(
+async def test_a_tool_call_is_passed_on_once_a_piece_of_it_comes_without_name_and_id(
     ctx: Context, llm: Llm
 ) -> None:
     body = Body(
@@ -564,21 +564,92 @@ async def test_a_tool_call_is_passed_on_as_soon_as_its_name_and_id_are_known(
     reader = asyncio.ensure_future(read())
     for _ in range(100):
         await asyncio.sleep(0)
-        if len(call.chunks) == 6:
+        if len(call.chunks) == 4:
             break
     reader.cancel()
     await asyncio.gather(reader, return_exceptions=True)
 
-    # The reply has not ended. The first call began when a piece came without a name or
-    # an id, and the second when the text began.
+    # The reply has not ended. The first call began when a piece of it came without a name
+    # or an id. The second came whole, so more of its name may still follow: it waits.
     assert call.chunks == [
         BlockStart(index=0, kind="tool-call", call_id="call_a", name="read"),
         ToolCallDelta(index=0, arguments='{"path": '),
-        BlockStart(index=1, kind="tool-call", call_id="call_b", name="read"),
-        ToolCallDelta(index=1, arguments="{}"),
-        BlockStart(index=2, kind="text"),
-        TextDelta(index=2, text="Both at once."),
+        BlockStart(index=1, kind="text"),
+        TextDelta(index=1, text="Both at once."),
     ]
+
+
+async def test_a_tool_call_that_came_whole_is_passed_on_when_the_reply_ends(
+    ctx: Context, llm: Llm
+) -> None:
+    body = sse(
+        piece(id="call_a", name="read", arguments='{"path": "a.txt"}'),
+        delta(content="One moment."),
+        piece(1, id="call_b", name="read", arguments='{"path": "b.txt"}'),
+        finish("tool_calls"),
+        "[DONE]",
+    )
+    connect(ctx, llm, Service(streamed(body)))
+
+    call = await ask(llm, tools=(READ,))
+
+    assert call.chunks == [
+        BlockStart(index=0, kind="text"),
+        TextDelta(index=0, text="One moment."),
+        BlockEnd(index=0),
+        BlockStart(index=1, kind="tool-call", call_id="call_a", name="read"),
+        ToolCallDelta(index=1, arguments='{"path": "a.txt"}'),
+        BlockStart(index=2, kind="tool-call", call_id="call_b", name="read"),
+        ToolCallDelta(index=2, arguments='{"path": "b.txt"}'),
+        BlockEnd(index=1),
+        BlockEnd(index=2),
+        Finish(reason="tool-calls"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "between",
+    [piece(1, id="call_b", name="read", arguments="{}"), delta(content="One moment.")],
+    ids=["another call", "text"],
+)
+async def test_pieces_of_a_name_may_be_parted_by_something_else(
+    ctx: Context, llm: Llm, between: dict[str, Any]
+) -> None:
+    body = sse(
+        piece(id="call_", name="re", arguments="{"),
+        between,
+        piece(id="abc", name="ad", arguments="}"),
+        finish("tool_calls"),
+        "[DONE]",
+    )
+    connect(ctx, llm, Service(streamed(body)))
+
+    call = await ask(llm, tools=(READ,))
+
+    assert call.failure is None
+    assert call.message.tool_calls[0] == ToolCallBlock(
+        call_id="call_abc", name="read", arguments="{}"
+    )
+
+
+async def test_a_name_that_comes_after_another_call_began_is_still_taken(
+    ctx: Context, llm: Llm
+) -> None:
+    body = sse(
+        piece(id="call_a", arguments="{"),
+        piece(1, id="call_b", name="read", arguments="{}"),
+        piece(name="read", arguments="}"),
+        finish("tool_calls"),
+        "[DONE]",
+    )
+    connect(ctx, llm, Service(streamed(body)))
+
+    call = await ask(llm, tools=(READ,))
+
+    assert call.message.tool_calls == (
+        ToolCallBlock(call_id="call_a", name="read", arguments="{}"),
+        ToolCallBlock(call_id="call_b", name="read", arguments="{}"),
+    )
 
 
 async def test_a_tool_call_that_was_cut_off_before_it_began_is_left_out(
@@ -1026,6 +1097,36 @@ async def test_the_error_that_held_the_key_does_not_travel_with_the_failure(
             pass
 
     assert KEY not in "".join(traceback.format_exception(raised.value))
+    # Not only out of what is printed: the error that was caught is not held on to at all.
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+async def test_a_refusal_that_held_the_key_does_not_travel_with_the_failure(
+    ctx: Context, llm: Llm
+) -> None:
+    adapter = connect(ctx, llm, Service(refused(401, f"bad {KEY}")))
+
+    with pytest.raises(LlmError) as raised:
+        async for _ in adapter.stream(LlmRequest(config=MODEL, messages=HELLO)):
+            pass
+
+    assert raised.value.failure.message == "bad [key]"
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+
+
+async def test_the_key_is_cut_out_of_the_id_of_a_request(ctx: Context, llm: Llm) -> None:
+    echo = refused(401, f"bad {KEY}", **{"x-request-id": f"req-{KEY}-" + "7" * 300})
+    connect(ctx, llm, Service(echo))
+
+    call = await ask(llm)
+
+    cleaned = LlmFailure(
+        message="bad [key]", code="AUTH", status=401, request_id="req-[key]-" + "7" * 190
+    )
+    assert call.failure == cleaned
+    assert KEY not in cleaned.model_dump_json()
 
 
 async def test_a_body_that_cannot_be_decoded_is_a_transport_failure(ctx: Context, llm: Llm) -> None:

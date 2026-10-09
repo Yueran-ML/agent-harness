@@ -7,6 +7,11 @@ provider name of its config. To talk to two services, load it twice.
 The API key is read from an environment variable when a request is made. It
 is never part of the config, and it is cut out of the text of every failure
 that leaves the adapter, whether the service or the connection wrote that text.
+The error that was caught is not passed on with the failure.
+
+One thing is not in the hands of the adapter. The HTTP library has a logger of
+its own, ``httpx``, which at the level INFO writes the status line of every
+response as the service sent it.
 """
 
 import math
@@ -70,6 +75,8 @@ _STATUS_CODES = {
 _EFFORT = {"low": "low", "high": "high", "max": "high"}
 _MESSAGE_CHARACTERS = 500
 """How much of the text of a failure is kept."""
+_ID_CHARACTERS = 200
+"""How much of the id of a request is kept."""
 
 
 class Config(BaseModel):
@@ -347,7 +354,6 @@ class _Translator:
     def _text(self, kind: Literal["reasoning", "text"], piece: str) -> Iterator[Chunk]:
         if self._open is None or self._open[1] != kind:
             yield from self._close()
-            yield from self._begin_waiting()
             self._open = (self._next, kind)
             self._next += 1
             yield BlockStart(index=self._open[0], kind=kind)
@@ -362,12 +368,12 @@ class _Translator:
 
         The block of a call begins once its name and its id are known in full,
         because a block says both when it begins. That is the case when a
-        fragment comes without either, when something else begins, or when the
-        reply ends. Arguments that arrive before then wait.
+        fragment of the call comes without either, or when the reply ends.
+        Arguments that arrive before then wait. Nothing else shows that a name
+        is complete: fragments of another call, or text, may come in between.
         """
         if fragment.index not in self._calls:
             yield from self._close()
-        yield from self._begin_waiting(but=fragment.index)
         call = self._calls.setdefault(fragment.index, _Call())
         function = fragment.function
         if call.block < 0:
@@ -398,10 +404,10 @@ class _Translator:
             yield ToolCallDelta(index=call.block, arguments=call.waiting)
             call.waiting = ""
 
-    def _begin_waiting(self, but: int | None = None) -> Iterator[Chunk]:
-        """Begin the block of every tool call that has none yet, except the call ``but``."""
-        for index, call in sorted(self._calls.items()):
-            if call.block < 0 and index != but:
+    def _begin_waiting(self) -> Iterator[Chunk]:
+        """Begin the block of every tool call that has none yet."""
+        for _, call in sorted(self._calls.items()):
+            if call.block < 0:
                 yield from self._begin(call)
 
     def _close(self) -> Iterator[Chunk]:
@@ -482,18 +488,25 @@ def _failure(error: httpx.RequestError | LlmError, secret: str | None) -> LlmFai
     """Return the failure that an error stands for, fit to be shown and to be stored.
 
     Every failure of the adapter passes through here. The key is cut out of
-    its text first, and then the text is cut to a length, so that no part of
-    the key is left at the end of it.
+    every text that came from outside, which is the message and the id of the
+    request. Then the text is cut to a length. In this order no part of the key
+    is left at the end of it.
     """
     if isinstance(error, LlmError):
         failure = error.failure
     else:
         code = "TIMEOUT" if isinstance(error, httpx.TimeoutException) else "TRANSPORT"
         failure = LlmFailure(message=_describe(error), code=code)
-    message = failure.message
+    cleaned: dict[str, str] = {"message": _cleaned(failure.message, secret, _MESSAGE_CHARACTERS)}
+    if failure.request_id is not None:
+        cleaned["request_id"] = _cleaned(failure.request_id, secret, _ID_CHARACTERS)
+    return failure.model_copy(update=cleaned)
+
+
+def _cleaned(text: str, secret: str | None, limit: int) -> str:
     if secret:
-        message = message.replace(secret, "[key]")
-    return failure.model_copy(update={"message": message[:_MESSAGE_CHARACTERS]})
+        text = text.replace(secret, "[key]")
+    return text[:limit]
 
 
 class OpenAIChat:
@@ -532,6 +545,7 @@ class OpenAIChat:
         headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}
         body = build_body(request, self._config)
         translator = _Translator(self._config.provider)
+        failure: LlmFailure | None = None
         try:
             async with self._client.stream(
                 "POST", "chat/completions", json=body, headers=headers
@@ -547,8 +561,11 @@ class OpenAIChat:
             for chunk in translator.finish():
                 yield chunk
         except (httpx.RequestError, LlmError) as error:
-            # The error itself is left behind: its text may hold the key, and so may its cause.
-            raise LlmError(_failure(error, secret)) from None
+            failure = _failure(error, secret)
+        if failure is not None:
+            # Raised out here, so that the error that was caught is not held on to. Its text
+            # may hold the key, and so may that of its cause.
+            raise LlmError(failure)
 
     def _secret(self) -> str | None:
         variable = self._config.api_key_env

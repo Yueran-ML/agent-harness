@@ -734,6 +734,18 @@ async def test_what_the_log_names_already_is_not_written_again(
     ]
 
 
+async def test_a_policy_that_the_log_names_already_is_kept_whatever_the_preset(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, preset="full-access")
+    at.approval.set_policy(at.session, "ask")
+
+    at.session.append(TurnStartEvent(turn=1))
+
+    assert at.approval.recorded(at.session) == "ask"
+    assert at.sandbox.recorded(at.session) == "danger-full-access"
+
+
 async def test_other_events_of_the_log_write_no_preset(ctx: Context, tmp_path: Path) -> None:
     at = await bench(ctx, tmp_path)
 

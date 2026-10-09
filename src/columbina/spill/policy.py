@@ -21,8 +21,11 @@ Two kinds of results are other than the rest.
 - A tool may have saved the whole of its output already, as it came, because
   it was never held in memory. It says so by a ``complete`` on what it
   returns, which is what the place said about it. Such a result is not saved
-  a second time, and it gets the last line even if it is small: its text has
-  a hole in it.
+  a second time. It ends with the line that says where the whole is, even if
+  it is small: its text has a hole in it. The tool may have put that line
+  there itself, and then it is not said twice. Where such a result is cut,
+  the line between its ends gives no number. How much the tool had left out
+  before is not known here.
 
 The check comes last. It measures what the other checks of a result have
 made of it.
@@ -45,6 +48,8 @@ name = "spill-policy"
 logger = logging.getLogger(__name__)
 
 _NOWHERE = "(The whole result was not kept: this program has no place to save it.)"
+_UNCOUNTED = "[... a part is left out here ...]"
+"""The line between two ends where nobody knows how much is left out."""
 _SPACE_AT_MOST = 7
 """No kind of character comes to less than a seventh of a token."""
 
@@ -58,10 +63,6 @@ class Config(BaseModel):
     """
 
     max_tokens: int = Field(default=12_500, gt=0)
-
-
-def _whole(saved: Saved) -> str:
-    return f"(The whole result has {saved.bytes} bytes and is in {saved.locator}. {saved.hint})"
 
 
 def _left_out(count: int) -> str:
@@ -101,21 +102,22 @@ def _end(text: str, tokens: int) -> str:
     return text[broken + 1 :] if broken >= 0 else text[start:]
 
 
-def two_ends(text: str, tokens: int, last: str) -> str:
+def two_ends(text: str, tokens: int, last: str, *, counted: bool = True) -> str:
     """Return the two ends of a text and a last line, in no more than so many tokens.
 
     Between the ends stands a line that says how many characters are left
-    out. No part of the text is shown twice: the end is taken from what the
-    beginning has left.
+    out, or only that some are if they are not to be counted. No part of the
+    text is shown twice: the end is taken from what the beginning has left.
     """
     # The line between the ends is priced as if everything were left out.
-    room = tokens - estimate(last) - estimate(_left_out(len(text))) - 2
+    widest = _left_out(len(text)) if counted else _UNCOUNTED
+    room = tokens - estimate(last) - estimate(widest) - 2
     half = max(room // 2, 0)
     head = _beginning(text, half)
     tail = _end(text[len(head) :], half)
     between = "" if not head or head.endswith("\n") else "\n"
     after = "" if not tail or tail.endswith("\n") else "\n"
-    gap = _left_out(len(text) - len(head) - len(tail))
+    gap = _left_out(len(text) - len(head) - len(tail)) if counted else _UNCOUNTED
     return f"{head}{between}{gap}\n{tail}{after}{last}"
 
 
@@ -134,7 +136,7 @@ def apply(ctx: Context, config: Config) -> None:
         except OSError as error:
             logger.error("a result of %s could not be saved: %s", named, error)
             return f"(The whole result could not be saved: {error.strerror or error}.)"
-        return _whole(saved)
+        return saved.told()
 
     async def within_the_limit(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
         verdict = await proceed(executed)
@@ -143,8 +145,13 @@ def apply(ctx: Context, config: Config) -> None:
         text = verdict.text
         complete: object = getattr(executed.value, "complete", None)
         too_large = estimate(text) > config.max_tokens
+        counted = True
         if isinstance(complete, Saved):
-            last = _whole(complete)
+            last = complete.told()
+            # The tool may have said so itself. It is said once, and it is said last.
+            text = text.removesuffix(last)
+            # What the tool saved may be more than its text ever held.
+            counted = False
         elif too_large:
             last = await saved_somewhere(executed, text)
         else:
@@ -152,6 +159,6 @@ def apply(ctx: Context, config: Config) -> None:
         if not too_large:
             between = "" if text.endswith("\n") else "\n"
             return Accept(text=f"{text}{between}{last}")
-        return Accept(text=two_ends(text, config.max_tokens, last))
+        return Accept(text=two_ends(text, config.max_tokens, last, counted=counted))
 
     ctx.on(POST_EXECUTE, within_the_limit, prepend=True)

@@ -14,8 +14,10 @@ not be written, and what was saved for another working directory stays out
 of reach.
 
 What is saved is read with the tool that reads files, which shows a line up
-to a length and counts the rest. A text is therefore saved with its longer
-lines broken at that length. What comes in pieces is saved as it comes.
+to a length and counts the rest. So a longer line is broken at that length
+as it is written, in a text that is saved in one go and in what comes in
+pieces alike. Nothing else is changed: a byte that is no text is written as
+it came.
 
 Files that have not been touched for a month are removed when the program
 starts. Nothing else of what the directory holds is touched, and no link is
@@ -23,6 +25,7 @@ followed.
 """
 
 import asyncio
+import codecs
 import contextlib
 import logging
 import os
@@ -39,7 +42,7 @@ from columbina.session import Session
 from columbina.session.store import workspace_key
 from columbina.spill import SPILL, Saved
 
-__all__ = ["FOLD_AT", "Config", "Local", "apply", "name", "sweep"]
+__all__ = ["FOLD_AT", "Config", "Fold", "Local", "apply", "name", "sweep"]
 
 name = "spill"
 
@@ -54,6 +57,7 @@ _UNFIT = re.compile(r"[^A-Za-z0-9._-]")
 _NAME_CHARACTERS = 80
 _DRAWS = 5
 _DAY = 24 * 60 * 60
+_Utf8 = codecs.getincrementaldecoder("utf-8")
 
 
 def _drawn() -> str:
@@ -73,19 +77,58 @@ def _fit(name: str) -> str:
     return fit if re.search("[A-Za-z0-9]", fit) else "output"
 
 
-def _folded(text: str) -> tuple[str, bool]:
-    """Return a text with its long lines broken, and whether any was."""
-    lines = text.split("\n")
-    if all(len(line) <= FOLD_AT for line in lines):
-        return text, False
-    pieces = (line[at : at + FOLD_AT] for line in lines for at in range(0, len(line) or 1, FOLD_AT))
-    return "\n".join(pieces), True
+class Fold:
+    """Breaks the lines of a text that are longer than the read tool shows.
+
+    The text may come in pieces that are cut anywhere. The same breaks are
+    made however it is cut, and nothing else is changed: without the breaks
+    that were made, the text is what it was.
+
+    A carriage return may stand where a line would be broken. A line break
+    may follow it, and then the line is no longer than the tool shows.
+
+    Attributes:
+        broken: Whether a line was broken.
+    """
+
+    __slots__ = ("_length", "broken")
+
+    def __init__(self) -> None:
+        self._length = 0
+        self.broken = False
+
+    def __call__(self, text: str) -> str:
+        """Return the next piece of the text, with the breaks that it needs."""
+        lines = text.split("\n")
+        for at, line in enumerate(lines):
+            if at:
+                self._length = 0
+            if self._length + len(line) > FOLD_AT:
+                lines[at] = self._in_parts(line)
+            else:
+                self._length += len(line)
+        return "\n".join(lines)
+
+    def _in_parts(self, line: str) -> str:
+        """Return what follows on a line that grows too long, with breaks in it."""
+        parts: list[str] = []
+        while True:
+            room = max(FOLD_AT - self._length, 0)
+            part, line = line[:room], line[room:]
+            if line.startswith("\r") and self._length + len(part) == FOLD_AT:
+                part, line = part + "\r", line[1:]
+            parts.append(part)
+            self._length += len(part)
+            if not line:
+                return "\n".join(parts)
+            self._length = 0
+            self.broken = True
 
 
 class _File:
-    """A file that is being written as its content comes."""
+    """A file that is being written as its content comes, with its long lines broken."""
 
-    __slots__ = ("_descriptor", "_saved", "_written", "locator")
+    __slots__ = ("_decoder", "_descriptor", "_fold", "_saved", "_written", "locator")
 
     def __init__(self, path: Path) -> None:
         # Made anew, or not at all. What is there is somebody else's.
@@ -94,20 +137,33 @@ class _File:
         self.locator = str(path)
         self._written = 0
         self._saved: Saved | None = None
+        # A byte that is no text passes through as it is, and counts as one character.
+        self._decoder = _Utf8(errors="surrogateescape")
+        self._fold = Fold()
 
     def write(self, data: bytes) -> None:
         if self._saved is not None:
             raise ValueError(f"{self.locator} is closed")
+        self._take(self._decoder.decode(data))
+
+    def close(self) -> Saved:
+        if self._saved is None:
+            try:
+                # Half a character at the very end has waited for the rest of it.
+                self._take(self._decoder.decode(b"", True))
+            finally:
+                # Closed once, whatever comes of it. Its number may soon be that of another file.
+                hint = _HINT + _FOLDED if self._fold.broken else _HINT
+                self._saved = Saved(self.locator, self._written, hint)
+                os.close(self._descriptor)
+        return self._saved
+
+    def _take(self, text: str) -> None:
+        data = self._fold(text).encode("utf-8", errors="surrogateescape")
         view = memoryview(data)
         while view:
             view = view[_put(self._descriptor, view) :]
         self._written += len(data)
-
-    def close(self, hint: str = _HINT) -> Saved:
-        if self._saved is None:
-            os.close(self._descriptor)
-            self._saved = Saved(self.locator, self._written, hint)
-        return self._saved
 
 
 class Local:
@@ -128,20 +184,20 @@ class Local:
 
     def save_text(self, session: Session, cwd: Path, name: str, text: str) -> Saved:
         """Save a text, with its long lines broken. This blocks."""
-        folded, broken = _folded(text)
         file = self.open(session, cwd, name)
         try:
-            file.write(folded.encode("utf-8", errors="replace"))
+            file.write(text.encode("utf-8", errors="replace"))
+            return file.close()
         except BaseException:
             # Half a text is of no use to anybody, and nobody would be told of it.
-            file.close()
+            with contextlib.suppress(OSError):
+                file.close()
             with contextlib.suppress(OSError):
                 Path(file.locator).unlink()
             raise
-        return file.close(_HINT + _FOLDED if broken else _HINT)
 
     def open(self, session: Session, cwd: Path, name: str) -> _File:
-        """Make a file for something that comes in pieces."""
+        """Make a file for something that comes in pieces. Its long lines are broken too."""
         workspace = self.directory(cwd)
         directory = workspace / session.id
         # A directory that is made together with those above it is the only one of them

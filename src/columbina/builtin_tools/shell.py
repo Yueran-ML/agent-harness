@@ -13,6 +13,13 @@ A command that ends with another exit code than 0 has not failed as a call:
 the model reads the output and the exit code and decides what that means.
 The call fails only if the command could not be started at all.
 
+Of a long output the model gets the beginning and the end. Where the program
+has a place for what is too large for a conversation, the whole output is
+written there as it comes, and the result says where it is. A command may
+write more than memory should hold, so this cannot wait until it has ended.
+Not all of it may get there: the place takes so much and no more, and a disk
+can fill up. The result then says how much of it did.
+
 What a command does once it runs cannot be checked from here. That is why
 the tool needs two services and is not loaded without them: the sandbox,
 which says how well a command is held, and the permissions, which decide
@@ -58,9 +65,12 @@ input. A command can be as long as the system lets an argument be, which is
 about 128 KiB on Linux, so longer ones are refused here with a plain word.
 """
 
+import logging
 import os
 import shutil
 import sys
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -70,14 +80,17 @@ from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.kernel import Context
 from columbina.permissions import PERMISSIONS, Splitter, split_bash, split_powershell
 from columbina.sandbox import SANDBOX, Sandbox, SandboxUnavailableError
+from columbina.spill import SPILL, Saved, SpillFile, SpillStore
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
 __all__ = [
     "DEFAULT_SECONDS",
     "MAX_COMMAND_BYTES",
+    "MAX_SAVED_BYTES",
     "MAX_SECONDS",
     "NAME",
     "ShellArgs",
+    "ShellResult",
     "apply",
     "inject",
     "name",
@@ -87,11 +100,19 @@ __all__ = [
 name = "tool-shell"
 inject = (TOOLS, SANDBOX, PERMISSIONS)
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_SECONDS = 120.0
 """How long a command may run if the call does not say."""
 
 MAX_SECONDS = 600.0
 """How long a command may run at most."""
+
+MAX_SAVED_BYTES = 64 * 1024 * 1024
+"""How much of the output of one command is saved at most.
+
+The read tool looks no further into a file than that.
+"""
 
 _GRACE_SECONDS = 30.0
 """How much longer than its command a call may take, to stop what the command started."""
@@ -169,14 +190,76 @@ class ShellArgs(BaseModel):
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ShellResult:
+    """What a command gave.
+
+    Attributes:
+        text: What the model reads.
+        complete: Where the whole output is, if the text does not hold all
+            of it and all of it was saved. Whatever keeps a result within
+            bounds goes by this, and does not save it a second time.
+    """
+
+    text: str
+    complete: Saved | None = None
+
+
+class _Place:
+    """Where the whole output of one command goes, once it is more than memory keeps.
+
+    A command that writes little has nothing made for it. The file is made
+    when the run asks for it.
+    """
+
+    __slots__ = ("_file", "_run", "_store")
+
+    def __init__(self, store: SpillStore, run: ToolRun) -> None:
+        self._store = store
+        self._run = run
+        self._file: SpillFile | None = None
+
+    def open(self) -> SpillFile:
+        """Make the file that takes the output."""
+        self._file = self._store.open(self._run.session, self._run.cwd, f"{NAME}-output.txt")
+        return self._file
+
+    def close(self) -> Saved | None:
+        """End the saving. Return what the place says of it, or ``None`` if there is nothing."""
+        if self._file is None:
+            return None
+        try:
+            return self._file.close()
+        except Exception as error:
+            # The call may be on its way out, cancelled. No fault of a place keeps it in.
+            fault = None if isinstance(error, OSError) else error
+            logger.error(
+                "the whole output of a command could not be saved: %s", error, exc_info=fault
+            )
+            return None
+
+
 def _target(args: ShellArgs, run: ToolRun) -> str:
     return args.command
 
 
-def shell_tool(sandbox: Sandbox, shell: str) -> Tool[ShellArgs, str]:
-    """Make the shell tool, which runs its commands with the program at ``shell``."""
+def _text(args: ShellArgs, result: ShellResult) -> str:
+    return result.text
 
-    async def run_command(args: ShellArgs, run: ToolRun) -> str:
+
+def shell_tool(
+    sandbox: Sandbox, shell: str, spill: Callable[[], SpillStore | None]
+) -> Tool[ShellArgs, ShellResult]:
+    """Make the shell tool, which runs its commands with the program at ``shell``.
+
+    Args:
+        sandbox: Says how a command is held.
+        shell: The path of the program that runs the commands.
+        spill: Returns the place for what is too large for a conversation, or
+            ``None`` if the program has none. It is asked at every call.
+    """
+
+    async def run_command(args: ShellArgs, run: ToolRun) -> ShellResult:
         if len(args.command.encode("utf-8")) > MAX_COMMAND_BYTES:
             raise ToolFailure(
                 f"The command is longer than {MAX_COMMAND_BYTES} bytes, which is more than "
@@ -191,6 +274,8 @@ def shell_tool(sandbox: Sandbox, shell: str) -> Tool[ShellArgs, str]:
             raise ToolFailure(
                 f"The command was not run: {error}.", code="SANDBOX_UNAVAILABLE"
             ) from None
+        store = spill()
+        place = None if store is None else _Place(store, run)
         try:
             done = await process.run(
                 confined.argv,
@@ -198,15 +283,33 @@ def shell_tool(sandbox: Sandbox, shell: str) -> Tool[ShellArgs, str]:
                 env=_environment(),
                 stdin=given,
                 timeout_seconds=seconds,
+                overflow=None if place is None else place.open,
+                max_overflow_bytes=MAX_SAVED_BYTES,
             )
         except OSError as error:
             raise ToolFailure(f"The command could not be run: {error}") from error
+        finally:
+            # However the run ended, also by the call being cancelled: it writes no more.
+            saved = None if place is None else place.close()
         output = done.output.replace("\r\n", "\n")
         if output and not output.endswith("\n"):
             output += "\n"
+        lines = [f"[exit code {done.exit_code}]"]
         if done.timed_out:
-            return f"{output}[the command was stopped after {seconds:g} seconds]"
-        return f"{output}[exit code {done.exit_code}]"
+            lines = [f"[the command was stopped after {seconds:g} seconds]"]
+        complete = None
+        if place is not None and done.omitted_bytes:
+            if saved is None or not done.saved_bytes:
+                lines.append("(The whole output could not be saved.)")
+            elif done.saved_bytes < done.output_bytes:
+                lines.append(
+                    f"(Only the first {done.saved_bytes} bytes of the output are saved, in "
+                    f"{saved.locator}. {saved.hint})"
+                )
+            else:
+                complete = replace(saved, what="output")
+                lines.append(complete.told())
+        return ShellResult(output + "\n".join(lines), complete)
 
     return Tool(
         name=NAME,
@@ -218,6 +321,7 @@ def shell_tool(sandbox: Sandbox, shell: str) -> Tool[ShellArgs, str]:
         ),
         parameters=ShellArgs,
         execute=run_command,
+        render=_text,
         effect="run",
         target=_target,
         timeout_seconds=MAX_SECONDS + _GRACE_SECONDS,
@@ -233,7 +337,7 @@ def apply(ctx: Context, config: object) -> None:
     shell = _shell()
     if shell is None:
         raise RuntimeError(f"{NAME} is not installed, so there is no tool that runs commands")
-    ctx.use(TOOLS).add(ctx, shell_tool(ctx.use(SANDBOX), shell))
+    ctx.use(TOOLS).add(ctx, shell_tool(ctx.use(SANDBOX), shell, lambda: ctx.get(SPILL)))
     ctx.use(PERMISSIONS).splitters.add(ctx, NAME, _SPLITTER)
 
     def facts(gathered: Facts) -> None:

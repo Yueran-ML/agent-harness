@@ -23,6 +23,11 @@ them would wait for that process. So the waits here are bounded, each of them:
 the wait for a stopped program to be gone, and the wait for the rest of its
 output.
 
+Of what the program writes, memory keeps the beginning and the end. Once
+it has written more than that, all of it can go somewhere else as well, as
+it comes: a build may write more than memory should hold, and nobody knows
+how much it will be before it has ended.
+
 The program is cut off from the terminal of the user. On Windows it has a
 console without a window, elsewhere a session without a terminal, and its
 input is what the caller gives it. So a program that asks the user for
@@ -38,12 +43,12 @@ import os
 import signal
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
-__all__ = ["Completed", "HeadTail", "cleaned", "run"]
+__all__ = ["Completed", "HeadTail", "Writable", "cleaned", "run"]
 
 logger = logging.getLogger(__name__)
 
@@ -71,13 +76,30 @@ class Completed:
         timed_out: Whether the program was stopped because its time was up.
         output: What the program wrote, to its output and to its error stream,
             in the order it was written.
-        omitted_bytes: How many bytes of what it wrote are not in ``output``.
+        output_bytes: How many bytes it wrote.
+        omitted_bytes: How many of them are not in ``output``.
+        saved_bytes: How many of them went somewhere else as well, from the
+            first one on. It is 0 if none did.
     """
 
     exit_code: int | None
     timed_out: bool
     output: str
+    output_bytes: int
     omitted_bytes: int
+    saved_bytes: int
+
+
+class Writable(Protocol):
+    """Somewhere that the whole output of a program can be written to."""
+
+    def write(self, data: bytes) -> None:
+        """Take the next piece.
+
+        Raises:
+            OSError: No more can be taken.
+        """
+        ...
 
 
 def cleaned(env: Mapping[str, str]) -> dict[str, str]:
@@ -102,17 +124,19 @@ class HeadTail:
     bytes arrive, the same ones are kept.
 
     Attributes:
+        limit: How many bytes are kept at most.
         total: How many bytes have been added.
 
     Raises:
         ValueError: ``limit`` is negative.
     """
 
-    __slots__ = ("_head", "_head_room", "_tail", "_tail_room", "total")
+    __slots__ = ("_head", "_head_room", "_tail", "_tail_room", "limit", "total")
 
     def __init__(self, limit: int) -> None:
         if limit < 0:
             raise ValueError(f"the limit of what is kept is {limit}, which is less than nothing")
+        self.limit = limit
         self._head_room = limit // 2
         self._tail_room = limit - self._head_room
         self._head = bytearray()
@@ -126,6 +150,10 @@ class HeadTail:
         self._head += data[:room]
         self._tail += data[room:]
         del self._tail[: max(0, len(self._tail) - self._tail_room)]
+
+    def held(self) -> bytes:
+        """Return the bytes that are kept. While no more was added than the limit, that is all."""
+        return bytes(self._head + self._tail)
 
     def _parts(self) -> tuple[bytes, bytes] | None:
         """Return the two ends as they are shown, or ``None`` if nothing is missing."""
@@ -321,6 +349,83 @@ else:  # pragma: posix only
         transport.close()
 
 
+class _Output:
+    """What a program writes: its two ends in memory, and all of it elsewhere if it is more.
+
+    The place elsewhere is asked for when the first byte arrives that memory
+    does not keep. It is given what came before, and then every piece as it
+    comes, up to a limit. A place that cannot be opened, or that fails to
+    take a piece, is given up, and the program runs on.
+
+    A piece is written when it arrives, by the event loop. The loop reads no
+    more from the program meanwhile. So a program that writes faster than the
+    place takes it has to wait, and nothing piles up in memory.
+
+    Attributes:
+        kept: The two ends.
+        saved: How many bytes went elsewhere.
+
+    Raises:
+        ValueError: One of the two limits is negative.
+    """
+
+    __slots__ = ("_elsewhere", "_open", "_room", "kept", "saved")
+
+    def __init__(
+        self, limit: int, overflow: Callable[[], Writable] | None, max_overflow_bytes: int
+    ) -> None:
+        if max_overflow_bytes < 0:
+            raise ValueError(
+                f"the limit of what is written elsewhere is {max_overflow_bytes}, "
+                "which is less than nothing"
+            )
+        self.kept = HeadTail(limit)
+        self.saved = 0
+        self._open = overflow
+        self._elsewhere: Writable | None = None
+        self._room = max_overflow_bytes
+
+    def add(self, data: bytes) -> None:
+        """Take the next piece of what the program writes."""
+        if self._open is not None and self.kept.total + len(data) > self.kept.limit:
+            opening, self._open = self._open, None
+            try:
+                self._elsewhere = opening()
+            except Exception as error:
+                self._give_up("cannot be kept", error)
+            else:
+                self._save(self.kept.held())
+        self.kept.add(data)
+        self._save(data)
+
+    def end(self) -> None:
+        """Write nothing elsewhere from now on. Whoever opened the place is about to close it."""
+        self._open = None
+        self._elsewhere = None
+
+    def _save(self, data: bytes) -> None:
+        if self._elsewhere is None:
+            return
+        taken = data[: self._room - self.saved]
+        try:
+            self._elsewhere.write(taken)
+        except Exception as error:
+            self._give_up("could not be written", error)
+            return
+        self.saved += len(taken)
+        if len(taken) < len(data):
+            # There is room for no more. What memory keeps goes on as before.
+            self._elsewhere = None
+
+    def _give_up(self, what: str, error: Exception) -> None:
+        """Leave the place alone from now on, and write down why."""
+        self._elsewhere = None
+        # What the system refuses is said in its own words. Anything else is a fault of the
+        # place, and nobody is there to hear of it but the log: this runs inside the loop.
+        fault = None if isinstance(error, OSError) else error
+        logger.error("the whole output of a program %s: %s", what, error, exc_info=fault)
+
+
 class _Watch(asyncio.SubprocessProtocol):
     """Hears what a program writes, and when it ends.
 
@@ -330,7 +435,7 @@ class _Watch(asyncio.SubprocessProtocol):
         closed: Done when everything of the program has been let go.
     """
 
-    def __init__(self, kept: HeadTail) -> None:
+    def __init__(self, kept: _Output) -> None:
         loop = asyncio.get_running_loop()
         self._kept = kept
         self.exited: asyncio.Future[None] = loop.create_future()
@@ -373,6 +478,8 @@ async def run(
     stdin: bytes | None = None,
     timeout_seconds: float,
     max_output_bytes: int = 64_000,
+    overflow: Callable[[], Writable] | None = None,
+    max_overflow_bytes: int = 64 * 1024 * 1024,
 ) -> Completed:
     """Run a program to its end, or until its time is up.
 
@@ -390,15 +497,39 @@ async def run(
         timeout_seconds: How long the program may run.
         max_output_bytes: How much of what it writes is kept. Of more, the
             beginning and the end are kept.
+        overflow: Opens a place for the whole of what the program writes. It
+            is called once, when the program has written more than is kept,
+            and never if it does not. Nothing is written to the place once
+            the run is over, however it ended, so whoever passes this closes
+            what it opened then.
+        max_overflow_bytes: How much is written to that place at most.
 
     Raises:
         OSError: The program could not be started.
-        ValueError: ``argv`` is empty, or ``max_output_bytes`` is negative.
+        ValueError: ``argv`` is empty, or one of the limits is negative.
     """
     if not argv:
         raise ValueError("there is no program to run")
-    kept = HeadTail(max_output_bytes)
-    watch = _Watch(kept)
+    written = _Output(max_output_bytes, overflow, max_overflow_bytes)
+    try:
+        return await _run(argv, cwd, env, stdin, timeout_seconds, written)
+    finally:
+        # A program that was left behind may write on, and one whose caller left as it was
+        # started has yet to come into being. Neither finds a place that its caller closed.
+        written.end()
+
+
+async def _run(
+    argv: Sequence[str],
+    cwd: Path,
+    env: Mapping[str, str] | None,
+    stdin: bytes | None,
+    timeout_seconds: float,
+    written: _Output,
+) -> Completed:
+    """Run a program, and hand what it writes to ``written``."""
+    kept = written.kept
+    watch = _Watch(written)
     loop = asyncio.get_running_loop()
     creating = asyncio.ensure_future(
         loop.subprocess_exec(
@@ -451,5 +582,7 @@ async def run(
         exit_code=None if timed_out else exit_code,
         timed_out=timed_out,
         output=kept.text(),
+        output_bytes=kept.total,
         omitted_bytes=kept.omitted,
+        saved_bytes=written.saved,
     )

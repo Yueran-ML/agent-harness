@@ -164,6 +164,26 @@ def test_the_two_ends_of_a_text_never_hold_a_part_of_it_twice() -> None:
     assert shown == "one\ntwo\n[... 0 characters are left out here ...]\n(the last line)"
 
 
+def test_the_line_between_the_ends_gives_no_number_where_none_can_be_given() -> None:
+    shown = two_ends("ab " * 3000, 100, "(the last line)", counted=False)
+
+    assert shown.startswith("ab ab ")
+    assert "ab \n[... a part is left out here ...]\nab ab " in shown
+    assert shown.endswith("ab \n(the last line)")
+    assert 90 < estimate(shown) <= 100
+
+
+def test_what_a_model_is_told_about_the_whole_says_what_it_is_the_whole_of() -> None:
+    saved = Saved("X:/spill/abcd-out.txt", 5, "Read it in parts.")
+
+    assert saved.told() == (
+        "(The whole result has 5 bytes and is in X:/spill/abcd-out.txt. Read it in parts.)"
+    )
+    assert Saved(saved.locator, 5, saved.hint, "output").told() == (
+        "(The whole output has 5 bytes and is in X:/spill/abcd-out.txt. Read it in parts.)"
+    )
+
+
 async def test_a_result_of_exactly_the_limit_goes_through(ctx: Context, tmp_path: Path) -> None:
     text = LINE * 30
     at = await bench(ctx, tmp_path, max_tokens=estimate(text))
@@ -239,18 +259,48 @@ async def test_a_result_whose_whole_was_saved_by_its_tool_is_not_saved_again(
     ctx: Context, tmp_path: Path
 ) -> None:
     at = await bench(ctx, tmp_path, max_tokens=300)
-    kept = Saved("X:/spill/abcd-output.txt", 4_000_000, "Read it in parts.")
+    kept = Saved("X:/spill/abcd-output.txt", 4_000_000, "Read it in parts.", "output")
     at.offer("run", Ran(LINE * 500, kept))
 
     shown = (await at.call("run")).text
 
     assert at.saved() == []
-    assert estimate(shown) <= 300
+    assert 270 < estimate(shown) <= 300
     assert shown.endswith(
-        "\n(The whole result has 4000000 bytes and is in X:/spill/abcd-output.txt. "
+        "dog.\n(The whole output has 4000000 bytes and is in X:/spill/abcd-output.txt. "
         "Read it in parts.)"
     )
-    assert " characters are left out here ...]\n" in shown
+    # How much the tool had left out before is not known here, so no number is given.
+    assert "dog.\n[... a part is left out here ...]\nThe quick" in shown
+    assert "characters are left out" not in shown
+
+
+async def test_a_tool_that_said_where_the_whole_is_does_not_have_it_said_again(
+    ctx: Context, tmp_path: Path
+) -> None:
+    # Such a tool is understood without this plugin as well.
+    at = await bench(ctx, tmp_path, max_tokens=300)
+    kept = Saved("X:/spill/abcd-output.txt", 4_000_000, "Read it in parts.", "output")
+    text = f"the beginning\n[many bytes are left out here]\nthe end\n{kept.told()}"
+    at.offer("run", Ran(text, kept))
+
+    assert (await at.call("run")).text == text
+
+
+async def test_what_a_tool_said_about_the_whole_stays_whole_and_last_when_its_result_is_cut(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, max_tokens=300)
+    kept = Saved("X:/spill/abcd-output.txt", 4_000_000, "Read it in parts.", "output")
+    at.offer("run", Ran(f"{LINE * 500}[exit code 0]\n{kept.told()}", kept))
+
+    shown = (await at.call("run")).text
+
+    assert at.saved() == []
+    assert 270 < estimate(shown) <= 300
+    assert shown.endswith(f"dog.\n[exit code 0]\n{kept.told()}")
+    assert shown.count("The whole output") == 1
+    assert "dog.\n[... a part is left out here ...]\nThe quick" in shown
 
 
 async def test_a_small_result_with_a_hole_in_it_still_says_where_the_whole_is(

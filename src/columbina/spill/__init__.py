@@ -30,15 +30,29 @@ class Saved:
         locator: Where it is. A model is given this as it stands.
         bytes: How much was saved.
         hint: How to read it, in a sentence for the model.
+        what: What it is the whole of, in a word. Whoever had it saved knows
+            that, and says so where it is something else than a result.
     """
 
     locator: str
     bytes: int
     hint: str
+    what: str = "result"
+
+    def told(self) -> str:
+        """Return the line that tells a model where the whole is and how to read it."""
+        return (
+            f"(The whole {self.what} has {self.bytes} bytes and is in {self.locator}. {self.hint})"
+        )
 
 
 class SpillFile(Protocol):
-    """Something that is being saved as it comes."""
+    """Something that is being saved as it comes.
+
+    What a command writes is handed over by the event loop, between two
+    looks at what the command has written. So a piece should take no longer
+    than a write to a disk takes.
+    """
 
     def write(self, data: bytes) -> None:
         """Save the next piece. This may block for as long as a write to a disk takes.
@@ -50,7 +64,12 @@ class SpillFile(Protocol):
         ...
 
     def close(self) -> Saved:
-        """End the saving, and say what was saved. Closing again says the same."""
+        """End the saving, and say what was saved. Closing again says the same.
+
+        Raises:
+            OSError: The end of it could not be saved. The saving has ended
+                all the same, and closing again says what there is.
+        """
         ...
 
 

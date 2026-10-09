@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import sys
 import time
@@ -17,15 +18,20 @@ import columbina.fs
 import columbina.permissions
 import columbina.sandbox
 import columbina.session
+import columbina.spill.local
+import columbina.spill.policy
 import columbina.tools
 from columbina import process
-from columbina.builtin_tools import shell
+from columbina.builtin_tools import read, shell
 from columbina.kernel import Context
 from columbina.llm import ToolCallBlock
 from columbina.permissions import PERMISSIONS, Permissions
 from columbina.permissions.commands import split_bash, split_powershell
+from columbina.process import Completed
 from columbina.sandbox import SANDBOX, Mode, Sandbox, Strength
 from columbina.session import SESSIONS, Session
+from columbina.spill import SPILL, Saved
+from columbina.token_meter import estimate
 from columbina.tools import TOOLS, Deny, Invocation, ToolOutcome, ToolRun, Tools
 from support.processes import gone
 
@@ -192,6 +198,347 @@ async def test_a_command_of_several_lines_runs_as_one(bench: Bench) -> None:
     )
 
     assert await bench.said(several) == "42\n[exit code 0]"
+
+
+# The whole of a long output
+
+ROWS = 2500
+MUCH = f"for number in range({ROWS}): print('%06d ' % number + 'x' * 72)"
+"""Writes two hundred thousand characters, eighty to a line."""
+WHOLE = "".join(f"{number:06d} {'x' * 72}\n" for number in range(ROWS))
+HINT = "Read a part of it with the read tool, by offset and limit, or search it with grep."
+
+
+class Kept:
+    """What a place that keeps things in memory was given for one command."""
+
+    def __init__(self, place: "Place", name: str) -> None:
+        self.place = place
+        self.name = name
+        self.written = bytearray()
+        self.closed = 0
+
+    def write(self, data: bytes) -> None:
+        if self.place.room is not None and len(self.written) + len(data) > self.place.room:
+            raise OSError(28, "No space left on device")
+        self.written += data
+
+    def close(self) -> Saved:
+        self.closed += 1
+        if self.place.closing is not None:
+            raise self.place.closing
+        return Saved(f"kept:{self.name}", len(self.written), "Read it.")
+
+
+class Place:
+    """A place for what is too large for a conversation. It keeps it in memory, and can fail.
+
+    Args:
+        opens: Whether a file can be made.
+        room: How many bytes a file takes, if not any number.
+        closing: What closing a file raises, if anything.
+    """
+
+    def __init__(
+        self, *, opens: bool = True, room: int | None = None, closing: Exception | None = None
+    ) -> None:
+        self.opens = opens
+        self.room = room
+        self.closing = closing
+        self.files: list[Kept] = []
+
+    def save_text(self, session: Session, cwd: Path, name: str, text: str) -> Saved:
+        raise AssertionError("the tool saves no text")
+
+    def open(self, session: Session, cwd: Path, name: str) -> Kept:
+        if not self.opens:
+            raise PermissionError(13, "Permission denied")
+        self.files.append(Kept(self, name))
+        return self.files[-1]
+
+
+def files_under(root: Path) -> list[Path]:
+    return sorted(path for path in root.rglob("*") if path.is_file())
+
+
+def unix(written: bytes) -> str:
+    """What was written, with lines that end the way the model writes them.
+
+    A part of it may end between the two characters that end a line on Windows.
+    """
+    return written.replace(b"\r", b"").decode()
+
+
+async def test_the_whole_of_a_long_output_is_saved_and_the_result_says_where(
+    bench: Bench, tmp_path: Path
+) -> None:
+    root = tmp_path / "home" / "spill"
+    await bench.ctx.plugin(columbina.spill.local, {"root": root})
+
+    outcome = await bench.call(python(MUCH))
+
+    assert outcome.error is None, outcome.text
+    (file,) = files_under(root)
+    written = file.read_bytes()
+    assert unix(written) == WHOLE
+    assert file.name.endswith(f"-{shell.NAME}-output.txt")
+    assert file.parent.name == bench.session.id
+    said = outcome.text
+    assert said.startswith(WHOLE[:8000])
+    assert " bytes of output are left out here]\n" in said
+    assert said.endswith(
+        f"{WHOLE[-8000:]}[exit code 0]\n"
+        f"(The whole output has {len(written)} bytes and is in {file}. {HINT})"
+    )
+    # Whatever keeps a result within bounds is told that the whole is saved, and where.
+    assert outcome.value == shell.ShellResult(said, Saved(str(file), len(written), HINT, "output"))
+
+
+async def test_an_output_that_memory_keeps_whole_is_saved_nowhere(
+    bench: Bench, tmp_path: Path
+) -> None:
+    root = tmp_path / "home" / "spill"
+    await bench.ctx.plugin(columbina.spill.local, {"root": root})
+
+    outcome = await bench.call(python("print('x' * 60000)"))
+
+    assert outcome.text == "x" * 60000 + "\n[exit code 0]"
+    assert outcome.value == shell.ShellResult(outcome.text, None)
+    assert files_under(root) == []
+
+
+async def test_a_long_output_that_is_cut_to_size_is_saved_once_and_says_so_once(
+    bench: Bench, tmp_path: Path
+) -> None:
+    root = tmp_path / "home" / "spill"
+    await bench.ctx.plugin(columbina.spill.local, {"root": root})
+    await bench.ctx.plugin(columbina.spill.policy)
+
+    said = await bench.said(python(MUCH))
+
+    (file,) = files_under(root)
+    assert unix(file.read_bytes()) == WHOLE
+    assert 12_000 < estimate(said) <= 12_500
+    # Each end is what half of the limit pays for, which is less than memory had kept.
+    assert said.startswith(WHOLE[:4000])
+    assert "x\n[... a part is left out here ...]\n0" in said
+    assert "bytes of output are left out" not in said
+    assert said.count("The whole ") == 1
+    assert said.endswith(
+        f"{WHOLE[-4000:]}[exit code 0]\n"
+        f"(The whole output has {file.stat().st_size} bytes and is in {file}. {HINT})"
+    )
+
+
+async def test_a_long_line_of_output_can_be_read_where_it_was_saved(
+    bench: Bench, tmp_path: Path
+) -> None:
+    root = tmp_path / "home" / "spill"
+    await bench.ctx.plugin(columbina.spill.local, {"root": root})
+
+    said = await bench.said(python("print('x' * 200000)"))
+
+    (file,) = files_under(root)
+    lines = unix(file.read_bytes()).split("\n")
+    # The read tool shows two thousand characters of a line.
+    assert [len(line) for line in lines] == [2000] * 100 + [0]
+    assert said.endswith(f"{HINT} Lines of more than 2000 characters are broken there.)")
+
+
+async def test_no_more_of_an_output_is_saved_than_the_read_tool_looks_at(
+    bench: Bench, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert shell.MAX_SAVED_BYTES == 64 * 1024 * 1024 == vars(read)["_SCAN_BYTES"]
+    monkeypatch.setattr(shell, "MAX_SAVED_BYTES", 100_000)
+    root = tmp_path / "home" / "spill"
+    await bench.ctx.plugin(columbina.spill.local, {"root": root})
+
+    outcome = await bench.call(python(MUCH))
+
+    (file,) = files_under(root)
+    written = file.read_bytes()
+    assert len(written) == 100_000
+    assert WHOLE.startswith(unix(written))
+    # The command ran to its end all the same, and the model has the end of what it wrote.
+    assert outcome.text.endswith(
+        f"{WHOLE[-8000:]}[exit code 0]\n"
+        f"(Only the first 100000 bytes of the output are saved, in {file}. {HINT})"
+    )
+    assert outcome.value == shell.ShellResult(outcome.text, None)
+
+
+async def test_an_output_that_is_saved_in_part_does_not_count_as_saved(
+    bench: Bench, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # What the result is cut down to is then saved like that of any other tool: the end of
+    # the output is in no other place.
+    monkeypatch.setattr(shell, "MAX_SAVED_BYTES", 100_000)
+    root = tmp_path / "home" / "spill"
+    await bench.ctx.plugin(columbina.spill.local, {"root": root})
+    await bench.ctx.plugin(columbina.spill.policy)
+
+    said = await bench.said(python(MUCH))
+
+    part, result = sorted(files_under(root), key=lambda path: path.name.endswith("-result.txt"))
+    assert part.name.endswith(f"-{shell.NAME}-output.txt")
+    assert result.name.endswith(f"-{shell.NAME}-result.txt")
+    kept = result.read_text(encoding="utf-8")
+    assert kept.startswith(WHOLE[:8000])
+    assert f"{WHOLE[-8000:]}[exit code 0]\n(Only the first 100000 bytes of the output" in kept
+    assert estimate(said) <= 12_500
+    assert f"(Only the first 100000 bytes of the output are saved, in {part}. {HINT})\n" in said
+    assert said.endswith(
+        f"(The whole result has {result.stat().st_size} bytes and is in {result}. {HINT})"
+    )
+
+
+async def test_the_place_is_asked_for_at_every_call(bench: Bench) -> None:
+    first, second = Place(), Place()
+
+    without = await bench.said(python(MUCH))
+    offered = bench.ctx.provide(SPILL, first)
+    with_the_first = await bench.said(python(MUCH))
+    await offered.dispose()
+    without_again = await bench.said(python(MUCH))
+    bench.ctx.provide(SPILL, second)
+    with_the_second = await bench.said(python(MUCH))
+
+    assert without == without_again
+    assert without.endswith(f"{WHOLE[-8000:]}[exit code 0]")
+    assert with_the_first == with_the_second
+    assert [len(place.files) for place in (first, second)] == [1, 1]
+    (file,) = second.files
+    assert unix(bytes(file.written)) == WHOLE
+    assert file.closed == 1
+    assert with_the_second == (
+        f"{without}\n(The whole output has {len(file.written)} bytes and is in "
+        f"kept:{shell.NAME}-output.txt. Read it.)"
+    )
+
+
+async def test_a_place_that_cannot_be_opened_does_not_keep_the_command_from_running(
+    bench: Bench,
+) -> None:
+    place = Place(opens=False)
+    bench.ctx.provide(SPILL, place)
+
+    outcome = await bench.call(python(MUCH))
+
+    assert outcome.error is None
+    assert outcome.text.startswith(WHOLE[:8000])
+    assert outcome.text.endswith(
+        f"{WHOLE[-8000:]}[exit code 0]\n(The whole output could not be saved.)"
+    )
+    assert outcome.value == shell.ShellResult(outcome.text, None)
+
+
+async def test_a_place_that_fills_up_is_said_to_hold_what_it_took(bench: Bench) -> None:
+    place = Place(room=100_000)
+    bench.ctx.provide(SPILL, place)
+
+    outcome = await bench.call(python(MUCH))
+
+    (file,) = place.files
+    assert 0 < len(file.written) <= 100_000
+    assert WHOLE.startswith(unix(bytes(file.written)))
+    assert file.closed == 1
+    assert outcome.text.endswith(
+        f"{WHOLE[-8000:]}[exit code 0]\n(Only the first {len(file.written)} bytes of the "
+        f"output are saved, in kept:{shell.NAME}-output.txt. Read it.)"
+    )
+    assert outcome.value == shell.ShellResult(outcome.text, None)
+
+
+async def test_a_place_that_takes_nothing_is_said_to_hold_nothing(bench: Bench) -> None:
+    place = Place(room=0)
+    bench.ctx.provide(SPILL, place)
+
+    said = await bench.said(python(MUCH))
+
+    (file,) = place.files
+    assert (bytes(file.written), file.closed) == (b"", 1)
+    assert said.endswith(f"{WHOLE[-8000:]}[exit code 0]\n(The whole output could not be saved.)")
+
+
+@pytest.mark.parametrize(
+    "refusal", [OSError(5, "Input/output error"), RuntimeError("a fault of the place")]
+)
+async def test_an_output_whose_file_cannot_be_closed_is_said_not_to_be_saved(
+    bench: Bench, caplog: pytest.LogCaptureFixture, refusal: Exception
+) -> None:
+    place = Place(closing=refusal)
+    bench.ctx.provide(SPILL, place)
+
+    outcome = await bench.call(python(MUCH))
+
+    assert outcome.error is None
+    assert outcome.text.endswith(
+        f"{WHOLE[-8000:]}[exit code 0]\n(The whole output could not be saved.)"
+    )
+    assert outcome.value == shell.ShellResult(outcome.text, None)
+    (record,) = (r for r in caplog.records if r.name == "columbina.builtin_tools.shell")
+    assert record.levelno == logging.ERROR
+    assert record.getMessage() == f"the whole output of a command could not be saved: {refusal}"
+    # What the system refuses is said in a line. A fault of the place is one to be found.
+    assert (record.exc_info is None) is isinstance(refusal, OSError)
+    assert record.exc_info is None or record.exc_info[1] is refusal
+
+
+async def test_the_output_of_a_command_that_was_stopped_is_saved_as_far_as_it_came(
+    bench: Bench, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    place = Place()
+    bench.ctx.provide(SPILL, place)
+
+    async def stopped(argv: Any, **options: Any) -> Completed:
+        options["overflow"]().write(b"x" * 70_000)
+        return Completed(
+            exit_code=None,
+            timed_out=True,
+            output="xx\n[5996 bytes of output are left out here]\nxx",
+            output_bytes=70_000,
+            omitted_bytes=5996,
+            saved_bytes=70_000,
+        )
+
+    monkeypatch.setattr(process, "run", stopped)
+
+    said = await bench.said("echo hi", timeout_seconds=5)
+
+    (file,) = place.files
+    assert file.closed == 1
+    assert said == (
+        "xx\n[5996 bytes of output are left out here]\nxx\n"
+        "[the command was stopped after 5 seconds]\n"
+        f"(The whole output has 70000 bytes and is in kept:{shell.NAME}-output.txt. Read it.)"
+    )
+
+
+@pytest.mark.parametrize("closing", [None, RuntimeError("a fault of the place")])
+async def test_a_call_that_is_cancelled_closes_what_it_was_saving(
+    bench: Bench, closing: Exception | None
+) -> None:
+    # Whatever closing comes to, the call ends cancelled, and not as a failure of the tool.
+    place = Place(closing=closing)
+    bench.ctx.provide(SPILL, place)
+    writing = (
+        "import sys, time; "
+        f"sys.stdout.write(''.join('%06d ' % n + 'x' * 72 + chr(10) for n in range({ROWS}))); "
+        "sys.stdout.flush(); time.sleep(600)"
+    )
+    calling = asyncio.ensure_future(bench.call(python(writing)))
+    deadline = time.monotonic() + 30
+    while not place.files or len(place.files[0].written) < 150_000:
+        assert time.monotonic() < deadline
+        await asyncio.sleep(0.05)
+    (file,) = place.files
+    assert file.closed == 0
+
+    calling.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await calling
+
+    assert file.closed == 1
 
 
 # Where and with what a command runs

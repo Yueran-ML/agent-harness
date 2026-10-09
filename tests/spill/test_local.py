@@ -1,6 +1,8 @@
 """Where text goes that is too large for a conversation: files under the home of the program."""
 
 import asyncio
+import itertools
+import json
 import os
 import stat
 import sys
@@ -12,13 +14,16 @@ import pytest
 import columbina.fs
 import columbina.session
 import columbina.spill.local
+import columbina.tools
 from columbina.builtin_tools import read
 from columbina.fs import FS, Access, locate
 from columbina.kernel import Context
+from columbina.llm import ToolCallBlock
 from columbina.session import SESSIONS, Session
 from columbina.session.store import workspace_key
 from columbina.spill import SPILL, Saved, SpillStore
-from columbina.spill.local import FOLD_AT, Local, sweep
+from columbina.spill.local import FOLD_AT, Fold, Local, sweep
+from columbina.tools import TOOLS, ToolRun
 
 DAY = 24 * 60 * 60
 
@@ -246,6 +251,72 @@ def test_a_line_of_exactly_that_length_stays_whole(
     assert "broken" not in saved.hint
 
 
+def test_a_carriage_return_before_a_line_break_does_not_make_a_line_too_long(
+    store: Local, session: Session, work: Path
+) -> None:
+    # The read tool takes it for a part of the line break, and shows the line whole.
+    text = ("x" * FOLD_AT + "\r\n") * 2
+
+    saved = store.save_text(session, work, "out.txt", text)
+
+    assert Path(saved.locator).read_bytes() == text.encode()
+    assert "broken" not in saved.hint
+
+
+def test_a_carriage_return_that_no_line_break_follows_counts_like_any_character(
+    store: Local, session: Session, work: Path
+) -> None:
+    full = "x" * FOLD_AT
+    text = f"{full}\ry\n{full}\r\r\n"
+
+    saved = store.save_text(session, work, "out.txt", text)
+
+    assert Path(saved.locator).read_bytes() == f"{full}\r\ny\n{full}\r\n\r\n".encode()
+    assert "broken" in saved.hint
+
+
+def broken_one_by_one(text: str, at: int) -> str:
+    """What the rule says, a character at a time: a break before each that is one too many."""
+    out: list[str] = []
+    length = 0
+    for character in text:
+        if character == "\n":
+            length = 0
+        elif length < at or (length == at and character == "\r"):
+            length += 1
+        else:
+            out.append("\n")
+            length = 1
+        out.append(character)
+    return "".join(out)
+
+
+def test_the_same_breaks_are_made_however_a_text_is_cut(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With lines of three characters, every text of up to eight is tried, cut in every place.
+    monkeypatch.setattr("columbina.spill.local.FOLD_AT", 3)
+    for size in range(9):
+        for characters in itertools.product("a\r\n", repeat=size):
+            text = "".join(characters)
+            expected = broken_one_by_one(text, 3)
+            for line in expected.split("\n"):
+                assert len(line) <= 3 or (len(line) == 4 and line.endswith("\r")), text
+            for cut in range(size + 1):
+                fold = Fold()
+                assert fold(text[:cut]) + fold(text[cut:]) == expected, (text, cut)
+                assert fold.broken is (expected != text), (text, cut)
+
+
+def test_a_text_that_comes_a_character_at_a_time_is_broken_in_the_same_places(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("columbina.spill.local.FOLD_AT", 3)
+    for characters in itertools.product("a\r\n", repeat=7):
+        text = "".join(characters)
+        fold = Fold()
+
+        assert "".join(fold(character) for character in text) == broken_one_by_one(text, 3)
+
+
 # Writing as it comes
 
 
@@ -267,6 +338,60 @@ def test_what_comes_in_pieces_is_written_as_it_comes(
     assert "broken" not in saved.hint
 
 
+def test_a_long_line_that_comes_in_pieces_is_broken_like_one_that_comes_whole(
+    store: Local, session: Session, work: Path
+) -> None:
+    moon = chr(0x6708)
+    text = f"short\r\n{moon * (2 * FOLD_AT + 5)}\r\nlast"
+    whole = store.save_text(session, work, "out.txt", text)
+    data = text.encode()
+
+    file = store.open(session, work, "out.txt")
+    # Seven bytes at a time: most pieces end in the middle of a character.
+    for start in range(0, len(data), 7):
+        file.write(data[start : start + 7])
+    saved = file.close()
+
+    written = Path(saved.locator).read_bytes()
+    assert written == Path(whole.locator).read_bytes()
+    assert [len(line) for line in written.decode().split("\n")] == [6, FOLD_AT, FOLD_AT, 6, 4]
+    assert saved.bytes == len(written) == len(data) + 2
+    assert saved.hint == whole.hint
+    assert saved.hint.endswith(f" Lines of more than {FOLD_AT} characters are broken there.")
+
+
+def test_a_character_that_comes_in_two_pieces_is_one_character(
+    store: Local, session: Session, work: Path
+) -> None:
+    data = (chr(0x6708) * FOLD_AT).encode()
+
+    file = store.open(session, work, "out.txt")
+    file.write(data[:1000])
+    file.write(data[1000:])
+    saved = file.close()
+
+    # As many characters as a line may have, so no break, though they are thrice the bytes.
+    assert len(data[:1000].decode(errors="ignore").encode()) < 1000
+    assert Path(saved.locator).read_bytes() == data
+    assert "broken" not in saved.hint
+
+
+def test_a_byte_that_is_no_text_is_written_as_it_came_and_counts_as_a_character(
+    store: Local, session: Session, work: Path
+) -> None:
+    file = store.open(session, work, "out.txt")
+    file.write(b"\xff" * (FOLD_AT + 1) + b"\n\xe6\x9c")
+    during = Path(file.locator).read_bytes()
+
+    saved = file.close()
+
+    assert during == b"\xff" * FOLD_AT + b"\n\xff\n"
+    # Half a character at the very end is no text either. It is written when nothing can follow.
+    assert Path(saved.locator).read_bytes() == during + b"\xe6\x9c"
+    assert saved.bytes == FOLD_AT + 5
+    assert "broken" in saved.hint
+
+
 def test_a_file_can_be_closed_twice_and_not_written_after(
     store: Local, session: Session, work: Path
 ) -> None:
@@ -278,6 +403,59 @@ def test_a_file_can_be_closed_twice_and_not_written_after(
     assert file.close() == first
     with pytest.raises(ValueError, match="closed"):
         file.write(b"two")
+
+
+def test_a_file_whose_end_cannot_be_written_is_closed_all_the_same(
+    store: Local, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def full(descriptor: int, data: memoryview) -> int:
+        raise OSError(28, "No space left on device")
+
+    closed: list[int] = []
+    really_close = os.close
+
+    def closing(descriptor: int) -> None:
+        closed.append(descriptor)
+        really_close(descriptor)
+
+    file = store.open(session, work, "out.txt")
+    file.write(b"one\xe6")
+    monkeypatch.setattr("columbina.spill.local._put", full)
+    monkeypatch.setattr(os, "close", closing)
+
+    with pytest.raises(OSError, match="No space left"):
+        file.close()
+    again = file.close()
+
+    monkeypatch.undo()
+    # Closed once: the number of a file that was given back may be that of another by now.
+    assert len(closed) == 1
+    assert again.bytes == 3
+    assert Path(again.locator).read_bytes() == b"one"
+    with pytest.raises(ValueError, match="closed"):
+        file.write(b"two")
+
+
+def test_a_text_whose_file_cannot_be_closed_leaves_no_file(
+    store: Local, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[int] = []
+    really_close = os.close
+
+    def failing(descriptor: int) -> None:
+        closed.append(descriptor)
+        really_close(descriptor)
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(os, "close", failing)
+
+    with pytest.raises(OSError, match="Input/output error"):
+        store.save_text(session, work, "out.txt", "text")
+
+    monkeypatch.undo()
+    assert list((store.directory(work) / "s-1").iterdir()) == []
+    # Closed once, although the system said that it failed: the number is given back by then.
+    assert len(closed) == 1
 
 
 # Reading it
@@ -306,6 +484,27 @@ async def test_the_model_may_read_what_was_saved_for_its_working_directory(
     # The directory of the working directory itself can be listed and searched.
     assert judged(str(Path(saved.locator).parent.parent)) is None
     assert judged(saved.locator, "write") == "OUTSIDE_WORKING_DIRECTORY"
+
+
+async def test_the_read_tool_shows_every_character_of_what_was_saved(
+    ctx: Context, session: Session, work: Path, tmp_path: Path
+) -> None:
+    # This is what the breaks are for. The lines end the way Windows ends them.
+    store = await seam_with(ctx, tmp_path / "home" / "spill")
+    await ctx.plugin(columbina.tools)
+    await ctx.plugin(read)
+    full, long = "x" * FOLD_AT, "y" * (2 * FOLD_AT + 500)
+    file = store.open(session, work, "powershell-output.txt")
+    file.write(f"{full}\r\n{long}\r\nlast\r\n".encode())
+    saved = file.close()
+
+    asked = ToolCallBlock(call_id="c", name="read", arguments=json.dumps({"path": saved.locator}))
+    outcome = await ctx.use(TOOLS).run(ctx, asked, ToolRun("c", work, session))
+
+    assert outcome.error is None, outcome.text
+    shown = [line.split("\t", 1)[1] for line in outcome.text.split("\n")]
+    assert shown == [full, long[:FOLD_AT], long[FOLD_AT : 2 * FOLD_AT], long[2 * FOLD_AT :], "last"]
+    assert "more characters" not in outcome.text
 
 
 async def test_what_was_saved_for_another_working_directory_is_out_of_reach(

@@ -78,7 +78,14 @@ async def test_the_output_and_the_exit_code_of_a_program_are_returned(tmp_path: 
         python("import sys; print('hello', end=''); sys.exit(3)"), cwd=tmp_path, timeout_seconds=30
     )
 
-    assert done == Completed(exit_code=3, timed_out=False, output="hello", omitted_bytes=0)
+    assert done == Completed(
+        exit_code=3,
+        timed_out=False,
+        output="hello",
+        output_bytes=5,
+        omitted_bytes=0,
+        saved_bytes=0,
+    )
 
 
 async def test_what_goes_to_the_error_stream_comes_in_the_order_it_was_written(

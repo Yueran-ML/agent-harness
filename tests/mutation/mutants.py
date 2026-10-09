@@ -73,6 +73,7 @@ UNSEEN = "src/columbina/unseen.py"
 TOKEN_METER = "src/columbina/token_meter/__init__.py"
 SPILL_LOCAL = "src/columbina/spill/local.py"
 SPILL_POLICY = "src/columbina/spill/policy.py"
+SPILL_SEAM = "src/columbina/spill/__init__.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,6 +582,108 @@ _PROCESS = (
             "        transport.close()\n",
             "        # The program has not run a single instruction, and it does not get to.\n",
         )
+    ),
+    mutant(
+        "the place for the whole output is opened with the first piece",
+        PROCESS,
+        "        if self._open is not None and self.kept.total + len(data) > self.kept.limit:\n",
+        "        if self._open is not None:\n",
+    ),
+    mutant(
+        "the place is opened for an output that memory keeps whole",
+        PROCESS,
+        "        if self._open is not None and self.kept.total + len(data) > self.kept.limit:\n",
+        "        if self._open is not None and self.kept.total + len(data) >= self.kept.limit:\n",
+    ),
+    mutant(
+        "what memory had kept until then does not go to the place",
+        PROCESS,
+        "                self._save(self.kept.held())\n",
+        "                pass\n",
+    ),
+    mutant(
+        "more goes to the place than there is room for",
+        PROCESS,
+        "        taken = data[: self._room - self.saved]\n",
+        "        taken = data\n",
+    ),
+    mutant(
+        "a piece that was cut short is counted whole",
+        PROCESS,
+        "        self.saved += len(taken)\n",
+        "        self.saved += len(data)\n",
+    ),
+    mutant(
+        "a place that failed is asked again",
+        PROCESS,
+        '        """Leave the place alone from now on, and write down why."""\n        self._elsewhere = None\n',
+        '        """Leave the place alone from now on, and write down why."""\n',
+    ),
+    mutant(
+        "the failure of a place is not written down",
+        PROCESS,
+        '        logger.error("the whole output of a program %s: %s", what, error, exc_info=fault)\n',
+        "        pass\n",
+    ),
+    mutant(
+        "a fault of a place is written down without its trace",
+        PROCESS,
+        "        fault = None if isinstance(error, OSError) else error\n",
+        "        fault = None\n",
+    ),
+    mutant(
+        "what the system refuses a place is written down with a trace",
+        PROCESS,
+        "        fault = None if isinstance(error, OSError) else error\n",
+        "        fault = error\n",
+    ),
+    mutant(
+        "a fault of a place that cannot be opened loses a piece of the output",
+        PROCESS,
+        '            except Exception as error:\n                self._give_up("cannot be kept", error)\n',
+        '            except OSError as error:\n                self._give_up("cannot be kept", error)\n',
+    ),
+    mutant(
+        "a fault of a place that cannot be written to loses a piece of the output",
+        PROCESS,
+        '        except Exception as error:\n            self._give_up("could not be written", error)\n',
+        '        except OSError as error:\n            self._give_up("could not be written", error)\n',
+    ),
+    mutant(
+        "a place can be opened after the run is over",
+        PROCESS,
+        '        """Write nothing elsewhere from now on. Whoever opened the place is about to close it."""\n        self._open = None\n',
+        '        """Write nothing elsewhere from now on. Whoever opened the place is about to close it."""\n',
+    ),
+    mutant(
+        "a place is written to after the run is over",
+        PROCESS,
+        "        self._open = None\n        self._elsewhere = None\n\n    def _save",
+        "        self._open = None\n\n    def _save",
+    ),
+    mutant(
+        "a run does not say that it is over",
+        PROCESS,
+        "        written.end()\n",
+        "        pass\n",
+    ),
+    mutant(
+        "a limit of less than nothing is taken for what goes elsewhere",
+        PROCESS,
+        "        if max_overflow_bytes < 0:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "what was left out does not count as written",
+        PROCESS,
+        "        output_bytes=kept.total,\n",
+        "        output_bytes=kept.total - kept.omitted,\n",
+    ),
+    mutant(
+        "what went elsewhere is not counted",
+        PROCESS,
+        "        saved_bytes=written.saved,\n",
+        "        saved_bytes=0,\n",
     ),
 )
 
@@ -2108,6 +2211,96 @@ _SHELL = (
             "        return str(found) if found.is_file() else None",
             '        return "powershell.exe"',
         )
+    ),
+    mutant(
+        "the whole of a long output goes nowhere",
+        SHELL,
+        "                overflow=None if place is None else place.open,\n",
+        "                overflow=None,\n",
+    ),
+    mutant(
+        "any amount of the output of a command is saved",
+        SHELL,
+        "                max_overflow_bytes=MAX_SAVED_BYTES,\n",
+        "",
+    ),
+    mutant(
+        "what was being saved stays open when the call is cancelled",
+        SHELL,
+        "        finally:\n            # However the run ended, also by the call being cancelled: it writes no more.\n            saved = None if place is None else place.close()\n",
+        "        saved = None if place is None else place.close()\n",
+    ),
+    mutant(
+        "an output that was saved in part counts as saved",
+        SHELL,
+        "            elif done.saved_bytes < done.output_bytes:\n",
+        "            elif False:\n",
+    ),
+    mutant(
+        "a place that took nothing is said to hold a part",
+        SHELL,
+        "            if saved is None or not done.saved_bytes:\n",
+        "            if saved is None:\n",
+    ),
+    mutant(
+        "an output that memory keeps whole is said not to be saved",
+        SHELL,
+        "        if place is not None and done.omitted_bytes:\n",
+        "        if place is not None:\n",
+    ),
+    mutant(
+        "the result does not say where the whole output is",
+        SHELL,
+        "                lines.append(complete.told())\n",
+        "                pass\n",
+    ),
+    mutant(
+        "nothing tells whatever bounds a result that the whole output is saved",
+        SHELL,
+        '        return ShellResult(output + "\\n".join(lines), complete)\n',
+        '        return ShellResult(output + "\\n".join(lines), None)\n',
+    ),
+    mutant(
+        "the whole output is called a result",
+        SHELL,
+        '                complete = replace(saved, what="output")\n',
+        "                complete = saved\n",
+    ),
+    mutant(
+        "the place is the one that was there when the tool was made",
+        SHELL,
+        "shell_tool(ctx.use(SANDBOX), shell, lambda: ctx.get(SPILL))",
+        "shell_tool(ctx.use(SANDBOX), shell, lambda found=ctx.get(SPILL): found)",
+    ),
+    mutant(
+        "a fault of a place fails the call that it was saving for",
+        SHELL,
+        "        except Exception as error:\n            # The call may be on its way out, cancelled. No fault of a place keeps it in.\n",
+        "        except OSError as error:\n            # The call may be on its way out, cancelled. No fault of a place keeps it in.\n",
+    ),
+    mutant(
+        "the saved output does not say which tool wrote it",
+        SHELL,
+        'f"{NAME}-output.txt"',
+        '"output.txt"',
+    ),
+    mutant(
+        "a fault of a place is written down by the tool without its trace",
+        SHELL,
+        "            fault = None if isinstance(error, OSError) else error\n",
+        "            fault = None\n",
+    ),
+    mutant(
+        "what the system refuses a place is written down by the tool with a trace",
+        SHELL,
+        "            fault = None if isinstance(error, OSError) else error\n",
+        "            fault = error\n",
+    ),
+    mutant(
+        "nothing is written down when the whole output cannot be saved",
+        SHELL,
+        '            logger.error(\n                "the whole output of a command could not be saved: %s", error, exc_info=fault\n            )\n',
+        "            pass\n",
     ),
 )
 
@@ -4736,16 +4929,16 @@ _SPILL = (
         "    return fit\n",
     ),
     mutant(
-        "a line of just the length that is shown counts as too long",
+        "a line is broken one character before it has to be",
         SPILL_LOCAL,
-        "    if all(len(line) <= FOLD_AT for line in lines):\n",
-        "    if all(len(line) < FOLD_AT for line in lines):\n",
+        "            room = max(FOLD_AT - self._length, 0)\n",
+        "            room = max(FOLD_AT - self._length - 1, 0)\n",
     ),
     mutant(
         "no line is broken",
         SPILL_LOCAL,
-        "    if all(len(line) <= FOLD_AT for line in lines):\n",
-        "    if True:\n",
+        "            if self._length + len(line) > FOLD_AT:\n",
+        "            if False:\n",
     ),
     mutant(
         "a file that is there is written over",
@@ -4774,8 +4967,8 @@ _SPILL = (
     mutant(
         "a file is closed as often as it is asked",
         SPILL_LOCAL,
-        "        if self._saved is None:\n            os.close(self._descriptor)\n",
-        "        if True:\n            os.close(self._descriptor)\n",
+        "        if self._saved is None:\n            try:\n",
+        "        if True:\n            try:\n",
     ),
     mutant(
         "half a text stays where it was begun",
@@ -4786,14 +4979,14 @@ _SPILL = (
     mutant(
         "a character that cannot be written keeps the text from being saved",
         SPILL_LOCAL,
-        '            file.write(folded.encode("utf-8", errors="replace"))\n',
-        '            file.write(folded.encode("utf-8"))\n',
+        '            file.write(text.encode("utf-8", errors="replace"))\n',
+        '            file.write(text.encode("utf-8"))\n',
     ),
     mutant(
         "nobody is told that lines were broken",
         SPILL_LOCAL,
-        "        return file.close(_HINT + _FOLDED if broken else _HINT)\n",
-        "        return file.close(_HINT)\n",
+        "                hint = _HINT + _FOLDED if self._fold.broken else _HINT\n",
+        "                hint = _HINT\n",
     ),
     mutant(
         "the files of all sessions lie in one directory",
@@ -4903,6 +5096,54 @@ _SPILL = (
         "        removed = await asyncio.to_thread(sweep, root, keep_days=keep_days)\n",
         "        removed = 0\n",
     ),
+    mutant(
+        "the length of a line goes on after a line break",
+        SPILL_LOCAL,
+        "            if at:\n                self._length = 0\n",
+        "",
+    ),
+    mutant(
+        "a carriage return before a line break makes a line too long",
+        SPILL_LOCAL,
+        '            if line.startswith("\\r") and self._length + len(part) == FOLD_AT:\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "carriage returns are let through one after another",
+        SPILL_LOCAL,
+        '            if line.startswith("\\r") and self._length + len(part) == FOLD_AT:\n',
+        '            if line.startswith("\\r"):\n',
+    ),
+    mutant(
+        "a line is broken and nobody knows",
+        SPILL_LOCAL,
+        "            self.broken = True\n",
+        "            pass\n",
+    ),
+    mutant(
+        "a byte that is no text is replaced by a sign",
+        SPILL_LOCAL,
+        '        self._decoder = _Utf8(errors="surrogateescape")\n',
+        '        self._decoder = _Utf8(errors="replace")\n',
+    ),
+    mutant(
+        "half a character at the very end is dropped",
+        SPILL_LOCAL,
+        '                self._take(self._decoder.decode(b"", True))\n',
+        "                pass\n",
+    ),
+    mutant(
+        "a character that comes in two pieces counts as several",
+        SPILL_LOCAL,
+        "        self._take(self._decoder.decode(data))\n",
+        '        self._take(data.decode("utf-8", errors="surrogateescape"))\n',
+    ),
+    mutant(
+        "a file that the system failed to close is closed again",
+        SPILL_LOCAL,
+        "                self._saved = Saved(self.locator, self._written, hint)\n                os.close(self._descriptor)\n",
+        "                os.close(self._descriptor)\n                self._saved = Saved(self.locator, self._written, hint)\n",
+    ),
 )
 
 _CAP = (
@@ -4933,8 +5174,8 @@ _CAP = (
     mutant(
         "a result whose whole was saved by its tool is saved again",
         SPILL_POLICY,
-        "        if isinstance(complete, Saved):\n            last = _whole(complete)\n        elif too_large:\n",
-        "        if too_large:\n",
+        "        if isinstance(complete, Saved):\n",
+        "        if False:\n",
     ),
     mutant(
         "a small result with a hole in it does not say where the whole is",
@@ -4951,8 +5192,8 @@ _CAP = (
     mutant(
         "the last line is not counted against the room",
         SPILL_POLICY,
-        "    room = tokens - estimate(last) - estimate(_left_out(len(text))) - 2\n",
-        "    room = tokens - estimate(_left_out(len(text))) - 2\n",
+        "    room = tokens - estimate(last) - estimate(widest) - 2\n",
+        "    room = tokens - estimate(widest) - 2\n",
     ),
     mutant(
         "the beginning is cut where the room ends, also in the middle of a line",
@@ -4981,8 +5222,8 @@ _CAP = (
     mutant(
         "the line between the ends says how long the text is",
         SPILL_POLICY,
-        "    gap = _left_out(len(text) - len(head) - len(tail))\n",
-        "    gap = _left_out(len(text))\n",
+        "    gap = _left_out(len(text) - len(head) - len(tail)) if counted else _UNCOUNTED\n",
+        "    gap = _left_out(len(text)) if counted else _UNCOUNTED\n",
     ),
     mutant(
         "the end is taken from the whole text and may hold the beginning again",
@@ -5016,9 +5257,33 @@ _CAP = (
     ),
     mutant(
         "what the place says about how to read it is left out",
+        SPILL_SEAM,
+        'f"(The whole {self.what} has {self.bytes} bytes and is in {self.locator}. {self.hint})"',
+        'f"(The whole {self.what} has {self.bytes} bytes and is in {self.locator}.)"',
+    ),
+    mutant(
+        "what it is the whole of is not said",
+        SPILL_SEAM,
+        'f"(The whole {self.what} has {self.bytes} bytes and is in {self.locator}. {self.hint})"',
+        'f"(The whole result has {self.bytes} bytes and is in {self.locator}. {self.hint})"',
+    ),
+    mutant(
+        "what a tool said about the whole is said again",
         SPILL_POLICY,
-        '    return f"(The whole result has {saved.bytes} bytes and is in {saved.locator}. {saved.hint})"\n',
-        '    return f"(The whole result has {saved.bytes} bytes and is in {saved.locator}.)"\n',
+        "            text = text.removesuffix(last)\n",
+        "            pass\n",
+    ),
+    mutant(
+        "a number is given of what a tool had left out",
+        SPILL_POLICY,
+        "            counted = False\n",
+        "            counted = True\n",
+    ),
+    mutant(
+        "the line between the ends never gives a number",
+        SPILL_POLICY,
+        "    gap = _left_out(len(text) - len(head) - len(tail)) if counted else _UNCOUNTED\n",
+        "    gap = _UNCOUNTED\n",
     ),
 )
 
@@ -5057,7 +5322,7 @@ SETS: dict[str, MutantSet] = {
         ),
         _READ,
     ),
-    "process": MutantSet(("tests/test_process.py",), _PROCESS),
+    "process": MutantSet(("tests/test_process.py", "tests/test_process_overflow.py"), _PROCESS),
     "fs": MutantSet(("tests/fs", "tests/builtin_tools"), _FS),
     "sandbox": MutantSet(("tests/sandbox",), _SANDBOX),
     "transcript": MutantSet(

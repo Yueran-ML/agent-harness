@@ -108,7 +108,7 @@ class Tools:
 
 守卫拿到的上下文是发起这次调用的那一个，也就是 Agent 的上下文，审批的询问经它分发。守卫抛异常或返回别的东西时，调用以 `CHECK_FAILED` 结束，不执行。守卫经 `cancellation.guard` 等待。`target` 抛异常时调用以 `TOOL_ERROR` 结束。
 
-`PendingCall` 在问检查之前、执行之前和 `tools/execute` 链的最后一环各核对一次：这个工具还登记在工具服务里。不在了就以 `UNKNOWN_TOOL` 结束。链的最后一环只执行管线交给它的那一个 `Invocation`，并且参数要与调用开始时留下的副本相等，否则调用以 `CHECK_FAILED` 结束。参数在问守卫之前也比对一次，守卫判断的就是模型写的参数。
+`PendingCall` 在问检查之前和 `tools/execute` 链的最后一环各核对一次：这个工具还登记在工具服务里。最后一环之后紧接着就是工具体，所以监听器等待期间卸载的工具也拦得住。不在了就以 `UNKNOWN_TOOL` 结束。链的最后一环只执行管线交给它的那一个 `Invocation`，并且参数要与调用开始时留下的副本相等，否则调用以 `CHECK_FAILED` 结束。参数在问守卫之前也比对一次，守卫判断的就是模型写的参数。
 
 `ToolRun` 的 `call_id`、`cwd`、`session`、`target` 都是只读属性。`target` 由管线在调用开始时填入，没有 `target` 函数的工具得到 `None`。
 

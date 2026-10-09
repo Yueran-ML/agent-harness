@@ -561,12 +561,6 @@ _TOOLS = (
         "        aimed = ToolRun(run.call_id, run.cwd, run.session)",
     ),
     mutant(
-        "a call runs although its tool has left",
-        PIPELINE,
-        "        gone = self._gone(tool)\n        if gone is not None:\n            return gone\n",
-        "",
-    ),
-    mutant(
         "a call is checked although its tool has left",
         PIPELINE,
         "        if self._gone(invocation.tool) is not None:\n            return\n",

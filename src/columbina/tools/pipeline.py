@@ -357,9 +357,6 @@ class PendingCall:
             assert self._outcome is not None
             return self._outcome
         tool = invocation.tool
-        gone = self._gone(tool)
-        if gone is not None:
-            return gone
 
         async def run_the_checked_call(passed: Invocation) -> object:
             # Listeners have had the call in their hands, and some of them have waited.

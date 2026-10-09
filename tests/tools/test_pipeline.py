@@ -1191,7 +1191,9 @@ async def test_a_tool_that_took_the_name_of_the_one_that_left_is_not_run_in_its_
     ctx: Context, tools: Tools, run: ToolRun, journal: Journal
 ) -> None:
     other = Journal()
+    asked: list[str] = []
     fiber = await ctx.plugin(lending("echo", journal))
+    tools.guards.add(ctx, "watching", content(asked, "watching"))
     pending = tools.begin(ctx, call("echo"), run)
 
     await fiber.dispose()
@@ -1202,6 +1204,8 @@ async def test_a_tool_that_took_the_name_of_the_one_that_left_is_not_run_in_its_
     assert outcome.error.code == "UNKNOWN_TOOL"
     assert journal.ran == []
     assert other.ran == []
+    # The checks are not asked about a call of a tool that is no longer the one it was for.
+    assert asked == []
 
 
 # Running calls beside each other

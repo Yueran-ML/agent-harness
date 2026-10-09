@@ -567,6 +567,9 @@ def simply(content: bytes, offset: int, limit: int, looked_at: int, size_limit: 
 )
 # A line that the read stops looking at inside a character.
 @example(content="abc好def".encode(), offset=0, limit=1, piece=3, looked_at=4, size_limit=200)
+# A carriage return that is the last thing the read looks at, in a line that goes on.
+@example(content=b"ab\rcd\n", offset=0, limit=2, piece=2, looked_at=3, size_limit=200)
+@example(content=b"ab\rcd\n", offset=0, limit=2, piece=1, looked_at=3, size_limit=200)
 # A long line and then a short one: nothing of the first may be left over for the second.
 @example(
     content=b"abcdefghij\rk\nxy\n", offset=0, limit=2, piece=4, looked_at=10**6, size_limit=200

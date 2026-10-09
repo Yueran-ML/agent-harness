@@ -8,7 +8,7 @@ from columbina.agent import Agent, Agents, AgentSpec
 from columbina.kernel import Context
 from columbina.llm import AssistantMessage, CallConfig, SystemMessage, TextBlock, UserMessage
 from columbina.llm.adapters.scripted import Scripted, Step
-from columbina.session import Session, Sessions
+from columbina.session import Session, Sessions, UserMessageEvent
 from columbina.tools import Tools
 
 MODEL = CallConfig(provider="scripted", model="script")
@@ -46,6 +46,25 @@ def types(session: Session, start: int = 0) -> list[str]:
 def user(text: str) -> UserMessage:
     """Return a user message with one block of text."""
     return UserMessage(content=(TextBlock(text=text),))
+
+
+def context(source: str, text: str) -> UserMessage:
+    """Return the message that carries the text of a source of context."""
+    return user(f'<context source="{source}">\n{text}\n</context>')
+
+
+STOPPED = context(
+    "interruption",
+    "The turn before this one was stopped before it had come to its end. A tool that was "
+    "running then was stopped and may have done a part of its work, and calls that had not "
+    "begun did not run. See how things stand before you rely on what that turn was doing.",
+)
+"""What a model is told when the turn before was cancelled."""
+
+
+def from_a_source(event: UserMessageEvent) -> bool:
+    """Tell whether a message was written by a source of context, and not given as input."""
+    return event.source.startswith("context/")
 
 
 def assistant(text: str) -> AssistantMessage:

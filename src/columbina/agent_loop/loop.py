@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from typing import Literal, TypeVar, cast
 
 from columbina import cancellation
@@ -18,6 +18,7 @@ from columbina.agent import (
     Agent,
     AgentSpec,
     CancelCause,
+    ContextSource,
     Enter,
     ErrorDecision,
     GiveUp,
@@ -34,7 +35,7 @@ from columbina.agent import (
     claim_task,
     clear_inbox,
 )
-from columbina.kernel import Context, Event
+from columbina.kernel import Context, Event, Registry
 from columbina.llm import (
     CallConfig,
     Llm,
@@ -44,6 +45,7 @@ from columbina.llm import (
     SystemMessage,
     TextBlock,
     ToolCallBlock,
+    UserMessage,
 )
 from columbina.session import (
     TURN,
@@ -90,6 +92,36 @@ def _last_header(
 
 _HEADER: Projection[RequestHeaderEvent | None] = Projection("request-header", None, _last_header)
 
+_CONTEXT = "context/"
+"""What the source of a message begins with if a source of context gave it."""
+
+
+def _last_context(
+    state: Mapping[str, SessionEvent[EventData]], event: SessionEvent[EventData]
+) -> Mapping[str, SessionEvent[EventData]]:
+    data = event.data
+    if isinstance(data, UserMessageEvent) and data.source.startswith(_CONTEXT):
+        return {**state, data.source: event}
+    return state
+
+
+_GIVEN: Projection[Mapping[str, SessionEvent[EventData]]] = Projection(
+    "context-given", {}, _last_context
+)
+"""The last message that each source of context gave, by the source of the message."""
+
+
+def _framed(name: str, text: str) -> UserMessage:
+    """Return the message that carries the text of a source of context.
+
+    The text stands between two tags, so that the model can tell it from what
+    the user says. Whatever in the text looks like the closing tag is taken
+    apart, so that nothing in a file can end the frame early.
+    """
+    body = text.strip().replace("</context", "<\\/context")
+    framed = f'<context source="{name}">\n{body}\n</context>'
+    return UserMessage(content=(TextBlock(text=framed),))
+
 
 def _describe(error: BaseException) -> str:
     text = str(error)
@@ -132,11 +164,13 @@ class LoopAgent(Agent):
         session: Session,
         llm: Llm,
         tools: Tools,
+        context: Registry[ContextSource],
         max_parallel_tool_calls: int,
     ) -> None:
         super().__init__(ctx, spec, session)
         self._llm = llm
         self._tools = tools
+        self._context = context
         self._max_parallel = max_parallel_tool_calls
         self._wake = asyncio.Event()
         self._idle = asyncio.Event()
@@ -273,6 +307,7 @@ class LoopAgent(Agent):
             if step == 0:
                 try:
                     await self._reconcile_system_message()
+                    self._write_context(await self._ask_for_context())
                 except Exception as error:
                     # The input is taken all the same. Left in the inbox, it would begin
                     # another turn at once, and that one would fail the same way.
@@ -364,6 +399,39 @@ class LoopAgent(Agent):
             )
         elif first.data.message != wanted:
             session.append(SystemMessageEvent(message=wanted), replaces=[first.seq])
+
+    async def _ask_for_context(self) -> list[tuple[str, ContextSource, str]]:
+        """Ask every source of context for its text, and return the texts that were given.
+
+        All are asked before anything is written. If one fails, the turn has
+        no context at all, and it ends before the model is asked.
+        """
+        ordered = sorted(self._context.items(), key=lambda item: (item[1].order, item[0]))
+        given: list[tuple[str, ContextSource, str]] = []
+        for name, source in ordered:
+            what = f"the source of context {name!r}"
+            text = cast("object", await cancellation.guard(source.render(self), what=what))
+            if text is None:
+                continue
+            if not isinstance(text, str):
+                raise TypeError(f"{what} gave {text!r}, which is no text")
+            given.append((name, source, text))
+        return given
+
+    def _write_context(self, given: list[tuple[str, ContextSource, str]]) -> None:
+        """Write what the sources of context gave, as far as it is news."""
+        session = self.session
+        for name, source, text in given:
+            written = UserMessageEvent(message=_framed(name, text), source=_CONTEXT + name)
+            last = _GIVEN.of(session).get(written.source)
+            if source.kind == "note":
+                session.append(written)
+            elif last is None or last.data != written:
+                if source.kind == "replace" and last is not None and last.seq in session.surface:
+                    # The old text is replaced where it stands, as the model still sees it there.
+                    session.append(written, replaces=[last.seq])
+                else:
+                    session.append(written)
 
     async def _step(self, turn: int, step: int) -> _StepEnd:
         """Ask the model, carry out the tool calls of its reply, and return how the step ended."""

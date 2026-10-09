@@ -1,7 +1,8 @@
 """What every agent offers, and the service that creates agents."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -120,6 +121,33 @@ def _item(content: str | UserMessage, source: str) -> InboxItem:
 AgentFactory = Callable[[Context, AgentSpec, Session], Agent]
 """What a loop registers: it makes an agent in a scope, from a spec, on a session."""
 
+ContextKind = Literal["replace", "append", "note"]
+"""How the text of a source of context is kept in a conversation."""
+
+
+@dataclass(frozen=True, slots=True)
+class ContextSource:
+    """Something that has text for the model when a turn begins.
+
+    The text is not what the user says, and it is not the instructions of
+    whoever set the agent up: it is what the model should know about where it
+    is and what has happened. The loop asks every source when a turn begins
+    and writes what they give as messages before the input of the turn.
+
+    Attributes:
+        render: Returns the text for an agent, or ``None`` if there is none.
+        order: Where the source stands among the others: lower numbers first.
+        kind: How the text is kept. ``append`` and ``replace`` are for text
+            that holds until it changes: it is written when it differs from
+            what this source gave last, after the conversation so far or in
+            the place of the last one. ``note`` is for word of something that
+            happened: it is written every time the source gives it.
+    """
+
+    render: Callable[[Agent], Awaitable[str | None]]
+    order: int = 0
+    kind: ContextKind = "append"
+
 
 class Agents:
     """The agent service: creates agents and knows the ones that are running.
@@ -127,13 +155,15 @@ class Agents:
     Attributes:
         loops: The loops that can drive an agent, by name.
         live: The agents that are running, by id.
+        context: The sources of context for the model, by name.
     """
 
-    __slots__ = ("_sessions", "live", "loops")
+    __slots__ = ("_sessions", "context", "live", "loops")
 
     def __init__(self, sessions: Sessions) -> None:
         self.loops: Registry[AgentFactory] = Registry("agent loop")
         self.live: Registry[Agent] = Registry("agent")
+        self.context: Registry[ContextSource] = Registry("source of context")
         self._sessions = sessions
 
     async def create(

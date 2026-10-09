@@ -3,6 +3,10 @@
 This module is a plugin. Loading it provides :data:`AGENTS`. It does not run
 a single turn: that is the job of a loop, which is a plugin of its own and
 registers itself with ``agents.loops``.
+
+The service also holds the sources of context: what a model is told, beside
+the words of the user, when a turn begins. A loop asks them. One source is
+registered here, the note that the turn before was cut short.
 """
 
 from columbina.agent.agent import (
@@ -13,7 +17,10 @@ from columbina.agent.agent import (
     Agents,
     AgentSpec,
     CancelCause,
+    ContextKind,
+    ContextSource,
 )
+from columbina.agent.context import INTERRUPTION
 from columbina.agent.events import (
     PRE_STEP,
     REQUEST,
@@ -60,6 +67,8 @@ __all__ = [
     "AgentSpec",
     "Agents",
     "CancelCause",
+    "ContextKind",
+    "ContextSource",
     "Enter",
     "ErrorDecision",
     "GiveUp",
@@ -92,4 +101,6 @@ def apply(ctx: Context, config: object) -> None:
     """Provide the agent service and register the events of the inbox."""
     sessions = ctx.use(SESSIONS)
     sessions.declare(ctx, InboxSplicedEvent)
-    ctx.provide(AGENTS, Agents(sessions))
+    agents = Agents(sessions)
+    agents.context.add(ctx, "interruption", INTERRUPTION)
+    ctx.provide(AGENTS, agents)

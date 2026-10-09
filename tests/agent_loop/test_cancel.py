@@ -18,7 +18,7 @@ from columbina.session import (
     UserMessageEvent,
 )
 from columbina.tools import Tools
-from support.loop import SYSTEM, Harness, assistant, idle, types, user
+from support.loop import STOPPED, SYSTEM, Harness, assistant, from_a_source, idle, types, user
 
 # Input that arrives while a turn runs
 
@@ -249,7 +249,7 @@ async def test_a_task_given_right_after_a_cancellation_waits_for_a_turn_of_its_o
     for event in agent.session.events:
         if isinstance(event.data, TurnStartEvent):
             turn = event.data.turn
-        elif isinstance(event.data, UserMessageEvent):
+        elif isinstance(event.data, UserMessageEvent) and not from_a_source(event.data):
             heard.append((turn, event.data.message.content[0].text))
     ends = [e.data.reason for e in agent.session.events if isinstance(e.data, TurnEndEvent)]
     # The cancelled turn keeps what it had taken. The new task is not swallowed by it.
@@ -259,6 +259,7 @@ async def test_a_task_given_right_after_a_cancellation_waits_for_a_turn_of_its_o
     assert harness.model.requests[0].messages == (
         SYSTEM,
         user("Some context."),
+        STOPPED,
         user("The new task."),
     )
 
@@ -289,6 +290,7 @@ async def test_an_agent_takes_a_new_task_after_a_cancellation(harness: Harness) 
         SYSTEM,
         user("Think."),
         assistant("thinking"),
+        STOPPED,
         user("Say hello."),
     )
 

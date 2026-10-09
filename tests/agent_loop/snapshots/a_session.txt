@@ -57,13 +57,17 @@ request 6 to scripted/script, tools: look, remove, build
     reasoning: 'This will take a while.'
     text: 'First, '
 18 user
+    text: '<context source="interruption">\nThe turn before this one was stopped before it had come to its end. A tool that was running then was stopped and may have done a part of its work, and calls that had not begun did not run. See how things stand before you rely on what that turn was doing.\n</context>'
+19 user
     text: 'Build it.'
 
 request 7 to scripted/script, tools: look, remove, build
-    as request 6 up to message 18
-19 assistant
+    as request 6 up to message 19
+20 assistant
     call build '{}' as call-7
-20 tool, failed result of call-7
+21 tool, failed result of call-7
     text: 'The call was cancelled while it ran. It may have taken effect in part.'
-21 user
+22 user
+    text: '<context source="interruption">\nThe turn before this one was stopped before it had come to its end. A tool that was running then was stopped and may have done a part of its work, and calls that had not begun did not run. See how things stand before you rely on what that turn was doing.\n</context>'
+23 user
     text: 'Go on.'

@@ -23,6 +23,8 @@ from dataclasses import dataclass, replace
 
 LOOP = "src/columbina/agent_loop/loop.py"
 INBOX = "src/columbina/agent/inbox.py"
+AGENT_CONTEXT = "src/columbina/agent/context.py"
+AGENT_PACKAGE = "src/columbina/agent/__init__.py"
 CANCELLATION = "src/columbina/cancellation.py"
 READ = "src/columbina/builtin_tools/read.py"
 PROCESS = "src/columbina/process.py"
@@ -2136,8 +2138,94 @@ _PROMPT = (
     ),
 )
 
+_CONTEXT = (
+    mutant(
+        "sources of context are asked in the order in which they were added",
+        LOOP,
+        "        ordered = sorted(self._context.items(), key=lambda item: (item[1].order, item[0]))",
+        "        ordered = list(self._context.items())",
+    ),
+    mutant(
+        "what a source gives is taken for text whatever it is",
+        LOOP,
+        "            if not isinstance(text, str):\n"
+        '                raise TypeError(f"{what} gave {text!r}, which is no text")\n',
+        "",
+    ),
+    mutant(
+        "a note is written only when its text is new",
+        LOOP,
+        '            if source.kind == "note":',
+        "            if False:",
+    ),
+    mutant(
+        "text that stays the same is written again",
+        LOOP,
+        "            elif last is None or last.data != written:",
+        "            elif True:",
+    ),
+    mutant(
+        "text of a source that replaces is put after the conversation",
+        LOOP,
+        '                if source.kind == "replace" and last is not None '
+        "and last.seq in session.surface:",
+        "                if False:",
+    ),
+    mutant(
+        "text of a source that appends takes the place of its old text",
+        LOOP,
+        '                if source.kind == "replace" and last is not None '
+        "and last.seq in session.surface:",
+        "                if last is not None and last.seq in session.surface:",
+    ),
+    mutant(
+        "text that the model no longer sees is replaced all the same",
+        LOOP,
+        '                if source.kind == "replace" and last is not None '
+        "and last.seq in session.surface:",
+        '                if source.kind == "replace" and last is not None:',
+    ),
+    mutant(
+        "a closing tag in a text ends the frame around it",
+        LOOP,
+        '    body = text.strip().replace("</context", "<\\\\/context")',
+        "    body = text.strip()",
+    ),
+    mutant(
+        "a message of the user counts as what a source of context gave",
+        LOOP,
+        "    if isinstance(data, UserMessageEvent) and data.source.startswith(_CONTEXT):",
+        "    if isinstance(data, UserMessageEvent):",
+    ),
+    mutant(
+        "every end of a turn is told of",
+        AGENT_CONTEXT,
+        '    if ended is None or ended.reason not in ("aborted", "interrupted"):',
+        "    if ended is None:",
+    ),
+    mutant(
+        "a turn that was cancelled is not told of",
+        AGENT_CONTEXT,
+        '    if ended is None or ended.reason not in ("aborted", "interrupted"):',
+        '    if ended is None or ended.reason != "interrupted":',
+    ),
+    mutant(
+        "a second interruption in a row is not told of",
+        AGENT_CONTEXT,
+        'INTERRUPTION = ContextSource(_interruption, order=200, kind="note")',
+        'INTERRUPTION = ContextSource(_interruption, order=200, kind="append")',
+    ),
+    mutant(
+        "the agent service does not register the note after an interruption",
+        AGENT_PACKAGE,
+        '    agents.context.add(ctx, "interruption", INTERRUPTION)\n',
+        "",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
+    "context": MutantSet(("tests/agent_loop",), _CONTEXT),
     "prompt": MutantSet(("tests/system_prompt", "tests/agent_loop/test_turns.py"), _PROMPT),
     "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),
     "permissions": MutantSet(("tests/permissions",), _PERMISSIONS),

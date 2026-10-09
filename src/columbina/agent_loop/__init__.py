@@ -43,8 +43,11 @@ def apply(ctx: Context, config: Config) -> None:
     """Register the loop with the agent service."""
     llm = ctx.use(LLM)
     tools = ctx.use(TOOLS)
+    agents = ctx.use(AGENTS)
 
     def make(scope: Context, spec: AgentSpec, session: Session) -> Agent:
-        return LoopAgent(scope, spec, session, llm, tools, config.max_parallel_tool_calls)
+        return LoopAgent(
+            scope, spec, session, llm, tools, agents.context, config.max_parallel_tool_calls
+        )
 
-    ctx.use(AGENTS).loops.add(ctx, config.name, make)
+    agents.loops.add(ctx, config.name, make)

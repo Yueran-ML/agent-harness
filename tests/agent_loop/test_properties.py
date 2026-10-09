@@ -54,7 +54,7 @@ from columbina.session import (
     closing_events,
 )
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from support.loop import MODEL
+from support.loop import MODEL, from_a_source
 
 
 class Args(BaseModel):
@@ -339,14 +339,19 @@ class Run:
         heard = [
             data.message.content[0].text
             for event in events
-            if isinstance(data := event.data, UserMessageEvent)
+            if isinstance(data := event.data, UserMessageEvent) and not from_a_source(data)
         ]
+        assert notes_problems(events) == []
         turn = 0
         for event in events:
             data = event.data
             if isinstance(data, TurnStartEvent):
                 turn = data.turn
-            elif isinstance(data, UserMessageEvent) and turn in self.asked_at:
+            elif (
+                isinstance(data, UserMessageEvent)
+                and not from_a_source(data)
+                and turn in self.asked_at
+            ):
                 # A turn that is being cancelled takes nothing more: not what waited at that
                 # moment, and not what was given after it.
                 text = data.message.content[0].text
@@ -524,6 +529,33 @@ def test_the_log_holds_together_whatever_is_asked_and_whenever_it_is_cancelled(
 def test_what_is_stored_is_what_happened(data: st.DataObject) -> None:
     with tempfile.TemporaryDirectory() as directory:
         scenario(data, Path(directory))
+
+
+def notes_problems(events: Sequence[SessionEvent[EventData]]) -> list[str]:
+    """Check that a model is told of every turn that was cut short, once, and of no other.
+
+    The note is due before the first request of the turn that follows. A turn
+    that ends before it asks the model owes nothing, and passes the debt on.
+    """
+    problems: list[str] = []
+    owed = False
+    notes = 0
+    for event in events:
+        data = event.data
+        if isinstance(data, TurnStartEvent):
+            notes = 0
+        elif isinstance(data, UserMessageEvent) and data.source == "context/interruption":
+            notes += 1
+        elif isinstance(data, StepStartEvent) and data.step == 1:
+            if notes != (1 if owed else 0):
+                problems.append(f"turn {data.turn}: {notes} notes of an interruption, owed: {owed}")
+            owed = False
+        elif isinstance(data, TurnEndEvent):
+            if notes and data.reason not in ("aborted", "interrupted") and owed:
+                # The note was written, and the turn ended before it asked the model.
+                owed = False
+            owed = owed or data.reason in ("aborted", "interrupted")
+    return problems
 
 
 def test_the_checks_of_these_tests_find_what_they_look_for() -> None:

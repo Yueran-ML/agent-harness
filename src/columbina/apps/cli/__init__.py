@@ -254,22 +254,26 @@ class Cli:
         prompt.show([head, hint, Text()])
 
     async def _take(self, prompt: Prompt, agent: Agent, line: str) -> None:
-        """Do with a line what its beginning and the state of the agent say."""
-        if not line.strip():
+        """Do with a line what its beginning and the state of the agent say.
+
+        The spaces around a line do not count, also not for whether it is a command.
+        """
+        line = line.strip()
+        if not line:
             return
         if is_command(line):
             if prompt.busy:
                 waits = "(a command waits until the agent is at rest. Escape stops the agent.)"
                 prompt.show([Text(waits, style=_NOTE)])
                 return
-            said = await self._commands.run(agent, line.strip())
+            said = await self._commands.run(agent, line)
             if said:
                 # An empty line sets the answer apart from what comes after it.
                 prompt.show([*(Text(part) for part in said.splitlines()), Text()])
         elif prompt.busy:
-            agent.steer(line.strip())
+            agent.steer(line)
         else:
-            agent.followup(line.strip())
+            agent.followup(line)
             prompt.busy = True
             watching = asyncio.ensure_future(self._rest(prompt, agent))
             self._watching.add(watching)

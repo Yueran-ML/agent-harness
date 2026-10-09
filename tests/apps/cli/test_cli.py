@@ -202,6 +202,18 @@ async def test_a_line_that_begins_with_a_slash_is_carried_out_and_not_sent(
     assert harness.model.requests == []
 
 
+async def test_a_command_may_have_spaces_before_it(harness: Harness) -> None:
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at)).run())
+
+        at.enter("   /nowhere  ")
+        await at.sees("There is no command /nowhere. /help lists the commands.\n")
+        at.enter("  /exit")
+
+        assert await left(running) == 0
+    assert harness.model.requests == []
+
+
 async def test_a_command_is_not_carried_out_while_a_turn_runs(harness: Harness) -> None:
     harness.model.add(Reply(text="thinking", hold=True))
     with desk() as at:

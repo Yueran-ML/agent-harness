@@ -2,7 +2,7 @@
 
 import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
@@ -223,3 +223,33 @@ def test_arguments_are_read_as_json_so_that_strict_parameters_work() -> None:
     assert args == Strict(when=datetime.date(2026, 10, 9), points=(1, 2))
     with pytest.raises(ToolFailure, match=r"points\.0"):
         tool.parse('{"when": "2026-10-09", "points": ["1"]}')
+
+
+# What a call does to the world
+
+
+def test_a_tool_says_nothing_about_its_effect_unless_it_is_told() -> None:
+    plain = Tool(name="read", description="Read.", parameters=ReadArgs, execute=read_file)
+
+    assert plain.effect == "none"
+    assert plain.target is None
+
+
+@pytest.mark.parametrize("effect", ["none", "read", "write", "run"])
+def test_a_tool_can_say_what_a_call_does_to_the_world(effect: Any) -> None:
+    told = Tool(
+        name="read", description="Read.", parameters=ReadArgs, execute=read_file, effect=effect
+    )
+
+    assert told.effect == effect
+
+
+def test_an_effect_that_does_not_exist_is_refused() -> None:
+    with pytest.raises(ValueError, match="'destroy' is not an effect"):
+        Tool(
+            name="read",
+            description="Read.",
+            parameters=ReadArgs,
+            execute=read_file,
+            effect=cast("Any", "destroy"),
+        )

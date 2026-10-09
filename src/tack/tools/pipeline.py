@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -28,12 +29,16 @@ class Invocation:
             the frontends and the tool must all see the same arguments.
         args: The arguments, validated against the parameters of the tool.
         run: What the tool is told about the call.
+        target: What the call acts on, as the tool says it, or ``None`` if the
+            tool does not say. It is worked out once, so that every check and
+            every frontend goes by the same text.
     """
 
     tool: Tool[Any, Any]
     call: ToolCallBlock
     args: BaseModel
     run: ToolRun
+    target: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +61,13 @@ class Deny:
 
 Decision = Allow | Deny
 """What a listener of :data:`PRE_EXECUTE` answers."""
+
+Guard = Callable[[Context, Invocation], Awaitable[Deny | None]]
+"""A check that can refuse a call and cannot let one through.
+
+It is given the context that the call was begun with, which is the context of
+the agent, and it answers with a refusal or with nothing.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +178,12 @@ class PendingCall:
     if it answers: one that fails, or answers nothing, keeps the tool from
     running and its result from getting through.
 
+    The checks before a call come in two kinds. The listeners of
+    ``tools/pre-execute`` form a chain, in which one may answer for those
+    after it. The guards are asked after that chain has let the call through,
+    each of them, and a guard can only refuse. So nothing in the chain can
+    keep a guard from being asked.
+
     Attributes:
         call: The call as the model wrote it.
         concurrency_safe: Whether the call may run beside other calls of the
@@ -175,6 +193,7 @@ class PendingCall:
     __slots__ = (
         "_authorized",
         "_ctx",
+        "_guards",
         "_invocation",
         "_outcome",
         "_timeout",
@@ -189,10 +208,12 @@ class PendingCall:
         invocation: Invocation | None,
         timeout: float | None,
         concurrency_safe: bool,
+        guards: Registry[Guard],
     ) -> None:
         self.call = call
         self.concurrency_safe = concurrency_safe
         self._ctx = ctx
+        self._guards = guards
         self._invocation = invocation
         self._timeout = timeout
         self._authorized = False
@@ -237,16 +258,47 @@ class PendingCall:
                 f"The call could not be checked and did not run: {_describe(error)}",
             )
             return
-        if isinstance(decision, Allow):
-            self._authorized = True
-        elif isinstance(decision, Deny):
+        if isinstance(decision, Deny):
             self._fail(decision.code, f"The call was not allowed: {decision.reason}")
-        else:
+        elif not isinstance(decision, Allow):
             logger.error("a check of a call of the tool %r gave no decision", self.call.name)
             self._fail(
                 "CHECK_FAILED",
                 "The call could not be checked and did not run: a check gave no decision",
             )
+        elif await self._passes_the_guards(invocation):
+            self._authorized = True
+
+    async def _passes_the_guards(self, invocation: Invocation) -> bool:
+        """Ask every guard, in the order they were added, until one refuses."""
+        for name, guard in list(self._guards.items()):
+            what = f"the guard {name!r}"
+            try:
+                refusal = cast(
+                    "object", await cancellation.guard(guard(self._ctx, invocation), what=what)
+                )
+            except Exception as error:
+                logger.error(
+                    "%s failed on a call of the tool %r", what, self.call.name, exc_info=error
+                )
+                self._fail(
+                    "CHECK_FAILED",
+                    f"The call could not be checked and did not run: {_describe(error)}",
+                )
+                return False
+            if isinstance(refusal, Deny):
+                self._fail(refusal.code, f"The call was not allowed: {refusal.reason}")
+                return False
+            if refusal is not None:
+                # A guard has no way to let a call through: it refuses, or it says nothing.
+                logger.error("%s gave an answer that is no refusal", what)
+                self._fail(
+                    "CHECK_FAILED",
+                    "The call could not be checked and did not run: "
+                    f"{what} gave an answer that is no refusal",
+                )
+                return False
+        return True
 
     async def execute(self) -> ToolOutcome:
         """Run the tool and return how the call ended.
@@ -338,14 +390,17 @@ class Tools:
 
     Attributes:
         registry: The tools, by name.
+        guards: The guards, by name. Each is asked about every call that the
+            listeners of ``tools/pre-execute`` let through.
         timeout_seconds: How long a call may take if its tool sets no limit of
             its own, or ``None`` for no limit.
     """
 
-    __slots__ = ("registry", "timeout_seconds")
+    __slots__ = ("guards", "registry", "timeout_seconds")
 
     def __init__(self, timeout_seconds: float | None) -> None:
         self.registry: Registry[Tool[Any, Any]] = Registry("tool")
+        self.guards: Registry[Guard] = Registry("tool guard")
         self.timeout_seconds = timeout_seconds
 
     def add(self, ctx: Context, *tools: Tool[Any, Any]) -> None:
@@ -377,13 +432,13 @@ class Tools:
         if tool is None:
             names = ", ".join(self.registry)
             known = f"The tools are: {names}." if names else "There are no tools."
-            unknown = PendingCall(ctx, call, None, None, True)
+            unknown = PendingCall(ctx, call, None, None, True, self.guards)
             unknown.fail("UNKNOWN_TOOL", f"There is no tool named {call.name!r}. {known}")
             return unknown
         try:
             args = tool.parse(call.arguments)
         except ToolFailure as failure:
-            unfit = PendingCall(ctx, call, None, None, True)
+            unfit = PendingCall(ctx, call, None, None, True, self.guards)
             unfit.fail(failure.code, str(failure))
             return unfit
         except (Exception, asyncio.CancelledError) as error:
@@ -392,12 +447,23 @@ class Tools:
             logger.error(
                 "the arguments of the tool %r could not be checked", tool.name, exc_info=error
             )
-            broken = PendingCall(ctx, call, None, None, True)
+            broken = PendingCall(ctx, call, None, None, True, self.guards)
             broken.fail(
                 "TOOL_ERROR",
                 f"The arguments of the tool {tool.name} could not be checked: {_describe(error)}",
             )
             return broken
+        try:
+            target = None if tool.target is None else tool.target(args, run)
+        except (Exception, asyncio.CancelledError) as error:
+            # Without knowing what a call acts on, no check can judge it.
+            logger.error("the tool %r could not say what a call acts on", tool.name, exc_info=error)
+            aimless = PendingCall(ctx, call, None, None, True, self.guards)
+            aimless.fail(
+                "TOOL_ERROR",
+                f"The tool {tool.name} could not say what the call acts on: {_describe(error)}",
+            )
+            return aimless
         try:
             safe = tool.is_concurrency_safe(args)
         except (Exception, asyncio.CancelledError):
@@ -406,7 +472,8 @@ class Tools:
             )
             safe = False
         timeout = self.timeout_seconds if tool.timeout_seconds is None else tool.timeout_seconds
-        return PendingCall(ctx, call, Invocation(tool, call, args, run), timeout, safe)
+        invocation = Invocation(tool, call, args, run, target)
+        return PendingCall(ctx, call, invocation, timeout, safe, self.guards)
 
     async def run(self, ctx: Context, call: ToolCallBlock, run: ToolRun) -> ToolOutcome:
         """Take a call through the whole pipeline and return how it ended."""

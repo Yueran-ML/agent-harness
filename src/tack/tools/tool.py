@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Generic, TypeVar, cast
+from typing import Any, Generic, Literal, TypeVar, cast, get_args
 
 from pydantic import BaseModel, JsonValue, ValidationError
 
@@ -93,6 +93,10 @@ def _without_titles(schema: dict[str, Any]) -> dict[str, JsonValue]:
     return cleaned
 
 
+Effect = Literal["none", "read", "write", "run"]
+"""What a call of a tool does to the world outside the conversation."""
+
+
 @dataclass(frozen=True)
 class Tool(Generic[ArgsT, ValueT]):
     """Something a model can ask the harness to do.
@@ -113,9 +117,16 @@ class Tool(Generic[ArgsT, ValueT]):
         concurrency_safe: Whether a call may run beside other calls of the
             same reply. Either a fixed answer or a function of the arguments.
             A tool that changes anything is not safe.
+        effect: What a call does to the world outside the conversation:
+            nothing, it reads, it writes, or it runs a program. Checks that
+            decide whether a call may run go by this.
+        target: Says what a call acts on, as text that a rule can be matched
+            against: a path for a tool that works on a file, the command for
+            a tool that runs one.
 
     Raises:
-        ValueError: The name is not one that every provider accepts.
+        ValueError: The name is not one that every provider accepts, or the
+            effect is none of the four.
         TypeError: ``parameters`` is not a pydantic model.
     """
 
@@ -126,8 +137,14 @@ class Tool(Generic[ArgsT, ValueT]):
     render: Callable[[ArgsT, ValueT], str] | None = None
     timeout_seconds: float | None = None
     concurrency_safe: bool | Callable[[ArgsT], bool] = False
+    effect: Effect = "none"
+    target: Callable[[ArgsT, ToolRun], str] | None = None
 
     def __post_init__(self) -> None:
+        if self.effect not in get_args(Effect):
+            raise ValueError(
+                f"{self.effect!r} is not an effect: a tool says none, read, write or run"
+            )
         if _NAME.fullmatch(self.name) is None:
             raise ValueError(
                 f"{self.name!r} is not a usable tool name: it may hold up to 64 letters, "

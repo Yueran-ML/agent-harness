@@ -721,6 +721,269 @@ async def test_a_call_can_be_ended_from_outside_before_it_runs(
         pending.fail("ABORTED_BEFORE_DISPATCH", "again")
 
 
+# Guards
+
+
+def refusing(reason: str, seen: list[str] | None = None) -> Any:
+    """A guard that refuses every call, and writes down that it was asked."""
+
+    async def guard(ctx: Context, invocation: Invocation) -> Deny | None:
+        if seen is not None:
+            seen.append(reason)
+        return Deny(reason=reason, code="NOT_TODAY")
+
+    return guard
+
+
+def content(seen: list[str], name: str) -> Any:
+    """A guard that has no objection, and writes down that it was asked."""
+
+    async def guard(ctx: Context, invocation: Invocation) -> Deny | None:
+        seen.append(name)
+        return None
+
+    return guard
+
+
+async def test_a_guard_can_refuse_a_call(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    tools.add(ctx, tool("echo", journal.echo))
+    tools.guards.add(ctx, "closed", refusing("the shop is closed"))
+    seen: list[ToolOutcome] = []
+    ctx.on(RESULT, seen.append)
+
+    outcome = await tools.run(ctx, call("echo"), run)
+
+    assert outcome.error == ToolError(
+        code="NOT_TODAY", reason="The call was not allowed: the shop is closed"
+    )
+    assert journal.ran == []
+    assert seen == [outcome]
+
+
+async def test_a_guard_is_asked_even_if_a_listener_let_the_call_through_by_itself(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    async def generous(invocation: Invocation, proceed: Next[Invocation, Decision]) -> Decision:
+        # Answers at once, so that no listener after it is asked.
+        return Allow()
+
+    tools.add(ctx, tool("echo", journal.echo))
+    ctx.on(PRE_EXECUTE, generous)
+    tools.guards.add(ctx, "closed", refusing("the shop is closed"))
+
+    outcome = await tools.run(ctx, call("echo"), run)
+
+    assert outcome.error is not None
+    assert outcome.error.code == "NOT_TODAY"
+    assert journal.ran == []
+
+
+async def test_guards_are_asked_in_the_order_they_were_added_until_one_refuses(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    asked: list[str] = []
+    tools.add(ctx, tool("echo", journal.echo))
+    tools.guards.add(ctx, "first", content(asked, "first"))
+    tools.guards.add(ctx, "second", refusing("second says no", asked))
+    tools.guards.add(ctx, "third", content(asked, "third"))
+
+    outcome = await tools.run(ctx, call("echo"), run)
+
+    assert asked == ["first", "second says no"]
+    assert outcome.error is not None
+    assert outcome.error.reason == "The call was not allowed: second says no"
+
+
+async def test_a_call_runs_when_no_guard_refuses(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    asked: list[str] = []
+    tools.add(ctx, tool("echo", journal.echo))
+    tools.guards.add(ctx, "first", content(asked, "first"))
+    tools.guards.add(ctx, "second", content(asked, "second"))
+
+    outcome = await tools.run(ctx, call("echo", '{"text": "hello"}'), run)
+
+    assert asked == ["first", "second"]
+    assert outcome.error is None
+    assert outcome.text == "hello"
+
+
+async def test_guards_are_not_asked_about_a_call_that_a_listener_refused(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    async def never(invocation: Invocation, proceed: Next[Invocation, Decision]) -> Decision:
+        return Deny(reason="not today")
+
+    asked: list[str] = []
+    tools.add(ctx, tool("echo", journal.echo))
+    ctx.on(PRE_EXECUTE, never)
+    tools.guards.add(ctx, "first", content(asked, "first"))
+
+    outcome = await tools.run(ctx, call("echo"), run)
+
+    assert asked == []
+    assert outcome.error is not None
+    assert outcome.error.code == "DENIED"
+
+
+async def test_a_guard_is_given_the_context_that_the_call_was_begun_with(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    given: list[Context] = []
+
+    async def guard(context: Context, invocation: Invocation) -> Deny | None:
+        given.append(context)
+        return None
+
+    tools.add(ctx, tool("echo", journal.echo))
+    tools.guards.add(ctx, "watching", guard)
+    scope = ctx.scope("one agent")
+
+    await tools.run(scope, call("echo"), run)
+
+    assert given == [scope]
+
+
+@pytest.mark.parametrize("fault", ["raises", "answers yes", "cancels itself", "is no coroutine"])
+async def test_a_guard_that_fails_keeps_the_tool_from_running(
+    ctx: Context,
+    tools: Tools,
+    run: ToolRun,
+    journal: Journal,
+    caplog: pytest.LogCaptureFixture,
+    fault: str,
+) -> None:
+    async def raising(context: Context, invocation: Invocation) -> Deny | None:
+        raise RuntimeError("guard bug")
+
+    async def approving(context: Context, invocation: Invocation) -> Any:
+        return Allow()
+
+    async def cancelling(context: Context, invocation: Invocation) -> Deny | None:
+        raise asyncio.CancelledError
+
+    def plain(context: Context, invocation: Invocation) -> Any:
+        raise RuntimeError("guard bug")
+
+    guards = {
+        "raises": raising,
+        "answers yes": approving,
+        "cancels itself": cancelling,
+        "is no coroutine": plain,
+    }
+    tools.add(ctx, tool("echo", journal.echo))
+    tools.guards.add(ctx, "broken", guards[fault])
+
+    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+        outcome = await asyncio.wait_for(tools.run(ctx, call("echo"), run), timeout=1)
+
+    assert outcome.error is not None
+    assert outcome.error.code == "CHECK_FAILED"
+    assert outcome.error.reason.startswith("The call could not be checked and did not run")
+    assert journal.ran == []
+    assert "the guard 'broken'" in caplog.text
+
+
+async def test_a_call_can_be_cancelled_while_a_guard_decides(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    asked = asyncio.Event()
+
+    async def pondering(context: Context, invocation: Invocation) -> Deny | None:
+        asked.set()
+        await asyncio.Event().wait()
+        return None
+
+    tools.add(ctx, tool("echo", journal.echo))
+    tools.guards.add(ctx, "slow", pondering)
+    running = asyncio.ensure_future(tools.run(ctx, call("echo"), run))
+    await asyncio.wait_for(asked.wait(), timeout=1)
+
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, timeout=1)
+    assert journal.ran == []
+
+
+async def test_a_guard_leaves_with_the_plugin_that_added_it(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    def apply(inner: Context, config: object) -> None:
+        inner.use(TOOLS).guards.add(inner, "closed", refusing("the shop is closed"))
+
+    tools.add(ctx, tool("echo", journal.echo))
+    fiber = await ctx.plugin(Plugin("shop", apply, inject=(TOOLS,)))
+    assert list(tools.guards) == ["closed"]
+
+    await fiber.dispose()
+
+    assert list(tools.guards) == []
+    assert (await tools.run(ctx, call("echo"), run)).error is None
+
+
+# What a call acts on
+
+
+async def test_what_a_call_acts_on_is_worked_out_once_and_shown_to_the_checks(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    worked_out: list[str] = []
+
+    def target(args: EchoArgs, run: ToolRun) -> str:
+        worked_out.append(args.text)
+        return f"{run.cwd.name}/{args.text}"
+
+    seen: list[tuple[str, str | None]] = []
+
+    async def listener(invocation: Invocation, proceed: Next[Invocation, Decision]) -> Decision:
+        seen.append(("listener", invocation.target))
+        return await proceed(invocation)
+
+    async def guard(context: Context, invocation: Invocation) -> Deny | None:
+        seen.append(("guard", invocation.target))
+        return None
+
+    tools.add(ctx, tool("echo", journal.echo, effect="write", target=target))
+    tools.add(ctx, tool("plain", journal.echo))
+    ctx.on(PRE_EXECUTE, listener)
+    tools.guards.add(ctx, "watching", guard)
+
+    await tools.run(ctx, call("echo", '{"text": "a.txt"}'), run)
+    await tools.run(ctx, call("plain"), run)
+
+    acted_on = f"{run.cwd.name}/a.txt"
+    assert worked_out == ["a.txt"]
+    assert seen == [
+        ("listener", acted_on),
+        ("guard", acted_on),
+        ("listener", None),
+        ("guard", None),
+    ]
+
+
+async def test_a_tool_that_cannot_say_what_a_call_acts_on_does_not_run(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal, caplog: pytest.LogCaptureFixture
+) -> None:
+    def target(args: EchoArgs, run: ToolRun) -> str:
+        raise RuntimeError("target bug")
+
+    tools.add(ctx, tool("echo", journal.echo, target=target))
+
+    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+        outcome = await tools.run(ctx, call("echo"), run)
+
+    assert outcome.error == ToolError(
+        code="TOOL_ERROR",
+        reason="The tool echo could not say what the call acts on: RuntimeError: target bug",
+    )
+    assert journal.ran == []
+    assert "target bug" in caplog.text
+
+
 # Running calls beside each other
 
 

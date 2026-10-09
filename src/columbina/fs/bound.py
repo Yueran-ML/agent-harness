@@ -65,6 +65,7 @@ __all__ = [
     "MovedError",
     "NotAFileError",
     "NotShownError",
+    "link_at",
     "listing",
     "open_for_reading",
     "replace",
@@ -112,14 +113,30 @@ class Listed:
     modified_ns: int
 
 
+def _is_link(status: os.stat_result) -> bool:
+    # A directory that stands for another one is a link too, whatever the system calls it.
+    return stat.S_ISLNK(status.st_mode) or getattr(status, "st_reparse_tag", 0) == _JUNCTION
+
+
+def link_at(path: Path) -> Path | None:
+    """Return where the link at a path says that it leads, or ``None`` if no link is there.
+
+    Nothing is followed to find this out, so it can be asked about a path
+    that nobody has checked. What comes back is what the link stores, which
+    may be relative to the directory that the link lies in.
+
+    Raises:
+        OSError: Nothing is at the path, or it cannot be looked at.
+    """
+    return path.readlink() if _is_link(path.lstat()) else None
+
+
 def _listed(entry: "os.DirEntry[str]") -> Listed:
     status = entry.stat(follow_symlinks=False)
     mode = status.st_mode
-    # A directory that stands for another one is a link too, whatever the system calls it.
-    link = stat.S_ISLNK(mode) or getattr(status, "st_reparse_tag", 0) == _JUNCTION
     kind: Literal["file", "directory", "link", "other"] = (
         "link"
-        if link
+        if _is_link(status)
         else "directory"
         if stat.S_ISDIR(mode)
         else "file"

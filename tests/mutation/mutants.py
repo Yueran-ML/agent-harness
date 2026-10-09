@@ -44,6 +44,7 @@ GREP = "src/columbina/builtin_tools/grep.py"
 SHELL = "src/columbina/builtin_tools/shell.py"
 PATTERNS = "src/columbina/fs/patterns.py"
 RUNTIME = "src/columbina/context/runtime.py"
+INSTRUCTIONS = "src/columbina/context/instructions.py"
 PROMPT = "src/columbina/system_prompt/__init__.py"
 RULES = "src/columbina/permissions/rules.py"
 COMMANDS = "src/columbina/permissions/commands.py"
@@ -2277,9 +2278,199 @@ _FACTS = (
     ),
 )
 
+_INSTRUCTIONS = (
+    mutant(
+        "the most specific file comes first",
+        INSTRUCTIONS,
+        "    parts = [_OPENING, *reversed(kept)] if kept else []",
+        "    parts = [_OPENING, *kept] if kept else []",
+    ),
+    mutant(
+        "the opening stands there when no file is given",
+        INSTRUCTIONS,
+        "    parts = [_OPENING, *reversed(kept)] if kept else []",
+        "    parts = [_OPENING, *reversed(kept)]",
+    ),
+    mutant(
+        "the directories above the project are looked at too",
+        INSTRUCTIONS,
+        "            return list(reversed(up[: steps + 1]))",
+        "            return list(reversed(up))",
+    ),
+    mutant(
+        "without a repository every directory above is looked at",
+        INSTRUCTIONS,
+        "    return [here]",
+        "    return list(reversed(up))",
+    ),
+    mutant(
+        "the repository that is furthest away is the project",
+        INSTRUCTIONS,
+        "    for steps, above in enumerate(up):",
+        "    for steps, above in reversed(list(enumerate(up))):",
+    ),
+    mutant(
+        "what marks a repository is followed to see whether it is there",
+        INSTRUCTIONS,
+        'if os.path.lexists(above / ".git"):',
+        'if os.path.exists(above / ".git"):',
+    ),
+    mutant(
+        "a file is called by its name alone wherever it lies",
+        INSTRUCTIONS,
+        '            label = "/".join([*[".."] * steps_up, file_name])',
+        "            label = file_name",
+    ),
+    mutant(
+        "a file of the same content is given twice",
+        INSTRUCTIONS,
+        "if content.removeprefix(codecs.BOM_UTF8).strip() and content not in known:",
+        "if content.removeprefix(codecs.BOM_UTF8).strip():",
+    ),
+    mutant(
+        "a file that holds a mark and nothing else is given",
+        INSTRUCTIONS,
+        "if content.removeprefix(codecs.BOM_UTF8).strip() and content not in known:",
+        "if content.strip() and content not in known:",
+    ),
+    mutant(
+        "a link is opened like a file",
+        INSTRUCTIONS,
+        "                if link is not None:",
+        "                if False:",
+    ),
+    mutant(
+        "nothing is said about a link that was not read",
+        INSTRUCTIONS,
+        "                    if _named_by(directory, link) not in looked_for:",
+        "                    if False:",
+    ),
+    mutant(
+        "a link to another instruction file is told like any other",
+        INSTRUCTIONS,
+        "                    if _named_by(directory, link) not in looked_for:",
+        "                    if True:",
+    ),
+    mutant(
+        "a link is told from a file by what it leads to",
+        BOUND,
+        "    return path.readlink() if _is_link(path.lstat()) else None",
+        "    return path.readlink() if _is_link(path.stat()) else None",
+    ),
+    mutant(
+        "a file that cannot be read is passed over",
+        INSTRUCTIONS,
+        "            except (FileNotFoundError, bound.NotAFileError):",
+        "            except OSError:",
+    ),
+    mutant(
+        "a file of the user that cannot be read is passed over",
+        INSTRUCTIONS,
+        "        except FileNotFoundError:",
+        "        except OSError:",
+    ),
+    mutant(
+        "a file is read to its end however long it is",
+        INSTRUCTIONS,
+        "                    take(label, file.read(config.max_bytes + 1))",
+        "                    take(label, file.read())",
+    ),
+    mutant(
+        "a file that just fits is cut",
+        INSTRUCTIONS,
+        "        fits = len(file.content) <= room",
+        "        fits = len(file.content) < room",
+    ),
+    mutant(
+        "a wider file that does not fit is cut and not left out",
+        INSTRUCTIONS,
+        "        if left_out or (kept and not fits):",
+        "        if left_out:",
+    ),
+    mutant(
+        "a small file is given although a more specific one was left out",
+        INSTRUCTIONS,
+        "        if left_out or (kept and not fits):",
+        "        if kept and not fits:",
+    ),
+    mutant(
+        "nothing is said about the files that were left out",
+        INSTRUCTIONS,
+        "    if left_out:\n        notes.append(",
+        "    if False:\n        notes.append(",
+    ),
+    mutant(
+        "the files that were left out are named the most specific first",
+        INSTRUCTIONS,
+        "bytes: {', '.join(reversed(left_out))}]",
+        "bytes: {', '.join(left_out)}]",
+    ),
+    mutant(
+        "nothing is said about a file that was cut",
+        INSTRUCTIONS,
+        "        if not fits:\n            text +=",
+        "        if False:\n            text +=",
+    ),
+    mutant(
+        "a character that the cut goes through shows as a mark",
+        INSTRUCTIONS,
+        'errors="replace" if fits else "ignore")',
+        'errors="replace")',
+    ),
+    mutant(
+        "lines keep the ending of the system that the file was written on",
+        INSTRUCTIONS,
+        '        text = text.replace("\\r\\n", "\\n").strip()',
+        "        text = text.strip()",
+    ),
+    mutant(
+        "a name with a slash in it is taken for the name of a file",
+        INSTRUCTIONS,
+        '            plain = file_name.strip() and not set(file_name) & {"/", "\\\\", chr(0)}',
+        "            plain = file_name.strip()",
+    ),
+    mutant(
+        "an empty name is taken for the name of a file",
+        INSTRUCTIONS,
+        '            if not plain or file_name in (".", "..") or not usable(file_name):',
+        '            if file_name in (".", "..") or not usable(file_name or "x"):',
+    ),
+    mutant(
+        "the model is not told that the files are gone",
+        INSTRUCTIONS,
+        "        if said is None and _GIVEN.of(agent.session):",
+        "        if False:",
+    ),
+    mutant(
+        "a session that never had instructions is told that they are gone",
+        INSTRUCTIONS,
+        "        if said is None and _GIVEN.of(agent.session):",
+        "        if said is None:",
+    ),
+    mutant(
+        "instructions that have not changed are given again in every turn",
+        INSTRUCTIONS,
+        'ContextSource(render, order=0, kind="replace")',
+        'ContextSource(render, order=0, kind="note")',
+    ),
+    mutant(
+        "new instructions follow the conversation and the old ones stay",
+        INSTRUCTIONS,
+        'ContextSource(render, order=0, kind="replace")',
+        'ContextSource(render, order=0, kind="append")',
+    ),
+    mutant(
+        "the instructions come after the facts about the run",
+        INSTRUCTIONS,
+        'ContextSource(render, order=0, kind="replace")',
+        'ContextSource(render, order=500, kind="replace")',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
+    "instructions": MutantSet(("tests/context",), _INSTRUCTIONS),
     "context": MutantSet(("tests/agent_loop",), _CONTEXT),
     "prompt": MutantSet(("tests/system_prompt", "tests/agent_loop/test_turns.py"), _PROMPT),
     "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),

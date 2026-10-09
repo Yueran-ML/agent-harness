@@ -3,7 +3,12 @@
 import sys
 from pathlib import Path
 
-__all__ = ["link_directory", "unlink_directory"]
+import pytest
+
+__all__ = ["link_directory", "link_file", "unlink_directory"]
+
+_NOT_ALLOWED = 1314
+"""What Windows answers a user who may not make symbolic links."""
 
 
 def link_directory(link: Path, target: Path) -> None:
@@ -26,3 +31,18 @@ def unlink_directory(link: Path) -> None:
         link.rmdir()
     else:
         link.unlink()
+
+
+def link_file(link: Path, target: str | Path) -> None:
+    """Make ``link`` a symbolic link to a file, or skip the test where that cannot be done.
+
+    On Windows a user may make such a link only in developer mode or as an
+    administrator. The target is stored as it is given, so a relative one is
+    relative to the directory of the link.
+    """
+    try:
+        link.symlink_to(target)
+    except OSError as error:
+        if getattr(error, "winerror", None) != _NOT_ALLOWED:
+            raise
+        pytest.skip("this user may not make symbolic links")

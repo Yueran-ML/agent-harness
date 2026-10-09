@@ -20,7 +20,7 @@ from columbina.builtin_tools import edit, glob, grep, read, write
 from columbina.fs import FS, Access, Fs, locate
 from columbina.kernel import Context
 from columbina.llm import ToolCallBlock
-from columbina.permissions import PERMISSIONS, PROJECT_FILE, Permissions
+from columbina.permissions import PERMISSIONS, PRESETS, PROJECT_FILE, Permissions
 from columbina.permissions.commands import split_bash
 from columbina.sandbox import SANDBOX, Sandbox
 from columbina.session import SESSIONS, Session, Sessions, TurnStartEvent
@@ -217,6 +217,7 @@ async def test_a_command_that_no_rule_allows_is_asked_about_and_runs_on_a_yes(
             summary="shell: make test",
             reason="No rule allows this command, and nothing holds it here.",
             target="make  test\n",
+            standing="this command, word for word",
         )
     ]
 
@@ -321,6 +322,164 @@ async def test_a_session_with_full_access_runs_commands_without_a_question(
 
     assert await at.shell("make $(nproc)") is None
     assert at.asked == []
+
+
+# What was allowed for the rest of a session
+
+
+async def test_a_question_says_what_a_yes_for_the_session_would_cover(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, ask=["write(new.txt)", "note"])
+
+    await at.shell("git status")
+    await at.shell("rm $TARGET")
+    await at.code("write", path="./new.txt", content="x")
+    await at.code("note", text="x")
+
+    assert [request.standing for request in at.asked] == [
+        "this command, word for word",
+        None,
+        "write on new.txt",
+        "any call of note",
+    ]
+
+
+async def test_a_call_that_was_allowed_for_the_session_is_not_asked_about_again(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path)
+    at.answer = "allowed-once"
+    assert await at.shell("git status") is None
+
+    at.permissions.grant(at.session, "shell", "git status")
+    at.answer = None
+
+    assert await at.shell("git status") is None
+    assert at.ran == ["git status", "git status"]
+    assert len(at.asked) == 1
+    assert at.permissions.granted(at.session) == (("shell", "git status"),)
+
+
+async def test_the_yes_is_for_that_call_and_for_no_other(ctx: Context, tmp_path: Path) -> None:
+    at = await bench(ctx, tmp_path)
+    at.permissions.grant(at.session, "shell", "git status")
+
+    assert await at.shell("git status --short") == "APPROVAL_UNAVAILABLE"
+    assert await at.shell("git status && rm -rf .") == "APPROVAL_UNAVAILABLE"
+    assert await at.shell("git  status") == "APPROVAL_UNAVAILABLE"
+    assert at.ran == []
+
+
+async def test_what_was_allowed_in_one_session_is_asked_about_in_another(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path)
+    other = at.sessions.create(ctx, at.work)
+    at.permissions.grant(other, "shell", "git status")
+
+    assert await at.shell("git status") == "APPROVAL_UNAVAILABLE"
+    assert at.permissions.granted(at.session) == ()
+    assert at.permissions.granted(other) == (("shell", "git status"),)
+
+
+async def test_a_rule_that_refuses_is_stronger_than_a_yes_for_the_session(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, deny=["shell(git push*)"])
+    at.permissions.grant(at.session, "shell", "git push")
+
+    assert await at.shell("git push") == "DENIED"
+    assert at.ran == []
+
+
+async def test_a_rule_that_asks_gives_way_to_a_yes_for_the_session(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, ask=["write(new.txt)"])
+    assert await at.code("write", path="new.txt", content="one") == "APPROVAL_UNAVAILABLE"
+
+    at.permissions.grant(at.session, "write", "new.txt")
+
+    assert await at.code("write", path="./new.txt", content="one") is None
+    assert await at.code("write", path="new.txt", content="two") is None
+    assert (at.work / "new.txt").read_text(encoding="utf-8") == "two"
+    assert len(at.asked) == 1
+
+
+async def test_a_yes_for_a_file_is_for_the_tool_that_was_asked_about(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, ask=["write"])
+    at.put("notes.txt")
+    await at.code("read", path="notes.txt")
+    at.fs.delivered(at.session)
+    at.permissions.grant(at.session, "write", "notes.txt")
+
+    assert await at.code("edit", path="notes.txt", old="needle", new="thread") == (
+        "APPROVAL_UNAVAILABLE"
+    )
+    assert await at.code("write", path="other.txt", content="x") == "APPROVAL_UNAVAILABLE"
+    assert await at.code("write", path="notes.txt", content="x") is None
+
+
+async def test_a_tool_without_anything_that_it_acts_on_is_allowed_as_a_whole(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, ask=["note"])
+    at.permissions.grant(at.session, "note", None)
+
+    assert await at.code("note", text="one") is None
+    assert await at.code("note", text="another") is None
+    assert at.asked == []
+    assert at.permissions.granted(at.session) == (("note", None),)
+
+
+@pytest.mark.parametrize(
+    ("tool", "target"),
+    [("shell", "rm $TARGET"), ("shell", None), ("nowhere", "x"), ("bare", "git status")],
+)
+async def test_a_call_that_has_to_be_asked_about_every_time_cannot_be_allowed_for_a_session(
+    ctx: Context, tmp_path: Path, tool: str, target: str | None
+) -> None:
+    at = await bench(ctx, tmp_path)
+
+    async def run_command(args: CommandArgs, run: ToolRun) -> str:
+        return "ran"
+
+    # A tool that runs commands and registered nothing that takes them apart.
+    at.tools.add(
+        ctx,
+        Tool(
+            name="bare",
+            description="Run.",
+            parameters=CommandArgs,
+            execute=run_command,
+            effect="run",
+            target=lambda args, run: args.command,
+        ),
+    )
+
+    assert at.permissions.standing(at.session, tool, target) is None
+    with pytest.raises(ValueError, match="has to be asked about every time"):
+        at.permissions.grant(at.session, tool, target)
+    assert at.permissions.granted(at.session) == ()
+
+
+async def test_what_was_allowed_is_told_in_one_order(ctx: Context, tmp_path: Path) -> None:
+    at = await bench(ctx, tmp_path)
+    at.permissions.grant(at.session, "write", "b.txt")
+    at.permissions.grant(at.session, "shell", "git status")
+    at.permissions.grant(at.session, "note", None)
+    at.permissions.grant(at.session, "write", "a.txt")
+    at.permissions.grant(at.session, "write", "a.txt")
+
+    assert at.permissions.granted(at.session) == (
+        ("note", None),
+        ("shell", "git status"),
+        ("write", "a.txt"),
+        ("write", "b.txt"),
+    )
 
 
 # Rules about files, at every file
@@ -752,6 +911,40 @@ async def test_other_events_of_the_log_write_no_preset(ctx: Context, tmp_path: P
     at.approval.set_policy(at.session, "ask")
 
     assert at.sandbox.recorded(at.session) is None
+
+
+@pytest.mark.parametrize(
+    ("before", "preset", "mode", "policy"),
+    [
+        ("full-access", "read-only", "read-only", "ask"),
+        ("full-access", "workspace-write", "workspace-write", "ask"),
+        ("read-only", "full-access", "danger-full-access", "never"),
+    ],
+)
+async def test_a_session_can_be_given_another_preset_on_its_way(
+    ctx: Context, tmp_path: Path, before: str, preset: str, mode: str, policy: str
+) -> None:
+    at = await bench(ctx, tmp_path, preset=before)
+    at.session.append(TurnStartEvent(turn=1))
+
+    at.permissions.set_preset(at.session, preset)
+
+    assert (at.sandbox.recorded(at.session), at.approval.recorded(at.session)) == (mode, policy)
+    # What the log names is kept when the next turn begins.
+    at.session.append(TurnStartEvent(turn=2))
+    assert (at.sandbox.recorded(at.session), at.approval.recorded(at.session)) == (mode, policy)
+
+
+async def test_a_preset_that_does_not_exist_changes_nothing(ctx: Context, tmp_path: Path) -> None:
+    at = await bench(ctx, tmp_path)
+    at.session.append(TurnStartEvent(turn=1))
+    written = len(at.session.events)
+
+    with pytest.raises(ValueError, match="there is no preset 'everything'"):
+        at.permissions.set_preset(at.session, "everything")
+
+    assert len(at.session.events) == written
+    assert PRESETS == ("read-only", "workspace-write", "full-access")
 
 
 # What leaves with the plugin

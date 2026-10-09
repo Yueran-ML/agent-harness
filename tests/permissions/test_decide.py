@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from columbina.permissions import Decided, RuleSet, decide, read_rules
+from columbina.permissions import Decided, RuleSet, Splitter, decide, read_rules
 from columbina.permissions.commands import split_bash
 from columbina.permissions.rules import Place, Rule, covers_command, covers_file, parse_rule
 from columbina.sandbox import Mode
@@ -193,6 +193,88 @@ def test_a_command_is_asked_about_in_words_that_say_why() -> None:
     assert command(RuleSet(), "make", "danger-full-access").why == "The session has full access."
 
 
+# What was allowed for the rest of a session
+
+
+def test_a_call_that_was_allowed_for_the_session_goes_ahead_although_a_rule_asks() -> None:
+    held = rules(ask="write(notes.txt)", allow="read")
+    place = Place("notes.txt", "/work/notes.txt")
+
+    asked = decide(held, "write", "write", "notes.txt", place, mode="read-only", splitter=None)
+    allowed = decide(
+        held, "write", "write", "notes.txt", place, mode="read-only", splitter=None, granted=True
+    )
+
+    assert asked.verdict == "ask"
+    assert allowed == Decided("allow", None, "It was allowed for the rest of this session.")
+
+
+def test_a_rule_that_refuses_counts_against_what_was_allowed_for_the_session() -> None:
+    held = rules(deny="write(notes.txt)")
+    place = Place("notes.txt", "/work/notes.txt")
+
+    decided = decide(
+        held, "write", "write", "notes.txt", place, mode="read-only", splitter=None, granted=True
+    )
+
+    assert decided.verdict == "deny"
+
+
+def test_a_command_that_was_allowed_for_the_session_runs_without_a_rule() -> None:
+    decided = decide(
+        RuleSet(), "shell", "run", "git status", None, mode="read-only", splitter=split_bash
+    )
+    again = decide(
+        RuleSet(),
+        "shell",
+        "run",
+        "git status",
+        None,
+        mode="read-only",
+        splitter=split_bash,
+        granted=True,
+    )
+
+    assert decided.verdict == "ask"
+    assert again == Decided("allow", None, "It was allowed for the rest of this session.")
+
+
+def test_a_rule_against_a_part_of_a_command_counts_against_what_was_allowed() -> None:
+    held = rules(deny="shell(rm *)")
+
+    decided = decide(
+        held,
+        "shell",
+        "run",
+        "git status && rm -rf .",
+        None,
+        mode="read-only",
+        splitter=split_bash,
+        granted=True,
+    )
+
+    assert decided.verdict == "deny"
+
+
+@pytest.mark.parametrize("splitter", [None, split_bash])
+def test_a_command_that_cannot_be_taken_apart_is_asked_about_every_time(
+    splitter: Splitter | None,
+) -> None:
+    # Whatever said yes to it once: a line with a variable in it may do another thing next time.
+    decided = decide(
+        RuleSet(),
+        "shell",
+        "run",
+        "rm $TARGET",
+        None,
+        mode="read-only",
+        splitter=splitter,
+        granted=True,
+    )
+
+    assert decided.verdict == "ask"
+
+
 # Against the definition
 
 
@@ -216,20 +298,33 @@ def some(rules_of_a_kind: tuple[Rule, ...], speaks: "list[bool]") -> Rule | None
     st.sampled_from(sorted(TOOLS)),
     PATHS,
     st.sampled_from(MODES),
+    st.booleans(),
 )
 def test_a_call_about_a_file_is_decided_as_the_order_of_the_kinds_says(
-    deny: list[Rule], ask: list[Rule], allow: list[Rule], tool: str, path: str, mode: Mode
+    deny: list[Rule],
+    ask: list[Rule],
+    allow: list[Rule],
+    tool: str,
+    path: str,
+    mode: Mode,
+    granted: bool,
 ) -> None:
     effect: Effect = TOOLS[tool]  # pyright: ignore[reportAssignmentType]
     place = Place(path, f"/work/{path}")
     held = RuleSet(tuple(deny), tuple(ask), tuple(allow))
 
-    decided = decide(held, tool, effect, path, place, mode=mode, splitter=None)
+    decided = decide(held, tool, effect, path, place, mode=mode, splitter=None, granted=granted)
 
-    expected = "allow"
-    for verdict, kind in (("allow", allow), ("ask", ask), ("deny", deny)):
-        if any(covers_file(rule, tool, effect, place) for rule in kind):
-            expected = verdict
+    def speaks(kind: list[Rule]) -> bool:
+        return any(covers_file(rule, tool, effect, place) for rule in kind)
+
+    # What was allowed for the session stands between the rules that refuse and those that ask.
+    if speaks(deny):
+        expected = "deny"
+    elif granted:
+        expected = "allow"
+    else:
+        expected = "ask" if speaks(ask) else "allow"
     assert decided.verdict == expected
 
 
@@ -251,9 +346,10 @@ ODD = SIMPLE.map(lambda simple: f"{simple} $(c)")
     st.lists(COMMAND_RULES, max_size=3),
     st.one_of(JOINED, ODD),
     st.sampled_from(MODES),
+    st.booleans(),
 )
 def test_a_command_is_decided_as_the_definition_says(
-    deny: list[Rule], ask: list[Rule], allow: list[Rule], text: str, mode: Mode
+    deny: list[Rule], ask: list[Rule], allow: list[Rule], text: str, mode: Mode, granted: bool
 ) -> None:
     held = RuleSet(tuple(deny), tuple(ask), tuple(allow))
     apart = split_bash(text)
@@ -267,12 +363,17 @@ def test_a_command_is_decided_as_the_definition_says(
     allowed = whole_tool or every_part or mode == "danger-full-access"
     if speaks(deny, every):
         expected = "deny"
+    elif granted and apart is not None:
+        expected = "allow"
     elif speaks(ask, every):
         expected = "ask"
     else:
         expected = "allow" if allowed else "ask"
 
-    assert command(held, text, mode).verdict == expected
+    decided = decide(
+        held, "shell", "run", text, None, mode=mode, splitter=split_bash, granted=granted
+    )
+    assert decided.verdict == expected
 
 
 # Rules in a file

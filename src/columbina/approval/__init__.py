@@ -116,6 +116,11 @@ class ApprovalRequest:
             ``None`` if the tool does not say. Whoever puts the question to
             a person shows this: nobody can say yes to a command of which
             only the beginning is seen.
+        standing: What a yes for the rest of the session would cover, in
+            words that finish "do not ask again about ...", or ``None`` if
+            the call has to be asked about every time. The answer to the
+            question is for this one call either way. Whoever offers the
+            longer yes records it where the question came from.
     """
 
     session: Session
@@ -124,6 +129,7 @@ class ApprovalRequest:
     summary: str
     reason: str
     target: str | None = None
+    standing: str | None = None
 
 
 APPROVAL_ASK: SerialEvent[ApprovalRequest, Outcome] = SerialEvent("approval/ask")

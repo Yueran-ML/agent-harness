@@ -73,10 +73,11 @@ from columbina.permissions.rules import (
 )
 from columbina.sandbox import SANDBOX, Mode, Sandbox
 from columbina.session import SESSION_EVENT, SESSIONS, Committed, Session, TurnStartEvent
-from columbina.tools import TOOLS, Deny, Effect, Invocation, ToolFailure
+from columbina.tools import TOOLS, Deny, Effect, Invocation, ToolFailure, Tools
 
 __all__ = [
     "PERMISSIONS",
+    "PRESETS",
     "PROJECT_FILE",
     "Config",
     "Decided",
@@ -115,6 +116,9 @@ _PRESETS: dict[Preset, tuple[Mode, Policy]] = {
     "workspace-write": ("workspace-write", "ask"),
     "full-access": ("danger-full-access", "never"),
 }
+
+PRESETS: tuple[str, ...] = tuple(_PRESETS)
+"""The names of the presets."""
 
 Verdict = Literal["deny", "ask", "allow"]
 """What is done with a call."""
@@ -237,6 +241,7 @@ def decide(
     *,
     mode: Mode,
     splitter: Splitter | None,
+    granted: bool = False,
 ) -> Decided:
     """Say what is done with a call.
 
@@ -250,14 +255,22 @@ def decide(
         mode: The mode of the sandbox of the session.
         splitter: What takes a command of this tool apart, if the tool runs
             commands and has registered one.
+        granted: Whether this very call was allowed for the rest of the
+            session. That counts after the rules that refuse and before
+            those that ask. It does not count for a command that cannot be
+            taken apart.
     """
-    kinds: tuple[tuple[Verdict, tuple[Rule, ...]], ...] = (
-        ("deny", rules.deny),
-        ("ask", rules.ask),
-        ("allow", rules.allow),
-    )
     if effect != "run":
-        for verdict, kind in kinds:
+        for rule in rules.deny:
+            if covers_file(rule, tool, effect, place):
+                return Decided("deny", rule, _said_by("deny", rule))
+        if granted:
+            return Decided("allow", None, _GRANTED)
+        later: tuple[tuple[Verdict, tuple[Rule, ...]], ...] = (
+            ("ask", rules.ask),
+            ("allow", rules.allow),
+        )
+        for verdict, kind in later:
             for rule in kind:
                 if covers_file(rule, tool, effect, place):
                     return Decided(verdict, rule, _said_by(verdict, rule))
@@ -265,10 +278,14 @@ def decide(
     command = target or ""
     apart = None if splitter is None else splitter(command)
     spoken_of = (command, *(apart or ()))
-    for verdict, kind in kinds[:2]:
-        for rule in kind:
-            if any(covers_command(rule, tool, text) for text in spoken_of):
-                return Decided(verdict, rule, _said_by(verdict, rule))
+    for rule in rules.deny:
+        if any(covers_command(rule, tool, text) for text in spoken_of):
+            return Decided("deny", rule, _said_by("deny", rule))
+    if granted and apart is not None:
+        return Decided("allow", None, _GRANTED)
+    for rule in rules.ask:
+        if any(covers_command(rule, tool, text) for text in spoken_of):
+            return Decided("ask", rule, _said_by("ask", rule))
     for rule in rules.allow:
         if rule.pattern is None and covers_command(rule, tool, command):
             # The tool is allowed, whatever it is given.
@@ -290,6 +307,9 @@ def decide(
             "apart with certainty.",
         )
     return Decided("ask", None, "No rule allows this command, and nothing holds it here.")
+
+
+_GRANTED = "It was allowed for the rest of this session."
 
 
 def _said_by(verdict: Verdict, rule: Rule) -> str:
@@ -371,10 +391,26 @@ class Permissions:
             the tool. A tool that runs commands registers its own.
     """
 
-    __slots__ = ("_approval", "_fs", "_preset", "_ready", "_rules", "_sandbox", "splitters")
+    __slots__ = (
+        "_approval",
+        "_fs",
+        "_grants",
+        "_preset",
+        "_ready",
+        "_rules",
+        "_sandbox",
+        "_tools",
+        "splitters",
+    )
 
     def __init__(
-        self, rules: RuleSet, preset: Preset, fs: Fs, sandbox: Sandbox, approval: Approval
+        self,
+        rules: RuleSet,
+        preset: Preset,
+        fs: Fs,
+        sandbox: Sandbox,
+        approval: Approval,
+        tools: Tools,
     ) -> None:
         self.splitters: Registry[Splitter] = Registry("splitter of commands")
         self._rules = rules
@@ -382,7 +418,11 @@ class Permissions:
         self._fs = fs
         self._sandbox = sandbox
         self._approval = approval
+        self._tools = tools
         self._ready: weakref.WeakKeyDictionary[Session, RuleSet | _Unreadable] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._grants: weakref.WeakKeyDictionary[Session, set[tuple[str, str | None]]] = (
             weakref.WeakKeyDictionary()
         )
 
@@ -418,6 +458,68 @@ class Permissions:
             self._sandbox.set_mode(session, mode)
         if self._approval.recorded(session) is None:
             self._approval.set_policy(session, policy)
+
+    def standing(self, session: Session, tool: str, target: str | None) -> str | None:
+        """Say what a yes for the rest of a session would cover, if one can be given.
+
+        Such a yes is for one call as it stands: the same tool, acting on
+        the same thing. For a command that is the same line, word for word,
+        and only a line that can be taken apart, because a line with a
+        variable in it may do another thing the next time.
+
+        Args:
+            session: The session.
+            tool: The name of the tool.
+            target: What the call acts on, as the tool says it.
+
+        Returns:
+            Words that finish the sentence "do not ask again about ...", or
+            ``None`` if this call has to be asked about every time.
+        """
+        known = self._tools.registry.get(tool)
+        if known is None:
+            return None
+        if known.effect == "run":
+            splitter = self.splitters.get(tool)
+            if target is None or splitter is None or splitter(target) is None:
+                return None
+            return "this command, word for word"
+        return f"any call of {tool}" if target is None else f"{tool} on {target}"
+
+    def grant(self, session: Session, tool: str, target: str | None) -> None:
+        """Allow one call, as it stands, for the rest of a session.
+
+        The yes is kept in memory. It is gone when the program ends, and a
+        session that is taken up again is asked anew.
+
+        Raises:
+            ValueError: No such yes can be given for this call. See
+                :meth:`standing`.
+        """
+        if self.standing(session, tool, target) is None:
+            raise ValueError(f"a call of {tool} like this one has to be asked about every time")
+        self._grants.setdefault(session, set()).add((tool, target))
+
+    def granted(self, session: Session) -> tuple[tuple[str, str | None], ...]:
+        """Return what was allowed for the rest of a session: tools, and what they act on."""
+        held = self._grants.get(session, ())
+        return tuple(sorted(held, key=lambda one: (one[0], one[1] or "")))
+
+    def set_preset(self, session: Session, preset: str) -> None:
+        """Give a session the mode of the sandbox and the policy of approval of a preset.
+
+        Both are written into the log of the session, so they hold when the
+        session is taken up again.
+
+        Raises:
+            ValueError: There is no preset of that name.
+        """
+        chosen = next((held for named, held in _PRESETS.items() if named == preset), None)
+        if chosen is None:
+            raise ValueError(f"there is no preset {preset!r}")
+        mode, policy = chosen
+        self._sandbox.set_mode(session, mode)
+        self._approval.set_policy(session, policy)
 
     def _unknown(self, session: Session) -> Refuse:
         """Say why nothing is done in a session whose rules are not known."""
@@ -476,6 +578,7 @@ class Permissions:
             place,
             mode=self._sandbox.mode(session),
             splitter=self.splitters.get(tool.name),
+            granted=(tool.name, invocation.target) in self._grants.get(session, ()),
         )
         if decided.verdict == "allow":
             return None
@@ -490,6 +593,7 @@ class Permissions:
                 summary=_summary(tool.name, invocation.target),
                 reason=decided.why,
                 target=invocation.target,
+                standing=self.standing(session, tool.name, invocation.target),
             ),
         )
         if outcome == "allowed-once":
@@ -558,6 +662,7 @@ def apply(ctx: Context, config: Config) -> None:
         ctx.use(FS),
         ctx.use(SANDBOX),
         ctx.use(APPROVAL),
+        ctx.use(TOOLS),
     )
 
     def turn_begins(committed: Committed) -> None:

@@ -23,8 +23,10 @@ classifiers = [
 ]
 dependencies = [
   "httpx>=0.27",
+  "prompt-toolkit>=3.0.50",
   "pydantic>=2.9",
   "pyyaml>=6.0.2",
+  "rich>=13.9",
 ]
 
 [project.scripts]

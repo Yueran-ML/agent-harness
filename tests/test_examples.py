@@ -19,3 +19,12 @@ def test_the_readme_shows_the_kernel_demo_unchanged() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert demo in readme
+
+
+def test_the_readme_shows_the_screen_of_a_conversation_as_a_test_left_it() -> None:
+    snapshot = ROOT / "tests" / "apps" / "cli" / "snapshots" / "the_screen_of_a_session.txt"
+    screen = snapshot.read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    fence = "`" * 3
+    assert f"{fence}text\n{screen}{fence}\n" in readme

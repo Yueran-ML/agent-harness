@@ -8,7 +8,7 @@ taken up again.
 """
 
 from columbina.llm import CallConfig
-from columbina.sandbox import Sandbox, Strength
+from columbina.sandbox import Mode, Sandbox, Strength
 from columbina.session import (
     USAGE,
     AssistantAttemptEvent,
@@ -47,7 +47,14 @@ def _last_sent(session: Session) -> int:
     return 0
 
 
-def status(session: Session, model: CallConfig, sandbox: Sandbox | None, *, busy: bool) -> str:
+def status(
+    session: Session,
+    model: CallConfig,
+    sandbox: Sandbox | None,
+    *,
+    busy: bool,
+    mode: Mode | None = None,
+) -> str:
     """Return the status line of a session.
 
     Args:
@@ -55,10 +62,13 @@ def status(session: Session, model: CallConfig, sandbox: Sandbox | None, *, busy
         model: The call config that requests are made with.
         sandbox: The sandbox, if the program has one.
         busy: Whether a turn is running, which Escape would stop.
+        mode: The mode of the sandbox that the session goes by, if somebody
+            knows it better than the sandbox. Before the first turn the log
+            names none, and the permissions know which one it will be.
     """
     parts = [model.model]
     if sandbox is not None:
-        parts.append(f"{sandbox.mode(session)}, {_HELD[sandbox.strength()]}")
+        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength()]}")
     sent = _last_sent(session)
     if sent:
         told = f"{_short(sent)} tokens"

@@ -34,10 +34,9 @@ def apply(ctx: Context, config: object) -> None:
 
     async def shown(agent: Agent) -> str:
         session = agent.session
-        lines = [
-            f"sandbox mode: {sandbox.mode(session)}",
-            f"approval: {approval.policy(session)}",
-        ]
+        # Before the first turn the log names neither, and the preset says what they will be.
+        mode, policy = permissions.in_force(session)
+        lines = [f"sandbox mode: {mode}", f"approval: {policy}"]
         rules = await permissions.prepare(session, agent.cwd)
         if rules is None:
             lines.append("The rules of this project cannot be read, so nothing is allowed.")

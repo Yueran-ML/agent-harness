@@ -102,6 +102,24 @@ async def test_what_a_session_may_do_is_shown(harness: Harness) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("preset", "mode", "policy"),
+    [("read-only", "read-only", "ask"), ("full-access", "danger-full-access", "never")],
+)
+async def test_before_the_first_turn_what_is_shown_is_what_the_preset_gives(
+    harness: Harness, preset: str, mode: str, policy: str
+) -> None:
+    # The preset is written into the log when the first turn begins. Until then it is what
+    # the session will go by, and that is what somebody who asks wants to know.
+    known = await with_permissions(harness, preset=preset)
+    agent = await harness.agent()
+
+    shown = await known.run(agent, "/permissions")
+
+    assert shown.startswith(f"sandbox mode: {mode}\napproval: {policy}\n")
+    assert list(agent.session.events) == []
+
+
 async def test_the_rules_of_the_project_are_among_those_that_are_shown(harness: Harness) -> None:
     (harness.cwd / ".columbina").mkdir()
     (harness.cwd / ".columbina" / "permissions.yml").write_text(

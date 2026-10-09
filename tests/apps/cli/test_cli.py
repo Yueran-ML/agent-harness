@@ -14,6 +14,9 @@ import columbina
 import columbina.approval
 import columbina.apps.cli
 import columbina.commands
+import columbina.fs
+import columbina.permissions
+import columbina.sandbox
 from columbina.agent import INBOX, STREAM, Agent, StreamFrame
 from columbina.approval import APPROVAL, ApprovalRequest
 from columbina.apps import FRONTEND, Frontend
@@ -359,6 +362,53 @@ async def test_an_agent_that_stops_for_good_ends_the_conversation(
     assert "No space left on device" in at.seen()
 
 
+async def test_an_agent_that_stops_for_good_in_a_turn_from_elsewhere_ends_the_conversation(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def full(event: object) -> str:
+        raise OSError(28, "No space left on device")
+
+    harness.model.add(Reply(text="thinking", hold=True))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="s-1")).run())
+        await at.sees("/help lists the commands.")
+        # Another part of the program gives the agent a task. Nothing was typed.
+        agent_of(harness).followup("From elsewhere.")
+        await asyncio.wait_for(harness.model.held(), timeout=5)
+        monkeypatch.setattr("columbina.session.store.encode_event", full)
+
+        harness.model.release()
+        await at.sees("(the agent has stopped: ")
+        code = await left(running)
+        monkeypatch.undo()
+
+    assert code == 1
+    assert "No space left on device" in at.seen()
+
+
+async def test_leaving_when_the_end_of_the_turn_cannot_be_written_is_no_success(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def full(event: object) -> str:
+        raise OSError(28, "No space left on device")
+
+    harness.model.add(Reply(text="thinking", hold=True))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="s-1")).run())
+        at.enter("Think.")
+        await asyncio.wait_for(harness.model.held(), timeout=5)
+        monkeypatch.setattr("columbina.session.store.encode_event", full)
+
+        # Leaving stops the turn, and what is left of it has to be written down.
+        at.type(CTRL_D)
+        code = await left(running)
+        monkeypatch.undo()
+
+    assert code == 1
+    assert at.seen().count("(the agent has stopped: ") == 1
+    assert "No space left on device" in at.seen()
+
+
 # Sessions
 
 
@@ -538,6 +588,25 @@ async def test_the_line_below_the_prompt_tells_of_the_session(harness: Harness) 
 
     assert before == ""
     assert after == f"{MODEL.model} | 1.2k tokens | cache 0%"
+
+
+async def test_the_line_below_the_prompt_goes_by_the_preset_before_the_first_turn(
+    harness: Harness,
+) -> None:
+    for plugin in (columbina.fs, columbina.sandbox, columbina.approval):
+        await harness.ctx.plugin(plugin)
+    await harness.ctx.plugin(columbina.permissions, {"preset": "full-access"})
+    with desk() as at:
+        runner = await frontend(harness, at)
+        assert isinstance(runner, columbina.apps.cli.Cli)
+        running = asyncio.ensure_future(runner.run())
+        await at.sees("/help lists the commands.")
+
+        before = runner.status_line()
+        at.type(CTRL_D)
+        await left(running)
+
+    assert before == f"{MODEL.model} | danger-full-access, commands not held"
 
 
 async def test_a_question_of_approval_is_put_to_the_person_at_the_terminal(

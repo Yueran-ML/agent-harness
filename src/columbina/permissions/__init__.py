@@ -459,6 +459,20 @@ class Permissions:
         if self._approval.recorded(session) is None:
             self._approval.set_policy(session, policy)
 
+    def in_force(self, session: Session) -> tuple[Mode, Policy]:
+        """Return the mode of the sandbox and the policy of approval that a session goes by.
+
+        What the log of the session names counts. What it does not name yet
+        is that of the preset, which is written into the log when the first
+        turn begins. So this is right before that turn too, which is when
+        somebody looks at what a session may do.
+        """
+        mode, policy = _PRESETS[self._preset]
+        return (
+            self._sandbox.recorded(session) or mode,
+            self._approval.recorded(session) or policy,
+        )
+
     def standing(self, session: Session, tool: str, target: str | None) -> str | None:
         """Say what a yes for the rest of a session would cover, if one can be given.
 

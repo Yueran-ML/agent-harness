@@ -19,6 +19,7 @@ about at the prompt.
 """
 
 import asyncio
+import functools
 import logging
 import sys
 from pathlib import Path
@@ -149,7 +150,9 @@ class Cli:
 
         Returns:
             0 when the user left, 1 if the session could not be opened or
-            the agent stopped by itself, and 2 if there is no terminal.
+            the agent stopped for good, be it in the middle of the
+            conversation or while the user left, and 2 if there is no
+            terminal.
         """
         terminal = self._ctx.get(TERMINAL) or real()
         if terminal is None:
@@ -166,19 +169,28 @@ class Cli:
             log.removeHandler(other)
         log.addHandler(shown)
         try:
-            return await self._converse(prompt)
+            code = await self._converse(prompt)
         finally:
             log.removeHandler(shown)
             for other in others:
                 log.addHandler(other)
-            await self._close()
+            failure = await self._close()
+        if failure is not None and not self._gone.is_set():
+            # The agent stopped for good while the program was leaving: what was left of
+            # its turn could not be written down. Nobody has been told so yet.
+            prompt.show([Text(f"(the agent has stopped: {failure})", style=_BAD)])
+            return 1
+        return code
 
     def status_line(self) -> str:
         """Return what the line below the prompt says at this moment."""
         if self._agent is None or self._prompt is None:
             return ""
+        session = self._agent.session
         sandbox = self._ctx.get(SANDBOX)
-        return status(self._agent.session, self._model, sandbox, busy=self._prompt.busy)
+        permissions = self._ctx.get(PERMISSIONS)
+        mode = None if permissions is None else permissions.in_force(session)[0]
+        return status(session, self._model, sandbox, busy=self._prompt.busy, mode=mode)
 
     async def leave(self, agent: Agent, rest: str) -> str:
         """Carry out the command that ends the conversation."""
@@ -246,7 +258,7 @@ class Cli:
         self._agent = agent
         self._transcript = Transcript(self._symbols)
         prompt.show(recap(agent.session.events, self._symbols))
-        agent.ctx.on(SESSION_EVENT, self._event)
+        agent.ctx.on(SESSION_EVENT, functools.partial(self._event, agent))
         agent.ctx.on(STREAM, self._chunk)
         agent.ctx.on(APPROVAL_ASK, Responder(prompt, self._ctx.get(PERMISSIONS)))
         agent.ctx.on(REQUEST, self._with_the_model)
@@ -282,9 +294,15 @@ class Cli:
         else:
             agent.followup(line)
             prompt.busy = True
-            watching = asyncio.ensure_future(self._rest(prompt, agent))
-            self._watching.add(watching)
-            watching.add_done_callback(self._watching.discard)
+            self._watch(prompt, agent)
+
+    def _watch(self, prompt: Prompt, agent: Agent) -> None:
+        """Have somebody wait for the agent to come to rest, unless somebody does."""
+        if self._watching:
+            return
+        watching = asyncio.ensure_future(self._rest(prompt, agent))
+        self._watching.add(watching)
+        watching.add_done_callback(self._watching.discard)
 
     async def _rest(self, prompt: Prompt, agent: Agent) -> None:
         """Wait until the agent is at rest, and notice if it has stopped for good."""
@@ -305,12 +323,15 @@ class Cli:
         config = await proceed(draft)
         return config.model_copy(update={"model": self._model.model})
 
-    def _event(self, committed: Committed) -> None:
+    def _event(self, agent: Agent, committed: Committed) -> None:
         prompt = self._prompt
         assert prompt is not None
         data = committed.event.data
         if isinstance(data, TurnStartEvent):
             prompt.busy = True
+            # A turn can begin without a line from the keys. An agent that stops for good
+            # in such a turn has to be noticed as well.
+            self._watch(prompt, agent)
         elif isinstance(data, TurnEndEvent):
             prompt.busy = False
         prompt.show(self._transcript.event(committed.event))
@@ -322,16 +343,28 @@ class Cli:
         prompt.show(self._transcript.chunk(frame.chunk))
         prompt.partial = self._transcript.partial
 
-    async def _close(self) -> None:
-        """End what is running, properly, before the program goes."""
+    async def _close(self) -> Exception | None:
+        """End what is running, properly, before the program goes.
+
+        Returns:
+            What stopped the agent for good, if something did. That can
+            happen at this very moment: the turn that is stopped here leaves
+            something to be written down.
+        """
         for watching in list(self._watching):
             watching.cancel()
+        self._watching.clear()
         agent, self._agent = self._agent, None
         if agent is None:
-            return
+            return None
         if TURN.of(agent.session).in_turn:
             agent.cancel("user")
         await asyncio.shield(agent.close())
+        try:
+            await agent.when_idle()
+        except Exception as error:
+            return error
+        return None
 
 
 def apply(ctx: Context, config: Config) -> None:

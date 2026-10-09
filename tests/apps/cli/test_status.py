@@ -63,6 +63,17 @@ async def test_the_mode_of_the_sandbox_is_shown_as_it_is_now(
     assert status(session, MODEL, sandbox, busy=False) == f"deepseek-flash | {told}"
 
 
+async def test_a_mode_that_is_not_written_down_yet_is_shown_if_somebody_knows_it(
+    ctx: Context, session: Session
+) -> None:
+    # Before the first turn the log names no mode, and the permissions know which it will be.
+    sandbox = await sandbox_of(ctx)
+
+    told = status(session, MODEL, sandbox, busy=False, mode="danger-full-access")
+
+    assert told == "deepseek-flash | danger-full-access, commands not held"
+
+
 @pytest.mark.parametrize(
     ("strength", "told"), [("partial", "commands held in part"), ("full", "commands held")]
 )

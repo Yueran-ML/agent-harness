@@ -863,6 +863,37 @@ async def test_the_preset_is_written_into_the_log_when_the_first_turn_begins(
     ]
 
 
+@pytest.mark.parametrize(
+    ("preset", "mode", "policy"),
+    [
+        ("read-only", "read-only", "ask"),
+        ("workspace-write", "workspace-write", "ask"),
+        ("full-access", "danger-full-access", "never"),
+    ],
+)
+async def test_a_session_goes_by_the_preset_before_its_first_turn_has_written_it_down(
+    ctx: Context, tmp_path: Path, preset: str, mode: str, policy: str
+) -> None:
+    at = await bench(ctx, tmp_path, preset=preset)
+
+    # Whoever shows what a session may do shows what it will do, and writes nothing for it.
+    assert at.permissions.in_force(at.session) == (mode, policy)
+    assert list(at.session.events) == []
+    at.session.append(TurnStartEvent(turn=1))
+    assert at.permissions.in_force(at.session) == (mode, policy)
+
+
+async def test_what_the_log_names_counts_for_more_than_the_preset(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, preset="full-access")
+
+    at.sandbox.set_mode(at.session, "read-only")
+    assert at.permissions.in_force(at.session) == ("read-only", "never")
+    at.approval.set_policy(at.session, "ask")
+    assert at.permissions.in_force(at.session) == ("read-only", "ask")
+
+
 async def test_the_preset_is_workspace_write_unless_the_config_says_otherwise(
     ctx: Context, tmp_path: Path
 ) -> None:

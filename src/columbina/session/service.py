@@ -11,11 +11,13 @@ from columbina.session.events import EndSeedEvent, EventData, SessionEvent
 from columbina.session.log import Session, now_ms
 from columbina.session.repair import CloseReason, closing_events
 from columbina.session.store import (
+    Listed,
     SessionFile,
     StoredSession,
     check_session_id,
     new_session_id,
     read_session,
+    stored_sessions,
     workspace_key,
 )
 
@@ -59,6 +61,16 @@ class Sessions:
                 "because the session plugin was given no root"
             )
         return self.root / workspace_key(cwd) / check_session_id(session_id)
+
+    def stored(self, cwd: str | Path) -> list[Listed]:
+        """List the sessions that are stored for a working directory, the last used first.
+
+        Sessions that are kept in memory are not listed. This reads the
+        beginning of every session file, so it takes the time that takes.
+        """
+        if self.root is None:
+            return []
+        return stored_sessions(self.root / workspace_key(cwd))
 
     def create(
         self,

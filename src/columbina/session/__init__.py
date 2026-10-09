@@ -48,7 +48,7 @@ from columbina.session.log import SESSION_EVENT, Committed, Session, SessionStor
 from columbina.session.projection import TURN, USAGE, Projection, TurnState, UsageTotal
 from columbina.session.repair import CloseReason, closing_events
 from columbina.session.service import SESSIONS, Sessions
-from columbina.session.store import SessionFile, StoredSession, read_session
+from columbina.session.store import Listed, SessionFile, StoredSession, read_session
 from columbina.session.surface import Surface
 
 __all__ = [
@@ -66,6 +66,7 @@ __all__ = [
     "EndSeedEvent",
     "EventData",
     "InvalidEventError",
+    "Listed",
     "Projection",
     "RequestHeaderEvent",
     "Session",

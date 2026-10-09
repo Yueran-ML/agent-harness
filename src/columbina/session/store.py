@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import re
@@ -13,7 +14,9 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
+
+from pydantic import ValidationError
 
 from columbina.session import lock
 from columbina.session.codec import (
@@ -30,7 +33,7 @@ from columbina.session.errors import (
     SessionStoreError,
     UnreadableSessionError,
 )
-from columbina.session.events import EventData, SessionEvent
+from columbina.session.events import EventData, SessionEvent, UserMessageEvent
 from columbina.session.surface import Surface
 
 logger = logging.getLogger("columbina.session")
@@ -93,6 +96,92 @@ class StoredSession:
     header: SessionHeader
     events: list[SessionEvent[EventData]]
     valid_length: int
+
+
+@dataclass(frozen=True, slots=True)
+class Listed:
+    """A stored session, as a list of sessions shows it.
+
+    Attributes:
+        id: The id of the session.
+        modified_ms: When the session was last written to, in milliseconds
+            since the epoch.
+        first_input: The beginning of what the user said first, or ``None``
+            if the user has said nothing in it.
+    """
+
+    id: str
+    modified_ms: int
+    first_input: str | None
+
+
+_SHOWN_OF_AN_INPUT = 79
+
+
+def _first_input(path: Path) -> str | None:
+    """Return the beginning of the first thing that the user said in a session file.
+
+    The file is read as far as that, and no further. What plugins told the
+    model at the beginning of a turn is not something the user said.
+
+    Raises:
+        UnreadableSessionError: The file does not begin like a session.
+        OSError: The file cannot be read.
+    """
+    with path.open("rb") as file:
+        decode_header(file.readline())
+        for number, line in enumerate(file, start=2):
+            if not line.endswith(b"\n"):
+                # A last line that was never finished.
+                break
+            try:
+                written: object = json.loads(line)
+            except ValueError:
+                raise UnreadableSessionError(f"line {number} is not an event") from None
+            if not isinstance(written, dict):
+                raise UnreadableSessionError(f"line {number} is not an event")
+            event = cast("dict[str, object]", written)
+            if event.get("type") != UserMessageEvent.event_type:
+                continue
+            try:
+                said = UserMessageEvent.model_validate(event.get("data"))
+            except ValidationError:
+                raise UnreadableSessionError(f"line {number} is not an event") from None
+            if said.source != "user":
+                continue
+            texts = [block.text for block in said.message.content]
+            first = " ".join(texts).strip().partition("\n")[0].rstrip()
+            if len(first) > _SHOWN_OF_AN_INPUT + 1:
+                return first[:_SHOWN_OF_AN_INPUT] + "..."
+            return first
+    return None
+
+
+def stored_sessions(directory: Path) -> list[Listed]:
+    """List the sessions that lie in the directory of one working directory.
+
+    The session that was written to last comes first. A session that cannot
+    be read is left out, with a warning in the log, so that one broken file
+    does not hide the others.
+    """
+    try:
+        entries = list(directory.iterdir())
+    except FileNotFoundError:
+        return []
+    listed: list[Listed] = []
+    for entry in entries:
+        file = entry / SESSION_FILE
+        try:
+            modified = file.stat().st_mtime_ns // 1_000_000
+            first = _first_input(file)
+        except (FileNotFoundError, NotADirectoryError):
+            # Something else lies there.
+            continue
+        except (UnreadableSessionError, OSError) as error:
+            logger.warning("the session in %s is left out of the list: %s", entry, error)
+            continue
+        listed.append(Listed(entry.name, modified, first))
+    return sorted(listed, key=lambda one: (one.modified_ms, one.id), reverse=True)
 
 
 def read_session(directory: Path, kinds: Mapping[str, type[EventData]]) -> StoredSession:

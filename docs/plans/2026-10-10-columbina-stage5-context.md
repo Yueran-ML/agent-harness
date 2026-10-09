@@ -166,11 +166,11 @@
 
 **14. 手动压缩走 `Agent.run_maintenance`。** 它只在 Agent 空闲时接受一件事，由驱动任务执行，执行期间到来的输入排在它后面。Agent 在忙时它立刻拒绝，不排队。`cancel()` 能停下它。`/compact` 就是经它调用压缩。
 
-**15. 溢出存盘是一个接缝，两个方法。** `save_text` 存一段文字，`open` 给出一个可以边到边写的文件。本地提供者写到 `<COLUMBINA_HOME>/spill/<工作目录的键>/<会话 id>/`，文件名是八位随机的十六进制数加上调用方给的名字，独占创建，POSIX 上目录和文件只有属主可以访问。提供者在文件系统接缝上登记一条授权：读这个工作目录的溢出目录是允许的。启动时清一次超过三十天的文件，不跟随链接。`save_text` 把超过 2000 个字符的行折开，否则 `read` 读不到一行的后半段。
+**15. 溢出存盘是一个接缝，两个方法。** `save_text` 存一段文字，`open` 给出一个可以边到边写的文件。本地提供者写到 `<COLUMBINA_HOME>/spill/<工作目录的键>/<会话 id>/`，文件名是八位随机的十六进制数加上调用方给的名字，独占创建，POSIX 上目录和文件只有属主可以访问。提供者在文件系统接缝上登记一条授权：读这个工作目录的溢出目录是允许的。启动时清一次超过三十天的文件，不跟随链接。两个方法写下的文件都把超过 2000 个字符的行折开，否则 `read` 读不到一行的后半段。分段到来的文字无论怎样切分，折行的位置都相同。不是文字的字节原样写入，换行之前的回车不计入行长。三层目录逐层创建，因为一次建到底时只有最末一层得到指定的权限。
 
 **16. 工具结果有一个上限，12500 个 token。** 一个 `tools/post-execute` 监听器按第 1 条的估算量结果的文字。超出时把全文存盘，交给模型的是开头、一行省略说明、结尾和一句结尾的话。那句话写明全文有多少字节、存在哪里、怎样读。工具可以声明自己的结果是分页的，`read` 是这样，上限不管它。存盘失败时仍然截短，并如实说明全文没有保住。
 
-**17. 命令的完整输出边到边写进溢出文件。** 输出超过内存里保留的 64000 字节时才打开文件，先写下已经到的部分，之后每到一段写一段，最多 64 MiB。命令工具的返回值带着这个文件的位置，结果上限用它，不再另存一份。屏幕上和模型读到的仍然是开头和结尾。
+**17. 命令的完整输出边到边写进溢出文件。** 输出超过内存里保留的 64000 字节时才打开文件，先写下已经到的部分，之后每到一段写一段，最多 64 MiB，这也是 `read` 在一个文件里查看的上限。运行结束之后不再写入，不论它是怎样结束的，所以调用方可以放心关闭文件。命令工具在结果末尾写明全文的位置，返回值也带着它。结果上限据此不再另存一份，也不重复这句话。裁短这样的结果时，省略说明不给字数，因为工具此前略去了多少在那里无从得知。只存下一部分时，结果写明存下了多少，返回值不带位置，结果上限把它当作普通结果处理。文件打不开或者一个字节也没有存下时，命令照常运行，结果写明全文没有保住。屏幕上和模型读到的仍然是开头和结尾。
 
 **18. 待办清单是模型自己的记事。** 工具 `todo_write` 每次整体替换清单，每项有内容和状态，状态是 `pending`、`in_progress`、`completed` 之一，同一时刻最多一项在进行。清单存成 `todo/write` 事件，读日志的程序可以略过它。工具的结果是三种状态各有几项。清单跨回合保留。写下清单的那次调用被压缩遮蔽之后，待办插件作为上下文来源把清单重新告诉模型。终端里清单变化时印出来，`/todos` 随时可以看。
 
@@ -188,6 +188,7 @@
 6. 保留的尾部总含最后一条由人写的消息。
 7. 待办清单跨回合保留，同一时刻最多一项在进行。
 8. `sessions show` 和 `sessions fork` 的具体行为，设计文档没有写。
+9. 命令的输出写进溢出文件时同样折行。溢出文件与输出逐字节相同，只在输出没有超长的行时成立。
 
 ## 模块与接口
 
@@ -220,6 +221,9 @@ class Saved:
     locator: str           # 告诉模型的位置。本地提供者给出绝对路径
     bytes: int
     hint: str              # 怎样读它
+    what: str = "result"   # 它是什么的全文。命令工具写 "output"
+
+    def told(self) -> str  # 告诉模型全文在哪里、怎样读的那一行
 
 class SpillFile(Protocol):
     def write(self, data: bytes) -> None
@@ -236,15 +240,34 @@ SPILL = ServiceKey[SpillStore]("spill")
 
 ### `columbina.spill.policy`（新建，插件 `spill-policy`）
 
-配置是 `max_tokens`，默认 12500。监听 `tools/post-execute`。`Tool` 增加字段 `paged: bool = False`。工具的返回值有属性 `complete: Saved | None` 时，上限把它当作全文的位置。
+配置是 `max_tokens`，默认 12500。监听 `tools/post-execute`。`Tool` 增加字段 `paged: bool = False`。工具的返回值有属性 `complete: Saved | None` 时，上限把它当作全文的位置：不另存，结果以 `Saved.told()` 结尾，工具自己已经写了这一行的不重复。
 
 ### `columbina.process`（修改）
 
 ```python
-async def run(..., overflow: Callable[[], BinaryIO] | None = None,
+class Writable(Protocol):
+    def write(self, data: bytes) -> None
+
+async def run(..., overflow: Callable[[], Writable] | None = None,
               max_overflow_bytes: int = 64 * 1024 * 1024) -> Completed
-# Completed 增加：saved_bytes: int，写进溢出文件的字节数，没有打开文件时为 0
+# Completed 增加：output_bytes: int，程序一共写了多少字节；
+#                saved_bytes: int，其中从头起有多少字节也写到了别处，没有打开时为 0
 ```
+
+### `columbina.builtin_tools.shell`（修改）
+
+```python
+@dataclass(frozen=True)
+class ShellResult:
+    text: str
+    complete: Saved | None = None   # 全文都存下时的位置
+
+def shell_tool(sandbox: Sandbox, shell: str,
+               spill: Callable[[], SpillStore | None]) -> Tool[ShellArgs, ShellResult]
+MAX_SAVED_BYTES = 64 * 1024 * 1024
+```
+
+`spill` 在每次调用时取存盘服务。没有存盘服务时，命令工具照旧只返回开头和结尾。
 
 ### `columbina.session`（修改）
 

@@ -30,6 +30,7 @@ PIPELINE = "src/columbina/tools/pipeline.py"
 SEAM = "src/columbina/fs/__init__.py"
 PATHS = "src/columbina/fs/paths.py"
 BOUND = "src/columbina/fs/bound.py"
+SANDBOX = "src/columbina/sandbox/__init__.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -859,11 +860,81 @@ _FS = (
     ),
 )
 
+_SANDBOX = (
+    mutant(
+        "a session that is read-only is written to",
+        SANDBOX,
+        '        if mode == "read-only":',
+        "        if False:",
+    ),
+    mutant(
+        "what belongs to the repository is written like anything else",
+        SANDBOX,
+        '        if mode == "workspace-write" and protected is not None:',
+        "        if False:",
+    ),
+    mutant(
+        "what belongs to the repository is kept from a session with full access",
+        SANDBOX,
+        '        if mode == "workspace-write" and protected is not None:',
+        "        if protected is not None:",
+    ),
+    mutant(
+        "another case of its name makes a directory unprotected",
+        SANDBOX,
+        "        if part.casefold() in PROTECTED:",
+        "        if part in PROTECTED:",
+    ),
+    mutant(
+        "a session that may write its working directory may write anywhere",
+        SANDBOX,
+        '        return mode == "workspace-write" and access.kind == "write" and access.where.inside',
+        '        return mode == "workspace-write" and access.kind == "write"',
+    ),
+    mutant(
+        "full access is no wider than the working directory",
+        SANDBOX,
+        '        if mode == "danger-full-access":\n            return True\n',
+        "",
+    ),
+    mutant(
+        "the mode that the log names is passed over",
+        SANDBOX,
+        "        return _MODE.of(session) or self._default",
+        "        return self._default",
+    ),
+    mutant(
+        "a mode is written although the log names it already",
+        SANDBOX,
+        "        if _MODE.of(session) != mode:",
+        "        if True:",
+    ),
+    mutant(
+        "the strength of the provider is not told",
+        SANDBOX,
+        '        return "none" if provider is None else provider.strength',
+        '        return "none"',
+    ),
+    mutant(
+        "a command is confined in the mode of the config",
+        SANDBOX,
+        "        held = provider.confine(argv, mode=self.mode(session), cwd=cwd)",
+        "        held = provider.confine(argv, mode=self._default, cwd=cwd)",
+    ),
+    mutant(
+        "a provider that is not there is no reason to stop",
+        SANDBOX,
+        "        if provider is None:\n            raise SandboxUnavailableError(",
+        "        if False:\n            raise SandboxUnavailableError(",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "loop": MutantSet(("tests/agent_loop", "tests/agent", "tests/test_cancellation.py"), _LOOP),
     "tools": MutantSet(("tests/tools",), _TOOLS),
     "read": MutantSet(("tests/builtin_tools",), _READ),
     "process": MutantSet(("tests/test_process.py",), _PROCESS),
     "fs": MutantSet(("tests/fs", "tests/builtin_tools"), _FS),
+    "sandbox": MutantSet(("tests/sandbox",), _SANDBOX),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

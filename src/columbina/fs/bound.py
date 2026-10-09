@@ -33,6 +33,7 @@ error 5, while files in it are still made and replaced.
 """
 
 import contextlib
+import itertools
 import os
 import secrets
 import stat
@@ -68,6 +69,13 @@ class ChangedError(Exception):
     """The file is no longer in the state in which it was seen."""
 
 
+def _one_entry(left: Path, right: Path) -> bool:
+    try:
+        return os.path.samestat(left.lstat(), right.lstat())
+    except OSError:
+        return False
+
+
 def _same_entries(one: str, other: str) -> bool:
     """Tell whether two spellings of a path name the same entries, level by level.
 
@@ -77,16 +85,9 @@ def _same_entries(one: str, other: str) -> bool:
     if len(first.parts) != len(second.parts):
         return False
     levels = zip((first, *first.parents), (second, *second.parents), strict=True)
-    for left, right in levels:
-        if str(left) == str(right):
-            # From here up the two are spelled alike.
-            return True
-        try:
-            if not os.path.samestat(left.lstat(), right.lstat()):
-                return False
-        except OSError:
-            return False
-    return True
+    # From the file upwards, as far as the two are spelled differently.
+    apart = itertools.takewhile(lambda level: str(level[0]) != str(level[1]), levels)
+    return all(_one_entry(left, right) for left, right in apart)
 
 
 if sys.platform == "win32":  # pragma: windows only

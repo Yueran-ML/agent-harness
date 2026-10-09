@@ -8,7 +8,12 @@ first ``_SCAN_BYTES`` of the file, and it stops when its caller is cancelled.
 
 The file is found, allowed and opened through the seam of the file system. A
 file that was read is one that the model has been shown, which the seam
-remembers for the tools that write.
+remembers for the tools that write. It is remembered when the result of the
+call has got through to the model, and not if something withheld it.
+
+The checks of a call are told where its path leads, and the tool looks again
+when it runs. If the path leads elsewhere by then, the file is not read: the
+checks spoke about another file.
 """
 
 import asyncio
@@ -20,9 +25,9 @@ from pydantic import BaseModel, Field
 
 from columbina.fs import FS, Access, Fingerprint, Fs, Permit, locate
 from columbina.kernel import Context
-from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
+from columbina.tools import RESULT, TOOLS, Tool, ToolFailure, ToolOutcome, ToolRun
 
-__all__ = ["ReadArgs", "apply", "inject", "name", "read_tool"]
+__all__ = ["ReadArgs", "ReadResult", "apply", "inject", "name", "read_tool"]
 
 name = "tool-read"
 inject = (TOOLS, FS)
@@ -225,15 +230,40 @@ def _note(part: _Part, offset: int) -> str | None:
     return f"[lines {first} to {last} of at least {part.lines}.{read_on} {looked_at}]"
 
 
+@dataclass(frozen=True, slots=True)
+class ReadResult:
+    """What a read returns.
+
+    Attributes:
+        text: What the model reads.
+        permit: The permit that the file was opened through.
+        fingerprint: The state of the file when it was opened.
+    """
+
+    text: str
+    permit: Permit
+    fingerprint: Fingerprint
+
+
 def _target(args: ReadArgs, run: ToolRun) -> str:
     return locate(run.cwd, args.path).relative
 
 
-def read_tool(fs: Fs) -> Tool[ReadArgs, str]:
+def _text(args: ReadArgs, result: ReadResult) -> str:
+    return result.text
+
+
+def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
     """Make the read tool, which reaches files through ``fs``."""
 
-    async def read(args: ReadArgs, run: ToolRun) -> str:
+    async def read(args: ReadArgs, run: ToolRun) -> ReadResult:
         where = locate(run.cwd, args.path)
+        if where.relative != run.target:
+            raise ToolFailure(
+                f"{args.path} leads somewhere else than it did when the call was checked, "
+                "so it was not read. Try again.",
+                code="MOVED",
+            )
         permit = fs.permit(Access(run.session, run.cwd, where, "read", "read"))
         if where.path.is_dir():
             raise ToolFailure(f"{args.path} is a directory, not a file.", code="NOT_A_FILE")
@@ -249,11 +279,11 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, str]:
             stopped.set()
         if part is None:
             raise ToolFailure(f"{args.path} does not look like a text file.", code="NOT_TEXT")
-        fs.shown(permit, part.fingerprint)
         if part.lines == 0:
-            return "(the file is empty)"
+            return ReadResult("(the file is empty)", permit, part.fingerprint)
         note = _note(part, args.offset)
-        return "\n".join(part.shown if note is None else [*part.shown, note])
+        text = "\n".join(part.shown if note is None else [*part.shown, note])
+        return ReadResult(text, permit, part.fingerprint)
 
     return Tool(
         name="read",
@@ -264,6 +294,7 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, str]:
         ),
         parameters=ReadArgs,
         execute=read,
+        render=_text,
         concurrency_safe=True,
         effect="read",
         target=_target,
@@ -271,5 +302,14 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, str]:
 
 
 def apply(ctx: Context, config: object) -> None:
-    """Register the read tool."""
-    ctx.use(TOOLS).add(ctx, read_tool(ctx.use(FS)))
+    """Register the read tool, and note which files the model was shown."""
+    fs = ctx.use(FS)
+
+    def remember(outcome: ToolOutcome) -> None:
+        # A result that was withheld on its way has shown the model nothing.
+        result = outcome.value
+        if outcome.error is None and isinstance(result, ReadResult):
+            fs.shown(result.permit, result.fingerprint)
+
+    ctx.use(TOOLS).add(ctx, read_tool(fs))
+    ctx.on(RESULT, remember)

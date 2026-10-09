@@ -5,7 +5,7 @@ import contextlib
 import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ValidationError, field_validator
@@ -418,7 +418,9 @@ async def test_a_listener_can_refuse_a_call_before_it_runs(
     assert seen[0].tool is registered
     assert seen[0].call is asked
     assert seen[0].args == EchoArgs(text="the secret")
-    assert seen[0].run is run
+    # The run that a listener sees tells what the caller told, and what the call acts on.
+    told = seen[0].run
+    assert (told.call_id, told.cwd, told.session) == (run.call_id, run.cwd, run.session)
 
 
 async def test_a_refusal_can_carry_its_own_code(
@@ -1044,6 +1046,102 @@ async def test_a_listener_that_passes_on_the_call_it_was_given_lets_it_run(
 
     assert outcome.error is None
     assert journal.ran == ["as checked"]
+
+
+class ListArgs(BaseModel):
+    items: list[str] = []
+
+
+@pytest.mark.parametrize("stage", ["before the checks", "after the checks"])
+async def test_arguments_that_a_listener_changed_in_place_keep_the_tool_from_running(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal, stage: str
+) -> None:
+    async def before(invocation: Invocation, proceed: Next[Invocation, Decision]) -> Decision:
+        cast("EchoArgs", invocation.args).text = "changed"
+        return await proceed(invocation)
+
+    async def after(invocation: Invocation, proceed: Next[Invocation, object]) -> object:
+        cast("EchoArgs", invocation.args).text = "changed"
+        return await proceed(invocation)
+
+    asked: list[str] = []
+    tools.add(ctx, tool("echo", journal.echo))
+    tools.guards.add(ctx, "watching", content(asked, "watching"))
+    if stage == "before the checks":
+        ctx.on(PRE_EXECUTE, before)
+    else:
+        ctx.on(EXECUTE, after)
+
+    outcome = await tools.run(ctx, call("echo", '{"text": "as written"}'), run)
+
+    assert outcome.error is not None
+    assert outcome.error.code == "CHECK_FAILED"
+    assert "changed the arguments" in outcome.error.reason
+    assert journal.ran == []
+    # A guard is not asked about arguments that are no longer those of the model.
+    assert asked == ([] if stage == "before the checks" else ["watching"])
+
+
+async def test_a_change_inside_an_argument_is_a_change_of_the_arguments(
+    ctx: Context, tools: Tools, run: ToolRun
+) -> None:
+    ran: list[list[str]] = []
+
+    async def take(args: ListArgs, run: ToolRun) -> str:
+        ran.append(args.items)
+        return "taken"
+
+    async def adding(invocation: Invocation, proceed: Next[Invocation, object]) -> object:
+        cast("ListArgs", invocation.args).items.append("smuggled")
+        return await proceed(invocation)
+
+    tools.add(ctx, Tool(name="take", description="Take.", parameters=ListArgs, execute=take))
+    ctx.on(EXECUTE, adding)
+
+    outcome = await tools.run(ctx, call("take", '{"items": ["one"]}'), run)
+
+    assert outcome.error is not None
+    assert outcome.error.code == "CHECK_FAILED"
+    assert ran == []
+
+
+async def test_a_tool_that_leaves_while_a_listener_holds_the_call_does_not_run(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    fiber = await ctx.plugin(lending("echo", journal))
+
+    async def unloading(invocation: Invocation, proceed: Next[Invocation, object]) -> object:
+        await fiber.dispose()
+        return await proceed(invocation)
+
+    ctx.on(EXECUTE, unloading)
+
+    outcome = await tools.run(ctx, call("echo"), run)
+
+    assert outcome.error is not None
+    assert outcome.error.code == "UNKNOWN_TOOL"
+    assert journal.ran == []
+
+
+async def test_a_tool_is_told_what_the_checks_were_told_that_the_call_acts_on(
+    ctx: Context, tools: Tools, run: ToolRun
+) -> None:
+    told: list[str | None] = []
+
+    async def noting(args: EchoArgs, run: ToolRun) -> str:
+        told.append(run.target)
+        return "noted"
+
+    def target(args: EchoArgs, run: ToolRun) -> str:
+        return f"the place of {args.text}"
+
+    tools.add(ctx, tool("aimed", noting, target=target))
+    tools.add(ctx, tool("plain", noting))
+
+    await tools.run(ctx, call("aimed", '{"text": "a.txt"}'), run)
+    await tools.run(ctx, call("plain"), run)
+
+    assert told == ["the place of a.txt", None]
 
 
 def lending(name: str, journal: Journal) -> Plugin[object]:

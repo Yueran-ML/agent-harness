@@ -18,11 +18,22 @@ import columbina.fs
 import columbina.tools
 from columbina.builtin_tools import read
 from columbina.fs import FS, Access, Fingerprint, Fs, Permit, Refuse, locate
-from columbina.kernel import Context
+from columbina.kernel import Context, Next
 from columbina.llm import ToolCallBlock
 from columbina.session import CORE_EVENTS, Session
-from columbina.tools import TOOLS, Deny, Invocation, ToolOutcome, ToolRun, Tools
-from support.links import link_directory
+from columbina.tools import (
+    POST_EXECUTE,
+    TOOLS,
+    Block,
+    Deny,
+    Executed,
+    Invocation,
+    ToolOutcome,
+    ToolRun,
+    Tools,
+    Verdict,
+)
+from support.links import link_directory, unlink_directory
 
 
 @pytest.fixture
@@ -681,3 +692,48 @@ async def test_a_file_that_is_elsewhere_by_the_time_it_is_opened_is_not_read(
     assert outcome.error is not None
     assert outcome.error.code == "MOVED"
     assert "a secret" not in outcome.text
+
+
+async def test_a_path_that_leads_elsewhere_than_when_the_call_was_checked_is_not_read(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "public").mkdir()
+    (work / "public" / "notes.txt").write_text("for everyone", encoding="utf-8")
+    (work / "private").mkdir()
+    (work / "private" / "notes.txt").write_text("a secret", encoding="utf-8")
+    link_directory(work / "door", work / "public")
+    checked: list[str | None] = []
+
+    async def turning(context: Context, invocation: Invocation) -> Deny | None:
+        # The check sees where the door leads. Then the door is turned.
+        checked.append(invocation.target)
+        unlink_directory(work / "door")
+        link_directory(work / "door", work / "private")
+        return None
+
+    tools.guards.add(ctx, "turning", turning)
+
+    outcome = await call(ctx, tools, work, arguments("door/notes.txt"))
+
+    assert checked == ["public/notes.txt"]
+    assert outcome.error is not None
+    assert outcome.error.code == "MOVED"
+    assert "a secret" not in outcome.text
+
+
+async def test_a_file_whose_content_was_withheld_was_not_shown_to_the_model(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    async def withholding(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
+        return Block(reason="this is not for the model")
+
+    (work / "notes.txt").write_text("first\n", encoding="utf-8")
+    session = Session(ctx, "s-9", {kind.event_type: kind for kind in CORE_EVENTS})
+    asked = ToolCallBlock(call_id="call-1", name="read", arguments=arguments("notes.txt"))
+    ctx.on(POST_EXECUTE, withholding)
+
+    outcome = await tools.run(ctx, asked, ToolRun(call_id="call-1", cwd=work, session=session))
+
+    assert outcome.error is not None
+    assert outcome.error.code == "RESULT_BLOCKED"
+    assert ctx.use(FS).seen(session, locate(work, "notes.txt").path) is None

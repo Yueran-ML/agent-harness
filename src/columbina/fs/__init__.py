@@ -8,9 +8,10 @@ place makes sure that what is touched is what was decided about.
 
 The decision has three parts, taken in this order.
 
-1. Restrictions. Each one may refuse an access or say nothing. All of them are
-   asked, and one refusal is enough. Nothing can keep a restriction from being
-   asked, and nothing that follows can undo its refusal.
+1. Restrictions. Each one may refuse an access or say nothing. They are asked
+   one after another, and the first refusal ends the asking. Nothing but a
+   refusal can keep a restriction from being asked, and nothing that follows
+   can undo a refusal.
 2. The rule of the seam itself: a file in the working directory may be read.
 3. Grants. Each one may allow an access or say nothing. One of them is enough.
 
@@ -259,8 +260,8 @@ class Fs:
     """Decides what tools may do to files, and remembers what the model was shown.
 
     Attributes:
-        restrictions: The restrictions, by name. Every one is asked about
-            every access.
+        restrictions: The restrictions, by name. They are asked about every
+            access, in the order they were added, until one refuses.
         grants: The grants, by name. They are asked about an access that the
             seam does not allow by itself.
     """

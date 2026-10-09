@@ -327,6 +327,18 @@ _READ = (
         '            self._head = ""\n            self._returned = False\n',
     ),
     mutant(
+        "a path that leads elsewhere than when it was checked is read",
+        READ,
+        "        if where.relative != run.target:",
+        "        if False:",
+    ),
+    mutant(
+        "a file that was read is not remembered as shown",
+        READ,
+        "    ctx.on(RESULT, remember)\n",
+        "",
+    ),
+    mutant(
         "the thread is not told to stop",
         READ,
         "            # A thread cannot be cancelled. It is told to stop, and does so at its next piece.\n"
@@ -379,6 +391,12 @@ _PROCESS = (
         PROCESS,
         "            await _within(watch.exited, _REAP_SECONDS)\n",
         "            await watch.exited\n",
+    ),
+    mutant(
+        "a program that comes into being after its caller left is not ended",
+        PROCESS,
+        "        creating.add_done_callback(_abandoned)\n",
+        "",
     ),
     mutant(
         "a program that ran out of time keeps its exit code",
@@ -515,8 +533,32 @@ _TOOLS = (
     mutant(
         "a listener can put another call in the place of the checked one",
         PIPELINE,
-        "            if passed is not invocation:\n                raise _NotTheCheckedCallError\n",
-        "",
+        "            if passed is not invocation:",
+        "            if False:",
+    ),
+    mutant(
+        "arguments that were changed before the guards are judged all the same",
+        PIPELINE,
+        "        elif invocation.args != self._written:",
+        "        elif False:",
+    ),
+    mutant(
+        "arguments that were changed after the checks are run all the same",
+        PIPELINE,
+        "            if invocation.args != self._written:",
+        "            if False:",
+    ),
+    mutant(
+        "a tool that left while a listener held the call runs",
+        PIPELINE,
+        "            if self._tools.registry.get(tool.name) is not tool:",
+        "            if False:",
+    ),
+    mutant(
+        "a tool is not told what the checks were told",
+        PIPELINE,
+        "        aimed = ToolRun(run.call_id, run.cwd, run.session, target)",
+        "        aimed = ToolRun(run.call_id, run.cwd, run.session)",
     ),
     mutant(
         "a call runs although its tool has left",
@@ -723,8 +765,8 @@ _FS = (
     mutant(
         "a link counts as the place that it leads to",
         BOUND,
-        "            if not os.path.samestat(left.lstat(), right.lstat()):",
-        "            if not os.path.samestat(left.stat(), right.stat()):",
+        "        return os.path.samestat(left.lstat(), right.lstat())",
+        "        return os.path.samestat(left.stat(), right.stat())",
     ),
     mutant(
         "two paths of different depth may be one place",

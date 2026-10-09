@@ -207,6 +207,13 @@ if sys.platform == "win32":
 
         assert same(str(work / "Notes.txt"), str(work / "NOTES.TXT"))
 
+    def test_two_spellings_that_differ_from_the_drive_down_can_be_one_place(work: Path) -> None:
+        (work / "Notes.txt").write_text("n")
+        same: Any = vars(bound)["_same_entries"]
+        spelled = str(work / "Notes.txt")
+
+        assert same(spelled, spelled.swapcase())
+
     def test_the_case_of_a_name_does_not_make_a_file_another_file(work: Path) -> None:
         (work / "Notes.txt").write_text("n")
 

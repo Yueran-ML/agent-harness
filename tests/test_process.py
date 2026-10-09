@@ -330,6 +330,80 @@ async def test_cancelling_the_caller_stops_the_program_and_what_it_started(
     assert await gone(started)
 
 
+class SlowStart:
+    """Starts programs for a run, and takes its time to say that it has."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, *, fails: bool = False) -> None:
+        loop = asyncio.get_running_loop()
+        self.started: list[asyncio.SubprocessTransport] = []
+        self.made = asyncio.Event()
+        self.go_on = asyncio.Event()
+        self.over = asyncio.Event()
+        really_start: Any = loop.subprocess_exec
+
+        async def start(*arguments: Any, **options: Any) -> Any:
+            try:
+                if fails:
+                    await self.go_on.wait()
+                    raise OSError("the program was not there after all")
+                made = await really_start(*arguments, **options)
+                self.started.append(made[0])
+                self.made.set()
+                await self.go_on.wait()
+                return made
+            finally:
+                self.over.set()
+
+        monkeypatch.setattr(loop, "subprocess_exec", start)
+
+
+async def test_a_program_that_comes_into_being_after_its_caller_was_cancelled_is_ended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slow = SlowStart(monkeypatch)
+    note = tmp_path / "started"
+    running = asyncio.ensure_future(
+        process.run(python(STARTS_ANOTHER_AND_STAYS, str(note)), cwd=tmp_path, timeout_seconds=60)
+    )
+    await asyncio.wait_for(slow.made.wait(), timeout=20)
+    descendants: list[int] = []
+    if sys.platform != "win32":
+        # Where a program runs from the moment it is made, it starts another before long.
+        descendants.append(await told(note))
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    slow.go_on.set()
+
+    assert await gone(slow.started[0].get_pid())
+    for descendant in descendants:
+        assert await gone(descendant)
+    if not descendants:
+        # The program was made suspended, so it started nothing, and it never ran.
+        await asyncio.sleep(0.5)
+        assert not note.exists()
+
+
+async def test_a_program_that_could_not_be_started_after_its_caller_was_cancelled_is_no_loose_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    slow = SlowStart(monkeypatch, fails=True)
+    running = asyncio.ensure_future(process.run(python("pass"), cwd=tmp_path, timeout_seconds=60))
+    await asyncio.sleep(0.05)
+
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+    with caplog.at_level(logging.ERROR):
+        slow.go_on.set()
+        await asyncio.wait_for(slow.over.wait(), timeout=5)
+        await asyncio.sleep(0.05)
+
+    # The failure was taken note of, so the event loop has nothing to complain about.
+    assert "never retrieved" not in caplog.text
+
+
 # What a program leaves behind
 
 

@@ -48,19 +48,49 @@ class ToolFailure(Exception):  # noqa: N818 - a failure that a tool reports, not
 class ToolRun:
     """What a tool is told about the call it serves, and what it may ask for.
 
-    Attributes:
+    What it is told is fixed when the run is made. A run passes through the
+    hands of listeners on its way to the tool, and none of them can change
+    the working directory or the target under it.
+
+    Args:
         call_id: The id that the model gave the call.
         cwd: The working directory of the agent.
         session: The session that the call belongs to.
+        target: What the checks were told that the call acts on. The pipeline
+            fills this in. A tool that works on a file compares it with what
+            it finds when it runs, and stops if the two differ.
     """
 
-    __slots__ = ("_concludes_turn", "call_id", "cwd", "session")
+    __slots__ = ("_call_id", "_concludes_turn", "_cwd", "_session", "_target")
 
-    def __init__(self, call_id: str, cwd: Path, session: Session) -> None:
-        self.call_id = call_id
-        self.cwd = cwd
-        self.session = session
+    def __init__(
+        self, call_id: str, cwd: Path, session: Session, target: str | None = None
+    ) -> None:
+        self._call_id = call_id
+        self._cwd = cwd
+        self._session = session
+        self._target = target
         self._concludes_turn = False
+
+    @property
+    def call_id(self) -> str:
+        """The id that the model gave the call."""
+        return self._call_id
+
+    @property
+    def cwd(self) -> Path:
+        """The working directory of the agent."""
+        return self._cwd
+
+    @property
+    def session(self) -> Session:
+        """The session that the call belongs to."""
+        return self._session
+
+    @property
+    def target(self) -> str | None:
+        """What the checks were told that the call acts on, if the tool says such a thing."""
+        return self._target
 
     @property
     def concludes_turn(self) -> bool:

@@ -12,6 +12,11 @@ leads a session and a process group of its own. A process that leaves on
 purpose, by starting a session of its own or by having a system service start
 it, is not reached.
 
+Starting a program takes a moment, and the caller may be cancelled in it. The
+start then goes on by itself, and what it brings into being is ended as soon
+as it is there. Where a program runs from the moment it is made, it may have
+started others by then, and they are ended with it.
+
 Whether the program has ended is heard from the event loop, not read off its
 pipes. A process that it left behind may hold the pipes open, and waiting for
 them would wait for that process. So the waits here are bounded, each of them:
@@ -281,6 +286,10 @@ if sys.platform == "win32":  # pragma: windows only
             """Give the job up, which is done once."""
             _kernel32.CloseHandle(self._job)
 
+    def _end_unheld(transport: asyncio.SubprocessTransport) -> None:
+        """End a program that is in no job yet. It was made suspended and has not run."""
+        transport.close()
+
 else:  # pragma: posix only
     _SPAWN: dict[str, Any] = {"start_new_session": True}
     """The program leads a session and a process group of its own."""
@@ -302,6 +311,11 @@ else:  # pragma: posix only
 
         def close(self) -> None:
             """Give the group up, which needs nothing."""
+
+    def _end_unheld(transport: asyncio.SubprocessTransport) -> None:
+        """End a program that nobody holds yet, with all that it has started meanwhile."""
+        _Tree(transport.get_pid()).stop()
+        transport.close()
 
 
 class _Watch(asyncio.SubprocessProtocol):
@@ -333,6 +347,13 @@ class _Watch(asyncio.SubprocessProtocol):
 
     def connection_lost(self, exc: Exception | None) -> None:
         self.closed.set_result(None)
+
+
+def _abandoned(creating: "asyncio.Future[tuple[asyncio.SubprocessTransport, _Watch]]") -> None:
+    """End a program that came into being after the one who asked for it had left."""
+    if creating.cancelled() or creating.exception() is not None:
+        return
+    _end_unheld(creating.result()[0])
 
 
 async def _within(awaited: asyncio.Future[None], seconds: float) -> bool:
@@ -376,8 +397,8 @@ async def run(
     kept = HeadTail(max_output_bytes)
     watch = _Watch(kept)
     loop = asyncio.get_running_loop()
-    try:
-        transport, _ = await loop.subprocess_exec(
+    creating = asyncio.ensure_future(
+        loop.subprocess_exec(
             lambda: watch,
             *argv,
             stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
@@ -387,6 +408,13 @@ async def run(
             env=cleaned(os.environ) if env is None else dict(env),
             **_SPAWN,
         )
+    )
+    try:
+        transport, _ = await asyncio.shield(creating)
+    except asyncio.CancelledError:
+        # The start goes on without its caller. What it makes is ended when it is there.
+        creating.add_done_callback(_abandoned)
+        raise
     except (OSError, ValueError) as error:
         raise OSError(f"the program {argv[0]!r} could not be started: {error}") from error
     try:

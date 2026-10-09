@@ -153,12 +153,26 @@ async def _allow(invocation: Invocation) -> Decision:
     return Allow()
 
 
-class _NotTheCheckedCallError(Exception):
-    """A listener of ``tools/execute`` passed on a call that the checks never saw."""
+class _NotRunError(Exception):
+    """The last link of the chain of ``tools/execute`` found a reason not to run the tool.
+
+    Attributes:
+        code: The error code of the result.
+        reason: What the model reads.
+    """
+
+    def __init__(self, code: str, reason: str) -> None:
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
 
 
 async def _accept(executed: Executed) -> Verdict:
     return Accept(text=executed.text)
+
+
+def _gone_text(tool: Tool[Any, Any]) -> str:
+    return f"The tool {tool.name} is no longer there, and the call did not run."
 
 
 class PendingCall:
@@ -181,14 +195,17 @@ class PendingCall:
     The checks before a call come in two kinds. The listeners of
     ``tools/pre-execute`` form a chain, in which one may answer for those
     after it. The guards are asked after that chain has let the call through,
-    each of them, and a guard can only refuse. So nothing in the chain can
-    keep a guard from being asked.
+    and a guard can only refuse. So nothing in the chain can
+    keep a guard from being asked. They are asked one after another, and the
+    first refusal ends the asking.
 
     What runs is what was checked. A listener of ``tools/execute`` may wrap
     the run or answer in its place, but the tool runs only with the call that
-    the checks saw. A call whose tool has left since it was begun does not
-    run either: what a plugin took away with it is no longer on offer, and a
-    tool that has taken its name is another tool.
+    the checks saw, and with the arguments that the model wrote: a copy of
+    them is put aside when the call is begun, and the call does not run if a
+    listener has changed them since. A call whose tool has left since it was
+    begun does not run either: what a plugin took away with it is no longer
+    on offer, and a tool that has taken its name is another tool.
 
     Attributes:
         call: The call as the model wrote it.
@@ -203,6 +220,7 @@ class PendingCall:
         "_outcome",
         "_timeout",
         "_tools",
+        "_written",
         "call",
         "concurrency_safe",
     )
@@ -221,6 +239,8 @@ class PendingCall:
         self._ctx = ctx
         self._tools = tools
         self._invocation = invocation
+        # The arguments as the model wrote them, which no listener gets its hands on.
+        self._written = None if invocation is None else invocation.args.model_copy(deep=True)
         self._timeout = timeout
         self._authorized = False
         self._outcome: ToolOutcome | None = None
@@ -274,6 +294,17 @@ class PendingCall:
                 "CHECK_FAILED",
                 "The call could not be checked and did not run: a check gave no decision",
             )
+        elif invocation.args != self._written:
+            # The guards judge what will run, and that is what the model wrote.
+            logger.error(
+                "a listener of tools/pre-execute changed the arguments of a call of the tool %r",
+                self.call.name,
+            )
+            self._fail(
+                "CHECK_FAILED",
+                "The call did not run: a listener of tools/pre-execute changed the arguments "
+                "of the call",
+            )
         elif await self._passes_the_guards(invocation):
             self._authorized = True
 
@@ -281,9 +312,7 @@ class PendingCall:
         """End the call if its tool is no longer on offer, and return how it ended."""
         if self._tools.registry.get(tool.name) is tool:
             return None
-        return self._fail(
-            "UNKNOWN_TOOL", f"The tool {tool.name} is no longer there, and the call did not run."
-        )
+        return self._fail("UNKNOWN_TOOL", _gone_text(tool))
 
     async def _passes_the_guards(self, invocation: Invocation) -> bool:
         """Ask every guard, in the order they were added, until one refuses."""
@@ -333,8 +362,21 @@ class PendingCall:
             return gone
 
         async def run_the_checked_call(passed: Invocation) -> object:
+            # Listeners have had the call in their hands, and some of them have waited.
             if passed is not invocation:
-                raise _NotTheCheckedCallError
+                raise _NotRunError(
+                    "CHECK_FAILED",
+                    "The call did not run: a listener of tools/execute passed on another call "
+                    "than the one that was checked",
+                )
+            if invocation.args != self._written:
+                raise _NotRunError(
+                    "CHECK_FAILED",
+                    "The call did not run: something changed the arguments of the call after "
+                    "it was checked",
+                )
+            if self._tools.registry.get(tool.name) is not tool:
+                raise _NotRunError("UNKNOWN_TOOL", _gone_text(tool))
             return await tool.execute(invocation.args, invocation.run)
 
         timer = asyncio.timeout(self._timeout)
@@ -348,17 +390,9 @@ class PendingCall:
             except asyncio.CancelledError as error:
                 # Rendering does not wait, so no cancellation of ours can arrive in it.
                 raise cancellation.CancelledFromInside from error
-        except _NotTheCheckedCallError:
-            logger.error(
-                "a listener of tools/execute passed on another call of the tool %r "
-                "than the one that was checked",
-                tool.name,
-            )
-            return self._fail(
-                "CHECK_FAILED",
-                "The call did not run: a listener of tools/execute passed on another call "
-                "than the one that was checked",
-            )
+        except _NotRunError as stopped:
+            logger.error("a call of the tool %r was stopped: %s", tool.name, stopped.reason)
+            return self._fail(stopped.code, stopped.reason)
         except Exception as error:
             return self._failed(tool.name, error, timed_out=timer.expired())
         executed = Executed(invocation, value, text or "(no output)")
@@ -513,7 +547,9 @@ class Tools:
             )
             safe = False
         timeout = self.timeout_seconds if tool.timeout_seconds is None else tool.timeout_seconds
-        invocation = Invocation(tool, call, args, run, target)
+        # The tool is told what the checks are told, so that it can tell if it finds another.
+        aimed = ToolRun(run.call_id, run.cwd, run.session, target)
+        invocation = Invocation(tool, call, args, aimed, target)
         return PendingCall(ctx, call, invocation, timeout, safe, self)
 
     async def run(self, ctx: Context, call: ToolCallBlock, run: ToolRun) -> ToolOutcome:

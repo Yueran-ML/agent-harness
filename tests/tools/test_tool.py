@@ -253,3 +253,26 @@ def test_an_effect_that_does_not_exist_is_refused() -> None:
             execute=read_file,
             effect=cast("Any", "destroy"),
         )
+
+
+def test_what_a_tool_is_told_about_a_call_cannot_be_changed(ctx: Context, tmp_path: Path) -> None:
+    session = Session(ctx, "s-1", {kind.event_type: kind for kind in CORE_EVENTS})
+    run = ToolRun(call_id="call-1", cwd=tmp_path, session=session, target="a.txt")
+    change: Any = setattr
+
+    for name, value in (
+        ("cwd", tmp_path / "elsewhere"),
+        ("call_id", "another"),
+        ("session", None),
+        ("target", "b.txt"),
+    ):
+        with pytest.raises(AttributeError):
+            change(run, name, value)
+
+    assert (run.call_id, run.cwd, run.session, run.target) == ("call-1", tmp_path, session, "a.txt")
+
+
+def test_a_tool_is_told_of_no_target_unless_there_is_one(ctx: Context, tmp_path: Path) -> None:
+    session = Session(ctx, "s-1", {kind.event_type: kind for kind in CORE_EVENTS})
+
+    assert ToolRun(call_id="call-1", cwd=tmp_path, session=session).target is None

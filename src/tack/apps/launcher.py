@@ -4,6 +4,9 @@
 entries: first the profile, then the patch of the user, then the patches named
 on the command line, and last what the command line itself asks for. The
 entry called ``frontend`` provides what is then run.
+
+The command line changes only what it names. A setting that it leaves open
+stays as the layers before it have it.
 """
 
 import argparse
@@ -79,13 +82,19 @@ def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
     entries = flatten(layers, lookup=_bundle)
     for position, entry in enumerate(entries):
         if entry.id == _FRONTEND:
+            if entry.disabled:
+                raise _UsageError(
+                    f"the entry {_FRONTEND!r} is disabled, so there is nothing to run the task"
+                )
             config: dict[str, Any] = dict(entry.config or {})
-            config.update(
-                task=args.task,
-                cwd=str(Path(args.cwd).resolve()),
-                json_lines=args.json,
-                session_id=args.session_id,
-            )
+            config["task"] = args.task
+            if args.cwd is not None:
+                config["cwd"] = str(Path(args.cwd).resolve())
+            config.setdefault("cwd", str(Path().resolve()))
+            if args.json is not None:
+                config["json_lines"] = args.json
+            if args.session_id is not None:
+                config["session_id"] = args.session_id
             if args.model is not None:
                 config["model"] = {**config.get("model", {}), "model": args.model}
             entries[position] = entry.model_copy(update={"config": config})
@@ -119,7 +128,16 @@ async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
             for problem in problems:
                 print(f"tack: {problem}", file=sys.stderr)
             return 2
-        return await root.use(FRONTEND).run()
+        frontend = root.get(FRONTEND)
+        if frontend is None:
+            plugin = next(entry.plugin for entry in entries if entry.id == _FRONTEND)
+            print(
+                f"tack: the entry {_FRONTEND!r} loads {plugin}, "
+                "which provides nothing to run the task",
+                file=sys.stderr,
+            )
+            return 2
+        return await frontend.run()
     finally:
         await root.fiber.dispose()
 
@@ -144,9 +162,17 @@ def _parser() -> argparse.ArgumentParser:
         help="a file of changes to the profile; may be given several times",
     )
     run.add_argument("--model", metavar="ID", help="the model to use")
-    run.add_argument("--cwd", default=".", metavar="DIR", help="the working directory of the agent")
+    run.add_argument(
+        "--cwd",
+        metavar="DIR",
+        help="the working directory of the agent; the current directory if nothing names one",
+    )
     run.add_argument("--session-id", metavar="ID", help="the session to start or to continue")
-    run.add_argument("--json", action="store_true", help="report the run as lines of JSON")
+    run.add_argument(
+        "--json",
+        action=argparse.BooleanOptionalAction,
+        help="report the run as lines of JSON, or as the answer alone",
+    )
     run.add_argument(
         "--dump-config",
         action="store_true",

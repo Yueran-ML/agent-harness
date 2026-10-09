@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -324,10 +325,83 @@ def test_the_composition_can_be_printed_instead_of_run(
         "model": {"provider": "deepseek", "model": "deepseek-fast"},
         "task": "Do it.",
         "cwd": str(work),
-        "json_lines": False,
-        "session_id": None,
     }
     assert not home.exists()
+
+
+CHOSEN_BY_THE_PROFILE = {
+    "model": {"provider": "deepseek", "model": "deepseek-flash"},
+    "cwd": "${PROJECT}/src",
+    "json_lines": True,
+    "session_id": "kept",
+    "system_prompt": "Be brief.",
+}
+
+
+def test_the_command_line_changes_only_what_it_names(
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(work)
+    chosen = profile(tmp_path, extra=[{"id": "frontend", "config": CHOSEN_BY_THE_PROFILE}])
+
+    main(["run", "Do it.", "--profile", chosen, "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert entries["frontend"]["config"] == CHOSEN_BY_THE_PROFILE | {"task": "Do it."}
+
+
+def test_what_the_command_line_names_wins_over_the_profile(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chosen = profile(tmp_path, extra=[{"id": "frontend", "config": CHOSEN_BY_THE_PROFILE}])
+
+    main(
+        [
+            "run",
+            "Do it.",
+            "--profile",
+            chosen,
+            "--cwd",
+            str(work),
+            "--no-json",
+            "--session-id",
+            "mine",
+            "--model",
+            "deepseek-fast",
+            "--dump-config",
+        ]
+    )
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert entries["frontend"]["config"] == {
+        "model": {"provider": "deepseek", "model": "deepseek-fast"},
+        "cwd": str(work),
+        "json_lines": False,
+        "session_id": "mine",
+        "system_prompt": "Be brief.",
+        "task": "Do it.",
+    }
+
+
+def test_a_profile_can_ask_for_lines_of_json(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    always = {
+        "id": "frontend",
+        "config": {"model": {"provider": "deepseek", "model": "any"}, "json_lines": True},
+    }
+
+    chosen = profile(tmp_path, {"text": "Hello."}, extra=[always])
+
+    code = main(["run", "Hi.", "--profile", chosen, "--cwd", str(work)])
+
+    reported = lines(capsys.readouterr().out)
+    assert code == 0
+    assert [line["type"] for line in reported] == ["session", "status", "text", "final"]
 
 
 def test_a_patch_changes_the_profile(
@@ -409,6 +483,44 @@ def test_a_profile_without_a_frontend_cannot_run_a_task(
     assert code == 2
     assert capsys.readouterr().err == (
         "tack: the profile has no entry 'frontend', so there is nothing to run the task\n"
+    )
+
+
+def test_a_frontend_that_is_switched_off_cannot_run_a_task(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    patch = tmp_path / "patch.yml"
+    patch.write_text("- id: frontend\n  disabled: true\n", encoding="utf-8")
+
+    code = main(["run", "Do it.", "--cwd", str(work), "--patch", str(patch)])
+
+    assert code == 2
+    assert capsys.readouterr().err == (
+        "tack: the entry 'frontend' is disabled, so there is nothing to run the task\n"
+    )
+
+
+def test_an_entry_called_frontend_that_is_no_frontend_cannot_run_a_task(
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "idle_plugin.py").write_text(
+        "name = 'idle'\n\n\ndef apply(ctx, config):\n    pass\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sys, "path", [str(tmp_path), *sys.path])
+    patch = tmp_path / "patch.yml"
+    patch.write_text("- id: frontend\n  plugin: idle_plugin\n", encoding="utf-8")
+
+    code = main(["run", "Do it.", "--cwd", str(work), "--patch", str(patch)])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "tack: the entry 'frontend' loads idle_plugin, which provides nothing to run the task\n"
     )
 
 

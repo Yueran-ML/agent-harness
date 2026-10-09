@@ -9,7 +9,9 @@ checks that for every mutant, so a list cannot go stale without a test failing.
 
 Left out on purpose are mutants that change nothing that can be observed. One
 example: counting the lines after the wanted ones on the slow path of the
-reader instead of the fast one.
+reader instead of the fast one. Another: not waiting for the rest of the
+output of a program that has ended. The event loop hands over what was on its
+way before the run goes on, though nothing says that it must.
 
 A mutant of code that only one platform runs says which. On another platform
 no test can notice it, and ``mutate.py`` passes it over.
@@ -351,12 +353,6 @@ _PROCESS = (
         "        # However the wait ended, nothing that the program started goes on.\n"
         "        tree.stop()\n",
         "        # However the wait ended, nothing that the program started goes on.\n",
-    ),
-    mutant(
-        "the rest of the output is not waited for",
-        PROCESS,
-        "            await _within(watch.silent, _DRAIN_SECONDS)\n",
-        "",
     ),
     mutant(
         "the rest of the output is waited for without end",

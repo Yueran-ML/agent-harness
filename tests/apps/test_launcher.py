@@ -570,7 +570,12 @@ def test_a_preset_that_does_not_exist_is_refused(
         main(["run", "Do it.", "--cwd", str(work), "--permission", "everything"])
 
     assert stopped.value.code == 2
-    assert "'read-only', 'workspace-write', 'full-access'" in capsys.readouterr().err
+    # The presets are named. How they are set apart differs from one Python to the next.
+    said = capsys.readouterr().err
+    assert "--permission" in said
+    assert "everything" in said
+    for preset in ("read-only", "workspace-write", "full-access"):
+        assert preset in said
 
 
 def test_a_rule_that_cannot_be_read_stops_the_run(

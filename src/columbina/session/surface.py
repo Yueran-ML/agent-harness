@@ -14,13 +14,17 @@ class Surface:
     node. Compaction and trimming put one new node in the place of a run of
     neighbouring nodes. The events that such a node shadows stay in the log,
     so the surface can always be rebuilt by applying the events in order.
+
+    Attributes:
+        replaced: How many times a node has taken the place of others.
     """
 
-    __slots__ = ("_messages", "_seqs")
+    __slots__ = ("_messages", "_seqs", "replaced")
 
     def __init__(self) -> None:
         self._seqs: list[int] = []
         self._messages: list[Message] = []
+        self.replaced = 0
 
     @property
     def seqs(self) -> tuple[int, ...]:
@@ -70,3 +74,4 @@ class Surface:
         stop = start + len(event.replaces)
         self._seqs[start:stop] = [event.seq]
         self._messages[start:stop] = [message]
+        self.replaced += 1

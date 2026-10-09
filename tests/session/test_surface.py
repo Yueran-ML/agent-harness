@@ -218,6 +218,26 @@ async def test_only_a_message_can_replace_messages(ctx: Context) -> None:
     assert len(session) == 8
 
 
+async def test_a_session_counts_how_often_its_messages_were_replaced(ctx: Context) -> None:
+    session = conversation(ctx)
+    assert session.replaced == 0
+
+    # One replacement, however many messages it takes the place of.
+    session.append(UserMessageEvent(message=user("Summary."), source="summary"), replaces=[3, 4, 6])
+    assert session.replaced == 1
+    session.append(UserMessageEvent(message=user("Thanks.")))
+    session.append(TurnStartEvent(turn=2))
+    assert session.replaced == 1
+    with pytest.raises(InvalidEventError):
+        session.append(UserMessageEvent(message=user("Again.")), replaces=[4])
+    assert session.replaced == 1
+    session.append(SystemMessageEvent(message=SYSTEM), replaces=[1])
+    assert session.replaced == 2
+
+    # A log that is read again comes to the same number.
+    assert Session(ctx, "s-2", KINDS, events=session.events).replaced == 2
+
+
 async def test_a_surface_can_be_rebuilt_from_the_events(ctx: Context) -> None:
     session = conversation(ctx)
     session.append(UserMessageEvent(message=user("Summary.")), replaces=[3, 4, 6])
@@ -251,6 +271,7 @@ def test_the_surface_always_matches_a_replay_of_the_log(data: st.DataObject) -> 
     """Whatever is appended and replaced, the messages equal a from-scratch replay."""
     session = Session(Context(), "s-1", KINDS)
     expected: list[tuple[int, Message]] = []
+    replacements = 0
 
     for step in range(data.draw(st.integers(min_value=0, max_value=30))):
         message = user(f"message {step}")
@@ -260,6 +281,7 @@ def test_the_surface_always_matches_a_replay_of_the_log(data: st.DataObject) -> 
             replaces = [seq for seq, _ in expected[start:stop]]
             event = session.append(UserMessageEvent(message=message), replaces=replaces)
             expected[start:stop] = [(event.seq, message)]
+            replacements += 1
         elif data.draw(st.booleans()):
             event = session.append(UserMessageEvent(message=message))
             expected.append((event.seq, message))
@@ -272,5 +294,6 @@ def test_the_surface_always_matches_a_replay_of_the_log(data: st.DataObject) -> 
 
     assert session.surface == tuple(seq for seq, _ in expected)
     assert session.messages == tuple(message for _, message in expected)
+    assert rebuilt.replaced == session.replaced == replacements
     assert rebuilt.seqs == session.surface
     assert rebuilt.messages == session.messages

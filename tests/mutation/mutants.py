@@ -68,6 +68,7 @@ COMMAND_PERMISSIONS = "src/columbina/commands/permissions.py"
 TERMINAL_TEXT = "src/columbina/apps/terminal_text.py"
 HEADLESS = "src/columbina/apps/headless.py"
 SESSION_STORE = "src/columbina/session/store.py"
+SURFACE = "src/columbina/session/surface.py"
 SESSION_SERVICE = "src/columbina/session/service.py"
 UNSEEN = "src/columbina/unseen.py"
 TOKEN_METER = "src/columbina/token_meter/__init__.py"
@@ -2381,28 +2382,25 @@ _CONTEXT = (
     mutant(
         "text that stays the same is written again",
         LOOP,
-        "            elif last is None or last.data != written:",
+        "            elif last is None or last.data != written or not seen:",
         "            elif True:",
     ),
     mutant(
         "text of a source that replaces is put after the conversation",
         LOOP,
-        '                if source.kind == "replace" and last is not None '
-        "and last.seq in session.surface:",
+        '                if source.kind == "replace" and last is not None and seen:',
         "                if False:",
     ),
     mutant(
         "text of a source that appends takes the place of its old text",
         LOOP,
-        '                if source.kind == "replace" and last is not None '
-        "and last.seq in session.surface:",
-        "                if last is not None and last.seq in session.surface:",
+        '                if source.kind == "replace" and last is not None and seen:',
+        "                if last is not None and seen:",
     ),
     mutant(
         "text that the model no longer sees is replaced all the same",
         LOOP,
-        '                if source.kind == "replace" and last is not None '
-        "and last.seq in session.surface:",
+        '                if source.kind == "replace" and last is not None and seen:',
         '                if source.kind == "replace" and last is not None:',
     ),
     mutant(
@@ -2433,6 +2431,42 @@ _CONTEXT = (
         "the agent service does not register the note after an interruption",
         AGENT_PACKAGE,
         '    agents.context.add(ctx, "interruption", INTERRUPTION)\n',
+        "",
+    ),
+    mutant(
+        "text that was taken from the model is not given again while it stays the same",
+        LOOP,
+        "            elif last is None or last.data != written or not seen:",
+        "            elif last is None or last.data != written:",
+    ),
+    mutant(
+        "context that was taken from the model in a turn stays away",
+        LOOP,
+        "        if self.session.replaced != self._replaced:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the sources of context are asked again before every request",
+        LOOP,
+        "        if self.session.replaced != self._replaced:\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "word of something that happened is given again when context comes back",
+        LOOP,
+        '            if source.kind == "note" and not notes:\n                continue\n',
+        "",
+    ),
+    mutant(
+        "what the loop itself replaced makes it ask the sources again",
+        LOOP,
+        "        self._replaced = session.replaced\n",
+        "",
+    ),
+    mutant(
+        "a replacement of messages is not counted",
+        SURFACE,
+        "        self.replaced += 1\n",
         "",
     ),
 )

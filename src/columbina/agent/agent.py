@@ -134,6 +134,12 @@ class ContextSource:
     is and what has happened. The loop asks every source when a turn begins
     and writes what they give as messages before the input of the turn.
 
+    A conversation that grows too long has its beginning replaced by a
+    summary, and context that stood there is gone from what the model sees.
+    So the loop asks again before it asks the model, whenever messages were
+    replaced since it last did, and text that the model no longer sees is
+    written again although it has not changed.
+
     Attributes:
         render: Returns the text for an agent, or ``None`` if there is none.
         order: Where the source stands among the others: lower numbers first.
@@ -141,7 +147,8 @@ class ContextSource:
             that holds until it changes: it is written when it differs from
             what this source gave last, after the conversation so far or in
             the place of the last one. ``note`` is for word of something that
-            happened: it is written every time the source gives it.
+            happened: it is written every time the source gives it, and the
+            source is asked only when a turn begins.
     """
 
     render: Callable[[Agent], Awaitable[str | None]]

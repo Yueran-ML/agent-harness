@@ -4,19 +4,36 @@ import asyncio
 from typing import Any, cast
 
 import pytest
+from pydantic import BaseModel
 
-from columbina.agent import INBOX, Agent, ContextKind, ContextSource
+from columbina.agent import (
+    INBOX,
+    PRE_STEP,
+    REQUEST_ERROR,
+    Agent,
+    ContextKind,
+    ContextSource,
+    ErrorDecision,
+    RequestFailure,
+    Retry,
+    StepDecision,
+    StepInfo,
+)
 from columbina.agent.context import INTERRUPTION
-from columbina.kernel import Context
-from columbina.llm import LlmRequest, Message, TextBlock, UserMessage
-from columbina.llm.adapters.scripted import Reply
+from columbina.kernel import Context, Next
+from columbina.llm import LlmFailure, LlmRequest, Message, TextBlock, ToolMessage, UserMessage
+from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import (
     CORE_EVENTS,
+    EventData,
     Session,
+    SessionEvent,
+    ToolResultEvent,
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
 )
+from columbina.tools import Tool, ToolRun
 from support.loop import STOPPED, SYSTEM, Harness, assistant, context, idle, types, user
 
 
@@ -266,6 +283,215 @@ async def test_a_source_that_falls_silent_leaves_its_last_text_where_it_is(
 
     assert sent(harness.model.requests[1])[1] == context("place", "You are in a library.")
     assert len(sent(harness.model.requests[1])) == 5
+
+
+# Context that was taken from what the model sees
+
+
+class NoArgs(BaseModel):
+    pass
+
+
+async def noop(args: NoArgs, run: ToolRun) -> str:
+    return "ok"
+
+
+NOOP = Tool(name="noop", description="Do nothing.", parameters=NoArgs, execute=noop)
+TOO_LONG = LlmFailure(message="too long", code="CONTEXT_WINDOW_EXCEEDED", status=400)
+
+
+def given_by(agent: Agent, source: str) -> list[SessionEvent[EventData]]:
+    """What a source of context has given so far."""
+    return [
+        event
+        for event in agent.session.events
+        if isinstance(event.data, UserMessageEvent) and event.data.source == f"context/{source}"
+    ]
+
+
+def summarize(session: Session, *seqs: int) -> None:
+    """Put a summary in the place of messages, as whatever shortens a conversation does."""
+    session.append(UserMessageEvent(message=user("(a summary)"), source="summary"), replaces=seqs)
+
+
+async def in_two_steps(harness: Harness) -> Agent:
+    """An agent whose next turn asks the model twice, with a call of a tool in between."""
+    harness.tools.add(harness.ctx, NOOP)
+    return await harness.agent(Reply(calls=(Call(name="noop"),)), Reply(text="Done."))
+
+
+async def test_text_that_was_taken_from_the_model_is_given_again_though_it_has_not_changed(
+    harness: Harness, board: Board
+) -> None:
+    board.add("place", "You are in a library.")
+    board.add("rules", "Be quiet.", kind="replace")
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
+    await turn(agent, "First.")
+    (place,), (rules,) = given_by(agent, "place"), given_by(agent, "rules")
+    summarize(agent.session, place.seq, rules.seq)
+
+    await turn(agent, "Second.")
+
+    assert sent(harness.model.requests[1]) == (
+        SYSTEM,
+        user("(a summary)"),
+        user("First."),
+        assistant("One."),
+        context("place", "You are in a library."),
+        context("rules", "Be quiet."),
+        user("Second."),
+    )
+
+
+async def test_context_that_is_taken_in_the_middle_of_a_turn_is_back_before_the_model_is_asked(
+    harness: Harness, board: Board
+) -> None:
+    board.add("bell", "The bell rang.", kind="note", order=-1)
+    board.add("place", "You are in a library.")
+    agent = await in_two_steps(harness)
+
+    async def shorten(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        if info.step == 2:
+            # The note, the place and what the user said. The call and its result stay.
+            summarize(agent.session, *agent.session.surface[1:4])
+        return await proceed(info)
+
+    agent.ctx.on(PRE_STEP, shorten)
+
+    await turn(agent, "Do it.")
+
+    first, second = (sent(request) for request in harness.model.requests)
+    assert first == (
+        SYSTEM,
+        context("bell", "The bell rang."),
+        context("place", "You are in a library."),
+        user("Do it."),
+    )
+    assert second[:2] == (SYSTEM, user("(a summary)"))
+    assert isinstance(second[3], ToolMessage)
+    # Word of something that happened is given once. What holds is given again.
+    assert second[4:] == (context("place", "You are in a library."),)
+    assert board.asked == ["bell", "place", "place"]
+
+
+async def test_context_that_is_taken_after_a_request_failed_is_back_before_the_next_try(
+    harness: Harness, board: Board
+) -> None:
+    board.add("place", "You are in a library.")
+    agent = await harness.agent(Reply(failure=TOO_LONG), Reply(text="Hello!"))
+
+    async def shorten(
+        failed: RequestFailure, proceed: Next[RequestFailure, ErrorDecision]
+    ) -> Retry:
+        (place,) = given_by(agent, "place")
+        summarize(agent.session, place.seq)
+        return Retry()
+
+    agent.ctx.on(REQUEST_ERROR, shorten)
+
+    await turn(agent, "Say hello.")
+
+    assert sent(harness.model.requests[1]) == (
+        SYSTEM,
+        user("(a summary)"),
+        user("Say hello."),
+        context("place", "You are in a library."),
+    )
+    assert board.asked == ["place", "place"]
+    assert agent.session.messages[-1] == assistant("Hello!")
+
+
+async def test_sources_that_are_asked_again_in_a_turn_give_what_holds_by_then(
+    harness: Harness, board: Board
+) -> None:
+    board.add("hour", "It is noon.")
+    board.add("place", "You are in a library.")
+    agent = await in_two_steps(harness)
+
+    async def shorten(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        if info.step == 2:
+            (place,) = given_by(agent, "place")
+            summarize(agent.session, place.seq)
+            board.texts["hour"] = "It is one."
+        return await proceed(info)
+
+    agent.ctx.on(PRE_STEP, shorten)
+
+    await turn(agent, "Do it.")
+
+    second = sent(harness.model.requests[1])
+    assert second[:3] == (SYSTEM, context("hour", "It is noon."), user("(a summary)"))
+    assert second[-2:] == (
+        context("hour", "It is one."),
+        context("place", "You are in a library."),
+    )
+
+
+async def test_a_replacement_that_leaves_the_context_in_sight_writes_nothing(
+    harness: Harness, board: Board
+) -> None:
+    board.add("place", "You are in a library.")
+    agent = await in_two_steps(harness)
+    trimmed: list[ToolMessage] = []
+
+    async def trim(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        if info.step == 2:
+            result = agent.session.events[agent.session.surface[-1]]
+            assert isinstance(result.data, ToolResultEvent)
+            call_id = result.data.message.call_id
+            trimmed.append(ToolMessage(call_id=call_id, content=(TextBlock(text="o"),)))
+            agent.session.append(ToolResultEvent(message=trimmed[0]), replaces=[result.seq])
+        return await proceed(info)
+
+    agent.ctx.on(PRE_STEP, trim)
+
+    await turn(agent, "Do it.")
+
+    second = sent(harness.model.requests[1])
+    assert second[:3] == (SYSTEM, context("place", "You are in a library."), user("Do it."))
+    assert len(second) == 5
+    assert second[-1] == trimmed[0]
+    assert len(given_by(agent, "place")) == 1
+    # The sources were asked, since something was replaced, and had nothing new to say.
+    assert board.asked == ["place", "place"]
+
+
+async def test_what_the_loop_itself_replaces_does_not_make_it_ask_the_sources_again(
+    harness: Harness, board: Board
+) -> None:
+    board.add("rules", "Be quiet.", kind="replace")
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
+    await turn(agent, "First.")
+    board.texts["rules"] = "Be loud."
+
+    await turn(agent, "Second.")
+
+    # The new text took the place of the old one, which is a replacement like any other.
+    assert agent.session.replaced == 1
+    assert board.asked == ["rules", "rules"]
+
+
+async def test_a_source_that_fails_when_it_is_asked_again_ends_the_turn_there(
+    harness: Harness, board: Board
+) -> None:
+    board.add("place", "You are in a library.")
+    agent = await in_two_steps(harness)
+
+    async def shorten(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        if info.step == 2:
+            (place,) = given_by(agent, "place")
+            summarize(agent.session, place.seq)
+            board.texts["place"] = RuntimeError("the shelf fell over")
+        return await proceed(info)
+
+    agent.ctx.on(PRE_STEP, shorten)
+
+    await turn(agent, "Do it.")
+
+    assert len(harness.model.requests) == 1
+    assert agent.session.events[-1].data == TurnEndEvent(
+        turn=1, reason="error", detail="RuntimeError: the shelf fell over"
+    )
 
 
 # Word of something that happened

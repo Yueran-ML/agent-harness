@@ -140,6 +140,16 @@ class Session:
         return self._surface.seqs
 
     @property
+    def replaced(self) -> int:
+        """How many times a message has taken the place of others in what the model sees.
+
+        Whoever keeps something in step with the messages can tell by this
+        number that some of them are gone, without looking through them. A
+        log that is read again comes to the same number.
+        """
+        return self._surface.replaced
+
+    @property
     def closed(self) -> bool:
         """Whether the session has stopped taking events."""
         return self._closed

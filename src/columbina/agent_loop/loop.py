@@ -179,6 +179,8 @@ class LoopAgent(Agent):
         self._halted = False
         self._failure: Exception | None = None
         self._cause: CancelCause | None = None
+        # How often messages of the session had been replaced when the context was last seen to.
+        self._replaced = 0
         self._turn_task: asyncio.Task[None] | None = None
         self._driver = asyncio.ensure_future(self._drive())
         ctx.effect(lambda: self._stop)
@@ -400,15 +402,35 @@ class LoopAgent(Agent):
         elif first.data.message != wanted:
             session.append(SystemMessageEvent(message=wanted), replaces=[first.seq])
 
-    async def _ask_for_context(self) -> list[tuple[str, ContextSource, str]]:
+    async def _restore_context(self) -> None:
+        """Give the model back the context that was taken from what it sees.
+
+        Whatever makes a conversation shorter puts a summary in the place of
+        its beginning, and context that stood there is gone with it. That may
+        happen in the middle of a turn, and the model is about to be asked.
+        So the sources are asked again, as when a turn begins. The ones that
+        give word of something that happened are not: such word is given
+        once. Nothing is asked if no message was replaced since the context
+        was last seen to, or if the loop was the one that replaced it.
+        """
+        if self.session.replaced != self._replaced:
+            self._write_context(await self._ask_for_context(notes=False))
+
+    async def _ask_for_context(self, *, notes: bool = True) -> list[tuple[str, ContextSource, str]]:
         """Ask every source of context for its text, and return the texts that were given.
 
         All are asked before anything is written. If one fails, the turn has
         no context at all, and it ends before the model is asked.
+
+        Args:
+            notes: Whether the sources that give word of something that
+                happened are asked as well.
         """
         ordered = sorted(self._context.items(), key=lambda item: (item[1].order, item[0]))
         given: list[tuple[str, ContextSource, str]] = []
         for name, source in ordered:
+            if source.kind == "note" and not notes:
+                continue
             what = f"the source of context {name!r}"
             text = cast("object", await cancellation.guard(source.render(self), what=what))
             if text is None:
@@ -419,19 +441,26 @@ class LoopAgent(Agent):
         return given
 
     def _write_context(self, given: list[tuple[str, ContextSource, str]]) -> None:
-        """Write what the sources of context gave, as far as it is news."""
+        """Write what the sources of context gave, as far as it is news to the model.
+
+        Text that a source gave before is news again if the model no longer
+        sees it.
+        """
         session = self.session
         for name, source, text in given:
             written = UserMessageEvent(message=_framed(name, text), source=_CONTEXT + name)
             last = _GIVEN.of(session).get(written.source)
+            seen = last is not None and last.seq in session.surface
             if source.kind == "note":
                 session.append(written)
-            elif last is None or last.data != written:
-                if source.kind == "replace" and last is not None and last.seq in session.surface:
+            elif last is None or last.data != written or not seen:
+                if source.kind == "replace" and last is not None and seen:
                     # The old text is replaced where it stands, as the model still sees it there.
                     session.append(written, replaces=[last.seq])
                 else:
                     session.append(written)
+        # What the loop itself has just replaced takes no context from the model.
+        self._replaced = session.replaced
 
     async def _step(self, turn: int, step: int) -> _StepEnd:
         """Ask the model, carry out the tool calls of its reply, and return how the step ended."""
@@ -474,11 +503,13 @@ class LoopAgent(Agent):
     async def _request(self, turn: int, step: int, attempt: int) -> LlmCall:
         """Ask the model once and return the call when its reply is over.
 
-        The request is derived from the log. If the reader is cancelled, what
-        had arrived of the reply is written down before the cancellation
+        The request is derived from the log. Context that was taken from
+        what the model sees is given back first. If the reader is cancelled,
+        what had arrived of the reply is written down before the cancellation
         goes on.
         """
         session = self.session
+        await self._restore_context()
         draft = RequestDraft(self, turn, step, attempt, self.spec.model)
         config = await self._heard(REQUEST, self.ctx.waterfall(REQUEST, draft, _as_drafted))
         schemas = self._tools.schemas()

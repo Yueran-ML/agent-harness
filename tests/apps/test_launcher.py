@@ -812,6 +812,21 @@ def test_a_session_cannot_be_both_named_and_looked_for(
     )
 
 
+def test_looking_for_the_last_session_counts_for_more_than_a_session_that_a_profile_names(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The command line changes what it names, and it names which session to take up.
+    named = {"id": "frontend", "config": {"session_id": "old"}}
+    chosen = profile(tmp_path, extends="cli", extra=[named])
+
+    code = main(["--cwd", str(work), "--profile", chosen, "--continue", "--dump-config"])
+
+    assert code == 0
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert entries["frontend"]["config"]["resume"] is True
+    assert "session_id" not in entries["frontend"]["config"]
+
+
 def test_a_task_is_not_a_conversation_and_takes_none_of_its_arguments(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -946,6 +961,44 @@ def test_what_is_logged_during_a_run_cannot_steer_a_terminal(
     assert OVERRIDE not in captured.err
     assert "columbina: cut an unfinished line of 10 bytes off the end of " in captured.err
     assert f"home{STAND_IN}x" in captured.err
+
+
+def test_what_is_logged_before_a_conversation_begins_cannot_steer_a_terminal(
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A conversation shows what is logged above its prompt. Before there is a prompt, the
+    # log goes where it goes for a run, and through the same filter. Here the rules of the
+    # user cannot be read, and the log names their file.
+    home = tmp_path / f"home{OVERRIDE}x"
+    home.mkdir()
+    (home / "permissions.yml").write_text("deny: [", encoding="utf-8")
+    monkeypatch.setenv("COLUMBINA_HOME", str(home))
+
+    code = main(["chat", "--cwd", str(work)])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert OVERRIDE not in captured.err
+    assert "columbina: plugin 'permissions' failed to load" in captured.err
+    assert f"home{STAND_IN}x" in captured.err
+
+
+@pytest.mark.parametrize("command", [["chat"], ["run", "Do it."]])
+def test_what_is_said_about_an_argument_that_is_not_known_cannot_steer_a_terminal(
+    capsys: pytest.CaptureFixture[str], command: list[str]
+) -> None:
+    # Whatever calls the program may hand it a text that it got from somewhere else.
+    with pytest.raises(SystemExit) as stopped:
+        main([*command, f"--bad={ESC}[2J{OVERRIDE}"])
+
+    said = capsys.readouterr().err
+    assert stopped.value.code == 2
+    assert ESC not in said
+    assert OVERRIDE not in said
+    assert f"--bad={STAND_IN}[2J{STAND_IN}" in said
 
 
 def test_the_composition_is_printed_as_it_is_for_a_program_and_made_fit_for_a_terminal(

@@ -159,11 +159,18 @@ class Cli:
         self._symbols = Symbols.of(terminal)
         log = logging.getLogger("columbina")
         shown = _Shown(prompt)
+        # While the prompt is there, what is logged stands above it and goes nowhere else:
+        # whatever wrote to the terminal by itself would tear the prompt apart.
+        others = list(log.handlers)
+        for other in others:
+            log.removeHandler(other)
         log.addHandler(shown)
         try:
             return await self._converse(prompt)
         finally:
             log.removeHandler(shown)
+            for other in others:
+                log.addHandler(other)
             await self._close()
 
     def status_line(self) -> str:

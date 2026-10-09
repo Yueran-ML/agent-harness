@@ -26,7 +26,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from importlib import resources
 from pathlib import Path
-from typing import Any, cast, get_args
+from typing import Any, NoReturn, cast, get_args
 
 import yaml
 
@@ -158,6 +158,8 @@ def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
                     config["json_lines"] = args.json
             elif args.resume:
                 config["resume"] = True
+                # Which session to take up is said here. One that a profile names is not it.
+                config.pop("session_id", None)
             entries[position] = entry.model_copy(update={"config": config})
             return entries
     raise _UsageError(
@@ -193,6 +195,19 @@ class _Fit(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         """Return the record as text, with what a terminal would act on made harmless."""
         return harmless(super().format(record))
+
+
+class _Parser(argparse.ArgumentParser):
+    """Reads the command line, and says what is wrong with it in a form fit for a terminal.
+
+    What is wrong is said with the words that were given, and whatever starts
+    the program may have them from somewhere else. The commands are read by
+    parsers of this kind too.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        """Say what is wrong with the command line, and end the program."""
+        super().error(harmless(message))
 
 
 async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
@@ -259,7 +274,7 @@ def _shared(command: argparse.ArgumentParser, profile: str) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="columbina",
         description="A plugin-based agent harness. Without a command, a conversation begins.",
     )
@@ -299,9 +314,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     log = logging.getLogger("columbina")
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(_Fit("columbina: %(message)s"))
-    if args.command == _RUN:
-        # A conversation shows what is logged by itself, above its prompt.
-        log.addHandler(handler)
+    # A conversation shows what is logged above its prompt, and keeps it from here for as
+    # long as the prompt is there. Before and after that, the log goes here for it too.
+    log.addHandler(handler)
     try:
         entries = _entries(args, Path(env["COLUMBINA_HOME"]))
         if args.dump_config:

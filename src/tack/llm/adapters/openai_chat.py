@@ -5,13 +5,18 @@ others. This module is a plugin: loading it registers one adapter under the
 provider name of its config. To talk to two services, load it twice.
 
 The API key is read from an environment variable when a request is made. It
-is never part of the config, and it is cut out of any error text that the
-service sends back.
+is never part of the config, and it is cut out of the text of every failure
+that leaves the adapter, whether the service or the connection wrote that text.
 """
 
+import math
 import os
+import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
+from datetime import UTC
+from email.utils import parsedate_to_datetime
 from typing import Literal
 
 import httpx
@@ -63,6 +68,8 @@ _STATUS_CODES = {
     429: "RATE_LIMIT",
 }
 _EFFORT = {"low": "low", "high": "high", "max": "high"}
+_MESSAGE_CHARACTERS = 500
+"""How much of the text of a failure is kept."""
 
 
 class Config(BaseModel):
@@ -112,6 +119,7 @@ class _Delta(BaseModel):
 
 
 class _Choice(BaseModel):
+    index: int = 0
     delta: _Delta = _Delta()
     finish_reason: str | None = None
 
@@ -246,16 +254,44 @@ async def _events(lines: AsyncIterator[str]) -> AsyncIterator[str]:
         yield "\n".join(data)
 
 
+@dataclass(slots=True)
+class _Call:
+    """A tool call of a streamed reply.
+
+    Attributes:
+        id: What has arrived of its id.
+        name: What has arrived of its name.
+        waiting: The arguments that arrived before its block began.
+        block: The index of its block, or -1 as long as the block has not begun.
+    """
+
+    id: str = ""
+    name: str = ""
+    waiting: str = ""
+    block: int = -1
+
+
+def _grown(so_far: str, piece: str | None) -> str:
+    """Return a name or an id with one more piece of it.
+
+    Services differ: one sends it whole and once, one in pieces, and one whole
+    again with every event.
+    """
+    if not piece or piece == so_far:
+        return so_far
+    return so_far + piece
+
+
 class _Translator:
     """Turns the events of one streamed reply into chunks."""
 
-    __slots__ = ("_adapter", "_next", "_open", "_reason", "_tools", "_usage")
+    __slots__ = ("_adapter", "_calls", "_next", "_open", "_reason", "_usage")
 
     def __init__(self, adapter: str) -> None:
         self._adapter = adapter
         self._next = 0
         self._open: tuple[int, BlockKind] | None = None
-        self._tools: dict[int, int] = {}
+        self._calls: dict[int, _Call] = {}
         self._reason: str | None = None
         self._usage: Usage | None = None
 
@@ -275,7 +311,10 @@ class _Translator:
             raise LlmError(LlmFailure(message=event.error.message, code="SERVER"))
         if event.usage is not None:
             self._usage = _usage(event.usage)
-        for choice in event.choices[:1]:
+        for choice in event.choices:
+            if choice.index != 0:
+                # A request may ask for several replies. Only the first one is read.
+                continue
             delta = choice.delta
             reasoning = delta.reasoning_content or delta.reasoning
             if reasoning:
@@ -294,7 +333,8 @@ class _Translator:
         if reason is None:
             return
         if reason != "length":
-            for block in sorted(self._tools.values()):
+            yield from self._begin_waiting()
+            for block in sorted(call.block for call in self._calls.values()):
                 yield BlockEnd(index=block)
         if self._usage is not None:
             yield UsageChunk(usage=self._usage)
@@ -307,6 +347,7 @@ class _Translator:
     def _text(self, kind: Literal["reasoning", "text"], piece: str) -> Iterator[Chunk]:
         if self._open is None or self._open[1] != kind:
             yield from self._close()
+            yield from self._begin_waiting()
             self._open = (self._next, kind)
             self._next += 1
             yield BlockStart(index=self._open[0], kind=kind)
@@ -316,26 +357,52 @@ class _Translator:
         else:
             yield TextDelta(index=index, text=piece)
 
-    def _tool(self, call: _ToolCall) -> Iterator[Chunk]:
-        block = self._tools.get(call.index)
-        if block is None:
+    def _tool(self, fragment: _ToolCall) -> Iterator[Chunk]:
+        """Take in one fragment of a tool call.
+
+        The block of a call begins once its name and its id are known in full,
+        because a block says both when it begins. That is the case when a
+        fragment comes without either, when something else begins, or when the
+        reply ends. Arguments that arrive before then wait.
+        """
+        if fragment.index not in self._calls:
             yield from self._close()
-            if not call.function.name:
-                raise LlmError(
-                    LlmFailure(
-                        message="a tool call began without a name", code="MALFORMED_RESPONSE"
-                    )
-                )
-            block = self._tools[call.index] = self._next
-            self._next += 1
-            yield BlockStart(
-                index=block,
-                kind="tool-call",
-                call_id=call.id or f"call_{uuid.uuid4().hex[:12]}",
-                name=call.function.name,
+        yield from self._begin_waiting(but=fragment.index)
+        call = self._calls.setdefault(fragment.index, _Call())
+        function = fragment.function
+        if call.block < 0:
+            if fragment.id or function.name or not call.name:
+                call.id = _grown(call.id, fragment.id)
+                call.name = _grown(call.name, function.name)
+                call.waiting += function.arguments or ""
+                return
+            yield from self._begin(call)
+        if function.arguments:
+            yield ToolCallDelta(index=call.block, arguments=function.arguments)
+
+    def _begin(self, call: _Call) -> Iterator[Chunk]:
+        """Begin the block of a tool call and pass on the arguments that waited."""
+        if not call.name:
+            raise LlmError(
+                LlmFailure(message="a tool call began without a name", code="MALFORMED_RESPONSE")
             )
-        if call.function.arguments:
-            yield ToolCallDelta(index=block, arguments=call.function.arguments)
+        call.block = self._next
+        self._next += 1
+        yield BlockStart(
+            index=call.block,
+            kind="tool-call",
+            call_id=call.id or f"call_{uuid.uuid4().hex[:12]}",
+            name=call.name,
+        )
+        if call.waiting:
+            yield ToolCallDelta(index=call.block, arguments=call.waiting)
+            call.waiting = ""
+
+    def _begin_waiting(self, but: int | None = None) -> Iterator[Chunk]:
+        """Begin the block of every tool call that has none yet, except the call ``but``."""
+        for index, call in sorted(self._calls.items()):
+            if call.block < 0 and index != but:
+                yield from self._begin(call)
 
     def _close(self) -> Iterator[Chunk]:
         """End the block of text or reasoning that is open, if any."""
@@ -367,25 +434,34 @@ def _describe(error: BaseException) -> str:
 
 
 def _retry_after_ms(response: httpx.Response) -> int | None:
+    """Return how long the service asks to wait: it names seconds, or a point in time."""
+    value = response.headers.get("retry-after", "")
     try:
-        seconds = float(response.headers.get("retry-after", ""))
+        seconds = float(value)
     except ValueError:
-        return None
-    return round(seconds * 1000) if seconds >= 0 else None
+        try:
+            moment = parsedate_to_datetime(value)
+        except ValueError:
+            return None
+        if moment.tzinfo is None:
+            # A date of HTTP is in universal time also where it does not say so.
+            moment = moment.replace(tzinfo=UTC)
+        return max(round((moment.timestamp() - time.time()) * 1000), 0)
+    return round(seconds * 1000) if math.isfinite(seconds) and seconds >= 0 else None
 
 
-def _refusal(response: httpx.Response, secret: str | None) -> LlmFailure:
+def _refusal(response: httpx.Response) -> LlmFailure:
     """Turn a response that is not a stream into a failure."""
     status = response.status_code
     code = _STATUS_CODES.get(status) or ("SERVER" if status >= 500 else f"HTTP_{status}")
     text = response.text
-    message = text[:500] or f"HTTP {status} {response.reason_phrase}"
+    message = text or f"HTTP {status} {response.reason_phrase}"
     try:
         error = _ErrorBody.model_validate_json(text).error
     except ValidationError:
         pass
     else:
-        message = error.message[:500]
+        message = error.message
         lowered = message.lower()
         if error.code == "insufficient_quota":
             code = "QUOTA"
@@ -393,8 +469,6 @@ def _refusal(response: httpx.Response, secret: str | None) -> LlmFailure:
             error.code == "context_length_exceeded" or "context length" in lowered
         ):
             code = "CONTEXT_WINDOW_EXCEEDED"
-    if secret:
-        message = message.replace(secret, "[key]")
     return LlmFailure(
         message=message,
         code=code,
@@ -402,6 +476,24 @@ def _refusal(response: httpx.Response, secret: str | None) -> LlmFailure:
         retry_after_ms=_retry_after_ms(response),
         request_id=response.headers.get("x-request-id"),
     )
+
+
+def _failure(error: httpx.RequestError | LlmError, secret: str | None) -> LlmFailure:
+    """Return the failure that an error stands for, fit to be shown and to be stored.
+
+    Every failure of the adapter passes through here. The key is cut out of
+    its text first, and then the text is cut to a length, so that no part of
+    the key is left at the end of it.
+    """
+    if isinstance(error, LlmError):
+        failure = error.failure
+    else:
+        code = "TIMEOUT" if isinstance(error, httpx.TimeoutException) else "TRANSPORT"
+        failure = LlmFailure(message=_describe(error), code=code)
+    message = failure.message
+    if secret:
+        message = message.replace(secret, "[key]")
+    return failure.model_copy(update={"message": message[:_MESSAGE_CHARACTERS]})
 
 
 class OpenAIChat:
@@ -446,18 +538,17 @@ class OpenAIChat:
             ) as response:
                 if response.status_code != 200:
                     await response.aread()
-                    raise LlmError(_refusal(response, secret))
+                    raise LlmError(_refusal(response))
                 async for data in _events(response.aiter_lines()):
                     if data == "[DONE]":
                         break
                     for chunk in translator.feed(data):
                         yield chunk
-        except httpx.TimeoutException as error:
-            raise LlmError(LlmFailure(message=_describe(error), code="TIMEOUT")) from error
-        except httpx.TransportError as error:
-            raise LlmError(LlmFailure(message=_describe(error), code="TRANSPORT")) from error
-        for chunk in translator.finish():
-            yield chunk
+            for chunk in translator.finish():
+                yield chunk
+        except (httpx.RequestError, LlmError) as error:
+            # The error itself is left behind: its text may hold the key, and so may its cause.
+            raise LlmError(_failure(error, secret)) from None
 
     def _secret(self) -> str | None:
         variable = self._config.api_key_env

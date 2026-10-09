@@ -2,7 +2,10 @@
 
 import asyncio
 import json
+import traceback
 from collections.abc import AsyncIterator, Iterable
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from typing import Any
 
 import httpx
@@ -18,6 +21,7 @@ from tack.llm import (
     Finish,
     Llm,
     LlmCall,
+    LlmError,
     LlmFailure,
     LlmRequest,
     Message,
@@ -468,8 +472,134 @@ async def test_a_tool_call_without_an_id_gets_one(ctx: Context, llm: Llm) -> Non
     assert first.call_id != second.call_id
 
 
+def piece(index: int = 0, **fields: str) -> dict[str, Any]:
+    """An event with one fragment of a tool call: any of ``id``, ``name`` and ``arguments``."""
+    function = {key: fields[key] for key in ("name", "arguments") if key in fields}
+    call: dict[str, Any] = {"index": index, "function": function}
+    if "id" in fields:
+        call["id"] = fields["id"]
+    return delta(tool_calls=[call])
+
+
+async def test_the_name_and_the_id_of_a_tool_call_may_arrive_in_pieces(
+    ctx: Context, llm: Llm
+) -> None:
+    body = sse(
+        piece(id="call_", name="re", arguments="{"),
+        piece(id="abc", name="ad", arguments="}"),
+        finish("tool_calls"),
+        "[DONE]",
+    )
+    connect(ctx, llm, Service(streamed(body)))
+
+    call = await ask(llm, tools=(READ,))
+
+    assert call.chunks == [
+        BlockStart(index=0, kind="tool-call", call_id="call_abc", name="read"),
+        ToolCallDelta(index=0, arguments="{}"),
+        BlockEnd(index=0),
+        Finish(reason="tool-calls"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "pieces",
+    [
+        [piece(id="call_a"), piece(name="read"), piece(arguments="{}"), piece(arguments="")],
+        [piece(name="read"), piece(id="call_a"), piece(arguments="{}")],
+        [piece(arguments=""), piece(id="call_a", name="read"), piece(arguments="{}")],
+    ],
+    ids=["id first", "name first", "both late"],
+)
+async def test_the_name_and_the_id_of_a_tool_call_may_arrive_one_after_the_other(
+    ctx: Context, llm: Llm, pieces: list[dict[str, Any]]
+) -> None:
+    connect(ctx, llm, Service(streamed(sse(*pieces, finish("tool_calls"), "[DONE]"))))
+
+    call = await ask(llm, tools=(READ,))
+
+    assert call.failure is None
+    assert call.message.tool_calls == (
+        ToolCallBlock(call_id="call_a", name="read", arguments="{}"),
+    )
+
+
+async def test_a_service_that_repeats_the_name_and_the_id_in_every_event_is_understood(
+    ctx: Context, llm: Llm
+) -> None:
+    body = sse(
+        piece(id="call_a", name="read", arguments='{"path": '),
+        piece(id="call_a", name="read", arguments='"a.txt"}'),
+        finish("tool_calls"),
+        "[DONE]",
+    )
+    connect(ctx, llm, Service(streamed(body)))
+
+    call = await ask(llm, tools=(READ,))
+
+    assert call.message.tool_calls == (
+        ToolCallBlock(call_id="call_a", name="read", arguments='{"path": "a.txt"}'),
+    )
+
+
+async def test_a_tool_call_is_passed_on_as_soon_as_its_name_and_id_are_known(
+    ctx: Context, llm: Llm
+) -> None:
+    body = Body(
+        [
+            sse(piece(id="call_a", name="read", arguments="")),
+            sse(piece(arguments='{"path": ')),
+            sse(piece(1, id="call_b", name="read", arguments="{}")),
+            sse(delta(content="Both at once.")),
+        ],
+        hang=True,
+    )
+    connect(ctx, llm, Service(streamed(body)))
+    call = llm.call(LlmRequest(config=MODEL, messages=HELLO, tools=(READ,)))
+
+    async def read() -> None:
+        async for _ in call:
+            pass
+
+    reader = asyncio.ensure_future(read())
+    for _ in range(100):
+        await asyncio.sleep(0)
+        if len(call.chunks) == 6:
+            break
+    reader.cancel()
+    await asyncio.gather(reader, return_exceptions=True)
+
+    # The reply has not ended. The first call began when a piece came without a name or
+    # an id, and the second when the text began.
+    assert call.chunks == [
+        BlockStart(index=0, kind="tool-call", call_id="call_a", name="read"),
+        ToolCallDelta(index=0, arguments='{"path": '),
+        BlockStart(index=1, kind="tool-call", call_id="call_b", name="read"),
+        ToolCallDelta(index=1, arguments="{}"),
+        BlockStart(index=2, kind="text"),
+        TextDelta(index=2, text="Both at once."),
+    ]
+
+
+async def test_a_tool_call_that_was_cut_off_before_it_began_is_left_out(
+    ctx: Context, llm: Llm
+) -> None:
+    body = sse(
+        delta(content="I will look."),
+        piece(id="call_a", name="read", arguments='{"pa'),
+        finish("length"),
+        "[DONE]",
+    )
+    connect(ctx, llm, Service(streamed(body)))
+
+    call = await ask(llm, tools=(READ,))
+
+    assert call.finish == Finish(reason="max-tokens")
+    assert call.message == AssistantMessage(content=(TextBlock(text="I will look."),))
+
+
 async def test_a_tool_call_without_a_name_is_a_malformed_reply(ctx: Context, llm: Llm) -> None:
-    body = sse(delta(tool_calls=[{"index": 0, "id": "call_a", "function": {"arguments": "{}"}}]))
+    body = sse(piece(id="call_a", arguments="{}"), finish("tool_calls"), "[DONE]")
     connect(ctx, llm, Service(streamed(body)))
 
     call = await ask(llm)
@@ -477,6 +607,26 @@ async def test_a_tool_call_without_a_name_is_a_malformed_reply(ctx: Context, llm
     assert call.failure == LlmFailure(
         message="a tool call began without a name", code="MALFORMED_RESPONSE"
     )
+
+
+async def test_only_the_first_choice_of_a_reply_is_read(ctx: Context, llm: Llm) -> None:
+    def choice(index: int, text: str | None, reason: str | None = None) -> dict[str, Any]:
+        fields = {} if text is None else {"content": text}
+        return {"index": index, "delta": fields, "finish_reason": reason}
+
+    body = sse(
+        {"choices": [choice(1, "B")]},
+        {"choices": [choice(0, "A")]},
+        {"choices": [choice(1, "b", "length"), choice(0, "a")]},
+        {"choices": [choice(0, None, "stop")]},
+        "[DONE]",
+    )
+    connect(ctx, llm, Service(streamed(body)))
+
+    call = await ask(llm, config=MODEL.model_copy(update={"options": {"n": 2}}))
+
+    assert call.message.text == "Aa"
+    assert call.finish == Finish(reason="stop")
 
 
 async def test_a_reply_cut_off_by_the_token_limit_says_so(ctx: Context, llm: Llm) -> None:
@@ -709,7 +859,17 @@ async def test_a_refusal_without_a_body_is_named_by_its_status(ctx: Context, llm
 
 
 @pytest.mark.parametrize(
-    ("header", "expected"), [("2", 2000), ("0.5", 500), ("soon", None), ("-1", None)]
+    ("header", "expected"),
+    [
+        ("2", 2000),
+        ("0.5", 500),
+        ("soon", None),
+        ("-1", None),
+        ("inf", None),
+        ("nan", None),
+        ("1e400", None),
+        ("", None),
+    ],
 )
 async def test_the_wait_that_the_service_asks_for_is_passed_on(
     ctx: Context, llm: Llm, header: str, expected: int | None
@@ -719,8 +879,36 @@ async def test_the_wait_that_the_service_asks_for_is_passed_on(
 
     call = await ask(llm)
 
-    assert call.failure is not None
-    assert call.failure.retry_after_ms == expected
+    assert call.failure == LlmFailure(
+        message="slow down", code="RATE_LIMIT", status=429, retry_after_ms=expected
+    )
+
+
+async def test_the_wait_may_be_given_as_a_point_in_time(ctx: Context, llm: Llm) -> None:
+    now = datetime.now(UTC)
+    dates = [
+        format_datetime(now + timedelta(seconds=90), usegmt=True),
+        # A date without a zone, which is how the oldest form of an HTTP date is read.
+        format_datetime((now + timedelta(seconds=90)).replace(tzinfo=None)),
+        format_datetime(now - timedelta(hours=1), usegmt=True),
+    ]
+    assert dates[0].endswith(" GMT")
+    assert dates[1].endswith(" -0000")
+    connect(
+        ctx,
+        llm,
+        Service(*(refused(429, {"message": "slow down"}, **{"retry-after": d}) for d in dates)),
+    )
+
+    failures = [(await ask(llm)).failure for _ in dates]
+    waits = [failure.retry_after_ms for failure in failures if failure is not None]
+
+    assert len(waits) == 3
+    assert waits[0] is not None
+    assert 85_000 < waits[0] <= 90_000
+    assert waits[1] is not None
+    assert 85_000 < waits[1] <= 90_000
+    assert waits[2] == 0
 
 
 async def test_a_service_that_cannot_be_reached_is_a_transport_failure(
@@ -780,6 +968,79 @@ async def test_the_key_never_shows_up_in_a_failure(ctx: Context, llm: Llm) -> No
     assert call.failure is not None
     assert KEY not in call.failure.message
     assert call.failure.message == "Incorrect API key provided: [key]"
+
+
+async def test_the_key_is_cut_out_of_an_error_inside_the_stream(ctx: Context, llm: Llm) -> None:
+    body = sse(delta(content="Hel"), {"error": {"message": f"Invalid API key: {KEY}"}})
+    connect(ctx, llm, Service(streamed(body)))
+
+    call = await ask(llm)
+
+    assert call.failure == LlmFailure(message="Invalid API key: [key]", code="SERVER")
+
+
+async def test_the_key_is_cut_out_of_a_failure_to_reach_the_service(ctx: Context, llm: Llm) -> None:
+    broken = Body([sse(delta(content="Hel"))], then=httpx.ReadError(f"lost after Bearer {KEY}"))
+    connect(
+        ctx,
+        llm,
+        Service(httpx.ConnectError(f"cannot send Bearer {KEY}"), streamed(broken)),
+    )
+
+    first = await ask(llm)
+    second = await ask(llm)
+
+    assert first.failure == LlmFailure(
+        message="ConnectError: cannot send Bearer [key]", code="TRANSPORT"
+    )
+    assert second.failure == LlmFailure(
+        message="ReadError: lost after Bearer [key]", code="TRANSPORT"
+    )
+
+
+async def test_the_key_is_cut_out_before_a_long_text_is_cut_short(ctx: Context, llm: Llm) -> None:
+    # The key lies across the place where the text ends.
+    connect(ctx, llm, Service(refused(401, "x" * 490 + KEY + " is not valid")))
+
+    call = await ask(llm)
+
+    assert call.failure is not None
+    assert call.failure.message == "x" * 490 + "[key] is n"
+
+
+async def test_a_long_error_inside_the_stream_is_cut_short(ctx: Context, llm: Llm) -> None:
+    connect(ctx, llm, Service(streamed(sse({"error": {"message": "y" * 800}}))))
+
+    call = await ask(llm)
+
+    assert call.failure == LlmFailure(message="y" * 500, code="SERVER")
+
+
+async def test_the_error_that_held_the_key_does_not_travel_with_the_failure(
+    ctx: Context, llm: Llm
+) -> None:
+    adapter = connect(ctx, llm, Service(httpx.ConnectError(f"cannot send Bearer {KEY}")))
+
+    with pytest.raises(LlmError) as raised:
+        async for _ in adapter.stream(LlmRequest(config=MODEL, messages=HELLO)):
+            pass
+
+    assert KEY not in "".join(traceback.format_exception(raised.value))
+
+
+async def test_a_body_that_cannot_be_decoded_is_a_transport_failure(ctx: Context, llm: Llm) -> None:
+    garbled = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream", "content-encoding": "gzip"},
+        stream=Body([b"this is not gzip"]),
+    )
+    connect(ctx, llm, Service(garbled))
+
+    call = await ask(llm)
+
+    assert call.failure is not None
+    assert call.failure.code == "TRANSPORT"
+    assert call.failure.message.startswith("DecodingError")
 
 
 # Stopping

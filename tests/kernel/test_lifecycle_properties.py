@@ -13,7 +13,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from tack.kernel import (
@@ -149,26 +149,47 @@ class Run:
 
         return Plugin(f"plugin-{index}", apply, inject=tuple(self.keys[s] for s in injects))
 
+    def users_of(self, service: int, token: Token) -> list[int]:
+        """The loaded plugins that were given ``token`` as the service."""
+        return [
+            dependent
+            for dependent in self.dependents_of(service)
+            if dependent in self.loaded and self.seen[dependent].get(service) is token
+        ]
+
     async def withdraw(self, service: int, handle: EffectHandle) -> None:
+        withdrawn = self.tokens[service]
         await handle.dispose()
-        del self.tokens[service]
-        for dependent in self.dependents_of(service):
-            if dependent in self.loaded:
-                self.violations.append(
-                    f"service {service} was withdrawn while its dependent "
-                    f"{dependent} was still loaded"
-                )
+        # The service may have been provided anew before this task was woken.
+        if self.tokens.get(service) is withdrawn:
+            del self.tokens[service]
+        for dependent in self.users_of(service, withdrawn):
+            self.violations.append(
+                f"service {service} was withdrawn while its dependent {dependent} was still loaded"
+            )
 
     def provide(self, service: int) -> None:
         if self.scenario.owners[service] != ROOT or service in self.handles:
             return
+        token = Token()
         withdrawal = self.withdrawals.get(service)
         if withdrawal is not None and not withdrawal.done():
-            with pytest.raises(ServiceConflictError):
-                self.ctx.provide(self.keys[service], Token())
-            return
-        token = Token()
-        self.handles[service] = self.ctx.provide(self.keys[service], token)
+            # The name of a withdrawn service stays taken until every plugin that used the
+            # service has unloaded. The kernel knows that moment a turn or two of the loop
+            # before the task that withdraws is woken. So while that task still waits, the
+            # name may be taken or free, but it may be free only if no user is left.
+            try:
+                handle = self.ctx.provide(self.keys[service], token)
+            except ServiceConflictError:
+                return
+            for dependent in self.users_of(service, self.tokens[service]):
+                self.violations.append(
+                    f"the name of service {service} was free while its user "
+                    f"{dependent} was still loaded"
+                )
+        else:
+            handle = self.ctx.provide(self.keys[service], token)
+        self.handles[service] = handle
         self.tokens[service] = token
 
     async def step(self, action: str, target: int) -> None:
@@ -269,8 +290,52 @@ async def play(scenario: Scenario) -> None:
     await run.finish()
 
 
+REPROVIDED_BEFORE_THE_WITHDRAWAL_RETURNED = Scenario(
+    owners=(ROOT,),
+    injects=(frozenset({0}), frozenset(), frozenset(), frozenset()),
+    slow=((False, False),) * 4,
+    steps=(
+        ("provide", 0),
+        ("withdraw_later", 0),
+        ("add", 0),
+        ("yield", 0),
+        ("yield", 0),
+        ("provide", 0),
+    ),
+)
+"""Found by a run with a fresh seed, months of runs after the test was written.
+
+After two turns of the loop the kernel has let the name of the service go, but
+the task that withdrew the service has not been woken yet.
+"""
+
+
+REPROVIDED_WHILE_A_USER_STILL_CLEANS_UP = Scenario(
+    owners=(ROOT,),
+    injects=(frozenset({0}), frozenset()),
+    slow=((False, True), (False, False)),
+    steps=(
+        ("provide", 0),
+        ("add", 0),
+        ("settle", 0),
+        ("withdraw_later", 0),
+        ("yield", 0),
+        ("yield", 0),
+        ("provide", 0),
+        ("settle", 0),
+    ),
+)
+"""The other side of the same rule: here the name must still be taken.
+
+The plugin that used the service takes a few turns of the loop to clean up,
+and the service is provided again while it does.
+"""
+
+
 @pytest.mark.timeout(120)
 @settings(max_examples=300, deadline=None)
 @given(scenarios())
+@example(REPROVIDED_BEFORE_THE_WITHDRAWAL_RETURNED)
+@example(REPROVIDED_WHILE_A_USER_STILL_CLEANS_UP)
 def test_plugins_are_active_exactly_when_their_services_are(scenario: Scenario) -> None:
     asyncio.run(play(scenario))

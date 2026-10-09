@@ -151,6 +151,26 @@ def test_text_takes_the_place_of_the_word_about_thinking() -> None:
     assert transcript.partial.style == ""
 
 
+def test_text_takes_the_place_of_the_word_also_where_no_block_was_begun_for_it() -> None:
+    transcript = Transcript(PLAIN)
+    transcript.chunk(BlockStart(index=0, kind="reasoning"))
+
+    shown = transcript.chunk(TextDelta(index=1, text="A line.\n"))
+
+    # The line is complete and handed over. Nothing says any more that the model thinks.
+    assert plain(shown) == ["A line."]
+    assert transcript.partial.plain == ""
+
+
+def test_a_line_that_is_not_complete_stays_in_front_of_a_word_about_what_comes_next() -> None:
+    transcript = Transcript(PLAIN)
+    transcript.chunk(TextDelta(index=0, text="Half a li"))
+
+    transcript.chunk(BlockStart(index=1, kind="tool-call", call_id="c-1", name="read"))
+
+    assert transcript.partial.plain == "Half a li"
+
+
 def test_chunks_that_show_nothing_change_nothing() -> None:
     transcript = Transcript(PLAIN)
     transcript.chunk(TextDelta(index=0, text="Half"))
@@ -663,6 +683,27 @@ async def test_a_turn_that_ended_badly_says_so_when_the_session_is_taken_up(log:
     assert plain(recap(log.events, PLAIN)) == [
         "(this session is taken up again. Its last turn:)",
         "> Think.",
+        "(stopped)",
+        "",
+    ]
+
+
+async def test_the_last_words_of_the_model_are_shown_also_when_a_reply_without_words_followed(
+    log: Session,
+) -> None:
+    for data in (
+        TurnStartEvent(turn=1),
+        said("Look."),
+        reply(TextBlock(text="I will look."), finish="tool-calls"),
+        reply(ToolCallBlock(call_id="c-1", name="read", arguments="{}"), finish="tool-calls"),
+        TurnEndEvent(turn=1, reason="aborted", detail="user"),
+    ):
+        log.append(data)
+
+    assert plain(recap(log.events, PLAIN)) == [
+        "(this session is taken up again. Its last turn:)",
+        "> Look.",
+        "I will look.",
         "(stopped)",
         "",
     ]

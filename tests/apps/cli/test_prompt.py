@@ -1,12 +1,14 @@
 """The line at the bottom of the terminal: what is typed there, and what is shown above it."""
 
 import asyncio
+import time
 
 import pytest
 from rich.text import Text
 
+from columbina.apps.cli import prompt as prompt_module
 from columbina.apps.cli.prompt import Prompt
-from support.terminal import CTRL_C, CTRL_D, ENTER, ESCAPE, Desk, desk, until
+from support.terminal import CTRL_C, CTRL_D, ENTER, ESCAPE, Desk, desk, stands, until
 
 STAND_IN = chr(0xFFFD)
 OVERRIDE = chr(0x202E)
@@ -91,6 +93,17 @@ async def test_the_unfinished_line_cannot_steer_the_terminal_either() -> None:
         assert OVERRIDE not in at.shown()
 
 
+async def test_what_is_shown_has_colours_only_on_a_terminal_that_wants_them() -> None:
+    red = "\x1b[0;31m"
+    with desk() as plain, desk(colours=True) as coloured:
+        for at in (plain, coloured):
+            Prompt(at.terminal).show([Text("stop", style="red")])
+
+        assert plain.seen() == coloured.seen() == "stop\n"
+        assert red in coloured.sent()
+        assert red not in plain.sent()
+
+
 async def test_showing_nothing_shows_nothing() -> None:
     with desk() as at:
         prompt = Prompt(at.terminal)
@@ -166,21 +179,30 @@ async def test_the_end_of_a_long_line_is_measured_in_the_cells_that_it_takes() -
         assert moon * 39 not in at.shown()
 
 
-async def test_a_reply_that_grows_fast_is_not_drawn_at_every_step() -> None:
+async def test_a_reply_that_grows_fast_is_not_drawn_at_every_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The time between two drawings is made long for this test. The clocks of some systems
+    # are coarse, and with a twentieth of a second the count would be blurred.
+    between = 0.5
+    monkeypatch.setattr(prompt_module, "_REDRAW_SECONDS", between)
     with desk() as at:
         prompt = Prompt(at.terminal)
         waiting = asyncio.ensure_future(prompt.line())
         await typed(prompt, at, "x")
 
-        for number in range(200):
+        before, began = at.drawings(), time.monotonic()
+        for number in range(10):
             prompt.partial = Text(f"step {number} of the reply")
-            await asyncio.sleep(0)
-        await until(lambda: "step 199 of the reply" in at.shown())
+            await asyncio.sleep(0.04)
+        await stands(lambda: at.window()[:1], ["step 9 of the reply"])
+        drawn, took = at.drawings() - before, time.monotonic() - began
         at.enter()
         await asyncio.wait_for(waiting, 5)
 
-        drawn = sum(f"step {number} of the reply" in at.shown() for number in range(200))
-        assert drawn < 20
+        # Ten steps, each of which would be drawn by itself, and the last one is shown.
+        assert 0 < drawn <= took / between + 2
+        assert drawn < 10
 
 
 # Stopping and leaving
@@ -250,9 +272,31 @@ async def test_ctrl_c_followed_by_typing_does_not_count_towards_leaving() -> Non
         await typed(prompt, at, "x")
         at.type(CTRL_C)
         await until(lambda: prompt.typed == "")
+        # The line is empty again, and this is the first of two once more.
+        at.type(CTRL_C)
+        await until(lambda: at.shown().count("Press Ctrl+C again to leave.") == 2)
         at.enter("stay")
 
         assert await asyncio.wait_for(waiting, 5) == "stay"
+
+
+async def test_a_line_that_is_submitted_takes_back_the_wish_to_leave() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        at.type(CTRL_C)
+        await until(lambda: "Press Ctrl+C again to leave." in at.shown())
+
+        # An empty line is submitted. Nothing was typed, so nothing but the line says that
+        # the user goes on.
+        at.enter()
+        assert await asyncio.wait_for(waiting, 5) == ""
+        waiting = asyncio.ensure_future(prompt.line())
+        at.type(CTRL_C)
+        await until(lambda: at.shown().count("Press Ctrl+C again to leave.") == 2)
+        at.type(CTRL_C)
+
+        assert await asyncio.wait_for(waiting, 5) is None
 
 
 async def test_ctrl_d_leaves_from_an_empty_line_only() -> None:
@@ -423,13 +467,19 @@ async def test_one_question_is_asked_at_a_time() -> None:
     with desk() as at:
         prompt = Prompt(at.terminal)
         waiting = asyncio.ensure_future(prompt.line())
-        first = asyncio.ensure_future(prompt.ask("yn", "first? [y/n]"))
-        second = asyncio.ensure_future(prompt.ask("yn", "second? [y/n]"))
-        await until(lambda: "first? [y/n]" in at.shown())
+        first = asyncio.ensure_future(prompt.ask("yn", "[1]", [Text("The first question.")]))
+        second = asyncio.ensure_future(prompt.ask("yn", "[2]", [Text("The second question.")]))
+        await stands(lambda: at.window()[:2], ["The first question.", "[1]"])
+        # The second question waits, words and all. Whoever reads a question and presses a
+        # key must be answering that question.
+        await asyncio.sleep(0.1)
+        assert "The second question." not in at.shown()
 
         at.type("y")
         assert await asyncio.wait_for(first, 5) == "y"
-        await until(lambda: "second? [y/n]" in at.shown())
+        await stands(
+            lambda: at.window()[:3], ["The first question.", "The second question.", "[2]"]
+        )
         at.type("n")
 
         assert await asyncio.wait_for(second, 5) == "n"

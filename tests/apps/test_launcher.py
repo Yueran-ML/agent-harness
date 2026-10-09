@@ -817,14 +817,27 @@ def test_a_task_is_not_a_conversation_and_takes_none_of_its_arguments(
     assert "--continue" in capsys.readouterr().err
 
 
-def test_the_help_names_the_commands(capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_the_help_names_the_commands(capsys: pytest.CaptureFixture[str], flag: str) -> None:
     with pytest.raises(SystemExit) as stopped:
-        main(["--help"])
+        main([flag])
 
     shown = capsys.readouterr().out
     assert stopped.value.code == 0
-    assert "chat" in shown
-    assert "run" in shown
+    # What each of the two commands is for, which only the help of the program says.
+    assert "hold a conversation at the terminal" in shown
+    assert "run one task and print the answer" in shown
+
+
+def test_a_task_loads_the_program_without_an_interface_unless_a_profile_is_named(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["run", "Do it.", "--cwd", str(work), "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert code == 0
+    assert entries["frontend"]["plugin"] == "columbina.apps.headless"
+    assert "commands" not in entries
 
 
 def test_an_interrupted_run_exits_the_way_a_shell_expects(

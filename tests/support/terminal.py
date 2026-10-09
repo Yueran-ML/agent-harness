@@ -52,6 +52,7 @@ class Screen(Emulated):
         printed: The pieces of text that were printed for good.
         drawn: The pieces of text that were drawn as a part of the prompt.
         everything: Both, in the order in which they came.
+        drawings: How many times the prompt was drawn.
     """
 
     def __init__(self, rows: int = 24, columns: int = 80) -> None:
@@ -59,10 +60,12 @@ class Screen(Emulated):
         self.printed: list[str] = []
         self.drawn: list[str] = []
         self.everything: list[str] = []
+        self.drawings = 0
         self._drawing = False
 
     def hide_cursor(self) -> None:
         self._drawing = True
+        self.drawings += 1
         super().hide_cursor()
 
     def show_cursor(self) -> None:
@@ -117,6 +120,15 @@ class Desk:
         """Return all text that the screen was sent, printed and drawn, in the order it came."""
         return _plain(self._screen.everything)
 
+    def sent(self) -> str:
+        """Return everything that the terminal was sent, with the sequences that steer it."""
+        self._screen.flush()
+        return "".join(self._screen.display.received)
+
+    def drawings(self) -> int:
+        """Return how many times the prompt was drawn so far."""
+        return self._screen.drawings
+
     def screen(self) -> list[str]:
         """Return the lines that stand on the screen now, with those that scrolled away."""
         self._screen.flush()
@@ -148,9 +160,11 @@ class Desk:
 
 
 @contextlib.contextmanager
-def desk(encoding: str = "utf-8", rows: int = 24, columns: int = 80) -> Generator[Desk, None, None]:
+def desk(
+    encoding: str = "utf-8", rows: int = 24, columns: int = 80, colours: bool = False
+) -> Generator[Desk, None, None]:
     """Set up a terminal that takes its keys from a pipe and keeps what it shows."""
     with create_pipe_input() as keys:
         screen = Screen(rows, columns)
-        terminal = Terminal(keys, screen, encoding=encoding, colours=False)
+        terminal = Terminal(keys, screen, encoding=encoding, colours=colours)
         yield Desk(terminal, keys, screen)

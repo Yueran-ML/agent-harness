@@ -218,3 +218,19 @@ async def test_text_that_would_steer_a_terminal_leaves_the_screen_as_it_is() -> 
         )
         at.type(CTRL_D)
         await asyncio.wait_for(waiting, 5)
+
+
+async def test_the_line_below_the_prompt_is_drawn_anew_when_something_begins_to_run() -> None:
+    said = ["at rest"]
+    with desk(rows=4, columns=40) as at:
+        prompt = Prompt(at.terminal, status=lambda: said[0])
+        waiting = asyncio.ensure_future(prompt.line())
+        await stands(lambda: at.window()[-1:], ["at rest"])
+
+        # Nothing is typed and nothing is printed. That something runs is reason enough.
+        said[0] = "running | esc stops"
+        prompt.busy = True
+
+        await stands(lambda: at.window()[-1:], ["running | esc stops"])
+        at.type(CTRL_D)
+        await asyncio.wait_for(waiting, 5)

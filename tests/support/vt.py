@@ -51,6 +51,7 @@ class Display:
         rows: The height of the window.
         columns: The width of the window.
         cursor_shown: Whether the cursor is shown.
+        received: Everything that was written to it, as it came, piece by piece.
         encoding: The encoding of the stream, which a terminal has.
     """
 
@@ -60,6 +61,7 @@ class Display:
         self.rows = rows
         self.columns = columns
         self.cursor_shown = True
+        self.received: list[str] = []
         self._lines: list[list[str]] = [[]]
         # The line that the first row of the window shows, and where the cursor is.
         self._top: int = 0
@@ -97,6 +99,7 @@ class Display:
 
     def write(self, data: str) -> int:
         """Carry out what a terminal is sent."""
+        self.received.append(data)
         data, self._unfinished = self._unfinished + data, ""
         position = 0
         while position < len(data):

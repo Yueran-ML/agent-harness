@@ -19,6 +19,7 @@ from columbina.builtin_tools import shell
 from columbina.llm import render_requests
 from columbina.llm.adapters import scripted
 from columbina.session import TurnEndEvent, UserMessageEvent
+from columbina.session.store import SESSION_FILE
 from support import user as at_the_terminal
 from support.launch import profile, stored
 from support.neutral import neutral_requests, neutral_screen
@@ -136,6 +137,61 @@ def test_a_repository_is_mended_in_a_conversation(
     standing = at_the_terminal.SCREENS[-1].display.lines()
     looked = neutral_screen(standing, repository, shell.NAME)
     assert looked == snapshot(SCREEN, looked)
+
+
+@pytest.mark.timeout(120)
+def test_the_program_that_is_shipped_has_its_commands(
+    home: Path, repository: Path, tmp_path: Path
+) -> None:
+    steps = (
+        {"sees": "/help lists the commands.", "keys": "/help" + ENTER},
+        {"sees": "goes to the agent.\n", "keys": "/exit" + ENTER},
+    )
+    chosen = profile(tmp_path, extends="cli", extra=[somebody(*steps)])
+
+    code = main(["--profile", chosen, "--cwd", str(repository)])
+
+    assert code == 0
+    assert (
+        "/exit         Leave.\n"
+        "/help         List the commands.\n"
+        "/model        Show the model, or name another.\n"
+        "/new          End this session and begin another one.\n"
+        "/permissions  Show what the session may do, or change it to a preset.\n"
+        "/sessions     List the sessions of this directory.\n"
+        "/tools        List the tools of the agent.\n"
+    ) in printed()
+
+
+@pytest.mark.timeout(120)
+def test_what_is_logged_in_a_conversation_stands_above_the_prompt_and_nowhere_else(
+    home: Path,
+    repository: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A session whose file ends in a line that was never finished: taking it up cuts
+    # the line off, and the log says so.
+    first = (
+        {"sees": "/help lists the commands.", "keys": "Hello?" + ENTER},
+        {"sees": "Hi.\n", "keys": "/exit" + ENTER},
+    )
+    arguments = ["--cwd", str(repository), "--session-id", "s-1"]
+    held = profile(tmp_path, {"text": "Hi."}, extends="cli", extra=[somebody(*first)])
+    main([*arguments, "--profile", held])
+    (file,) = home.rglob(SESSION_FILE)
+    with file.open("ab") as log:
+        log.write(b'{"seq": 99')
+    capsys.readouterr()
+
+    again = ({"sees": "columbina: cut an unfinished line", "keys": "/exit" + ENTER},)
+    code = main(
+        [*arguments, "--profile", profile(tmp_path, extends="cli", extra=[somebody(*again)])]
+    )
+
+    assert code == 0
+    assert "columbina: cut an unfinished line of 10 bytes off the end of " in printed()
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.timeout(120)

@@ -112,7 +112,7 @@ async def test_a_session_in_which_the_user_said_nothing_is_listed_without_words(
 
 
 async def test_a_directory_that_holds_no_session_is_passed_over(
-    sessions: Sessions, ctx: Context, tmp_path: Path
+    sessions: Sessions, ctx: Context, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     work = tmp_path / "work"
     await keep(sessions, ctx, work, "s-1", said("One."), at=1000)
@@ -120,7 +120,12 @@ async def test_a_directory_that_holds_no_session_is_passed_over(
     (beside / "not-a-session").mkdir()
     (beside / "a-file").write_text("x", encoding="utf-8")
 
-    assert [listed.id for listed in sessions.stored(work)] == ["s-1"]
+    with caplog.at_level(logging.WARNING, logger="columbina.session"):
+        listed = sessions.stored(work)
+
+    assert [one.id for one in listed] == ["s-1"]
+    # Nothing is wrong with a session, so there is nothing to warn about.
+    assert caplog.records == []
 
 
 async def test_a_session_that_cannot_be_read_is_left_out_and_the_rest_is_listed(

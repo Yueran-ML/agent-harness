@@ -15,7 +15,9 @@ way before the run goes on, though nothing says that it must. A third: asking
 again where an open file is after the system has said that it is elsewhere.
 The second look agrees with the first unless a link is put back between them.
 A fourth: remembering the last message of every source of a user message, and not
-only of the sources of context. Nothing asks for the others.
+only of the sources of context. Nothing asks for the others. A fifth: letting the
+library that renders the lines of a conversation read markup. It reads markup in
+plain strings only, and the lines that it is handed are no plain strings.
 
 A mutant of code that only one platform runs says which. On another platform
 no test can notice it, and ``mutate.py`` passes it over.
@@ -52,6 +54,21 @@ RULES = "src/columbina/permissions/rules.py"
 COMMANDS = "src/columbina/permissions/commands.py"
 PERMISSIONS = "src/columbina/permissions/__init__.py"
 GREP_WORKER = "src/columbina/builtin_tools/grep_worker.py"
+CLI_LINES = "src/columbina/apps/cli/lines.py"
+CLI_TRANSCRIPT = "src/columbina/apps/cli/transcript.py"
+CLI_PROMPT = "src/columbina/apps/cli/prompt.py"
+CLI_APPROVAL = "src/columbina/apps/cli/approval.py"
+CLI_STATUS = "src/columbina/apps/cli/status.py"
+CLI_FRONTEND = "src/columbina/apps/cli/__init__.py"
+CLI_BUNDLE = "src/columbina/bundles/cli.yml"
+SLASH = "src/columbina/commands/__init__.py"
+COMMAND_TOOLS = "src/columbina/commands/tools.py"
+COMMAND_SESSIONS = "src/columbina/commands/sessions.py"
+COMMAND_PERMISSIONS = "src/columbina/commands/permissions.py"
+TERMINAL_TEXT = "src/columbina/apps/terminal_text.py"
+HEADLESS = "src/columbina/apps/headless.py"
+SESSION_STORE = "src/columbina/session/store.py"
+SESSION_SERVICE = "src/columbina/session/service.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2574,6 +2591,1667 @@ _BASE = (
     ),
 )
 
+_TRANSCRIPT = (
+    mutant(
+        "a carriage return before a line feed stays in the line",
+        CLI_LINES,
+        '        return [line.removesuffix("\\r") for line in complete]\n',
+        "        return list(complete)\n",
+    ),
+    mutant(
+        "the line that is not complete is dropped when the text ends",
+        CLI_LINES,
+        "        return line or None\n",
+        "        return None\n",
+    ),
+    mutant(
+        "the line that is not complete is handed over and kept",
+        CLI_LINES,
+        '        line, self.partial = self.partial.removesuffix("\\r"), ""\n',
+        '        line = self.partial.removesuffix("\\r")\n',
+    ),
+    mutant(
+        "a carriage return that waited for its line feed is handed over at the end",
+        CLI_LINES,
+        '        line, self.partial = self.partial.removesuffix("\\r"), ""\n',
+        '        line, self.partial = self.partial, ""\n',
+    ),
+    mutant(
+        "a reply that was shown as it arrived is shown again",
+        CLI_TRANSCRIPT,
+        "            if not self._shown:\n                shown.extend(",
+        "            if True:\n                shown.extend(",
+    ),
+    mutant(
+        "a reply that did not arrive in pieces is not shown",
+        CLI_TRANSCRIPT,
+        "            if not self._shown:\n                shown.extend(",
+        "            if False:\n                shown.extend(",
+    ),
+    mutant(
+        "after a reply that arrived in pieces the next one is taken for shown too",
+        CLI_TRANSCRIPT,
+        "            self._shown = False\n            self._word = None\n            return shown\n",
+        "            self._word = None\n            return shown\n",
+    ),
+    mutant(
+        "the line of a reply that is not complete is not closed when the reply is written down",
+        CLI_TRANSCRIPT,
+        "            shown = self._close()\n            if not self._shown:",
+        "            shown: list[Text] = []\n            if not self._shown:",
+    ),
+    mutant(
+        "the line that is not complete is not closed when its block ends",
+        CLI_TRANSCRIPT,
+        "            self._word = None\n            return self._close()\n",
+        "            self._word = None\n            return []\n",
+    ),
+    mutant(
+        "what the user gave as a task is shown again",
+        CLI_TRANSCRIPT,
+        '            if data.source != "steer":\n                return []\n',
+        '            if data.source not in ("steer", "user"):\n                return []\n',
+    ),
+    mutant(
+        "what the user said on the way is not shown when the model reads it",
+        CLI_TRANSCRIPT,
+        '            return [Text(f"{self._symbols.steer} {line}") for line in _said(data).splitlines()]\n',
+        "            return []\n",
+    ),
+    mutant(
+        "the end of a turn leaves no empty line",
+        CLI_TRANSCRIPT,
+        "            return [*_end(data), Text()]\n",
+        "            return _end(data)\n",
+    ),
+    mutant(
+        "the time that somebody took to answer counts as time of the call",
+        CLI_TRANSCRIPT,
+        "            self._began[data.call_id] = event.time\n        return []\n",
+        "            pass\n        return []\n",
+    ),
+    mutant(
+        "a request that is made again is not told",
+        CLI_TRANSCRIPT,
+        "        if isinstance(data, RetryEvent):\n",
+        "        if isinstance(data, RetryEvent) and not data.code:\n",
+    ),
+    mutant(
+        "a turn that somebody else stopped does not say who",
+        CLI_TRANSCRIPT,
+        '        told = "(stopped)" if detail in (None, "user") else f"(stopped: {detail})"\n',
+        '        told = "(stopped)"\n',
+    ),
+    mutant(
+        "a turn that the user stopped names the user",
+        CLI_TRANSCRIPT,
+        '        told = "(stopped)" if detail in (None, "user") else f"(stopped: {detail})"\n',
+        '        told = "(stopped)" if detail is None else f"(stopped: {detail})"\n',
+    ),
+    mutant(
+        "a turn that ended with an error says nothing",
+        CLI_TRANSCRIPT,
+        '    if data.reason == "error":\n',
+        '    if data.reason == "no error":\n',
+    ),
+    mutant(
+        "a reply that was cut off says nothing",
+        CLI_TRANSCRIPT,
+        '    if data.reason == "max-tokens":\n',
+        '    if data.reason == "no limit":\n',
+    ),
+    mutant(
+        "a turn that was not allowed to go on says nothing",
+        CLI_TRANSCRIPT,
+        '    if data.reason == "blocked":\n',
+        '    if data.reason == "not blocked":\n',
+    ),
+    mutant(
+        "a turn that the end of the program cut short says nothing",
+        CLI_TRANSCRIPT,
+        '    if data.reason == "interrupted":\n',
+        '    if data.reason == "not interrupted":\n',
+    ),
+    mutant(
+        "a call is told by all of its arguments",
+        CLI_TRANSCRIPT,
+        "    for named in _NAMED_FIRST:\n",
+        "    for named in ():\n",
+    ),
+    mutant(
+        "a call with one text among its arguments is told by all of them",
+        CLI_TRANSCRIPT,
+        "    if len(texts) == 1:\n        return texts[0]\n",
+        "    if len(texts) == 0:\n        return texts[0]\n",
+    ),
+    mutant(
+        "what a call acts on is shown in full on its line",
+        CLI_TRANSCRIPT,
+        "    if len(joined) > _SUMMARY_CHARACTERS:\n",
+        "    if len(joined) > 100 * _SUMMARY_CHARACTERS:\n",
+    ),
+    mutant(
+        "what a call acts on keeps its line breaks on the line of the call",
+        CLI_TRANSCRIPT,
+        '    joined = " ".join(text.split())\n',
+        "    joined = text\n",
+    ),
+    mutant(
+        "arguments that cannot be read are not shown",
+        CLI_TRANSCRIPT,
+        "        told = _one_line(data.arguments if arguments is None else _acted_on(arguments))\n",
+        '        told = _one_line("" if arguments is None else _acted_on(arguments))\n',
+    ),
+    mutant(
+        "a call that changes text does not show what goes and what comes",
+        CLI_TRANSCRIPT,
+        "        if isinstance(old, str) and isinstance(new, str):\n",
+        "        if isinstance(old, int) and isinstance(new, str):\n",
+    ),
+    mutant(
+        "a long change is shown whole",
+        CLI_TRANSCRIPT,
+        "_CHANGED_LINES = 6\n",
+        "_CHANGED_LINES = 600\n",
+    ),
+    mutant(
+        "a call that writes a file does not say how much",
+        CLI_TRANSCRIPT,
+        "        if isinstance(content, str):\n",
+        "        if isinstance(content, int):\n",
+    ),
+    mutant(
+        "a result does not say how long the call took",
+        CLI_TRANSCRIPT,
+        "        took = [] if began is None else [_took(time - began)]\n",
+        "        took: list[str] = []\n",
+    ),
+    mutant(
+        "the time of a call is counted from the first call there was",
+        CLI_TRANSCRIPT,
+        "        began = self._began.pop(call_id, None)\n",
+        "        began = min(self._began.values(), default=None)\n",
+    ),
+    mutant(
+        "the time of a call is always told in milliseconds",
+        CLI_TRANSCRIPT,
+        "    if milliseconds < 1000:\n",
+        "    if milliseconds < 1000 or True:\n",
+    ),
+    mutant(
+        "a minute is told in seconds",
+        CLI_TRANSCRIPT,
+        "    if milliseconds < 60_000:\n",
+        "    if milliseconds < 60_000_000:\n",
+    ),
+    mutant(
+        "the output of a command is shown whole",
+        CLI_TRANSCRIPT,
+        "_OUTPUT_LINES = 5\n",
+        "_OUTPUT_LINES = 500\n",
+    ),
+    mutant(
+        "what any tool gave back is shown, not only the output of a command",
+        CLI_TRANSCRIPT,
+        "        if not command:\n            return [head]\n",
+        "        if not lines:\n            return [head]\n",
+    ),
+    mutant(
+        "the output of a command is counted in lines like what a file holds",
+        CLI_TRANSCRIPT,
+        "        if lines and not command:\n",
+        "        if lines:\n",
+    ),
+    mutant(
+        "a call that failed does not show its code",
+        CLI_TRANSCRIPT,
+        '            head.append(", ".join([f"{self._symbols.failed} {data.error.code}", *took]), style=_BAD)\n',
+        '            head.append(", ".join([f"{self._symbols.failed}", *took]), style=_BAD)\n',
+    ),
+    mutant(
+        "a call that failed shows everything that was said about it",
+        CLI_TRANSCRIPT,
+        "_ERROR_LINES = 3\n",
+        "_ERROR_LINES = 300\n",
+    ),
+    mutant(
+        "a result is told as one of a command whatever the call was",
+        CLI_TRANSCRIPT,
+        "        command = call_id in self._commands\n",
+        "        command = bool(self._commands)\n",
+    ),
+    mutant(
+        "the rest of what is shown by its beginning is not counted",
+        CLI_TRANSCRIPT,
+        "    if len(lines) > at_most:\n",
+        "    if len(lines) > 100 * at_most:\n",
+    ),
+    mutant(
+        "one line more is told as lines",
+        CLI_TRANSCRIPT,
+        '    return f"{number} {what}" if number == 1 else f"{number} {what}s"\n',
+        '    return f"{number} {what}s"\n',
+    ),
+    mutant(
+        "no word says that the model thinks",
+        CLI_TRANSCRIPT,
+        '                self._word = "thinking..."\n',
+        "                self._word = None\n",
+    ),
+    mutant(
+        "no word says that the model prepares a call",
+        CLI_TRANSCRIPT,
+        '                self._word = f"preparing a call of {chunk.name}..."\n',
+        "                self._word = None\n",
+    ),
+    mutant(
+        "the word about what the model does stays when text arrives",
+        CLI_TRANSCRIPT,
+        "            self._word = None\n            self._shown = True\n",
+        "            self._shown = True\n",
+    ),
+    mutant(
+        "the word about what the model does stands before the line that is not complete",
+        CLI_TRANSCRIPT,
+        "        if self._lines.partial:\n            return Text(self._lines.partial)\n",
+        "        if self._lines.partial and self._word is None:\n            return Text(self._lines.partial)\n",
+    ),
+    mutant(
+        "a long line is broken by the program and not by the terminal",
+        CLI_TRANSCRIPT,
+        "        console.print(_shown_safely(line), soft_wrap=True)\n",
+        "        console.print(_shown_safely(line), soft_wrap=False)\n",
+    ),
+    mutant(
+        "what a model or a tool wrote goes to the terminal as it came",
+        CLI_TRANSCRIPT,
+        "        console.print(_shown_safely(line), soft_wrap=True)\n",
+        "        console.print(line, soft_wrap=True)\n",
+    ),
+    mutant(
+        "a line loses its colours where something in it is replaced",
+        CLI_TRANSCRIPT,
+        "    shown = line.copy()\n",
+        "    shown = Text()\n",
+    ),
+    mutant(
+        "colours are sent although none are wanted",
+        CLI_TRANSCRIPT,
+        "        no_color=not colours,\n",
+        "        no_color=False,\n",
+        ("        force_terminal=colours,\n", "        force_terminal=True,\n"),
+        (
+            '        color_system="standard" if colours else None,\n',
+            '        color_system="standard",\n',
+        ),
+    ),
+    mutant(
+        "the marks are not chosen by what the screen can show",
+        CLI_TRANSCRIPT,
+        '            call=terminal.symbol(wanted.call, "*"),\n',
+        "            call=wanted.call,\n",
+    ),
+    mutant(
+        "a session that is taken up again shows all of its turns",
+        CLI_TRANSCRIPT,
+        "    for event in events[starts[-1] :]:\n",
+        "    for event in events[starts[0] :]:\n",
+    ),
+    mutant(
+        "a session that is taken up again shows the whole of its last answer",
+        CLI_TRANSCRIPT,
+        "_RECAP_LINES = 12\n",
+        "_RECAP_LINES = 1200\n",
+    ),
+    mutant(
+        "a session that is taken up again shows what plugins told the model",
+        CLI_TRANSCRIPT,
+        '        if isinstance(data, UserMessageEvent) and data.source in ("user", "steer"):\n',
+        "        if isinstance(data, UserMessageEvent):\n",
+    ),
+    mutant(
+        "a session that is taken up again marks what was said on the way like a task",
+        CLI_TRANSCRIPT,
+        '            mark = ">" if data.source == "user" else symbols.steer\n',
+        '            mark = ">"\n',
+    ),
+    mutant(
+        "a session that is taken up again does not say how its last turn ended",
+        CLI_TRANSCRIPT,
+        "            ended = _end(data)\n",
+        "            ended = []\n",
+    ),
+    mutant(
+        "a session that is taken up again shows an answer of nothing but spaces",
+        CLI_TRANSCRIPT,
+        "        elif isinstance(data, AssistantMessageEvent) and data.message.text.strip():\n",
+        "        elif isinstance(data, AssistantMessageEvent):\n",
+    ),
+    mutant(
+        "a session that is taken up again leaves no empty line",
+        CLI_TRANSCRIPT,
+        "    return [*shown, *ended, Text()]\n",
+        "    return [*shown, *ended]\n",
+    ),
+    mutant(
+        "a session without a turn says that it is taken up again",
+        CLI_TRANSCRIPT,
+        "    if not starts:\n        return []\n",
+        "    if not starts:\n        starts = [0]\n",
+    ),
+)
+
+_TERMINAL = (
+    mutant(
+        "escape stops nothing",
+        CLI_PROMPT,
+        "        def stop(event: KeyPressEvent) -> None:\n            self._cancel()\n",
+        "        def stop(event: KeyPressEvent) -> None:\n            pass\n",
+    ),
+    mutant(
+        "escape stops what is not running",
+        CLI_PROMPT,
+        "        running = Condition(lambda: self.busy and self._answer is None)\n",
+        "        running = Condition(lambda: self._answer is None)\n",
+    ),
+    mutant(
+        "escape waits five seconds before it counts",
+        CLI_PROMPT,
+        "        self._session.app.ttimeoutlen = _ESCAPE_SECONDS\n",
+        "        self._session.app.ttimeoutlen = 50 * _ESCAPE_SECONDS\n",
+        (
+            "        self._session.app.timeoutlen = _ESCAPE_SECONDS\n",
+            "        self._session.app.timeoutlen = 50 * _ESCAPE_SECONDS\n",
+        ),
+    ),
+    mutant(
+        "ctrl+c does not stop what is running",
+        CLI_PROMPT,
+        "            elif self.busy:\n                self._cancel()\n",
+        "            elif self.busy:\n                pass\n",
+    ),
+    mutant(
+        "ctrl+c does not clear the line",
+        CLI_PROMPT,
+        "            elif event.current_buffer.text:\n                event.current_buffer.reset()\n",
+        "            elif event.current_buffer.text:\n                pass\n",
+    ),
+    mutant(
+        "the first ctrl+c on an empty line leaves",
+        CLI_PROMPT,
+        "            elif self._leaving:\n",
+        "            elif not self._leaving:\n",
+    ),
+    mutant(
+        "the second ctrl+c does not leave",
+        CLI_PROMPT,
+        "            elif self._leaving:\n                event.app.exit(result=None)\n",
+        "            elif self._leaving:\n                pass\n",
+    ),
+    mutant(
+        "ctrl+c on an empty line does not say how to leave",
+        CLI_PROMPT,
+        '                self.show([Text("Press Ctrl+C again to leave.", style="dim")])\n',
+        "                pass\n",
+    ),
+    mutant(
+        "typing does not take back the wish to leave",
+        CLI_PROMPT,
+        "        # Somebody who types has not made up their mind to leave.\n        self._leaving = False\n",
+        "        # Somebody who types has not made up their mind to leave.\n        pass\n",
+    ),
+    mutant(
+        "a new line does not take back the wish to leave",
+        CLI_PROMPT,
+        "        self._leaving = False\n        try:\n            return await self._session.prompt_async()\n",
+        "        try:\n            return await self._session.prompt_async()\n",
+    ),
+    mutant(
+        "ctrl+d leaves from a line with text in it",
+        CLI_PROMPT,
+        "        at_rest_and_empty = Condition(lambda: self._answer is None and not self.typed)\n",
+        "        at_rest_and_empty = Condition(lambda: self._answer is None)\n",
+    ),
+    mutant(
+        "ctrl+d does not leave",
+        CLI_PROMPT,
+        "        def leave(event: KeyPressEvent) -> None:\n            event.app.exit(result=None)\n",
+        "        def leave(event: KeyPressEvent) -> None:\n            pass\n",
+    ),
+    mutant(
+        "a terminal that goes away is an error",
+        CLI_PROMPT,
+        "        except EOFError:\n            return None\n",
+        "        except EOFError:\n            raise\n",
+    ),
+    mutant(
+        "a key that is no answer is taken for one",
+        CLI_PROMPT,
+        "            if event.data.lower() in self._keys:\n",
+        "            if event.data:\n",
+    ),
+    mutant(
+        "an answer in capitals is no answer",
+        CLI_PROMPT,
+        "            if event.data.lower() in self._keys:\n                self._answered(event.data.lower())\n",
+        "            if event.data in self._keys:\n                self._answered(event.data)\n",
+    ),
+    mutant(
+        "a line that is submitted while a question is asked is handed over",
+        CLI_PROMPT,
+        '        @bindings.add("enter", filter=asking)\n',
+        '        @bindings.add("f24", filter=asking)\n',
+    ),
+    mutant(
+        "escape does not answer a question",
+        CLI_PROMPT,
+        '        @bindings.add("escape", filter=asking)\n',
+        '        @bindings.add("f23", filter=asking)\n',
+    ),
+    mutant(
+        "ctrl+d does not answer a question",
+        CLI_PROMPT,
+        '        @bindings.add("c-d", filter=asking)\n',
+        '        @bindings.add("f22", filter=asking)\n',
+    ),
+    mutant(
+        "escape answers a question with the first of its keys",
+        CLI_PROMPT,
+        "        def decline(event: KeyPressEvent) -> None:\n            self._answered(self._keys[-1])\n",
+        "        def decline(event: KeyPressEvent) -> None:\n            self._answered(self._keys[0])\n",
+    ),
+    mutant(
+        "ctrl+c answers a question with the first of its keys",
+        CLI_PROMPT,
+        "            if self._answer is not None:\n                self._answered(self._keys[-1])\n",
+        "            if self._answer is not None:\n                self._answered(self._keys[0])\n",
+    ),
+    mutant(
+        "ctrl+c stops what is running although a question is asked",
+        CLI_PROMPT,
+        "            if self._answer is not None:\n                self._answered(self._keys[-1])\n",
+        "            if self._answer is not None:\n                self._answered(self._keys[-1])\n                self._cancel()\n",
+    ),
+    mutant(
+        "a second key changes the answer that was given",
+        CLI_PROMPT,
+        "        if self._answer is not None and not self._answer.done():\n",
+        "        if self._answer is not None:\n            self._answer = asyncio.get_running_loop().create_future()\n",
+    ),
+    mutant(
+        "what was typed before a question is gone after it",
+        CLI_PROMPT,
+        "                buffer.set_document(aside, bypass_readonly=True)\n",
+        "                pass\n",
+    ),
+    mutant(
+        "what was typed before a question stays in the line while it is asked",
+        CLI_PROMPT,
+        "            aside = buffer.document\n            buffer.reset()\n",
+        "            aside = buffer.document\n",
+    ),
+    mutant(
+        "two questions are asked at the same time",
+        CLI_PROMPT,
+        "        async with self._asking:\n            buffer = self._session.default_buffer\n",
+        "        if True:\n            buffer = self._session.default_buffer\n",
+    ),
+    mutant(
+        "the words of a question are shown before its turn has come",
+        CLI_PROMPT,
+        "        async with self._asking:\n            buffer = self._session.default_buffer\n",
+        "        self.show(about)\n        async with self._asking:\n            buffer = self._session.default_buffer\n",
+        (
+            "            self.show(about)\n            self._redraw()\n",
+            "            self._redraw()\n",
+        ),
+    ),
+    mutant(
+        "the words of a question are not shown",
+        CLI_PROMPT,
+        "            self.show(about)\n            self._redraw()\n",
+        "            self._redraw()\n",
+    ),
+    mutant(
+        "a question does not take the place of the mark",
+        CLI_PROMPT,
+        '        parts.append(("", f"{self._choices} " if self._answer is not None else _MARK))\n',
+        '        parts.append(("", _MARK))\n',
+    ),
+    mutant(
+        "the mark stays when a question has been answered",
+        CLI_PROMPT,
+        "            finally:\n                self._answer = None\n",
+        "            finally:\n",
+    ),
+    mutant(
+        "the half of a reply stays above a line that is submitted",
+        CLI_PROMPT,
+        "        if self._partial.plain and not self._session.app.is_done:\n",
+        "        if self._partial.plain:\n",
+    ),
+    mutant(
+        "the line of a reply that is not complete is not drawn",
+        CLI_PROMPT,
+        "        if self._partial.plain and not self._session.app.is_done:\n",
+        "        if self._partial.plain and self._session.app.is_done:\n",
+    ),
+    mutant(
+        "the line of a reply that is not complete goes to the terminal as it came",
+        CLI_PROMPT,
+        "            unfinished = harmless(self._partial.plain)\n",
+        "            unfinished = self._partial.plain\n",
+    ),
+    mutant(
+        "a long line that is not complete is drawn whole",
+        CLI_PROMPT,
+        '            parts.append((quiet, _end_of(unfinished, columns - 1) + "\\n"))\n',
+        '            parts.append((quiet, unfinished + "\\n"))\n',
+    ),
+    mutant(
+        "a long line that is not complete fills the row to its last cell",
+        CLI_PROMPT,
+        '            parts.append((quiet, _end_of(unfinished, columns - 1) + "\\n"))\n',
+        '            parts.append((quiet, _end_of(unfinished, columns) + "\\n"))\n',
+    ),
+    mutant(
+        "the end of a long line is measured in characters and not in cells",
+        CLI_PROMPT,
+        "    if get_cwidth(text) <= cells:\n",
+        "    if len(text) <= cells:\n",
+    ),
+    mutant(
+        "the end of a long line is cut without the points that say so",
+        CLI_PROMPT,
+        "    return _CUT + text[kept:]\n",
+        "    return text[kept:]\n",
+    ),
+    mutant(
+        "a line that grows is drawn at every step",
+        CLI_PROMPT,
+        "        self._session.app.min_redraw_interval = _REDRAW_SECONDS\n",
+        "        self._session.app.min_redraw_interval = 0\n",
+    ),
+    mutant(
+        "a line that is not complete is not drawn anew when it grows",
+        CLI_PROMPT,
+        "        self._partial = text\n        self._redraw()\n",
+        "        self._partial = text\n",
+    ),
+    mutant(
+        "the line below the prompt is not drawn anew when something begins to run",
+        CLI_PROMPT,
+        "        # The line below the prompt says so.\n        self._redraw()\n",
+        "        # The line below the prompt says so.\n",
+    ),
+    mutant(
+        "the line below the prompt is not asked for",
+        CLI_PROMPT,
+        "            bottom_toolbar=lambda: self.status(),\n",
+        '            bottom_toolbar=lambda: "",\n',
+    ),
+    mutant(
+        "what is shown while nobody is asked for a line is lost",
+        CLI_PROMPT,
+        '            print_formatted_text(ANSI(sent), output=self._terminal.output, end="")\n',
+        "            if self._session.app.is_running:\n"
+        '                print_formatted_text(ANSI(sent), output=self._terminal.output, end="")\n',
+    ),
+    mutant(
+        "colours are sent to a terminal that wants none",
+        CLI_PROMPT,
+        "        sent = on_screen(lines, colours=self._terminal.colours)\n",
+        "        sent = on_screen(lines, colours=True)\n",
+    ),
+    mutant(
+        "the question shows only the first line of what is asked about",
+        CLI_APPROVAL,
+        '            lines = request.target.split("\\n")\n',
+        '            lines = request.target.split("\\n")[:1]\n',
+    ),
+    mutant(
+        "a line break that is no line feed breaks a line of the question",
+        CLI_APPROVAL,
+        '            lines = request.target.split("\\n")\n',
+        "            lines = request.target.splitlines()\n",
+    ),
+    mutant(
+        "what cannot be seen is not named in the question",
+        CLI_APPROVAL,
+        '            about = [Text(f"    {spelled_out(line)}") for line in lines]\n',
+        '            about = [Text(f"    {line}") for line in lines]\n',
+    ),
+    mutant(
+        "the question does not say why it is asked",
+        CLI_APPROVAL,
+        "        question = [asked, *about, Text(request.reason, style=_NOTE), *keys]\n",
+        "        question = [asked, *about, *keys]\n",
+    ),
+    mutant(
+        "a call that acts on nothing in particular is asked about like one that does",
+        CLI_APPROVAL,
+        '            asked.append(" asks for a yes.")\n',
+        '            asked.append(" asks for a yes:")\n',
+    ),
+    mutant(
+        "a longer yes is offered where nobody can write it down",
+        CLI_APPROVAL,
+        "        longer = None if self._granting is None else request.standing\n",
+        "        longer = request.standing\n",
+    ),
+    mutant(
+        "a longer yes is never offered",
+        CLI_APPROVAL,
+        "        longer = None if self._granting is None else request.standing\n",
+        "        longer = None\n",
+    ),
+    mutant(
+        "the question does not say what a longer yes would cover",
+        CLI_APPROVAL,
+        '            keys.append(Text(f"  a  yes, and do not ask again in this session about {longer}"))\n',
+        '            keys.append(Text("  a  yes, and do not ask again in this session"))\n',
+    ),
+    mutant(
+        "a no is taken for a yes",
+        CLI_APPROVAL,
+        '            self._say("(not allowed)")\n            return "rejected"\n',
+        '            self._say("(not allowed)")\n            return "allowed-once"\n',
+    ),
+    mutant(
+        "a yes for this once is written down for the session",
+        CLI_APPROVAL,
+        '        if key == "a" and self._written_down(request):\n',
+        '        if key in "ay" and self._written_down(request):\n',
+    ),
+    mutant(
+        "a yes for the session is not written down",
+        CLI_APPROVAL,
+        '        if key == "a" and self._written_down(request):\n',
+        '        if key == "a":\n',
+    ),
+    mutant(
+        "a yes for the session that could not be written down is told as written",
+        CLI_APPROVAL,
+        "        except ValueError:\n            return False\n",
+        "        except ValueError:\n            return True\n",
+    ),
+    mutant(
+        "a question that is withdrawn does not say so",
+        CLI_APPROVAL,
+        '            self._say("(the question was withdrawn)")\n            raise\n',
+        "            raise\n",
+    ),
+    mutant(
+        "a question that is withdrawn counts as a no",
+        CLI_APPROVAL,
+        '            self._say("(the question was withdrawn)")\n            raise\n',
+        '            self._say("(the question was withdrawn)")\n            return "rejected"\n',
+    ),
+)
+
+_CLI = (
+    mutant(
+        "the line below the prompt shows the tokens of the first request and not of the last",
+        CLI_STATUS,
+        "    for event in reversed(session.events):\n",
+        "    for event in session.events:\n",
+    ),
+    mutant(
+        "what was read from the cache is not counted as sent",
+        CLI_STATUS,
+        "            return usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens\n",
+        "            return usage.input_tokens + usage.cache_write_tokens\n",
+    ),
+    mutant(
+        "what was written to the cache is not counted as sent",
+        CLI_STATUS,
+        "            return usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens\n",
+        "            return usage.input_tokens + usage.cache_read_tokens\n",
+    ),
+    mutant(
+        "a reply that failed does not count as a request",
+        CLI_STATUS,
+        "        if isinstance(data, AssistantMessageEvent | AssistantAttemptEvent):\n",
+        "        if isinstance(data, AssistantMessageEvent):\n",
+    ),
+    mutant(
+        "the share of the window is not told",
+        CLI_STATUS,
+        "        if model.context_window:\n",
+        "        if not model.context_window:\n",
+    ),
+    mutant(
+        "the share of the cache is that of what was written to it",
+        CLI_STATUS,
+        '        parts.append(f"cache {round(100 * total.cache_read_tokens / everything)}%")\n',
+        '        parts.append(f"cache {round(100 * total.cache_write_tokens / everything)}%")\n',
+    ),
+    mutant(
+        "the share of the cache leaves out what was written to it",
+        CLI_STATUS,
+        "    everything = total.input_tokens + total.cache_read_tokens + total.cache_write_tokens\n",
+        "    everything = total.input_tokens + total.cache_read_tokens\n",
+    ),
+    mutant(
+        "the line below the prompt does not say that escape stops a turn",
+        CLI_STATUS,
+        '    if busy:\n        parts.append("esc stops")\n',
+        '    if not busy:\n        parts.append("esc stops")\n',
+    ),
+    mutant(
+        "the line below the prompt does not say how well commands are held",
+        CLI_STATUS,
+        '        parts.append(f"{sandbox.mode(session)}, {_HELD[sandbox.strength()]}")\n',
+        '        parts.append(f"{sandbox.mode(session)}")\n',
+    ),
+    mutant(
+        "tokens are counted in thousands from the first one on",
+        CLI_STATUS,
+        "    if tokens < 1000:\n        return str(tokens)\n",
+        "    if tokens < 0:\n        return str(tokens)\n",
+    ),
+    mutant(
+        "many thousands of tokens are told with a part of a thousand",
+        CLI_STATUS,
+        "    if tokens < 100_000:\n",
+        "    if tokens < 1_000_000:\n",
+    ),
+    mutant(
+        "a million tokens is told in thousands",
+        CLI_STATUS,
+        '    if tokens < 1_000_000:\n        return f"{tokens // 1000}k"\n',
+        '    if tokens < 1_000_000_000:\n        return f"{tokens // 1000}k"\n',
+    ),
+    mutant(
+        "before the first request the line shows a count of nothing",
+        CLI_STATUS,
+        "    if sent:\n",
+        "    if sent >= 0:\n",
+    ),
+    mutant(
+        "a line that is typed while a turn runs is a task for the next turn",
+        CLI_FRONTEND,
+        "        elif prompt.busy:\n            agent.steer(line)\n",
+        "        elif prompt.busy:\n            agent.followup(line)\n",
+    ),
+    mutant(
+        "a line that is typed while the agent is at rest is said on the way",
+        CLI_FRONTEND,
+        "            agent.followup(line)\n            prompt.busy = True\n",
+        "            agent.steer(line)\n            prompt.busy = True\n",
+    ),
+    mutant(
+        "a command is carried out while a turn runs",
+        CLI_FRONTEND,
+        "            if prompt.busy:\n                waits =",
+        "            if prompt.busy and not line:\n                waits =",
+    ),
+    mutant(
+        "a line of spaces is a task",
+        CLI_FRONTEND,
+        "        line = line.strip()\n        if not line:\n            return\n",
+        "        if not line:\n            return\n",
+    ),
+    mutant(
+        "a command with spaces before it goes to the model",
+        CLI_FRONTEND,
+        "        if is_command(line):\n            if prompt.busy:",
+        "        if is_command(typed):\n            if prompt.busy:",
+        (
+            "        line = line.strip()\n        if not line:\n            return\n",
+            "        typed, line = line, line.strip()\n        if not line:\n            return\n",
+        ),
+    ),
+    mutant(
+        "the answer of a command is not shown",
+        CLI_FRONTEND,
+        "            if said:\n                # An empty line sets the answer apart from what comes after it.\n",
+        "            if not said:\n                # An empty line sets the answer apart from what comes after it.\n",
+    ),
+    mutant(
+        "the answer of a command has no empty line after it",
+        CLI_FRONTEND,
+        "                prompt.show([*(Text(part) for part in said.splitlines()), Text()])\n",
+        "                prompt.show([Text(part) for part in said.splitlines()])\n",
+    ),
+    mutant(
+        "a command that has nothing to say leaves an empty line",
+        CLI_FRONTEND,
+        "            if said:\n                # An empty line sets the answer apart from what comes after it.\n",
+        "            if True:\n                # An empty line sets the answer apart from what comes after it.\n",
+    ),
+    mutant(
+        "escape does not stop the turn of the agent",
+        CLI_FRONTEND,
+        '        prompt.on_cancel = lambda: agent.cancel("user")\n',
+        "        prompt.on_cancel = None\n",
+    ),
+    mutant(
+        "a turn that is stopped from the keys throws away what waits for the agent",
+        CLI_FRONTEND,
+        '        prompt.on_cancel = lambda: agent.cancel("user")\n',
+        '        prompt.on_cancel = lambda: agent.cancel("budget")\n',
+    ),
+    mutant(
+        "a question of approval is not put to the person at the terminal",
+        CLI_FRONTEND,
+        "        agent.ctx.on(APPROVAL_ASK, Responder(prompt, self._ctx.get(PERMISSIONS)))\n",
+        "        Responder(prompt, self._ctx.get(PERMISSIONS))\n",
+    ),
+    mutant(
+        "the person at the terminal cannot say yes for the rest of the session",
+        CLI_FRONTEND,
+        "        agent.ctx.on(APPROVAL_ASK, Responder(prompt, self._ctx.get(PERMISSIONS)))\n",
+        "        agent.ctx.on(APPROVAL_ASK, Responder(prompt, None))\n",
+    ),
+    mutant(
+        "the model that was named last is not the one that is asked",
+        CLI_FRONTEND,
+        '        return config.model_copy(update={"model": self._model.model})\n',
+        "        return config\n",
+    ),
+    mutant(
+        "naming another model changes nothing",
+        CLI_FRONTEND,
+        '            self._model = self._model.model_copy(update={"model": rest})\n',
+        "            pass\n",
+    ),
+    mutant(
+        "the command that ends the conversation does not end it",
+        CLI_FRONTEND,
+        '        self._leaving = True\n        return ""\n',
+        '        return ""\n',
+    ),
+    mutant(
+        "a new session is begun on top of the old one",
+        CLI_FRONTEND,
+        "        await self._close()\n        opened = await self._open(None, prompt)\n",
+        "        opened = await self._open(None, prompt)\n",
+    ),
+    mutant(
+        "a new session takes up the one that the conversation began on",
+        CLI_FRONTEND,
+        "        opened = await self._open(None, prompt)\n",
+        "        opened = await self._open(self._config.session_id, prompt)\n",
+    ),
+    mutant(
+        "the session that is taken up again is the oldest and not the one used last",
+        CLI_FRONTEND,
+        "            return stored[0].id\n",
+        "            return stored[-1].id\n",
+    ),
+    mutant(
+        "a session that is named is passed over for the one that was used last",
+        CLI_FRONTEND,
+        "        if config.session_id is not None or not config.resume:\n",
+        "        if not config.resume:\n",
+    ),
+    mutant(
+        "the session that was used last is taken up although nobody asked for it",
+        CLI_FRONTEND,
+        "        if config.session_id is not None or not config.resume:\n",
+        "        if config.session_id is not None:\n",
+    ),
+    mutant(
+        "nothing says that no session is stored yet",
+        CLI_FRONTEND,
+        "        prompt.show([Text(note, style=_NOTE)])\n        return None\n",
+        "        return None\n",
+    ),
+    mutant(
+        "a session that is taken up again does not show its last turn",
+        CLI_FRONTEND,
+        "        prompt.show(recap(agent.session.events, self._symbols))\n",
+        "        recap(agent.session.events, self._symbols)\n",
+    ),
+    mutant(
+        "the conversation does not begin with a word about itself",
+        CLI_FRONTEND,
+        "        prompt.show([head, hint, Text()])\n",
+        "        prompt.show([Text()])\n",
+    ),
+    mutant(
+        "the word that a conversation begins with has no empty line after it",
+        CLI_FRONTEND,
+        "        prompt.show([head, hint, Text()])\n",
+        "        prompt.show([head, hint])\n",
+    ),
+    mutant(
+        "what the program logs is not shown above the prompt",
+        CLI_FRONTEND,
+        "        log.addHandler(shown)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "what the program logs is still shown when the conversation is over",
+        CLI_FRONTEND,
+        "            log.removeHandler(shown)\n",
+        "            pass\n",
+    ),
+    mutant(
+        "an error in the log is shown like a note",
+        CLI_FRONTEND,
+        "        style = _BAD if record.levelno >= logging.ERROR else _NOTE\n",
+        "        style = _NOTE\n",
+    ),
+    mutant(
+        "the agent is left open when the user leaves",
+        CLI_FRONTEND,
+        "        await asyncio.shield(agent.close())\n",
+        "        pass\n",
+    ),
+    mutant(
+        "the conversation goes on although the agent has stopped for good",
+        CLI_FRONTEND,
+        "            if self._gone.is_set():\n                return 1\n",
+        "            if self._gone.is_set():\n                self._gone.clear()\n",
+    ),
+    mutant(
+        "an agent that has stopped for good is taken for a user who left",
+        CLI_FRONTEND,
+        "            if self._gone.is_set():\n                return 1\n",
+        "            if self._gone.is_set():\n                return 0\n",
+    ),
+    mutant(
+        "nothing says that the agent has stopped",
+        CLI_FRONTEND,
+        '            prompt.show([Text(f"(the agent has stopped: {error})", style=_BAD)])\n',
+        "            pass\n",
+    ),
+    mutant(
+        "a program without a terminal says that all went well",
+        CLI_FRONTEND,
+        "            print(_NO_TERMINAL, file=sys.stderr)\n            return 2\n",
+        "            print(_NO_TERMINAL, file=sys.stderr)\n            return 0\n",
+    ),
+    mutant(
+        "a program without a terminal does not say what is missing",
+        CLI_FRONTEND,
+        "            print(_NO_TERMINAL, file=sys.stderr)\n            return 2\n",
+        "            return 2\n",
+    ),
+    mutant(
+        "a session that cannot be opened is told as a conversation that went well",
+        CLI_FRONTEND,
+        '            prompt.show([Text(f"columbina: {error}", style=_BAD)])\n            return 1\n',
+        '            prompt.show([Text(f"columbina: {error}", style=_BAD)])\n            return 0\n',
+    ),
+    mutant(
+        "the terminal that a test provides is passed over for the real one",
+        CLI_FRONTEND,
+        "        terminal = self._ctx.get(TERMINAL) or real()\n",
+        "        terminal = real()\n",
+    ),
+    mutant(
+        "the marks are not chosen for the terminal",
+        CLI_FRONTEND,
+        "        self._symbols = Symbols.of(terminal)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "the line of a reply that is not complete is not drawn while it is written",
+        CLI_FRONTEND,
+        "        prompt.show(self._transcript.chunk(frame.chunk))\n        prompt.partial = self._transcript.partial\n",
+        "        prompt.show(self._transcript.chunk(frame.chunk))\n",
+    ),
+    mutant(
+        "the word about what the model does stays when the reply is written down",
+        CLI_FRONTEND,
+        "        prompt.show(self._transcript.event(committed.event))\n        prompt.partial = self._transcript.partial\n",
+        "        prompt.show(self._transcript.event(committed.event))\n",
+    ),
+    mutant(
+        "the line below the prompt is empty",
+        CLI_FRONTEND,
+        "        return status(self._agent.session, self._model, sandbox, busy=self._prompt.busy)\n",
+        '        return ""\n',
+    ),
+    mutant(
+        "the line below the prompt names the model that the conversation began with",
+        CLI_FRONTEND,
+        "        return status(self._agent.session, self._model, sandbox, busy=self._prompt.busy)\n",
+        "        return status(\n"
+        "            self._agent.session, self._config.model, sandbox, busy=self._prompt.busy\n"
+        "        )\n",
+    ),
+    mutant(
+        "what is shown is not begun anew for the terminal and the session that are there",
+        CLI_FRONTEND,
+        "        self._agent = agent\n        self._transcript = Transcript(self._symbols)\n",
+        "        self._agent = agent\n",
+    ),
+    mutant(
+        "a turn that begins by itself is not known to be running",
+        CLI_FRONTEND,
+        "        if isinstance(data, TurnStartEvent):\n            prompt.busy = True\n",
+        "        if isinstance(data, TurnStartEvent):\n            pass\n",
+    ),
+)
+
+_SLASH = (
+    mutant(
+        "the name of a command is taken with the capitals it was typed in",
+        SLASH,
+        "        command = self.registry.get(named.lower())\n",
+        "        command = self.registry.get(named)\n",
+    ),
+    mutant(
+        "what follows the name of a command keeps the spaces around it",
+        SLASH,
+        "            return await command.run(agent, rest.strip())\n",
+        "            return await command.run(agent, rest)\n",
+    ),
+    mutant(
+        "the name of a command ends at its last space and not at its first",
+        SLASH,
+        '        named, _, rest = line[len(_MARK) :].partition(" ")\n',
+        '        named, _, rest = line[len(_MARK) :].rpartition(" ")\n',
+    ),
+    mutant(
+        "a command that fails stops the program",
+        SLASH,
+        "        except Exception as error:\n",
+        "        except KeyboardInterrupt as error:\n",
+    ),
+    mutant(
+        "a command that fails is not logged",
+        SLASH,
+        '            logger.error("the command %s%s failed", _MARK, named.lower(), exc_info=error)\n',
+        "            pass\n",
+    ),
+    mutant(
+        "a command that fails does not say what went wrong",
+        SLASH,
+        '            return f"The command {_MARK}{named.lower()} failed: {type(error).__name__}: {error}"\n',
+        '            return f"The command {_MARK}{named.lower()} failed."\n',
+    ),
+    mutant(
+        "a name that no command has is an error",
+        SLASH,
+        "        if command is None:\n",
+        "        if command is None and not named:\n",
+    ),
+    mutant(
+        "a line that does not begin with a slash is taken for a command",
+        SLASH,
+        "        if not is_command(line):\n",
+        "        if not line:\n",
+    ),
+    mutant(
+        "the commands are listed in the order in which they were registered",
+        SLASH,
+        "            for named in sorted(self.registry)\n",
+        "            for named in self.registry\n",
+    ),
+    mutant(
+        "the list of the commands is not set in columns",
+        SLASH,
+        '            f"{_MARK}{named.ljust(width)}  {self.registry[named].summary}"\n',
+        '            f"{_MARK}{named}  {self.registry[named].summary}"\n',
+    ),
+    mutant(
+        "the list of the commands does not say where other lines go",
+        SLASH,
+        '        lines.append("A line that does not begin with a slash goes to the agent.")\n',
+        "        pass\n",
+    ),
+    mutant(
+        "there is no command that lists the commands",
+        SLASH,
+        '    commands.registry.add(ctx, "help", Command(commands.help, "List the commands."))\n',
+        "    pass\n",
+    ),
+    mutant(
+        "a tool is listed with the whole of its description",
+        COMMAND_TOOLS,
+        '        told = tool.description.strip().partition("\\n")[0]\n',
+        "        told = tool.description.strip()\n",
+    ),
+    mutant(
+        "the list of the tools does not say what a call of each does",
+        COMMAND_TOOLS,
+        '        lines.append(f"{tool.name.ljust(width)}  ({_DOES[tool.effect]})  {told}")\n',
+        '        lines.append(f"{tool.name.ljust(width)}  {told}")\n',
+    ),
+    mutant(
+        "the list of the tools is not set in columns",
+        COMMAND_TOOLS,
+        '        lines.append(f"{tool.name.ljust(width)}  ({_DOES[tool.effect]})  {told}")\n',
+        '        lines.append(f"{tool.name}  ({_DOES[tool.effect]})  {told}")\n',
+    ),
+    mutant(
+        "a program without tools cannot list them",
+        COMMAND_TOOLS,
+        "    if not tools.registry:\n",
+        "    if tools.registry is None:\n",
+    ),
+    mutant(
+        "the session that is open is not marked in the list",
+        COMMAND_SESSIONS,
+        '        mark = "*" if session.id == current else " "\n',
+        '        mark = " "\n',
+    ),
+    mutant(
+        "every session is listed, however many there are",
+        COMMAND_SESSIONS,
+        "_MOST = 20\n",
+        "_MOST = 2000\n",
+    ),
+    mutant(
+        "the list does not say that there are older sessions",
+        COMMAND_SESSIONS,
+        "    if len(stored) > _MOST:\n",
+        "    if len(stored) > 100 * _MOST:\n",
+    ),
+    mutant(
+        "a session in which nothing was said shows nothing in its place",
+        COMMAND_SESSIONS,
+        '        said = session.first_input or "(nothing said yet)"\n',
+        '        said = session.first_input or ""\n',
+    ),
+    mutant(
+        "a directory without sessions gives an empty list and no word about it",
+        COMMAND_SESSIONS,
+        "    if not stored:\n",
+        "    if stored is None:\n",
+    ),
+    mutant(
+        "the list of the sessions does not say when each was used last",
+        COMMAND_SESSIONS,
+        '        lines.append(f"{mark} {session.id.ljust(width)}  {_when(session.modified_ms)}  {said}")\n',
+        '        lines.append(f"{mark} {session.id.ljust(width)}  {said}")\n',
+    ),
+    mutant(
+        "the list of the sessions does not say how another one is taken up",
+        COMMAND_SESSIONS,
+        '    lines.append("The one with the star is open. Another one is taken up with --session-id.")\n',
+        "    pass\n",
+    ),
+    mutant(
+        "a preset that does not exist is given to the session",
+        COMMAND_PERMISSIONS,
+        "        if rest not in PRESETS:\n",
+        "        if not rest:\n",
+    ),
+    mutant(
+        "naming a preset changes nothing",
+        COMMAND_PERMISSIONS,
+        "        permissions.set_preset(agent.session, rest)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "what was allowed for the rest of the session is not shown",
+        COMMAND_PERMISSIONS,
+        "        for tool, target in permissions.granted(session):\n",
+        "        for tool, target in permissions.granted(session)[:0]:\n",
+    ),
+    mutant(
+        "a tool that was allowed as a whole is shown with nothing after it",
+        COMMAND_PERMISSIONS,
+        '            what = tool if target is None else f"{tool}: {target}"\n',
+        '            what = f"{tool}: {target}"\n',
+    ),
+    mutant(
+        "the command does not say that the rules of the project cannot be read",
+        COMMAND_PERMISSIONS,
+        '            lines.append("The rules of this project cannot be read, so nothing is allowed.")\n',
+        '            lines.append("deny: (none)")\n',
+    ),
+    mutant(
+        "the rules that ask are not shown",
+        COMMAND_PERMISSIONS,
+        '            lines.append(_rules("ask", rules.ask))\n',
+        "            pass\n",
+    ),
+    mutant(
+        "a kind without rules shows nothing in their place",
+        COMMAND_PERMISSIONS,
+        "    return f\"{kind}: {', '.join(str(rule) for rule in rules) or '(none)'}\"\n",
+        "    return f\"{kind}: {', '.join(str(rule) for rule in rules)}\"\n",
+    ),
+    mutant(
+        "the command does not say how the mode and the policy are changed",
+        COMMAND_PERMISSIONS,
+        "        lines.append(f\"To change the mode and the policy: /permissions {' | '.join(PRESETS)}\")\n",
+        "        pass\n",
+    ),
+    mutant(
+        "the command does not say that the agent is told of the change",
+        COMMAND_PERMISSIONS,
+        '            "The agent is told when its next turn begins."\n',
+        '            ""\n',
+    ),
+)
+
+_TEXT = (
+    mutant(
+        "a control character goes to the terminal",
+        TERMINAL_TEXT,
+        '_ACTED_ON = frozenset({"Cc", "Cs", "Zl", "Zp"})\n',
+        '_ACTED_ON = frozenset({"Cs", "Zl", "Zp"})\n',
+    ),
+    mutant(
+        "half of a pair goes to the terminal",
+        TERMINAL_TEXT,
+        '_ACTED_ON = frozenset({"Cc", "Cs", "Zl", "Zp"})\n',
+        '_ACTED_ON = frozenset({"Cc", "Zl", "Zp"})\n',
+    ),
+    mutant(
+        "a character that breaks the line without being a line feed goes to the terminal",
+        TERMINAL_TEXT,
+        '_ACTED_ON = frozenset({"Cc", "Cs", "Zl", "Zp"})\n',
+        '_ACTED_ON = frozenset({"Cc", "Cs"})\n',
+    ),
+    mutant(
+        "a character that turns the direction of text goes to the terminal",
+        TERMINAL_TEXT,
+        "    return character in _TURNS or unicodedata.category(character) in _ACTED_ON\n",
+        "    return unicodedata.category(character) in _ACTED_ON\n",
+    ),
+    mutant(
+        "the marks that say a direction without turning it go to the terminal",
+        TERMINAL_TEXT,
+        "    chr(code) for code in (0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A))\n",
+        "    chr(code) for code in (*range(0x202A, 0x202F), *range(0x2066, 0x206A))\n",
+    ),
+    mutant(
+        "the characters that set a piece of text apart in its direction go to the terminal",
+        TERMINAL_TEXT,
+        "    chr(code) for code in (0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A))\n",
+        "    chr(code) for code in (0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F))\n",
+    ),
+    mutant(
+        "a tab is replaced like a control character",
+        TERMINAL_TEXT,
+        '        STAND_IN if character not in "\\t\\n" and _acted_on(character) else character\n',
+        '        STAND_IN if character not in "\\n" and _acted_on(character) else character\n',
+    ),
+    mutant(
+        "a line feed is replaced like a control character",
+        TERMINAL_TEXT,
+        '        STAND_IN if character not in "\\t\\n" and _acted_on(character) else character\n',
+        '        STAND_IN if character not in "\\t" and _acted_on(character) else character\n',
+    ),
+    mutant(
+        "what stands in for a character is a question mark",
+        TERMINAL_TEXT,
+        "STAND_IN = chr(0xFFFD)\n",
+        'STAND_IN = "?"\n',
+    ),
+    mutant(
+        "a character that passes for a space is not named in what a person is asked",
+        TERMINAL_TEXT,
+        '_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})\n',
+        '_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})\n',
+    ),
+    mutant(
+        "a character without a width is not named in what a person is asked",
+        TERMINAL_TEXT,
+        '_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})\n',
+        '_UNSEEN = frozenset({"Cc", "Cs", "Zl", "Zp", "Zs"})\n',
+    ),
+    mutant(
+        "a control character is not named in what a person is asked",
+        TERMINAL_TEXT,
+        '_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})\n',
+        '_UNSEEN = frozenset({"Cf", "Cs", "Zl", "Zp", "Zs"})\n',
+    ),
+    mutant(
+        "a plain space is named in what a person is asked",
+        TERMINAL_TEXT,
+        '        if character not in " \\t\\n" and unicodedata.category(character) in _UNSEEN\n',
+        '        if character not in "\\t\\n" and unicodedata.category(character) in _UNSEEN\n',
+    ),
+    mutant(
+        "a character is named in lower case and without its leading zeros",
+        TERMINAL_TEXT,
+        '        f"<U+{ord(character):04X}>"\n',
+        '        f"<U+{ord(character):x}>"\n',
+    ),
+    mutant(
+        "printed json leaves the characters that a terminal acts on as they are",
+        TERMINAL_TEXT,
+        '    return f"\\\\u{ord(character):04x}" if _acted_on(character) else character\n',
+        "    return character\n",
+    ),
+    mutant(
+        "printed json writes other languages by the numbers of their characters",
+        TERMINAL_TEXT,
+        '    return f"\\\\u{ord(character):04x}" if _acted_on(character) else character\n',
+        '    return f"\\\\u{ord(character):04x}"\n',
+    ),
+    mutant(
+        "printed json leaves the character that deletes as it is",
+        TERMINAL_TEXT,
+        '_IN_JSON = re.compile("[^\\t\\n -~]")\n',
+        '_IN_JSON = re.compile("[^\\t\\n -\\x7f]")\n',
+    ),
+    mutant(
+        "an answer goes to a terminal as the model wrote it",
+        HEADLESS,
+        "                print(harmless(answer) if sys.stdout.isatty() else answer)\n",
+        "                print(answer)\n",
+    ),
+    mutant(
+        "an answer is changed also where a file or a program gets it",
+        HEADLESS,
+        "                print(harmless(answer) if sys.stdout.isatty() else answer)\n",
+        "                print(harmless(answer))\n",
+    ),
+    mutant(
+        "what is said about a run goes out as it came",
+        HEADLESS,
+        '    print(harmless(f"columbina: {message}"), file=sys.stderr)\n',
+        '    print(f"columbina: {message}", file=sys.stderr)\n',
+    ),
+    mutant(
+        "the lines of json of a run leave such characters as they are",
+        HEADLESS,
+        '    sys.stdout.write(escaped(json.dumps(line, ensure_ascii=False)) + "\\n")\n',
+        '    sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\\n")\n',
+    ),
+    mutant(
+        "what the launcher says goes out as it came",
+        LAUNCHER,
+        '    print(harmless(f"columbina: {message}"), file=sys.stderr)\n',
+        '    print(f"columbina: {message}", file=sys.stderr)\n',
+    ),
+    mutant(
+        "what is logged during a run goes out as it came",
+        LAUNCHER,
+        "        return harmless(super().format(record))\n",
+        "        return super().format(record)\n",
+    ),
+    mutant(
+        "the entries are printed to a terminal as they are",
+        LAUNCHER,
+        "            sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)\n",
+        "            sys.stdout.write(dumped)\n",
+    ),
+    mutant(
+        "the entries are changed also where a file or a program gets them",
+        LAUNCHER,
+        "            sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)\n",
+        "            sys.stdout.write(harmless(dumped))\n",
+    ),
+)
+
+_STORED = (
+    mutant(
+        "the sessions are listed with the oldest first",
+        SESSION_STORE,
+        "    return sorted(listed, key=lambda one: (one.modified_ms, one.id), reverse=True)\n",
+        "    return sorted(listed, key=lambda one: (one.modified_ms, one.id))\n",
+    ),
+    mutant(
+        "what plugins told the model counts as the first thing the user said",
+        SESSION_STORE,
+        '            if said.source != "user":\n                continue\n',
+        '            if said.source == "nobody":\n                continue\n',
+    ),
+    mutant(
+        "a session that cannot be read hides the others",
+        SESSION_STORE,
+        '            logger.warning("the session in %s is left out of the list: %s", entry, error)\n'
+        "            continue\n",
+        "            raise\n",
+    ),
+    mutant(
+        "a session that cannot be read is left out without a word",
+        SESSION_STORE,
+        '            logger.warning("the session in %s is left out of the list: %s", entry, error)\n',
+        "            pass\n",
+    ),
+    mutant(
+        "something else that lies among the sessions is warned about",
+        SESSION_STORE,
+        "        except (FileNotFoundError, NotADirectoryError):\n",
+        "        except ChildProcessError:\n",
+    ),
+    mutant(
+        "a long first input is shown whole",
+        SESSION_STORE,
+        "            if len(first) > _SHOWN_OF_AN_INPUT + 1:\n",
+        "            if len(first) > 100 * _SHOWN_OF_AN_INPUT:\n",
+    ),
+    mutant(
+        "a first input of several lines is shown with all of them",
+        SESSION_STORE,
+        '            first = " ".join(texts).strip().partition("\\n")[0].rstrip()\n',
+        '            first = " ".join(texts).strip()\n',
+    ),
+    mutant(
+        "a last line that was never finished makes a session unreadable",
+        SESSION_STORE,
+        '            if not line.endswith(b"\\n"):\n                # A last line that was never finished.\n                break\n',
+        '            if not line.endswith(b"\\n"):\n                # A last line that was never finished.\n                pass\n',
+    ),
+    mutant(
+        "the first user message is looked for only in the first event",
+        SESSION_STORE,
+        '            if event.get("type") != UserMessageEvent.event_type:\n                continue\n',
+        '            if event.get("type") != UserMessageEvent.event_type:\n                break\n',
+    ),
+    mutant(
+        "a file that does not begin like a session is listed",
+        SESSION_STORE,
+        '    with path.open("rb") as file:\n        decode_header(file.readline())\n',
+        '    with path.open("rb") as file:\n        file.readline()\n',
+    ),
+    mutant(
+        "a directory that is not there yet is an error and not an empty list",
+        SESSION_STORE,
+        "        entries = list(directory.iterdir())\n    except FileNotFoundError:\n        return []\n",
+        "        entries = list(directory.iterdir())\n    except FileNotFoundError:\n        raise\n",
+    ),
+    mutant(
+        "the time of a session is told in seconds and not in milliseconds",
+        SESSION_STORE,
+        "            modified = file.stat().st_mtime_ns // 1_000_000\n",
+        "            modified = file.stat().st_mtime_ns // 1_000_000_000\n",
+    ),
+    mutant(
+        "sessions that are kept in memory are looked for in a store that is not there",
+        SESSION_SERVICE,
+        "        if self.root is None:\n            return []\n        return stored_sessions(",
+        "        return stored_sessions(",
+    ),
+    mutant(
+        "the sessions of every working directory are looked for in one place",
+        SESSION_SERVICE,
+        "        return stored_sessions(self.root / workspace_key(cwd))\n",
+        '        return stored_sessions(self.root / workspace_key("."))\n',
+    ),
+)
+
+_GRANTS = (
+    mutant(
+        "what was allowed for the rest of a session does not count for a file",
+        PERMISSIONS,
+        '        if granted:\n            return Decided("allow", None, _GRANTED)\n',
+        '        if granted and not tool:\n            return Decided("allow", None, _GRANTED)\n',
+    ),
+    mutant(
+        "what was allowed for the rest of a session does not count for a command",
+        PERMISSIONS,
+        '    if granted and apart is not None:\n        return Decided("allow", None, _GRANTED)\n',
+        '    if granted and apart is None:\n        return Decided("allow", None, _GRANTED)\n',
+    ),
+    mutant(
+        "a command that cannot be taken apart runs because it was allowed for the session",
+        PERMISSIONS,
+        "    if granted and apart is not None:\n",
+        "    if granted:\n",
+    ),
+    mutant(
+        "what was allowed for the session counts for the tool, whatever it acts on",
+        PERMISSIONS,
+        "            granted=(tool.name, invocation.target) in self._grants.get(session, ()),\n",
+        "            granted=any(tool.name == held[0] for held in self._grants.get(session, ())),\n",
+    ),
+    mutant(
+        "what was allowed for the session counts for whatever tool acts on the same thing",
+        PERMISSIONS,
+        "            granted=(tool.name, invocation.target) in self._grants.get(session, ()),\n",
+        "            granted=any(\n"
+        "                invocation.target == held[1] for held in self._grants.get(session, ())\n"
+        "            ),\n",
+    ),
+    mutant(
+        "a question does not say what a yes for the session would cover",
+        PERMISSIONS,
+        "                standing=self.standing(session, tool.name, invocation.target),\n",
+        "                standing=None,\n",
+    ),
+    mutant(
+        "a call that has to be asked about every time is allowed for a session",
+        PERMISSIONS,
+        "        if self.standing(session, tool, target) is None:\n",
+        "        if self.standing(session, tool, target) is None and not tool:\n",
+    ),
+    mutant(
+        "a command that cannot be taken apart can be allowed for a session",
+        PERMISSIONS,
+        "            if target is None or splitter is None or splitter(target) is None:\n",
+        "            if target is None or splitter is None:\n",
+    ),
+    mutant(
+        "a command can be allowed for a session where no splitter knows its shell",
+        PERMISSIONS,
+        "            if target is None or splitter is None or splitter(target) is None:\n",
+        "            if target is None or (splitter is not None and splitter(target) is None):\n",
+    ),
+    mutant(
+        "a tool that acts on nothing in particular is allowed on nothing",
+        PERMISSIONS,
+        '        return f"any call of {tool}" if target is None else f"{tool} on {target}"\n',
+        '        return f"{tool} on {target}"\n',
+    ),
+    mutant(
+        "a preset gives a session its mode and not its policy",
+        PERMISSIONS,
+        "        self._sandbox.set_mode(session, mode)\n        self._approval.set_policy(session, policy)\n",
+        "        self._sandbox.set_mode(session, mode)\n",
+    ),
+    mutant(
+        "a preset gives a session its policy and not its mode",
+        PERMISSIONS,
+        "        self._sandbox.set_mode(session, mode)\n        self._approval.set_policy(session, policy)\n",
+        "        self._approval.set_policy(session, policy)\n",
+    ),
+    mutant(
+        "a preset that does not exist is taken for the first one",
+        PERMISSIONS,
+        '        if chosen is None:\n            raise ValueError(f"there is no preset {preset!r}")\n',
+        "        if chosen is None:\n            chosen = next(iter(_PRESETS.values()))\n",
+    ),
+)
+
+_CHAT = (
+    mutant(
+        "without a command a task is meant and not a conversation",
+        LAUNCHER,
+        "        given.insert(0, _CHAT)\n",
+        "        given.insert(0, _RUN)\n",
+    ),
+    mutant(
+        "an option that stands first is taken for a command",
+        LAUNCHER,
+        '    if not given or (given[0].startswith("-") and given[0] not in _NOT_A_COMMAND):\n',
+        "    if not given:\n",
+    ),
+    mutant(
+        "asking for help begins a conversation",
+        LAUNCHER,
+        '_NOT_A_COMMAND = ("-h", "--help", "--version")\n',
+        '_NOT_A_COMMAND = ("--version",)\n',
+    ),
+    mutant(
+        "asking for the version begins a conversation",
+        LAUNCHER,
+        '_NOT_A_COMMAND = ("-h", "--help", "--version")\n',
+        '_NOT_A_COMMAND = ("-h", "--help")\n',
+    ),
+    mutant(
+        "a session can be named and looked for at once",
+        LAUNCHER,
+        "    if args.command == _CHAT and args.resume and args.session_id is not None:\n",
+        "    if args.command == _RUN and args.resume and args.session_id is not None:\n",
+    ),
+    mutant(
+        "the wish to take up the last session is not handed to the conversation",
+        LAUNCHER,
+        '            elif args.resume:\n                config["resume"] = True\n',
+        '            elif args.resume:\n                config["resume"] = False\n',
+    ),
+    mutant(
+        "a conversation loads the program that runs one task",
+        LAUNCHER,
+        '    _shared(chat, "cli")\n',
+        '    _shared(chat, "headless")\n',
+    ),
+    mutant(
+        "a task loads the program of a conversation",
+        LAUNCHER,
+        '    _shared(run, "headless")\n',
+        '    _shared(run, "cli")\n',
+    ),
+    mutant(
+        "a conversation writes its log to the standard error as well",
+        LAUNCHER,
+        "    if args.command == _RUN:\n        # A conversation shows what is logged by itself, above its prompt.\n",
+        "    if args.command:\n        # A conversation shows what is logged by itself, above its prompt.\n",
+    ),
+    mutant(
+        "a task does not write its log to the standard error",
+        LAUNCHER,
+        "    if args.command == _RUN:\n        # A conversation shows what is logged by itself, above its prompt.\n",
+        "    if args.command == _CHAT:\n        # A conversation shows what is logged by itself, above its prompt.\n",
+    ),
+    mutant(
+        "a working directory that is not there is taken",
+        LAUNCHER,
+        "                if not Path(args.cwd).is_dir():\n",
+        "                if not Path(args.cwd).parent.is_dir():\n",
+    ),
+    mutant(
+        "a file is taken for a working directory",
+        LAUNCHER,
+        "                if not Path(args.cwd).is_dir():\n",
+        "                if not Path(args.cwd).exists():\n",
+    ),
+    mutant(
+        "the conversation has no command that lists the tools",
+        CLI_BUNDLE,
+        "        plugin: columbina.commands.tools\n",
+        "        plugin: columbina.commands.tools\n        disabled: true\n",
+    ),
+    mutant(
+        "the conversation has no command that shows what the session may do",
+        CLI_BUNDLE,
+        "        plugin: columbina.commands.permissions\n",
+        "        plugin: columbina.commands.permissions\n        disabled: true\n",
+    ),
+    mutant(
+        "the conversation has no command that lists the sessions",
+        CLI_BUNDLE,
+        "        plugin: columbina.commands.sessions\n",
+        "        plugin: columbina.commands.sessions\n        disabled: true\n",
+    ),
+    mutant(
+        "the conversation asks another model than the one that is the default",
+        CLI_BUNDLE,
+        "            model: ${COLUMBINA_MODEL:-deepseek-flash}\n",
+        "            model: ${COLUMBINA_MODEL:-deepseek-pro}\n",
+    ),
+    mutant(
+        "the conversation does not build on the base program",
+        CLI_BUNDLE,
+        "extends: base\n",
+        "extends: minimal\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -2612,5 +4290,36 @@ SETS: dict[str, MutantSet] = {
     "process": MutantSet(("tests/test_process.py",), _PROCESS),
     "fs": MutantSet(("tests/fs", "tests/builtin_tools"), _FS),
     "sandbox": MutantSet(("tests/sandbox",), _SANDBOX),
+    "transcript": MutantSet(
+        ("tests/apps/cli/test_lines.py", "tests/apps/cli/test_transcript.py"), _TRANSCRIPT
+    ),
+    "terminal": MutantSet(
+        (
+            "tests/apps/cli/test_prompt.py",
+            "tests/apps/cli/test_approval.py",
+            "tests/apps/cli/test_what_the_screen_shows.py",
+        ),
+        _TERMINAL,
+    ),
+    "cli": MutantSet(
+        (
+            "tests/apps/cli/test_status.py",
+            "tests/apps/cli/test_cli.py",
+            "tests/apps/cli/test_a_session_at_the_terminal.py",
+        ),
+        _CLI,
+    ),
+    "commands": MutantSet(("tests/commands",), _SLASH),
+    "text": MutantSet(
+        (
+            "tests/apps/test_terminal_text.py",
+            "tests/apps/test_headless.py",
+            "tests/apps/test_launcher.py",
+        ),
+        _TEXT,
+    ),
+    "stored": MutantSet(("tests/session/test_stored.py",), _STORED),
+    "grants": MutantSet(("tests/permissions",), _GRANTS),
+    "chat": MutantSet(("tests/apps", "tests/test_package.py"), _CHAT),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

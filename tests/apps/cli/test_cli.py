@@ -3,23 +3,26 @@
 import asyncio
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 import columbina
 import columbina.approval
 import columbina.apps.cli
 import columbina.commands
-from columbina.agent import INBOX, Agent
+from columbina.agent import INBOX, STREAM, Agent, StreamFrame
 from columbina.approval import APPROVAL, ApprovalRequest
 from columbina.apps import FRONTEND, Frontend
 from columbina.apps.cli.terminal import TERMINAL
-from columbina.llm import LlmFailure, Usage
-from columbina.llm.adapters.scripted import Reply
+from columbina.llm import BlockEnd, BlockStart, Chunk, LlmFailure, TextDelta, Usage
+from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
+from columbina.tools import Tool, ToolRun
 from support.loop import MODEL, Harness, from_a_source, user
 from support.terminal import CTRL_D, ESCAPE, Desk, desk, stands, until
 
@@ -237,7 +240,9 @@ async def test_another_model_can_be_named_and_the_next_request_goes_to_it(
 ) -> None:
     harness.model.add(Reply(text="One."), Reply(text="Two."))
     with desk() as at:
-        running = asyncio.ensure_future((await frontend(harness, at)).run())
+        cli = await frontend(harness, at)
+        assert isinstance(cli, columbina.apps.cli.Cli)
+        running = asyncio.ensure_future(cli.run())
 
         at.enter("First.")
         await at.sees("One.\n")
@@ -245,6 +250,8 @@ async def test_another_model_can_be_named_and_the_next_request_goes_to_it(
         await at.sees(f"The model is {MODEL.model}. Another one is named with /model ID.\n")
         at.enter("/model other-model")
         await at.sees("The model is other-model from the next request on.\n")
+        # The line below the prompt names the model that the next request goes to.
+        assert cli.status_line().split(" | ")[0] == "other-model"
         at.enter("Second.")
         await at.sees("Two.\n")
         at.type(CTRL_D)
@@ -407,9 +414,8 @@ async def test_a_session_that_is_named_is_taken_up_and_its_last_turn_is_shown(
     assert said == [user("Fix the parser."), user("And the lexer.")]
 
 
-async def test_the_session_that_was_used_last_can_be_taken_up_without_its_name(
-    harness: Harness,
-) -> None:
+async def an_older_and_a_newer_session(harness: Harness) -> None:
+    """Store two sessions of the working directory, one used after the other."""
     for name, at_second in (("older", 1000), ("newer", 2000)):
         session = harness.sessions.create(harness.ctx, harness.cwd, session_id=name)
         session.append(UserMessageEvent(message=user(f"A task of {name}.")))
@@ -418,6 +424,36 @@ async def test_the_session_that_was_used_last_can_be_taken_up_without_its_name(
         stamp = at_second * 1_000_000_000
         file = harness.sessions.directory(harness.cwd, name) / SESSION_FILE
         os.utime(file, ns=(stamp, stamp))
+
+
+def went_on(harness: Harness, name: str) -> bool:
+    """Tell whether a turn was held in a stored session."""
+    stored = harness.sessions.read(harness.cwd, name)
+    return any(isinstance(event.data, TurnEndEvent) for event in stored.events)
+
+
+async def test_a_session_that_is_named_is_taken_up_although_another_one_was_used_last(
+    harness: Harness,
+) -> None:
+    await an_older_and_a_newer_session(harness)
+    harness.model.add(Reply(text="Going on."))
+    with desk() as at:
+        named = await frontend(harness, at, session_id="older", resume=True)
+        running = asyncio.ensure_future(named.run())
+        await at.sees("/help lists the commands.")
+
+        at.enter("Go on.")
+        await at.sees("Going on.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    assert (went_on(harness, "older"), went_on(harness, "newer")) == (True, False)
+
+
+async def test_the_session_that_was_used_last_can_be_taken_up_without_its_name(
+    harness: Harness,
+) -> None:
+    await an_older_and_a_newer_session(harness)
     harness.model.add(Reply(text="Going on."))
     with desk() as at:
         running = asyncio.ensure_future((await frontend(harness, at, resume=True)).run())
@@ -428,8 +464,7 @@ async def test_the_session_that_was_used_last_can_be_taken_up_without_its_name(
         at.type(CTRL_D)
         await left(running)
 
-    newer = harness.sessions.read(harness.cwd, "newer")
-    assert any(isinstance(event.data, TurnEndEvent) for event in newer.events)
+    assert (went_on(harness, "older"), went_on(harness, "newer")) == (False, True)
 
 
 async def test_taking_up_a_session_where_none_is_stored_begins_a_new_one(
@@ -463,6 +498,27 @@ async def test_what_the_program_logs_is_shown_above_the_prompt_while_it_is_open(
         handlers = list(logging.getLogger("columbina").handlers)
 
     assert not any(type(handler).__name__ == "_Shown" for handler in handlers)
+
+
+async def test_an_error_in_the_log_is_shown_in_red_and_a_warning_is_not(
+    harness: Harness,
+) -> None:
+    red = "\x1b[0;31m"
+    log = logging.getLogger("columbina.somewhere")
+    with desk(colours=True) as at:
+        running = asyncio.ensure_future((await frontend(harness, at)).run())
+        await at.sees("/help lists the commands.")
+
+        log.warning("careful")
+        await at.sees("columbina: careful\n")
+        until_the_warning = at.sent()
+        log.error("that went wrong")
+        await at.sees("columbina: that went wrong\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    assert red not in until_the_warning
+    assert red in at.sent()[len(until_the_warning) :]
 
 
 async def test_the_line_below_the_prompt_tells_of_the_session(harness: Harness) -> None:
@@ -577,5 +633,94 @@ async def test_what_is_said_on_the_way_stands_where_it_was_typed_and_where_it_wa
             "",
             ">",
         ]
+        at.type(CTRL_D)
+        await left(running)
+
+
+class Nothing(BaseModel):
+    pass
+
+
+async def test_the_marks_before_the_lines_are_those_that_the_terminal_can_show(
+    harness: Harness,
+) -> None:
+    async def look(args: Nothing, run: ToolRun) -> str:
+        return "seen"
+
+    harness.tools.add(
+        harness.ctx, Tool(name="look", description="Look.", parameters=Nothing, execute=look)
+    )
+    harness.model.add(Reply(calls=(Call(name="look"),)), Reply(text="Done."))
+    with desk(encoding="ascii") as at:
+        running = asyncio.ensure_future((await frontend(harness, at)).run())
+
+        at.enter("Look.")
+        await at.sees("Done.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    assert re.search(r"^\* look\n  ok \d+ ms, 1 line\nDone\.$", at.seen(), re.MULTILINE)
+
+
+async def test_the_line_that_is_being_written_stands_above_the_prompt_until_it_is_complete(
+    harness: Harness,
+) -> None:
+    with desk(rows=10, columns=400) as at:
+        running = asyncio.ensure_future((await frontend(harness, at)).run())
+        await at.sees("/help lists the commands.")
+        agent = agent_of(harness)
+
+        def arrives(chunk: Chunk) -> None:
+            agent.ctx.emit(STREAM, StreamFrame(agent, 1, 1, chunk))
+
+        arrives(BlockStart(index=0, kind="text"))
+        arrives(TextDelta(index=0, text="First line.\nHalf a li"))
+        await stands(lambda: at.window()[3:6], ["First line.", "Half a li", ">"])
+        printed_so_far = at.seen()
+        arrives(TextDelta(index=0, text="ne"))
+        await stands(lambda: at.window()[3:6], ["First line.", "Half a line", ">"])
+        arrives(BlockEnd(index=0))
+        await at.sees("Half a line\n")
+        await stands(lambda: at.window()[3:7], ["First line.", "Half a line", ">", ""])
+
+        # The line was drawn with the prompt while it grew, and printed when it was complete.
+        assert printed_so_far.endswith("First line.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+
+async def test_what_arrived_of_a_reply_that_broke_off_stands_on_the_screen_once(
+    harness: Harness,
+) -> None:
+    # A stream that ends in the middle of a line, without the end of a reply.
+    harness.model.add([BlockStart(index=0, kind="text"), TextDelta(index=0, text="Half a li")])
+    with desk(rows=12, columns=400) as at:
+        running = asyncio.ensure_future((await frontend(harness, at)).run())
+
+        at.enter("Go.")
+        await at.sees("(the turn ended with an error: ")
+        await stands(lambda: at.window()[7:8], [">"])
+
+        assert at.window()[3:5] == ["> Go.", "Half a li"]
+        assert at.window()[5].startswith("(the turn ended with an error: STREAM_CLOSED")
+        assert at.window()[6:9] == ["", ">", ""]
+        at.type(CTRL_D)
+        await left(running)
+
+
+async def test_a_turn_that_was_not_begun_from_the_keys_can_be_stopped_from_them(
+    harness: Harness,
+) -> None:
+    harness.model.add(Reply(text="thinking", hold=True))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at)).run())
+        await at.sees("/help lists the commands.")
+
+        # Another part of the program gives the agent a task. Nothing was typed.
+        agent_of(harness).followup("From elsewhere.")
+        await asyncio.wait_for(harness.model.held(), timeout=5)
+        at.type(ESCAPE)
+
+        await at.sees("(stopped)\n")
         at.type(CTRL_D)
         await left(running)

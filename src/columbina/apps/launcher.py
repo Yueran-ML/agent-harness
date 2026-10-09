@@ -32,6 +32,7 @@ import yaml
 
 import columbina
 from columbina.apps import FRONTEND
+from columbina.apps.terminal_text import harmless
 from columbina.kernel import CompositionError, Context, Entry, Layer, flatten, mount, parse_layer
 from columbina.permissions import Preset
 
@@ -174,6 +175,23 @@ def _dump(entries: Sequence[Entry]) -> str:
     return yaml.safe_dump(ordered, sort_keys=False, allow_unicode=True)
 
 
+def _tell(message: str) -> None:
+    """Say something to whoever started the program.
+
+    What is said may name a file or repeat what a file holds, so it is made fit for a
+    terminal first.
+    """
+    print(harmless(f"columbina: {message}"), file=sys.stderr)
+
+
+class _Fit(logging.Formatter):
+    """Writes a record of the log so that a terminal shows it and does not act on it."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Return the record as text, with what a terminal would act on made harmless."""
+        return harmless(super().format(record))
+
+
 async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
     """Load the entries, run the frontend, and unload everything again."""
     root = Context()
@@ -183,16 +201,12 @@ async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
         problems = composition.problems()
         if problems:
             for problem in problems:
-                print(f"columbina: {problem}", file=sys.stderr)
+                _tell(str(problem))
             return 2
         frontend = root.get(FRONTEND)
         if frontend is None:
             plugin = next(entry.plugin for entry in entries if entry.id == _FRONTEND)
-            print(
-                f"columbina: the entry {_FRONTEND!r} loads {plugin}, "
-                "which provides nothing to run the task",
-                file=sys.stderr,
-            )
+            _tell(f"the entry {_FRONTEND!r} loads {plugin}, which provides nothing to run the task")
             return 2
         return await frontend.run()
     finally:
@@ -281,18 +295,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     env.setdefault("COLUMBINA_HOME", str(Path.home() / ".columbina"))
     log = logging.getLogger("columbina")
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("columbina: %(message)s"))
+    handler.setFormatter(_Fit("columbina: %(message)s"))
     if args.command == _RUN:
         # A conversation shows what is logged by itself, above its prompt.
         log.addHandler(handler)
     try:
         entries = _entries(args, Path(env["COLUMBINA_HOME"]))
         if args.dump_config:
-            sys.stdout.write(_dump(entries))
+            dumped = _dump(entries)
+            # A file or another program gets the entries as they are, to be read again.
+            sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)
             return 0
         return asyncio.run(_run(entries, env))
     except (_UsageError, CompositionError) as error:
-        print(f"columbina: {error}", file=sys.stderr)
+        _tell(str(error))
         return 2
     except KeyboardInterrupt:
         return _INTERRUPTED

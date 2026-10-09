@@ -2,6 +2,12 @@
 
 This module is a plugin. It provides the frontend of ``columbina run``: one agent
 is given one task, and when the agent is at rest the answer is printed.
+
+The answer is written by a model, and a terminal carries out the control
+characters it is sent. So the answer is printed as the model wrote it only
+where the output is a file or another program. On a terminal, and in whatever
+is said about the run, such characters are shown and not sent. The lines of
+JSON write them by their numbers, which is the same JSON.
 """
 
 import asyncio
@@ -14,6 +20,7 @@ from pydantic import BaseModel, JsonValue
 from columbina.agent import AGENTS, Agent, Agents, AgentSpec
 from columbina.apps import FRONTEND
 from columbina.apps.common import DEFAULT_PROMPT, open_agent
+from columbina.apps.terminal_text import escaped, harmless
 from columbina.kernel import Context
 from columbina.llm.types import CallConfig, ReasoningBlock, TextBlock
 from columbina.session import (
@@ -60,8 +67,13 @@ class Config(BaseModel):
 
 
 def _emit(line: dict[str, JsonValue]) -> None:
-    sys.stdout.write(json.dumps(line, ensure_ascii=False) + "\n")
+    sys.stdout.write(escaped(json.dumps(line, ensure_ascii=False)) + "\n")
     sys.stdout.flush()
+
+
+def _tell(message: str) -> None:
+    """Say something about the run to whoever started it."""
+    print(harmless(f"columbina: {message}"), file=sys.stderr)
 
 
 def _report(data: EventData) -> list[dict[str, JsonValue]]:
@@ -114,7 +126,7 @@ class Headless:
         try:
             agent = await self._agent()
         except (SessionError, ValueError) as error:
-            print(f"columbina: {error}", file=sys.stderr)
+            _tell(str(error))
             return 1
         session = agent.session
         before = len(session)
@@ -139,7 +151,7 @@ class Headless:
             await asyncio.shield(agent.close())
             raise
         except Exception as error:
-            print(f"columbina: the agent has stopped: {error}", file=sys.stderr)
+            _tell(f"the agent has stopped: {error}")
             return 1
         events = [event.data for event in session.events[before:]]
         ends = [data for data in events if isinstance(data, TurnEndEvent)]
@@ -168,12 +180,12 @@ class Headless:
             )
         else:
             if answer:
-                print(answer)
+                print(harmless(answer) if sys.stdout.isatty() else answer)
             if end.reason == "error":
-                print(f"columbina: the turn ended with an error: {end.detail}", file=sys.stderr)
+                _tell(f"the turn ended with an error: {end.detail}")
             elif end.reason != "completed":
                 detail = end.reason if end.detail is None else f"{end.reason} ({end.detail})"
-                print(f"columbina: the turn ended early: {detail}", file=sys.stderr)
+                _tell(f"the turn ended early: {detail}")
         return 0 if end.reason == "completed" else 1
 
     async def _agent(self) -> Agent:

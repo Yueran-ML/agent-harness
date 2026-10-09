@@ -29,7 +29,8 @@ from rich.text import Text
 
 from columbina.approval import ApprovalDecidedEvent
 from columbina.apps.cli.lines import Lines
-from columbina.apps.cli.terminal import Terminal, harmless
+from columbina.apps.cli.terminal import Terminal
+from columbina.apps.terminal_text import harmless
 from columbina.llm import BlockEnd, BlockStart, Chunk, TextDelta
 from columbina.retry import RetryEvent
 from columbina.session import (

@@ -1,6 +1,8 @@
 """The headless frontend: what happens around the one task that it runs."""
 
 import asyncio
+import io
+import json
 import subprocess
 import sys
 
@@ -11,6 +13,7 @@ import columbina.apps.headless
 from columbina.agent import PRE_STEP, Reject, StepDecision, StepInfo
 from columbina.apps import FRONTEND
 from columbina.kernel import Next
+from columbina.llm import LlmFailure
 from columbina.llm.adapters.scripted import Reply
 from columbina.session import TurnEndEvent
 from columbina.session.store import SESSION_FILE
@@ -124,6 +127,85 @@ async def test_a_turn_that_was_blocked_is_reported_with_its_reason(
     assert code == 1
     assert captured.out == ""
     assert captured.err == "columbina: the turn ended early: blocked (the budget is spent)\n"
+
+
+# What is printed
+
+
+ESC = chr(0x1B)
+STAND_IN = chr(0xFFFD)
+OVERRIDE = chr(0x202E)
+CSI = chr(0x9B)
+HOSTILE = f"Done.{ESC}[2J{ESC}]52;c;aGk={chr(7)} {OVERRIDE}txt.exe {CSI}2J"
+SHOWN = f"Done.{STAND_IN}[2J{STAND_IN}]52;c;aGk={STAND_IN} {STAND_IN}txt.exe {STAND_IN}2J"
+
+
+class Screen(io.StringIO):
+    """A standard output that is a terminal."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+async def test_an_answer_that_goes_to_a_terminal_cannot_steer_it(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness.model.add(Reply(text=HOSTILE))
+    runner = await frontend(harness)
+    screen = Screen()
+    monkeypatch.setattr(sys, "stdout", screen)
+
+    code = await runner.run()
+
+    assert code == 0
+    assert screen.getvalue() == SHOWN + "\n"
+
+
+async def test_an_answer_that_goes_to_a_file_or_a_program_is_what_the_model_wrote(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    harness.model.add(Reply(text=HOSTILE))
+    runner = await frontend(harness)
+
+    code = await runner.run()
+
+    assert code == 0
+    assert capsys.readouterr().out == HOSTILE + "\n"
+
+
+async def test_what_is_said_about_a_run_cannot_steer_a_terminal(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    failed = LlmFailure(message=f"no{ESC}[2Jthing", code="SERVER", status=500)
+    harness.model.add(Reply(failure=failed))
+    runner = await frontend(harness)
+
+    code = await runner.run()
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert ESC not in captured.err
+    assert (
+        captured.err == f"columbina: the turn ended with an error: SERVER: no{STAND_IN}[2Jthing\n"
+    )
+
+
+async def test_the_lines_of_json_write_such_characters_by_their_numbers(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    said = f"{chr(0x5B8C)}{chr(0x6210)} {OVERRIDE}txt.exe {CSI}2J{chr(0x7F)}"
+    harness.model.add(Reply(text=said))
+    runner = await frontend(harness, json_lines=True)
+
+    code = await runner.run()
+
+    lines = capsys.readouterr().out.splitlines()
+    assert code == 0
+    # Other languages stay readable. What a terminal would act on is written by its number.
+    wanted = f'"text": "{chr(0x5B8C)}{chr(0x6210)} \\u202etxt.exe \\u009b2J\\u007f"'
+    assert wanted in lines[-1]
+    assert not any(mark in line for line in lines for mark in (OVERRIDE, CSI, chr(0x7F)))
+    assert json.loads(lines[-1])["text"] == said
 
 
 def test_the_package_can_be_run_as_a_module() -> None:

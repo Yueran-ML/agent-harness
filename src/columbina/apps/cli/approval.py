@@ -19,7 +19,7 @@ from rich.text import Text
 
 from columbina.approval import ApprovalRequest, Outcome
 from columbina.apps.cli.prompt import Prompt
-from columbina.apps.cli.terminal import spelled_out
+from columbina.apps.terminal_text import spelled_out
 from columbina.session import Session
 
 __all__ = ["Granting", "Responder"]

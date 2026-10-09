@@ -1,6 +1,7 @@
 """The command line: ``columbina run`` loads a profile, runs one task, and reports."""
 
 import asyncio
+import io
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ import yaml
 import columbina
 from columbina.apps.launcher import main
 from columbina.session import TurnEndEvent
+from columbina.session.store import SESSION_FILE
 from support.launch import lines, profile, stored
 
 READ_THEN_ANSWER: tuple[dict[str, Any], ...] = (
@@ -839,3 +841,109 @@ def test_an_interrupted_run_exits_the_way_a_shell_expects(
     )
 
     assert code == 130
+
+
+# What a terminal is sent
+
+
+ESC = chr(0x1B)
+STAND_IN = chr(0xFFFD)
+OVERRIDE = chr(0x202E)
+
+
+class Screen(io.StringIO):
+    """A standard output that is a terminal."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+def test_what_is_said_about_a_profile_that_cannot_be_read_cannot_steer_a_terminal(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The name of a directory can turn the direction of the text, and what is said about a
+    # file that is no YAML repeats a part of the file.
+    odd = tmp_path / f"odd{OVERRIDE}dir"
+    odd.mkdir()
+    (odd / "bad.yml").write_text(f"- [not{OVERRIDE} a mapping", encoding="utf-8")
+
+    code = main(["run", "Do it.", "--profile", str(odd / "bad.yml"), "--cwd", str(work)])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert OVERRIDE not in captured.err
+    assert f"odd{STAND_IN}dir" in captured.err
+    assert f"- [not{STAND_IN} a mapping" in captured.err
+
+
+def test_what_is_logged_during_a_run_cannot_steer_a_terminal(
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The directory of the data can have any name. The log names a file in it when it cuts
+    # off a line that a run before this one did not finish.
+    home = tmp_path / f"home{OVERRIDE}x"
+    monkeypatch.setenv("COLUMBINA_HOME", str(home))
+    arguments = ["run", "Hello?", "--cwd", str(work), "--session-id", "s-1"]
+    main([*arguments, "--profile", profile(tmp_path, {"text": "One."})])
+    (file,) = home.rglob(SESSION_FILE)
+    with file.open("ab") as log:
+        log.write(b'{"seq": 99')
+    capsys.readouterr()
+
+    code = main([*arguments, "--profile", profile(tmp_path, {"text": "Two."})])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out == "Two." + chr(10)
+    assert OVERRIDE not in captured.err
+    assert "columbina: cut an unfinished line of 10 bytes off the end of " in captured.err
+    assert f"home{STAND_IN}x" in captured.err
+
+
+def test_the_composition_is_printed_as_it_is_for_a_program_and_made_fit_for_a_terminal(
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    said = f"a{OVERRIDE}b"
+    arguments = ["run", "Do it.", "--cwd", str(work), "--dump-config"]
+    arguments += ["--profile", profile(tmp_path, {"text": said})]
+
+    main(arguments)
+    for_a_program = capsys.readouterr().out
+    screen = Screen()
+    monkeypatch.setattr(sys, "stdout", screen)
+    main(arguments)
+
+    assert said in for_a_program
+    assert screen.getvalue() == for_a_program.replace(OVERRIDE, STAND_IN)
+
+
+def test_the_lines_of_json_of_a_run_cannot_steer_a_terminal(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    work = tmp_path / f"work{OVERRIDE}txt"
+    work.mkdir()
+
+    code = main(
+        [
+            "run",
+            "Hello?",
+            "--profile",
+            profile(tmp_path, {"text": "Hi."}),
+            "--cwd",
+            str(work),
+            "--json",
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert code == 0
+    assert OVERRIDE not in out
+    assert "work\\u202etxt" in out.splitlines()[0]
+    assert lines(out)[0]["cwd"] == str(work)

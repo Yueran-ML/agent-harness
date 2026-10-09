@@ -31,8 +31,9 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.utils import get_cwidth
 from rich.text import Text
 
-from columbina.apps.cli.terminal import Terminal, harmless
+from columbina.apps.cli.terminal import Terminal
 from columbina.apps.cli.transcript import on_screen
+from columbina.apps.terminal_text import harmless
 
 __all__ = ["Prompt"]
 

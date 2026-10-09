@@ -17,7 +17,7 @@ from hypothesis import strategies as st
 import columbina.fs
 import columbina.tools
 from columbina.builtin_tools import read
-from columbina.fs import FS, Access, Fingerprint, Permit, Refuse, locate
+from columbina.fs import FS, Access, Fingerprint, Fs, Permit, Refuse, locate
 from columbina.kernel import Context
 from columbina.llm import ToolCallBlock
 from columbina.session import CORE_EVENTS, Session
@@ -49,7 +49,7 @@ async def call(ctx: Context, tools: Tools, work: Path, arguments: str) -> ToolOu
 def allowed(path: Path) -> Permit:
     """A permit to read a file, for the tests that read without the tool around them."""
     where = locate(path.parent, path.name)
-    return Permit(Access(cast("Session", None), path.parent, where, "read", "read"))
+    return Permit(Access(cast("Session", None), path.parent, where, "read", "read"), Fs())
 
 
 def arguments(path: str | Path, **more: int) -> str:

@@ -419,7 +419,7 @@ def test_what_one_session_was_shown_another_was_not(
 def test_the_seam_does_not_keep_a_session_alive(fs: Fs, ctx: Context, work: Path) -> None:
     passing = Session(ctx, "s-3", {kind.event_type: kind for kind in CORE_EVENTS})
     where = locate(work, "a.txt")
-    fs.shown(Permit(Access(passing, work, where, "read", "probe")), Fingerprint(6, 1000))
+    fs.shown(Permit(Access(passing, work, where, "read", "probe"), fs), Fingerprint(6, 1000))
     watch = weakref.ref(passing)
 
     del passing

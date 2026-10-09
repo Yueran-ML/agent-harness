@@ -20,10 +20,18 @@ thing writes nothing.
 
 Restrictions and grants are plain functions that do not wait. They go by what
 is in memory, so that a search can ask them about every file it comes upon.
+
+The seam also remembers which files the model was shown, and in what state. A
+file that is there is replaced only if the model was shown it as it is now:
+what the model has not read, or what has changed since, it would overwrite
+blindly. What the agent writes counts as shown. The memory belongs to a
+session and lasts as long as the process, so a session that is taken up again
+reads before it writes.
 """
 
 import logging
 import os
+import threading
 import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -148,17 +156,18 @@ class Opened:
 class Permit:
     """An access that was allowed. Only :meth:`Fs.permit` gives one out.
 
-    The file is opened through the permit and in no other way, so that what
-    is opened is the file that the decision was about.
+    The file is opened or replaced through the permit and in no other way,
+    so that what is touched is the file that the decision was about.
 
     Attributes:
         access: The access that was allowed.
     """
 
-    __slots__ = ("access",)
+    __slots__ = ("_fs", "access")
 
-    def __init__(self, access: Access) -> None:
+    def __init__(self, access: Access, fs: "Fs") -> None:
         self.access = access
+        self._fs = fs
 
     def open(self) -> Opened:
         """Open the file for reading. This blocks, so it belongs in a worker thread.
@@ -186,6 +195,56 @@ class Permit:
             raise ToolFailure(f"{where.written} is not a file.", code="NOT_A_FILE") from None
         return Opened(file, Fingerprint(status.st_size, status.st_mtime_ns))
 
+    def replace(self, data: bytes) -> Fingerprint:
+        """Put ``data`` in the place of the file, or make the file with it.
+
+        This blocks, so it belongs in a worker thread. The new content takes
+        the place of the old in one step, and directories that are missing
+        are made. What was written counts as shown to the model.
+
+        Returns:
+            The state of the file after it was written.
+
+        Raises:
+            ToolFailure: The file is there and the model was never shown it
+                (code ``NOT_READ``), or it has changed since (code
+                ``CHANGED_SINCE_READ``). A directory on the way was not where
+                it was when the access was decided (code ``MOVED``). The path
+                names something that is no file (code ``NOT_A_FILE``).
+            OSError: The file cannot be written. The caller says so in words
+                that fit what it was doing.
+            ValueError: The permit is not for writing.
+        """
+        if self.access.kind != "write":
+            raise ValueError("this permit is not for writing")
+        where = self.access.where
+        shown = self._fs.seen(self.access.session, where.path)
+        try:
+            status = bound.replace(
+                where.path, data, None if shown is None else (shown.size, shown.modified_ns)
+            )
+        except bound.MovedError:
+            raise ToolFailure(
+                f"A directory on the way to {where.written} was not where it had been a "
+                "moment before, so nothing was written. Try again.",
+                code="MOVED",
+            ) from None
+        except bound.NotAFileError:
+            raise ToolFailure(f"{where.written} is not a file.", code="NOT_A_FILE") from None
+        except bound.NotShownError:
+            raise ToolFailure(
+                f"{where.written} exists and has not been read. Read it before writing it.",
+                code="NOT_READ",
+            ) from None
+        except bound.ChangedError:
+            raise ToolFailure(
+                f"{where.written} has changed since it was read. Read it again before writing it.",
+                code="CHANGED_SINCE_READ",
+            ) from None
+        fingerprint = Fingerprint(status.st_size, status.st_mtime_ns)
+        self._fs.shown(self, fingerprint)
+        return fingerprint
+
 
 def _describe(error: BaseException) -> str:
     text = str(error)
@@ -206,7 +265,7 @@ class Fs:
             seam does not allow by itself.
     """
 
-    __slots__ = ("_shown", "grants", "restrictions")
+    __slots__ = ("_lock", "_shown", "grants", "restrictions")
 
     def __init__(self) -> None:
         self.restrictions: Registry[Restriction] = Registry("restriction of file access")
@@ -214,6 +273,8 @@ class Fs:
         self._shown: weakref.WeakKeyDictionary[Session, dict[str, Fingerprint]] = (
             weakref.WeakKeyDictionary()
         )
+        # A file is replaced in a worker thread, which reads and writes what was shown.
+        self._lock = threading.Lock()
 
     def judge(self, access: Access) -> Refuse | None:
         """Decide about an access. Return the refusal, or ``None`` if it may happen.
@@ -270,16 +331,18 @@ class Fs:
         refusal = self.judge(access)
         if refusal is not None:
             raise ToolFailure(refusal.reason, code=refusal.code)
-        return Permit(access)
+        return Permit(access, self)
 
     def shown(self, permit: Permit, fingerprint: Fingerprint) -> None:
         """Remember that the model was shown a file in this state."""
         access = permit.access
-        self._shown.setdefault(access.session, {})[_key(access.where.path)] = fingerprint
+        with self._lock:
+            self._shown.setdefault(access.session, {})[_key(access.where.path)] = fingerprint
 
     def seen(self, session: Session, path: Path) -> Fingerprint | None:
         """Return the state in which the model was last shown a file, if it was."""
-        return self._shown.get(session, {}).get(_key(path))
+        with self._lock:
+            return self._shown.get(session, {}).get(_key(path))
 
 
 FS = ServiceKey[Fs]("fs")

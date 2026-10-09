@@ -700,8 +700,8 @@ _FS = (
         mutant(
             "another case of a name is another file",
             BOUND,
-            "        return os.path.normcase(one) == os.path.normcase(other)",
-            "        return one == other",
+            "        return os.path.normcase(_plain(one)) == os.path.normcase(_plain(other))",
+            "        return _plain(one) == _plain(other)",
         )
     ),
     mutant(
@@ -715,6 +715,83 @@ _FS = (
         BOUND,
         "    return os.path.samestat(os.fstat(descriptor), named) and _spelled_alike(still, str(expected))",
         "    return os.path.samestat(os.fstat(descriptor), named)",
+    ),
+    mutant(
+        "a file that the model never saw is taken for one that changed",
+        BOUND,
+        "            if seen is None:\n"
+        '                raise NotShownError(f"{path} was never seen")\n',
+        "",
+    ),
+    mutant(
+        "a file that changed since it was seen is replaced",
+        BOUND,
+        "            if (existing.st_size, existing.st_mtime_ns) != seen:\n"
+        '                raise ChangedError(f"{path} is not as it was seen")\n',
+        "",
+    ),
+    mutant(
+        "a change that keeps the size goes unnoticed",
+        BOUND,
+        "            if (existing.st_size, existing.st_mtime_ns) != seen:",
+        "            if existing.st_size != seen[0]:",
+    ),
+    mutant(
+        "a directory is taken for a file that was never seen",
+        BOUND,
+        "            if not stat.S_ISREG(existing.st_mode):\n"
+        '                raise NotAFileError(f"{path} is not a regular file")\n',
+        "",
+    ),
+    mutant(
+        "what was written beside the file stays there after a failure",
+        BOUND,
+        "        except BaseException:\n            directory.remove(beside)\n            raise\n",
+        "        except BaseException:\n            raise\n",
+    ),
+    mutant(
+        "directories that are missing are not made",
+        BOUND,
+        "        held = held.enter(name)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "a file in the way is treated as a directory to be made",
+        BOUND,
+        "        if present.exists():\n"
+        '            raise NotADirectoryError(f"{present} is in the way, and it is no directory")\n',
+        "",
+    ),
+    on_windows(
+        mutant(
+            "a directory is held without asking where it is",
+            BOUND,
+            "            if actual is None or not _spelled_alike(actual, str(path)):\n"
+            "                self.close()\n"
+            '                raise MovedError(f"{path} was somewhere else when it was opened")\n',
+            "",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a file that is busy for a moment is given up at once",
+            BOUND,
+            "                    if attempt == _RENAME_ATTEMPTS:\n                        raise\n",
+            "                    raise\n",
+        )
+    ),
+    mutant(
+        "what the agent wrote does not count as shown",
+        SEAM,
+        "        self._fs.shown(self, fingerprint)\n        return fingerprint\n",
+        "        return fingerprint\n",
+    ),
+    mutant(
+        "a permit to read replaces",
+        SEAM,
+        '        if self.access.kind != "write":\n'
+        '            raise ValueError("this permit is not for writing")\n',
+        "",
     ),
 )
 

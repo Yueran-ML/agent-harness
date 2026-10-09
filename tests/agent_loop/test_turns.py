@@ -4,9 +4,8 @@ import asyncio
 
 from pydantic import BaseModel
 
-from support.loop import MODEL, SYSTEM, Harness, assistant, idle, types, user
-from tack.agent import AGENTS, STREAM, InboxItem, StreamFrame, enqueue
-from tack.llm import (
+from columbina.agent import AGENTS, STREAM, InboxItem, StreamFrame, enqueue
+from columbina.llm import (
     BlockStart,
     CallConfig,
     Finish,
@@ -16,8 +15,8 @@ from tack.llm import (
     TextBlock,
     Usage,
 )
-from tack.llm.adapters.scripted import Reply
-from tack.session import (
+from columbina.llm.adapters.scripted import Reply
+from columbina.session import (
     TURN,
     USAGE,
     AssistantAttemptEvent,
@@ -31,7 +30,8 @@ from tack.session import (
     TurnState,
     UserMessageEvent,
 )
-from tack.tools import Tool, ToolRun
+from columbina.tools import Tool, ToolRun
+from support.loop import MODEL, SYSTEM, Harness, assistant, idle, types, user
 
 
 async def test_a_task_becomes_a_turn_with_one_step(harness: Harness) -> None:

@@ -3,18 +3,18 @@ from pathlib import Path
 
 import pytest
 
-import tack.agent
-import tack.agent_loop
-import tack.llm
-import tack.session
-import tack.tools
+import columbina.agent
+import columbina.agent_loop
+import columbina.llm
+import columbina.session
+import columbina.tools
+from columbina.agent import AGENTS
+from columbina.kernel import Context
+from columbina.llm import LLM
+from columbina.llm.adapters.scripted import Scripted
+from columbina.session import SESSIONS
+from columbina.tools import TOOLS
 from support.loop import Harness
-from tack.agent import AGENTS
-from tack.kernel import Context
-from tack.llm import LLM
-from tack.llm.adapters.scripted import Scripted
-from tack.session import SESSIONS
-from tack.tools import TOOLS
 
 
 @pytest.fixture
@@ -28,11 +28,11 @@ async def ctx() -> AsyncIterator[Context]:
 @pytest.fixture
 async def harness(ctx: Context, tmp_path: Path) -> Harness:
     """The loop with its services, a scripted model, and sessions stored in a temporary place."""
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
-    await ctx.plugin(tack.llm, {"idle_timeout_seconds": 5})
-    await ctx.plugin(tack.tools)
-    await ctx.plugin(tack.agent)
-    await ctx.plugin(tack.agent_loop)
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.llm, {"idle_timeout_seconds": 5})
+    await ctx.plugin(columbina.tools)
+    await ctx.plugin(columbina.agent)
+    await ctx.plugin(columbina.agent_loop)
     model = Scripted()
     ctx.use(LLM).adapters.add(ctx, "scripted", model)
     work = tmp_path / "work"

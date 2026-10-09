@@ -11,8 +11,8 @@ from typing import Any
 import httpx
 import pytest
 
-from tack.kernel import Context
-from tack.llm import (
+from columbina.kernel import Context
+from columbina.llm import (
     LLM,
     AssistantMessage,
     BlockEnd,
@@ -38,8 +38,8 @@ from tack.llm import (
     UsageChunk,
     UserMessage,
 )
-from tack.llm.adapters import openai_chat
-from tack.llm.adapters.openai_chat import Config, OpenAIChat
+from columbina.llm.adapters import openai_chat
+from columbina.llm.adapters.openai_chat import Config, OpenAIChat
 
 KEY = "sk-test-0123456789"
 CONFIG = Config(provider="deepseek", base_url="https://api.example.test", api_key_env="TEST_KEY")

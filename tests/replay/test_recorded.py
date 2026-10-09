@@ -1,7 +1,7 @@
 """A run that was recorded against the real service happens again, without the service.
 
 The session under ``tests/fixtures/recorded/deepseek-read`` was written by
-``tack run`` talking to DeepSeek. Here the replies of that session are played
+``columbina run`` talking to DeepSeek. Here the replies of that session are played
 to the loop again. The same input must lead to the same log, event by event,
 and the model must be sent exactly the requests of ``requests.txt``. How such
 a recording is made is written down next to it.
@@ -11,20 +11,18 @@ import re
 import shutil
 from pathlib import Path
 
-import tack.agent
-import tack.agent_loop
-import tack.llm
-import tack.retry
-import tack.session
-import tack.tools
-from support.loop import idle
-from support.snapshot import stored
-from tack.agent import AGENTS, AgentSpec
-from tack.builtin_tools import read
-from tack.kernel import Context
-from tack.llm import LLM, render_requests
-from tack.llm.adapters import replay
-from tack.session import (
+import columbina.agent
+import columbina.agent_loop
+import columbina.llm
+import columbina.retry
+import columbina.session
+import columbina.tools
+from columbina.agent import AGENTS, AgentSpec
+from columbina.builtin_tools import read
+from columbina.kernel import Context
+from columbina.llm import LLM, render_requests
+from columbina.llm.adapters import replay
+from columbina.session import (
     SESSIONS,
     EventData,
     RequestHeaderEvent,
@@ -33,7 +31,9 @@ from tack.session import (
     UserMessageEvent,
     read_session,
 )
-from tack.tools import TOOLS
+from columbina.tools import TOOLS
+from support.loop import idle
+from support.snapshot import stored
 
 RECORDED = Path(__file__).parent.parent / "fixtures" / "recorded" / "deepseek-read"
 
@@ -48,13 +48,13 @@ def essence(events: list[SessionEvent[EventData]]) -> list[Essence]:
 async def test_a_recorded_run_happens_again_event_by_event(ctx: Context, tmp_path: Path) -> None:
     work = tmp_path / "work"
     shutil.copytree(RECORDED / "work", work)
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
-    await ctx.plugin(tack.llm)
-    await ctx.plugin(tack.tools)
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.llm)
+    await ctx.plugin(columbina.tools)
     await ctx.plugin(read)
-    await ctx.plugin(tack.agent)
-    await ctx.plugin(tack.agent_loop)
-    await ctx.plugin(tack.retry)
+    await ctx.plugin(columbina.agent)
+    await ctx.plugin(columbina.agent_loop)
+    await ctx.plugin(columbina.retry)
     recorded = read_session(RECORDED, ctx.use(SESSIONS).kinds).events
     header = next(e.data for e in recorded if isinstance(e.data, RequestHeaderEvent))
     system = next(e.data for e in recorded if isinstance(e.data, SystemMessageEvent))

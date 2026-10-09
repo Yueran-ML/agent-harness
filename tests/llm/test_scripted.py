@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from tack.kernel import Context
-from tack.llm import (
+from columbina.kernel import Context
+from columbina.llm import (
     LLM,
     AssistantMessage,
     BlockEnd,
@@ -24,8 +24,8 @@ from tack.llm import (
     Usage,
     UserMessage,
 )
-from tack.llm.adapters import scripted
-from tack.llm.adapters.scripted import Call, Reply, Scripted
+from columbina.llm.adapters import scripted
+from columbina.llm.adapters.scripted import Call, Reply, Scripted
 
 
 def request(text: str = "hello") -> LlmRequest:

@@ -5,9 +5,9 @@ from typing import ClassVar
 
 import pytest
 
-import tack.session
-from tack.kernel import Context
-from tack.llm import (
+import columbina.session
+from columbina.kernel import Context
+from columbina.llm import (
     Assembler,
     AssistantMessage,
     CallConfig,
@@ -22,9 +22,9 @@ from tack.llm import (
     Usage,
     UserMessage,
 )
-from tack.llm.adapters import replay
-from tack.llm.adapters.replay import replies_of
-from tack.session import (
+from columbina.llm.adapters import replay
+from columbina.llm.adapters.replay import replies_of
+from columbina.session import (
     SESSIONS,
     AssistantAttemptEvent,
     AssistantMessageEvent,
@@ -143,7 +143,7 @@ def test_a_message_that_takes_the_place_of_a_reply_is_no_reply_of_the_model() ->
 async def test_the_plugin_answers_with_the_replies_of_a_stored_session(
     ctx: Context, llm: Llm, tmp_path: Path
 ) -> None:
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
     sessions = ctx.use(SESSIONS)
     recorded = sessions.create(ctx, tmp_path, session_id="recorded")
     for data in RECORDED:
@@ -174,7 +174,7 @@ async def test_the_plugin_answers_with_the_replies_of_a_stored_session(
 async def test_the_session_is_read_when_the_first_call_is_made(
     ctx: Context, llm: Llm, tmp_path: Path
 ) -> None:
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
     sessions = ctx.use(SESSIONS)
     directory = sessions.directory(tmp_path, "recorded")
     await ctx.plugin(replay, {"provider": "recorded", "directory": directory})
@@ -191,7 +191,7 @@ async def test_the_session_is_read_when_the_first_call_is_made(
 async def test_a_session_that_cannot_be_read_fails_every_call_and_says_why(
     ctx: Context, llm: Llm, tmp_path: Path
 ) -> None:
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
     await ctx.plugin(replay, {"provider": "recorded", "directory": tmp_path / "nowhere"})
 
     for _ in range(2):
@@ -206,7 +206,7 @@ async def test_a_session_that_cannot_be_read_fails_every_call_and_says_why(
 async def test_a_session_with_an_interrupted_reply_fails_the_call_and_says_why(
     ctx: Context, llm: Llm, tmp_path: Path
 ) -> None:
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
     sessions = ctx.use(SESSIONS)
     recorded = sessions.create(ctx, tmp_path, session_id="recorded")
     recorded.append(AssistantMessageEvent(message=ANSWER, usage=Usage(), finish_reason=None))

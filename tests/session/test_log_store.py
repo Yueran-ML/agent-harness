@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from tack.kernel import Context
-from tack.llm import TextBlock, UserMessage
-from tack.session import (
+from columbina.kernel import Context
+from columbina.llm import TextBlock, UserMessage
+from columbina.session import (
     CORE_EVENTS,
     SESSION_EVENT,
     EventData,
@@ -20,7 +20,7 @@ from tack.session import (
     TurnStartEvent,
     UserMessageEvent,
 )
-from tack.session.store import SessionFile, read_session
+from columbina.session.store import SessionFile, read_session
 
 KINDS: dict[str, type[EventData]] = {kind.event_type: kind for kind in CORE_EVENTS}
 

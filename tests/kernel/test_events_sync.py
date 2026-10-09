@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from tack.kernel import BailEvent, Context, EmitEvent, EventModeError
+from columbina.kernel import BailEvent, Context, EmitEvent, EventModeError
 
 PING = EmitEvent[str]("test/ping")
 ASK = BailEvent[str, int]("test/ask")
@@ -66,7 +66,7 @@ async def test_emit_logs_a_failing_listener_and_continues(
     ctx.on(PING, failing)
     ctx.on(PING, log.append)
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         ctx.emit(PING, "x")
 
     assert log == ["x"]
@@ -179,7 +179,7 @@ async def test_emit_closes_a_coroutine_returned_by_a_plain_listener(
 
     ctx.on(PING, sneaky)
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         ctx.emit(PING, "x")
 
     assert "returned a coroutine" in caplog.text
@@ -207,7 +207,7 @@ async def test_emit_isolates_a_listener_that_raises_cancelled_error(
     ctx.on(PING, cancelled)
     ctx.on(PING, log.append)
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         ctx.emit(PING, "x")
 
     assert log == ["x"]

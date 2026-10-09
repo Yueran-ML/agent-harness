@@ -2,16 +2,16 @@ from pathlib import Path
 
 import pytest
 
-import tack.tools
-from tack.kernel import Context
-from tack.session import CORE_EVENTS, Session
-from tack.tools import TOOLS, ToolRun, Tools
+import columbina.tools
+from columbina.kernel import Context
+from columbina.session import CORE_EVENTS, Session
+from columbina.tools import TOOLS, ToolRun, Tools
 
 
 @pytest.fixture
 async def tools(ctx: Context) -> Tools:
     """The tool service, loaded as a plugin."""
-    await ctx.plugin(tack.tools)
+    await ctx.plugin(columbina.tools)
     return ctx.use(TOOLS)
 
 

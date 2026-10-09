@@ -2,7 +2,7 @@
 
 import pytest
 
-from tack.kernel import Context, InactiveEffectError, Plugin, Registry, RegistryConflictError
+from columbina.kernel import Context, InactiveEffectError, Plugin, Registry, RegistryConflictError
 
 
 async def test_an_entry_is_found_by_its_name(ctx: Context) -> None:

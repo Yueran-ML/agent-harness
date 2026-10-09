@@ -5,11 +5,10 @@ import logging
 
 import pytest
 
-from support.loop import SYSTEM, Harness, assistant, idle, types, user
-from tack.agent import INBOX, STREAM, Inbox, InboxItem, InboxSplicedEvent, StreamFrame
-from tack.llm import AssistantMessage, TextDelta, Usage
-from tack.llm.adapters.scripted import Reply
-from tack.session import (
+from columbina.agent import INBOX, STREAM, Inbox, InboxItem, InboxSplicedEvent, StreamFrame
+from columbina.llm import AssistantMessage, TextDelta, Usage
+from columbina.llm.adapters.scripted import Reply
+from columbina.session import (
     SESSION_EVENT,
     AssistantMessageEvent,
     Committed,
@@ -18,7 +17,8 @@ from tack.session import (
     TurnStartEvent,
     UserMessageEvent,
 )
-from tack.tools import Tools
+from columbina.tools import Tools
+from support.loop import SYSTEM, Harness, assistant, idle, types, user
 
 # Input that arrives while a turn runs
 
@@ -369,7 +369,7 @@ async def test_a_turn_that_breaks_ends_with_an_error_and_the_agent_goes_on(
     agent = await harness.agent(Reply(text="Hello!"))
     monkeypatch.setattr(Tools, "schemas", broken)
 
-    with caplog.at_level(logging.ERROR, logger="tack.agent_loop"):
+    with caplog.at_level(logging.ERROR, logger="columbina.agent_loop"):
         agent.followup("Say hello.")
         await idle(agent)
     monkeypatch.undo()
@@ -395,11 +395,11 @@ async def test_an_agent_that_cannot_write_its_log_stops_and_says_why(
     agent = await harness.agent(Reply(text="thinking", hold=True))
     agent.followup("Think.")
     await asyncio.wait_for(harness.model.held(), timeout=5)
-    monkeypatch.setattr("tack.session.store.encode_event", full)
+    monkeypatch.setattr("columbina.session.store.encode_event", full)
 
     harness.model.release()
     with (
-        caplog.at_level(logging.ERROR, logger="tack.agent_loop"),
+        caplog.at_level(logging.ERROR, logger="columbina.agent_loop"),
         pytest.raises(SessionStoreError, match="No space left on device"),
     ):
         await idle(agent)
@@ -423,7 +423,7 @@ async def test_history_without_instructions_gets_none_later(
     await first.close()
 
     second = await harness.agents.resume(harness.ctx, harness.spec(), "s-1")
-    with caplog.at_level(logging.WARNING, logger="tack.agent_loop"):
+    with caplog.at_level(logging.WARNING, logger="columbina.agent_loop"):
         second.followup("Again.")
         await idle(second)
 

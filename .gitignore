@@ -18,7 +18,7 @@ venv/
 htmlcov/
 coverage.xml
 
-# 密钥与日志（运行期数据在 TACK_HOME，不在项目目录里）
+# 密钥与日志（运行期数据在 COLUMBINA_HOME，不在项目目录里）
 .env
 .env.*
 !.env.example

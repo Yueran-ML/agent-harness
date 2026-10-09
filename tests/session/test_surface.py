@@ -4,8 +4,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tack.kernel import Context
-from tack.llm import (
+from columbina.kernel import Context
+from columbina.llm import (
     AssistantMessage,
     LlmFailure,
     Message,
@@ -16,7 +16,7 @@ from tack.llm import (
     Usage,
     UserMessage,
 )
-from tack.session import (
+from columbina.session import (
     CORE_EVENTS,
     AssistantAttemptEvent,
     AssistantMessageEvent,

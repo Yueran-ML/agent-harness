@@ -2,8 +2,8 @@
 
 from pydantic import BaseModel
 
+from columbina.kernel import Context
 from compose_demo.keys import CLOCK
-from tack.kernel import Context
 
 name = "clock"
 

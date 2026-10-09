@@ -7,10 +7,10 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel, ConfigDict, Field
 
-from tack.kernel import Context
-from tack.llm import ToolSchema
-from tack.session import CORE_EVENTS, Session
-from tack.tools import Tool, ToolFailure, ToolRun
+from columbina.kernel import Context
+from columbina.llm import ToolSchema
+from columbina.session import CORE_EVENTS, Session
+from columbina.tools import Tool, ToolFailure, ToolRun
 
 
 class ReadArgs(BaseModel):

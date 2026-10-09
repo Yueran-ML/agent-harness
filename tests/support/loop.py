@@ -4,12 +4,12 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
-from tack.agent import Agent, Agents, AgentSpec
-from tack.kernel import Context
-from tack.llm import AssistantMessage, CallConfig, SystemMessage, TextBlock, UserMessage
-from tack.llm.adapters.scripted import Scripted, Step
-from tack.session import Session, Sessions
-from tack.tools import Tools
+from columbina.agent import Agent, Agents, AgentSpec
+from columbina.kernel import Context
+from columbina.llm import AssistantMessage, CallConfig, SystemMessage, TextBlock, UserMessage
+from columbina.llm.adapters.scripted import Scripted, Step
+from columbina.session import Session, Sessions
+from columbina.tools import Tools
 
 MODEL = CallConfig(provider="scripted", model="script")
 SYSTEM = SystemMessage(content=(TextBlock(text="You are helpful."),))

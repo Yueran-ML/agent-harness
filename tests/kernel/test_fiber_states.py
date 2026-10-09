@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from tack.kernel import (
+from columbina.kernel import (
     FIBER_STATE_CHANGED,
     Context,
     Disposer,
@@ -132,7 +132,7 @@ async def test_a_failing_state_listener_does_not_disturb_the_lifecycle(
 
     ctx.on(FIBER_STATE_CHANGED, failing)
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         fiber = await ctx.plugin(Plugin("demo", nothing))
 
     assert fiber.state is ACTIVE

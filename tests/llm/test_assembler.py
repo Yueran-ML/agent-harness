@@ -4,7 +4,7 @@ from typing import cast
 
 import pytest
 
-from tack.llm import (
+from columbina.llm import (
     Assembler,
     AssistantMessage,
     BlockEnd,

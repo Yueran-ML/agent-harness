@@ -1,21 +1,21 @@
-# Tack
+# Columbina
 
-Tack is a plugin-based agent harness written in Python. Every capability is a plugin:
+Columbina is a plugin-based agent harness written in Python. Every capability is a plugin:
 the model adapter, the tool registry, the session log, and the agent loop itself.
 
-**Status:** early development. `tack run` gives one task to an agent and prints the
+**Status:** early development. `columbina run` gives one task to an agent and prints the
 answer. The agent talks to a model over the OpenAI Chat Completions protocol, and it has
 one tool so far, which reads files. Tools that write files and run commands, permissions
 and an interactive interface come next.
 
-Tack 是一个用 Python 写的插件化 Agent harness。模型适配、工具注册、会话日志和 Agent
-循环都是插件。项目处于早期开发阶段。`tack run` 已经可以把一个任务交给 Agent 并打印回答。
+Columbina 是一个用 Python 写的插件化 Agent harness。模型适配、工具注册、会话日志和 Agent
+循环都是插件。项目处于早期开发阶段。`columbina run` 已经可以把一个任务交给 Agent 并打印回答。
 模型走 OpenAI Chat Completions 协议，默认接 DeepSeek，目前只有一个读文件的工具。
 写文件和执行命令的工具、权限控制和交互界面是接下来的工作。
 
 ## Running a task
 
-Tack needs Python 3.11 or newer and [uv](https://docs.astral.sh/uv/). It is not on PyPI
+Columbina needs Python 3.11 or newer and [uv](https://docs.astral.sh/uv/). It is not on PyPI
 yet, so it runs from a clone of this repository.
 
 ```bash
@@ -23,19 +23,19 @@ uv sync
 ```
 
 The default profile talks to DeepSeek. Put the API key into the environment variable
-`DEEPSEEK_API_KEY`. Tack reads it when it makes a request. The key is never part of a
+`DEEPSEEK_API_KEY`. Columbina reads it when it makes a request. The key is never part of a
 config file, and it is cut out of every error message before the message is shown or
 stored.
 
 ```console
-$ uv run tack run "What is the codename of release 0.1? It is written in notes.txt. Answer with the codename only."
+$ uv run columbina run "What is the codename of release 0.1? It is written in notes.txt. Answer with the codename only."
 Halyard
 ```
 
 With `--json` the run is reported as lines of JSON, one for each thing that happens:
 
 ```console
-$ uv run tack run "What is the codename of release 0.1? ..." --session-id demo-1 --json
+$ uv run columbina run "What is the codename of release 0.1? ..." --session-id demo-1 --json
 {"type": "session", "id": "demo-1", "cwd": "/work", "provider": "deepseek", "model": "deepseek-flash"}
 {"type": "status", "turn": 1, "step": 1}
 {"type": "thinking", "text": "Let me look at notes.txt."}
@@ -53,10 +53,10 @@ shortened. The session that the run left behind is kept in
 | Option | What it does |
 |---|---|
 | `--cwd DIR` | The working directory of the agent. The read tool stays inside it. |
-| `--model ID` | The model to use. The default is `deepseek-flash`, or `TACK_MODEL` if it is set. |
+| `--model ID` | The model to use. The default is `deepseek-flash`, or `COLUMBINA_MODEL` if it is set. |
 | `--session-id ID` | The session to start. If a session with this id exists, it is continued. |
 | `--json`, `--no-json` | Report the run as lines of JSON, or print the answer alone. |
-| `--profile NAME` | The profile to load: a name that comes with Tack, or the path of a file. |
+| `--profile NAME` | The profile to load: a name that comes with Columbina, or the path of a file. |
 | `--patch FILE` | A file of changes to the profile. It may be given several times. |
 | `--dump-config` | Print the plugin entries that would be loaded, and stop. |
 
@@ -64,8 +64,8 @@ The exit code is 0 if the turn was completed and 1 if it ended for another reaso
 is 2 if the command line, the profile or a plugin is at fault, in which case no request
 is made. It is 130 after an interruption with Ctrl+C.
 
-Sessions are stored under `~/.tack/sessions`. The environment variable `TACK_HOME` puts
-`~/.tack` somewhere else. A session is one file of JSON lines to which events are only
+Sessions are stored under `~/.columbina/sessions`. The environment variable `COLUMBINA_HOME` puts
+`~/.columbina` somewhere else. A session is one file of JSON lines to which events are only
 ever appended.
 
 ## How it is built
@@ -88,7 +88,7 @@ ever appended.
 
 ## The kernel
 
-`tack.kernel` is a small asyncio plugin framework.
+`columbina.kernel` is a small asyncio plugin framework.
 
 - A **context** is a service repository. A plugin offers a service with `provide` and
   reads one with `use`.
@@ -104,7 +104,7 @@ ever appended.
 ```python
 import asyncio
 
-from tack.kernel import Context, EmitEvent, Plugin, ServiceKey
+from columbina.kernel import Context, EmitEvent, Plugin, ServiceKey
 
 CLOCK = ServiceKey[int]("clock")
 TICK = EmitEvent[int]("demo/tick")
@@ -158,7 +158,7 @@ are these kinds:
 - **Replay tests** play a recorded run again and compare the log event by event.
 - **Request snapshots** keep what the model was sent as text, in
   `tests/agent_loop/snapshots` and beside each recording. Run the tests with
-  `TACK_UPDATE_SNAPSHOTS=1` to write them anew after a change that was meant.
+  `COLUMBINA_UPDATE_SNAPSHOTS=1` to write them anew after a change that was meant.
 
 Two more things are run by hand:
 

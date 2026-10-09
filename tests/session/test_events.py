@@ -4,7 +4,7 @@ from typing import ClassVar
 
 import pytest
 
-from tack.llm import (
+from columbina.llm import (
     AssistantMessage,
     CallConfig,
     LlmFailure,
@@ -16,7 +16,7 @@ from tack.llm import (
     Usage,
     UserMessage,
 )
-from tack.session import (
+from columbina.session import (
     CORE_EVENTS,
     AssistantAttemptEvent,
     AssistantMessageEvent,

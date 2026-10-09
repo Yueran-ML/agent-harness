@@ -2,7 +2,7 @@
 
 import pytest
 
-from tack.kernel import (
+from columbina.kernel import (
     Change,
     CompositionError,
     Entry,

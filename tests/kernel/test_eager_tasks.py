@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Awaitable
 
 import pytest
 
-from tack.kernel import Context, Disposer, EffectHandle, FiberState, Plugin
+from columbina.kernel import Context, Disposer, EffectHandle, FiberState, Plugin
 
 pytestmark = pytest.mark.skipif(
     sys.version_info < (3, 12), reason="eager task factories arrived in Python 3.12"

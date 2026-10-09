@@ -6,21 +6,21 @@ import sys
 
 import pytest
 
-import tack
-import tack.apps.headless
+import columbina
+import columbina.apps.headless
+from columbina.agent import PRE_STEP, Reject, StepDecision, StepInfo
+from columbina.apps import FRONTEND
+from columbina.kernel import Next
+from columbina.llm.adapters.scripted import Reply
+from columbina.session import TurnEndEvent
+from columbina.session.store import SESSION_FILE
 from support.loop import MODEL, Harness
-from tack.agent import PRE_STEP, Reject, StepDecision, StepInfo
-from tack.apps import FRONTEND
-from tack.kernel import Next
-from tack.llm.adapters.scripted import Reply
-from tack.session import TurnEndEvent
-from tack.session.store import SESSION_FILE
 
 
-async def frontend(harness: Harness, **config: object) -> tack.apps.Frontend:
+async def frontend(harness: Harness, **config: object) -> columbina.apps.Frontend:
     """Load the headless frontend on top of the loop of the harness."""
     await harness.ctx.plugin(
-        tack.apps.headless,
+        columbina.apps.headless,
         {"model": MODEL.model_dump(), "cwd": harness.cwd, "task": "Do it.", **config},
     )
     return harness.ctx.use(FRONTEND)
@@ -54,7 +54,7 @@ async def test_a_run_whose_log_cannot_be_written_says_so(
     runner = await frontend(harness, session_id="s-1")
     running = asyncio.ensure_future(runner.run())
     await asyncio.wait_for(harness.model.held(), timeout=5)
-    monkeypatch.setattr("tack.session.store.encode_event", full)
+    monkeypatch.setattr("columbina.session.store.encode_event", full)
 
     harness.model.release()
     code = await asyncio.wait_for(running, timeout=5)
@@ -63,7 +63,7 @@ async def test_a_run_whose_log_cannot_be_written_says_so(
     captured = capsys.readouterr()
     assert code == 1
     assert captured.out == ""
-    assert captured.err.startswith("tack: the agent has stopped: ")
+    assert captured.err.startswith("columbina: the agent has stopped: ")
     assert "No space left on device" in captured.err
 
 
@@ -76,7 +76,7 @@ async def test_an_id_that_cannot_name_a_session_stops_the_run(
 
     captured = capsys.readouterr()
     assert code == 1
-    assert captured.err.startswith("tack: '../escape' is not a usable session id")
+    assert captured.err.startswith("columbina: '../escape' is not a usable session id")
     assert harness.model.requests == []
 
 
@@ -123,12 +123,12 @@ async def test_a_turn_that_was_blocked_is_reported_with_its_reason(
     captured = capsys.readouterr()
     assert code == 1
     assert captured.out == ""
-    assert captured.err == "tack: the turn ended early: blocked (the budget is spent)\n"
+    assert captured.err == "columbina: the turn ended early: blocked (the budget is spent)\n"
 
 
 def test_the_package_can_be_run_as_a_module() -> None:
     done = subprocess.run(
-        [sys.executable, "-m", "tack", "--version"],
+        [sys.executable, "-m", "columbina", "--version"],
         capture_output=True,
         text=True,
         timeout=60,
@@ -136,5 +136,5 @@ def test_the_package_can_be_run_as_a_module() -> None:
     )
 
     assert done.returncode == 0
-    assert done.stdout == f"tack {tack.__version__}\n"
+    assert done.stdout == f"columbina {columbina.__version__}\n"
     assert done.stderr == ""

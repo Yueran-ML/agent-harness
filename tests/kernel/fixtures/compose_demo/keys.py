@@ -1,6 +1,6 @@
 """Service keys shared by the demo plugins. This module is not a plugin."""
 
-from tack.kernel import ServiceKey
+from columbina.kernel import ServiceKey
 
 CLOCK = ServiceKey[int]("clock")
 STORE = ServiceKey[dict[str, int]]("store")

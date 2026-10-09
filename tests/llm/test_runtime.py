@@ -8,10 +8,10 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-import tack.llm
-from tack import cancellation
-from tack.kernel import Context, Plugin, RegistryConflictError
-from tack.llm import (
+import columbina.llm
+from columbina import cancellation
+from columbina.kernel import Context, Plugin, RegistryConflictError
+from columbina.llm import (
     LLM,
     AssistantMessage,
     BlockEnd,
@@ -94,13 +94,13 @@ async def drain(llm: Llm, request: LlmRequest = REQUEST) -> tuple[list[Chunk], F
     return seen, call.finish
 
 
-async def read_until(call: tack.llm.LlmCall, last: Chunk, arrived: asyncio.Event) -> None:
+async def read_until(call: columbina.llm.LlmCall, last: Chunk, arrived: asyncio.Event) -> None:
     async for chunk in call:
         if chunk == last:
             arrived.set()
 
 
-async def read_all(call: tack.llm.LlmCall) -> None:
+async def read_all(call: columbina.llm.LlmCall) -> None:
     async for _ in call:
         pass
 
@@ -398,7 +398,7 @@ async def test_a_stream_that_goes_quiet_and_fails_to_close_still_times_out(
 ) -> None:
     llm.adapters.add(ctx, "fake", Fake(HELLO[:2], hang=True, fail_on_close=True))
 
-    with caplog.at_level(logging.ERROR, logger="tack.llm"):
+    with caplog.at_level(logging.ERROR, logger="columbina.llm"):
         _, finish = await drain(llm)
 
     assert finish.failure == LlmFailure(message="no chunk arrived for 0.05 seconds", code="TIMEOUT")
@@ -523,7 +523,7 @@ async def test_closing_a_call_that_was_never_iterated_does_nothing(ctx: Context,
 async def test_cancelling_the_reader_closes_the_stream_and_keeps_what_arrived(
     ctx: Context,
 ) -> None:
-    await ctx.plugin(tack.llm, {"idle_timeout_seconds": 30})
+    await ctx.plugin(columbina.llm, {"idle_timeout_seconds": 30})
     llm = ctx.use(LLM)
     adapter = Fake(HELLO[:2], hang=True)
     llm.adapters.add(ctx, "fake", adapter)
@@ -545,7 +545,7 @@ async def test_cancelling_the_reader_closes_the_stream_and_keeps_what_arrived(
 async def test_an_adapter_that_keeps_a_cancellation_to_itself_does_not_keep_the_reader_going(
     ctx: Context,
 ) -> None:
-    await ctx.plugin(tack.llm, {"idle_timeout_seconds": 30})
+    await ctx.plugin(columbina.llm, {"idle_timeout_seconds": 30})
     llm = ctx.use(LLM)
     waiting = asyncio.Event()
     closed: list[bool] = []
@@ -588,7 +588,7 @@ async def test_an_adapter_that_fails_to_close_does_not_spoil_the_reply(
 ) -> None:
     llm.adapters.add(ctx, "fake", Fake(HELLO, fail_on_close=True))
 
-    with caplog.at_level(logging.ERROR, logger="tack.llm"):
+    with caplog.at_level(logging.ERROR, logger="columbina.llm"):
         seen, finish = await drain(llm)
 
     assert seen == HELLO
@@ -600,7 +600,7 @@ async def test_an_adapter_that_fails_to_close_does_not_spoil_the_reply(
 async def test_an_adapter_that_fails_to_close_does_not_swallow_a_cancellation(
     ctx: Context, caplog: pytest.LogCaptureFixture
 ) -> None:
-    await ctx.plugin(tack.llm, {"idle_timeout_seconds": 30})
+    await ctx.plugin(columbina.llm, {"idle_timeout_seconds": 30})
     llm = ctx.use(LLM)
     llm.adapters.add(ctx, "fake", Fake(HELLO[:2], hang=True, fail_on_close=True))
     call = llm.call(REQUEST)
@@ -609,7 +609,10 @@ async def test_an_adapter_that_fails_to_close_does_not_swallow_a_cancellation(
     reader = asyncio.ensure_future(read_until(call, HELLO[1], arrived))
     await asyncio.wait_for(arrived.wait(), timeout=1)
     reader.cancel()
-    with caplog.at_level(logging.ERROR, logger="tack.llm"), pytest.raises(asyncio.CancelledError):
+    with (
+        caplog.at_level(logging.ERROR, logger="columbina.llm"),
+        pytest.raises(asyncio.CancelledError),
+    ):
         await asyncio.wait_for(reader, timeout=1)
 
     assert call.finish is None
@@ -668,7 +671,10 @@ async def test_a_cancellation_while_the_stream_closes_gets_through_a_close_that_
     reader = asyncio.ensure_future(read_all(call))
     await asyncio.wait_for(stream.closing.wait(), timeout=1)
     reader.cancel()
-    with caplog.at_level(logging.ERROR, logger="tack.llm"), pytest.raises(asyncio.CancelledError):
+    with (
+        caplog.at_level(logging.ERROR, logger="columbina.llm"),
+        pytest.raises(asyncio.CancelledError),
+    ):
         await asyncio.wait_for(reader, timeout=1)
 
     assert call.finish is None
@@ -760,7 +766,7 @@ async def test_an_adapter_that_cancels_its_own_close_does_not_spoil_the_reply(
 
     llm.adapters.add(ctx, "fake", Serving(Stream()))
 
-    with caplog.at_level(logging.ERROR, logger="tack.llm"):
+    with caplog.at_level(logging.ERROR, logger="columbina.llm"):
         seen, finish = await drain(llm)
 
     assert seen == HELLO
@@ -798,7 +804,7 @@ async def test_an_adapter_is_unregistered_with_the_plugin_that_registered_it(
 
 @pytest.mark.parametrize("seconds", [0, -1])
 async def test_the_idle_timeout_must_be_positive(ctx: Context, seconds: float) -> None:
-    fiber = ctx.plugin(tack.llm, {"idle_timeout_seconds": seconds})
+    fiber = ctx.plugin(columbina.llm, {"idle_timeout_seconds": seconds})
 
     with pytest.raises(ValidationError, match="idle_timeout_seconds"):
         await fiber

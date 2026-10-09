@@ -8,8 +8,8 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from tack import cancellation
-from tack.cancellation import CancelledFromInside, guard
+from columbina import cancellation
+from columbina.cancellation import CancelledFromInside, guard
 
 
 async def value() -> str:
@@ -165,7 +165,7 @@ async def test_an_error_that_took_the_place_of_a_cancellation_gives_the_place_ba
     await asyncio.wait_for(started.wait(), timeout=1)
     task.cancel()
 
-    with caplog.at_level(logging.ERROR, logger="tack"), pytest.raises(asyncio.CancelledError):
+    with caplog.at_level(logging.ERROR, logger="columbina"), pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=1)
 
     assert "an error took the place of a cancellation" in caplog.text

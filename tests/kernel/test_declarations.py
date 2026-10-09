@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from tack.kernel import (
+from columbina.kernel import (
     BailEvent,
     CompositionError,
     EmitEvent,

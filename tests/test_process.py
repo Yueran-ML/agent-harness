@@ -10,9 +10,9 @@ from typing import Any
 
 import pytest
 
+from columbina import process
+from columbina.process import Completed, HeadTail, cleaned
 from support.processes import end, gone, python
-from tack import process
-from tack.process import Completed, HeadTail, cleaned
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -106,10 +106,10 @@ async def test_a_program_runs_in_the_directory_it_is_given(tmp_path: Path) -> No
 
 
 async def test_a_program_sees_the_environment_it_is_given(tmp_path: Path) -> None:
-    environment = {**os.environ, "TACK_TEST_API_KEY": "halyard"}
+    environment = {**os.environ, "COLUMBINA_TEST_API_KEY": "halyard"}
 
     done = await process.run(
-        python("import os; print(os.environ['TACK_TEST_API_KEY'])"),
+        python("import os; print(os.environ['COLUMBINA_TEST_API_KEY'])"),
         cwd=tmp_path,
         env=environment,
         timeout_seconds=30,
@@ -121,9 +121,12 @@ async def test_a_program_sees_the_environment_it_is_given(tmp_path: Path) -> Non
 async def test_a_program_given_no_environment_gets_this_one_without_its_secrets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("TACK_TEST_API_KEY", "sk-not-for-programs")
-    monkeypatch.setenv("TACK_TEST_WORD", "halyard")
-    code = "import os; print(os.environ.get('TACK_TEST_API_KEY'), os.environ.get('TACK_TEST_WORD'))"
+    monkeypatch.setenv("COLUMBINA_TEST_API_KEY", "sk-not-for-programs")
+    monkeypatch.setenv("COLUMBINA_TEST_WORD", "halyard")
+    code = (
+        "import os\n"
+        "print(os.environ.get('COLUMBINA_TEST_API_KEY'), os.environ.get('COLUMBINA_TEST_WORD'))\n"
+    )
 
     done = await process.run(python(code), cwd=tmp_path, timeout_seconds=30)
 
@@ -179,8 +182,8 @@ async def test_what_a_program_wrote_just_before_it_ended_is_not_lost(tmp_path: P
 
 
 async def test_a_program_that_cannot_be_started_raises(tmp_path: Path) -> None:
-    with pytest.raises(OSError, match="'no-such-program-of-tack' could not be started"):
-        await process.run(["no-such-program-of-tack"], cwd=tmp_path, timeout_seconds=30)
+    with pytest.raises(OSError, match="'no-such-program-of-columbina' could not be started"):
+        await process.run(["no-such-program-of-columbina"], cwd=tmp_path, timeout_seconds=30)
 
 
 async def test_arguments_that_no_program_can_be_given_raise_the_same_way(tmp_path: Path) -> None:
@@ -463,7 +466,7 @@ if sys.platform == "win32":
         monkeypatch.setattr(process, "_REAP_SECONDS", 0.3)
         monkeypatch.setattr(process, "_DRAIN_SECONDS", 0.3)
 
-        with caplog.at_level(logging.ERROR, logger="tack.process"):
+        with caplog.at_level(logging.ERROR, logger="columbina.process"):
             done = await process.run(
                 python(STARTS_ANOTHER_AND_STAYS), cwd=tmp_path, timeout_seconds=1.0
             )
@@ -485,11 +488,11 @@ def test_variables_that_sound_like_secrets_are_not_passed_on() -> None:
         "DB_PASSWORD": "p",
         "Client_Secret": "s",
         "HOME": "/home/me",
-        "TACK_HOME": "/home/me/.tack",
+        "COLUMBINA_HOME": "/home/me/.columbina",
     }
 
     assert cleaned(environment) == {
         "PATH": "/usr/bin",
         "HOME": "/home/me",
-        "TACK_HOME": "/home/me/.tack",
+        "COLUMBINA_HOME": "/home/me/.columbina",
     }

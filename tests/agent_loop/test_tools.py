@@ -5,13 +5,12 @@ import asyncio
 import pytest
 from pydantic import BaseModel
 
-import tack.agent_loop
-from support.loop import SYSTEM, Harness, idle, types, user
-from tack.agent import INBOX, Agent
-from tack.kernel import Next
-from tack.llm import AssistantMessage, TextBlock, ToolCallBlock, ToolMessage
-from tack.llm.adapters.scripted import Call, Reply
-from tack.session import (
+import columbina.agent_loop
+from columbina.agent import INBOX, Agent
+from columbina.kernel import Next
+from columbina.llm import AssistantMessage, TextBlock, ToolCallBlock, ToolMessage
+from columbina.llm.adapters.scripted import Call, Reply
+from columbina.session import (
     SESSION_EVENT,
     AssistantMessageEvent,
     Committed,
@@ -22,7 +21,8 @@ from tack.session import (
     ToolResultEvent,
     TurnEndEvent,
 )
-from tack.tools import PRE_EXECUTE, Decision, Deny, Invocation, Tool, ToolFailure, ToolRun
+from columbina.tools import PRE_EXECUTE, Decision, Deny, Invocation, Tool, ToolFailure, ToolRun
+from support.loop import SYSTEM, Harness, idle, types, user
 
 
 class Args(BaseModel):
@@ -317,7 +317,7 @@ async def test_a_call_that_must_be_alone_waits_and_makes_the_ones_after_it_wait(
 
 
 async def test_only_so_many_calls_run_beside_each_other(harness: Harness, board: Board) -> None:
-    await harness.ctx.plugin(tack.agent_loop, {"name": "narrow", "max_parallel_tool_calls": 2})
+    await harness.ctx.plugin(columbina.agent_loop, {"name": "narrow", "max_parallel_tool_calls": 2})
     for name in ("a", "b", "c"):
         board.gate(name)
     agent = await harness.agent(
@@ -345,7 +345,7 @@ async def test_only_so_many_calls_run_beside_each_other(harness: Harness, board:
 async def test_at_least_one_call_must_be_allowed_to_run(harness: Harness, limit: int) -> None:
     with pytest.raises(ValueError, match="max_parallel_tool_calls"):
         await harness.ctx.plugin(
-            tack.agent_loop, {"name": "none", "max_parallel_tool_calls": limit}
+            columbina.agent_loop, {"name": "none", "max_parallel_tool_calls": limit}
         )
 
 

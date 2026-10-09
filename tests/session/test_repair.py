@@ -4,8 +4,8 @@ from typing import Literal
 
 import pytest
 
-from tack.kernel import Context
-from tack.llm import (
+from columbina.kernel import Context
+from columbina.llm import (
     AssistantMessage,
     TextBlock,
     ToolCallBlock,
@@ -13,7 +13,7 @@ from tack.llm import (
     Usage,
     UserMessage,
 )
-from tack.session import (
+from columbina.session import (
     CORE_EVENTS,
     AssistantMessageEvent,
     EndSeedEvent,

@@ -1,6 +1,6 @@
 """The names the kernel exports. Changing this list is changing the public API."""
 
-import tack.kernel
+import columbina.kernel
 
 EXPORTS = {
     # Contexts, fibers and effects
@@ -59,11 +59,11 @@ EXPORTS = {
 
 
 def test_the_kernel_exports_exactly_its_public_api() -> None:
-    assert set(tack.kernel.__all__) == EXPORTS
-    assert len(tack.kernel.__all__) == len(EXPORTS)
+    assert set(columbina.kernel.__all__) == EXPORTS
+    assert len(columbina.kernel.__all__) == len(EXPORTS)
 
 
 def test_every_exported_name_exists() -> None:
-    missing = [name for name in tack.kernel.__all__ if not hasattr(tack.kernel, name)]
+    missing = [name for name in columbina.kernel.__all__ if not hasattr(columbina.kernel, name)]
 
     assert missing == []

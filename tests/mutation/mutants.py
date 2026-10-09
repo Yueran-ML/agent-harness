@@ -19,11 +19,11 @@ no test can notice it, and ``mutate.py`` passes it over.
 
 from dataclasses import dataclass, replace
 
-LOOP = "src/tack/agent_loop/loop.py"
-INBOX = "src/tack/agent/inbox.py"
-CANCELLATION = "src/tack/cancellation.py"
-READ = "src/tack/builtin_tools/read.py"
-PROCESS = "src/tack/process.py"
+LOOP = "src/columbina/agent_loop/loop.py"
+INBOX = "src/columbina/agent/inbox.py"
+CANCELLATION = "src/columbina/cancellation.py"
+READ = "src/columbina/builtin_tools/read.py"
+PROCESS = "src/columbina/process.py"
 
 
 @dataclass(frozen=True, slots=True)

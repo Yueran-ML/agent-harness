@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from tack.kernel import (
+from columbina.kernel import (
     Context,
     EventModeError,
     Next,
@@ -65,7 +65,7 @@ async def test_parallel_logs_a_failing_listener_and_waits_for_the_rest(
     ctx.on(FLUSH, failing)
     ctx.on(FLUSH, slow)
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         await ctx.parallel(FLUSH, "x")
 
     assert log == ["x"]

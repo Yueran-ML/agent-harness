@@ -9,12 +9,12 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError, field_validator
 
-import tack.tools
-from tack import cancellation
-from tack.kernel import Context, Next, Plugin, RegistryConflictError
-from tack.llm import TextBlock, ToolCallBlock, ToolMessage
-from tack.session import ToolError, ToolResultEvent
-from tack.tools import (
+import columbina.tools
+from columbina import cancellation
+from columbina.kernel import Context, Next, Plugin, RegistryConflictError
+from columbina.llm import TextBlock, ToolCallBlock, ToolMessage
+from columbina.session import ToolError, ToolResultEvent
+from columbina.tools import (
     EXECUTE,
     POST_EXECUTE,
     PRE_EXECUTE,
@@ -239,7 +239,7 @@ async def test_a_tool_that_crashes_is_an_error_result_and_is_logged(
 ) -> None:
     tools.add(ctx, tool("crash", journal.crash))
 
-    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
         outcome = await tools.run(ctx, call("crash"), run)
 
     assert outcome.error == ToolError(
@@ -285,7 +285,7 @@ async def test_a_tool_that_takes_too_long_is_stopped(
 async def test_the_service_sets_the_limit_for_tools_that_have_none(
     ctx: Context, run: ToolRun, journal: Journal
 ) -> None:
-    await ctx.plugin(tack.tools, {"timeout_seconds": 0.05})
+    await ctx.plugin(columbina.tools, {"timeout_seconds": 0.05})
     tools = ctx.use(TOOLS)
     tools.add(ctx, tool("hang", journal.hang), tool("patient", journal.hang, timeout_seconds=30))
 
@@ -320,7 +320,7 @@ async def test_without_any_limit_a_tool_may_take_its_time(
 @pytest.mark.parametrize("seconds", [0, -1])
 async def test_the_limit_of_the_service_must_be_positive(ctx: Context, seconds: float) -> None:
     with pytest.raises(ValidationError, match="timeout_seconds"):
-        await ctx.plugin(tack.tools, {"timeout_seconds": seconds})
+        await ctx.plugin(columbina.tools, {"timeout_seconds": seconds})
 
 
 async def test_a_cleanup_that_fails_after_the_limit_is_logged(
@@ -328,7 +328,7 @@ async def test_a_cleanup_that_fails_after_the_limit_is_logged(
 ) -> None:
     tools.add(ctx, tool("hang", journal.hang_and_fail_to_clean_up, timeout_seconds=0.05))
 
-    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
         outcome = await asyncio.wait_for(tools.run(ctx, call("hang"), run), timeout=2)
 
     assert outcome.error is not None
@@ -364,7 +364,10 @@ async def test_a_cleanup_that_fails_does_not_swallow_a_cancellation(
     running = asyncio.ensure_future(pending.execute())
     await asyncio.wait_for(journal.started.wait(), timeout=1)
     running.cancel()
-    with caplog.at_level(logging.ERROR, logger="tack.tools"), pytest.raises(asyncio.CancelledError):
+    with (
+        caplog.at_level(logging.ERROR, logger="columbina.tools"),
+        pytest.raises(asyncio.CancelledError),
+    ):
         await asyncio.wait_for(running, timeout=1)
 
     assert pending.outcome is None
@@ -441,7 +444,7 @@ async def test_a_check_that_crashes_keeps_the_tool_from_running(
     tools.add(ctx, tool("echo", journal.echo))
     ctx.on(PRE_EXECUTE, broken)
 
-    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
         outcome = await tools.run(ctx, call("echo"), run)
 
     assert outcome.error == ToolError(
@@ -599,7 +602,7 @@ async def test_a_check_of_the_result_that_crashes_withholds_the_result(
     tools.add(ctx, tool("echo", journal.echo))
     ctx.on(POST_EXECUTE, broken)
 
-    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
         outcome = await tools.run(ctx, call("echo"), run)
 
     assert outcome.error == ToolError(
@@ -877,7 +880,7 @@ async def test_a_guard_that_fails_keeps_the_tool_from_running(
     tools.add(ctx, tool("echo", journal.echo))
     tools.guards.add(ctx, "broken", guards[fault])
 
-    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
         outcome = await asyncio.wait_for(tools.run(ctx, call("echo"), run), timeout=1)
 
     assert outcome.error is not None
@@ -973,7 +976,7 @@ async def test_a_tool_that_cannot_say_what_a_call_acts_on_does_not_run(
 
     tools.add(ctx, tool("echo", journal.echo, target=target))
 
-    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
         outcome = await tools.run(ctx, call("echo"), run)
 
     assert outcome.error == ToolError(
@@ -1083,7 +1086,7 @@ async def test_parameters_whose_validation_crashes_are_an_error_result(
     seen: list[ToolOutcome] = []
     ctx.on(RESULT, seen.append)
 
-    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
         outcome = await tools.run(ctx, call("fussy", '{"text": "hi"}'), run)
 
     assert outcome.error == ToolError(
@@ -1112,7 +1115,7 @@ async def test_parameters_whose_validation_raises_a_cancellation_are_an_error_re
     seen: list[ToolOutcome] = []
     ctx.on(RESULT, seen.append)
 
-    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
         outcome = await asyncio.wait_for(
             tools.run(ctx, call("fussy", '{"text": "hi"}'), run), timeout=1
         )

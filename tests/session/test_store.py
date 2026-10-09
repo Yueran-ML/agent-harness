@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from tack.llm import TextBlock, UserMessage
-from tack.session import (
+from columbina.llm import TextBlock, UserMessage
+from columbina.session import (
     CORE_EVENTS,
     EventData,
     SessionEvent,
@@ -22,7 +22,7 @@ from tack.session import (
     encode_event,
     encode_header,
 )
-from tack.session.store import (
+from columbina.session.store import (
     SESSION_FILE,
     SessionFile,
     check_session_id,
@@ -248,7 +248,7 @@ def test_opening_for_writing_cuts_an_unfinished_last_line_off(
     whole = path.read_bytes()
     path.write_bytes(whole + b'{"type":"user/mess')
 
-    with caplog.at_level(logging.WARNING, logger="tack.session"):
+    with caplog.at_level(logging.WARNING, logger="columbina.session"):
         file, events = SessionFile.open(tmp_path / "s-1", KINDS)
     file.write(EVENTS[2])
     file.close()
@@ -335,7 +335,7 @@ async def test_a_write_that_fails_spoils_the_file_for_good(
     def full(event: SessionEvent[EventData]) -> str:
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr("tack.session.store.encode_event", full)
+    monkeypatch.setattr("columbina.session.store.encode_event", full)
     with pytest.raises(SessionStoreError, match=r"cannot be written: .*No space left on device"):
         file.write(EVENTS[1])
     monkeypatch.undo()

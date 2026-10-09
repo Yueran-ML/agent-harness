@@ -1,13 +1,13 @@
 request 1 to deepseek/deepseek-flash, tools: read
 1 system
-    text: "You are Tack, an agent that works in a directory on the user's machine. Use the tools you are given to look at what is there before you answer. When the task is done, say briefly what you found or did."
+    text: "You are Columbina, an agent that works in a directory on the user's machine. Use the tools you are given to look at what is there before you answer. When the task is done, say briefly what you found or did."
 2 user
     text: 'What is the codename of release 0.1? It is written in notes.txt. Answer with the codename only.'
 
 request 2 to deepseek/deepseek-flash, tools: read
     as request 1 up to message 2
 3 assistant
-    reasoning: 'Let me look at notes.txt.'
-    call read '{"path": "notes.txt"}' as call_00_plQNpwHHD4aAtGs8H6551554
-4 tool, result of call_00_plQNpwHHD4aAtGs8H6551554
+    text: "I'll look at notes.txt to find that."
+    call read '{"path": "notes.txt"}' as call_00_ET_x7MpVJwoi5dnpwU3CpOM4120
+4 tool, result of call_00_ET_x7MpVJwoi5dnpwU3CpOM4120
     text: '     1\tRelease notes\n     2\t=============\n     3\t\n     4\tThe codename of release 0.1 is "Halyard".\n     5\tIt ships the kernel and the agent loop.'

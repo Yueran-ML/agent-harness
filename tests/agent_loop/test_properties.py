@@ -18,15 +18,14 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
 
-import tack.agent
-import tack.agent_loop
-import tack.llm
-import tack.session
-import tack.tools
-from support.loop import MODEL
-from tack.agent import AGENTS, INBOX, STREAM, Agent, AgentSpec, StreamFrame
-from tack.kernel import Context
-from tack.llm import (
+import columbina.agent
+import columbina.agent_loop
+import columbina.llm
+import columbina.session
+import columbina.tools
+from columbina.agent import AGENTS, INBOX, STREAM, Agent, AgentSpec, StreamFrame
+from columbina.kernel import Context
+from columbina.llm import (
     LLM,
     AssistantMessage,
     LlmFailure,
@@ -35,8 +34,8 @@ from tack.llm import (
     ToolMessage,
     UserMessage,
 )
-from tack.llm.adapters.scripted import Call, Reply, Scripted
-from tack.session import (
+from columbina.llm.adapters.scripted import Call, Reply, Scripted
+from columbina.session import (
     SESSION_EVENT,
     SESSIONS,
     TURN,
@@ -54,7 +53,8 @@ from tack.session import (
     UserMessageEvent,
     closing_events,
 )
-from tack.tools import TOOLS, Tool, ToolFailure, ToolRun
+from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
+from support.loop import MODEL
 
 
 class Args(BaseModel):
@@ -381,11 +381,11 @@ def waiting_texts(session: Session) -> list[str]:
 
 async def build(root: Path | None, script: list[Reply]) -> tuple[Context, Run]:
     ctx = Context()
-    await ctx.plugin(tack.session, None if root is None else {"root": root})
-    await ctx.plugin(tack.llm, {"idle_timeout_seconds": 5})
-    await ctx.plugin(tack.tools)
-    await ctx.plugin(tack.agent)
-    await ctx.plugin(tack.agent_loop, {"max_parallel_tool_calls": PARALLEL})
+    await ctx.plugin(columbina.session, None if root is None else {"root": root})
+    await ctx.plugin(columbina.llm, {"idle_timeout_seconds": 5})
+    await ctx.plugin(columbina.tools)
+    await ctx.plugin(columbina.agent)
+    await ctx.plugin(columbina.agent_loop, {"max_parallel_tool_calls": PARALLEL})
     model = Scripted(script)
     bench = Bench()
     ctx.use(LLM).adapters.add(ctx, "scripted", model)
@@ -396,7 +396,7 @@ async def build(root: Path | None, script: list[Reply]) -> tuple[Context, Run]:
 
 
 class Complaints(logging.Handler):
-    """Collects what Tack logs as an error. Nothing in these examples should be one."""
+    """Collects what Columbina logs as an error. Nothing in these examples should be one."""
 
     def __init__(self) -> None:
         super().__init__(level=logging.ERROR)
@@ -409,11 +409,11 @@ class Complaints(logging.Handler):
 def scenario(data: st.DataObject, root: Path | None) -> None:
     """Play one example in an event loop of its own, and let nothing in it log an error."""
     complaints = Complaints()
-    logging.getLogger("tack").addHandler(complaints)
+    logging.getLogger("columbina").addHandler(complaints)
     try:
         asyncio.run(play(data, root))
     finally:
-        logging.getLogger("tack").removeHandler(complaints)
+        logging.getLogger("columbina").removeHandler(complaints)
     assert complaints.messages == []
 
 
@@ -527,7 +527,7 @@ def test_what_is_stored_is_what_happened(data: st.DataObject) -> None:
 
 
 def test_the_checks_of_these_tests_find_what_they_look_for() -> None:
-    from tack.llm import TextBlock, ToolCallBlock
+    from columbina.llm import TextBlock, ToolCallBlock
 
     def user(text: str) -> UserMessage:
         return UserMessage(content=(TextBlock(text=text),))
@@ -616,7 +616,7 @@ def test_the_checks_of_these_tests_find_what_they_look_for() -> None:
 async def test_an_input_that_is_lost_is_noticed_also_after_a_cancellation_that_dropped_others() -> (
     None
 ):
-    from tack.agent import clear_inbox
+    from columbina.agent import clear_inbox
 
     async def example(*, lose_the_second: bool) -> Run:
         ctx, run = await build(None, [Reply(text="Done.")])

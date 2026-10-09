@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from tack.kernel import (
+from columbina.kernel import (
     Context,
     Disposer,
     EmitEvent,
@@ -34,7 +34,7 @@ async def a_few_turns() -> None:
 
 def driver_of(fiber: Fiber) -> asyncio.Task[object]:
     """Find the background task that is loading or unloading ``fiber``."""
-    name = f"tack-fiber-{fiber.uid}"
+    name = f"columbina-fiber-{fiber.uid}"
     return next(task for task in asyncio.all_tasks() if task.get_name() == name)
 
 
@@ -112,7 +112,7 @@ async def test_a_cancellation_raised_by_apply_is_a_failed_load(
         inner.on(PING, log.append)
         raise asyncio.CancelledError
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         fiber = ctx.plugin(Plugin("cancelled", apply))
         with pytest.raises(KernelError, match="cancelled while loading"):
             await fiber
@@ -140,7 +140,7 @@ async def test_a_cancellation_raised_by_a_disposer_does_not_stop_the_unload(
     ctx.effect(lambda: lambda: log.append("older"))
     ctx.effect(lambda: cancelled if kind == "plain function" else cancelled_later)
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         await asyncio.wait_for(ctx.fiber.dispose(), timeout=1)
 
     assert log == ["older"]
@@ -246,7 +246,7 @@ async def test_parallel_isolates_a_listener_that_is_cancelled(
     ctx.on(FLUSH, cancelled)
     ctx.on(FLUSH, slow)
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         await ctx.parallel(FLUSH, "x")
 
     assert finished == ["x"]
@@ -349,7 +349,7 @@ async def test_a_cleanup_cancelled_before_it_ran_is_run_for_the_next_waiter(ctx:
     await ctx.plugin(Plugin("dependent", apply, inject=(CLOCK,)))
 
     def cancel_the_release_before_it_starts() -> None:
-        name = f"tack-effect-{ctx.fiber.uid}"
+        name = f"columbina-effect-{ctx.fiber.uid}"
         next(task for task in asyncio.all_tasks() if task.get_name() == name).cancel()
 
     caller = asyncio.ensure_future(handle.dispose())
@@ -380,10 +380,10 @@ async def test_a_cleanup_cancelled_after_it_started_is_reported(
     waiter = asyncio.ensure_future(handle.dispose())
     await asyncio.wait_for(started.wait(), timeout=1)
 
-    name = f"tack-effect-{ctx.fiber.uid}"
+    name = f"columbina-effect-{ctx.fiber.uid}"
     next(task for task in asyncio.all_tasks() if task.get_name() == name).cancel()
     with (
-        caplog.at_level(logging.ERROR, logger="tack.kernel"),
+        caplog.at_level(logging.ERROR, logger="columbina.kernel"),
         pytest.raises(asyncio.CancelledError),
     ):
         await waiter

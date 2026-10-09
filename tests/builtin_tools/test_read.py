@@ -12,17 +12,17 @@ import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-import tack.tools
-from tack.builtin_tools import read
-from tack.kernel import Context
-from tack.llm import ToolCallBlock
-from tack.session import CORE_EVENTS, Session
-from tack.tools import TOOLS, ToolOutcome, ToolRun, Tools
+import columbina.tools
+from columbina.builtin_tools import read
+from columbina.kernel import Context
+from columbina.llm import ToolCallBlock
+from columbina.session import CORE_EVENTS, Session
+from columbina.tools import TOOLS, ToolOutcome, ToolRun, Tools
 
 
 @pytest.fixture
 async def tools(ctx: Context) -> Tools:
-    await ctx.plugin(tack.tools)
+    await ctx.plugin(columbina.tools)
     await ctx.plugin(read)
     return ctx.use(TOOLS)
 

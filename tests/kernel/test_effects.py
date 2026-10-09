@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 
 import pytest
 
-from tack.kernel import Context, FiberState, InactiveEffectError
+from columbina.kernel import Context, FiberState, InactiveEffectError
 
 
 def recorder(log: list[str], label: str) -> Callable[[], None]:
@@ -139,7 +139,7 @@ async def test_a_failing_disposer_does_not_stop_the_others(
     ctx.effect(lambda: broken)
     ctx.effect(lambda: recorder(log, "third"))
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         await ctx.fiber.dispose()
 
     assert log == ["third", "first"]

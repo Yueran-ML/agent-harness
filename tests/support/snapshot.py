@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-UPDATE = "TACK_UPDATE_SNAPSHOTS"
+UPDATE = "COLUMBINA_UPDATE_SNAPSHOTS"
 """The environment variable that makes the tests write their snapshots anew."""
 
 

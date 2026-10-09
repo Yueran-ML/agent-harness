@@ -6,10 +6,10 @@ from typing import ClassVar
 
 import pytest
 
-import tack.session
-from tack.kernel import Context, Plugin
-from tack.llm import TextBlock, UserMessage
-from tack.session import (
+import columbina.session
+from columbina.kernel import Context, Plugin
+from columbina.llm import TextBlock, UserMessage
+from columbina.session import (
     CORE_EVENTS,
     SESSIONS,
     EventData,
@@ -23,7 +23,7 @@ from tack.session import (
     UnreadableSessionError,
     UserMessageEvent,
 )
-from tack.session.store import SESSION_FILE, read_session, workspace_key
+from columbina.session.store import SESSION_FILE, read_session, workspace_key
 
 
 class NoteEvent(EventData):
@@ -39,7 +39,7 @@ def said(text: str) -> UserMessageEvent:
 @pytest.fixture
 async def sessions(ctx: Context, tmp_path: Path) -> Sessions:
     """The session service, storing under a temporary directory, with a clock that ticks."""
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
     service = ctx.use(SESSIONS)
     ticks = itertools.count(1_791_234_567_890, 1000)
     service.clock = lambda: next(ticks)
@@ -47,7 +47,7 @@ async def sessions(ctx: Context, tmp_path: Path) -> Sessions:
 
 
 async def test_the_plugin_provides_the_service_with_the_core_events(ctx: Context) -> None:
-    await ctx.plugin(tack.session)
+    await ctx.plugin(columbina.session)
 
     sessions = ctx.use(SESSIONS)
 
@@ -56,7 +56,7 @@ async def test_the_plugin_provides_the_service_with_the_core_events(ctx: Context
 
 
 async def test_without_a_root_a_session_lives_in_memory(ctx: Context, tmp_path: Path) -> None:
-    await ctx.plugin(tack.session)
+    await ctx.plugin(columbina.session)
     sessions = ctx.use(SESSIONS)
 
     session = sessions.create(ctx, tmp_path)
@@ -154,7 +154,7 @@ async def test_a_session_that_is_not_stored_cannot_be_resumed(
 async def test_a_session_closes_when_its_owner_unloads(
     ctx: Context, sessions: Sessions, tmp_path: Path
 ) -> None:
-    opened: list[tack.session.Session] = []
+    opened: list[columbina.session.Session] = []
 
     def apply(inner: Context, config: object) -> None:
         opened.append(inner.use(SESSIONS).create(inner, tmp_path, session_id="s-1"))

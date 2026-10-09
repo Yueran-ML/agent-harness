@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import BaseModel, ValidationError, field_validator
 
-from tack.kernel import (
+from columbina.kernel import (
     Context,
     Disposer,
     EmitEvent,
@@ -81,10 +81,10 @@ async def test_config_is_validated_against_the_model(ctx: Context) -> None:
     def apply(inner: Context, config: Greeting) -> None:
         seen.append(config)
 
-    fiber = await ctx.plugin(Plugin("demo", apply, config=Greeting), {"name": "tack"})
+    fiber = await ctx.plugin(Plugin("demo", apply, config=Greeting), {"name": "columbina"})
 
-    assert seen == [Greeting(name="tack")]
-    assert fiber.config == Greeting(name="tack")
+    assert seen == [Greeting(name="columbina")]
+    assert fiber.config == Greeting(name="columbina")
 
 
 async def test_a_missing_config_uses_the_model_defaults(ctx: Context) -> None:
@@ -107,7 +107,7 @@ async def test_an_invalid_config_fails_without_running_apply(
     def apply(inner: Context, config: Greeting) -> None:
         calls.append("applied")
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         fiber = ctx.plugin(Plugin("demo", apply, config=Greeting), {"name": ["not", "text"]})
 
     assert fiber.state is FiberState.FAILED
@@ -128,7 +128,7 @@ async def test_a_plugin_that_raises_fails_and_rolls_back(
         inner.effect(lambda: lambda: log.append("rolled back"))
         raise RuntimeError("cannot start")
 
-    with caplog.at_level(logging.ERROR, logger="tack.kernel"):
+    with caplog.at_level(logging.ERROR, logger="columbina.kernel"):
         fiber = ctx.plugin(Plugin("demo", apply))
         with pytest.raises(RuntimeError, match="cannot start"):
             await fiber
@@ -270,10 +270,10 @@ async def test_a_module_like_object_is_a_plugin(ctx: Context) -> None:
         seen.append(config)
 
     module = SimpleNamespace(name="greeter", apply=apply, Config=Greeting)
-    fiber = await ctx.plugin(module, {"name": "tack"})
+    fiber = await ctx.plugin(module, {"name": "columbina"})
 
     assert fiber.name == "greeter"
-    assert seen == [Greeting(name="tack")]
+    assert seen == [Greeting(name="columbina")]
 
 
 async def test_a_bare_function_is_a_plugin(ctx: Context) -> None:

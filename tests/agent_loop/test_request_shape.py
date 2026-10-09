@@ -10,13 +10,13 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from columbina.kernel import Next
+from columbina.llm import render_requests
+from columbina.llm.adapters.scripted import Call, Reply
+from columbina.session import TurnEndEvent
+from columbina.tools import PRE_EXECUTE, Decision, Deny, Invocation, Tool, ToolFailure, ToolRun
 from support.loop import Harness, idle
 from support.snapshot import stored
-from tack.kernel import Next
-from tack.llm import render_requests
-from tack.llm.adapters.scripted import Call, Reply
-from tack.session import TurnEndEvent
-from tack.tools import PRE_EXECUTE, Decision, Deny, Invocation, Tool, ToolFailure, ToolRun
 
 SNAPSHOTS = Path(__file__).parent / "snapshots"
 

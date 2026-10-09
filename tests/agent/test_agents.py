@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-import tack.agent
-import tack.session
-from tack.agent import (
+import columbina.agent
+import columbina.session
+from columbina.agent import (
     AGENTS,
     INBOX,
     Agent,
@@ -17,9 +17,9 @@ from tack.agent import (
     Inbox,
     InboxItem,
 )
-from tack.kernel import Context, Plugin
-from tack.llm import CallConfig, TextBlock, UserMessage
-from tack.session import (
+from columbina.kernel import Context, Plugin
+from columbina.llm import CallConfig, TextBlock, UserMessage
+from columbina.session import (
     SESSION_EVENT,
     Committed,
     Session,
@@ -60,8 +60,8 @@ def item(text: str, source: str) -> InboxItem:
 @pytest.fixture
 async def agents(ctx: Context, tmp_path: Path) -> Agents:
     """The agent service, with sessions stored under a temporary directory and a still loop."""
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
-    await ctx.plugin(tack.agent)
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.agent)
     service = ctx.use(AGENTS)
     service.loops.add(ctx, "default", Still)
     return service

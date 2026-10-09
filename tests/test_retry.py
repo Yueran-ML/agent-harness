@@ -6,12 +6,11 @@ import random
 import pytest
 from pydantic import ValidationError
 
-import tack.retry
-from support.loop import Harness, assistant, idle, types
-from tack.llm import LlmFailure
-from tack.llm.adapters.scripted import Reply
-from tack.retry import Config, RetryEvent, delay_for
-from tack.session import (
+import columbina.retry
+from columbina.llm import LlmFailure
+from columbina.llm.adapters.scripted import Reply
+from columbina.retry import Config, RetryEvent, delay_for
+from columbina.session import (
     SESSION_EVENT,
     AssistantAttemptEvent,
     Committed,
@@ -19,6 +18,7 @@ from tack.session import (
     TurnEndEvent,
     UnknownEvent,
 )
+from support.loop import Harness, assistant, idle, types
 
 BUSY = LlmFailure(message="overloaded", code="SERVER", status=529)
 QUICK = {"base_delay_seconds": 0.001, "max_delay_seconds": 0.004, "jitter": 0}
@@ -29,7 +29,7 @@ def retries(session: Session) -> list[RetryEvent]:
 
 
 async def test_a_request_that_failed_for_a_passing_reason_is_made_again(harness: Harness) -> None:
-    await harness.ctx.plugin(tack.retry, QUICK)
+    await harness.ctx.plugin(columbina.retry, QUICK)
     agent = await harness.agent(Reply(text="I w", failure=BUSY), Reply(text="Hello!"))
 
     agent.followup("Say hello.")
@@ -52,7 +52,7 @@ async def test_a_request_that_failed_for_a_passing_reason_is_made_again(harness:
 
 
 async def test_after_so_many_attempts_the_failure_stands(harness: Harness) -> None:
-    await harness.ctx.plugin(tack.retry, {**QUICK, "max_attempts": 3})
+    await harness.ctx.plugin(columbina.retry, {**QUICK, "max_attempts": 3})
     agent = await harness.agent(*[Reply(failure=BUSY)] * 3, Reply(text="never"))
 
     agent.followup("Say hello.")
@@ -69,7 +69,7 @@ async def test_after_so_many_attempts_the_failure_stands(harness: Harness) -> No
 
 @pytest.mark.parametrize("code", ["AUTH", "INVALID_REQUEST", "CONTEXT_WINDOW_EXCEEDED", "INTERNAL"])
 async def test_a_failure_that_will_not_pass_is_not_tried_again(harness: Harness, code: str) -> None:
-    await harness.ctx.plugin(tack.retry, QUICK)
+    await harness.ctx.plugin(columbina.retry, QUICK)
     agent = await harness.agent(
         Reply(failure=LlmFailure(message="no", code=code)), Reply(text="never")
     )
@@ -87,7 +87,7 @@ async def test_a_failure_that_will_not_pass_is_not_tried_again(harness: Harness,
     "code", ["EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "TIMEOUT", "TRANSPORT", "STREAM_CLOSED"]
 )
 async def test_these_failures_pass(harness: Harness, code: str) -> None:
-    await harness.ctx.plugin(tack.retry, QUICK)
+    await harness.ctx.plugin(columbina.retry, QUICK)
     agent = await harness.agent(
         Reply(failure=LlmFailure(message="wait", code=code)), Reply(text="Hello!")
     )
@@ -100,7 +100,7 @@ async def test_these_failures_pass(harness: Harness, code: str) -> None:
 
 
 async def test_which_failures_are_tried_again_can_be_configured(harness: Harness) -> None:
-    await harness.ctx.plugin(tack.retry, {**QUICK, "codes": ["FLAKY"]})
+    await harness.ctx.plugin(columbina.retry, {**QUICK, "codes": ["FLAKY"]})
     agent = await harness.agent(
         Reply(failure=LlmFailure(message="hm", code="FLAKY")), Reply(failure=BUSY)
     )
@@ -116,7 +116,7 @@ async def test_which_failures_are_tried_again_can_be_configured(harness: Harness
 
 async def test_cancelling_during_the_wait_ends_the_turn(harness: Harness) -> None:
     await harness.ctx.plugin(
-        tack.retry, {"base_delay_seconds": 30, "max_delay_seconds": 60, "jitter": 0}
+        columbina.retry, {"base_delay_seconds": 30, "max_delay_seconds": 60, "jitter": 0}
     )
     agent = await harness.agent(Reply(failure=BUSY), Reply(text="never"))
     waiting = asyncio.Event()
@@ -140,7 +140,7 @@ async def test_cancelling_during_the_wait_ends_the_turn(harness: Harness) -> Non
 
 
 async def test_a_session_with_retries_can_be_read_without_the_plugin(harness: Harness) -> None:
-    plugin = await harness.ctx.plugin(tack.retry, QUICK)
+    plugin = await harness.ctx.plugin(columbina.retry, QUICK)
     agent = await harness.agent(Reply(failure=BUSY), Reply(text="Hello!"))
     agent.followup("Say hello.")
     await idle(agent)
@@ -219,4 +219,4 @@ async def test_a_config_that_makes_no_sense_is_refused(
     harness: Harness, bad: dict[str, float]
 ) -> None:
     with pytest.raises(ValidationError):
-        await harness.ctx.plugin(tack.retry, bad)
+        await harness.ctx.plugin(columbina.retry, bad)

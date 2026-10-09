@@ -5,9 +5,9 @@ from typing import Any, ClassVar, cast
 
 import pytest
 
-from tack.kernel import Context
-from tack.llm import TextBlock, ToolMessage
-from tack.session import (
+from columbina.kernel import Context
+from columbina.llm import TextBlock, ToolMessage
+from columbina.session import (
     CORE_EVENTS,
     SESSION_EVENT,
     Committed,

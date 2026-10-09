@@ -6,9 +6,9 @@ from typing import ClassVar
 
 import pytest
 
-import tack.session
-from tack.kernel import Context, Plugin
-from tack.llm import (
+import columbina.session
+from columbina.kernel import Context, Plugin
+from columbina.llm import (
     AssistantMessage,
     TextBlock,
     ToolCallBlock,
@@ -16,7 +16,7 @@ from tack.llm import (
     Usage,
     UserMessage,
 )
-from tack.session import (
+from columbina.session import (
     SESSION_EVENT,
     SESSIONS,
     AssistantMessageEvent,
@@ -33,7 +33,7 @@ from tack.session import (
     UnknownEvent,
     UserMessageEvent,
 )
-from tack.session.store import SESSION_FILE
+from columbina.session.store import SESSION_FILE
 
 ASKING = AssistantMessageEvent(
     message=AssistantMessage(
@@ -61,7 +61,7 @@ def said(text: str) -> UserMessageEvent:
 @pytest.fixture
 async def sessions(ctx: Context, tmp_path: Path) -> Sessions:
     """The session service, storing under a temporary directory, with a clock that ticks."""
-    await ctx.plugin(tack.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
     service = ctx.use(SESSIONS)
     ticks = itertools.count(1_791_234_567_890, 1000)
     service.clock = lambda: next(ticks)
@@ -260,7 +260,7 @@ async def test_only_what_a_fork_adds_is_announced(
 
 
 async def test_a_fork_works_without_a_store(ctx: Context, tmp_path: Path) -> None:
-    await ctx.plugin(tack.session)
+    await ctx.plugin(columbina.session)
     sessions = ctx.use(SESSIONS)
     parent = sessions.create(ctx, tmp_path)
     parent.append(TurnStartEvent(turn=1))
@@ -298,7 +298,7 @@ async def test_a_fork_closes_with_its_owner(
     ctx: Context, sessions: Sessions, tmp_path: Path
 ) -> None:
     one_turn(sessions, ctx, tmp_path)
-    made: list[tack.session.Session] = []
+    made: list[columbina.session.Session] = []
 
     def apply(inner: Context, config: object) -> None:
         made.append(inner.use(SESSIONS).fork(inner, tmp_path, "s-1", session_id="s-2"))

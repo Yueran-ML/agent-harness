@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from tack.session.lock import acquire
+from columbina.session.lock import acquire
 
 
 def test_a_free_lock_can_be_taken(tmp_path: Path) -> None:

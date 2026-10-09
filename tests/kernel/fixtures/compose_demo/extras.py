@@ -2,8 +2,8 @@
 
 from pydantic import BaseModel, field_validator
 
+from columbina.kernel import Context, Plugin
 from compose_demo.keys import CLOCK, STORE
-from tack.kernel import Context, Plugin
 
 
 class Fussy(BaseModel):

@@ -1,0 +1,13 @@
+# What `columbina run` loads: the minimal program, retries for requests that fail
+# for a passing reason, and the frontend that runs one task.
+extends: minimal
+patch:
+  - insert:
+      - id: retry
+        plugin: columbina.retry
+      - id: frontend
+        plugin: columbina.apps.headless
+        config:
+          model:
+            provider: deepseek
+            model: ${COLUMBINA_MODEL:-deepseek-flash}

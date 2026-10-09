@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-import tack.agent
-import tack.session
-from tack.agent import (
+import columbina.agent
+import columbina.session
+from columbina.agent import (
     INBOX,
     Inbox,
     InboxItem,
@@ -14,9 +14,9 @@ from tack.agent import (
     clear_inbox,
     enqueue,
 )
-from tack.kernel import Context
-from tack.llm import TextBlock, UserMessage
-from tack.session import SESSION_EVENT, SESSIONS, Committed, Session
+from columbina.kernel import Context
+from columbina.llm import TextBlock, UserMessage
+from columbina.session import SESSION_EVENT, SESSIONS, Committed, Session
 
 
 def item(text: str, source: str = "user") -> InboxItem:
@@ -29,8 +29,8 @@ def claim_for_turn(session: Session) -> tuple[InboxItem, ...]:
 
 
 async def open_session(ctx: Context, root: Path | None = None) -> Session:
-    await ctx.plugin(tack.session, None if root is None else {"root": root})
-    await ctx.plugin(tack.agent)
+    await ctx.plugin(columbina.session, None if root is None else {"root": root})
+    await ctx.plugin(columbina.agent)
     return ctx.use(SESSIONS).create(ctx, Path.cwd(), session_id="s-1")
 
 

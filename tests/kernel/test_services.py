@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from tack.kernel import (
+from columbina.kernel import (
     Context,
     Disposer,
     FiberState,

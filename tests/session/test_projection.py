@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-import tack.session
-from tack.kernel import Context
-from tack.llm import AssistantMessage, LlmFailure, TextBlock, Usage
-from tack.session import (
+import columbina.session
+from columbina.kernel import Context
+from columbina.llm import AssistantMessage, LlmFailure, TextBlock, Usage
+from columbina.session import (
     CORE_EVENTS,
     SESSIONS,
     TURN,
@@ -144,7 +144,7 @@ async def test_a_projection_does_not_keep_a_session_alive(ctx: Context) -> None:
 async def test_a_resumed_session_is_folded_from_its_first_event(
     ctx: Context, tmp_path: Path
 ) -> None:
-    await ctx.plugin(tack.session, {"root": tmp_path})
+    await ctx.plugin(columbina.session, {"root": tmp_path})
     sessions = ctx.use(SESSIONS)
     first = sessions.create(ctx, tmp_path, session_id="s-1")
     first.append(TurnStartEvent(turn=1))

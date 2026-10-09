@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tack.kernel import (
+from columbina.kernel import (
     CompositionError,
     Context,
     Entry,

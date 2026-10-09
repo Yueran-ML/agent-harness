@@ -6,8 +6,7 @@ import contextlib
 import pytest
 from pydantic import BaseModel
 
-from support.loop import MODEL, Harness, assistant, idle, types, user
-from tack.agent import (
+from columbina.agent import (
     PRE_STEP,
     REQUEST,
     REQUEST_ERROR,
@@ -23,16 +22,17 @@ from tack.agent import (
     StepInfo,
     TurnStopping,
 )
-from tack.kernel import Next
-from tack.llm import CallConfig, LlmFailure
-from tack.llm.adapters.scripted import Call, Reply
-from tack.session import (
+from columbina.kernel import Next
+from columbina.llm import CallConfig, LlmFailure
+from columbina.llm.adapters.scripted import Call, Reply
+from columbina.session import (
     AssistantAttemptEvent,
     RequestHeaderEvent,
     TurnEndEvent,
     UserMessageEvent,
 )
-from tack.tools import Tool, ToolRun
+from columbina.tools import Tool, ToolRun
+from support.loop import MODEL, Harness, assistant, idle, types, user
 
 BUSY = LlmFailure(message="overloaded", code="SERVER", status=529)
 

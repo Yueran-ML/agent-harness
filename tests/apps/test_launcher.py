@@ -1,4 +1,4 @@
-"""The command line: ``tack run`` loads a profile, runs one task, and reports."""
+"""The command line: ``columbina run`` loads a profile, runs one task, and reports."""
 
 import asyncio
 import json
@@ -9,21 +9,21 @@ from typing import Any
 import pytest
 import yaml
 
-import tack
-from tack.apps.launcher import main
-from tack.session import CORE_EVENTS, TurnEndEvent, read_session
-from tack.session.store import workspace_key
+import columbina
+from columbina.apps.launcher import main
+from columbina.session import CORE_EVENTS, TurnEndEvent, read_session
+from columbina.session.store import workspace_key
 
 KINDS = {kind.event_type: kind for kind in CORE_EVENTS}
 
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A data directory for Tack that is thrown away after the test, and no API key."""
+    """A data directory for Columbina that is thrown away after the test, and no API key."""
     directory = tmp_path / "home"
-    monkeypatch.setenv("TACK_HOME", str(directory))
+    monkeypatch.setenv("COLUMBINA_HOME", str(directory))
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
-    monkeypatch.delenv("TACK_MODEL", raising=False)
+    monkeypatch.delenv("COLUMBINA_MODEL", raising=False)
     return directory
 
 
@@ -41,7 +41,7 @@ def profile(
     """Write a profile that is the headless bundle with a scripted model, and return its path."""
     scripted = {
         "id": "model",
-        "plugin": "tack.llm.adapters.scripted",
+        "plugin": "columbina.llm.adapters.scripted",
         "config": {"provider": "deepseek", "replies": list(replies)},
     }
     layer = {"extends": "headless", "patch": [scripted, *(extra or [])]}
@@ -105,8 +105,8 @@ def test_the_run_leaves_a_session_behind(
 
 
 def _more_kinds() -> dict[str, Any]:
-    from tack.agent import InboxSplicedEvent
-    from tack.retry import RetryEvent
+    from columbina.agent import InboxSplicedEvent
+    from columbina.retry import RetryEvent
 
     return {kind.event_type: kind for kind in (InboxSplicedEvent, RetryEvent)}
 
@@ -192,7 +192,7 @@ def test_a_run_that_fails_says_why_and_exits_with_one(
     captured = capsys.readouterr()
     assert code == 1
     assert captured.out == ""
-    assert captured.err == "tack: the turn ended with an error: AUTH: the key is not valid\n"
+    assert captured.err == "columbina: the turn ended with an error: AUTH: the key is not valid\n"
 
 
 def test_a_failed_run_ends_its_json_with_the_reason(
@@ -222,7 +222,7 @@ def test_a_reply_that_was_cut_off_is_printed_but_the_run_does_not_count_as_done(
     captured = capsys.readouterr()
     assert code == 1
     assert captured.out == "This sentence never\n"
-    assert captured.err == "tack: the turn ended early: max-tokens\n"
+    assert captured.err == "columbina: the turn ended early: max-tokens\n"
 
 
 def test_a_session_can_be_continued_by_its_id(
@@ -317,8 +317,8 @@ def test_the_composition_can_be_printed_instead_of_run(
     ]
     assert entries["session"] == {
         "id": "session",
-        "plugin": "tack.session",
-        "config": {"root": "${TACK_HOME}/sessions"},
+        "plugin": "columbina.session",
+        "config": {"root": "${COLUMBINA_HOME}/sessions"},
     }
     assert entries["model"]["config"]["api_key_env"] == "DEEPSEEK_API_KEY"
     assert entries["frontend"]["config"] == {
@@ -413,7 +413,7 @@ def test_a_patch_changes_the_profile(
     main(["run", "Do it.", "--cwd", str(work), "--patch", str(patch), "--dump-config"])
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
-    assert entries["retry"] == {"id": "retry", "plugin": "tack.retry", "disabled": True}
+    assert entries["retry"] == {"id": "retry", "plugin": "columbina.retry", "disabled": True}
 
 
 def test_the_patch_of_the_user_comes_before_the_patches_of_the_command(
@@ -441,7 +441,7 @@ def test_the_model_can_come_from_the_environment(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TACK_MODEL", "deepseek-from-env")
+    monkeypatch.setenv("COLUMBINA_MODEL", "deepseek-from-env")
 
     main(
         [
@@ -470,7 +470,7 @@ def test_a_profile_that_does_not_exist_is_refused(
     assert code == 2
     assert captured.out == ""
     assert captured.err == (
-        "tack: there is no profile 'nowhere'. The profiles that come with Tack are: "
+        "columbina: there is no profile 'nowhere'. The profiles that come with Columbina are: "
         "headless, minimal\n"
     )
 
@@ -482,7 +482,7 @@ def test_a_profile_without_a_frontend_cannot_run_a_task(
 
     assert code == 2
     assert capsys.readouterr().err == (
-        "tack: the profile has no entry 'frontend', so there is nothing to run the task\n"
+        "columbina: the profile has no entry 'frontend', so there is nothing to run the task\n"
     )
 
 
@@ -496,7 +496,7 @@ def test_a_frontend_that_is_switched_off_cannot_run_a_task(
 
     assert code == 2
     assert capsys.readouterr().err == (
-        "tack: the entry 'frontend' is disabled, so there is nothing to run the task\n"
+        "columbina: the entry 'frontend' is disabled, so there is nothing to run the task\n"
     )
 
 
@@ -520,7 +520,8 @@ def test_an_entry_called_frontend_that_is_no_frontend_cannot_run_a_task(
     assert code == 2
     assert captured.out == ""
     assert captured.err == (
-        "tack: the entry 'frontend' loads idle_plugin, which provides nothing to run the task\n"
+        "columbina: the entry 'frontend' loads idle_plugin, "
+        "which provides nothing to run the task\n"
     )
 
 
@@ -535,7 +536,7 @@ def test_a_patch_that_cannot_be_applied_is_refused(
     captured = capsys.readouterr()
     assert code == 2
     assert "nowhere" in captured.err
-    assert captured.err.startswith("tack: ")
+    assert captured.err.startswith("columbina: ")
 
 
 def test_a_patch_file_that_is_not_there_is_refused(
@@ -566,9 +567,10 @@ def test_a_plugin_that_does_not_load_stops_the_run(
     captured = capsys.readouterr()
     assert code == 2
     assert captured.out == ""
-    assert "tack: tools (tack.tools) failed: ValidationError" in captured.err
-    assert "tack: tool-read (tack.builtin_tools.read) is waiting for the service 'tools'" in (
-        captured.err
+    assert "columbina: tools (columbina.tools) failed: ValidationError" in captured.err
+    assert (
+        "columbina: tool-read (columbina.builtin_tools.read) is waiting for the service 'tools'"
+        in (captured.err)
     )
 
 
@@ -585,14 +587,14 @@ def test_the_version_can_be_asked_for(capsys: pytest.CaptureFixture[str]) -> Non
         main(["--version"])
 
     assert stopped.value.code == 0
-    assert capsys.readouterr().out == f"tack {tack.__version__}\n"
+    assert capsys.readouterr().out == f"columbina {columbina.__version__}\n"
 
 
 def test_without_a_command_the_help_is_printed(capsys: pytest.CaptureFixture[str]) -> None:
     code = main([])
 
     assert code == 2
-    assert "usage: tack" in capsys.readouterr().err
+    assert "usage: columbina" in capsys.readouterr().err
 
 
 def test_an_interrupted_run_exits_the_way_a_shell_expects(

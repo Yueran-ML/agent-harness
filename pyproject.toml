@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tack-harness"
+name = "columbina"
 version = "0.1.0.dev0"
 description = "A plugin-based agent harness for Python."
 readme = "README.md"
@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.scripts]
-tack = "tack.apps.launcher:main"
+columbina = "columbina.apps.launcher:main"
 
 [project.urls]
 Repository = "https://github.com/Yueran-ML/agent-harness"
@@ -46,7 +46,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tack"]
+packages = ["src/columbina"]
 
 [tool.ruff]
 line-length = 100
@@ -111,8 +111,8 @@ filterwarnings = ["error"]
 
 [tool.coverage.run]
 branch = true
-source_pkgs = ["tack"]
-omit = ["*/tack/__main__.py"]  # two lines, run by a test in a process of its own
+source_pkgs = ["columbina"]
+omit = ["*/columbina/__main__.py"]  # two lines, run by a test in a process of its own
 # Counts code that only one platform can run on that platform. It is found from the root
 # of the repository, so coverage is run as `python -m coverage`.
 plugins = ["tests.support.coverage_platform"]

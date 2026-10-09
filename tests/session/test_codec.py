@@ -7,8 +7,8 @@ from typing import ClassVar
 import pytest
 from pydantic import ConfigDict
 
-from tack.llm import TextBlock, UserMessage
-from tack.session import (
+from columbina.llm import TextBlock, UserMessage
+from columbina.session import (
     CORE_EVENTS,
     EventData,
     SessionEvent,

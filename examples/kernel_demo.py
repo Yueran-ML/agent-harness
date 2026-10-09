@@ -1,6 +1,6 @@
 import asyncio
 
-from tack.kernel import Context, EmitEvent, Plugin, ServiceKey
+from columbina.kernel import Context, EmitEvent, Plugin, ServiceKey
 
 CLOCK = ServiceKey[int]("clock")
 TICK = EmitEvent[int]("demo/tick")

@@ -3,7 +3,7 @@
 from hypothesis import given
 from hypothesis import strategies as st
 
-from tack.llm import (
+from columbina.llm import (
     AssistantMessage,
     CallConfig,
     LlmRequest,

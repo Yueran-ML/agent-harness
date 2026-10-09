@@ -3,7 +3,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from tack.llm import (
+from columbina.llm import (
     AssistantMessage,
     BlockEnd,
     BlockStart,

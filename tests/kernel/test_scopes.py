@@ -1,6 +1,6 @@
 import pytest
 
-from tack.kernel import (
+from columbina.kernel import (
     BailEvent,
     Context,
     EmitEvent,

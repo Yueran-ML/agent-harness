@@ -16,7 +16,7 @@ import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from tack.kernel import (
+from columbina.kernel import (
     Context,
     Disposer,
     EffectHandle,

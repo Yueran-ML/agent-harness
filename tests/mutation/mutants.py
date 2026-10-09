@@ -14,6 +14,8 @@ output of a program that has ended. The event loop hands over what was on its
 way before the run goes on, though nothing says that it must. A third: asking
 again where an open file is after the system has said that it is elsewhere.
 The second look agrees with the first unless a link is put back between them.
+A fourth: remembering the last message of every source of a user message, and not
+only of the sources of context. Nothing asks for the others.
 
 A mutant of code that only one platform runs says which. On another platform
 no test can notice it, and ``mutate.py`` passes it over.
@@ -2190,12 +2192,6 @@ _CONTEXT = (
         LOOP,
         '    body = text.strip().replace("</context", "<\\\\/context")',
         "    body = text.strip()",
-    ),
-    mutant(
-        "a message of the user counts as what a source of context gave",
-        LOOP,
-        "    if isinstance(data, UserMessageEvent) and data.source.startswith(_CONTEXT):",
-        "    if isinstance(data, UserMessageEvent):",
     ),
     mutant(
         "every end of a turn is told of",

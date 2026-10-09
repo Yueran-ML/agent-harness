@@ -1,0 +1,430 @@
+"""The line at the bottom of the terminal: what is typed there, and what is shown above it."""
+
+import asyncio
+
+import pytest
+from rich.text import Text
+
+from columbina.apps.cli.prompt import Prompt
+from support.terminal import CTRL_C, CTRL_D, ENTER, ESCAPE, Desk, desk, until
+
+
+async def typed(prompt: Prompt, at: Desk, text: str) -> None:
+    """Type something and wait until the line holds it."""
+    at.type(text)
+    await until(lambda: prompt.typed.endswith(text))
+
+
+# Lines
+
+
+async def test_a_line_that_is_submitted_is_handed_over_as_it_was_typed() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        at.enter("  What does notes.txt say? ")
+
+        assert await asyncio.wait_for(prompt.line(), 5) == "  What does notes.txt say? "
+
+
+async def test_lines_are_handed_over_one_after_the_other() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        at.enter("one")
+        at.enter("")
+        at.enter("three")
+
+        lines = [await asyncio.wait_for(prompt.line(), 5) for _ in range(3)]
+
+    assert lines == ["one", "", "three"]
+
+
+async def test_what_is_shown_appears_on_the_screen_and_leaves_the_typing_alone() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "ha")
+
+        prompt.show([Text("The file says 42."), Text("It is short.")])
+        await until(lambda: "It is short." in at.shown())
+        at.enter("lf")
+
+        assert await asyncio.wait_for(waiting, 5) == "half"
+        assert "The file says 42.\nIt is short." in at.shown().replace("\r\n", "\n")
+
+
+async def test_something_can_be_shown_while_nobody_is_asked_for_a_line() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+
+        prompt.show([Text("Before the first line.")])
+
+        assert "Before the first line." in at.shown()
+
+
+async def test_showing_nothing_shows_nothing() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+
+        prompt.show([])
+
+        assert at.shown() == ""
+
+
+async def test_the_line_of_a_reply_that_is_not_complete_is_shown_with_the_prompt() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "x")
+
+        prompt.partial = Text("The answer is")
+        await until(lambda: "The answer is" in at.shown())
+        prompt.partial = Text()
+        at.enter()
+
+        assert await asyncio.wait_for(waiting, 5) == "x"
+        assert prompt.partial.plain == ""
+
+
+async def test_a_line_that_is_submitted_leaves_no_half_of_a_reply_above_it() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        prompt.partial = Text("The answer is")
+        await at.draws("The answer is")
+        await typed(prompt, at, "wait")
+        await at.draws("wait")
+        before = len(at.drawn())
+
+        at.enter()
+
+        assert await asyncio.wait_for(waiting, 5) == "wait"
+        # A line that is submitted is drawn once more, the way it stays on the screen. The
+        # half of the reply goes on growing in the next prompt and is printed when it is
+        # complete, so it must not stay here as well.
+        assert at.drawn()[before:] == "> wait\n"
+        assert prompt.partial.plain == "The answer is"
+
+
+async def test_of_a_very_long_unfinished_line_the_end_is_shown() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "x")
+
+        prompt.partial = Text("start " + "word " * 40 + "the end")
+        await until(lambda: "the end" in at.shown())
+        at.enter()
+        await asyncio.wait_for(waiting, 5)
+
+        assert "start word" not in at.shown()
+
+
+async def test_the_end_of_a_long_line_is_measured_in_the_cells_that_it_takes() -> None:
+    moon = chr(0x6708)
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "x")
+
+        # The screen of a test is 80 cells wide, and this character takes two of them.
+        prompt.partial = Text(moon * 60)
+        await until(lambda: moon in at.shown())
+        at.enter()
+        await asyncio.wait_for(waiting, 5)
+
+        assert "..." + moon * 38 in at.shown()
+        assert moon * 39 not in at.shown()
+
+
+async def test_a_reply_that_grows_fast_is_not_drawn_at_every_step() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "x")
+
+        for number in range(200):
+            prompt.partial = Text(f"step {number} of the reply")
+            await asyncio.sleep(0)
+        await until(lambda: "step 199 of the reply" in at.shown())
+        at.enter()
+        await asyncio.wait_for(waiting, 5)
+
+        drawn = sum(f"step {number} of the reply" in at.shown() for number in range(200))
+        assert drawn < 20
+
+
+# Stopping and leaving
+
+
+async def test_escape_stops_what_is_running_and_does_nothing_when_nothing_is() -> None:
+    stopped: list[str] = []
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        prompt.on_cancel = lambda: stopped.append("stop")
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "a")
+
+        at.type(ESCAPE)
+        # A key that follows Escape at once is taken together with it, as a terminal sends
+        # the keys that are pressed with Alt. A person is slower than that.
+        await asyncio.sleep(0.4)
+        await typed(prompt, at, "b")
+        idle = list(stopped)
+        prompt.busy = True
+        at.type(ESCAPE)
+        await until(lambda: stopped == ["stop"])
+        at.enter("c")
+
+        assert idle == []
+        assert await asyncio.wait_for(waiting, 5) == "abc"
+
+
+async def test_ctrl_c_stops_what_is_running() -> None:
+    stopped: list[str] = []
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        prompt.on_cancel = lambda: stopped.append("stop")
+        prompt.busy = True
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "kept")
+
+        at.type(CTRL_C)
+        await until(lambda: stopped == ["stop"])
+        at.enter()
+
+        assert await asyncio.wait_for(waiting, 5) == "kept"
+
+
+async def test_ctrl_c_clears_the_line_and_on_an_empty_line_the_second_one_leaves() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "not this")
+
+        at.type(CTRL_C)
+        await until(lambda: prompt.typed == "")
+        at.type(CTRL_C)
+        await until(lambda: "Press Ctrl+C again to leave." in at.shown())
+        at.type(CTRL_C)
+
+        assert await asyncio.wait_for(waiting, 5) is None
+
+
+async def test_ctrl_c_followed_by_typing_does_not_count_towards_leaving() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+
+        at.type(CTRL_C)
+        await until(lambda: "Press Ctrl+C again to leave." in at.shown())
+        await typed(prompt, at, "x")
+        at.type(CTRL_C)
+        await until(lambda: prompt.typed == "")
+        at.enter("stay")
+
+        assert await asyncio.wait_for(waiting, 5) == "stay"
+
+
+async def test_ctrl_d_leaves_from_an_empty_line_only() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "ab")
+
+        at.type(CTRL_D)
+        at.enter()
+        first = await asyncio.wait_for(waiting, 5)
+        at.type(CTRL_D)
+        second = await asyncio.wait_for(prompt.line(), 5)
+
+        assert first == "ab"
+        assert second is None
+
+
+async def test_escape_does_nothing_when_nobody_said_what_it_stops() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        prompt.busy = True
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "a")
+
+        at.type(ESCAPE)
+        await asyncio.sleep(0.4)
+        at.enter("b")
+
+        assert await asyncio.wait_for(waiting, 5) == "ab"
+
+
+async def test_a_terminal_that_goes_away_is_like_leaving() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "half a li")
+
+        at.hang_up()
+
+        assert await asyncio.wait_for(waiting, 5) is None
+
+
+# Questions
+
+
+async def test_a_question_is_answered_by_one_key() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yan", "[y] yes  [a] always  [n] no"))
+        await until(lambda: "[y] yes  [a] always  [n] no" in at.shown())
+
+        at.type("a")
+
+        assert await asyncio.wait_for(asked, 5) == "a"
+        at.enter("next")
+        assert await asyncio.wait_for(waiting, 5) == "next"
+
+
+async def test_the_first_answer_counts_and_a_second_key_changes_nothing() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
+        await until(lambda: "[y] yes  [n] no" in at.shown())
+
+        at.type("yn")
+
+        assert await asyncio.wait_for(asked, 5) == "y"
+        waiting.cancel()
+
+
+async def test_ctrl_d_answers_a_question_with_its_last_key() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yan", "[y] yes  [a] always  [n] no"))
+        await until(lambda: "[y] yes  [a] always  [n] no" in at.shown())
+
+        at.type(CTRL_D)
+
+        assert await asyncio.wait_for(asked, 5) == "n"
+        assert not waiting.done()
+        waiting.cancel()
+
+
+async def test_escape_answers_a_question_with_its_last_key() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
+        await until(lambda: "[y] yes  [n] no" in at.shown())
+
+        at.type(ESCAPE)
+
+        assert await asyncio.wait_for(asked, 5) == "n"
+        waiting.cancel()
+
+
+async def test_ctrl_c_answers_a_question_with_its_last_key_and_stops_nothing() -> None:
+    stopped: list[str] = []
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        prompt.on_cancel = lambda: stopped.append("stop")
+        prompt.busy = True
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
+        await until(lambda: "[y] yes  [n] no" in at.shown())
+
+        at.type(CTRL_C)
+
+        assert await asyncio.wait_for(asked, 5) == "n"
+        assert stopped == []
+        waiting.cancel()
+
+
+async def test_a_key_that_is_no_answer_is_no_answer_and_neither_is_a_line() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
+        await until(lambda: "[y] yes  [n] no" in at.shown())
+
+        at.type("aq" + ENTER)
+        at.type("Y")
+
+        # The keys before it changed nothing: the answer is the first key that is one.
+        assert await asyncio.wait_for(asked, 5) == "y"
+        assert prompt.typed == ""
+        assert not waiting.done()
+        waiting.cancel()
+
+
+async def test_what_was_typed_before_a_question_is_there_again_after_it() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "No, the lex")
+
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
+        await until(lambda: prompt.typed == "")
+        at.type("zz")
+        at.type("n")
+        await asyncio.wait_for(asked, 5)
+        at.enter("er.")
+
+        assert await asyncio.wait_for(waiting, 5) == "No, the lexer."
+
+
+async def test_a_question_that_is_withdrawn_leaves_the_line_as_it_was() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "half")
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
+        await until(lambda: prompt.typed == "")
+
+        asked.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asked
+        at.enter(" done")
+
+        assert await asyncio.wait_for(waiting, 5) == "half done"
+
+
+async def test_one_question_is_asked_at_a_time() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        first = asyncio.ensure_future(prompt.ask("yn", "first? [y/n]"))
+        second = asyncio.ensure_future(prompt.ask("yn", "second? [y/n]"))
+        await until(lambda: "first? [y/n]" in at.shown())
+
+        at.type("y")
+        assert await asyncio.wait_for(first, 5) == "y"
+        await until(lambda: "second? [y/n]" in at.shown())
+        at.type("n")
+
+        assert await asyncio.wait_for(second, 5) == "n"
+        waiting.cancel()
+
+
+async def test_a_question_can_be_asked_while_nobody_waits_for_a_line() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
+        await asyncio.sleep(0)
+
+        waiting = asyncio.ensure_future(prompt.line())
+        await until(lambda: "[y] yes  [n] no" in at.shown())
+        at.type("y")
+
+        assert await asyncio.wait_for(asked, 5) == "y"
+        waiting.cancel()
+
+
+# The status line
+
+
+async def test_the_status_line_is_asked_for_whenever_the_prompt_is_drawn() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal, status=lambda: "model-x | idle")
+
+        assert prompt.status() == "model-x | idle"

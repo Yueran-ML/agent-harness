@@ -87,6 +87,29 @@ def test_what_cannot_be_seen_is_named_where_a_person_is_asked() -> None:
     assert spelled_out(f"a{chr(0x1F600)}b") == f"a{chr(0x1F600)}b"
 
 
+def test_a_letter_or_a_mark_that_is_drawn_as_nothing_is_named_too() -> None:
+    # Unicode files these with the letters and the marks, and nothing of them is seen: one
+    # that joins what stands beside it, a filler, one that chooses a form, the Braille
+    # pattern without dots. A file whose name holds one is another file.
+    joiner, filler, selector, blank = chr(0x034F), chr(0x3164), chr(0xFE0F), chr(0x2800)
+
+    assert spelled_out(f"python setup{joiner}.py") == "python setup<U+034F>.py"
+    assert spelled_out(f"rm{filler}-rf x") == "rm<U+3164>-rf x"
+    assert spelled_out(f"a{selector}b{blank}c") == "a<U+FE0F>b<U+2800>c"
+    assert spelled_out(f"a{chr(0xE0100)}b") == "a<U+E0100>b"
+
+
+def test_a_character_that_has_no_meaning_yet_or_a_private_one_is_named() -> None:
+    assert spelled_out(f"a{chr(0xFFF0)}b{chr(0xE000)}c") == "a<U+FFF0>b<U+E000>c"
+
+
+def test_an_accent_on_a_letter_stays_as_it_is() -> None:
+    # A mark that is drawn on the letter before it is a part of what is seen.
+    accented = f"cafe{chr(0x0301)} na{chr(0x0303)}o"
+
+    assert spelled_out(accented) == accented
+
+
 def test_spaces_tabs_and_line_feeds_are_not_named() -> None:
     assert spelled_out("a b\tc\nd") == "a b\tc\nd"
 
@@ -102,12 +125,22 @@ def test_whatever_a_command_is_refused_a_rule_for_is_named_in_the_question() -> 
         0x85,
         0xA0,
         0xAD,
+        0x034F,
+        0x115F,
         0x200B,
         0x200D,
         0x202E,
         0x2028,
+        0x2800,
         0x3000,
+        0x3164,
+        0xD800,
+        0xE000,
+        0xFE0F,
         0xFEFF,
+        0xFFA0,
+        0xFFF0,
+        0xE0100,
     ):
         command = f"git{chr(code)}status"
         assert split_bash(command) is None, hex(code)

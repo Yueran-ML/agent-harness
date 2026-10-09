@@ -21,6 +21,8 @@ Three functions deal with that, each for one use.
 import re
 import unicodedata
 
+from columbina.unseen import unseen
+
 __all__ = ["STAND_IN", "escaped", "harmless", "spelled_out"]
 
 STAND_IN = chr(0xFFFD)
@@ -33,9 +35,6 @@ _TURNS = frozenset(
 
 _ACTED_ON = frozenset({"Cc", "Cs", "Zl", "Zp"})
 """Kinds of characters that a terminal acts on, or that cannot be sent to one."""
-
-_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})
-"""Kinds of characters that cannot be seen, or that pass for a space."""
 
 
 def _acted_on(character: str) -> bool:
@@ -63,14 +62,14 @@ def spelled_out(text: str) -> str:
 
     A character that cannot be seen, that passes for a space, or that turns
     the direction of the text is written as its number, like ``<U+200B>``.
-    Spaces, tabs and line feeds stay.
+    Which characters those are is told in :mod:`columbina.unseen`. Spaces,
+    tabs and line feeds stay.
     """
-    if text.isprintable():
+    if text.isascii() and text.isprintable():
+        # Nothing but the letters and signs of a keyboard, which is most of what is asked.
         return text
     return "".join(
-        f"<U+{ord(character):04X}>"
-        if character not in " \t\n" and unicodedata.category(character) in _UNSEEN
-        else character
+        f"<U+{ord(character):04X}>" if character not in " \t\n" and unseen(character) else character
         for character in text
     )
 

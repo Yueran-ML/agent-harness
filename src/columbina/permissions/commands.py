@@ -26,16 +26,14 @@ for a space or turn the direction of the text, are refused in both: a person
 who is asked about a command has to see what will run.
 """
 
-import unicodedata
 from collections.abc import Callable
+
+from columbina.unseen import unseen
 
 __all__ = ["Splitter", "split_bash", "split_powershell"]
 
 Splitter = Callable[[str], tuple[str, ...] | None]
 """Takes a command apart into its simple commands, or returns ``None`` if it cannot."""
-
-_HIDDEN = frozenset({"Cc", "Cf", "Zl", "Zp", "Zs"})
-"""The kinds of characters that are not what they look like: controls, marks, odd spaces."""
 
 
 def _split(
@@ -56,7 +54,7 @@ def _split(
     for letter in text:
         if letter in quotes_of_other_kinds:
             return None
-        if letter not in " \n\t" and unicodedata.category(letter) in _HIDDEN:
+        if letter not in " \n\t" and unseen(letter):
             return None
     commands: list[str] = []
     words: list[str] = []

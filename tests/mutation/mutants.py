@@ -75,6 +75,7 @@ TOKEN_METER = "src/columbina/token_meter/__init__.py"
 SPILL_LOCAL = "src/columbina/spill/local.py"
 SPILL_POLICY = "src/columbina/spill/policy.py"
 SPILL_SEAM = "src/columbina/spill/__init__.py"
+COMPACTION_SEAM = "src/columbina/compaction/__init__.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -5321,6 +5322,81 @@ _CAP = (
     ),
 )
 
+_COMPACTION = (
+    mutant(
+        "a reader must know the event that begins a compaction",
+        COMPACTION_SEAM,
+        '    event_type: ClassVar[str] = "compaction/start"\n    ignorable: ClassVar[bool] = True\n',
+        '    event_type: ClassVar[str] = "compaction/start"\n',
+    ),
+    mutant(
+        "a reader must know the event that keeps a summary",
+        COMPACTION_SEAM,
+        '    event_type: ClassVar[str] = "compaction/summary"\n    ignorable: ClassVar[bool] = True\n',
+        '    event_type: ClassVar[str] = "compaction/summary"\n',
+    ),
+    mutant(
+        "a reader must know the event that ends a compaction",
+        COMPACTION_SEAM,
+        '    event_type: ClassVar[str] = "compaction/end"\n    ignorable: ClassVar[bool] = True\n',
+        '    event_type: ClassVar[str] = "compaction/end"\n',
+    ),
+    mutant(
+        "the source of a summary is that of what the user says",
+        COMPACTION_SEAM,
+        'SUMMARY_SOURCE = "compaction"',
+        'SUMMARY_SOURCE = "user"',
+    ),
+    mutant(
+        "a compaction that changed nothing is counted",
+        COMPACTION_SEAM,
+        "        count = state.count + data.outcome.changed\n",
+        "        count = state.count + 1\n",
+    ),
+    mutant(
+        "a compaction that has ended stays open",
+        COMPACTION_SEAM,
+        'update={"count": count, "last": data.outcome, "open": False}',
+        'update={"count": count, "last": data.outcome}',
+    ),
+    mutant(
+        "how the last compaction ended is not kept",
+        COMPACTION_SEAM,
+        'update={"count": count, "last": data.outcome, "open": False}',
+        'update={"count": count, "open": False}',
+    ),
+    mutant(
+        "a compaction that was open when the session was taken up again stays open",
+        COMPACTION_SEAM,
+        "    if isinstance(data, EndSeedEvent) and state.open:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "taking a session up again makes an orphan of a compaction that had ended",
+        COMPACTION_SEAM,
+        "    if isinstance(data, EndSeedEvent) and state.open:\n",
+        "    if isinstance(data, EndSeedEvent):\n",
+    ),
+    mutant(
+        "a compaction that begins while another is open makes no orphan of it",
+        COMPACTION_SEAM,
+        'update={"open": True, "orphans": state.orphans + state.open}',
+        'update={"open": True}',
+    ),
+    mutant(
+        "trimming alone does not count as a change",
+        COMPACTION_SEAM,
+        "        return bool(self.trimmed or self.summarised)\n",
+        "        return bool(self.summarised)\n",
+    ),
+    mutant(
+        "a summary alone does not count as a change",
+        COMPACTION_SEAM,
+        "        return bool(self.trimmed or self.summarised)\n",
+        "        return bool(self.trimmed)\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -5394,5 +5470,6 @@ SETS: dict[str, MutantSet] = {
     "meter": MutantSet(("tests/token_meter",), _METER),
     "spill": MutantSet(("tests/spill",), _SPILL),
     "cap": MutantSet(("tests/spill/test_policy.py",), _CAP),
+    "compaction": MutantSet(("tests/compaction",), _COMPACTION),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

@@ -13,6 +13,7 @@ from collections.abc import Callable, Sequence
 from itertools import pairwise
 from pathlib import Path
 
+import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from pydantic import BaseModel
@@ -263,7 +264,7 @@ class Run:
         self.bench = bench
         self.given: dict[str, str] = {}
         self.cancelled = False
-        self.dropped_possible = False
+        self.dropped: set[str] = set()
         self.requests_when_cancelled: dict[int, int] = {}
         self.problems: list[str] = []
 
@@ -283,7 +284,9 @@ class Run:
         if state.in_turn:
             self.requests_when_cancelled.setdefault(state.turn, len(self.model.requests))
         self.cancelled = True
-        self.dropped_possible = self.dropped_possible or not keep_inbox
+        if not keep_inbox:
+            # What waits at this moment is dropped. Nothing else may ever go missing.
+            self.dropped.update(waiting_texts(session))
         self.agent.cancel("budget", keep_inbox=keep_inbox)
         if not keep_inbox and INBOX.of(session):
             self.problems.append("a cancellation left input in the inbox")
@@ -317,18 +320,27 @@ class Run:
             for event in events
             if isinstance(data := event.data, UserMessageEvent)
         ]
-        inbox = INBOX.of(session)
-        waiting = [item.message.content[0].text for item in (*inbox.next_step, *inbox.next_turn)]
+        waiting = waiting_texts(session)
         assert len(set(heard)) == len(heard), "an input reached the model twice"
         assert not set(heard) & set(waiting), "an input both reached the model and still waits"
-        assert set(heard) | set(waiting) <= set(self.given)
-        if not self.dropped_possible:
-            assert sorted(heard + waiting) == sorted(self.given), "an input was lost"
+        # Each input is in exactly one place: with the model, in the inbox, or dropped by a
+        # cancellation that was asked to drop what waited at that moment.
+        assert not self.dropped & set(heard), "an input that was dropped reached the model"
+        assert not self.dropped & set(waiting), "an input that was dropped waits again"
+        assert sorted(heard + waiting) == sorted(set(self.given) - self.dropped), (
+            "an input was lost"
+        )
         if not self.cancelled:
             # Left alone, an agent comes to rest only when every task and steer was read.
             assert [self.given[text] for text in waiting] == ["inject"] * len(waiting)
         if stored is not None:
             assert list(stored) == list(events)
+
+
+def waiting_texts(session: Session) -> list[str]:
+    """The texts of the input that waits in the inbox of a session."""
+    inbox = INBOX.of(session)
+    return [item.message.content[0].text for item in (*inbox.next_step, *inbox.next_turn)]
 
 
 async def build(root: Path | None, script: list[Reply]) -> tuple[Context, Run]:
@@ -538,3 +550,30 @@ def test_the_checks_of_these_tests_find_what_they_look_for() -> None:
         )
         != []
     )
+
+
+async def test_an_input_that_is_lost_is_noticed_also_after_a_cancellation_that_dropped_others() -> (
+    None
+):
+    from tack.agent import clear_inbox
+
+    async def example(*, lose_the_second: bool) -> Run:
+        ctx, run = await build(None, [Reply(text="Done.")])
+        try:
+            run.give("inject", "before the cancellation")
+            run.cancel(keep_inbox=False)
+            run.give("inject", "after the cancellation")
+            if lose_the_second:
+                clear_inbox(run.agent.session)
+            await asyncio.wait_for(run.agent.when_idle(), timeout=5)
+        finally:
+            await ctx.fiber.dispose()
+        return run
+
+    kept = await example(lose_the_second=False)
+    kept.check(None)
+    assert kept.dropped == {"before the cancellation"}
+
+    lost = await example(lose_the_second=True)
+    with pytest.raises(AssertionError, match="an input was lost"):
+        lost.check(None)

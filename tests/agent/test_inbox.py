@@ -16,7 +16,7 @@ from tack.agent import (
 )
 from tack.kernel import Context
 from tack.llm import TextBlock, UserMessage
-from tack.session import SESSIONS, Session
+from tack.session import SESSION_EVENT, SESSIONS, Committed, Session
 
 
 def item(text: str, source: str = "user") -> InboxItem:
@@ -121,6 +121,73 @@ async def test_an_inbox_can_be_emptied(ctx: Context) -> None:
     assert [event.data for event in session.events[3:]] == [
         InboxSplicedEvent(queue="next-step", removed=1),
         InboxSplicedEvent(queue="next-turn", removed=2),
+    ]
+
+
+# A listener that changes the inbox while it is being read
+
+
+def at_the_next_removal(ctx: Context, session: Session, act: object) -> None:
+    """Call ``act`` once, when the next event that takes input out of the inbox is written."""
+    waiting = [act]
+
+    def listener(committed: Committed) -> None:
+        data = committed.event.data
+        if waiting and isinstance(data, InboxSplicedEvent) and data.removed:
+            waiting.pop()
+            assert callable(act)
+            act()
+
+    ctx.on(SESSION_EVENT, listener)
+
+
+async def test_a_task_that_is_dropped_while_a_turn_takes_its_input_is_not_taken(
+    ctx: Context,
+) -> None:
+    session = await open_session(ctx)
+    enqueue(session, "next-step", item("some context", "inject"))
+    enqueue(session, "next-turn", item("first task"))
+    enqueue(session, "next-turn", item("second task"))
+    # As the context is taken out, a listener cancels the agent and drops what waits.
+    at_the_next_removal(ctx, session, lambda: clear_inbox(session))
+
+    claimed = claim_for_turn(session)
+
+    assert claimed == (item("some context", "inject"),)
+    assert INBOX.of(session) == Inbox()
+    assert [event.data for event in session.events[3:]] == [
+        InboxSplicedEvent(queue="next-step", removed=1),
+        InboxSplicedEvent(queue="next-turn", removed=2),
+    ]
+
+
+async def test_a_task_that_arrives_while_a_turn_takes_its_input_is_taken(ctx: Context) -> None:
+    session = await open_session(ctx)
+    enqueue(session, "next-step", item("some context", "inject"))
+    at_the_next_removal(
+        ctx, session, lambda: enqueue(session, "next-turn", item("a task just in time"))
+    )
+
+    claimed = claim_for_turn(session)
+
+    assert claimed == (item("some context", "inject"), item("a task just in time"))
+    assert INBOX.of(session) == Inbox()
+
+
+async def test_emptying_an_inbox_that_a_listener_empties_too_removes_nothing_twice(
+    ctx: Context,
+) -> None:
+    session = await open_session(ctx)
+    enqueue(session, "next-step", item("some context", "inject"))
+    enqueue(session, "next-turn", item("first task"))
+    at_the_next_removal(ctx, session, lambda: clear_inbox(session))
+
+    clear_inbox(session)
+
+    assert INBOX.of(session) == Inbox()
+    assert [event.data for event in session.events[2:]] == [
+        InboxSplicedEvent(queue="next-step", removed=1),
+        InboxSplicedEvent(queue="next-turn", removed=1),
     ]
 
 

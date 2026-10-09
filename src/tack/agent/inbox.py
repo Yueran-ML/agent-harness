@@ -76,13 +76,17 @@ def enqueue(session: Session, queue: Queue, item: InboxItem) -> None:
 
 
 def claim_for_turn(session: Session) -> tuple[InboxItem, ...]:
-    """Take what a turn begins with: all input for the next step, then one task."""
-    inbox = INBOX.of(session)
-    if inbox.next_step:
-        session.append(InboxSplicedEvent(queue="next-step", removed=len(inbox.next_step)))
-    if inbox.next_turn:
+    """Take what a turn begins with: all input for the next step, then one task.
+
+    The inbox is looked at anew for the task. Taking the other input writes an
+    event, and a listener of that event may have changed what waits: it may
+    have cancelled the agent, which drops the tasks.
+    """
+    for_the_step = claim_for_step(session)
+    task = INBOX.of(session).next_turn[:1]
+    if task:
         session.append(InboxSplicedEvent(queue="next-turn", removed=1))
-    return (*inbox.next_step, *inbox.next_turn[:1])
+    return (*for_the_step, *task)
 
 
 def claim_for_step(session: Session) -> tuple[InboxItem, ...]:
@@ -94,9 +98,14 @@ def claim_for_step(session: Session) -> tuple[InboxItem, ...]:
 
 
 def clear_inbox(session: Session) -> None:
-    """Drop everything that waits."""
-    inbox = INBOX.of(session)
-    if inbox.next_step:
-        session.append(InboxSplicedEvent(queue="next-step", removed=len(inbox.next_step)))
-    if inbox.next_turn:
-        session.append(InboxSplicedEvent(queue="next-turn", removed=len(inbox.next_turn)))
+    """Drop everything that waits.
+
+    Each queue is looked at when its turn comes, for the same reason as in
+    :func:`claim_for_turn`.
+    """
+    for_the_step = len(INBOX.of(session).next_step)
+    if for_the_step:
+        session.append(InboxSplicedEvent(queue="next-step", removed=for_the_step))
+    tasks = len(INBOX.of(session).next_turn)
+    if tasks:
+        session.append(InboxSplicedEvent(queue="next-turn", removed=tasks))

@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from mutation.mutants import SETS, Mutant
+from mutation.mutate import NothingTestedError, verdict
 
 ROOT = Path(__file__).resolve().parents[2]
 EVERY = [(name, mutant) for name, chosen in SETS.items() for mutant in chosen.mutants]
@@ -39,3 +40,21 @@ def test_the_tests_that_a_set_names_exist() -> None:
         assert chosen.tests
         for path in chosen.tests:
             assert (ROOT / path).exists()
+
+
+# The runner
+
+
+@pytest.mark.parametrize(
+    ("code", "found"),
+    [(0, False), (1, True), (2, True), (None, True)],
+    ids=["all passed", "a test failed", "the run was cut short", "no end in time"],
+)
+def test_a_run_of_the_tests_says_whether_a_mutant_was_found(code: int | None, found: bool) -> None:
+    assert verdict(code) is found
+
+
+@pytest.mark.parametrize("code", [3, 4, 5], ids=["pytest broke", "wrong usage", "no test ran"])
+def test_a_run_that_tested_nothing_says_nothing_about_a_mutant(code: int) -> None:
+    with pytest.raises(NothingTestedError, match=f"exit code {code}"):
+        verdict(code)

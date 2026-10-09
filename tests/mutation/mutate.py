@@ -9,9 +9,10 @@ The first argument names a set of ``mutants.py``. Further arguments take the
 place of the tests that the set names, which is how one finds out what a
 single test file notices by itself.
 
-Each mutant is written into its file, pytest is run until the first failure,
-and the file is put back. A run that fails has found the mutant. The exit code
-is 0 if every mutant was found.
+First the tests are run on the code as it is, and they have to pass. Then
+each mutant is written into its file, pytest is run until the first failure,
+and the file is put back. A run in which a test fails has found the mutant.
+The exit code is 0 if every mutant was found.
 
 The script changes files under ``src`` while it runs. It refuses to start if
 ``src`` has changes that are not committed, so that ``git checkout -- src``
@@ -41,8 +42,30 @@ def mutated(mutant: Mutant, source: str) -> str | None:
     return source
 
 
-def notices(tests: tuple[str, ...], storage: str) -> bool:
-    """Run the tests and tell whether one of them failed."""
+class NothingTestedError(Exception):
+    """Pytest ended in a way that says nothing about the code: it ran no test, or it broke."""
+
+
+def verdict(code: int | None) -> bool:
+    """Tell from the exit code of pytest whether the tests noticed a fault.
+
+    Args:
+        code: The exit code, or ``None`` if the run did not end in time.
+
+    Raises:
+        NothingTestedError: The code is neither of the three that say something.
+    """
+    if code == 0:
+        return False
+    # 1: a test failed. 2: the run was cut short, which is what a module that no longer
+    # imports does to it. No end in time: tests that hang have noticed, in their way.
+    if code in (1, 2, None):
+        return True
+    raise NothingTestedError(f"pytest ended with the exit code {code}")
+
+
+def run(tests: tuple[str, ...], storage: str) -> int | None:
+    """Run the tests and return the exit code of pytest, or ``None`` after too long a time."""
     command = [sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", *tests]
     # Examples that fail against a mutant are of no use to later runs of the real code.
     environment = os.environ | {"HYPOTHESIS_STORAGE_DIRECTORY": storage}
@@ -56,9 +79,8 @@ def notices(tests: tuple[str, ...], storage: str) -> bool:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        # Tests that hang have noticed, in their way.
-        return True
-    return done.returncode != 0
+        return None
+    return done.returncode
 
 
 def main(arguments: list[str]) -> int:
@@ -79,6 +101,14 @@ def main(arguments: list[str]) -> int:
         return 2
     missed: list[str] = []
     with tempfile.TemporaryDirectory() as storage:
+        before = run(tests, storage)
+        if before != 0:
+            print(
+                f"the tests do not pass on the code as it is (pytest ended with {before}), "
+                "so they can say nothing about a mutant",
+                file=sys.stderr,
+            )
+            return 2
         for mutant in chosen.mutants:
             path = ROOT / mutant.path
             original = path.read_text(encoding="utf-8")
@@ -89,7 +119,7 @@ def main(arguments: list[str]) -> int:
                 continue
             try:
                 path.write_text(changed, encoding="utf-8", newline="\n")
-                found = notices(tests, storage)
+                found = verdict(run(tests, storage))
             finally:
                 path.write_text(original, encoding="utf-8", newline="\n")
             print(f"{'found   ' if found else 'MISSED  '}  {mutant.name}", flush=True)

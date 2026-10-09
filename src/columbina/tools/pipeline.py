@@ -153,8 +153,8 @@ async def _allow(invocation: Invocation) -> Decision:
     return Allow()
 
 
-async def _run_tool(invocation: Invocation) -> object:
-    return await invocation.tool.execute(invocation.args, invocation.run)
+class _NotTheCheckedCallError(Exception):
+    """A listener of ``tools/execute`` passed on a call that the checks never saw."""
 
 
 async def _accept(executed: Executed) -> Verdict:
@@ -184,6 +184,12 @@ class PendingCall:
     each of them, and a guard can only refuse. So nothing in the chain can
     keep a guard from being asked.
 
+    What runs is what was checked. A listener of ``tools/execute`` may wrap
+    the run or answer in its place, but the tool runs only with the call that
+    the checks saw. A call whose tool has left since it was begun does not
+    run either: what a plugin took away with it is no longer on offer, and a
+    tool that has taken its name is another tool.
+
     Attributes:
         call: The call as the model wrote it.
         concurrency_safe: Whether the call may run beside other calls of the
@@ -193,10 +199,10 @@ class PendingCall:
     __slots__ = (
         "_authorized",
         "_ctx",
-        "_guards",
         "_invocation",
         "_outcome",
         "_timeout",
+        "_tools",
         "call",
         "concurrency_safe",
     )
@@ -208,12 +214,12 @@ class PendingCall:
         invocation: Invocation | None,
         timeout: float | None,
         concurrency_safe: bool,
-        guards: Registry[Guard],
+        tools: Tools,
     ) -> None:
         self.call = call
         self.concurrency_safe = concurrency_safe
         self._ctx = ctx
-        self._guards = guards
+        self._tools = tools
         self._invocation = invocation
         self._timeout = timeout
         self._authorized = False
@@ -246,6 +252,8 @@ class PendingCall:
         invocation = self._invocation
         if self._authorized or self._outcome is not None or invocation is None:
             return
+        if self._gone(invocation.tool) is not None:
+            return
         try:
             decision = cast(
                 "object",
@@ -269,9 +277,17 @@ class PendingCall:
         elif await self._passes_the_guards(invocation):
             self._authorized = True
 
+    def _gone(self, tool: Tool[Any, Any]) -> ToolOutcome | None:
+        """End the call if its tool is no longer on offer, and return how it ended."""
+        if self._tools.registry.get(tool.name) is tool:
+            return None
+        return self._fail(
+            "UNKNOWN_TOOL", f"The tool {tool.name} is no longer there, and the call did not run."
+        )
+
     async def _passes_the_guards(self, invocation: Invocation) -> bool:
         """Ask every guard, in the order they were added, until one refuses."""
-        for name, guard in list(self._guards.items()):
+        for name, guard in list(self._tools.guards.items()):
             what = f"the guard {name!r}"
             try:
                 refusal = cast(
@@ -312,17 +328,37 @@ class PendingCall:
             assert self._outcome is not None
             return self._outcome
         tool = invocation.tool
+        gone = self._gone(tool)
+        if gone is not None:
+            return gone
+
+        async def run_the_checked_call(passed: Invocation) -> object:
+            if passed is not invocation:
+                raise _NotTheCheckedCallError
+            return await tool.execute(invocation.args, invocation.run)
+
         timer = asyncio.timeout(self._timeout)
         try:
             async with timer:
                 value = await cancellation.guard(
-                    self._ctx.waterfall(EXECUTE, invocation, _run_tool)
+                    self._ctx.waterfall(EXECUTE, invocation, run_the_checked_call)
                 )
             try:
                 text = str(value) if tool.render is None else tool.render(invocation.args, value)
             except asyncio.CancelledError as error:
                 # Rendering does not wait, so no cancellation of ours can arrive in it.
                 raise cancellation.CancelledFromInside from error
+        except _NotTheCheckedCallError:
+            logger.error(
+                "a listener of tools/execute passed on another call of the tool %r "
+                "than the one that was checked",
+                tool.name,
+            )
+            return self._fail(
+                "CHECK_FAILED",
+                "The call did not run: a listener of tools/execute passed on another call "
+                "than the one that was checked",
+            )
         except Exception as error:
             return self._failed(tool.name, error, timed_out=timer.expired())
         executed = Executed(invocation, value, text or "(no output)")
@@ -432,13 +468,13 @@ class Tools:
         if tool is None:
             names = ", ".join(self.registry)
             known = f"The tools are: {names}." if names else "There are no tools."
-            unknown = PendingCall(ctx, call, None, None, True, self.guards)
+            unknown = PendingCall(ctx, call, None, None, True, self)
             unknown.fail("UNKNOWN_TOOL", f"There is no tool named {call.name!r}. {known}")
             return unknown
         try:
             args = tool.parse(call.arguments)
         except ToolFailure as failure:
-            unfit = PendingCall(ctx, call, None, None, True, self.guards)
+            unfit = PendingCall(ctx, call, None, None, True, self)
             unfit.fail(failure.code, str(failure))
             return unfit
         except (Exception, asyncio.CancelledError) as error:
@@ -447,7 +483,7 @@ class Tools:
             logger.error(
                 "the arguments of the tool %r could not be checked", tool.name, exc_info=error
             )
-            broken = PendingCall(ctx, call, None, None, True, self.guards)
+            broken = PendingCall(ctx, call, None, None, True, self)
             broken.fail(
                 "TOOL_ERROR",
                 f"The arguments of the tool {tool.name} could not be checked: {_describe(error)}",
@@ -458,7 +494,7 @@ class Tools:
         except (Exception, asyncio.CancelledError) as error:
             # Without knowing what a call acts on, no check can judge it.
             logger.error("the tool %r could not say what a call acts on", tool.name, exc_info=error)
-            aimless = PendingCall(ctx, call, None, None, True, self.guards)
+            aimless = PendingCall(ctx, call, None, None, True, self)
             aimless.fail(
                 "TOOL_ERROR",
                 f"The tool {tool.name} could not say what the call acts on: {_describe(error)}",
@@ -473,7 +509,7 @@ class Tools:
             safe = False
         timeout = self.timeout_seconds if tool.timeout_seconds is None else tool.timeout_seconds
         invocation = Invocation(tool, call, args, run, target)
-        return PendingCall(ctx, call, invocation, timeout, safe, self.guards)
+        return PendingCall(ctx, call, invocation, timeout, safe, self)
 
     async def run(self, ctx: Context, call: ToolCallBlock, run: ToolRun) -> ToolOutcome:
         """Take a call through the whole pipeline and return how it ended."""

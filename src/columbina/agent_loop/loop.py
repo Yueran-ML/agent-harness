@@ -438,6 +438,10 @@ class LoopAgent(Agent):
         beside each other then overlap, up to a limit. A call that is not
         waits until nothing else runs, and nothing starts until it is done.
 
+        The checks of a call are asked when it can run, and it runs as soon
+        as they have let it through. So what they went by has no time to
+        change in between: no other call is waited for after the checks.
+
         The results are written in the order of the model, each as soon as
         all before it are in. If the turn is cancelled, the tools that run
         are stopped, and every call still gets a result.
@@ -468,20 +472,20 @@ class LoopAgent(Agent):
         try:
             for index, call in enumerate(calls):
                 pending = pendings[index] = self._begin(call)
-                await pending.authorize()
+                if pending.outcome is None:
+                    room = self._max_parallel - 1 if pending.concurrency_safe else 0
+                    await until_running(room)
+                    await session.flush()
+                    await pending.authorize()
                 if pending.outcome is not None:
                     outcomes[index] = pending.outcome
                     write()
                 elif pending.concurrency_safe:
-                    await until_running(self._max_parallel - 1)
-                    await session.flush()
                     started.add(index)
                     task = asyncio.ensure_future(pending.execute())
                     running[task] = index
                     task.add_done_callback(finished)
                 else:
-                    await until_running(0)
-                    await session.flush()
                     started.add(index)
                     outcomes[index] = await pending.execute()
                     write()

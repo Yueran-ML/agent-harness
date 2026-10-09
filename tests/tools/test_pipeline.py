@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -985,6 +986,105 @@ async def test_a_tool_that_cannot_say_what_a_call_acts_on_does_not_run(
     )
     assert journal.ran == []
     assert "target bug" in caplog.text
+
+
+# What runs is what was checked
+
+
+async def test_a_listener_cannot_put_another_call_in_the_place_of_the_one_that_was_checked(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def swapping(invocation: Invocation, proceed: Next[Invocation, object]) -> object:
+        return await proceed(dataclasses.replace(invocation, args=EchoArgs(text="another")))
+
+    tools.add(ctx, tool("echo", journal.echo))
+    ctx.on(EXECUTE, swapping)
+
+    with caplog.at_level(logging.ERROR, logger="columbina.tools"):
+        outcome = await tools.run(ctx, call("echo", '{"text": "as checked"}'), run)
+
+    assert outcome.error == ToolError(
+        code="CHECK_FAILED",
+        reason="The call did not run: a listener of tools/execute passed on another call "
+        "than the one that was checked",
+    )
+    assert journal.ran == []
+    assert "tools/execute" in caplog.text
+
+
+async def test_a_listener_that_passes_on_the_call_it_was_given_lets_it_run(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    async def timing(invocation: Invocation, proceed: Next[Invocation, object]) -> object:
+        return await proceed(invocation)
+
+    tools.add(ctx, tool("echo", journal.echo))
+    ctx.on(EXECUTE, timing)
+
+    outcome = await tools.run(ctx, call("echo", '{"text": "as checked"}'), run)
+
+    assert outcome.error is None
+    assert journal.ran == ["as checked"]
+
+
+def lending(name: str, journal: Journal) -> Plugin[object]:
+    """A plugin that brings one tool, and takes it away when it leaves."""
+
+    def apply(inner: Context, config: object) -> None:
+        inner.use(TOOLS).add(inner, tool(name, journal.echo))
+
+    return Plugin(f"lends-{name}", apply, inject=(TOOLS,))
+
+
+async def test_a_call_whose_tool_left_before_the_checks_does_not_run_and_is_not_checked(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    asked: list[str] = []
+    fiber = await ctx.plugin(lending("echo", journal))
+    tools.guards.add(ctx, "watching", content(asked, "watching"))
+    pending = tools.begin(ctx, call("echo"), run)
+
+    await fiber.dispose()
+    outcome = await pending.execute()
+
+    assert outcome.error == ToolError(
+        code="UNKNOWN_TOOL", reason="The tool echo is no longer there, and the call did not run."
+    )
+    assert asked == []
+    assert journal.ran == []
+
+
+async def test_a_call_whose_tool_left_after_the_checks_does_not_run(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    fiber = await ctx.plugin(lending("echo", journal))
+    pending = tools.begin(ctx, call("echo"), run)
+    await pending.authorize()
+    assert pending.outcome is None
+
+    await fiber.dispose()
+    outcome = await pending.execute()
+
+    assert outcome.error is not None
+    assert outcome.error.code == "UNKNOWN_TOOL"
+    assert journal.ran == []
+
+
+async def test_a_tool_that_took_the_name_of_the_one_that_left_is_not_run_in_its_place(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    other = Journal()
+    fiber = await ctx.plugin(lending("echo", journal))
+    pending = tools.begin(ctx, call("echo"), run)
+
+    await fiber.dispose()
+    await ctx.plugin(lending("echo", other))
+    outcome = await pending.execute()
+
+    assert outcome.error is not None
+    assert outcome.error.code == "UNKNOWN_TOOL"
+    assert journal.ran == []
+    assert other.ran == []
 
 
 # Running calls beside each other

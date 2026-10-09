@@ -24,6 +24,7 @@ INBOX = "src/columbina/agent/inbox.py"
 CANCELLATION = "src/columbina/cancellation.py"
 READ = "src/columbina/builtin_tools/read.py"
 PROCESS = "src/columbina/process.py"
+PIPELINE = "src/columbina/tools/pipeline.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,10 +129,18 @@ _LOOP = (
     mutant(
         "an exclusive call does not wait for the pool",
         LOOP,
-        "                else:\n"
-        "                    await until_running(0)\n"
+        "                    room = self._max_parallel - 1 if pending.concurrency_safe else 0\n",
+        "                    room = self._max_parallel - 1\n",
+    ),
+    mutant(
+        "a call is checked before it can run",
+        LOOP,
+        "                    await until_running(room)\n"
+        "                    await session.flush()\n"
+        "                    await pending.authorize()\n",
+        "                    await pending.authorize()\n"
+        "                    await until_running(room)\n"
         "                    await session.flush()\n",
-        "                else:\n                    await session.flush()\n",
     ),
     mutant(
         "cancel clears nothing from the inbox",
@@ -491,8 +500,42 @@ _PROCESS = (
     ),
 )
 
+_TOOLS = (
+    mutant(
+        "the guards are not asked",
+        PIPELINE,
+        "        elif await self._passes_the_guards(invocation):\n            self._authorized = True\n",
+        "        else:\n            self._authorized = True\n",
+    ),
+    mutant(
+        "a listener can put another call in the place of the checked one",
+        PIPELINE,
+        "            if passed is not invocation:\n                raise _NotTheCheckedCallError\n",
+        "",
+    ),
+    mutant(
+        "a call runs although its tool has left",
+        PIPELINE,
+        "        gone = self._gone(tool)\n        if gone is not None:\n            return gone\n",
+        "",
+    ),
+    mutant(
+        "a call is checked although its tool has left",
+        PIPELINE,
+        "        if self._gone(invocation.tool) is not None:\n            return\n",
+        "",
+    ),
+    mutant(
+        "a tool that took the name of another counts as that one",
+        PIPELINE,
+        "        if self._tools.registry.get(tool.name) is tool:",
+        "        if tool.name in self._tools.registry:",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "loop": MutantSet(("tests/agent_loop", "tests/agent", "tests/test_cancellation.py"), _LOOP),
+    "tools": MutantSet(("tests/tools",), _TOOLS),
     "read": MutantSet(("tests/builtin_tools",), _READ),
     "process": MutantSet(("tests/test_process.py",), _PROCESS),
 }

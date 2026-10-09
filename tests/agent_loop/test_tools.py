@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 import columbina.agent_loop
 from columbina.agent import INBOX, Agent
-from columbina.kernel import Next
+from columbina.kernel import Context, Next
 from columbina.llm import AssistantMessage, TextBlock, ToolCallBlock, ToolMessage
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import (
@@ -314,6 +314,60 @@ async def test_a_call_that_must_be_alone_waits_and_makes_the_ones_after_it_wait(
 
     assert board.log == ["start a", "end a", "start x", "end x", "start b", "end b"]
     assert [text for _, text, _ in results(agent)] == ["did a", "did x", "did b"]
+
+
+def watched(harness: Harness, board: Board) -> None:
+    """Write down on the board when the checks of a call are asked."""
+
+    async def guard(ctx: Context, invocation: Invocation) -> Deny | None:
+        board.log.append(f"check {invocation.call.arguments}")
+        return None
+
+    harness.tools.guards.add(harness.ctx, "watching", guard)
+
+
+async def test_a_call_that_must_be_alone_is_checked_only_when_it_can_run(
+    harness: Harness, board: Board
+) -> None:
+    watched(harness, board)
+    board.gate("a")
+    agent = await harness.agent(Reply(calls=(*shared("a"), *exclusive("x"))), Reply(text="Done."))
+    agent.followup("Do a and x.")
+    await asyncio.wait_for(board.begun("a").wait(), timeout=5)
+    await asyncio.sleep(0.02)
+
+    assert board.log == ['check {"name": "a"}', "start a"]
+
+    board.gate("a").set()
+    await idle(agent)
+
+    assert board.log == [
+        'check {"name": "a"}',
+        "start a",
+        "end a",
+        'check {"name": "x"}',
+        "start x",
+        "end x",
+    ]
+
+
+async def test_a_call_that_waits_for_room_is_checked_only_when_there_is_room(
+    harness: Harness, board: Board
+) -> None:
+    await harness.ctx.plugin(columbina.agent_loop, {"name": "narrow", "max_parallel_tool_calls": 1})
+    watched(harness, board)
+    board.gate("a")
+    agent = await harness.agent(Reply(calls=shared("a", "b")), Reply(text="Done."), loop="narrow")
+    agent.followup("Do a and b.")
+    await asyncio.wait_for(board.begun("a").wait(), timeout=5)
+    await asyncio.sleep(0.02)
+
+    assert board.log == ['check {"name": "a"}', "start a"]
+
+    board.gate("a").set()
+    await idle(agent)
+
+    assert board.log[2:4] == ["end a", 'check {"name": "b"}']
 
 
 async def test_only_so_many_calls_run_beside_each_other(harness: Harness, board: Board) -> None:

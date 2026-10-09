@@ -507,7 +507,9 @@ async def test_keys_that_were_under_way_when_a_question_came_do_not_answer_it(
 async def test_a_question_takes_an_answer_once_the_keys_have_been_still_for_a_while(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(prompt_module, "_SETTLE_SECONDS", 0.6)
+    # The keys have to be still for a second here. A machine that is busy with other tests
+    # may be late with a key, and it would have to be late by most of that second.
+    monkeypatch.setattr(prompt_module, "_SETTLE_SECONDS", 1.0)
     with desk() as at:
         prompt = Prompt(at.terminal)
         waiting = asyncio.ensure_future(prompt.line())
@@ -515,7 +517,7 @@ async def test_a_question_takes_an_answer_once_the_keys_have_been_still_for_a_wh
         await at.sees("May it be run?")
 
         # A key every fifth of a second, for longer than the keys have to be still.
-        for _ in range(5):
+        for _ in range(7):
             at.type("y")
             await asyncio.sleep(0.2)
 

@@ -128,13 +128,15 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 | 清单 | 内容 | 用途 |
 |---|---|---|
-| `minimal` | 内核、会话、模型、循环、一个 shell 工具 | 最小可行脚手架，也是性能基准的对象 |
+| `minimal` | 会话、模型、工具管线、循环、一个工具 | 最小可行脚手架，也是性能基准的对象 |
 | `base` | 全部共用插件 | 其余清单的第一层 |
 | `headless` | `base` 加一次性运行器 | 脚本和自动化 |
 | `cli` | `base` 加终端界面 | 日常使用 |
 | `bench` | `base` 加基准运行器，审批为"从不"，带回合预算 | 验收基准 |
 
 补丁按 `id` 定位条目，可以整体替换它的 `config`、把它设为 `disabled`，或插入新条目。叠加顺序是清单、用户目录下的补丁、命令行 `--patch`。
+
+第 2 阶段只有 `minimal` 和 `headless` 两份清单。`minimal` 里的工具是只读的 `read`，shell 工具要等第 3 阶段的权限和审批。`headless` 暂时建立在 `minimal` 之上，加上重试插件和一次性运行器。`base` 在第 3 阶段出现后，`headless` 改为建立在它之上。
 
 清单和补丁是同一种格式，叫做层。一层是一组操作：`insert` 插入条目，带 `id` 的操作修改已有条目。一层可以用 `extends` 写明它建立在哪一层之上。配置里的字符串可以用 `${NAME}` 和 `${NAME:-default}` 引用环境变量。
 
@@ -169,6 +171,14 @@ tests/   benchmarks/   docs/   examples/plugins/
 - 等待方被取消不会打断加载、卸载或清理。异步的清理在内核自己的任务里进行。
 - 提供方卸载前，先等依赖它的插件卸载完。服务被撤回期间名字保留，直到依赖方卸载完成。
 - `apply` 和 disposer 不能等待一个正在等它们的 Fiber。这种情况下 `dispose()` 只发出请求，`settled()` 立即返回，应用级的 `ctx.settled()` 抛 `LifecycleError`。
+
+模型运行时、工具管线和循环等待别人的代码时，都经 `tack.cancellation.guard`。别人的代码指适配器的流、工具体和各拦截点的监听器。`guard` 靠当前任务被请求取消的次数分清三种情况。
+
+- 当前任务确实被取消，取消原样向外传播。
+- 被等待的代码自己抛出了取消，这算它出错。`guard` 把它换成普通异常 `CancelledFromInside`，异常文本写明等的是什么。
+- 清理时的异常顶替了取消，`guard` 记下这个异常，再把取消重新抛出。
+
+任务运行期间收到的取消请求要到它下一次等待时才送达。`guard` 在取计数之前先让出一次，这样的请求在被等待的代码启动之前就送达。
 
 ### 4.6 与 Cordis 的差异
 
@@ -247,6 +257,8 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 修复区分两种状态。有 `tool/call` 记录但没有结果，标 `TOOL_OUTCOME_UNKNOWN`。连调用记录都没有，标 `TOOL_NOT_STARTED`。结果文本告诉模型只有只读或幂等操作才可重试。
 
+调用和结果按出现的次序逐个配对，不只看 `call_id`，因为模型可能在后面的回复里重用同一个 id。顶替别的事件的事件不参与配对。它只是把日志里已有的内容重说一遍，既不发起调用，也不回答调用。
+
 分叉复制到指定 `seq` 为止的前缀，追加 `session/end-seed{inherited: true}`，再用同一个修复函数以 `forked` 为原因关闭未闭合的尾部。
 
 ### 5.6 状态投影
@@ -283,7 +295,7 @@ tests/   benchmarks/   docs/   examples/plugins/
 - 适配器抛出 `LlmError` 以外的异常，算 `INTERNAL`。流没有结束分片就断了，算 `STREAM_CLOSED`。分片顺序违反协议，算 `MALFORMED_RESPONSE`。
 - 流空闲看门狗默认 300 秒，只在等待下一个分片时计时。
 - 适配器内部不重试。重试是独立插件，挂在"请求出错"拦截点上。
-- 默认策略：最多 5 次，只重试 `EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`，指数退避 0.5 到 10 秒，抖动 10%，提供方给出的等待时间在上限内优先。
+- 默认策略：最多 5 次，只重试 `EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`、`STREAM_CLOSED`，指数退避 0.5 到 10 秒，抖动 10%，提供方给出的等待时间在上限内优先。
 - 每次重试先写 `llm/retry` 事件再等待，等待可取消。重试在同一个打开的步内重跑，不重复追加用户消息。
 
 ### 6.3 适配器
@@ -296,6 +308,13 @@ tests/   benchmarks/   docs/   examples/plugins/
 | `replay` | 无 | 测试。从录制的会话日志里取出每次调用的回复，重新拆成分片当脚本 |
 
 `anthropic_messages` 放在第 6 阶段之后。DeepSeek Harness 的官方适配器走这个格式，Tack 先做 Chat 格式是因为本地模型都用它。
+
+`openai_chat` 另有四条规则。
+
+- 密钥在发请求时从环境变量读取，不进配置。适配器给出的每一个失败都走同一个出口，先从文本里剔除密钥，再截到 500 个字符，截断处因此不会留下密钥的前半段。被捕获的原始异常不随失败向外传，因为它的文本没有清理过。
+- 工具调用的名字和 id 可能一次给全，可能分片到达，也可能每个事件都重复一遍。适配器等两者齐全才开始这个内容块。同一调用来了一个不带名字和 id 的片段、别的内容开始、回复结束，这三种情况都算齐全。在这之前到达的参数先存着。
+- 一次回复带多个 `choices` 时，只读 `index` 为 0 的那个。
+- `Retry-After` 既认秒数，也认 HTTP 日期。
 
 DeepSeek 的注意事项，来自官方文档：
 
@@ -321,12 +340,18 @@ DeepSeek 的注意事项，来自官方文档：
 | `steer(content)` | 运行中在最近的步边界被消费，空闲时开新回合 |
 | `inject(content)` | 只附带上下文，等别的输入唤醒 |
 | `cancel(cause, keep_inbox=False)` | 中止当前活动。`cause` 取 `user`、`parent`、`hook`、`budget`、`disposed`，写进 `turn/end` |
-| `run_maintenance(task)` | 在真正空闲时跑非回合任务，手动压缩用它 |
+| `wake()` | 告诉 Agent 可能有输入在等。没有输入时什么也不做 |
 | `when_idle()` | 等到空闲 |
+| `close()` | 结束 Agent：停下当前活动，关闭会话 |
+| `run_maintenance(task)` | 在真正空闲时跑非回合任务，手动压缩用它。第 5 阶段加入 |
+
+`cancel` 默认丢弃排队的输入。`keep_inbox=True` 时输入保留，但 Agent 在下一次被唤醒之前不开新回合。新的输入和 `wake()` 都会唤醒它。
 
 inbox 分 `next-turn` 和 `next-step` 两个队列。回合边界认领全部 `next-step` 加一条 `next-turn`，步之间只认领 `next-step`。每次 inbox 变更落成一条 `agent/inbox/spliced` 事件，排队的输入是日志投影出的状态。
 
-`ctx.agents.create()` 新建，`ctx.agents.resume(session_id)` 恢复。扩展插件只依赖 `tack.agent`，不依赖 `tack.agent_loop`，所以循环可以替换。
+回合边界的认领分两步，取任务之前重新读一次 inbox。第一步写出的事件会通知监听器，监听器可能在这时取消 Agent 并丢弃排队的任务，被丢弃的任务不能再被取走。
+
+`agents.create(ctx, spec, session_id=...)` 新建，`agents.resume(ctx, spec, session_id)` 恢复。`spec` 给出工作目录、调用配置、系统提示和用哪一个循环。扩展插件只依赖 `tack.agent`，不依赖 `tack.agent_loop`，所以循环可以替换。
 
 ### 7.2 回合与步
 
@@ -334,21 +359,23 @@ inbox 分 `next-turn` 和 `next-step` 两个队列。回合边界认领全部 `n
 
 ```
 turn/start
-  进入前：认领输入 → 组装系统提示 → 运行时上下文快照
-          → waterfall agent/pre-step ⇒ reject | enter(messages)
-     reject ⇒ turn/end{blocked}；首批为空 ⇒ turn/end{completed}，不花模型调用
+  每一步之前：对账 system/message → 认领输入，追加 user/message
+          → waterfall agent/pre-step ⇒ Reject | Enter
+     Reject，或者没有明确的决定 ⇒ turn/end{blocked}
   step/start
      waterfall agent/request（可替换调用配置）
-     对账 system/message；仅首次尝试追加 user/message；写 request/header
-     由日志派生并冻结请求
+     调用配置或工具模式有变化时写 request/header
+     由日志派生请求
      读流，逐分片发 agent/assistant-stream
      成功 ⇒ assistant/message；失败 ⇒ assistant/attempt
-            → waterfall agent/request-error ⇒ 重试 | 保留原错误
+            → waterfall agent/request-error ⇒ Retry 才重试，否则保留原错误
      有工具调用 ⇒ 按 8.3 节调度执行
   step/end
   本步给出结束原因且 next-step 队列为空 ⇒ serial agent/turn-stopping
 turn/end{reason}
 ```
+
+没有输入在等时，唤醒 Agent 不开回合。系统提示的分段组装和运行时上下文快照在第 3 阶段加入，位置在认领输入之后、`agent/pre-step` 之前。
 
 `turn/*`、`step/*`、`*/message`、`assistant/attempt`、`tool/*` 是持久事件。`agent/*` 是进程内的实时接口。需要可回放数据的前端消费会话事件，`agent/*` 只管队列、状态、拦截和流式帧。
 
@@ -358,20 +385,24 @@ turn/end{reason}
 |---|---|
 | 回复里没有工具调用 | `completed` |
 | 结束原因为 `max-tokens` | `max-tokens`，在回合内有粘性 |
-| 工具结果带 `concludes_turn` | 提交完本批结果后结束 |
+| 工具结果带 `concludes_turn` | 提交完本批结果后以 `completed` 结束，`next-step` 队列里的输入留给下一回合 |
 | `agent/pre-step` 返回 `reject` | `blocked`，不开步 |
 | 取消 | `aborted` |
 | 异常 | `error` |
 
-回合真正关闭还要求 `next-step` 队列为空。`agent/turn-stopping` 的监听器想阻止结束时，调用 `agent.steer()` 塞一条消息，循环就再跑一步。
+除了工具要求结束这一种情况，回合关闭还要求 `next-step` 队列为空。`agent/turn-stopping` 的监听器想阻止结束时，调用 `agent.steer()` 塞一条消息，循环就再跑一步。
+
+`agent/pre-step` 和 `agent/request-error` 的监听器必须给出明确的决定。前者只有 `Enter` 才进入下一步，后者只有 `Retry` 才重试，别的返回值一律按拒绝处理。
 
 循环本体不设步数上限。上限由回合预算插件提供。它在 `agent/pre-step` 上检查步数、累计 token 和墙钟时间，到限后返回 `reject`，`turn/end` 写成 `blocked` 并在 `detail` 里注明是哪项预算。
 
 ### 7.4 取消与失败
 
-- 流中途被取消时，已送达的文本落成带 `interrupted: true` 的 `assistant/message`。
-- 未派发的工具调用各补一对 `tool/call` 和"未执行"的结果。
+- 流中途被取消时，已到达的内容落成结束原因为空的 `assistant/message`。一点内容都没到达时，这条消息不进消息面。
+- 未派发的工具调用各补一对 `tool/call` 和"未执行"的结果，错误码 `ABORTED_BEFORE_DISPATCH`。被打断的回复里的工具调用也这样处理。
+- 正在执行的工具被停下，结果的错误码是 `TOOL_CANCELLED`，文本提醒模型调用可能已经部分生效。
 - 步失败时，给每个没有结果的工具调用补错误结果。调用与结果在任何情况下都成对。
+- 四个拦截点的监听器抛异常时，回合以 `error` 结束。监听器自己抛出的取消同样算它出错，回合不会被记成 `aborted`。
 
 ## 8. 工具
 
@@ -416,10 +447,10 @@ Tool(
 三条不变式：
 
 - 参数一旦记录就不能被改写。历史、审计、界面和执行必须一致。
-- 一切失败都变成结构化的错误结果返回给模型，回合不中断。检查本身出错时调用不执行，结果检查出错时结果不放行。
-- 只有调用方自己被取消才会向外抛。这时工具被停下，调用没有结果，由循环补一条。工具清理时出错不会吞掉取消，工具内部自己触发的取消算工具出错。
+- 一切失败都变成结构化的错误结果返回给模型，回合不中断。检查本身出错时调用不执行，结果检查出错时结果不放行。检查没有给出明确答复时也一样，只有 `Allow` 和 `Accept` 算放行。
+- 只有调用方自己被取消才会向外抛。这时工具被停下，调用没有结果，由循环补一条。工具清理时出错不会吞掉取消，工具内部自己触发的取消算工具出错。读参数和判断能否并行时不等待任何东西，这两处出现的取消同样算工具出错。
 
-错误码：`UNKNOWN_TOOL`、`INVALID_ARGS`、`TOOL_ERROR`、`TOOL_TIMEOUT`、`DENIED`、`CHECK_FAILED`、`RESULT_BLOCKED`、`ABORTED_BEFORE_DISPATCH`，第 3 阶段加 `APPROVAL_REJECTED`、`APPROVAL_UNAVAILABLE`。工具可以用 `ToolFailure` 带上自己的错误码。
+错误码：`UNKNOWN_TOOL`、`INVALID_ARGS`、`TOOL_ERROR`、`TOOL_TIMEOUT`、`DENIED`、`CHECK_FAILED`、`RESULT_BLOCKED`、`ABORTED_BEFORE_DISPATCH`、`TOOL_CANCELLED`，第 3 阶段加 `APPROVAL_REJECTED`、`APPROVAL_UNAVAILABLE`。工具可以用 `ToolFailure` 带上自己的错误码。
 
 ### 8.3 并行
 
@@ -429,7 +460,7 @@ Tool(
 
 | 工具 | 说明 | 上限 |
 |---|---|---|
-| `read` | 带行号读文本，支持 `offset` 和 `limit` | 2000 行，每行 2000 字符，50 KiB |
+| `read` | 带行号读文本，支持 `offset` 和 `limit` | 2000 行，每行 2000 字符，50 KiB，只看文件的前 64 MiB |
 | `write` | 整文件创建或覆盖 | |
 | `edit` | 精确字面替换。必须唯一匹配，否则报错并要求扩大上下文。`replace_all` 可选 | |
 | `glob` | 文件名匹配，按修改时间排序 | 100 条 |
@@ -439,6 +470,8 @@ Tool(
 | `skill` | 按名字加载一个技能的完整说明 | |
 | `subagent` | 委派给全新上下文的子代理 | 深度 1 |
 | `ask_user_question` | 向用户提问并等待回答，只在交互式前端可用 | |
+
+`read` 的上限管的是它做的事，不只是它返回的东西。文件按 64 KiB 一块读入。超长的行只留开头，其余部分边读边数，所以提示里仍能给出被省略的字符数。没被要求的行只计数。超出 64 MiB 的部分不看，提示写成"至少 N 行"。调用方被取消时，读文件的线程在下一块处停下。
 
 写和改之前必须先读过该文件。读后文件变了就拒绝并提示重读。这条规则挂在文件系统的意图事件上，不写在工具里。
 
@@ -606,9 +639,15 @@ CLI 提供三个选项：允许一次、本会话允许、拒绝。"本会话允
 - `tack doctor`：自检密钥、模型可达性、shell、ripgrep、容器。
 - 通用参数：`--profile`、`--patch`、`--model`、`--permission`、`--dump-config`。
 
+第 2 阶段有 `tack run`，参数是 `--profile`、`--patch`、`--model`、`--cwd`、`--session-id`、`--json`、`--no-json`、`--dump-config`。其余命令随各自的阶段加入。
+
+程序由几层叠出来，依次是清单、`<TACK_HOME>/config.yml`、各个 `--patch`、命令行自己的参数。名为 `frontend` 的条目提供要运行的前端。命令行只改它点名的设置。没给 `--cwd`、`--json`、`--session-id` 时，前面各层的值保持不变。工作目录只有在哪一层都没指定时才取当前目录。
+
 ### 12.2 无界面
 
-最终回答写到标准输出。`--json` 输出逐行事件：`session`、`status`、`text`、`thinking`、`tool_call`、`tool_result`、`final`。`final` 带结束原因和用量。`--session-id` 续接已有会话。退出码成功为 0，其余为 1。
+最终回答写到标准输出。`--json` 输出逐行事件：`session`、`status`、`text`、`thinking`、`tool_call`、`tool_result`、`final`。`final` 带结束原因和用量。`--session-id` 续接已有会话，没有这个会话就用这个 id 新建。
+
+退出码有四个。回合以 `completed` 结束为 0。回合以别的原因结束，或者 Agent 中途停下，为 1。命令行、清单或插件加载有问题，为 2，这时不发任何模型请求。被 Ctrl+C 打断为 130，打断前先把当前回合正常收尾。
 
 ### 12.3 终端 CLI
 
@@ -630,12 +669,23 @@ CLI 提供三个选项：允许一次、本会话允许、拒绝。"本会话允
 |---|---|
 | 单元 | 内核、日志折叠、路径隔离、编辑工具、截断、权限规则、分片装配等 |
 | 循环 | 用脚本化适配器驱动真实的工具管线和 JSONL 持久化。只替换模型、网络和时钟 |
-| 性质 | 用 hypothesis 随机生成输入与取消的时序。不变量：每条输入在日志里恰好出现一次，回合号严格递增，工具调用与结果始终成对，状态只在空闲和运行之间切换 |
-| 回放 | 录制的真实会话既是输入也是期望输出，不需要密钥 |
-| 请求快照 | 把每次请求渲染成"序号、角色、内容"的行并存成快照，断言第 n 次请求里模型看到了什么 |
+| 性质 | 用 hypothesis 随机生成输入与取消的时序，取消也可以从监听器和工具内部发起。不变量见表后 |
+| 回放 | 录制的真实会话既是输入也是期望输出，不需要密钥。`replay` 适配器按顺序给出会话里记下的每次回复，重跑得到的日志必须与录制的逐事件相同 |
+| 请求快照 | 把每次请求写成文本存成快照。每条消息一行序号和角色，每个内容块一行。只在上一次请求之后追加内容的请求，只写它追加的部分 |
+| 变异 | 往循环、inbox、取消辅助和 `read` 工具里逐个放入小错误，看测试能否发现。`tests/mutation/mutate.py` 手工运行，不进闸门。闸门里只有一条测试，检查变异清单仍然对得上代码 |
 | 卸载 | 每个注册表一条测试：销毁贡献它的插件实例，断言清理干净 |
 | 适配器恢复 | 本地模拟 SSE 服务器，编排断流、挂起、畸形 JSON、429、5xx |
 | 真实接口 | 有密钥时对真实模型跑，没有就跳过 |
+
+性质测试检查这些不变量。
+
+- 每条输入恰好在一处：已经进了模型的历史，还在 inbox 里等，或者在一次要求丢弃的取消发生时正在等。
+- 回合号严格递增，步号连续，回合和步都正常闭合。
+- 工具调用与结果始终成对，结果按模型给出的顺序写入。
+- 后一次请求以前一次请求的全部消息开头，历史只增不改。
+- 回合被取消之后不再向模型发请求。工具要求结束回合之后不再开新的步。
+- 独占的工具不与别的调用重叠，并行的调用不超过上限。
+- 整个过程不产生错误级别的日志。
 
 两条纪律。断言要重新读文件或重跑命令来验证结果，不信 Agent 的自述。产品可见的插件必须有一条经真实清单加载的测试。
 

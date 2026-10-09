@@ -253,12 +253,6 @@ _READ = (
         "            if True:\n",
     ),
     mutant(
-        "bytes of one line are left in the decoder for the next",
-        READ,
-        "            self._decoder.reset()\n",
-        "",
-    ),
-    mutant(
         "the size limit is off by one",
         READ,
         "if self.shown and self._size > MAX_BYTES:",

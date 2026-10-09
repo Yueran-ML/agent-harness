@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 import tack.tools
@@ -525,6 +525,28 @@ def simply(content: bytes, offset: int, limit: int, looked_at: int, size_limit: 
     piece=st.one_of(st.integers(min_value=1, max_value=4), st.integers(min_value=1, max_value=40)),
     looked_at=st.one_of(st.just(10**6), st.integers(min_value=1, max_value=120)),
     size_limit=st.sampled_from([20, 60, 200]),
+)
+# Cases that a random run meets only now and then, pinned so that every run meets them.
+# A carriage return in the middle of a line, with the line in pieces of one byte.
+@example(content=b"a\rb\nnext\n", offset=0, limit=2, piece=1, looked_at=10**6, size_limit=200)
+# The line break of Windows, parted between two pieces, after more than is shown.
+@example(
+    content=b"abcdefgh\r\nnext\r\n", offset=0, limit=2, piece=9, looked_at=10**6, size_limit=200
+)
+# A character of three bytes in pieces of two, and one that the line ends inside of.
+@example(
+    content="好好".encode() + b"\xe5\xa5\nnext\n",
+    offset=0,
+    limit=2,
+    piece=2,
+    looked_at=10**6,
+    size_limit=200,
+)
+# A line that the read stops looking at inside a character.
+@example(content="abc好def".encode(), offset=0, limit=1, piece=3, looked_at=4, size_limit=200)
+# A long line and then a short one: nothing of the first may be left over for the second.
+@example(
+    content=b"abcdefghij\rk\nxy\n", offset=0, limit=2, piece=4, looked_at=10**6, size_limit=200
 )
 def test_reading_in_pieces_finds_what_reading_at_once_would(
     content: bytes, offset: int, limit: int, piece: int, looked_at: int, size_limit: int

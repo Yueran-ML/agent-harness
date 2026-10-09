@@ -129,7 +129,6 @@ class _Reader:
                 self._end = self.lines
             else:
                 self.shown.append(numbered)
-            self._decoder.reset()
             self._head = ""
             self._passed = 0
             self._returned = False

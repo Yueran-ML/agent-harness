@@ -37,6 +37,7 @@ WALK = "src/columbina/fs/walk.py"
 GLOB = "src/columbina/builtin_tools/glob.py"
 APPROVAL = "src/columbina/approval/__init__.py"
 GREP = "src/columbina/builtin_tools/grep.py"
+SHELL = "src/columbina/builtin_tools/shell.py"
 PATTERNS = "src/columbina/fs/patterns.py"
 RULES = "src/columbina/permissions/rules.py"
 COMMANDS = "src/columbina/permissions/commands.py"
@@ -1991,8 +1992,98 @@ _PERMISSIONS = (
     ),
 )
 
+_SHELL = (
+    mutant(
+        "a command may run as long as the call says",
+        SHELL,
+        "        seconds = min(args.timeout_seconds or DEFAULT_SECONDS, MAX_SECONDS)",
+        "        seconds = args.timeout_seconds or DEFAULT_SECONDS",
+    ),
+    mutant(
+        "the length of a command is counted in letters",
+        SHELL,
+        '        if len(args.command.encode("utf-8")) > MAX_COMMAND_BYTES:',
+        "        if len(args.command) > MAX_COMMAND_BYTES:",
+    ),
+    mutant(
+        "the tool runs its command and not what the sandbox handed back",
+        SHELL,
+        "                confined.argv,\n",
+        "                argv,\n",
+    ),
+    mutant(
+        "a command is given the environment with its secrets",
+        SHELL,
+        "                env=_environment(),",
+        "                env=dict(os.environ),",
+    ),
+    mutant(
+        "the exit code is put behind the last character of the output",
+        SHELL,
+        '        if output and not output.endswith("\\n"):',
+        "        if False:",
+    ),
+    mutant(
+        "a command that was stopped is said to have ended",
+        SHELL,
+        "        if done.timed_out:",
+        "        if False:",
+    ),
+    mutant(
+        "the call is stopped at the moment its command would be",
+        SHELL,
+        "        timeout_seconds=MAX_SECONDS + _GRACE_SECONDS,",
+        "        timeout_seconds=MAX_SECONDS,",
+    ),
+    mutant(
+        "a command counts as something that does nothing to the world",
+        SHELL,
+        '        effect="run",',
+        '        effect="none",',
+    ),
+    mutant(
+        "the permissions are not told how the commands of the tool are taken apart",
+        SHELL,
+        "    ctx.use(PERMISSIONS).splitters.add(ctx, NAME, _SPLITTER)\n",
+        "",
+    ),
+    on_windows(
+        mutant(
+            "the output keeps the line ends of Windows",
+            SHELL,
+            '        output = done.output.replace("\\r\\n", "\\n")',
+            "        output = done.output",
+        )
+    ),
+    on_windows(
+        mutant(
+            "python is left to write in the code page of the system",
+            SHELL,
+            '        cleaned.setdefault("PYTHONIOENCODING", "utf-8")\n',
+            "",
+        )
+    ),
+    on_windows(
+        mutant(
+            "what ran last does not decide the exit code",
+            SHELL,
+            '        return argv, (command + _AFTER).encode("utf-8")',
+            '        return argv, command.encode("utf-8")',
+        )
+    ),
+    on_windows(
+        mutant(
+            "powershell is found wherever Windows finds a program of that name",
+            SHELL,
+            "        return str(found) if found.is_file() else None",
+            '        return "powershell.exe"',
+        )
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
+    "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),
     "permissions": MutantSet(("tests/permissions",), _PERMISSIONS),
     "search": MutantSet(
         (

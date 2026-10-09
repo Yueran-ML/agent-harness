@@ -72,6 +72,7 @@ SESSION_SERVICE = "src/columbina/session/service.py"
 UNSEEN = "src/columbina/unseen.py"
 TOKEN_METER = "src/columbina/token_meter/__init__.py"
 SPILL_LOCAL = "src/columbina/spill/local.py"
+SPILL_POLICY = "src/columbina/spill/policy.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -4886,6 +4887,123 @@ _SPILL = (
     ),
 )
 
+_CAP = (
+    mutant(
+        "a result may be one token larger",
+        SPILL_POLICY,
+        "    max_tokens: int = Field(default=12_500, gt=0)\n",
+        "    max_tokens: int = Field(default=12_501, gt=0)\n",
+    ),
+    mutant(
+        "a tool that hands out pages is cut like any other",
+        SPILL_POLICY,
+        "        if not isinstance(verdict, Accept) or executed.invocation.tool.paged:\n",
+        "        if not isinstance(verdict, Accept):\n",
+    ),
+    mutant(
+        "a result of exactly the limit is cut",
+        SPILL_POLICY,
+        "        too_large = estimate(text) > config.max_tokens\n",
+        "        too_large = estimate(text) >= config.max_tokens\n",
+    ),
+    mutant(
+        "no result is too large",
+        SPILL_POLICY,
+        "        too_large = estimate(text) > config.max_tokens\n",
+        "        too_large = False\n",
+    ),
+    mutant(
+        "a result whose whole was saved by its tool is saved again",
+        SPILL_POLICY,
+        "        if isinstance(complete, Saved):\n            last = _whole(complete)\n        elif too_large:\n",
+        "        if too_large:\n",
+    ),
+    mutant(
+        "a small result with a hole in it does not say where the whole is",
+        SPILL_POLICY,
+        '        if not too_large:\n            between = "" if text.endswith("\\n") else "\\n"\n            return Accept(text=f"{text}{between}{last}")\n',
+        "        if not too_large:\n            return verdict\n",
+    ),
+    mutant(
+        "each end gets all the room there is",
+        SPILL_POLICY,
+        "    half = max(room // 2, 0)\n",
+        "    half = max(room, 0)\n",
+    ),
+    mutant(
+        "the last line is not counted against the room",
+        SPILL_POLICY,
+        "    room = tokens - estimate(last) - estimate(_left_out(len(text))) - 2\n",
+        "    room = tokens - estimate(_left_out(len(text))) - 2\n",
+    ),
+    mutant(
+        "the beginning is cut where the room ends, also in the middle of a line",
+        SPILL_POLICY,
+        '    broken = text.rfind("\\n", low - low // 5, low)\n',
+        "    broken = -1\n",
+    ),
+    mutant(
+        "the beginning goes back to a line break however far that is",
+        SPILL_POLICY,
+        '    broken = text.rfind("\\n", low - low // 5, low)\n',
+        '    broken = text.rfind("\\n", 0, low)\n',
+    ),
+    mutant(
+        "the end is cut where the room begins, also in the middle of a line",
+        SPILL_POLICY,
+        '    broken = text.find("\\n", start, start + low // 5)\n',
+        "    broken = -1\n",
+    ),
+    mutant(
+        "the end goes on to a line break however far that is",
+        SPILL_POLICY,
+        '    broken = text.find("\\n", start, start + low // 5)\n',
+        '    broken = text.find("\\n", start)\n',
+    ),
+    mutant(
+        "the line between the ends says how long the text is",
+        SPILL_POLICY,
+        "    gap = _left_out(len(text) - len(head) - len(tail))\n",
+        "    gap = _left_out(len(text))\n",
+    ),
+    mutant(
+        "the end is taken from the whole text and may hold the beginning again",
+        SPILL_POLICY,
+        "    tail = _end(text[len(head) :], half)\n",
+        "    tail = _end(text, half)\n",
+    ),
+    mutant(
+        "a result that cannot be saved is said to be nowhere",
+        SPILL_POLICY,
+        '            return f"(The whole result could not be saved: {error.strerror or error}.)"\n',
+        "            return _NOWHERE\n",
+    ),
+    mutant(
+        "nothing is logged when a result cannot be saved",
+        SPILL_POLICY,
+        '            logger.error("a result of %s could not be saved: %s", named, error)\n',
+        "            pass\n",
+    ),
+    mutant(
+        "what is saved is named after nothing",
+        SPILL_POLICY,
+        '        named = f"{executed.invocation.tool.name}-result.txt"\n',
+        '        named = "result.txt"\n',
+    ),
+    mutant(
+        "the limit comes before the other checks of a result",
+        SPILL_POLICY,
+        "    ctx.on(POST_EXECUTE, within_the_limit, prepend=True)\n",
+        "    ctx.on(POST_EXECUTE, within_the_limit)\n",
+    ),
+    mutant(
+        "what the place says about how to read it is left out",
+        SPILL_POLICY,
+        '    return f"(The whole result has {saved.bytes} bytes and is in {saved.locator}. {saved.hint})"\n',
+        '    return f"(The whole result has {saved.bytes} bytes and is in {saved.locator}.)"\n',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -4958,5 +5076,6 @@ SETS: dict[str, MutantSet] = {
     "unseen": MutantSet(("tests/test_unseen.py", "tests/apps/test_terminal_text.py"), _UNSEEN),
     "meter": MutantSet(("tests/token_meter",), _METER),
     "spill": MutantSet(("tests/spill",), _SPILL),
+    "cap": MutantSet(("tests/spill/test_policy.py",), _CAP),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

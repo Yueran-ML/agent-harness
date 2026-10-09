@@ -153,6 +153,9 @@ class Tool(Generic[ArgsT, ValueT]):
         target: Says what a call acts on, as text that a rule can be matched
             against: a path for a tool that works on a file, the command for
             a tool that runs one.
+        paged: Whether the tool hands out what it has in pages: it bounds
+            what one call returns by itself, and says how to ask for more.
+            Whatever cuts a large result short leaves such a tool alone.
 
     Raises:
         ValueError: The name is not one that every provider accepts, or the
@@ -169,6 +172,7 @@ class Tool(Generic[ArgsT, ValueT]):
     concurrency_safe: bool | Callable[[ArgsT], bool] = False
     effect: Effect = "none"
     target: Callable[[ArgsT, ToolRun], str] | None = None
+    paged: bool = False
 
     def __post_init__(self) -> None:
         if self.effect not in get_args(Effect):

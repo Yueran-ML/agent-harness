@@ -302,6 +302,7 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
         concurrency_safe=True,
         effect="read",
         target=target,
+        paged=True,
     )
 
 

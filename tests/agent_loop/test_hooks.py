@@ -335,6 +335,63 @@ async def test_a_listener_that_fails_ends_the_turn_with_an_error(
     assert agent.session.messages[-1] == assistant("Ok.")
 
 
+@pytest.mark.parametrize(
+    ("point", "first_reply"),
+    [
+        ("pre-step", None),
+        ("request", None),
+        ("request-error", Reply(failure=BUSY)),
+        ("turn-stopping", Reply(text="Hello!")),
+    ],
+)
+async def test_a_listener_that_raises_a_cancellation_of_its_own_ends_the_turn_with_an_error(
+    harness: Harness, point: str, first_reply: Reply | None
+) -> None:
+    agent = await harness.agent(*([] if first_reply is None else [first_reply]), Reply(text="Ok."))
+
+    async def step(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        raise asyncio.CancelledError
+
+    async def request(draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]) -> CallConfig:
+        raise asyncio.CancelledError
+
+    async def failed(
+        failure: RequestFailure, proceed: Next[RequestFailure, ErrorDecision]
+    ) -> ErrorDecision:
+        raise asyncio.CancelledError
+
+    async def stopping(event: TurnStopping) -> None:
+        raise asyncio.CancelledError
+
+    if point == "pre-step":
+        handle = agent.ctx.on(PRE_STEP, step)
+    elif point == "request":
+        handle = agent.ctx.on(REQUEST, request)
+    elif point == "request-error":
+        handle = agent.ctx.on(REQUEST_ERROR, failed)
+    else:
+        handle = agent.ctx.on(TURN_STOPPING, stopping)
+
+    agent.followup("Say hello.")
+    await idle(agent)
+
+    # Nobody cancelled the turn and nothing was disposed: it is the listener that is at fault.
+    assert agent.session.events[-1].data == TurnEndEvent(
+        turn=1,
+        reason="error",
+        detail=f"CancelledFromInside: a listener of agent/{point} "
+        "ended with a cancellation that nobody asked for",
+    )
+    assert types(agent.session).count("step/start") == types(agent.session).count("step/end")
+
+    await handle.dispose()
+    agent.followup("Again.")
+    await idle(agent)
+
+    assert agent.session.events[-1].data == TurnEndEvent(turn=2, reason="completed")
+    assert agent.session.messages[-1] == assistant("Ok.")
+
+
 async def test_a_turn_can_be_cancelled_while_a_listener_decides(harness: Harness) -> None:
     agent = await harness.agent(Reply(text="never"))
     asked = asyncio.Event()

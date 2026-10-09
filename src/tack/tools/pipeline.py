@@ -386,8 +386,9 @@ class Tools:
             unfit = PendingCall(ctx, call, None, None, True)
             unfit.fail(failure.code, str(failure))
             return unfit
-        except Exception as error:
-            # The model of the parameters is broken: one of its validators raised.
+        except (Exception, asyncio.CancelledError) as error:
+            # The model of the parameters is broken: one of its validators raised. Nothing
+            # waits while arguments are checked, so a cancellation here is such a fault too.
             logger.error(
                 "the arguments of the tool %r could not be checked", tool.name, exc_info=error
             )
@@ -399,7 +400,7 @@ class Tools:
             return broken
         try:
             safe = tool.is_concurrency_safe(args)
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             logger.exception(
                 "the tool %r could not say whether a call may run beside others", tool.name
             )

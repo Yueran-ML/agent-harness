@@ -77,8 +77,20 @@ async def test_a_cancellation_of_the_current_task_gets_through() -> None:
 
 
 async def test_a_cancellation_from_inside_becomes_an_error() -> None:
-    with pytest.raises(CancelledFromInside):
+    with pytest.raises(CancelledFromInside) as raised:
         await guard(cancel_inside())
+
+    assert str(raised.value) == "awaited code ended with a cancellation that nobody asked for"
+    assert isinstance(raised.value.__cause__, asyncio.CancelledError)
+
+
+async def test_the_error_names_what_was_awaited_if_it_is_told() -> None:
+    with pytest.raises(CancelledFromInside) as raised:
+        await guard(cancel_inside(), what="the check of a plugin")
+
+    assert str(raised.value) == (
+        "the check of a plugin ended with a cancellation that nobody asked for"
+    )
 
 
 async def test_a_cancellation_from_inside_is_told_apart_in_a_task_that_survived_one() -> None:

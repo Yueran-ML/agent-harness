@@ -830,6 +830,52 @@ async def test_parameters_whose_validation_crashes_are_an_error_result(
     assert "validator bug" in caplog.text
 
 
+async def test_parameters_whose_validation_raises_a_cancellation_are_an_error_result(
+    ctx: Context, tools: Tools, run: ToolRun, caplog: pytest.LogCaptureFixture
+) -> None:
+    class Fussy(BaseModel):
+        text: str
+
+        @field_validator("text")
+        @classmethod
+        def broken(cls, value: str) -> str:
+            raise asyncio.CancelledError("validator bug")
+
+    async def work(args: Fussy, run: ToolRun) -> str:
+        return "never"
+
+    tools.add(ctx, Tool(name="fussy", description="Fuss.", parameters=Fussy, execute=work))
+    seen: list[ToolOutcome] = []
+    ctx.on(RESULT, seen.append)
+
+    with caplog.at_level(logging.ERROR, logger="tack.tools"):
+        outcome = await asyncio.wait_for(
+            tools.run(ctx, call("fussy", '{"text": "hi"}'), run), timeout=1
+        )
+
+    assert outcome.error == ToolError(
+        code="TOOL_ERROR",
+        reason="The arguments of the tool fussy could not be checked: "
+        "CancelledError: validator bug",
+    )
+    assert seen == [outcome]
+    assert "validator bug" in caplog.text
+
+
+async def test_a_tool_that_raises_a_cancellation_when_asked_whether_it_may_overlap_runs_alone(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    def broken(args: EchoArgs) -> bool:
+        raise asyncio.CancelledError
+
+    tools.add(ctx, tool("broken", journal.echo, concurrency_safe=broken))
+
+    pending = tools.begin(ctx, call("broken", '{"text": "hi"}'), run)
+
+    assert not pending.concurrency_safe
+    assert (await pending.execute()).text == "hi"
+
+
 async def test_a_rendering_that_raises_a_cancellation_is_an_error_result(
     ctx: Context, tools: Tools, run: ToolRun, journal: Journal
 ) -> None:

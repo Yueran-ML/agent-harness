@@ -78,7 +78,7 @@ def replaced(error: BaseException, before: int) -> bool:
     return False
 
 
-async def guard(awaitable: Awaitable[ResultT]) -> ResultT:
+async def guard(awaitable: Awaitable[ResultT], *, what: str = "awaited code") -> ResultT:
     """Await code that is not ours, and let only a real cancellation through as one.
 
     A result and an ordinary error get through unchanged. Two cases are put
@@ -89,6 +89,11 @@ async def guard(awaitable: Awaitable[ResultT]) -> ResultT:
 
     A cancellation that was asked for before the guard began arrives before
     ``awaitable`` is started.
+
+    Args:
+        awaitable: What to await.
+        what: A name for the awaited code, which the text of a
+            :class:`CancelledFromInside` begins with.
     """
     try:
         before = await settled_requests()
@@ -103,7 +108,9 @@ async def guard(awaitable: Awaitable[ResultT]) -> ResultT:
     except asyncio.CancelledError as error:
         if requested_since(before):
             raise
-        raise CancelledFromInside from error
+        raise CancelledFromInside(
+            f"{what} ended with a cancellation that nobody asked for"
+        ) from error
     except Exception as error:
         if replaced(error, before):
             logger.error("an error took the place of a cancellation", exc_info=error)

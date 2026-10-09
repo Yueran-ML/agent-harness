@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Literal, cast
+from collections.abc import Awaitable
+from typing import Literal, TypeVar, cast
 
 from tack import cancellation
 from tack.agent import (
@@ -32,7 +33,7 @@ from tack.agent import (
     claim_for_turn,
     clear_inbox,
 )
-from tack.kernel import Context
+from tack.kernel import Context, Event
 from tack.llm import (
     CallConfig,
     Llm,
@@ -64,6 +65,8 @@ from tack.session import (
 from tack.tools import PendingCall, ToolOutcome, ToolRun, Tools
 
 logger = logging.getLogger("tack.agent_loop")
+
+ResultT = TypeVar("ResultT")
 
 _StepEnd = Literal["stop", "max-tokens", "tools", "concluded"]
 """How a step ended.
@@ -270,7 +273,9 @@ class LoopAgent(Agent):
                 session.append(UserMessageEvent(message=item.message, source=item.source))
             decision = cast(
                 "object",
-                await self.ctx.waterfall(PRE_STEP, StepInfo(self, turn, step + 1), _enter),
+                await self._heard(
+                    PRE_STEP, self.ctx.waterfall(PRE_STEP, StepInfo(self, turn, step + 1), _enter)
+                ),
             )
             if isinstance(decision, Reject):
                 return "blocked", decision.reason
@@ -293,9 +298,19 @@ class LoopAgent(Agent):
                 continue
             # The turn would end here. A listener that steers the agent keeps it going.
             reason: TurnEndReason = "max-tokens" if cut_off else "completed"
-            await self.ctx.serial(TURN_STOPPING, TurnStopping(self, turn, reason))
+            stopping = TurnStopping(self, turn, reason)
+            await self._heard(TURN_STOPPING, self.ctx.serial(TURN_STOPPING, stopping))
             if not INBOX.of(session).next_step:
                 return reason, None
+
+    async def _heard(self, event: Event, answer: Awaitable[ResultT]) -> ResultT:
+        """Wait for the listeners of ``event`` and return their answer.
+
+        A listener that raises a cancellation of its own has failed, like one
+        that raises anything else. Without this, the turn would be recorded as
+        cancelled although nobody cancelled it.
+        """
+        return await cancellation.guard(answer, what=f"a listener of {event.name}")
 
     def _reconcile_system_message(self) -> None:
         """Make the first message the model sees the instructions of the spec."""
@@ -331,7 +346,12 @@ class LoopAgent(Agent):
                 )
             )
             failed = RequestFailure(self, turn, step, attempt, finish.failure)
-            decision = cast("object", await self.ctx.waterfall(REQUEST_ERROR, failed, _give_up))
+            decision = cast(
+                "object",
+                await self._heard(
+                    REQUEST_ERROR, self.ctx.waterfall(REQUEST_ERROR, failed, _give_up)
+                ),
+            )
             if not isinstance(decision, Retry):
                 # Only an explicit answer makes the request again.
                 raise _RequestError(finish.failure)
@@ -356,7 +376,7 @@ class LoopAgent(Agent):
         """
         session = self.session
         draft = RequestDraft(self, turn, step, attempt, self.spec.model)
-        config = await self.ctx.waterfall(REQUEST, draft, _as_drafted)
+        config = await self._heard(REQUEST, self.ctx.waterfall(REQUEST, draft, _as_drafted))
         schemas = self._tools.schemas()
         header = _HEADER.of(session)
         if header is None or header.config != config or header.tools != schemas:

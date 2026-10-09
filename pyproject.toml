@@ -85,6 +85,7 @@ convention = "google"
   "D",        # tests explain themselves by their names
   "ASYNC240", # a test may look at the file system from an async function
 ]
+"tests/mutation/mutants.py" = ["E501"]  # the text of source lines, kept whole
 "examples/**" = ["D"]
 
 [tool.pyright]

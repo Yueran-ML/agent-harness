@@ -211,6 +211,9 @@ class LlmCall:
                 )
                 raise asyncio.CancelledError from error
             return self._failure(error, timed_out=watchdog.expired())
+        # An adapter that caught the cancellation of the reader and went on does not keep
+        # the reader going. The watchdog has taken its own request back by now.
+        await cancellation.kept_back(before)
         if isinstance(chunk, Finish):
             return chunk
         try:

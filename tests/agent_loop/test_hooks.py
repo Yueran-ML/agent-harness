@@ -1,6 +1,7 @@
 """The points at which a plugin can watch a turn or change its course."""
 
 import asyncio
+import contextlib
 
 import pytest
 from pydantic import BaseModel
@@ -410,6 +411,39 @@ async def test_a_turn_can_be_cancelled_while_a_listener_decides(harness: Harness
 
     assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
     assert "step/start" not in types(agent.session)
+    assert harness.model.requests == []
+
+
+@pytest.mark.parametrize("point", ["pre-step", "request"])
+async def test_a_listener_that_keeps_a_cancellation_to_itself_does_not_keep_the_turn_going(
+    harness: Harness, point: str
+) -> None:
+    agent = await harness.agent(Reply(text="never"))
+    asked = asyncio.Event()
+
+    async def step(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        asked.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.Event().wait()
+        return await proceed(info)
+
+    async def request(draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]) -> CallConfig:
+        asked.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.Event().wait()
+        return draft.config
+
+    if point == "pre-step":
+        agent.ctx.on(PRE_STEP, step)
+    else:
+        agent.ctx.on(REQUEST, request)
+    agent.followup("Do it.")
+    await asyncio.wait_for(asked.wait(), timeout=5)
+
+    agent.cancel()
+    await idle(agent)
+
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
     assert harness.model.requests == []
 
 

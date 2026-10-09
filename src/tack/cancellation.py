@@ -15,7 +15,10 @@ One more case has to be kept apart. A request that was made while the task was
 running has not been delivered yet. It arrives where the task next waits, and
 it is as real as any other. So the count is taken with
 :func:`settled_requests`, which lets such a request arrive first.
-:func:`guard` does all of this for one awaitable.
+
+And the coroutine may end well although the task was cancelled meanwhile: it
+caught the cancellation and went on. :func:`kept_back` raises the cancellation
+then. :func:`guard` does all of this for one awaitable.
 """
 
 import asyncio
@@ -78,14 +81,33 @@ def replaced(error: BaseException, before: int) -> bool:
     return False
 
 
+async def kept_back(before: int) -> None:
+    """Raise the cancellation that awaited code kept to itself, if it did.
+
+    Call this when awaited code has come back with a result. If the current
+    task has been asked to cancel since the count was ``before``, one of two
+    things happened. The request has not arrived yet, and then it arrives
+    here. Or it arrived inside the awaited code, which caught it and went on,
+    and then it is raised here in its place.
+
+    Code that means to absorb a cancellation takes the request back with
+    ``Task.uncancel``, as ``asyncio.timeout`` does. Such code is left alone.
+    """
+    if requested_since(before):
+        await asyncio.sleep(0)
+        raise asyncio.CancelledError
+
+
 async def guard(awaitable: Awaitable[ResultT], *, what: str = "awaited code") -> ResultT:
     """Await code that is not ours, and let only a real cancellation through as one.
 
-    A result and an ordinary error get through unchanged. Two cases are put
+    A result and an ordinary error get through unchanged. Three cases are put
     right. A ``CancelledError`` that the awaited code produced by itself
     becomes :class:`CancelledFromInside`, which is an ordinary error. An error
     that took the place of a cancellation of the current task is logged, and
-    the cancellation is raised again in its stead.
+    the cancellation is raised again in its stead. A result that comes back
+    although the task was cancelled meanwhile is dropped, and the cancellation
+    is raised.
 
     A cancellation that was asked for before the guard began arrives before
     ``awaitable`` is started.
@@ -104,7 +126,7 @@ async def guard(awaitable: Awaitable[ResultT], *, what: str = "awaited code") ->
             close()
         raise
     try:
-        return await awaitable
+        result = await awaitable
     except asyncio.CancelledError as error:
         if requested_since(before):
             raise
@@ -116,3 +138,5 @@ async def guard(awaitable: Awaitable[ResultT], *, what: str = "awaited code") ->
             logger.error("an error took the place of a cancellation", exc_info=error)
             raise asyncio.CancelledError from error
         raise
+    await kept_back(before)
+    return result

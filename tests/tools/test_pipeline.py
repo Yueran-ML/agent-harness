@@ -1,6 +1,7 @@
 """The tool pipeline: what happens between a call of the model and its result."""
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -874,6 +875,56 @@ async def test_a_tool_that_raises_a_cancellation_when_asked_whether_it_may_overl
 
     assert not pending.concurrency_safe
     assert (await pending.execute()).text == "hi"
+
+
+async def test_a_tool_that_keeps_its_time_limit_to_itself_still_runs_out_of_time(
+    ctx: Context, tools: Tools, run: ToolRun
+) -> None:
+    async def stubborn(args: EchoArgs, run: ToolRun) -> str:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.Event().wait()
+        return "finished anyway"
+
+    tools.add(
+        ctx,
+        Tool(
+            name="stubborn",
+            description="Wait.",
+            parameters=EchoArgs,
+            execute=stubborn,
+            timeout_seconds=0.02,
+        ),
+    )
+
+    outcome = await asyncio.wait_for(tools.run(ctx, call("stubborn"), run), timeout=1)
+
+    assert outcome.error == ToolError(
+        code="TOOL_TIMEOUT",
+        reason="The tool stubborn did not finish within 0.02 seconds and was stopped.",
+    )
+
+
+async def test_a_tool_that_keeps_a_cancellation_to_itself_does_not_keep_its_caller_going(
+    ctx: Context, tools: Tools, run: ToolRun
+) -> None:
+    began = asyncio.Event()
+
+    async def stubborn(args: EchoArgs, run: ToolRun) -> str:
+        began.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.Event().wait()
+        return "finished anyway"
+
+    tools.add(
+        ctx, Tool(name="stubborn", description="Wait.", parameters=EchoArgs, execute=stubborn)
+    )
+    running = asyncio.ensure_future(tools.run(ctx, call("stubborn"), run))
+    await asyncio.wait_for(began.wait(), timeout=1)
+
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, timeout=1)
 
 
 async def test_a_rendering_that_raises_a_cancellation_is_an_error_result(

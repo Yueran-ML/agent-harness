@@ -76,6 +76,60 @@ async def test_a_cancellation_of_the_current_task_gets_through() -> None:
         await asyncio.wait_for(task, timeout=1)
 
 
+def carrying_on(started: asyncio.Event) -> Callable[[], Awaitable[str]]:
+    """Code that catches the cancellation of the task it runs in, and returns as if nothing was."""
+
+    async def run() -> str:
+        started.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.Event().wait()
+        return "carried on"
+
+    return run
+
+
+async def test_a_cancellation_that_the_awaited_code_keeps_to_itself_still_cancels() -> None:
+    started = asyncio.Event()
+    task = asyncio.ensure_future(guard(carrying_on(started)()))
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+    assert task.cancelled()
+
+
+async def test_a_cancellation_asked_for_while_the_awaited_code_ended_arrives_only_once() -> None:
+    async def ask_and_end() -> str:
+        # The request is made while the task runs, so it has not arrived when this returns.
+        cancellation.current_task().cancel()
+        return "done"
+
+    async def work() -> str:
+        try:
+            return await guard(ask_and_end())
+        except asyncio.CancelledError:
+            # What cleans up after a cancellation must be able to wait.
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            return "cancelled once"
+
+    assert await asyncio.wait_for(asyncio.ensure_future(work()), timeout=1) == "cancelled once"
+
+
+async def test_code_that_takes_a_cancellation_back_is_left_alone() -> None:
+    async def patient() -> str:
+        try:
+            async with asyncio.timeout(0.01):
+                await asyncio.Event().wait()
+        except TimeoutError:
+            return "timed out"
+        return "never"
+
+    assert await asyncio.wait_for(guard(patient()), timeout=1) == "timed out"
+
+
 async def test_a_cancellation_from_inside_becomes_an_error() -> None:
     with pytest.raises(CancelledFromInside) as raised:
         await guard(cancel_inside())

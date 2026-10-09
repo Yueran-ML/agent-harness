@@ -542,6 +542,47 @@ async def test_cancelling_the_reader_closes_the_stream_and_keeps_what_arrived(
     assert call.chunks == HELLO[:2]
 
 
+async def test_an_adapter_that_keeps_a_cancellation_to_itself_does_not_keep_the_reader_going(
+    ctx: Context,
+) -> None:
+    await ctx.plugin(tack.llm, {"idle_timeout_seconds": 30})
+    llm = ctx.use(LLM)
+    waiting = asyncio.Event()
+    closed: list[bool] = []
+
+    class Adapter:
+        async def stream(self, request: LlmRequest) -> AsyncIterator[Chunk]:
+            try:
+                yield HELLO[0]
+                yield HELLO[1]
+                try:
+                    waiting.set()
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    pass
+                for chunk in HELLO[2:]:
+                    yield chunk
+            finally:
+                closed.append(True)
+
+    llm.adapters.add(ctx, "fake", Adapter())
+    call = llm.call(REQUEST)
+
+    async def read() -> None:
+        async for _ in call:
+            pass
+
+    reader = asyncio.ensure_future(read())
+    await asyncio.wait_for(waiting.wait(), timeout=1)
+    reader.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(reader, timeout=1)
+    assert closed == [True]
+    assert call.finish is None
+    assert call.message == AssistantMessage(content=(TextBlock(text="Hel"),))
+
+
 async def test_an_adapter_that_fails_to_close_does_not_spoil_the_reply(
     ctx: Context, llm: Llm, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -10,7 +10,7 @@ import columbina
 from columbina.kernel import flatten, import_plugin
 from support.launch import bundle
 
-BUNDLES = ["base", "headless", "minimal"]
+BUNDLES = ["base", "cli", "headless", "minimal"]
 
 
 def test_version_matches_the_installed_distribution() -> None:
@@ -44,3 +44,5 @@ def test_every_bundle_builds_on_the_one_before_it() -> None:
 
     assert ids["base"][: len(ids["minimal"])] == ids["minimal"]
     assert ids["headless"] == [*ids["base"], "frontend"]
+    assert ids["cli"][: len(ids["base"])] == ids["base"]
+    assert ids["cli"][-1] == "frontend"

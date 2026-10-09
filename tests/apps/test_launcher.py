@@ -511,7 +511,7 @@ def test_a_profile_that_does_not_exist_is_refused(
     assert captured.out == ""
     assert captured.err == (
         "columbina: there is no profile 'nowhere'. The profiles that come with Columbina are: "
-        "base, headless, minimal\n"
+        "base, cli, headless, minimal\n"
     )
 
 
@@ -727,11 +727,102 @@ def test_the_version_can_be_asked_for(capsys: pytest.CaptureFixture[str]) -> Non
     assert capsys.readouterr().out == f"columbina {columbina.__version__}\n"
 
 
-def test_without_a_command_the_help_is_printed(capsys: pytest.CaptureFixture[str]) -> None:
-    code = main([])
+NOT_A_TERMINAL = (
+    "columbina: this is not a terminal, and the conversation needs one. "
+    "`columbina run TASK` gives an agent one task without it.\n"
+)
+
+
+@pytest.mark.parametrize("given", [[], ["chat"], ["--model", "other"], ["chat", "--continue"]])
+def test_without_a_command_a_conversation_is_meant_and_that_needs_a_terminal(
+    home: Path,
+    work: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    given: list[str],
+) -> None:
+    monkeypatch.chdir(work)
+
+    code = main(given)
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == NOT_A_TERMINAL
+    assert not home.exists()
+
+
+def test_the_program_of_a_conversation_can_be_printed_instead_of_run(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["--cwd", str(work), "--continue", "--model", "other", "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert code == 0
+    assert list(entries)[-5:] == [
+        "commands",
+        "command-tools",
+        "command-permissions",
+        "command-sessions",
+        "frontend",
+    ]
+    assert entries["frontend"] == {
+        "id": "frontend",
+        "plugin": "columbina.apps.cli",
+        "config": {
+            "model": {"provider": "deepseek", "model": "other"},
+            "cwd": str(work),
+            "resume": True,
+        },
+    }
+
+
+def test_a_conversation_takes_the_preset_the_rules_and_the_session_of_the_command_line(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chat = ["chat", "--cwd", str(work), "--session-id", "mine"]
+    main([*chat, "--permission", "read-only", "--allow", "grep", "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert entries["frontend"]["config"] == {
+        "model": {"provider": "deepseek", "model": "${COLUMBINA_MODEL:-deepseek-flash}"},
+        "cwd": str(work),
+        "session_id": "mine",
+    }
+    assert entries["permissions"]["config"]["preset"] == "read-only"
+    assert entries["permissions"]["config"]["allow"] == ["grep"]
+
+
+def test_a_session_cannot_be_both_named_and_looked_for(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["--cwd", str(work), "--continue", "--session-id", "mine"])
 
     assert code == 2
-    assert "usage: columbina" in capsys.readouterr().err
+    assert capsys.readouterr().err == (
+        "columbina: --continue takes up the session that was used last, and --session-id names "
+        "one: give one of the two\n"
+    )
+
+
+def test_a_task_is_not_a_conversation_and_takes_none_of_its_arguments(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main(["run", "Do it.", "--continue"])
+
+    assert stopped.value.code == 2
+    assert "--continue" in capsys.readouterr().err
+
+
+def test_the_help_names_the_commands(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main(["--help"])
+
+    shown = capsys.readouterr().out
+    assert stopped.value.code == 0
+    assert "chat" in shown
+    assert "run" in shown
 
 
 def test_an_interrupted_run_exits_the_way_a_shell_expects(

@@ -1,0 +1,20 @@
+# What `columbina` loads when it is started without a command: the base program,
+# the commands that a person gives the program itself, and the interface that
+# holds a conversation at a terminal.
+extends: base
+patch:
+  - insert:
+      - id: commands
+        plugin: columbina.commands
+      - id: command-tools
+        plugin: columbina.commands.tools
+      - id: command-permissions
+        plugin: columbina.commands.permissions
+      - id: command-sessions
+        plugin: columbina.commands.sessions
+      - id: frontend
+        plugin: columbina.apps.cli
+        config:
+          model:
+            provider: deepseek
+            model: ${COLUMBINA_MODEL:-deepseek-flash}

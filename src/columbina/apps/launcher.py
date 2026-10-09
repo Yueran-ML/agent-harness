@@ -1,6 +1,10 @@
 """The command line of Columbina.
 
-``columbina run TASK`` builds the program from layers, which are lists of plugin
+``columbina`` holds a conversation at the terminal, and ``columbina run TASK``
+gives an agent one task. Without a command the first is meant, so
+``columbina --continue`` is ``columbina chat --continue``.
+
+Either way the program is built from layers, which are lists of plugin
 entries: first the profile, then the patch of the user, then the patches named
 on the command line, and last what the command line itself asks for. The
 entry called ``frontend`` provides what is then run.
@@ -36,6 +40,10 @@ __all__ = ["main"]
 _FRONTEND = "frontend"
 _PERMISSIONS = "permissions"
 _INTERRUPTED = 130
+_CHAT = "chat"
+_RUN = "run"
+_NOT_A_COMMAND = ("-h", "--help", "--version")
+"""What may stand first on the command line without meaning the conversation."""
 
 
 class _UsageError(Exception):
@@ -114,6 +122,11 @@ def _permit(entries: list[Entry], args: argparse.Namespace) -> None:
 
 def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
     """Work out the plugin entries that the command line asks for."""
+    if args.command == _CHAT and args.resume and args.session_id is not None:
+        raise _UsageError(
+            "--continue takes up the session that was used last, and --session-id names one: "
+            "give one of the two"
+        )
     layers = [_profile(args.profile)]
     mine = home / "config.yml"
     if mine.is_file():
@@ -128,16 +141,19 @@ def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
                     f"the entry {_FRONTEND!r} is disabled, so there is nothing to run the task"
                 )
             config = _config_of(entry)
-            config["task"] = args.task
             if args.cwd is not None:
                 config["cwd"] = str(Path(args.cwd).resolve())
             config.setdefault("cwd", str(Path().resolve()))
-            if args.json is not None:
-                config["json_lines"] = args.json
             if args.session_id is not None:
                 config["session_id"] = args.session_id
             if args.model is not None:
                 config["model"] = {**config.get("model", {}), "model": args.model}
+            if args.command == _RUN:
+                config["task"] = args.task
+                if args.json is not None:
+                    config["json_lines"] = args.json
+            elif args.resume:
+                config["resume"] = True
             entries[position] = entry.model_copy(update={"config": config})
             return entries
     raise _UsageError(
@@ -183,38 +199,34 @@ async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
         await root.fiber.dispose()
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="columbina", description="A plugin-based agent harness.")
-    parser.add_argument("--version", action="version", version=f"columbina {columbina.__version__}")
-    commands = parser.add_subparsers(dest="command", metavar="COMMAND")
-    run = commands.add_parser("run", help="run one task and print the answer")
-    run.add_argument("task", metavar="TASK", help="what the agent is asked to do")
-    run.add_argument(
+def _shared(command: argparse.ArgumentParser, profile: str) -> None:
+    """Add the arguments that every command takes."""
+    command.add_argument(
         "--profile",
-        default="headless",
+        default=profile,
         metavar="NAME",
         help="the profile to load: a name that comes with Columbina, or the path of a file",
     )
-    run.add_argument(
+    command.add_argument(
         "--patch",
         action="append",
         default=[],
         metavar="FILE",
         help="a file of changes to the profile; may be given several times",
     )
-    run.add_argument("--model", metavar="ID", help="the model to use")
-    run.add_argument(
+    command.add_argument("--model", metavar="ID", help="the model to use")
+    command.add_argument(
         "--cwd",
         metavar="DIR",
         help="the working directory of the agent; the current directory if nothing names one",
     )
-    run.add_argument("--session-id", metavar="ID", help="the session to start or to continue")
-    run.add_argument(
+    command.add_argument("--session-id", metavar="ID", help="the session to start or to continue")
+    command.add_argument(
         "--permission",
         choices=get_args(Preset),
         help="how much the agent may do without anybody being asked",
     )
-    run.add_argument(
+    command.add_argument(
         "--allow",
         action="append",
         default=[],
@@ -222,26 +234,45 @@ def _parser() -> argparse.ArgumentParser:
         help="a rule that lets calls go ahead, such as 'run(git status*)'; "
         "may be given several times",
     )
+    command.add_argument(
+        "--dump-config",
+        action="store_true",
+        help="print the plugin entries that would be loaded, and stop",
+    )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="columbina",
+        description="A plugin-based agent harness. Without a command, a conversation begins.",
+    )
+    parser.add_argument("--version", action="version", version=f"columbina {columbina.__version__}")
+    commands = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
+    chat = commands.add_parser(_CHAT, help="hold a conversation at the terminal")
+    _shared(chat, "cli")
+    chat.add_argument(
+        "--continue",
+        dest="resume",
+        action="store_true",
+        help="take up the session of this directory that was used last",
+    )
+    run = commands.add_parser(_RUN, help="run one task and print the answer")
+    run.add_argument("task", metavar="TASK", help="what the agent is asked to do")
+    _shared(run, "headless")
     run.add_argument(
         "--json",
         action=argparse.BooleanOptionalAction,
         help="report the run as lines of JSON, or as the answer alone",
-    )
-    run.add_argument(
-        "--dump-config",
-        action="store_true",
-        help="print the plugin entries that would be loaded, and stop",
     )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the command line and return the exit code of the program."""
-    parser = _parser()
-    args = parser.parse_args(argv)
-    if args.command is None:
-        parser.print_usage(sys.stderr)
-        return 2
+    given = list(sys.argv[1:] if argv is None else argv)
+    if not given or (given[0].startswith("-") and given[0] not in _NOT_A_COMMAND):
+        given.insert(0, _CHAT)
+    args = _parser().parse_args(given)
     for stream in (sys.stdout, sys.stderr):
         # Text goes out as UTF-8 also where the system would choose something else.
         with contextlib.suppress(AttributeError, ValueError):
@@ -251,7 +282,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     log = logging.getLogger("columbina")
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("columbina: %(message)s"))
-    log.addHandler(handler)
+    if args.command == _RUN:
+        # A conversation shows what is logged by itself, above its prompt.
+        log.addHandler(handler)
     try:
         entries = _entries(args, Path(env["COLUMBINA_HOME"]))
         if args.dump_config:

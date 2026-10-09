@@ -75,37 +75,55 @@ def enqueue(session: Session, queue: Queue, item: InboxItem) -> None:
     session.append(InboxSplicedEvent(queue=queue, added=(item,)))
 
 
-def claim_for_turn(session: Session) -> tuple[InboxItem, ...]:
-    """Take what a turn begins with: all input for the next step, then one task.
-
-    The inbox is looked at anew for the task. Taking the other input writes an
-    event, and a listener of that event may have changed what waits: it may
-    have cancelled the agent, which drops the tasks.
-    """
-    for_the_step = claim_for_step(session)
-    task = INBOX.of(session).next_turn[:1]
-    if task:
-        session.append(InboxSplicedEvent(queue="next-turn", removed=1))
-    return (*for_the_step, *task)
-
-
 def claim_for_step(session: Session) -> tuple[InboxItem, ...]:
-    """Take what a further step of a turn begins with: all input for the next step."""
+    """Take all input for the next step. Every step of a turn begins with this."""
     inbox = INBOX.of(session)
     if inbox.next_step:
         session.append(InboxSplicedEvent(queue="next-step", removed=len(inbox.next_step)))
     return inbox.next_step
 
 
-def clear_inbox(session: Session) -> None:
-    """Drop everything that waits.
+def claim_task(session: Session) -> tuple[InboxItem, ...]:
+    """Take the task that has waited longest, if one waits.
 
-    Each queue is looked at when its turn comes, for the same reason as in
-    :func:`claim_for_turn`.
+    A turn begins with the input for its first step and then with one task.
+    The two are taken by two calls, because taking the first writes an event,
+    and a listener of that event may have changed what waits. It may also have
+    cancelled the agent, which the caller has to look at before it goes on.
     """
-    for_the_step = len(INBOX.of(session).next_step)
-    if for_the_step:
-        session.append(InboxSplicedEvent(queue="next-step", removed=for_the_step))
-    tasks = len(INBOX.of(session).next_turn)
+    task = INBOX.of(session).next_turn[:1]
+    if task:
+        session.append(InboxSplicedEvent(queue="next-turn", removed=1))
+    return task
+
+
+def clear_inbox(session: Session) -> None:
+    """Drop everything that waits at this moment.
+
+    Dropping from the first queue writes an event, and a listener of that
+    event may take tasks away or give new ones. Of the tasks, only those are
+    dropped that waited when this began and still do. What is given after a
+    cancellation has begun is not lost to it.
+    """
+    waiting = INBOX.of(session)
+    if waiting.next_step:
+        session.append(InboxSplicedEvent(queue="next-step", removed=len(waiting.next_step)))
+    tasks = _still_first(INBOX.of(session).next_turn, waiting.next_turn)
     if tasks:
         session.append(InboxSplicedEvent(queue="next-turn", removed=tasks))
+
+
+def _still_first(now: tuple[InboxItem, ...], before: tuple[InboxItem, ...]) -> int:
+    """Count the items at the head of a queue that were already in it ``before``.
+
+    Input leaves a queue at its head and enters at its end, so what is left
+    of the earlier items stands first. Items are told apart by identity,
+    because the same words may be given twice.
+    """
+    earlier = {id(item) for item in before}
+    count = 0
+    for item in now:
+        if id(item) not in earlier:
+            break
+        count += 1
+    return count

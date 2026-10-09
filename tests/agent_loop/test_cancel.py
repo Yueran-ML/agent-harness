@@ -6,13 +6,16 @@ import logging
 import pytest
 
 from support.loop import SYSTEM, Harness, assistant, idle, types, user
-from tack.agent import INBOX, STREAM, Inbox, InboxItem, StreamFrame
+from tack.agent import INBOX, STREAM, Inbox, InboxItem, InboxSplicedEvent, StreamFrame
 from tack.llm import AssistantMessage, TextDelta, Usage
 from tack.llm.adapters.scripted import Reply
 from tack.session import (
+    SESSION_EVENT,
     AssistantMessageEvent,
+    Committed,
     SessionStoreError,
     TurnEndEvent,
+    TurnStartEvent,
     UserMessageEvent,
 )
 from tack.tools import Tools
@@ -220,6 +223,44 @@ async def test_cancelling_right_after_a_task_was_given_takes_the_task_back(
     assert INBOX.of(agent.session) == Inbox()
     assert "turn/start" not in types(agent.session)
     assert harness.model.requests == []
+
+
+async def test_a_task_given_right_after_a_cancellation_waits_for_a_turn_of_its_own(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Here is the new one."))
+    pending = [True]
+
+    def change_of_mind(committed: Committed) -> None:
+        # As the turn takes its input, the user cancels and asks for something else.
+        data = committed.event.data
+        if pending and isinstance(data, InboxSplicedEvent) and data.removed:
+            pending.clear()
+            agent.cancel()
+            agent.followup("The new task.")
+
+    agent.ctx.on(SESSION_EVENT, change_of_mind)
+    agent.inject("Some context.")
+    agent.followup("The old task.")
+    await idle(agent)
+
+    heard: list[tuple[int, str]] = []
+    turn = 0
+    for event in agent.session.events:
+        if isinstance(event.data, TurnStartEvent):
+            turn = event.data.turn
+        elif isinstance(event.data, UserMessageEvent):
+            heard.append((turn, event.data.message.content[0].text))
+    ends = [e.data.reason for e in agent.session.events if isinstance(e.data, TurnEndEvent)]
+    # The cancelled turn keeps what it had taken. The new task is not swallowed by it.
+    assert heard == [(1, "Some context."), (2, "The new task.")]
+    assert ends == ["aborted", "completed"]
+    assert len(harness.model.requests) == 1
+    assert harness.model.requests[0].messages == (
+        SYSTEM,
+        user("Some context."),
+        user("The new task."),
+    )
 
 
 async def test_cancelling_an_agent_at_rest_only_empties_its_inbox(harness: Harness) -> None:

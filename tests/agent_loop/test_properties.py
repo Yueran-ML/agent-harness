@@ -275,13 +275,17 @@ class Run:
         self.model = model
         self.bench = bench
         self.given: dict[str, str] = {}
+        self.given_at: dict[str, int] = {}
         self.cancelled = False
         self.dropped: set[str] = set()
+        self.asked_at: dict[int, int] = {}
+        self.waiting_at: dict[int, set[str]] = {}
         self.requests_when_cancelled: dict[int, int] = {}
         self.problems: list[str] = []
 
     def give(self, kind: str, text: str) -> None:
         self.given[text] = kind
+        self.given_at[text] = len(self.agent.session.events)
         if kind == "task":
             self.agent.followup(text)
         elif kind == "steer":
@@ -295,12 +299,17 @@ class Run:
         state = TURN.of(session)
         if state.in_turn:
             self.requests_when_cancelled.setdefault(state.turn, len(self.model.requests))
+            # From here on the open turn may take nothing more from the inbox.
+            self.asked_at.setdefault(state.turn, len(session.events))
+            self.waiting_at.setdefault(state.turn, set(waiting_texts(session)))
         self.cancelled = True
+        waited = waiting_texts(session)
         if not keep_inbox:
             # What waits at this moment is dropped. Nothing else may ever go missing.
-            self.dropped.update(waiting_texts(session))
+            self.dropped.update(waited)
         self.agent.cancel("budget", keep_inbox=keep_inbox)
-        if not keep_inbox and INBOX.of(session):
+        # A listener may have given new input while the agent was being cancelled.
+        if not keep_inbox and set(waited) & set(waiting_texts(session)):
             self.problems.append("a cancellation left input in the inbox")
 
     def watch(self, committed: Committed) -> None:
@@ -332,6 +341,21 @@ class Run:
             for event in events
             if isinstance(data := event.data, UserMessageEvent)
         ]
+        turn = 0
+        for event in events:
+            data = event.data
+            if isinstance(data, TurnStartEvent):
+                turn = data.turn
+            elif isinstance(data, UserMessageEvent) and turn in self.asked_at:
+                # A turn that is being cancelled takes nothing more: not what waited at that
+                # moment, and not what was given after it.
+                text = data.message.content[0].text
+                assert text not in self.waiting_at[turn], (
+                    f"{text!r} waited when turn {turn} was cancelled, and the turn took it"
+                )
+                assert self.given_at[text] < self.asked_at[turn], (
+                    f"{text!r} was given after turn {turn} was cancelled, and the turn took it"
+                )
         waiting = waiting_texts(session)
         assert len(set(heard)) == len(heard), "an input reached the model twice"
         assert not set(heard) & set(waiting), "an input both reached the model and still waits"
@@ -401,6 +425,8 @@ async def play(data: st.DataObject, root: Path | None) -> None:
     events_left: list[int] = []
     chunks_left: list[int] = []
     tools_left: list[int] = []
+    keep_at_an_event: list[bool] = []
+    change_of_mind: list[tuple[str, str]] = []
 
     def at_a_tool() -> None:
         # Ask for a cancellation while a tool is running: from the tool itself, as it begins.
@@ -419,7 +445,10 @@ async def play(data: st.DataObject, root: Path | None) -> None:
             events_left[0] -= 1
             if events_left[0] <= 0:
                 events_left.clear()
-                run.cancel(keep_inbox=False)
+                run.cancel(keep_inbox=keep_at_an_event.pop())
+                # Whoever cancels may say at once what to do instead.
+                while change_of_mind:
+                    run.give(*change_of_mind.pop())
 
     def at_a_chunk(frame: StreamFrame) -> None:
         # The same, but while a reply streams, after a chosen number of chunks.
@@ -449,7 +478,13 @@ async def play(data: st.DataObject, root: Path | None) -> None:
                 st.sampled_from(["none", "none", "none", "event", "chunk", "tool"]), label="trap"
             )
             if trap == "event":
-                events_left[:] = [data.draw(st.integers(min_value=1, max_value=12), label="at")]
+                at = data.draw(st.integers(min_value=1, max_value=12), label="at")
+                keep = data.draw(st.booleans(), label="keep")
+                instead = data.draw(st.sampled_from(["nothing", "task", "steer"]), label="then")
+                # Set last what springs the trap, so that it is never half set.
+                keep_at_an_event[:] = [keep]
+                change_of_mind[:] = [] if instead == "nothing" else [(instead, f"instead {number}")]
+                events_left[:] = [at]
             elif trap == "chunk":
                 chunks_left[:] = [data.draw(st.integers(min_value=1, max_value=9), label="at")]
             elif trap == "tool":
@@ -460,6 +495,7 @@ async def play(data: st.DataObject, root: Path | None) -> None:
         events_left.clear()
         chunks_left.clear()
         tools_left.clear()
+        change_of_mind.clear()
         if run.cancelled:
             # What a cancellation kept is run once the agent is woken, and then it rests again.
             agent.wake()

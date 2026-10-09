@@ -144,8 +144,8 @@ _LOOP = (
         INBOX,
         "    if task:\n"
         '        session.append(InboxSplicedEvent(queue="next-turn", removed=1))\n'
-        "    return (*for_the_step, *task)\n",
-        "    return (*for_the_step, *task)\n",
+        "    return task\n",
+        "    return task\n",
     ),
     mutant(
         "a step takes nothing from the inbox",
@@ -156,10 +156,34 @@ _LOOP = (
         "    return ()\n",
     ),
     mutant(
-        "a turn takes its task from what waited before its other input was taken",
+        "a turn that is being cancelled still takes a task",
+        LOOP,
+        "        if first_step and not cancellation.requests():\n",
+        "        if first_step:\n",
+    ),
+    mutant(
+        "a turn that is being cancelled still takes the input for its next step",
+        LOOP,
+        "        if cancellation.requests():\n            return ()\n        claimed = claim_for_step",
+        "        claimed = claim_for_step",
+    ),
+    mutant(
+        "emptying the inbox drops what was given meanwhile",
         INBOX,
-        "    for_the_step = claim_for_step(session)\n    task = INBOX.of(session).next_turn[:1]\n",
-        "    task = INBOX.of(session).next_turn[:1]\n    for_the_step = claim_for_step(session)\n",
+        "    tasks = _still_first(INBOX.of(session).next_turn, waiting.next_turn)\n",
+        "    tasks = len(INBOX.of(session).next_turn)\n",
+    ),
+    mutant(
+        "emptying the inbox counts the tasks before a listener took some away",
+        INBOX,
+        "    tasks = _still_first(INBOX.of(session).next_turn, waiting.next_turn)\n",
+        "    tasks = len(waiting.next_turn)\n",
+    ),
+    mutant(
+        "a result that comes back in spite of a cancellation is accepted",
+        CANCELLATION,
+        "    await kept_back(before)\n    return result\n",
+        "    return result\n",
     ),
     mutant(
         "a pending cancellation is not let through by the guard",

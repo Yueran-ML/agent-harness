@@ -21,6 +21,7 @@ from tack.agent import (
     Enter,
     ErrorDecision,
     GiveUp,
+    InboxItem,
     Reject,
     RequestDraft,
     RequestFailure,
@@ -30,7 +31,7 @@ from tack.agent import (
     StreamFrame,
     TurnStopping,
     claim_for_step,
-    claim_for_turn,
+    claim_task,
     clear_inbox,
 )
 from tack.kernel import Context, Event
@@ -268,8 +269,7 @@ class LoopAgent(Agent):
         cut_off = False
         while True:
             self._reconcile_system_message()
-            claimed = claim_for_turn(session) if step == 0 else claim_for_step(session)
-            for item in claimed:
+            for item in self._claim(first_step=step == 0):
                 session.append(UserMessageEvent(message=item.message, source=item.source))
             decision = cast(
                 "object",
@@ -302,6 +302,22 @@ class LoopAgent(Agent):
             await self._heard(TURN_STOPPING, self.ctx.serial(TURN_STOPPING, stopping))
             if not INBOX.of(session).next_step:
                 return reason, None
+
+    def _claim(self, *, first_step: bool) -> tuple[InboxItem, ...]:
+        """Take from the inbox what a step begins with.
+
+        A turn that is being cancelled takes nothing more. What waits at that
+        moment was kept on purpose, or was given after the cancellation, and
+        either way it is for a later turn. The cancellation may be asked for
+        by a listener of an event that is written here, so it is looked for
+        before each of the two moves.
+        """
+        if cancellation.requests():
+            return ()
+        claimed = claim_for_step(self.session)
+        if first_step and not cancellation.requests():
+            claimed = (*claimed, *claim_task(self.session))
+        return claimed
 
     async def _heard(self, event: Event, answer: Awaitable[ResultT]) -> ResultT:
         """Wait for the listeners of ``event`` and return their answer.

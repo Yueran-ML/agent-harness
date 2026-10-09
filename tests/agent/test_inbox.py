@@ -10,7 +10,7 @@ from tack.agent import (
     InboxItem,
     InboxSplicedEvent,
     claim_for_step,
-    claim_for_turn,
+    claim_task,
     clear_inbox,
     enqueue,
 )
@@ -21,6 +21,11 @@ from tack.session import SESSION_EVENT, SESSIONS, Committed, Session
 
 def item(text: str, source: str = "user") -> InboxItem:
     return InboxItem(message=UserMessage(content=(TextBlock(text=text),)), source=source)
+
+
+def claim_for_turn(session: Session) -> tuple[InboxItem, ...]:
+    """What a turn takes when nothing comes in between: input for its first step, then a task."""
+    return (*claim_for_step(session), *claim_task(session))
 
 
 async def open_session(ctx: Context, root: Path | None = None) -> Session:
@@ -188,6 +193,42 @@ async def test_emptying_an_inbox_that_a_listener_empties_too_removes_nothing_twi
     assert [event.data for event in session.events[2:]] == [
         InboxSplicedEvent(queue="next-step", removed=1),
         InboxSplicedEvent(queue="next-turn", removed=1),
+    ]
+
+
+async def test_input_that_is_given_while_the_inbox_is_emptied_is_kept(ctx: Context) -> None:
+    session = await open_session(ctx)
+    enqueue(session, "next-step", item("some context", "inject"))
+    enqueue(session, "next-turn", item("first task"))
+    enqueue(session, "next-turn", item("second task"))
+    at_the_next_removal(
+        ctx, session, lambda: enqueue(session, "next-turn", item("a task given meanwhile"))
+    )
+
+    clear_inbox(session)
+
+    assert INBOX.of(session) == Inbox(next_turn=(item("a task given meanwhile"),))
+
+
+async def test_input_given_after_a_listener_emptied_the_inbox_too_is_kept(ctx: Context) -> None:
+    session = await open_session(ctx)
+    enqueue(session, "next-step", item("some context", "inject"))
+    enqueue(session, "next-turn", item("go on"))
+
+    def change_of_mind() -> None:
+        clear_inbox(session)
+        # The same words as before, but given anew.
+        enqueue(session, "next-turn", item("go on"))
+
+    at_the_next_removal(ctx, session, change_of_mind)
+
+    clear_inbox(session)
+
+    assert INBOX.of(session) == Inbox(next_turn=(item("go on"),))
+    assert [event.data for event in session.events[2:]] == [
+        InboxSplicedEvent(queue="next-step", removed=1),
+        InboxSplicedEvent(queue="next-turn", removed=1),
+        InboxSplicedEvent(queue="next-turn", added=(item("go on"),)),
     ]
 
 

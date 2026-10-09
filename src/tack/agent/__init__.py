@@ -39,7 +39,7 @@ from tack.agent.inbox import (
     InboxSplicedEvent,
     Queue,
     claim_for_step,
-    claim_for_turn,
+    claim_task,
     clear_inbox,
     enqueue,
 )
@@ -77,7 +77,7 @@ __all__ = [
     "TurnStopping",
     "apply",
     "claim_for_step",
-    "claim_for_turn",
+    "claim_task",
     "clear_inbox",
     "enqueue",
     "inject",

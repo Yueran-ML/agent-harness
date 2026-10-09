@@ -110,6 +110,9 @@ def main(arguments: list[str]) -> int:
             )
             return 2
         for mutant in chosen.mutants:
+            if mutant.only_on not in (None, sys.platform):
+                print(f"elsewhere  {mutant.name}", flush=True)
+                continue
             path = ROOT / mutant.path
             original = path.read_text(encoding="utf-8")
             changed = mutated(mutant, original)
@@ -125,7 +128,7 @@ def main(arguments: list[str]) -> int:
             print(f"{'found   ' if found else 'MISSED  '}  {mutant.name}", flush=True)
             if not found:
                 missed.append(mutant.name)
-    total = len(chosen.mutants)
+    total = sum(mutant.only_on in (None, sys.platform) for mutant in chosen.mutants)
     print(f"{total - len(missed)} of {total} mutants found by {' '.join(tests)}")
     return 1 if missed else 0
 

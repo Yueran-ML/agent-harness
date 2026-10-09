@@ -9,14 +9,13 @@ import os
 import sys
 from pathlib import Path
 
-# Each platform runs its own branch, so neither is counted by the coverage of the other.
-if sys.platform == "win32":  # pragma: no cover
+if sys.platform == "win32":  # pragma: windows only
     import msvcrt
 
     def _lock(descriptor: int) -> None:
         msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
 
-else:  # pragma: no cover
+else:  # pragma: posix only
     import fcntl
 
     def _lock(descriptor: int) -> None:

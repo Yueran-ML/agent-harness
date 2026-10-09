@@ -141,9 +141,12 @@ uv sync
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
-uv run coverage run -m pytest
-uv run coverage report
+uv run python -m coverage run -m pytest
+uv run python -m coverage report
 ```
+
+Coverage is run as a module because it loads a small plugin from `tests/support`, which
+counts the code of one platform only where that platform runs it.
 
 The tests need no key and reach no service outside the machine. Beside unit tests there
 are these kinds:

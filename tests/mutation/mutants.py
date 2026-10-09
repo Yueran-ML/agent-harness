@@ -10,14 +10,18 @@ checks that for every mutant, so a list cannot go stale without a test failing.
 Left out on purpose are mutants that change nothing that can be observed. One
 example: counting the lines after the wanted ones on the slow path of the
 reader instead of the fast one.
+
+A mutant of code that only one platform runs says which. On another platform
+no test can notice it, and ``mutate.py`` passes it over.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 LOOP = "src/tack/agent_loop/loop.py"
 INBOX = "src/tack/agent/inbox.py"
 CANCELLATION = "src/tack/cancellation.py"
 READ = "src/tack/builtin_tools/read.py"
+PROCESS = "src/tack/process.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,11 +32,13 @@ class Mutant:
         name: What goes wrong, in a few words.
         path: The file, from the root of the repository.
         changes: Pairs of the text to replace and the text to put there.
+        only_on: The ``sys.platform`` that runs the code, or ``None`` if every one does.
     """
 
     name: str
     path: str
     changes: tuple[tuple[str, str], ...]
+    only_on: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +56,10 @@ class MutantSet:
 
 def mutant(name: str, path: str, old: str, new: str, *more: tuple[str, str]) -> Mutant:
     return Mutant(name, path, ((old, new), *more))
+
+
+def on_windows(fault: Mutant) -> Mutant:
+    return replace(fault, only_on="win32")
 
 
 _LOOP = (
@@ -334,8 +344,160 @@ _READ = (
     ),
 )
 
+_PROCESS = (
+    mutant(
+        "what a program started is not stopped",
+        PROCESS,
+        "        # However the wait ended, nothing that the program started goes on.\n"
+        "        tree.stop()\n",
+        "        # However the wait ended, nothing that the program started goes on.\n",
+    ),
+    mutant(
+        "the rest of the output is not waited for",
+        PROCESS,
+        "            await _within(watch.silent, _DRAIN_SECONDS)\n",
+        "",
+    ),
+    mutant(
+        "the rest of the output is waited for without end",
+        PROCESS,
+        "            await _within(watch.silent, _DRAIN_SECONDS)\n",
+        "            await watch.silent\n",
+    ),
+    mutant(
+        "a program that was stopped is waited for without end",
+        PROCESS,
+        "            await _within(watch.exited, _REAP_SECONDS)\n",
+        "            await watch.exited\n",
+    ),
+    mutant(
+        "a program that ran out of time keeps its exit code",
+        PROCESS,
+        "        exit_code=None if timed_out else exit_code,",
+        "        exit_code=exit_code,",
+    ),
+    mutant(
+        "running out of time goes unnoticed",
+        PROCESS,
+        "        timed_out = not await _within(watch.exited, timeout_seconds)",
+        "        await _within(watch.exited, timeout_seconds)",
+    ),
+    mutant(
+        "the beginning takes all the room",
+        PROCESS,
+        "        self._head_room = limit // 2",
+        "        self._head_room = limit",
+    ),
+    mutant(
+        "the end is kept without a limit",
+        PROCESS,
+        "        del self._tail[: max(0, len(self._tail) - self._tail_room)]\n",
+        "",
+    ),
+    mutant(
+        "output of exactly the limit counts as too much",
+        PROCESS,
+        "        if self.total <= self._head_room + self._tail_room:",
+        "        if self.total < self._head_room + self._tail_room:",
+    ),
+    mutant(
+        "half a character is left where the beginning is cut",
+        PROCESS,
+        "        head = bytes(self._head[: len(self._head) - unfinished])",
+        "        head = bytes(self._head)",
+    ),
+    mutant(
+        "half a character is left where the end begins",
+        PROCESS,
+        "        return head, bytes(self._tail[rest:])",
+        "        return head, bytes(self._tail)",
+    ),
+    mutant(
+        "one byte is counted like several",
+        PROCESS,
+        '    if count == 1:\n        return "[1 byte of output is left out here]"\n',
+        "",
+    ),
+    mutant(
+        "the line about what is left out follows the beginning without a break",
+        PROCESS,
+        '        gap = "" if not head or head.endswith("\\n") else "\\n"',
+        '        gap = ""',
+    ),
+    mutant(
+        "secrets are passed on when no environment is given",
+        PROCESS,
+        "            env=cleaned(os.environ) if env is None else dict(env),",
+        "            env=dict(os.environ) if env is None else dict(env),",
+    ),
+    mutant(
+        "a secret is known only in capitals",
+        PROCESS,
+        "        if not any(word in name.upper() for word in _SECRET_WORDS)",
+        "        if not any(word in name for word in _SECRET_WORDS)",
+    ),
+    mutant(
+        "a password is no secret",
+        PROCESS,
+        '_SECRET_WORDS = ("KEY", "PASSWORD", "SECRET", "TOKEN")',
+        '_SECRET_WORDS = ("KEY", "SECRET", "TOKEN")',
+    ),
+    mutant(
+        "the error stream is dropped",
+        PROCESS,
+        "            stderr=subprocess.STDOUT,",
+        "            stderr=subprocess.DEVNULL,",
+    ),
+    mutant(
+        "a program given no input waits for some",
+        PROCESS,
+        "            stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,",
+        "            stdin=subprocess.PIPE,",
+    ),
+    mutant(
+        "the input of a program has no end",
+        PROCESS,
+        "            feed.write_eof()\n",
+        "",
+    ),
+    on_windows(
+        mutant(
+            "the program is not put into its job",
+            PROCESS,
+            "                        _kernel32.AssignProcessToJobObject(job, process),",
+            "                        True,",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the job does not end with its handle",
+            PROCESS,
+            "                limits.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE",
+            "                limits.BasicLimitInformation.LimitFlags = 0",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the program runs before it is in its job",
+            PROCESS,
+            '{"creationflags": _CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW}',
+            '{"creationflags": subprocess.CREATE_NO_WINDOW}',
+        )
+    ),
+    on_windows(
+        mutant(
+            "a program that could not be put into a job is left as it is",
+            PROCESS,
+            "        # The program has not run a single instruction, and it does not get to.\n"
+            "        transport.close()\n",
+            "        # The program has not run a single instruction, and it does not get to.\n",
+        )
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "loop": MutantSet(("tests/agent_loop", "tests/agent", "tests/test_cancellation.py"), _LOOP),
     "read": MutantSet(("tests/builtin_tools",), _READ),
+    "process": MutantSet(("tests/test_process.py",), _PROCESS),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

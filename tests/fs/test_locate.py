@@ -11,6 +11,7 @@ import pytest
 from columbina.fs import Located, locate, paths
 from columbina.tools import ToolFailure
 from support.links import link_directory
+from support.names import short_name
 
 
 @pytest.fixture
@@ -169,6 +170,17 @@ if sys.platform == "win32":
         where = locate(work, "NOTES.TXT")
 
         assert (where.inside, where.relative) == (True, "Notes.txt")
+
+    def test_the_short_name_that_the_disk_keeps_for_a_name_is_spelled_out(work: Path) -> None:
+        (work / ".git").mkdir()
+        (work / ".git" / "config").write_text("c")
+        short = short_name(work / ".git")
+        if short is None:
+            pytest.skip("this disk keeps no short names")
+
+        assert locate(work, short).relative == ".git"
+        assert locate(work, f"{short}/config").relative == ".git/config"
+        assert locate(work, f"{short.lower()}/new/file.txt").relative == ".git/new/file.txt"
 
     def test_two_names_that_are_one_only_in_lower_case_are_two_directories(
         tmp_path: Path,

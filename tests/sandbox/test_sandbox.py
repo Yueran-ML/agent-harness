@@ -22,6 +22,7 @@ from columbina.sandbox import (
     Strength,
 )
 from columbina.session import SESSIONS, Session, Sessions
+from support.names import short_name
 
 MODES: tuple[Mode, ...] = ("read-only", "workspace-write", "danger-full-access")
 KINDS: tuple[Kind, ...] = ("read", "write")
@@ -229,6 +230,23 @@ def test_a_write_into_a_protected_directory_is_refused_in_words_that_name_it(
 
     assert refusal is not None
     assert refusal.reason == "sub/.git/config is in .git, which is not written in this mode."
+
+
+@pytest.mark.parametrize("protected", [".git", ".columbina"])
+def test_the_short_name_that_a_disk_keeps_for_a_protected_directory_leads_to_it(
+    seam: tuple[Fs, Sandbox, Session], work: Path, protected: str
+) -> None:
+    fs, _, session = seam
+    (work / protected).mkdir()
+    short = short_name(work / protected)
+    if short is None:
+        pytest.skip("this disk keeps no short names")
+
+    for written in (f"{short}/config", f"{short.lower()}/sub/new.txt", short):
+        refusal = fs.judge(Access(session, work, locate(work, written), "write", "probe"))
+
+        assert refusal is not None, written
+        assert refusal.code == "PROTECTED", written
 
 
 def test_a_change_of_the_mode_counts_from_the_next_access_on(

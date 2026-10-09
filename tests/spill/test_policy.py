@@ -17,7 +17,7 @@ from columbina.kernel import Context, Next
 from columbina.llm import ToolCallBlock
 from columbina.session import SESSIONS, Session
 from columbina.spill import Saved
-from columbina.spill.policy import Config
+from columbina.spill.policy import Config, two_ends
 from columbina.token_meter import estimate
 from columbina.tools import (
     POST_EXECUTE,
@@ -154,6 +154,14 @@ async def test_a_text_without_line_breaks_is_cut_where_the_room_ends(
     assert estimate(shown) <= 300
     assert estimate(shown) > 270
     assert shown.startswith("ab ab ab ")
+
+
+def test_the_two_ends_of_a_text_never_hold_a_part_of_it_twice() -> None:
+    # With more room than the text needs, the beginning is all of it, and nothing is left
+    # that the end could be taken from.
+    shown = two_ends("one\ntwo\n", 1000, "(the last line)")
+
+    assert shown == "one\ntwo\n[... 0 characters are left out here ...]\n(the last line)"
 
 
 async def test_a_result_of_exactly_the_limit_goes_through(ctx: Context, tmp_path: Path) -> None:

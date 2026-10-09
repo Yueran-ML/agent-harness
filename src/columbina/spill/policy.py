@@ -38,7 +38,7 @@ from columbina.spill import SPILL, Saved
 from columbina.token_meter import estimate
 from columbina.tools import POST_EXECUTE, Accept, Executed, Verdict
 
-__all__ = ["Config", "apply", "name"]
+__all__ = ["Config", "apply", "name", "two_ends"]
 
 name = "spill-policy"
 
@@ -101,8 +101,13 @@ def _end(text: str, tokens: int) -> str:
     return text[broken + 1 :] if broken >= 0 else text[start:]
 
 
-def _cut(text: str, tokens: int, last: str) -> str:
-    """Return the two ends of a text and a last line, in no more than so many tokens."""
+def two_ends(text: str, tokens: int, last: str) -> str:
+    """Return the two ends of a text and a last line, in no more than so many tokens.
+
+    Between the ends stands a line that says how many characters are left
+    out. No part of the text is shown twice: the end is taken from what the
+    beginning has left.
+    """
     # The line between the ends is priced as if everything were left out.
     room = tokens - estimate(last) - estimate(_left_out(len(text))) - 2
     half = max(room // 2, 0)
@@ -147,6 +152,6 @@ def apply(ctx: Context, config: Config) -> None:
         if not too_large:
             between = "" if text.endswith("\n") else "\n"
             return Accept(text=f"{text}{between}{last}")
-        return Accept(text=_cut(text, config.max_tokens, last))
+        return Accept(text=two_ends(text, config.max_tokens, last))
 
     ctx.on(POST_EXECUTE, within_the_limit, prepend=True)

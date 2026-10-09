@@ -45,7 +45,7 @@ from columbina.session import (
     UserMessageEvent,
 )
 
-__all__ = ["Symbols", "Transcript", "on_screen", "recap"]
+__all__ = ["Symbols", "Transcript", "fit", "on_screen", "recap"]
 
 _NOTE = "dim"
 _BAD = "red"
@@ -136,13 +136,26 @@ def _counted(number: int, what: str) -> str:
     return f"{number} {what}" if number == 1 else f"{number} {what}s"
 
 
+def fit(written: str, style: str = "") -> Text:
+    """Return text from elsewhere as a line that is fit for a terminal.
+
+    The library that keeps the colours takes some control characters out of
+    a text by itself, and leaves no trace of them: the bell, the backspace,
+    the carriage return, and two that move the paper on. A backspace that
+    is gone leaves two words standing as one. So what a terminal would act
+    on is replaced before the library is given the text, each character by
+    one that is shown, and the text keeps its length.
+    """
+    return Text(harmless(written), style=style)
+
+
 def _note(text: str, style: str = _NOTE) -> Text:
-    return Text(text, style=style)
+    return fit(text, style)
 
 
 def _beginning(lines: list[str], at_most: int, before: str, style: str = "") -> list[Text]:
     """Return the first lines of many, each after ``before``, and a word about the rest."""
-    shown = [Text(f"{before}{line}", style=style) for line in lines[:at_most]]
+    shown = [fit(f"{before}{line}", style) for line in lines[:at_most]]
     if len(lines) > at_most:
         rest = _counted(len(lines) - at_most, "more line")
         shown.append(Text(f"{before}... {rest}", style=style or _NOTE))
@@ -155,7 +168,7 @@ def _ending(lines: list[str], at_most: int, before: str = "") -> list[Text]:
     if len(lines) > at_most:
         earlier = _counted(len(lines) - at_most, "line")
         shown.append(_note(f"{before}... {earlier} before these"))
-    shown.extend(Text(f"{before}{line}") for line in lines[-at_most:])
+    shown.extend(fit(f"{before}{line}") for line in lines[-at_most:])
     return shown
 
 
@@ -225,7 +238,7 @@ class Transcript:
     def partial(self) -> Text:
         """The line of the reply that is not complete yet, or a word about what the model does."""
         if self._lines.partial:
-            return Text(self._lines.partial)
+            return fit(self._lines.partial)
         return Text() if self._word is None else _note(self._word)
 
     def chunk(self, chunk: Chunk) -> list[Text]:
@@ -233,7 +246,7 @@ class Transcript:
         if isinstance(chunk, TextDelta):
             self._word = None
             self._shown = True
-            return [Text(line) for line in self._lines.feed(chunk.text)]
+            return [fit(line) for line in self._lines.feed(chunk.text)]
         if isinstance(chunk, BlockStart):
             if chunk.kind == "reasoning":
                 self._word = "thinking..."
@@ -253,7 +266,7 @@ class Transcript:
         if isinstance(data, AssistantMessageEvent | AssistantAttemptEvent):
             shown = self._close()
             if not self._shown:
-                shown.extend(Text(line) for line in data.message.text.splitlines())
+                shown.extend(fit(line) for line in data.message.text.splitlines())
             self._shown = False
             self._word = None
             return shown
@@ -264,7 +277,7 @@ class Transcript:
         if isinstance(data, UserMessageEvent):
             if data.source != "steer":
                 return []
-            return [Text(f"{self._symbols.steer} {line}") for line in _said(data).splitlines()]
+            return [fit(f"{self._symbols.steer} {line}") for line in _said(data).splitlines()]
         if isinstance(data, TurnEndEvent):
             # An empty line sets the turn apart from what comes after it.
             return [*_end(data), Text()]
@@ -279,17 +292,17 @@ class Transcript:
     def _close(self) -> list[Text]:
         """Hand over the line that is not complete, if there is one."""
         last = self._lines.flush()
-        return [] if last is None else [Text(last)]
+        return [] if last is None else [fit(last)]
 
     def _call(self, time: int, data: ToolCallEvent) -> list[Text]:
         self._began[data.call_id] = time
         arguments = _read(data.arguments)
         line = Text()
         line.append(f"{self._symbols.call} ", style=_MARK)
-        line.append(data.name, style=_NAME)
+        line.append(harmless(data.name), style=_NAME)
         told = _one_line(data.arguments if arguments is None else _acted_on(arguments))
         if told:
-            line.append(f" {told}")
+            line.append(harmless(f" {told}"))
         shown = [line]
         if arguments is None:
             return shown
@@ -313,7 +326,8 @@ class Transcript:
         took = [] if began is None else [_took(time - began)]
         head = Text("  ")
         if data.error is not None:
-            head.append(", ".join([f"{self._symbols.failed} {data.error.code}", *took]), style=_BAD)
+            failed = ", ".join([f"{self._symbols.failed} {data.error.code}", *took])
+            head.append(harmless(failed), style=_BAD)
             return [head, *_beginning(lines, _ERROR_LINES, "    ")]
         if lines and not command:
             took.append(_counted(len(lines), "line"))

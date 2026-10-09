@@ -23,7 +23,8 @@ from rich.text import Text
 
 from columbina.approval import ApprovalRequest, Outcome
 from columbina.apps.cli.prompt import Prompt
-from columbina.apps.terminal_text import spelled_out
+from columbina.apps.cli.transcript import fit
+from columbina.apps.terminal_text import harmless, spelled_out
 from columbina.session import Session
 
 __all__ = ["Granting", "Responder"]
@@ -60,7 +61,7 @@ class Responder:
     async def __call__(self, request: ApprovalRequest) -> Outcome:
         """Put one question to the person and return the answer."""
         asked = Text()
-        asked.append(request.tool, style=_NAME)
+        asked.append(harmless(request.tool), style=_NAME)
         if request.target is None:
             asked.append(" asks for a yes.")
             about: list[Text] = []
@@ -72,9 +73,9 @@ class Responder:
         longer = None if self._granting is None else request.standing
         keys = [Text("  y  yes, this once")]
         if longer is not None:
-            keys.append(Text(f"  a  yes, and do not ask again in this session about {longer}"))
+            keys.append(fit(f"  a  yes, and do not ask again in this session about {longer}"))
         keys.append(Text("  n  no"))
-        question = [asked, *about, Text(request.reason, style=_NOTE), *keys]
+        question = [asked, *about, fit(request.reason, _NOTE), *keys]
         offered = "yn" if longer is None else "yan"
         try:
             key = await self.prompt.ask(offered, f"[{'/'.join(offered)}]", question)

@@ -583,12 +583,71 @@ def test_what_a_model_or_a_tool_wrote_cannot_steer_the_terminal() -> None:
     sent = on_screen(lines, colours=True)
 
     # The line has no colour of its own, so nothing that begins a sequence may be sent at all.
-    # What would have steered the terminal is shown as characters. The bell is left out by
-    # the library that renders.
+    # What would have steered the terminal is shown as characters, the bell too.
     assert "\x1b" not in sent
     assert sent == (
-        f"a{STAND_IN}[31mb{STAND_IN}{STAND_IN}[2J{STAND_IN}c{STAND_IN}]2;mined{STAND_IN}2Je{STAND_IN}f\n"
+        f"a{STAND_IN}[31mb{STAND_IN}{STAND_IN}[2J{STAND_IN}c{STAND_IN}]2;mine{STAND_IN}d"
+        f"{STAND_IN}2Je{STAND_IN}f\n"
     )
+
+
+DROPPED = [0x07, 0x08, 0x0B, 0x0C, 0x0D]
+"""Control characters that the library which keeps the colours takes out of a text by itself."""
+
+
+@pytest.mark.parametrize("code", DROPPED)
+def test_no_character_goes_missing_from_a_reply_that_is_being_written(code: int) -> None:
+    # A backspace that is taken out leaves two words standing as one. Whatever a terminal
+    # would act on is shown in its place, so that nobody is shown less than was written.
+    transcript = Transcript(PLAIN)
+    odd = chr(code)
+
+    lines = transcript.chunk(TextDelta(index=0, text=f"pass{odd}{odd}fail\nmo{odd}re"))
+
+    assert on_screen(lines, colours=False) == f"pass{STAND_IN}{STAND_IN}fail\n"
+    assert on_screen([transcript.partial], colours=False) == f"mo{STAND_IN}re\n"
+    assert on_screen(transcript.chunk(BlockEnd(index=0)), colours=False) == f"mo{STAND_IN}re\n"
+
+
+@pytest.mark.parametrize("code", [0x07, 0x08])
+async def test_no_character_goes_missing_from_what_the_log_holds(log: Session, code: int) -> None:
+    # The other three break a line where a text is taken apart into its lines.
+    transcript = Transcript(PLAIN)
+    odd = chr(code)
+
+    shown = [
+        *transcript.event(log.append(reply(TextBlock(text=f"a{odd}b")))),
+        *transcript.event(log.append(call(f"re{odd}ad", path=f"x{odd}y"))),
+        *transcript.event(log.append(result(f"no{odd}pe", error=f"BAD{odd}CODE"))),
+        *transcript.event(log.append(said(f"st{odd}eer", source="steer"))),
+        *transcript.event(log.append(TurnEndEvent(turn=1, reason="error", detail=f"o{odd}h"))),
+    ]
+    sent = on_screen(shown, colours=False).splitlines()
+
+    assert sent[0] == f"a{STAND_IN}b"
+    assert sent[1] == f"* re{STAND_IN}ad x{STAND_IN}y"
+    assert sent[2].startswith(f"  failed BAD{STAND_IN}CODE")
+    assert sent[3] == f"    no{STAND_IN}pe"
+    assert sent[4] == f">> st{STAND_IN}eer"
+    assert sent[5] == f"(the turn ended with an error: o{STAND_IN}h)"
+
+
+@pytest.mark.parametrize("code", [0x07, 0x08])
+async def test_no_character_goes_missing_from_the_last_turn_of_a_session_that_is_taken_up(
+    log: Session, code: int
+) -> None:
+    odd = chr(code)
+    for data in (
+        TurnStartEvent(turn=1),
+        said(f"he{odd}llo"),
+        reply(TextBlock(text=f"wo{odd}rld")),
+        TurnEndEvent(turn=1, reason="completed"),
+    ):
+        log.append(data)
+
+    sent = on_screen(recap(log.events, PLAIN), colours=False).splitlines()
+
+    assert sent[1:3] == [f"> he{STAND_IN}llo", f"wo{STAND_IN}rld"]
 
 
 async def test_the_output_of_a_command_cannot_steer_the_terminal(log: Session) -> None:
@@ -622,7 +681,23 @@ async def test_a_line_keeps_its_colours_where_something_was_replaced(log: Sessio
         transcript.event(log.append(call("read", "c-2", path="a?.txt"))), colours=True
     )
     assert coloured == usual.replace("a?.txt", f"a{STAND_IN}.txt")
-    assert card[0].plain == "* read a\x1b.txt"
+    # The line is made fit where it is put together, before anything else is done with it.
+    assert card[0].plain == f"* read a{STAND_IN}.txt"
+
+
+def test_a_line_that_was_put_together_elsewhere_keeps_its_colours_too() -> None:
+    # Whoever shows a line of their own gets the same care, on the way to the screen.
+    line = Text("* ", style="cyan")
+    line.append("read", style="bold")
+    line.append(" a\x1b.txt")
+    usual = Text("* ", style="cyan")
+    usual.append("read", style="bold")
+    usual.append(" a?.txt")
+
+    coloured = on_screen([line], colours=True)
+
+    assert coloured == on_screen([usual], colours=True).replace("a?.txt", f"a{STAND_IN}.txt")
+    assert line.plain == "* read a\x1b.txt"
 
 
 def test_a_long_line_is_left_to_the_screen_to_break() -> None:

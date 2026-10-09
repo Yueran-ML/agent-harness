@@ -44,8 +44,9 @@ from columbina.apps.cli.approval import Responder
 from columbina.apps.cli.prompt import Prompt
 from columbina.apps.cli.status import status
 from columbina.apps.cli.terminal import TERMINAL, real
-from columbina.apps.cli.transcript import Symbols, Transcript, recap
+from columbina.apps.cli.transcript import Symbols, Transcript, fit, recap
 from columbina.apps.common import DEFAULT_PROMPT, open_agent
+from columbina.apps.terminal_text import harmless
 from columbina.commands import COMMANDS, Command, Commands, is_command
 from columbina.kernel import Context, Next
 from columbina.llm import CallConfig
@@ -106,7 +107,7 @@ class _Shown(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         style = _BAD if record.levelno >= logging.ERROR else _NOTE
-        self._prompt.show([Text(f"columbina: {record.getMessage()}", style=style)])
+        self._prompt.show([fit(f"columbina: {record.getMessage()}", style)])
 
 
 class Cli:
@@ -178,7 +179,7 @@ class Cli:
         if failure is not None and not self._gone.is_set():
             # The agent stopped for good while the program was leaving: what was left of
             # its turn could not be written down. Nobody has been told so yet.
-            prompt.show([Text(f"(the agent has stopped: {failure})", style=_BAD)])
+            prompt.show([fit(f"(the agent has stopped: {failure})", _BAD)])
             return 1
         return code
 
@@ -216,7 +217,7 @@ class Cli:
         try:
             agent = await self._open(await self._first_session(prompt), prompt)
         except (SessionError, ValueError) as error:
-            prompt.show([Text(f"columbina: {error}", style=_BAD)])
+            prompt.show([fit(f"columbina: {error}", _BAD)])
             return 1
         self._greet(prompt, agent)
         while not self._leaving:
@@ -268,7 +269,7 @@ class Cli:
     def _greet(self, prompt: Prompt, agent: Agent) -> None:
         head = Text()
         head.append("Columbina", style=_NAME)
-        head.append(f" {columbina.__version__}   {self._model.model}   {agent.cwd}")
+        head.append(harmless(f" {columbina.__version__}   {self._model.model}   {agent.cwd}"))
         hint = Text("/help lists the commands. Ctrl+D leaves.", style=_NOTE)
         prompt.show([head, hint, Text()])
 
@@ -288,7 +289,7 @@ class Cli:
             said = await self._commands.run(agent, line)
             if said:
                 # An empty line sets the answer apart from what comes after it.
-                prompt.show([*(Text(part) for part in said.splitlines()), Text()])
+                prompt.show([*(fit(part) for part in said.splitlines()), Text()])
         elif prompt.busy:
             agent.steer(line)
         else:
@@ -311,7 +312,7 @@ class Cli:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            prompt.show([Text(f"(the agent has stopped: {error})", style=_BAD)])
+            prompt.show([fit(f"(the agent has stopped: {error})", _BAD)])
             self._gone.set()
         finally:
             prompt.busy = False

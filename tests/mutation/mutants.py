@@ -71,6 +71,7 @@ SESSION_STORE = "src/columbina/session/store.py"
 SESSION_SERVICE = "src/columbina/session/service.py"
 UNSEEN = "src/columbina/unseen.py"
 TOKEN_METER = "src/columbina/token_meter/__init__.py"
+SPILL_LOCAL = "src/columbina/spill/local.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -4708,6 +4709,183 @@ _METER = (
     ),
 )
 
+_SPILL = (
+    mutant(
+        "a line may be one character longer than the read tool shows",
+        SPILL_LOCAL,
+        "FOLD_AT = 2000\n",
+        "FOLD_AT = 2001\n",
+    ),
+    mutant(
+        "a name is taken with whatever it holds",
+        SPILL_LOCAL,
+        '    fit = _UNFIT.sub("_", name)[:_NAME_CHARACTERS]\n',
+        "    fit = name[:_NAME_CHARACTERS]\n",
+    ),
+    mutant(
+        "a name is taken at whatever length",
+        SPILL_LOCAL,
+        '    fit = _UNFIT.sub("_", name)[:_NAME_CHARACTERS]\n',
+        '    fit = _UNFIT.sub("_", name)\n',
+    ),
+    mutant(
+        "a name of nothing but dots is taken",
+        SPILL_LOCAL,
+        '    return fit if re.search("[A-Za-z0-9]", fit) else "output"\n',
+        "    return fit\n",
+    ),
+    mutant(
+        "a line of just the length that is shown counts as too long",
+        SPILL_LOCAL,
+        "    if all(len(line) <= FOLD_AT for line in lines):\n",
+        "    if all(len(line) < FOLD_AT for line in lines):\n",
+    ),
+    mutant(
+        "no line is broken",
+        SPILL_LOCAL,
+        "    if all(len(line) <= FOLD_AT for line in lines):\n",
+        "    if True:\n",
+    ),
+    mutant(
+        "a file that is there is written over",
+        SPILL_LOCAL,
+        '        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)\n',
+        '        flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0)\n',
+    ),
+    mutant(
+        "a line break is written the way the system writes one",
+        SPILL_LOCAL,
+        '        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)\n',
+        "        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL\n",
+    ),
+    mutant(
+        "what was written is counted in pieces",
+        SPILL_LOCAL,
+        "        self._written += len(data)\n",
+        "        self._written += 1\n",
+    ),
+    mutant(
+        "a file that was closed is written to",
+        SPILL_LOCAL,
+        '        if self._saved is not None:\n            raise ValueError(f"{self.locator} is closed")\n',
+        "",
+    ),
+    mutant(
+        "a file is closed as often as it is asked",
+        SPILL_LOCAL,
+        "        if self._saved is None:\n            os.close(self._descriptor)\n",
+        "        if True:\n            os.close(self._descriptor)\n",
+    ),
+    mutant(
+        "half a text stays where it was begun",
+        SPILL_LOCAL,
+        "            with contextlib.suppress(OSError):\n                Path(file.locator).unlink()\n",
+        "",
+    ),
+    mutant(
+        "a character that cannot be written keeps the text from being saved",
+        SPILL_LOCAL,
+        '            file.write(folded.encode("utf-8", errors="replace"))\n',
+        '            file.write(folded.encode("utf-8"))\n',
+    ),
+    mutant(
+        "nobody is told that lines were broken",
+        SPILL_LOCAL,
+        "        return file.close(_HINT + _FOLDED if broken else _HINT)\n",
+        "        return file.close(_HINT)\n",
+    ),
+    mutant(
+        "the files of all sessions lie in one directory",
+        SPILL_LOCAL,
+        "        directory = self.directory(cwd) / session.id\n",
+        "        directory = self.directory(cwd)\n",
+    ),
+    mutant(
+        "a name that is taken is not drawn anew",
+        SPILL_LOCAL,
+        "        for _ in range(_DRAWS):\n",
+        "        for _ in range(1):\n",
+    ),
+    mutant(
+        "the files of all working directories lie in one directory",
+        SPILL_LOCAL,
+        "        return self.root / workspace_key(cwd)\n",
+        '        return self.root / "all"\n',
+    ),
+    mutant(
+        "what was saved may be written by the model",
+        SPILL_LOCAL,
+        '        if access.kind != "read":\n            return False\n',
+        "",
+    ),
+    mutant(
+        "the directory of what was saved cannot be listed",
+        SPILL_LOCAL,
+        "        return directory == access.where.path or directory in access.where.path.parents\n",
+        "        return directory in access.where.path.parents\n",
+    ),
+    mutant(
+        "what was saved for any working directory may be read",
+        SPILL_LOCAL,
+        "        directory = Path(os.path.realpath(self.directory(access.cwd)))\n",
+        "        directory = Path(os.path.realpath(self.root))\n",
+    ),
+    mutant(
+        "the newer files are removed and the older ones are kept",
+        SPILL_LOCAL,
+        "                    if entry.is_file(follow_symlinks=False) and status.st_mtime < before:\n",
+        "                    if entry.is_file(follow_symlinks=False) and status.st_mtime > before:\n",
+    ),
+    mutant(
+        "a file is kept for seconds and not for days",
+        SPILL_LOCAL,
+        "    before = time.time() - keep_days * _DAY\n",
+        "    before = time.time() - keep_days\n",
+    ),
+    mutant(
+        "the files that were removed are not counted",
+        SPILL_LOCAL,
+        "                        removed += 1\n",
+        "                        pass\n",
+    ),
+    mutant(
+        "the directory of a session stays when nothing is left in it",
+        SPILL_LOCAL,
+        "            with contextlib.suppress(OSError):\n                Path(session).rmdir()\n",
+        "",
+    ),
+    mutant(
+        "the directory of a working directory stays when nothing is left in it",
+        SPILL_LOCAL,
+        "        with contextlib.suppress(OSError):\n            Path(workspace).rmdir()\n",
+        "",
+    ),
+    mutant(
+        "files are kept for a day longer",
+        SPILL_LOCAL,
+        "    keep_days: float = Field(default=30, gt=0)\n",
+        "    keep_days: float = Field(default=31, gt=0)\n",
+    ),
+    mutant(
+        "old files that cannot be looked through keep nothing from being said",
+        SPILL_LOCAL,
+        '        logger.exception("the old files under %s could not be looked through", root)\n',
+        "        pass\n",
+    ),
+    mutant(
+        "the model is not let read what was saved",
+        SPILL_LOCAL,
+        '        seam.grants.add(ctx, "spill", store.grants)\n',
+        "        pass\n",
+    ),
+    mutant(
+        "old files are not removed when the program starts",
+        SPILL_LOCAL,
+        "        removed = await asyncio.to_thread(sweep, root, keep_days=keep_days)\n",
+        "        removed = 0\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -4779,5 +4957,6 @@ SETS: dict[str, MutantSet] = {
     "chat": MutantSet(("tests/apps", "tests/test_package.py"), _CHAT),
     "unseen": MutantSet(("tests/test_unseen.py", "tests/apps/test_terminal_text.py"), _UNSEEN),
     "meter": MutantSet(("tests/token_meter",), _METER),
+    "spill": MutantSet(("tests/spill",), _SPILL),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

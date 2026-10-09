@@ -32,7 +32,11 @@ def test_a_path_is_taken_from_the_working_directory(work: Path) -> None:
     where = locate(work, "sub/a.txt")
 
     assert where == Located(
-        path=real(work / "sub" / "a.txt"), written="sub/a.txt", inside=True, relative="sub/a.txt"
+        path=real(work / "sub" / "a.txt"),
+        written="sub/a.txt",
+        inside=True,
+        relative="sub/a.txt",
+        root=real(work),
     )
 
 

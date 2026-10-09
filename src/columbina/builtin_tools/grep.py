@@ -36,7 +36,7 @@ from pydantic import BaseModel, Field
 
 from columbina import process
 from columbina.builtin_tools.glob import matcher
-from columbina.fs import FS, Access, Fs, locate
+from columbina.fs import FS, Access, Fs
 from columbina.fs.walk import Found, Tally, remarks, walk
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
@@ -150,10 +150,6 @@ class _Search:
     unread: Counter[_Unread] = field(default_factory=Counter[_Unread])
     cut: bool = False
     out_of_room: bool = False
-
-
-def _target(args: GrepArgs, run: ToolRun) -> str:
-    return locate(run.cwd, args.path).relative
 
 
 async def _only(found: Found) -> AsyncGenerator[Found, None]:
@@ -308,11 +304,14 @@ def _said(search: _Search, tally: Tally, args: GrepArgs) -> str:
 def grep_tool(fs: Fs) -> Tool[GrepArgs, str]:
     """Make the grep tool, which reaches files through ``fs``."""
 
+    def target(args: GrepArgs, run: ToolRun) -> str:
+        return fs.locate(run.session, run.cwd, args.path).relative
+
     def files(
         args: GrepArgs, run: ToolRun, tally: Tally
     ) -> tuple[AsyncGenerator[Found, None], Callable[[tuple[str, ...]], bool] | None]:
         """Return the files that the call leads to, and what tells which of them to search."""
-        root = locate(run.cwd, args.path)
+        root = fs.locate(run.session, run.cwd, args.path)
         if root.relative != run.target:
             raise ToolFailure(
                 f"{args.path} leads somewhere else than it did when the call was checked, "
@@ -393,7 +392,7 @@ def grep_tool(fs: Fs) -> Tool[GrepArgs, str]:
         execute=grep,
         concurrency_safe=True,
         effect="read",
-        target=_target,
+        target=target,
     )
 
 

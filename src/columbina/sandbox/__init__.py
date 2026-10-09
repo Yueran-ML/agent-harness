@@ -9,7 +9,11 @@ the session is taken up again.
     Nothing is written.
 ``workspace-write``
     Files in the working directory are written, except what belongs to the
-    repository and to this program: ``.git`` and ``.columbina``.
+    repository and to this program: ``.git`` and ``.columbina``. That is
+    what lies in a directory of such a name, wherever on the path the name
+    comes, and what such a name at the top of the working directory leads
+    to if it is a link. A repository that keeps its history in a directory
+    of another name, and points to it from a file, is not found this way.
 ``danger-full-access``
     Everything is read and written, wherever it is.
 
@@ -24,6 +28,7 @@ the job of a provider. The only one so far is ``none``, which holds nothing
 and says so by its strength, and whoever decides about commands goes by that.
 """
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,11 +132,23 @@ _MODE: Projection[Mode | None] = Projection("sandbox-mode", None, _last_mode)
 
 
 def _protected(access: Access) -> str | None:
-    """Return the protected directory that a file lies in or is, if there is one."""
-    for part in access.where.relative.split("/"):
+    """Return the protected directory that a file lies in or is, if there is one.
+
+    The whole path counts, and not only the part below the working
+    directory: a session that was started inside ``.git`` writes nothing
+    there either. A protected name at the top of the working directory may
+    be a link, and then the directory that it leads to is protected under
+    its own name too.
+    """
+    where = access.where
+    for part in where.path.parts:
         # The disk may not tell upper case from lower, so neither does this.
         if part.casefold() in PROTECTED:
             return part
+    for name in PROTECTED:
+        led = Path(os.path.realpath(where.root / name))
+        if led == where.path or led in where.path.parents:
+            return name
     return None
 
 
@@ -209,8 +226,8 @@ class Sandbox:
         written = access.where.written
         if mode == "read-only":
             return Refuse(f"The session is read-only, so {written} cannot be written.", "READ_ONLY")
-        protected = _protected(access)
-        if mode == "workspace-write" and protected is not None:
+        protected = _protected(access) if mode == "workspace-write" else None
+        if protected is not None:
             return Refuse(
                 f"{written} is in {protected}, which is not written in this mode.", "PROTECTED"
             )

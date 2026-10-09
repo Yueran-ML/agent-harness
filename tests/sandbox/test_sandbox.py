@@ -22,6 +22,7 @@ from columbina.sandbox import (
     Strength,
 )
 from columbina.session import SESSIONS, Session, Sessions
+from support.links import link_directory
 from support.names import short_name
 
 MODES: tuple[Mode, ...] = ("read-only", "workspace-write", "danger-full-access")
@@ -247,6 +248,56 @@ def test_the_short_name_that_a_disk_keeps_for_a_protected_directory_leads_to_it(
 
         assert refusal is not None, written
         assert refusal.code == "PROTECTED", written
+
+
+@pytest.mark.parametrize("protected", [".git", ".columbina"])
+async def test_a_working_directory_inside_a_protected_directory_is_not_written(
+    ctx: Context, tmp_path: Path, work: Path, protected: str
+) -> None:
+    sessions, fs, _ = await program(ctx, tmp_path)
+    inner = work / protected / "hooks"
+    inner.mkdir(parents=True)
+    session = sessions.create(ctx, inner)
+
+    refusal = fs.judge(Access(session, inner, locate(inner, "pre-commit"), "write", "probe"))
+
+    assert refusal is not None
+    assert refusal.code == "PROTECTED"
+    assert refusal.reason == f"pre-commit is in {protected}, which is not written in this mode."
+    assert fs.judge(Access(session, inner, locate(inner, "pre-commit"), "read", "probe")) is None
+
+
+@pytest.mark.parametrize("protected", [".git", ".columbina"])
+def test_what_a_protected_name_leads_to_is_protected_under_its_own_name_too(
+    seam: tuple[Fs, Sandbox, Session], work: Path, protected: str
+) -> None:
+    # The directory that holds the history may lie somewhere else, with a link in its place.
+    fs, _, session = seam
+    (work / "kept" / "hooks").mkdir(parents=True)
+    link_directory(work / protected, work / "kept")
+
+    for written in ("kept/config", "kept/hooks/pre-commit", "kept", f"{protected}/config"):
+        refusal = fs.judge(Access(session, work, locate(work, written), "write", "probe"))
+
+        assert refusal is not None, written
+        assert refusal.code == "PROTECTED", written
+        assert f"is in {protected}, which" in refusal.reason
+    assert fs.judge(Access(session, work, locate(work, "kept/config"), "read", "probe")) is None
+    assert fs.judge(Access(session, work, locate(work, "kept2/config"), "write", "probe")) is None
+
+
+def test_a_protected_name_that_leads_out_of_the_working_directory_protects_what_it_leads_to(
+    seam: tuple[Fs, Sandbox, Session], work: Path, tmp_path: Path
+) -> None:
+    fs, sandbox, session = seam
+    sandbox.set_mode(session, "workspace-write")
+    (tmp_path / "elsewhere").mkdir()
+    link_directory(work / ".git", tmp_path / "elsewhere")
+
+    refusal = fs.judge(Access(session, work, locate(work, ".git/config"), "write", "probe"))
+
+    assert refusal is not None
+    assert refusal.code == "PROTECTED"
 
 
 def test_a_change_of_the_mode_counts_from_the_next_access_on(

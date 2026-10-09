@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
-from columbina.fs import FS, Access, Fingerprint, Fs, Permit, locate
+from columbina.fs import FS, Access, Fingerprint, Fs, Permit
 from columbina.kernel import Context
 from columbina.tools import RESULT, TOOLS, Tool, ToolFailure, ToolOutcome, ToolRun
 
@@ -245,10 +245,6 @@ class ReadResult:
     fingerprint: Fingerprint
 
 
-def _target(args: ReadArgs, run: ToolRun) -> str:
-    return locate(run.cwd, args.path).relative
-
-
 def _text(args: ReadArgs, result: ReadResult) -> str:
     return result.text
 
@@ -256,8 +252,11 @@ def _text(args: ReadArgs, result: ReadResult) -> str:
 def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
     """Make the read tool, which reaches files through ``fs``."""
 
+    def target(args: ReadArgs, run: ToolRun) -> str:
+        return fs.locate(run.session, run.cwd, args.path).relative
+
     async def read(args: ReadArgs, run: ToolRun) -> ReadResult:
-        where = locate(run.cwd, args.path)
+        where = fs.locate(run.session, run.cwd, args.path)
         if where.relative != run.target:
             raise ToolFailure(
                 f"{args.path} leads somewhere else than it did when the call was checked, "
@@ -297,7 +296,7 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
         render=_text,
         concurrency_safe=True,
         effect="read",
-        target=_target,
+        target=target,
     )
 
 

@@ -1,7 +1,10 @@
 """Walking a tree for a tool that searches: every entry is asked about, and links stay closed."""
 
 import asyncio
+import dataclasses
+import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -10,6 +13,7 @@ import pytest
 
 import columbina.fs
 from columbina.fs import FS, Access, Fs, Refuse, bound, locate
+from columbina.fs.paths import below
 from columbina.fs.walk import Tally, walk
 from columbina.kernel import Context
 from columbina.session import CORE_EVENTS, Session
@@ -260,3 +264,61 @@ async def test_a_walk_outside_the_working_directory_finds_what_a_grant_lets_it_s
     assert [entry.below for entry in found] == [("docs", "n.txt")]
     assert not found[0].where.inside
     assert found[0].where.path == locate(work, "../elsewhere/docs/n.txt").path
+
+
+async def test_what_a_walk_from_outside_finds_is_spelled_the_way_a_call_would_spell_it(
+    fs: Fs, session: Session, work: Path, ctx: Context
+) -> None:
+    def anywhere(access: Access) -> bool:
+        return True
+
+    fs.grants.add(ctx, "anywhere", anywhere)
+    tally = Tally()
+    above = locate(work, "..")
+
+    found = [
+        entry.where
+        async for entry in walk(fs, session, work, above, "probe", limit=1000, tally=tally)
+    ]
+
+    # A rule about a file of the working directory speaks about it on this way too.
+    assert found == [
+        locate(work, name)
+        for name in ("a.txt", "z.txt", "lib/d.txt", "sub/b.txt", "sub/deep/c.txt")
+    ]
+    assert all(where.inside for where in found)
+
+
+def test_an_entry_at_the_top_of_a_disk_is_spelled_like_any_other(work: Path) -> None:
+    top = locate(work, Path(os.path.realpath(work)).anchor)
+
+    found = below(top, "private")
+
+    assert found.path == top.path / "private"
+    assert found.relative == top.relative.rstrip("/") + "/private"
+    called = locate(work, str(top.path / "private"))
+    assert found == dataclasses.replace(called, written=found.written)
+
+
+if sys.platform == "win32":
+    VERBATIM = chr(92) * 2 + "?" + chr(92)
+
+    @pytest.mark.parametrize("odd", ["secret.", "secret ", "nul", "COM1.txt"])
+    async def test_a_name_that_windows_reads_as_another_file_is_passed_over(
+        fs: Fs, session: Session, work: Path, odd: str
+    ) -> None:
+        # Such a name can only be made, and only be removed, by a path that the system
+        # takes letter by letter. Opened the usual way, "secret." is "secret".
+        (work / "secret").write_text("what a rule may keep from a tool")
+        literal = Path(VERBATIM + os.path.realpath(work) + chr(92) + odd)
+        try:
+            literal.write_text("decoy")
+        except OSError:
+            pytest.skip("this disk does not take such a name")
+        try:
+            found, tally = await found_in(fs, session, work)
+        finally:
+            literal.unlink()
+
+        assert found == ["a.txt", "secret", "z.txt", "lib/d.txt", "sub/b.txt", "sub/deep/c.txt"]
+        assert tally.refused == 1

@@ -584,6 +584,26 @@ _TOOLS = (
 
 _FS = (
     mutant(
+        "a session follows its working directory wherever it leads",
+        SEAM,
+        "        if first == where.root:",
+        "        if True:",
+    ),
+    mutant(
+        "a place that was found without the seam is not held to the working directory",
+        SEAM,
+        "        moved = self._moved(access.session, access.where)\n"
+        "        if moved is not None:\n"
+        "            return moved\n",
+        "",
+    ),
+    mutant(
+        "locating through the seam says nothing about a working directory that has moved",
+        SEAM,
+        "        if moved is not None:\n            raise ToolFailure(moved.reason, code=moved.code)\n",
+        "",
+    ),
+    mutant(
         "the refusal of a restriction is passed over",
         SEAM,
         "            if isinstance(refusal, Refuse):\n                return refusal\n",
@@ -650,16 +670,22 @@ _FS = (
     mutant(
         "a path that climbs out counts as inside",
         PATHS,
-        "    if path.parts[: len(top)] == top:",
-        "    if True:",
+        "    inside = path.parts[: len(top)] == top",
+        "    inside = True",
     ),
     on_windows(
         mutant(
             "names are compared after their case was lowered",
             PATHS,
-            "    if path.parts[: len(top)] == top:",
-            "    if path.is_relative_to(Path(root)):",
+            "    inside = path.parts[: len(top)] == top",
+            "    inside = path.is_relative_to(root)",
         )
+    ),
+    mutant(
+        "what a search comes upon counts as lying where the search began",
+        PATHS,
+        "    return _placed(directory.root, directory.path / name, None)",
+        "    return _placed(directory.path, directory.path / name, None)",
     ),
     on_windows(
         mutant(
@@ -715,24 +741,23 @@ _FS = (
         mutant(
             "a device with an ending to its name is a file",
             PATHS,
-            '            if part.split(".")[0].rstrip(" ").upper() in _DEVICES:',
-            "            if part.upper() in _DEVICES:",
+            '        if name.split(".")[0].rstrip(" ").upper() in _DEVICES:',
+            "        if name.upper() in _DEVICES:",
         )
     ),
     on_windows(
         mutant(
             "a name may end with a dot",
             PATHS,
-            '            if part[-1] in ". ":',
-            '            if part[-1] == " ":',
+            '        if name[-1] in ". ":',
+            '        if name[-1] == " ":',
         )
     ),
     on_windows(
         mutant(
             "a name may hold a colon",
             PATHS,
-            '            if ":" in part:\n'
-            '                raise _refused(written, "a colon inside a name is not allowed.")\n',
+            '        if ":" in name:\n            return "a colon inside a name is not allowed."\n',
             "",
         )
     ),
@@ -871,14 +896,32 @@ _SANDBOX = (
     mutant(
         "what belongs to the repository is written like anything else",
         SANDBOX,
-        '        if mode == "workspace-write" and protected is not None:',
-        "        if False:",
+        '        protected = _protected(access) if mode == "workspace-write" else None',
+        "        protected = None",
     ),
     mutant(
         "what belongs to the repository is kept from a session with full access",
         SANDBOX,
-        '        if mode == "workspace-write" and protected is not None:',
-        "        if protected is not None:",
+        '        protected = _protected(access) if mode == "workspace-write" else None',
+        "        protected = _protected(access)",
+    ),
+    mutant(
+        "a protected name counts only below the working directory",
+        SANDBOX,
+        "    for part in where.path.parts:",
+        '    for part in where.relative.split("/"):',
+    ),
+    mutant(
+        "what a protected name leads to is written under its own name",
+        SANDBOX,
+        "        if led == where.path or led in where.path.parents:",
+        "        if False:",
+    ),
+    mutant(
+        "the directory that a protected name leads to is itself written",
+        SANDBOX,
+        "        if led == where.path or led in where.path.parents:",
+        "        if led in where.path.parents:",
     ),
     mutant(
         "another case of its name makes a directory unprotected",
@@ -1027,8 +1070,16 @@ _SEARCH = (
     mutant(
         "what the seam refuses ends the walk",
         WALK,
-        "                tally.refused += 1\n                continue\n",
-        "                tally.refused += 1\n                return\n",
+        "            except ToolFailure:\n                tally.refused += 1\n                continue\n",
+        "            except ToolFailure:\n                tally.refused += 1\n                return\n",
+    ),
+    on_windows(
+        mutant(
+            "a name that the system reads as another is handed on",
+            WALK,
+            "            if not usable(entry.name):",
+            "            if False:",
+        )
     ),
     mutant(
         "the history of a repository is walked",

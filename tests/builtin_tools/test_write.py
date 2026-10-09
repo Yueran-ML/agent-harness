@@ -3,13 +3,14 @@
 import asyncio
 import os
 import threading
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from columbina.fs import Permit
 from columbina.kernel import Context
-from columbina.session import ToolError
+from columbina.session import SESSIONS, ToolError
 from columbina.tools import Deny, Invocation
 from support.desk import Desk
 from support.links import link_directory, unlink_directory
@@ -253,3 +254,54 @@ async def test_a_write_that_is_cancelled_leaves_the_old_file_or_the_new_one(
 
     assert (desk.work / "notes.txt").read_bytes() == b"new\n"
     assert desk.names() == ["notes.txt"]
+
+
+# A working directory that does not stay where it was
+
+
+def through_a_door(desk: Desk, door: Path, target: Path) -> Desk:
+    """A desk whose working directory is a link, which leads to ``target`` for now."""
+    target.mkdir()
+    link_directory(door, target)
+    session = desk.ctx.use(SESSIONS).create(desk.ctx, door)
+    return Desk(desk.ctx, desk.tools, desk.fs, desk.sandbox, session, door)
+
+
+async def test_a_working_directory_that_leads_elsewhere_than_at_first_is_not_written(
+    desk: Desk, tmp_path: Path
+) -> None:
+    door, first, second = tmp_path / "door", tmp_path / "first", tmp_path / "second"
+    second.mkdir()
+    through = through_a_door(desk, door, first)
+    assert (await through.call("write", path="a.txt", content="a")).error is None
+
+    unlink_directory(door)
+    link_directory(door, second)
+    outcome = await through.call("write", path="b.txt", content="b")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "WORKING_DIRECTORY_MOVED"
+    assert list(second.iterdir()) == []
+    assert (first / "a.txt").read_text() == "a"
+
+
+async def test_a_working_directory_that_is_turned_while_a_first_call_is_checked_is_not_written(
+    desk: Desk, tmp_path: Path
+) -> None:
+    door, first, second = tmp_path / "door", tmp_path / "first", tmp_path / "second"
+    second.mkdir()
+    through = through_a_door(desk, door, first)
+
+    async def turning(context: Context, invocation: Invocation) -> Deny | None:
+        unlink_directory(door)
+        link_directory(door, second)
+        return None
+
+    desk.tools.guards.add(desk.ctx, "turning", turning)
+
+    outcome = await through.call("write", path="a.txt", content="a")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "WORKING_DIRECTORY_MOVED"
+    assert list(first.iterdir()) == []
+    assert list(second.iterdir()) == []

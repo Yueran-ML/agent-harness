@@ -19,7 +19,7 @@ import asyncio
 
 from pydantic import BaseModel, Field
 
-from columbina.fs import FS, Access, Fs, Permit, locate
+from columbina.fs import FS, Access, Fs, Permit
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
@@ -50,10 +50,6 @@ class EditArgs(BaseModel):
     replace_all: bool = Field(
         default=False, description="Replace every occurrence instead of the only one."
     )
-
-
-def _target(args: EditArgs, run: ToolRun) -> str:
-    return locate(run.cwd, args.path).relative
 
 
 def _ends_lines_like_windows(text: str) -> bool:
@@ -115,8 +111,11 @@ def _edit(fs: Fs, reading: Permit, writing: Permit, args: EditArgs) -> int:
 def edit_tool(fs: Fs) -> Tool[EditArgs, str]:
     """Make the edit tool, which reaches files through ``fs``."""
 
+    def target(args: EditArgs, run: ToolRun) -> str:
+        return fs.locate(run.session, run.cwd, args.path).relative
+
     async def edit(args: EditArgs, run: ToolRun) -> str:
-        where = locate(run.cwd, args.path)
+        where = fs.locate(run.session, run.cwd, args.path)
         if where.relative != run.target:
             raise ToolFailure(
                 f"{args.path} leads somewhere else than it did when the call was checked, "
@@ -152,7 +151,7 @@ def edit_tool(fs: Fs) -> Tool[EditArgs, str]:
         parameters=EditArgs,
         execute=edit,
         effect="write",
-        target=_target,
+        target=target,
     )
 
 

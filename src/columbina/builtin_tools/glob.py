@@ -21,7 +21,7 @@ from functools import cache
 
 from pydantic import BaseModel, Field
 
-from columbina.fs import FS, Access, Fs, locate
+from columbina.fs import FS, Access, Fs
 from columbina.fs.walk import Found, Tally, remarks, walk
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
@@ -62,10 +62,6 @@ class GlobArgs(BaseModel):
         default=".",
         description="The directory to search. A relative path starts at the working directory.",
     )
-
-
-def _target(args: GlobArgs, run: ToolRun) -> str:
-    return locate(run.cwd, args.path).relative
 
 
 def matcher(pattern: str) -> Callable[[tuple[str, ...]], bool]:
@@ -130,9 +126,12 @@ def _said(matched: list[Found], tally: Tally, args: GlobArgs) -> str:
 def glob_tool(fs: Fs) -> Tool[GlobArgs, str]:
     """Make the glob tool, which reaches files through ``fs``."""
 
+    def target(args: GlobArgs, run: ToolRun) -> str:
+        return fs.locate(run.session, run.cwd, args.path).relative
+
     async def glob(args: GlobArgs, run: ToolRun) -> str:
         matches = matcher(args.pattern)
-        root = locate(run.cwd, args.path)
+        root = fs.locate(run.session, run.cwd, args.path)
         if root.relative != run.target:
             raise ToolFailure(
                 f"{args.path} leads somewhere else than it did when the call was checked, "
@@ -168,7 +167,7 @@ def glob_tool(fs: Fs) -> Tool[GlobArgs, str]:
         execute=glob,
         concurrency_safe=True,
         effect="read",
-        target=_target,
+        target=target,
     )
 
 

@@ -35,7 +35,7 @@ from pathlib import Path
 
 from columbina.tools import ToolFailure
 
-__all__ = ["Located", "locate"]
+__all__ = ["Located", "below", "locate", "usable"]
 
 _MAX_LINKS = 40
 
@@ -51,12 +51,15 @@ class Located:
         relative: The path that rules are matched against, with forward
             slashes: from the working directory if the file is inside it,
             and absolute otherwise. The working directory itself is ``.``.
+        root: Where the working directory was when the file was located:
+            absolute, with every link followed.
     """
 
     path: Path
     written: str
     inside: bool
     relative: str
+    root: Path
 
 
 def _refused(written: str, why: str) -> ToolFailure:
@@ -79,6 +82,16 @@ if sys.platform == "win32":  # pragma: windows only
     def _begins_with_two_slashes(path: str) -> bool:
         return path[:2].replace("/", "\\") == "\\\\"
 
+    def _odd(name: str) -> str | None:
+        """Say why a name is not used, if Windows reads it as something else than it says."""
+        if ":" in name:
+            return "a colon inside a name is not allowed."
+        if name[-1] in ". ":
+            return "a name may not end with a dot or a space."
+        if name.split(".")[0].rstrip(" ").upper() in _DEVICES:
+            return f"{name} is the name of a device."
+        return None
+
     def _check_spelling(written: str) -> None:
         """Refuse a spelling that Windows reads as another machine, a device or another name."""
         if _begins_with_two_slashes(written):
@@ -87,14 +100,9 @@ if sys.platform == "win32":  # pragma: windows only
         if drive and rest[:1] not in ("\\", "/"):
             raise _refused(written, "a drive has to be followed by a slash.")
         for part in _parts(rest):
-            if part in (".", ".."):
-                continue
-            if ":" in part:
-                raise _refused(written, "a colon inside a name is not allowed.")
-            if part[-1] in ". ":
-                raise _refused(written, "a name may not end with a dot or a space.")
-            if part.split(".")[0].rstrip(" ").upper() in _DEVICES:
-                raise _refused(written, f"{part} is the name of a device.")
+            why = None if part in (".", "..") else _odd(part)
+            if why is not None:
+                raise _refused(written, why)
 
     def _on_a_drive(rest: str) -> bool:
         return len(rest) >= 2 and rest[0].isascii() and rest[0].isalpha() and rest[1] == ":"
@@ -171,6 +179,10 @@ if sys.platform == "win32":  # pragma: windows only
 
 else:  # pragma: posix only
 
+    def _odd(name: str) -> str | None:
+        """Say nothing: every name means what it says here."""
+        return None
+
     def _check_spelling(written: str) -> None:
         """Refuse nothing: every spelling means one file here."""
 
@@ -199,8 +211,34 @@ def locate(cwd: Path, written: str) -> Located:
     root = os.path.realpath(cwd)
     joined = os.path.join(root, written)
     _check_links(root, joined, written)
-    path = Path(os.path.realpath(joined))
-    top = Path(root).parts
-    if path.parts[: len(top)] == top:
-        return Located(path, written, True, "/".join(path.parts[len(top) :]) or ".")
-    return Located(path, written, False, path.as_posix())
+    return _placed(Path(root), Path(os.path.realpath(joined)), written)
+
+
+def _placed(root: Path, path: Path, written: str | None) -> Located:
+    """Say where a file is, seen from a working directory. Neither path goes through a link."""
+    top = root.parts
+    inside = path.parts[: len(top)] == top
+    relative = ("/".join(path.parts[len(top) :]) or ".") if inside else path.as_posix()
+    return Located(path, relative if written is None else written, inside, relative, root)
+
+
+def usable(name: str) -> bool:
+    """Tell whether the system reads the name of a file as that name and nothing else.
+
+    On Windows a name that ends with a dot or a space, that holds a colon, or
+    that is the name of a device can lie on a disk, but a path that is
+    written with it leads to another file or to none. :func:`locate` refuses
+    such a path, and whoever lists a directory passes such a name over.
+    """
+    return _odd(name) is None
+
+
+def below(directory: Located, name: str) -> Located:
+    """Return the place of an entry of a directory that was located already.
+
+    The entry is spelled the way :func:`locate` would spell it, so that a
+    rule speaks about a file the same way whether a call named the file or a
+    search came upon it. No link is followed: the entry is taken as it lies
+    in its directory.
+    """
+    return _placed(directory.root, directory.path / name, None)

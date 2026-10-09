@@ -13,7 +13,7 @@ import asyncio
 
 from pydantic import BaseModel, Field
 
-from columbina.fs import FS, Access, Fs, locate
+from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
@@ -32,10 +32,6 @@ class WriteArgs(BaseModel):
     content: str = Field(description="All that the file is to hold.")
 
 
-def _target(args: WriteArgs, run: ToolRun) -> str:
-    return locate(run.cwd, args.path).relative
-
-
 def _lines(content: str) -> str:
     count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
     return "1 line" if count == 1 else f"{count} lines"
@@ -44,8 +40,11 @@ def _lines(content: str) -> str:
 def write_tool(fs: Fs) -> Tool[WriteArgs, str]:
     """Make the write tool, which reaches files through ``fs``."""
 
+    def target(args: WriteArgs, run: ToolRun) -> str:
+        return fs.locate(run.session, run.cwd, args.path).relative
+
     async def write(args: WriteArgs, run: ToolRun) -> str:
-        where = locate(run.cwd, args.path)
+        where = fs.locate(run.session, run.cwd, args.path)
         if where.relative != run.target:
             raise ToolFailure(
                 f"{args.path} leads somewhere else than it did when the call was checked, "
@@ -74,7 +73,7 @@ def write_tool(fs: Fs) -> Tool[WriteArgs, str]:
         parameters=WriteArgs,
         execute=write,
         effect="write",
-        target=_target,
+        target=target,
     )
 
 

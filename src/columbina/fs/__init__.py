@@ -22,6 +22,13 @@ thing writes nothing.
 Restrictions and grants are plain functions that do not wait. They go by what
 is in memory, so that a search can ask them about every file it comes upon.
 
+The working directory of a session is where it was when the session first
+asked about a file. A path that is checked and a path that is used are both
+taken from there, and nothing else ties the two together but that place. If
+the directory leads somewhere else later, because it is a link that was
+turned or because another directory has taken its name, the session touches
+nothing any more: what it would touch is not what it was started in.
+
 The seam also remembers which files the model was shown, and in what state. A
 file that is there is replaced only if the model was shown it as it is now:
 what the model has not read, or what has changed since, it would overwrite
@@ -274,16 +281,47 @@ class Fs:
             seam does not allow by itself.
     """
 
-    __slots__ = ("_lock", "_shown", "grants", "restrictions")
+    __slots__ = ("_lock", "_roots", "_shown", "grants", "restrictions")
 
     def __init__(self) -> None:
         self.restrictions: Registry[Restriction] = Registry("restriction of file access")
         self.grants: Registry[Grant] = Registry("grant of file access")
+        self._roots: weakref.WeakKeyDictionary[Session, Path] = weakref.WeakKeyDictionary()
         self._shown: weakref.WeakKeyDictionary[Session, dict[str, Fingerprint]] = (
             weakref.WeakKeyDictionary()
         )
         # A file is replaced in a worker thread, which reads and writes what was shown.
         self._lock = threading.Lock()
+
+    def locate(self, session: Session, cwd: Path, written: str) -> Located:
+        """Find the file that a path means, for a session.
+
+        This is :func:`columbina.fs.locate`, and it also holds the session to
+        the place where its working directory was at first.
+
+        Raises:
+            ToolFailure: The path is not used here (code ``INVALID_PATH``),
+                or the working directory leads somewhere else than it did
+                (code ``WORKING_DIRECTORY_MOVED``).
+        """
+        where = locate(cwd, written)
+        moved = self._moved(session, where)
+        if moved is not None:
+            raise ToolFailure(moved.reason, code=moved.code)
+        return where
+
+    def _moved(self, session: Session, where: Located) -> Refuse | None:
+        """Refuse a place that was found from another working directory than the first."""
+        with self._lock:
+            first = self._roots.setdefault(session, where.root)
+        if first == where.root:
+            return None
+        return Refuse(
+            f"The working directory was {first} when this session first touched a file, "
+            f"and it leads to {where.root} now. Nothing is touched there. Tell the user that "
+            "the session has to be started again.",
+            "WORKING_DIRECTORY_MOVED",
+        )
 
     def judge(self, access: Access) -> Refuse | None:
         """Decide about an access. Return the refusal, or ``None`` if it may happen.
@@ -291,6 +329,9 @@ class Fs:
         A restriction that fails refuses: an access that cannot be checked
         does not happen. A grant that fails allows nothing.
         """
+        moved = self._moved(access.session, access.where)
+        if moved is not None:
+            return moved
         for name, restriction in list(self.restrictions.items()):
             try:
                 refusal = cast("object", restriction(access))

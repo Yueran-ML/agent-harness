@@ -15,7 +15,7 @@ from columbina.fs import FS, Access, Fingerprint, Fs, Kind, Permit, Refuse, loca
 from columbina.kernel import Context, Plugin, RegistryConflictError
 from columbina.session import CORE_EVENTS, Session
 from columbina.tools import ToolFailure
-from support.links import link_directory
+from support.links import link_directory, unlink_directory
 
 
 @pytest.fixture
@@ -439,6 +439,91 @@ if sys.platform == "win32":
         # However the path is written, it is found under the name that is on the disk.
         assert fs.seen(session, access("read", "A.TXT").where.path) == Fingerprint(6, 1000)
         assert fs.seen(session, access("read", "./sub/../a.TXT").where.path) == Fingerprint(6, 1000)
+
+
+# The working directory of a session
+
+
+@pytest.fixture
+def door(tmp_path: Path) -> Path:
+    """A working directory that is a link to ``first``, and can be turned to ``second``."""
+    for name in ("first", "second"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "a.txt").write_text(name)
+    link_directory(tmp_path / "door", tmp_path / "first")
+    return tmp_path / "door"
+
+
+def turn(door: Path) -> None:
+    unlink_directory(door)
+    link_directory(door, door.parent / "second")
+
+
+def test_a_session_is_held_to_where_its_working_directory_was_at_first(
+    fs: Fs, session: Session, door: Path
+) -> None:
+    where = fs.locate(session, door, "a.txt")
+    assert where == locate(door, "a.txt")
+    assert fs.judge(Access(session, door, where, "read", "probe")) is None
+
+    turn(door)
+
+    with pytest.raises(ToolFailure) as refused:
+        fs.locate(session, door, "a.txt")
+    assert refused.value.code == "WORKING_DIRECTORY_MOVED"
+    for name in ("first", "second"):
+        assert str(locate(door.parent / name, ".").path) in str(refused.value)
+
+
+def test_a_place_that_was_found_without_the_seam_is_held_to_it_all_the_same(
+    fs: Fs, session: Session, door: Path
+) -> None:
+    assert fs.judge(Access(session, door, locate(door, "a.txt"), "read", "probe")) is None
+
+    turn(door)
+    refusal = fs.judge(Access(session, door, locate(door, "a.txt"), "read", "probe"))
+
+    assert refusal is not None
+    assert refusal.code == "WORKING_DIRECTORY_MOVED"
+    with pytest.raises(ToolFailure) as refused:
+        fs.permit(Access(session, door, locate(door, "a.txt"), "read", "probe"))
+    assert refused.value.code == "WORKING_DIRECTORY_MOVED"
+
+
+def test_a_working_directory_that_is_turned_back_is_used_again(
+    fs: Fs, session: Session, door: Path
+) -> None:
+    fs.locate(session, door, "a.txt")
+    turn(door)
+    unlink_directory(door)
+    link_directory(door, door.parent / "first")
+
+    assert fs.locate(session, door, "a.txt").inside
+
+
+def test_another_session_starts_where_the_working_directory_is_by_then(
+    fs: Fs, ctx: Context, session: Session, door: Path
+) -> None:
+    fs.locate(session, door, "a.txt")
+    turn(door)
+    later = Session(ctx, "s-2", {kind.event_type: kind for kind in CORE_EVENTS})
+
+    where = fs.locate(later, door, "a.txt")
+
+    assert where.path == locate(door.parent / "second", "a.txt").path
+    assert fs.judge(Access(later, door, where, "read", "probe")) is None
+
+
+def test_a_path_that_is_not_used_here_is_refused_before_anything_is_remembered(
+    fs: Fs, session: Session, door: Path
+) -> None:
+    with pytest.raises(ToolFailure) as refused:
+        fs.locate(session, door, "")
+    assert refused.value.code == "INVALID_PATH"
+
+    turn(door)
+
+    assert fs.locate(session, door, "a.txt").inside
 
 
 def test_the_service_is_what_the_plugin_provides(fs: Fs) -> None:

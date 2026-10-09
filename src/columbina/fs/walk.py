@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from columbina.fs import Access, Fs, Located, Permit, bound
+from columbina.fs.paths import below, usable
 from columbina.session import Session
 from columbina.tools import ToolFailure
 
@@ -98,12 +99,6 @@ def remarks(tally: Tally) -> list[str]:
     return said
 
 
-def _below(parent: Located, name: str) -> Located:
-    """Return the place of an entry of a directory that was located already."""
-    relative = name if parent.relative == "." else f"{parent.relative}/{name}"
-    return Located(parent.path / name, relative, parent.inside, relative)
-
-
 async def walk(
     fs: Fs,
     session: Session,
@@ -143,14 +138,18 @@ async def walk(
                 tally.cut_short = True
                 return
             tally.entries += 1
-            where = _below(directory, entry.name)
-            below = (*names, entry.name)
+            if not usable(entry.name):
+                # A path that is written with this name leads to another file.
+                tally.refused += 1
+                continue
+            where = below(directory, entry.name)
+            led = (*names, entry.name)
             try:
                 permit = fs.permit(Access(session, cwd, where, "read", tool, named=False))
             except ToolFailure:
                 tally.refused += 1
                 continue
             if entry.kind == "directory":
-                waiting.append((where, below))
+                waiting.append((where, led))
             else:
-                yield Found(where, below, entry.size, entry.modified_ns, permit)
+                yield Found(where, led, entry.size, entry.modified_ns, permit)

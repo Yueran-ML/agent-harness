@@ -1747,7 +1747,15 @@ SETS: dict[str, MutantSet] = {
     ),
     "loop": MutantSet(("tests/agent_loop", "tests/agent", "tests/test_cancellation.py"), _LOOP),
     "tools": MutantSet(("tests/tools",), _TOOLS),
-    "read": MutantSet(("tests/builtin_tools",), _READ),
+    "read": MutantSet(
+        (
+            "tests/builtin_tools/test_read.py",
+            "tests/builtin_tools/test_in_the_loop.py",
+            "tests/builtin_tools/test_write.py",
+            "tests/builtin_tools/test_edit.py",
+        ),
+        _READ,
+    ),
     "process": MutantSet(("tests/test_process.py",), _PROCESS),
     "fs": MutantSet(("tests/fs", "tests/builtin_tools"), _FS),
     "sandbox": MutantSet(("tests/sandbox",), _SANDBOX),

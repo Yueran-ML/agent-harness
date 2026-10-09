@@ -37,6 +37,8 @@ PATHS = (
     "sub/.git/hooks/pre-commit",
     ".columbina/permissions.yml",
     ".GIT/config",
+    "sub/.GIT/config",
+    "sub/deep/.Columbina/rules.yml",
     ".gitignore",
     "git/config",
     "../outside.txt",

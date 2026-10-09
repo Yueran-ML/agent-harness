@@ -15,11 +15,11 @@ The file is read and written through the seam of the file system. It has to
 be one that the model has read, in the state in which it read it.
 """
 
-import asyncio
+import threading
 
 from pydantic import BaseModel, Field
 
-from columbina.fs import FS, Access, Fs, Permit
+from columbina.fs import FS, Access, Fs, Permit, carry_out
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
@@ -82,7 +82,9 @@ def _change(text: str, args: EditArgs) -> tuple[str, int]:
     return text.replace(old, new), count
 
 
-def _edit(fs: Fs, reading: Permit, writing: Permit, args: EditArgs) -> int:
+def _edit(
+    fs: Fs, reading: Permit, writing: Permit, args: EditArgs, given_up: threading.Event
+) -> int:
     """Read the file, change it and write it back. Return how often the piece was replaced."""
     with reading.open() as opened:
         raw = opened.file.read(_MAX_BYTES + 1)
@@ -104,7 +106,8 @@ def _edit(fs: Fs, reading: Permit, writing: Permit, args: EditArgs) -> int:
             f"{args.path} is not a text file in UTF-8, so it cannot be edited.", code="NOT_TEXT"
         ) from None
     changed, count = _change(text, args)
-    writing.replace(changed.encode("utf-8"))
+    # The new content takes the place of the content that it was made from, and of no other.
+    writing.replace(changed.encode("utf-8"), made_from=fingerprint, given_up=given_up)
     return count
 
 
@@ -130,8 +133,7 @@ def edit_tool(fs: Fs) -> Tool[EditArgs, str]:
         reading = fs.permit(Access(run.session, run.cwd, where, "read", "edit"))
         writing = fs.permit(Access(run.session, run.cwd, where, "write", "edit"))
         try:
-            # A thread is not cancelled: once it has begun, the file is written whole.
-            count = await asyncio.to_thread(_edit, fs, reading, writing, args)
+            count = await carry_out(lambda given_up: _edit(fs, reading, writing, args, given_up))
         except FileNotFoundError:
             raise ToolFailure(
                 f"There is no file {args.path}. To make one, write it.", code="NOT_FOUND"

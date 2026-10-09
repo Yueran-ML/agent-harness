@@ -2,17 +2,18 @@
 
 import asyncio
 import os
-import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from columbina.fs import Permit
+import columbina.fs
+from columbina.fs import bound
 from columbina.kernel import Context
 from columbina.session import SESSIONS, ToolError
 from columbina.tools import Deny, Invocation
 from support.desk import Desk
+from support.held import HeldWrite
 from support.links import link_directory, unlink_directory
 
 # A file that is made
@@ -158,6 +159,8 @@ async def test_a_file_that_cannot_be_written_is_an_error_that_says_why(
     def full(*arguments: Any, **options: Any) -> None:
         raise OSError(28, "No space left on device")
 
+    (desk.work / "notes.txt").write_bytes(b"old\n")
+    await desk.have_read("notes.txt")
     monkeypatch.setattr(os, "replace", full)
 
     outcome = await desk.call("write", path="notes.txt", content="new\n")
@@ -165,7 +168,8 @@ async def test_a_file_that_cannot_be_written_is_an_error_that_says_why(
     assert outcome.error is not None
     assert outcome.error.code == "TOOL_ERROR"
     assert outcome.text == "notes.txt cannot be written: [Errno 28] No space left on device"
-    assert desk.names() == []
+    assert (desk.work / "notes.txt").read_bytes() == b"old\n"
+    assert desk.names() == ["notes.txt"]
 
 
 async def test_a_path_that_leads_elsewhere_than_when_the_call_was_checked_is_not_written(
@@ -223,37 +227,86 @@ def test_the_model_is_told_that_a_file_has_to_be_read_first(desk: Desk) -> None:
 # A write that is cut short
 
 
-async def test_a_write_that_is_cancelled_leaves_the_old_file_or_the_new_one(
+async def test_a_write_that_is_cancelled_does_not_end_before_its_thread_has(
     desk: Desk, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (desk.work / "notes.txt").write_bytes(b"old\n")
     await desk.have_read("notes.txt")
-    began = threading.Event()
-    go_on = threading.Event()
-    done = threading.Event()
-    really_replace: Any = Permit.replace
-
-    def slow(permit: Permit, data: bytes) -> Any:
-        began.set()
-        go_on.wait(timeout=10)
-        try:
-            return really_replace(permit, data)
-        finally:
-            done.set()
-
-    monkeypatch.setattr(Permit, "replace", slow)
+    held = HeldWrite(monkeypatch)
     writing = asyncio.ensure_future(desk.call("write", path="notes.txt", content="new\n"))
-    assert await asyncio.to_thread(began.wait, 10)
+    assert await asyncio.to_thread(held.reached.wait, 20)
 
     writing.cancel()
-    await asyncio.gather(writing, return_exceptions=True)
-    # The caller has its answer. Whatever the thread does from here, the file is whole.
-    assert (desk.work / "notes.txt").read_bytes() == b"old\n"
-    go_on.set()
-    assert await asyncio.to_thread(done.wait, 10)
+    await asyncio.sleep(0.1)
+    stayed = not writing.done()
+    held.go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await writing
 
-    assert (desk.work / "notes.txt").read_bytes() == b"new\n"
+    assert stayed
+    assert held.ended.is_set()
+    # The thread was told in time that nobody wants the file any more.
+    assert (desk.work / "notes.txt").read_bytes() == b"old\n"
     assert desk.names() == ["notes.txt"]
+
+
+async def test_a_write_that_is_cancelled_twice_still_stays_with_its_thread(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = HeldWrite(monkeypatch)
+    writing = asyncio.ensure_future(desk.call("write", path="notes.txt", content="new\n"))
+    assert await asyncio.to_thread(held.reached.wait, 20)
+
+    writing.cancel()
+    await asyncio.sleep(0.05)
+    writing.cancel()
+    await asyncio.sleep(0.05)
+    stayed = not writing.done()
+    held.go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await writing
+
+    assert stayed
+    assert held.ended.is_set()
+    assert desk.names() == []
+
+
+async def test_a_write_whose_thread_does_not_end_is_let_go_of_and_writes_nothing_later(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (desk.work / "notes.txt").write_bytes(b"old\n")
+    await desk.have_read("notes.txt")
+    held = HeldWrite(monkeypatch)
+    monkeypatch.setattr(columbina.fs, "_LET_GO_SECONDS", 0.05)
+    writing = asyncio.ensure_future(desk.call("write", path="notes.txt", content="late\n"))
+    assert await asyncio.to_thread(held.reached.wait, 20)
+
+    writing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await writing
+    # The thread is still there. Another call writes the file meanwhile.
+    assert not held.ended.is_set()
+    outcome = await desk.call("write", path="notes.txt", content="in time\n")
+    assert outcome.error is None
+    held.go_on.set()
+    assert await asyncio.to_thread(held.ended.wait, 20)
+
+    assert (desk.work / "notes.txt").read_bytes() == b"in time\n"
+    assert desk.names() == ["notes.txt"]
+
+
+async def test_a_write_that_fails_in_its_thread_fails_the_call(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def failing(*arguments: Any) -> Any:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(bound, "replace", failing)
+
+    outcome = await desk.call("write", path="notes.txt", content="new\n")
+
+    assert outcome.error is not None
+    assert outcome.text == "notes.txt cannot be written: [Errno 13] Permission denied"
 
 
 # A working directory that does not stay where it was

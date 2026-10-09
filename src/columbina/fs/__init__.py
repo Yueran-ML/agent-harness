@@ -32,11 +32,22 @@ nothing any more: what it would touch is not what it was started in.
 The seam also remembers which files the model was shown, and in what state. A
 file that is there is replaced only if the model was shown it as it is now:
 what the model has not read, or what has changed since, it would overwrite
-blindly. What the agent writes counts as shown. The memory belongs to a
-session and lasts as long as the process, so a session that is taken up again
-reads before it writes.
+blindly. The memory belongs to a session and lasts as long as the process, so
+a session that is taken up again reads before it writes.
+
+Shown means: before the model when it wrote the call. A model may ask for a
+file to be read and to be written in one reply, and it wrote the second call
+without having seen the result of the first. So what a call reads counts from
+the next step on, which is when its result goes to the model. What the agent
+itself writes counts at once: the model knows what is in a file that it has
+just written.
+
+Files are written in worker threads, and a thread cannot be cancelled. A call
+that writes therefore stays with its thread: see :func:`carry_out`.
 """
 
+import asyncio
+import contextlib
 import logging
 import threading
 import weakref
@@ -44,12 +55,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Literal, cast
+from typing import Any, BinaryIO, Literal, TypeVar, cast
 
 from columbina.fs import bound
 from columbina.fs.paths import Located, locate
 from columbina.kernel import Context, Registry, ServiceKey
-from columbina.session import Session
+from columbina.session import SESSION_EVENT, Committed, Session, StepStartEvent
 from columbina.tools import ToolFailure
 
 __all__ = [
@@ -65,6 +76,7 @@ __all__ = [
     "Refuse",
     "Restriction",
     "apply",
+    "carry_out",
     "locate",
     "name",
 ]
@@ -75,6 +87,52 @@ logger = logging.getLogger(__name__)
 
 Kind = Literal["read", "write"]
 """What an access does to a file."""
+
+ResultT = TypeVar("ResultT")
+
+_LET_GO_SECONDS = 5.0
+"""How long a caller that was cancelled stays with work that does not end."""
+
+
+def _forget(working: "asyncio.Future[Any]") -> None:
+    """Take note of how work ended that nobody waits for any more."""
+    with contextlib.suppress(asyncio.CancelledError):
+        working.exception()
+
+
+async def carry_out(work: Callable[[threading.Event], ResultT]) -> ResultT:
+    """Do work on files in a worker thread, and stay until the thread is done.
+
+    A thread cannot be cancelled. If the caller is cancelled, the work is
+    told so through the event that it was handed, and the caller stays until
+    the thread has ended. So nothing happens to a file after the call that
+    asked for it is over: what is written by then is written, and what is
+    not will not be.
+
+    Work that does not end within a few seconds is let go of. It has been
+    told to give up, and it will, unless it is stuck in the very step that
+    writes.
+
+    Args:
+        work: What to do. It is handed an event that is set when what it
+            does is no longer wanted.
+    """
+    given_up = threading.Event()
+    working = asyncio.ensure_future(asyncio.to_thread(work, given_up))
+    try:
+        return await asyncio.shield(working)
+    except asyncio.CancelledError:
+        given_up.set()
+        loop = asyncio.get_running_loop()
+        until = loop.time() + _LET_GO_SECONDS
+        while not working.done() and loop.time() < until:
+            try:
+                await asyncio.wait({working}, timeout=until - loop.time())
+            except asyncio.CancelledError:
+                # Cancelled once more. The thread is no further for that.
+                continue
+        working.add_done_callback(_forget)
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,15 +260,30 @@ class Permit:
             raise ToolFailure(f"{where.written} is not a file.", code="NOT_A_FILE") from None
         return Opened(file, Fingerprint(status.st_size, status.st_mtime_ns))
 
-    def replace(self, data: bytes) -> Fingerprint:
+    def replace(
+        self,
+        data: bytes,
+        *,
+        made_from: Fingerprint | None = None,
+        given_up: threading.Event | None = None,
+    ) -> Fingerprint:
         """Put ``data`` in the place of the file, or make the file with it.
 
         This blocks, so it belongs in a worker thread. The new content takes
         the place of the old in one step, and directories that are missing
         are made. What was written counts as shown to the model.
 
+        Args:
+            data: The new content.
+            made_from: The state of the file that the new content was made
+                from, for a tool that changes a part of a file. The file is
+                replaced only if that is the state the model was shown and
+                the state it is still in.
+            given_up: Set by the caller to say that the file is not to be
+                replaced after all. See :func:`carry_out`.
+
         Returns:
-            The state of the file after it was written.
+            The state of the content that was written.
 
         Raises:
             ToolFailure: The file is there and the model was never shown it
@@ -218,6 +291,8 @@ class Permit:
                 ``CHANGED_SINCE_READ``). A directory on the way was not where
                 it was when the access was decided (code ``MOVED``). The path
                 names something that is no file (code ``NOT_A_FILE``).
+            bound.GivenUpError: ``given_up`` was set in time. Nothing has
+                changed.
             OSError: The file cannot be written. The caller says so in words
                 that fit what it was doing.
             ValueError: The permit is not for writing.
@@ -226,9 +301,15 @@ class Permit:
             raise ValueError("this permit is not for writing")
         where = self.access.where
         shown = self._fs.seen(self.access.session, where.path)
+        if made_from is not None and shown != made_from:
+            # Another call has written the file since this one read it.
+            raise _not_read(where) if shown is None else _changed(where)
         try:
             status = bound.replace(
-                where.path, data, None if shown is None else (shown.size, shown.modified_ns)
+                where.path,
+                data,
+                None if shown is None else (shown.size, shown.modified_ns),
+                given_up,
             )
         except bound.MovedError:
             raise ToolFailure(
@@ -281,13 +362,17 @@ class Fs:
             seam does not allow by itself.
     """
 
-    __slots__ = ("_lock", "_roots", "_shown", "grants", "restrictions")
+    __slots__ = ("_coming", "_lock", "_roots", "_shown", "grants", "restrictions")
 
     def __init__(self) -> None:
         self.restrictions: Registry[Restriction] = Registry("restriction of file access")
         self.grants: Registry[Grant] = Registry("grant of file access")
         self._roots: weakref.WeakKeyDictionary[Session, Path] = weakref.WeakKeyDictionary()
         self._shown: weakref.WeakKeyDictionary[Session, dict[str, Fingerprint]] = (
+            weakref.WeakKeyDictionary()
+        )
+        # What calls of the step that is under way have read, and the model has yet to see.
+        self._coming: weakref.WeakKeyDictionary[Session, dict[str, Fingerprint]] = (
             weakref.WeakKeyDictionary()
         )
         # A file is replaced in a worker thread, which reads and writes what was shown.
@@ -384,10 +469,38 @@ class Fs:
         return Permit(access, self)
 
     def shown(self, permit: Permit, fingerprint: Fingerprint) -> None:
-        """Remember that the model was shown a file in this state."""
+        """Remember that the model knows a file in this state, from now on.
+
+        This is for what the agent itself has written. What a call has read
+        is told with :meth:`showing`.
+        """
+        access = permit.access
+        key = _key(access.where.path)
+        with self._lock:
+            self._shown.setdefault(access.session, {})[key] = fingerprint
+            # An older state that is on its way to the model is of no use any more.
+            self._coming.get(access.session, {}).pop(key, None)
+
+    def showing(self, permit: Permit, fingerprint: Fingerprint) -> None:
+        """Remember that a call has read a file in this state for the model.
+
+        It counts as shown once :meth:`delivered` says that the results of
+        the step have gone to the model.
+        """
         access = permit.access
         with self._lock:
-            self._shown.setdefault(access.session, {})[_key(access.where.path)] = fingerprint
+            self._coming.setdefault(access.session, {})[_key(access.where.path)] = fingerprint
+
+    def delivered(self, session: Session) -> None:
+        """Take note that the model has before it what the calls of a session have read so far.
+
+        The seam does this by itself whenever a step of the session begins.
+        Whoever calls tools without a loop says it here.
+        """
+        with self._lock:
+            coming = self._coming.pop(session, None)
+            if coming:
+                self._shown.setdefault(session, {}).update(coming)
 
     def seen(self, session: Session, path: Path) -> Fingerprint | None:
         """Return the state in which the model was last shown a file, if it was."""
@@ -423,5 +536,13 @@ FS = ServiceKey[Fs]("fs")
 
 
 def apply(ctx: Context, config: object) -> None:
-    """Provide the seam."""
-    ctx.provide(FS, Fs())
+    """Provide the seam, and have it told when a step begins."""
+    seam = Fs()
+
+    def step_begins(committed: Committed) -> None:
+        # The request of this step carries the results of the one before it.
+        if isinstance(committed.event.data, StepStartEvent):
+            seam.delivered(committed.session)
+
+    ctx.on(SESSION_EVENT, step_begins)
+    ctx.provide(FS, seam)

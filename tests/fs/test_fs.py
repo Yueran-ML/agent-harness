@@ -13,7 +13,7 @@ import pytest
 import columbina.fs
 from columbina.fs import FS, Access, Fingerprint, Fs, Kind, Permit, Refuse, locate
 from columbina.kernel import Context, Plugin, RegistryConflictError
-from columbina.session import CORE_EVENTS, Session
+from columbina.session import CORE_EVENTS, Session, StepEndEvent, StepStartEvent
 from columbina.tools import ToolFailure
 from support.links import link_directory, unlink_directory
 
@@ -439,6 +439,86 @@ if sys.platform == "win32":
         # However the path is written, it is found under the name that is on the disk.
         assert fs.seen(session, access("read", "A.TXT").where.path) == Fingerprint(6, 1000)
         assert fs.seen(session, access("read", "./sub/../a.TXT").where.path) == Fingerprint(6, 1000)
+
+
+# What is on its way to the model
+
+
+def test_what_a_call_has_read_counts_as_shown_when_the_next_step_begins(
+    fs: Fs, access: Asking, session: Session
+) -> None:
+    permit = fs.permit(access("read", "a.txt"))
+    where = permit.access.where.path
+
+    fs.showing(permit, Fingerprint(6, 1000))
+
+    assert fs.seen(session, where) is None
+
+    session.append(StepEndEvent(turn=1, step=1))
+
+    assert fs.seen(session, where) is None
+
+    session.append(StepStartEvent(turn=1, step=2))
+
+    assert fs.seen(session, where) == Fingerprint(6, 1000)
+
+
+def test_a_step_of_one_session_delivers_nothing_to_another(
+    fs: Fs, ctx: Context, access: Asking, session: Session
+) -> None:
+    other = Session(ctx, "s-2", {kind.event_type: kind for kind in CORE_EVENTS})
+    permit = fs.permit(access("read", "a.txt"))
+    fs.showing(permit, Fingerprint(6, 1000))
+
+    other.append(StepStartEvent(turn=1, step=1))
+
+    assert fs.seen(session, permit.access.where.path) is None
+
+
+def test_whoever_calls_tools_without_a_loop_says_when_the_results_were_delivered(
+    fs: Fs, access: Asking, session: Session
+) -> None:
+    permit = fs.permit(access("read", "a.txt"))
+    fs.showing(permit, Fingerprint(6, 1000))
+
+    fs.delivered(session)
+    fs.delivered(session)
+
+    assert fs.seen(session, permit.access.where.path) == Fingerprint(6, 1000)
+
+
+def test_what_was_read_last_is_what_is_delivered(fs: Fs, access: Asking, session: Session) -> None:
+    permit = fs.permit(access("read", "a.txt"))
+    fs.shown(permit, Fingerprint(6, 1000))
+    fs.showing(permit, Fingerprint(7, 2000))
+    fs.showing(permit, Fingerprint(8, 3000))
+
+    assert fs.seen(session, permit.access.where.path) == Fingerprint(6, 1000)
+
+    fs.delivered(session)
+
+    assert fs.seen(session, permit.access.where.path) == Fingerprint(8, 3000)
+
+
+def test_what_the_agent_wrote_is_not_undone_by_an_older_state_that_was_on_its_way(
+    fs: Fs, access: Asking, session: Session
+) -> None:
+    # A read and a write of one reply: the read saw the file as it was before the write.
+    permit = fs.permit(access("read", "a.txt"))
+    fs.showing(permit, Fingerprint(6, 1000))
+    fs.shown(permit, Fingerprint(9, 5000))
+
+    fs.delivered(session)
+
+    assert fs.seen(session, permit.access.where.path) == Fingerprint(9, 5000)
+
+
+def test_delivering_to_a_session_that_has_read_nothing_does_nothing(
+    fs: Fs, session: Session, work: Path
+) -> None:
+    fs.delivered(session)
+
+    assert fs.seen(session, locate(work, "a.txt").path) is None
 
 
 # The working directory of a session

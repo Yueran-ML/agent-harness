@@ -347,6 +347,24 @@ _READ = (
         "",
     ),
     mutant(
+        "what a call has read counts before its result is before the model",
+        READ,
+        "            fs.showing(result.permit, result.fingerprint)",
+        "            fs.shown(result.permit, result.fingerprint)",
+    ),
+    mutant(
+        "a read that showed no line of a file counts as having shown it",
+        READ,
+        "            and result.shows\n",
+        "",
+    ),
+    mutant(
+        "a file counts as shown though other words took the place of its content",
+        READ,
+        "            and result.text in outcome.text\n",
+        "",
+    ),
+    mutant(
         "the thread is not told to stop",
         READ,
         "            # A thread cannot be cancelled. It is told to stop, and does so at its next piece.\n"
@@ -810,29 +828,59 @@ _FS = (
     mutant(
         "a file that the model never saw is taken for one that changed",
         BOUND,
-        "            if seen is None:\n"
-        '                raise NotShownError(f"{path} was never seen")\n',
+        '    if seen is None:\n        raise NotShownError(f"{path} was never seen")\n',
         "",
     ),
     mutant(
         "a file that changed since it was seen is replaced",
         BOUND,
-        "            if (existing.st_size, existing.st_mtime_ns) != seen:\n"
-        '                raise ChangedError(f"{path} is not as it was seen")\n',
+        "    if (existing.st_size, existing.st_mtime_ns) != seen:\n"
+        '        raise ChangedError(f"{path} is not as it was seen")\n',
         "",
     ),
     mutant(
         "a change that keeps the size goes unnoticed",
         BOUND,
-        "            if (existing.st_size, existing.st_mtime_ns) != seen:",
-        "            if existing.st_size != seen[0]:",
+        "    if (existing.st_size, existing.st_mtime_ns) != seen:",
+        "    if existing.st_size != seen[0]:",
     ),
     mutant(
         "a directory is taken for a file that was never seen",
         BOUND,
-        "            if not stat.S_ISREG(existing.st_mode):\n"
-        '                raise NotAFileError(f"{path} is not a regular file")\n',
+        "    if not stat.S_ISREG(existing.st_mode):\n"
+        '        raise NotAFileError(f"{path} is not a regular file")\n',
         "",
+    ),
+    mutant(
+        "nothing is asked before the new content is made ready",
+        BOUND,
+        "        existing = _there(directory, path, seen)\n        beside =",
+        "        existing = None\n        beside =",
+    ),
+    mutant(
+        "the file is not looked at again when the new content is ready",
+        BOUND,
+        "            # changed, gone or come into being meanwhile.\n"
+        "            existing = _there(directory, path, seen)\n",
+        "            # changed, gone or come into being meanwhile.\n",
+    ),
+    mutant(
+        "a new file takes its name from whatever has it",
+        BOUND,
+        "                    directory.place(beside, name)",
+        "                    directory.rename(beside, name)",
+    ),
+    mutant(
+        "a replacement that was given up goes ahead",
+        BOUND,
+        "            if given_up is not None and given_up.is_set():",
+        "            if False:",
+    ),
+    mutant(
+        "what is said about the file is looked up after it got its name",
+        BOUND,
+        "        directory.sync()\n        return written\n",
+        "        directory.sync()\n        return directory.status(name)\n",
     ),
     mutant(
         "what was written beside the file stays there after a failure",
@@ -876,6 +924,49 @@ _FS = (
         SEAM,
         "        self._fs.shown(self, fingerprint)\n        return fingerprint\n",
         "        return fingerprint\n",
+    ),
+    mutant(
+        "content that was made from another state than the model was shown is written",
+        SEAM,
+        "        if made_from is not None and shown != made_from:",
+        "        if False:",
+    ),
+    mutant(
+        "an older state on its way to the model undoes what the agent wrote",
+        SEAM,
+        "            self._coming.get(access.session, {}).pop(key, None)\n",
+        "",
+    ),
+    mutant(
+        "a step that begins delivers nothing",
+        SEAM,
+        "        if isinstance(committed.event.data, StepStartEvent):",
+        "        if False:",
+    ),
+    mutant(
+        "every event of the log delivers what was read",
+        SEAM,
+        "        if isinstance(committed.event.data, StepStartEvent):",
+        "        if True:",
+    ),
+    mutant(
+        "a call that is cancelled leaves its thread behind",
+        SEAM,
+        "        while not working.done() and loop.time() < until:",
+        "        while False:",
+    ),
+    mutant(
+        "work is not told that it is no longer wanted",
+        SEAM,
+        "        given_up.set()\n        loop = asyncio.get_running_loop()\n",
+        "        loop = asyncio.get_running_loop()\n",
+    ),
+    mutant(
+        "a second cancellation ends the stay with the thread",
+        SEAM,
+        "                # Cancelled once more. The thread is no further for that.\n"
+        "                continue\n",
+        "                break\n",
     ),
     mutant(
         "a permit to read replaces",

@@ -9,11 +9,9 @@ The content is stored as the model gave it, as UTF-8, with the line breaks it
 came with.
 """
 
-import asyncio
-
 from pydantic import BaseModel, Field
 
-from columbina.fs import FS, Access, Fs
+from columbina.fs import FS, Access, Fs, carry_out
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
@@ -56,8 +54,7 @@ def write_tool(fs: Fs) -> Tool[WriteArgs, str]:
         data = args.content.encode("utf-8")
         was_there = where.path.exists()
         try:
-            # A thread is not cancelled: once it has begun, the file is written whole.
-            await asyncio.to_thread(permit.replace, data)
+            await carry_out(lambda given_up: permit.replace(data, given_up=given_up))
         except OSError as error:
             raise ToolFailure(f"{args.path} cannot be written: {error}") from error
         deed = "Replaced" if was_there else "Created"

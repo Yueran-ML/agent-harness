@@ -52,6 +52,8 @@ class Desk:
         """Read a file with the read tool, so that the model has been shown it."""
         outcome = await self.call("read", path=path)
         assert outcome.error is None, outcome.text
+        # What a call has read counts once its result is before the model.
+        self.fs.delivered(self.session)
 
     def names(self, directory: str = ".") -> list[str]:
         """The names of what is in a directory of the desk."""

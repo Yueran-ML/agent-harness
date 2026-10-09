@@ -4,6 +4,7 @@ import os
 import shutil
 import stat
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -279,6 +280,159 @@ def test_the_new_content_is_whole_before_it_takes_the_place_of_the_old(
 
     assert seen == [(b"old", b"new content")]
     assert names(work) == ["a.txt"]
+
+
+# Somebody else at the same file
+
+
+def once_ready(monkeypatch: pytest.MonkeyPatch, deed: Any) -> None:
+    """Have ``deed`` done when the new content is ready, before it is put in place."""
+    really_sync = os.fsync
+    done: list[bool] = []
+
+    def syncing(descriptor: int) -> None:
+        really_sync(descriptor)
+        if not done:
+            done.append(True)
+            deed()
+
+    monkeypatch.setattr(os, "fsync", syncing)
+
+
+def test_a_file_that_changes_while_the_new_content_is_made_ready_is_not_replaced(
+    hand: Hand, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hand.show("a.txt")
+    once_ready(monkeypatch, lambda: (work / "a.txt").write_bytes(b"somebody else was here"))
+
+    with pytest.raises(ToolFailure) as refused:
+        hand.to_write("a.txt").replace(b"new")
+
+    assert refused.value.code == "CHANGED_SINCE_READ"
+    assert (work / "a.txt").read_bytes() == b"somebody else was here"
+    assert names(work) == ["a.txt"]
+
+
+def test_a_file_that_appears_while_a_new_one_is_made_ready_is_not_overwritten(
+    hand: Hand, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    once_ready(monkeypatch, lambda: (work / "new.txt").write_bytes(b"somebody else made this"))
+
+    with pytest.raises(ToolFailure) as refused:
+        hand.to_write("new.txt").replace(b"mine")
+
+    assert refused.value.code == "NOT_READ"
+    assert (work / "new.txt").read_bytes() == b"somebody else made this"
+    assert names(work) == ["a.txt", "new.txt"]
+
+
+def test_a_file_that_appears_at_the_last_moment_is_not_overwritten(
+    hand: Hand, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A new file is given its name by a step that fails if something has the name.
+    step = "rename" if sys.platform == "win32" else "link"
+    really: Any = getattr(os, step)
+
+    def at_the_last_moment(source: Any, target: Any, **options: Any) -> None:
+        (work / "new.txt").write_bytes(b"somebody else made this")
+        really(source, target, **options)
+
+    monkeypatch.setattr(os, step, at_the_last_moment)
+
+    with pytest.raises(ToolFailure) as refused:
+        hand.to_write("new.txt").replace(b"mine")
+
+    assert refused.value.code == "NOT_READ"
+    assert (work / "new.txt").read_bytes() == b"somebody else made this"
+    assert names(work) == ["a.txt", "new.txt"]
+
+
+def test_what_is_remembered_is_what_was_written_whatever_lies_there_a_moment_later(
+    hand: Hand, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    really_replace = os.replace
+
+    def and_then_somebody_else(source: Any, target: Any, **options: Any) -> None:
+        really_replace(source, target, **options)
+        (work / "a.txt").write_bytes(b"somebody else, a moment later")
+
+    hand.show("a.txt")
+    monkeypatch.setattr(os, "replace", and_then_somebody_else)
+
+    fingerprint = hand.to_write("a.txt").replace(b"new")
+
+    assert fingerprint.size == 3
+    assert hand.seen("a.txt") == fingerprint
+    # What lies there now is not what the agent wrote, so it is not written over unread.
+    with pytest.raises(ToolFailure) as refused:
+        hand.to_write("a.txt").replace(b"again")
+    assert refused.value.code == "CHANGED_SINCE_READ"
+    assert (work / "a.txt").read_bytes() == b"somebody else, a moment later"
+
+
+def test_a_file_that_will_not_be_replaced_has_nothing_made_ready_for_it(
+    hand: Hand, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    made_ready: list[int] = []
+    once_ready(monkeypatch, lambda: made_ready.append(1))
+
+    with pytest.raises(ToolFailure):
+        hand.to_write("a.txt").replace(b"new")
+
+    assert made_ready == []
+
+
+# Giving a replacement up, and saying what it was made from
+
+
+def test_a_replacement_that_is_given_up_when_its_content_is_ready_changes_nothing(
+    hand: Hand, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shown = hand.show("a.txt")
+    given_up = threading.Event()
+    once_ready(monkeypatch, given_up.set)
+
+    with pytest.raises(bound.GivenUpError):
+        hand.to_write("a.txt").replace(b"new", given_up=given_up)
+
+    assert (work / "a.txt").read_bytes() == b"old"
+    assert names(work) == ["a.txt"]
+    assert hand.seen("a.txt") == shown
+
+
+def test_a_replacement_that_nobody_gave_up_goes_ahead(hand: Hand, work: Path) -> None:
+    hand.show("a.txt")
+
+    hand.to_write("a.txt").replace(b"new", given_up=threading.Event())
+
+    assert (work / "a.txt").read_bytes() == b"new"
+
+
+def test_content_is_put_in_the_place_of_the_state_that_it_was_made_from(
+    hand: Hand, work: Path
+) -> None:
+    shown = hand.show("a.txt")
+    another = Fingerprint(shown.size, shown.modified_ns + 1)
+
+    with pytest.raises(ToolFailure) as refused:
+        hand.to_write("a.txt").replace(b"new", made_from=another)
+
+    assert refused.value.code == "CHANGED_SINCE_READ"
+    assert (work / "a.txt").read_bytes() == b"old"
+
+    hand.to_write("a.txt").replace(b"new", made_from=shown)
+
+    assert (work / "a.txt").read_bytes() == b"new"
+
+
+def test_content_that_was_made_from_a_file_the_model_was_never_shown_is_not_written(
+    hand: Hand, work: Path
+) -> None:
+    with pytest.raises(ToolFailure) as refused:
+        hand.to_write("a.txt").replace(b"new", made_from=state(work / "a.txt"))
+
+    assert refused.value.code == "NOT_READ"
+    assert (work / "a.txt").read_bytes() == b"old"
 
 
 # Where it was judged

@@ -30,6 +30,19 @@ directory that is held open without sharing its deletion cannot be renamed or
 removed, and neither can any directory above it. This was tried on NTFS: the
 rename of the held directory fails with error 32, and that of its parent with
 error 5, while files in it are still made and replaced.
+
+Somebody else may be at the same file. A file that is there is replaced only
+in the state in which it was seen, and that is asked twice: before anything
+is made ready, so that nothing is made ready in vain, and again when the new
+content lies beside the old, because making it ready takes time. A file that
+is not there is given its name by a step that fails if something has taken
+the name meanwhile. Between the second look and the rename of a file that is
+there, a moment is left in which a change goes unnoticed. No system has a
+call that closes it.
+
+What is said about the file afterwards is said of the content that was
+written, taken before it got its name. Whatever lies under the name a moment
+later may be the work of somebody else.
 """
 
 import contextlib
@@ -38,14 +51,16 @@ import os
 import secrets
 import stat
 import sys
+import threading
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Literal
 
 __all__ = [
     "ChangedError",
+    "GivenUpError",
     "Listed",
     "MovedError",
     "NotAFileError",
@@ -73,6 +88,10 @@ class NotShownError(Exception):
 
 class ChangedError(Exception):
     """The file is no longer in the state in which it was seen."""
+
+
+class GivenUpError(Exception):
+    """Whoever asked for a file to be replaced has given that up before it was done."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,12 +276,12 @@ if sys.platform == "win32":  # pragma: windows only
         def keep_mode(self, descriptor: int, existing: os.stat_result) -> None:
             """Do nothing: a file has no permission bits here."""
 
-        def rename(self, old: str, new: str) -> None:
-            # A program that looks at files as they change may have the old one open for a moment.
+        def _patiently(self, step: Callable[[], object]) -> None:
+            # A program that looks at files as they change may have one open for a moment.
             attempt = 1
             while True:
                 try:
-                    (self.path / old).replace(self.path / new)
+                    step()
                 except PermissionError:
                     if attempt == _RENAME_ATTEMPTS:
                         raise
@@ -270,6 +289,13 @@ if sys.platform == "win32":  # pragma: windows only
                     time.sleep(_RENAME_PAUSE)
                 else:
                     return
+
+        def rename(self, old: str, new: str) -> None:
+            self._patiently(lambda: (self.path / old).replace(self.path / new))
+
+        def place(self, old: str, new: str) -> None:
+            """Give a file a name that nothing has. If something has it, fail."""
+            self._patiently(lambda: (self.path / old).rename(self.path / new))
 
         def remove(self, name: str) -> None:
             with contextlib.suppress(OSError):
@@ -356,6 +382,21 @@ else:  # pragma: posix only
         def rename(self, old: str, new: str) -> None:
             os.replace(old, new, src_dir_fd=self._descriptor, dst_dir_fd=self._descriptor)
 
+        def place(self, old: str, new: str) -> None:
+            """Give a file a name that nothing has. If something has it, fail."""
+            here = self._descriptor
+            try:
+                # A second name for a file is only made if nothing has that name.
+                os.link(old, new, src_dir_fd=here, dst_dir_fd=here)
+            except FileExistsError:
+                raise
+            except OSError:
+                # A disk on which a file has one name only. There the name is taken the
+                # plain way, which would also take it from a file that has just appeared.
+                os.replace(old, new, src_dir_fd=here, dst_dir_fd=here)
+            else:
+                os.unlink(old, dir_fd=here)
+
         def remove(self, name: str) -> None:
             with contextlib.suppress(OSError):
                 os.unlink(name, dir_fd=self._descriptor)
@@ -436,7 +477,34 @@ def _held(directory: Path) -> Generator[_Held, None, None]:
         held.close()
 
 
-def replace(path: Path, data: bytes, seen: tuple[int, int] | None) -> os.stat_result:
+def _there(directory: _Held, path: Path, seen: tuple[int, int] | None) -> os.stat_result | None:
+    """Return what the system says about a file that may be replaced, or ``None`` if none is there.
+
+    Raises:
+        NotAFileError: What is there is no regular file.
+        NotShownError: A file is there and was never seen.
+        ChangedError: A file is there, in another state than it was seen in.
+    """
+    try:
+        existing = directory.status(path.name)
+    except FileNotFoundError:
+        return None
+    # A link that has taken the place of the file is no regular file either.
+    if not stat.S_ISREG(existing.st_mode):
+        raise NotAFileError(f"{path} is not a regular file")
+    if seen is None:
+        raise NotShownError(f"{path} was never seen")
+    if (existing.st_size, existing.st_mtime_ns) != seen:
+        raise ChangedError(f"{path} is not as it was seen")
+    return existing
+
+
+def replace(
+    path: Path,
+    data: bytes,
+    seen: tuple[int, int] | None,
+    given_up: threading.Event | None = None,
+) -> os.stat_result:
     """Put ``data`` in the place of the file at ``path``, or make the file.
 
     Whoever replaces a file has to have seen what it replaces. So a file that
@@ -448,9 +516,12 @@ def replace(path: Path, data: bytes, seen: tuple[int, int] | None) -> os.stat_re
         data: The new content.
         seen: The size and the time of the last change of the file as it was
             seen, or ``None`` if it was never seen.
+        given_up: Set by whoever asked, to say that the file is not to be
+            replaced after all. It is looked at just before the new content
+            gets the name of the file.
 
     Returns:
-        What the system says about the file after it was replaced.
+        What the system says about the content that was written.
 
     Raises:
         MovedError: A directory on the way is somewhere else than it was.
@@ -458,22 +529,13 @@ def replace(path: Path, data: bytes, seen: tuple[int, int] | None) -> os.stat_re
             that is no regular file.
         NotShownError: The file is there and was never seen.
         ChangedError: The file is not in the state in which it was seen.
+        GivenUpError: ``given_up`` was set in time. Nothing has changed.
         OSError: The file cannot be written.
     """
     name = path.name
     with _held(path.parent) as directory:
-        try:
-            existing = directory.status(name)
-        except FileNotFoundError:
-            existing = None
-        if existing is not None:
-            # A link that has taken the place of the file is no regular file either.
-            if not stat.S_ISREG(existing.st_mode):
-                raise NotAFileError(f"{path} is not a regular file")
-            if seen is None:
-                raise NotShownError(f"{path} was never seen")
-            if (existing.st_size, existing.st_mtime_ns) != seen:
-                raise ChangedError(f"{path} is not as it was seen")
+        # Asked before anything is made ready, so that nothing is made ready in vain.
+        existing = _there(directory, path, seen)
         beside = f".columbina-{secrets.token_hex(8)}.tmp"
         descriptor = directory.create(beside)
         try:
@@ -483,12 +545,24 @@ def replace(path: Path, data: bytes, seen: tuple[int, int] | None) -> os.stat_re
                 file.write(data)
                 file.flush()
                 os.fsync(descriptor)
-            directory.rename(beside, name)
+            written = directory.status(beside)
+            # Asked again: making the content ready took time, and the file may have
+            # changed, gone or come into being meanwhile.
+            existing = _there(directory, path, seen)
+            if given_up is not None and given_up.is_set():
+                raise GivenUpError(f"the replacement of {path} was given up")
+            if existing is None:
+                try:
+                    directory.place(beside, name)
+                except FileExistsError:
+                    raise NotShownError(f"{path} has come into being and was never seen") from None
+            else:
+                directory.rename(beside, name)
         except BaseException:
             directory.remove(beside)
             raise
         directory.sync()
-        return directory.status(name)
+        return written
 
 
 def listing(path: Path) -> list[Listed]:

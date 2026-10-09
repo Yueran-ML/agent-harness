@@ -24,6 +24,7 @@ from columbina.session import CORE_EVENTS, Session
 from columbina.tools import (
     POST_EXECUTE,
     TOOLS,
+    Accept,
     Block,
     Deny,
     Executed,
@@ -597,34 +598,86 @@ def test_reading_in_pieces_finds_what_reading_at_once_would(
 # Through the seam of the file system
 
 
-async def test_a_file_that_was_read_is_one_that_the_model_was_shown(
+async def shown_after(
+    ctx: Context, tools: Tools, work: Path, written: str, *, offset: int = 0, limit: int = 2000
+) -> tuple[ToolOutcome, Fingerprint | None, Fingerprint | None]:
+    """Read a file. Return how the call ended, and what the model counts as having been
+    shown before and after the result of the call has gone to it."""
+    session = Session(ctx, "s-9", {kind.event_type: kind for kind in CORE_EVENTS})
+    asked = ToolCallBlock(
+        call_id="call-1", name="read", arguments=arguments(written, offset=offset, limit=limit)
+    )
+    fs = ctx.use(FS)
+    where = locate(work, written).path
+
+    outcome = await tools.run(ctx, asked, ToolRun(call_id="call-1", cwd=work, session=session))
+    before = fs.seen(session, where)
+    fs.delivered(session)
+
+    return outcome, before, fs.seen(session, where)
+
+
+def state(path: Path) -> Fingerprint:
+    status = path.stat()
+    return Fingerprint(status.st_size, status.st_mtime_ns)
+
+
+async def test_a_file_that_was_read_counts_as_shown_once_the_result_has_gone_to_the_model(
     ctx: Context, tools: Tools, work: Path
 ) -> None:
     (work / "notes.txt").write_text("first\n", encoding="utf-8")
-    session = Session(ctx, "s-9", {kind.event_type: kind for kind in CORE_EVENTS})
-    asked = ToolCallBlock(call_id="call-1", name="read", arguments=arguments("notes.txt"))
 
-    outcome = await tools.run(ctx, asked, ToolRun(call_id="call-1", cwd=work, session=session))
+    outcome, before, after = await shown_after(ctx, tools, work, "notes.txt")
 
-    status = (work / "notes.txt").stat()
     assert outcome.error is None
-    assert ctx.use(FS).seen(session, locate(work, "notes.txt").path) == Fingerprint(
-        status.st_size, status.st_mtime_ns
-    )
+    # The model wrote the other calls of its reply without having seen this result.
+    assert before is None
+    assert after == state(work / "notes.txt")
+
+
+async def test_a_part_of_a_file_is_enough_for_the_file_to_count_as_shown(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "notes.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    _, _, after = await shown_after(ctx, tools, work, "notes.txt", offset=1, limit=1)
+
+    assert after == state(work / "notes.txt")
+
+
+async def test_a_read_that_showed_no_line_of_the_file_has_shown_nothing(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "notes.txt").write_text("one\ntwo\n", encoding="utf-8")
+
+    outcome, _, after = await shown_after(ctx, tools, work, "notes.txt", offset=5)
+
+    assert outcome.error is None
+    assert "the offset skips them all" in outcome.text
+    assert after is None
+
+
+async def test_a_file_without_lines_counts_as_shown_when_the_model_was_told_so(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "empty.txt").write_bytes(b"")
+
+    outcome, _, after = await shown_after(ctx, tools, work, "empty.txt")
+
+    assert outcome.text == "(the file is empty)"
+    assert after == Fingerprint(0, (work / "empty.txt").stat().st_mtime_ns)
 
 
 async def test_a_file_that_could_not_be_shown_is_not_remembered(
     ctx: Context, tools: Tools, work: Path
 ) -> None:
     (work / "blob.bin").write_bytes(bytes([0, 1, 2]))
-    session = Session(ctx, "s-9", {kind.event_type: kind for kind in CORE_EVENTS})
-    asked = ToolCallBlock(call_id="call-1", name="read", arguments=arguments("blob.bin"))
 
-    outcome = await tools.run(ctx, asked, ToolRun(call_id="call-1", cwd=work, session=session))
+    outcome, _, after = await shown_after(ctx, tools, work, "blob.bin")
 
     assert outcome.error is not None
     assert outcome.error.code == "NOT_TEXT"
-    assert ctx.use(FS).seen(session, locate(work, "blob.bin").path) is None
+    assert after is None
 
 
 async def test_a_restriction_of_the_seam_keeps_a_file_from_being_read(
@@ -731,12 +784,41 @@ async def test_a_file_whose_content_was_withheld_was_not_shown_to_the_model(
         return Block(reason="this is not for the model")
 
     (work / "notes.txt").write_text("first\n", encoding="utf-8")
-    session = Session(ctx, "s-9", {kind.event_type: kind for kind in CORE_EVENTS})
-    asked = ToolCallBlock(call_id="call-1", name="read", arguments=arguments("notes.txt"))
     ctx.on(POST_EXECUTE, withholding)
 
-    outcome = await tools.run(ctx, asked, ToolRun(call_id="call-1", cwd=work, session=session))
+    outcome, _, after = await shown_after(ctx, tools, work, "notes.txt")
 
     assert outcome.error is not None
     assert outcome.error.code == "RESULT_BLOCKED"
-    assert ctx.use(FS).seen(session, locate(work, "notes.txt").path) is None
+    assert after is None
+
+
+async def test_a_file_in_whose_place_the_model_reads_other_words_was_not_shown_to_it(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    async def veiling(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
+        return Accept(text="[the content is not shown]")
+
+    (work / "notes.txt").write_text("first\n", encoding="utf-8")
+    ctx.on(POST_EXECUTE, veiling)
+
+    outcome, _, after = await shown_after(ctx, tools, work, "notes.txt")
+
+    assert outcome.error is None
+    assert outcome.text == "[the content is not shown]"
+    assert after is None
+
+
+async def test_a_file_whose_content_reaches_the_model_among_other_words_was_shown_to_it(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    async def annotating(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
+        return Accept(text=f"[read at noon]\n{executed.text}\n[end]")
+
+    (work / "notes.txt").write_text("first\n", encoding="utf-8")
+    ctx.on(POST_EXECUTE, annotating)
+
+    outcome, _, after = await shown_after(ctx, tools, work, "notes.txt")
+
+    assert outcome.error is None
+    assert after == state(work / "notes.txt")

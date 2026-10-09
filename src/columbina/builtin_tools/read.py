@@ -8,8 +8,10 @@ first ``_SCAN_BYTES`` of the file, and it stops when its caller is cancelled.
 
 The file is found, allowed and opened through the seam of the file system. A
 file that was read is one that the model has been shown, which the seam
-remembers for the tools that write. It is remembered when the result of the
-call has got through to the model, and not if something withheld it.
+remembers for the tools that write. It is told so when the result of the
+call is on its way to the model with what the tool returned in it: not if
+something withheld the result or put other words in its place, and not if
+the call showed no line of a file that has lines.
 
 The checks of a call are told where its path leads, and the tool looks again
 when it runs. If the path leads elsewhere by then, the file is not read: the
@@ -238,11 +240,14 @@ class ReadResult:
         text: What the model reads.
         permit: The permit that the file was opened through.
         fingerprint: The state of the file when it was opened.
+        shows: Whether the text shows the model something of the file: at
+            least one of its lines, or that it has none.
     """
 
     text: str
     permit: Permit
     fingerprint: Fingerprint
+    shows: bool
 
 
 def _text(args: ReadArgs, result: ReadResult) -> str:
@@ -279,10 +284,10 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
         if part is None:
             raise ToolFailure(f"{args.path} does not look like a text file.", code="NOT_TEXT")
         if part.lines == 0:
-            return ReadResult("(the file is empty)", permit, part.fingerprint)
+            return ReadResult("(the file is empty)", permit, part.fingerprint, True)
         note = _note(part, args.offset)
         text = "\n".join(part.shown if note is None else [*part.shown, note])
-        return ReadResult(text, permit, part.fingerprint)
+        return ReadResult(text, permit, part.fingerprint, bool(part.shown))
 
     return Tool(
         name="read",
@@ -305,10 +310,16 @@ def apply(ctx: Context, config: object) -> None:
     fs = ctx.use(FS)
 
     def remember(outcome: ToolOutcome) -> None:
-        # A result that was withheld on its way has shown the model nothing.
+        # A result that was withheld on its way shows the model nothing, and neither does
+        # one in which other words have taken the place of what was read.
         result = outcome.value
-        if outcome.error is None and isinstance(result, ReadResult):
-            fs.shown(result.permit, result.fingerprint)
+        if (
+            outcome.error is None
+            and isinstance(result, ReadResult)
+            and result.shows
+            and result.text in outcome.text
+        ):
+            fs.showing(result.permit, result.fingerprint)
 
     ctx.use(TOOLS).add(ctx, read_tool(fs))
     ctx.on(RESULT, remember)

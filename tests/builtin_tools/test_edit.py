@@ -1,5 +1,6 @@
 """The edit tool: new text in the place of a piece of a file."""
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -10,11 +11,12 @@ from hypothesis import strategies as st
 
 from columbina.builtin_tools import edit
 from columbina.builtin_tools.edit import EditArgs
-from columbina.fs import Access, Fingerprint, locate
+from columbina.fs import Access, Fingerprint, Permit, locate
 from columbina.kernel import Context
 from columbina.session import ToolError
 from columbina.tools import Deny, Invocation, ToolFailure
 from support.desk import Desk
+from support.held import HeldWrite
 from support.links import link_directory, unlink_directory
 
 
@@ -386,3 +388,49 @@ def test_the_model_is_told_what_an_edit_needs(desk: Desk) -> None:
 
     assert "has to be read first" in schema.description
     assert schema.parameters["required"] == ["path", "old", "new"]
+
+
+# An edit that is cut short
+
+
+async def test_an_edit_that_is_cancelled_does_not_end_before_its_thread_has(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (desk.work / "notes.txt").write_bytes(b"one\ntwo\n")
+    await desk.have_read("notes.txt")
+    held = HeldWrite(monkeypatch)
+    editing = asyncio.ensure_future(desk.call("edit", path="notes.txt", old="two", new="three"))
+    assert await asyncio.to_thread(held.reached.wait, 20)
+
+    editing.cancel()
+    await asyncio.sleep(0.1)
+    stayed = not editing.done()
+    held.go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await editing
+
+    assert stayed
+    assert held.ended.is_set()
+    assert (desk.work / "notes.txt").read_bytes() == b"one\ntwo\n"
+    assert desk.names() == ["notes.txt"]
+
+
+async def test_an_edit_puts_its_text_in_the_place_of_the_text_it_was_made_from_and_no_other(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (desk.work / "notes.txt").write_bytes(b"one\ntwo\n")
+    await desk.have_read("notes.txt")
+    made_from: list[object] = []
+    really_replace: Any = Permit.replace
+
+    def watching(permit: Permit, data: bytes, **options: Any) -> Any:
+        made_from.append(options["made_from"])
+        return really_replace(permit, data, **options)
+
+    monkeypatch.setattr(Permit, "replace", watching)
+    before = (desk.work / "notes.txt").stat()
+
+    outcome = await desk.call("edit", path="notes.txt", old="two", new="three")
+
+    assert outcome.error is None
+    assert made_from == [Fingerprint(before.st_size, before.st_mtime_ns)]

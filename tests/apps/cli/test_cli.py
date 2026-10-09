@@ -21,7 +21,7 @@ from columbina.llm.adapters.scripted import Reply
 from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
 from support.loop import MODEL, Harness, from_a_source, user
-from support.terminal import CTRL_D, ESCAPE, Desk, desk
+from support.terminal import CTRL_D, ESCAPE, Desk, desk, stands, until
 
 STEER = chr(0xBB)
 
@@ -124,8 +124,10 @@ async def test_a_line_that_is_typed_while_a_turn_runs_is_read_at_the_next_step(
         await asyncio.wait_for(harness.model.held(), timeout=5)
 
         at.enter("No, read b.txt.")
-        await at.draws("No, read b.txt.")
-        await asyncio.sleep(0.05)
+        # The line counts as said on the way once the interface has taken it. A line that
+        # is submitted in the moment in which the turn ends is a task for the next turn.
+        agent = agent_of(harness)
+        await until(lambda: len(INBOX.of(agent.session).next_step) == 1)
         harness.model.release()
         await at.sees(f"{STEER} No, read b.txt.\n")
         await at.sees("Reading b.txt.\n")
@@ -493,5 +495,75 @@ async def test_a_question_of_approval_is_put_to_the_person_at_the_terminal(
         at.type("y")
 
         assert await asyncio.wait_for(answering, 5) == "allowed-once"
+        at.type(CTRL_D)
+        await left(running)
+
+
+# The screen
+
+
+async def test_a_conversation_stands_on_the_screen_with_what_the_user_typed(
+    harness: Harness,
+) -> None:
+    harness.model.add(Reply(text="Hello!\nWhat shall we do?"))
+    # The window is wide, so that the name of the working directory fits into one row.
+    with desk(rows=12, columns=400) as at:
+        cli = await frontend(harness, at)
+        assert isinstance(cli, columbina.apps.cli.Cli)
+        running = asyncio.ensure_future(cli.run())
+
+        at.enter("Say hello.")
+        await at.sees("What shall we do?\n\n")
+        await stands(lambda: at.window()[7:8], [">"])
+
+        assert at.window() == [
+            f"Columbina {columbina.__version__}   {MODEL.model}   {harness.cwd}",
+            "/help lists the commands. Ctrl+D leaves.",
+            "",
+            "> Say hello.",
+            "Hello!",
+            "What shall we do?",
+            "",
+            ">",
+            "",
+            "",
+            "",
+            cli.status_line(),
+        ]
+        assert at.cursor() == (7, 2)
+        at.enter("/exit")
+        assert await left(running) == 0
+        assert at.screen()[7:] == ["> /exit"]
+
+
+async def test_what_is_said_on_the_way_stands_where_it_was_typed_and_where_it_was_read(
+    harness: Harness,
+) -> None:
+    harness.model.add(Reply(text="Reading a.txt.", hold=True), Reply(text="Reading b.txt."))
+    with desk(rows=14, columns=400) as at:
+        running = asyncio.ensure_future((await frontend(harness, at)).run())
+        at.enter("Read a.txt.")
+        await asyncio.wait_for(harness.model.held(), timeout=5)
+
+        at.enter("No, read b.txt.")
+        # The model has written its line and is held before it ends the reply.
+        typed = ["> Read a.txt.", "Reading a.txt.", "> No, read b.txt."]
+        await stands(lambda: at.screen()[3:6], typed)
+        # The line stands on the screen a moment before the interface has taken it.
+        agent = agent_of(harness)
+        await until(lambda: len(INBOX.of(agent.session).next_step) == 1)
+        harness.model.release()
+        await at.sees("Reading b.txt.\n\n")
+        await stands(lambda: at.window()[9:10], [">"])
+
+        assert at.window()[3:10] == [
+            "> Read a.txt.",
+            "Reading a.txt.",
+            "> No, read b.txt.",
+            f"{STEER} No, read b.txt.",
+            "Reading b.txt.",
+            "",
+            ">",
+        ]
         at.type(CTRL_D)
         await left(running)

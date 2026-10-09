@@ -1,24 +1,27 @@
-"""A terminal for tests: keys are typed into a pipe, and what is shown is kept as text.
+"""A terminal for tests: keys are typed into a pipe, and what is shown is kept.
 
-The screen of a test keeps two things apart, which a real screen shows one
+The screen of a test is a terminal that is emulated, so a test can read what
+stands on it the way a person at a real one would: :mod:`support.vt` carries
+out what the library that draws the prompt sends.
+
+Beside that, the screen keeps two things apart which a real one shows one
 above the other. What was printed is there for good: the conversation. What
 was drawn is the prompt, which is drawn anew whenever something changes. The
-library that draws the prompt hides the cursor while it draws and shows it
-again afterwards, and that is how the two are told apart here.
+library hides the cursor while it draws and shows it again afterwards, and
+that is how the two are told apart here.
 """
 
 import asyncio
 import contextlib
-import io
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 
 from prompt_toolkit.input import PipeInput, create_pipe_input
-from prompt_toolkit.output.plain_text import PlainTextOutput
 
 from columbina.apps.cli.terminal import Terminal
+from support.vt import Display, Emulated
 
-__all__ = ["Desk", "Screen", "desk", "until"]
+__all__ = ["Desk", "Screen", "desk", "stands", "until"]
 
 ENTER = "\r"
 ESCAPE = "\x1b"
@@ -34,29 +37,44 @@ async def until(holds: Callable[[], bool], seconds: float = 5.0) -> None:
             await asyncio.sleep(0.005)
 
 
-class Screen(PlainTextOutput):
-    """A screen that keeps what was printed for good apart from what was drawn as the prompt."""
+async def stands(rows: Callable[[], list[str]], wanted: list[str], seconds: float = 5.0) -> None:
+    """Wait until rows of a screen are what is wanted, and say what they are if they never are."""
+    try:
+        await until(lambda: rows() == wanted, seconds)
+    except TimeoutError:
+        raise AssertionError(f"wanted {wanted!r}, and the screen has {rows()!r}") from None
 
-    def __init__(self) -> None:
-        self.everything = io.StringIO()
-        super().__init__(self.everything)
+
+class Screen(Emulated):
+    """A screen that shows what a terminal would, and keeps printed and drawn text apart.
+
+    Attributes:
+        printed: The pieces of text that were printed for good.
+        drawn: The pieces of text that were drawn as a part of the prompt.
+        everything: Both, in the order in which they came.
+    """
+
+    def __init__(self, rows: int = 24, columns: int = 80) -> None:
+        super().__init__(Display(rows, columns))
         self.printed: list[str] = []
         self.drawn: list[str] = []
+        self.everything: list[str] = []
         self._drawing = False
 
     def hide_cursor(self) -> None:
         self._drawing = True
+        super().hide_cursor()
 
     def show_cursor(self) -> None:
         self._drawing = False
+        super().show_cursor()
 
     def write(self, data: str) -> None:
+        # Only text is kept. What moves the cursor or sets a colour is carried out by the
+        # display and is nothing that a person reads.
         (self.drawn if self._drawing else self.printed).append(data)
+        self.everything.append(data)
         super().write(data)
-
-    def write_raw(self, data: str) -> None:
-        (self.drawn if self._drawing else self.printed).append(data)
-        super().write_raw(data)
 
 
 def _plain(pieces: list[str]) -> str:
@@ -96,8 +114,23 @@ class Desk:
         return _plain(self._screen.drawn)
 
     def shown(self) -> str:
-        """Return everything that the screen was sent, printed and drawn, in the order it came."""
-        return self._screen.everything.getvalue()
+        """Return all text that the screen was sent, printed and drawn, in the order it came."""
+        return _plain(self._screen.everything)
+
+    def screen(self) -> list[str]:
+        """Return the lines that stand on the screen now, with those that scrolled away."""
+        self._screen.flush()
+        return self._screen.display.lines()
+
+    def window(self) -> list[str]:
+        """Return the rows of the window as they are now."""
+        self._screen.flush()
+        return self._screen.display.window()
+
+    def cursor(self) -> tuple[int, int]:
+        """Return the row of the window and the column that the cursor is in."""
+        self._screen.flush()
+        return self._screen.display.cursor
 
     async def sees(self, text: str, seconds: float = 5.0) -> None:
         """Wait until a text was printed. What is shown gets to the screen in its own time."""
@@ -115,9 +148,9 @@ class Desk:
 
 
 @contextlib.contextmanager
-def desk(encoding: str = "utf-8") -> Generator[Desk, None, None]:
+def desk(encoding: str = "utf-8", rows: int = 24, columns: int = 80) -> Generator[Desk, None, None]:
     """Set up a terminal that takes its keys from a pipe and keeps what it shows."""
     with create_pipe_input() as keys:
-        screen = Screen()
+        screen = Screen(rows, columns)
         terminal = Terminal(keys, screen, encoding=encoding, colours=False)
         yield Desk(terminal, keys, screen)

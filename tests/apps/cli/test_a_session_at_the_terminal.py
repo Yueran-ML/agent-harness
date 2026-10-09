@@ -21,11 +21,12 @@ from columbina.llm.adapters import scripted
 from columbina.session import TurnEndEvent, UserMessageEvent
 from support import user as at_the_terminal
 from support.launch import profile, stored
-from support.neutral import neutral_requests
+from support.neutral import neutral_requests, neutral_screen
 from support.scenario import CHECK, TASK, check, fresh
 from support.snapshot import stored as snapshot
 
 SNAPSHOT = Path(__file__).parent / "snapshots" / "a_session_at_the_terminal.txt"
+SCREEN = Path(__file__).parent / "snapshots" / "the_screen_of_a_session.txt"
 ENTER = "\r"
 ESCAPE = "\x1b"
 WAIT = "python -c 'import time; time.sleep(60)'"
@@ -93,9 +94,10 @@ def test_a_repository_is_mended_in_a_conversation(
             models.append(self)
 
     monkeypatch.setattr(scripted, "Scripted", Watched)
-    chosen = profile(
-        tmp_path, *WHAT_THE_MODEL_DOES, extends="cli", extra=[somebody(*WHAT_THE_USER_DOES)]
-    )
+    # The window is wide, so that no line is broken at a place that depends on how long the
+    # name of the working directory is on this machine.
+    user = somebody(*WHAT_THE_USER_DOES, columns=400)
+    chosen = profile(tmp_path, *WHAT_THE_MODEL_DOES, extends="cli", extra=[user])
 
     code = main(["--profile", chosen, "--cwd", str(repository), "--session-id", "s-1"])
 
@@ -130,6 +132,10 @@ def test_a_repository_is_mended_in_a_conversation(
     sent = neutral_requests(models[0].requests, repository, shell.NAME)
     seen = render_requests(sent) + "\n"
     assert seen == snapshot(SNAPSHOT, seen)
+    # What stood on the screen in the end, with the lines that the user typed among it.
+    standing = at_the_terminal.SCREENS[-1].display.lines()
+    looked = neutral_screen(standing, repository, shell.NAME)
+    assert looked == snapshot(SCREEN, looked)
 
 
 @pytest.mark.timeout(120)

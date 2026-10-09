@@ -56,11 +56,15 @@ class Config(BaseModel):
         answer: The key that answers every question, or nothing if the steps
             of the script answer the questions.
         seconds: How long a step waits.
+        rows: The height of the window of the terminal.
+        columns: Its width.
     """
 
     script: tuple[Step, ...] = ()
     answer: str = ""
     seconds: float = 30.0
+    rows: int = 24
+    columns: int = 80
 
 
 def _printed(screen: Screen) -> str:
@@ -113,7 +117,7 @@ def apply(ctx: Context, config: Config) -> None:
     """Provide a terminal, and sit at it."""
     stack = contextlib.ExitStack()
     keys = stack.enter_context(create_pipe_input())
-    screen = Screen()
+    screen = Screen(config.rows, config.columns)
     SCREENS.append(screen)
     ctx.provide(TERMINAL, Terminal(keys, screen, colours=False))
     acting = [asyncio.ensure_future(_act(ctx, config, keys, screen))]

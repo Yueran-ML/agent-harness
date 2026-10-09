@@ -11,6 +11,9 @@ one form before it is compared or stored:
   of the platform. What that line and that name are on each platform has
   tests of its own.
 
+What stands on the screen of a conversation is brought to one form by
+:func:`neutral_screen`.
+
 A run also begins the same way everywhere: :func:`copy_of` gives it a working
 directory whose files are all of one age.
 """
@@ -22,12 +25,17 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
+import columbina
 from columbina.llm import LlmRequest
 
-__all__ = ["copy_of", "neutral", "neutral_requests"]
+__all__ = ["copy_of", "neutral", "neutral_requests", "neutral_screen"]
 
 WORK = "/work"
 _RUN_BY = re.compile(r"^commands are run by: .*$", flags=re.MULTILINE)
+_TOOK = re.compile(
+    r"^(  \S+ (?:[A-Z_]+, )?)(?:\d+ ms|\d+\.\d s|\d+ min \d+ s)(?=,|$)", flags=re.MULTILINE
+)
+"""The time that a call took, in the line that tells of its result."""
 _ONE_MOMENT = 1_700_000_000
 """When every file of a copy was last changed, as far as the copy says."""
 
@@ -69,6 +77,27 @@ def neutral(value: object, work: Path, shell: str | None = None) -> Any:
             changed["name"] = "shell"
         return changed
     return value
+
+
+def neutral_screen(lines: Sequence[str], work: Path, shell: str) -> str:
+    """Return what stands on a screen, with what differs between machines and runs made neutral.
+
+    Beside the working directory, that is the version of the program in the
+    line that a conversation begins with, the name of the tool that runs
+    commands where a call of it is shown or asked about, and how long each
+    call took.
+
+    Args:
+        lines: The lines of the screen.
+        work: The working directory of the run.
+        shell: The name of the tool that runs commands.
+    """
+    text = "\n".join(lines).replace(str(work), WORK) + "\n"
+    text = text.replace(f"Columbina {columbina.__version__} ", "Columbina VERSION ", 1)
+    named = re.escape(shell)
+    text = re.sub(rf"^(. ){named}( |$)", r"\1shell\2", text, flags=re.MULTILINE)
+    text = re.sub(rf"^{named}( asks for a yes)", r"shell\1", text, flags=re.MULTILINE)
+    return _TOOK.sub(r"\1TIME", text)
 
 
 def neutral_requests(

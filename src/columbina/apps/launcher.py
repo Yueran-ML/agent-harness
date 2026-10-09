@@ -143,6 +143,9 @@ def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
                 )
             config = _config_of(entry)
             if args.cwd is not None:
+                if not Path(args.cwd).is_dir():
+                    # Otherwise an agent would be sent to work where nothing is.
+                    raise _UsageError(f"the working directory {args.cwd!r} is not a directory")
                 config["cwd"] = str(Path(args.cwd).resolve())
             config.setdefault("cwd", str(Path().resolve()))
             if args.session_id is not None:

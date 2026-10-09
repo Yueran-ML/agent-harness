@@ -843,6 +843,33 @@ def test_an_interrupted_run_exits_the_way_a_shell_expects(
     assert code == 130
 
 
+# The working directory
+
+
+@pytest.mark.parametrize("command", [["run", "Do it."], ["chat"], []], ids=["run", "chat", "none"])
+def test_a_working_directory_that_is_not_there_is_refused_before_anything_runs(
+    home: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str], command: list[str]
+) -> None:
+    missing = tmp_path / "nowhere"
+    a_file = tmp_path / "notes.txt"
+    a_file.write_text("text", encoding="utf-8")
+
+    codes = [
+        main([*command, "--cwd", str(place), "--profile", profile(tmp_path, {"text": "never"})])
+        for place in (missing, a_file)
+    ]
+
+    captured = capsys.readouterr()
+    assert codes == [2, 2]
+    assert captured.out == ""
+    assert captured.err == (
+        f"columbina: the working directory {str(missing)!r} is not a directory\n"
+        f"columbina: the working directory {str(a_file)!r} is not a directory\n"
+    )
+    # No session was begun.
+    assert not home.exists()
+
+
 # What a terminal is sent
 
 

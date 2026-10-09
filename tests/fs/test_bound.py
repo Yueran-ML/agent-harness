@@ -169,16 +169,17 @@ def test_two_spellings_are_one_place_if_they_name_the_same_entries(work: Path) -
     assert not same(str(work / "sub" / "a.txt"), str(work / "sub" / "deeper" / "a.txt"))
 
 
-def test_a_link_and_what_it_leads_to_are_not_the_same_entry(work: Path, tmp_path: Path) -> None:
-    outside = real(tmp_path) / "out" / "side"
-    outside.mkdir(parents=True)
-    (outside / "a.txt").write_text("a")
-    link_directory(work / "door", outside)
+def test_a_link_and_what_it_leads_to_are_not_the_same_entry(work: Path) -> None:
+    # The link lies beside what it leads to, so the two ways part at one name only.
+    (work / "room").mkdir()
+    (work / "room" / "a.txt").write_text("a")
+    link_directory(work / "door", work / "room")
     same: Any = vars(bound)["_same_entries"]
 
-    # Both spellings reach the same file, as deep down, and yet they are two ways.
-    assert (work / "door" / "a.txt").samefile(outside / "a.txt")
-    assert not same(str(work / "door" / "a.txt"), str(outside / "a.txt"))
+    assert (work / "door" / "a.txt").samefile(work / "room" / "a.txt")
+    assert (work / "door").samefile(work / "room")
+    assert not same(str(work / "door" / "a.txt"), str(work / "room" / "a.txt"))
+    assert not same(str(work / "door"), str(work / "room"))
 
 
 if sys.platform == "win32":

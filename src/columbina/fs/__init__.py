@@ -232,18 +232,26 @@ class Permit:
         except bound.NotAFileError:
             raise ToolFailure(f"{where.written} is not a file.", code="NOT_A_FILE") from None
         except bound.NotShownError:
-            raise ToolFailure(
-                f"{where.written} exists and has not been read. Read it before writing it.",
-                code="NOT_READ",
-            ) from None
+            raise _not_read(where) from None
         except bound.ChangedError:
-            raise ToolFailure(
-                f"{where.written} has changed since it was read. Read it again before writing it.",
-                code="CHANGED_SINCE_READ",
-            ) from None
+            raise _changed(where) from None
         fingerprint = Fingerprint(status.st_size, status.st_mtime_ns)
         self._fs.shown(self, fingerprint)
         return fingerprint
+
+
+def _not_read(where: Located) -> ToolFailure:
+    return ToolFailure(
+        f"{where.written} exists and has not been read. Read it before writing it.",
+        code="NOT_READ",
+    )
+
+
+def _changed(where: Located) -> ToolFailure:
+    return ToolFailure(
+        f"{where.written} has changed since it was read. Read it again before writing it.",
+        code="CHANGED_SINCE_READ",
+    )
 
 
 def _describe(error: BaseException) -> str:
@@ -344,6 +352,29 @@ class Fs:
         """Return the state in which the model was last shown a file, if it was."""
         with self._lock:
             return self._shown.get(session, {}).get(_key(path))
+
+    def must_have_shown(self, permit: Permit, fingerprint: Fingerprint) -> None:
+        """Make sure that the model was shown a file in the state that it is in.
+
+        A tool that changes a part of a file asks this as soon as it has
+        opened the file. So it says nothing about the content of a file that
+        the model has not seen, not even that a text does not occur in it.
+
+        Args:
+            permit: The permit that the file was opened through.
+            fingerprint: The state of the file when it was opened.
+
+        Raises:
+            ToolFailure: The model was never shown the file (code
+                ``NOT_READ``), or it was shown it in another state (code
+                ``CHANGED_SINCE_READ``).
+        """
+        access = permit.access
+        shown = self.seen(access.session, access.where.path)
+        if shown is None:
+            raise _not_read(access.where)
+        if shown != fingerprint:
+            raise _changed(access.where)
 
 
 FS = ServiceKey[Fs]("fs")

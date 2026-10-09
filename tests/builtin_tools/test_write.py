@@ -1,0 +1,255 @@
+"""The write tool: a file is made, or all that it holds is replaced."""
+
+import asyncio
+import os
+import threading
+from typing import Any
+
+import pytest
+
+from columbina.fs import Permit
+from columbina.kernel import Context
+from columbina.session import ToolError
+from columbina.tools import Deny, Invocation
+from support.desk import Desk
+from support.links import link_directory, unlink_directory
+
+# A file that is made
+
+
+async def test_a_file_that_is_not_there_is_made(desk: Desk) -> None:
+    outcome = await desk.call("write", path="notes.txt", content="first\nsecond\n")
+
+    assert outcome.error is None
+    assert outcome.text == "Created notes.txt: 2 lines."
+    assert (desk.work / "notes.txt").read_bytes() == b"first\nsecond\n"
+
+
+async def test_directories_that_are_missing_are_made(desk: Desk) -> None:
+    outcome = await desk.call("write", path="docs/guide/intro.md", content="# Intro")
+
+    assert outcome.error is None
+    assert outcome.text == "Created docs/guide/intro.md: 1 line."
+    assert (desk.work / "docs" / "guide" / "intro.md").read_bytes() == b"# Intro"
+
+
+async def test_the_content_is_stored_as_it_was_given(desk: Desk) -> None:
+    content = "one\r\ntwo\nthree\rfour\n\tfive 好\n"
+
+    await desk.call("write", path="exact.txt", content=content)
+
+    assert (desk.work / "exact.txt").read_bytes() == content.encode()
+
+
+async def test_a_file_can_be_made_empty(desk: Desk) -> None:
+    outcome = await desk.call("write", path="empty.txt", content="")
+
+    assert outcome.text == "Created empty.txt: 0 lines."
+    assert (desk.work / "empty.txt").read_bytes() == b""
+
+
+async def test_content_that_cannot_be_stored_as_text_is_refused(desk: Desk) -> None:
+    # Half of a pair of code units, which JSON can carry and no file in UTF-8 can hold.
+    outcome = await desk.call("write", path="notes.txt", content="half: " + chr(0xD83D))
+
+    # The pipeline does not take such arguments, so the tool never sees them.
+    assert outcome.error is not None
+    assert outcome.error.code == "INVALID_ARGS"
+    assert desk.names() == []
+
+
+# A file that is replaced
+
+
+async def test_a_file_that_was_read_is_replaced(desk: Desk) -> None:
+    (desk.work / "notes.txt").write_bytes(b"old\n")
+    await desk.have_read("notes.txt")
+
+    outcome = await desk.call("write", path="notes.txt", content="new\ncontent\n")
+
+    assert outcome.error is None
+    assert outcome.text == "Replaced notes.txt: 2 lines."
+    assert (desk.work / "notes.txt").read_bytes() == b"new\ncontent\n"
+    assert desk.names() == ["notes.txt"]
+
+
+async def test_a_file_that_was_not_read_is_not_replaced(desk: Desk) -> None:
+    (desk.work / "notes.txt").write_bytes(b"old\n")
+
+    outcome = await desk.call("write", path="notes.txt", content="new\n")
+
+    assert outcome.error == ToolError(
+        code="NOT_READ",
+        reason="notes.txt exists and has not been read. Read it before writing it.",
+    )
+    assert (desk.work / "notes.txt").read_bytes() == b"old\n"
+
+
+async def test_a_file_that_changed_since_it_was_read_is_not_replaced(desk: Desk) -> None:
+    (desk.work / "notes.txt").write_bytes(b"old\n")
+    await desk.have_read("notes.txt")
+    (desk.work / "notes.txt").write_bytes(b"changed by someone else\n")
+
+    outcome = await desk.call("write", path="notes.txt", content="new\n")
+
+    assert outcome.error == ToolError(
+        code="CHANGED_SINCE_READ",
+        reason="notes.txt has changed since it was read. Read it again before writing it.",
+    )
+    assert (desk.work / "notes.txt").read_bytes() == b"changed by someone else\n"
+
+
+async def test_what_was_written_can_be_written_again_without_reading_it(desk: Desk) -> None:
+    await desk.call("write", path="notes.txt", content="first\n")
+
+    outcome = await desk.call("write", path="notes.txt", content="second\n")
+
+    assert outcome.error is None
+    assert outcome.text == "Replaced notes.txt: 1 line."
+    assert (desk.work / "notes.txt").read_bytes() == b"second\n"
+
+
+# Where nothing is written
+
+
+async def test_a_session_that_is_read_only_writes_nothing(desk: Desk) -> None:
+    desk.sandbox.set_mode(desk.session, "read-only")
+
+    outcome = await desk.call("write", path="notes.txt", content="new\n")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "READ_ONLY"
+    assert desk.names() == []
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [
+        ("../outside.txt", "OUTSIDE_WORKING_DIRECTORY"),
+        (".git/hooks/pre-commit", "PROTECTED"),
+        (".columbina/permissions.yml", "PROTECTED"),
+    ],
+)
+async def test_nothing_is_written_where_the_mode_does_not_allow_it(
+    desk: Desk, path: str, code: str
+) -> None:
+    outcome = await desk.call("write", path=path, content="x")
+
+    assert outcome.error is not None
+    assert outcome.error.code == code
+    assert desk.names() == []
+    assert not (desk.work.parent / "outside.txt").exists()
+
+
+async def test_a_directory_is_not_replaced_by_a_file(desk: Desk) -> None:
+    (desk.work / "docs").mkdir()
+
+    outcome = await desk.call("write", path="docs", content="x")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "NOT_A_FILE"
+    assert (desk.work / "docs").is_dir()
+
+
+async def test_a_file_that_cannot_be_written_is_an_error_that_says_why(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def full(*arguments: Any, **options: Any) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", full)
+
+    outcome = await desk.call("write", path="notes.txt", content="new\n")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "TOOL_ERROR"
+    assert outcome.text == "notes.txt cannot be written: [Errno 28] No space left on device"
+    assert desk.names() == []
+
+
+async def test_a_path_that_leads_elsewhere_than_when_the_call_was_checked_is_not_written(
+    desk: Desk,
+) -> None:
+    (desk.work / "drafts").mkdir()
+    (desk.work / "final").mkdir()
+    link_directory(desk.work / "door", desk.work / "drafts")
+
+    async def turning(context: Context, invocation: Invocation) -> Deny | None:
+        unlink_directory(desk.work / "door")
+        link_directory(desk.work / "door", desk.work / "final")
+        return None
+
+    desk.tools.guards.add(desk.ctx, "turning", turning)
+
+    outcome = await desk.call("write", path="door/notes.txt", content="x")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "MOVED"
+    assert desk.names("drafts") == []
+    assert desk.names("final") == []
+
+
+# What the checks and the model are told
+
+
+async def test_a_write_says_which_file_it_acts_on_by_the_place_of_the_file(desk: Desk) -> None:
+    seen: list[tuple[str, str | None]] = []
+
+    async def watching(context: Context, invocation: Invocation) -> Deny | None:
+        seen.append((invocation.tool.effect, invocation.target))
+        return None
+
+    (desk.work / "docs").mkdir()
+    desk.tools.guards.add(desk.ctx, "watching", watching)
+
+    await desk.call("write", path="docs/../notes.txt", content="x")
+    await desk.call("write", path=str(desk.work / "docs" / "new.txt"), content="x")
+
+    assert seen == [("write", "notes.txt"), ("write", "docs/new.txt")]
+
+
+def test_a_write_does_not_run_beside_other_calls(desk: Desk) -> None:
+    assert not desk.begin("write", path="notes.txt", content="").concurrency_safe
+
+
+def test_the_model_is_told_that_a_file_has_to_be_read_first(desk: Desk) -> None:
+    schema = next(schema for schema in desk.tools.schemas() if schema.name == "write")
+
+    assert "has to be read first" in schema.description
+    assert schema.parameters["required"] == ["path", "content"]
+
+
+# A write that is cut short
+
+
+async def test_a_write_that_is_cancelled_leaves_the_old_file_or_the_new_one(
+    desk: Desk, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (desk.work / "notes.txt").write_bytes(b"old\n")
+    await desk.have_read("notes.txt")
+    began = threading.Event()
+    go_on = threading.Event()
+    done = threading.Event()
+    really_replace: Any = Permit.replace
+
+    def slow(permit: Permit, data: bytes) -> Any:
+        began.set()
+        go_on.wait(timeout=10)
+        try:
+            return really_replace(permit, data)
+        finally:
+            done.set()
+
+    monkeypatch.setattr(Permit, "replace", slow)
+    writing = asyncio.ensure_future(desk.call("write", path="notes.txt", content="new\n"))
+    assert await asyncio.to_thread(began.wait, 10)
+
+    writing.cancel()
+    await asyncio.gather(writing, return_exceptions=True)
+    # The caller has its answer. Whatever the thread does from here, the file is whole.
+    assert (desk.work / "notes.txt").read_bytes() == b"old\n"
+    go_on.set()
+    assert await asyncio.to_thread(done.wait, 10)
+
+    assert (desk.work / "notes.txt").read_bytes() == b"new\n"
+    assert desk.names() == ["notes.txt"]

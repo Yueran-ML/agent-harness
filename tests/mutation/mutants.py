@@ -31,6 +31,8 @@ SEAM = "src/columbina/fs/__init__.py"
 PATHS = "src/columbina/fs/paths.py"
 BOUND = "src/columbina/fs/bound.py"
 SANDBOX = "src/columbina/sandbox/__init__.py"
+WRITE = "src/columbina/builtin_tools/write.py"
+EDIT = "src/columbina/builtin_tools/edit.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -764,12 +766,6 @@ _FS = (
         "        return os.path.samestat(left.stat(), right.stat())",
     ),
     mutant(
-        "two paths of different depth may be one place",
-        BOUND,
-        "    if len(first.parts) != len(second.parts):\n        return False\n",
-        "",
-    ),
-    mutant(
         "without an answer, any file at the place will do",
         BOUND,
         "    return os.path.samestat(os.fstat(descriptor), named) and _spelled_alike(still, str(expected))",
@@ -929,7 +925,91 @@ _SANDBOX = (
     ),
 )
 
+_FILES = (
+    mutant(
+        "a write goes ahead where the path leads elsewhere than it did",
+        WRITE,
+        "        if where.relative != run.target:",
+        "        if False:",
+    ),
+    mutant(
+        "a file that was replaced is said to have been made",
+        WRITE,
+        '        deed = "Replaced" if was_there else "Created"',
+        '        deed = "Created"',
+    ),
+    mutant(
+        "a last line without a line break is not counted",
+        WRITE,
+        '    count = content.count("\\n") + (1 if content and not content.endswith("\\n") else 0)',
+        '    count = content.count("\\n")',
+    ),
+    mutant(
+        "a write is taken for a read by the checks",
+        WRITE,
+        '        effect="write",',
+        '        effect="read",',
+    ),
+    mutant(
+        "an edit goes ahead where the path leads elsewhere than it did",
+        EDIT,
+        "        if where.relative != run.target:",
+        "        if False:",
+    ),
+    mutant(
+        "an edit that changes nothing is carried out",
+        EDIT,
+        "        if args.old == args.new:",
+        "        if False:",
+    ),
+    mutant(
+        "an edit speaks about a file before it is known that the model saw it",
+        EDIT,
+        "    fs.must_have_shown(reading, fingerprint)\n",
+        "",
+    ),
+    mutant(
+        "several places are replaced without being asked for",
+        EDIT,
+        "    if count > 1 and not args.replace_all:",
+        "    if False:",
+    ),
+    mutant(
+        "a file of Windows gets plain line feeds",
+        EDIT,
+        "    if _ends_lines_like_windows(text):",
+        "    if False:",
+    ),
+    mutant(
+        "a file with both kinds of line breaks is taken for one of Windows",
+        EDIT,
+        '    return "\\r\\n" in text and "\\n" not in text.replace("\\r\\n", "")',
+        '    return "\\r\\n" in text',
+    ),
+    mutant(
+        "a file that is too large is edited",
+        EDIT,
+        "    if len(raw) > _MAX_BYTES:",
+        "    if False:",
+    ),
+    mutant(
+        "a file with bytes that no text holds is edited",
+        EDIT,
+        "        if bytes(1) in raw[:_SNIFF_BYTES]:",
+        "        if False:",
+    ),
+    mutant(
+        "an edit is taken for a read by the checks",
+        EDIT,
+        '        effect="write",',
+        '        effect="read",',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
+    "files": MutantSet(
+        ("tests/builtin_tools/test_write.py", "tests/builtin_tools/test_edit.py"), _FILES
+    ),
     "loop": MutantSet(("tests/agent_loop", "tests/agent", "tests/test_cancellation.py"), _LOOP),
     "tools": MutantSet(("tests/tools",), _TOOLS),
     "read": MutantSet(("tests/builtin_tools",), _READ),

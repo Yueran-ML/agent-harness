@@ -225,6 +225,23 @@ def test_a_permit_to_read_does_not_replace(
         permit.replace(b"new")
 
 
+def test_a_tool_can_ask_whether_the_model_was_shown_a_file_as_it_is(
+    hand: Hand, fs: Fs, session: Session, work: Path
+) -> None:
+    permit = fs.permit(Access(session, work, locate(work, "a.txt"), "read", "probe"))
+    with permit.open() as opened:
+        now = opened.fingerprint
+
+    with pytest.raises(ToolFailure, match="has not been read") as never:
+        fs.must_have_shown(permit, now)
+    fs.shown(permit, now)
+    fs.must_have_shown(permit, now)
+    with pytest.raises(ToolFailure, match="has changed since it was read") as since:
+        fs.must_have_shown(permit, Fingerprint(now.size + 1, now.modified_ns))
+
+    assert (never.value.code, since.value.code) == ("NOT_READ", "CHANGED_SINCE_READ")
+
+
 # One step
 
 

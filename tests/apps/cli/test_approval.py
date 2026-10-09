@@ -233,6 +233,17 @@ async def test_only_a_key_that_says_yes_is_a_yes(session: Session, handed_back: 
         await at.sees("(not allowed)\n")
 
 
+async def test_a_longer_yes_that_was_not_offered_is_a_no(session: Session) -> None:
+    with desk() as at:
+        granting = Grants()
+        responder = Responder(_Odd(at, "a"), granting)
+
+        outcome = await responder(request(session, standing=None))
+
+        assert outcome == "rejected"
+        assert granting.given == []
+
+
 async def test_a_question_that_is_withdrawn_is_withdrawn(session: Session) -> None:
     with desk() as at:
         prompt = Prompt(at.terminal)

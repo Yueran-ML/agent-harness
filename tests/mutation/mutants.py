@@ -69,6 +69,7 @@ TERMINAL_TEXT = "src/columbina/apps/terminal_text.py"
 HEADLESS = "src/columbina/apps/headless.py"
 SESSION_STORE = "src/columbina/session/store.py"
 SESSION_SERVICE = "src/columbina/session/service.py"
+UNSEEN = "src/columbina/unseen.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1844,8 +1845,8 @@ _PERMISSIONS = (
     mutant(
         "a character that cannot be seen is a letter like any other",
         COMMANDS,
-        '        if letter not in " \\n\\t" and unicodedata.category(letter) in _HIDDEN:',
-        "        if False:",
+        '        if letter not in " \\n\\t" and unseen(letter):\n',
+        "        if False:\n",
     ),
     mutant(
         "a curved quotation mark is a letter for every shell",
@@ -2655,7 +2656,7 @@ _TRANSCRIPT = (
     mutant(
         "what the user said on the way is not shown when the model reads it",
         CLI_TRANSCRIPT,
-        '            return [Text(f"{self._symbols.steer} {line}") for line in _said(data).splitlines()]\n',
+        '            return [fit(f"{self._symbols.steer} {line}") for line in _said(data).splitlines()]\n',
         "            return []\n",
     ),
     mutant(
@@ -2805,8 +2806,8 @@ _TRANSCRIPT = (
     mutant(
         "a call that failed does not show its code",
         CLI_TRANSCRIPT,
-        '            head.append(", ".join([f"{self._symbols.failed} {data.error.code}", *took]), style=_BAD)\n',
-        '            head.append(", ".join([f"{self._symbols.failed}", *took]), style=_BAD)\n',
+        '            failed = ", ".join([f"{self._symbols.failed} {data.error.code}", *took])\n',
+        '            failed = ", ".join([f"{self._symbols.failed}", *took])\n',
     ),
     mutant(
         "a call that failed shows everything that was said about it",
@@ -2841,8 +2842,8 @@ _TRANSCRIPT = (
     mutant(
         "what is shown by its end is shown from its beginning on",
         CLI_TRANSCRIPT,
-        '    shown.extend(Text(f"{before}{line}") for line in lines[-at_most:])\n',
-        '    shown.extend(Text(f"{before}{line}") for line in lines)\n',
+        '    shown.extend(fit(f"{before}{line}") for line in lines[-at_most:])\n',
+        '    shown.extend(fit(f"{before}{line}") for line in lines)\n',
     ),
     mutant(
         "one line more is told as lines",
@@ -2871,8 +2872,32 @@ _TRANSCRIPT = (
     mutant(
         "the word about what the model does stands before the line that is not complete",
         CLI_TRANSCRIPT,
-        "        if self._lines.partial:\n            return Text(self._lines.partial)\n",
-        "        if self._lines.partial and self._word is None:\n            return Text(self._lines.partial)\n",
+        "        if self._lines.partial:\n            return fit(self._lines.partial)\n",
+        "        if self._lines.partial and self._word is None:\n            return fit(self._lines.partial)\n",
+    ),
+    mutant(
+        "a character that the library drops goes missing from a line",
+        CLI_TRANSCRIPT,
+        "    return Text(harmless(written), style=style)\n",
+        "    return Text(written, style=style)\n",
+    ),
+    mutant(
+        "a character that the library drops goes missing from the name of a call",
+        CLI_TRANSCRIPT,
+        "        line.append(harmless(data.name), style=_NAME)\n",
+        "        line.append(data.name, style=_NAME)\n",
+    ),
+    mutant(
+        "a character that the library drops goes missing from what a call acts on",
+        CLI_TRANSCRIPT,
+        '            line.append(harmless(f" {told}"))\n',
+        '            line.append(f" {told}")\n',
+    ),
+    mutant(
+        "a character that the library drops goes missing from the code of a failure",
+        CLI_TRANSCRIPT,
+        "            head.append(harmless(failed), style=_BAD)\n",
+        "            head.append(failed, style=_BAD)\n",
     ),
     mutant(
         "a long line is broken by the program and not by the terminal",
@@ -3045,14 +3070,14 @@ _TERMINAL = (
     mutant(
         "a key that is no answer is taken for one",
         CLI_PROMPT,
-        "            if event.data.lower() in self._keys:\n",
-        "            if event.data:\n",
+        "            if len(key) == 1 and key in self._keys:\n",
+        "            if key:\n",
     ),
     mutant(
         "an answer in capitals is no answer",
         CLI_PROMPT,
-        "            if event.data.lower() in self._keys:\n                self._answered(event.data.lower())\n",
-        "            if event.data in self._keys:\n                self._answered(event.data)\n",
+        "            key = event.data.lower()\n",
+        "            key = event.data\n",
     ),
     mutant(
         "a line that is submitted while a question is asked is handed over",
@@ -3105,20 +3130,20 @@ _TERMINAL = (
     mutant(
         "what was typed before a question stays in the line while it is asked",
         CLI_PROMPT,
-        "            aside = buffer.document\n            buffer.reset()\n",
-        "            aside = buffer.document\n",
+        "            aside = buffer.document if app.is_running and not app.is_done else None\n            buffer.reset()\n",
+        "            aside = buffer.document if app.is_running and not app.is_done else None\n",
     ),
     mutant(
         "two questions are asked at the same time",
         CLI_PROMPT,
-        "        async with self._asking:\n            buffer = self._session.default_buffer\n",
-        "        if True:\n            buffer = self._session.default_buffer\n",
+        "        async with self._asking:\n            app = self._session.app\n",
+        "        if True:\n            app = self._session.app\n",
     ),
     mutant(
         "the words of a question are shown before its turn has come",
         CLI_PROMPT,
-        "        async with self._asking:\n            buffer = self._session.default_buffer\n",
-        "        self.show(about)\n        async with self._asking:\n            buffer = self._session.default_buffer\n",
+        "        async with self._asking:\n            app = self._session.app\n",
+        "        self.show(about)\n        async with self._asking:\n            app = self._session.app\n",
         (
             "            self.show(about)\n            self._redraw()\n",
             "            self._redraw()\n",
@@ -3133,8 +3158,8 @@ _TERMINAL = (
     mutant(
         "a question does not take the place of the mark",
         CLI_PROMPT,
-        '        parts.append(("", f"{self._choices} " if self._answer is not None else _MARK))\n',
-        '        parts.append(("", _MARK))\n',
+        '            parts.append(("", f"{self._choices} " if self._counting else _WAIT))\n',
+        '            parts.append(("", _MARK))\n',
     ),
     mutant(
         "the mark stays when a question has been answered",
@@ -3205,7 +3230,7 @@ _TERMINAL = (
     mutant(
         "the line below the prompt is not asked for",
         CLI_PROMPT,
-        "            bottom_toolbar=lambda: self.status(),\n",
+        "            bottom_toolbar=lambda: harmless(self.status()),\n",
         '            bottom_toolbar=lambda: "",\n',
     ),
     mutant(
@@ -3242,7 +3267,7 @@ _TERMINAL = (
     mutant(
         "the question does not say why it is asked",
         CLI_APPROVAL,
-        "        question = [asked, *about, Text(request.reason, style=_NOTE), *keys]\n",
+        "        question = [asked, *about, fit(request.reason, _NOTE), *keys]\n",
         "        question = [asked, *about, *keys]\n",
     ),
     mutant(
@@ -3266,8 +3291,68 @@ _TERMINAL = (
     mutant(
         "the question does not say what a longer yes would cover",
         CLI_APPROVAL,
-        '            keys.append(Text(f"  a  yes, and do not ask again in this session about {longer}"))\n',
-        '            keys.append(Text("  a  yes, and do not ask again in this session"))\n',
+        '            keys.append(fit(f"  a  yes, and do not ask again in this session about {longer}"))\n',
+        '            keys.append(fit("  a  yes, and do not ask again in this session"))\n',
+    ),
+    mutant(
+        "a key that brings no letter is an answer",
+        CLI_PROMPT,
+        "            if len(key) == 1 and key in self._keys:\n",
+        "            if key in self._keys:\n",
+    ),
+    mutant(
+        "a key that was under way when a question came answers it",
+        CLI_PROMPT,
+        "            if not self._counting:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "typing on does not make the wait for the keys begin anew",
+        CLI_PROMPT,
+        "                self._last_key = asyncio.get_running_loop().time()\n",
+        "                pass\n",
+    ),
+    mutant(
+        "the keys of a question count as soon as it is asked",
+        CLI_PROMPT,
+        "            left = self._last_key + _SETTLE_SECONDS - loop.time()\n",
+        "            left = 0.0\n",
+    ),
+    mutant(
+        "the keys of a question count before its words are on the screen",
+        CLI_PROMPT,
+        "        await self._printed()\n",
+        "",
+    ),
+    mutant(
+        "the keys of a question are shown before they count",
+        CLI_PROMPT,
+        '            parts.append(("", f"{self._choices} " if self._counting else _WAIT))\n',
+        '            parts.append(("", f"{self._choices} "))\n',
+    ),
+    mutant(
+        "a line that was submitted is put aside like one that is being typed",
+        CLI_PROMPT,
+        "            aside = buffer.document if app.is_running and not app.is_done else None\n",
+        "            aside = buffer.document\n",
+    ),
+    mutant(
+        "the line below the prompt goes to the terminal as it came",
+        CLI_PROMPT,
+        "            bottom_toolbar=lambda: harmless(self.status()),\n",
+        "            bottom_toolbar=lambda: self.status(),\n",
+    ),
+    mutant(
+        "whatever is not a no is a yes",
+        CLI_APPROVAL,
+        "        if key not in tuple(offered[:-1]):\n",
+        '        if key == "n":\n',
+    ),
+    mutant(
+        "a longer yes that was not offered is a yes",
+        CLI_APPROVAL,
+        "        if key not in tuple(offered[:-1]):\n",
+        '        if key not in ("y", "a"):\n',
     ),
     mutant(
         "a no is taken for a yes",
@@ -3359,8 +3444,8 @@ _CLI = (
     mutant(
         "the line below the prompt does not say how well commands are held",
         CLI_STATUS,
-        '        parts.append(f"{sandbox.mode(session)}, {_HELD[sandbox.strength()]}")\n',
-        '        parts.append(f"{sandbox.mode(session)}")\n',
+        '        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength()]}")\n',
+        '        parts.append(f"{mode or sandbox.mode(session)}")\n',
     ),
     mutant(
         "tokens are counted in thousands from the first one on",
@@ -3429,8 +3514,8 @@ _CLI = (
     mutant(
         "the answer of a command has no empty line after it",
         CLI_FRONTEND,
-        "                prompt.show([*(Text(part) for part in said.splitlines()), Text()])\n",
-        "                prompt.show([Text(part) for part in said.splitlines()])\n",
+        "                prompt.show([*(fit(part) for part in said.splitlines()), Text()])\n",
+        "                prompt.show([fit(part) for part in said.splitlines()])\n",
     ),
     mutant(
         "a command that has nothing to say leaves an empty line",
@@ -3573,7 +3658,7 @@ _CLI = (
     mutant(
         "nothing says that the agent has stopped",
         CLI_FRONTEND,
-        '            prompt.show([Text(f"(the agent has stopped: {error})", style=_BAD)])\n',
+        '            prompt.show([fit(f"(the agent has stopped: {error})", _BAD)])\n',
         "            pass\n",
     ),
     mutant(
@@ -3591,8 +3676,8 @@ _CLI = (
     mutant(
         "a session that cannot be opened is told as a conversation that went well",
         CLI_FRONTEND,
-        '            prompt.show([Text(f"columbina: {error}", style=_BAD)])\n            return 1\n',
-        '            prompt.show([Text(f"columbina: {error}", style=_BAD)])\n            return 0\n',
+        '            prompt.show([fit(f"columbina: {error}", _BAD)])\n            return 1\n',
+        '            prompt.show([fit(f"columbina: {error}", _BAD)])\n            return 0\n',
     ),
     mutant(
         "the terminal that a test provides is passed over for the real one",
@@ -3621,16 +3706,62 @@ _CLI = (
     mutant(
         "the line below the prompt is empty",
         CLI_FRONTEND,
-        "        return status(self._agent.session, self._model, sandbox, busy=self._prompt.busy)\n",
+        "        return status(session, self._model, sandbox, busy=self._prompt.busy, mode=mode)\n",
         '        return ""\n',
     ),
     mutant(
         "the line below the prompt names the model that the conversation began with",
         CLI_FRONTEND,
-        "        return status(self._agent.session, self._model, sandbox, busy=self._prompt.busy)\n",
-        "        return status(\n"
-        "            self._agent.session, self._config.model, sandbox, busy=self._prompt.busy\n"
-        "        )\n",
+        "        return status(session, self._model, sandbox, busy=self._prompt.busy, mode=mode)\n",
+        "        return status(session, self._config.model, sandbox, busy=self._prompt.busy, mode=mode)\n",
+    ),
+    mutant(
+        "the line below the prompt shows the mode of the sandbox though somebody knows better",
+        CLI_STATUS,
+        '        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength()]}")\n',
+        '        parts.append(f"{sandbox.mode(session)}, {_HELD[sandbox.strength()]}")\n',
+    ),
+    mutant(
+        "the line below the prompt does not ask the permissions what the session goes by",
+        CLI_FRONTEND,
+        "        mode = None if permissions is None else permissions.in_force(session)[0]\n",
+        "        mode = None\n",
+    ),
+    mutant(
+        "a turn that did not begin with a line from the keys has nobody waiting for its end",
+        CLI_FRONTEND,
+        "            # in such a turn has to be noticed as well.\n            self._watch(prompt, agent)\n",
+        "            # in such a turn has to be noticed as well.\n",
+    ),
+    mutant(
+        "leaving is a success although the agent stopped for good while it was closed",
+        CLI_FRONTEND,
+        '            prompt.show([fit(f"(the agent has stopped: {failure})", _BAD)])\n            return 1\n',
+        '            prompt.show([fit(f"(the agent has stopped: {failure})", _BAD)])\n            return 0\n',
+    ),
+    mutant(
+        "what stopped the agent while it was closed is not looked for",
+        CLI_FRONTEND,
+        "        except Exception as error:\n            return error\n        return None\n",
+        "        except Exception:\n            return None\n        return None\n",
+    ),
+    mutant(
+        "an agent that stopped for good is told of a second time when it is closed",
+        CLI_FRONTEND,
+        "        if failure is not None and not self._gone.is_set():\n",
+        "        if failure is not None:\n",
+    ),
+    mutant(
+        "while the prompt is there the log also goes where it went before",
+        CLI_FRONTEND,
+        "        for other in others:\n            log.removeHandler(other)\n        log.addHandler(shown)\n",
+        "        log.addHandler(shown)\n",
+    ),
+    mutant(
+        "the log is not handed back when the conversation is over",
+        CLI_FRONTEND,
+        "            for other in others:\n                log.addHandler(other)\n",
+        "",
     ),
     mutant(
         "what is shown is not begun anew for the terminal and the session that are there",
@@ -3798,6 +3929,12 @@ _SLASH = (
         "        pass\n",
     ),
     mutant(
+        "what a session may do is shown as the sandbox has it before the first turn",
+        COMMAND_PERMISSIONS,
+        "        mode, policy = permissions.in_force(session)\n",
+        "        mode, policy = sandbox.mode(session), approval.policy(session)\n",
+    ),
+    mutant(
         "what was allowed for the rest of the session is not shown",
         COMMAND_PERMISSIONS,
         "        for tool, target in permissions.granted(session):\n",
@@ -3897,34 +4034,34 @@ _TEXT = (
         'STAND_IN = "?"\n',
     ),
     mutant(
-        "a character that passes for a space is not named in what a person is asked",
-        TERMINAL_TEXT,
-        '_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})\n',
-        '_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp"})\n',
-    ),
-    mutant(
-        "a character without a width is not named in what a person is asked",
-        TERMINAL_TEXT,
-        '_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})\n',
-        '_UNSEEN = frozenset({"Cc", "Cs", "Zl", "Zp", "Zs"})\n',
-    ),
-    mutant(
-        "a control character is not named in what a person is asked",
-        TERMINAL_TEXT,
-        '_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})\n',
-        '_UNSEEN = frozenset({"Cf", "Cs", "Zl", "Zp", "Zs"})\n',
-    ),
-    mutant(
         "a plain space is named in what a person is asked",
         TERMINAL_TEXT,
-        '        if character not in " \\t\\n" and unicodedata.category(character) in _UNSEEN\n',
-        '        if character not in "\\t\\n" and unicodedata.category(character) in _UNSEEN\n',
+        '        f"<U+{ord(character):04X}>" if character not in " \\t\\n" and unseen(character) else character\n',
+        '        f"<U+{ord(character):04X}>" if character not in "\\t\\n" and unseen(character) else character\n',
     ),
     mutant(
         "a character is named in lower case and without its leading zeros",
         TERMINAL_TEXT,
-        '        f"<U+{ord(character):04X}>"\n',
-        '        f"<U+{ord(character):x}>"\n',
+        '        f"<U+{ord(character):04X}>" if character not in " \\t\\n" and unseen(character) else character\n',
+        '        f"<U+{ord(character):x}>" if character not in " \\t\\n" and unseen(character) else character\n',
+    ),
+    mutant(
+        "a text that Python calls printable is not looked at where a person is asked",
+        TERMINAL_TEXT,
+        "    if text.isascii() and text.isprintable():\n",
+        "    if text.isprintable():\n",
+    ),
+    mutant(
+        "nothing is named in what a person is asked",
+        TERMINAL_TEXT,
+        '        f"<U+{ord(character):04X}>" if character not in " \\t\\n" and unseen(character) else character\n',
+        '        f"<U+{ord(character):04X}>" if character not in " \\t\\n" and False else character\n',
+    ),
+    mutant(
+        "an argument that is not known is repeated as it was given",
+        LAUNCHER,
+        "        super().error(harmless(message))\n",
+        "        super().error(message)\n",
     ),
     mutant(
         "printed json leaves the characters that a terminal acts on as they are",
@@ -4122,6 +4259,30 @@ _GRANTS = (
         "                standing=None,\n",
     ),
     mutant(
+        "the mode of the preset does not count before it is written down",
+        PERMISSIONS,
+        "            self._sandbox.recorded(session) or mode,\n",
+        "            self._sandbox.mode(session),\n",
+    ),
+    mutant(
+        "the mode that the log names does not count against the preset",
+        PERMISSIONS,
+        "            self._sandbox.recorded(session) or mode,\n",
+        "            mode,\n",
+    ),
+    mutant(
+        "the policy of the preset does not count before it is written down",
+        PERMISSIONS,
+        "            self._approval.recorded(session) or policy,\n",
+        "            self._approval.policy(session),\n",
+    ),
+    mutant(
+        "the policy that the log names does not count against the preset",
+        PERMISSIONS,
+        "            self._approval.recorded(session) or policy,\n",
+        "            policy,\n",
+    ),
+    mutant(
         "a call that has to be asked about every time is allowed for a session",
         PERMISSIONS,
         "        if self.standing(session, tool, target) is None:\n",
@@ -4215,16 +4376,22 @@ _CHAT = (
         '    _shared(run, "cli")\n',
     ),
     mutant(
-        "a conversation writes its log to the standard error as well",
-        LAUNCHER,
-        "    if args.command == _RUN:\n        # A conversation shows what is logged by itself, above its prompt.\n",
-        "    if args.command:\n        # A conversation shows what is logged by itself, above its prompt.\n",
-    ),
-    mutant(
         "a task does not write its log to the standard error",
         LAUNCHER,
-        "    if args.command == _RUN:\n        # A conversation shows what is logged by itself, above its prompt.\n",
-        "    if args.command == _CHAT:\n        # A conversation shows what is logged by itself, above its prompt.\n",
+        "    log.addHandler(handler)\n    try:\n",
+        "    if args.command == _CHAT:\n        log.addHandler(handler)\n    try:\n",
+    ),
+    mutant(
+        "what a conversation logs before its prompt is there has nowhere to go",
+        LAUNCHER,
+        "    log.addHandler(handler)\n    try:\n",
+        "    if args.command == _RUN:\n        log.addHandler(handler)\n    try:\n",
+    ),
+    mutant(
+        "a session that the profile names is taken up though the last one was asked for",
+        LAUNCHER,
+        '                config.pop("session_id", None)\n',
+        "                pass\n",
     ),
     mutant(
         "a working directory that is not there is taken",
@@ -4267,6 +4434,81 @@ _CHAT = (
         CLI_BUNDLE,
         "extends: base\n",
         "extends: minimal\n",
+    ),
+)
+
+_UNSEEN = (
+    mutant(
+        "a control character is seen",
+        UNSEEN,
+        '    return unicodedata.category(character)[0] in "CZ" or character in _DRAWN_AS_NOTHING\n',
+        '    return unicodedata.category(character)[0] in "Z" or character in _DRAWN_AS_NOTHING\n',
+    ),
+    mutant(
+        "a space of another width is seen",
+        UNSEEN,
+        '    return unicodedata.category(character)[0] in "CZ" or character in _DRAWN_AS_NOTHING\n',
+        '    return unicodedata.category(character)[0] in "C" or character in _DRAWN_AS_NOTHING\n',
+    ),
+    mutant(
+        "a letter or a mark that is drawn as nothing is seen",
+        UNSEEN,
+        '    return unicodedata.category(character)[0] in "CZ" or character in _DRAWN_AS_NOTHING\n',
+        '    return unicodedata.category(character)[0] in "CZ"\n',
+    ),
+    mutant(
+        "the mark that joins what stands beside it is seen",
+        UNSEEN,
+        "        0x034F,  # joins the characters beside it\n",
+        "",
+    ),
+    mutant(
+        "the pattern of Braille without dots is seen",
+        UNSEEN,
+        "        0x2800,  # the pattern of Braille without dots\n",
+        "",
+    ),
+    mutant(
+        "the first of the characters that choose a form is seen",
+        UNSEEN,
+        "        *range(0xFE00, 0xFE10),  # choose the form of the character before them\n",
+        "        *range(0xFE01, 0xFE10),  # choose the form of the character before them\n",
+    ),
+    mutant(
+        "the last of the characters that choose a form is seen",
+        UNSEEN,
+        "        *range(0xFE00, 0xFE10),  # choose the form of the character before them\n",
+        "        *range(0xFE00, 0xFE0F),  # choose the form of the character before them\n",
+    ),
+    mutant(
+        "the character after those that choose a form is not seen",
+        UNSEEN,
+        "        *range(0xFE00, 0xFE10),  # choose the form of the character before them\n",
+        "        *range(0xFE00, 0xFE11),  # choose the form of the character before them\n",
+    ),
+    mutant(
+        "the last of the characters that choose a form of a letter of Mongolian is seen",
+        UNSEEN,
+        "        *range(0x180B, 0x1810),  # choose the form of a letter of Mongolian\n",
+        "        *range(0x180B, 0x180F),  # choose the form of a letter of Mongolian\n",
+    ),
+    mutant(
+        "the last of the further characters that choose a form is seen",
+        UNSEEN,
+        "        *range(0xE0100, 0xE01F0),\n",
+        "        *range(0xE0100, 0xE01EF),\n",
+    ),
+    mutant(
+        "a filler of Hangul is seen",
+        UNSEEN,
+        "        0x1160,\n",
+        "",
+    ),
+    mutant(
+        "a vowel of Khmer that is not written is seen",
+        UNSEEN,
+        "        0x17B5,\n",
+        "",
     ),
 )
 
@@ -4339,5 +4581,6 @@ SETS: dict[str, MutantSet] = {
     "stored": MutantSet(("tests/session/test_stored.py",), _STORED),
     "grants": MutantSet(("tests/permissions",), _GRANTS),
     "chat": MutantSet(("tests/apps", "tests/test_package.py"), _CHAT),
+    "unseen": MutantSet(("tests/test_unseen.py", "tests/apps/test_terminal_text.py"), _UNSEEN),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

@@ -548,6 +548,30 @@ async def test_the_keys_of_a_question_are_shown_when_they_count(
         waiting.cancel()
 
 
+async def test_the_keys_of_a_question_are_not_offered_before_its_words_are_on_the_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # What is shown is printed in its own time, after what was shown before it. However
+    # short the wait is, it begins when the words of the question stand on the screen: no
+    # key may count for a question that nobody can have read.
+    monkeypatch.setattr(prompt_module, "_SETTLE_SECONDS", 0.0)
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await offered(at, ">")
+        for number in range(40):
+            prompt.show([Text(f"line {number}")])
+
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y/n]", [Text("May it be run?")]))
+        await offered(at, "[y/n]")
+
+        # The screen was sent the words before it was sent the keys.
+        sent = at.shown()
+        assert sent.index("May it be run?") < sent.index("[y/n]")
+        asked.cancel()
+        waiting.cancel()
+
+
 async def test_a_question_can_be_declined_before_its_keys_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

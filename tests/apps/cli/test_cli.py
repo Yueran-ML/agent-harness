@@ -360,6 +360,8 @@ async def test_an_agent_that_stops_for_good_ends_the_conversation(
 
     assert code == 1
     assert "No space left on device" in at.seen()
+    # It is said once, though closing the agent finds the same thing again.
+    assert at.seen().count("(the agent has stopped: ") == 1
 
 
 async def test_an_agent_that_stops_for_good_in_a_turn_from_elsewhere_ends_the_conversation(
@@ -548,6 +550,30 @@ async def test_what_the_program_logs_is_shown_above_the_prompt_while_it_is_open(
         handlers = list(logging.getLogger("columbina").handlers)
 
     assert not any(type(handler).__name__ == "_Shown" for handler in handlers)
+
+
+async def test_the_log_is_taken_over_for_the_conversation_and_handed_back_after_it(
+    harness: Harness,
+) -> None:
+    # Whoever started the program may have the log written somewhere. While the prompt is
+    # there, that would tear the prompt apart. Before and after, it is where the log goes.
+    log = logging.getLogger("columbina")
+    elsewhere = logging.NullHandler()
+    log.addHandler(elsewhere)
+    try:
+        with desk() as at:
+            running = asyncio.ensure_future((await frontend(harness, at)).run())
+            await at.sees("/help lists the commands.")
+            during = list(log.handlers)
+            at.type(CTRL_D)
+            await left(running)
+        after = list(log.handlers)
+    finally:
+        log.removeHandler(elsewhere)
+
+    assert elsewhere not in during
+    assert elsewhere in after
+    assert len(during) == 1
 
 
 async def test_an_error_in_the_log_is_shown_in_red_and_a_warning_is_not(

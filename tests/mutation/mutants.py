@@ -38,6 +38,9 @@ GLOB = "src/columbina/builtin_tools/glob.py"
 APPROVAL = "src/columbina/approval/__init__.py"
 GREP = "src/columbina/builtin_tools/grep.py"
 PATTERNS = "src/columbina/fs/patterns.py"
+RULES = "src/columbina/permissions/rules.py"
+COMMANDS = "src/columbina/permissions/commands.py"
+PERMISSIONS = "src/columbina/permissions/__init__.py"
 GREP_WORKER = "src/columbina/builtin_tools/grep_worker.py"
 
 
@@ -1728,8 +1731,269 @@ _APPROVAL = (
     ),
 )
 
+_PERMISSIONS = (
+    mutant(
+        "a rule named after what tools do speaks about the tool of that name only",
+        RULES,
+        "    return wild(rule.tool, name) or (rule.tool == effect and effect in _CLASSES)",
+        "    return wild(rule.tool, name)",
+    ),
+    mutant(
+        "a rule named none speaks about every tool that does nothing",
+        RULES,
+        "    return wild(rule.tool, name) or (rule.tool == effect and effect in _CLASSES)",
+        "    return wild(rule.tool, name) or rule.tool == effect",
+    ),
+    mutant(
+        "a pattern for files does not speak about what lies below what it names",
+        RULES,
+        "    # What speaks about a directory speaks about all that is in it.\n"
+        '    names = (*names, "**")\n',
+        "",
+    ),
+    mutant(
+        "a pattern of one name is looked for at the top only",
+        RULES,
+        '        start = "every depth"\n        names = ("**", *names)\n',
+        '        start = "every depth"\n',
+    ),
+    mutant(
+        "a name that is pinned to the top is looked for at every depth",
+        RULES,
+        '    elif len(names) == 1 and names != ("..",) and not written.startswith("./"):',
+        '    elif len(names) == 1 and names != ("..",):',
+    ),
+    mutant(
+        "a pattern for every depth does not speak about files outside",
+        RULES,
+        '    if start == "full path" or (start == "every depth" and not inside):',
+        '    if start == "full path":',
+    ),
+    mutant(
+        "a star takes a step out of the working directory",
+        RULES,
+        "    return _steps_back(parts) == back and sequence_fits("
+        "parts[back:], relative[back:], wild)",
+        "    return sequence_fits(parts, relative, wild)",
+    ),
+    mutant(
+        "a star stands for nothing or for what follows at once",
+        RULES,
+        "        elif star >= 0:",
+        "        elif False:",
+    ),
+    mutant(
+        "a pattern that ends with a star needs a character for it",
+        RULES,
+        '    return all(letter == "*" for letter in pattern[at:])',
+        "    return at == len(pattern)",
+    ),
+    mutant(
+        "space around a command keeps a rule from speaking about it",
+        RULES,
+        "    return rule.pattern is None or wild(rule.pattern, command.strip())",
+        "    return rule.pattern is None or wild(rule.pattern, command)",
+    ),
+    mutant(
+        "space around a pattern is a part of the pattern",
+        RULES,
+        "        pattern = rest[:-1].strip()",
+        "        pattern = rest[:-1]",
+    ),
+    mutant(
+        "a file outside the working directory has no path from there",
+        RULES,
+        "        relative = Path(os.path.relpath(where.path, where.root)).as_posix()",
+        "        relative = None",
+    ),
+    on_windows(
+        mutant(
+            "upper and lower case count in a pattern for files",
+            RULES,
+            "_folded = str.lower if IGNORES_CASE else str",
+            "_folded = str",
+        )
+    ),
+    mutant(
+        "a character that cannot be seen is a letter like any other",
+        COMMANDS,
+        '        if letter not in " \\n\\t" and unicodedata.category(letter) in _HIDDEN:',
+        "        if False:",
+    ),
+    mutant(
+        "a curved quotation mark is a letter for every shell",
+        COMMANDS,
+        "        if letter in quotes_of_other_kinds:",
+        "        if False:",
+    ),
+    mutant(
+        "between double quotes nothing is expanded",
+        COMMANDS,
+        "            if letter == '\"' and any("
+        "inner in in_double_quotes for inner in text[at + 1 : end]):",
+        "            if False:",
+    ),
+    mutant(
+        "a joint with nothing before it is passed over",
+        COMMANDS,
+        '                elif joint != "\\n":',
+        "                elif False:",
+    ),
+    mutant(
+        "a joint with nothing after it is passed over",
+        COMMANDS,
+        '                owed = owed or joint in ("&&", "||", "|")',
+        "                owed = False",
+    ),
+    mutant(
+        "a command that is empty is a plain command",
+        COMMANDS,
+        "    if owed or not commands:",
+        "    if owed:",
+    ),
+    mutant(
+        "what a shell expands or redirects is a letter",
+        COMMANDS,
+        "        if letter in plain_breaks:",
+        "        if False:",
+    ),
+    mutant(
+        "the word that stops the reading of a line is a word",
+        COMMANDS,
+        '    if apart is None or any("--%" in simple.split(" ") for simple in apart):',
+        "    if apart is None:",
+    ),
+    mutant(
+        "a rule that refuses a part of a line lets the line through",
+        PERMISSIONS,
+        "    spoken_of = (command, *(apart or ()))",
+        "    spoken_of = (command,)",
+    ),
+    mutant(
+        "one allowed command allows the line that it stands in",
+        PERMISSIONS,
+        "        if all(rule is not None for rule in allowing):",
+        "        if any(rule is not None for rule in allowing):",
+    ),
+    mutant(
+        "a rule that allows a tool does not allow what cannot be taken apart",
+        PERMISSIONS,
+        "        if rule.pattern is None and covers_command(rule, tool, command):",
+        "        if False:",
+    ),
+    mutant(
+        "a command needs no rule in any session",
+        PERMISSIONS,
+        '    if mode == "danger-full-access":',
+        "    if True:",
+    ),
+    mutant(
+        "a command needs a rule in a session with full access too",
+        PERMISSIONS,
+        '    if mode == "danger-full-access":',
+        "    if False:",
+    ),
+    mutant(
+        "a project may allow",
+        PERMISSIONS,
+        "    return RuleSet(held.deny, held.ask)",
+        "    return held",
+    ),
+    mutant(
+        "the rules of a project are read anew for every call",
+        PERMISSIONS,
+        "        if session not in self._ready:",
+        "        if True:",
+    ),
+    mutant(
+        "rules of a project that lead out of it are read",
+        PERMISSIONS,
+        "    if not where.inside:\n        return _Unreadable(",
+        "    if False:\n        return _Unreadable(",
+    ),
+    mutant(
+        "rules of a project are read whatever their size",
+        PERMISSIONS,
+        "        if status.st_size > MAX_FILE_BYTES:",
+        "        if False:",
+    ),
+    mutant(
+        "the rules of the user are not read",
+        PERMISSIONS,
+        "        written + _user_rules(config.user_file),",
+        "        written,",
+    ),
+    mutant(
+        "a search opens a file that somebody is to be asked about",
+        PERMISSIONS,
+        "        if not access.named:",
+        "        if False:",
+    ),
+    mutant(
+        "a file that somebody was asked about is refused where it is opened",
+        PERMISSIONS,
+        "        if not access.named:",
+        "        if True:",
+    ),
+    mutant(
+        "a call that somebody is to be asked about runs unasked",
+        PERMISSIONS,
+        '        if decided.verdict == "allow":',
+        '        if decided.verdict != "deny":',
+    ),
+    mutant(
+        "a no counts as a yes",
+        PERMISSIONS,
+        '        if outcome == "allowed-once":',
+        '        if outcome != "unavailable":',
+    ),
+    mutant(
+        "the preset is written over the mode that the log names",
+        PERMISSIONS,
+        "        if self._sandbox.recorded(session) is None:",
+        "        if True:",
+    ),
+    mutant(
+        "the preset is written over the policy that the log names",
+        PERMISSIONS,
+        "        if self._approval.recorded(session) is None:",
+        "        if True:",
+    ),
+    mutant(
+        "every event of the log writes the preset",
+        PERMISSIONS,
+        "        if isinstance(committed.event.data, TurnStartEvent):",
+        "        if True:",
+    ),
+    mutant(
+        "a question shows a command with its line breaks",
+        PERMISSIONS,
+        '    line = " ".join(target.split())',
+        "    line = target",
+    ),
+    mutant(
+        "a question shows a long command whole in its one line",
+        PERMISSIONS,
+        "    if len(line) > _SUMMARY_CHARACTERS:",
+        "    if False:",
+    ),
+    mutant(
+        "a question does not hand over what the call acts on",
+        PERMISSIONS,
+        "                target=invocation.target,\n",
+        "",
+    ),
+    mutant(
+        "a session where nobody is asked is told that somebody said no",
+        PERMISSIONS,
+        '                if self._approval.policy(session) == "never"',
+        "                if False",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
+    "permissions": MutantSet(("tests/permissions",), _PERMISSIONS),
     "search": MutantSet(
         (
             "tests/fs/test_walk.py",

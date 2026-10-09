@@ -108,8 +108,13 @@ class ApprovalRequest:
         session: The session that the call belongs to.
         call_id: The id that the model gave the call.
         tool: The name of the tool.
-        summary: One line for a person: the tool and what it acts on.
+        summary: One line for a person: the tool and what it acts on. A
+            long text is cut short in it.
         reason: Why the question is put.
+        target: What the call acts on, whole, as the tool says it, or
+            ``None`` if the tool does not say. Whoever puts the question to
+            a person shows this: nobody can say yes to a command of which
+            only the beginning is seen.
     """
 
     session: Session
@@ -117,6 +122,7 @@ class ApprovalRequest:
     tool: str
     summary: str
     reason: str
+    target: str | None = None
 
 
 APPROVAL_ASK: SerialEvent[ApprovalRequest, Outcome] = SerialEvent("approval/ask")

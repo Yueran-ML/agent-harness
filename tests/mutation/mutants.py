@@ -4798,8 +4798,26 @@ _SPILL = (
     mutant(
         "the files of all sessions lie in one directory",
         SPILL_LOCAL,
-        "        directory = self.directory(cwd) / session.id\n",
-        "        directory = self.directory(cwd)\n",
+        "        directory = workspace / session.id\n",
+        "        directory = workspace\n",
+    ),
+    mutant(
+        "only the last directory is made for its owner alone",
+        SPILL_LOCAL,
+        "        for level in (self.root, workspace, directory):\n",
+        "        for level in (directory,):\n",
+    ),
+    mutant(
+        "the directories are made for everybody",
+        SPILL_LOCAL,
+        "            level.mkdir(mode=0o700, parents=True, exist_ok=True)\n",
+        "            level.mkdir(parents=True, exist_ok=True)\n",
+    ),
+    mutant(
+        "a file is made for everybody",
+        SPILL_LOCAL,
+        "        self._descriptor = os.open(path, flags, 0o600)\n",
+        "        self._descriptor = os.open(path, flags)\n",
     ),
     mutant(
         "a name that is taken is not drawn anew",

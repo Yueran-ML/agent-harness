@@ -142,8 +142,13 @@ class Local:
 
     def open(self, session: Session, cwd: Path, name: str) -> _File:
         """Make a file for something that comes in pieces."""
-        directory = self.directory(cwd) / session.id
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        workspace = self.directory(cwd)
+        directory = workspace / session.id
+        # A directory that is made together with those above it is the only one of them
+        # to get the mode that is asked for. So each of the three is made by itself. One
+        # that is there already is left as it is, and so is whatever lies above the root.
+        for level in (self.root, workspace, directory):
+            level.mkdir(mode=0o700, parents=True, exist_ok=True)
         for _ in range(_DRAWS):
             with contextlib.suppress(FileExistsError):
                 return _File(directory / f"{_drawn()}-{_fit(name)}")

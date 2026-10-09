@@ -137,6 +137,44 @@ def test_only_the_owner_gets_at_what_is_saved(store: Local, session: Session, wo
     assert stat.S_IMODE(where.stat().st_mode) == 0o600
     assert stat.S_IMODE(where.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(where.parent.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(store.root.stat().st_mode) == 0o700
+
+
+def test_what_is_made_for_a_saved_text_is_asked_for_its_owner_alone(
+    store: Local, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A directory that is made together with those above it is the only one of them to
+    # get the mode that is asked for, so each is made by itself. Not every system keeps
+    # such modes. What it is asked for can be seen on all of them.
+    made: dict[Path, int] = {}
+    opened: dict[Path, int] = {}
+    really_make = os.mkdir
+    really_open = os.open
+
+    def making(path: str | Path, mode: int = 0o777) -> None:
+        really_make(path, mode)
+        made[Path(path)] = mode
+
+    def opening(path: str | Path, flags: int, mode: int = 0o777) -> int:
+        descriptor = really_open(path, flags, mode)
+        opened[Path(path)] = mode
+        return descriptor
+
+    monkeypatch.setattr(os, "mkdir", making)
+    monkeypatch.setattr(os, "open", opening)
+
+    saved = store.save_text(session, work, "out.txt", "secret")
+
+    monkeypatch.undo()
+    where = Path(saved.locator)
+    assert made == {
+        # What lies above the root is not for this program to decide.
+        store.root.parent: 0o777,
+        store.root: 0o700,
+        where.parent.parent: 0o700,
+        where.parent: 0o700,
+    }
+    assert opened == {where: 0o600}
 
 
 def test_a_character_that_cannot_be_written_is_replaced(

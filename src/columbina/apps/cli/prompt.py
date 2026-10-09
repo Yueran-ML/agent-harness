@@ -31,7 +31,7 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.utils import get_cwidth
 from rich.text import Text
 
-from columbina.apps.cli.terminal import Terminal
+from columbina.apps.cli.terminal import Terminal, harmless
 from columbina.apps.cli.transcript import on_screen
 
 __all__ = ["Prompt"]
@@ -193,7 +193,8 @@ class Prompt:
         if self._partial.plain and not self._session.app.is_done:
             columns = self._terminal.output.get_size().columns
             quiet = _QUIET if self._partial.style and self._terminal.colours else ""
-            parts.append((quiet, _end_of(self._partial.plain, columns - 1) + "\n"))
+            unfinished = harmless(self._partial.plain)
+            parts.append((quiet, _end_of(unfinished, columns - 1) + "\n"))
         parts.append(("", f"{self._choices} " if self._answer is not None else _MARK))
         return parts
 

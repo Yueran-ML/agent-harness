@@ -169,3 +169,96 @@ def test_the_terminal_of_a_test_takes_keys_and_keeps_what_is_shown() -> None:
         assert [key.data for key in keys] == ["a", "b", "c", "\r"]
         assert at.shown() == "shown\n"
         assert at.terminal.colours is False
+
+
+# Text from elsewhere
+
+
+ESC = chr(0x1B)
+STAND_IN = terminal.STAND_IN
+OVERRIDE = chr(0x202E)
+POP = chr(0x202C)
+
+
+def test_ordinary_text_goes_to_the_terminal_as_it_is() -> None:
+    joiner, accent, wide_space = chr(0x200D), chr(0x0301), chr(0x3000)
+    accented, chinese = f"na{chr(0xEF)}ve caf{chr(0xE9)}", chr(0x5217) + chr(0x8868)
+    text = f"{accented}, {chinese}{wide_space}e{accent} a{joiner}b"
+
+    assert terminal.harmless(text) == text
+    assert terminal.harmless("") == ""
+    assert terminal.harmless("one\ttwo\nthree") == "one\ttwo\nthree"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [0x00, 0x01, 0x02, 0x07, 0x08, 0x0B, 0x0C, 0x0D, 0x1B, 0x7F, 0x85, 0x9B, 0x9D, 0x2028, 0x2029],
+)
+def test_a_character_that_a_terminal_acts_on_is_replaced_by_one_that_it_shows(code: int) -> None:
+    assert terminal.harmless(f"a{chr(code)}b") == f"a{STAND_IN}b"
+
+
+@pytest.mark.parametrize(
+    "code", [0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2069]
+)
+def test_a_character_that_turns_the_direction_of_text_is_replaced(code: int) -> None:
+    assert terminal.harmless(f"a{chr(code)}b") == f"a{STAND_IN}b"
+
+
+def test_half_of_a_pair_that_cannot_be_sent_is_replaced() -> None:
+    assert terminal.harmless(f"a{chr(0xD800)}b") == f"a{STAND_IN}b"
+
+
+def test_a_sequence_that_would_steer_the_terminal_is_shown_and_not_carried_out() -> None:
+    clear, title = f"{ESC}[2J", f"{ESC}]2;hello{chr(7)}"
+
+    assert terminal.harmless(f"before{clear}{title}after") == (
+        f"before{STAND_IN}[2J{STAND_IN}]2;hello{STAND_IN}after"
+    )
+
+
+def test_text_that_is_made_harmless_keeps_its_length() -> None:
+    text = "".join(chr(code) for code in range(0x250)) + OVERRIDE + POP
+
+    assert len(terminal.harmless(text)) == len(text)
+
+
+def test_what_cannot_be_seen_is_named_where_a_person_is_asked() -> None:
+    zero_width, no_break, wide_space = chr(0x200B), chr(0xA0), chr(0x3000)
+
+    assert terminal.spelled_out("python setup.py --dry-run") == "python setup.py --dry-run"
+    assert terminal.spelled_out(f"python setup{zero_width}.py") == "python setup<U+200B>.py"
+    assert terminal.spelled_out(f"rm{no_break}-rf{wide_space}x") == "rm<U+00A0>-rf<U+3000>x"
+    assert terminal.spelled_out(f"git push {OVERRIDE}gro.live{POP}") == (
+        "git push <U+202E>gro.live<U+202C>"
+    )
+    assert terminal.spelled_out(f"a{ESC}[2Jb\rc") == "a<U+001B>[2Jb<U+000D>c"
+    assert terminal.spelled_out(f"a{chr(0xD800)}b") == "a<U+D800>b"
+
+
+def test_spaces_tabs_and_line_feeds_are_not_named() -> None:
+    assert terminal.spelled_out("a b\tc\nd") == "a b\tc\nd"
+
+
+def test_whatever_a_command_is_refused_a_rule_for_is_named_in_the_question() -> None:
+    """Where the splitter refuses a command for what cannot be seen in it, the question shows it."""
+    from columbina.permissions.commands import split_bash, split_powershell
+
+    for code in (
+        0x00,
+        0x1B,
+        0x7F,
+        0x85,
+        0xA0,
+        0xAD,
+        0x200B,
+        0x200D,
+        0x202E,
+        0x2028,
+        0x3000,
+        0xFEFF,
+    ):
+        command = f"git{chr(code)}status"
+        assert split_bash(command) is None, hex(code)
+        assert split_powershell(command) is None, hex(code)
+        assert terminal.spelled_out(command) == f"git<U+{code:04X}>status", hex(code)

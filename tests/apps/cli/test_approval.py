@@ -14,6 +14,7 @@ from support.terminal import ESCAPE, Desk, desk
 
 WHY = "No rule allows this command, and nothing holds it here."
 LONGER = "  a  yes, and do not ask again in this session about this command, word for word\n"
+ZERO_WIDTH, OVERRIDE, POP, SEPARATOR = chr(0x200B), chr(0x202E), chr(0x202C), chr(0x2028)
 
 
 class Grants:
@@ -84,6 +85,32 @@ async def test_the_question_shows_the_tool_the_whole_of_what_it_acts_on_and_why(
             "  y  yes, this once\n"
             "  n  no\n",
         )
+
+
+async def test_the_question_names_what_cannot_be_seen_in_what_is_asked_about(
+    session: Session,
+) -> None:
+    # A file with a name that looks like another one, a line that is turned around on the
+    # screen, something that would move the cursor up and write over the question, and a
+    # line break that is no line feed.
+    command = (
+        f"python setup{ZERO_WIDTH}.py\n"
+        f"git push {OVERRIDE}gro.live{POP}\n"
+        f"echo \x1b[2A\x1b[2Kgit status\rls{SEPARATOR}pwd"
+    )
+    with desk() as at:
+        responder = Responder(Prompt(at.terminal), None)
+
+        await answered(at, responder, request(session, target=command), "y", "[y/n]")
+
+        await at.sees(
+            "bash asks for a yes:\n"
+            "    python setup<U+200B>.py\n"
+            "    git push <U+202E>gro.live<U+202C>\n"
+            "    echo <U+001B>[2A<U+001B>[2Kgit status<U+000D>ls<U+2028>pwd\n"
+            f"{WHY}\n"
+        )
+        assert "\x1b" not in at.shown()
 
 
 async def test_a_call_that_acts_on_nothing_in_particular_is_asked_about_by_its_name(

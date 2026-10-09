@@ -47,6 +47,8 @@ from columbina.session import (
 )
 
 PLAIN = Symbols(call="*", done="ok", failed="failed", steer=">>")
+STAND_IN = chr(0xFFFD)
+OVERRIDE, POP = chr(0x202E), chr(0x202C)
 
 
 @pytest.fixture
@@ -536,6 +538,57 @@ def test_text_of_the_model_is_never_read_as_markup() -> None:
     lines = transcript.chunk(TextDelta(index=0, text="[bold]not bold[/bold] :smile:\n"))
 
     assert on_screen(lines, colours=False) == "[bold]not bold[/bold] :smile:\n"
+
+
+def test_what_a_model_or_a_tool_wrote_cannot_steer_the_terminal() -> None:
+    transcript = Transcript(PLAIN)
+    red, clear, title = "\x1b[31m", "\x01\x1b[2J\x02", "\x1b]2;mine\x07"
+    hostile = f"a{red}b{clear}c{title}d\x9b2Je\x00f"
+
+    lines = transcript.chunk(TextDelta(index=0, text=hostile + "\n"))
+    sent = on_screen(lines, colours=True)
+
+    # The line has no colour of its own, so nothing that begins a sequence may be sent at all.
+    # What would have steered the terminal is shown as characters. The bell is left out by
+    # the library that renders.
+    assert "\x1b" not in sent
+    assert sent == (
+        f"a{STAND_IN}[31mb{STAND_IN}{STAND_IN}[2J{STAND_IN}c{STAND_IN}]2;mined{STAND_IN}2Je{STAND_IN}f\n"
+    )
+
+
+async def test_the_output_of_a_command_cannot_steer_the_terminal(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+    show(transcript, log, call("bash", command="cat notes.txt"))
+
+    lines = transcript.event(log.append(result("first\n\x1b[1A\x1b[2Kforged\n[exit code 0]")))
+    sent = on_screen(lines, colours=False)
+
+    assert sent.splitlines()[1:] == [
+        "    first",
+        f"    {STAND_IN}[1A{STAND_IN}[2Kforged",
+        "    [exit code 0]",
+    ]
+
+
+def test_text_that_turns_its_direction_around_is_shown_in_the_order_it_has() -> None:
+    line = Text(f"git push {OVERRIDE}gro.live{POP} --force")
+
+    assert on_screen([line], colours=False) == f"git push {STAND_IN}gro.live{STAND_IN} --force\n"
+
+
+async def test_a_line_keeps_its_colours_where_something_was_replaced(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+    card = transcript.event(log.append(call("read", path="a\x1b.txt")))
+
+    coloured = on_screen(card, colours=True)
+
+    # The mark and the name of the tool are coloured as on any other line.
+    usual = on_screen(
+        transcript.event(log.append(call("read", "c-2", path="a?.txt"))), colours=True
+    )
+    assert coloured == usual.replace("a?.txt", f"a{STAND_IN}.txt")
+    assert card[0].plain == "* read a\x1b.txt"
 
 
 def test_a_long_line_is_left_to_the_screen_to_break() -> None:

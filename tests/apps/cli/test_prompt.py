@@ -8,6 +8,9 @@ from rich.text import Text
 from columbina.apps.cli.prompt import Prompt
 from support.terminal import CTRL_C, CTRL_D, ENTER, ESCAPE, Desk, desk, until
 
+STAND_IN = chr(0xFFFD)
+OVERRIDE = chr(0x202E)
+
 
 async def typed(prompt: Prompt, at: Desk, text: str) -> None:
     """Type something and wait until the line holds it."""
@@ -59,6 +62,33 @@ async def test_something_can_be_shown_while_nobody_is_asked_for_a_line() -> None
         prompt.show([Text("Before the first line.")])
 
         assert "Before the first line." in at.shown()
+
+
+async def test_what_is_shown_cannot_steer_the_terminal() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+
+        # Between these two marks a library that reads sequences hands text on as it is.
+        prompt.show([Text("a\x01\x1b[2J\x02b\x1b]52;c;aGk=\x07c\x1b[31md")])
+
+        assert at.seen() == (
+            f"a{STAND_IN}{STAND_IN}[2J{STAND_IN}b{STAND_IN}]52;c;aGk=c{STAND_IN}[31md\n"
+        )
+        assert "\x1b" not in at.shown()
+
+
+async def test_the_unfinished_line_cannot_steer_the_terminal_either() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+
+        prompt.partial = Text(f"ab{OVERRIDE}cd\x1b[2Jef")
+        await at.draws(f"ab{STAND_IN}cd{STAND_IN}[2Jef\n")
+        at.enter()
+
+        await asyncio.wait_for(waiting, 5)
+        assert "\x1b" not in at.shown()
+        assert OVERRIDE not in at.shown()
 
 
 async def test_showing_nothing_shows_nothing() -> None:

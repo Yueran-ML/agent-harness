@@ -13,7 +13,9 @@ shown once.
 
 The lines are :class:`rich.text.Text`, so that they carry their colours with
 them. :func:`on_screen` turns them into what a terminal is sent. Nothing that
-a model or a tool wrote is ever read as markup.
+a model or a tool wrote is ever read as markup, and nothing of it reaches the
+terminal as a control character: the only sequences that a terminal is sent
+are those of the colours that were chosen here.
 """
 
 import io
@@ -27,7 +29,7 @@ from rich.text import Text
 
 from columbina.approval import ApprovalDecidedEvent
 from columbina.apps.cli.lines import Lines
-from columbina.apps.cli.terminal import Terminal
+from columbina.apps.cli.terminal import Terminal, harmless
 from columbina.llm import BlockEnd, BlockStart, Chunk, TextDelta
 from columbina.retry import RetryEvent
 from columbina.session import (
@@ -105,8 +107,19 @@ def on_screen(lines: Sequence[Text], *, colours: bool) -> str:
     )
     for line in lines:
         # A long line is left whole: the terminal breaks it where its window ends.
-        console.print(line, soft_wrap=True)
+        console.print(_shown_safely(line), soft_wrap=True)
     return sent.getvalue()
+
+
+def _shown_safely(line: Text) -> Text:
+    """Return a line that a terminal shows and does not act on, with its colours where they were."""
+    safe = harmless(line.plain)
+    if safe == line.plain:
+        return line
+    shown = line.copy()
+    # The text keeps its length, so every colour stays on the characters that it was on.
+    shown.plain = safe
+    return shown
 
 
 def _took(milliseconds: int) -> str:

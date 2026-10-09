@@ -19,6 +19,7 @@ from rich.text import Text
 
 from columbina.approval import ApprovalRequest, Outcome
 from columbina.apps.cli.prompt import Prompt
+from columbina.apps.cli.terminal import spelled_out
 from columbina.session import Session
 
 __all__ = ["Granting", "Responder"]
@@ -61,7 +62,9 @@ class Responder:
             about: list[Text] = []
         else:
             asked.append(" asks for a yes:")
-            about = [Text(f"    {line}") for line in request.target.splitlines()]
+            # Only a line feed breaks a line here. Whatever else would is named instead.
+            lines = request.target.split("\n")
+            about = [Text(f"    {spelled_out(line)}") for line in lines]
         longer = None if self._granting is None else request.standing
         keys = [Text("  y  yes, this once")]
         if longer is not None:

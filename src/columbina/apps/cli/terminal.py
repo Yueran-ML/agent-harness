@@ -7,10 +7,20 @@ pipe to type into and a screen that keeps what was shown.
 
 Keys and screen are those of ``prompt_toolkit``, which knows the consoles of
 the systems apart.
+
+What is shown on a terminal is not all written by this program. A reply
+comes from a model, and the output of a command from whatever the command
+read. A terminal carries out the control characters it is sent: they move
+the cursor, write over what was shown before, name the window, fill the
+clipboard. And some characters turn the direction of the text around, so
+that it stands on the screen in another order than it has. Text from
+elsewhere therefore goes through :func:`harmless` before it is shown, and
+what a person is asked to say yes to goes through :func:`spelled_out`.
 """
 
 import os
 import sys
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -19,7 +29,68 @@ from prompt_toolkit.output import Output, create_output
 
 from columbina.kernel import ServiceKey
 
-__all__ = ["NO_CONSOLE", "TERMINAL", "Terminal", "marks_encoding", "real"]
+__all__ = [
+    "NO_CONSOLE",
+    "STAND_IN",
+    "TERMINAL",
+    "Terminal",
+    "harmless",
+    "marks_encoding",
+    "real",
+    "spelled_out",
+]
+
+STAND_IN = chr(0xFFFD)
+"""What is shown in the place of a character that must not reach a terminal."""
+
+_TURNS = frozenset(
+    chr(code) for code in (0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A))
+)
+"""The characters that say in which direction text runs."""
+
+_ACTED_ON = frozenset({"Cc", "Cs", "Zl", "Zp"})
+"""Kinds of characters that a terminal acts on, or that cannot be sent to one."""
+
+_UNSEEN = frozenset({"Cc", "Cf", "Cs", "Zl", "Zp", "Zs"})
+"""Kinds of characters that cannot be seen, or that pass for a space."""
+
+
+def harmless(text: str) -> str:
+    """Return a text that a terminal shows and does not act on.
+
+    A control character, a character that breaks the line without being a
+    line feed, and a character that turns the direction of the text are each
+    replaced by :data:`STAND_IN`. The text keeps its length. Tabs and line
+    feeds stay.
+    """
+    if text.isprintable():
+        return text
+    return "".join(
+        STAND_IN
+        if character in _TURNS
+        or (character not in "\t\n" and unicodedata.category(character) in _ACTED_ON)
+        else character
+        for character in text
+    )
+
+
+def spelled_out(text: str) -> str:
+    """Return a text in which every character that cannot be seen is named.
+
+    This is for what a person is asked to say yes to. A character that
+    cannot be seen, that passes for a space, or that turns the direction of
+    the text is written as its number, like ``<U+200B>``, so that what is
+    read is what will be done. Spaces, tabs and line feeds stay.
+    """
+    if text.isprintable():
+        return text
+    return "".join(
+        f"<U+{ord(character):04X}>"
+        if character not in " \t\n" and unicodedata.category(character) in _UNSEEN
+        else character
+        for character in text
+    )
+
 
 if sys.platform == "win32":  # pragma: windows only
     from prompt_toolkit.output.win32 import NoConsoleScreenBufferError

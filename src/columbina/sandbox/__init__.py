@@ -36,6 +36,7 @@ from typing import ClassVar, Literal, Protocol
 
 from pydantic import BaseModel
 
+from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Refuse
 from columbina.kernel import Context, Registry, ServiceKey
 from columbina.session import SESSIONS, EventData, Projection, Session, SessionEvent
@@ -121,6 +122,24 @@ class _Unconfined:
 
     def confine(self, argv: Sequence[str], *, mode: Mode, cwd: Path) -> Sequence[str]:
         return argv
+
+
+_MODES: dict[Mode, str] = {
+    "read-only": "read-only. No file can be written.",
+    "workspace-write": (
+        "workspace-write. Files in the working directory can be written, except in .git and "
+        ".columbina. Outside it no file can be read or written."
+    ),
+    "danger-full-access": "danger-full-access. Files anywhere can be read and written.",
+}
+"""What a model is told about each mode."""
+
+_STRENGTHS: dict[Strength, str] = {
+    "none": "not at all. A command can do whatever the user of this machine can do.",
+    "partial": "in part. A command may still reach more than the mode of the sandbox allows.",
+    "full": "fully. A command can do no more than the mode of the sandbox allows.",
+}
+"""What a model is told about how well commands are held."""
 
 
 def _last_mode(mode: Mode | None, event: SessionEvent[EventData]) -> Mode | None:
@@ -246,4 +265,10 @@ def apply(ctx: Context, config: Config) -> None:
     seam = ctx.use(FS)
     seam.grants.add(ctx, "sandbox", sandbox.grants)
     seam.restrictions.add(ctx, "sandbox", sandbox.restricts)
+
+    def facts(gathered: Facts) -> None:
+        gathered.lines["sandbox mode"] = _MODES[sandbox.mode(gathered.agent.session)]
+        gathered.lines["commands are held"] = _STRENGTHS[sandbox.strength()]
+
+    ctx.on(RUNTIME_FACTS, facts)
     ctx.provide(SANDBOX, sandbox)

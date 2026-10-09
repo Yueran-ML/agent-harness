@@ -37,6 +37,7 @@ from typing import ClassVar, Literal, cast, get_args
 
 from pydantic import BaseModel
 
+from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.kernel import Context, SerialEvent, ServiceKey
 from columbina.session import SESSIONS, EventData, Projection, Session, SessionEvent
 
@@ -129,6 +130,13 @@ APPROVAL_ASK: SerialEvent[ApprovalRequest, Outcome] = SerialEvent("approval/ask"
 """Puts a question to whoever can answer it. A listener that cannot says nothing."""
 
 
+_POLICIES: dict[Policy, str] = {
+    "ask": "ask. A call that needs a yes is put to the user, if somebody is there to ask.",
+    "never": "never. A call that needs a yes is refused without anybody being asked.",
+}
+"""What a model is told about each policy."""
+
+
 def _last_policy(policy: Policy | None, event: SessionEvent[EventData]) -> Policy | None:
     data = event.data
     return data.policy if isinstance(data, ApprovalPolicyEvent) else policy
@@ -218,4 +226,10 @@ def apply(ctx: Context, config: Config) -> None:
     sessions = ctx.use(SESSIONS)
     for kind in (ApprovalPolicyEvent, ApprovalAskedEvent, ApprovalDecidedEvent):
         sessions.declare(ctx, kind)
-    ctx.provide(APPROVAL, Approval(config.policy))
+    approval = Approval(config.policy)
+
+    def facts(gathered: Facts) -> None:
+        gathered.lines["approval"] = _POLICIES[approval.policy(gathered.agent.session)]
+
+    ctx.on(RUNTIME_FACTS, facts)
+    ctx.provide(APPROVAL, approval)

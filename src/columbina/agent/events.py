@@ -7,7 +7,7 @@ in the session log.
 A listener of one of the questions that fails ends the turn with an error.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from columbina.agent.agent import Agent
 from columbina.kernel import EmitEvent, SerialEvent, WaterfallEvent
@@ -147,3 +147,23 @@ class TurnStopping:
 
 TURN_STOPPING: SerialEvent[TurnStopping, None] = SerialEvent("agent/turn-stopping")
 """Told when a turn is about to end by itself. A listener that steers the agent keeps it going."""
+
+
+@dataclass(frozen=True, slots=True)
+class Facts:
+    """What a model is told about where it runs, gathered when a turn begins.
+
+    Attributes:
+        agent: The agent whose turn begins.
+        lines: The facts, each under a name. A listener adds what it knows.
+    """
+
+    agent: Agent
+    lines: dict[str, str] = field(default_factory=dict[str, str])
+
+
+RUNTIME_FACTS: EmitEvent[Facts] = EmitEvent("agent/runtime-facts")
+"""Emitted to gather the facts about a run. A plugin that knows one adds it.
+
+Whoever tells the model the facts emits this: see :mod:`columbina.context.runtime`.
+"""

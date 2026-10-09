@@ -53,6 +53,9 @@ _REAP_SECONDS = 5.0
 _DRAIN_SECONDS = 2.0
 """How long the rest of the output is waited for once the program is gone."""
 
+_CLOSE_SECONDS = 5.0
+"""How long a run waits for the loop to take note that its program is gone for good."""
+
 _SECRET_WORDS = ("KEY", "PASSWORD", "SECRET", "TOKEN")
 _Utf8 = codecs.getincrementaldecoder("utf-8")
 
@@ -422,7 +425,7 @@ async def run(
     except BaseException:
         # The program has not run a single instruction, and it does not get to.
         transport.close()
-        await _within(watch.closed, _REAP_SECONDS)
+        await _within(watch.closed, _CLOSE_SECONDS)
         raise
     timed_out = False
     try:
@@ -443,7 +446,7 @@ async def run(
             exit_code = transport.get_returncode()
             transport.close()
             tree.close()
-            await _within(watch.closed, _REAP_SECONDS)
+            await _within(watch.closed, _CLOSE_SECONDS)
     return Completed(
         exit_code=None if timed_out else exit_code,
         timed_out=timed_out,

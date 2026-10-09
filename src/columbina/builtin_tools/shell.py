@@ -66,6 +66,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from columbina import process
+from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.kernel import Context
 from columbina.permissions import PERMISSIONS, Splitter, split_bash, split_powershell
 from columbina.sandbox import SANDBOX, Sandbox, SandboxUnavailableError
@@ -108,6 +109,7 @@ if sys.platform == "win32":  # pragma: windows only
         "$OutputEncoding = [Console]::InputEncoding; "
         ". ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"
     )
+    _FACT = "the tool powershell, which is Windows PowerShell 5.1 and not bash"
     _ABOUT = (
         "Run a command in Windows PowerShell 5.1. This is not bash: join commands with ; "
         "(there is no && and no ||), write $env:NAME for a variable of the environment, and "
@@ -137,6 +139,7 @@ else:  # pragma: posix only
     MAX_COMMAND_BYTES = 120_000
 
     _SPLITTER: Splitter = split_bash
+    _FACT = "the tool bash"
     _ABOUT = "Run a command in bash."
 
     def _shell() -> str | None:
@@ -232,3 +235,8 @@ def apply(ctx: Context, config: object) -> None:
         raise RuntimeError(f"{NAME} is not installed, so there is no tool that runs commands")
     ctx.use(TOOLS).add(ctx, shell_tool(ctx.use(SANDBOX), shell))
     ctx.use(PERMISSIONS).splitters.add(ctx, NAME, _SPLITTER)
+
+    def facts(gathered: Facts) -> None:
+        gathered.lines["commands are run by"] = _FACT
+
+    ctx.on(RUNTIME_FACTS, facts)

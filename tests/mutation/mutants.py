@@ -43,6 +43,7 @@ APPROVAL = "src/columbina/approval/__init__.py"
 GREP = "src/columbina/builtin_tools/grep.py"
 SHELL = "src/columbina/builtin_tools/shell.py"
 PATTERNS = "src/columbina/fs/patterns.py"
+RUNTIME = "src/columbina/context/runtime.py"
 PROMPT = "src/columbina/system_prompt/__init__.py"
 RULES = "src/columbina/permissions/rules.py"
 COMMANDS = "src/columbina/permissions/commands.py"
@@ -2219,8 +2220,66 @@ _CONTEXT = (
     ),
 )
 
+_FACTS = (
+    mutant(
+        "facts come in the order in which they were added",
+        RUNTIME,
+        "for name, value in sorted(facts.lines.items()))",
+        "for name, value in facts.lines.items())",
+    ),
+    mutant(
+        "the working directory is not among the facts",
+        RUNTIME,
+        '    facts = Facts(agent, {"working directory": str(agent.cwd)})',
+        "    facts = Facts(agent)",
+    ),
+    mutant(
+        "no plugin is asked for its facts",
+        RUNTIME,
+        "    agent.ctx.emit(RUNTIME_FACTS, facts)\n",
+        "",
+    ),
+    mutant(
+        "facts that have not changed are told again",
+        RUNTIME,
+        'ContextSource(_runtime, order=100, kind="append")',
+        'ContextSource(_runtime, order=100, kind="note")',
+    ),
+    mutant(
+        "the mode of the sandbox is not told",
+        SANDBOX,
+        '        gathered.lines["sandbox mode"] = _MODES[sandbox.mode(gathered.agent.session)]\n',
+        "",
+    ),
+    mutant(
+        "the mode of the config is told whatever the mode of the session",
+        SANDBOX,
+        '        gathered.lines["sandbox mode"] = _MODES[sandbox.mode(gathered.agent.session)]',
+        '        gathered.lines["sandbox mode"] = _MODES[config.mode]',
+    ),
+    mutant(
+        "how well commands are held is not told",
+        SANDBOX,
+        '        gathered.lines["commands are held"] = _STRENGTHS[sandbox.strength()]\n',
+        "",
+    ),
+    mutant(
+        "the policy of approval is not told",
+        APPROVAL,
+        '        gathered.lines["approval"] = _POLICIES[approval.policy(gathered.agent.session)]\n',
+        "        pass\n",
+    ),
+    mutant(
+        "what runs commands is not told",
+        SHELL,
+        '        gathered.lines["commands are run by"] = _FACT\n',
+        "        pass\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
+    "facts": MutantSet(("tests/context",), _FACTS),
     "context": MutantSet(("tests/agent_loop",), _CONTEXT),
     "prompt": MutantSet(("tests/system_prompt", "tests/agent_loop/test_turns.py"), _PROMPT),
     "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),

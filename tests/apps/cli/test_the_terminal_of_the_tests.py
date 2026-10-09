@@ -186,6 +186,32 @@ def test_the_rest_of_a_line_is_erased() -> None:
     assert after(f"abcdef\r{ESC}[3C{ESC}[K").lines() == ["abc"]
 
 
+def test_erasing_after_the_last_column_begins_in_the_last_column() -> None:
+    # After the last column the cursor waits in it. What is erased from the cursor on takes
+    # the character that stands there, and then nothing waits any more: what comes next
+    # is written into the last column.
+    assert after(f"abcde{ESC}[K", columns=5).lines() == ["abcd"]
+    assert after(f"abcde{ESC}[KX", columns=5).lines() == ["abcdX"]
+    assert after(f"abcde{ESC}[J", columns=5).lines() == ["abcd"]
+    assert after(f"abcde{ESC}[JXY", columns=5).lines() == ["abcdX", "Y"]
+    assert after(f"abcde{ESC}[K", columns=5).cursor == (0, 4)
+
+
+def test_a_wide_character_goes_as_a_whole_when_its_second_half_is_erased() -> None:
+    assert after(f"{WIDE}x\r{ESC}[C{ESC}[K").lines() == []
+    assert after(f"a{WIDE}x\r{ESC}[2C{ESC}[K").lines() == ["a"]
+    assert after(f"{WIDE}x\r\nyz{ESC}[A\r{ESC}[C{ESC}[J").lines() == []
+    # Erasing from its first half on takes it too, and nothing is left of it either.
+    assert after(f"a{WIDE}x\r{ESC}[C{ESC}[K").lines() == ["a"]
+
+
+def test_a_mark_on_a_wide_character_belongs_to_the_character_and_not_to_its_second_half() -> None:
+    assert after(f"{WIDE}{ACCENT}x").lines() == [f"{WIDE}{ACCENT}x"]
+    # So writing over the second half still takes the whole character away, mark and all.
+    assert after(f"{WIDE}{ACCENT}\bX").lines() == [" X"]
+    assert after(f"{WIDE}{ACCENT}\r{ESC}[C{ESC}[K").lines() == []
+
+
 def test_everything_from_the_cursor_on_is_erased() -> None:
     display = after(f"one\r\ntwo\r\nthree{ESC}[2A\r{ESC}[2C{ESC}[J")
 

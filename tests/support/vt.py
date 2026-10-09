@@ -165,10 +165,12 @@ class Display:
     def _put(self, character: str) -> None:
         width = get_cwidth(character)
         if width == 0:
-            # A mark that goes onto the character before it.
+            # A mark that goes onto the character before it. A wide character is held by
+            # the first of its two cells, and the mark belongs there.
             line = self._line()
             if 0 < self._column <= len(line):
-                line[self._column - 1] += character
+                cell = self._column - 1
+                line[cell - 1 if line[cell] == _HALF else cell] += character
             return
         if self._column + width > self.columns:
             if self._wraps:
@@ -207,9 +209,9 @@ class Display:
             self._row = self._top + min(row, self.rows) - 1
             self._column = min(column, self.columns) - 1
         elif final == "K" and not given:
-            del self._line()[self._column :]
+            self._erase_the_rest_of_the_line()
         elif final == "J" and not given:
-            del self._line()[self._column :]
+            self._erase_the_rest_of_the_line()
             for line in self._lines[self._row + 1 :]:
                 line.clear()
         elif final == "J" and given == [2]:
@@ -218,6 +220,17 @@ class Display:
         elif final not in "mn":
             # Colours are not kept, and nobody answers the question where the cursor is.
             raise unknown
+
+    def _erase_the_rest_of_the_line(self) -> None:
+        """Erase the line from the cursor on, the cell that the cursor is in among it."""
+        # After the last column the cursor waits in that column. Erasing begins there, and
+        # with the end of the line gone there is nothing to wait for any more.
+        self._settle()
+        line = self._line()
+        if self._column < len(line) and line[self._column] == _HALF:
+            # A wide character goes as a whole.
+            line[self._column - 1] = " "
+        del line[self._column :]
 
     def _modes(self, given: list[int], final: str, unknown: ValueError) -> None:
         if final not in "hl":

@@ -3,8 +3,10 @@
 A search names one directory and then comes upon many files. Each of them is
 an access of its own: the walk asks the seam about every directory before it
 goes in and about every file before it hands the file on, so that a rule
-which keeps a tool from a file also keeps a search from it. What the seam
-refuses is counted, and the tool says how much it was not allowed to see.
+which keeps a tool from a file also keeps a search from it. A file is handed
+on with the permit that the seam gave for it, and a tool that wants to look
+into the file opens it through that. What the seam refuses is counted, and
+the tool says how much it was not allowed to see.
 
 A directory is listed while it is held open and after the system has said
 that it is where the walk thinks it is, the same way a file is opened. Links
@@ -18,14 +20,15 @@ directories, and it never asks a restriction from another thread.
 
 import asyncio
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
 
-from columbina.fs import Access, Fs, Located, bound
+from columbina.fs import Access, Fs, Located, Permit, bound
 from columbina.session import Session
+from columbina.tools import ToolFailure
 
-__all__ = ["SKIPPED", "Found", "Tally", "walk"]
+__all__ = ["SKIPPED", "Found", "Tally", "counted", "remarks", "walk"]
 
 SKIPPED = frozenset({".git"})
 """The names of directories that a walk does not go into."""
@@ -41,12 +44,14 @@ class Found:
             walked, the name of the file last.
         size: Its size in bytes.
         modified_ns: When it was last changed, in nanoseconds.
+        permit: The permit to read it.
     """
 
     where: Located
     below: tuple[str, ...]
     size: int
     modified_ns: int
+    permit: Permit
 
 
 @dataclass(slots=True)
@@ -67,6 +72,32 @@ class Tally:
     cut_short: bool = False
 
 
+def counted(number: int, one: str, many: str) -> str:
+    """Return a number with what it counts, in the singular or the plural."""
+    return f"1 {one}" if number == 1 else f"{number} {many}"
+
+
+def remarks(tally: Tally) -> list[str]:
+    """Return what a search tells the model about what its walk passed.
+
+    A model takes what a search does not show for what is not there. So a
+    search says what it did not look at, one remark to a line.
+    """
+    said: list[str] = []
+    if tally.cut_short:
+        said.append(
+            f"[The search stopped after {tally.entries} files and directories, so there may "
+            "be more. Search a narrower directory.]"
+        )
+    if tally.refused:
+        skipped = counted(tally.refused, "file or directory was", "files and directories were")
+        said.append(f"[{skipped} not searched, because this tool may not see them.]")
+    if tally.unreadable:
+        unlisted = counted(tally.unreadable, "directory", "directories")
+        said.append(f"[{unlisted} could not be listed.]")
+    return said
+
+
 def _below(parent: Located, name: str) -> Located:
     """Return the place of an entry of a directory that was located already."""
     relative = name if parent.relative == "." else f"{parent.relative}/{name}"
@@ -82,7 +113,7 @@ async def walk(
     *,
     limit: int,
     tally: Tally,
-) -> AsyncIterator[Found]:
+) -> AsyncGenerator[Found, None]:
     """Hand on the files below a directory that the tool may see, level by level.
 
     Args:
@@ -114,9 +145,12 @@ async def walk(
             tally.entries += 1
             where = _below(directory, entry.name)
             below = (*names, entry.name)
-            if fs.judge(Access(session, cwd, where, "read", tool, named=False)) is not None:
+            try:
+                permit = fs.permit(Access(session, cwd, where, "read", tool, named=False))
+            except ToolFailure:
                 tally.refused += 1
-            elif entry.kind == "directory":
+                continue
+            if entry.kind == "directory":
                 waiting.append((where, below))
             else:
-                yield Found(where, below, entry.size, entry.modified_ns)
+                yield Found(where, below, entry.size, entry.modified_ns, permit)

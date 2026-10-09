@@ -8,7 +8,7 @@ import columbina.fs
 import columbina.sandbox
 import columbina.session
 import columbina.tools
-from columbina.builtin_tools import edit, glob, read, write
+from columbina.builtin_tools import edit, glob, grep, read, write
 from columbina.fs import FS
 from columbina.kernel import Context
 from columbina.sandbox import SANDBOX
@@ -30,5 +30,6 @@ async def desk(ctx: Context, tmp_path: Path) -> Desk:
     await ctx.plugin(write)
     await ctx.plugin(edit)
     await ctx.plugin(glob)
+    await ctx.plugin(grep)
     session = ctx.use(SESSIONS).create(ctx, work)
     return Desk(ctx, ctx.use(TOOLS), ctx.use(FS), ctx.use(SANDBOX), session, work)

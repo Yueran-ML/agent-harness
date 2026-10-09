@@ -35,6 +35,8 @@ WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
 WALK = "src/columbina/fs/walk.py"
 GLOB = "src/columbina/builtin_tools/glob.py"
+GREP = "src/columbina/builtin_tools/grep.py"
+GREP_WORKER = "src/columbina/builtin_tools/grep_worker.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1012,14 +1014,20 @@ _SEARCH = (
     mutant(
         "the seam is not asked about what a walk comes upon",
         WALK,
-        '            if fs.judge(Access(session, cwd, where, "read", tool, named=False)) is not None:',
-        "            if False:",
+        '                permit = fs.permit(Access(session, cwd, where, "read", tool, named=False))',
+        '                permit = Permit(Access(session, cwd, where, "read", tool, named=False), fs)',
     ),
     mutant(
         "what a walk comes upon counts as named by the call",
         WALK,
-        '            if fs.judge(Access(session, cwd, where, "read", tool, named=False)) is not None:',
-        '            if fs.judge(Access(session, cwd, where, "read", tool)) is not None:',
+        '                permit = fs.permit(Access(session, cwd, where, "read", tool, named=False))',
+        '                permit = fs.permit(Access(session, cwd, where, "read", tool))',
+    ),
+    mutant(
+        "what the seam refuses ends the walk",
+        WALK,
+        "                tally.refused += 1\n                continue\n",
+        "                tally.refused += 1\n                return\n",
     ),
     mutant(
         "the history of a repository is walked",
@@ -1089,15 +1097,27 @@ _SEARCH = (
     ),
     mutant(
         "what was kept from the search is not mentioned",
-        GLOB,
+        WALK,
         "    if tally.refused:",
         "    if False:",
     ),
     mutant(
         "a search does not say that it stopped early",
-        GLOB,
+        WALK,
         "    if tally.cut_short:",
         "    if False:",
+    ),
+    mutant(
+        "directories that could not be listed are not mentioned",
+        WALK,
+        "    if tally.unreadable:",
+        "    if False:",
+    ),
+    mutant(
+        "one thing that was passed is counted like many",
+        WALK,
+        '    return f"1 {one}" if number == 1 else f"{number} {many}"',
+        '    return f"{number} {many}"',
     ),
     mutant(
         "a file is searched as if it were a directory",
@@ -1121,8 +1141,296 @@ _SEARCH = (
     ),
 )
 
+_GREP = (
+    mutant(
+        "a search goes ahead where the path leads elsewhere than it did",
+        GREP,
+        "        if root.relative != run.target:",
+        "        if False:",
+    ),
+    mutant(
+        "the file that a call names counts as one that the search came upon",
+        GREP,
+        '        permit = fs.permit(Access(run.session, run.cwd, root, "read", "grep"))',
+        '        permit = fs.permit(Access(run.session, run.cwd, root, "read", "grep", named=False))',
+    ),
+    mutant(
+        "a file that the call names is searched only if its path fits",
+        GREP,
+        "            return _only(Found(root, (), status.st_size, status.st_mtime_ns, permit)), None",
+        "            return _only(Found(root, (), status.st_size, status.st_mtime_ns, permit)), fits",
+    ),
+    mutant(
+        "files whose paths do not fit are searched",
+        GREP,
+        "                    if fits is not None and not fits(found.below):",
+        "                    if False:",
+    ),
+    mutant(
+        "a search that has as many lines as it shows goes on",
+        GREP,
+        "                    if len(search.lines) >= MAX_MATCHES:",
+        "                    if False:",
+    ),
+    mutant(
+        "a search that left files does not say that there may be more",
+        GREP,
+        "                        search.cut = True\n                        break\n",
+        "                        break\n",
+    ),
+    mutant(
+        "a search reads more than it may",
+        GREP,
+        "                    if search.searched_bytes >= MAX_BYTES:",
+        "                    if False:",
+    ),
+    mutant(
+        "a search that stopped reading does not say so",
+        GREP,
+        "                        search.out_of_room = True\n",
+        "",
+    ),
+    mutant(
+        "what a search has read is not counted",
+        GREP,
+        "                search.searched_bytes += sum(len(content) for _, content in texts)\n",
+        "",
+    ),
+    mutant(
+        "a file that is listed as too large is opened",
+        GREP,
+        "                    if found.size > MAX_FILE_BYTES:",
+        "                    if False:",
+    ),
+    mutant(
+        "a file of just the size that may be searched is passed over",
+        GREP,
+        "                    if found.size > MAX_FILE_BYTES:",
+        "                    if found.size >= MAX_FILE_BYTES:",
+    ),
+    mutant(
+        "a file that turns out too large is searched",
+        GREP,
+        "        elif len(content) > MAX_FILE_BYTES:",
+        "        elif False:",
+    ),
+    mutant(
+        "a file that does not look like text is searched",
+        GREP,
+        '        if b"\\x00" in content[:_SNIFF_BYTES]:',
+        "        if False:",
+    ),
+    mutant(
+        "a zero byte anywhere makes a file something else than text",
+        GREP,
+        '        if b"\\x00" in content[:_SNIFF_BYTES]:',
+        '        if b"\\x00" in content:',
+    ),
+    mutant(
+        "a file that does not look like text is read to its end",
+        GREP,
+        '                if b"\\x00" not in content:',
+        "                if True:",
+    ),
+    mutant(
+        "a file that is somewhere else by now fails the search",
+        GREP,
+        "        except (OSError, ToolFailure):",
+        "        except OSError:",
+    ),
+    mutant(
+        "reading goes on after the search was given up",
+        GREP,
+        "        if stopped.is_set():\n            break\n",
+        "",
+    ),
+    mutant(
+        "a search that ends does not tell its reading to stop",
+        GREP,
+        "            stopped.set()\n",
+        "            pass\n",
+    ),
+    mutant(
+        "the matching process is started with what lies beside it",
+        GREP,
+        '                [sys.executable, "-I", "-S", str(_WORKER)],',
+        '                [sys.executable, "-S", str(_WORKER)],',
+    ),
+    mutant(
+        "the matching process is started with what is installed",
+        GREP,
+        '                [sys.executable, "-I", "-S", str(_WORKER)],',
+        '                [sys.executable, "-I", str(_WORKER)],',
+    ),
+    mutant(
+        "every batch may show as many lines as the whole search",
+        GREP,
+        "                stdin=_request(args, MAX_MATCHES - len(search.lines), texts),",
+        "                stdin=_request(args, MAX_MATCHES, texts),",
+    ),
+    mutant(
+        "every batch gets the whole time of the search",
+        GREP,
+        "                timeout_seconds=left,",
+        "                timeout_seconds=SECONDS,",
+    ),
+    mutant(
+        "a search whose time is up starts a process all the same",
+        GREP,
+        "    if left > 0:",
+        "    if True:",
+    ),
+    mutant(
+        "a search that was stopped is not said to have taken too long",
+        GREP,
+        "    if done is None or done.timed_out:",
+        "    if done is None:",
+    ),
+    mutant(
+        "a pattern that cannot be used counts as a search that failed",
+        GREP,
+        "    if answers and answers[0].error is not None:",
+        "    if False:",
+    ),
+    mutant(
+        "a process that failed after it answered is believed",
+        GREP,
+        "        done.exit_code == 0\n",
+        "        True\n",
+    ),
+    mutant(
+        "an answer without its last line is believed",
+        GREP,
+        "        and answers[-1].done\n",
+        "",
+    ),
+    mutant(
+        "an answer about fewer files than were sent is believed",
+        GREP,
+        "        and (answers[-1].cut or answers[-1].files == len(texts))\n",
+        "",
+    ),
+    mutant(
+        "an answer about a file before the first is believed",
+        GREP,
+        "        and all(0 <= hit.id < len(texts) for hit in hits)",
+        "        and all(hit.id < len(texts) for hit in hits)",
+    ),
+    mutant(
+        "what the matching process left out is forgotten",
+        GREP,
+        "    search.cut = answers[-1].cut",
+        "    search.cut = False",
+    ),
+    mutant(
+        "the rest of a long line is not mentioned",
+        GREP,
+        '        more = f" [{hit.more} more characters]" if hit.more else ""',
+        '        more = ""',
+    ),
+    mutant(
+        "a search that shows nothing says nothing",
+        GREP,
+        "    if not lines:",
+        "    if False:",
+    ),
+    mutant(
+        "files that are too large are not mentioned",
+        GREP,
+        '    if large := search.unread["large"]:',
+        "    if large := 0:",
+    ),
+    mutant(
+        "files that do not look like text are not mentioned",
+        GREP,
+        '    if strange := search.unread["not text"]:',
+        "    if strange := 0:",
+    ),
+    mutant(
+        "files that could not be read are not mentioned",
+        GREP,
+        '    if unreadable := search.unread["unreadable"]:',
+        "    if unreadable := 0:",
+    ),
+    mutant(
+        "upper and lower case count whatever the call says",
+        GREP_WORKER,
+        '            pattern = re.compile(request["pattern"], re.IGNORECASE if request["ignore_case"] else 0)',
+        '            pattern = re.compile(request["pattern"], 0)',
+    ),
+    mutant(
+        "a warning about the pattern is let out",
+        GREP_WORKER,
+        '            warnings.simplefilter("ignore")\n',
+        "",
+    ),
+    mutant(
+        "input that ends in the middle of a file counts as whole",
+        GREP_WORKER,
+        "            return 1\n",
+        "            break\n",
+    ),
+    mutant(
+        "the matching process reads on after it has enough",
+        GREP_WORKER,
+        "    while not cut:",
+        "    while True:",
+    ),
+    mutant(
+        "what follows the last line break is a line",
+        GREP_WORKER,
+        "        while start < len(content) and not cut:",
+        "        while start <= len(content) and not cut:",
+    ),
+    mutant(
+        "the carriage return of a line break is shown",
+        GREP_WORKER,
+        '.decode("utf-8", errors="replace").removesuffix("\\r")',
+        '.decode("utf-8", errors="replace")',
+    ),
+    mutant(
+        "lines are counted from two",
+        GREP_WORKER,
+        "        number = 0\n",
+        "        number = 1\n",
+    ),
+    mutant(
+        "one line more than asked for is answered",
+        GREP_WORKER,
+        "            if left == 0:",
+        "            if left < 0:",
+    ),
+    mutant(
+        "more lines than were asked for go unsaid",
+        GREP_WORKER,
+        "                cut = True\n",
+        "                pass\n",
+    ),
+    mutant(
+        "a file that was not searched to its end counts as searched",
+        GREP_WORKER,
+        "        if not cut:\n            files += 1\n",
+        "        files += 1\n",
+    ),
+    mutant(
+        "a long line is answered whole",
+        GREP_WORKER,
+        '                        "text": line[:width],',
+        '                        "text": line,',
+    ),
+    mutant(
+        "what was cut off a long line is not counted",
+        GREP_WORKER,
+        '                        "more": max(0, len(line) - width),',
+        '                        "more": 0,',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "search": MutantSet(("tests/fs/test_walk.py", "tests/builtin_tools/test_glob.py"), _SEARCH),
+    "grep": MutantSet(
+        ("tests/builtin_tools/test_grep.py", "tests/builtin_tools/test_grep_worker.py"), _GREP
+    ),
     "files": MutantSet(
         ("tests/builtin_tools/test_write.py", "tests/builtin_tools/test_edit.py"), _FILES
     ),

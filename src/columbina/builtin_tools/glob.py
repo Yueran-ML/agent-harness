@@ -22,7 +22,7 @@ from functools import cache
 from pydantic import BaseModel, Field
 
 from columbina.fs import FS, Access, Fs, locate
-from columbina.fs.walk import Found, Tally, walk
+from columbina.fs.walk import Found, Tally, remarks, walk
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
@@ -113,10 +113,6 @@ def matcher(pattern: str) -> Callable[[tuple[str, ...]], bool]:
     return matches
 
 
-def _counted(number: int, one: str, many: str) -> str:
-    return f"1 {one}" if number == 1 else f"{number} {many}"
-
-
 def _said(matched: list[Found], tally: Tally, args: GlobArgs) -> str:
     """Return what the model reads: the paths, and what was not looked at."""
     newest = sorted(matched, key=lambda found: (-found.modified_ns, found.where.relative))
@@ -128,18 +124,7 @@ def _said(matched: list[Found], tally: Tally, args: GlobArgs) -> str:
             f"[These are the {MAX_RESULTS} files that were changed last, of {len(matched)} "
             "that fit. Narrow the pattern to see the others.]"
         )
-    if tally.cut_short:
-        lines.append(
-            f"[The search stopped after {tally.entries} files and directories, so more may "
-            "fit. Search a narrower directory.]"
-        )
-    if tally.refused:
-        skipped = _counted(tally.refused, "file or directory was", "files and directories were")
-        lines.append(f"[{skipped} not searched, because this tool may not see them.]")
-    if tally.unreadable:
-        unlisted = _counted(tally.unreadable, "directory", "directories")
-        lines.append(f"[{unlisted} could not be listed.]")
-    return "\n".join(lines)
+    return "\n".join([*lines, *remarks(tally)])
 
 
 def glob_tool(fs: Fs) -> Tool[GlobArgs, str]:

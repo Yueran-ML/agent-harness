@@ -194,7 +194,7 @@ async def test_a_search_that_looked_at_as_much_as_it_may_says_that_more_may_fit(
         "a.py",
         "b.py",
         "c.py",
-        "[The search stopped after 3 files and directories, so more may fit. "
+        "[The search stopped after 3 files and directories, so there may be more. "
         "Search a narrower directory.]",
     ]
 

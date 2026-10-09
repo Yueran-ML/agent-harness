@@ -2823,8 +2823,26 @@ _TRANSCRIPT = (
     mutant(
         "the rest of what is shown by its beginning is not counted",
         CLI_TRANSCRIPT,
-        "    if len(lines) > at_most:\n",
-        "    if len(lines) > 100 * at_most:\n",
+        "    if len(lines) > at_most:\n        rest = ",
+        "    if len(lines) > 100 * at_most:\n        rest = ",
+    ),
+    mutant(
+        "what came before the end that is shown is not counted",
+        CLI_TRANSCRIPT,
+        "    if len(lines) > at_most:\n        earlier = ",
+        "    if len(lines) > 100 * at_most:\n        earlier = ",
+    ),
+    mutant(
+        "the output of a command is shown by its beginning and not by its end",
+        CLI_TRANSCRIPT,
+        '        return [head, *_ending(lines, _OUTPUT_LINES, "    ")]\n',
+        '        return [head, *_beginning(lines, _OUTPUT_LINES, "    ")]\n',
+    ),
+    mutant(
+        "what is shown by its end is shown from its beginning on",
+        CLI_TRANSCRIPT,
+        '    shown.extend(Text(f"{before}{line}") for line in lines[-at_most:])\n',
+        '    shown.extend(Text(f"{before}{line}") for line in lines)\n',
     ),
     mutant(
         "one line more is told as lines",
@@ -2930,8 +2948,8 @@ _TRANSCRIPT = (
     mutant(
         "a session that is taken up again leaves no empty line",
         CLI_TRANSCRIPT,
-        "    return [*shown, *ended, Text()]\n",
-        "    return [*shown, *ended]\n",
+        "    return [*shown, *_ending(answer, _RECAP_LINES), *ended, Text()]\n",
+        "    return [*shown, *_ending(answer, _RECAP_LINES), *ended]\n",
     ),
     mutant(
         "a session without a turn says that it is taken up again",

@@ -149,6 +149,16 @@ def _beginning(lines: list[str], at_most: int, before: str, style: str = "") -> 
     return shown
 
 
+def _ending(lines: list[str], at_most: int, before: str = "") -> list[Text]:
+    """Return the last lines of many, each after ``before``, and a word about those before them."""
+    shown: list[Text] = []
+    if len(lines) > at_most:
+        earlier = _counted(len(lines) - at_most, "line")
+        shown.append(_note(f"{before}... {earlier} before these"))
+    shown.extend(Text(f"{before}{line}") for line in lines[-at_most:])
+    return shown
+
+
 def _one_line(text: str) -> str:
     """Return a text on one line and not too long, for the line that tells of a call."""
     joined = " ".join(text.split())
@@ -310,7 +320,8 @@ class Transcript:
         head.append(" ".join([self._symbols.done, ", ".join(took)]).rstrip(), style=_NOTE)
         if not command:
             return [head]
-        return [head, *_beginning(lines, _OUTPUT_LINES, "    ")]
+        # What went wrong and the exit code stand at the end of what a command says.
+        return [head, *_ending(lines, _OUTPUT_LINES, "    ")]
 
 
 def _said(data: UserMessageEvent) -> str:
@@ -341,8 +352,4 @@ def recap(events: Sequence[SessionEvent[EventData]], symbols: Symbols) -> list[T
             answer = data.message.text.splitlines()
         elif isinstance(data, TurnEndEvent):
             ended = _end(data)
-    if len(answer) > _RECAP_LINES:
-        before = _counted(len(answer) - _RECAP_LINES, "line")
-        shown.append(_note(f"... {before} before these"))
-    shown.extend(Text(line) for line in answer[-_RECAP_LINES:])
-    return [*shown, *ended, Text()]
+    return [*shown, *_ending(answer, _RECAP_LINES), *ended, Text()]

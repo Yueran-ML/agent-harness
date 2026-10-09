@@ -383,18 +383,32 @@ async def test_the_time_that_an_answer_took_is_not_counted_as_time_of_the_call(
     assert shown == ["  ok 500 ms", "    done"]
 
 
-async def test_the_output_of_a_command_is_shown_by_its_beginning(log: Session) -> None:
+async def test_the_output_of_a_command_is_shown_by_its_end(log: Session) -> None:
     transcript = Transcript(PLAIN)
-    output = "\n".join(f"line {number}" for number in range(1, 9)) + "\n[exit code 0]"
+    output = "\n".join(f"line {number}" for number in range(1, 9)) + "\n[exit code 1]"
 
     shown = show(transcript, log, call("bash", command="make"), result(output))
 
+    # What went wrong, the summary and the exit code stand at the end of what a command
+    # says, so the end is what is shown.
     assert shown == [
         "* bash make",
         "  ok 250 ms",
-        *(f"    line {number}" for number in range(1, 6)),
-        "    ... 4 more lines",
+        "    ... 4 lines before these",
+        *(f"    line {number}" for number in range(5, 9)),
+        "    [exit code 1]",
     ]
+
+
+async def test_one_line_too_many_of_the_output_of_a_command_is_told_as_one_line(
+    log: Session,
+) -> None:
+    transcript = Transcript(PLAIN)
+    output = "\n".join(f"line {number}" for number in range(1, 6)) + "\n[exit code 0]"
+
+    shown = show(transcript, log, call("bash", command="make"), result(output))
+
+    assert shown[2:4] == ["    ... 1 line before these", "    line 2"]
 
 
 async def test_a_short_output_of_a_command_is_shown_whole(log: Session) -> None:

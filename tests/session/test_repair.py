@@ -313,6 +313,26 @@ async def test_a_result_that_takes_the_place_of_another_answers_no_new_call(ctx:
     assert [type(data) for data in found] == [ToolResultEvent, StepEndEvent, TurnEndEvent]
 
 
+async def test_a_reply_that_takes_the_place_of_another_asks_for_no_new_call(ctx: Context) -> None:
+    session = log_of(
+        ctx,
+        TurnStartEvent(turn=1),
+        StepStartEvent(turn=1, step=1),
+        asking("call-1"),
+        dispatched("call-1"),
+        answered("call-1"),
+    )
+    # The same reply again, say with its reasoning left out. Its call was answered long ago.
+    session.append(asking("call-1"), replaces=[2])
+
+    found = closing_events(session.events, "interrupted")
+
+    assert found == [
+        StepEndEvent(turn=1, step=1),
+        TurnEndEvent(turn=1, reason="interrupted"),
+    ]
+
+
 async def test_a_call_or_a_result_that_belongs_to_no_waiting_call_changes_nothing(
     ctx: Context,
 ) -> None:

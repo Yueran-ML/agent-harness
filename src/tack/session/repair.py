@@ -71,7 +71,9 @@ def closing_events(
     call that had not been dispatched did not run: ``TOOL_NOT_STARTED``.
 
     Calls are matched with their results one by one and in order, not by id
-    alone: a model may use an id again in a later reply.
+    alone: a model may use an id again in a later reply. An event that takes
+    the place of earlier ones is passed over. It says again what the log
+    holds, so it asks for no new call and answers none.
 
     Returns:
         The events to append, in order. The list is empty if no turn is open.
@@ -81,6 +83,8 @@ def closing_events(
     waiting: list[_Waiting] = []
     for event in events:
         data = event.data
+        if event.replaces:
+            continue
         if isinstance(data, TurnStartEvent):
             turn, step = data.turn, None
             waiting.clear()
@@ -97,7 +101,7 @@ def closing_events(
                 if call.call_id == data.call_id and not call.dispatched:
                     call.dispatched = True
                     break
-        elif isinstance(data, ToolResultEvent) and not event.replaces:
+        elif isinstance(data, ToolResultEvent):
             for call in waiting:
                 if call.call_id == data.message.call_id:
                     waiting.remove(call)

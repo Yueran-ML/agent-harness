@@ -13,6 +13,7 @@ from pydantic import BaseModel, JsonValue
 
 from columbina.agent import AGENTS, Agent, Agents, AgentSpec
 from columbina.apps import FRONTEND
+from columbina.apps.common import DEFAULT_PROMPT, open_agent
 from columbina.kernel import Context
 from columbina.llm.types import CallConfig, ReasoningBlock, TextBlock
 from columbina.session import (
@@ -29,21 +30,11 @@ from columbina.session import (
     ToolResultEvent,
     TurnEndEvent,
 )
-from columbina.session.store import SESSION_FILE
 
-__all__ = ["Config", "Headless", "apply", "inject", "name"]
+__all__ = ["DEFAULT_PROMPT", "Config", "Headless", "apply", "inject", "name"]
 
 name = "headless"
 inject = (AGENTS, SESSIONS)
-
-DEFAULT_PROMPT = (
-    "You are Columbina, an agent that works in a directory on the user's machine. "
-    "Use the tools you are given to look at what is there before you answer or change "
-    "anything. After a change, check that it does what it should, if you have a way to check. "
-    "If a call is refused because it is not allowed, do not try to get the same thing done "
-    "another way: say in your answer what was not allowed. "
-    "When the task is done, say briefly what you found or did."
-)
 
 
 class Config(BaseModel):
@@ -189,12 +180,7 @@ class Headless:
         """Create the agent, on a stored session if the config names one that exists."""
         config = self._config
         spec = AgentSpec(cwd=config.cwd, model=config.model, system_prompt=config.system_prompt)
-        session_id = config.session_id
-        if session_id is not None and self._sessions.root is not None:
-            stored = self._sessions.directory(config.cwd, session_id) / SESSION_FILE
-            if stored.exists():
-                return await self._agents.resume(self._ctx, spec, session_id)
-        return await self._agents.create(self._ctx, spec, session_id=session_id)
+        return await open_agent(self._ctx, self._agents, self._sessions, spec, config.session_id)
 
     def _follow(self, committed: Committed) -> None:
         for line in _report(committed.event.data):

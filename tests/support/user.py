@@ -40,11 +40,14 @@ class Step(BaseModel):
         sees: Text that has to be printed, after everything that the steps
             before this one waited for.
         rests: Whether to wait until a turn has ended and none is running.
+        asked: Whether to wait until the prompt offers the keys of a
+            question, which is when a key answers it.
         keys: The keys to press then.
     """
 
     sees: str = ""
     rests: bool = False
+    asked: bool = False
     keys: str = ""
 
 
@@ -77,6 +80,12 @@ def _shows(screen: Screen, text: str, after: int) -> Callable[[], bool]:
     return lambda: text in _printed(screen)[after:]
 
 
+def _offers_keys(screen: Screen) -> bool:
+    """Tell whether the prompt offers the keys of a question at this moment."""
+    screen.flush()
+    return any(row.startswith("[y/") for row in screen.display.window())
+
+
 def _at_rest(ctx: Context) -> bool:
     """Tell whether an agent is there that has had a turn and runs none."""
     agents = ctx.get(AGENTS)
@@ -95,21 +104,23 @@ async def _act(ctx: Context, config: Config, keys: PipeInput, screen: Screen) ->
             after = _printed(screen).index(step.sees, after) + len(step.sees)
         if step.rests:
             await until(lambda: _at_rest(ctx), config.seconds)
+        if step.asked:
+            await until(lambda: _offers_keys(screen), config.seconds)
         keys.send_text(step.keys)
 
 
 async def _answer(config: Config, keys: PipeInput, screen: Screen) -> None:
-    """Answer every question once it is on the screen.
+    """Answer every question once its keys are offered.
 
-    A question is printed when the prompt has become the question, so a key
-    that is pressed after the text is there is taken for the answer.
+    A key counts from the moment at which the prompt shows the keys of the
+    question, and not before, so that is what a person waits for too.
     """
     answered = 0
     while True:
         printed = _printed(screen)
         asked = printed.count(_ASKED)
         closed = sum(printed.count(mark) for mark in _ANSWERED)
-        if asked > answered and closed >= answered:
+        if asked > answered and closed >= answered and _offers_keys(screen):
             question = printed[printed.rindex(_ASKED) :]
             offered = f"\n  {config.answer}  " in question
             keys.send_text(config.answer if offered else "y")

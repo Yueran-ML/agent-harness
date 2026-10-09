@@ -10,6 +10,10 @@ One key answers. A yes is for this one call. Where the question says that a
 longer yes can be given, a third key gives it: the call, as it stands, is
 then written down as allowed for the rest of the session, where the rules
 are kept, and the answer to the question is still a yes for this one call.
+
+Nothing but one of the keys that say yes is a yes. An answer that is none of
+the keys that were offered should not come back from the prompt, and if one
+does, it is a no.
 """
 
 import asyncio
@@ -71,15 +75,15 @@ class Responder:
             keys.append(Text(f"  a  yes, and do not ask again in this session about {longer}"))
         keys.append(Text("  n  no"))
         question = [asked, *about, Text(request.reason, style=_NOTE), *keys]
+        offered = "yn" if longer is None else "yan"
         try:
-            if longer is None:
-                key = await self.prompt.ask("yn", "[y/n]", question)
-            else:
-                key = await self.prompt.ask("yan", "[y/a/n]", question)
+            key = await self.prompt.ask(offered, f"[{'/'.join(offered)}]", question)
         except asyncio.CancelledError:
             self._say("(the question was withdrawn)")
             raise
-        if key == "n":
+        # Only a key that was offered and says yes is a yes. Whatever else comes back is a
+        # no, also what should never come back at all.
+        if key not in tuple(offered[:-1]):
             self._say("(not allowed)")
             return "rejected"
         if key == "a" and self._written_down(request):

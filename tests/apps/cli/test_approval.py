@@ -1,8 +1,10 @@
 """The person at the terminal is asked before something is done, and answers with one key."""
 
 import asyncio
+from collections.abc import Sequence
 
 import pytest
+from rich.text import Text
 
 import columbina.session
 from columbina.approval import ApprovalRequest, Outcome
@@ -204,6 +206,31 @@ async def test_a_longer_yes_that_cannot_be_written_down_still_allows_this_call(
 
         assert outcome == "allowed-once"
         await at.sees("(allowed, this once)\n")
+
+
+class _Odd(Prompt):
+    """A prompt that hands back something that is none of the keys it was asked for."""
+
+    def __init__(self, at: Desk, handed_back: str) -> None:
+        super().__init__(at.terminal)
+        self.handed_back = handed_back
+
+    async def ask(self, keys: str, choices: str, about: Sequence[Text] = ()) -> str:
+        return self.handed_back
+
+
+@pytest.mark.parametrize("handed_back", ["", "x", "ya", "Y"])
+async def test_only_a_key_that_says_yes_is_a_yes(session: Session, handed_back: str) -> None:
+    # Whatever goes wrong with the keys, it must not come out as a yes.
+    with desk() as at:
+        granting = Grants()
+        responder = Responder(_Odd(at, handed_back), granting)
+
+        outcome = await responder(request(session))
+
+        assert outcome == "rejected"
+        assert granting.given == []
+        await at.sees("(not allowed)\n")
 
 
 async def test_a_question_that_is_withdrawn_is_withdrawn(session: Session) -> None:

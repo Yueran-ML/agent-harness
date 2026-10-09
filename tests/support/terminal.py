@@ -16,7 +16,10 @@ import contextlib
 from collections.abc import Callable, Generator
 from dataclasses import dataclass
 
+from prompt_toolkit.application.current import get_app_or_none
 from prompt_toolkit.input import PipeInput, create_pipe_input
+from prompt_toolkit.key_binding import KeyPress
+from prompt_toolkit.keys import Keys
 
 from columbina.apps.cli.terminal import Terminal
 from support.vt import Display, Emulated
@@ -103,6 +106,18 @@ class Desk:
     def enter(self, line: str = "") -> None:
         """Type a line and press Enter."""
         self._keys.send_text(line + ENTER)
+
+    def press(self, key: Keys, data: str = "") -> None:
+        """Press a key that a pipe cannot carry, with the text that it is handed over with.
+
+        A console of Windows hands the keys that write nothing over without
+        any text, where a terminal sends a sequence of characters for them.
+        The key goes to the prompt that is open, and is carried out at once.
+        """
+        app = get_app_or_none()
+        assert app is not None, "no prompt is open that a key could go to"
+        app.key_processor.feed(KeyPress(key, data))
+        app.key_processor.process_keys()
 
     def hang_up(self) -> None:
         """Close the input, as when the terminal goes away."""

@@ -18,12 +18,21 @@ The prompt serves three things at once.
   by one, since each has a meaning of its own in the line editor, so the
   line editor is given an empty line to work on instead, and the keys that
   write are swallowed.
+
+A question may come while somebody is typing, and a letter of the word they
+are in the middle of must not answer it. So the keys of a question count
+only once the question stands on the screen and no key has been pressed for
+a moment, and they are shown in the place of the prompt from then on and not
+before. Whoever sees keys offered and presses one has answered. The answer
+that changes nothing can be given at any time.
 """
 
 import asyncio
-from collections.abc import Callable, Sequence
+import contextlib
+from collections.abc import Awaitable, Callable, Sequence
 
 from prompt_toolkit import PromptSession, print_formatted_text
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
@@ -43,9 +52,20 @@ _REDRAW_SECONDS = 0.05
 _ESCAPE_SECONDS = 0.1
 """How long Escape waits for a key that would make it the beginning of another key."""
 
+_SETTLE_SECONDS = 0.6
+"""How long the keys have to be still before those of a question count."""
+
+_TICK_SECONDS = 0.02
+"""The shortest wait that is worth beginning."""
+
 _MARK = "> "
+_WAIT = "... "
 _CUT = "..."
 _QUIET = "fg:ansibrightblack"
+
+
+def _nothing() -> None:
+    """Print nothing: this only takes a turn among the things that are printed."""
 
 
 def _end_of(text: str, cells: int) -> str:
@@ -74,7 +94,9 @@ class Prompt:
         "_asking",
         "_busy",
         "_choices",
+        "_counting",
         "_keys",
+        "_last_key",
         "_leaving",
         "_partial",
         "_session",
@@ -90,6 +112,8 @@ class Prompt:
         self._busy = False
         self._partial = Text()
         self._answer: asyncio.Future[str] | None = None
+        self._counting = False
+        self._last_key = 0.0
         self._keys = ""
         self._choices = ""
         self._asking = asyncio.Lock()
@@ -99,7 +123,8 @@ class Prompt:
             input=terminal.input,
             output=terminal.output,
             key_bindings=self._bindings(),
-            bottom_toolbar=lambda: self.status(),
+            # What the line says comes from a file or from what somebody typed.
+            bottom_toolbar=lambda: harmless(self.status()),
         )
         self._session.app.min_redraw_interval = _REDRAW_SECONDS
         # Escape is also how a terminal begins the keys that are pressed with Alt. A key that
@@ -151,31 +176,46 @@ class Prompt:
         """Ask for one key, and return the key that was pressed.
 
         Escape, Ctrl+C and Ctrl+D count as the last of the keys, which is
-        where the answer that changes nothing belongs. Whatever else is
-        pressed is no answer. Questions are asked one at a time, and the
-        words of a question are shown when its turn has come. By then the
-        prompt takes keys for answers, so whoever reads the question and
+        where the answer that changes nothing belongs, and they count from
+        the first moment. Whatever else is pressed is no answer. Questions
+        are asked one at a time, and the words of a question are shown when
+        its turn has come.
+
+        The other keys count once the words stand on the screen and no key
+        has been pressed for a moment. Until then they are swallowed, and
+        ``choices`` is not shown. So a key that was under way when the
+        question came answers nothing, and whoever sees the choices and
         presses a key answers this question and no other.
 
         Args:
             keys: The keys that are answers, in lower case.
-            choices: What stands in the place of the prompt while the
-                question is asked.
+            choices: What stands in the place of the prompt once the keys
+                count.
             about: The question in words, shown above the prompt.
         """
         async with self._asking:
+            app = self._session.app
             buffer = self._session.default_buffer
-            aside = buffer.document
+            # Only a line that is being typed is put aside. One that was submitted stays in
+            # the editor until the next line is begun, and it must not come back then.
+            aside = buffer.document if app.is_running and not app.is_done else None
             buffer.reset()
             self._keys, self._choices = keys, choices
-            self._answer = asyncio.get_running_loop().create_future()
+            self._counting = False
+            self._answer = answer = asyncio.get_running_loop().create_future()
             self.show(about)
             self._redraw()
             try:
-                return await self._answer
+                await self._until_the_keys_count(answer)
+                return await answer
             finally:
                 self._answer = None
-                buffer.set_document(aside, bypass_readonly=True)
+                self._counting = False
+                if aside is None:
+                    # What got into the line meanwhile was meant for nobody.
+                    buffer.reset()
+                else:
+                    buffer.set_document(aside, bypass_readonly=True)
                 self._redraw()
 
     def show(self, lines: Sequence[Text]) -> None:
@@ -184,6 +224,46 @@ class Prompt:
         if sent:
             # While the prompt is open, this prints above it and draws it again below.
             print_formatted_text(ANSI(sent), output=self._terminal.output, end="")
+
+    async def _until_the_keys_count(self, answer: "asyncio.Future[str]") -> None:
+        """Wait until a question is on the screen and the keys have been still for a while.
+
+        The wait ends early if the question is answered meanwhile, by a key
+        that says no.
+        """
+        loop = asyncio.get_running_loop()
+        await self._printed()
+        self._last_key = loop.time()
+        while not answer.done():
+            left = self._last_key + _SETTLE_SECONDS - loop.time()
+            if left <= 0:
+                self._counting = True
+                self._redraw()
+                return
+            # A clock may wake a wait a moment early. The rest is then not waited for in
+            # steps too small for the clock to tell apart.
+            await asyncio.wait([answer], timeout=max(left, _TICK_SECONDS))
+
+    async def _printed(self) -> None:
+        """Wait until everything that was shown so far stands on the screen."""
+        if not self._session.app.is_running:
+            # Without a prompt, what is shown is printed at once.
+            return
+        loop = asyncio.get_running_loop()
+        begun: asyncio.Future[Awaitable[None]] = loop.create_future()
+
+        def follow() -> None:
+            # Things are printed one after the other, each when the one before it is done.
+            # Nothing is begun for somebody who has stopped waiting.
+            if not begun.done():
+                begun.set_result(run_in_terminal(_nothing))
+
+        # What was shown is handed over in the same way, so this comes after it.
+        loop.call_soon_threadsafe(follow)
+        following = asyncio.shield(await begun)
+        # However the printing ends, there is nothing more to wait for.
+        with contextlib.suppress(Exception):
+            await following
 
     def _message(self) -> StyleAndTextTuples:
         """Return what stands before the typing: the unfinished line, and the mark below it."""
@@ -196,7 +276,11 @@ class Prompt:
             quiet = _QUIET if self._partial.style and self._terminal.colours else ""
             unfinished = harmless(self._partial.plain)
             parts.append((quiet, _end_of(unfinished, columns - 1) + "\n"))
-        parts.append(("", f"{self._choices} " if self._answer is not None else _MARK))
+        if self._answer is None:
+            parts.append(("", _MARK))
+        else:
+            # The keys of a question are offered from the moment at which they count.
+            parts.append(("", f"{self._choices} " if self._counting else _WAIT))
         return parts
 
     def _redraw(self) -> None:
@@ -232,8 +316,15 @@ class Prompt:
 
         @bindings.add(Keys.Any, filter=asking)
         def answer(event: KeyPressEvent) -> None:
-            if event.data.lower() in self._keys:
-                self._answered(event.data.lower())
+            if not self._counting:
+                # Somebody is still typing: the keys have to be still for a while again.
+                self._last_key = asyncio.get_running_loop().time()
+                return
+            # One letter, and one that was offered. Some keys come without any text, and
+            # nothing at all is found in every text.
+            key = event.data.lower()
+            if len(key) == 1 and key in self._keys:
+                self._answered(key)
 
         @bindings.add("enter", filter=asking)
         def no_line(event: KeyPressEvent) -> None:

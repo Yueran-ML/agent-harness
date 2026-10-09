@@ -53,12 +53,12 @@ WHAT_THE_USER_DOES: tuple[dict[str, Any], ...] = (
     # A task.
     {"sees": "/help lists the commands.", "keys": TASK + ENTER},
     # The check needs a yes. It is given for the rest of the session.
-    {"sees": f"    {CHECK}\n", "keys": "a"},
+    {"sees": f"    {CHECK}\n", "asked": True, "keys": "a"},
     # Something is said while the turn runs.
     {"sees": "(allowed, and not asked about again in this session)\n", "keys": ALSO + ENTER},
     # A second task, with a command that runs for a long time.
     {"sees": f"{ANSWER}\n", "keys": "Now wait a minute." + ENTER},
-    {"sees": f"    {WAIT}\n", "keys": "y"},
+    {"sees": f"    {WAIT}\n", "asked": True, "keys": "y"},
     # It is stopped.
     {"sees": "(allowed, this once)\n", "keys": ESCAPE},
     # A third task, and the end.
@@ -199,7 +199,7 @@ def test_a_no_keeps_the_command_from_running(home: Path, repository: Path, tmp_p
     replies = (call(shell.NAME, command=CHECK), {"text": "I was not allowed to run it."})
     steps = (
         {"sees": "/help lists the commands.", "keys": "Run the check." + ENTER},
-        {"sees": f"    {CHECK}\n", "keys": "n"},
+        {"sees": f"    {CHECK}\n", "asked": True, "keys": "n"},
         {"sees": "I was not allowed to run it.\n", "keys": "/exit" + ENTER},
     )
     chosen = profile(tmp_path, *replies, extends="cli", extra=[somebody(*steps)])

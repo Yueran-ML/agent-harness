@@ -4,6 +4,7 @@ import asyncio
 import time
 
 import pytest
+from prompt_toolkit.keys import Keys
 from rich.text import Text
 
 from columbina.apps.cli import prompt as prompt_module
@@ -18,6 +19,20 @@ async def typed(prompt: Prompt, at: Desk, text: str) -> None:
     """Type something and wait until the line holds it."""
     at.type(text)
     await until(lambda: prompt.typed.endswith(text))
+
+
+async def offered(at: Desk, mark: str) -> None:
+    """Wait until something stands where the prompt is, as the keys of a question do.
+
+    This reads the screen. What is sent to draw a line leaves out the places
+    that hold the same as before, so it need not hold the line in one piece.
+    """
+    await until(lambda: at_the_prompt(at, mark))
+
+
+def at_the_prompt(at: Desk, mark: str) -> bool:
+    """Tell whether something stands where the prompt is at this moment."""
+    return any(row.startswith(mark) for row in at.window())
 
 
 # Lines
@@ -348,7 +363,7 @@ async def test_a_question_is_answered_by_one_key() -> None:
         prompt = Prompt(at.terminal)
         waiting = asyncio.ensure_future(prompt.line())
         asked = asyncio.ensure_future(prompt.ask("yan", "[y] yes  [a] always  [n] no"))
-        await until(lambda: "[y] yes  [a] always  [n] no" in at.shown())
+        await offered(at, "[y] yes  [a] always  [n] no")
 
         at.type("a")
 
@@ -362,7 +377,7 @@ async def test_the_first_answer_counts_and_a_second_key_changes_nothing() -> Non
         prompt = Prompt(at.terminal)
         waiting = asyncio.ensure_future(prompt.line())
         asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
-        await until(lambda: "[y] yes  [n] no" in at.shown())
+        await offered(at, "[y] yes  [n] no")
 
         at.type("yn")
 
@@ -375,7 +390,7 @@ async def test_ctrl_d_answers_a_question_with_its_last_key() -> None:
         prompt = Prompt(at.terminal)
         waiting = asyncio.ensure_future(prompt.line())
         asked = asyncio.ensure_future(prompt.ask("yan", "[y] yes  [a] always  [n] no"))
-        await until(lambda: "[y] yes  [a] always  [n] no" in at.shown())
+        await offered(at, "[y] yes  [a] always  [n] no")
 
         at.type(CTRL_D)
 
@@ -389,7 +404,7 @@ async def test_escape_answers_a_question_with_its_last_key() -> None:
         prompt = Prompt(at.terminal)
         waiting = asyncio.ensure_future(prompt.line())
         asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
-        await until(lambda: "[y] yes  [n] no" in at.shown())
+        await offered(at, "[y] yes  [n] no")
 
         at.type(ESCAPE)
 
@@ -405,7 +420,7 @@ async def test_ctrl_c_answers_a_question_with_its_last_key_and_stops_nothing() -
         prompt.busy = True
         waiting = asyncio.ensure_future(prompt.line())
         asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
-        await until(lambda: "[y] yes  [n] no" in at.shown())
+        await offered(at, "[y] yes  [n] no")
 
         at.type(CTRL_C)
 
@@ -419,7 +434,7 @@ async def test_a_key_that_is_no_answer_is_no_answer_and_neither_is_a_line() -> N
         prompt = Prompt(at.terminal)
         waiting = asyncio.ensure_future(prompt.line())
         asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
-        await until(lambda: "[y] yes  [n] no" in at.shown())
+        await offered(at, "[y] yes  [n] no")
 
         at.type("aq" + ENTER)
         at.type("Y")
@@ -431,6 +446,24 @@ async def test_a_key_that_is_no_answer_is_no_answer_and_neither_is_a_line() -> N
         waiting.cancel()
 
 
+@pytest.mark.parametrize("brought", ["", "ya", "an"])
+async def test_a_key_that_does_not_bring_one_letter_is_no_answer(brought: str) -> None:
+    # A console hands some keys over without any text, and nothing at all is found in every
+    # text. Two letters at once are found in the keys too, and are none of them. The key
+    # has to be one that the line editor has no use for, or it would not get this far.
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yan", "[y] yes  [a] always  [n] no"))
+        await offered(at, "[y] yes  [a] always  [n] no")
+
+        at.press(Keys.ControlPageUp, brought)
+        at.type("n")
+
+        assert await asyncio.wait_for(asked, 5) == "n"
+        waiting.cancel()
+
+
 async def test_what_was_typed_before_a_question_is_there_again_after_it() -> None:
     with desk() as at:
         prompt = Prompt(at.terminal)
@@ -438,13 +471,118 @@ async def test_what_was_typed_before_a_question_is_there_again_after_it() -> Non
         await typed(prompt, at, "No, the lex")
 
         asked = asyncio.ensure_future(prompt.ask("yn", "[y] yes  [n] no"))
-        await until(lambda: prompt.typed == "")
+        await offered(at, "[y] yes  [n] no")
         at.type("zz")
         at.type("n")
         await asyncio.wait_for(asked, 5)
         at.enter("er.")
 
         assert await asyncio.wait_for(waiting, 5) == "No, the lexer."
+
+
+async def test_keys_that_were_under_way_when_a_question_came_do_not_answer_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Somebody who is in the middle of a word has not read the question that appears.
+    monkeypatch.setattr(prompt_module, "_SETTLE_SECONDS", 0.5)
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "Stop that, ")
+
+        asked = asyncio.ensure_future(prompt.ask("yan", "[y/a/n]", [Text("May it be run?")]))
+        await until(lambda: prompt.typed == "")
+        at.type("any day now")
+        await offered(at, "[y/a/n]")
+        # The keys are gone: they were no answer, and they are no part of the line either.
+        await asyncio.sleep(0.05)
+        assert not asked.done()
+        at.type("n")
+
+        assert await asyncio.wait_for(asked, 5) == "n"
+        at.enter("please.")
+        assert await asyncio.wait_for(waiting, 5) == "Stop that, please."
+
+
+async def test_a_question_takes_an_answer_once_the_keys_have_been_still_for_a_while(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(prompt_module, "_SETTLE_SECONDS", 0.6)
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y/n]", [Text("May it be run?")]))
+        await at.sees("May it be run?")
+
+        # A key every fifth of a second, for longer than the keys have to be still.
+        for _ in range(5):
+            at.type("y")
+            await asyncio.sleep(0.2)
+
+        assert not at_the_prompt(at, "[y/n]")
+        assert not asked.done()
+        await offered(at, "[y/n]")
+        at.type("y")
+        assert await asyncio.wait_for(asked, 5) == "y"
+        waiting.cancel()
+
+
+async def test_the_keys_of_a_question_are_shown_when_they_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(prompt_module, "_SETTLE_SECONDS", 30.0)
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y/n]", [Text("May it be run?")]))
+        await at.sees("May it be run?")
+        await offered(at, "...")
+
+        at.type("y")
+        await asyncio.sleep(0.1)
+
+        # Whoever sees no keys offered has answered nothing by pressing one.
+        assert not at_the_prompt(at, "[y/n]")
+        assert not asked.done()
+        asked.cancel()
+        waiting.cancel()
+
+
+async def test_a_question_can_be_declined_before_its_keys_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(prompt_module, "_SETTLE_SECONDS", 30.0)
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        asked = asyncio.ensure_future(prompt.ask("yan", "[y/a/n]", [Text("May it be run?")]))
+        await at.sees("May it be run?")
+        await offered(at, "...")
+
+        at.type(ESCAPE)
+
+        # The answer that changes nothing is safe to give without having read anything.
+        assert await asyncio.wait_for(asked, 5) == "n"
+        waiting.cancel()
+
+
+async def test_a_line_that_was_submitted_does_not_come_back_after_a_question() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        at.enter("do it")
+        assert await asyncio.wait_for(prompt.line(), 5) == "do it"
+
+        # The question comes between two lines, as when a call follows a task at once.
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y/n]"))
+        await asyncio.sleep(0)
+        waiting = asyncio.ensure_future(prompt.line())
+        await offered(at, "[y/n]")
+        at.type("n")
+        await asyncio.wait_for(asked, 5)
+
+        assert prompt.typed == ""
+        at.enter("next")
+        assert await asyncio.wait_for(waiting, 5) == "next"
 
 
 async def test_a_question_that_is_withdrawn_leaves_the_line_as_it_was() -> None:
@@ -461,6 +599,24 @@ async def test_a_question_that_is_withdrawn_leaves_the_line_as_it_was() -> None:
         at.enter(" done")
 
         assert await asyncio.wait_for(waiting, 5) == "half done"
+
+
+async def test_a_question_that_is_withdrawn_at_once_waits_for_nothing_more() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "half")
+        asked = asyncio.ensure_future(prompt.ask("yn", "[y/n]", [Text("May it be run?")]))
+        # The question has put the line aside, and waits for its words to be printed.
+        await asyncio.sleep(0)
+
+        asked.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asked
+        at.enter(" done")
+
+        assert await asyncio.wait_for(waiting, 5) == "half done"
+        assert not at_the_prompt(at, "[y/n]")
 
 
 async def test_one_question_is_asked_at_a_time() -> None:
@@ -493,7 +649,7 @@ async def test_a_question_can_be_asked_while_nobody_waits_for_a_line() -> None:
         await asyncio.sleep(0)
 
         waiting = asyncio.ensure_future(prompt.line())
-        await until(lambda: "[y] yes  [n] no" in at.shown())
+        await offered(at, "[y] yes  [n] no")
         at.type("y")
 
         assert await asyncio.wait_for(asked, 5) == "y"
@@ -508,3 +664,16 @@ async def test_the_status_line_is_asked_for_whenever_the_prompt_is_drawn() -> No
         prompt = Prompt(at.terminal, status=lambda: "model-x | idle")
 
         assert prompt.status() == "model-x | idle"
+
+
+async def test_the_status_line_cannot_steer_the_terminal() -> None:
+    # The name of a model comes from a file or from what somebody typed.
+    with desk() as at:
+        prompt = Prompt(at.terminal, status=lambda: f"safe{OVERRIDE}abc | idle")
+        waiting = asyncio.ensure_future(prompt.line())
+
+        await until(lambda: any("| idle" in row for row in at.window()))
+
+        assert OVERRIDE not in at.sent()
+        assert any(f"safe{STAND_IN}abc | idle" in row for row in at.window())
+        waiting.cancel()

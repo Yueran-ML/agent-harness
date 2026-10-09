@@ -4,6 +4,19 @@ from pathlib import Path
 
 import pytest
 
+from columbina.apps.cli import prompt
+
+
+@pytest.fixture(autouse=True)
+def questions_without_the_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Have the keys of a question count as good as at once.
+
+    The wait is there for a person who is typing when a question appears. A
+    test presses a key when it sees the keys offered, and that is where the
+    wait is over, however long it was. The tests of the wait set it themselves.
+    """
+    monkeypatch.setattr(prompt, "_SETTLE_SECONDS", 0.05)
+
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

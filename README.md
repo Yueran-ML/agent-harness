@@ -121,6 +121,10 @@ for the rest of the session: the same tool, acting on the same thing, and for a 
 the same line, word for word. Such a yes is kept in memory and is gone when the program
 ends. A rule that refuses is not answered away by it.
 
+The keys are offered a moment after the question has appeared, once nothing has been
+typed for 0.6 seconds, and they count from then on. A letter of a line that was being
+typed when the question came answers nothing. Escape says no at any time.
+
 The line below the prompt names the model, says what the session may do to files and how
 well commands are held, and counts the tokens of the last request and the share of all
 input that came from the cache of the provider.

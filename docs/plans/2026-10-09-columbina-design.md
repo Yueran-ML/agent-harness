@@ -36,12 +36,12 @@ Columbina 是一个能安装、能日常使用、做得扎实的开源 harness�
 | 仓库 | `github.com/Yueran-ML/agent-harness`。本地只做提交，推送由作者用 GitHub Desktop 完成 |
 | 实现路线 | 对齐 DeepSeek Harness，参考 Claude Code 和 Codex，取其精华 |
 | 重心 | 偏工程 |
-| 界面 | 先终端 CLI，后补 Web，Web 要好看 |
+| 界面 | 先终端 CLI，后补桌面应用。应用用 Electron 做壳，界面用网页技术写，要好看 |
 | API 模型 | DeepSeek Flash（`deepseek-flash`，即 V4.1-Flash），密钥在环境变量 `DEEPSEEK_API_KEY` |
 | 本地模型 | `D:\ollama-models\gguf` 下的 Qwen2.5、Llama、Gemma 各量化档 |
 | 基准任务 | 代码修改、文件与命令行操作、SQL 数据查询、多步工具计算，四类都做 |
 | 评测隔离 | 容器内执行。Docker 和 WSL 由作者在第 7 阶段前安装 |
-| 交付 | 公开仓库、工程报告、Web 界面。SUS 可用性调查由作者完成 |
+| 交付 | 公开仓库、工程报告、桌面应用。SUS 可用性调查由作者完成 |
 
 ## 2. 参考与取舍
 
@@ -85,7 +85,7 @@ Columbina 与 DeepSeek Harness 的另一处不同：后者没有内置终端界�
       ├──► 消息投影：日志 → 下一次请求的消息列表
       ├──► 状态投影：inbox、待办、用量、重试计数
       ├──► 持久化：JSONL
-      └──► 前端：CLI、无界面、之后的 JSON-RPC 与 Web
+      └──► 前端：CLI、无界面、之后的 JSON-RPC 服务与桌面应用
 ```
 
 规则只有一条：模型能看到的，必须先写进日志。任何一次请求都能由日志重建。
@@ -764,7 +764,7 @@ Tool(
 
 ### 12.4 之后
 
-第 10 阶段加 JSON-RPC 2.0 的 stdio 服务（请求 `initialize`、`session/prompt`、`shutdown`，通知 `session.event`、`session.status`）和 Web 界面。Web 的设计届时单独做。
+第 10 阶段加 JSON-RPC 2.0 的 stdio 服务和桌面应用。应用由三部分组成：Electron 写的壳，网页技术写的界面，以及这个服务。界面与服务之间的消息已经先行规定，见 [`docs/protocol/README.md`](../protocol/README.md)，界面可以在服务实现之前对着样例数据开发。选 Electron 是因为它自带浏览器内核，界面在各个平台上的表现一致。界面的视觉设计届时单独做。
 
 ## 13. 质量保障
 
@@ -840,7 +840,7 @@ Qwen2.5 和 Llama 的各量化档在验收基准上的成功率，标出哪些�
 - GitHub 公开仓库和 PyPI 包，MIT 协议，中英文 README，演示动图，更新日志。
 - 文档：架构说明、配置参考、插件开发指南。
 - 一份 4 到 6 页的工程报告，讲架构、设计取舍和基准结果。
-- Web 界面。
+- 桌面应用。
 
 ### 15.2 阶段
 
@@ -855,7 +855,7 @@ Qwen2.5 和 Llama 的各量化档在验收基准上的成功率，标出哪些�
 | 7 | 容器沙箱 | shell 工具在容器内执行，断网 |
 | 8 | 基准与本地模型支持矩阵 | 三张结果表 |
 | 9 | 打包发布、文档、工程报告 | PyPI 上可安装 |
-| 10 | JSON-RPC 服务与 Web 界面 | 之后由作者做 SUS |
+| 10 | JSON-RPC 服务与桌面应用 | 之后由作者做 SUS |
 
 ## 16. 风险与未决事项
 

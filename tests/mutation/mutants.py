@@ -78,6 +78,7 @@ SPILL_SEAM = "src/columbina/spill/__init__.py"
 COMPACTION_SEAM = "src/columbina/compaction/__init__.py"
 TRIM = "src/columbina/compaction/basic/trim.py"
 REGION = "src/columbina/compaction/basic/region.py"
+SUMMARY = "src/columbina/compaction/basic/summary.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -5576,6 +5577,144 @@ _COMPACTION = (
         REGION,
         "    return Region(tuple(event.seq for event in chosen), sum(sizes[start:end]))\n",
         "    return Region(tuple(event.seq for event in chosen), sum(sizes))\n",
+    ),
+    mutant(
+        "the model that sums up is not shown what stands before the part that goes",
+        SUMMARY,
+        "LlmRequest(config=config, messages=(*before, *shown, ask), tools=tools)",
+        "LlmRequest(config=config, messages=(*shown, ask), tools=tools)",
+    ),
+    mutant(
+        "the model is asked for a summary before it is shown what to sum up",
+        SUMMARY,
+        "LlmRequest(config=config, messages=(*before, *shown, ask), tools=tools)",
+        "LlmRequest(config=config, messages=(ask, *before, *shown), tools=tools)",
+    ),
+    mutant(
+        "the request for a summary declares no tools",
+        SUMMARY,
+        "LlmRequest(config=config, messages=(*before, *shown, ask), tools=tools)",
+        "LlmRequest(config=config, messages=(*before, *shown, ask), tools=())",
+    ),
+    mutant(
+        "what the requests for a summary cost is what the last one cost",
+        SUMMARY,
+        "        usage += call.usage\n",
+        "        usage = call.usage\n",
+    ),
+    mutant(
+        "a part that is too long for the model is not halved",
+        SUMMARY,
+        "            newer = _newer_half(shown, size) if failure.code == _TOO_LONG else ()\n",
+        "            newer = ()\n",
+    ),
+    mutant(
+        "any failure of the request for a summary halves the part",
+        SUMMARY,
+        "            newer = _newer_half(shown, size) if failure.code == _TOO_LONG else ()\n",
+        "            newer = _newer_half(shown, size)\n",
+    ),
+    mutant(
+        "a failure that may pass ends the summary at once",
+        SUMMARY,
+        "            elif failure.code in _PASSING and not waited:\n",
+        "            elif False:\n",
+    ),
+    mutant(
+        "a failure that may pass is waited out as often as it comes",
+        SUMMARY,
+        "            elif failure.code in _PASSING and not waited:\n",
+        "            elif failure.code in _PASSING:\n",
+    ),
+    mutant(
+        "a failure that cannot pass is waited out",
+        SUMMARY,
+        "            elif failure.code in _PASSING and not waited:\n",
+        "            elif not waited:\n",
+    ),
+    mutant(
+        "the wait is the same whatever the service asked for",
+        SUMMARY,
+        "                seconds = _WAIT_SECONDS if asked_for is None else asked_for / 1000\n",
+        "                seconds = _WAIT_SECONDS\n",
+    ),
+    mutant(
+        "the service is waited for as long as it says",
+        SUMMARY,
+        "                await pause(min(seconds, _LONGEST_WAIT_SECONDS))\n",
+        "                await pause(seconds)\n",
+    ),
+    mutant(
+        "a summary that was cut off is taken for a whole one",
+        SUMMARY,
+        '        if finish.reason == "max-tokens":\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "the text of a reply is taken with the space around it",
+        SUMMARY,
+        "        text = call.message.text.strip()\n",
+        "        text = call.message.text\n",
+    ),
+    mutant(
+        "a reply without text is the end although tools were declared",
+        SUMMARY,
+        "        if not tools:\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "a reply without text is asked for again with the tools",
+        SUMMARY,
+        "        tools = ()\n",
+        "        pass\n",
+    ),
+    mutant(
+        "a summary of the size of what it sums up is taken",
+        SUMMARY,
+        "    if size(carried(text)) >= region.tokens:\n",
+        "    if size(carried(text)) > region.tokens:\n",
+    ),
+    mutant(
+        "a summary is taken however long it is",
+        SUMMARY,
+        "    if size(carried(text)) >= region.tokens:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "nobody is told how many messages the model was not shown",
+        SUMMARY,
+        "dropped=len(region.seqs) - len(shown))",
+        "dropped=0)",
+    ),
+    mutant(
+        "the newer half of a part is less than half of it",
+        SUMMARY,
+        "    while at > 0 and kept + sizes[at - 1] <= half:\n",
+        "    while at > 0 and kept + sizes[at - 1] < half:\n",
+    ),
+    mutant(
+        "a half begins with a result whose call was dropped",
+        SUMMARY,
+        "    while at < len(messages) and isinstance(messages[at], ToolMessage):\n        at += 1\n",
+        "",
+    ),
+    mutant(
+        "a part of which nothing can be dropped is shown again",
+        SUMMARY,
+        "    return messages[at:] if at else ()\n",
+        "    return messages[at:]\n",
+    ),
+    mutant(
+        "a closing tag in a summary ends the frame around it",
+        SUMMARY,
+        '    body = summary.strip().replace("</summary", "<\\\\/summary")\n',
+        "    body = summary.strip()\n",
+    ),
+    mutant(
+        "a summary is carried with the space around it",
+        SUMMARY,
+        '    body = summary.strip().replace("</summary", "<\\\\/summary")\n',
+        '    body = summary.replace("</summary", "<\\\\/summary")\n',
     ),
 )
 

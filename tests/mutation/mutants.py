@@ -66,6 +66,8 @@ COMMAND_TOOLS = "src/columbina/commands/tools.py"
 COMMAND_SESSIONS = "src/columbina/commands/sessions.py"
 COMMAND_PERMISSIONS = "src/columbina/commands/permissions.py"
 COMMAND_COMPACT = "src/columbina/commands/compact.py"
+COMMAND_TODOS = "src/columbina/commands/todos.py"
+TODO = "src/columbina/todo/__init__.py"
 TERMINAL_TEXT = "src/columbina/apps/terminal_text.py"
 HEADLESS = "src/columbina/apps/headless.py"
 SESSION_STORE = "src/columbina/session/store.py"
@@ -3303,6 +3305,42 @@ _TRANSCRIPT = (
         "        if event.replaces:\n            return []\n        data = event.data\n",
         "        data = event.data\n",
     ),
+    mutant(
+        "the list of things to do is not shown when it is written",
+        CLI_TRANSCRIPT,
+        "        if isinstance(data, TodoWriteEvent):\n            return _things(data)\n",
+        "",
+    ),
+    mutant(
+        "the call that writes the list is shown with all that it writes",
+        CLI_TRANSCRIPT,
+        "        if data.name == TODO_TOOL and arguments is not None:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a call for the list that cannot be read is shown by its name alone",
+        CLI_TRANSCRIPT,
+        "        if data.name == TODO_TOOL and arguments is not None:\n",
+        "        if data.name == TODO_TOOL:\n",
+    ),
+    mutant(
+        "a list that was emptied shows nothing",
+        CLI_TRANSCRIPT,
+        '    if not data.items:\n        return [_note("    (the list of things to do is empty)")]\n',
+        "",
+    ),
+    mutant(
+        "a thing that is being done does not stand out",
+        CLI_TRANSCRIPT,
+        '"in_progress": _DOING',
+        '"in_progress": ""',
+    ),
+    mutant(
+        "a thing that is done does not step back",
+        CLI_TRANSCRIPT,
+        '"completed": _NOTE}',
+        '"completed": ""}',
+    ),
 )
 
 _TERMINAL = (
@@ -5472,6 +5510,195 @@ _CAP = (
     ),
 )
 
+_TODO = (
+    mutant(
+        "a list that the model writes is not kept",
+        TODO,
+        "        run.session.append(TodoWriteEvent(call_id=run.call_id, items=items))\n",
+        "        pass\n",
+    ),
+    mutant(
+        "a new list is added to the old one",
+        TODO,
+        "        return Todos(items=data.items, call_id=data.call_id)\n",
+        "        return Todos(items=(*state.items, *data.items), call_id=data.call_id)\n",
+    ),
+    mutant(
+        "a list forgets which call wrote it",
+        TODO,
+        "        return Todos(items=data.items, call_id=data.call_id)\n",
+        "        return Todos(items=data.items)\n",
+    ),
+    mutant(
+        "a thing that is in progress is marked like one that waits",
+        TODO,
+        '"in_progress": "[>]"',
+        '"in_progress": "[ ]"',
+    ),
+    mutant(
+        "a thing that is done is marked like one that waits",
+        TODO,
+        '"completed": "[x]"',
+        '"completed": "[ ]"',
+    ),
+    mutant(
+        "a list that was emptied is said to hold nothing of each kind",
+        TODO,
+        '    if not items:\n        return "The list is empty now."\n',
+        "",
+    ),
+    mutant(
+        "the things of one state are counted as the things of the others",
+        TODO,
+        "sum(item.status == status for item in items)",
+        "sum(item.status != status for item in items)",
+    ),
+    mutant(
+        "one thing is told as one things",
+        TODO,
+        '    things = "1 thing" if len(items) == 1 else f"{len(items)} things"\n',
+        '    things = f"{len(items)} things"\n',
+    ),
+    mutant(
+        "what is done is told as what waits",
+        TODO,
+        "_counted(counts['completed'], 'completed')",
+        "_counted(counts['pending'], 'completed')",
+    ),
+    mutant(
+        "what is in progress is told as what waits",
+        TODO,
+        "_counted(counts['in_progress'], 'in progress')",
+        "_counted(counts['pending'], 'in progress')",
+    ),
+    mutant(
+        "what waits is told as what is done",
+        TODO,
+        "_counted(counts['pending'], 'pending')",
+        "_counted(counts['completed'], 'pending')",
+    ),
+    mutant(
+        "a list may be as long as the model likes",
+        TODO,
+        "    if len(args.items) > MAX_ITEMS:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a list of just the size that is kept is refused",
+        TODO,
+        "    if len(args.items) > MAX_ITEMS:\n",
+        "    if len(args.items) >= MAX_ITEMS:\n",
+    ),
+    mutant(
+        "the things of a list are counted from nothing where one says nothing",
+        TODO,
+        "enumerate(args.items, start=1)",
+        "enumerate(args.items)",
+    ),
+    mutant(
+        "the space around the words of a thing is kept",
+        TODO,
+        '        content = " ".join(thing.content.split())\n',
+        "        content = thing.content\n",
+    ),
+    mutant(
+        "a thing may go over several lines",
+        TODO,
+        '        content = " ".join(thing.content.split())\n',
+        "        content = thing.content.strip()\n",
+    ),
+    mutant(
+        "a thing that says nothing is kept",
+        TODO,
+        "        if not content:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a thing may be as long as the model likes",
+        TODO,
+        "        if len(content) > MAX_CHARACTERS:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a thing of just the length that is kept is refused",
+        TODO,
+        "        if len(content) > MAX_CHARACTERS:\n",
+        "        if len(content) >= MAX_CHARACTERS:\n",
+    ),
+    mutant(
+        "the things in progress are counted from nothing",
+        TODO,
+        "enumerate(items, start=1)",
+        "enumerate(items)",
+    ),
+    mutant(
+        "several things may be in progress at once",
+        TODO,
+        "    if len(doing) > 1:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "one thing in progress is one too many",
+        TODO,
+        "    if len(doing) > 1:\n",
+        "    if len(doing) > 0:\n",
+    ),
+    mutant(
+        "a model is told its list although it sees the call that wrote it",
+        TODO,
+        "    if not todos.items or todos.call_id is None or _seen(session, todos.call_id):\n",
+        "    if not todos.items or todos.call_id is None:\n",
+    ),
+    mutant(
+        "a list that was emptied is told again",
+        TODO,
+        "    if not todos.items or todos.call_id is None or _seen(session, todos.call_id):\n",
+        "    if todos.call_id is None or _seen(session, todos.call_id):\n",
+    ),
+    mutant(
+        "the result of any call passes for the call that wrote the list",
+        TODO,
+        "isinstance(data := events[seq].data, ToolResultEvent) and data.message.call_id == call_id",
+        "isinstance(events[seq].data, ToolResultEvent)",
+    ),
+    mutant(
+        "the list that is told again lacks its things",
+        TODO,
+        "        *shown(todos.items),\n",
+        "",
+    ),
+    mutant(
+        "the event of the list is not declared",
+        TODO,
+        "    ctx.use(SESSIONS).declare(ctx, TodoWriteEvent)\n",
+        "",
+    ),
+    mutant(
+        "a list that is told again stands beside the one that was told before",
+        TODO,
+        'ContextSource(_remembered, order=150, kind="replace")',
+        'ContextSource(_remembered, order=150, kind="append")',
+    ),
+    mutant(
+        "the list is told before what is told about the run",
+        TODO,
+        'ContextSource(_remembered, order=150, kind="replace")',
+        'ContextSource(_remembered, order=50, kind="replace")',
+    ),
+    mutant(
+        "the command shows a list that was emptied as no line at all",
+        COMMAND_TODOS,
+        '    return "\\n".join(shown(items)) if items else _NOTHING\n',
+        '    return "\\n".join(shown(items))\n',
+    ),
+    mutant(
+        "the command says that nothing was written down, whatever was",
+        COMMAND_TODOS,
+        '    return "\\n".join(shown(items)) if items else _NOTHING\n',
+        "    return _NOTHING\n",
+    ),
+)
+
 _COMPACTION = (
     mutant(
         "a reader must know the event that begins a compaction",
@@ -6305,5 +6532,6 @@ SETS: dict[str, MutantSet] = {
     "spill": MutantSet(("tests/spill",), _SPILL),
     "cap": MutantSet(("tests/spill/test_policy.py",), _CAP),
     "compaction": MutantSet(("tests/compaction",), _COMPACTION),
+    "todo": MutantSet(("tests/todo", "tests/commands/test_todos.py"), _TODO),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

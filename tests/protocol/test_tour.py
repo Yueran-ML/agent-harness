@@ -10,13 +10,14 @@ their order are therefore the ones that a frontend is sent.
 
 What happens, turn by turn:
 
-1. A mistake in a file is found and mended. The user says something on the
-   way, one request fails and is made again, and a command is asked about and
-   allowed.
+1. A mistake in a file is found and mended. The model writes down what it
+   means to do, the user says something on the way, one request fails and is
+   made again, and a command is asked about and allowed.
 2. A command is asked about and refused, and the user stops the reply.
 3. The program is left and the session taken up again. Two commands say a
    lot, and the conversation is made shorter by cutting a result down.
-4. The user has the conversation summed up, and one more turn follows.
+4. The user has the conversation summed up, and one more turn follows, in
+   which the model is told again what it had written down.
 """
 
 import asyncio
@@ -33,6 +34,7 @@ import columbina.fs
 import columbina.permissions
 import columbina.retry
 import columbina.sandbox
+import columbina.todo
 import columbina.token_meter
 from columbina.agent import Agent, AgentSpec, ContextSource
 from columbina.approval import APPROVAL_ASK, ApprovalRequest, Outcome
@@ -50,6 +52,7 @@ from columbina.session import (
     read_session,
 )
 from columbina.session.store import SESSION_FILE
+from columbina.todo import TOOL as TODO_TOOL
 from columbina.tools import Tool, ToolRun
 from support.loop import Harness, idle
 from support.protocol import DOCS, event_kinds
@@ -157,6 +160,19 @@ def shell(command: str) -> Call:
     return Call(name="bash", arguments={"command": command})
 
 
+def noted(mended: str, checked: str) -> Call:
+    """The model writes down how far the two things have come that it means to do."""
+    return Call(
+        name=TODO_TOOL,
+        arguments={
+            "items": [
+                {"content": "Mend mean() in calc.py", "status": mended},
+                {"content": "Run the check", "status": checked},
+            ]
+        },
+    )
+
+
 async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
     """Drive an agent through the session, and return its file and what was asked about."""
     ctx = harness.ctx
@@ -174,6 +190,7 @@ async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
     )
     await ctx.plugin(read)
     await ctx.plugin(edit)
+    await ctx.plugin(columbina.todo)
     for name in ("calc.py", "check.py"):
         shutil.copy(REPOSITORY / name, harness.cwd / name)
 
@@ -238,15 +255,20 @@ async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
             "len(values) - 1. One expression has to change, and nothing else.",
             text="mean() divides by one too few. I change that expression and nothing else.",
             calls=(
+                noted("in_progress", "pending"),
                 Call(
                     name="edit",
                     arguments={"path": "calc.py", "old": "(len(values) - 1)", "new": "len(values)"},
                 ),
             ),
-            usage=spent(96, 87, 704),
+            usage=spent(96, 131, 704),
         ),
-        Reply(calls=(shell("python check.py"),), usage=spent(61, 19, 896)),
-        Reply(text=ANSWER, usage=spent(48, 24, 960)),
+        Reply(
+            calls=(noted("completed", "in_progress"), shell("python check.py")),
+            usage=spent(84, 58, 896),
+        ),
+        Reply(calls=(noted("completed", "completed"),), usage=spent(52, 41, 1024)),
+        Reply(text=ANSWER, usage=spent(48, 24, 1088)),
     )
     agent.followup(TASK)
     await asyncio.wait_for(model.held(), timeout=5)
@@ -260,12 +282,12 @@ async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
         Reply(
             text="I will commit the change.",
             calls=(shell('git commit -am "Fix mean()"'),),
-            usage=spent(83, 27, 1024),
+            usage=spent(83, 27, 1152),
         ),
         Reply(
             text="The commit was not allowed, so the fix is in the working tree and is not "
             "committed. If you want it committed, you",
-            usage=spent(74, 31, 1088),
+            usage=spent(74, 31, 1216),
             hold=True,
         ),
     )
@@ -279,24 +301,24 @@ async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
     clock.now += 95 * 60 * 1000
     agent = await harness.agents.resume(ctx, spec, "tour")
     model.add(
-        Reply(calls=(shell("git log --stat -- calc.py"),), usage=spent(131, 22, 1152)),
+        Reply(calls=(shell("git log --stat -- calc.py"),), usage=spent(131, 22, 1280)),
         Reply(
             text="The file was changed often. The commit that takes the length once is the "
             "likely one.",
             calls=(shell("git show 0029d5f -- calc.py"),),
-            usage=spent(1287, 41, 1216),
+            usage=spent(1287, 41, 1344),
         ),
         Reply(
             text="The mistake came in with commit 0029d5f, which took the length once and "
             "took one off it.",
-            usage=spent(203, 29, 1344),
+            usage=spent(1016, 29, 1280),
         ),
     )
     agent.followup("How did calc.py come to be like this? Look at its history.")
     await idle(agent)
 
     # 4. The conversation is summed up, and goes on.
-    model.add(Reply(text=SUMMARY, usage=spent(88, 171, 1472)))
+    model.add(Reply(text=SUMMARY, usage=spent(88, 171, 2240)))
     compaction = ctx.use(COMPACTION)
     await asyncio.wait_for(
         agent.run_maintenance(lambda: compaction.compact(agent, "manual")), timeout=5
@@ -305,7 +327,7 @@ async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
         Reply(
             text="Only the commit. The fix is in the working tree, and committing it was not "
             "allowed.",
-            usage=spent(301, 23, 320),
+            usage=spent(398, 23, 256),
         )
     )
     agent.followup("What is left to do?")
@@ -355,7 +377,14 @@ def test_everything_that_can_happen_happens_in_the_sample(tmp_path: Path) -> Non
         ("completed", None),
     ]
     said = [event.data.source for event in events if isinstance(event.data, UserMessageEvent)]
-    assert set(said) == {"user", "steer", "context/project", "context/interruption", "compaction"}
+    assert set(said) == {
+        "user",
+        "steer",
+        "context/project",
+        "context/interruption",
+        "context/todo",
+        "compaction",
+    }
     shorter = [event.data.outcome for event in events if isinstance(event.data, CompactionEndEvent)]
     assert [(made.trimmed, made.summarised > 0, made.error) for made in shorter] == [
         (1, False, None),

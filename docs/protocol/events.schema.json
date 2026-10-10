@@ -1025,6 +1025,36 @@
           "additionalProperties": false
         },
         {
+          "title": "todo/write",
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "todo/write"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "time": {
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/TodoWriteEvent"
+            },
+            "ignorable": {
+              "const": true
+            }
+          },
+          "required": [
+            "type",
+            "seq",
+            "time",
+            "data",
+            "ignorable"
+          ],
+          "additionalProperties": false
+        },
+        {
           "title": "tool/call",
           "type": "object",
           "properties": {
@@ -1260,6 +1290,30 @@
         "added"
       ],
       "title": "InboxSplicedEvent",
+      "type": "object"
+    },
+    "Item": {
+      "additionalProperties": false,
+      "description": "One thing to do.\n\nAttributes:\n    content: What is to be done, on one line.\n    status: How far it has come.",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "status": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ],
+      "title": "Item",
       "type": "object"
     },
     "JsonValue": {},
@@ -1674,6 +1728,27 @@
         "text"
       ],
       "title": "TextDelta",
+      "type": "object"
+    },
+    "TodoWriteEvent": {
+      "additionalProperties": false,
+      "description": "The list was written. It takes the place of the list before it.\n\nAttributes:\n    call_id: The call that wrote it. The model sees the list for as long\n        as it sees that call.\n    items: The things to do, in the order in which they were given.",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/Item"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "call_id",
+        "items"
+      ],
+      "title": "TodoWriteEvent",
       "type": "object"
     },
     "ToolCallBlock": {

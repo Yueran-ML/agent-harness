@@ -45,6 +45,8 @@ from columbina.session import (
     TurnStartEvent,
     UserMessageEvent,
 )
+from columbina.todo import TOOL as TODO_TOOL
+from columbina.todo import Item, TodoWriteEvent
 
 PLAIN = Symbols(call="*", done="ok", failed="failed", steer=">>")
 STAND_IN = chr(0xFFFD)
@@ -277,6 +279,63 @@ async def test_arguments_that_cannot_be_read_are_shown_as_they_are(
     shown = show(transcript, log, ToolCallEvent(call_id="c-1", name="read", arguments=written))
 
     assert shown == [f"* read {written}".rstrip()]
+
+
+async def test_the_list_of_things_to_do_is_shown_when_it_is_written(
+    ctx: Context, log: Session
+) -> None:
+    ctx.use(SESSIONS).declare(ctx, TodoWriteEvent)
+    transcript = Transcript(PLAIN)
+    things = [
+        {"content": "Read the check", "status": "completed"},
+        {"content": "Mend calc.py", "status": "in_progress"},
+        {"content": "Run the check"},
+    ]
+    items = (
+        Item(content="Read the check", status="completed"),
+        Item(content="Mend calc.py", status="in_progress"),
+        Item(content="Run the check"),
+    )
+
+    # The call is told by its name alone: what it wrote follows, thing by thing.
+    assert show(transcript, log, call(TODO_TOOL, items=things)) == ["* todo_write"]
+    card = transcript.event(log.append(TodoWriteEvent(call_id="c-1", items=items)))
+
+    assert plain(card) == [
+        "    [x] Read the check",
+        "    [>] Mend calc.py",
+        "    [ ] Run the check",
+    ]
+    # What is done steps back, and what is being done stands out.
+    assert [str(line.style) for line in card] == ["dim", "bold", ""]
+    assert show(transcript, log, result("The list holds 3 things.")) == ["  ok 500 ms, 1 line"]
+
+
+async def test_a_list_that_was_emptied_is_said_to_be_empty(ctx: Context, log: Session) -> None:
+    ctx.use(SESSIONS).declare(ctx, TodoWriteEvent)
+    transcript = Transcript(PLAIN)
+
+    shown = show(transcript, log, TodoWriteEvent(call_id="c-1", items=()))
+
+    assert shown == ["    (the list of things to do is empty)"]
+
+
+async def test_a_list_cannot_steer_the_terminal(ctx: Context, log: Session) -> None:
+    ctx.use(SESSIONS).declare(ctx, TodoWriteEvent)
+    transcript = Transcript(PLAIN)
+    items = (Item(content="Ring\x07 the bell\x1b[2J"),)
+
+    shown = show(transcript, log, TodoWriteEvent(call_id="c-1", items=items))
+
+    assert shown == [f"    [ ] Ring{STAND_IN} the bell{STAND_IN}[2J"]
+
+
+async def test_a_call_for_the_list_that_cannot_be_read_is_shown_as_it_is(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    shown = show(transcript, log, ToolCallEvent(call_id="c-1", name=TODO_TOOL, arguments="[1"))
+
+    assert shown == ["* todo_write [1"]
 
 
 async def test_a_call_that_changes_text_shows_what_goes_and_what_comes(log: Session) -> None:

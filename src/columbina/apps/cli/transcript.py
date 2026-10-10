@@ -44,6 +44,9 @@ from columbina.session import (
     TurnStartEvent,
     UserMessageEvent,
 )
+from columbina.todo import TOOL as TODO_TOOL
+from columbina.todo import TodoWriteEvent
+from columbina.todo import shown as listed
 
 __all__ = ["Symbols", "Transcript", "fit", "on_screen", "recap"]
 
@@ -51,6 +54,7 @@ _NOTE = "dim"
 _BAD = "red"
 _NAME = "bold"
 _MARK = "cyan"
+_DOING = "bold"
 _GOES = "red"
 _COMES = "green"
 
@@ -291,6 +295,8 @@ class Transcript:
         if isinstance(data, RetryEvent):
             wait = _took(data.delay_ms)
             return [_note(f"(the request failed: {data.code}. Trying again in {wait})")]
+        if isinstance(data, TodoWriteEvent):
+            return _things(data)
         if isinstance(data, ApprovalDecidedEvent) and data.call_id in self._began:
             # The time that somebody took to answer is not the time that the call took.
             self._began[data.call_id] = event.time
@@ -307,6 +313,9 @@ class Transcript:
         line = Text()
         line.append(f"{self._symbols.call} ", style=_MARK)
         line.append(harmless(data.name), style=_NAME)
+        if data.name == TODO_TOOL and arguments is not None:
+            # The list that the call writes is shown when it is written, thing by thing.
+            return [line]
         told = _one_line(data.arguments if arguments is None else _acted_on(arguments))
         if told:
             line.append(harmless(f" {told}"))
@@ -343,6 +352,17 @@ class Transcript:
             return [head]
         # What went wrong and the exit code stand at the end of what a command says.
         return [head, *_ending(lines, _OUTPUT_LINES, "    ")]
+
+
+def _things(data: TodoWriteEvent) -> list[Text]:
+    """Show the list of things to do as the model has just written it."""
+    if not data.items:
+        return [_note("    (the list of things to do is empty)")]
+    styles = {"pending": "", "in_progress": _DOING, "completed": _NOTE}
+    return [
+        fit(f"    {line}", styles[item.status])
+        for item, line in zip(data.items, listed(data.items), strict=True)
+    ]
 
 
 def _said(data: UserMessageEvent) -> str:

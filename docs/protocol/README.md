@@ -271,6 +271,7 @@
 | `approval/asked` | `call_id`、`tool`、`summary` | | 一次提问 |
 | `approval/decided` | `call_id`、`outcome` | | 一次提问有了结果 |
 | `sandbox/mode` | `mode` | | 沙箱模式被设定 |
+| `todo/write` | `call_id`、`items` | | 模型写下了自己的待办清单，整份顶替上一份 |
 | `compaction/start` | `why`、`tokens` | | 开始压缩对话 |
 | `compaction/summary` | `summary`、`replaces`、`region_tokens`、`summary_tokens`、`usage` | | 摘要写好了，带着它的消息紧随其后 |
 | `compaction/end` | `why`、`outcome` | | 压缩结束 |
@@ -284,6 +285,7 @@
 - `failure`：`{message, code, status, retry_after_ms, request_id}`。`code` 是稳定的代码，例如 `RATE_LIMIT`。
 - `tool/result.error`：`{code, reason}` 或 `null`。`meta` 是模型看不到的附带信息，目前没有工具写它。
 - `approval/decided.outcome`：`allowed-once`、`rejected`、`cancelled`、`unavailable`。后两个分别表示提问被撤回和没有人可以问。
+- `todo/write.items`：每项是 `{content, status}`，`status` 取 `pending`、`in_progress`、`completed`，同一时刻最多一项是 `in_progress`。`call_id` 是写下清单的那次调用。
 - `compaction/*.why`：`pressure`（对话接近模型的上限）、`overflow`（模型因为太长拒绝了请求）、`manual`（用户要求）。
 - `compaction/end.outcome`：`{trimmed, summarised, before, after, error}`。`trimmed` 是被裁短的工具结果的条数，`summarised` 是被摘要顶替的消息的条数，`before` 和 `after` 是压缩前后对话的 token 估计数，`error` 不为 `null` 时说明没有做完的原因。
 
@@ -361,6 +363,8 @@
 
 **用量。** 上一次请求发给模型的 token 数，是最近一条 `assistant/message` 或 `assistant/attempt` 的 `input_tokens`、`cache_read_tokens`、`cache_write_tokens` 之和。它与 `session.status.model.context_window` 之比是上下文的占用率。缓存命中率是 `cache_read_tokens` 的总和除以上述三项的总和，求和的范围是全部 `assistant/message`、`assistant/attempt` 和 `request/aside`。
 
+**待办清单。** 最近一条 `todo/write` 的 `items` 是当前的清单。没有这种事件，或者最近一条的 `items` 为空，就是没有清单。清单是模型给自己记的事，界面可以把它显示成一块面板。写下清单的工具叫 `todo_write`，它的调用不必再把参数显示一遍。
+
 **工具的声明。** 最近一条 `request/header` 的 `tools` 是模型现在能用的工具，每项是 `{name, description, parameters}`。
 
 内置工具的参数名可以用来把一次调用显示得更清楚。终端界面的做法是：依次取 `command`、`path`、`pattern` 中第一个存在的参数当作调用作用的对象；`edit` 的 `old` 和 `new` 显示成删去和加上的行；`write` 的 `content` 只显示行数；命令的输出显示末尾几行，因为报错和退出码在末尾。
@@ -433,10 +437,10 @@
 
 | 回合 | 内容 | 可以看到 |
 |---|---|---|
-| 1 | 找出并改正一个文件里的错误 | 推理块、一次回复带两个调用、回合中途的转向、一次失败后重试的请求、一次被同意的审批 |
+| 1 | 找出并改正一个文件里的错误 | 推理块、一次回复带两个调用、回合中途的转向、一次失败后重试的请求、三次写下的待办清单、一次被同意的审批 |
 | 2 | 提交改动被拒绝，回复被用户停下 | 上下文更新、被拒绝的审批和带错误的结果、被打断的回复、`aborted` 的回合 |
 | 3 | 程序退出后重新打开会话，两个命令输出很长 | `session/end-seed`、说明上一个回合被停下的上下文、一次只裁短结果的压缩 |
-| 4 | 用户要求压缩，然后再问一句 | 一次带摘要的压缩、摘要之后的对话 |
+| 4 | 用户要求压缩，然后再问一句 | 一次带摘要的压缩、摘要之后的对话、作为上下文重新告诉模型的待办清单 |
 
 Schema 描述的是这个版本写出的数据，每个对象都不带多余的字段。界面不要用它来拒绝数据，新版本会增加字段，见第 14 节。
 
@@ -453,7 +457,6 @@ Schema 描述的是这个版本写出的数据，每个对象都不带多余的�
 
 下面这些还没有定义。界面的结构要留出位置，现在不必实现。
 
-- 待办清单：事件 `todo/write`，第 5 阶段稍后加入。
 - 会话分叉：`/fork` 命令，第 5 阶段稍后加入。会话头里的 `parent_session` 是它的来源。
 - 子代理、钩子、MCP 工具：第 6 阶段。子代理有自己的会话，它的事件带着自己的 `session_id`。
 - 图片内容块：尚无计划。

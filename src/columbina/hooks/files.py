@@ -10,7 +10,10 @@ The file of the user lies where the config says. The file of a project lies
 in ``.columbina`` at the root of the project that the working directory
 belongs to, and its place is told with every link on the way to that root
 followed. Somebody else wrote it, so more care is taken with it: a link in
-its place is not followed, and a directory or a device is not read.
+its place is not followed, and a directory or a device is not read. The way
+from the root to the file is looked at before the file is opened, so that a
+link is not even gone to: one that leads to another machine would tell that
+machine who is asking.
 
 No more of a file is read than a hook file may hold, and one byte beyond
 that, by which the reader of its content knows that it is too large. A file
@@ -22,6 +25,7 @@ from pathlib import Path
 
 from columbina.fs import bound, locate
 from columbina.hooks.config import MAX_FILE_BYTES
+from columbina.places import LINK
 from columbina.project import root_of
 
 __all__ = [
@@ -86,6 +90,8 @@ def of_the_project(project: Path) -> Found:
         project: The root, as :func:`project_of` gave it.
     """
     path = file_in(project)
+    if bound.link_on_the_way(path) is not None:
+        return Found(path, problem=LINK)
     try:
         with bound.open_for_reading(path)[0] as file:
             return Found(path, file.read(MAX_FILE_BYTES + 1))

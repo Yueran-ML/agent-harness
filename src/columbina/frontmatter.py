@@ -15,7 +15,9 @@ was cloned. So it is read with care. What is wrong with it is said in words
 for whoever wrote it, and those words show little of what the file holds: a
 file of a few lines can give a value that fills a disk when it is written
 out. Whatever the reader of YAML makes of a file, it ends here as a value or
-as an error of this module, and as nothing else.
+as an error of this module, and as nothing else. The lines are read plainly,
+see :mod:`columbina.plain_yaml`: a file that builds values out of values is
+refused before anything is built.
 
 Nothing here knows what the keys of a skill or of a kind of subagent are.
 This reads the lines, and hands out what a key gives if it is what the key
@@ -26,7 +28,8 @@ import re
 from collections.abc import Mapping
 from typing import cast
 
-import yaml
+from columbina import plain_yaml
+from columbina.plain_yaml import PlainYamlError
 
 __all__ = ["MAX_NAME", "FrontMatterError", "cut", "flag", "name", "read", "shown", "text"]
 
@@ -39,8 +42,16 @@ _DASHES = "---"
 _SHOWN = 60
 """How many characters of a value from a file are shown to whoever wrote it."""
 
-_SAID = 300
-"""How many characters of what the reader of YAML says are passed on."""
+_NOT_READ: dict[plain_yaml.Kind, str] = {
+    "syntax": "are not YAML: {said}",
+    "depth": "are nested too deeply",
+    "value": "give a value that cannot be read: {said}",
+    "alias": (
+        "use a value again by its name, which is not read here. Write the value out where it "
+        "is used"
+    ),
+}
+"""What is said of first lines that cannot be read, after the words that name them."""
 
 
 class FrontMatterError(Exception):
@@ -93,24 +104,10 @@ def read(content: bytes, file: str) -> tuple[dict[object, object], str]:
         raise FrontMatterError(f"{file} is not written in UTF-8") from None
     front, rest = _split(decoded.replace("\r\n", "\n"), file)
     try:
-        loaded: object = yaml.safe_load(front)
-    except RecursionError:
-        raise FrontMatterError(
-            f"the lines at the beginning of {file} are nested too deeply"
-        ) from None
-    except yaml.YAMLError as error:
-        said = cut(" ".join(str(error).split()), _SAID)
-        raise FrontMatterError(
-            f"the lines at the beginning of {file} are not YAML: {said}"
-        ) from None
-    except Exception as error:
-        # The reader makes values of what it reads, and a value that cannot be made fails
-        # with whatever the making of it raises: a date that there is none of, a number of
-        # thousands of digits, a tag before something that it does not go with.
-        said = cut(" ".join(str(error).split()), _SAID)
-        raise FrontMatterError(
-            f"the lines at the beginning of {file} give a value that cannot be read: {said}"
-        ) from None
+        loaded = plain_yaml.load(front)
+    except PlainYamlError as error:
+        why = _NOT_READ[error.kind].format(said=error.said)
+        raise FrontMatterError(f"the lines at the beginning of {file} {why}") from None
     if loaded is None:
         loaded = {}
     if not isinstance(loaded, dict):

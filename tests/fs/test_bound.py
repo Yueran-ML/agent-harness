@@ -218,6 +218,51 @@ def test_what_is_no_directory_cannot_be_listed(work: Path) -> None:
         bound.listing(work / "nowhere")
 
 
+def test_the_first_link_on_the_way_to_a_path_is_found_without_going_through_it(
+    work: Path,
+) -> None:
+    (work / "room" / "inner").mkdir(parents=True)
+    (work / "room" / "inner" / "a.txt").write_text("a")
+    link_directory(work / "door", work / "room")
+    link_directory(work / "room" / "hatch", work / "room" / "inner")
+
+    assert bound.link_on_the_way(work / "room" / "inner" / "a.txt") is None
+    assert bound.link_on_the_way(work) is None
+    # The link itself counts, and so does one that the way only passes.
+    assert bound.link_on_the_way(work / "door") == work / "door"
+    assert bound.link_on_the_way(work / "door" / "inner" / "a.txt") == work / "door"
+    assert bound.link_on_the_way(work / "room" / "hatch" / "a.txt") == work / "room" / "hatch"
+    # Of two links on one way, the one that is reached first is told.
+    assert bound.link_on_the_way(work / "door" / "hatch" / "a.txt") == work / "door"
+
+
+def test_a_way_that_ends_before_the_path_has_no_link_on_it(work: Path) -> None:
+    (work / "a.txt").write_text("a")
+
+    assert bound.link_on_the_way(work / "nowhere" / "deeper" / "a.txt") is None
+    # A file where a directory should be ends the way as well.
+    assert bound.link_on_the_way(work / "a.txt" / "below") is None
+
+
+def test_a_link_that_is_looked_for_is_not_followed(
+    work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (work / "room").mkdir()
+    link_directory(work / "door", work / "room")
+    looked_at: list[str] = []
+    following = os.stat
+
+    def follows(path: Any, *more: Any, **options: Any) -> os.stat_result:
+        if options.get("follow_symlinks", True):
+            looked_at.append(str(path))
+        return following(path, *more, **options)
+
+    monkeypatch.setattr(os, "stat", follows)
+
+    assert bound.link_on_the_way(work / "door" / "a.txt") == work / "door"
+    assert looked_at == []
+
+
 def test_a_link_and_what_it_leads_to_are_not_the_same_entry(work: Path) -> None:
     # The link lies beside what it leads to, so the two ways part at one name only.
     (work / "room").mkdir()

@@ -406,6 +406,12 @@ def test_a_file_without_rules_holds_none(text: str) -> None:
         ("forbid:\n  - read\n", "it holds forbid, and only deny, ask and allow are known"),
         ("deny: [a\n", "it is not YAML that can be read at line"),
         ("deny:\n\t- a\n", "it is not YAML that can be read at line 2"),
+        (
+            "few: &few [read]\ndeny: *few\n",
+            "it uses a value again by its name, which is not read here",
+        ),
+        pytest.param("deny: " + "[" * 100_000, "it is nested too deeply", id="lists in lists"),
+        ("deny: 2024-13-45\n", "it gives a value that cannot be read"),
     ],
 )
 def test_a_file_that_does_not_hold_rules_is_refused_in_words_that_name_it(

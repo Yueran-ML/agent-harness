@@ -56,9 +56,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-import yaml
 from pydantic import BaseModel
 
+from columbina import plain_yaml
 from columbina.approval import APPROVAL, Approval, ApprovalRequest, Policy
 from columbina.fs import FS, Access, Fs, Refuse, bound, locate
 from columbina.kernel import Context, Registry, ServiceKey
@@ -71,6 +71,7 @@ from columbina.permissions.rules import (
     parse_rule,
     place_of,
 )
+from columbina.plain_yaml import PlainYamlError
 from columbina.sandbox import SANDBOX, Mode, Sandbox
 from columbina.session import SESSION_EVENT, SESSIONS, Committed, Session, TurnStartEvent
 from columbina.tools import TOOLS, Deny, Effect, Invocation, ToolFailure, Tools
@@ -105,6 +106,14 @@ PROJECT_FILE = ".columbina/permissions.yml"
 
 MAX_FILE_BYTES = 256 * 1024
 """A file of rules that is larger is not read."""
+
+_NOT_READ: dict[plain_yaml.Kind, str] = {
+    "syntax": "it is not YAML that can be read",
+    "depth": "it is nested too deeply",
+    "value": "it gives a value that cannot be read",
+    "alias": "it uses a value again by its name, which is not read here",
+}
+"""What is said of a file of rules that cannot be read. Nothing of what it holds is repeated."""
 
 _SUMMARY_CHARACTERS = 200
 
@@ -210,11 +219,10 @@ def read_rules(text: str, source: str) -> RuleSet:
             names the file and says what is wrong.
     """
     try:
-        held: object = yaml.safe_load(text)
-    except yaml.YAMLError as error:
-        mark = getattr(error, "problem_mark", None)
-        where = "" if mark is None else f" at line {mark.line + 1}"
-        raise ValueError(f"{source}: it is not YAML that can be read{where}") from None
+        held = plain_yaml.load(text)
+    except PlainYamlError as error:
+        where = "" if error.line is None else f" at line {error.line}"
+        raise ValueError(f"{source}: {_NOT_READ[error.kind]}{where}") from None
     if held is None:
         return RuleSet()
     if not isinstance(held, dict):

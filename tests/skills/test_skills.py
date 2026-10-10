@@ -13,7 +13,7 @@ import columbina.sandbox
 import columbina.skills
 from columbina.agent import Agent
 from columbina.builtin_tools import read, write
-from columbina.fs import Access, locate
+from columbina.fs import Access, Located, locate
 from columbina.llm import LlmRequest
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import ToolResultEvent, TurnEndEvent, UserMessageEvent
@@ -821,6 +821,26 @@ async def asked(harness: Harness, home: Path) -> tuple[Skills, Agent]:
 
 def access(agent: Agent, path: Path, kind: Any = "read") -> Access:
     return Access(agent.session, agent.cwd, locate(agent.cwd, str(path)), kind, "read")
+
+
+async def test_a_directory_that_differs_from_that_of_a_skill_by_its_case_is_another_one(
+    harness: Harness, tmp_path: Path
+) -> None:
+    home = (tmp_path / "home").resolve()
+    directory = put(home, "notes")
+    skills, agent = await asked(harness, home)
+    await skills.found(agent.session, agent.cwd)
+
+    def at(path: Path) -> Access:
+        # Where the file lies, as a system would say that tells the two spellings apart.
+        where = Located(path, str(path), False, path.as_posix(), agent.cwd)
+        return Access(agent.session, agent.cwd, where, "read", "read")
+
+    assert skills.grants(at(directory / "codenames.txt")) is True
+    # A disk can hold both, and to Windows the two paths are one and the same.
+    assert skills.grants(at(home / "NOTES" / "secret.txt")) is False
+    assert skills.grants(at(home / "Notes")) is False
+    assert skills.grants(at(Path(str(home).swapcase()) / "notes" / "codenames.txt")) is False
 
 
 async def test_the_files_of_a_skill_may_be_read_once_its_session_was_told_of_it(

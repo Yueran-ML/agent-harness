@@ -212,13 +212,16 @@ class _Known:
 
     Attributes:
         scans: What each place held.
-        directories: The directories of the skills. Their files may be read.
+        directories: The directories of the skills, as the system spells
+            them. Their files may be read. They are kept as text: two paths
+            that differ by the case of a letter are one path to Windows and
+            may be two directories on its disk.
         said: What was written to the log about these places, so that it is
             not written again for as long as it stays true.
     """
 
     scans: dict[Root, Scan]
-    directories: frozenset[Path]
+    directories: frozenset[str]
     said: frozenset[tuple[str, ...]]
 
 
@@ -285,7 +288,7 @@ class Skills:
                 logger.warning("%s is no skill that can be used: %s", place, why[0])
             else:
                 logger.info("the skill in %s is passed over for one of the same name", place)
-        directories = frozenset(skill.directory for skill in found.skills.values())
+        directories = frozenset(str(skill.directory) for skill in found.skills.values())
         self._known[session] = _Known(scans, directories, frozenset(said))
         return found
 
@@ -306,7 +309,7 @@ class Skills:
         if known is None:
             return False
         path = access.where.path
-        return not known.directories.isdisjoint((path, *path.parents))
+        return not known.directories.isdisjoint(map(str, (path, *path.parents)))
 
 
 SKILLS = ServiceKey[Skills]("skills")

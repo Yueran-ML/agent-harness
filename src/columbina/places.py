@@ -7,8 +7,10 @@ others are the user's own, and the difference is who wrote what lies there.
 A root of a project is taken as it lies there. A link is not followed, be
 it the root itself or something in it: what a repository holds was written
 by somebody else, and a link could lead to a place that is nobody's
-business. A root of the user is the user's own, and links in it are
-followed.
+business. It is not even gone to: the way to a file is looked at name by
+name before anything on it is opened, because opening a link that leads to
+another machine already tells that machine who is asking. A root of the
+user is the user's own, and links in it are followed.
 
 This module knows these two ways of going into a root, and nothing of what
 is found there.
@@ -61,6 +63,19 @@ def followed(path: Path) -> Path:
     return Path(os.path.realpath(path, strict=True))
 
 
+def _taken_as_it_lies(root: Root, path: Path) -> None:
+    """Refuse a path in a root of a project that has a link on its way.
+
+    This is asked before the path is opened. The system would follow the
+    link first and say where it came out afterwards.
+
+    Raises:
+        RootError: A link is on the way.
+    """
+    if not root.own and bound.link_on_the_way(path) is not None:
+        raise RootError(LINK)
+
+
 def listed(root: Root, at_most: int) -> tuple[Path, list[bound.Listed], bool] | None:
     """Look into a root.
 
@@ -78,6 +93,7 @@ def listed(root: Root, at_most: int) -> tuple[Path, list[bound.Listed], bool] | 
         OSError: The root is there and cannot be looked into.
     """
     base = root.path
+    _taken_as_it_lies(root, base)
     try:
         if root.own:
             base = followed(base)
@@ -131,6 +147,7 @@ def opened(root: Root, file: Path) -> BinaryIO | None:
         bound.NotAFileError: A directory, a pipe or a device lies there.
         OSError: The file cannot be opened.
     """
+    _taken_as_it_lies(root, file)
     try:
         if root.own:
             file = followed(file)

@@ -66,6 +66,7 @@ __all__ = [
     "NotAFileError",
     "NotShownError",
     "link_at",
+    "link_on_the_way",
     "listing",
     "open_for_reading",
     "replace",
@@ -129,6 +130,24 @@ def link_at(path: Path) -> Path | None:
         OSError: Nothing is at the path, or it cannot be looked at.
     """
     return path.readlink() if _is_link(path.lstat()) else None
+
+
+def link_on_the_way(path: Path) -> Path | None:
+    """Return the first link on the way to a path, the path itself counted, or ``None``.
+
+    The way is looked at from the top down, one name at a time, and nothing
+    is followed or opened. So a link is found before anybody goes where it
+    leads, which may be another machine. What is not there, or cannot be
+    looked at, ends the way: whoever opens the path is told so by the system.
+    """
+    for here in (*reversed(path.parents), path):
+        try:
+            status = here.lstat()
+        except OSError:
+            return None
+        if _is_link(status):
+            return here
+    return None
 
 
 def _listed(entry: "os.DirEntry[str]") -> Listed:

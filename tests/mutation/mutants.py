@@ -98,6 +98,7 @@ SKILL_FILES = "src/columbina/skills/files.py"
 FRONT_MATTER = "src/columbina/frontmatter.py"
 PLACES = "src/columbina/places.py"
 TEXT = "src/columbina/text.py"
+PLAIN_YAML = "src/columbina/plain_yaml.py"
 SUBAGENT_TYPES = "src/columbina/subagents/types.py"
 SKILLS_PLUGIN = "src/columbina/skills/__init__.py"
 HOOK_FILES = "src/columbina/hooks/config.py"
@@ -1704,6 +1705,42 @@ _SEARCH = (
             "    flags = 0",
         )
     ),
+    mutant(
+        "only the path itself is looked at for a link, and not the way to it",
+        BOUND,
+        "    for here in (*reversed(path.parents), path):\n",
+        "    for here in (path,):\n",
+    ),
+    mutant(
+        "the way to a path is looked at for a link, and not the path itself",
+        BOUND,
+        "    for here in (*reversed(path.parents), path):\n",
+        "    for here in reversed(path.parents):\n",
+    ),
+    mutant(
+        "of two links on one way the one that is reached last is told",
+        BOUND,
+        "    for here in (*reversed(path.parents), path):\n",
+        "    for here in (path, *path.parents):\n",
+    ),
+    mutant(
+        "a way that ends before the path stops whoever looks for a link on it",
+        BOUND,
+        "        try:\n            status = here.lstat()\n        except OSError:\n            return None\n",
+        "        status = here.lstat()\n",
+    ),
+    mutant(
+        "a link on the way to a path is passed without a word",
+        BOUND,
+        "        if _is_link(status):\n            return here\n",
+        "",
+    ),
+    mutant(
+        "a link is followed by whoever looks for links",
+        BOUND,
+        "            status = here.lstat()\n",
+        "            status = here.stat()\n",
+    ),
 )
 
 _GREP = (
@@ -2369,6 +2406,24 @@ _PERMISSIONS = (
         PERMISSIONS,
         '                if self._approval.policy(session) == "never"',
         "                if False",
+    ),
+    mutant(
+        "rules that cannot be read as yaml stop whoever reads them",
+        PERMISSIONS,
+        "    except PlainYamlError as error:\n",
+        "    except ZeroDivisionError as error:\n",
+    ),
+    mutant(
+        "why rules cannot be read is told as bad syntax, whatever it is",
+        PERMISSIONS,
+        '        raise ValueError(f"{source}: {_NOT_READ[error.kind]}{where}") from None\n',
+        "        raise ValueError(f\"{source}: {_NOT_READ['syntax']}{where}\") from None\n",
+    ),
+    mutant(
+        "the line at which rules stop being yaml is not told",
+        PERMISSIONS,
+        '        where = "" if error.line is None else f" at line {error.line}"\n',
+        '        where = ""\n',
     ),
 )
 
@@ -7632,36 +7687,6 @@ _SKILLS = (
         "    front, rest = _split(decoded, file)\n",
     ),
     mutant(
-        "lists that lie too deep in one another are told as a value that cannot be read",
-        FRONT_MATTER,
-        '    except RecursionError:\n        raise FrontMatterError(\n            f"the lines at the beginning of {file} are nested too deeply"\n        ) from None\n',
-        "",
-    ),
-    mutant(
-        "an error of the reader of yaml that is none of its own goes through",
-        FRONT_MATTER,
-        "    except Exception as error:\n",
-        "    except ValueError as error:\n",
-    ),
-    mutant(
-        "what the reader of yaml says is passed on at whatever length",
-        FRONT_MATTER,
-        '    except yaml.YAMLError as error:\n        said = cut(" ".join(str(error).split()), _SAID)\n',
-        '    except yaml.YAMLError as error:\n        said = " ".join(str(error).split())\n',
-    ),
-    mutant(
-        "what the reader of yaml says is passed on with its line breaks",
-        FRONT_MATTER,
-        '    except yaml.YAMLError as error:\n        said = cut(" ".join(str(error).split()), _SAID)\n',
-        "    except yaml.YAMLError as error:\n        said = cut(str(error), _SAID)\n",
-    ),
-    mutant(
-        "why a value cannot be made is passed on at whatever length",
-        FRONT_MATTER,
-        '        # thousands of digits, a tag before something that it does not go with.\n        said = cut(" ".join(str(error).split()), _SAID)\n',
-        '        # thousands of digits, a tag before something that it does not go with.\n        said = " ".join(str(error).split())\n',
-    ),
-    mutant(
         "first lines that say nothing are told as no keys and values",
         FRONT_MATTER,
         "    if loaded is None:\n        loaded = {}\n",
@@ -8156,8 +8181,8 @@ _SKILLS = (
     mutant(
         "the files of a skill that is passed over may be read",
         SKILLS_PLUGIN,
-        "frozenset(skill.directory for skill in found.skills.values())",
-        "frozenset(skill.directory for skill in (*found.skills.values(), *found.shadowed))",
+        "frozenset(str(skill.directory) for skill in found.skills.values())",
+        "frozenset(str(skill.directory) for skill in (*found.skills.values(), *found.shadowed))",
     ),
     mutant(
         "a file of a skill may be written",
@@ -8168,13 +8193,13 @@ _SKILLS = (
     mutant(
         "the directory of a skill itself cannot be looked into",
         SKILLS_PLUGIN,
-        "isdisjoint((path, *path.parents))",
-        "isdisjoint(path.parents)",
+        "isdisjoint(map(str, (path, *path.parents)))",
+        "isdisjoint(map(str, path.parents))",
     ),
     mutant(
         "what lies beside a skill may be read",
         SKILLS_PLUGIN,
-        "        return not known.directories.isdisjoint((path, *path.parents))\n",
+        "        return not known.directories.isdisjoint(map(str, (path, *path.parents)))\n",
         "        return True\n",
     ),
     mutant(
@@ -8302,6 +8327,48 @@ _SKILLS = (
         SKILL_FILES,
         "        raise SkillError(str(error)) from None\n    read = ",
         '        raise SkillError("") from None\n    read = ',
+    ),
+    mutant(
+        "why first lines cannot be read is told as bad syntax, whatever it is",
+        FRONT_MATTER,
+        "        why = _NOT_READ[error.kind].format(said=error.said)\n",
+        '        why = _NOT_READ["syntax"].format(said=error.said)\n',
+    ),
+    mutant(
+        "first lines that cannot be read stop whoever reads the file",
+        FRONT_MATTER,
+        "    except PlainYamlError as error:\n",
+        "    except ZeroDivisionError as error:\n",
+    ),
+    mutant(
+        "a link on the way to a place of a project is gone through before it is refused",
+        PLACES,
+        "    _taken_as_it_lies(root, base)\n",
+        "",
+    ),
+    mutant(
+        "a link on the way to a file of a project is gone through before it is refused",
+        PLACES,
+        "    _taken_as_it_lies(root, file)\n",
+        "",
+    ),
+    mutant(
+        "a link on the way is refused in a place of the user as well",
+        PLACES,
+        "    if not root.own and bound.link_on_the_way(path) is not None:\n",
+        "    if bound.link_on_the_way(path) is not None:\n",
+    ),
+    on_windows(
+        mutant(
+            "a directory that differs by its case from that of a skill is the same directory",
+            SKILLS_PLUGIN,
+            "        directories = frozenset(str(skill.directory) for skill in found.skills.values())\n",
+            "        directories = frozenset(skill.directory for skill in found.skills.values())\n",
+            (
+                "        return not known.directories.isdisjoint(map(str, (path, *path.parents)))\n",
+                "        return not known.directories.isdisjoint((path, *path.parents))\n",
+            ),
+        )
     ),
 )
 
@@ -9597,6 +9664,12 @@ _HOOKS = (
         "    ctx.use(TOOLS).guards.add(ctx, name, bridge.guard)\n",
         "",
     ),
+    mutant(
+        "a link on the way to the hook file of a project is gone through before it is refused",
+        HOOK_PLACES,
+        "    if bound.link_on_the_way(path) is not None:\n        return Found(path, problem=LINK)\n",
+        "",
+    ),
 )
 
 _TRUST = (
@@ -10365,6 +10438,75 @@ _SUBAGENTS = (
     ),
 )
 
+_YAML = (
+    mutant(
+        "lists that lie too deep in one another are told as a value that cannot be read",
+        PLAIN_YAML,
+        '    except RecursionError:\n        raise PlainYamlError("depth") from None\n',
+        "",
+    ),
+    mutant(
+        "an error of the reader of yaml that is none of its own goes through",
+        PLAIN_YAML,
+        "    except Exception as error:\n",
+        "    except ValueError as error:\n",
+    ),
+    mutant(
+        "what the reader of yaml says is passed on at whatever length",
+        PLAIN_YAML,
+        '    return said if len(said) <= _SAID else f"{said[:_SAID]}..."\n',
+        "    return said\n",
+    ),
+    mutant(
+        "what the reader of yaml says is passed on with its line breaks",
+        PLAIN_YAML,
+        '    said = " ".join(str(error).split())\n',
+        "    said = str(error)\n",
+    ),
+    mutant(
+        "why a value cannot be made is passed on at whatever length",
+        PLAIN_YAML,
+        '        raise PlainYamlError("value", _one_line(error)) from None\n',
+        '        raise PlainYamlError("value", " ".join(str(error).split())) from None\n',
+    ),
+    mutant(
+        "a value that is used again by its name is built",
+        PLAIN_YAML,
+        "        if self.check_event(yaml.AliasEvent):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a value that is used again by its name is told as text that is no yaml",
+        PLAIN_YAML,
+        '    except _UsedAgainError:\n        raise PlainYamlError("alias") from None\n',
+        "",
+    ),
+    mutant(
+        "a message of the reader of just the length that is passed on is cut",
+        PLAIN_YAML,
+        '    return said if len(said) <= _SAID else f"{said[:_SAID]}..."\n',
+        '    return said if len(said) < _SAID else f"{said[:_SAID]}..."\n',
+    ),
+    mutant(
+        "the line at which a text stops being yaml is counted from nought",
+        PLAIN_YAML,
+        "    return None if mark is None else mark.line + 1\n",
+        "    return None if mark is None else mark.line\n",
+    ),
+    mutant(
+        "a text that is no yaml is not told where it stops being one",
+        PLAIN_YAML,
+        '        raise PlainYamlError("syntax", _one_line(error), _line(error)) from None\n',
+        '        raise PlainYamlError("syntax", _one_line(error)) from None\n',
+    ),
+    mutant(
+        "an error of the reader of yaml says its kind where it has words of its own",
+        PLAIN_YAML,
+        "        super().__init__(said or kind)\n",
+        "        super().__init__(kind)\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -10449,5 +10591,6 @@ SETS: dict[str, MutantSet] = {
     "hooks": MutantSet(("tests/hooks",), _HOOKS),
     "trust": MutantSet(("tests/apps/test_hooks_command.py",), _TRUST),
     "subagents": MutantSet(("tests/subagents",), _SUBAGENTS),
+    "yaml": MutantSet(("tests/test_plain_yaml.py",), _YAML),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

@@ -1,13 +1,17 @@
 """Skill files: what counts as a skill, and which of two skills of one name is the skill."""
 
 import itertools
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from columbina import places
 from columbina.fs import bound
+from columbina.places import RootError
 from columbina.skills import files
 from columbina.skills.files import (
     FILE,
@@ -203,6 +207,43 @@ def test_three_dashes_inside_a_value_do_not_end_the_first_lines() -> None:
 def test_a_file_that_is_no_skill_file_says_what_is_wrong_with_it(content: str, why: str) -> None:
     with pytest.raises(SkillError, match=why):
         parsed(content.encode(), "deploy")
+
+
+def test_a_skill_file_that_uses_a_value_again_by_its_name_is_refused() -> None:
+    content = b"---\nname: deploy\ndescription: &what Deploy.\nlicense: *what\n---\nDo it.\n"
+
+    with pytest.raises(SkillError) as refused:
+        parsed(content, "deploy")
+
+    assert str(refused.value) == (
+        "the lines at the beginning of SKILL.md use a value again by its name, which is not "
+        "read here. Write the value out where it is used"
+    )
+
+
+def test_a_skill_file_that_would_build_a_value_without_end_is_refused_at_once(
+    place: Path,
+) -> None:
+    # Each key takes in the one before it twice. Built, the last would have 2**40 entries.
+    lines = ["a0: &a0 {x: 1}"]
+    lines.extend(f"a{n}: &a{n} {{<<: [*a{n - 1}, *a{n - 1}]}}" for n in range(1, 41))
+    front = "\n".join(lines)
+    # Were a value that is used again built at all, the file would be the end of this
+    # run. So a small one is tried first, and it stops the test if it is taken.
+    with pytest.raises(SkillError):
+        parsed(b"---\nname: small\ndescription: &d Small.\nother: *d\n---\n", "small")
+    root = of_a_project(place / "skills")
+    skill(root.path, "bomb", f"---\nname: bomb\ndescription: Boom.\n{front}\n---\n")
+    skill(root.path, "deploy")
+    began = time.monotonic()
+
+    found = scan(root)
+
+    assert time.monotonic() - began < 5
+    assert [one.name for one in found.skills] == ["deploy"]
+    assert [reason[:60] for _, reason in reasons(found)] == [
+        "the lines at the beginning of SKILL.md use a value again by "
+    ]
 
 
 @pytest.mark.parametrize(
@@ -470,6 +511,28 @@ def test_a_place_of_the_user_that_is_changed_while_it_is_looked_into_is_an_error
         scan(root)
 
 
+def test_a_place_of_a_project_that_becomes_a_link_while_it_is_looked_into_says_so(
+    place: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = of_a_project(place / "skills")
+    skill(root.path, "deploy")
+
+    def elsewhere(path: Path, at_most: int) -> object:
+        # No link was on the way when it was looked at, and one is there when it is opened.
+        raise bound.MovedError(f"{path} was somewhere else when it was opened")
+
+    monkeypatch.setattr(bound, "listing", elsewhere)
+
+    assert scan(root) == Scan(
+        root,
+        invalid=(
+            Invalid(
+                root.path, root, "it lies behind a link, and links are not followed in a project"
+            ),
+        ),
+    )
+
+
 def test_a_skill_file_of_the_user_that_is_changed_while_it_is_opened_cannot_be_read(
     place: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -612,6 +675,79 @@ def test_a_project_whose_place_for_skills_is_a_link_has_no_skills(place: Path) -
     assert [invalid.reason for invalid in found.invalid] == [
         "it lies behind a link, and links are not followed in a project"
     ]
+
+
+@pytest.mark.parametrize("linked", [".columbina", "skills"])
+def test_nobody_goes_where_a_link_in_a_project_leads(
+    place: Path, monkeypatch: pytest.MonkeyPatch, linked: str
+) -> None:
+    real = place / "elsewhere"
+    skill(real / "skills", "deploy")
+    project = place / "project"
+    project.mkdir()
+    if linked == ".columbina":
+        link_directory(project / ".columbina", real)
+    else:
+        (project / ".columbina").mkdir()
+        link_directory(project / ".columbina" / "skills", real / "skills")
+    gone_to: list[Path] = []
+    listing = bound.listing
+    opening = bound.open_for_reading
+
+    def lists(path: Path, at_most: int) -> Any:
+        gone_to.append(path)
+        return listing(path, at_most)
+
+    def opens(path: Path) -> Any:
+        gone_to.append(path)
+        return opening(path)
+
+    monkeypatch.setattr(bound, "listing", lists)
+    monkeypatch.setattr(bound, "open_for_reading", opens)
+    root = of_a_project(project / ".columbina" / "skills")
+
+    found = scan(root)
+
+    # A link may lead to another machine, and going there already tells it who asks. So the
+    # way is looked at first, and nothing on it is opened.
+    assert gone_to == []
+    assert found == Scan(
+        root,
+        invalid=(
+            Invalid(
+                root.path, root, "it lies behind a link, and links are not followed in a project"
+            ),
+        ),
+    )
+
+
+def test_a_file_of_a_project_behind_a_link_is_not_opened(
+    place: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kept = place / "elsewhere"
+    skill(kept, "deploy")
+    root = of_a_project(place / "skills")
+    root.path.mkdir()
+    link_directory(root.path / "door", kept / "deploy")
+    gone_to: list[Path] = []
+    opening = bound.open_for_reading
+
+    def opens(path: Path) -> Any:
+        gone_to.append(path)
+        return opening(path)
+
+    monkeypatch.setattr(bound, "open_for_reading", opens)
+
+    # The directory that the file is asked for in turns out to be a link.
+    with pytest.raises(RootError, match="it lies behind a link"):
+        places.opened(root, root.path / "door" / FILE)
+
+    assert gone_to == []
+    # In a place of the user's own the same file is read where the link leads.
+    opened = places.opened(own(root.path), root.path / "door" / FILE)
+    assert opened is not None
+    with opened:
+        assert opened.read().startswith(b"---\nname: deploy\n")
 
 
 def test_a_skill_file_of_a_project_that_is_a_link_is_not_read(place: Path) -> None:

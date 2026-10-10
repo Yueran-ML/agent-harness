@@ -2,9 +2,11 @@
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from columbina.fs import bound
 from columbina.hooks.config import MAX_FILE_BYTES
 from columbina.hooks.files import (
     PROJECT_FILE,
@@ -134,16 +136,50 @@ def test_what_lies_there_and_cannot_be_read_is_said_with_the_reason(
 
 
 def test_a_link_in_the_place_of_the_directory_of_the_project_is_not_followed(
-    project: Path, tmp_path: Path
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     elsewhere = Path(os.path.realpath(tmp_path)) / "elsewhere"
     elsewhere.mkdir()
     (elsewhere / "hooks.json").write_bytes(CONTENT)
     link_directory(project / ".columbina", elsewhere)
 
+    gone_to: list[Path] = []
+    opening = bound.open_for_reading
+
+    def opens(path: Path) -> Any:
+        gone_to.append(path)
+        return opening(path)
+
+    monkeypatch.setattr(bound, "open_for_reading", opens)
+
     found = of_the_project(project)
 
     # What a repository brings may lead anywhere. Only a file that lies in it is its hook file.
+    assert found == Found(
+        file_in(project), problem="it lies behind a link, and links are not followed in a project"
+    )
+    # A link may lead to another machine, and going there already tells it who asks. So the
+    # way is looked at first, and nothing on it is opened.
+    assert gone_to == []
+
+
+def test_a_link_that_takes_the_place_of_the_directory_after_it_was_looked_at_is_not_followed(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    elsewhere = Path(os.path.realpath(tmp_path)) / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "hooks.json").write_bytes(CONTENT)
+    link_directory(project / ".columbina", elsewhere)
+
+    def nothing(path: Path) -> Path | None:
+        # No link was on the way when it was looked at. One is there when the file is opened.
+        return None
+
+    monkeypatch.setattr(bound, "link_on_the_way", nothing)
+
+    found = of_the_project(project)
+
+    # The file that was opened is asked where it lies, and it lies somewhere else.
     assert found == Found(
         file_in(project), problem=f"{file_in(project)} was somewhere else when it was opened"
     )

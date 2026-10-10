@@ -291,6 +291,11 @@ def test_a_kind_is_called_what_its_file_is_called() -> None:
             "---\nname: [\ndescription: x\n---\n",
             "the lines at the beginning of reviewer.md are not YAML: ",
         ),
+        (
+            "---\nname: reviewer\ndescription: x\ntools: &few [read]\nmodel: *few\n---\n",
+            "the lines at the beginning of reviewer.md use a value again by its name, which is "
+            "not read here. Write the value out where it is used",
+        ),
     ],
 )
 def test_a_file_that_is_no_file_of_a_kind_says_what_is_wrong_with_it(
@@ -604,6 +609,29 @@ def test_a_project_whose_place_for_kinds_is_a_link_has_no_kinds(place: Path) -> 
             ),
         ),
     )
+
+
+def test_nobody_goes_where_the_place_for_kinds_of_a_project_leads(
+    place: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    elsewhere = place / "elsewhere"
+    kind(elsewhere, "reviewer")
+    root = of_a_project(place / "project" / "agents")
+    root.path.parent.mkdir()
+    link_directory(root.path, elsewhere)
+    gone_to: list[Path] = []
+    listing = bound.listing
+
+    def lists(path: Path, at_most: int) -> Any:
+        gone_to.append(path)
+        return listing(path, at_most)
+
+    monkeypatch.setattr(bound, "listing", lists)
+
+    scan(root)
+
+    # Going where a link leads may already tell another machine who asks.
+    assert gone_to == []
 
 
 # Tools that are not there

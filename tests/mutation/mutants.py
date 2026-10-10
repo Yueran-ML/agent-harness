@@ -97,6 +97,7 @@ PROJECT = "src/columbina/project.py"
 SKILL_FILES = "src/columbina/skills/files.py"
 FRONT_MATTER = "src/columbina/frontmatter.py"
 PLACES = "src/columbina/places.py"
+SUBAGENT_TYPES = "src/columbina/subagents/types.py"
 SKILLS_PLUGIN = "src/columbina/skills/__init__.py"
 HOOK_FILES = "src/columbina/hooks/config.py"
 HOOK_RUN = "src/columbina/hooks/run.py"
@@ -9775,6 +9776,387 @@ _TRUST = (
     ),
 )
 
+_SUBAGENTS = (
+    mutant(
+        "a file of a kind may be of whatever length",
+        SUBAGENT_TYPES,
+        "    if len(content) > MAX_BYTES:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a file of a kind of just the length that is allowed is refused",
+        SUBAGENT_TYPES,
+        "    if len(content) > MAX_BYTES:\n",
+        "    if len(content) >= MAX_BYTES:\n",
+    ),
+    mutant(
+        "a file that is too long is read as far as is allowed, and used",
+        SUBAGENT_TYPES,
+        "        content = opened.read(MAX_BYTES + 1)\n",
+        "        content = opened.read(MAX_BYTES)\n",
+    ),
+    mutant(
+        "a key that is not known is passed over",
+        SUBAGENT_TYPES,
+        '            raise SubagentTypeError(f"the key {frontmatter.shown(key)} is not known. {hint}")\n',
+        "",
+    ),
+    mutant(
+        "a key that is nearly one of them is told like any key that is not known",
+        SUBAGENT_TYPES,
+        "            meant = _meant(key)\n",
+        "            meant = None\n",
+    ),
+    mutant(
+        "a key that is not known is shown at whatever length",
+        SUBAGENT_TYPES,
+        'f"the key {frontmatter.shown(key)} is not known. {hint}"',
+        'f"the key {key!r} is not known. {hint}"',
+    ),
+    mutant(
+        "a slip of the pen is found in lower case alone",
+        SUBAGENT_TYPES,
+        '    return _MEANT.get(key.lower().replace("-", "").replace("_", ""))\n',
+        '    return _MEANT.get(key.replace("-", "").replace("_", ""))\n',
+    ),
+    mutant(
+        "a dash keeps a slip of the pen from being found",
+        SUBAGENT_TYPES,
+        '    return _MEANT.get(key.lower().replace("-", "").replace("_", ""))\n',
+        '    return _MEANT.get(key.lower().replace("_", ""))\n',
+    ),
+    mutant(
+        "a low line keeps a slip of the pen from being found",
+        SUBAGENT_TYPES,
+        '    return _MEANT.get(key.lower().replace("-", "").replace("_", ""))\n',
+        '    return _MEANT.get(key.lower().replace("-", ""))\n',
+    ),
+    mutant(
+        "a key that is no text stops whoever reads the file",
+        SUBAGENT_TYPES,
+        "    if not isinstance(key, str):\n        return None\n",
+        "",
+    ),
+    mutant(
+        "one tool for tools is no slip of the pen",
+        SUBAGENT_TYPES,
+        '    "tool": "tools",\n',
+        "",
+    ),
+    mutant(
+        "the key that other programs have for the tools is no slip of the pen",
+        SUBAGENT_TYPES,
+        '    "allowedtools": "tools",\n',
+        "",
+    ),
+    mutant(
+        "steps written as one word are no slip of the pen",
+        SUBAGENT_TYPES,
+        '    "maxsteps": "max_steps",\n',
+        "",
+    ),
+    mutant(
+        "turns for steps are no slip of the pen",
+        SUBAGENT_TYPES,
+        '    "maxturns": "max_steps",\n',
+        "",
+    ),
+    mutant(
+        "a kind that says nothing of tools has none",
+        SUBAGENT_TYPES,
+        '    if "tools" not in fields:\n        return None\n',
+        '    if "tools" not in fields:\n        return ()\n',
+    ),
+    mutant(
+        "tools that are no list are taken letter by letter",
+        SUBAGENT_TYPES,
+        "    if not isinstance(value, list):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "whatever stands in the list of tools is the name of a tool",
+        SUBAGENT_TYPES,
+        "        if not isinstance(one, str) or not one.strip():\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a name of spaces alone is the name of a tool",
+        SUBAGENT_TYPES,
+        "        if not isinstance(one, str) or not one.strip():\n",
+        "        if not isinstance(one, str) or not one:\n",
+    ),
+    mutant(
+        "a tool that is named twice stands twice",
+        SUBAGENT_TYPES,
+        "        if one not in names:\n            names.append(one)\n",
+        "        names.append(one)\n",
+    ),
+    mutant(
+        "a kind that says nothing of steps gets one step",
+        SUBAGENT_TYPES,
+        '    if "max_steps" not in fields:\n        return None\n',
+        '    if "max_steps" not in fields:\n        return 1\n',
+    ),
+    mutant(
+        "true is a number of steps",
+        SUBAGENT_TYPES,
+        "    if isinstance(value, bool) or not isinstance(value, int) or value < 1:\n",
+        "    if not isinstance(value, int) or value < 1:\n",
+    ),
+    mutant(
+        "a number with a point is a number of steps",
+        SUBAGENT_TYPES,
+        "    if isinstance(value, bool) or not isinstance(value, int) or value < 1:\n",
+        "    if isinstance(value, bool) or value < 1:\n",
+    ),
+    mutant(
+        "no step at all is a number of steps",
+        SUBAGENT_TYPES,
+        "    if isinstance(value, bool) or not isinstance(value, int) or value < 1:\n",
+        "    if isinstance(value, bool) or not isinstance(value, int) or value < 0:\n",
+    ),
+    mutant(
+        "a kind may be called otherwise than its file",
+        SUBAGENT_TYPES,
+        "        if given != name:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a model that is no name is taken as it is",
+        SUBAGENT_TYPES,
+        '        model = frontmatter.text(fields, "model") if "model" in fields else None\n',
+        '        model = fields.get("model")\n',
+    ),
+    mutant(
+        "spaces alone are a system prompt",
+        SUBAGENT_TYPES,
+        "        prompt = text if text.strip() else None\n",
+        "        prompt = text or None\n",
+    ),
+    mutant(
+        "a file without text gives a system prompt that says nothing",
+        SUBAGENT_TYPES,
+        "        prompt = text if text.strip() else None\n",
+        "        prompt = text\n",
+    ),
+    mutant(
+        "what is wrong with the beginning of a file stops whoever looks for kinds",
+        SUBAGENT_TYPES,
+        "    except FrontMatterError as error:\n",
+        "    except ZeroDivisionError as error:\n",
+    ),
+    mutant(
+        "why the beginning of the file of a kind cannot be read is not passed on",
+        SUBAGENT_TYPES,
+        "with the kind.\n        raise SubagentTypeError(str(error)) from None\n",
+        'with the kind.\n        raise SubagentTypeError("") from None\n',
+    ),
+    mutant(
+        "whatever lies in a root is the file of a kind",
+        SUBAGENT_TYPES,
+        '    if not entry.name.endswith(SUFFIX) or entry.name.startswith("."):\n',
+        '    if entry.name.startswith("."):\n',
+    ),
+    mutant(
+        "a file that a program left for itself is the file of a kind",
+        SUBAGENT_TYPES,
+        '    if not entry.name.endswith(SUFFIX) or entry.name.startswith("."):\n',
+        "    if not entry.name.endswith(SUFFIX):\n",
+    ),
+    mutant(
+        "a directory that is called like the file of a kind is opened",
+        SUBAGENT_TYPES,
+        '    if entry.kind not in ("file", "link"):\n        return None\n',
+        "",
+    ),
+    mutant(
+        "a link among the kinds of a project stops whoever looks for kinds",
+        SUBAGENT_TYPES,
+        "    except RootError as error:\n        raise SubagentTypeError(str(error)) from None\n",
+        "    except ZeroDivisionError as error:\n        raise SubagentTypeError(str(error)) from None\n",
+    ),
+    mutant(
+        "why an entry is not gone into is not passed on",
+        SUBAGENT_TYPES,
+        "    except RootError as error:\n        raise SubagentTypeError(str(error)) from None\n",
+        '    except RootError as error:\n        raise SubagentTypeError("") from None\n',
+    ),
+    mutant(
+        "a link to a directory is told as a file that cannot be read",
+        SUBAGENT_TYPES,
+        '    except bound.NotAFileError:\n        raise SubagentTypeError("it is not a file") from None\n',
+        "",
+    ),
+    mutant(
+        "a file that is gone when it is opened stops whoever looks for kinds",
+        SUBAGENT_TYPES,
+        "    if opened is None:\n        # Gone since the root was listed.\n        return None\n",
+        "",
+    ),
+    mutant(
+        "a kind is called what its link leads to",
+        SUBAGENT_TYPES,
+        "    return parsed(content, entry.name.removesuffix(SUFFIX), file, root)\n",
+        "    return parsed(content, file.name.removesuffix(SUFFIX), file, root)\n",
+    ),
+    mutant(
+        "the file of a kind is told by the way that led to it",
+        SUBAGENT_TYPES,
+        "    return parsed(content, entry.name.removesuffix(SUFFIX), file, root)\n",
+        "    return parsed(content, entry.name.removesuffix(SUFFIX), there, root)\n",
+    ),
+    mutant(
+        "a place for kinds that is a link in a project stops whoever looks for kinds",
+        SUBAGENT_TYPES,
+        "    except RootError as error:\n        return Scan(",
+        "    except ZeroDivisionError as error:\n        return Scan(",
+    ),
+    mutant(
+        "a place for kinds that is a link in a project says nothing about it",
+        SUBAGENT_TYPES,
+        "        return Scan(root, invalid=(Invalid(root.path, root, str(error)),))\n",
+        "        return Scan(root)\n",
+    ),
+    mutant(
+        "a root of kinds that is not there stops whoever looks for kinds",
+        SUBAGENT_TYPES,
+        "    if looked is None:\n        return Scan(root)\n",
+        "",
+    ),
+    mutant(
+        "a root with more files than are looked at says nothing about the rest",
+        SUBAGENT_TYPES,
+        "    if more:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a kind that cannot be used stops whoever looks for kinds",
+        SUBAGENT_TYPES,
+        "        except SubagentTypeError as error:\n",
+        "        except ZeroDivisionError as error:\n",
+    ),
+    mutant(
+        "a file of a kind that cannot be read stops whoever looks for kinds",
+        SUBAGENT_TYPES,
+        "        except OSError as error:\n",
+        "        except ZeroDivisionError as error:\n",
+    ),
+    mutant(
+        "why a file of a kind cannot be read is told with the number of the error",
+        SUBAGENT_TYPES,
+        'f"it cannot be read: {error.strerror or error}"',
+        'f"it cannot be read: {error}"',
+    ),
+    mutant(
+        "an entry that is no kind is taken for one",
+        SUBAGENT_TYPES,
+        "            if kind is not None:\n                types.append(kind)\n",
+        "            types.append(kind)\n",
+    ),
+    mutant(
+        "a kind that names a tool which is not there is used all the same",
+        SUBAGENT_TYPES,
+        "        if not missing:\n            types.append(kind)\n            continue\n",
+        "        if True:\n            types.append(kind)\n            continue\n",
+    ),
+    mutant(
+        "the tools that are there are the ones that a kind is said to lack",
+        SUBAGENT_TYPES,
+        "        missing = [name for name in kind.tools or () if name not in tools]\n",
+        "        missing = [name for name in kind.tools or () if name in tools]\n",
+    ),
+    mutant(
+        "what could not be used before is forgotten when the tools are looked at",
+        SUBAGENT_TYPES,
+        "    invalid = list(found.invalid)\n",
+        "    invalid: list[Invalid] = []\n",
+    ),
+    mutant(
+        "one tool that is not there is told as several",
+        SUBAGENT_TYPES,
+        '        what = "a tool that is" if len(missing) == 1 else "tools that are"\n',
+        '        what = "tools that are"\n',
+    ),
+    mutant(
+        "every tool that is not there is named, however many there are",
+        SUBAGENT_TYPES,
+        '        named = ", ".join(frontmatter.shown(name) for name in missing[:_NAMED])\n',
+        '        named = ", ".join(frontmatter.shown(name) for name in missing)\n',
+    ),
+    mutant(
+        "the name of a tool that is not there is shown at whatever length",
+        SUBAGENT_TYPES,
+        '        named = ", ".join(frontmatter.shown(name) for name in missing[:_NAMED])\n',
+        '        named = ", ".join(repr(name) for name in missing[:_NAMED])\n',
+    ),
+    mutant(
+        "one tool fewer is named than is said",
+        SUBAGENT_TYPES,
+        "_NAMED = 5\n",
+        "_NAMED = 4\n",
+    ),
+    mutant(
+        "how many tools were not named is not said",
+        SUBAGENT_TYPES,
+        '        rest = f", and {more} more" if more > 0 else ""\n',
+        '        rest = ""\n',
+    ),
+    mutant(
+        "none more is said where every tool was named",
+        SUBAGENT_TYPES,
+        '        rest = f", and {more} more" if more > 0 else ""\n',
+        '        rest = f", and {more} more" if more >= 0 else ""\n',
+    ),
+    mutant(
+        "of two kinds of one name the one whose root comes later is the kind",
+        SUBAGENT_TYPES,
+        "            if kind.name in types:\n                shadowed.append(kind)\n            else:\n                types[kind.name] = kind\n",
+        "            types[kind.name] = kind\n",
+    ),
+    mutant(
+        "a kind that was passed over for its namesake is forgotten",
+        SUBAGENT_TYPES,
+        "                shadowed.append(kind)\n",
+        "                pass\n",
+    ),
+    mutant(
+        "what cannot be used in a root is forgotten when the roots are put together",
+        SUBAGENT_TYPES,
+        "        invalid.extend(found.invalid)\n",
+        "",
+    ),
+    mutant(
+        "the kinds come in the order of their roots and not by name",
+        SUBAGENT_TYPES,
+        "    return Found(dict(sorted(types.items())), tuple(shadowed), tuple(invalid))\n",
+        "    return Found(types, tuple(shadowed), tuple(invalid))\n",
+    ),
+    mutant(
+        "the kinds of a project are the user's own, links and all",
+        SUBAGENT_TYPES,
+        '    found = [Root(project / ".columbina" / "agents", "project", own=False)]\n',
+        '    found = [Root(project / ".columbina" / "agents", "project", own=True)]\n',
+    ),
+    mutant(
+        "the kinds of the user are another's, and no link of theirs is followed",
+        SUBAGENT_TYPES,
+        '        found.append(Root(home, "home", own=True))\n',
+        '        found.append(Root(home, "home", own=False))\n',
+    ),
+    mutant(
+        "without a home for kinds, one is looked into all the same",
+        SUBAGENT_TYPES,
+        "    if home is not None:\n",
+        "    if True:\n",
+    ),
+    mutant(
+        "the file of a kind ends otherwise",
+        SUBAGENT_TYPES,
+        'SUFFIX = ".md"\n',
+        'SUFFIX = ".markdown"\n',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -9855,5 +10237,6 @@ SETS: dict[str, MutantSet] = {
     "skills": MutantSet(("tests/skills",), _SKILLS),
     "hooks": MutantSet(("tests/hooks",), _HOOKS),
     "trust": MutantSet(("tests/apps/test_hooks_command.py",), _TRUST),
+    "subagents": MutantSet(("tests/subagents",), _SUBAGENTS),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

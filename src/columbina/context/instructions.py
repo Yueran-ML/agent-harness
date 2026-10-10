@@ -45,6 +45,7 @@ from columbina.agent import AGENTS, CONTEXT_PREFIX, Agent, ContextSource
 from columbina.fs import bound, locate
 from columbina.fs.paths import usable
 from columbina.kernel import Context
+from columbina.project import way_down
 from columbina.session import EventData, Projection, SessionEvent, UserMessageEvent
 
 __all__ = ["Config", "apply", "inject", "name"]
@@ -127,22 +128,6 @@ _GIVEN: Projection[bool] = Projection("instructions-given", False, _last_given)
 """Whether instructions were ever given in a session."""
 
 
-def _way_down(here: Path) -> list[Path]:
-    """Return the directories from the root of the project to a working directory, both with it.
-
-    The root is the nearest directory, from the working directory upwards,
-    that holds ``.git``: a directory in a repository, and a file in a work
-    tree that was added to one. Without a root, the way is the working
-    directory alone.
-    """
-    up = [here, *here.parents]
-    for steps, above in enumerate(up):
-        # Nothing is followed to find this out: a link of that name counts as it lies there.
-        if os.path.lexists(above / ".git"):
-            return list(reversed(up[: steps + 1]))
-    return [here]
-
-
 def _named_by(directory: Path, link: Path) -> Path:
     """Return the place that a link in a directory names, going by what the link stores alone."""
     return Path(os.path.normpath(str(directory / link).removeprefix(_VERBATIM)))
@@ -174,7 +159,7 @@ def _gather(cwd: Path, config: Config) -> _Gathered:
                 f"the instruction file {config.user_file} cannot be read: {error}"
             ) from error
     here = locate(cwd, ".").path
-    down = _way_down(here)
+    down = way_down(here)
     looked_for = {directory / file_name for directory in down for file_name in config.names}
     for directory in down:
         for file_name in config.names:

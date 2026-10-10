@@ -7,12 +7,14 @@ the model adapter, the tool registry, the session log, and the agent loop itself
 terminal, and `columbina run` gives it one task and prints the answer. The agent talks to
 a model over the OpenAI Chat Completions protocol. It reads, searches and changes the
 files of its working directory and runs commands, and what a call may do is decided
-before it runs.
+before it runs. A conversation that outgrows its model is made shorter by itself, and a
+session can be taken up again after the program was killed.
 
 Columbina 是一个用 Python 写的插件化 Agent harness。模型适配、工具注册、会话日志和 Agent
 循环都是插件。项目处于早期开发阶段。`columbina` 在终端里和 Agent 对话，`columbina run`
 把一个任务交给它并打印回答。Agent 在工作目录里读文件、搜索、改文件、执行命令，每次调用能做
-什么在执行之前判定。模型走 OpenAI Chat Completions 协议，默认接 DeepSeek。
+什么在执行之前判定。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。
+模型走 OpenAI Chat Completions 协议，默认接 DeepSeek。
 
 ## Getting started
 
@@ -101,7 +103,7 @@ it.
 
 | Key | What it does |
 |---|---|
-| Esc | Stops the turn that is running. Ctrl+C does the same. |
+| Esc | Stops the turn that is running, or what a command has the agent do. Ctrl+C does the same. |
 | Ctrl+C | At rest it clears the line. On an empty line, the second one leaves. |
 | Ctrl+D | Leaves, from an empty line. |
 
@@ -111,6 +113,9 @@ it.
 | `/tools` | Lists the tools of the agent, each with what a call of it does. |
 | `/permissions` | Shows what the session may do: the mode of the sandbox, the policy of approval, the rules, and what was allowed for the rest of the session. `/permissions PRESET` changes the first two. |
 | `/sessions` | Lists the sessions that are stored for the working directory. |
+| `/compact` | Sums up the older part of the conversation to make room, now and not when it has to be. |
+| `/todos` | Shows the list of things to do that the agent keeps for itself. |
+| `/fork` | Goes on in a copy of the session. The session stays as it was and can be taken up again. |
 | `/model` | Shows the model. `/model ID` names another one for the requests that follow. |
 | `/new` | Ends the session and begins another one. |
 | `/exit` | Leaves. |
@@ -126,13 +131,57 @@ typed for 0.6 seconds, and they count from then on. A letter of a line that was 
 typed when the question came answers nothing. Escape says no at any time.
 
 The line below the prompt names the model, says what the session may do to files and how
-well commands are held, and counts the tokens of the last request and the share of all
-input that came from the cache of the provider.
+well commands are held, and tells what the conversation comes to in tokens, what share of
+the model's window that is, and what share of all input came from the cache of the
+provider. The number of tokens is an estimate, and a `~` before it says so.
 
 `columbina --continue` takes up the session of the working directory that was used last,
 and `--session-id ID` takes up the one that is named. The conversation needs a terminal.
 On Windows that is Windows Terminal, PowerShell or cmd. Where there is none, as in a
 pipe, the program says so and ends, and `columbina run` is the command to use.
+
+## A long conversation
+
+A model takes only so much, and a conversation that works on files outgrows it. Columbina
+keeps count. It estimates what the conversation comes to without asking the model, and
+corrects the estimate by what the provider reports with each reply.
+
+- **A result that is too large is not shown whole.** What a tool gives back is cut down
+  to its beginning and its end when it comes to more than 12500 tokens. The whole of it
+  is kept in a file under `~/.columbina/spill`, and the result says where, so the model
+  can read the part that it needs. The output of a command is written to such a file as
+  it comes.
+- **A conversation that comes near the limit is made shorter.** Before a step begins,
+  long results that the model has read are cut down to their two ends. If that is not
+  enough, the model writes a summary of the oldest part, and the summary takes the place
+  of that part. The newest part stays as it is, and so does the last thing that the user
+  said. Nothing is deleted: the log keeps every event, and only what the model is sent
+  changes.
+- **A request that the model refuses as too long** is answered the same way, and the
+  step is taken again.
+
+`/compact` does it at once, and Esc stops it like a turn. The terminal says when a
+conversation is made shorter and what came of it.
+
+The profiles say that the model takes 1048576 tokens, which is what DeepSeek Flash says
+of itself. Whoever names another model names its window too, in the environment variable
+`COLUMBINA_CONTEXT_WINDOW`.
+
+For work of several steps the model keeps a list of things to do. The list is shown
+whenever the model writes it, and `/todos` shows it at any time. When the call that wrote
+it has been summed up, the model is told its list again.
+
+A session can be left and taken up again, also after the program was killed. A call that
+was under way then gets a result that says that nobody knows what came of it, and the
+model is told what happened before it goes on. `/fork` goes on in a copy of the session
+and leaves the session as it was. Stored sessions can be looked at without a
+conversation, and without a model:
+
+| Command | What it does |
+|---|---|
+| `columbina sessions list` | Lists the sessions that are stored for the working directory. |
+| `columbina sessions show ID` | Tells a session turn by turn: what the user said, and the end of what the model answered. |
+| `columbina sessions fork ID` | Copies a session up to its last whole turn and prints the id of the copy. |
 
 ## Running a task
 
@@ -184,8 +233,9 @@ ever appended.
 
 ## Changing files and running commands
 
-The agent has six tools: `read`, `write`, `edit`, `glob`, `grep`, and a tool that runs
-commands, which is called `powershell` on Windows and `bash` elsewhere.
+The agent has six tools for its working directory: `read`, `write`, `edit`, `glob`,
+`grep`, and a tool that runs commands, which is called `powershell` on Windows and `bash`
+elsewhere. A seventh, `todo_write`, changes nothing but its own list of things to do.
 
 ```console
 $ uv run columbina run 'check.py fails. Find the mistake in calc.py and fix it, and make sure that `python check.py` prints ok.' --allow 'run(python check.py)'
@@ -235,6 +285,10 @@ directory. A link in the place of such a file is not followed.
   written to the log first, and every request is derived from the log. A log that
   stops in the middle of a turn is closed when the session is resumed, so that every
   tool call has a result.
+- **What the model is sent is a view of the log.** A summary or a shortened result
+  takes the place of older messages in that view, and the events themselves stay. So
+  making a conversation shorter loses nothing, and whatever shows a session can show all
+  of it.
 - **Model access** has one vocabulary of messages and streamed chunks. An adapter only
   yields chunks. The runtime sees to it that every call ends with exactly one finish,
   and that every failure has a stable code. Retries are a plugin.

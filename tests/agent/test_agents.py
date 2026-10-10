@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TypeVar
 
 import pytest
+from pydantic import ValidationError
 
 import columbina.agent
 import columbina.session
@@ -104,6 +105,41 @@ async def test_an_agent_can_be_given_the_id_of_its_session(
 async def test_a_spec_that_names_no_loop_gets_the_default_one(tmp_path: Path) -> None:
     assert spec(tmp_path).loop == "default"
     assert spec(tmp_path).system_prompt == ""
+
+
+def test_a_spec_that_says_nothing_about_tools_and_steps_sets_no_limit(tmp_path: Path) -> None:
+    assert spec(tmp_path).tools is None
+    assert spec(tmp_path).max_steps is None
+
+
+def test_a_spec_may_name_the_tools_and_the_steps_of_a_turn(tmp_path: Path) -> None:
+    limited = spec(tmp_path).model_copy(update={"tools": frozenset({"read"}), "max_steps": 1})
+
+    again = AgentSpec.model_validate(limited.model_dump())
+
+    assert again == limited
+    assert again.tools == frozenset({"read"})
+    assert again.max_steps == 1
+
+
+def test_a_turn_of_no_steps_is_no_limit_that_a_spec_can_set(tmp_path: Path) -> None:
+    whole = spec(tmp_path).model_dump()
+
+    with pytest.raises(ValidationError, match="max_steps"):
+        AgentSpec.model_validate({**whole, "max_steps": 0})
+
+
+async def test_an_agent_can_be_created_for_what_another_one_delegates(
+    ctx: Context, agents: Agents, tmp_path: Path
+) -> None:
+    agent = await agents.create(
+        ctx, spec(tmp_path), session_id="child", parent="s-1", delegation_depth=1
+    )
+    agent.session.append(TurnStartEvent(turn=1))
+    await agent.session.flush()
+
+    header = ctx.use(SESSIONS).read(tmp_path, "child").header
+    assert (header.parent_session, header.delegation_depth) == ("s-1", 1)
 
 
 async def test_a_loop_that_is_not_there_cannot_create_an_agent(

@@ -408,7 +408,7 @@ async def test_a_turn_that_alone_is_cancelled_from_outside_leaves_the_agent_usab
 async def test_a_turn_that_breaks_ends_with_an_error_and_the_agent_goes_on(
     harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def broken(self: Tools) -> tuple[()]:
+    def broken(self: Tools, only: frozenset[str] | None = None) -> tuple[()]:
         raise RuntimeError("tools bug")
 
     agent = await harness.agent(Reply(text="Hello!"))

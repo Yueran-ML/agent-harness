@@ -262,6 +262,20 @@ def test_a_turn_that_is_still_open_and_a_session_without_turns_say_so() -> None:
     ]
 
 
+def test_a_session_that_was_delegated_says_by_which_one() -> None:
+    header = SessionHeader(
+        id="s-2",
+        created_at=1_791_590_400_000,
+        cwd="/work",
+        parent_session="s-1",
+        delegation_depth=1,
+    )
+
+    told = shown(StoredSession(header, [], 0)).splitlines()
+
+    assert told[1] == "delegated by the session s-1"
+
+
 def test_a_copy_says_what_it_is_a_copy_of() -> None:
     session = held(TurnStartEvent(turn=1), TurnEndEvent(turn=1, reason="completed"), parent="s-0")
 

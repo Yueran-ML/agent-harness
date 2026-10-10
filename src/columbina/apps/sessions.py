@@ -84,7 +84,9 @@ def shown(stored: StoredSession) -> str:
     header = stored.header
     lines = [f"session {header.id}, begun {_when(header.created_at)} in {header.cwd}"]
     if header.parent_session is not None:
-        lines.append(f"a copy of the session {header.parent_session}")
+        # A session that an agent delegated to is no copy of the one that delegated.
+        what = "delegated by" if header.delegation_depth else "a copy of"
+        lines.append(f"{what} the session {header.parent_session}")
     starts = [
         at for at, event in enumerate(stored.events) if isinstance(event.data, TurnStartEvent)
     ]

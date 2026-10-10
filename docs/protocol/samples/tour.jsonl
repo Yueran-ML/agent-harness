@@ -1,4 +1,4 @@
-{"type":"session","version":1,"id":"tour","created_at":1791590400180,"cwd":"/work","parent_session":null}
+{"type":"session","version":1,"id":"tour","created_at":1791590400180,"cwd":"/work","parent_session":null,"delegation_depth":0}
 {"type":"agent/inbox/spliced","seq":0,"time":1791590400360,"data":{"queue":"next-turn","removed":0,"added":[{"message":{"role":"user","content":[{"type":"text","text":"check.py fails. Find the mistake in calc.py and fix it, and make sure that `python check.py` prints ok."}]},"source":"user"}]}}
 {"type":"turn/start","seq":1,"time":1791590400540,"data":{"turn":1}}
 {"type":"sandbox/mode","seq":2,"time":1791590400720,"data":{"mode":"workspace-write"},"ignorable":true}

@@ -55,6 +55,45 @@ async def test_the_sessions_of_a_working_directory_are_listed_the_last_used_firs
     ]
 
 
+async def test_a_session_that_was_delegated_is_not_listed_among_the_conversations(
+    sessions: Sessions, ctx: Context, tmp_path: Path
+) -> None:
+    work = tmp_path / "work"
+    await keep(sessions, ctx, work, "talk", said("Fix the parser."), at=1000)
+    child = sessions.create(ctx, work, session_id="child", parent="talk", delegation_depth=1)
+    child.append(said("Find where the parser is."))
+    await child.flush()
+    child.close()
+    os.utime(sessions.directory(work, "child") / SESSION_FILE, ns=(2000 * SECOND, 2000 * SECOND))
+
+    # It was written to last, and it is nothing that a person takes up again.
+    assert sessions.stored(work) == [Listed("talk", 1_000_000, "Fix the parser.")]
+    # Whoever asks for all of them gets it, with how deep it was delegated.
+    assert sessions.stored(work, delegated=True) == [
+        Listed("child", 2_000_000, "Find where the parser is.", delegation_depth=1),
+        Listed("talk", 1_000_000, "Fix the parser."),
+    ]
+    header = sessions.read(work, "child").header
+    assert (header.parent_session, header.delegation_depth) == ("talk", 1)
+
+
+async def test_a_copy_of_a_session_that_was_delegated_is_a_conversation(
+    sessions: Sessions, ctx: Context, tmp_path: Path
+) -> None:
+    work = tmp_path / "work"
+    child = sessions.create(ctx, work, session_id="child", parent="talk", delegation_depth=1)
+    child.append(said("Find where the parser is."))
+    await child.flush()
+
+    copy = sessions.fork(ctx, work, child, session_id="copy")
+    await copy.flush()
+
+    # Somebody copied it to go on with it.
+    header = sessions.read(work, "copy").header
+    assert (header.parent_session, header.delegation_depth) == ("child", 0)
+    assert [listed.id for listed in sessions.stored(work)] == ["copy"]
+
+
 async def test_sessions_that_were_written_in_the_same_moment_come_in_the_order_of_their_ids(
     sessions: Sessions, ctx: Context, tmp_path: Path
 ) -> None:

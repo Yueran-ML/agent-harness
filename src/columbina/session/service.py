@@ -62,15 +62,20 @@ class Sessions:
             )
         return self.root / workspace_key(cwd) / check_session_id(session_id)
 
-    def stored(self, cwd: str | Path) -> list[Listed]:
+    def stored(self, cwd: str | Path, *, delegated: bool = False) -> list[Listed]:
         """List the sessions that are stored for a working directory, the last used first.
 
         Sessions that are kept in memory are not listed. This reads the
         beginning of every session file, so it takes the time that takes.
+
+        Args:
+            cwd: The working directory.
+            delegated: Whether the sessions of subagents are listed as well.
+                By default only conversations are.
         """
         if self.root is None:
             return []
-        return stored_sessions(self.root / workspace_key(cwd))
+        return stored_sessions(self.root / workspace_key(cwd), delegated=delegated)
 
     def create(
         self,
@@ -79,6 +84,7 @@ class Sessions:
         *,
         session_id: str | None = None,
         parent: str | None = None,
+        delegation_depth: int = 0,
     ) -> Session:
         """Start a session that belongs to the fiber of ``ctx``.
 
@@ -90,12 +96,15 @@ class Sessions:
             ctx: The context of the owner.
             cwd: The working directory that the session belongs to.
             session_id: The id of the session. One is made up by default.
-            parent: The id of the session that this one continues from.
+            parent: The id of the session that this one comes from.
+            delegation_depth: How deep the session is delegated: 0 for a
+                conversation, and one more than that of the parent for the
+                session of a subagent.
 
         Raises:
             ValueError: The id cannot name a directory.
         """
-        return self._start(ctx, cwd, session_id, parent, ())
+        return self._start(ctx, cwd, session_id, parent, delegation_depth, ())
 
     def fork(
         self,
@@ -136,7 +145,8 @@ class Sessions:
             if not 0 <= upto < len(events):
                 raise ValueError(f"the session {parent!r} has no event {upto}")
             events = events[: upto + 1]
-        session = self._start(ctx, cwd, session_id, parent, events)
+        # A copy is a conversation of its own, whatever it is a copy of.
+        session = self._start(ctx, cwd, session_id, parent, 0, events)
         self._take_over(session, inherited=True, reason="forked")
         return session
 
@@ -182,6 +192,7 @@ class Sessions:
         cwd: str | Path,
         session_id: str | None,
         parent: str | None,
+        depth: int,
         events: Sequence[SessionEvent[EventData]],
     ) -> Session:
         """Start a session that begins with ``events``, and store those first."""
@@ -194,6 +205,7 @@ class Sessions:
                 created_at=created,
                 cwd=os.path.abspath(cwd),  # noqa: PTH100
                 parent_session=parent,
+                delegation_depth=depth,
             )
             store = SessionFile.create(self.directory(cwd, identity), header)
             for event in events:

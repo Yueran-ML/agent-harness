@@ -595,7 +595,7 @@ class LoopAgent(Agent):
         await self._restore_context()
         draft = RequestDraft(self, turn, step, attempt, self.spec.model)
         config = await self._heard(REQUEST, self.ctx.waterfall(REQUEST, draft, _as_drafted))
-        schemas = self._tools.schemas()
+        schemas = self._tools.schemas(self.spec.tools)
         header = _HEADER.of(session)
         if header is None or header.config != config or header.tools != schemas:
             session.append(RequestHeaderEvent(config=config, tools=schemas))
@@ -625,7 +625,8 @@ class LoopAgent(Agent):
         session.append(
             ToolCallEvent(call_id=call.call_id, name=call.name, arguments=call.arguments)
         )
-        return self._tools.begin(self.ctx, call, ToolRun(call.call_id, self.cwd, session))
+        run = ToolRun(call.call_id, self.cwd, session)
+        return self._tools.begin(self.ctx, call, run, self.spec.tools)
 
     def _not_run(self, call: ToolCallBlock) -> ToolOutcome:
         """Write down a tool call that will not be carried out, and return its result."""

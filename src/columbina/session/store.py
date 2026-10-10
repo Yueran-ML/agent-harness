@@ -108,18 +108,21 @@ class Listed:
             since the epoch.
         first_input: The beginning of what the user said first, or ``None``
             if the user has said nothing in it.
+        delegation_depth: How deep the session was delegated: 0 for a
+            conversation, more for the session of a subagent.
     """
 
     id: str
     modified_ms: int
     first_input: str | None
+    delegation_depth: int = 0
 
 
 _SHOWN_OF_AN_INPUT = 79
 
 
-def _first_input(path: Path) -> str | None:
-    """Return the beginning of the first thing that the user said in a session file.
+def _beginning(path: Path) -> tuple[SessionHeader, str | None]:
+    """Return the header of a session file and the beginning of what the user said first.
 
     The file is read as far as that, and no further. What plugins told the
     model at the beginning of a turn is not something the user said.
@@ -129,40 +132,51 @@ def _first_input(path: Path) -> str | None:
         OSError: The file cannot be read.
     """
     with path.open("rb") as file:
-        decode_header(file.readline())
-        for number, line in enumerate(file, start=2):
-            if not line.endswith(b"\n"):
-                # A last line that was never finished.
-                break
-            try:
-                written: object = json.loads(line)
-            except ValueError:
-                raise UnreadableSessionError(f"line {number} is not an event") from None
-            if not isinstance(written, dict):
-                raise UnreadableSessionError(f"line {number} is not an event")
-            event = cast("dict[str, object]", written)
-            if event.get("type") != UserMessageEvent.event_type:
-                continue
-            try:
-                said = UserMessageEvent.model_validate(event.get("data"))
-            except ValidationError:
-                raise UnreadableSessionError(f"line {number} is not an event") from None
-            if said.source != "user":
-                continue
-            texts = [block.text for block in said.message.content]
-            first = " ".join(texts).strip().partition("\n")[0].rstrip()
-            if len(first) > _SHOWN_OF_AN_INPUT + 1:
-                return first[:_SHOWN_OF_AN_INPUT] + "..."
-            return first
+        header = decode_header(file.readline())
+        return header, _first_input(file)
+
+
+def _first_input(file: BinaryIO) -> str | None:
+    """Return the beginning of the first thing that the user said, read from after the header."""
+    for number, line in enumerate(file, start=2):
+        if not line.endswith(b"\n"):
+            # A last line that was never finished.
+            break
+        try:
+            written: object = json.loads(line)
+        except ValueError:
+            raise UnreadableSessionError(f"line {number} is not an event") from None
+        if not isinstance(written, dict):
+            raise UnreadableSessionError(f"line {number} is not an event")
+        event = cast("dict[str, object]", written)
+        if event.get("type") != UserMessageEvent.event_type:
+            continue
+        try:
+            said = UserMessageEvent.model_validate(event.get("data"))
+        except ValidationError:
+            raise UnreadableSessionError(f"line {number} is not an event") from None
+        if said.source != "user":
+            continue
+        texts = [block.text for block in said.message.content]
+        first = " ".join(texts).strip().partition("\n")[0].rstrip()
+        if len(first) > _SHOWN_OF_AN_INPUT + 1:
+            return first[:_SHOWN_OF_AN_INPUT] + "..."
+        return first
     return None
 
 
-def stored_sessions(directory: Path) -> list[Listed]:
+def stored_sessions(directory: Path, *, delegated: bool = False) -> list[Listed]:
     """List the sessions that lie in the directory of one working directory.
 
     The session that was written to last comes first. A session that cannot
     be read is left out, with a warning in the log, so that one broken file
     does not hide the others.
+
+    Args:
+        directory: The directory.
+        delegated: Whether the sessions of subagents are listed as well. By
+            default only conversations are: a session that an agent
+            delegated to is nothing that a person takes up again.
     """
     try:
         entries = list(directory.iterdir())
@@ -173,14 +187,15 @@ def stored_sessions(directory: Path) -> list[Listed]:
         file = entry / SESSION_FILE
         try:
             modified = file.stat().st_mtime_ns // 1_000_000
-            first = _first_input(file)
+            header, first = _beginning(file)
         except (FileNotFoundError, NotADirectoryError):
             # Something else lies there.
             continue
         except (UnreadableSessionError, OSError) as error:
             logger.warning("the session in %s is left out of the list: %s", entry, error)
             continue
-        listed.append(Listed(entry.name, modified, first))
+        if header.delegation_depth == 0 or delegated:
+            listed.append(Listed(entry.name, modified, first, header.delegation_depth))
     return sorted(listed, key=lambda one: (one.modified_ms, one.id), reverse=True)
 
 

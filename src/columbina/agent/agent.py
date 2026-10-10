@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeVar
 
+from pydantic import Field
+
 from columbina.agent.inbox import InboxItem, enqueue
 from columbina.data import Data
 from columbina.kernel import Context, Registry, ServiceKey
@@ -35,12 +37,21 @@ class AgentSpec(Data):
         model: The model that the agent talks to, and how.
         system_prompt: The instructions that open the conversation.
         loop: The name of the loop that drives the agent.
+        tools: The names of the tools that the agent may use, or ``None`` for
+            every tool that there is. A tool that is not named is not there
+            for the agent: its model is not told about it, and a call of it
+            is answered like a call of a tool that does not exist.
+        max_steps: How many steps a turn of the agent may take, or ``None``
+            if the spec sets no limit. The loop does not count steps itself.
+            Whatever keeps turns within a budget goes by this.
     """
 
     cwd: Path
     model: CallConfig
     system_prompt: str = ""
     loop: str = "default"
+    tools: frozenset[str] | None = None
+    max_steps: int | None = Field(default=None, ge=1)
 
 
 class Agent(ABC):
@@ -211,9 +222,24 @@ class Agents:
         self._sessions = sessions
 
     async def create(
-        self, ctx: Context, spec: AgentSpec, *, session_id: str | None = None
+        self,
+        ctx: Context,
+        spec: AgentSpec,
+        *,
+        session_id: str | None = None,
+        parent: str | None = None,
+        delegation_depth: int = 0,
     ) -> Agent:
         """Create an agent with a new session. It belongs to the fiber of ``ctx``.
+
+        Args:
+            ctx: The context of the owner of the agent.
+            spec: What the agent is created from.
+            session_id: The id of the session. One is made up by default.
+            parent: The id of the session whose agent delegates to this one,
+                if one does.
+            delegation_depth: How deep the agent is delegated: 0 for one that
+                a person talks to.
 
         Raises:
             AgentError: The loop that the spec names is not there, or an agent
@@ -225,7 +251,13 @@ class Agents:
             session_id = new_session_id(self._sessions.clock())
         scope = self._scope(ctx, check_session_id(session_id))
         try:
-            session = self._sessions.create(scope, spec.cwd, session_id=session_id)
+            session = self._sessions.create(
+                scope,
+                spec.cwd,
+                session_id=session_id,
+                parent=parent,
+                delegation_depth=delegation_depth,
+            )
             return self._start(scope, factory, spec, session)
         except BaseException:
             await scope.fiber.dispose()

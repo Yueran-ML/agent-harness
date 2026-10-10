@@ -5,7 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import ClassVar, Literal, cast
 
-from pydantic import ConfigDict, JsonValue, PrivateAttr, ValidationError
+from pydantic import ConfigDict, Field, JsonValue, PrivateAttr, ValidationError
 
 from columbina.data import Data
 from columbina.session.errors import UnreadableSessionError
@@ -24,7 +24,12 @@ class SessionHeader(Data):
         id: The id of the session.
         created_at: When the session was created, in milliseconds since the epoch.
         cwd: The working directory that the session was created in.
-        parent_session: The id of the session that this one was forked from.
+        parent_session: The id of the session that this one comes from: the
+            one it is a copy of, or the one whose agent delegated to it.
+        delegation_depth: How many agents stand between a person and the
+            agent of this session. It is 0 for a conversation, and one more
+            than that of its parent for the session of a subagent. A file
+            that says nothing about it was written for a conversation.
     """
 
     type: Literal["session"] = "session"
@@ -33,6 +38,7 @@ class SessionHeader(Data):
     created_at: int
     cwd: str
     parent_session: str | None = None
+    delegation_depth: int = Field(default=0, ge=0)
 
 
 class UnknownEvent(EventData):

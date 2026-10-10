@@ -481,11 +481,26 @@ class Tools:
         for tool in tools:
             self.registry.add(ctx, tool.name, tool)
 
-    def schemas(self) -> tuple[ToolSchema, ...]:
-        """Return what a model is told about the tools, in the order they were added."""
-        return tuple(tool.schema for tool in self.registry.values())
+    def schemas(self, only: frozenset[str] | None = None) -> tuple[ToolSchema, ...]:
+        """Return what a model is told about the tools, in the order they were added.
 
-    def begin(self, ctx: Context, call: ToolCallBlock, run: ToolRun) -> PendingCall:
+        Args:
+            only: The names of the tools that the caller may use, or ``None``
+                for all of them. The others are left out.
+        """
+        return tuple(self.registry[name].schema for name in self._names(only))
+
+    def _names(self, only: frozenset[str] | None) -> list[str]:
+        """Return the names of the tools that a caller may use, in the order they were added."""
+        return [name for name in self.registry if only is None or name in only]
+
+    def begin(
+        self,
+        ctx: Context,
+        call: ToolCallBlock,
+        run: ToolRun,
+        only: frozenset[str] | None = None,
+    ) -> PendingCall:
         """Take up a call of the model.
 
         The tool is looked up and the arguments are read at once. If either
@@ -496,10 +511,13 @@ class Tools:
                 reached, which is the context of the agent.
             call: The call as the model wrote it.
             run: What the tool is told about the call.
+            only: The names of the tools that the caller may use, or ``None``
+                for all of them. A tool that is not among them is not there
+                for this caller.
         """
-        tool = self.registry.get(call.name)
+        tool = self.registry.get(call.name) if only is None or call.name in only else None
         if tool is None:
-            names = ", ".join(self.registry)
+            names = ", ".join(self._names(only))
             known = f"The tools are: {names}." if names else "There are no tools."
             unknown = PendingCall(ctx, call, None, None, True, self)
             unknown.fail("UNKNOWN_TOOL", f"There is no tool named {call.name!r}. {known}")

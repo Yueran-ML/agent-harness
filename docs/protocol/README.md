@@ -433,7 +433,7 @@
 | 包含全部事件类型的样例会话 | [`samples/tour.jsonl`](samples/tour.jsonl) | 由真实的 Agent 循环跑出来，每种事件至少出现一次。测试保证它不过时 |
 | 真实运行的记录 | [`tests/fixtures/recorded/`](../../tests/fixtures/recorded/) | 两段对 DeepSeek 的真实运行留下的会话日志 |
 
-会话文件的第一行是会话头，形状是 `{type: "session", version, id, created_at, cwd, parent_session}`。其余每一行就是第 7.1 节的一条事件。
+会话文件的第一行是会话头，形状是 `{type: "session", version, id, created_at, cwd, parent_session, delegation_depth}`。`delegation_depth` 是 0 的会话是人参与的对话，大于 0 的是子代理的会话，这时 `parent_session` 是把任务交给它的那个会话。其余每一行就是第 7.1 节的一条事件。
 
 **样例会话里发生了什么。** 模型的回复是事先写好的，命令是假的，其余都是真的，所以事件和它们的顺序与实际运行相同。模型的窗口设成了 3200 个 token，为的是让压缩在几个回合之内发生。
 

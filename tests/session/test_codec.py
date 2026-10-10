@@ -188,9 +188,37 @@ def test_a_line_that_is_not_a_well_formed_event_is_refused(line: str, complaint:
 def test_a_header_is_the_first_line_of_a_session_file() -> None:
     assert encode_header(HEADER) == (
         '{"type":"session","version":1,"id":"s-1","created_at":1791234567890,'
-        '"cwd":"F:\\\\work","parent_session":null}'
+        '"cwd":"F:\\\\work","parent_session":null,"delegation_depth":0}'
     )
     assert decode_header(encode_header(HEADER)) == HEADER
+
+
+def test_a_header_says_how_deep_its_session_was_delegated() -> None:
+    header = SessionHeader(
+        id="s-2", created_at=1, cwd="/work", parent_session="s-1", delegation_depth=1
+    )
+
+    assert decode_header(encode_header(header)) == header
+    assert encode_header(header).endswith('"parent_session":"s-1","delegation_depth":1}')
+
+
+def test_a_header_that_says_nothing_about_it_is_of_a_session_that_nobody_delegated() -> None:
+    # A file that was written before sessions could be delegated.
+    old = (
+        '{"type":"session","version":1,"id":"s-1","created_at":1,"cwd":"/w","parent_session":null}'
+    )
+
+    assert decode_header(old).delegation_depth == 0
+
+
+def test_no_session_is_delegated_less_than_not_at_all() -> None:
+    line = (
+        '{"type":"session","version":1,"id":"s-1","created_at":1,"cwd":"/w",'
+        '"parent_session":null,"delegation_depth":-1}'
+    )
+
+    with pytest.raises(UnreadableSessionError, match="is not a session header"):
+        decode_header(line)
 
 
 def test_a_header_can_name_the_session_it_was_forked_from() -> None:

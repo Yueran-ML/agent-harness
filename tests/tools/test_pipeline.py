@@ -210,6 +210,55 @@ async def test_without_any_tool_the_error_says_so(ctx: Context, tools: Tools, ru
     assert outcome.text == "There is no tool named 'echo'. There are no tools."
 
 
+# Tools for one caller and not for another
+
+
+def test_a_caller_can_be_told_about_some_of_the_tools_only(
+    ctx: Context, tools: Tools, journal: Journal
+) -> None:
+    tools.add(
+        ctx, tool("echo", journal.echo), tool("count", journal.count), tool("fail", journal.fail)
+    )
+
+    assert [schema.name for schema in tools.schemas()] == ["echo", "count", "fail"]
+    # They come in the order in which they were added, whatever order they are named in.
+    some = tools.schemas(only=frozenset({"fail", "echo"}))
+    assert [schema.name for schema in some] == ["echo", "fail"]
+    assert tools.schemas(only=frozenset[str]()) == ()
+    # A name that no tool has adds nothing.
+    named = tools.schemas(only=frozenset({"count", "nowhere"}))
+    assert [schema.name for schema in named] == ["count"]
+
+
+async def test_a_tool_that_a_caller_may_not_use_is_not_there_for_it(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    tools.add(ctx, tool("echo", journal.echo), tool("count", journal.count))
+
+    refused = tools.begin(ctx, call("echo"), run, only=frozenset({"count"}))
+
+    assert refused.outcome is not None
+    # The tools that the answer names are the ones that the caller may use.
+    assert refused.outcome.error == ToolError(
+        code="UNKNOWN_TOOL", reason="There is no tool named 'echo'. The tools are: count."
+    )
+    assert journal.ran == []
+    # One that it may use is taken up as ever.
+    taken = tools.begin(ctx, call("count"), run, only=frozenset({"count"}))
+    assert taken.outcome is None
+
+
+async def test_a_caller_that_may_use_no_tool_is_told_that_there_are_none(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    tools.add(ctx, tool("echo", journal.echo))
+
+    refused = tools.begin(ctx, call("echo"), run, only=frozenset[str]())
+
+    assert refused.outcome is not None
+    assert refused.outcome.text == "There is no tool named 'echo'. There are no tools."
+
+
 async def test_arguments_that_do_not_fit_are_an_error_result_and_the_tool_does_not_run(
     ctx: Context, tools: Tools, run: ToolRun, journal: Journal
 ) -> None:

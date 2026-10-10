@@ -378,6 +378,36 @@ _LOOP = (
         "        while not self._ending() and not self._halted:\n",
         "        while not self._closing and not self._halted:\n",
     ),
+    mutant(
+        "an agent is told about the tools that its spec leaves out",
+        LOOP,
+        "        schemas = self._tools.schemas(self.spec.tools)\n",
+        "        schemas = self._tools.schemas()\n",
+    ),
+    mutant(
+        "an agent can call a tool that its spec leaves out",
+        LOOP,
+        "        return self._tools.begin(self.ctx, call, run, self.spec.tools)\n",
+        "        return self._tools.begin(self.ctx, call, run)\n",
+    ),
+    mutant(
+        "a turn of no steps is a limit that a spec can set",
+        AGENTS_SERVICE,
+        "    max_steps: int | None = Field(default=None, ge=1)\n",
+        "    max_steps: int | None = Field(default=None, ge=0)\n",
+    ),
+    mutant(
+        "an agent that is created for a delegation does not say how deep",
+        AGENTS_SERVICE,
+        "                delegation_depth=delegation_depth,\n",
+        "",
+    ),
+    mutant(
+        "an agent that is created for a delegation does not say by whom",
+        AGENTS_SERVICE,
+        "                parent=parent,\n",
+        "",
+    ),
 )
 
 _READ = (
@@ -852,6 +882,18 @@ _TOOLS = (
         PIPELINE,
         "        if self._tools.registry.get(tool.name) is tool:",
         "        if tool.name in self._tools.registry:",
+    ),
+    mutant(
+        "a caller is told about the tools that it may not use",
+        PIPELINE,
+        "        return [name for name in self.registry if only is None or name in only]\n",
+        "        return list(self.registry)\n",
+    ),
+    mutant(
+        "a tool that a caller may not use is carried out for it",
+        PIPELINE,
+        "        tool = self.registry.get(call.name) if only is None or call.name in only else None\n",
+        "        tool = self.registry.get(call.name)\n",
     ),
 )
 
@@ -4923,8 +4965,8 @@ _STORED = (
     mutant(
         "what plugins told the model counts as the first thing the user said",
         SESSION_STORE,
-        '            if said.source != "user":\n                continue\n',
-        '            if said.source == "nobody":\n                continue\n',
+        '        if said.source != "user":\n            continue\n',
+        '        if said.source == "nobody":\n            continue\n',
     ),
     mutant(
         "a session that cannot be read hides the others",
@@ -4948,32 +4990,32 @@ _STORED = (
     mutant(
         "a long first input is shown whole",
         SESSION_STORE,
-        "            if len(first) > _SHOWN_OF_AN_INPUT + 1:\n",
-        "            if len(first) > 100 * _SHOWN_OF_AN_INPUT:\n",
+        "        if len(first) > _SHOWN_OF_AN_INPUT + 1:\n",
+        "        if len(first) > 100 * _SHOWN_OF_AN_INPUT:\n",
     ),
     mutant(
         "a first input of several lines is shown with all of them",
         SESSION_STORE,
-        '            first = " ".join(texts).strip().partition("\\n")[0].rstrip()\n',
-        '            first = " ".join(texts).strip()\n',
+        '        first = " ".join(texts).strip().partition("\\n")[0].rstrip()\n',
+        '        first = " ".join(texts).strip()\n',
     ),
     mutant(
         "a last line that was never finished makes a session unreadable",
         SESSION_STORE,
-        '            if not line.endswith(b"\\n"):\n                # A last line that was never finished.\n                break\n',
-        '            if not line.endswith(b"\\n"):\n                # A last line that was never finished.\n                pass\n',
+        '        if not line.endswith(b"\\n"):\n            # A last line that was never finished.\n            break\n',
+        '        if not line.endswith(b"\\n"):\n            # A last line that was never finished.\n            pass\n',
     ),
     mutant(
         "the first user message is looked for only in the first event",
         SESSION_STORE,
-        '            if event.get("type") != UserMessageEvent.event_type:\n                continue\n',
-        '            if event.get("type") != UserMessageEvent.event_type:\n                break\n',
+        '        if event.get("type") != UserMessageEvent.event_type:\n            continue\n',
+        '        if event.get("type") != UserMessageEvent.event_type:\n            break\n',
     ),
     mutant(
         "a file that does not begin like a session is listed",
         SESSION_STORE,
-        '    with path.open("rb") as file:\n        decode_header(file.readline())\n',
-        '    with path.open("rb") as file:\n        file.readline()\n',
+        "        header = decode_header(file.readline())\n        return header, _first_input(file)\n",
+        '        file.readline()\n        return SessionHeader(id=path.parent.name, created_at=0, cwd=""), _first_input(file)\n',
     ),
     mutant(
         "a directory that is not there yet is an error and not an empty list",
@@ -4996,8 +5038,44 @@ _STORED = (
     mutant(
         "the sessions of every working directory are looked for in one place",
         SESSION_SERVICE,
-        "        return stored_sessions(self.root / workspace_key(cwd))\n",
-        '        return stored_sessions(self.root / workspace_key("."))\n',
+        "        return stored_sessions(self.root / workspace_key(cwd), delegated=delegated)\n",
+        '        return stored_sessions(self.root / workspace_key("."), delegated=delegated)\n',
+    ),
+    mutant(
+        "the sessions of subagents are listed among the conversations",
+        SESSION_STORE,
+        "        if header.delegation_depth == 0 or delegated:\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "whoever asks for every session gets the conversations only",
+        SESSION_STORE,
+        "        if header.delegation_depth == 0 or delegated:\n",
+        "        if header.delegation_depth == 0:\n",
+    ),
+    mutant(
+        "a session in a list does not say how deep it was delegated",
+        SESSION_STORE,
+        "            listed.append(Listed(entry.name, modified, first, header.delegation_depth))\n",
+        "            listed.append(Listed(entry.name, modified, first))\n",
+    ),
+    mutant(
+        "a session forgets how deep it was delegated",
+        SESSION_SERVICE,
+        "                delegation_depth=depth,\n",
+        "",
+    ),
+    mutant(
+        "a copy of a session that was delegated counts as delegated itself",
+        SESSION_SERVICE,
+        "        session = self._start(ctx, cwd, session_id, parent, 0, events)\n",
+        "        session = self._start(ctx, cwd, session_id, parent, 1, events)\n",
+    ),
+    mutant(
+        "whoever lists the sessions of a directory gets those of subagents as well",
+        SESSION_SERVICE,
+        "        return stored_sessions(self.root / workspace_key(cwd), delegated=delegated)\n",
+        "        return stored_sessions(self.root / workspace_key(cwd), delegated=True)\n",
     ),
 )
 
@@ -5931,8 +6009,8 @@ _STORED_SESSIONS = (
     mutant(
         "a copy does not say what it is a copy of",
         APPS_SESSIONS,
-        '    if header.parent_session is not None:\n        lines.append(f"a copy of the session {header.parent_session}")\n',
-        "",
+        '        lines.append(f"{what} the session {header.parent_session}")\n',
+        "        pass\n",
     ),
     mutant(
         "a session without turns says nothing about that",
@@ -6065,6 +6143,18 @@ _STORED_SESSIONS = (
         LAUNCHER,
         '                "there are none to look at"\n            )\n            return 2\n',
         '                "there are none to look at"\n            )\n            return 0\n',
+    ),
+    mutant(
+        "a session that was delegated is told as a copy",
+        APPS_SESSIONS,
+        '        what = "delegated by" if header.delegation_depth else "a copy of"\n',
+        '        what = "a copy of"\n',
+    ),
+    mutant(
+        "a copy is told as a session that was delegated",
+        APPS_SESSIONS,
+        '        what = "delegated by" if header.delegation_depth else "a copy of"\n',
+        '        what = "delegated by"\n',
     ),
 )
 

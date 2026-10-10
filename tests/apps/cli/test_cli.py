@@ -915,6 +915,30 @@ async def test_the_session_that_was_used_last_can_be_taken_up_without_its_name(
     assert (went_on(harness, "older"), went_on(harness, "newer")) == (False, True)
 
 
+async def test_the_session_of_a_subagent_is_not_what_is_taken_up_again(harness: Harness) -> None:
+    await an_older_and_a_newer_session(harness)
+    # An agent handed a task on after that, and the session of the subagent was written last.
+    child = harness.sessions.create(
+        harness.ctx, harness.cwd, session_id="child", parent="newer", delegation_depth=1
+    )
+    child.append(UserMessageEvent(message=user("A task that was handed on.")))
+    await child.flush()
+    child.close()
+    stamp = 3000 * 1_000_000_000
+    os.utime(harness.sessions.directory(harness.cwd, "child") / SESSION_FILE, ns=(stamp, stamp))
+    harness.model.add(Reply(text="Going on."))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, resume=True)).run())
+        await at.sees("/help lists the commands.")
+
+        at.enter("Go on.")
+        await at.sees("Going on.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    assert (went_on(harness, "newer"), went_on(harness, "child")) == (True, False)
+
+
 async def test_taking_up_a_session_where_none_is_stored_begins_a_new_one(
     harness: Harness, tmp_path: Path
 ) -> None:

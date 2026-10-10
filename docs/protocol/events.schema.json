@@ -1542,7 +1542,7 @@
     },
     "SessionHeader": {
       "additionalProperties": false,
-      "description": "The first line of a session file.\n\nAttributes:\n    type: Always ``session``.\n    version: The version of the file format.\n    id: The id of the session.\n    created_at: When the session was created, in milliseconds since the epoch.\n    cwd: The working directory that the session was created in.\n    parent_session: The id of the session that this one was forked from.",
+      "description": "The first line of a session file.\n\nAttributes:\n    type: Always ``session``.\n    version: The version of the file format.\n    id: The id of the session.\n    created_at: When the session was created, in milliseconds since the epoch.\n    cwd: The working directory that the session was created in.\n    parent_session: The id of the session that this one comes from: the\n        one it is a copy of, or the one whose agent delegated to it.\n    delegation_depth: How many agents stand between a person and the\n        agent of this session. It is 0 for a conversation, and one more\n        than that of its parent for the session of a subagent. A file\n        that says nothing about it was written for a conversation.",
       "properties": {
         "type": {
           "const": "session",
@@ -1572,6 +1572,11 @@
             }
           ],
           "default": null
+        },
+        "delegation_depth": {
+          "default": 0,
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -1580,7 +1585,8 @@
         "id",
         "created_at",
         "cwd",
-        "parent_session"
+        "parent_session",
+        "delegation_depth"
       ],
       "title": "SessionHeader",
       "type": "object"

@@ -120,6 +120,63 @@ def board(harness: Harness) -> Board:
     return made
 
 
+# The tools of one agent
+
+
+async def test_an_agent_has_every_tool_unless_its_spec_names_some(
+    harness: Harness, board: Board
+) -> None:
+    agent = await harness.agent(Reply(text="Done."))
+
+    agent.followup("Go.")
+    await idle(agent)
+
+    told = [schema.name for schema in harness.model.requests[0].tools]
+    assert told == ["shared", "exclusive", "fail", "finish"]
+
+
+async def test_an_agent_is_told_about_the_tools_that_its_spec_names_and_no_others(
+    harness: Harness, board: Board
+) -> None:
+    agent = await harness.agent(Reply(text="Done."), tools=frozenset({"finish", "shared"}))
+
+    agent.followup("Go.")
+    await idle(agent)
+
+    assert [schema.name for schema in harness.model.requests[0].tools] == ["shared", "finish"]
+
+
+async def test_an_agent_cannot_call_a_tool_that_its_spec_does_not_name(
+    harness: Harness, board: Board
+) -> None:
+    agent = await harness.agent(
+        Reply(calls=(*exclusive("a"), *shared("b"))),
+        Reply(text="I see."),
+        tools=frozenset({"shared"}),
+    )
+
+    agent.followup("Go.")
+    await idle(agent)
+
+    assert [(code, text) for _, text, code in results(agent)] == [
+        ("UNKNOWN_TOOL", "There is no tool named 'exclusive'. The tools are: shared."),
+        (None, "did b"),
+    ]
+    # The tool that it may not use did not run.
+    assert board.log == ["start b", "end b"]
+
+
+async def test_an_agent_whose_spec_names_no_tool_at_all_has_none(
+    harness: Harness, board: Board
+) -> None:
+    agent = await harness.agent(Reply(text="Done."), tools=frozenset[str]())
+
+    agent.followup("Go.")
+    await idle(agent)
+
+    assert harness.model.requests[0].tools == ()
+
+
 # One call
 
 

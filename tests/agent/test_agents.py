@@ -23,9 +23,12 @@ from columbina.kernel import Context, Plugin
 from columbina.llm import CallConfig, TextBlock, UserMessage
 from columbina.session import (
     SESSION_EVENT,
+    SESSIONS,
     Committed,
+    EndSeedEvent,
     Session,
     SessionClosedError,
+    TurnEndEvent,
     TurnStartEvent,
     UnreadableSessionError,
 )
@@ -282,3 +285,104 @@ async def test_an_id_that_cannot_name_a_session_is_refused(
         await agents.create(ctx, spec(tmp_path), session_id="../escape")
     with pytest.raises(ValueError, match="is not a usable session id"):
         await agents.resume(ctx, spec(tmp_path), "../escape")
+
+
+async def test_an_agent_can_go_on_from_a_copy_of_the_session_of_another(
+    ctx: Context, agents: Agents, tmp_path: Path
+) -> None:
+    first = await agents.create(ctx, spec(tmp_path), session_id="s-1")
+    first.session.append(TurnStartEvent(turn=1))
+    first.session.append(TurnEndEvent(turn=1, reason="completed"))
+    first.followup("Fix the bug.")
+
+    second = await agents.fork(ctx, spec(tmp_path), first.session, upto=1, session_id="s-2")
+
+    assert isinstance(second, Still)
+    assert (second.id, second.session.id) == ("s-2", "s-2")
+    assert agents.live["s-1"] is first
+    assert agents.live["s-2"] is second
+    # It holds what the other held up to there, and says that this came from elsewhere.
+    assert [event.data for event in second.session.events] == [
+        TurnStartEvent(turn=1),
+        TurnEndEvent(turn=1, reason="completed"),
+        EndSeedEvent(inherited=True),
+    ]
+    assert INBOX.of(second.session) == Inbox()
+    assert ctx.use(SESSIONS).read(tmp_path, "s-2").header.parent_session == "s-1"
+    # The other is as it was, and each goes its own way from here.
+    assert len(first.session) == 3
+    first.session.append(TurnStartEvent(turn=2))
+    second.followup("Write the test.")
+    assert INBOX.of(first.session).next_turn == (item("Fix the bug.", "user"),)
+    assert INBOX.of(second.session).next_turn == (item("Write the test.", "user"),)
+
+
+async def test_an_agent_can_go_on_from_a_copy_of_a_stored_session(
+    ctx: Context, agents: Agents, tmp_path: Path
+) -> None:
+    first = await agents.create(ctx, spec(tmp_path), session_id="s-1")
+    first.session.append(TurnStartEvent(turn=1))
+    first.session.append(TurnEndEvent(turn=1, reason="completed"))
+    await first.close()
+
+    second = await agents.fork(ctx, spec(tmp_path), "s-1")
+
+    # Without a position, all of it is copied. Without an id, one is made up.
+    assert second.id != "s-1"
+    assert [event.type for event in second.session.events] == [
+        "turn/start",
+        "turn/end",
+        "session/end-seed",
+    ]
+    assert list(agents.live) == [second.id]
+    # The stored one can be taken up as before.
+    assert len((await agents.resume(ctx, spec(tmp_path), "s-1")).session) == 3
+
+
+async def test_a_copy_that_cannot_be_made_leaves_nothing_behind(
+    ctx: Context, agents: Agents, tmp_path: Path
+) -> None:
+    first = await agents.create(ctx, spec(tmp_path), session_id="s-1")
+    first.session.append(TurnStartEvent(turn=1))
+
+    with pytest.raises(UnreadableSessionError):
+        await agents.fork(ctx, spec(tmp_path), "nowhere", session_id="s-2")
+    with pytest.raises(ValueError, match="the session 's-1' has no event 5"):
+        await agents.fork(ctx, spec(tmp_path), first.session, upto=5, session_id="s-2")
+    with pytest.raises(AgentError, match="there is no agent loop named 'missing'"):
+        await agents.fork(ctx, spec(tmp_path, loop="missing"), first.session, session_id="s-2")
+    with pytest.raises(AgentError, match="an agent with the id 's-1' is running"):
+        await agents.fork(ctx, spec(tmp_path), first.session, session_id="s-1")
+    with pytest.raises(ValueError, match="is not a usable session id"):
+        await agents.fork(ctx, spec(tmp_path), first.session, session_id="../escape")
+
+    assert list(agents.live) == ["s-1"]
+    assert len(first.session) == 1
+    # The id is free for a copy that can be made.
+    assert (await agents.fork(ctx, spec(tmp_path), first.session, session_id="s-2")).id == "s-2"
+
+
+async def test_a_copy_whose_agent_cannot_be_made_is_let_go_of(
+    ctx: Context, agents: Agents, tmp_path: Path
+) -> None:
+    def broken(scope: Context, spec: AgentSpec, session: Session) -> Agent:
+        raise RuntimeError("the loop cannot start")
+
+    agents.loops.add(ctx, "broken", broken)
+    first = await agents.create(ctx, spec(tmp_path), session_id="s-1")
+    first.session.append(TurnStartEvent(turn=1))
+    first.session.append(TurnEndEvent(turn=1, reason="completed"))
+
+    with pytest.raises(RuntimeError, match="the loop cannot start"):
+        await agents.fork(ctx, spec(tmp_path, loop="broken"), first.session, session_id="s-2")
+
+    assert list(agents.live) == ["s-1"]
+    # The copy was written before the loop failed, and it stays. Nothing holds it open:
+    # it can be taken up like any stored session.
+    second = await agents.resume(ctx, spec(tmp_path), "s-2")
+    assert [event.data for event in second.session.events] == [
+        TurnStartEvent(turn=1),
+        TurnEndEvent(turn=1, reason="completed"),
+        EndSeedEvent(inherited=True),
+        EndSeedEvent(inherited=False),
+    ]

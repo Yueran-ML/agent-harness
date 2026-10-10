@@ -17,16 +17,19 @@ import columbina.commands
 import columbina.fs
 import columbina.permissions
 import columbina.sandbox
-from columbina.agent import INBOX, STREAM, Agent, StreamFrame
+from columbina.agent import INBOX, STREAM, Agent, AgentSpec, StreamFrame
 from columbina.approval import APPROVAL, ApprovalRequest
 from columbina.apps import FRONTEND, Frontend
 from columbina.apps.cli.terminal import TERMINAL
+from columbina.commands import SWITCH
+from columbina.commands import fork as fork_command
+from columbina.kernel import Context
 from columbina.llm import BlockEnd, BlockStart, Chunk, LlmFailure, TextDelta, Usage
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
 from columbina.tools import Tool, ToolRun
-from support.loop import MODEL, Harness, from_a_source, user
+from support.loop import MODEL, Harness, assistant, from_a_source, user
 from support.terminal import CTRL_D, ESCAPE, Desk, desk, stands, until
 
 STEER = chr(0xBB)
@@ -292,6 +295,72 @@ async def test_a_new_session_can_be_begun_without_leaving(harness: Harness) -> N
         if isinstance(event.data, UserMessageEvent) and not from_a_source(event.data)
     ]
     assert said == [user("First.")]
+
+
+async def test_the_conversation_can_go_on_in_a_copy_of_its_session(harness: Harness) -> None:
+    harness.model.add(Reply(text="One."), Reply(text="Two."))
+    with desk() as at:
+        interface = await frontend(harness, at, session_id="first")
+        await harness.ctx.plugin(fork_command)
+        running = asyncio.ensure_future(interface.run())
+
+        at.enter("First.")
+        await at.sees("One.\n")
+        at.enter("/fork")
+        await at.sees("The session first stays as it was.\n")
+        # The session that the conversation left is closed, and its agent is gone.
+        (agent,) = harness.agents.live.values()
+        second = agent.id
+        at.enter("Second.")
+        await at.sees("Two.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    assert second != "first"
+    # What the copy holds of the conversation is shown, and then what the command says.
+    assert (
+        "(this session is taken up again. Its last turn:)\n"
+        "> First.\n"
+        "One.\n"
+        "\n"
+        f"The conversation goes on in a copy of the session first: {second}\n"
+        "The session first stays as it was.\n"
+    ) in at.seen()
+    # The model of the copy was shown what was said before the two parted.
+    assert harness.model.requests[1].messages[-3:] == (
+        user("First."),
+        assistant("One."),
+        user("Second."),
+    )
+    stored = harness.sessions.read(harness.cwd, "first")
+    said = [
+        event.data.message
+        for event in stored.events
+        if isinstance(event.data, UserMessageEvent) and not from_a_source(event.data)
+    ]
+    assert said == [user("First.")]
+    assert isinstance(stored.events[-1].data, TurnEndEvent)
+    assert harness.sessions.read(harness.cwd, second).header.parent_session == "first"
+
+
+async def test_the_conversation_stays_where_it_is_if_it_cannot_go_over(harness: Harness) -> None:
+    harness.model.add(Reply(text="One."))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="first")).run())
+        await at.sees("Ctrl+D leaves.\n")
+
+        async def broken(scope: Context, spec: AgentSpec) -> Agent:
+            raise RuntimeError("no such agent")
+
+        with pytest.raises(RuntimeError, match="no such agent"):
+            await harness.ctx.use(SWITCH)(broken)
+
+        # The agent that it had is the one that answers.
+        at.enter("First.")
+        await at.sees("One.\n")
+        assert agent_of(harness).id == "first"
+        at.type(CTRL_D)
+        await left(running)
 
 
 # Leaving

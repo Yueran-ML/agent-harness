@@ -174,7 +174,7 @@
 
 **18. 待办清单是模型自己的记事。** 工具 `todo_write` 每次整体替换清单，每项有内容和状态，状态是 `pending`、`in_progress`、`completed` 之一，同一时刻最多一项在进行。清单最多 100 项，每项最多 500 个字符，首尾的空白不算。不合规的清单被拒绝并说明原因，旧清单不变。清单存成 `todo/write` 事件，读日志的程序可以略过它。工具的结果是三种状态各有几项。清单跨回合保留。写下清单的那次调用被压缩遮蔽之后，待办插件作为上下文来源把清单重新告诉模型。终端里清单变化时印出来，`/todos` 随时可以看。
 
-**19. 分叉从最后一个完整的回合切。** `/fork` 在 Agent 空闲时执行：复制当前会话到最后一个 `turn/end` 为止，开一个新会话，前端换到新会话上，原会话保持原样。`columbina sessions fork ID` 做同样的事，不进入对话，印出新会话的 id。`sessions list` 列出这个工作目录的会话，`sessions show ID` 印出一个会话每个回合的输入和回答的末尾。这三个子命令只加载会话插件，不需要模型。
+**19. 分叉复制的是完整的回合。** `columbina sessions fork ID` 把一个存着的会话复制到最后一个 `turn/end` 为止，印出新会话的 id，不进入对话。被复制的会话可以正开在别的对话里：副本停在最后一个完整的回合，之后正在写的内容不进副本，也就没有需要补上结尾的回合。一个回合都没有结束的会话不复制。`/fork` 在 Agent 空闲时执行，它复制整个日志，对话转到副本上，原会话保持原样。Agent 空闲时日志停在两个回合之间，最后一个 `turn/end` 之后只有回合之间发生的事，例如用户要求的压缩和权限预设的变更，它们属于会话当前的状态。最初的计划是 `/fork` 也切在最后一个 `turn/end`，那样会悄悄丢掉这些变更，实现时改成了现在的做法。`sessions list` 列出这个工作目录的会话，`sessions show ID` 印出一个会话每个回合的输入、回答的末尾和回合没有正常结束时的原因。这三个子命令用与对话相同的清单和补丁，但只加载其中的 `session` 和 `agent` 两项：前者管日志，后者声明了收件箱事件，读日志的程序不能略过这种事件。它们不需要模型，清单里的模型加载不了也不妨碍。
 
 **20. 状态行显示估算值。** 有估算服务时，状态行写的是当前消息面的估算和它占窗口的比例，不再是上一次请求的输入 token 数。压缩刚发生之后这个数会降下来，用户看得到。
 
@@ -319,11 +319,13 @@ COMPACTIONS = Projection(...)  # Compactions(count, last, open, orphans)
 
 ### `columbina.commands.compact`、`.todos`、`.fork`（新建）
 
-三条命令各是一个插件。`/fork` 需要前端换会话，前端为此在命令服务里登记一个 `switch` 能力：给它一个会话 id，它关闭当前的 Agent 并打开那个会话。`/new` 改用同一个能力。
+三条命令各是一个插件。`/fork` 需要前端换会话，能换的前端为此提供服务 `SWITCH`（`columbina.commands`）：给它一个创建 Agent 的函数，它先让新的 Agent 建好，再关闭当前的 Agent，把对话接到新的上面。新的建不出来时对话留在原处，错误交给调用方。`/new` 改用同一个能力。没有前端提供 `SWITCH` 时，`/fork` 说明原因，什么也不复制。
+
+`Agents.fork(ctx, spec, source, *, upto=None, session_id=None)` 在一份会话的副本上创建 Agent，与 `create`、`resume` 并列。
 
 ### `columbina.apps.sessions`（新建）与启动器（修改）
 
-`columbina sessions list|show|fork`。子命令只加载会话插件。输出经过 `harmless`。
+`columbina sessions list|show|fork`。三个子命令都接受 `--cwd`、`--profile` 和 `--patch`，`fork` 另有 `--session-id` 给副本指定 id。输出经过 `harmless`。会话读不出来、id 不合法、没有可复制的回合时退出码为 2，原因写到标准错误。回合是怎么结束的这几句话与终端界面共用一处（`columbina.apps.common.how_it_ended`）。
 
 ### 清单（修改）
 

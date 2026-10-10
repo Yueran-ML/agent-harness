@@ -249,6 +249,51 @@ class Agents:
             await scope.fiber.dispose()
             raise
 
+    async def fork(
+        self,
+        ctx: Context,
+        spec: AgentSpec,
+        source: Session | str,
+        *,
+        upto: int | None = None,
+        session_id: str | None = None,
+    ) -> Agent:
+        """Create an agent on a copy of another session. It belongs to the fiber of ``ctx``.
+
+        The new session begins with what the other one holds, and goes its
+        own way from there. The other one is not changed, and it may be open:
+        an agent can be forked while it is at rest.
+
+        The copy is written before its agent is made. If the agent cannot be
+        made, the copy is closed and stays stored.
+
+        Args:
+            ctx: The context of the owner of the new agent.
+            spec: What the new agent is created from.
+            source: The session to copy: one that is open, or the id of a
+                stored one.
+            upto: The position of the last event to copy. By default every
+                event is copied.
+            session_id: The id of the new session. One is made up by default.
+
+        Raises:
+            AgentError: The loop that the spec names is not there, or an agent
+                with the id is running.
+            SessionError: The stored source cannot be read.
+            ValueError: ``upto`` is no position in the source, or an id
+                cannot name a session.
+        """
+        factory = self._loop(spec)
+        if session_id is None:
+            session_id = new_session_id(self._sessions.clock())
+        scope = self._scope(ctx, check_session_id(session_id))
+        try:
+            session = self._sessions.fork(scope, spec.cwd, source, upto=upto, session_id=session_id)
+            return self._start(scope, factory, spec, session)
+        except BaseException:
+            await scope.fiber.dispose()
+            raise
+
     def _loop(self, spec: AgentSpec) -> AgentFactory:
         factory = self.loops.get(spec.loop)
         if factory is None:

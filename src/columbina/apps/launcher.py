@@ -2,7 +2,8 @@
 
 ``columbina`` holds a conversation at the terminal, and ``columbina run TASK``
 gives an agent one task. Without a command the first is meant, so
-``columbina --continue`` is ``columbina chat --continue``.
+``columbina --continue`` is ``columbina chat --continue``. ``columbina sessions``
+lists, shows and copies the sessions that are stored, without a conversation.
 
 Either way the program is built from layers, which are lists of plugin
 entries: first the profile, then the patch of the user, then the patches named
@@ -11,6 +12,11 @@ entry called ``frontend`` provides what is then run.
 
 The command line changes only what it names. A setting that it leaves open
 stays as the layers before it have it.
+
+``columbina sessions`` builds the same layers and loads two of their entries,
+the ones called ``session`` and ``agent``: they know what a log holds. So the
+sessions that it finds are the ones that the profile stores, and no model is
+needed to look at them.
 
 What the agent may do is the business of the entry called ``permissions``:
 ``--permission`` names its preset, and each ``--allow`` adds a rule to the
@@ -23,7 +29,7 @@ import contextlib
 import logging
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from importlib import resources
 from pathlib import Path
 from typing import Any, NoReturn, cast, get_args
@@ -32,9 +38,11 @@ import yaml
 
 import columbina
 from columbina.apps import FRONTEND
+from columbina.apps import sessions as stored_sessions
 from columbina.apps.terminal_text import harmless
 from columbina.kernel import CompositionError, Context, Entry, Layer, flatten, mount, parse_layer
 from columbina.permissions import Preset
+from columbina.session import SessionError
 
 __all__ = ["main"]
 
@@ -43,6 +51,9 @@ _PERMISSIONS = "permissions"
 _INTERRUPTED = 130
 _CHAT = "chat"
 _RUN = "run"
+_SESSIONS = "sessions"
+_KNOW_THE_LOG = ("session", "agent")
+"""The entries that are enough to read a stored session: its log, and the events of the inbox."""
 _NOT_A_COMMAND = ("-h", "--help", "--version")
 """What may stand first on the command line without meaning the conversation."""
 
@@ -121,6 +132,31 @@ def _permit(entries: list[Entry], args: argparse.Namespace) -> None:
     )
 
 
+def _flattened(args: argparse.Namespace, home: Path) -> list[Entry]:
+    """Return the entries of the profile, with the patches of the user and of the command line."""
+    layers = [_profile(args.profile)]
+    mine = home / "config.yml"
+    if mine.is_file():
+        layers.append(_file_layer(mine))
+    layers.extend(_file_layer(Path(patch)) for patch in args.patch)
+    return flatten(layers, lookup=_bundle)
+
+
+def _entries_that_know_the_log(args: argparse.Namespace, home: Path) -> list[Entry]:
+    """Work out the entries that are enough to look at stored sessions."""
+    entries = [
+        entry
+        for entry in _flattened(args, home)
+        if entry.id in _KNOW_THE_LOG and not entry.disabled
+    ]
+    if _KNOW_THE_LOG[0] not in [entry.id for entry in entries]:
+        raise _UsageError(
+            f"the profile has no entry {_KNOW_THE_LOG[0]!r}, or it is disabled, so there are "
+            "no stored sessions to look at"
+        )
+    return entries
+
+
 def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
     """Work out the plugin entries that the command line asks for."""
     if args.command == _CHAT and args.resume and args.session_id is not None:
@@ -128,12 +164,7 @@ def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
             "--continue takes up the session that was used last, and --session-id names one: "
             "give one of the two"
         )
-    layers = [_profile(args.profile)]
-    mine = home / "config.yml"
-    if mine.is_file():
-        layers.append(_file_layer(mine))
-    layers.extend(_file_layer(Path(patch)) for patch in args.patch)
-    entries = flatten(layers, lookup=_bundle)
+    entries = _flattened(args, home)
     _permit(entries, args)
     for position, entry in enumerate(entries):
         if entry.id == _FRONTEND:
@@ -210,8 +241,10 @@ class _Parser(argparse.ArgumentParser):
         super().error(harmless(message))
 
 
-async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
-    """Load the entries, run the frontend, and unload everything again."""
+async def _loaded(
+    entries: Sequence[Entry], env: Mapping[str, str], then: Callable[[Context], Awaitable[int]]
+) -> int:
+    """Load the entries, do what is to be done with them, and unload everything again."""
     root = Context()
     try:
         composition = mount(root, entries, env=env)
@@ -221,18 +254,46 @@ async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
             for problem in problems:
                 _tell(str(problem))
             return 2
+        return await then(root)
+    finally:
+        await root.fiber.dispose()
+
+
+async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
+    """Load the entries, run the frontend, and unload everything again."""
+
+    async def run(root: Context) -> int:
         frontend = root.get(FRONTEND)
         if frontend is None:
             plugin = next(entry.plugin for entry in entries if entry.id == _FRONTEND)
             _tell(f"the entry {_FRONTEND!r} loads {plugin}, which provides nothing to run the task")
             return 2
         return await frontend.run()
-    finally:
-        await root.fiber.dispose()
+
+    return await _loaded(entries, env, run)
 
 
-def _shared(command: argparse.ArgumentParser, profile: str) -> None:
-    """Add the arguments that every command takes."""
+async def _look(entries: Sequence[Entry], env: Mapping[str, str], args: argparse.Namespace) -> int:
+    """Load what knows the log, and list, show or copy the sessions that are stored."""
+    cwd = Path() if args.cwd is None else Path(args.cwd)
+
+    async def look(root: Context) -> int:
+        try:
+            told = await stored_sessions.run(
+                root, cwd.resolve(), args.what, getattr(args, "id", None), args.copy_id
+            )
+        except (SessionError, ValueError) as error:
+            _tell(str(error))
+            return 2
+        # What a session holds was written by users and by models.
+        print(harmless(told))
+        return 0
+
+    return await _loaded(entries, env, look)
+
+
+def _from_the_profile(command: argparse.ArgumentParser, profile: str) -> None:
+    """Add the arguments that say which program is meant and where it works."""
     command.add_argument(
         "--profile",
         default=profile,
@@ -246,6 +307,11 @@ def _shared(command: argparse.ArgumentParser, profile: str) -> None:
         metavar="FILE",
         help="a file of changes to the profile; may be given several times",
     )
+
+
+def _shared(command: argparse.ArgumentParser, profile: str) -> None:
+    """Add the arguments that every command takes that has an agent work."""
+    _from_the_profile(command, profile)
     command.add_argument("--model", metavar="ID", help="the model to use")
     command.add_argument(
         "--cwd",
@@ -273,6 +339,37 @@ def _shared(command: argparse.ArgumentParser, profile: str) -> None:
     )
 
 
+def _stored(command: argparse.ArgumentParser) -> None:
+    """Add what ``columbina sessions`` takes: what to do, and with which session."""
+    whats = command.add_subparsers(dest="what", metavar="WHAT", required=True)
+    listing = whats.add_parser(
+        stored_sessions.LIST, help="list the sessions of the working directory"
+    )
+    showing = whats.add_parser(
+        stored_sessions.SHOW, help="tell what happened in a session, turn by turn"
+    )
+    copying = whats.add_parser(
+        stored_sessions.FORK,
+        help="copy a session up to its last whole turn, and print the id of the copy",
+    )
+    showing.add_argument("id", metavar="ID", help="the session to show")
+    copying.add_argument("id", metavar="ID", help="the session to copy")
+    for what in (listing, showing, copying):
+        _from_the_profile(what, "cli")
+        what.add_argument(
+            "--cwd",
+            metavar="DIR",
+            help="the working directory whose sessions are meant; the current one by default",
+        )
+        what.set_defaults(copy_id=None)
+    copying.add_argument(
+        "--session-id",
+        dest="copy_id",
+        metavar="ID",
+        help="the id that the copy is to have; one is made up by default",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog="columbina",
@@ -296,6 +393,10 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="report the run as lines of JSON, or as the answer alone",
     )
+    stored = commands.add_parser(
+        _SESSIONS, help="list, show or copy the sessions that are stored, without a conversation"
+    )
+    _stored(stored)
     return parser
 
 
@@ -318,7 +419,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     # long as the prompt is there. Before and after that, the log goes here for it too.
     log.addHandler(handler)
     try:
-        entries = _entries(args, Path(env["COLUMBINA_HOME"]))
+        home = Path(env["COLUMBINA_HOME"])
+        if args.command == _SESSIONS:
+            return asyncio.run(_look(_entries_that_know_the_log(args, home), env, args))
+        entries = _entries(args, home)
         if args.dump_config:
             dumped = _dump(entries)
             # A file or another program gets the entries as they are, to be read again.

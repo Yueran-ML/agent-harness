@@ -56,6 +56,7 @@ PERMISSIONS = "src/columbina/permissions/__init__.py"
 GREP_WORKER = "src/columbina/builtin_tools/grep_worker.py"
 CLI_LINES = "src/columbina/apps/cli/lines.py"
 CLI_TRANSCRIPT = "src/columbina/apps/cli/transcript.py"
+APPS_COMMON = "src/columbina/apps/common.py"
 CLI_PROMPT = "src/columbina/apps/cli/prompt.py"
 CLI_APPROVAL = "src/columbina/apps/cli/approval.py"
 CLI_STATUS = "src/columbina/apps/cli/status.py"
@@ -67,6 +68,9 @@ COMMAND_SESSIONS = "src/columbina/commands/sessions.py"
 COMMAND_PERMISSIONS = "src/columbina/commands/permissions.py"
 COMMAND_COMPACT = "src/columbina/commands/compact.py"
 COMMAND_TODOS = "src/columbina/commands/todos.py"
+COMMAND_FORK = "src/columbina/commands/fork.py"
+AGENTS_SERVICE = "src/columbina/agent/agent.py"
+APPS_SESSIONS = "src/columbina/apps/sessions.py"
 TODO = "src/columbina/todo/__init__.py"
 TERMINAL_TEXT = "src/columbina/apps/terminal_text.py"
 HEADLESS = "src/columbina/apps/headless.py"
@@ -342,6 +346,24 @@ _LOOP = (
         LOOP,
         "            # Either the driver is being cancelled, or only the work was stopped.\n            if cancellation.requested_since(before):\n",
         "            # Either the driver is being cancelled, or only the work was stopped.\n            if False:\n",
+    ),
+    mutant(
+        "an agent goes on from all of a session, wherever it was to be cut",
+        AGENTS_SERVICE,
+        "            session = self._sessions.fork(scope, spec.cwd, source, upto=upto, session_id=session_id)\n",
+        "            session = self._sessions.fork(scope, spec.cwd, source, session_id=session_id)\n",
+    ),
+    mutant(
+        "an agent that goes on from a copy shares the session that was copied",
+        AGENTS_SERVICE,
+        "            session = self._sessions.fork(scope, spec.cwd, source, upto=upto, session_id=session_id)\n",
+        "            session = self._sessions.resume(scope, spec.cwd, session_id)\n",
+    ),
+    mutant(
+        "a copy that cannot be made keeps its id",
+        AGENTS_SERVICE,
+        "            session = self._sessions.fork(scope, spec.cwd, source, upto=upto, session_id=session_id)\n            return self._start(scope, factory, spec, session)\n        except BaseException:\n            await scope.fiber.dispose()\n            raise\n",
+        "            session = self._sessions.fork(scope, spec.cwd, source, upto=upto, session_id=session_id)\n            return self._start(scope, factory, spec, session)\n        except BaseException:\n            raise\n",
     ),
 )
 
@@ -2996,39 +3018,51 @@ _TRANSCRIPT = (
     ),
     mutant(
         "a turn that somebody else stopped does not say who",
-        CLI_TRANSCRIPT,
-        '        told = "(stopped)" if detail in (None, "user") else f"(stopped: {detail})"\n',
-        '        told = "(stopped)"\n',
+        APPS_COMMON,
+        '        return "(stopped)" if detail in (None, "user") else f"(stopped: {detail})"\n',
+        '        return "(stopped)"\n',
     ),
     mutant(
         "a turn that the user stopped names the user",
-        CLI_TRANSCRIPT,
-        '        told = "(stopped)" if detail in (None, "user") else f"(stopped: {detail})"\n',
-        '        told = "(stopped)" if detail is None else f"(stopped: {detail})"\n',
+        APPS_COMMON,
+        '        return "(stopped)" if detail in (None, "user") else f"(stopped: {detail})"\n',
+        '        return "(stopped)" if detail is None else f"(stopped: {detail})"\n',
     ),
     mutant(
         "a turn that ended with an error says nothing",
+        APPS_COMMON,
+        '    if end.reason == "error":\n',
+        '    if end.reason == "no error":\n',
+    ),
+    mutant(
+        "an error at the end of a turn is shown like any other end",
         CLI_TRANSCRIPT,
-        '    if data.reason == "error":\n',
-        '    if data.reason == "no error":\n',
+        '_BAD if data.reason == "error" else _NOTE',
+        "_NOTE",
     ),
     mutant(
         "a reply that was cut off says nothing",
-        CLI_TRANSCRIPT,
-        '    if data.reason == "max-tokens":\n',
-        '    if data.reason == "no limit":\n',
+        APPS_COMMON,
+        '    if end.reason == "max-tokens":\n',
+        '    if end.reason == "no limit":\n',
     ),
     mutant(
         "a turn that was not allowed to go on says nothing",
-        CLI_TRANSCRIPT,
-        '    if data.reason == "blocked":\n',
-        '    if data.reason == "not blocked":\n',
+        APPS_COMMON,
+        '    if end.reason == "blocked":\n',
+        '    if end.reason == "not blocked":\n',
     ),
     mutant(
         "a turn that the end of the program cut short says nothing",
-        CLI_TRANSCRIPT,
-        '    if data.reason == "interrupted":\n',
-        '    if data.reason == "not interrupted":\n',
+        APPS_COMMON,
+        '    if end.reason == "interrupted":\n',
+        '    if end.reason == "not interrupted":\n',
+    ),
+    mutant(
+        "a turn that was cut short where its session was copied says nothing",
+        APPS_COMMON,
+        '    if end.reason == "forked":\n',
+        '    if end.reason == "not forked":\n',
     ),
     mutant(
         "a call is told by all of its arguments",
@@ -3925,16 +3959,28 @@ _CLI = (
         '        return ""\n',
     ),
     mutant(
-        "a new session is begun on top of the old one",
+        "the agent that a conversation leaves is not closed",
         CLI_FRONTEND,
-        "        await self._close()\n        opened = await self._open(None, prompt)\n",
-        "        opened = await self._open(None, prompt)\n",
+        "        agent = await opener(self._ctx, self._spec())\n        await self._close()\n",
+        "        agent = await opener(self._ctx, self._spec())\n",
     ),
     mutant(
-        "a new session takes up the one that the conversation began on",
+        "the agent of a conversation is closed before the one that it is to go over to is there",
         CLI_FRONTEND,
-        "        opened = await self._open(None, prompt)\n",
-        "        opened = await self._open(self._config.session_id, prompt)\n",
+        "        agent = await opener(self._ctx, self._spec())\n        await self._close()\n",
+        "        await self._close()\n        agent = await opener(self._ctx, self._spec())\n",
+    ),
+    mutant(
+        "a conversation does not go over to the agent that was created for it",
+        CLI_FRONTEND,
+        "        self._adopt(agent, prompt)\n        return agent\n\n    async def _converse",
+        "        return agent\n\n    async def _converse",
+    ),
+    mutant(
+        "the terminal does not offer to go over to another agent",
+        CLI_FRONTEND,
+        "    ctx.provide(SWITCH, cli.switch)\n",
+        "",
     ),
     mutant(
         "the session that is taken up again is the oldest and not the one used last",
@@ -4236,8 +4282,8 @@ _SLASH = (
     mutant(
         "the session that is open is not marked in the list",
         COMMAND_SESSIONS,
-        '        mark = "*" if session.id == current else " "\n',
-        '        mark = " "\n',
+        '        mark = "" if current is None else "* " if session.id == current else "  "\n',
+        '        mark = "" if current is None else "  "\n',
     ),
     mutant(
         "every session is listed, however many there are",
@@ -4266,8 +4312,8 @@ _SLASH = (
     mutant(
         "the list of the sessions does not say when each was used last",
         COMMAND_SESSIONS,
-        '        lines.append(f"{mark} {session.id.ljust(width)}  {_when(session.modified_ms)}  {said}")\n',
-        '        lines.append(f"{mark} {session.id.ljust(width)}  {said}")\n',
+        '        lines.append(f"{mark}{session.id.ljust(width)}  {_when(session.modified_ms)}  {said}")\n',
+        '        lines.append(f"{mark}{session.id.ljust(width)}  {said}")\n',
     ),
     mutant(
         "the list of the sessions does not say how another one is taken up",
@@ -4388,6 +4434,36 @@ _SLASH = (
         COMMAND_COMPACT,
         "    if outcome.summarised:\n",
         "    if False:\n",
+    ),
+    mutant(
+        "a session is copied although nothing can go over to the copy",
+        COMMAND_FORK,
+        "        if switch is None:\n            return _NO_WAY\n",
+        "",
+    ),
+    mutant(
+        "a session is copied while a turn runs in it",
+        COMMAND_FORK,
+        "        if TURN.of(session).in_turn:\n            return _RUNNING\n",
+        "",
+    ),
+    mutant(
+        "a session in which no turn has ended is copied",
+        COMMAND_FORK,
+        "        if not any(isinstance(event.data, TurnEndEvent) for event in session.events):\n            return _NOTHING\n",
+        "",
+    ),
+    mutant(
+        "what was done to a session since its last turn is not copied",
+        COMMAND_FORK,
+        "            return await agents.fork(scope, spec, session)\n",
+        "            return await agents.fork(scope, spec, session, upto=len(session) - 2)\n",
+    ),
+    mutant(
+        "the conversation goes on in a session that holds nothing",
+        COMMAND_FORK,
+        "            return await agents.fork(scope, spec, session)\n",
+        "            return await agents.create(scope, spec)\n",
     ),
 )
 
@@ -5510,6 +5586,189 @@ _CAP = (
     ),
 )
 
+_STORED_SESSIONS = (
+    mutant(
+        "what the user said on the way is left out of a turn that is told",
+        APPS_SESSIONS,
+        '_MARKS = {"user": ">", "steer": ">>"}',
+        '_MARKS = {"user": ">"}',
+    ),
+    mutant(
+        "what the user said on the way is told like a task",
+        APPS_SESSIONS,
+        '"steer": ">>"',
+        '"steer": ">"',
+    ),
+    mutant(
+        "a reply without words takes the place of the last answer",
+        APPS_SESSIONS,
+        "        elif isinstance(data, AssistantMessageEvent) and data.message.text.strip():\n",
+        "        elif isinstance(data, AssistantMessageEvent):\n",
+    ),
+    mutant(
+        "a turn that came to its end is said not to have",
+        APPS_SESSIONS,
+        "            ended = how_it_ended(data)\n",
+        "            pass\n",
+    ),
+    mutant(
+        "a turn that is still open says nothing about that",
+        APPS_SESSIONS,
+        '    ended: str | None = "(the turn did not come to its end)"\n',
+        "    ended: str | None = None\n",
+    ),
+    mutant(
+        "a long answer does not say that it had more",
+        APPS_SESSIONS,
+        "    if len(answer) > _ANSWER_LINES:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "an answer of just as many lines as are shown is said to have more",
+        APPS_SESSIONS,
+        "    if len(answer) > _ANSWER_LINES:\n",
+        "    if len(answer) >= _ANSWER_LINES:\n",
+    ),
+    mutant(
+        "a long answer is told whole",
+        APPS_SESSIONS,
+        "    lines.extend(answer[-_ANSWER_LINES:])\n",
+        "    lines.extend(answer)\n",
+    ),
+    mutant(
+        "one line before the end of an answer is told as one lines",
+        APPS_SESSIONS,
+        "{'line' if earlier == 1 else 'lines'}",
+        "{'lines'}",
+    ),
+    mutant(
+        "a copy does not say what it is a copy of",
+        APPS_SESSIONS,
+        '    if header.parent_session is not None:\n        lines.append(f"a copy of the session {header.parent_session}")\n',
+        "",
+    ),
+    mutant(
+        "a session without turns says nothing about that",
+        APPS_SESSIONS,
+        '    if not starts:\n        lines.append("(no turn has begun in this session)")\n',
+        "",
+    ),
+    mutant(
+        "the turns of a session are counted from nothing",
+        APPS_SESSIONS,
+        "enumerate(zip(starts, stops, strict=False), start=1)",
+        "enumerate(zip(starts, stops, strict=False))",
+    ),
+    mutant(
+        "a turn is told with the turns that follow it",
+        APPS_SESSIONS,
+        "    stops = [*starts[1:], len(stored.events)]\n",
+        "    stops = [len(stored.events)] * len(starts)\n",
+    ),
+    mutant(
+        "a copy holds the turn that was under way",
+        APPS_SESSIONS,
+        "        copy = sessions.fork(scope, cwd, source, upto=ends[-1], session_id=session_id)\n",
+        "        copy = sessions.fork(scope, cwd, source, session_id=session_id)\n",
+    ),
+    mutant(
+        "a copy ends where the first turn of the session ends",
+        APPS_SESSIONS,
+        "        copy = sessions.fork(scope, cwd, source, upto=ends[-1], session_id=session_id)\n",
+        "        copy = sessions.fork(scope, cwd, source, upto=ends[0], session_id=session_id)\n",
+    ),
+    mutant(
+        "a copy is given an id of its own although one was asked for",
+        APPS_SESSIONS,
+        "        copy = sessions.fork(scope, cwd, source, upto=ends[-1], session_id=session_id)\n",
+        "        copy = sessions.fork(scope, cwd, source, upto=ends[-1])\n",
+    ),
+    mutant(
+        "a session is listed when it was to be shown",
+        APPS_SESSIONS,
+        "    if what == LIST:\n",
+        "    if what in (LIST, SHOW):\n",
+    ),
+    mutant(
+        "a session is copied when it was to be shown",
+        APPS_SESSIONS,
+        "    if what == SHOW:\n        return shown(sessions.read(cwd, source))\n",
+        "",
+    ),
+    mutant(
+        "a list that no conversation asked for keeps a place for the star",
+        COMMAND_SESSIONS,
+        '        mark = "" if current is None else "* " if session.id == current else "  "\n',
+        '        mark = "* " if session.id == current else "  "\n',
+    ),
+    mutant(
+        "a list that no conversation asked for speaks of a star",
+        COMMAND_SESSIONS,
+        '    if current is None:\n        lines.append("A session is taken up with --session-id.")\n    else:\n',
+        "    if True:\n",
+    ),
+    mutant(
+        "what a session holds is printed as it was written",
+        LAUNCHER,
+        "        print(harmless(told))\n",
+        "        print(told)\n",
+    ),
+    mutant(
+        "an id that cannot name a session ends the program with a trace",
+        LAUNCHER,
+        "        except (SessionError, ValueError) as error:\n",
+        "        except SessionError as error:\n",
+    ),
+    mutant(
+        "a session that cannot be read ends the program with a trace",
+        LAUNCHER,
+        "        except (SessionError, ValueError) as error:\n",
+        "        except ValueError as error:\n",
+    ),
+    mutant(
+        "sessions that could not be looked at count as looked at",
+        LAUNCHER,
+        "            _tell(str(error))\n            return 2\n        # What a session holds",
+        "            _tell(str(error))\n            return 0\n        # What a session holds",
+    ),
+    mutant(
+        "why sessions could not be looked at is not said",
+        LAUNCHER,
+        "            _tell(str(error))\n            return 2\n        # What a session holds",
+        "            return 2\n        # What a session holds",
+    ),
+    mutant(
+        "the sessions of the current directory are looked at, whichever was named",
+        LAUNCHER,
+        "    cwd = Path() if args.cwd is None else Path(args.cwd)\n",
+        "    cwd = Path()\n",
+    ),
+    mutant(
+        "the directory whose sessions are meant has to be named",
+        LAUNCHER,
+        "    cwd = Path() if args.cwd is None else Path(args.cwd)\n",
+        "    cwd = Path(args.cwd)\n",
+    ),
+    mutant(
+        "all of a profile is loaded to look at its sessions",
+        LAUNCHER,
+        "        if entry.id in _KNOW_THE_LOG and not entry.disabled\n",
+        "        if not entry.disabled\n",
+    ),
+    mutant(
+        "an entry that is switched off is loaded to look at sessions",
+        LAUNCHER,
+        "        if entry.id in _KNOW_THE_LOG and not entry.disabled\n",
+        "        if entry.id in _KNOW_THE_LOG\n",
+    ),
+    mutant(
+        "a profile that stores no sessions is looked at all the same",
+        LAUNCHER,
+        "    if _KNOW_THE_LOG[0] not in [entry.id for entry in entries]:\n",
+        "    if False:\n",
+    ),
+)
+
 _TODO = (
     mutant(
         "a list that the model writes is not kept",
@@ -6533,5 +6792,6 @@ SETS: dict[str, MutantSet] = {
     "cap": MutantSet(("tests/spill/test_policy.py",), _CAP),
     "compaction": MutantSet(("tests/compaction",), _COMPACTION),
     "todo": MutantSet(("tests/todo", "tests/commands/test_todos.py"), _TODO),
+    "sessions": MutantSet(("tests/apps/test_stored_sessions.py",), _STORED_SESSIONS),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

@@ -47,7 +47,7 @@ from columbina.apps.cli.terminal import TERMINAL, real
 from columbina.apps.cli.transcript import Symbols, Transcript, fit, recap
 from columbina.apps.common import DEFAULT_PROMPT, open_agent
 from columbina.apps.terminal_text import harmless
-from columbina.commands import COMMANDS, Command, Commands, is_command
+from columbina.commands import COMMANDS, SWITCH, Command, Commands, Opener, is_command
 from columbina.kernel import Context, Next
 from columbina.llm import CallConfig
 from columbina.permissions import PERMISSIONS
@@ -207,11 +207,21 @@ class Cli:
 
     async def begin_anew(self, agent: Agent, rest: str) -> str:
         """Carry out the command that ends the session and begins another one."""
+        opened = await self.switch(self._agents.create)
+        return f"A new session begins: {opened.id}"
+
+    async def switch(self, opener: Opener) -> Agent:
+        """Have the conversation go on with the agent that ``opener`` creates.
+
+        The agent is created first. If that fails, the conversation stays
+        with the agent that it has, and the failure reaches the caller.
+        """
         prompt = self._prompt
         assert prompt is not None
+        agent = await opener(self._ctx, self._spec())
         await self._close()
-        opened = await self._open(None, prompt)
-        return f"A new session begins: {opened.id}"
+        self._adopt(agent, prompt)
+        return agent
 
     async def _converse(self, prompt: Prompt) -> int:
         try:
@@ -251,11 +261,19 @@ class Cli:
         prompt.show([Text(note, style=_NOTE)])
         return None
 
-    async def _open(self, session_id: str | None, prompt: Prompt) -> Agent:
-        """Create the agent of the conversation and listen to what happens to it."""
+    def _spec(self) -> AgentSpec:
+        """Return what an agent of this conversation is created from."""
         config = self._config
-        spec = AgentSpec(cwd=config.cwd, model=self._model, system_prompt=config.system_prompt)
-        agent = await open_agent(self._ctx, self._agents, self._sessions, spec, session_id)
+        return AgentSpec(cwd=config.cwd, model=self._model, system_prompt=config.system_prompt)
+
+    async def _open(self, session_id: str | None, prompt: Prompt) -> Agent:
+        """Create the agent that the conversation begins with."""
+        agent = await open_agent(self._ctx, self._agents, self._sessions, self._spec(), session_id)
+        self._adopt(agent, prompt)
+        return agent
+
+    def _adopt(self, agent: Agent, prompt: Prompt) -> None:
+        """Make an agent the one of the conversation, and listen to what happens to it."""
         self._agent = agent
         self._transcript = Transcript(self._symbols)
         prompt.show(recap(agent.session.events, self._symbols))
@@ -264,7 +282,6 @@ class Cli:
         agent.ctx.on(APPROVAL_ASK, Responder(prompt, self._ctx.get(PERMISSIONS)))
         agent.ctx.on(REQUEST, self._with_the_model)
         prompt.on_cancel = lambda: agent.cancel("user")
-        return agent
 
     def _greet(self, prompt: Prompt, agent: Agent) -> None:
         head = Text()
@@ -377,4 +394,5 @@ def apply(ctx: Context, config: Config) -> None:
     commands.registry.add(
         ctx, "new", Command(cli.begin_anew, "End this session and begin another one.")
     )
+    ctx.provide(SWITCH, cli.switch)
     ctx.provide(FRONTEND, cli)

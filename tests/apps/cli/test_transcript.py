@@ -584,7 +584,10 @@ async def test_what_the_user_says_is_not_shown_again_but_a_steer_is_when_it_is_r
             TurnEndEvent(turn=1, reason="interrupted"),
             ["(the turn was cut short when the program ended)"],
         ),
-        (TurnEndEvent(turn=1, reason="forked"), []),
+        (
+            TurnEndEvent(turn=1, reason="forked"),
+            ["(the turn was cut short where its session was copied)"],
+        ),
     ],
 )
 async def test_a_turn_that_did_not_end_well_says_how_it_ended(
@@ -592,6 +595,15 @@ async def test_a_turn_that_did_not_end_well_says_how_it_ended(
 ) -> None:
     # The empty line sets the turn apart from what comes after it.
     assert show(Transcript(PLAIN), log, end) == [*shown, ""]
+
+
+async def test_an_error_at_the_end_of_a_turn_stands_out(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    failed, _ = transcript.event(log.append(TurnEndEvent(turn=1, reason="error", detail="AUTH")))
+    stopped, _ = transcript.event(log.append(TurnEndEvent(turn=2, reason="aborted")))
+
+    assert (str(failed.style), str(stopped.style)) == ("red", "dim")
 
 
 async def test_a_request_that_is_made_again_is_told(log: Session) -> None:

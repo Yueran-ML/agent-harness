@@ -13,16 +13,31 @@ so a frontend need not know them. A plugin that leaves takes its commands
 with it.
 
 This plugin brings one command itself, ``/help``.
+
+A command may have the conversation go on with another agent: on a new
+session, or on a copy of the one that is open. Only whatever holds the
+conversation can do that, so a frontend that can provides :data:`SWITCH`, and
+a command that needs it asks for it when it is given.
 """
 
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from columbina.agent import Agent
+from columbina.agent import Agent, AgentSpec
 from columbina.kernel import Context, Registry, ServiceKey
 
-__all__ = ["COMMANDS", "Command", "Commands", "apply", "is_command", "name"]
+__all__ = [
+    "COMMANDS",
+    "SWITCH",
+    "Command",
+    "Commands",
+    "Opener",
+    "Switch",
+    "apply",
+    "is_command",
+    "name",
+]
 
 name = "commands"
 
@@ -103,6 +118,24 @@ class Commands:
 
 COMMANDS = ServiceKey[Commands]("commands")
 """The commands."""
+
+Opener = Callable[[Context, AgentSpec], Awaitable[Agent]]
+"""Creates the agent that a conversation is to go on with: in a scope, from a spec.
+
+Whoever holds the conversation says which scope the agent belongs to and how
+it is to call its model.
+"""
+
+Switch = Callable[[Opener], Awaitable[Agent]]
+"""Has a conversation go on with another agent, and returns that agent.
+
+The other agent is created first. Only when it is there is the one before it
+closed: if the other cannot be created, the conversation stays where it is,
+and what went wrong reaches the caller.
+"""
+
+SWITCH = ServiceKey[Switch]("commands/switch")
+"""What has the conversation go on with another agent. A frontend that can do so provides it."""
 
 
 def apply(ctx: Context, config: object) -> None:

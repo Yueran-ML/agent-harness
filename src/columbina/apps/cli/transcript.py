@@ -30,6 +30,7 @@ from rich.text import Text
 from columbina.approval import ApprovalDecidedEvent
 from columbina.apps.cli.lines import Lines
 from columbina.apps.cli.terminal import Terminal
+from columbina.apps.common import how_it_ended
 from columbina.apps.terminal_text import harmless
 from columbina.llm import BlockEnd, BlockStart, Chunk, TextDelta
 from columbina.retry import RetryEvent
@@ -207,19 +208,10 @@ def _acted_on(arguments: dict[str, object]) -> str:
 
 def _end(data: TurnEndEvent) -> list[Text]:
     """Say how a turn ended, unless it ended the way turns are meant to."""
-    detail = data.detail
-    if data.reason == "aborted":
-        told = "(stopped)" if detail in (None, "user") else f"(stopped: {detail})"
-        return [_note(told)]
-    if data.reason == "error":
-        return [_note(f"(the turn ended with an error: {detail})", _BAD)]
-    if data.reason == "max-tokens":
-        return [_note("(the reply was cut off: the model reached its limit of output)")]
-    if data.reason == "blocked":
-        return [_note(f"(the turn was not allowed to go on: {detail})")]
-    if data.reason == "interrupted":
-        return [_note("(the turn was cut short when the program ended)")]
-    return []
+    told = how_it_ended(data)
+    if told is None:
+        return []
+    return [_note(told, _BAD if data.reason == "error" else _NOTE)]
 
 
 class Transcript:

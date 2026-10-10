@@ -1,11 +1,15 @@
-"""What the frontends share: the words an agent begins with, and how its session is found."""
+"""What the frontends share.
+
+The words an agent begins with, how its session is found, and how a person is
+told that a turn did not end well.
+"""
 
 from columbina.agent import Agent, Agents, AgentSpec
 from columbina.kernel import Context
-from columbina.session import Sessions
+from columbina.session import Sessions, TurnEndEvent
 from columbina.session.store import SESSION_FILE
 
-__all__ = ["DEFAULT_PROMPT", "open_agent"]
+__all__ = ["DEFAULT_PROMPT", "how_it_ended", "open_agent"]
 
 DEFAULT_PROMPT = (
     "You are Columbina, an agent that works in a directory on the user's machine. "
@@ -35,3 +39,21 @@ async def open_agent(
         if stored.exists():
             return await agents.resume(ctx, spec, session_id)
     return await agents.create(ctx, spec, session_id=session_id)
+
+
+def how_it_ended(end: TurnEndEvent) -> str | None:
+    """Say how a turn ended, for a person, or return ``None`` if it ended as turns are meant to."""
+    detail = end.detail
+    if end.reason == "aborted":
+        return "(stopped)" if detail in (None, "user") else f"(stopped: {detail})"
+    if end.reason == "error":
+        return f"(the turn ended with an error: {detail})"
+    if end.reason == "max-tokens":
+        return "(the reply was cut off: the model reached its limit of output)"
+    if end.reason == "blocked":
+        return f"(the turn was not allowed to go on: {detail})"
+    if end.reason == "interrupted":
+        return "(the turn was cut short when the program ended)"
+    if end.reason == "forked":
+        return "(the turn was cut short where its session was copied)"
+    return None

@@ -122,6 +122,13 @@ AgentFactory = Callable[[Context, AgentSpec, Session], Agent]
 """What a loop registers: it makes an agent in a scope, from a spec, on a session."""
 
 ContextKind = Literal["replace", "append", "note"]
+
+CONTEXT_PREFIX = "context/"
+"""What the source of a message begins with if a source of context gave it.
+
+The name of the source follows. By this, such a message is told from what
+the user said and from everything else in the role of the user.
+"""
 """How the text of a source of context is kept in a conversation."""
 
 

@@ -77,6 +77,7 @@ SPILL_POLICY = "src/columbina/spill/policy.py"
 SPILL_SEAM = "src/columbina/spill/__init__.py"
 COMPACTION_SEAM = "src/columbina/compaction/__init__.py"
 TRIM = "src/columbina/compaction/basic/trim.py"
+REGION = "src/columbina/compaction/basic/region.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -5479,6 +5480,102 @@ _COMPACTION = (
         TRIM,
         "        cut += 1\n",
         "        cut += 0\n",
+    ),
+    mutant(
+        "the context at the top is summed up with the conversation",
+        REGION,
+        "    while start < len(events) and (\n        isinstance(events[start].data, SystemMessageEvent)\n        or _source(events[start]).startswith(CONTEXT_PREFIX)\n    ):\n",
+        "    while start < len(events) and isinstance(events[start].data, SystemMessageEvent):\n",
+    ),
+    mutant(
+        "the instructions are summed up with the conversation",
+        REGION,
+        "    while start < len(events) and (\n        isinstance(events[start].data, SystemMessageEvent)\n        or _source(events[start]).startswith(CONTEXT_PREFIX)\n    ):\n",
+        "    while start < len(events) and _source(events[start]).startswith(CONTEXT_PREFIX):\n",
+    ),
+    mutant(
+        "one message more stays than was asked for",
+        REGION,
+        "    while end > start and kept < retain:\n",
+        "    while end > start and kept <= retain:\n",
+    ),
+    mutant(
+        "what is to stay is counted in messages",
+        REGION,
+        "        kept += sizes[end]\n",
+        "        kept += 1\n",
+    ),
+    mutant(
+        "a call stays without its results going with it",
+        REGION,
+        "    end = _before_the_call(events, min(end, last), start)\n",
+        "    end = min(end, last)\n",
+    ),
+    mutant(
+        "what the user said last goes although it need not",
+        REGION,
+        "    if human and human[-1] < end and sum(sizes[human[-1] :]) <= half:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "what the user said last stays whatever has come after it",
+        REGION,
+        "    if human and human[-1] < end and sum(sizes[human[-1] :]) <= half:\n",
+        "    if human and human[-1] < end:\n",
+    ),
+    mutant(
+        "what the user said last goes when just half of the window follows it",
+        REGION,
+        "    if human and human[-1] < end and sum(sizes[human[-1] :]) <= half:\n",
+        "    if human and human[-1] < end and sum(sizes[human[-1] :]) < half:\n",
+    ),
+    mutant(
+        "a steer is not something that the user said",
+        REGION,
+        'HUMAN = ("user", "steer")',
+        'HUMAN = ("user",)',
+    ),
+    mutant(
+        "whatever is in the role of the user counts as what the user said",
+        REGION,
+        "if at >= start and _source(event) in HUMAN]",
+        "if at >= start and _source(event)]",
+    ),
+    mutant(
+        "no more goes although so much has to go",
+        REGION,
+        "    while end < last and sum(sizes[start:end]) < shed:\n",
+        "    while False:\n",
+    ),
+    mutant(
+        "the last message goes if so much has to go",
+        REGION,
+        "    while end < last and sum(sizes[start:end]) < shed:\n",
+        "    while end < len(events) - 1 and sum(sizes[start:end]) < shed:\n",
+    ),
+    mutant(
+        "more goes than has to",
+        REGION,
+        "    while end < last and sum(sizes[start:end]) < shed:\n",
+        "    while end < last and sum(sizes[start:end]) <= shed:\n",
+    ),
+    mutant(
+        "a call goes and its results stay",
+        REGION,
+        "        while isinstance(events[end].data, ToolResultEvent):\n            end += 1\n",
+        "",
+    ),
+    mutant(
+        "an earlier summary is summed up by itself",
+        REGION,
+        "    if all(_source(event) == SUMMARY_SOURCE for event in chosen):\n",
+        "    if not chosen:\n",
+    ),
+    mutant(
+        "what goes is said to come to as much as the whole conversation",
+        REGION,
+        "    return Region(tuple(event.seq for event in chosen), sum(sizes[start:end]))\n",
+        "    return Region(tuple(event.seq for event in chosen), sum(sizes))\n",
     ),
 )
 

@@ -9,6 +9,7 @@ from typing import Literal, TypeVar, cast
 
 from columbina import cancellation
 from columbina.agent import (
+    CONTEXT_PREFIX,
     INBOX,
     PRE_STEP,
     REQUEST,
@@ -92,8 +93,7 @@ def _last_header(
 
 _HEADER: Projection[RequestHeaderEvent | None] = Projection("request-header", None, _last_header)
 
-_CONTEXT = "context/"
-"""What the source of a message begins with if a source of context gave it."""
+_CONTEXT = CONTEXT_PREFIX
 
 
 def _last_context(

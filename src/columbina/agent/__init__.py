@@ -11,6 +11,7 @@ registered here, the note that the turn before was cut short.
 
 from columbina.agent.agent import (
     AGENTS,
+    CONTEXT_PREFIX,
     Agent,
     AgentError,
     AgentFactory,
@@ -57,6 +58,7 @@ from columbina.session import SESSIONS
 
 __all__ = [
     "AGENTS",
+    "CONTEXT_PREFIX",
     "INBOX",
     "PRE_STEP",
     "REQUEST",

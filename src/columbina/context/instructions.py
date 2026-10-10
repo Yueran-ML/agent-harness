@@ -41,7 +41,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
-from columbina.agent import AGENTS, Agent, ContextSource
+from columbina.agent import AGENTS, CONTEXT_PREFIX, Agent, ContextSource
 from columbina.fs import bound, locate
 from columbina.fs.paths import usable
 from columbina.kernel import Context
@@ -52,7 +52,7 @@ __all__ = ["Config", "apply", "inject", "name"]
 name = "context-instructions"
 inject = (AGENTS,)
 
-_SOURCE = "context/instructions"
+_SOURCE = CONTEXT_PREFIX + "instructions"
 _GONE = (
     "The instruction files that were given before are no longer there. What they said does "
     "not hold any more."

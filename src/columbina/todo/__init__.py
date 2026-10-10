@@ -18,6 +18,9 @@ A model sees its list in the call that wrote it. A conversation that grows
 too long has its beginning summed up, and the call may be in the part that
 goes. Then the list is told to the model again, as context: without that, a
 model would go on with a list that it can no longer read.
+
+Which call wrote the list is told by where it stands in the log, not by its
+id: a model may use an id again in a later reply.
 """
 
 from typing import ClassVar, Literal
@@ -29,11 +32,11 @@ from columbina.data import Data
 from columbina.kernel import Context
 from columbina.session import (
     SESSIONS,
+    AssistantMessageEvent,
     EventData,
     Projection,
     Session,
     SessionEvent,
-    ToolResultEvent,
 )
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
@@ -90,7 +93,7 @@ class TodoWriteEvent(EventData):
 
     Attributes:
         call_id: The call that wrote it. The model sees the list for as long
-            as it sees that call.
+            as it sees the reply that made that call.
         items: The things to do, in the order in which they were given.
     """
 
@@ -107,17 +110,18 @@ class Todos(Data):
     Attributes:
         items: The things to do. None before the list is written, and none
             after an empty one was written.
-        call_id: The call that wrote the list last, or ``None`` if none did.
+        written_at: Where the list was written last: the position of that
+            event in the log, or ``None`` if the list was never written.
     """
 
     items: tuple[Item, ...] = ()
-    call_id: str | None = None
+    written_at: int | None = None
 
 
 def _fold(state: Todos, event: SessionEvent[EventData]) -> Todos:
     data = event.data
     if isinstance(data, TodoWriteEvent):
-        return Todos(items=data.items, call_id=data.call_id)
+        return Todos(items=data.items, written_at=event.seq)
     return state
 
 
@@ -224,20 +228,26 @@ def todo_tool() -> Tool[TodoArgs, str]:
     )
 
 
-def _seen(session: Session, call_id: str) -> bool:
-    """Tell whether the model still sees the call that wrote the list."""
+def _seen(session: Session, written_at: int) -> bool:
+    """Tell whether the model still sees the call that wrote the list.
+
+    The call stands in the reply that came last before the list was written.
+    The model sees the call for as long as it sees that reply.
+    """
     events = session.events
-    return any(
-        isinstance(data := events[seq].data, ToolResultEvent) and data.message.call_id == call_id
-        for seq in session.surface
+    reply = next(
+        seq
+        for seq in range(written_at - 1, -1, -1)
+        if isinstance(events[seq].data, AssistantMessageEvent)
     )
+    return reply in session.surface
 
 
 async def _remembered(agent: Agent) -> str | None:
     """Return the list as context, if the model no longer sees the call that wrote it."""
     session = agent.session
     todos = TODOS.of(session)
-    if not todos.items or todos.call_id is None or _seen(session, todos.call_id):
+    if not todos.items or todos.written_at is None or _seen(session, todos.written_at):
         return None
     lines = [
         "This is your list of things to do, as you wrote it last. The call that wrote it is "

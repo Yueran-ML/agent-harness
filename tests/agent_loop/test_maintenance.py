@@ -9,7 +9,7 @@ from columbina.agent import Agent, AgentBusyError
 from columbina.llm import LlmRequest
 from columbina.llm.adapters.scripted import Reply
 from columbina.session import TurnEndEvent
-from support.loop import Harness, assistant, idle
+from support.loop import Harness, assistant, ending, idle
 
 
 class Work:
@@ -211,6 +211,17 @@ async def test_an_agent_that_has_ended_takes_no_work(harness: Harness) -> None:
 
     with pytest.raises(AgentBusyError, match="has ended"):
         agent.run_maintenance(at_once)
+
+
+async def test_an_agent_that_is_ending_takes_no_work(harness: Harness) -> None:
+    agent = await harness.agent()
+    work = Work()
+
+    async with ending(agent):
+        with pytest.raises(AgentBusyError, match="has ended"):
+            agent.run_maintenance(work)
+
+    assert work.told == []
 
 
 async def test_work_that_was_taken_as_the_agent_ended_is_not_left_waiting(harness: Harness) -> None:

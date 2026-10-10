@@ -1,6 +1,8 @@
 """What tests of the agent loop share."""
 
 import asyncio
+import contextlib
+from collections.abc import AsyncGenerator, Generator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,3 +77,52 @@ def assistant(text: str) -> AssistantMessage:
 async def idle(agent: Agent) -> None:
     """Wait until ``agent`` is at rest, but not for ever."""
     await asyncio.wait_for(agent.when_idle(), timeout=5)
+
+
+class Lingering:
+    """Something of an agent that lets go late when the agent ends.
+
+    What was added to an agent after it was made is undone before the agent
+    stops. This is added to ``agent``. When the agent ends, it is reached
+    first, and the agent goes on ending only when it is let go: in between the
+    agent is ending and has not stopped.
+
+    Attributes:
+        reached: Set when the agent has begun to end.
+        let_go: Set by a test to have the agent go on ending.
+    """
+
+    def __init__(self, agent: Agent) -> None:
+        self.reached = asyncio.Event()
+        self.let_go = asyncio.Event()
+        agent.ctx.effect(lambda: self._undo)
+
+    async def _undo(self) -> None:
+        self.reached.set()
+        await self.let_go.wait()
+
+
+@contextlib.contextmanager
+def lingering(agent: Agent) -> Generator[Lingering]:
+    """Have ``agent`` take its time to end, until it is let go or the block is left.
+
+    A test that fails in the block leaves it, so nothing is held for ever.
+    """
+    held = Lingering(agent)
+    try:
+        yield held
+    finally:
+        held.let_go.set()
+
+
+@contextlib.asynccontextmanager
+async def ending(agent: Agent) -> AsyncGenerator[None]:
+    """Begin to end ``agent`` and hold it there: inside the block it is ending and has not stopped.
+
+    The agent ends when the block is left, and the block waits for that.
+    """
+    with lingering(agent) as held:
+        closing = asyncio.ensure_future(agent.close())
+        await asyncio.wait_for(held.reached.wait(), timeout=5)
+        yield
+    await asyncio.wait_for(closing, timeout=5)

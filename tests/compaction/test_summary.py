@@ -1,6 +1,7 @@
 """The summary that a model writes of the oldest part of a conversation."""
 
 import asyncio
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -16,16 +17,20 @@ from columbina.compaction.basic.summary import (
 from columbina.kernel import Context
 from columbina.llm import (
     LLM,
+    BlockStart,
     CallConfig,
+    Chunk,
     LlmFailure,
     LlmRequest,
     TextBlock,
+    TextDelta,
     ToolSchema,
     Usage,
+    UsageChunk,
     UserMessage,
 )
 from columbina.llm.adapters.scripted import Call, Reply, Scripted
-from columbina.session import AsideEvent
+from columbina.session import USAGE, AsideEvent
 from support.talk import Talk, letters
 
 MODEL = CallConfig(
@@ -282,6 +287,37 @@ async def test_a_request_for_a_summary_that_is_cut_short_is_in_the_log_too(
     last = desk.talk.session.events[-1].data
     assert isinstance(last, AsideEvent)
     assert (last.purpose, last.failure) == ("summary", None)
+
+
+async def test_what_a_request_had_used_when_it_was_cut_short_is_counted(
+    desk: Desk, model: Scripted, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A service says what a reply has cost so far while the reply is still being written.
+    told = asyncio.Event()
+
+    async def stalls(self: Scripted, request: LlmRequest) -> AsyncIterator[Chunk]:
+        yield BlockStart(index=0, kind="text")
+        yield TextDelta(index=0, text="They")
+        yield UsageChunk(usage=Usage(input_tokens=900, output_tokens=1))
+        told.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(Scripted, "stream", stalls)
+    summing = asyncio.ensure_future(desk.summed())
+    await asyncio.wait_for(told.wait(), timeout=5)
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    summing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await summing
+
+    session = desk.talk.session
+    last = session.events[-1].data
+    assert isinstance(last, AsideEvent)
+    assert (last.purpose, last.failure) == ("summary", None)
+    assert last.usage == Usage(input_tokens=900, output_tokens=1)
+    assert USAGE.of(session).usage == Usage(input_tokens=900, output_tokens=1)
 
 
 async def test_a_failure_that_does_not_pass_is_the_end(desk: Desk, model: Scripted) -> None:

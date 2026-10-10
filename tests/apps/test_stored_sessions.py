@@ -465,6 +465,23 @@ def test_a_profile_that_stores_no_sessions_has_none_to_look_at(
     )
 
 
+def test_an_entry_that_is_called_session_and_stores_none_is_told_apart(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The name of an entry says nothing about what its plugin provides.
+    only = tmp_path / "only.yml"
+    entry = {"id": "session", "plugin": "columbina.commands"}
+    only.write_text(yaml.safe_dump([{"insert": [entry]}]), encoding="utf-8")
+
+    code, out, err = looked("list", "--cwd", str(work), "--profile", str(only), capsys=capsys)
+
+    assert (code, out) == (2, "")
+    assert err == (
+        "columbina: the entry 'session' of this profile provides no sessions, so there are "
+        "none to look at\n"
+    )
+
+
 def test_a_plugin_that_does_not_load_keeps_the_sessions_from_being_looked_at(
     home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

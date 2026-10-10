@@ -1732,7 +1732,7 @@
     },
     "TodoWriteEvent": {
       "additionalProperties": false,
-      "description": "The list was written. It takes the place of the list before it.\n\nAttributes:\n    call_id: The call that wrote it. The model sees the list for as long\n        as it sees that call.\n    items: The things to do, in the order in which they were given.",
+      "description": "The list was written. It takes the place of the list before it.\n\nAttributes:\n    call_id: The call that wrote it. The model sees the list for as long\n        as it sees the reply that made that call.\n    items: The things to do, in the order in which they were given.",
       "properties": {
         "call_id": {
           "type": "string"

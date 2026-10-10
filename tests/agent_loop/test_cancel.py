@@ -20,7 +20,17 @@ from columbina.session import (
     UserMessageEvent,
 )
 from columbina.tools import Tool, ToolRun, Tools
-from support.loop import STOPPED, SYSTEM, Harness, assistant, from_a_source, idle, types, user
+from support.loop import (
+    STOPPED,
+    SYSTEM,
+    Harness,
+    assistant,
+    ending,
+    from_a_source,
+    idle,
+    types,
+    user,
+)
 
 # Input that arrives while a turn runs
 
@@ -314,6 +324,37 @@ async def test_closing_an_agent_ends_the_turn_that_is_running(harness: Harness) 
     )
     stored = harness.sessions.read(harness.cwd, "s-1")
     assert stored.events == list(agent.session.events)
+    assert len(INBOX.of(agent.session).next_turn) == 1
+
+
+async def test_an_agent_that_is_ending_begins_no_turn(harness: Harness) -> None:
+    agent = await harness.agent(Reply(text="Hello!"))
+
+    async with ending(agent):
+        agent.followup("Say hello.")
+        await idle(agent)
+
+    assert harness.model.requests == []
+    assert "turn/start" not in types(agent.session)
+    # What was said waits for whoever takes the session up again.
+    assert len(INBOX.of(agent.session).next_turn) == 1
+
+
+async def test_a_turn_that_ends_while_the_agent_is_ending_is_followed_by_none(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Hello!", hold=True), Reply(text="Hello again!"))
+    agent.followup("Say hello.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+    agent.followup("Say it again.")
+
+    async with ending(agent):
+        harness.model.release()
+        await idle(agent)
+
+    assert len(harness.model.requests) == 1
+    assert types(agent.session).count("turn/start") == 1
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
     assert len(INBOX.of(agent.session).next_turn) == 1
 
 

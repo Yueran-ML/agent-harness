@@ -18,12 +18,15 @@ import columbina.fs
 import columbina.permissions
 import columbina.sandbox
 import columbina.token_meter
+from columbina import cancellation
 from columbina.agent import INBOX, STREAM, Agent, AgentSpec, StreamFrame
 from columbina.approval import APPROVAL, ApprovalRequest
 from columbina.apps import FRONTEND, Frontend
 from columbina.apps.cli.terminal import TERMINAL
-from columbina.commands import SWITCH
+from columbina.commands import COMMANDS, SWITCH, Command
+from columbina.commands import compact as compact_command
 from columbina.commands import fork as fork_command
+from columbina.compaction import COMPACTION, Outcome, Why
 from columbina.kernel import Context
 from columbina.llm import BlockEnd, BlockStart, Chunk, LlmFailure, TextDelta, Usage
 from columbina.llm.adapters.scripted import Call, Reply
@@ -31,7 +34,7 @@ from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
 from columbina.token_meter import TOKEN_METER
 from columbina.tools import Tool, ToolRun
-from support.loop import MODEL, Harness, assistant, from_a_source, user
+from support.loop import MODEL, Harness, assistant, from_a_source, lingering, user
 from support.terminal import CTRL_D, ESCAPE, Desk, desk, stands, until
 
 STEER = chr(0xBB)
@@ -56,6 +59,66 @@ def agent_of(harness: Harness) -> Agent:
 
 async def left(running: "asyncio.Future[int]") -> int:
     return await asyncio.wait_for(running, 5)
+
+
+class Slow:
+    """A command that has the agent do something, which takes until it is let go or stopped.
+
+    Attributes:
+        begun: Set when the agent has begun with it.
+        let_go: Set by a test to have it come to its end.
+        ended: How the command ended, once it has.
+    """
+
+    def __init__(self) -> None:
+        self.begun = asyncio.Event()
+        self.let_go = asyncio.Event()
+        self.ended: list[str] = []
+
+    async def __call__(self, agent: Agent, rest: str) -> str:
+        async def work() -> None:
+            self.begun.set()
+            await self.let_go.wait()
+
+        try:
+            await cancellation.guard(agent.run_maintenance(work), what="what takes long")
+        except cancellation.CancelledFromInside:
+            self.ended.append("the agent was stopped")
+            return "It was stopped."
+        except asyncio.CancelledError:
+            self.ended.append("the command was stopped")
+            raise
+        self.ended.append("it is done")
+        return "It is done."
+
+
+def slow(harness: Harness) -> Slow:
+    """Give the program a command that takes long, by the name ``/slow``."""
+    command = Slow()
+    harness.ctx.use(COMMANDS).registry.add(harness.ctx, "slow", Command(command, "Take long."))
+    return command
+
+
+class Summing:
+    """Whatever makes conversations shorter, and never comes to an end by itself here."""
+
+    def __init__(self) -> None:
+        self.begun = asyncio.Event()
+
+    async def compact(self, agent: Agent, why: Why) -> Outcome:
+        self.begun.set()
+        await asyncio.Event().wait()
+        raise AssertionError("it is stopped before it ends")
+
+
+def said_in(harness: Harness, session_id: str) -> list[object]:
+    """What a person said in a stored session, in order."""
+    stored = harness.sessions.read(harness.cwd, session_id)
+    return [
+        event.data.message
+        for event in stored.events
+        if isinstance(event.data, UserMessageEvent) and not from_a_source(event.data)
+    ]
 
 
 # A conversation
@@ -363,6 +426,268 @@ async def test_the_conversation_stays_where_it_is_if_it_cannot_go_over(harness: 
         assert agent_of(harness).id == "first"
         at.type(CTRL_D)
         await left(running)
+
+
+# A command that takes long
+
+
+async def test_escape_stops_what_a_command_has_the_agent_do(harness: Harness) -> None:
+    summing = Summing()
+    harness.ctx.provide(COMPACTION, summing)
+    with desk() as at:
+        cli = await frontend(harness, at)
+        assert isinstance(cli, columbina.apps.cli.Cli)
+        await harness.ctx.plugin(compact_command)
+        running = asyncio.ensure_future(cli.run())
+
+        at.enter("/compact")
+        await asyncio.wait_for(summing.begun.wait(), timeout=5)
+        # The line below the prompt says how it is stopped.
+        assert cli.status_line().split(" | ")[-1] == "esc stops"
+        at.type(ESCAPE)
+
+        await at.sees("It was stopped. The conversation is as it was.\n\n")
+        await until(lambda: "esc stops" not in cli.status_line())
+        # The prompt takes lines as it did before.
+        at.enter("/exit")
+        assert await left(running) == 0
+
+
+async def test_what_is_submitted_while_a_command_is_carried_out_waits_for_it(
+    harness: Harness,
+) -> None:
+    harness.model.add(Reply(text="One."))
+    with desk() as at:
+        interface = await frontend(harness, at)
+        command = slow(harness)
+        running = asyncio.ensure_future(interface.run())
+        at.enter("/slow")
+        await asyncio.wait_for(command.begun.wait(), timeout=5)
+
+        at.enter("/model")
+        at.enter("First.")
+        # The keys are read, and nothing comes of the two lines yet.
+        await asyncio.sleep(0.2)
+        assert "The model is" not in at.seen()
+        assert INBOX.of(agent_of(harness).session).next_turn == ()
+        command.let_go.set()
+
+        await at.sees("One.\n")
+        at.type(CTRL_D)
+        assert await left(running) == 0
+    shown = at.seen()
+    # They are taken in the order in which they were submitted, once the command is over.
+    assert shown.index("It is done.\n") < shown.index("The model is ") < shown.index("One.\n")
+    assert command.ended == ["it is done"]
+    assert harness.model.requests[0].messages[-1] == user("First.")
+
+
+async def test_leaving_stops_a_command_that_is_being_carried_out(harness: Harness) -> None:
+    with desk() as at:
+        interface = await frontend(harness, at)
+        command = slow(harness)
+        running = asyncio.ensure_future(interface.run())
+        at.enter("/slow")
+        await asyncio.wait_for(command.begun.wait(), timeout=5)
+
+        at.type(CTRL_D)
+
+        assert await left(running) == 0
+        assert command.ended == ["the command was stopped"]
+    assert "It was stopped." not in at.seen()
+    assert list(harness.agents.live) == []
+
+
+async def test_what_a_command_lets_through_ends_the_conversation(harness: Harness) -> None:
+    class Odd(BaseException):
+        """Nothing that a command is expected to raise."""
+
+    async def lets_through(agent: Agent, rest: str) -> str:
+        raise Odd
+
+    with desk() as at:
+        interface = await frontend(harness, at)
+        harness.ctx.use(COMMANDS).registry.add(harness.ctx, "odd", Command(lets_through, "Break."))
+        running = asyncio.ensure_future(interface.run())
+        at.enter("/odd")
+
+        with pytest.raises(Odd):
+            await left(running)
+    assert list(harness.agents.live) == []
+
+
+# Going over to another agent
+
+
+async def test_a_line_goes_to_the_agent_that_the_conversation_went_over_to(
+    harness: Harness,
+) -> None:
+    harness.model.add(Reply(text="One."))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="first")).run())
+        await at.sees("Ctrl+D leaves.\n")
+        first = agent_of(harness)
+
+        # Somebody else has the conversation go over while the prompt waits for a line.
+        other = await harness.ctx.use(SWITCH)(harness.agents.create)
+
+        at.enter("First.")
+        await at.sees("One.\n")
+        at.type(CTRL_D)
+        assert await left(running) == 0
+    assert other is not first
+    assert said_in(harness, other.id) == [user("First.")]
+    # Nothing was said to the agent that the conversation had left.
+    assert first.session.closed
+    assert list(first.session.events) == []
+
+
+async def test_going_over_that_is_cut_short_leaves_no_agent_to_itself(harness: Harness) -> None:
+    harness.model.add(Reply(text="One."))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="first")).run())
+        await at.sees("Ctrl+D leaves.\n")
+        first = agent_of(harness)
+        # The agent that the conversation leaves takes its time to end.
+        with lingering(first) as held:
+            going = asyncio.ensure_future(harness.ctx.use(SWITCH)(harness.agents.create))
+            await asyncio.wait_for(held.reached.wait(), timeout=5)
+
+            # Whoever asked for it is stopped meanwhile.
+            going.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await going
+        await until(lambda: first.session.closed)
+
+        # The conversation is with the other agent all the same.
+        other = agent_of(harness)
+        at.enter("First.")
+        await at.sees("One.\n")
+        at.type(CTRL_D)
+        assert await left(running) == 0
+    assert said_in(harness, other.id) == [user("First.")]
+    # And the program ended it as it left, like every agent of a conversation.
+    assert other.session.closed
+    assert list(harness.agents.live) == []
+
+
+async def test_an_agent_is_heard_from_the_moment_the_conversation_goes_over_to_it(
+    harness: Harness,
+) -> None:
+    harness.model.add(Reply(text="thinking", hold=True))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="first")).run())
+        await at.sees("Ctrl+D leaves.\n")
+
+        async def with_a_task(scope: Context, spec: AgentSpec) -> Agent:
+            agent = await harness.agents.create(scope, spec)
+            agent.followup("Think.")
+            return agent
+
+        # The agent that the conversation leaves takes its time to end.
+        with lingering(agent_of(harness)):
+            going = asyncio.ensure_future(harness.ctx.use(SWITCH)(with_a_task))
+            await asyncio.wait_for(harness.model.held(), timeout=5)
+            assert not going.done()
+
+            # Escape stops the turn of the other agent, although the one before it is
+            # still ending.
+            at.type(ESCAPE)
+            await at.sees("(stopped)\n")
+        other = await asyncio.wait_for(going, timeout=5)
+        at.type(CTRL_D)
+        assert await left(running) == 0
+    assert other.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
+
+
+async def test_an_agent_that_is_in_a_turn_when_the_conversation_goes_over_to_it_can_be_stopped(
+    harness: Harness,
+) -> None:
+    harness.model.add(
+        Reply(text="first thoughts", hold=True), Reply(text="second thoughts", hold=True)
+    )
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="first")).run())
+        at.enter("Think.")
+        await asyncio.wait_for(harness.model.held(), timeout=5)
+        first = agent_of(harness)
+
+        async def in_a_turn(scope: Context, spec: AgentSpec) -> Agent:
+            agent = await harness.agents.create(scope, spec)
+            agent.followup("Think too.")
+            await until(lambda: len(harness.model.requests) == 2)
+            return agent
+
+        # The agent that the conversation leaves takes its time to end, and writes meanwhile.
+        with lingering(first):
+            going = asyncio.ensure_future(harness.ctx.use(SWITCH)(in_a_turn))
+            # The turn of the first agent is stopped as the conversation leaves it.
+            await until(lambda: isinstance(first.session.events[-1].data, TurnEndEvent))
+            (other,) = (agent for agent in harness.agents.live.values() if agent is not first)
+
+            at.type(ESCAPE)
+
+            await until(lambda: isinstance(other.session.events[-1].data, TurnEndEvent))
+        assert await asyncio.wait_for(going, timeout=5) is other
+        at.type(CTRL_D)
+        assert await left(running) == 0
+    stopped = TurnEndEvent(turn=1, reason="aborted", detail="user")
+    assert first.session.events[-1].data == stopped
+    assert other.session.events[-1].data == stopped
+    # What the first agent wrote down as it ended is in its log. It was not shown as if
+    # it were of the conversation.
+    assert at.seen().count("(stopped)\n") == 1
+
+
+async def test_an_agent_at_rest_takes_a_command_although_the_one_before_it_was_in_a_turn(
+    harness: Harness,
+) -> None:
+    harness.model.add(Reply(text="thinking", hold=True))
+    with desk() as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="first")).run())
+        at.enter("Think.")
+        await asyncio.wait_for(harness.model.held(), timeout=5)
+        first = agent_of(harness)
+
+        other = await asyncio.wait_for(harness.ctx.use(SWITCH)(harness.agents.create), timeout=5)
+
+        # Nobody waits any longer for the first agent to come to rest. The one that the
+        # conversation is with is at rest, so a command is carried out.
+        at.enter("/exit")
+        assert await left(running) == 0
+    assert first.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
+    assert other.session.closed
+    assert "a command waits" not in at.seen()
+
+
+async def test_what_an_agent_writes_after_the_conversation_left_it_is_not_shown(
+    harness: Harness,
+) -> None:
+    with desk(rows=10, columns=400) as at:
+        running = asyncio.ensure_future((await frontend(harness, at, session_id="first")).run())
+        await at.sees("/help lists the commands.")
+        first = agent_of(harness)
+
+        def arrives(chunk: Chunk) -> None:
+            first.ctx.emit(STREAM, StreamFrame(first, 1, 1, chunk))
+
+        # The first agent is in the middle of a line of its reply.
+        arrives(BlockStart(index=0, kind="text"))
+        arrives(TextDelta(index=0, text="Half a li"))
+        await until(lambda: "Half a li" in at.window())
+
+        # It takes its time to end, and is listened to until it has ended.
+        with lingering(first):
+            going = asyncio.ensure_future(harness.ctx.use(SWITCH)(harness.agents.create))
+            # The half of a line is no part of the conversation any more.
+            await until(lambda: "Half a li" not in at.window())
+            arrives(TextDelta(index=0, text="ne that comes late"))
+            await asyncio.sleep(0.2)
+            assert not any("comes late" in row for row in at.window())
+        await asyncio.wait_for(going, timeout=5)
+        at.type(CTRL_D)
+        assert await left(running) == 0
+    assert "comes late" not in at.shown()
 
 
 # Leaving

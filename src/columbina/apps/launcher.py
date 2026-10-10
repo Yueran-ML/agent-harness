@@ -42,7 +42,7 @@ from columbina.apps import sessions as stored_sessions
 from columbina.apps.terminal_text import harmless
 from columbina.kernel import CompositionError, Context, Entry, Layer, flatten, mount, parse_layer
 from columbina.permissions import Preset
-from columbina.session import SessionError
+from columbina.session import SESSIONS, SessionError
 
 __all__ = ["main"]
 
@@ -278,6 +278,13 @@ async def _look(entries: Sequence[Entry], env: Mapping[str, str], args: argparse
     cwd = Path() if args.cwd is None else Path(args.cwd)
 
     async def look(root: Context) -> int:
+        if root.get(SESSIONS) is None:
+            # What an entry is called says nothing about what its plugin provides.
+            _tell(
+                f"the entry {_KNOW_THE_LOG[0]!r} of this profile provides no sessions, so "
+                "there are none to look at"
+            )
+            return 2
         try:
             told = await stored_sessions.run(
                 root, cwd.resolve(), args.what, getattr(args, "id", None), args.copy_id

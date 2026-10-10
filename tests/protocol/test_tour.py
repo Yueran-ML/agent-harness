@@ -18,6 +18,10 @@ What happens, turn by turn:
    lot, and the conversation is made shorter by cutting a result down.
 4. The user has the conversation summed up, and one more turn follows, in
    which the model is told again what it had written down.
+
+At the end the user has it summed up once more. The summary of before is in
+the part that goes this time, and it stands first there although it was
+written last.
 """
 
 import asyncio
@@ -84,6 +88,12 @@ The history of the file shows that the mistake came in with commit 0029d5f.
 to `git commit -am "Fix mean()"`.
 3. Remaining steps: The fix is in the working tree and is not committed.
 4. Key data: calc.py, check.py, `python check.py`, commit 0029d5f."""
+SUMMARY_AGAIN = """\
+1. Progress and decisions: mean() in calc.py is fixed and `python check.py` prints ok. The \
+mistake came in with commit 0029d5f.
+2. Constraints and preferences: Keep changes small. Committing was not allowed.
+3. Remaining steps: The fix is not committed.
+4. Key data: calc.py, commit 0029d5f."""
 
 
 class Clock:
@@ -332,6 +342,12 @@ async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
     )
     agent.followup("What is left to do?")
     await idle(agent)
+
+    # And once more: the summary of before goes with what followed it.
+    model.add(Reply(text=SUMMARY_AGAIN, usage=spent(79, 68, 640)))
+    await asyncio.wait_for(
+        agent.run_maintenance(lambda: compaction.compact(agent, "manual")), timeout=5
+    )
     assert model.remaining == 0
 
     path = harness.sessions.directory(harness.cwd, "tour") / SESSION_FILE
@@ -389,7 +405,20 @@ def test_everything_that_can_happen_happens_in_the_sample(tmp_path: Path) -> Non
     assert [(made.trimmed, made.summarised > 0, made.error) for made in shorter] == [
         (1, False, None),
         (0, True, None),
+        (0, True, None),
     ]
     # Each way in which something takes the place of something else.
     replacing = {event.type for event in events if event.replaces}
     assert replacing == {"tool/result", "user/message"}
+    # What is replaced is listed in the order of the conversation. The second summary takes
+    # the place of the first, which was written after the messages that follow it.
+    listed = [event.replaces for event in events if len(event.replaces) > 1]
+    assert [list(seqs) == sorted(seqs) for seqs in listed] == [True, False]
+    first, second = (
+        event.seq
+        for event in events
+        if isinstance(event.data, UserMessageEvent) and event.data.source == "compaction"
+    )
+    assert listed[1][0] == first
+    assert first > max(listed[1][1:])
+    assert second > first

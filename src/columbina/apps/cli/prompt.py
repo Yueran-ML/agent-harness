@@ -167,10 +167,23 @@ class Prompt:
             more can be typed because the input has come to its end.
         """
         self._leaving = False
+        # A prompt stays on the screen with its line, unless it is put away.
+        self._session.app.erase_when_done = False
         try:
             return await self._session.prompt_async()
         except EOFError:
             return None
+
+    def put_away(self) -> None:
+        """Take the prompt off the screen, if it stands there. Whoever waits for a line gets none.
+
+        A prompt that stood on although nobody takes a line from it any more
+        would look as if somebody did.
+        """
+        app = self._session.app
+        if app.is_running and not app.is_done:
+            app.erase_when_done = True
+            app.exit(result=None)
 
     async def ask(self, keys: str, choices: str, about: Sequence[Text] = ()) -> str:
         """Ask for one key, and return the key that was pressed.

@@ -24,6 +24,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from columbina import cancellation
 from columbina.agent import Agent, AgentSpec
 from columbina.kernel import Context, Registry, ServiceKey
 
@@ -84,7 +85,9 @@ class Commands:
         The name ends at the first space, and it is taken in lower case.
         What follows is handed to the command without the spaces around it.
         A name that no command has, and a command that fails, are answered
-        with a sentence for the person. Neither stops the program.
+        with a sentence for the person. Neither stops the program. The same
+        goes for a command whose work was stopped: what it waited for may be
+        stopped while nobody stops the one who carries the command out.
 
         Args:
             agent: The agent that the person is talking to.
@@ -99,8 +102,13 @@ class Commands:
         command = self.registry.get(named.lower())
         if command is None:
             return f"There is no command {_MARK}{named}. {_MARK}help lists the commands."
+        called = f"{_MARK}{named.lower()}"
         try:
-            return await command.run(agent, rest.strip())
+            return await cancellation.guard(
+                command.run(agent, rest.strip()), what=f"the command {called}"
+            )
+        except cancellation.CancelledFromInside:
+            return f"The command {called} was stopped."
         except Exception as error:
             logger.error("the command %s%s failed", _MARK, named.lower(), exc_info=error)
             return f"The command {_MARK}{named.lower()} failed: {type(error).__name__}: {error}"
@@ -132,6 +140,9 @@ Switch = Callable[[Opener], Awaitable[Agent]]
 The other agent is created first. Only when it is there is the one before it
 closed: if the other cannot be created, the conversation stays where it is,
 and what went wrong reaches the caller.
+
+The conversation is with the other agent from the moment it is there. The
+call comes back when the agent before it has ended.
 """
 
 SWITCH = ServiceKey[Switch]("commands/switch")

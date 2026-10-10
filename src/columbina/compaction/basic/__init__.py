@@ -105,6 +105,9 @@ inject = (SESSIONS, LLM, TOKEN_METER)
 logger = logging.getLogger(__name__)
 
 _TOO_LONG = "CONTEXT_WINDOW_EXCEEDED"
+
+_Coming = tuple[int, int, int]
+"""The request that is about to be made: its turn, its step, and which attempt of the step."""
 _FAILURES_IN_A_ROW = 2
 """After so many failures in a row, a conversation is not made shorter by itself."""
 
@@ -314,7 +317,7 @@ class Basic:
 
     async def compact(self, agent: Agent, why: Why) -> Outcome:
         """Make the conversation of an agent shorter, and say how that ended."""
-        return await self._compact(agent, why, None)
+        return await self._compact(agent, why, None, None)
 
     async def before_a_step(
         self, info: StepInfo, proceed: Next[StepInfo, StepDecision]
@@ -322,8 +325,9 @@ class Basic:
         """Make the conversation shorter if it has come near what its model takes."""
         decision = await proceed(info)
         # Nothing is done for a step that something else keeps from beginning.
-        if isinstance(decision, Enter) and await self._pressed(info.agent):
-            await self._compact(info.agent, "pressure", None)
+        coming = (info.turn, info.step, 1)
+        if isinstance(decision, Enter) and await self._pressed(info.agent, coming):
+            await self._compact(info.agent, "pressure", None, coming)
         return decision
 
     async def after_a_refusal(
@@ -336,26 +340,35 @@ class Basic:
             return await proceed(failed)
         self._refused[session] = step
         said = refusal(failed.failure.message)
-        outcome = await self._compact(failed.agent, "overflow", said)
+        # The request that is made again is the next attempt of the same step.
+        coming = (failed.turn, failed.step, failed.attempt + 1)
+        outcome = await self._compact(failed.agent, "overflow", said, coming)
         # The same request would be refused again. Only less is worth another try.
         return Retry() if outcome.changed else await proceed(failed)
 
-    async def _model(self, agent: Agent) -> CallConfig:
+    async def _model(self, agent: Agent, coming: _Coming | None) -> CallConfig:
         """Return how the next request of an agent would call its model.
 
         The listeners of ``agent/request`` are asked, as the loop asks them
         before every request. One of them may send the requests to another
         model than the agent was created with. That model is then the one
         whose window counts, and the one that writes the summary.
+
+        Args:
+            agent: The agent.
+            coming: The turn, the step and the attempt of the request that is
+                about to be made, as far as they are known. A listener may
+                go by them. Between two turns nothing is known, and the next
+                request is taken to be the first of the turn that follows.
         """
-        state = TURN.of(agent.session)
-        draft = RequestDraft(agent, state.turn, state.step, 1, agent.spec.model)
+        turn, step, attempt = coming or (TURN.of(agent.session).turn + 1, 1, 1)
+        draft = RequestDraft(agent, turn, step, attempt, agent.spec.model)
         return await agent.ctx.waterfall(REQUEST, draft, _as_drafted)
 
-    async def _pressed(self, agent: Agent) -> bool:
+    async def _pressed(self, agent: Agent, coming: _Coming) -> bool:
         """Tell whether a conversation is to be made shorter before its next step."""
         session = agent.session
-        model = await self._model(agent)
+        model = await self._model(agent, coming)
         limits = budget(model, self._config)
         if limits is None or limits.threshold <= 0:
             if not self._told:
@@ -371,7 +384,9 @@ class Basic:
             return False
         return self._failures.get(session, 0) < _FAILURES_IN_A_ROW
 
-    async def _compact(self, agent: Agent, why: Why, said: Refusal | None) -> Outcome:
+    async def _compact(
+        self, agent: Agent, why: Why, said: Refusal | None, coming: _Coming | None
+    ) -> Outcome:
         session = agent.session
         measured = self._meter.measure(session)
         if session in self._running:
@@ -380,15 +395,21 @@ class Basic:
                 after=measured.tokens,
                 error="this conversation is being made shorter already",
             )
+        # From here on nobody else begins: asking for the model may take a moment.
+        self._running.add(session)
         config = self._config
-        model = await self._model(agent)
-        plan = _plan(model, config, why, said, measured)
+        try:
+            model = await self._model(agent, coming)
+            plan = _plan(model, config, why, said, measured)
+            session.append(CompactionStartEvent(why=why, tokens=measured.tokens))
+        except BaseException:
+            # It has not begun. Whoever asks next finds nothing in the way.
+            self._running.discard(session)
+            raise
 
         def size(message: Message) -> int:
             return math.ceil(estimate_message(message) * plan.scale)
 
-        session.append(CompactionStartEvent(why=why, tokens=measured.tokens))
-        self._running.add(session)
         trimmed = summarised = 0
         error: str | None = None
         try:

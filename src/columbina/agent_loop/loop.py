@@ -38,7 +38,7 @@ from columbina.agent import (
     claim_task,
     clear_inbox,
 )
-from columbina.kernel import Context, Event, Registry
+from columbina.kernel import Context, Event, FiberState, Registry
 from columbina.llm import (
     CallConfig,
     Llm,
@@ -251,7 +251,7 @@ class LoopAgent(Agent):
         Raises:
             AgentBusyError: The agent is not at rest, or it has ended.
         """
-        if self._closing or self._failure is not None or self._driver.done():
+        if self._ending() or self._failure is not None or self._driver.done():
             raise AgentBusyError(f"the agent {self.id!r} has ended")
         if not self._idle.is_set():
             raise AgentBusyError(f"the agent {self.id!r} is not at rest")
@@ -263,6 +263,17 @@ class LoopAgent(Agent):
         return cast("Awaitable[ResultT]", done)
 
     # The driver
+
+    def _ending(self) -> bool:
+        """Tell whether the agent is being ended.
+
+        An agent begins to end when its fiber begins to unload. What was added
+        to the agent after it was made is undone first, which may take a while,
+        and only then is the loop stopped. Nothing new begins in between: a
+        turn that runs goes on until the loop is stopped, no turn follows it,
+        and input that waits is kept for whoever takes the session up again.
+        """
+        return self.ctx.fiber.state is FiberState.UNLOADING
 
     async def _stop(self) -> None:
         """End the agent: stop the turn that is running, then the driver."""
@@ -328,7 +339,7 @@ class LoopAgent(Agent):
     async def _run_turns(self) -> None:
         """Run a turn for the input that waits, and then one for every further task."""
         first = True
-        while not self._closing and not self._halted:
+        while not self._ending() and not self._halted:
             inbox = INBOX.of(self.session)
             if not (inbox.next_turn or (first and inbox.next_step)):
                 return

@@ -109,6 +109,27 @@ async def test_a_command_that_fails_says_so_and_the_program_goes_on(
     assert caplog.records[0].exc_info is not None
 
 
+async def test_a_command_whose_work_was_stopped_says_so_and_the_program_goes_on(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    # What a command waits for may be stopped: the agent, when a person presses Escape.
+    # Nobody stopped whoever carries the command out.
+    async def waits_for_what_is_stopped(agent: Agent, rest: str) -> str:
+        stopped: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        stopped.cancel()
+        return await stopped
+
+    known = await commands(harness)
+    known.registry.add(harness.ctx, "wait", Command(waits_for_what_is_stopped, "Wait."))
+    agent = await harness.agent()
+
+    with caplog.at_level(logging.ERROR, logger="columbina.commands"):
+        shown = await known.run(agent, "/WAIT now")
+
+    assert shown == "The command /wait was stopped."
+    assert caplog.records == []
+
+
 async def test_a_command_that_is_cancelled_is_cancelled(harness: Harness) -> None:
     started = asyncio.Event()
 

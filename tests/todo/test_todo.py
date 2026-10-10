@@ -80,6 +80,11 @@ def written(agent: Agent) -> list[TodoWriteEvent]:
     return [event.data for event in agent.session.events if isinstance(event.data, TodoWriteEvent)]
 
 
+def where(agent: Agent) -> list[int]:
+    """Where in the log the list was written, each time that it was."""
+    return [event.seq for event in agent.session.events if isinstance(event.data, TodoWriteEvent)]
+
+
 def recalled(agent: Agent) -> list[UserMessageEvent]:
     """The messages on the surface in which the model is told its list as context."""
     session = agent.session
@@ -119,7 +124,7 @@ async def test_the_list_is_written_whole_and_kept_in_the_log(harness: Harness) -
         ("The list holds 3 things: 1 completed, 1 in progress, 1 pending.", None)
     ]
     assert written(agent) == [TodoWriteEvent(call_id="call-1", items=ITEMS)]
-    assert TODOS.of(agent.session) == Todos(items=ITEMS, call_id="call-1")
+    assert TODOS.of(agent.session) == Todos(items=ITEMS, written_at=where(agent)[0])
     # A program that reads the log and does not know the list may pass it over.
     assert TodoWriteEvent.ignorable
 
@@ -141,7 +146,7 @@ async def test_a_new_list_takes_the_place_of_the_old_one(harness: Harness) -> No
         "The list is empty now.",
     ]
     assert [len(event.items) for event in written(agent)] == [3, 1, 0]
-    assert TODOS.of(agent.session) == Todos(items=(), call_id="call-3")
+    assert TODOS.of(agent.session) == Todos(items=(), written_at=where(agent)[2])
 
 
 async def test_a_thing_is_pending_unless_the_model_says_otherwise(harness: Harness) -> None:
@@ -204,7 +209,7 @@ async def test_a_list_that_cannot_be_kept_is_refused_and_the_old_one_stays(
 
     assert results(agent)[1] == (said, "INVALID_ARGS")
     assert len(written(agent)) == 1
-    assert TODOS.of(agent.session) == Todos(items=ITEMS, call_id="call-1")
+    assert TODOS.of(agent.session) == Todos(items=ITEMS, written_at=where(agent)[0])
 
 
 async def test_a_list_of_just_the_size_that_is_kept_is_kept(harness: Harness) -> None:
@@ -244,12 +249,12 @@ async def test_the_list_stays_from_turn_to_turn_and_when_a_session_is_taken_up_a
     agent = await working(harness, wrote(*PLAN), Reply(text="On it."), Reply(text="Still on it."))
     await turn(agent)
     await turn(agent)
-    assert TODOS.of(agent.session) == Todos(items=ITEMS, call_id="call-1")
+    assert TODOS.of(agent.session) == Todos(items=ITEMS, written_at=where(agent)[0])
 
     await agent.close()
     again = await harness.agents.resume(harness.ctx, harness.spec(), "s-1")
 
-    assert TODOS.of(again.session) == Todos(items=ITEMS, call_id="call-1")
+    assert TODOS.of(again.session) == Todos(items=ITEMS, written_at=where(again)[0])
 
 
 # Telling the model its list again
@@ -305,6 +310,36 @@ async def test_the_result_of_another_call_is_not_the_call_that_wrote_the_list(
     # which was refused, stays where it is, and so does its result.
     summary = UserMessageEvent(message=user("A summary of what was done."), source="compaction")
     session.append(summary, replaces=replies[2:4])
+
+    await turn(agent)
+
+    assert [data.message for data in recalled(agent)] == [RECALLED]
+
+
+async def test_a_later_call_with_the_same_id_is_not_the_call_that_wrote_the_list(
+    harness: Harness,
+) -> None:
+    # A model may use an id again in a later reply.
+    things: list[JsonValue] = [{"content": content, "status": status} for content, status in PLAN]
+    agent = await working(
+        harness,
+        Reply(calls=(Call(name=TOOL, arguments={"items": things}, call_id="same"),)),
+        Reply(calls=(Call(name=TOOL, arguments={"items": "none"}, call_id="same"),)),
+        Reply(text="On it."),
+        Reply(text="Mended."),
+    )
+    await turn(agent)
+    session = agent.session
+    assert results(agent)[1][1] == "INVALID_ARGS"
+    replies = [
+        seq
+        for seq in session.surface
+        if isinstance(session.events[seq].data, AssistantMessageEvent | ToolResultEvent)
+    ]
+    # The call that wrote the list is summed up, with its result. The later call, which
+    # wrote nothing, stays, and so does its result. The model sees no list any more.
+    summary = UserMessageEvent(message=user("A summary of what was done."), source="compaction")
+    session.append(summary, replaces=replies[:2])
 
     await turn(agent)
 

@@ -331,7 +331,7 @@ COMPACTIONS = Projection(...)  # Compactions(count, last, open, orphans)
 
 ### `columbina.commands.compact`、`.todos`、`.fork`（新建）
 
-三条命令各是一个插件。`/fork` 需要前端换会话，能换的前端为此提供服务 `SWITCH`（`columbina.commands`）：给它一个创建 Agent 的函数，它先让新的 Agent 建好，再关闭当前的 Agent，把对话接到新的上面。新的建不出来时对话留在原处，错误交给调用方。`/new` 改用同一个能力。没有前端提供 `SWITCH` 时，`/fork` 说明原因，什么也不复制。
+三条命令各是一个插件。`/fork` 需要前端换会话，能换的前端为此提供服务 `SWITCH`（`columbina.commands`）：给它一个创建 Agent 的函数，它先让新的 Agent 建好，随即把对话接到新的上面，然后才关闭原来的 Agent。新的建不出来时对话留在原处，错误交给调用方。`/new` 改用同一个能力。没有前端提供 `SWITCH` 时，`/fork` 说明原因，什么也不复制。
 
 `Agents.fork(ctx, spec, source, *, upto=None, session_id=None)` 在一份会话的副本上创建 Agent，与 `create`、`resume` 并列。
 

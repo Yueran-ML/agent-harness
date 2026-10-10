@@ -355,6 +355,58 @@ async def test_a_terminal_that_goes_away_is_like_leaving() -> None:
         assert await asyncio.wait_for(waiting, 5) is None
 
 
+async def test_a_prompt_that_is_put_away_leaves_the_screen_and_gives_no_line() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal, status=lambda: "the line below")
+        prompt.show([Text("Above.")])
+        waiting = asyncio.ensure_future(prompt.line())
+        await typed(prompt, at, "half a li")
+        # The prompt stands below what was shown, and its last line at the bottom of the window.
+        await stands(
+            lambda: [row for row in at.screen() if row],
+            [
+                "Above.",
+                "> half a li",
+                "the line below",
+            ],
+        )
+
+        prompt.put_away()
+        # Somebody else may put it away at the same moment.
+        prompt.put_away()
+
+        assert await asyncio.wait_for(waiting, 5) is None
+        # Nothing of the prompt is left, and nothing of what was typed.
+        await stands(at.screen, ["Above."])
+
+
+async def test_the_prompt_after_one_that_was_put_away_stays_as_every_prompt_does() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+        waiting = asyncio.ensure_future(prompt.line())
+        await offered(at, ">")
+        prompt.put_away()
+        await asyncio.wait_for(waiting, 5)
+
+        at.enter("one")
+
+        assert await asyncio.wait_for(prompt.line(), 5) == "one"
+        # A line that was submitted stays on the screen the way it was typed.
+        await stands(at.screen, ["> one"])
+
+
+async def test_a_prompt_that_is_not_there_can_be_put_away() -> None:
+    with desk() as at:
+        prompt = Prompt(at.terminal)
+
+        prompt.put_away()
+
+        # It changes nothing for the prompt that comes after.
+        at.enter("one")
+        assert await asyncio.wait_for(prompt.line(), 5) == "one"
+        await stands(at.screen, ["> one"])
+
+
 # Questions
 
 

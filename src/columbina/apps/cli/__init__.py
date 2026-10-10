@@ -10,6 +10,10 @@ something said to the agent on its way, which the model reads when its next
 step begins. A line that begins with a slash is a command for the program
 itself, and it is carried out while the agent is at rest.
 
+A command may take long: it may have the agent sum up the conversation. The
+keys are read meanwhile. Escape stops what the agent does for the command,
+and a line that is submitted waits until the command is over.
+
 What is shown comes from the log of the session, so a session that is taken
 up again looks the way it looked. Only the reply that is being written is
 shown from its chunks, because nothing else is quick enough.
@@ -19,10 +23,12 @@ about at the prompt.
 """
 
 import asyncio
-import functools
 import logging
 import sys
+from collections import deque
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 from pydantic import BaseModel
 from rich.text import Text
@@ -78,6 +84,8 @@ _NO_TERMINAL = (
     "`columbina run TASK` gives an agent one task without it."
 )
 
+HeardT = TypeVar("HeardT")
+
 
 class Config(BaseModel):
     """The config of the terminal interface.
@@ -117,6 +125,7 @@ class Cli:
     __slots__ = (
         "_agent",
         "_agents",
+        "_command",
         "_commands",
         "_config",
         "_ctx",
@@ -127,6 +136,7 @@ class Cli:
         "_sessions",
         "_symbols",
         "_transcript",
+        "_turning",
         "_watching",
     )
 
@@ -146,6 +156,10 @@ class Cli:
         self._watching: set[asyncio.Future[None]] = set()
         self._gone = asyncio.Event()
         self._leaving = False
+        # Whether the agent is in a turn, or about to begin one.
+        self._turning = False
+        # The command that is being carried out.
+        self._command: asyncio.Future[None] | None = None
 
     async def run(self) -> int:
         """Hold the conversation until the user leaves.
@@ -176,6 +190,7 @@ class Cli:
             log.removeHandler(shown)
             for other in others:
                 log.addHandler(other)
+            await self._drop_the_command()
             failure = await self._close()
         if failure is not None and not self._gone.is_set():
             # The agent stopped for good while the program was leaving: what was left of
@@ -223,12 +238,20 @@ class Cli:
 
         The agent is created first. If that fails, the conversation stays
         with the agent that it has, and the failure reaches the caller.
+
+        The conversation goes over as soon as the other agent is there, and
+        the agent that it had is ended after that. So nothing that the other
+        agent does goes unheard while the one before it ends. And whatever
+        happens meanwhile, the other agent is the one of the conversation: the
+        next line goes to it, and it is ended when the program leaves.
         """
         prompt = self._prompt
         assert prompt is not None
         agent = await opener(self._ctx, self._spec())
-        await self._close()
+        left = self._agent
+        self._unwatch()
         self._adopt(agent, prompt)
+        await _ended(left)
         return agent
 
     async def _converse(self, prompt: Prompt) -> int:
@@ -238,24 +261,38 @@ class Cli:
             prompt.show([fit(f"columbina: {error}", _BAD)])
             return 1
         self._greet(prompt, agent)
-        while not self._leaving:
-            agent = self._agent
-            assert agent is not None
-            typed = asyncio.ensure_future(prompt.line())
-            gone = asyncio.ensure_future(self._gone.wait())
-            try:
-                await asyncio.wait({typed, gone}, return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                gone.cancel()
-                if not typed.done():
-                    typed.cancel()
-            if self._gone.is_set():
-                return 1
-            line = typed.result()
-            if line is None:
-                break
-            await self._take(prompt, agent, line)
-        return 0
+        gone = asyncio.ensure_future(self._gone.wait())
+        typed: asyncio.Future[str | None] | None = None
+        # The lines that were submitted and are not taken yet.
+        lines: deque[str] = deque()
+        try:
+            while not self._leaving:
+                command = self._command
+                if command is None and lines:
+                    self._take(prompt, lines.popleft())
+                    continue
+                # The keys are read while a command is carried out, so that it can be stopped.
+                typed = typed or asyncio.ensure_future(prompt.line())
+                waited = {typed, gone} if command is None else {typed, gone, command}
+                await asyncio.wait(waited, return_when=asyncio.FIRST_COMPLETED)
+                if self._gone.is_set():
+                    return 1
+                if command is not None and command.done():
+                    self._command = None
+                    self._mark(prompt)
+                    # What a command let through is an error of the program, and ends it.
+                    command.result()
+                    continue
+                line, typed = typed.result(), None
+                if line is None:
+                    break
+                lines.append(line)
+            return 0
+        finally:
+            gone.cancel()
+            if typed is not None:
+                # Nobody takes a line from the prompt any more.
+                prompt.put_away()
 
     async def _first_session(self, prompt: Prompt) -> str | None:
         """Return the id of the session that the conversation begins on, if one is named."""
@@ -285,11 +322,34 @@ class Cli:
         self._agent = agent
         self._transcript = Transcript(self._symbols)
         prompt.show(recap(agent.session.events, self._symbols))
-        agent.ctx.on(SESSION_EVENT, functools.partial(self._event, agent))
-        agent.ctx.on(STREAM, self._chunk)
+        prompt.partial = self._transcript.partial
+        agent.ctx.on(SESSION_EVENT, self._heard(agent, self._event))
+        agent.ctx.on(STREAM, self._heard(agent, self._chunk))
         agent.ctx.on(APPROVAL_ASK, Responder(prompt, self._ctx.get(PERMISSIONS)))
         agent.ctx.on(REQUEST, self._with_the_model)
         prompt.on_cancel = lambda: agent.cancel("user")
+        # The agent may be in a turn already. Whoever waits for it to come to rest finds out.
+        self._turning = True
+        self._mark(prompt)
+        self._watch(prompt, agent)
+
+    def _heard(self, agent: Agent, hear: Callable[[HeardT], None]) -> Callable[[HeardT], None]:
+        """Return a listener that hears ``agent`` for as long as the conversation is with it.
+
+        The conversation may go over to another agent while this one is still
+        ending. What it writes down then is in its log, and is not shown as
+        if it were of the conversation.
+        """
+
+        def listener(heard: HeardT) -> None:
+            if agent is self._agent:
+                hear(heard)
+
+        return listener
+
+    def _mark(self, prompt: Prompt) -> None:
+        """Say at the prompt whether something is running that Escape would stop."""
+        prompt.busy = self._turning or self._command is not None
 
     def _greet(self, prompt: Prompt, agent: Agent) -> None:
         head = Text()
@@ -298,29 +358,46 @@ class Cli:
         hint = Text("/help lists the commands. Ctrl+D leaves.", style=_NOTE)
         prompt.show([head, hint, Text()])
 
-    async def _take(self, prompt: Prompt, agent: Agent, line: str) -> None:
+    def _take(self, prompt: Prompt, line: str) -> None:
         """Do with a line what its beginning and the state of the agent say.
 
-        The spaces around a line do not count, also not for whether it is a command.
+        The line goes to the agent that the conversation is with at this
+        moment. The spaces around a line do not count, also not for whether
+        it is a command.
         """
+        agent = self._agent
+        assert agent is not None
         line = line.strip()
         if not line:
             return
         if is_command(line):
-            if prompt.busy:
+            if self._turning:
                 waits = "(a command waits until the agent is at rest. Escape stops the agent.)"
                 prompt.show([Text(waits, style=_NOTE)])
                 return
-            said = await self._commands.run(agent, line)
-            if said:
-                # An empty line sets the answer apart from what comes after it.
-                prompt.show([*(fit(part) for part in said.splitlines()), Text()])
-        elif prompt.busy:
+            self._command = asyncio.ensure_future(self._carry_out(prompt, agent, line))
+            self._mark(prompt)
+        elif self._turning:
             agent.steer(line)
         else:
             agent.followup(line)
-            prompt.busy = True
+            self._turning = True
+            self._mark(prompt)
             self._watch(prompt, agent)
+
+    async def _carry_out(self, prompt: Prompt, agent: Agent, line: str) -> None:
+        """Carry out a command, and show what it says."""
+        said = await self._commands.run(agent, line)
+        if said:
+            # An empty line sets the answer apart from what comes after it.
+            prompt.show([*(fit(part) for part in said.splitlines()), Text()])
+
+    async def _drop_the_command(self) -> None:
+        """Stop the command that is being carried out, if one is: the program is leaving."""
+        command, self._command = self._command, None
+        if command is not None:
+            command.cancel()
+            await asyncio.gather(command, return_exceptions=True)
 
     def _watch(self, prompt: Prompt, agent: Agent) -> None:
         """Have somebody wait for the agent to come to rest, unless somebody does."""
@@ -329,6 +406,12 @@ class Cli:
         watching = asyncio.ensure_future(self._rest(prompt, agent))
         self._watching.add(watching)
         watching.add_done_callback(self._watching.discard)
+
+    def _unwatch(self) -> None:
+        """Have nobody wait any longer for the agent to come to rest."""
+        for watching in list(self._watching):
+            watching.cancel()
+        self._watching.clear()
 
     async def _rest(self, prompt: Prompt, agent: Agent) -> None:
         """Wait until the agent is at rest, and notice if it has stopped for good."""
@@ -340,7 +423,10 @@ class Cli:
             prompt.show([fit(f"(the agent has stopped: {error})", _BAD)])
             self._gone.set()
         finally:
-            prompt.busy = False
+            # The conversation may be with another agent by now, which has a state of its own.
+            if agent is self._agent:
+                self._turning = False
+                self._mark(prompt)
 
     async def _with_the_model(
         self, draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]
@@ -349,17 +435,20 @@ class Cli:
         config = await proceed(draft)
         return config.model_copy(update={"model": self._model.model})
 
-    def _event(self, agent: Agent, committed: Committed) -> None:
-        prompt = self._prompt
+    def _event(self, committed: Committed) -> None:
+        prompt, agent = self._prompt, self._agent
         assert prompt is not None
+        assert agent is not None
         data = committed.event.data
         if isinstance(data, TurnStartEvent):
-            prompt.busy = True
+            self._turning = True
+            self._mark(prompt)
             # A turn can begin without a line from the keys. An agent that stops for good
             # in such a turn has to be noticed as well.
             self._watch(prompt, agent)
         elif isinstance(data, TurnEndEvent):
-            prompt.busy = False
+            self._turning = False
+            self._mark(prompt)
         prompt.show(self._transcript.event(committed.event))
         prompt.partial = self._transcript.partial
 
@@ -370,27 +459,33 @@ class Cli:
         prompt.partial = self._transcript.partial
 
     async def _close(self) -> Exception | None:
-        """End what is running, properly, before the program goes.
+        """End the agent of the conversation, properly, before the program goes.
 
         Returns:
             What stopped the agent for good, if something did. That can
             happen at this very moment: the turn that is stopped here leaves
             something to be written down.
         """
-        for watching in list(self._watching):
-            watching.cancel()
-        self._watching.clear()
-        agent, self._agent = self._agent, None
-        if agent is None:
-            return None
-        if TURN.of(agent.session).in_turn:
-            agent.cancel("user")
-        await asyncio.shield(agent.close())
-        try:
-            await agent.when_idle()
-        except Exception as error:
-            return error
+        self._unwatch()
+        return await _ended(self._agent)
+
+
+async def _ended(agent: Agent | None) -> Exception | None:
+    """End an agent properly, if there is one: a turn that is running is stopped first.
+
+    Returns:
+        What stopped the agent for good, if something did.
+    """
+    if agent is None:
         return None
+    if TURN.of(agent.session).in_turn:
+        agent.cancel("user")
+    await asyncio.shield(agent.close())
+    try:
+        await agent.when_idle()
+    except Exception as error:
+        return error
+    return None
 
 
 def apply(ctx: Context, config: Config) -> None:

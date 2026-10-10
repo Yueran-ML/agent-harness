@@ -388,6 +388,70 @@ async def test_the_model_that_requests_really_go_to_is_the_one_that_counts(
     assert {request.config.model for request in harness.model.requests} == {"other"}
 
 
+async def test_the_model_of_the_step_that_is_about_to_begin_is_the_one_that_counts(
+    harness: Harness,
+) -> None:
+    # Something sends the first step of every turn to a model that takes much, and the
+    # steps after it to one that takes little.
+    await loaded(harness)
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
+    much = CallConfig(provider="scripted", model="much", context_window=100_000)
+    little = CallConfig(provider="scripted", model="little", context_window=10_000)
+    asked: list[tuple[int, int]] = []
+
+    async def by_step(draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]) -> CallConfig:
+        await proceed(draft)
+        asked.append((draft.turn, draft.step))
+        return much if draft.step == 1 else little
+
+    agent.ctx.on(REQUEST, by_step)
+
+    await turn(agent, words(9000))
+    await turn(agent, words(100))
+
+    # Nine thousand tokens are too much for the one and little for the other. The step
+    # that was about to begin was the first of its turn each time, so nothing was done.
+    assert attempts(agent) == []
+    assert set(asked) == {(1, 1), (2, 1)}
+    assert [request.config.model for request in harness.model.requests] == ["much", "much"]
+
+
+async def test_whoever_says_how_a_request_calls_its_model_is_told_which_request_it_is(
+    harness: Harness,
+) -> None:
+    # Something may send some of the requests to another model. It goes by the turn, the
+    # step and the attempt, so it is asked about the request that is about to be made.
+    service = await loaded(harness)
+    agent = await harness.agent(
+        Reply(text="One."),
+        Reply(failure=refused(16_000, 21_000, 19_000)),
+        Reply(text="They said words."),
+        Reply(text="Two."),
+    )
+    asked: list[tuple[int, int, int]] = []
+
+    async def noting(draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]) -> CallConfig:
+        asked.append((draft.turn, draft.step, draft.attempt))
+        return await proceed(draft)
+
+    agent.ctx.on(REQUEST, noting)
+
+    await turn(agent, words(6000))
+    # It is asked before the step, and then for the request itself.
+    assert asked == [(1, 1, 1), (1, 1, 1)]
+
+    del asked[:]
+    await turn(agent, words(6000))
+    # What is sent again after the model refused is the second attempt of its step.
+    assert asked == [(2, 1, 1), (2, 1, 1), (2, 1, 2), (2, 1, 2)]
+
+    del asked[:]
+    harness.model.add(Reply(text="They said less."))
+    await service.compact(agent, "manual")
+    # Between two turns, the request to come is the first of the turn that follows.
+    assert asked == [(3, 1, 1)]
+
+
 async def test_a_model_without_a_window_in_its_config_is_not_watched(
     harness: Harness, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -1090,6 +1154,65 @@ async def test_a_conversation_is_made_shorter_by_one_attempt_at_a_time(harness: 
     assert (await first).summarised == 2
     # When it is over, another can begin.
     assert (await service.compact(agent, "manual")).error is None
+
+
+async def test_two_that_ask_at_the_same_moment_are_one_attempt_and_one_refusal(
+    harness: Harness,
+) -> None:
+    # Finding out which model the next request goes to takes a moment, if a listener of
+    # requests takes one. Whoever asks second in that moment is told that it is being done.
+    service = await loaded(harness)
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."), model=MODEL)
+    await turn(agent, words(4000))
+    await turn(agent, words(4000))
+    harness.model.add(Reply(text="They said words."), Reply(text="They said words again."))
+    reached = asyncio.Event()
+    go_on = asyncio.Event()
+
+    async def slow(draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]) -> CallConfig:
+        config = await proceed(draft)
+        reached.set()
+        await go_on.wait()
+        return config
+
+    agent.ctx.on(REQUEST, slow)
+    both = [asyncio.ensure_future(service.compact(agent, "manual")) for _ in range(2)]
+    await asyncio.wait_for(reached.wait(), timeout=5)
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    go_on.set()
+    first, second = await asyncio.wait_for(asyncio.gather(*both), timeout=5)
+
+    assert (first.summarised, first.error) == (2, None)
+    assert second.error == "this conversation is being made shorter already"
+    assert not second.changed
+    assert len(sums(harness)) == 1
+    assert [why for why, _ in attempts(agent)] == ["manual"]
+
+
+async def test_an_attempt_that_could_not_begin_is_in_nobodys_way(harness: Harness) -> None:
+    service = await loaded(harness)
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."), model=MODEL)
+    await turn(agent, words(4000))
+    await turn(agent, words(4000))
+    harness.model.add(Reply(text="They said words."))
+    count = len(agent.session)
+    broken = [True]
+
+    async def once(draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]) -> CallConfig:
+        if broken.pop() if broken else False:
+            raise RuntimeError("nobody knows which model")
+        return await proceed(draft)
+
+    agent.ctx.on(REQUEST, once)
+
+    with pytest.raises(RuntimeError, match="nobody knows which model"):
+        await service.compact(agent, "manual")
+
+    # Nothing was written, and the next one that asks is not told that it is being done.
+    assert len(agent.session) == count
+    assert (await service.compact(agent, "manual")).summarised == 2
 
 
 async def test_a_start_that_an_earlier_program_left_without_an_end_is_in_nobodys_way(

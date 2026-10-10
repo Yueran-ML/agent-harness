@@ -279,7 +279,7 @@ _LOOP = (
     mutant(
         "an agent that has ended takes work to do between turns",
         LOOP,
-        '        if self._closing or self._failure is not None or self._driver.done():\n            raise AgentBusyError(f"the agent {self.id!r} has ended")\n',
+        '        if self._ending() or self._failure is not None or self._driver.done():\n            raise AgentBusyError(f"the agent {self.id!r} has ended")\n',
         "",
     ),
     mutant(
@@ -365,6 +365,18 @@ _LOOP = (
         AGENTS_SERVICE,
         "            session = self._sessions.fork(scope, spec.cwd, source, upto=upto, session_id=session_id)\n            return self._start(scope, factory, spec, session)\n        except BaseException:\n            await scope.fiber.dispose()\n            raise\n",
         "            session = self._sessions.fork(scope, spec.cwd, source, upto=upto, session_id=session_id)\n            return self._start(scope, factory, spec, session)\n        except BaseException:\n            raise\n",
+    ),
+    mutant(
+        "an agent that is ending takes work to do between turns",
+        LOOP,
+        "        if self._ending() or self._failure is not None or self._driver.done():\n            raise AgentBusyError(",
+        "        if self._closing or self._failure is not None or self._driver.done():\n            raise AgentBusyError(",
+    ),
+    mutant(
+        "an agent that is ending begins another turn",
+        LOOP,
+        "        while not self._ending() and not self._halted:\n",
+        "        while not self._closing and not self._halted:\n",
     ),
 )
 
@@ -3542,8 +3554,8 @@ _TERMINAL = (
     mutant(
         "a new line does not take back the wish to leave",
         CLI_PROMPT,
-        "        self._leaving = False\n        try:\n            return await self._session.prompt_async()\n",
-        "        try:\n            return await self._session.prompt_async()\n",
+        "        self._leaving = False\n        # A prompt stays on the screen with its line",
+        "        # A prompt stays on the screen with its line",
     ),
     mutant(
         "ctrl+d leaves from a line with text in it",
@@ -3886,6 +3898,36 @@ _TERMINAL = (
         '            self._say("(the question was withdrawn)")\n            raise\n',
         '            self._say("(the question was withdrawn)")\n            return "rejected"\n',
     ),
+    mutant(
+        "a prompt that was put away takes the one after it off the screen as well",
+        CLI_PROMPT,
+        "        self._session.app.erase_when_done = False\n",
+        "",
+    ),
+    mutant(
+        "a prompt that is put away stays on the screen",
+        CLI_PROMPT,
+        "            app.erase_when_done = True\n            app.exit(result=None)\n",
+        "            app.exit(result=None)\n",
+    ),
+    mutant(
+        "whoever waits for a line goes on waiting when the prompt is put away",
+        CLI_PROMPT,
+        "            app.erase_when_done = True\n            app.exit(result=None)\n",
+        "            app.erase_when_done = True\n",
+    ),
+    mutant(
+        "a prompt that is not there cannot be put away",
+        CLI_PROMPT,
+        "        if app.is_running and not app.is_done:\n",
+        "        if not app.is_done:\n",
+    ),
+    mutant(
+        "a prompt cannot be put away twice",
+        CLI_PROMPT,
+        "        if app.is_running and not app.is_done:\n",
+        "        if app.is_running:\n",
+    ),
 )
 
 _CLI = (
@@ -3970,20 +4012,20 @@ _CLI = (
     mutant(
         "a line that is typed while a turn runs is a task for the next turn",
         CLI_FRONTEND,
-        "        elif prompt.busy:\n            agent.steer(line)\n",
-        "        elif prompt.busy:\n            agent.followup(line)\n",
+        "        elif self._turning:\n            agent.steer(line)\n",
+        "        elif self._turning:\n            agent.followup(line)\n",
     ),
     mutant(
         "a line that is typed while the agent is at rest is said on the way",
         CLI_FRONTEND,
-        "            agent.followup(line)\n            prompt.busy = True\n",
-        "            agent.steer(line)\n            prompt.busy = True\n",
+        "            agent.followup(line)\n            self._turning = True\n",
+        "            agent.steer(line)\n            self._turning = True\n",
     ),
     mutant(
         "a command is carried out while a turn runs",
         CLI_FRONTEND,
-        "            if prompt.busy:\n                waits =",
-        "            if prompt.busy and not line:\n                waits =",
+        "            if self._turning:\n                waits =",
+        "            if self._turning and not line:\n                waits =",
     ),
     mutant(
         "a line of spaces is a task",
@@ -3994,8 +4036,8 @@ _CLI = (
     mutant(
         "a command with spaces before it goes to the model",
         CLI_FRONTEND,
-        "        if is_command(line):\n            if prompt.busy:",
-        "        if is_command(typed):\n            if prompt.busy:",
+        "        if is_command(line):\n            if self._turning:",
+        "        if is_command(typed):\n            if self._turning:",
         (
             "        line = line.strip()\n        if not line:\n            return\n",
             "        typed, line = line, line.strip()\n        if not line:\n            return\n",
@@ -4004,20 +4046,20 @@ _CLI = (
     mutant(
         "the answer of a command is not shown",
         CLI_FRONTEND,
-        "            if said:\n                # An empty line sets the answer apart from what comes after it.\n",
-        "            if not said:\n                # An empty line sets the answer apart from what comes after it.\n",
+        "        if said:\n            # An empty line sets the answer apart from what comes after it.\n",
+        "        if not said:\n            # An empty line sets the answer apart from what comes after it.\n",
     ),
     mutant(
         "the answer of a command has no empty line after it",
         CLI_FRONTEND,
-        "                prompt.show([*(fit(part) for part in said.splitlines()), Text()])\n",
-        "                prompt.show([fit(part) for part in said.splitlines()])\n",
+        "            prompt.show([*(fit(part) for part in said.splitlines()), Text()])\n",
+        "            prompt.show([fit(part) for part in said.splitlines()])\n",
     ),
     mutant(
         "a command that has nothing to say leaves an empty line",
         CLI_FRONTEND,
-        "            if said:\n                # An empty line sets the answer apart from what comes after it.\n",
-        "            if True:\n                # An empty line sets the answer apart from what comes after it.\n",
+        "        if said:\n            # An empty line sets the answer apart from what comes after it.\n",
+        "        if True:\n            # An empty line sets the answer apart from what comes after it.\n",
     ),
     mutant(
         "escape does not stop the turn of the agent",
@@ -4064,20 +4106,24 @@ _CLI = (
     mutant(
         "the agent that a conversation leaves is not closed",
         CLI_FRONTEND,
-        "        agent = await opener(self._ctx, self._spec())\n        await self._close()\n",
-        "        agent = await opener(self._ctx, self._spec())\n",
+        "        self._adopt(agent, prompt)\n        await _ended(left)\n",
+        "        self._adopt(agent, prompt)\n",
     ),
     mutant(
         "the agent of a conversation is closed before the one that it is to go over to is there",
         CLI_FRONTEND,
-        "        agent = await opener(self._ctx, self._spec())\n        await self._close()\n",
-        "        await self._close()\n        agent = await opener(self._ctx, self._spec())\n",
+        "        agent = await opener(self._ctx, self._spec())\n        left = self._agent\n",
+        "        left = self._agent\n        await _ended(left)\n        agent = await opener(self._ctx, self._spec())\n",
+        (
+            "        self._adopt(agent, prompt)\n        await _ended(left)\n",
+            "        self._adopt(agent, prompt)\n",
+        ),
     ),
     mutant(
         "a conversation does not go over to the agent that was created for it",
         CLI_FRONTEND,
-        "        self._adopt(agent, prompt)\n        return agent\n\n    async def _converse",
-        "        return agent\n\n    async def _converse",
+        "        self._unwatch()\n        self._adopt(agent, prompt)\n        await _ended(left)\n",
+        "        self._unwatch()\n        await _ended(left)\n",
     ),
     mutant(
         "the terminal does not offer to go over to another agent",
@@ -4148,20 +4194,20 @@ _CLI = (
     mutant(
         "the agent is left open when the user leaves",
         CLI_FRONTEND,
-        "        await asyncio.shield(agent.close())\n",
-        "        pass\n",
+        "    await asyncio.shield(agent.close())\n",
+        "    pass\n",
     ),
     mutant(
         "the conversation goes on although the agent has stopped for good",
         CLI_FRONTEND,
-        "            if self._gone.is_set():\n                return 1\n",
-        "            if self._gone.is_set():\n                self._gone.clear()\n",
+        "                if self._gone.is_set():\n                    return 1\n",
+        "                if self._gone.is_set():\n                    self._gone.clear()\n",
     ),
     mutant(
         "an agent that has stopped for good is taken for a user who left",
         CLI_FRONTEND,
-        "            if self._gone.is_set():\n                return 1\n",
-        "            if self._gone.is_set():\n                return 0\n",
+        "                if self._gone.is_set():\n                    return 1\n",
+        "                if self._gone.is_set():\n                    return 0\n",
     ),
     mutant(
         "nothing says that the agent has stopped",
@@ -4256,8 +4302,8 @@ _CLI = (
     mutant(
         "what stopped the agent while it was closed is not looked for",
         CLI_FRONTEND,
-        "        except Exception as error:\n            return error\n        return None\n",
-        "        except Exception:\n            return None\n        return None\n",
+        "    except Exception as error:\n        return error\n    return None\n",
+        "    except Exception:\n        return None\n    return None\n",
     ),
     mutant(
         "an agent that stopped for good is told of a second time when it is closed",
@@ -4286,7 +4332,7 @@ _CLI = (
     mutant(
         "a turn that begins by itself is not known to be running",
         CLI_FRONTEND,
-        "        if isinstance(data, TurnStartEvent):\n            prompt.busy = True\n",
+        "        if isinstance(data, TurnStartEvent):\n            self._turning = True\n",
         "        if isinstance(data, TurnStartEvent):\n            pass\n",
     ),
     mutant(
@@ -4307,6 +4353,102 @@ _CLI = (
         '    sent, about = (_last_sent(session), "") if meter is None else (_held(session, meter), "~")\n',
         '    sent, about = (_last_sent(session), "~") if meter is None else (_held(session, meter), "~")\n',
     ),
+    mutant(
+        "the conversation goes over only when the agent before it has ended",
+        CLI_FRONTEND,
+        "        self._unwatch()\n        self._adopt(agent, prompt)\n        await _ended(left)\n",
+        "        self._unwatch()\n        await _ended(left)\n        self._adopt(agent, prompt)\n",
+    ),
+    mutant(
+        "whoever waited for the agent before goes on waiting when the conversation has left it",
+        CLI_FRONTEND,
+        "        left = self._agent\n        self._unwatch()\n",
+        "        left = self._agent\n",
+    ),
+    mutant(
+        "what an agent does after the conversation left it is taken for the conversation's",
+        CLI_FRONTEND,
+        "            if agent is self._agent:\n                hear(heard)\n",
+        "            if True:\n                hear(heard)\n",
+    ),
+    mutant(
+        "half a line of the agent before stays above the prompt",
+        CLI_FRONTEND,
+        "        prompt.partial = self._transcript.partial\n        agent.ctx.on(SESSION_EVENT",
+        "        agent.ctx.on(SESSION_EVENT",
+    ),
+    mutant(
+        "an agent that is in a turn when the conversation goes over to it is taken to be at rest",
+        CLI_FRONTEND,
+        "        self._turning = True\n        self._mark(prompt)\n        self._watch(prompt, agent)\n\n    def _heard",
+        "        self._turning = False\n        self._mark(prompt)\n        self._watch(prompt, agent)\n\n    def _heard",
+    ),
+    mutant(
+        "nobody waits for the agent of a conversation to come to rest until it begins a turn",
+        CLI_FRONTEND,
+        "        self._mark(prompt)\n        self._watch(prompt, agent)\n\n    def _heard",
+        "        self._mark(prompt)\n\n    def _heard",
+    ),
+    mutant(
+        "an agent that the conversation has left says when the conversation is at rest",
+        CLI_FRONTEND,
+        "            if agent is self._agent:\n                self._turning = False\n",
+        "            if True:\n                self._turning = False\n",
+    ),
+    mutant(
+        "escape does not stop what a command has the agent do",
+        CLI_FRONTEND,
+        "        prompt.busy = self._turning or self._command is not None\n",
+        "        prompt.busy = self._turning\n",
+    ),
+    mutant(
+        "the prompt does not say that a command is being carried out when it begins",
+        CLI_FRONTEND,
+        "            self._command = asyncio.ensure_future(self._carry_out(prompt, agent, line))\n            self._mark(prompt)\n",
+        "            self._command = asyncio.ensure_future(self._carry_out(prompt, agent, line))\n",
+    ),
+    mutant(
+        "the prompt goes on saying that a command is carried out when it is over",
+        CLI_FRONTEND,
+        "                    self._command = None\n                    self._mark(prompt)\n",
+        "                    self._command = None\n",
+    ),
+    mutant(
+        "a line that is submitted while a command is carried out is taken at once",
+        CLI_FRONTEND,
+        "                if command is None and lines:\n",
+        "                if lines:\n",
+    ),
+    mutant(
+        "a command that is over is noticed only when a line is submitted",
+        CLI_FRONTEND,
+        "                waited = {typed, gone} if command is None else {typed, gone, command}\n",
+        "                waited = {typed, gone}\n",
+    ),
+    mutant(
+        "what a command let through is lost",
+        CLI_FRONTEND,
+        "                    command.result()\n",
+        "",
+    ),
+    mutant(
+        "a command that is being carried out is left to itself when the program leaves",
+        CLI_FRONTEND,
+        "            await self._drop_the_command()\n",
+        "",
+    ),
+    mutant(
+        "a command is waited for and not stopped when the program leaves",
+        CLI_FRONTEND,
+        "            command.cancel()\n            await asyncio.gather(command, return_exceptions=True)\n",
+        "            await asyncio.gather(command, return_exceptions=True)\n",
+    ),
+    mutant(
+        "the prompt stays on the screen when the conversation is over",
+        CLI_FRONTEND,
+        "                prompt.put_away()\n",
+        "                pass\n",
+    ),
 )
 
 _SLASH = (
@@ -4319,8 +4461,8 @@ _SLASH = (
     mutant(
         "what follows the name of a command keeps the spaces around it",
         SLASH,
-        "            return await command.run(agent, rest.strip())\n",
-        "            return await command.run(agent, rest)\n",
+        "                command.run(agent, rest.strip()), what=",
+        "                command.run(agent, rest), what=",
     ),
     mutant(
         "the name of a command ends at its last space and not at its first",
@@ -4591,6 +4733,24 @@ _SLASH = (
         COMMAND_FORK,
         "            return await agents.fork(scope, spec, session)\n",
         "            return await agents.create(scope, spec)\n",
+    ),
+    mutant(
+        "a command whose work was stopped stops whoever carries it out",
+        SLASH,
+        '            return await cancellation.guard(\n                command.run(agent, rest.strip()), what=f"the command {called}"\n            )\n',
+        "            return await command.run(agent, rest.strip())\n",
+    ),
+    mutant(
+        "a command whose work was stopped is told as one that failed",
+        SLASH,
+        '        except cancellation.CancelledFromInside:\n            return f"The command {called} was stopped."\n',
+        "",
+    ),
+    mutant(
+        "a command that was stopped is named with the capitals it was typed in",
+        SLASH,
+        '        called = f"{_MARK}{named.lower()}"\n',
+        '        called = f"{_MARK}{named}"\n',
     ),
 )
 
@@ -5894,6 +6054,18 @@ _STORED_SESSIONS = (
         "    if _KNOW_THE_LOG[0] not in [entry.id for entry in entries]:\n",
         "    if False:\n",
     ),
+    mutant(
+        "an entry that is called session and stores none is taken at its word",
+        LAUNCHER,
+        "        if root.get(SESSIONS) is None:\n            # What an entry is called",
+        "        if False:\n            # What an entry is called",
+    ),
+    mutant(
+        "a profile that stores no sessions is told as a success",
+        LAUNCHER,
+        '                "there are none to look at"\n            )\n            return 2\n',
+        '                "there are none to look at"\n            )\n            return 0\n',
+    ),
 )
 
 _TODO = (
@@ -5906,13 +6078,13 @@ _TODO = (
     mutant(
         "a new list is added to the old one",
         TODO,
-        "        return Todos(items=data.items, call_id=data.call_id)\n",
-        "        return Todos(items=(*state.items, *data.items), call_id=data.call_id)\n",
+        "        return Todos(items=data.items, written_at=event.seq)\n",
+        "        return Todos(items=(*state.items, *data.items), written_at=event.seq)\n",
     ),
     mutant(
-        "a list forgets which call wrote it",
+        "a list forgets where it was written",
         TODO,
-        "        return Todos(items=data.items, call_id=data.call_id)\n",
+        "        return Todos(items=data.items, written_at=event.seq)\n",
         "        return Todos(items=data.items)\n",
     ),
     mutant(
@@ -6032,20 +6204,20 @@ _TODO = (
     mutant(
         "a model is told its list although it sees the call that wrote it",
         TODO,
-        "    if not todos.items or todos.call_id is None or _seen(session, todos.call_id):\n",
-        "    if not todos.items or todos.call_id is None:\n",
+        "    if not todos.items or todos.written_at is None or _seen(session, todos.written_at):\n",
+        "    if not todos.items or todos.written_at is None:\n",
     ),
     mutant(
         "a list that was emptied is told again",
         TODO,
-        "    if not todos.items or todos.call_id is None or _seen(session, todos.call_id):\n",
-        "    if todos.call_id is None or _seen(session, todos.call_id):\n",
+        "    if not todos.items or todos.written_at is None or _seen(session, todos.written_at):\n",
+        "    if todos.written_at is None or _seen(session, todos.written_at):\n",
     ),
     mutant(
-        "the result of any call passes for the call that wrote the list",
+        "the reply that came last passes for the one that wrote the list",
         TODO,
-        "isinstance(data := events[seq].data, ToolResultEvent) and data.message.call_id == call_id",
-        "isinstance(events[seq].data, ToolResultEvent)",
+        "        for seq in range(written_at - 1, -1, -1)\n",
+        "        for seq in range(len(events) - 1, -1, -1)\n",
     ),
     mutant(
         "the list that is told again lacks its things",
@@ -6082,6 +6254,12 @@ _TODO = (
         COMMAND_TODOS,
         '    return "\\n".join(shown(items)) if items else _NOTHING\n',
         "    return _NOTHING\n",
+    ),
+    mutant(
+        "a list whose call the model no longer sees is not told again",
+        TODO,
+        "    return reply in session.surface\n",
+        "    return True\n",
     ),
 )
 
@@ -6563,13 +6741,13 @@ _COMPACTION = (
     mutant(
         "a conversation is made shorter for a step that does not begin",
         BASIC,
-        "        if isinstance(decision, Enter) and await self._pressed(info.agent):\n",
-        "        if await self._pressed(info.agent):\n",
+        "        if isinstance(decision, Enter) and await self._pressed(info.agent, coming):\n",
+        "        if await self._pressed(info.agent, coming):\n",
     ),
     mutant(
         "a conversation is made shorter before every step",
         BASIC,
-        "        if isinstance(decision, Enter) and await self._pressed(info.agent):\n",
+        "        if isinstance(decision, Enter) and await self._pressed(info.agent, coming):\n",
         "        if isinstance(decision, Enter):\n",
     ),
     mutant(
@@ -6647,8 +6825,8 @@ _COMPACTION = (
     mutant(
         "an attempt that has ended is still under way",
         BASIC,
-        "        self._running.discard(session)\n",
-        "        pass\n",
+        '        """Write down how an attempt ended, and keep count of the ones that failed."""\n        self._running.discard(session)\n',
+        '        """Write down how an attempt ended, and keep count of the ones that failed."""\n',
     ),
     mutant(
         "cutting old results is never enough by itself",
@@ -6841,6 +7019,36 @@ _COMPACTION = (
         PROJECTION,
         "    if isinstance(data, (AssistantMessageEvent, AssistantAttemptEvent, AsideEvent)):\n",
         "    if isinstance(data, (AssistantMessageEvent, AssistantAttemptEvent)):\n",
+    ),
+    mutant(
+        "the step before the one that is about to begin says which model counts",
+        BASIC,
+        "        coming = (info.turn, info.step, 1)\n",
+        "        coming = (info.turn, info.step - 1, 1)\n",
+    ),
+    mutant(
+        "the request that is made again after a refusal is taken for the one that was refused",
+        BASIC,
+        "        coming = (failed.turn, failed.step, failed.attempt + 1)\n",
+        "        coming = (failed.turn, failed.step, failed.attempt)\n",
+    ),
+    mutant(
+        "between two turns the request to come is taken for one of the turn before",
+        BASIC,
+        "        turn, step, attempt = coming or (TURN.of(agent.session).turn + 1, 1, 1)\n",
+        "        turn, step, attempt = coming or (TURN.of(agent.session).turn, 1, 1)\n",
+    ),
+    mutant(
+        "two that ask at the same moment both begin",
+        BASIC,
+        "        self._running.add(session)\n        config = self._config\n        try:\n            model = await self._model(agent, coming)\n",
+        "        config = self._config\n        try:\n            model = await self._model(agent, coming)\n            self._running.add(session)\n",
+    ),
+    mutant(
+        "an attempt that could not begin stays in the way",
+        BASIC,
+        "            # It has not begun. Whoever asks next finds nothing in the way.\n            self._running.discard(session)\n",
+        "            # It has not begun. Whoever asks next finds nothing in the way.\n",
     ),
 )
 

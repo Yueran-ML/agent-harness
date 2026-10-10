@@ -50,6 +50,10 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/columbina"]
 
+# The pictures of the README are no part of the software, and its license does not cover them.
+[tool.hatch.build.targets.sdist]
+exclude = ["/docs/assets"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"

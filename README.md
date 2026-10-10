@@ -1,20 +1,98 @@
-# Columbina
+<p align="center">
+  <img src="docs/assets/columbina-wings.png" width="100%"
+       alt="A winged figure floats before a full moon, above ruins that stand in still water.">
+</p>
+<p align="center">
+  <sub>Fan art, made with an AI image generator. <a href="#the-name-and-the-pictures">About the pictures</a></sub>
+</p>
 
-Columbina is a plugin-based agent harness written in Python. Every capability is a plugin:
-the model adapter, the tool registry, the session log, and the agent loop itself.
+<h1 align="center">Columbina</h1>
 
-**Status:** early development. `columbina` holds a conversation with an agent at the
-terminal, and `columbina run` gives it one task and prints the answer. The agent talks to
-a model over the OpenAI Chat Completions protocol. It reads, searches and changes the
-files of its working directory and runs commands, and what a call may do is decided
-before it runs. A conversation that outgrows its model is made shorter by itself, and a
-session can be taken up again after the program was killed.
+<p align="center">
+  <strong>A plugin-based agent harness, written from scratch in Python.</strong><br>
+  <sub>用 Python 从零写起的插件化 Agent harness</sub>
+</p>
 
-Columbina 是一个用 Python 写的插件化 Agent harness。模型适配、工具注册、会话日志和 Agent
-循环都是插件。项目处于早期开发阶段。`columbina` 在终端里和 Agent 对话，`columbina run`
-把一个任务交给它并打印回答。Agent 在工作目录里读文件、搜索、改文件、执行命令，每次调用能做
-什么在执行之前判定。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。
-模型走 OpenAI Chat Completions 协议，默认接 DeepSeek。
+<p align="center">
+  <a href="https://github.com/Yueran-ML/agent-harness/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Yueran-ML/agent-harness/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Python 3.11 and 3.12" src="https://img.shields.io/badge/python-3.11%20%7C%203.12-8b7fd6?labelColor=1b1b2f&logo=python&logoColor=white">
+  <img alt="Coverage: 100%" src="https://img.shields.io/badge/coverage-100%25-8b7fd6?labelColor=1b1b2f">
+  <img alt="Types: pyright, strict" src="https://img.shields.io/badge/types-pyright%20strict-8b7fd6?labelColor=1b1b2f">
+  <img alt="Lint: ruff" src="https://img.shields.io/badge/lint-ruff-8b7fd6?labelColor=1b1b2f">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-8b7fd6?labelColor=1b1b2f">
+</p>
+
+<p align="center">
+  <a href="#getting-started">Getting started</a> ·
+  <a href="#a-conversation-at-the-terminal">The terminal</a> ·
+  <a href="#a-long-conversation">Long conversations</a> ·
+  <a href="#running-a-task">One task</a> ·
+  <a href="#changing-files-and-running-commands">Permissions</a> ·
+  <a href="#how-it-is-built">Architecture</a> ·
+  <a href="#where-it-stands">Roadmap</a>
+</p>
+
+Columbina runs an agent against a language model and lets it work in a directory of
+yours. The agent reads, searches and changes files and runs commands, and what a call may
+do is decided before it runs. Everything that Columbina is made of is a plugin of a small
+asyncio kernel: the model adapter, the tool registry, the session log, and the agent loop
+itself.
+
+It was written from scratch, with three existing harnesses as its reference: DeepSeek
+Harness for the kernel and the loop, and Codex and Claude Code where they do something
+better. What was taken from which is written down in [`docs/research`](docs/research) and
+in the [design document](docs/plans/2026-10-09-columbina-design.md).
+
+**Status:** early development, in the sixth of ten stages. `columbina` holds a
+conversation with an agent at the terminal, and `columbina run` gives it one task and
+prints the answer. The agent talks to a model over the OpenAI Chat Completions protocol,
+DeepSeek by default. A conversation that outgrows its model is made shorter by itself,
+and a session can be taken up again after the program was killed.
+
+> **中文简介**　Columbina 是一个用 Python 从零写起的插件化 Agent harness。模型适配、工具注册、会话日志和 Agent 循环都是一个小型 asyncio 内核上的插件。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 在工作目录里读文件、搜索、改文件、执行命令，每次调用能做什么在执行之前判定。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。模型走 OpenAI Chat Completions 协议，默认接 DeepSeek。项目处于早期开发阶段，十个阶段做到第六个。
+
+## What is there
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <b>Plugins all the way down</b><br>
+      The model adapter, the tools, the session log and the agent loop are plugins of a
+      small asyncio kernel. An application is a few layers of YAML that name them.
+    </td>
+    <td width="50%" valign="top">
+      <b>One log, and nothing beside it</b><br>
+      A session is one file of events that are only ever appended, and every request is
+      derived from it. So a session can be taken up after a crash, copied, played again
+      and looked at.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <b>Tools behind checks</b><br>
+      Six tools read, search and change files and run commands. Rules, a mode of the
+      sandbox and a question at the prompt decide about a call before it runs.
+    </td>
+    <td valign="top">
+      <b>Conversations that outgrow the model</b><br>
+      The size of a conversation is estimated as it grows. A result that is too large
+      goes to a file, and the oldest part is summed up when the window fills.
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <b>A terminal that can be talked into</b><br>
+      One prompt stays open. What is typed while a turn runs reaches the model at its
+      next step, and Esc stops the turn.
+    </td>
+    <td valign="top">
+      <b>Tested from several sides</b><br>
+      A scripted model, real runs that were recorded and are played again, random tasks
+      and cancellations, a terminal that is emulated, and faults that are put into the
+      code on purpose.
+    </td>
+  </tr>
+</table>
 
 ## Getting started
 
@@ -281,6 +359,28 @@ directory. A link in the place of such a file is not followed.
 
 ## How it is built
 
+```mermaid
+flowchart TB
+    user(["A person at the terminal, or one task from the command line"])
+    agent["Agent loop<br/>turns and steps"]
+    model["Model access<br/>OpenAI Chat, a script, a replay"]
+    tools["Tool pipeline<br/>check, guards, approval,<br/>the call, check of the result"]
+    log[("Session log<br/>events, only ever appended")]
+    state["Inbox, todo list, usage"]
+    front["Frontends<br/>the terminal, lines of JSON"]
+
+    user -- "task, steer, context, cancel" --> agent
+    agent <-- "request,<br/>streamed reply" --> model
+    agent <-- "calls,<br/>results" --> tools
+    agent <-- "events,<br/>the view of them" --> log
+    log --> state
+    log --> front
+```
+
+Each box is one plugin of the kernel or several. So is what the drawing leaves out: the
+rules of permission, the mode of the sandbox, retries, the estimate of tokens, the
+shortening of a conversation, the list of things to do.
+
 - **The session log is the only source of truth.** Whatever the model is sent has been
   written to the log first, and every request is derived from the log. A log that
   stops in the middle of a turn is closed when the session is resumed, so that every
@@ -370,6 +470,16 @@ asyncio.run(main())
 
 ## Development
 
+What the checks come to at the moment:
+
+| Check | What it comes to |
+|---|---|
+| Tests | more than 5,500 |
+| Coverage | 100% of lines and of branches, in more than 10,000 statements |
+| Mutants | more than 1,600 small faults, written by hand, each to be noticed by a test |
+| Static checks | `ruff`, and `pyright` in strict mode, for Windows and for Linux |
+| Platforms | CI runs the tests and the static checks on Windows, Linux and macOS, with Python 3.11 and 3.12 |
+
 ```bash
 uv sync
 uv run ruff check .
@@ -409,6 +519,59 @@ uv run python tests/mutation/mutate.py loop   # put faults into the code and see
 
 Design notes live in `docs/plans/`.
 
+## Where it stands
+
+The work goes in ten stages, and each one ends with something that can be shown.
+
+| | Stage | What it brings |
+|:-:|---|---|
+| 🌕 | 1 | The repository, the toolchain, the kernel |
+| 🌕 | 2 | The session log, model access, the tool pipeline, the agent loop, running one task |
+| 🌕 | 3 | Tools for files and commands, permissions and approval, the system prompt, instruction files |
+| 🌕 | 4 | The terminal interface |
+| 🌕 | 5 | Long conversations: estimates, shortening, taking a session up again, copies |
+| 🌓 | 6 | Skills, hooks, subagents, MCP |
+| 🌑 | 7 | A sandbox in a container for the commands that the agent runs |
+| 🌑 | 8 | Benchmarks, and a table of what local models can do |
+| 🌑 | 9 | A package on PyPI, documentation, an engineering report |
+| 🌑 | 10 | A JSON-RPC service, and a desktop app on top of it |
+
+🌕 done  ·  🌓 under way  ·  🌑 to come
+
+Of the sixth stage, skills and hooks are built and tested. They join the default
+profile when the stage is closed, together with subagents and MCP. The protocol that the
+desktop app will speak is written down already, in [`docs/protocol`](docs/protocol).
+
+## The name and the pictures
+
+The project is named after Columbina, a character of *Genshin Impact*. The pictures show
+her as a fan sees her. The author made them with an AI image generator, ChatGPT, and they
+are not official artwork. Each file is kept as the generator wrote it, with the Content
+Credentials that say how it was made.
+
+<p align="center">
+  <img src="docs/assets/columbina-ruins.png" width="100%"
+       alt="The same figure sits among ruins by the water, with a small light between her hands.">
+</p>
+
+<details>
+<summary>A storyboard</summary>
+<br>
+<p align="center">
+  <img src="docs/assets/columbina-storyboard.png" width="100%"
+       alt="Twelve small scenes of the same figure, with the name Columbina and a mark for it.">
+</p>
+
+The words in this picture belong to the picture. They are no list of what the program
+does.
+
+</details>
+
+*Genshin Impact* and its characters belong to HoYoverse (miHoYo). This project is the work
+of a fan. It is not affiliated with HoYoverse and not endorsed by it. The pictures are not
+part of the software, and the license below does not cover them. See
+[`docs/assets`](docs/assets/README.md).
+
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT, for the code and the documents. See [LICENSE](LICENSE).

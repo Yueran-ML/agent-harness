@@ -329,6 +329,18 @@ _LOOP = (
         "            self._turn_task = None\n            # However it ended, nobody is left waiting for it.\n            work.done.cancel()\n",
         "            self._turn_task = None\n",
     ),
+    mutant(
+        "work that fails ends the agent if whoever asked has stopped waiting",
+        LOOP,
+        "            if not work.done.done():\n                work.done.set_exception(error)\n",
+        "            if True:\n                work.done.set_exception(error)\n",
+    ),
+    mutant(
+        "a driver that is told to stop goes on after the work that it was doing",
+        LOOP,
+        "            # Either the driver is being cancelled, or only the work was stopped.\n            if cancellation.requested_since(before):\n",
+        "            # Either the driver is being cancelled, or only the work was stopped.\n            if False:\n",
+    ),
 )
 
 _READ = (

@@ -245,6 +245,22 @@ async def test_work_is_not_left_waiting_if_the_driver_of_the_agent_is_stopped(
     await idle(agent)
 
 
+async def test_work_that_is_under_way_ends_with_the_driver_of_the_agent(harness: Harness) -> None:
+    agent = await harness.agent()
+    work = Work()
+    waiting = await begun(work, agent.run_maintenance(work))
+    driver: asyncio.Task[None] = getattr(agent, "_driver")  # noqa: B009
+
+    driver.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await soon(waiting)
+    assert work.told == ["the work begins"]
+    await idle(agent)
+    # The driver was told to stop, and it did: it does not go on to the next thing.
+    assert driver.cancelled()
+
+
 async def test_whoever_asked_may_stop_waiting_and_the_work_goes_on(harness: Harness) -> None:
     agent = await harness.agent()
     work = Work()
@@ -258,6 +274,26 @@ async def test_whoever_asked_may_stop_waiting_and_the_work_goes_on(harness: Harn
     await idle(agent)
     assert work.told == ["the work begins", "the work ends"]
     assert await soon(agent.run_maintenance(at_once)) == "done"
+
+
+async def test_work_that_fails_after_whoever_asked_stopped_waiting_harms_nobody(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="One."))
+    work = Work(result=RuntimeError("the broom broke"))
+    waiting = await begun(work, agent.run_maintenance(work))
+
+    waiting.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await soon(waiting)
+    work.let_go.set()
+
+    await idle(agent)
+    assert work.told == ["the work begins", "the work ends"]
+    # Nobody is there to be told. The agent goes on as after any other work.
+    agent.followup("Go.")
+    await idle(agent)
+    assert agent.session.messages[-1] == assistant("One.")
 
 
 async def test_any_agent_can_be_asked(harness: Harness) -> None:

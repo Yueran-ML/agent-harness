@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from columbina import process, shells
+from columbina import process
 from columbina.hooks.config import Hook
 from columbina.hooks.run import (
     MAX_COMMAND,
@@ -20,6 +20,7 @@ from columbina.hooks.run import (
     read,
     run,
 )
+from support.hooks import SHELL, needs_shell, python_hook
 
 NO_REASON = "A hook stopped this and gave no reason."
 LIMIT = 10_000
@@ -372,22 +373,6 @@ def test_what_several_hooks_add_and_say_is_put_together_in_their_order() -> None
 # With a real command
 
 
-SHELL = shells.find()
-needs_shell = pytest.mark.skipif(SHELL is None, reason="the shell of this system is not installed")
-
-
-def quoted(text: str | Path) -> str:
-    return "'" + str(text).replace("'", "''" if sys.platform == "win32" else "'\\''") + "'"
-
-
-def python_hook(place: Path, body: str) -> str:
-    """Write a program, and return the command that runs it as a hook."""
-    script = place / "hook.py"
-    script.write_text(body, encoding="utf-8")
-    call = "& " if sys.platform == "win32" else ""
-    return f"{call}{quoted(sys.executable)} {quoted(script)}"
-
-
 async def ran(command: str, place: Path, event: str = "PreToolUse", **more: Any) -> Result:
     assert SHELL is not None
     hook = Hook(command, more.pop("timeout", 30.0))
@@ -413,7 +398,10 @@ async def test_a_hook_reads_what_it_is_told_and_finds_the_project(
         "        'columbina': os.environ.get('COLUMBINA_PROJECT_DIR'),\n"
         "        'key': os.environ.get('MY_API_KEY'),\n"
         "        'plain': os.environ.get('COLUMBINA_TEST_PLAIN')}\n"
-        "open('seen.json', 'w', encoding='utf-8').write(json.dumps(seen))\n",
+        # Beside the program, wherever it runs: a hook that runs in the wrong directory
+        # is to be found out, and is not to leave a file there.
+        "beside = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'seen.json')\n"
+        "open(beside, 'w', encoding='utf-8').write(json.dumps(seen))\n",
     )
 
     result = await ran(command, tmp_path, told={"prompt": "把月亮画出来 naïve"}, project=project)

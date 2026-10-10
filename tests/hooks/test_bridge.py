@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 import columbina.agent
 import columbina.agent_loop
@@ -790,7 +790,8 @@ async def test_the_hooks_of_a_project_run_only_once_its_file_is_trusted(
     assert [command for _, command, _ in ran.calls] == ["of-the-user", "of-the-user"]
     assert logged(caplog) == [
         f"the hooks of this project are not run: the file {project_file(harness)} is not "
-        "trusted as it is now. Look at what it would run, and trust it with: columbina hooks trust"
+        "trusted as it is now. 'columbina hooks list' shows what it would run, and "
+        "'columbina hooks trust' trusts it"
     ]
 
     # The user looks at the file and says that it may run. Its hooks come after their own.
@@ -804,6 +805,72 @@ async def test_the_hooks_of_a_project_run_only_once_its_file_is_trusted(
     await turn(agent)
 
     assert [command for _, command, _ in ran.calls][4:] == ["of-the-user"]
+
+
+async def test_a_file_of_a_project_that_would_run_nothing_needs_no_trust_and_no_word(
+    harness: Harness, tmp_path: Path, ran: Ran, caplog: pytest.LogCaptureFixture
+) -> None:
+    # One kind of hook that is not run here, and no command at all.
+    held = {"Stop": [{"hooks": [{"type": "prompt", "prompt": "Is it done?"}]}]}
+    hooks_file(project_file(harness), held)
+    agent = await working(harness, tmp_path, {}, trust_file=tmp_path / "home" / "trusted.json")
+
+    await turn(agent)
+
+    assert ran.calls == []
+    assert logged(caplog) == []
+
+
+async def test_what_was_passed_over_in_the_file_of_a_project_is_said_once_it_is_trusted(
+    harness: Harness, tmp_path: Path, ran: Ran, caplog: pytest.LogCaptureFixture
+) -> None:
+    record = tmp_path / "home" / "trusted-hooks.json"
+    held = {
+        "Stop": [{"hooks": [{"type": "prompt", "prompt": "Is it done?"}]}],
+        **at("UserPromptSubmit", "of-the-project"),
+    }
+    content = hooks_file(project_file(harness), held)
+    agent = await working(
+        harness, tmp_path, {}, Reply(text="One."), Reply(text="Two."), trust_file=record
+    )
+
+    await turn(agent)
+
+    # What is wrong in a file that does not count is the business of whoever wrote it.
+    assert len(logged(caplog)) == 1
+    assert logged(caplog)[0].startswith("the hooks of this project are not run: ")
+
+    record.write_bytes(trust(None, project_file(harness), content))
+    await turn(agent)
+
+    assert [command for _, command, _ in ran.calls] == ["of-the-project"]
+    assert logged(caplog)[1:] == [
+        f"in the hook file {project_file(harness)}: Stop, group 1, hook 1 is of the type "
+        '"prompt". Only hooks of the type "command" are run, and this one is passed over'
+    ]
+
+
+async def test_a_file_of_a_project_that_cannot_be_used_is_said_whoever_trusts_it(
+    harness: Harness, tmp_path: Path, ran: Ran, caplog: pytest.LogCaptureFixture
+) -> None:
+    project_file(harness).parent.mkdir(parents=True)
+    project_file(harness).write_bytes(b"not json")
+    agent = await working(harness, tmp_path, at("UserPromptSubmit", "of-the-user"))
+
+    await turn(agent)
+
+    # Nobody can trust such a file, so nobody is told to.
+    assert [command for _, command, _ in ran.calls] == ["of-the-user"]
+    (said,) = logged(caplog)
+    assert said.startswith(f"the hook file {project_file(harness)} is not used: it is not JSON")
+
+
+@pytest.mark.parametrize("which", ["user_file", "trust_file"])
+def test_the_files_of_the_hooks_are_given_by_their_whole_paths(which: str) -> None:
+    with pytest.raises(ValidationError, match=r"hooks\.json does not begin at a root"):
+        columbina.hooks.Config.model_validate({which: "hooks.json"})
+
+    assert getattr(columbina.hooks.Config.model_validate({which: None}), which) is None
 
 
 async def test_the_hook_file_of_a_project_can_be_left_unread(

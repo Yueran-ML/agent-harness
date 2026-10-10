@@ -4,6 +4,8 @@
 gives an agent one task. Without a command the first is meant, so
 ``columbina --continue`` is ``columbina chat --continue``. ``columbina sessions``
 lists, shows and copies the sessions that are stored, without a conversation.
+``columbina hooks`` lists the hooks of a directory, and trusts those of its
+project or takes that trust back.
 
 Either way the program is built from layers, which are lists of plugin
 entries: first the profile, then the patch of the user, then the patches named
@@ -17,6 +19,11 @@ stays as the layers before it have it.
 the ones called ``session`` and ``agent``: they know what a log holds. So the
 sessions that it finds are the ones that the profile stores, and no model is
 needed to look at them.
+
+``columbina hooks`` builds the same layers and loads none of their entries.
+It reads the config of the one that has the hooks run, so the files that it
+shows and the record that it writes are the ones that a session of the
+profile goes by.
 
 What the agent may do is the business of the entry called ``permissions``:
 ``--permission`` names its preset, and each ``--allow`` adds a rule to the
@@ -35,12 +42,24 @@ from pathlib import Path
 from typing import Any, NoReturn, cast, get_args
 
 import yaml
+from pydantic import ValidationError
 
 import columbina
 from columbina.apps import FRONTEND
+from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
 from columbina.apps.terminal_text import harmless
-from columbina.kernel import CompositionError, Context, Entry, Layer, flatten, mount, parse_layer
+from columbina.hooks import Config as HooksConfig
+from columbina.kernel import (
+    CompositionError,
+    Context,
+    Entry,
+    Layer,
+    flatten,
+    interpolate,
+    mount,
+    parse_layer,
+)
 from columbina.permissions import Preset
 from columbina.session import SESSIONS, SessionError
 
@@ -54,6 +73,9 @@ _RUN = "run"
 _SESSIONS = "sessions"
 _KNOW_THE_LOG = ("session", "agent")
 """The entries that are enough to read a stored session: its log, and the events of the inbox."""
+_HOOKS = "hooks"
+_RUNS_THE_HOOKS = "columbina.hooks"
+"""The plugin whose config says where the hook files and the record of trust lie."""
 _NOT_A_COMMAND = ("-h", "--help", "--version")
 """What may stand first on the command line without meaning the conversation."""
 
@@ -155,6 +177,29 @@ def _entries_that_know_the_log(args: argparse.Namespace, home: Path) -> list[Ent
             "no stored sessions to look at"
         )
     return entries
+
+
+def _config_of_the_hooks(
+    args: argparse.Namespace, home: Path, env: Mapping[str, str]
+) -> HooksConfig:
+    """Work out where a session of the profile has its hooks from."""
+    for entry in _flattened(args, home):
+        # What an entry is called says nothing about what it loads.
+        if entry.plugin == _RUNS_THE_HOOKS and not entry.disabled:
+            try:
+                config = interpolate(entry.config, env)
+            except CompositionError as error:
+                raise CompositionError(f"entry {entry.id!r}: {error}") from error
+            try:
+                return HooksConfig.model_validate({} if config is None else config)
+            except ValidationError as error:
+                raise _UsageError(
+                    f"{entry.id} ({entry.plugin}) has an invalid config: {error}"
+                ) from error
+    raise _UsageError(
+        f"the profile runs no hooks: none of its entries loads {_RUNS_THE_HOOKS}, or the one "
+        "that does is disabled. So there are no hooks to look at"
+    )
 
 
 def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
@@ -299,6 +344,22 @@ async def _look(entries: Sequence[Entry], env: Mapping[str, str], args: argparse
     return await _loaded(entries, env, look)
 
 
+def _hooks(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """List the hooks of a working directory, or change whether those of its project are trusted."""
+    config = _config_of_the_hooks(args, home, env)
+    cwd = Path() if args.cwd is None else Path(args.cwd)
+    if not cwd.is_dir():
+        raise _UsageError(f"the working directory {args.cwd!r} is not a directory")
+    try:
+        told = written_hooks.run(config, cwd.resolve(), args.what)
+    except written_hooks.HooksError as error:
+        _tell(str(error))
+        return 2
+    # What a hook file holds was written by the user, or by whoever wrote the project.
+    print(harmless(told))
+    return 0
+
+
 def _from_the_profile(command: argparse.ArgumentParser, profile: str) -> None:
     """Add the arguments that say which program is meant and where it works."""
     command.add_argument(
@@ -377,6 +438,26 @@ def _stored(command: argparse.ArgumentParser) -> None:
     )
 
 
+def _written(command: argparse.ArgumentParser) -> None:
+    """Add what ``columbina hooks`` takes: what to do with the hooks of a directory."""
+    whats = command.add_subparsers(dest="what", metavar="WHAT", required=True)
+    helps = {
+        written_hooks.LIST: "list the hooks that count in the working directory, and say "
+        "whether those of its project are trusted",
+        written_hooks.TRUST: "trust the hook file of the project as it is now, and show what "
+        "runs from then on",
+        written_hooks.DISTRUST: "take that trust back",
+    }
+    for name, text in helps.items():
+        what = whats.add_parser(name, help=text)
+        _from_the_profile(what, "cli")
+        what.add_argument(
+            "--cwd",
+            metavar="DIR",
+            help="the working directory whose hooks are meant; the current one by default",
+        )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog="columbina",
@@ -404,6 +485,11 @@ def _parser() -> argparse.ArgumentParser:
         _SESSIONS, help="list, show or copy the sessions that are stored, without a conversation"
     )
     _stored(stored)
+    written = commands.add_parser(
+        _HOOKS,
+        help="list the hooks of a directory, and trust those of its project or trust them no more",
+    )
+    _written(written)
     return parser
 
 
@@ -429,6 +515,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         home = Path(env["COLUMBINA_HOME"])
         if args.command == _SESSIONS:
             return asyncio.run(_look(_entries_that_know_the_log(args, home), env, args))
+        if args.command == _HOOKS:
+            return _hooks(args, home, env)
         entries = _entries(args, home)
         if args.dump_config:
             dumped = _dump(entries)

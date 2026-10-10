@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from columbina import shells
 from columbina.agent import (
@@ -58,20 +58,28 @@ from columbina.agent import (
     TurnStopping,
 )
 from columbina.approval import APPROVAL, ApprovalRequest
-from columbina.fs import bound, locate
+from columbina.fs import locate
 from columbina.hooks.config import (
     TOOL_EVENTS,
     Group,
     HookFileError,
+    Hooks,
     matches,
     names_of,
     parsed,
     trusted,
 )
+from columbina.hooks.files import (
+    PROJECT_FILE,
+    Found,
+    of_the_project,
+    of_the_user,
+    project_of,
+    record_at,
+)
 from columbina.hooks.run import Result, Status, merged, payload, run
 from columbina.kernel import Context, Next
 from columbina.llm import TextBlock, UserMessage
-from columbina.project import root_of
 from columbina.session import (
     SESSIONS,
     EventData,
@@ -110,9 +118,6 @@ inject = (AGENTS, SESSIONS)
 
 logger = logging.getLogger(__name__)
 
-PROJECT_FILE = ".columbina/hooks.json"
-"""Where the hooks of a project are, from its root."""
-
 _FILE_TOOLS = ("read", "write", "edit")
 _SOURCE = "hook/"
 _HUMAN = ("user", "steer")
@@ -140,6 +145,15 @@ class Config(BaseModel):
     project: bool = True
     max_stop_continuations: int = Field(default=3, ge=0)
     max_context_chars: int = Field(default=10000, ge=100)
+
+    @field_validator("user_file", "trust_file")
+    @classmethod
+    def _whole(cls, given: Path | None) -> Path | None:
+        # The session and the command line that trusts for it have to mean the same file,
+        # from whatever directory each was started.
+        if given is not None and not given.is_absolute():
+            raise ValueError(f"{given} does not begin at a root. Give the whole path")
+        return given
 
 
 class HookInvokedEvent(EventData):
@@ -222,52 +236,47 @@ class _Bridge:
             self._said.add(text)
             logger.warning("%s", text)
 
-    def _file(self, path: Path, content: bytes) -> Mapping[str, tuple[Group, ...]]:
+    def _held(self, found: Found) -> Hooks | None:
+        """Return what a hook file holds. If it cannot be read or used, say why and return none."""
+        if found.problem is not None:
+            self._once(f"the hook file {found.path} cannot be read: {found.problem}")
+        if found.content is None:
+            return None
         try:
-            hooks = parsed(content)
+            return parsed(found.content)
         except HookFileError as error:
-            self._once(f"the hook file {path} is not used: {error}")
-            return {}
+            self._once(f"the hook file {found.path} is not used: {error}")
+            return None
+
+    def _groups(self, found: Found, hooks: Hooks) -> Mapping[str, tuple[Group, ...]]:
+        """Return the groups of a hook file that counts, and say what was passed over in it."""
         for warning in hooks.warnings:
-            self._once(f"in the hook file {path}: {warning}")
+            self._once(f"in the hook file {found.path}: {warning}")
         return hooks.groups
 
     def _read(self, cwd: Path) -> _Loaded:
         """Read the hook files that count for a working directory. This blocks."""
         config = self._config
-        project = root_of(locate(cwd, ".").path)
+        project = project_of(cwd)
         found: list[Mapping[str, tuple[Group, ...]]] = []
         if config.user_file is not None:
-            try:
-                found.append(self._file(config.user_file, config.user_file.read_bytes()))
-            except FileNotFoundError:
-                pass
-            except OSError as error:
-                self._once(f"the hook file {config.user_file} cannot be read: {error}")
+            mine = of_the_user(config.user_file)
+            hooks = self._held(mine)
+            if hooks is not None:
+                found.append(self._groups(mine, hooks))
         if config.project:
-            path = project / PROJECT_FILE
-            try:
-                with bound.open_for_reading(path)[0] as file:
-                    content = file.read()
-            except (FileNotFoundError, NotADirectoryError):
-                content = None
-            except OSError as error:
-                self._once(f"the hook file {path} cannot be read: {error}")
-                content = None
-            if content is not None:
-                record = None
-                if config.trust_file is not None:
-                    try:
-                        record = config.trust_file.read_bytes()
-                    except OSError:
-                        record = None
-                if trusted(record, path, content):
-                    found.append(self._file(path, content))
-                else:
+            theirs = of_the_project(project)
+            hooks = self._held(theirs)
+            if hooks is not None:
+                assert theirs.content is not None
+                if trusted(record_at(config.trust_file), theirs.path, theirs.content):
+                    found.append(self._groups(theirs, hooks))
+                elif hooks.groups:
+                    # A file that would run nothing needs nobody's trust, and no word here.
                     self._once(
-                        f"the hooks of this project are not run: the file {path} is not "
-                        "trusted as it is now. Look at what it would run, and trust it "
-                        "with: columbina hooks trust"
+                        f"the hooks of this project are not run: the file {theirs.path} is not "
+                        "trusted as it is now. 'columbina hooks list' shows what it would run, "
+                        "and 'columbina hooks trust' trusts it"
                     )
         groups: dict[str, tuple[Group, ...]] = {}
         for one in found:

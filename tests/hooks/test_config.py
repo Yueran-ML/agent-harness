@@ -15,7 +15,9 @@ from columbina.hooks.config import (
     Hook,
     HookFileError,
     Hooks,
+    chooses_tools,
     digest,
+    distrust,
     matches,
     names_of,
     parsed,
@@ -258,6 +260,16 @@ def test_a_group_that_names_no_tool_is_for_every_tool(matcher: str | None) -> No
     assert matches(matcher, ("mcp__github__create_issue",)) is True
 
 
+@pytest.mark.parametrize(
+    ("matcher", "chooses"),
+    [(None, False), ("", False), ("*", False), ("Edit|Write", True), (".*", True), (" ", True)],
+)
+def test_a_matcher_chooses_among_the_tools_unless_it_is_for_all_of_them(
+    matcher: str | None, chooses: bool
+) -> None:
+    assert chooses_tools(matcher) is chooses
+
+
 def test_names_with_bars_between_them_mean_just_these_tools() -> None:
     assert matches("Edit|Write", ("edit", "Edit")) is True
     assert matches("Edit|Write", ("write", "Write")) is True
@@ -362,6 +374,35 @@ def test_a_record_that_cannot_be_read_trusts_nothing_and_is_begun_anew(record: b
 )
 def test_a_record_of_another_shape_trusts_nothing(written: dict[str, Any]) -> None:
     assert trusted(json.dumps(written).encode(), PROJECT, CONTENT) is False
+
+
+def test_trust_that_was_given_can_be_taken_back() -> None:
+    other = Path("/work/other/.columbina/hooks.json")
+    record = trust(trust(None, PROJECT, CONTENT), other, b"{}")
+
+    left = distrust(record, PROJECT)
+
+    assert left is not None
+    assert trusted(left, PROJECT, CONTENT) is False
+    # What the record says about another file stays.
+    assert trusted(left, other, b"{}") is True
+    assert json.loads(left) == {"version": 1, "files": {str(other): digest(b"{}")}}
+    assert left.endswith(b"\n")
+
+    # The last file goes, and a record stays that trusts none.
+    none = distrust(left, other)
+
+    assert none is not None
+    assert json.loads(none) == {"version": 1, "files": {}}
+
+
+def test_a_file_that_was_not_trusted_leaves_the_record_as_it_is() -> None:
+    record = trust(None, PROJECT, CONTENT)
+
+    assert distrust(record, PROJECT.parent.parent / "other" / "hooks.json") is None
+    assert distrust(None, PROJECT) is None
+    # A record that cannot be read trusts nothing, so there is nothing to take out of it.
+    assert distrust(b"not json", PROJECT) is None
 
 
 def test_the_mark_of_a_content_is_its_sha_256() -> None:

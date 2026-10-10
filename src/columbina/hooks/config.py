@@ -43,7 +43,9 @@ that it may: its place and the SHA-256 of what it holds are written into a
 record in the home of the program. When the file changes, the record does
 not fit it any more and its hooks stop until the user has looked again.
 The record goes by the place as well as by the content, since the same
-words mean other commands in another directory.
+words mean other commands in another directory. ``columbina hooks trust``
+writes a file into the record, and ``columbina hooks distrust`` takes it
+out again, see :mod:`columbina.apps.hooks`.
 """
 
 import hashlib
@@ -52,7 +54,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import TypeGuard, cast
 
 __all__ = [
     "ALIASES",
@@ -65,7 +67,9 @@ __all__ = [
     "Hook",
     "HookFileError",
     "Hooks",
+    "chooses_tools",
     "digest",
+    "distrust",
     "matches",
     "names_of",
     "parsed",
@@ -208,7 +212,7 @@ def _group(written: object, where: str, warnings: list[str]) -> Group | None:
             f"{where} has the matcher {_shown(matcher)}, which is no text. It is passed over"
         )
         return None
-    if matcher is not None and matcher not in _EVERY:
+    if chooses_tools(matcher):
         try:
             re.compile(matcher)
         except (re.error, RecursionError, OverflowError) as error:
@@ -281,11 +285,19 @@ def names_of(tool: str) -> tuple[str, ...]:
     return (tool,) if alias is None else (tool, alias)
 
 
+def chooses_tools(matcher: str | None) -> TypeGuard[str]:
+    """Tell whether a matcher is for some tools and not for all of them.
+
+    It is for all of them if there is none, or if it is empty or ``*``.
+    """
+    return matcher is not None and matcher not in _EVERY
+
+
 def matches(matcher: str | None, names: Sequence[str]) -> bool:
     """Tell whether a matcher is for a tool that goes by one of these names."""
-    if matcher is None or matcher in _EVERY:
-        return True
-    return any(re.fullmatch(matcher, name) is not None for name in names)
+    return not chooses_tools(matcher) or any(
+        re.fullmatch(matcher, name) is not None for name in names
+    )
 
 
 def digest(content: bytes) -> str:
@@ -316,6 +328,12 @@ def _record(record: bytes | None) -> dict[str, str]:
     }
 
 
+def _kept(files: Mapping[str, str]) -> bytes:
+    """Return a record of trust that holds these files, the way it is kept on the disk."""
+    kept = {"version": _VERSION, "files": dict(sorted(files.items()))}
+    return (json.dumps(kept, ensure_ascii=False, indent=2) + "\n").encode()
+
+
 def trusted(record: bytes | None, file: Path, content: bytes) -> bool:
     """Tell whether the user has said that this content of a hook file may be used.
 
@@ -335,5 +353,18 @@ def trust(record: bytes | None, file: Path, content: bytes) -> bytes:
     """
     files = _record(record)
     files[str(file)] = digest(content)
-    kept = {"version": _VERSION, "files": dict(sorted(files.items()))}
-    return (json.dumps(kept, ensure_ascii=False, indent=2) + "\n").encode()
+    return _kept(files)
+
+
+def distrust(record: bytes | None, file: Path) -> bytes | None:
+    """Return the record of trust without a hook file, whatever content of it was trusted.
+
+    Returns:
+        The record as it is to be kept from now on, or ``None`` if it says
+        nothing about the file, so that there is nothing to change.
+    """
+    files = _record(record)
+    if str(file) not in files:
+        return None
+    del files[str(file)]
+    return _kept(files)

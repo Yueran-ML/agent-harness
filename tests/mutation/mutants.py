@@ -44,6 +44,7 @@ GLOB = "src/columbina/builtin_tools/glob.py"
 APPROVAL = "src/columbina/approval/__init__.py"
 GREP = "src/columbina/builtin_tools/grep.py"
 SHELL = "src/columbina/builtin_tools/shell.py"
+SHELLS = "src/columbina/shells.py"
 PATTERNS = "src/columbina/fs/patterns.py"
 RUNTIME = "src/columbina/context/runtime.py"
 LAUNCHER = "src/columbina/apps/launcher.py"
@@ -96,6 +97,7 @@ PROJECT = "src/columbina/project.py"
 SKILL_FILES = "src/columbina/skills/files.py"
 SKILLS_PLUGIN = "src/columbina/skills/__init__.py"
 HOOK_FILES = "src/columbina/hooks/config.py"
+HOOK_RUN = "src/columbina/hooks/run.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2384,9 +2386,10 @@ _SHELL = (
     ),
     mutant(
         "a command is given the environment with its secrets",
-        SHELL,
-        "                env=_environment(),",
-        "                env=dict(os.environ),",
+        SHELLS,
+        "        cleaned = process.cleaned(os.environ)\n",
+        "        cleaned = dict(os.environ)\n",
+        ("        return process.cleaned(os.environ)\n", "        return dict(os.environ)\n"),
     ),
     mutant(
         "the exit code is put behind the last character of the output",
@@ -2429,7 +2432,7 @@ _SHELL = (
     on_windows(
         mutant(
             "python is left to write in the code page of the system",
-            SHELL,
+            SHELLS,
             '        cleaned.setdefault("PYTHONIOENCODING", "utf-8")\n',
             "",
         )
@@ -2438,14 +2441,14 @@ _SHELL = (
         mutant(
             "what ran last does not decide the exit code",
             SHELL,
-            '        return argv, (command + _AFTER).encode("utf-8")',
+            '        return argv, (command + shells.AFTER).encode("utf-8")',
             '        return argv, command.encode("utf-8")',
         )
     ),
     on_windows(
         mutant(
             "powershell is found wherever Windows finds a program of that name",
-            SHELL,
+            SHELLS,
             "        return str(found) if found.is_file() else None",
             '        return "powershell.exe"',
         )
@@ -8529,6 +8532,421 @@ _HOOKS = (
         HOOK_FILES,
         '    return (json.dumps(kept, ensure_ascii=False, indent=2) + "\\n").encode()\n',
         "    return json.dumps(kept, ensure_ascii=False, indent=2).encode()\n",
+    ),
+    mutant(
+        "a text of just the length that is allowed loses its middle",
+        HOOK_RUN,
+        "    if len(text) <= limit:\n        return text\n",
+        "    if len(text) < limit:\n        return text\n",
+    ),
+    mutant(
+        "a text that is too long is given whole",
+        HOOK_RUN,
+        "    if len(text) <= limit:\n        return text\n",
+        "    if True:\n        return text\n",
+    ),
+    mutant(
+        "what is left of a long text is its beginning alone",
+        HOOK_RUN,
+        "    return text[:head] + note + text[len(text) - (limit - head) :]\n",
+        "    return text[:head] + note\n",
+    ),
+    mutant(
+        "how much of a long text was left out is counted wrongly",
+        HOOK_RUN,
+        '    note = f"\\n[{len(text) - limit} characters are left out here]\\n"\n',
+        '    note = f"\\n[{len(text)} characters are left out here]\\n"\n',
+    ),
+    mutant(
+        "what a hook is told has no line end after it",
+        HOOK_RUN,
+        '    return json.dumps(told, ensure_ascii=False).encode("utf-8") + b"\\n"\n',
+        '    return json.dumps(told, ensure_ascii=False).encode("utf-8")\n',
+    ),
+    mutant(
+        "what is no ASCII is told to a hook as numbers",
+        HOOK_RUN,
+        '    return json.dumps(told, ensure_ascii=False).encode("utf-8") + b"\\n"\n',
+        '    return json.dumps(told).encode("utf-8") + b"\\n"\n',
+    ),
+    mutant(
+        "a hook is not told which moment it is run for",
+        HOOK_RUN,
+        '        "hook_event_name": event,\n',
+        "",
+    ),
+    on_windows(
+        mutant(
+            "the script of a hook goes to powershell in an encoding that it does not take",
+            HOOK_RUN,
+            '        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")\n',
+            '        encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")\n',
+        )
+    ),
+    on_windows(
+        mutant(
+            "powershell does not pass the exit code of a hook on",
+            HOOK_RUN,
+            '        script = f"{shells.PREAMBLE}\\n{command}{shells.AFTER}"\n',
+            '        script = f"{shells.PREAMBLE}\\n{command}"\n',
+        )
+    ),
+    on_windows(
+        mutant(
+            "powershell reads and writes for a hook in the code page of the system",
+            HOOK_RUN,
+            '        script = f"{shells.PREAMBLE}\\n{command}{shells.AFTER}"\n',
+            '        script = f"{command}{shells.AFTER}"\n',
+        )
+    ),
+    mutant(
+        "what the shell of windows wrote about an error is left as it came",
+        HOOK_RUN,
+        "    if not text.lstrip().startswith(_CLIXML):\n        return text\n",
+        "    return text\n",
+    ),
+    mutant(
+        "text that is none of the shell's is searched for its marks all the same",
+        HOOK_RUN,
+        "    if not text.lstrip().startswith(_CLIXML):\n        return text\n",
+        "",
+    ),
+    mutant(
+        "the marks of xml stay in what the shell wrote about an error",
+        HOOK_RUN,
+        "    parts = [html.unescape(part) for part in _ERROR.findall(text)]\n",
+        "    parts = list(_ERROR.findall(text))\n",
+    ),
+    mutant(
+        "the line ends of the shell stay as numbers",
+        HOOK_RUN,
+        '    joined = _ESCAPE.sub(lambda found: chr(int(found.group(1), 16)), "".join(parts))\n',
+        '    joined = "".join(parts)\n',
+    ),
+    mutant(
+        "the line ends of windows stay in what the shell wrote about an error",
+        HOOK_RUN,
+        '    return joined.replace("\\r\\n", "\\n")\n',
+        "    return joined\n",
+    ),
+    mutant(
+        "a field that is no text is taken for text",
+        HOOK_RUN,
+        '    return value.strip() if isinstance(value, str) else ""\n',
+        "    return str(value).strip()\n",
+    ),
+    mutant(
+        "the spaces around what a hook says stay",
+        HOOK_RUN,
+        '    return value.strip() if isinstance(value, str) else ""\n',
+        '    return value if isinstance(value, str) else ""\n',
+    ),
+    mutant(
+        "output that begins like json and is none stops whoever reads it",
+        HOOK_RUN,
+        "    except (ValueError, RecursionError):\n        return Result(",
+        "    except ZeroDivisionError:\n        return Result(",
+    ),
+    mutant(
+        "json that lies too deep stops whoever reads it",
+        HOOK_RUN,
+        "    except (ValueError, RecursionError):\n        return Result(",
+        "    except ValueError:\n        return Result(",
+    ),
+    mutant(
+        "a field that cannot be honoured is passed over without a word",
+        HOOK_RUN,
+        "        for name in _UNSUPPORTED\n",
+        "        for name in ()\n",
+    ),
+    mutant(
+        "a hook that says block in json stops nothing",
+        HOOK_RUN,
+        '    if top == "block":\n',
+        '    if top == "stop":\n',
+    ),
+    mutant(
+        "the reason that a hook gives in json is not taken",
+        HOOK_RUN,
+        '        decision, reason = "block", _field(fields, "reason")\n',
+        '        decision = "block"\n',
+    ),
+    mutant(
+        "a hook that approves has said nothing",
+        HOOK_RUN,
+        '    elif top == "approve":\n        decision = "allow"\n',
+        '    elif top == "approve":\n        pass\n',
+    ),
+    mutant(
+        "a decision that is not known is passed over without a word",
+        HOOK_RUN,
+        "    elif top is not None:\n",
+        "    elif False:\n",
+    ),
+    mutant(
+        "what a hook says about another moment counts",
+        HOOK_RUN,
+        '        if about.get("hookEventName") == event:\n',
+        "        if True:\n",
+    ),
+    mutant(
+        "what a hook says about another moment is passed over without a word",
+        HOOK_RUN,
+        '        else:\n            warnings.append(\n                "its answer speaks of another moment',
+        '        elif False:\n            warnings.append(\n                "its answer speaks of another moment',
+    ),
+    mutant(
+        "a wish about a call counts after the call as well",
+        HOOK_RUN,
+        '            if event == "PreToolUse" and isinstance(wanted, str) and wanted in _PERMISSION:\n',
+        "            if isinstance(wanted, str) and wanted in _PERMISSION:\n",
+    ),
+    mutant(
+        "a hook that denies a call lets it through",
+        HOOK_RUN,
+        '_PERMISSION = {"allow": "allow", "deny": "block", "ask": "ask"}\n',
+        '_PERMISSION = {"allow": "allow", "deny": "allow", "ask": "ask"}\n',
+    ),
+    mutant(
+        "a hook that wants somebody asked stops the call",
+        HOOK_RUN,
+        '_PERMISSION = {"allow": "allow", "deny": "block", "ask": "ask"}\n',
+        '_PERMISSION = {"allow": "allow", "deny": "block", "ask": "block"}\n',
+    ),
+    mutant(
+        "why a hook wants a call stopped is not taken",
+        HOOK_RUN,
+        '                reason = _field(about, "permissionDecisionReason")\n',
+        "",
+    ),
+    mutant(
+        "a wish about a call that cannot be used is passed over without a word",
+        HOOK_RUN,
+        "            elif wanted is not None:\n",
+        "            elif False:\n",
+    ),
+    mutant(
+        "a hook adds something for the model at every moment",
+        HOOK_RUN,
+        "            if event in CONTEXT_EVENTS:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "after a call a hook can add nothing for the model",
+        HOOK_RUN,
+        'CONTEXT_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse")\n',
+        'CONTEXT_EVENTS = ("SessionStart", "UserPromptSubmit")\n',
+    ),
+    mutant(
+        "a hook that stops something in json and gives no reason has an empty reason",
+        HOOK_RUN,
+        '    if decision == "block" and not reason:\n        reason = _NO_REASON\n',
+        "",
+    ),
+    mutant(
+        "a hook that lets a call through gives a reason all the same",
+        HOOK_RUN,
+        '    if decision == "allow":\n        reason = ""\n',
+        "",
+    ),
+    mutant(
+        "a hook that stops something in json is told as one that ended well",
+        HOOK_RUN,
+        '        "blocked" if decision == "block" else "completed",\n        decision,\n        cut(reason, limit),\n',
+        '        "completed",\n        decision,\n        cut(reason, limit),\n',
+    ),
+    mutant(
+        "a reason from json is taken at whatever length",
+        HOOK_RUN,
+        "        cut(reason, limit),\n        cut(context, limit),\n",
+        "        reason,\n        cut(context, limit),\n",
+    ),
+    mutant(
+        "what a hook adds in json is taken at whatever length",
+        HOOK_RUN,
+        "        cut(reason, limit),\n        cut(context, limit),\n",
+        "        cut(reason, limit),\n        context,\n",
+    ),
+    mutant(
+        "what a hook says to the person is taken at whatever length",
+        HOOK_RUN,
+        '        cut(_field(fields, "systemMessage"), limit),\n',
+        '        _field(fields, "systemMessage"),\n',
+    ),
+    mutant(
+        "a hook that took too long is read as one that ended",
+        HOOK_RUN,
+        '    if done.timed_out:\n        return Result("timed-out")\n',
+        "",
+    ),
+    mutant(
+        "what the shell wrote about the error of a hook is read as it came",
+        HOOK_RUN,
+        "    errors = from_clixml(done.error_output).strip()\n",
+        "    errors = done.error_output.strip()\n",
+    ),
+    mutant(
+        "exit code two stops nothing",
+        HOOK_RUN,
+        "    if code == 2:\n",
+        "    if code == 22:\n",
+    ),
+    mutant(
+        "a hook that says stop without a reason has an empty reason",
+        HOOK_RUN,
+        "cut(errors or _NO_REASON, limit), exit_code=2)",
+        "cut(errors, limit), exit_code=2)",
+    ),
+    mutant(
+        "the reason of a hook is taken from its error stream at whatever length",
+        HOOK_RUN,
+        "cut(errors or _NO_REASON, limit), exit_code=2)",
+        "errors or _NO_REASON, exit_code=2)",
+    ),
+    mutant(
+        "a hook that failed is read as one that ended well",
+        HOOK_RUN,
+        "    if code != 0:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "all that a hook that failed wrote about it is passed on",
+        HOOK_RUN,
+        '        said = errors.partition("\\n")[0]\n',
+        "        said = errors\n",
+    ),
+    mutant(
+        "the first line of a hook that failed is passed on at whatever length",
+        HOOK_RUN,
+        '(f": {cut(said, 200)}" if said else "")',
+        '(f": {said}" if said else "")',
+    ),
+    mutant(
+        "a hook whose output was cut is believed",
+        HOOK_RUN,
+        "    if done.omitted_bytes:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "output that begins with a brace is taken for plain text",
+        HOOK_RUN,
+        '    if text.startswith("{"):\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "what a hook writes is for the model at every moment",
+        HOOK_RUN,
+        '    context = text if event in _PLAIN_CONTEXT else ""\n',
+        "    context = text\n",
+    ),
+    mutant(
+        "what a hook writes when the user says something is not for the model",
+        HOOK_RUN,
+        '_PLAIN_CONTEXT = ("SessionStart", "UserPromptSubmit")\n',
+        '_PLAIN_CONTEXT = ("SessionStart",)\n',
+    ),
+    mutant(
+        "what a hook writes for the model is taken at whatever length",
+        HOOK_RUN,
+        "    return Result(context=cut(context, limit), exit_code=0)\n",
+        "    return Result(context=context, exit_code=0)\n",
+    ),
+    mutant(
+        "of several answers the last one counts",
+        HOOK_RUN,
+        "        if _RANK[result.decision] > _RANK[decision]:\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "a hook that wants somebody asked counts before one that says stop",
+        HOOK_RUN,
+        '_RANK: dict[Decision | None, int] = {None: 0, "allow": 1, "ask": 2, "block": 3}\n',
+        '_RANK: dict[Decision | None, int] = {None: 0, "allow": 1, "ask": 3, "block": 2}\n',
+    ),
+    mutant(
+        "the reasons of all hooks are given, also of those that wanted something else",
+        HOOK_RUN,
+        "if result.decision == decision and result.reason]\n",
+        "if result.reason]\n",
+    ),
+    mutant(
+        "several hooks that stop something are told as hooks that ended well",
+        HOOK_RUN,
+        '        "blocked" if decision == "block" else "completed",\n        decision,\n        "\\n\\n".join(reasons)',
+        '        "completed",\n        decision,\n        "\\n\\n".join(reasons)',
+    ),
+    mutant(
+        "what several hooks add for the model is run together",
+        HOOK_RUN,
+        '        "\\n\\n".join(result.context for result in results if result.context),\n',
+        '        "".join(result.context for result in results if result.context),\n',
+    ),
+    mutant(
+        "what several hooks say to the person is lost but for the first",
+        HOOK_RUN,
+        '        "\\n".join(result.message for result in results if result.message),\n',
+        '        next((result.message for result in results if result.message), ""),\n',
+    ),
+    mutant(
+        "what was wrong with the answers of several hooks is not told",
+        HOOK_RUN,
+        "        tuple(warning for result in results for warning in result.warnings),\n",
+        "        (),\n",
+    ),
+    mutant(
+        "a command of any length is handed to the shell",
+        HOOK_RUN,
+        "    if len(hook.command) > MAX_COMMAND:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a command of just the length that is allowed is not run",
+        HOOK_RUN,
+        "    if len(hook.command) > MAX_COMMAND:\n",
+        "    if len(hook.command) >= MAX_COMMAND:\n",
+    ),
+    mutant(
+        "a hook does not find the project in its environment",
+        HOOK_RUN,
+        '    env["CLAUDE_PROJECT_DIR"] = env["COLUMBINA_PROJECT_DIR"] = str(project)\n',
+        "",
+    ),
+    mutant(
+        "a hook is given the environment with its secrets",
+        HOOK_RUN,
+        "    env = shells.environment()\n",
+        "    env = dict(os.environ)\n",
+        ("import base64\n", "import base64\nimport os\n"),
+    ),
+    mutant(
+        "a hook is run where the program was started",
+        HOOK_RUN,
+        "            cwd=cwd,\n",
+        '            cwd=Path("."),\n',
+    ),
+    mutant(
+        "a hook is told nothing",
+        HOOK_RUN,
+        "            stdin=told,\n",
+        "            stdin=None,\n",
+    ),
+    mutant(
+        "a hook may take as long as it likes",
+        HOOK_RUN,
+        "            timeout_seconds=hook.timeout,\n",
+        "            timeout_seconds=600.0,\n",
+    ),
+    mutant(
+        "what a hook writes to its error stream is put with its output",
+        HOOK_RUN,
+        '            streams="apart",\n',
+        '            streams="joined",\n',
+    ),
+    mutant(
+        "a shell that is not there stops whoever runs a hook",
+        HOOK_RUN,
+        "    except OSError as error:\n        return Result(",
+        "    except ZeroDivisionError as error:\n        return Result(",
     ),
 )
 

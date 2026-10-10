@@ -66,16 +66,13 @@ about 128 KiB on Linux, so longer ones are refused here with a plain word.
 """
 
 import logging
-import os
-import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from columbina import process
+from columbina import process, shells
 from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.kernel import Context
 from columbina.permissions import PERMISSIONS, Splitter, split_bash, split_powershell
@@ -124,14 +121,7 @@ if sys.platform == "win32":  # pragma: windows only
     MAX_COMMAND_BYTES = 1_000_000
 
     _SPLITTER: Splitter = split_powershell
-    _AFTER = "\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE } else { exit 1 } }\n"
-    _READ_AND_RUN = (
-        "$ProgressPreference = 'SilentlyContinue'; "
-        "[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false; "
-        "[Console]::OutputEncoding = [Console]::InputEncoding; "
-        "$OutputEncoding = [Console]::InputEncoding; "
-        ". ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"
-    )
+    _READ_AND_RUN = f"{shells.PREAMBLE}; . ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"
     _FACT = "the tool powershell, which is Windows PowerShell 5.1 and not bash"
     _ABOUT = (
         "Run a command in Windows PowerShell 5.1. This is not bash: join commands with ; "
@@ -139,23 +129,10 @@ if sys.platform == "win32":  # pragma: windows only
         "use the cmdlets or programs of Windows (Get-ChildItem, Get-Content, Select-String)."
     )
 
-    def _shell() -> str | None:
-        """Return the path of Windows PowerShell, or ``None`` if it is not where it belongs."""
-        root = os.environ.get("SYSTEMROOT", "C:\\Windows")
-        found = Path(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-        return str(found) if found.is_file() else None
-
     def _invocation(shell: str, command: str) -> tuple[list[str], bytes | None]:
         """Return what to run for a command, and what to give it as input."""
         argv = [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", _READ_AND_RUN]
-        return argv, (command + _AFTER).encode("utf-8")
-
-    def _environment() -> dict[str, str]:
-        """Return the environment of a command: this one, without what sounds like a secret."""
-        cleaned = process.cleaned(os.environ)
-        # Python writes to a pipe in the code page of the system unless it is told otherwise.
-        cleaned.setdefault("PYTHONIOENCODING", "utf-8")
-        return cleaned
+        return argv, (command + shells.AFTER).encode("utf-8")
 
 else:  # pragma: posix only
     NAME = "bash"
@@ -165,17 +142,9 @@ else:  # pragma: posix only
     _FACT = "the tool bash"
     _ABOUT = "Run a command in bash."
 
-    def _shell() -> str | None:
-        """Return the path of bash, or ``None`` if there is none."""
-        return shutil.which("bash")
-
     def _invocation(shell: str, command: str) -> tuple[list[str], bytes | None]:
         """Return what to run for a command, and what to give it as input."""
         return [shell, "--noprofile", "--norc", "-c", command], None
-
-    def _environment() -> dict[str, str]:
-        """Return the environment of a command: this one, without what sounds like a secret."""
-        return process.cleaned(os.environ)
 
 
 class ShellArgs(BaseModel):
@@ -282,7 +251,7 @@ def shell_tool(
             done = await process.run(
                 confined.argv,
                 cwd=run.cwd,
-                env=_environment(),
+                env=shells.environment(),
                 stdin=given,
                 timeout_seconds=seconds,
                 overflow=None if place is None else place.open,
@@ -336,7 +305,7 @@ def apply(ctx: Context, config: object) -> None:
     Raises:
         RuntimeError: The shell of this platform is not installed.
     """
-    shell = _shell()
+    shell = shells.find()
     if shell is None:
         raise RuntimeError(f"{NAME} is not installed, so there is no tool that runs commands")
     ctx.use(TOOLS).add(ctx, shell_tool(ctx.use(SANDBOX), shell, lambda: ctx.get(SPILL)))

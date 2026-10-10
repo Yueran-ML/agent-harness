@@ -21,7 +21,7 @@ import columbina.session
 import columbina.spill.local
 import columbina.spill.policy
 import columbina.tools
-from columbina import process
+from columbina import process, shells
 from columbina.builtin_tools import read, shell
 from columbina.kernel import Context
 from columbina.llm import ToolCallBlock
@@ -836,7 +836,7 @@ async def test_without_the_shell_of_the_platform_the_tool_does_not_load(
     def nowhere() -> None:
         return None
 
-    monkeypatch.setattr(shell, "_shell", nowhere)
+    monkeypatch.setattr(shells, "find", nowhere)
 
     with pytest.raises(RuntimeError, match="is not installed"):
         await loaded(ctx, tmp_path)
@@ -902,7 +902,7 @@ if WINDOWS:
     def test_powershell_is_looked_for_where_the_system_is(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        find: Any = vars(shell)["_shell"]
+        find: Any = vars(shells)["find"]
         monkeypatch.setenv("SYSTEMROOT", str(tmp_path))
 
         assert find() is None

@@ -90,6 +90,7 @@ SUMMARY = "src/columbina/compaction/basic/summary.py"
 BASIC = "src/columbina/compaction/basic/__init__.py"
 PROJECTION = "src/columbina/session/projection.py"
 BUDGET = "src/columbina/guard/budget.py"
+TOOL = "src/columbina/tools/tool.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -895,6 +896,36 @@ _TOOLS = (
         PIPELINE,
         "        tool = self.registry.get(call.name) if only is None or call.name in only else None\n",
         "        tool = self.registry.get(call.name)\n",
+    ),
+    mutant(
+        "a model is told nothing of the schema that a tool brings",
+        TOOL,
+        "        if self.input_schema is not None:\n            brought = dict(self.input_schema)\n",
+        "        if False:\n            brought = dict(self.input_schema)\n",
+    ),
+    mutant(
+        "the schema that a tool brings changes when whoever gave it changes it",
+        TOOL,
+        '        object.__setattr__(self, "input_schema", copy.deepcopy(dict(brought)))\n',
+        "",
+    ),
+    mutant(
+        "a schema of its own goes with a model of the parameters",
+        TOOL,
+        "        if parameters is not JsonArguments:\n            raise TypeError(\n",
+        "        if False:\n            raise TypeError(\n",
+    ),
+    mutant(
+        "arguments of which nothing is known need no schema for the model",
+        TOOL,
+        "            if parameters is JsonArguments:\n                raise TypeError(\n",
+        "            if False:\n                raise TypeError(\n",
+    ),
+    mutant(
+        "a schema that describes no object is taken for the arguments of a tool",
+        TOOL,
+        '        if brought.get("type") != "object":\n',
+        "        if False:\n",
     ),
 )
 

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import Any, Generic, Literal, TypeVar, cast, get_args
 
-from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic import BaseModel, JsonValue, RootModel, ValidationError
 
 from columbina.llm.types import ToolSchema
 from columbina.session.log import Session
@@ -29,6 +30,16 @@ _JSON_KINDS: dict[type[object], str] = {
 }
 _SUBSCHEMAS = ("properties", "$defs")
 _SUBSCHEMA_LISTS = ("anyOf", "allOf", "oneOf", "prefixItems")
+
+
+class JsonArguments(RootModel[dict[str, JsonValue]]):
+    """The arguments of a call as the model wrote them: an object, and no more is known.
+
+    These are the parameters of a tool that brings the schema of its
+    arguments from somewhere else, such as a server that offers the tool.
+    The object is in ``root``. Whether it fits the schema is for whoever
+    gets it to say.
+    """
 
 
 class ToolFailure(Exception):  # noqa: N818 - a failure that a tool reports, not a bug
@@ -156,11 +167,19 @@ class Tool(Generic[ArgsT, ValueT]):
         paged: Whether the tool hands out what it has in pages: it bounds
             what one call returns by itself, and says how to ask for more.
             Whatever cuts a large result short leaves such a tool alone.
+        input_schema: The JSON Schema of the arguments, for a tool that
+            brings it from somewhere else. The model is told this schema as
+            it is. The parameters of such a tool are :class:`JsonArguments`,
+            and its arguments are only checked for being an object. The
+            schema is copied when the tool is made.
 
     Raises:
-        ValueError: The name is not one that every provider accepts, or the
-            effect is none of the four.
-        TypeError: ``parameters`` is not a pydantic model.
+        ValueError: The name is not one that every provider accepts, the
+            effect is none of the four, or a schema that the tool brings
+            does not describe an object.
+        TypeError: ``parameters`` is not a pydantic model, or the tool
+            brings a schema and its parameters are not
+            :class:`JsonArguments`, or the other way round.
     """
 
     name: str
@@ -173,6 +192,7 @@ class Tool(Generic[ArgsT, ValueT]):
     effect: Effect = "none"
     target: Callable[[ArgsT, ToolRun], str] | None = None
     paged: bool = False
+    input_schema: Mapping[str, JsonValue] | None = None
 
     def __post_init__(self) -> None:
         if self.effect not in get_args(Effect):
@@ -187,10 +207,30 @@ class Tool(Generic[ArgsT, ValueT]):
         parameters = cast("object", self.parameters)
         if not (isinstance(parameters, type) and issubclass(parameters, BaseModel)):
             raise TypeError(f"the parameters of the tool {self.name!r} must be a pydantic model")
+        brought = self.input_schema
+        if brought is None:
+            if parameters is JsonArguments:
+                raise TypeError(
+                    f"the tool {self.name!r} takes whatever object the model writes, so it "
+                    "needs a schema of its own to tell the model what to write"
+                )
+            return
+        if parameters is not JsonArguments:
+            raise TypeError(
+                f"the tool {self.name!r} brings a schema of its own, so its parameters "
+                "must be JsonArguments"
+            )
+        if brought.get("type") != "object":
+            raise ValueError(f"the schema of the tool {self.name!r} must describe an object")
+        # Whoever gave the schema may go on using it. The tool keeps its own.
+        object.__setattr__(self, "input_schema", copy.deepcopy(dict(brought)))
 
     @cached_property
     def schema(self) -> ToolSchema:
         """What a model is told about the tool."""
+        if self.input_schema is not None:
+            brought = dict(self.input_schema)
+            return ToolSchema(name=self.name, description=self.description, parameters=brought)
         parameters = _without_titles(self.parameters.model_json_schema())
         parameters.pop("description", None)
         return ToolSchema(name=self.name, description=self.description, parameters=parameters)

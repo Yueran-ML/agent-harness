@@ -25,7 +25,7 @@ from columbina.tools.pipeline import (
     Tools,
     Verdict,
 )
-from columbina.tools.tool import Effect, Tool, ToolFailure, ToolRun
+from columbina.tools.tool import Effect, JsonArguments, Tool, ToolFailure, ToolRun
 
 __all__ = [
     "EXECUTE",
@@ -43,6 +43,7 @@ __all__ = [
     "Executed",
     "Guard",
     "Invocation",
+    "JsonArguments",
     "PendingCall",
     "Tool",
     "ToolFailure",

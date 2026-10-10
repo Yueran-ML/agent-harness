@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from columbina.kernel import Context
 from columbina.llm import ToolSchema
 from columbina.session import CORE_EVENTS, Session
-from columbina.tools import Tool, ToolFailure, ToolRun
+from columbina.tools import JsonArguments, Tool, ToolFailure, ToolRun
 
 
 class ReadArgs(BaseModel):
@@ -163,6 +163,100 @@ def test_arguments_that_do_not_fit_are_refused_field_by_field() -> None:
         "- path: Field required\n"
         "- offset: Input should be a valid integer, unable to parse string as an integer"
     )
+
+
+# A tool whose parameters are described elsewhere
+
+FOREIGN: dict[str, Any] = {
+    "type": "object",
+    "title": "SearchArguments",
+    "properties": {
+        "query": {"type": "string", "title": "Query", "description": "What to look for."},
+        "limit": {"$ref": "#/$defs/Limit"},
+    },
+    "required": ["query"],
+    "$defs": {"Limit": {"type": "integer", "minimum": 1, "title": "Limit"}},
+    "x-vendor": {"anything": [1, 2.5, None, True]},
+}
+
+
+async def passed_on(args: JsonArguments, run: ToolRun) -> dict[str, Any]:
+    return args.root
+
+
+def foreign(**options: Any) -> Tool[JsonArguments, dict[str, Any]]:
+    return Tool(
+        name="search",
+        description="Search somewhere else.",
+        parameters=JsonArguments,
+        execute=passed_on,
+        **options,
+    )
+
+
+def test_a_tool_can_bring_the_schema_of_its_parameters_and_the_model_is_told_it_as_it_is() -> None:
+    tool = foreign(input_schema=FOREIGN)
+
+    assert tool.schema == ToolSchema(
+        name="search", description="Search somewhere else.", parameters=FOREIGN
+    )
+    # Nothing of it is tidied up: it is not ours to change.
+    assert tool.schema.parameters["title"] == "SearchArguments"
+    assert tool.schema.parameters["x-vendor"] == {"anything": [1, 2.5, None, True]}
+
+
+def test_what_a_model_is_told_does_not_change_when_the_schema_that_was_given_does() -> None:
+    given: dict[str, Any] = {"type": "object", "properties": {"a": {"type": "string"}}}
+    tool = foreign(input_schema=given)
+
+    # Whoever gave it goes on using it for something else.
+    given["properties"]["b"] = {"type": "string"}
+
+    assert tool.schema.parameters == {"type": "object", "properties": {"a": {"type": "string"}}}
+
+
+def test_the_arguments_of_such_a_tool_are_whatever_object_the_model_wrote() -> None:
+    tool = foreign(input_schema=FOREIGN)
+
+    args = tool.parse('{"query": "x", "limit": "many", "more": {"deep": [1, null, 2.5, true]}}')
+
+    # Whether they fit the schema is for whoever gets them to say.
+    assert args.root == {"query": "x", "limit": "many", "more": {"deep": [1, None, 2.5, True]}}
+    assert tool.parse("").root == {}
+
+
+@pytest.mark.parametrize(
+    ("arguments", "kind"), [("[1]", "a list"), ('"query"', "a string"), ("null", "null")]
+)
+def test_the_arguments_of_such_a_tool_still_have_to_be_an_object(arguments: str, kind: str) -> None:
+    with pytest.raises(ToolFailure, match=f"must be a JSON object, not {kind}") as raised:
+        foreign(input_schema=FOREIGN).parse(arguments)
+
+    assert raised.value.code == "INVALID_ARGS"
+
+
+def test_a_schema_of_its_own_and_a_model_of_the_parameters_do_not_go_together() -> None:
+    async def read(args: ReadArgs, run: ToolRun) -> str:
+        return args.path
+
+    with pytest.raises(TypeError, match="brings a schema of its own, so its parameters"):
+        Tool(
+            name="read",
+            description="Read.",
+            parameters=ReadArgs,
+            execute=read,
+            input_schema=FOREIGN,
+        )
+
+
+def test_arguments_of_which_nothing_is_known_need_a_schema_for_the_model() -> None:
+    with pytest.raises(TypeError, match="takes whatever object the model writes, so it needs"):
+        foreign()
+
+
+def test_a_schema_that_is_no_object_schema_is_refused() -> None:
+    with pytest.raises(ValueError, match="the schema of the tool 'search' must describe an object"):
+        foreign(input_schema={"type": "string"})
 
 
 def test_a_tool_says_whether_a_call_may_run_beside_others() -> None:

@@ -17,6 +17,7 @@ import columbina.commands
 import columbina.fs
 import columbina.permissions
 import columbina.sandbox
+import columbina.token_meter
 from columbina.agent import INBOX, STREAM, Agent, AgentSpec, StreamFrame
 from columbina.approval import APPROVAL, ApprovalRequest
 from columbina.apps import FRONTEND, Frontend
@@ -28,6 +29,7 @@ from columbina.llm import BlockEnd, BlockStart, Chunk, LlmFailure, TextDelta, Us
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
+from columbina.token_meter import TOKEN_METER
 from columbina.tools import Tool, ToolRun
 from support.loop import MODEL, Harness, assistant, from_a_source, user
 from support.terminal import CTRL_D, ESCAPE, Desk, desk, stands, until
@@ -683,6 +685,29 @@ async def test_the_line_below_the_prompt_tells_of_the_session(harness: Harness) 
 
     assert before == ""
     assert after == f"{MODEL.model} | 1.2k tokens | cache 0%"
+
+
+async def test_the_line_below_the_prompt_shows_the_estimate_where_the_program_has_one(
+    harness: Harness,
+) -> None:
+    await harness.ctx.plugin(columbina.token_meter)
+    harness.model.add(Reply(text="One.", usage=Usage(input_tokens=1200, output_tokens=5)))
+    with desk() as at:
+        runner = await frontend(harness, at)
+        assert isinstance(runner, columbina.apps.cli.Cli)
+        running = asyncio.ensure_future(runner.run())
+
+        at.enter("First.")
+        await at.sees("One.\n")
+        await asyncio.wait_for(agent_of(harness).when_idle(), 5)
+        after = runner.status_line()
+        held = harness.ctx.use(TOKEN_METER).measure(agent_of(harness).session).tokens
+        at.type(CTRL_D)
+        await left(running)
+
+    # What the service counted for the last request is no longer what is shown.
+    assert 0 < held < 1000
+    assert after == f"{MODEL.model} | ~{held} tokens | cache 0%"
 
 
 async def test_the_line_below_the_prompt_goes_by_the_preset_before_the_first_turn(

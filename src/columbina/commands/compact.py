@@ -14,7 +14,7 @@ from columbina.commands import COMMANDS, Command
 from columbina.compaction import COMPACTION, Outcome
 from columbina.kernel import Context
 
-__all__ = ["apply", "inject", "name"]
+__all__ = ["apply", "inject", "name", "told"]
 
 name = "command-compact"
 inject = (COMMANDS, COMPACTION)
@@ -29,7 +29,7 @@ def _so_many(count: int, one: str, several: str) -> str:
     return f"1 {one}" if count == 1 else f"{count} {several}"
 
 
-def _told(outcome: Outcome) -> str:
+def told(outcome: Outcome) -> str:
     """Say in a sentence or two what an attempt to make the conversation shorter came to."""
     if not outcome.changed:
         size = f"It comes to about {outcome.before} tokens."
@@ -67,7 +67,7 @@ def apply(ctx: Context, config: object) -> None:
         except cancellation.CancelledFromInside:
             # The agent was told to stop, and the work with it. Nobody stopped this command.
             return _STOPPED
-        return _told(outcome)
+        return told(outcome)
 
     ctx.use(COMMANDS).registry.add(
         ctx, "compact", Command(run, "Sum up the older part of the conversation to make room.")

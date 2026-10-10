@@ -153,12 +153,15 @@ def test_the_program_that_is_shipped_has_its_commands(
 
     assert code == 0
     assert (
+        "/compact      Sum up the older part of the conversation to make room.\n"
         "/exit         Leave.\n"
+        "/fork         Go on in a copy of this session, and leave the session as it is.\n"
         "/help         List the commands.\n"
         "/model        Show the model, or name another.\n"
         "/new          End this session and begin another one.\n"
         "/permissions  Show what the session may do, or change it to a preset.\n"
         "/sessions     List the sessions of this directory.\n"
+        "/todos        Show the list of things to do that the agent keeps.\n"
         "/tools        List the tools of the agent.\n"
     ) in printed()
 

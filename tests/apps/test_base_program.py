@@ -26,6 +26,8 @@ from columbina.session import (
 from support.launch import lines, profile, stored
 
 SIX_TIMES_SEVEN = "python -c 'print(6 * 7)'"
+MANY_WORDS = "python -c 'print(40000 * chr(119) + chr(10) + 20000 * (chr(111) + chr(32)))'"
+"""A command that says more than a model is shown: a long line, and many short words."""
 NOBODY_TO_ASK = (
     "The call was not allowed: No rule allows this command, and nothing holds it here. "
     "Nobody is here who could be asked, so it was not done."
@@ -118,7 +120,15 @@ def test_the_model_is_offered_the_tools_of_the_base_program(program: Program) ->
 
     assert ran.code == 0
     assert ran.errors == ""
-    assert program.offered() == ["read", "write", "edit", "glob", "grep", shell.NAME]
+    assert program.offered() == [
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "todo_write",
+        shell.NAME,
+    ]
 
 
 def test_a_file_in_the_working_directory_can_be_made_and_changed(program: Program) -> None:
@@ -203,6 +213,39 @@ def test_a_rule_of_the_command_line_lets_a_command_run(program: Program) -> None
         ("42\n[exit code 0]", None),
         (NOBODY_TO_ASK, "APPROVAL_UNAVAILABLE"),
     ]
+
+
+def test_the_model_can_write_down_what_it_means_to_do(program: Program) -> None:
+    things = [{"content": "Read the notes", "status": "in_progress"}, {"content": "Answer"}]
+
+    ran = program.run(call("todo_write", items=things))
+
+    assert ran.code == 0
+    assert ran.results == [
+        ("The list holds 2 things: 0 completed, 1 in progress, 1 pending.", None)
+    ]
+    assert "todo/write" in [event.type for event in program.session().events]
+
+
+def test_what_a_command_says_is_kept_whole_and_the_model_is_shown_what_it_can_take(
+    program: Program,
+) -> None:
+    ran = program.run(call(shell.NAME, command=MANY_WORDS), flags=("--allow", "run(python -c *)"))
+
+    ((said, error),) = ran.results
+    assert error is None
+    # The program has a place for the whole of it, and the result says where that is.
+    last = said.splitlines()[-1]
+    assert last.startswith("(The whole output has ")
+    where = Path(last.split(" bytes and is in ", 1)[1].split(". ", 1)[0])
+    assert where.is_relative_to(program.home / "spill")
+    kept = where.read_text(encoding="utf-8")
+    assert kept.count("w") == 40000
+    assert kept.count("o") == 20000
+    # What the tool kept in memory is more than a result may come to, so it was cut again.
+    assert "[... a part is left out here ...]" in said
+    assert len(said) < 64_000
+    assert said.startswith("wwww")
 
 
 def test_a_session_begins_with_the_preset_of_the_bundle(program: Program) -> None:
@@ -311,7 +354,7 @@ def test_without_the_permissions_and_the_shell_tool_the_other_tools_are_there(
 
     assert ran.errors == ""
     assert [error for _, error in ran.results] == [None, "UNKNOWN_TOOL"]
-    assert program.offered() == ["read", "write", "edit", "glob", "grep"]
+    assert program.offered() == ["read", "write", "edit", "glob", "grep", "todo_write"]
 
 
 def test_without_a_sandbox_nothing_is_written(program: Program) -> None:

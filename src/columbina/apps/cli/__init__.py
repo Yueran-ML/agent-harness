@@ -62,6 +62,7 @@ from columbina.session import (
     TurnEndEvent,
     TurnStartEvent,
 )
+from columbina.token_meter import TOKEN_METER
 
 __all__ = ["Cli", "Config", "apply", "inject", "name"]
 
@@ -191,7 +192,14 @@ class Cli:
         sandbox = self._ctx.get(SANDBOX)
         permissions = self._ctx.get(PERMISSIONS)
         mode = None if permissions is None else permissions.in_force(session)[0]
-        return status(session, self._model, sandbox, busy=self._prompt.busy, mode=mode)
+        return status(
+            session,
+            self._model,
+            sandbox,
+            busy=self._prompt.busy,
+            mode=mode,
+            meter=self._ctx.get(TOKEN_METER),
+        )
 
     async def leave(self, agent: Agent, rest: str) -> str:
         """Carry out the command that ends the conversation."""

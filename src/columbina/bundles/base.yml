@@ -37,3 +37,20 @@ patch:
       # A request that fails for a passing reason is made again.
       - id: retry
         plugin: columbina.retry
+      # What keeps a conversation within what its model takes: an estimate of
+      # its size, a place for what is too large to be shown whole, a limit on
+      # what one tool may give back, and a summary of the oldest part when the
+      # conversation comes near the limit of the model.
+      - id: token-meter
+        plugin: columbina.token_meter
+      - id: spill
+        plugin: columbina.spill.local
+        config:
+          root: ${COLUMBINA_HOME}/spill
+      - id: spill-policy
+        plugin: columbina.spill.policy
+      - id: compaction
+        plugin: columbina.compaction.basic
+      # The list of things to do that a model keeps for itself.
+      - id: todo
+        plugin: columbina.todo

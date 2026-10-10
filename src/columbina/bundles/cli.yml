@@ -12,9 +12,18 @@ patch:
         plugin: columbina.commands.permissions
       - id: command-sessions
         plugin: columbina.commands.sessions
+      - id: command-compact
+        plugin: columbina.commands.compact
+      - id: command-todos
+        plugin: columbina.commands.todos
+      - id: command-fork
+        plugin: columbina.commands.fork
       - id: frontend
         plugin: columbina.apps.cli
         config:
           model:
             provider: deepseek
             model: ${COLUMBINA_MODEL:-deepseek-flash}
+            # How many tokens the model takes. The service says so itself when
+            # it refuses a request as too long.
+            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}

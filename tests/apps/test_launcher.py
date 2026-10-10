@@ -279,8 +279,18 @@ def test_the_composition_can_be_printed_instead_of_run(
         "context-instructions",
         "context-runtime",
         "retry",
+        "token-meter",
+        "spill",
+        "spill-policy",
+        "compaction",
+        "todo",
         "frontend",
     ]
+    assert entries["spill"] == {
+        "id": "spill",
+        "plugin": "columbina.spill.local",
+        "config": {"root": "${COLUMBINA_HOME}/spill"},
+    }
     assert entries["session"] == {
         "id": "session",
         "plugin": "columbina.session",
@@ -293,8 +303,13 @@ def test_the_composition_can_be_printed_instead_of_run(
         "config": {"preset": "workspace-write", "user_file": "${COLUMBINA_HOME}/permissions.yml"},
     }
     assert entries["context-instructions"]["config"] == {"user_file": "${COLUMBINA_HOME}/AGENTS.md"}
+    # The model is another one. How much it takes stays as the profile has it.
     assert entries["frontend"]["config"] == {
-        "model": {"provider": "deepseek", "model": "deepseek-fast"},
+        "model": {
+            "provider": "deepseek",
+            "model": "deepseek-fast",
+            "context_window": "${COLUMBINA_CONTEXT_WINDOW:-1048576}",
+        },
         "task": "Do it.",
         "cwd": str(work),
     }
@@ -766,18 +781,25 @@ def test_the_program_of_a_conversation_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-5:] == [
+    assert list(entries)[-8:] == [
         "commands",
         "command-tools",
         "command-permissions",
         "command-sessions",
+        "command-compact",
+        "command-todos",
+        "command-fork",
         "frontend",
     ]
     assert entries["frontend"] == {
         "id": "frontend",
         "plugin": "columbina.apps.cli",
         "config": {
-            "model": {"provider": "deepseek", "model": "other"},
+            "model": {
+                "provider": "deepseek",
+                "model": "other",
+                "context_window": "${COLUMBINA_CONTEXT_WINDOW:-1048576}",
+            },
             "cwd": str(work),
             "resume": True,
         },
@@ -792,7 +814,11 @@ def test_a_conversation_takes_the_preset_the_rules_and_the_session_of_the_comman
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert entries["frontend"]["config"] == {
-        "model": {"provider": "deepseek", "model": "${COLUMBINA_MODEL:-deepseek-flash}"},
+        "model": {
+            "provider": "deepseek",
+            "model": "${COLUMBINA_MODEL:-deepseek-flash}",
+            "context_window": "${COLUMBINA_CONTEXT_WINDOW:-1048576}",
+        },
         "cwd": str(work),
         "session_id": "mine",
     }

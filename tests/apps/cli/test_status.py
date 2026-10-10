@@ -5,10 +5,18 @@ import pytest
 import columbina.fs
 import columbina.sandbox
 import columbina.session
+import columbina.token_meter
 import columbina.tools
 from columbina.apps.cli.status import status
 from columbina.kernel import Context
-from columbina.llm import AssistantMessage, CallConfig, LlmFailure, TextBlock, Usage
+from columbina.llm import (
+    AssistantMessage,
+    CallConfig,
+    LlmFailure,
+    TextBlock,
+    Usage,
+    UserMessage,
+)
 from columbina.sandbox import SANDBOX, Mode, Sandbox, Strength
 from columbina.session import (
     SESSIONS,
@@ -16,7 +24,9 @@ from columbina.session import (
     AssistantMessageEvent,
     Session,
     TurnStartEvent,
+    UserMessageEvent,
 )
+from columbina.token_meter import TOKEN_METER, TokenMeter
 
 MODEL = CallConfig(provider="deepseek", model="deepseek-flash")
 SAID = AssistantMessage(content=(TextBlock(text="Hello."),))
@@ -161,3 +171,57 @@ async def test_a_running_turn_says_how_it_is_stopped(ctx: Context, session: Sess
     assert status(session, MODEL, sandbox, busy=True) == (
         "deepseek-flash | workspace-write, commands not held | 1.0k tokens | cache 0% | esc stops"
     )
+
+
+# With an estimate
+
+
+async def meter_of(ctx: Context) -> TokenMeter:
+    await ctx.plugin(columbina.token_meter)
+    return ctx.use(TOKEN_METER)
+
+
+def said(text: str, source: str = "user") -> UserMessageEvent:
+    return UserMessageEvent(message=UserMessage(content=(TextBlock(text=text),)), source=source)
+
+
+async def test_where_there_is_an_estimate_it_is_what_is_shown(
+    ctx: Context, session: Session
+) -> None:
+    meter = await meter_of(ctx)
+    roomy = MODEL.model_copy(update={"context_window": 128_000})
+    session.append(said("word " * 8000))
+    held = meter.measure(session).tokens
+    assert 8000 < held < 10_000
+
+    # The mark says that nobody counted this.
+    assert status(session, roomy, None, busy=False, meter=meter) == (
+        f"deepseek-flash | ~{held / 1000:.1f}k tokens ({round(100 * held / 128_000)}%)"
+    )
+    # Without the estimate nothing is known yet: no request has been made.
+    assert status(session, roomy, None, busy=False) == "deepseek-flash"
+
+
+async def test_an_estimate_goes_down_as_soon_as_the_conversation_is_shorter(
+    ctx: Context, session: Session
+) -> None:
+    meter = await meter_of(ctx)
+    long = session.append(said("word " * 8000)).seq
+    session.append(reply(input_tokens=9000))
+    before, held = status(session, MODEL, None, busy=False, meter=meter), meter.measure(session)
+    assert held.tokens > 8000
+
+    session.append(said("What was said before, in short.", "compaction"), replaces=[long])
+
+    after, left = status(session, MODEL, None, busy=False, meter=meter), meter.measure(session)
+    assert left.tokens < 100
+    assert before.split(" | ")[1] == f"~{held.tokens / 1000:.1f}k tokens"
+    assert after.split(" | ")[1] == f"~{left.tokens} tokens"
+    # What the last request sent is what it was, whatever happened to the conversation since.
+    assert status(session, MODEL, None, busy=False).split(" | ")[1] == "9.0k tokens"
+
+
+async def test_an_estimate_of_nothing_is_not_shown(ctx: Context, session: Session) -> None:
+    meter = await meter_of(ctx)
+
+    assert status(session, MODEL, None, busy=False, meter=meter) == "deepseek-flash"

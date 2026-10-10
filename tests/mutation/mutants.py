@@ -48,6 +48,7 @@ PATTERNS = "src/columbina/fs/patterns.py"
 RUNTIME = "src/columbina/context/runtime.py"
 LAUNCHER = "src/columbina/apps/launcher.py"
 BASE_BUNDLE = "src/columbina/bundles/base.yml"
+HEADLESS_BUNDLE = "src/columbina/bundles/headless.yml"
 INSTRUCTIONS = "src/columbina/context/instructions.py"
 PROMPT = "src/columbina/system_prompt/__init__.py"
 RULES = "src/columbina/permissions/rules.py"
@@ -2929,6 +2930,66 @@ _BASE = (
         "        plugin: columbina.system_prompt",
         "        plugin: columbina.system_prompt\n        disabled: true",
     ),
+    mutant(
+        "the base program has no estimate of the size of a conversation",
+        BASE_BUNDLE,
+        "      - id: token-meter\n        plugin: columbina.token_meter\n",
+        "",
+    ),
+    mutant(
+        "the base program has no place for what is too large",
+        BASE_BUNDLE,
+        "      - id: spill\n        plugin: columbina.spill.local\n        config:\n          root: ${COLUMBINA_HOME}/spill\n",
+        "",
+    ),
+    mutant(
+        "the base program puts no limit on what a tool gives back",
+        BASE_BUNDLE,
+        "      - id: spill-policy\n        plugin: columbina.spill.policy\n",
+        "",
+    ),
+    mutant(
+        "the base program does not make a conversation shorter",
+        BASE_BUNDLE,
+        "      - id: compaction\n        plugin: columbina.compaction.basic\n",
+        "",
+    ),
+    mutant(
+        "the base program has no list of things to do",
+        BASE_BUNDLE,
+        "      - id: todo\n        plugin: columbina.todo\n",
+        "",
+    ),
+    mutant(
+        "a conversation at the terminal cannot be made shorter when the user asks",
+        CLI_BUNDLE,
+        "      - id: command-compact\n        plugin: columbina.commands.compact\n",
+        "",
+    ),
+    mutant(
+        "a conversation at the terminal cannot show the list of things to do",
+        CLI_BUNDLE,
+        "      - id: command-todos\n        plugin: columbina.commands.todos\n",
+        "",
+    ),
+    mutant(
+        "a conversation at the terminal cannot go on in a copy of its session",
+        CLI_BUNDLE,
+        "      - id: command-fork\n        plugin: columbina.commands.fork\n",
+        "",
+    ),
+    mutant(
+        "a conversation at the terminal is not told how much its model takes",
+        CLI_BUNDLE,
+        "            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}\n",
+        "",
+    ),
+    mutant(
+        "a run without an interface is not told how much its model takes",
+        HEADLESS_BUNDLE,
+        "            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}\n",
+        "",
+    ),
 )
 
 _TRANSCRIPT = (
@@ -3374,6 +3435,48 @@ _TRANSCRIPT = (
         CLI_TRANSCRIPT,
         '"completed": _NOTE}',
         '"completed": ""}',
+    ),
+    mutant(
+        "nothing stands where a reply would grow while a conversation is made shorter",
+        CLI_TRANSCRIPT,
+        "            self._word = _SHORTER\n",
+        "            self._word = None\n",
+    ),
+    mutant(
+        "a conversation that is made shorter does not say why",
+        CLI_TRANSCRIPT,
+        "            return [] if why is None else [_note(why)]\n",
+        "            return []\n",
+    ),
+    mutant(
+        "the word about a conversation being made shorter stays when that is over",
+        CLI_TRANSCRIPT,
+        '            self._word = None\n            if data.why == "manual":\n',
+        '            if data.why == "manual":\n',
+    ),
+    mutant(
+        "what came of what the user asked for is told a second time",
+        CLI_TRANSCRIPT,
+        '            if data.why == "manual":\n                # The command that asked for it says what came of it.\n                return []\n',
+        "",
+    ),
+    mutant(
+        "what came of making a conversation shorter is not told",
+        CLI_TRANSCRIPT,
+        '            return [_note(f"({came[0].lower()}{came[1:]})")]\n',
+        "            return []\n",
+    ),
+    mutant(
+        "what came of making a conversation shorter begins like a sentence of its own",
+        CLI_TRANSCRIPT,
+        '            return [_note(f"({came[0].lower()}{came[1:]})")]\n',
+        '            return [_note(f"({came})")]\n',
+    ),
+    mutant(
+        "a conversation that the model refused says that it had come near the limit",
+        CLI_TRANSCRIPT,
+        '    "overflow": "(the model refused the conversation as too long. Making it shorter.)",\n',
+        '    "overflow": "(the conversation has come near what the model takes. Making it shorter.)",\n',
     ),
 )
 
@@ -4111,14 +4214,20 @@ _CLI = (
     mutant(
         "the line below the prompt is empty",
         CLI_FRONTEND,
-        "        return status(session, self._model, sandbox, busy=self._prompt.busy, mode=mode)\n",
+        "        return status(\n            session,\n            self._model,\n            sandbox,\n            busy=self._prompt.busy,\n            mode=mode,\n            meter=self._ctx.get(TOKEN_METER),\n        )\n",
         '        return ""\n',
     ),
     mutant(
         "the line below the prompt names the model that the conversation began with",
         CLI_FRONTEND,
-        "        return status(session, self._model, sandbox, busy=self._prompt.busy, mode=mode)\n",
-        "        return status(session, self._config.model, sandbox, busy=self._prompt.busy, mode=mode)\n",
+        "            self._model,\n            sandbox,\n",
+        "            self._config.model,\n            sandbox,\n",
+    ),
+    mutant(
+        "the line below the prompt does not go by the estimate that the program has",
+        CLI_FRONTEND,
+        "            meter=self._ctx.get(TOKEN_METER),\n",
+        "",
     ),
     mutant(
         "the line below the prompt shows the mode of the sandbox though somebody knows better",
@@ -4179,6 +4288,24 @@ _CLI = (
         CLI_FRONTEND,
         "        if isinstance(data, TurnStartEvent):\n            prompt.busy = True\n",
         "        if isinstance(data, TurnStartEvent):\n            pass\n",
+    ),
+    mutant(
+        "what the last request sent is shown although there is an estimate",
+        CLI_STATUS,
+        '    sent, about = (_last_sent(session), "") if meter is None else (_held(session, meter), "~")\n',
+        '    sent, about = (_last_sent(session), "")\n',
+    ),
+    mutant(
+        "an estimate is shown as if the service had counted it",
+        CLI_STATUS,
+        '    sent, about = (_last_sent(session), "") if meter is None else (_held(session, meter), "~")\n',
+        '    sent, about = (_last_sent(session), "") if meter is None else (_held(session, meter), "")\n',
+    ),
+    mutant(
+        "what the service counted is marked as an estimate",
+        CLI_STATUS,
+        '    sent, about = (_last_sent(session), "") if meter is None else (_held(session, meter), "~")\n',
+        '    sent, about = (_last_sent(session), "~") if meter is None else (_held(session, meter), "~")\n',
     ),
 )
 

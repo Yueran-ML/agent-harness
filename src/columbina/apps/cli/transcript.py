@@ -11,6 +11,10 @@ follows only closes it. A reply that came without chunks, as in a session
 that is read from its file, is shown from the event. Either way the text is
 shown once.
 
+A conversation that is made shorter says so: why it is, when it begins, and
+what came of it, when it is over. Where the user asked for it, the command
+that was given says what came of it, and nothing is said here a second time.
+
 The lines are :class:`rich.text.Text`, so that they carry their colours with
 them. :func:`on_screen` turns them into what a terminal is sent. Nothing that
 a model or a tool wrote is ever read as markup, and nothing of it reaches the
@@ -32,6 +36,8 @@ from columbina.apps.cli.lines import Lines
 from columbina.apps.cli.terminal import Terminal
 from columbina.apps.common import how_it_ended
 from columbina.apps.terminal_text import harmless
+from columbina.commands.compact import told as what_came_of_it
+from columbina.compaction import CompactionEndEvent, CompactionStartEvent, Why
 from columbina.llm import BlockEnd, BlockStart, Chunk, TextDelta
 from columbina.retry import RetryEvent
 from columbina.session import (
@@ -66,6 +72,16 @@ _ERROR_LINES = 3
 _RECAP_LINES = 12
 _NAMED_FIRST = ("command", "path", "pattern")
 """The arguments that say what a call acts on, the most telling one first."""
+
+_SHORTER = "making the conversation shorter..."
+"""What stands where a reply would grow, for as long as a conversation is being made shorter."""
+
+_WHY_SHORTER: dict[Why, str | None] = {
+    "pressure": "(the conversation has come near what the model takes. Making it shorter.)",
+    "overflow": "(the model refused the conversation as too long. Making it shorter.)",
+    # The user has just asked for it.
+    "manual": None,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +305,17 @@ class Transcript:
             return [_note(f"(the request failed: {data.code}. Trying again in {wait})")]
         if isinstance(data, TodoWriteEvent):
             return _things(data)
+        if isinstance(data, CompactionStartEvent):
+            self._word = _SHORTER
+            why = _WHY_SHORTER[data.why]
+            return [] if why is None else [_note(why)]
+        if isinstance(data, CompactionEndEvent):
+            self._word = None
+            if data.why == "manual":
+                # The command that asked for it says what came of it.
+                return []
+            came = what_came_of_it(data.outcome)
+            return [_note(f"({came[0].lower()}{came[1:]})")]
         if isinstance(data, ApprovalDecidedEvent) and data.call_id in self._began:
             # The time that somebody took to answer is not the time that the call took.
             self._began[data.call_id] = event.time

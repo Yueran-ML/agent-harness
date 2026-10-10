@@ -13,6 +13,8 @@ import columbina.retry
 import columbina.session
 from columbina.approval import ApprovalDecidedEvent
 from columbina.apps.cli.transcript import Symbols, Transcript, on_screen, recap
+from columbina.compaction import EVENTS as COMPACTION_EVENTS
+from columbina.compaction import CompactionEndEvent, CompactionStartEvent, Outcome
 from columbina.kernel import Context
 from columbina.llm import (
     AssistantMessage,
@@ -616,6 +618,68 @@ async def test_a_request_that_is_made_again_is_told(log: Session) -> None:
 
     assert soon == ["(the request failed: SERVER. Trying again in 800 ms)"]
     assert later == ["(the request failed: RATE_LIMIT. Trying again in 4.0 s)"]
+
+
+async def test_a_conversation_that_is_made_shorter_says_why_and_what_came_of_it(
+    ctx: Context, log: Session
+) -> None:
+    ctx.use(SESSIONS).declare(ctx, *COMPACTION_EVENTS)
+    transcript = Transcript(PLAIN)
+
+    begun = show(transcript, log, CompactionStartEvent(why="pressure", tokens=15_200))
+    # While it goes on, a word stands where a reply would grow.
+    meanwhile = transcript.partial.plain
+    over = show(
+        transcript,
+        log,
+        CompactionEndEvent(why="pressure", outcome=Outcome(trimmed=2, before=15_200, after=6100)),
+    )
+
+    assert begun == ["(the conversation has come near what the model takes. Making it shorter.)"]
+    assert meanwhile == "making the conversation shorter..."
+    assert over == [
+        "(the conversation was made shorter: 2 long results of tools were cut down to the "
+        "beginning and the end. It came to about 15200 tokens and comes to about 6100 now.)"
+    ]
+    assert transcript.partial.plain == ""
+
+
+async def test_a_conversation_that_the_model_refused_says_so(ctx: Context, log: Session) -> None:
+    ctx.use(SESSIONS).declare(ctx, *COMPACTION_EVENTS)
+    transcript = Transcript(PLAIN)
+    failed = Outcome(before=900, after=900, error="the model wrote no summary")
+
+    shown = show(
+        transcript,
+        log,
+        CompactionStartEvent(why="overflow", tokens=900),
+        CompactionEndEvent(why="overflow", outcome=failed),
+    )
+
+    assert shown == [
+        "(the model refused the conversation as too long. Making it shorter.)",
+        "(the conversation is as it was: the model wrote no summary. It comes to about 900 "
+        "tokens.)",
+    ]
+
+
+async def test_what_the_user_asked_for_is_told_by_the_command_and_not_a_second_time(
+    ctx: Context, log: Session
+) -> None:
+    ctx.use(SESSIONS).declare(ctx, *COMPACTION_EVENTS)
+    transcript = Transcript(PLAIN)
+
+    begun = show(transcript, log, CompactionStartEvent(why="manual", tokens=900))
+    meanwhile = transcript.partial.plain
+    over = show(
+        transcript,
+        log,
+        CompactionEndEvent(why="manual", outcome=Outcome(summarised=4, before=900, after=300)),
+    )
+
+    assert (begun, over) == ([], [])
+    assert meanwhile == "making the conversation shorter..."
+    assert transcript.partial.plain == ""
 
 
 async def test_the_bookkeeping_of_a_turn_is_not_shown(log: Session) -> None:

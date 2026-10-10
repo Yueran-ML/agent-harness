@@ -1,10 +1,15 @@
 """The line below the prompt: what somebody at the terminal wants to see at a glance.
 
 It says which model answers, what the session may do to files, how well
-commands are held, how much the model was sent with the last request, and how
-much of everything it was sent it could take from its cache. The numbers come
+commands are held, how much the conversation comes to, and how much of
+everything the model was sent it could take from its cache. The numbers come
 from the log of the session, so they are right also for a session that was
 taken up again.
+
+How much the conversation comes to is what the next request will send. Where
+the program has an estimate of that, the estimate is shown, with a mark that
+says so: it goes down at once when the conversation is made shorter. Without
+one, what is shown is what the last request sent, as the service counted it.
 """
 
 from columbina.llm import CallConfig
@@ -15,6 +20,7 @@ from columbina.session import (
     AssistantMessageEvent,
     Session,
 )
+from columbina.token_meter import TokenMeter
 
 __all__ = ["status"]
 
@@ -47,6 +53,11 @@ def _last_sent(session: Session) -> int:
     return 0
 
 
+def _held(session: Session, meter: TokenMeter) -> int:
+    """Return what the conversation comes to now, as it is estimated."""
+    return meter.measure(session).tokens
+
+
 def status(
     session: Session,
     model: CallConfig,
@@ -54,6 +65,7 @@ def status(
     *,
     busy: bool,
     mode: Mode | None = None,
+    meter: TokenMeter | None = None,
 ) -> str:
     """Return the status line of a session.
 
@@ -65,13 +77,15 @@ def status(
         mode: The mode of the sandbox that the session goes by, if somebody
             knows it better than the sandbox. Before the first turn the log
             names none, and the permissions know which one it will be.
+        meter: The estimate of the size of sessions, if the program has one.
     """
     parts = [model.model]
     if sandbox is not None:
         parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength()]}")
-    sent = _last_sent(session)
+    # An estimate is marked as one. What the service counted is not.
+    sent, about = (_last_sent(session), "") if meter is None else (_held(session, meter), "~")
     if sent:
-        told = f"{_short(sent)} tokens"
+        told = f"{about}{_short(sent)} tokens"
         if model.context_window:
             told += f" ({round(100 * sent / model.context_window)}%)"
         parts.append(told)

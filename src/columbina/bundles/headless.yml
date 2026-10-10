@@ -10,3 +10,4 @@ patch:
           model:
             provider: deepseek
             model: ${COLUMBINA_MODEL:-deepseek-flash}
+            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}

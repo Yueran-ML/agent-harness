@@ -65,6 +65,7 @@ SLASH = "src/columbina/commands/__init__.py"
 COMMAND_TOOLS = "src/columbina/commands/tools.py"
 COMMAND_SESSIONS = "src/columbina/commands/sessions.py"
 COMMAND_PERMISSIONS = "src/columbina/commands/permissions.py"
+COMMAND_COMPACT = "src/columbina/commands/compact.py"
 TERMINAL_TEXT = "src/columbina/apps/terminal_text.py"
 HEADLESS = "src/columbina/apps/headless.py"
 SESSION_STORE = "src/columbina/session/store.py"
@@ -266,6 +267,66 @@ _LOOP = (
         CANCELLATION,
         "    await asyncio.sleep(0)\n    return current_task().cancelling()\n",
         "    return current_task().cancelling()\n",
+    ),
+    mutant(
+        "an agent that has ended takes work to do between turns",
+        LOOP,
+        '        if self._closing or self._failure is not None or self._driver.done():\n            raise AgentBusyError(f"the agent {self.id!r} has ended")\n',
+        "",
+    ),
+    mutant(
+        "an agent that is not at rest takes work to do between turns",
+        LOOP,
+        '        if not self._idle.is_set():\n            raise AgentBusyError(f"the agent {self.id!r} is not at rest")\n',
+        "",
+    ),
+    mutant(
+        "an agent counts as at rest while it does work between turns",
+        LOOP,
+        "        self._idle.clear()\n        self._wake.set()\n        return cast(",
+        "        self._wake.set()\n        return cast(",
+    ),
+    mutant(
+        "work that the agent is told to stop before it began is done all the same",
+        LOOP,
+        "        self._drop_work()\n        task = self._turn_task\n",
+        "        task = self._turn_task\n",
+    ),
+    mutant(
+        "work that waits when the driver of the agent ends is left waiting",
+        LOOP,
+        "            self._idle.set()\n            self._drop_work()\n",
+        "            self._idle.set()\n",
+    ),
+    mutant(
+        "work between turns cannot be stopped with the agent",
+        LOOP,
+        "        task = self._turn_task = asyncio.ensure_future(_did(work.job))\n",
+        "        task = asyncio.ensure_future(_did(work.job))\n",
+    ),
+    mutant(
+        "what work between turns gives is not handed to whoever asked",
+        LOOP,
+        "                work.done.set_result(result)\n",
+        "                pass\n",
+    ),
+    mutant(
+        "what work between turns raises is not handed to whoever asked",
+        LOOP,
+        "                work.done.set_exception(error)\n",
+        "                pass\n",
+    ),
+    mutant(
+        "whoever stops waiting for work between turns ends the agent",
+        LOOP,
+        "            if not work.done.done():\n                work.done.set_result(result)\n",
+        "            if True:\n                work.done.set_result(result)\n",
+    ),
+    mutant(
+        "nobody is told that work between turns was stopped",
+        LOOP,
+        "            self._turn_task = None\n            # However it ended, nobody is left waiting for it.\n            work.done.cancel()\n",
+        "            self._turn_task = None\n",
     ),
 )
 
@@ -4216,6 +4277,60 @@ _SLASH = (
         COMMAND_PERMISSIONS,
         '            "The agent is told when its next turn begins."\n',
         '            ""\n',
+    ),
+    mutant(
+        "the command that makes a conversation shorter fails on an agent that is busy",
+        COMMAND_COMPACT,
+        "        except AgentBusyError:\n            return _BUSY\n",
+        "",
+    ),
+    mutant(
+        "work that was stopped with the agent counts as a failure of the command",
+        COMMAND_COMPACT,
+        "        except cancellation.CancelledFromInside:\n            # The agent was told to stop, and the work with it. Nobody stopped this command.\n            return _STOPPED\n",
+        "",
+    ),
+    mutant(
+        "the command asks as if the conversation had come near what the model takes",
+        COMMAND_COMPACT,
+        'return await service.compact(agent, "manual")',
+        'return await service.compact(agent, "pressure")',
+    ),
+    mutant(
+        "one message is counted like several",
+        COMMAND_COMPACT,
+        '    return f"1 {one}" if count == 1 else f"{count} {several}"\n',
+        '    return f"{count} {several}"\n',
+    ),
+    mutant(
+        "a conversation that stayed as it was is said to have been made shorter",
+        COMMAND_COMPACT,
+        "    if not outcome.changed:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a failure that changed nothing is told as nothing to do",
+        COMMAND_COMPACT,
+        '        if outcome.error is None:\n            return f"There is nothing',
+        '        if True:\n            return f"There is nothing',
+    ),
+    mutant(
+        "a summary that failed after results were cut is not mentioned",
+        COMMAND_COMPACT,
+        '    if outcome.error is None:\n        return f"{told} {sizes}"\n',
+        '    if True:\n        return f"{told} {sizes}"\n',
+    ),
+    mutant(
+        "results that were cut down are not mentioned",
+        COMMAND_COMPACT,
+        "    if outcome.trimmed:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "messages that gave way to a summary are not mentioned",
+        COMMAND_COMPACT,
+        "    if outcome.summarised:\n",
+        "    if False:\n",
     ),
 )
 

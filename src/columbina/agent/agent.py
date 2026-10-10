@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 from columbina.agent.inbox import InboxItem, enqueue
 from columbina.data import Data
@@ -16,9 +16,15 @@ from columbina.session.store import check_session_id, new_session_id
 CancelCause = Literal["user", "parent", "hook", "budget", "disposed"]
 """Who cancelled what an agent was doing."""
 
+ResultT = TypeVar("ResultT")
+
 
 class AgentError(Exception):
     """An agent could not be created."""
+
+
+class AgentBusyError(Exception):
+    """An agent was asked for work between turns while it was not at rest, or after it ended."""
 
 
 class AgentSpec(Data):
@@ -111,6 +117,30 @@ class Agent(ABC):
     async def when_idle(self) -> None:
         """Wait until the agent is at rest: no turn is running and none is about to begin."""
 
+    @abstractmethod
+    def run_maintenance(self, job: Callable[[], Awaitable[ResultT]]) -> Awaitable[ResultT]:
+        """Do a piece of work on the conversation between two turns.
+
+        A turn reads and writes the conversation as it goes, so work that
+        changes what the model sees has to wait for a moment of rest. The
+        agent does the work itself, before any input that arrives meanwhile,
+        and :meth:`cancel` stops it like a turn. Until it is over the agent
+        is not at rest.
+
+        The agent is asked where this is called, not where the result is
+        waited for.
+
+        Args:
+            job: Does the work when it is called.
+
+        Returns:
+            What gives the result of the work when it is waited for, or
+            raises what the work raised.
+
+        Raises:
+            AgentBusyError: The agent is not at rest, or it has ended.
+        """
+
 
 def _item(content: str | UserMessage, source: str) -> InboxItem:
     if isinstance(content, str):
@@ -122,6 +152,7 @@ AgentFactory = Callable[[Context, AgentSpec, Session], Agent]
 """What a loop registers: it makes an agent in a scope, from a spec, on a session."""
 
 ContextKind = Literal["replace", "append", "note"]
+"""How the text of a source of context is kept in a conversation."""
 
 CONTEXT_PREFIX = "context/"
 """What the source of a message begins with if a source of context gave it.
@@ -129,7 +160,6 @@ CONTEXT_PREFIX = "context/"
 The name of the source follows. By this, such a message is told from what
 the user said and from everything else in the role of the user.
 """
-"""How the text of a source of context is kept in a conversation."""
 
 
 @dataclass(frozen=True, slots=True)

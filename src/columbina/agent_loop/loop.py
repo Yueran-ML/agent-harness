@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Literal, TypeVar, cast
 
 from columbina import cancellation
@@ -17,6 +18,7 @@ from columbina.agent import (
     STREAM,
     TURN_STOPPING,
     Agent,
+    AgentBusyError,
     AgentSpec,
     CancelCause,
     ContextSource,
@@ -140,6 +142,23 @@ async def _give_up(failure: RequestFailure) -> ErrorDecision:
     return GiveUp()
 
 
+@dataclass(frozen=True, slots=True)
+class _Work:
+    """A piece of work that is to be done between two turns.
+
+    Attributes:
+        job: Does the work.
+        done: Gives whoever asked for it what came of it.
+    """
+
+    job: Callable[[], Awaitable[object]]
+    done: asyncio.Future[object]
+
+
+async def _did(job: Callable[[], Awaitable[ResultT]]) -> ResultT:
+    return await job()
+
+
 class _RequestError(Exception):
     """A call to the model failed for good."""
 
@@ -181,7 +200,9 @@ class LoopAgent(Agent):
         self._cause: CancelCause | None = None
         # How often messages of the session had been replaced when the context was last seen to.
         self._replaced = 0
-        self._turn_task: asyncio.Task[None] | None = None
+        self._work: _Work | None = None
+        # The turn that is running, or the work between turns that is being done.
+        self._turn_task: asyncio.Task[object] | None = None
         self._driver = asyncio.ensure_future(self._drive())
         ctx.effect(lambda: self._stop)
 
@@ -205,6 +226,7 @@ class LoopAgent(Agent):
             clear_inbox(self.session)
         self._halted = True
         self._wake.clear()
+        self._drop_work()
         task = self._turn_task
         if task is None:
             self._idle.set()
@@ -223,6 +245,23 @@ class LoopAgent(Agent):
         if self._failure is not None:
             raise self._failure
 
+    def run_maintenance(self, job: Callable[[], Awaitable[ResultT]]) -> Awaitable[ResultT]:
+        """Do a piece of work on the conversation between two turns.
+
+        Raises:
+            AgentBusyError: The agent is not at rest, or it has ended.
+        """
+        if self._closing or self._failure is not None or self._driver.done():
+            raise AgentBusyError(f"the agent {self.id!r} has ended")
+        if not self._idle.is_set():
+            raise AgentBusyError(f"the agent {self.id!r} is not at rest")
+        done: asyncio.Future[object] = asyncio.get_running_loop().create_future()
+        self._work = _Work(job, done)
+        # The driver does it, as it runs the turns: one thing at a time writes the conversation.
+        self._idle.clear()
+        self._wake.set()
+        return cast("Awaitable[ResultT]", done)
+
     # The driver
 
     async def _stop(self) -> None:
@@ -239,6 +278,9 @@ class LoopAgent(Agent):
                 self._wake.clear()
                 if self._closing:
                     return
+                work, self._work = self._work, None
+                if work is not None:
+                    await self._do(work)
                 # A wake that a cancellation has taken back since is not acted on.
                 if not self._halted:
                     try:
@@ -252,6 +294,36 @@ class LoopAgent(Agent):
         finally:
             # However the driver ends, nobody is left waiting for an agent that is gone.
             self._idle.set()
+            self._drop_work()
+
+    def _drop_work(self) -> None:
+        """Give up the work that was taken and has not begun, and tell whoever waits for it."""
+        work, self._work = self._work, None
+        if work is not None:
+            work.done.cancel()
+
+    async def _do(self, work: _Work) -> None:
+        """Do a piece of work in a task of its own, so that it can be stopped like a turn."""
+        self._cause = None
+        task = self._turn_task = asyncio.ensure_future(_did(work.job))
+        before = cancellation.requests()
+        try:
+            result = await task
+        except asyncio.CancelledError:
+            # Either the driver is being cancelled, or only the work was stopped.
+            if cancellation.requested_since(before):
+                raise
+        except Exception as error:
+            # Whoever asked may have stopped waiting. The work was done for the agent all the same.
+            if not work.done.done():
+                work.done.set_exception(error)
+        else:
+            if not work.done.done():
+                work.done.set_result(result)
+        finally:
+            self._turn_task = None
+            # However it ended, nobody is left waiting for it.
+            work.done.cancel()
 
     async def _run_turns(self) -> None:
         """Run a turn for the input that waits, and then one for every further task."""

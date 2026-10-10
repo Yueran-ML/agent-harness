@@ -1,6 +1,8 @@
 """The agent service: where agents are created, and what every agent offers."""
 
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import TypeVar
 
 import pytest
 
@@ -29,6 +31,7 @@ from columbina.session import (
 )
 
 MODEL = CallConfig(provider="scripted", model="script")
+ResultT = TypeVar("ResultT")
 
 
 class Still(Agent):
@@ -51,6 +54,9 @@ class Still(Agent):
 
     async def when_idle(self) -> None:
         return None
+
+    def run_maintenance(self, job: Callable[[], Awaitable[ResultT]]) -> Awaitable[ResultT]:
+        return job()
 
 
 def item(text: str, source: str) -> InboxItem:

@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from columbina.compaction.basic.trim import trim
+from columbina.compaction.basic.trim import Cut, apply, cuts, trim
 from columbina.kernel import Context
 from columbina.llm import (
     AssistantMessage,
@@ -231,6 +231,48 @@ async def test_each_block_of_text_of_a_result_is_cut_by_itself(ctx: Context) -> 
         TextBlock(text="a short one"),
         TextBlock(text=f"{text_of(10_000)[:4096]}{left_out(4880)}\n{text_of(10_000)[-1024:]}"),
     )
+
+
+async def test_what_would_be_cut_can_be_found_without_cutting_it(ctx: Context) -> None:
+    session = begun(ctx)
+    long = text_of(10_000)
+    asked(session, "call-1", "call-2")
+    first = answered(session, "call-1", long)
+    answered(session, "call-2", "short")
+    asked(session, say="Done.")
+    count = len(session)
+
+    found = cuts(session, **LIMITS)
+
+    assert len(session) == count
+    (cut,) = found
+    assert cut.seq == first
+    assert cut.whole == session.events[first].data
+    assert cut.shorter.message.content == (
+        TextBlock(text=f"{long[:4096]}{left_out(4880)}\n{long[-1024:]}"),
+    )
+    assert apply(session, found) == 1
+    assert session.events[-1].data == cut.shorter
+    assert session.events[-1].replaces == (first,)
+
+
+async def test_a_result_that_the_model_no_longer_sees_is_passed_over(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1", "call-2")
+    gone = answered(session, "call-1", text_of(10_000))
+    stays = answered(session, "call-2", text_of(10_000))
+    asked(session, say="Done.")
+    found = cuts(session, **LIMITS)
+    assert [cut.seq for cut in found] == [gone, stays]
+    # Something has taken the place of the first one since: a summary, or this very cut.
+    assert apply(session, found[:1]) == 1
+    count = len(session)
+
+    assert apply(session, found) == 1
+
+    assert len(session) == count + 1
+    assert session.events[-1].replaces == (stays,)
+    assert apply(session, [Cut(seq=10**6, whole=found[0].whole, shorter=found[0].shorter)]) == 0
 
 
 async def test_messages_that_are_no_results_are_never_cut(ctx: Context) -> None:

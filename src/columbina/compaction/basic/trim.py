@@ -12,12 +12,35 @@ its last reply are such: the request that shows them to it is still to come.
 
 A result that was saved somewhere because it was too large says so in its
 last line. That line is at the end, and the end is kept.
+
+Finding what would be cut and cutting it are two moves. Whoever makes a
+conversation shorter looks first whether this alone would be enough. If it
+is not, the oldest part is summed up as it stands, and what is cut
+afterwards is only what the summary has left.
 """
+
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 from columbina.llm import TextBlock
 from columbina.session import AssistantMessageEvent, Session, ToolResultEvent
 
-__all__ = ["trim"]
+__all__ = ["Cut", "apply", "cuts", "trim"]
+
+
+@dataclass(frozen=True, slots=True)
+class Cut:
+    """A result that can be replaced by a shorter one.
+
+    Attributes:
+        seq: Where the result stands in the log.
+        whole: The result as it is.
+        shorter: What would take its place.
+    """
+
+    seq: int
+    whole: ToolResultEvent
+    shorter: ToolResultEvent
 
 
 def _left_out(count: int) -> str:
@@ -40,13 +63,12 @@ def _two_ends(text: str, head: int, tail: int) -> str:
     return cut if len(cut) < len(text) else text
 
 
-def trim(session: Session, *, over: int, head: int, tail: int) -> int:
-    """Cut down the long results that the model has read, and return how many were cut.
+def cuts(session: Session, *, over: int, head: int, tail: int) -> list[Cut]:
+    """Find the long results that the model has read, and what each would be cut down to.
 
-    Each one is replaced where it stands by a result that differs from it in
-    its text alone, so the model goes on seeing which call it answers and
-    whether the call failed. A result of several blocks of text has each
-    block cut by itself.
+    The shorter result differs from the whole one in its text alone, so the
+    model goes on seeing which call it answers and whether the call failed.
+    A result of several blocks of text has each block cut by itself.
 
     Args:
         session: The session whose messages are looked through.
@@ -60,7 +82,7 @@ def trim(session: Session, *, over: int, head: int, tail: int) -> int:
         at for at, event in enumerate(events) if isinstance(event.data, AssistantMessageEvent)
     ]
     read = events[: replies[-1]] if replies else []
-    cut = 0
+    found: list[Cut] = []
     for event in read:
         data = event.data
         if not isinstance(data, ToolResultEvent):
@@ -72,6 +94,25 @@ def trim(session: Session, *, over: int, head: int, tail: int) -> int:
         if content == data.message.content:
             continue
         message = data.message.model_copy(update={"content": content})
-        session.append(data.model_copy(update={"message": message}), replaces=[event.seq])
-        cut += 1
-    return cut
+        found.append(Cut(event.seq, data, data.model_copy(update={"message": message})))
+    return found
+
+
+def apply(session: Session, found: Iterable[Cut]) -> int:
+    """Put each shorter result in the place of its whole one, and return how many were put.
+
+    A result that the model no longer sees is passed over: a summary may
+    have taken its place since it was found.
+    """
+    seen = set(session.surface)
+    put = 0
+    for cut in found:
+        if cut.seq in seen:
+            session.append(cut.shorter, replaces=[cut.seq])
+            put += 1
+    return put
+
+
+def trim(session: Session, *, over: int, head: int, tail: int) -> int:
+    """Cut down the long results that the model has read, and return how many were cut."""
+    return apply(session, cuts(session, over=over, head=head, tail=tail))

@@ -348,7 +348,12 @@ async def test_a_long_line_of_output_can_be_read_where_it_was_saved(
 async def test_no_more_of_an_output_is_saved_than_the_read_tool_looks_at(
     bench: Bench, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert shell.MAX_SAVED_BYTES == 64 * 1024 * 1024 == vars(read)["_SCAN_BYTES"]
+    # A place may break long lines, which adds a byte to every two thousand characters.
+    # What is saved must stay within reach of the read tool with those bytes added.
+    looked_at: int = vars(read)["_SCAN_BYTES"]
+    limit = shell.MAX_SAVED_BYTES
+    assert limit + limit // columbina.spill.local.FOLD_AT + 1 <= looked_at
+    assert limit >= looked_at - 64 * 1024
     monkeypatch.setattr(shell, "MAX_SAVED_BYTES", 100_000)
     root = tmp_path / "home" / "spill"
     await bench.ctx.plugin(columbina.spill.local, {"root": root})

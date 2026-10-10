@@ -11,9 +11,12 @@ with them goes what it had kept. The request for a handover says in words
 that no tool is to be called.
 
 A model may call one all the same, or answer with nothing. It is then asked
-once more without tools. A failure that may pass is waited out once. If the
-part is more than the model takes, it is shown its newer half: the older
-half stays in the log and is in no summary.
+once more without tools. A reply that calls a tool is no summary, whatever it
+says beside the call: "I will look at the file first" is how work begins.
+
+A failure that may pass is waited out once. If the part is more than the
+model takes, it is shown its newer half: the older half stays in the log and
+is in no summary.
 
 What comes back is a summary only if it is all there and shorter than what
 it sums up. A reply that was cut off by its limit lacks its end, and the end
@@ -37,7 +40,7 @@ from columbina.llm import (
     Usage,
     UserMessage,
 )
-from columbina.session import Session
+from columbina.session import AsideEvent, Session
 from columbina.token_meter import estimate_message
 
 __all__ = ["INSTRUCTION", "Summary", "SummaryError", "carried", "summarise"]
@@ -76,6 +79,7 @@ _PASSING = ("EMPTY_RESPONSE", "RATE_LIMIT", "SERVER", "STREAM_CLOSED", "TIMEOUT"
 """The failures of a request that another try may not meet again."""
 
 _TOO_LONG = "CONTEXT_WINDOW_EXCEEDED"
+_EMPTY = "EMPTY_RESPONSE"
 _WAIT_SECONDS = 1.0
 _LONGEST_WAIT_SECONDS = 10.0
 
@@ -130,11 +134,19 @@ def _newer_half(messages: Sequence[Message], size: Callable[[Message], int]) -> 
     return messages[at:] if at else ()
 
 
-async def _asked(llm: Llm, request: LlmRequest) -> LlmCall:
-    """Make a request and return the call when its reply is over."""
+async def _asked(llm: Llm, session: Session, request: LlmRequest) -> LlmCall:
+    """Make a request beside the conversation, and return the call when its reply is over.
+
+    What the request cost is written to the log, however it ended: the summary
+    is no reply of the conversation, and nothing else would count it.
+    """
     async with llm.call(request) as call:
-        async for _ in call:
-            pass
+        try:
+            async for _ in call:
+                pass
+        finally:
+            # Also if it was cut short: what was used by then was used.
+            session.append(AsideEvent(purpose="summary", usage=call.usage, failure=call.failure))
     return call
 
 
@@ -171,12 +183,16 @@ async def summarise(
     waited = False
     while True:
         call = await _asked(
-            llm, LlmRequest(config=config, messages=(*before, *shown, ask), tools=tools)
+            llm, session, LlmRequest(config=config, messages=(*before, *shown, ask), tools=tools)
         )
         usage += call.usage
         finish = call.finish
         assert finish is not None
         failure = finish.failure
+        if failure is not None and failure.code == _EMPTY and tools:
+            # Nothing came back. With tools on offer, that is one more way of not writing.
+            tools = ()
+            continue
         if failure is not None:
             newer = _newer_half(shown, size) if failure.code == _TOO_LONG else ()
             if newer:
@@ -193,7 +209,8 @@ async def summarise(
             limit = config.max_output_tokens
             raise SummaryError(f"the summary did not fit into the {limit} tokens it was given")
         text = call.message.text.strip()
-        if text:
+        # A reply that calls a tool is the model going to work, whatever it says beside.
+        if text and not call.message.tool_calls:
             break
         if not tools:
             raise SummaryError("the model wrote no summary")

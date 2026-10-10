@@ -14,6 +14,7 @@ from columbina.session import (
     SESSIONS,
     TURN,
     USAGE,
+    AsideEvent,
     AssistantAttemptEvent,
     AssistantMessageEvent,
     EndSeedEvent,
@@ -212,6 +213,32 @@ async def test_the_usage_adds_up_over_replies_and_failed_attempts(ctx: Context) 
             input_tokens=140, output_tokens=26, cache_read_tokens=150, cache_write_tokens=50
         ),
     )
+
+
+async def test_requests_beside_the_conversation_cost_what_any_request_costs(ctx: Context) -> None:
+    session = Session(ctx, "s-1", KINDS)
+    session.append(replied(Usage(input_tokens=100, output_tokens=20)))
+
+    # A summary is asked for: once in vain, and once more.
+    session.append(
+        AsideEvent(
+            purpose="summary",
+            usage=Usage(input_tokens=7),
+            failure=LlmFailure(message="overloaded", code="SERVER"),
+        )
+    )
+    told = session.append(
+        AsideEvent(purpose="summary", usage=Usage(input_tokens=900, output_tokens=60))
+    )
+
+    assert USAGE.of(session) == UsageTotal(
+        calls=3, usage=Usage(input_tokens=1007, output_tokens=80)
+    )
+    # The model is never shown it, and a reader that does not know it can pass it over.
+    assert not told.on_surface
+    assert AsideEvent.ignorable
+    assert AsideEvent.event_type == "request/aside"
+    assert AsideEvent in CORE_EVENTS
 
 
 def test_usages_can_be_added() -> None:

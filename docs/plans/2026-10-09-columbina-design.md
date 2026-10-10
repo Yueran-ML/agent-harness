@@ -227,6 +227,7 @@ tests/   benchmarks/   docs/   examples/plugins/
 | `tool/result` | 结果内容、可选 `error{code, reason}`、可选 `meta` | 是 |
 | `request/header` | 调用配置和工具模式的完整快照，含提供方、模型、上下文窗口、采样参数 | 否 |
 | `session/end-seed` | 继承或恢复的历史与本次生命周期的分界 | 否 |
+| `request/aside` | 对话之外的一次模型请求，例如摘要：存用途、用量和可选的失败原因。它不带消息，只为了用量有处可记，读日志的程序可以略过 | 否 |
 
 `turn/end.reason` 取值：`completed`、`aborted`、`blocked`、`error`、`max-tokens`、`interrupted`、`forked`。后两个只由崩溃修复和分叉合成。
 

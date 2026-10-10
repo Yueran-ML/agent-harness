@@ -7,6 +7,7 @@ from weakref import WeakKeyDictionary
 from columbina.data import Data
 from columbina.llm.types import Usage
 from columbina.session.events import (
+    AsideEvent,
     AssistantAttemptEvent,
     AssistantMessageEvent,
     EventData,
@@ -118,7 +119,7 @@ class UsageTotal(Data):
 
 def _fold_usage(state: UsageTotal, event: SessionEvent[EventData]) -> UsageTotal:
     data = event.data
-    if isinstance(data, (AssistantMessageEvent, AssistantAttemptEvent)):
+    if isinstance(data, (AssistantMessageEvent, AssistantAttemptEvent, AsideEvent)):
         return UsageTotal(calls=state.calls + 1, usage=state.usage + data.usage)
     return state
 

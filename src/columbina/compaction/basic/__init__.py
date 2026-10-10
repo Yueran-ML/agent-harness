@@ -58,10 +58,12 @@ from pydantic import BaseModel, Field, model_validator
 
 from columbina.agent import (
     PRE_STEP,
+    REQUEST,
     REQUEST_ERROR,
     Agent,
     Enter,
     ErrorDecision,
+    RequestDraft,
     RequestFailure,
     Retry,
     StepDecision,
@@ -85,6 +87,7 @@ from columbina.kernel import Context, Next
 from columbina.llm import LLM, CallConfig, Llm, Message, ToolSchema
 from columbina.session import (
     SESSIONS,
+    TURN,
     EventData,
     Projection,
     RequestHeaderEvent,
@@ -104,6 +107,9 @@ logger = logging.getLogger(__name__)
 _TOO_LONG = "CONTEXT_WINDOW_EXCEEDED"
 _FAILURES_IN_A_ROW = 2
 """After so many failures in a row, a conversation is not made shorter by itself."""
+
+_LINE_BETWEEN = 128
+"""How many characters the two ends of a result leave for the line that stands between them."""
 
 
 class Config(BaseModel):
@@ -137,11 +143,12 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def _ends_are_less_than_the_whole(self) -> Self:
-        if self.trim_head + self.trim_tail >= self.trim_over:
+        if self.trim_head + self.trim_tail + _LINE_BETWEEN > self.trim_over:
             raise ValueError(
                 f"trim_head and trim_tail come to {self.trim_head + self.trim_tail} characters, "
-                f"which is not less than trim_over ({self.trim_over}): a result that was cut "
-                "down would be cut down again"
+                f"which is not {_LINE_BETWEEN} less than trim_over ({self.trim_over}): with the "
+                "line that says what was left out, a result that was cut down would be cut "
+                "down again"
             )
         return self
 
@@ -234,6 +241,10 @@ _HEADER: Projection[RequestHeaderEvent | None] = Projection(
 )
 
 
+async def _as_drafted(draft: RequestDraft) -> CallConfig:
+    return draft.config
+
+
 def _describe(error: BaseException) -> str:
     text = str(error)
     return f"{type(error).__name__}: {text}" if text else type(error).__name__
@@ -311,7 +322,7 @@ class Basic:
         """Make the conversation shorter if it has come near what its model takes."""
         decision = await proceed(info)
         # Nothing is done for a step that something else keeps from beginning.
-        if isinstance(decision, Enter) and self._pressed(info.agent):
+        if isinstance(decision, Enter) and await self._pressed(info.agent):
             await self._compact(info.agent, "pressure", None)
         return decision
 
@@ -329,10 +340,23 @@ class Basic:
         # The same request would be refused again. Only less is worth another try.
         return Retry() if outcome.changed else await proceed(failed)
 
-    def _pressed(self, agent: Agent) -> bool:
+    async def _model(self, agent: Agent) -> CallConfig:
+        """Return how the next request of an agent would call its model.
+
+        The listeners of ``agent/request`` are asked, as the loop asks them
+        before every request. One of them may send the requests to another
+        model than the agent was created with. That model is then the one
+        whose window counts, and the one that writes the summary.
+        """
+        state = TURN.of(agent.session)
+        draft = RequestDraft(agent, state.turn, state.step, 1, agent.spec.model)
+        return await agent.ctx.waterfall(REQUEST, draft, _as_drafted)
+
+    async def _pressed(self, agent: Agent) -> bool:
         """Tell whether a conversation is to be made shorter before its next step."""
         session = agent.session
-        limits = budget(agent.spec.model, self._config)
+        model = await self._model(agent)
+        limits = budget(model, self._config)
         if limits is None or limits.threshold <= 0:
             if not self._told:
                 self._told = True
@@ -340,7 +364,7 @@ class Basic:
                     "the model %s has no context window that leaves room for a conversation "
                     "in its config, so a conversation is not made shorter before it is refused "
                     "as too long",
-                    agent.spec.model.model,
+                    model.model,
                 )
             return False
         if self._meter.measure(session).tokens <= limits.threshold:
@@ -357,7 +381,8 @@ class Basic:
                 error="this conversation is being made shorter already",
             )
         config = self._config
-        plan = _plan(agent.spec.model, config, why, said, measured)
+        model = await self._model(agent)
+        plan = _plan(model, config, why, said, measured)
 
         def size(message: Message) -> int:
             return math.ceil(estimate_message(message) * plan.scale)
@@ -370,6 +395,9 @@ class Basic:
             found = cuts(
                 session, over=config.trim_over, head=config.trim_head, tail=config.trim_tail
             )
+            # A result is cut down to save tokens. One that would be shorter in characters
+            # and cost no less stays as it is.
+            found = [cut for cut in found if size(cut.shorter.message) < size(cut.whole.message)]
             saved = sum(size(cut.whole.message) - size(cut.shorter.message) for cut in found)
             enough = plan.target is not None and plan.size - saved <= plan.target
             if not enough:
@@ -383,7 +411,9 @@ class Basic:
                 )
                 if region is not None:
                     try:
-                        summarised = await self._sum_up(agent, region, limits.headroom, size)
+                        summarised = await self._sum_up(
+                            agent.session, model, region, limits.headroom, size
+                        )
                     except SummaryError as failed:
                         error = str(failed)
                     else:
@@ -391,7 +421,9 @@ class Basic:
                         enough = plan.target is None or now <= plan.target
             if not summarised or not enough:
                 # Cutting alone is enough, or there is no summary, or it was not enough.
-                trimmed = cut_down(session, found)
+                for cut in found:
+                    # One at a time: what was cut stays counted if the next cannot be written.
+                    trimmed += cut_down(session, [cut])
             if not (trimmed or summarised or error) and why != "manual":
                 error = "nothing of this conversation can go"
         except asyncio.CancelledError:
@@ -404,7 +436,12 @@ class Basic:
         return self._end(session, why, measured.tokens, trimmed, summarised, error, counts=counts)
 
     async def _sum_up(
-        self, agent: Agent, region: Region, headroom: int, size: Callable[[Message], int]
+        self,
+        session: Session,
+        model: CallConfig,
+        region: Region,
+        headroom: int,
+        size: Callable[[Message], int],
     ) -> int:
         """Have the oldest part summed up and put the summary in its place.
 
@@ -414,7 +451,6 @@ class Basic:
         Raises:
             SummaryError: No summary came of it. Nothing has changed.
         """
-        session, model = agent.session, agent.spec.model
         header = _HEADER.of(session)
         tools: tuple[ToolSchema, ...] = () if header is None else header.tools
         # A summary may be as long as the room that is kept for a reply, and no longer than

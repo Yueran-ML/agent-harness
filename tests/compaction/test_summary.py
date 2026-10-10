@@ -25,6 +25,7 @@ from columbina.llm import (
     UserMessage,
 )
 from columbina.llm.adapters.scripted import Call, Reply, Scripted
+from columbina.session import AsideEvent
 from support.talk import Talk, letters
 
 MODEL = CallConfig(
@@ -155,6 +156,47 @@ async def test_a_reply_without_text_is_asked_for_again_without_the_tools(
     )
 
 
+async def test_a_reply_that_calls_a_tool_is_no_summary_whatever_it_says_beside(
+    desk: Desk, model: Scripted
+) -> None:
+    # "I will look first" is how a model begins to work, not how it hands work over. Taken
+    # for a summary, it would be all that is left of the part that goes.
+    model.add(
+        Reply(text="I will inspect the file first.", calls=(Call(name="read"),)),
+        Reply(text="They read a file."),
+    )
+
+    summary = await desk.summed()
+
+    assert summary.text == "They read a file."
+    assert [request.tools for request in model.requests] == [TOOLS, ()]
+
+
+async def test_a_reply_of_nothing_at_all_is_asked_for_again_without_the_tools(
+    desk: Desk, model: Scripted
+) -> None:
+    # The service that asks models reports it as a failure of the request. It is one more
+    # way of not writing, and is answered like the others: at once, and without tools.
+    model.add(Reply(), Reply(text="They read a file."))
+
+    summary = await desk.summed()
+
+    assert summary.text == "They read a file."
+    assert [request.tools for request in model.requests] == [TOOLS, ()]
+    assert desk.waits == []
+
+
+async def test_a_reply_of_nothing_where_no_tools_were_declared_may_pass(
+    desk: Desk, model: Scripted
+) -> None:
+    model.add(Reply(), Reply(text="They read a file."))
+
+    summary = await desk.summed(tools=())
+
+    assert summary.text == "They read a file."
+    assert desk.waits == [1.0]
+
+
 async def test_a_reply_without_text_and_without_tools_to_blame_is_a_failure(
     desk: Desk, model: Scripted
 ) -> None:
@@ -206,6 +248,40 @@ async def test_a_failure_that_may_pass_is_waited_out_once(desk: Desk, model: Scr
     assert summary.usage == Usage(input_tokens=905, output_tokens=6)
     assert model.requests[0] == model.requests[1]
     assert desk.waits == [1.0]
+
+
+async def test_every_request_for_a_summary_is_in_the_log_with_what_it_cost(
+    desk: Desk, model: Scripted
+) -> None:
+    model.add(
+        Reply(failure=BUSY, usage=Usage(input_tokens=5)),
+        Reply(text="They read a file.", usage=Usage(input_tokens=900, output_tokens=6)),
+    )
+    before = len(desk.talk.session)
+
+    await desk.summed()
+
+    # Nothing else is written by the one that asks: where the summary goes is not for it to say.
+    assert [event.data for event in desk.talk.session.events[before:]] == [
+        AsideEvent(purpose="summary", usage=Usage(input_tokens=5), failure=BUSY),
+        AsideEvent(purpose="summary", usage=Usage(input_tokens=900, output_tokens=6)),
+    ]
+
+
+async def test_a_request_for_a_summary_that_is_cut_short_is_in_the_log_too(
+    desk: Desk, model: Scripted
+) -> None:
+    model.add(Reply(text="They", usage=Usage(input_tokens=900, output_tokens=1), hold=True))
+    summing = asyncio.ensure_future(desk.summed())
+    await asyncio.wait_for(model.held(), timeout=5)
+
+    summing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await summing
+
+    last = desk.talk.session.events[-1].data
+    assert isinstance(last, AsideEvent)
+    assert (last.purpose, last.failure) == ("summary", None)
 
 
 async def test_a_failure_that_does_not_pass_is_the_end(desk: Desk, model: Scripted) -> None:

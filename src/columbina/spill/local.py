@@ -112,14 +112,17 @@ class Fold:
     def _in_parts(self, line: str) -> str:
         """Return what follows on a line that grows too long, with breaks in it."""
         parts: list[str] = []
+        at = 0
         while True:
-            room = max(FOLD_AT - self._length, 0)
-            part, line = line[:room], line[room:]
-            if line.startswith("\r") and self._length + len(part) == FOLD_AT:
-                part, line = part + "\r", line[1:]
-            parts.append(part)
-            self._length += len(part)
-            if not line:
+            # Each part is taken out of the line where it stands. Taking the rest of the line
+            # anew every time would copy a long line as often as it is broken.
+            end = min(at + max(FOLD_AT - self._length, 0), len(line))
+            if self._length + end - at == FOLD_AT and line.startswith("\r", end):
+                end += 1
+            parts.append(line[at:end])
+            self._length += end - at
+            at = end
+            if at == len(line):
                 return "\n".join(parts)
             self._length = 0
             self.broken = True

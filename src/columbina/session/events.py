@@ -187,6 +187,28 @@ class AssistantAttemptEvent(EventData):
     failure: LlmFailure
 
 
+class AsideEvent(EventData):
+    """A request to a model that is no part of the conversation.
+
+    A summary of the conversation is asked for in this way. What the model
+    answers is not shown to it as something it said, so there is no message
+    here. But the request cost what any request costs, and that is what this
+    event is for.
+
+    Attributes:
+        purpose: What the request was made for, in a word.
+        usage: What it cost.
+        failure: Why it failed, if it did.
+    """
+
+    event_type: ClassVar[str] = "request/aside"
+    ignorable: ClassVar[bool] = True
+
+    purpose: str
+    usage: Usage
+    failure: LlmFailure | None = None
+
+
 class ToolCallEvent(EventData):
     """A tool call is about to be dispatched, with the arguments as the model wrote them."""
 
@@ -258,6 +280,7 @@ CORE_EVENTS: tuple[type[EventData], ...] = (
     UserMessageEvent,
     AssistantMessageEvent,
     AssistantAttemptEvent,
+    AsideEvent,
     ToolCallEvent,
     ToolResultEvent,
     RequestHeaderEvent,

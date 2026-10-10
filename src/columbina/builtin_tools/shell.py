@@ -108,10 +108,12 @@ DEFAULT_SECONDS = 120.0
 MAX_SECONDS = 600.0
 """How long a command may run at most."""
 
-MAX_SAVED_BYTES = 64 * 1024 * 1024
+MAX_SAVED_BYTES = 64 * 1024 * 1024 - 64 * 1024
 """How much of the output of one command is saved at most.
 
-The read tool looks no further into a file than that.
+The read tool looks no further into a file than 64 MiB. This is a little
+less: the place may break long lines as it saves, and every break is a byte
+more.
 """
 
 _GRACE_SECONDS = 30.0

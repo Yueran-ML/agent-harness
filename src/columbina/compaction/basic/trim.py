@@ -47,10 +47,12 @@ def _left_out(count: int) -> str:
     return f"[... {count} characters of this result were left out to shorten the conversation ...]"
 
 
-def _two_ends(text: str, head: int, tail: int) -> str:
-    """Return the two ends of a text, with a line between them that says what is left out.
+def _two_ends(text: str, over: int, head: int, tail: int) -> str:
+    """Return the two ends of a long text, with a line between them that says what is left out.
 
-    The text itself is returned if that would be no shorter.
+    The text has more than `over` characters. It is returned as it is if what would take its
+    place would be long itself: that would be cut again the next time, and the line in it
+    would count wrongly. So whatever takes the place of a text is shorter than the text.
     """
     count = len(text) - head - tail
     if count <= 0:
@@ -60,7 +62,7 @@ def _two_ends(text: str, head: int, tail: int) -> str:
     # The line stands on its own, whether or not the beginning ends a line.
     between = "" if not first or first.endswith("\n") else "\n"
     cut = f"{first}{between}{_left_out(count)}\n{last}"
-    return cut if len(cut) < len(text) else text
+    return cut if len(cut) <= over else text
 
 
 def cuts(session: Session, *, over: int, head: int, tail: int) -> list[Cut]:
@@ -88,7 +90,9 @@ def cuts(session: Session, *, over: int, head: int, tail: int) -> list[Cut]:
         if not isinstance(data, ToolResultEvent):
             continue
         content = tuple(
-            block if len(block.text) <= over else TextBlock(text=_two_ends(block.text, head, tail))
+            block
+            if len(block.text) <= over
+            else TextBlock(text=_two_ends(block.text, over, head, tail))
             for block in data.message.content
         )
         if content == data.message.content:

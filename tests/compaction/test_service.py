@@ -9,7 +9,16 @@ from pydantic import BaseModel, ValidationError
 
 import columbina.compaction.basic
 import columbina.token_meter
-from columbina.agent import PRE_STEP, Agent, Enter, Reject, StepDecision, StepInfo
+from columbina.agent import (
+    PRE_STEP,
+    REQUEST,
+    Agent,
+    Enter,
+    Reject,
+    RequestDraft,
+    StepDecision,
+    StepInfo,
+)
 from columbina.compaction import (
     COMPACTION,
     COMPACTIONS,
@@ -31,14 +40,18 @@ from columbina.llm import (
     LlmRequest,
     TextBlock,
     ToolMessage,
+    Usage,
     UserMessage,
 )
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import (
+    USAGE,
     AssistantAttemptEvent,
     Session,
+    SessionStoreError,
     ToolResultEvent,
     TurnEndEvent,
+    UsageTotal,
     UserMessageEvent,
 )
 from columbina.token_meter import TOKEN_METER, Measure, estimate
@@ -160,6 +173,7 @@ def test_the_config_says_how_much_of_the_window_may_be_filled_and_what_stays() -
     "bad",
     [
         {"trim_over": 100, "trim_head": 60, "trim_tail": 40},
+        {"trim_over": 1000, "trim_head": 500, "trim_tail": 373},
         {"trim_head": 8192, "trim_tail": 0},
         {"threshold_ratio": 0},
         {"threshold_ratio": 1.1},
@@ -175,11 +189,12 @@ def test_a_config_that_cannot_work_is_refused(bad: dict[str, Any]) -> None:
 
 
 def test_ends_that_come_to_less_than_the_whole_are_taken() -> None:
-    config = Config(trim_over=100, trim_head=60, trim_tail=39)
+    # The line that says what was left out needs room between them: 128 characters.
+    config = Config(trim_over=1000, trim_head=500, trim_tail=372)
 
-    assert (config.auto, config.trim_head) == (True, 60)
+    assert (config.auto, config.trim_head) == (True, 500)
     with pytest.raises(ValidationError, match="would be cut down again"):
-        Config(trim_over=100, trim_head=60, trim_tail=40)
+        Config(trim_over=1000, trim_head=500, trim_tail=373)
 
 
 @pytest.mark.parametrize(
@@ -248,6 +263,45 @@ async def test_old_results_are_cut_down_when_that_alone_is_enough(harness: Harne
     assert COMPACTIONS.of(agent.session).count == 1
 
 
+async def test_what_was_cut_before_the_log_refused_an_event_is_counted(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(
+        Reply(calls=(Call(name="big", arguments={"tokens": 9000}),) * 2),
+        wants(9000),
+        Reply(text="Done."),
+        model=ROOMY.model_copy(update={"context_window": 30_000}),
+    )
+    kept: Any = getattr(agent.session, "_store")  # noqa: B009
+    store = kept.__class__
+    really_write = store.write
+    refused: list[int] = []
+
+    def write(self: Any, event: Any) -> None:
+        # The second of the two results that are cut down cannot be written, once.
+        if isinstance(event.data, ToolResultEvent) and event.replaces:
+            refused.append(event.seq)
+            if len(refused) == 2:
+                raise SessionStoreError("the disk is full")
+        really_write(self, event)
+
+    monkeypatch.setattr(store, "write", write)
+
+    await turn(agent, "Go.")
+
+    # Three results of nine thousand tokens where 22500 may be filled. Two have been read.
+    ((why, outcome),) = attempts(agent)
+    assert why == "pressure"
+    assert outcome is not None
+    assert outcome.error == "SessionStoreError: the disk is full"
+    assert (outcome.trimmed, outcome.summarised) == (1, 0)
+    assert outcome.changed
+    assert outcome.before > outcome.after
+    assert agent.session.messages[-1] == assistant("Done.")
+
+
 async def test_the_oldest_part_is_summed_up_when_cutting_is_not_enough(harness: Harness) -> None:
     await loaded(harness)
     agent = await harness.agent(
@@ -281,15 +335,16 @@ async def test_the_oldest_part_is_summed_up_when_cutting_is_not_enough(harness: 
     # The log tells it in this order, and the one message takes the place of the four.
     order = types(agent.session)
     start = order.index("compaction/start")
-    assert order[start - 1 : start + 5] == [
+    assert order[start - 1 : start + 6] == [
         "user/message",
         "compaction/start",
+        "request/aside",
         "compaction/summary",
         "user/message",
         "compaction/end",
         "step/start",
     ]
-    told, carrier = agent.session.events[start + 1], agent.session.events[start + 2]
+    told, carrier = agent.session.events[start + 2], agent.session.events[start + 3]
     assert isinstance(told.data, CompactionSummaryEvent)
     assert isinstance(carrier.data, UserMessageEvent)
     assert carrier.data.source == SUMMARY_SOURCE
@@ -297,6 +352,40 @@ async def test_the_oldest_part_is_summed_up_when_cutting_is_not_enough(harness: 
     assert told.data.summary == "They said words."
     assert told.data.region_tokens > 12_000 > told.data.summary_tokens > 0
     assert len(carrier.replaces) == 4
+
+
+async def test_the_model_that_requests_really_go_to_is_the_one_that_counts(
+    harness: Harness,
+) -> None:
+    # The agent was created for a model of which nothing says how much it takes. Something
+    # sends its requests to another one, as a frontend does when the user names a model.
+    await loaded(harness)
+    agent = await harness.agent(
+        Reply(text="One."),
+        Reply(text="Two."),
+        Reply(text="They said words."),
+        Reply(text="Three."),
+    )
+    other = CallConfig(provider="scripted", model="other", context_window=WINDOW)
+
+    async def elsewhere(draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]) -> CallConfig:
+        await proceed(draft)
+        return other
+
+    agent.ctx.on(REQUEST, elsewhere)
+
+    for _ in range(3):
+        await turn(agent, words(6000))
+
+    # That model takes twenty thousand tokens, so the conversation is made shorter in time,
+    # and that model writes the summary.
+    ((why, outcome),) = attempts(agent)
+    assert why == "pressure"
+    assert outcome is not None
+    assert (outcome.summarised, outcome.error) == (4, None)
+    (asked,) = sums(harness)
+    assert asked.config == other.model_copy(update={"max_output_tokens": 5000})
+    assert {request.config.model for request in harness.model.requests} == {"other"}
 
 
 async def test_a_model_without_a_window_in_its_config_is_not_watched(
@@ -369,8 +458,9 @@ async def test_what_is_left_is_cut_down_if_the_summary_was_not_enough(harness: H
     assert outcome.before > 24_000 > outcome.after
     order = types(agent.session)
     start = order.index("compaction/start")
-    assert order[start : start + 5] == [
+    assert order[start : start + 6] == [
         "compaction/start",
+        "request/aside",
         "compaction/summary",
         "user/message",
         "tool/result",
@@ -844,6 +934,55 @@ async def test_attempts_that_the_user_asked_for_do_not_count_as_failures_in_a_ro
     await turn(agent, words(8000))
 
     assert [(why, o.error) for why, o in attempts(agent) if o is not None][-1] == ("pressure", None)
+
+
+async def blank(args: Size, run: ToolRun) -> str:
+    return " " * args.tokens
+
+
+async def test_a_result_that_would_cost_no_less_is_not_cut_down(harness: Harness) -> None:
+    # A result of nothing but spaces is long and cheap. The line that would take its place
+    # says how many characters were left out, and that line costs more than they did.
+    service = await loaded(harness, trim_over=128, trim_head=0, trim_tail=0)
+    line = "[... 129 characters of this result were left out to shorten the conversation ...]"
+    assert estimate(line) > estimate(" " * 129)
+    harness.tools.add(
+        harness.ctx,
+        Tool(name="blank", description="Gives spaces.", parameters=Size, execute=blank),
+    )
+    agent = await harness.agent(
+        Reply(calls=(Call(name="blank", arguments={"tokens": 129}),)),
+        Reply(text="Done."),
+        model=MODEL,
+    )
+    await turn(agent, "Go.")
+    seen = agent.session.messages
+
+    outcome = await service.compact(agent, "manual")
+
+    # Shorter in characters it would be. Nothing is gained by it, so nothing is done.
+    assert (outcome.trimmed, outcome.changed, outcome.error) == (0, False, None)
+    assert agent.session.messages == seen
+
+
+async def test_what_a_summary_cost_is_in_what_the_session_cost(harness: Harness) -> None:
+    service = await loaded(harness)
+    agent = await harness.agent(
+        Reply(text="One.", usage=Usage(input_tokens=10, output_tokens=1)),
+        Reply(text="Two.", usage=Usage(input_tokens=20, output_tokens=1)),
+        model=MODEL,
+    )
+    await turn(agent, words(4000))
+    await turn(agent, words(4000))
+    harness.model.add(
+        Reply(text="They said words.", usage=Usage(input_tokens=1000, output_tokens=100))
+    )
+
+    await service.compact(agent, "manual")
+
+    assert USAGE.of(agent.session) == UsageTotal(
+        calls=3, usage=Usage(input_tokens=1030, output_tokens=102)
+    )
 
 
 async def test_asking_for_it_where_nothing_can_go_is_no_failure(harness: Harness) -> None:

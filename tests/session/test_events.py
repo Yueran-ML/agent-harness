@@ -18,6 +18,7 @@ from columbina.llm import (
 )
 from columbina.session import (
     CORE_EVENTS,
+    AsideEvent,
     AssistantAttemptEvent,
     AssistantMessageEvent,
     EndSeedEvent,
@@ -78,6 +79,12 @@ SAMPLES: list[EventData] = [
         tools=(ToolSchema(name="read", description="Read a file.", parameters={"type": "object"}),),
     ),
     EndSeedEvent(inherited=True),
+    AsideEvent(purpose="summary", usage=Usage(input_tokens=900, output_tokens=60)),
+    AsideEvent(
+        purpose="summary",
+        usage=Usage(input_tokens=7),
+        failure=LlmFailure(message="overloaded", code="SERVER", status=529),
+    ),
 ]
 
 
@@ -100,6 +107,7 @@ def test_the_core_events_have_these_names() -> None:
         "user/message",
         "assistant/message",
         "assistant/attempt",
+        "request/aside",
         "tool/call",
         "tool/result",
         "request/header",
@@ -107,8 +115,11 @@ def test_the_core_events_have_these_names() -> None:
     ]
 
 
-def test_no_core_event_may_be_skipped_by_a_reader() -> None:
-    assert [kind.event_type for kind in CORE_EVENTS if kind.ignorable] == []
+def test_only_the_event_that_keeps_count_may_be_skipped_by_a_reader() -> None:
+    # A reader that skipped any other would see another conversation than was held.
+    # This one holds no part of it: only what a request beside it cost.
+    assert [kind.event_type for kind in CORE_EVENTS if kind.ignorable] == ["request/aside"]
+    assert AsideEvent(purpose="summary", usage=Usage()).for_model() is None
 
 
 def test_a_reply_without_a_finish_reason_was_interrupted() -> None:

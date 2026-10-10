@@ -302,6 +302,24 @@ async def test_what_memory_had_kept_until_then_is_the_first_thing_to_go_somewher
     assert done.saved_bytes == done.output_bytes == 3000
 
 
+def test_the_pieces_go_to_the_place_in_the_order_in_which_they_came() -> None:
+    # Without a program and a pipe, whose pieces are of a size that nobody can count on.
+    opened = Opened()
+    output: Any = vars(process)["_Output"](2000, opened, 10_000)
+
+    output.add(b"a" * 1500)
+    nothing_yet = list(opened.places)
+    output.add(b"b" * 1500)
+    output.add(b"c" * 100)
+
+    assert nothing_yet == []
+    (place,) = opened.places
+    # What memory held is handed over first, as one piece, and then each piece as it comes.
+    assert bytes(place.written) == b"a" * 1500 + b"b" * 1500 + b"c" * 100
+    assert place.asked == 3
+    assert (output.saved, output.kept.total) == (3100, 3100)
+
+
 def test_what_is_kept_of_an_output_that_fits_is_all_of_it() -> None:
     kept = HeadTail(10)
     kept.add(b"abc")

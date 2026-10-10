@@ -306,6 +306,23 @@ def test_the_same_breaks_are_made_however_a_text_is_cut(monkeypatch: pytest.Monk
                 assert fold.broken is (expected != text), (text, cut)
 
 
+def test_a_line_of_many_million_characters_is_broken_in_the_time_it_takes_to_read_it() -> None:
+    # Taking the rest of the line anew at every break would be sixteen thousand copies of
+    # sixteen million characters on average: minutes, where this takes a moment.
+    long = "x" * (16 * 1024 * 1024)
+    fold = Fold()
+    began = time.monotonic()
+
+    broken = fold(long)
+
+    assert time.monotonic() - began < 10
+    # Whole lines of two thousand characters and a rest: one break after each whole line.
+    assert len(long) % FOLD_AT
+    assert broken.count("\n") == len(long) // FOLD_AT
+    assert len(broken) == len(long) + len(long) // FOLD_AT
+    assert fold.broken
+
+
 def test_a_text_that_comes_a_character_at_a_time_is_broken_in_the_same_places(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

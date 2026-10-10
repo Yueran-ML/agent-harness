@@ -27,6 +27,7 @@ from columbina.session.errors import (
 )
 from columbina.session.events import (
     CORE_EVENTS,
+    AsideEvent,
     AssistantAttemptEvent,
     AssistantMessageEvent,
     EndSeedEvent,
@@ -58,6 +59,7 @@ __all__ = [
     "SESSION_EVENT",
     "TURN",
     "USAGE",
+    "AsideEvent",
     "AssistantAttemptEvent",
     "AssistantMessageEvent",
     "CloseReason",

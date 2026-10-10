@@ -81,6 +81,7 @@ TRIM = "src/columbina/compaction/basic/trim.py"
 REGION = "src/columbina/compaction/basic/region.py"
 SUMMARY = "src/columbina/compaction/basic/summary.py"
 BASIC = "src/columbina/compaction/basic/__init__.py"
+PROJECTION = "src/columbina/session/projection.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2368,6 +2369,12 @@ _SHELL = (
         SHELL,
         '            logger.error(\n                "the whole output of a command could not be saved: %s", error, exc_info=fault\n            )\n',
         "            pass\n",
+    ),
+    mutant(
+        "as much of an output is saved as the read tool looks at, and breaks come on top",
+        SHELL,
+        "MAX_SAVED_BYTES = 64 * 1024 * 1024 - 64 * 1024\n",
+        "MAX_SAVED_BYTES = 64 * 1024 * 1024\n",
     ),
 )
 
@@ -5097,8 +5104,8 @@ _SPILL = (
     mutant(
         "a line is broken one character before it has to be",
         SPILL_LOCAL,
-        "            room = max(FOLD_AT - self._length, 0)\n",
-        "            room = max(FOLD_AT - self._length - 1, 0)\n",
+        "            end = min(at + max(FOLD_AT - self._length, 0), len(line))\n",
+        "            end = min(at + max(FOLD_AT - self._length - 1, 0), len(line))\n",
     ),
     mutant(
         "no line is broken",
@@ -5271,14 +5278,14 @@ _SPILL = (
     mutant(
         "a carriage return before a line break makes a line too long",
         SPILL_LOCAL,
-        '            if line.startswith("\\r") and self._length + len(part) == FOLD_AT:\n',
+        '            if self._length + end - at == FOLD_AT and line.startswith("\\r", end):\n',
         "            if False:\n",
     ),
     mutant(
         "carriage returns are let through one after another",
         SPILL_LOCAL,
-        '            if line.startswith("\\r") and self._length + len(part) == FOLD_AT:\n',
-        '            if line.startswith("\\r"):\n',
+        '            if self._length + end - at == FOLD_AT and line.startswith("\\r", end):\n',
+        '            if line.startswith("\\r", end):\n',
     ),
     mutant(
         "a line is broken and nobody knows",
@@ -5535,14 +5542,14 @@ _COMPACTION = (
     mutant(
         "a result of just the length that is let be is cut down",
         TRIM,
-        "block if len(block.text) <= over else",
-        "block if len(block.text) < over else",
+        "            if len(block.text) <= over\n",
+        "            if len(block.text) < over\n",
     ),
     mutant(
         "no result is long enough to be cut down",
         TRIM,
-        "block if len(block.text) <= over else",
-        "block if True else",
+        "            if len(block.text) <= over\n",
+        "            if True\n",
     ),
     mutant(
         "the end of a result is not kept",
@@ -5563,9 +5570,9 @@ _COMPACTION = (
         '    between = ""\n',
     ),
     mutant(
-        "a result is replaced by something that is no shorter",
+        "what a result is cut down to may be long itself",
         TRIM,
-        "    return cut if len(cut) < len(text) else text\n",
+        "    return cut if len(cut) <= over else text\n",
         "    return cut\n",
     ),
     mutant(
@@ -5793,8 +5800,8 @@ _COMPACTION = (
     mutant(
         "a reply without text is asked for again with the tools",
         SUMMARY,
-        "        tools = ()\n",
-        "        pass\n",
+        "        # It called a tool, or it said nothing. Without tools it can only write.\n        tools = ()\n",
+        "        # It called a tool, or it said nothing. Without tools it can only write.\n        pass\n",
     ),
     mutant(
         "a summary of the size of what it sums up is taken",
@@ -5917,21 +5924,27 @@ _COMPACTION = (
         "    if requested is None:\n",
     ),
     mutant(
-        "ends that come to the whole are taken by the config",
+        "ends that leave no room for the line between them are taken by the config",
         BASIC,
-        "        if self.trim_head + self.trim_tail >= self.trim_over:\n",
+        "        if self.trim_head + self.trim_tail + _LINE_BETWEEN > self.trim_over:\n",
         "        if self.trim_head + self.trim_tail > self.trim_over:\n",
+    ),
+    mutant(
+        "ends that leave just the room for the line between them are refused",
+        BASIC,
+        "        if self.trim_head + self.trim_tail + _LINE_BETWEEN > self.trim_over:\n",
+        "        if self.trim_head + self.trim_tail + _LINE_BETWEEN >= self.trim_over:\n",
     ),
     mutant(
         "a conversation is made shorter for a step that does not begin",
         BASIC,
-        "        if isinstance(decision, Enter) and self._pressed(info.agent):\n",
-        "        if self._pressed(info.agent):\n",
+        "        if isinstance(decision, Enter) and await self._pressed(info.agent):\n",
+        "        if await self._pressed(info.agent):\n",
     ),
     mutant(
         "a conversation is made shorter before every step",
         BASIC,
-        "        if isinstance(decision, Enter) and self._pressed(info.agent):\n",
+        "        if isinstance(decision, Enter) and await self._pressed(info.agent):\n",
         "        if isinstance(decision, Enter):\n",
     ),
     mutant(
@@ -6155,6 +6168,54 @@ _COMPACTION = (
         BASIC,
         "target=size - shed)",
         "target=size)",
+    ),
+    mutant(
+        "the summary is asked of the model that the agent was created with",
+        BASIC,
+        "        return await agent.ctx.waterfall(REQUEST, draft, _as_drafted)\n",
+        "        return agent.spec.model\n",
+    ),
+    mutant(
+        "a result is cut down although that saves no tokens",
+        BASIC,
+        "[cut for cut in found if size(cut.shorter.message) < size(cut.whole.message)]",
+        "[cut for cut in found if True]",
+    ),
+    mutant(
+        "what was cut before the log refused an event is not counted",
+        BASIC,
+        "                for cut in found:\n                    # One at a time: what was cut stays counted if the next cannot be written.\n                    trimmed += cut_down(session, [cut])\n",
+        "                trimmed = cut_down(session, found)\n",
+    ),
+    mutant(
+        "a reply that calls a tool is taken for a summary if it says something beside",
+        SUMMARY,
+        "        if text and not call.message.tool_calls:\n",
+        "        if text:\n",
+    ),
+    mutant(
+        "a reply of nothing is waited out with the tools still on offer",
+        SUMMARY,
+        "        if failure is not None and failure.code == _EMPTY and tools:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a reply of nothing is asked for again at once also where no tools were declared",
+        SUMMARY,
+        "        if failure is not None and failure.code == _EMPTY and tools:\n",
+        "        if failure is not None and failure.code == _EMPTY:\n",
+    ),
+    mutant(
+        "what a request for a summary cost is not written down",
+        SUMMARY,
+        '            session.append(AsideEvent(purpose="summary", usage=call.usage, failure=call.failure))\n',
+        "            pass\n",
+    ),
+    mutant(
+        "what requests beside the conversation cost is in no total",
+        PROJECTION,
+        "    if isinstance(data, (AssistantMessageEvent, AssistantAttemptEvent, AsideEvent)):\n",
+        "    if isinstance(data, (AssistantMessageEvent, AssistantAttemptEvent)):\n",
     ),
 )
 

@@ -195,13 +195,33 @@ async def test_ends_that_are_no_shorter_than_the_whole_leave_a_result_as_it_is(
     asked(session, say="Done.")
     count = len(session)
 
-    assert trim(session, over=100, head=90, tail=90) == 0
-    # Ends that reach each other leave nothing out, whatever their sum says.
-    assert trim(session, over=100, head=10, tail=300) == 0
-    assert trim(session, over=100, head=300, tail=10) == 0
-    assert trim(session, over=100, head=60, tail=60) == 0
+    assert trim(session, over=190, head=90, tail=90) == 0
+    assert trim(session, over=190, head=60, tail=60) == 0
+    # Ends that reach each other leave nothing out, whatever their sum says. An end that is
+    # longer than the whole is no end of it: what it would make of the result would be short,
+    # and would say that less than nothing was left out.
+    assert trim(session, over=199, head=10, tail=300) == 0
+    assert trim(session, over=199, head=300, tail=10) == 0
+    assert trim(session, over=199, head=100, tail=100) == 0
     assert len(session) == count
-    assert trim(session, over=100, head=50, tail=50) == 1
+    assert trim(session, over=190, head=50, tail=50) == 1
+
+
+async def test_what_a_result_is_cut_down_to_is_never_long_itself(ctx: Context) -> None:
+    # Ends that leave no room for the line between them: what they would make of a result
+    # would be cut again the next time, down to other ends and with another count in it.
+    session = begun(ctx)
+    asked(session, "call-1")
+    answered(session, "call-1", "x" * 1000)
+    asked(session, say="Done.")
+    count = len(session)
+
+    assert trim(session, over=100, head=60, tail=39) == 0
+    assert len(session) == count
+    # With room for the line, it is cut once and stays as it is.
+    assert trim(session, over=200, head=60, tail=39) == 1
+    assert trim(session, over=200, head=60, tail=39) == 0
+    assert shown(session, session.events[-1].seq) == f"{'x' * 60}\n{left_out(901)}\n{'x' * 39}"
 
 
 async def test_a_result_can_be_cut_down_to_its_beginning_alone(ctx: Context) -> None:
@@ -317,13 +337,15 @@ def test_what_is_cut_is_shorter_and_keeps_its_ends(
     for size, (original, now) in zip(sizes, results, strict=True):
         whole, text = text_of(size), shown(session, now)
         if original == now:
-            # Not long, or its ends with the line between them would be no shorter.
+            # Not long, or its ends with the line between them would be no shorter, or long.
             fits = size <= over or size <= head + tail
-            assert fits or head + tail + len(left_out(size - head - tail)) + 2 >= size
+            least = head + tail + len(left_out(size - head - tail)) + 1
+            assert fits or least + 1 >= size or least + 1 > over
             continue
         assert size > over
         assert size > head + tail
         assert len(text) < size
+        assert len(text) <= over
         assert text.startswith(whole[:head])
         assert text.endswith(whole[size - tail :])
         assert left_out(size - head - tail) in text

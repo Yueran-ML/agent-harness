@@ -195,6 +195,9 @@ class Headless:
         return await open_agent(self._ctx, self._agents, self._sessions, spec, config.session_id)
 
     def _follow(self, committed: Committed) -> None:
+        if committed.event.replaces:
+            # It takes the place of something that was reported when it happened.
+            return
         for line in _report(committed.event.data):
             _emit(line)
 

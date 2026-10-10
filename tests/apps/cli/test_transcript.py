@@ -469,6 +469,20 @@ async def test_a_result_without_its_call_is_shown_without_a_time(log: Session) -
     ]
 
 
+async def test_a_result_that_takes_the_place_of_another_is_nothing_new(log: Session) -> None:
+    # A long result that the model has read is cut down later, to make the conversation
+    # shorter. Shown again, it would look like the same call ending a second time.
+    transcript = Transcript(PLAIN)
+    show(transcript, log, call("bash", "c-1", command="make"))
+    whole = log.append(result("one\ntwo\nthree", "c-1"))
+    shown = plain(transcript.event(whole))
+
+    shorter = log.append(result("one\n[...]\nthree", "c-1"), replaces=[whole.seq])
+
+    assert shown == ["  ok 250 ms", "    one", "    two", "    three"]
+    assert transcript.event(shorter) == []
+
+
 # What else happens
 
 

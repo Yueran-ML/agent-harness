@@ -7,16 +7,18 @@ import subprocess
 import sys
 
 import pytest
+from pydantic import BaseModel
 
 import columbina
 import columbina.apps.headless
 from columbina.agent import PRE_STEP, Reject, StepDecision, StepInfo
 from columbina.apps import FRONTEND
 from columbina.kernel import Next
-from columbina.llm import LlmFailure
-from columbina.llm.adapters.scripted import Reply
-from columbina.session import TurnEndEvent
+from columbina.llm import LlmFailure, TextBlock
+from columbina.llm.adapters.scripted import Call, Reply
+from columbina.session import ToolResultEvent, TurnEndEvent
 from columbina.session.store import SESSION_FILE
+from columbina.tools import Tool, ToolRun
 from support.loop import MODEL, Harness
 
 
@@ -206,6 +208,44 @@ async def test_the_lines_of_json_write_such_characters_by_their_numbers(
     assert wanted in lines[-1]
     assert not any(mark in line for line in lines for mark in (OVERRIDE, CSI, chr(0x7F)))
     assert json.loads(lines[-1])["text"] == said
+
+
+class NoArgs(BaseModel):
+    pass
+
+
+async def three_lines(args: NoArgs, run: ToolRun) -> str:
+    return "one\ntwo\nthree"
+
+
+async def test_a_result_that_is_replaced_later_is_reported_once(
+    harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    harness.tools.add(
+        harness.ctx,
+        Tool(name="lines", description="Gives lines.", parameters=NoArgs, execute=three_lines),
+    )
+    harness.model.add(Reply(calls=(Call(name="lines"),)), Reply(text="Done."))
+
+    async def shorten(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        if info.step == 2:
+            # What makes a conversation shorter cuts a result down where it stands.
+            session = info.agent.session
+            whole = session.events[session.surface[-1]]
+            assert isinstance(whole.data, ToolResultEvent)
+            message = whole.data.message.model_copy(update={"content": (TextBlock(text="o"),)})
+            shorter = whole.data.model_copy(update={"message": message})
+            session.append(shorter, replaces=[whole.seq])
+        return await proceed(info)
+
+    harness.ctx.on(PRE_STEP, shorten)
+    runner = await frontend(harness, json_lines=True)
+
+    code = await runner.run()
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert code == 0
+    assert [line["text"] for line in lines if line["type"] == "tool_result"] == ["one\ntwo\nthree"]
 
 
 def test_the_package_can_be_run_as_a_module() -> None:

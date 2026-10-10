@@ -3214,6 +3214,12 @@ _TRANSCRIPT = (
         "    if not starts:\n        return []\n",
         "    if not starts:\n        starts = [0]\n",
     ),
+    mutant(
+        "a result that takes the place of another is shown as a call that ends again",
+        CLI_TRANSCRIPT,
+        "        if event.replaces:\n            return []\n        data = event.data\n",
+        "        data = event.data\n",
+    ),
 )
 
 _TERMINAL = (
@@ -4360,6 +4366,12 @@ _TEXT = (
         LAUNCHER,
         "            sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)\n",
         "            sys.stdout.write(harmless(dumped))\n",
+    ),
+    mutant(
+        "a result that is replaced later is reported a second time",
+        HEADLESS,
+        "        if committed.event.replaces:\n            # It takes the place of something that was reported when it happened.\n            return\n",
+        "",
     ),
 )
 

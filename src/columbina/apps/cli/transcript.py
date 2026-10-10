@@ -261,7 +261,14 @@ class Transcript:
         return []
 
     def event(self, event: SessionEvent[EventData]) -> list[Text]:
-        """Take an event of the session and return the lines that show it."""
+        """Take an event of the session and return the lines that show it.
+
+        An event that takes the place of others shows nothing. What it stands
+        for was shown when it happened: a result that is cut down later, to
+        make the conversation shorter, is not a call that ends a second time.
+        """
+        if event.replaces:
+            return []
         data = event.data
         if isinstance(data, AssistantMessageEvent | AssistantAttemptEvent):
             shown = self._close()

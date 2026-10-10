@@ -95,6 +95,7 @@ TOOL = "src/columbina/tools/tool.py"
 PROJECT = "src/columbina/project.py"
 SKILL_FILES = "src/columbina/skills/files.py"
 SKILLS_PLUGIN = "src/columbina/skills/__init__.py"
+HOOK_FILES = "src/columbina/hooks/config.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -8228,6 +8229,309 @@ _SKILLS = (
     ),
 )
 
+_HOOKS = (
+    mutant(
+        "a list that stands where an object should is written out",
+        HOOK_FILES,
+        '    if isinstance(value, list):\n        return "a list"\n',
+        "",
+    ),
+    mutant(
+        "an object that stands where a list should is written out",
+        HOOK_FILES,
+        '    if isinstance(value, dict):\n        return "an object"\n',
+        "",
+    ),
+    mutant(
+        "what a hook file holds is shown at whatever length",
+        HOOK_FILES,
+        '    return shown if len(shown) <= _SHOWN else f"{shown[:_SHOWN]}..."\n',
+        "    return shown\n",
+    ),
+    mutant(
+        "something that is no object is read as a hook",
+        HOOK_FILES,
+        '    if not isinstance(written, dict):\n        warnings.append(f"{where} is {_shown(written)} and no object, and is passed over")\n        return None\n    entry = cast("dict[str, object]", written)\n    kind',
+        '    entry = cast("dict[str, object]", written)\n    kind',
+    ),
+    mutant(
+        "a hook of another kind is run as a command",
+        HOOK_FILES,
+        '    if kind != "command":\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "a hook that names no type is no hook",
+        HOOK_FILES,
+        '    kind = entry.get("type", "command")\n',
+        '    kind = entry.get("type")\n',
+    ),
+    mutant(
+        "a hook without a command is a hook",
+        HOOK_FILES,
+        "    if not isinstance(command, str) or not command.strip():\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a command of spaces alone is a command",
+        HOOK_FILES,
+        "    if not isinstance(command, str) or not command.strip():\n",
+        "    if not isinstance(command, str) or not command:\n",
+    ),
+    mutant(
+        "a hook that says nothing of its time gets ten seconds",
+        HOOK_FILES,
+        "DEFAULT_TIMEOUT = 60.0\n",
+        "DEFAULT_TIMEOUT = 10.0\n",
+    ),
+    mutant(
+        "true counts as a number of seconds",
+        HOOK_FILES,
+        "    if isinstance(timeout, bool) or not isinstance(timeout, int | float) or not timeout > 0:\n",
+        "    if not isinstance(timeout, int | float) or not timeout > 0:\n",
+    ),
+    mutant(
+        "a time of no seconds is a time",
+        HOOK_FILES,
+        "or not isinstance(timeout, int | float) or not timeout > 0:\n",
+        "or not isinstance(timeout, int | float) or not timeout >= 0:\n",
+    ),
+    mutant(
+        "a hook may take as long as its file likes",
+        HOOK_FILES,
+        "    if timeout > MAX_TIMEOUT:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a hook that asks for just the longest time is told that it asked for too long",
+        HOOK_FILES,
+        "    if timeout > MAX_TIMEOUT:\n",
+        "    if timeout >= MAX_TIMEOUT:\n",
+    ),
+    mutant(
+        "a hook that asks for too long is told so and gets what it asked for",
+        HOOK_FILES,
+        "        timeout = MAX_TIMEOUT\n",
+        "",
+    ),
+    mutant(
+        "a matcher that is no text is taken for no matcher",
+        HOOK_FILES,
+        "    if matcher is not None and not isinstance(matcher, str):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a matcher that is no regular expression stops the reading of its file",
+        HOOK_FILES,
+        "        except (re.error, RecursionError, OverflowError) as error:\n",
+        "        except ZeroDivisionError as error:\n",
+    ),
+    mutant(
+        "a pattern that lies too deep stops the reading of its file",
+        HOOK_FILES,
+        "        except (re.error, RecursionError, OverflowError) as error:\n",
+        "        except (re.error, OverflowError) as error:\n",
+    ),
+    mutant(
+        "a count that is too large stops the reading of its file",
+        HOOK_FILES,
+        "        except (re.error, RecursionError, OverflowError) as error:\n",
+        "        except (re.error, RecursionError) as error:\n",
+    ),
+    mutant(
+        "a group without a list of hooks stops the reading of its file",
+        HOOK_FILES,
+        '    if not isinstance(listed, list):\n        warnings.append(f"{where} has no list of hooks, and is passed over")\n        return None\n',
+        "",
+    ),
+    mutant(
+        "a group of which no hook is left is a group",
+        HOOK_FILES,
+        "    return Group(matcher, tuple(hooks)) if hooks else None\n",
+        "    return Group(matcher, tuple(hooks))\n",
+    ),
+    mutant(
+        "a hook file of any size is read",
+        HOOK_FILES,
+        "    if len(content) > MAX_FILE_BYTES:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a hook file of just the size that is allowed is refused",
+        HOOK_FILES,
+        "    if len(content) > MAX_FILE_BYTES:\n",
+        "    if len(content) >= MAX_FILE_BYTES:\n",
+    ),
+    mutant(
+        "a mark at the beginning of a hook file makes it no JSON",
+        HOOK_FILES,
+        '        loaded: object = json.loads(content.decode("utf-8-sig"))\n    except UnicodeDecodeError:\n        raise HookFileError("it is not written in UTF-8")',
+        '        loaded: object = json.loads(content.decode("utf-8"))\n    except UnicodeDecodeError:\n        raise HookFileError("it is not written in UTF-8")',
+    ),
+    mutant(
+        "a hook file that is no text is told as one that is no JSON",
+        HOOK_FILES,
+        '    except UnicodeDecodeError:\n        raise HookFileError("it is not written in UTF-8") from None\n',
+        "",
+    ),
+    mutant(
+        "lists that lie too deep in a hook file stop whoever reads it",
+        HOOK_FILES,
+        '    except RecursionError:\n        raise HookFileError("it is nested too deeply") from None\n    except ValueError as error:\n        raise HookFileError(f"it is not JSON',
+        '    except ValueError as error:\n        raise HookFileError(f"it is not JSON',
+    ),
+    mutant(
+        "a list at the top of a hook file is looked into for hooks",
+        HOOK_FILES,
+        '    if not isinstance(loaded, dict):\n        raise HookFileError(f"it holds',
+        '    if False:\n        raise HookFileError(f"it holds',
+    ),
+    mutant(
+        "hooks that are no object are looked into for moments",
+        HOOK_FILES,
+        "    if not isinstance(moments, dict):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a moment that is not known has hooks all the same",
+        HOOK_FILES,
+        "        if event not in EVENTS:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a moment that holds no list stops the reading of its file",
+        HOOK_FILES,
+        "        if not isinstance(listed, list):\n            warnings.append(\n",
+        "        if False:\n            warnings.append(\n",
+    ),
+    mutant(
+        "a moment of which no group is left is listed all the same",
+        HOOK_FILES,
+        "        if found:\n            groups[event] = tuple(found)\n",
+        "        groups[event] = tuple(found)\n",
+    ),
+    mutant(
+        "what was passed over in a hook file is not told",
+        HOOK_FILES,
+        "    return Hooks(groups, tuple(warnings))\n",
+        "    return Hooks(groups)\n",
+    ),
+    mutant(
+        "a star is read as a pattern, which it is not",
+        HOOK_FILES,
+        '_EVERY = ("", "*")\n',
+        '_EVERY = ("",)\n',
+    ),
+    mutant(
+        "an empty matcher is for no tool",
+        HOOK_FILES,
+        '_EVERY = ("", "*")\n',
+        '_EVERY = ("*",)\n',
+    ),
+    mutant(
+        "a star in a file is passed over as a pattern that is none",
+        HOOK_FILES,
+        "    if matcher is not None and matcher not in _EVERY:\n",
+        "    if matcher is not None:\n",
+    ),
+    mutant(
+        "a tool goes by its own name alone",
+        HOOK_FILES,
+        "    return (tool,) if alias is None else (tool, alias)\n",
+        "    return (tool,)\n",
+    ),
+    mutant(
+        "a tool goes by what others call it and not by its own name",
+        HOOK_FILES,
+        "    return (tool,) if alias is None else (tool, alias)\n",
+        "    return (tool,) if alias is None else (alias,)\n",
+    ),
+    mutant(
+        "the shell of windows is no shell to a matcher",
+        HOOK_FILES,
+        '    "powershell": "Bash",\n',
+        "",
+    ),
+    mutant(
+        "a group that names no tool is for no tool",
+        HOOK_FILES,
+        "    if matcher is None or matcher in _EVERY:\n        return True\n",
+        "    if matcher is None or matcher in _EVERY:\n        return False\n",
+    ),
+    mutant(
+        "a group without a matcher is read as one with a pattern",
+        HOOK_FILES,
+        "    if matcher is None or matcher in _EVERY:\n",
+        "    if matcher in _EVERY:\n",
+    ),
+    mutant(
+        "a pattern need only match the beginning of a name",
+        HOOK_FILES,
+        "    return any(re.fullmatch(matcher, name) is not None for name in names)\n",
+        "    return any(re.match(matcher, name) is not None for name in names)\n",
+    ),
+    mutant(
+        "a pattern is looked for anywhere in a name",
+        HOOK_FILES,
+        "    return any(re.fullmatch(matcher, name) is not None for name in names)\n",
+        "    return any(re.search(matcher, name) is not None for name in names)\n",
+    ),
+    mutant(
+        "a record of another version is believed",
+        HOOK_FILES,
+        '.get("version") != _VERSION or not isinstance(files, dict):\n',
+        '.get("version") is None or not isinstance(files, dict):\n',
+    ),
+    mutant(
+        "a record that is no JSON stops whoever asks about a file",
+        HOOK_FILES,
+        "    except (ValueError, RecursionError):\n        return {}\n",
+        "    except ZeroDivisionError:\n        return {}\n",
+    ),
+    mutant(
+        "a record that lies too deep stops whoever asks about a file",
+        HOOK_FILES,
+        "    except (ValueError, RecursionError):\n",
+        "    except ValueError:\n",
+    ),
+    mutant(
+        "a record that is a list stops whoever asks about a file",
+        HOOK_FILES,
+        "    if not isinstance(loaded, dict):\n        return {}\n",
+        "",
+    ),
+    mutant(
+        "a file is trusted wherever it lies, if its content was trusted somewhere",
+        HOOK_FILES,
+        "    return _record(record).get(str(file)) == digest(content)\n",
+        "    return digest(content) in _record(record).values()\n",
+    ),
+    mutant(
+        "a file that was trusted once is trusted whatever it holds now",
+        HOOK_FILES,
+        "    return _record(record).get(str(file)) == digest(content)\n",
+        "    return str(file) in _record(record)\n",
+    ),
+    mutant(
+        "trusting one file forgets the others",
+        HOOK_FILES,
+        "    files = _record(record)\n    files[str(file)] = digest(content)\n",
+        "    files = {str(file): digest(content)}\n",
+    ),
+    mutant(
+        "the record lists its files in the order in which they were trusted",
+        HOOK_FILES,
+        '"files": dict(sorted(files.items()))}',
+        '"files": files}',
+    ),
+    mutant(
+        "the record does not end in a line end",
+        HOOK_FILES,
+        '    return (json.dumps(kept, ensure_ascii=False, indent=2) + "\\n").encode()\n',
+        "    return json.dumps(kept, ensure_ascii=False, indent=2).encode()\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -8306,5 +8610,6 @@ SETS: dict[str, MutantSet] = {
     "sessions": MutantSet(("tests/apps/test_stored_sessions.py",), _STORED_SESSIONS),
     "budget": MutantSet(("tests/guard",), _BUDGET),
     "skills": MutantSet(("tests/skills",), _SKILLS),
+    "hooks": MutantSet(("tests/hooks",), _HOOKS),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

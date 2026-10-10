@@ -89,6 +89,7 @@ REGION = "src/columbina/compaction/basic/region.py"
 SUMMARY = "src/columbina/compaction/basic/summary.py"
 BASIC = "src/columbina/compaction/basic/__init__.py"
 PROJECTION = "src/columbina/session/projection.py"
+BUDGET = "src/columbina/guard/budget.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -7142,6 +7143,87 @@ _COMPACTION = (
     ),
 )
 
+_BUDGET = (
+    mutant(
+        "a turn takes a step more than it has",
+        BUDGET,
+        "        if steps is not None and info.step > steps:\n",
+        "        if steps is not None and info.step > steps + 1:\n",
+    ),
+    mutant(
+        "a turn is ended a step before its last",
+        BUDGET,
+        "        if steps is not None and info.step > steps:\n",
+        "        if steps is not None and info.step >= steps:\n",
+    ),
+    mutant(
+        "the steps of the config count before those of the spec",
+        BUDGET,
+        "        steps = info.agent.spec.max_steps or config.max_steps\n",
+        "        steps = config.max_steps or info.agent.spec.max_steps\n",
+    ),
+    mutant(
+        "the steps that a spec names are not looked at",
+        BUDGET,
+        "        steps = info.agent.spec.max_steps or config.max_steps\n",
+        "        steps = config.max_steps\n",
+    ),
+    mutant(
+        "one step is told as one steps",
+        BUDGET,
+        "step{'' if steps == 1 else 's'}",
+        "steps",
+    ),
+    mutant(
+        "the tokens of a turn are those of the whole session",
+        BUDGET,
+        "        used = spent - begun.tokens\n",
+        "        used = spent\n",
+    ),
+    mutant(
+        "tokens that come to just the limit are not the limit",
+        BUDGET,
+        "        if config.max_tokens is not None and used >= config.max_tokens:\n",
+        "        if config.max_tokens is not None and used > config.max_tokens:\n",
+    ),
+    mutant(
+        "what was read from the cache is not counted as used",
+        BUDGET,
+        "        + usage.cache_read_tokens\n",
+        "",
+    ),
+    mutant(
+        "what the model wrote is not counted as used",
+        BUDGET,
+        "        + usage.output_tokens\n",
+        "",
+    ),
+    mutant(
+        "a turn goes by where the turn before it began",
+        BUDGET,
+        "        if begun is None or begun.turn != info.turn:\n",
+        "        if begun is None:\n",
+    ),
+    mutant(
+        "a turn that has run for its time takes another step",
+        BUDGET,
+        "        if config.max_seconds is not None and passed >= config.max_seconds:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a step that the budget refuses is asked about by those after it",
+        BUDGET,
+        "            # Nobody else is asked about a step that does not begin.\n            return Reject(over)\n",
+        "            await proceed(info)\n            return Reject(over)\n",
+    ),
+    mutant(
+        "the budget is asked after those that were there before it",
+        BUDGET,
+        "    ctx.on(PRE_STEP, _Budget(config).before_a_step, prepend=True)\n",
+        "    ctx.on(PRE_STEP, _Budget(config).before_a_step)\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -7218,5 +7300,6 @@ SETS: dict[str, MutantSet] = {
     "compaction": MutantSet(("tests/compaction",), _COMPACTION),
     "todo": MutantSet(("tests/todo", "tests/commands/test_todos.py"), _TODO),
     "sessions": MutantSet(("tests/apps/test_stored_sessions.py",), _STORED_SESSIONS),
+    "budget": MutantSet(("tests/guard",), _BUDGET),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

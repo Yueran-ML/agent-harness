@@ -5,8 +5,8 @@ project have written down, at five moments.
 
 - ``SessionStart``: when the first turn of an agent begins. What the hooks
   write is given to the model as context.
-- ``UserPromptSubmit``: when a step takes up something that a person said. A
-  hook can stop that input, which ends the turn, or add to it for the model.
+- ``UserPromptSubmit``: before a model is sent something that a person said.
+  A hook can stop that input, which ends the turn, or add to it for the model.
 - ``PreToolUse``: before a tool is called. A hook can stop the call or have
   somebody asked about it.
 - ``PostToolUse``: after a tool has done its work. A hook can put a reason in
@@ -16,7 +16,14 @@ project have written down, at five moments.
 
 A hook that lets a call through has only said that it has nothing against
 it. The rules and the sandbox are asked all the same: a hook can make things
-stricter and never looser.
+stricter and never looser. So the hooks stand among the guards of the tools,
+which can refuse a call and cannot let one through.
+
+No input of a person reaches a model that the hooks have not been asked
+about. A model is sent what it sees when a step begins. So before a step
+begins, the hooks are asked about everything that a person said since the
+last step that began, be it taken up by this step or by one that never came
+to begin because something else stopped it.
 
 The hooks of the user are in a file in the home of the program, and those of
 a project in ``.columbina/hooks.json`` at its root. The file of a project
@@ -26,19 +33,20 @@ turn begins, so a change needs no restart.
 
 Nothing that goes wrong with a hook goes wrong for the turn. A hook that
 fails, a file that cannot be read and a mistake in this module are written
-to the log, and the session goes on as if there were no hook. Each run of a
-hook leaves two events in the log of its session.
+to the log, and the session goes on as if that hook were not there. What
+the hooks beside it decided stands. Each run of a hook leaves two events in
+the log of its session.
 
 What a hook file holds is in :mod:`columbina.hooks.config`, and how a hook
 is run and its answer read in :mod:`columbina.hooks.run`.
 """
 
 import asyncio
-import itertools
+import contextlib
 import logging
 import time
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -62,6 +70,7 @@ from columbina.fs import locate
 from columbina.hooks.config import (
     TOOL_EVENTS,
     Group,
+    Hook,
     HookFileError,
     Hooks,
     matches,
@@ -86,20 +95,20 @@ from columbina.session import (
     Session,
     SessionError,
     Sessions,
-    StepEndEvent,
+    StepStartEvent,
     TurnStartEvent,
     UserMessageEvent,
 )
 from columbina.session.store import SESSION_FILE
 from columbina.tools import (
     POST_EXECUTE,
-    PRE_EXECUTE,
+    TOOLS,
     Accept,
     Block,
-    Decision,
     Deny,
     Executed,
     Invocation,
+    ToolFailure,
     Verdict,
 )
 
@@ -114,7 +123,7 @@ __all__ = [
 ]
 
 name = "hooks"
-inject = (AGENTS, SESSIONS)
+inject = (AGENTS, SESSIONS, TOOLS)
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +131,7 @@ _FILE_TOOLS = ("read", "write", "edit")
 _SOURCE = "hook/"
 _HUMAN = ("user", "steer")
 _STOPPED = "[A hook of the user stopped what was said here: {}]"
+_NOT_ACTED_ON = "what the %s hooks answered could not be acted on"
 
 _now = time.monotonic
 
@@ -223,6 +233,8 @@ class _Bridge:
         self._shell = shells.find()
         self._loaded: weakref.WeakKeyDictionary[Session, _Loaded] = weakref.WeakKeyDictionary()
         self._started: weakref.WeakSet[Session] = weakref.WeakSet()
+        # Where the inputs lie that the hooks let through, of those that no model was sent yet.
+        self._passed: weakref.WeakKeyDictionary[Session, set[int]] = weakref.WeakKeyDictionary()
         self._kept_going: weakref.WeakKeyDictionary[Session, tuple[int, int]] = (
             weakref.WeakKeyDictionary()
         )
@@ -299,17 +311,82 @@ class _Bridge:
             # Sessions are kept in memory, so there is no file to point to.
             return None
 
+    async def _one(
+        self,
+        session: Session,
+        cwd: Path,
+        project: Path,
+        event: str,
+        hook: Hook,
+        told: bytes,
+        shell: str,
+    ) -> Result:
+        """Run one hook, write its run into the log, and return what it answered.
+
+        What goes wrong here goes wrong for this one hook. It counts as a
+        hook that failed, which stops nothing, and what it answered before
+        things went wrong stands.
+        """
+        result = Result("failed")
+        try:
+            session.append(HookInvokedEvent(event=event, command=hook.command))
+            began = _now()
+            try:
+                result = await run(
+                    hook,
+                    event,
+                    told,
+                    shell=shell,
+                    cwd=cwd,
+                    project=project,
+                    limit=self._config.max_context_chars,
+                )
+            finally:
+                # Also when the turn was cancelled meanwhile and the hook with it.
+                session.append(
+                    HookResultEvent(
+                        event=event,
+                        command=hook.command,
+                        status=result.status,
+                        exit_code=result.exit_code,
+                        duration_ms=round((_now() - began) * 1000),
+                        reason=result.reason,
+                    )
+                )
+            for warning in result.warnings:
+                logger.warning("the %s hook %r: %s", event, hook.command, warning)
+            if result.status == "timed-out":
+                logger.warning(
+                    "the %s hook %r was stopped after %g seconds", event, hook.command, hook.timeout
+                )
+            if result.message:
+                logger.warning("the %s hook %r says: %s", event, hook.command, result.message)
+        except Exception as error:
+            logger.error("the %s hook %r could not be run", event, hook.command, exc_info=error)
+        return result
+
     async def _run(
         self,
         session: Session,
         cwd: Path,
         event: str,
-        more: Mapping[str, object],
+        more: Callable[[], Mapping[str, object]],
         names: tuple[str, ...] = (),
         *,
         anew: bool = False,
     ) -> Result:
-        """Run the hooks of a moment and return what they come to. This fails for nobody."""
+        """Run the hooks of a moment and return what they come to. This fails for nobody.
+
+        Args:
+            session: The session.
+            cwd: The working directory of its agent.
+            event: The moment.
+            more: Works out what this moment adds to what every hook is told.
+                It is asked only if there is a hook to tell.
+            names: The names that the tool of this moment goes by, if it has one.
+            anew: Whether the hook files are read again first.
+        """
+        results: list[Result] = []
         try:
             loaded = await self._hooks(session, cwd, anew=anew)
             groups = [
@@ -317,58 +394,22 @@ class _Bridge:
                 for group in loaded.groups.get(event, ())
                 if event not in TOOL_EVENTS or matches(group.matcher, names)
             ]
-            if not groups:
-                return Result()
-            if self._shell is None:
+            shell = self._shell
+            if groups and shell is None:
                 self._once("no hook is run: the shell of this system is not installed")
-                return Result()
-            told = payload(event, session.id, self._transcript(session, cwd), cwd, more)
-            results: list[Result] = []
-            for group in groups:
-                for hook in group.hooks:
-                    session.append(HookInvokedEvent(event=event, command=hook.command))
-                    began = _now()
-                    result = Result("failed")
-                    try:
-                        result = await run(
-                            hook,
-                            event,
-                            told,
-                            shell=self._shell,
-                            cwd=cwd,
-                            project=loaded.project,
-                            limit=self._config.max_context_chars,
-                        )
-                    finally:
-                        # Also when the turn was cancelled meanwhile and the hook with it.
-                        session.append(
-                            HookResultEvent(
-                                event=event,
-                                command=hook.command,
-                                status=result.status,
-                                exit_code=result.exit_code,
-                                duration_ms=round((_now() - began) * 1000),
-                                reason=result.reason,
-                            )
-                        )
-                    for warning in result.warnings:
-                        logger.warning("the %s hook %r: %s", event, hook.command, warning)
-                    if result.status == "timed-out":
-                        logger.warning(
-                            "the %s hook %r was stopped after %g seconds",
-                            event,
-                            hook.command,
-                            hook.timeout,
-                        )
-                    if result.message:
-                        logger.warning(
-                            "the %s hook %r says: %s", event, hook.command, result.message
-                        )
-                    results.append(result)
-            return merged(results)
+            elif groups and shell is not None:
+                hooks = [hook for group in groups for hook in group.hooks]
+                told = payload(event, session.id, self._transcript(session, cwd), cwd, more())
+                for hook in hooks:
+                    answered = await self._one(
+                        session, cwd, loaded.project, event, hook, told, shell
+                    )
+                    # One by one: what a hook answered stands, whatever becomes of the next.
+                    results.append(answered)
         except Exception as error:
             logger.error("running the %s hooks failed", event, exc_info=error)
-            return Result()
+        # What the hooks answered before something went wrong is what they answered.
+        return merged(results, self._config.max_context_chars)
 
     # The five moments
 
@@ -380,69 +421,100 @@ class _Bridge:
         self._started.add(session)
         turns = sum(isinstance(event.data, TurnStartEvent) for event in session.events)
         source = "resume" if turns > 1 else "startup"
-        result = await self._run(session, agent.cwd, "SessionStart", {"source": source}, anew=True)
+        told = {"source": source}
+        result = await self._run(session, agent.cwd, "SessionStart", lambda: told, anew=True)
         return result.context or None
+
+    def _waiting(self, session: Session) -> list[int]:
+        """Return where the inputs of a person lie that no model was sent and no hook let through.
+
+        A model is sent what it sees when a step begins. So whatever a
+        person said that lies after the last step that began, and is still
+        seen, has reached no model. A step may have taken it up and never
+        begun: something else stopped that step, or the turn failed before
+        it came to ask.
+        """
+        events = session.events
+        began = next(
+            (event.seq for event in reversed(events) if isinstance(event.data, StepStartEvent)), -1
+        )
+        # What lies before a step that began was sent, and is nothing to remember any more.
+        passed = {seq for seq in self._passed.get(session, ()) if seq > began}
+        self._passed[session] = passed
+        waiting: list[int] = []
+        for seq in reversed(session.surface):
+            if seq <= began:
+                break
+            data = events[seq].data
+            if isinstance(data, UserMessageEvent) and data.source in _HUMAN and seq not in passed:
+                waiting.append(seq)
+        waiting.reverse()
+        return waiting
 
     async def before_a_step(
         self, info: StepInfo, proceed: Next[StepInfo, StepDecision]
     ) -> StepDecision:
-        """Run the hooks for what a person said and this step takes up."""
+        """Run the hooks for what a person said and a model has not been sent yet."""
         agent = info.agent
         session = agent.session
-        events = session.events
-        # What this step took up stands after the end of the step before it, or after the
-        # beginning of the turn.
-        taken = itertools.takewhile(
-            lambda event: not isinstance(event.data, StepEndEvent | TurnStartEvent),
-            reversed(events),
-        )
-        said = [
-            event.seq
-            for event in taken
-            if isinstance(event.data, UserMessageEvent) and event.data.source in _HUMAN
-        ]
-        for seq in reversed(said):
-            data = events[seq].data
+        stopped: list[str] = []
+        # The hook files are read again when a turn begins.
+        anew = info.step == 1
+        for seq in self._waiting(session):
+            data = session.events[seq].data
             assert isinstance(data, UserMessageEvent)
+            told = {"prompt": _text(data.message)}
             result = await self._run(
-                session,
-                agent.cwd,
-                "UserPromptSubmit",
-                {"prompt": _text(data.message)},
-                anew=info.step == 1 and seq == said[-1],
+                session, agent.cwd, "UserPromptSubmit", lambda told=told: told, anew=anew
             )
+            anew = False
+            try:
+                if result.decision == "block":
+                    # Left where it is, the model would read it in the next turn all the same.
+                    note = _note("UserPromptSubmit", _STOPPED.format(result.reason))
+                    session.append(note, replaces=[seq])
+                elif result.context:
+                    session.append(_note("UserPromptSubmit", result.context))
+            except Exception as error:
+                logger.error(_NOT_ACTED_ON, "UserPromptSubmit", exc_info=error)
             if result.decision == "block":
-                # Left where it is, the model would read it in the next turn all the same.
-                stopped = _note("UserPromptSubmit", _STOPPED.format(result.reason))
-                session.append(stopped, replaces=[seq])
-                return Reject(f"a hook stopped the input: {result.reason}")
-            if result.context:
-                session.append(_note("UserPromptSubmit", result.context))
+                # Every other input is looked at all the same: the turn ends, and what is
+                # left where a model sees it will be read by the turn after this one.
+                stopped.append(result.reason)
+            else:
+                self._passed[session].add(seq)
+        if stopped:
+            return Reject(f"a hook stopped the input: {stopped[0]}")
         return await proceed(info)
 
-    async def before_a_call(
-        self, invocation: Invocation, proceed: Next[Invocation, Decision]
-    ) -> Decision:
-        """Run the hooks for a call that is about to be made."""
+    async def guard(self, ctx: Context, invocation: Invocation) -> Deny | None:
+        """Run the hooks for a call that is about to be made, and refuse it if they say so.
+
+        Args:
+            ctx: The context of the agent that makes the call. Whoever is asked
+                about the call is asked through it, so that the one who answers
+                is the one who answers for this agent.
+            invocation: The call.
+        """
         run_ = invocation.run
         tool = invocation.tool.name
         result = await self._run(
             run_.session,
             run_.cwd,
             "PreToolUse",
-            self._about(invocation),
+            lambda: self._about(invocation),
             names_of(tool),
         )
         if result.decision == "block":
             return Deny(f"a hook stopped the call: {result.reason}", "HOOK_BLOCKED")
         if result.decision == "ask":
-            approval = self._ctx.get(APPROVAL)
+            approval = ctx.get(APPROVAL)
             outcome = "unavailable"
             if approval is not None:
                 why = result.reason or "A hook wants somebody asked about this call."
                 target = invocation.target
                 outcome = await approval.ask(
-                    self._ctx,
+                    ctx,
                     ApprovalRequest(
                         session=run_.session,
                         call_id=run_.call_id,
@@ -457,8 +529,8 @@ class _Bridge:
                     "a hook wanted somebody asked about the call, and nobody said yes",
                     "HOOK_BLOCKED",
                 )
-        # Nothing against it. Whether it may run is for the rules to say.
-        return await proceed(invocation)
+        # Nothing against it. Whether it may run is for the other guards to say.
+        return None
 
     async def after_a_call(self, executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
         """Run the hooks for a call that a tool has carried out."""
@@ -467,9 +539,12 @@ class _Bridge:
             return verdict
         invocation = executed.invocation
         run_ = invocation.run
-        more = {**self._about(invocation), "tool_response": verdict.text}
         result = await self._run(
-            run_.session, run_.cwd, "PostToolUse", more, names_of(invocation.tool.name)
+            run_.session,
+            run_.cwd,
+            "PostToolUse",
+            lambda: {**self._about(invocation), "tool_response": verdict.text},
+            names_of(invocation.tool.name),
         )
         if result.decision == "block":
             return Block(f"a hook withheld it: {result.reason}")
@@ -484,7 +559,8 @@ class _Bridge:
         turn, count = self._kept_going.get(session, (stopping.turn, 0))
         if turn != stopping.turn:
             count = 0
-        result = await self._run(session, agent.cwd, "Stop", {"stop_hook_active": count > 0})
+        told = {"stop_hook_active": count > 0}
+        result = await self._run(session, agent.cwd, "Stop", lambda: told)
         if result.decision != "block":
             return
         if count >= self._config.max_stop_continuations:
@@ -495,7 +571,10 @@ class _Bridge:
             )
             return
         self._kept_going[session] = (stopping.turn, count + 1)
-        agent.steer(result.reason, source=_SOURCE + "Stop")
+        try:
+            agent.steer(result.reason, source=_SOURCE + "Stop")
+        except Exception as error:
+            logger.error(_NOT_ACTED_ON, "Stop", exc_info=error)
 
     def _about(self, invocation: Invocation) -> dict[str, object]:
         """Return what a hook is told about a call."""
@@ -503,8 +582,10 @@ class _Bridge:
         given: dict[str, object] = dict(invocation.args.model_dump(mode="json"))
         path = given.get("path")
         if tool in _FILE_TOOLS and isinstance(path, str):
-            # The hooks that are most common, such as a formatter, go by this.
-            given["file_path"] = str(locate(invocation.run.cwd, path).path)
+            # The hooks that are most common, such as a formatter, go by this. A path that
+            # names no file is left for the tool to refuse.
+            with contextlib.suppress(ToolFailure):
+                given["file_path"] = str(locate(invocation.run.cwd, path).path)
         return {
             "tool_name": names_of(tool)[-1],
             "tool_input": given,
@@ -521,6 +602,6 @@ def apply(ctx: Context, config: Config) -> None:
     source = ContextSource(bridge.session_start, order=50, kind="note")
     ctx.use(AGENTS).context.add(ctx, "hooks", source)
     ctx.on(PRE_STEP, bridge.before_a_step)
-    ctx.on(PRE_EXECUTE, bridge.before_a_call)
+    ctx.use(TOOLS).guards.add(ctx, name, bridge.guard)
     ctx.on(POST_EXECUTE, bridge.after_a_call)
     ctx.on(TURN_STOPPING, bridge.stopping)

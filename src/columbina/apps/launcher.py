@@ -350,13 +350,21 @@ def _hooks(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     cwd = Path() if args.cwd is None else Path(args.cwd)
     if not cwd.is_dir():
         raise _UsageError(f"the working directory {args.cwd!r} is not a directory")
+
+    def show(told: str) -> None:
+        # What a hook file holds was written by the user, or by whoever wrote the project.
+        print(harmless(told))
+        # Whoever goes on after this may go by it that the text has left the program.
+        sys.stdout.flush()
+
     try:
-        told = written_hooks.run(config, cwd.resolve(), args.what)
+        written_hooks.run(config, cwd.resolve(), args.what, show)
     except written_hooks.HooksError as error:
         _tell(str(error))
         return 2
-    # What a hook file holds was written by the user, or by whoever wrote the project.
-    print(harmless(told))
+    except OSError as error:
+        _tell(f"what there is to say about the hooks could not be written: {error}")
+        return 2
     return 0
 
 

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from columbina import process
 from columbina.hooks.config import Hook
@@ -19,10 +21,15 @@ from columbina.hooks.run import (
     payload,
     read,
     run,
+    too_long,
 )
 from support.hooks import SHELL, needs_shell, python_hook
 
 NO_REASON = "A hook stopped this and gave no reason."
+TOO_LONG = (
+    f"its command is longer than {MAX_COMMAND} characters, counted the way Windows counts "
+    "them, and was not run"
+)
 LIMIT = 10_000
 
 
@@ -58,6 +65,18 @@ def about(event: str, **fields: Any) -> dict[str, Any]:
 
 
 # What a hook is told
+
+
+def test_half_a_character_in_what_a_hook_is_told_is_spelled_and_not_lost() -> None:
+    half = chr(0xDC80)
+    asked = {"tool_name": "Bash", "tool_input": {"command": f"rm -rf x #{half}"}}
+
+    # A hook that guards a call has to be told of the call, whatever the call holds.
+    told = payload("PreToolUse", "s-1", None, Path("/work"), asked)
+
+    assert told.endswith(b"\n")
+    assert rb"\udc80" in told
+    assert json.loads(told)["tool_input"] == {"command": f"rm -rf x #{half}"}
 
 
 def test_a_hook_is_told_what_happens_in_one_line_of_json() -> None:
@@ -118,16 +137,17 @@ def test_what_a_hook_writes_at_the_other_moments_is_not_used(event: str) -> None
         (1, "", "it ended with the exit code 1"),
         (3, "Traceback\n  File x\n", "it ended with the exit code 3: Traceback"),
         (-9, "killed", "it ended with the exit code -9: killed"),
-        (1, "x" * 500, "it ended with the exit code 1: " + "x" * 100),
+        (1, "x" * 200, "it ended with the exit code 1: " + "x" * 200),
+        pytest.param(
+            1, "x" * 500, "it ended with the exit code 1: " + "x" * 200 + "...", id="a long line"
+        ),
     ],
 )
 def test_a_hook_that_fails_stops_nothing(code: int, err: str, why: str) -> None:
     result = read("PreToolUse", done(code, "{}", err), LIMIT)
 
-    assert (result.status, result.decision, result.exit_code) == ("failed", None, code)
-    (warning,) = result.warnings
-    assert warning.startswith(why)
-    assert len(warning) < 300
+    # What goes into the log about it is the first line that it wrote, and not all of a long one.
+    assert result == Result("failed", warnings=(why,), exit_code=code)
 
 
 def test_a_hook_that_takes_too_long_stops_nothing() -> None:
@@ -281,11 +301,33 @@ def test_output_that_begins_like_json_and_is_none_is_a_failure() -> None:
 
 
 def test_a_text_that_is_too_long_loses_its_middle() -> None:
+    long = "a" * 300 + "b" * 300
+
     assert cut("abcdefghij", 10) == "abcdefghij"
-    assert cut("abcdefghijk", 10) == "abcde\n[1 characters are left out here]\nghijk"
-    assert cut("a" * 30 + "b" * 30, 21) == (
-        "a" * 10 + "\n[39 characters are left out here]\n" + "b" * 11
-    )
+    assert cut(long, 600) == long
+    # What says how much is left out counts as well: the limit is the limit.
+    assert cut(long, 100) == "a" * 32 + "\n[536 characters are left out here]\n" + "b" * 32
+    assert cut(long, 101) == "a" * 32 + "\n[535 characters are left out here]\n" + "b" * 33
+    assert len(cut(long, 100)) == 100
+
+
+def test_a_limit_that_has_no_room_for_saying_what_is_left_out_cuts_the_end_off() -> None:
+    text = "x" * 50
+
+    # Just room for the words, and none for the text.
+    assert cut(text, 35) == "\n[50 characters are left out here]\n"
+    assert cut(text, 34) == "x" * 34
+    assert cut("abcdefghijk", 10) == "abcdefghij"
+    assert cut("abc", 0) == ""
+
+
+@given(text=st.text(max_size=400), limit=st.integers(min_value=0, max_value=450))
+def test_what_is_cut_never_has_more_characters_than_the_limit(text: str, limit: int) -> None:
+    shortened = cut(text, limit)
+
+    assert len(shortened) <= limit or shortened == text
+    if len(text) <= limit:
+        assert shortened == text
 
 
 def test_a_reason_and_what_is_added_for_the_model_are_kept_within_bounds() -> None:
@@ -327,6 +369,34 @@ def test_what_the_shell_of_windows_writes_about_an_error_is_turned_back_into_tex
     assert from_clixml("") == ""
 
 
+def test_a_character_that_the_shell_of_windows_wrote_in_two_halves_is_one_again() -> None:
+    written = '#< CLIXML\r\n<Objs><S S="Error">a_xD83D__xDE00_b_xD800_</S></Objs>'
+
+    # A half that stands alone gives way to the sign for what could not be read.
+    assert from_clixml(written) == "a\U0001f600b�"
+
+
+def test_half_a_character_in_what_a_hook_answers_gives_way_to_a_sign() -> None:
+    stops = r'{"decision": "block", "reason": "not \ud83d this", "systemMessage": "\udc00"}'
+    adds = (
+        r'{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "a\ud800"}}'
+    )
+    asks = (
+        r'{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask", '
+        r'"permissionDecisionReason": "\ud800?"}}'
+    )
+
+    stopped = read("PreToolUse", done(0, stops), LIMIT)
+
+    # A text with a half in it could not be written into the log of a session.
+    assert (stopped.decision, stopped.reason, stopped.message) == ("block", "not � this", "�")
+    assert read("SessionStart", done(0, adds), LIMIT).context == "a�"
+    assert read("PreToolUse", done(0, asks), LIMIT).reason == "�?"
+    # A character that is spelled as its two halves is that character.
+    pair = r'{"decision": "block", "reason": "\ud83d' r'\ude00"}'
+    assert read("Stop", done(0, pair), LIMIT).reason == "\U0001f600"
+
+
 def test_the_reason_of_a_hook_is_read_from_what_the_shell_wrote_about_its_error() -> None:
     result = read("PreToolUse", done(2, "", CLIXML), LIMIT)
 
@@ -347,17 +417,17 @@ def test_of_several_answers_the_strictest_counts_and_gives_the_reason() -> None:
     stop = Result("blocked", "block", "Not this.")
     silent = Result(context="A note.")
 
-    assert merged([let, silent]) == Result(decision="allow", context="A note.")
-    assert merged([let, ask, silent]) == Result(
+    assert merged([let, silent], LIMIT) == Result(decision="allow", context="A note.")
+    assert merged([let, ask, silent], LIMIT) == Result(
         decision="ask", reason="Ask about this.", context="A note."
     )
-    assert merged([ask, stop, let]) == Result("blocked", "block", "Not this.")
-    assert merged([stop, ask]) == Result("blocked", "block", "Not this.")
+    assert merged([ask, stop, let], LIMIT) == Result("blocked", "block", "Not this.")
+    assert merged([stop, ask], LIMIT) == Result("blocked", "block", "Not this.")
     # Hooks that want the same thing all give their reasons.
     again = Result("blocked", "block", "Nor that.")
-    assert merged([stop, ask, again]).reason == "Not this.\n\nNor that."
-    assert merged([silent, silent]) == Result(context="A note.\n\nA note.")
-    assert merged([]) == Result()
+    assert merged([stop, ask, again], LIMIT).reason == "Not this.\n\nNor that."
+    assert merged([silent, silent], LIMIT) == Result(context="A note.\n\nA note.")
+    assert merged([], LIMIT) == Result()
 
 
 def test_what_several_hooks_add_and_say_is_put_together_in_their_order() -> None:
@@ -365,9 +435,29 @@ def test_what_several_hooks_add_and_say_is_put_together_in_their_order() -> None
     failed = Result("failed", warnings=("b",), exit_code=1)
     last = Result(context="Two.", message="Linted.", exit_code=0)
 
-    assert merged([first, failed, last]) == Result(
+    assert merged([first, failed, last], LIMIT) == Result(
         context="One.\n\nTwo.", message="Formatted.\nLinted.", warnings=("a", "b")
     )
+
+
+def test_what_several_hooks_say_together_keeps_to_the_limit_of_one() -> None:
+    one = Result(decision="ask", reason="r" * 60, context="x" * 60, message="m" * 60)
+    two = Result(decision="ask", reason="s" * 60, context="y" * 60, message="n" * 60)
+
+    # Each of them is within the limit, and the two together are not.
+    together = merged([one, two], 100)
+
+    for said, first, last in (
+        (together.reason, "r", "s"),
+        (together.context, "x", "y"),
+        (together.message, "m", "n"),
+    ):
+        assert len(said) <= 100
+        assert said.startswith(first * 10)
+        assert said.endswith(last * 10)
+        assert "characters are left out here" in said
+    # Where there is room for all of it, all of it is there.
+    assert merged([one, two], 122).context == "x" * 60 + "\n\n" + "y" * 60
 
 
 # With a real command
@@ -483,10 +573,34 @@ async def test_a_command_that_is_too_long_is_not_run(tmp_path: Path) -> None:
         limit=LIMIT,
     )
 
-    assert result == Result(
-        "failed",
-        warnings=(f"its command has more than {MAX_COMMAND} characters, and was not run",),
+    assert result == Result("failed", warnings=(TOO_LONG,))
+
+
+def test_a_command_is_measured_the_way_the_shell_of_windows_is_handed_it() -> None:
+    face = chr(0x1F600)
+
+    assert too_long("x" * MAX_COMMAND) is False
+    assert too_long("x" * (MAX_COMMAND + 1)) is True
+    # A character outside the first plane takes two of the units that are counted there.
+    assert too_long(face * (MAX_COMMAND // 2)) is False
+    assert too_long(face * (MAX_COMMAND // 2) + "x") is True
+
+
+async def test_a_command_of_few_characters_that_take_much_room_is_not_run(tmp_path: Path) -> None:
+    # Fewer characters than are allowed, and more than Windows takes on one command line.
+    command = "# " + chr(0x1F600) * 7000 + "\nexit 2"
+
+    result = await run(
+        Hook(command),
+        "Stop",
+        b"{}\n",
+        shell=str(tmp_path / "no-such-shell"),
+        cwd=tmp_path,
+        project=tmp_path,
+        limit=LIMIT,
     )
+
+    assert result == Result("failed", warnings=(TOO_LONG,))
 
 
 async def test_a_command_of_just_the_length_that_is_allowed_is_handed_to_the_shell(
@@ -511,6 +625,17 @@ async def test_a_command_of_just_the_length_that_is_allowed_is_handed_to_the_she
 
 
 if sys.platform == "win32":
+
+    @needs_shell
+    async def test_the_longest_command_that_is_allowed_fits_on_a_command_line(
+        tmp_path: Path,
+    ) -> None:
+        command = "# " + chr(0x1F600) * 3990 + "\nexit 2"
+        assert not too_long(command)
+
+        result = await ran(command, tmp_path)
+
+        assert (result.status, result.decision, result.exit_code) == ("blocked", "block", 2)
 
     @needs_shell
     async def test_an_error_of_powershell_itself_is_read_as_text(tmp_path: Path) -> None:

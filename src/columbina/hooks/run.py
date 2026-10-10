@@ -39,6 +39,7 @@ from typing import Literal, cast
 
 from columbina import process, shells
 from columbina.hooks.config import Hook
+from columbina.text import whole
 
 __all__ = [
     "CONTEXT_EVENTS",
@@ -54,10 +55,11 @@ __all__ = [
     "payload",
     "read",
     "run",
+    "too_long",
 ]
 
 MAX_COMMAND = 8000
-"""How many characters the command of a hook may have."""
+"""How long the command of a hook may be, see :func:`too_long`."""
 
 MAX_OUTPUT_BYTES = 64_000
 """How much of what a hook writes to either of its streams is read."""
@@ -67,6 +69,8 @@ CONTEXT_EVENTS = ("SessionStart", "UserPromptSubmit", "PostToolUse")
 
 _PLAIN_CONTEXT = ("SessionStart", "UserPromptSubmit")
 _NO_REASON = "A hook stopped this and gave no reason."
+_LINE = 200
+"""How many characters of the first line that a failed hook wrote go into the log."""
 _UNSUPPORTED = ("continue", "stopReason", "updatedInput", "suppressOutput")
 _PERMISSION = {"allow": "allow", "deny": "block", "ask": "ask"}
 
@@ -102,13 +106,35 @@ class Result:
     exit_code: int | None = None
 
 
+_LEFT_OUT = "\n[{} characters are left out here]\n"
+
+
 def cut(text: str, limit: int) -> str:
-    """Return a text in no more characters than ``limit``, with its middle left out if need be."""
+    """Return a text in no more characters than ``limit``, with its middle left out if need be.
+
+    What says how much is left out counts as text. Where the limit has no
+    room even for that, the end of the text is cut off and nothing is said.
+    """
     if len(text) <= limit:
         return text
-    note = f"\n[{len(text) - limit} characters are left out here]\n"
-    head = limit // 2
-    return text[:head] + note + text[len(text) - (limit - head) :]
+    # Room is kept for the longest that the words about it can get.
+    room = limit - len(_LEFT_OUT.format(len(text)))
+    if room < 0:
+        return text[:limit]
+    head = room // 2
+    note = _LEFT_OUT.format(len(text) - room)
+    return text[:head] + note + text[len(text) - (room - head) :]
+
+
+def too_long(command: str) -> bool:
+    """Tell whether a command is longer than the command of a hook may be.
+
+    The shell of Windows is handed the command on its command line, which
+    has room for some thirty thousand units of UTF-16 after it is packed for
+    the way there. So the units are what is counted, on every system alike:
+    a character outside the first plane takes two of them.
+    """
+    return len(command.encode("utf-16-le", "surrogatepass")) // 2 > MAX_COMMAND
 
 
 def payload(
@@ -131,7 +157,9 @@ def payload(
         "hook_event_name": event,
         **more,
     }
-    return json.dumps(told, ensure_ascii=False).encode("utf-8") + b"\n"
+    # Half a character, which no text of UTF-8 can hold, is spelled the way JSON spells it.
+    # So a hook is told of everything that it is asked about, whatever that holds.
+    return json.dumps(told, ensure_ascii=False).encode("utf-8", "backslashreplace") + b"\n"
 
 
 if sys.platform == "win32":  # pragma: windows only
@@ -172,12 +200,14 @@ def from_clixml(text: str) -> str:
         return text
     parts = [html.unescape(part) for part in _ERROR.findall(text)]
     joined = _ESCAPE.sub(lambda found: chr(int(found.group(1), 16)), "".join(parts))
-    return joined.replace("\r\n", "\n")
+    # A character outside the first plane was written as its two halves.
+    return whole(joined).replace("\r\n", "\n")
 
 
 def _field(fields: Mapping[str, object], key: str) -> str:
+    """Return the text that a field of an answer holds, as text that can be written down."""
     value = fields.get(key)
-    return value.strip() if isinstance(value, str) else ""
+    return whole(value).strip() if isinstance(value, str) else ""
 
 
 def _from_json(event: str, text: str, limit: int) -> Result:
@@ -252,8 +282,10 @@ def read(event: str, done: process.Completed, limit: int) -> Result:
     if code == 2:
         return Result("blocked", "block", cut(errors or _NO_REASON, limit), exit_code=2)
     if code != 0:
+        # For the log, which wants one line: the first one, and not all of a long one.
         said = errors.partition("\n")[0]
-        why = f"it ended with the exit code {code}" + (f": {cut(said, 200)}" if said else "")
+        said = said if len(said) <= _LINE else f"{said[:_LINE]}..."
+        why = f"it ended with the exit code {code}" + (f": {said}" if said else "")
         return Result("failed", warnings=(why,), exit_code=code)
     if done.omitted_bytes:
         why = f"it wrote more than the {MAX_OUTPUT_BYTES} bytes that are read"
@@ -268,12 +300,17 @@ def read(event: str, done: process.Completed, limit: int) -> Result:
 _RANK: dict[Decision | None, int] = {None: 0, "allow": 1, "ask": 2, "block": 3}
 
 
-def merged(results: Sequence[Result]) -> Result:
+def merged(results: Sequence[Result], limit: int) -> Result:
     """Put together what the hooks of one moment answered.
 
     The strictest of them counts: stop before ask, ask before let through.
     The reason is that of the hooks that wanted just that, and of no other.
     What they add for the model is put together in their order.
+
+    Args:
+        results: What each hook answered, in the order in which they ran.
+        limit: How many characters the reason, what is added for the model
+            and what is said to the person may each have, all hooks together.
     """
     decision: Decision | None = None
     for result in results:
@@ -283,9 +320,9 @@ def merged(results: Sequence[Result]) -> Result:
     return Result(
         "blocked" if decision == "block" else "completed",
         decision,
-        "\n\n".join(reasons) if decision in ("ask", "block") else "",
-        "\n\n".join(result.context for result in results if result.context),
-        "\n".join(result.message for result in results if result.message),
+        cut("\n\n".join(reasons), limit) if decision in ("ask", "block") else "",
+        cut("\n\n".join(result.context for result in results if result.context), limit),
+        cut("\n".join(result.message for result in results if result.message), limit),
         tuple(warning for result in results for warning in result.warnings),
     )
 
@@ -306,8 +343,11 @@ async def run(
         limit: How many characters of a reason, and of what is added for the
             model, are taken.
     """
-    if len(hook.command) > MAX_COMMAND:
-        why = f"its command has more than {MAX_COMMAND} characters, and was not run"
+    if too_long(hook.command):
+        why = (
+            f"its command is longer than {MAX_COMMAND} characters, counted the way Windows "
+            "counts them, and was not run"
+        )
         return Result("failed", warnings=(why,))
     env = shells.environment()
     env["CLAUDE_PROJECT_DIR"] = env["COLUMBINA_PROJECT_DIR"] = str(project)

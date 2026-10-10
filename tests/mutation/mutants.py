@@ -97,6 +97,7 @@ PROJECT = "src/columbina/project.py"
 SKILL_FILES = "src/columbina/skills/files.py"
 FRONT_MATTER = "src/columbina/frontmatter.py"
 PLACES = "src/columbina/places.py"
+TEXT = "src/columbina/text.py"
 SUBAGENT_TYPES = "src/columbina/subagents/types.py"
 SKILLS_PLUGIN = "src/columbina/skills/__init__.py"
 HOOK_FILES = "src/columbina/hooks/config.py"
@@ -5584,6 +5585,24 @@ _UNSEEN = (
         "        0x17B5,\n",
         "",
     ),
+    mutant(
+        "two halves that make a character stay two halves",
+        TEXT,
+        '    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")\n',
+        "    return _HALF.sub(chr(0xFFFD), text)\n",
+    ),
+    mutant(
+        "half a character stays in a text",
+        TEXT,
+        '    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")\n',
+        "    return text\n",
+    ),
+    mutant(
+        "a text without a half is made anew",
+        TEXT,
+        "    if _HALF.search(text) is None:\n        return text\n",
+        "",
+    ),
 )
 
 _METER = (
@@ -6289,8 +6308,8 @@ _STORED_SESSIONS = (
     mutant(
         "what a session holds is printed as it was written",
         LAUNCHER,
-        "        print(harmless(told))\n",
-        "        print(told)\n",
+        "        # What a session holds was written by users and by models.\n        print(harmless(told))\n",
+        "        # What a session holds was written by users and by models.\n        print(told)\n",
     ),
     mutant(
         "an id that cannot name a session ends the program with a trace",
@@ -8602,26 +8621,26 @@ _HOOKS = (
     mutant(
         "what is left of a long text is its beginning alone",
         HOOK_RUN,
-        "    return text[:head] + note + text[len(text) - (limit - head) :]\n",
+        "    return text[:head] + note + text[len(text) - (room - head) :]\n",
         "    return text[:head] + note\n",
     ),
     mutant(
         "how much of a long text was left out is counted wrongly",
         HOOK_RUN,
-        '    note = f"\\n[{len(text) - limit} characters are left out here]\\n"\n',
-        '    note = f"\\n[{len(text)} characters are left out here]\\n"\n',
+        "    note = _LEFT_OUT.format(len(text) - room)\n",
+        "    note = _LEFT_OUT.format(len(text))\n",
     ),
     mutant(
         "what a hook is told has no line end after it",
         HOOK_RUN,
-        '    return json.dumps(told, ensure_ascii=False).encode("utf-8") + b"\\n"\n',
-        '    return json.dumps(told, ensure_ascii=False).encode("utf-8")\n',
+        '    return json.dumps(told, ensure_ascii=False).encode("utf-8", "backslashreplace") + b"\\n"\n',
+        '    return json.dumps(told, ensure_ascii=False).encode("utf-8", "backslashreplace")\n',
     ),
     mutant(
         "what is no ASCII is told to a hook as numbers",
         HOOK_RUN,
-        '    return json.dumps(told, ensure_ascii=False).encode("utf-8") + b"\\n"\n',
-        '    return json.dumps(told).encode("utf-8") + b"\\n"\n',
+        '    return json.dumps(told, ensure_ascii=False).encode("utf-8", "backslashreplace") + b"\\n"\n',
+        '    return json.dumps(told).encode("utf-8", "backslashreplace") + b"\\n"\n',
     ),
     mutant(
         "a hook is not told which moment it is run for",
@@ -8680,20 +8699,20 @@ _HOOKS = (
     mutant(
         "the line ends of windows stay in what the shell wrote about an error",
         HOOK_RUN,
-        '    return joined.replace("\\r\\n", "\\n")\n',
-        "    return joined\n",
+        '    return whole(joined).replace("\\r\\n", "\\n")\n',
+        "    return whole(joined)\n",
     ),
     mutant(
         "a field that is no text is taken for text",
         HOOK_RUN,
-        '    return value.strip() if isinstance(value, str) else ""\n',
-        "    return str(value).strip()\n",
+        '    return whole(value).strip() if isinstance(value, str) else ""\n',
+        "    return whole(str(value)).strip()\n",
     ),
     mutant(
         "the spaces around what a hook says stay",
         HOOK_RUN,
-        '    return value.strip() if isinstance(value, str) else ""\n',
-        '    return value if isinstance(value, str) else ""\n',
+        '    return whole(value).strip() if isinstance(value, str) else ""\n',
+        '    return whole(value) if isinstance(value, str) else ""\n',
     ),
     mutant(
         "output that begins like json and is none stops whoever reads it",
@@ -8872,8 +8891,8 @@ _HOOKS = (
     mutant(
         "the first line of a hook that failed is passed on at whatever length",
         HOOK_RUN,
-        '(f": {cut(said, 200)}" if said else "")',
-        '(f": {said}" if said else "")',
+        '        said = said if len(said) <= _LINE else f"{said[:_LINE]}..."\n',
+        "",
     ),
     mutant(
         "a hook whose output was cut is believed",
@@ -8926,20 +8945,20 @@ _HOOKS = (
     mutant(
         "several hooks that stop something are told as hooks that ended well",
         HOOK_RUN,
-        '        "blocked" if decision == "block" else "completed",\n        decision,\n        "\\n\\n".join(reasons)',
-        '        "completed",\n        decision,\n        "\\n\\n".join(reasons)',
+        '        "blocked" if decision == "block" else "completed",\n        decision,\n        cut("\\n\\n".join(reasons), limit)',
+        '        "completed",\n        decision,\n        cut("\\n\\n".join(reasons), limit)',
     ),
     mutant(
         "what several hooks add for the model is run together",
         HOOK_RUN,
-        '        "\\n\\n".join(result.context for result in results if result.context),\n',
-        '        "".join(result.context for result in results if result.context),\n',
+        '        cut("\\n\\n".join(result.context for result in results if result.context), limit),\n',
+        '        cut("".join(result.context for result in results if result.context), limit),\n',
     ),
     mutant(
         "what several hooks say to the person is lost but for the first",
         HOOK_RUN,
-        '        "\\n".join(result.message for result in results if result.message),\n',
-        '        next((result.message for result in results if result.message), ""),\n',
+        '        cut("\\n".join(result.message for result in results if result.message), limit),\n',
+        '        cut(next((result.message for result in results if result.message), ""), limit),\n',
     ),
     mutant(
         "what was wrong with the answers of several hooks is not told",
@@ -8950,14 +8969,14 @@ _HOOKS = (
     mutant(
         "a command of any length is handed to the shell",
         HOOK_RUN,
-        "    if len(hook.command) > MAX_COMMAND:\n",
+        "    if too_long(hook.command):\n",
         "    if False:\n",
     ),
     mutant(
         "a command of just the length that is allowed is not run",
         HOOK_RUN,
-        "    if len(hook.command) > MAX_COMMAND:\n",
-        "    if len(hook.command) >= MAX_COMMAND:\n",
+        '    return len(command.encode("utf-16-le", "surrogatepass")) // 2 > MAX_COMMAND\n',
+        '    return len(command.encode("utf-16-le", "surrogatepass")) // 2 >= MAX_COMMAND\n',
     ),
     mutant(
         "a hook does not find the project in its environment",
@@ -9093,40 +9112,40 @@ _HOOKS = (
         "                if matches(group.matcher, names)\n",
     ),
     mutant(
-        "without a shell the run of a hook is tried all the same",
+        "without a shell nothing is said about the hooks that do not run",
         HOOKS_PLUGIN,
-        "            if self._shell is None:\n",
+        "            if groups and shell is None:\n",
         "            if False:\n",
     ),
     mutant(
         "the run of a hook is not written into the log of its session",
         HOOKS_PLUGIN,
-        "                    session.append(HookInvokedEvent(event=event, command=hook.command))\n",
+        "            session.append(HookInvokedEvent(event=event, command=hook.command))\n",
         "",
     ),
     mutant(
         "what was wrong with the answer of a hook is not written down",
         HOOKS_PLUGIN,
-        "                    for warning in result.warnings:\n",
-        "                    for warning in ():\n",
+        "            for warning in result.warnings:\n",
+        "            for warning in ():\n",
     ),
     mutant(
         "a hook that was stopped for taking too long is not written down",
         HOOKS_PLUGIN,
-        '                    if result.status == "timed-out":\n',
-        "                    if False:\n",
+        '            if result.status == "timed-out":\n',
+        "            if False:\n",
     ),
     mutant(
         "what a hook says to the person is not passed on",
         HOOKS_PLUGIN,
-        "                    if result.message:\n",
-        "                    if False:\n",
+        "            if result.message:\n",
+        "            if False:\n",
     ),
     mutant(
         "a failure of the bridge that nobody foresaw ends the turn",
         HOOKS_PLUGIN,
-        '        except Exception as error:\n            logger.error("running the %s hooks failed", event, exc_info=error)\n            return Result()\n',
-        "        except ZeroDivisionError:\n            return Result()\n",
+        '        except Exception as error:\n            logger.error("running the %s hooks failed", event, exc_info=error)\n',
+        '        except ZeroDivisionError as error:\n            logger.error("running the %s hooks failed", event, exc_info=error)\n',
     ),
     mutant(
         "the hooks of a session that begins run at every turn",
@@ -9155,8 +9174,8 @@ _HOOKS = (
     mutant(
         "a hook is run for whatever was put before the model, not only for what a person said",
         HOOKS_PLUGIN,
-        "            if isinstance(event.data, UserMessageEvent) and event.data.source in _HUMAN\n",
-        "            if isinstance(event.data, UserMessageEvent)\n",
+        "            if isinstance(data, UserMessageEvent) and data.source in _HUMAN and seq not in passed:\n",
+        "            if isinstance(data, UserMessageEvent) and seq not in passed:\n",
     ),
     mutant(
         "what a person says while a turn runs has no hook",
@@ -9167,25 +9186,25 @@ _HOOKS = (
     mutant(
         "a hook is run again for what was said in an earlier step",
         HOOKS_PLUGIN,
-        "            lambda event: not isinstance(event.data, StepEndEvent | TurnStartEvent),\n",
-        "            lambda event: not isinstance(event.data, TurnStartEvent),\n",
+        "            if seq <= began:\n                break\n",
+        "",
     ),
     mutant(
         "an input that a hook stops goes to the model all the same",
         HOOKS_PLUGIN,
-        '            if result.decision == "block":\n                # Left where it is',
-        "            if False:\n                # Left where it is",
+        '            if result.decision == "block":\n                # Every other input',
+        "            if False:\n                # Every other input",
     ),
     mutant(
         "an input that a hook stopped stays where the model reads it",
         HOOKS_PLUGIN,
-        "                session.append(stopped, replaces=[seq])\n",
+        "                    session.append(note, replaces=[seq])\n",
         "",
     ),
     mutant(
         "what a hook adds to an input is not given to the model",
         HOOKS_PLUGIN,
-        '            if result.context:\n                session.append(_note("UserPromptSubmit", result.context))\n',
+        '                elif result.context:\n                    session.append(_note("UserPromptSubmit", result.context))\n',
         "",
     ),
     mutant(
@@ -9205,13 +9224,6 @@ _HOOKS = (
         HOOKS_PLUGIN,
         '            if outcome != "allowed-once":\n',
         "            if False:\n",
-    ),
-    mutant(
-        "a hook that lets a call through gets it past the other checks",
-        HOOKS_PLUGIN,
-        "        # Nothing against it. Whether it may run is for the rules to say.\n        return await proceed(invocation)\n",
-        '        # Nothing against it. Whether it may run is for the rules to say.\n        return Allow() if result.decision == "allow" else await proceed(invocation)\n',
-        ("    Accept,\n    Block,\n", "    Accept,\n    Allow,\n    Block,\n"),
     ),
     mutant(
         "a result that something else withheld is shown to the hooks",
@@ -9234,8 +9246,8 @@ _HOOKS = (
     mutant(
         "a hook after a call is not told what the model will read",
         HOOKS_PLUGIN,
-        '        more = {**self._about(invocation), "tool_response": verdict.text}\n',
-        "        more = self._about(invocation)\n",
+        '            lambda: {**self._about(invocation), "tool_response": verdict.text},\n',
+        "            lambda: self._about(invocation),\n",
     ),
     mutant(
         "a hook that says go on keeps a turn going for ever",
@@ -9258,8 +9270,8 @@ _HOOKS = (
     mutant(
         "a hook is not told that it kept the turn going before",
         HOOKS_PLUGIN,
-        '{"stop_hook_active": count > 0})',
-        '{"stop_hook_active": False})',
+        '        told = {"stop_hook_active": count > 0}\n',
+        '        told = {"stop_hook_active": False}\n',
     ),
     mutant(
         "a hook that has nothing against the end of a turn keeps it going",
@@ -9423,6 +9435,168 @@ _HOOKS = (
         "        if given is not None and not given.is_absolute():\n",
         "        if given is None or not given.is_absolute():\n",
     ),
+    mutant(
+        "what says how much of a text is left out does not count as text",
+        HOOK_RUN,
+        "    room = limit - len(_LEFT_OUT.format(len(text)))\n",
+        "    room = limit\n",
+    ),
+    mutant(
+        "a limit without room for the words about what is left out is passed",
+        HOOK_RUN,
+        "    if room < 0:\n        return text[:limit]\n",
+        "",
+    ),
+    mutant(
+        "a limit with just room for the words about what is left out cuts the end off",
+        HOOK_RUN,
+        "    if room < 0:\n",
+        "    if room <= 0:\n",
+    ),
+    mutant(
+        "a character outside the first plane counts once in a command",
+        HOOK_RUN,
+        '    return len(command.encode("utf-16-le", "surrogatepass")) // 2 > MAX_COMMAND\n',
+        "    return len(command) > MAX_COMMAND\n",
+    ),
+    mutant(
+        "half a character in what a hook is told stops the telling",
+        HOOK_RUN,
+        '.encode("utf-8", "backslashreplace") + b"\\n"\n',
+        '.encode("utf-8") + b"\\n"\n',
+    ),
+    mutant(
+        "a character that the shell of windows wrote in two halves stays in two",
+        HOOK_RUN,
+        '    return whole(joined).replace("\\r\\n", "\\n")\n',
+        '    return joined.replace("\\r\\n", "\\n")\n',
+    ),
+    mutant(
+        "half a character in what a hook answers stays in it",
+        HOOK_RUN,
+        '    return whole(value).strip() if isinstance(value, str) else ""\n',
+        '    return value.strip() if isinstance(value, str) else ""\n',
+    ),
+    mutant(
+        "a first line of just the length that goes into the log is cut",
+        HOOK_RUN,
+        '        said = said if len(said) <= _LINE else f"{said[:_LINE]}..."\n',
+        '        said = said if len(said) < _LINE else f"{said[:_LINE]}..."\n',
+    ),
+    mutant(
+        "the reasons of several hooks together are as long as they come",
+        HOOK_RUN,
+        '        cut("\\n\\n".join(reasons), limit) if decision in ("ask", "block") else "",\n',
+        '        "\\n\\n".join(reasons) if decision in ("ask", "block") else "",\n',
+    ),
+    mutant(
+        "what several hooks add for the model is as long as it comes",
+        HOOK_RUN,
+        '        cut("\\n\\n".join(result.context for result in results if result.context), limit),\n',
+        '        "\\n\\n".join(result.context for result in results if result.context),\n',
+    ),
+    mutant(
+        "what several hooks say to the person is as long as it comes",
+        HOOK_RUN,
+        '        cut("\\n".join(result.message for result in results if result.message), limit),\n',
+        '        "\\n".join(result.message for result in results if result.message),\n',
+    ),
+    mutant(
+        "a command with half a character in it is handed to the shell",
+        HOOK_FILES,
+        "    if whole(command) != command:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a hook whose run breaks takes the hooks after it along",
+        HOOKS_PLUGIN,
+        '        except Exception as error:\n            logger.error("the %s hook %r could not be run"',
+        '        except ZeroDivisionError as error:\n            logger.error("the %s hook %r could not be run"',
+    ),
+    mutant(
+        "what a hook answered is forgotten when its run cannot be written into the log",
+        HOOKS_PLUGIN,
+        "exc_info=error)\n        return result\n",
+        'exc_info=error)\n            result = Result("failed")\n        return result\n',
+    ),
+    mutant(
+        "the hooks of a moment are told of it though there are none",
+        HOOKS_PLUGIN,
+        "            elif groups and shell is not None:\n",
+        "            elif shell is not None:\n",
+    ),
+    mutant(
+        "what the hooks let through is put before them again",
+        HOOKS_PLUGIN,
+        "            if isinstance(data, UserMessageEvent) and data.source in _HUMAN and seq not in passed:\n",
+        "            if isinstance(data, UserMessageEvent) and data.source in _HUMAN:\n",
+    ),
+    mutant(
+        "an input that a hook stopped before is put before the hooks again",
+        HOOKS_PLUGIN,
+        "        for seq in reversed(session.surface):\n",
+        "        for seq in reversed(range(len(events))):\n",
+    ),
+    mutant(
+        "the inputs of a step are put before the hooks the last one first",
+        HOOKS_PLUGIN,
+        "        waiting.reverse()\n",
+        "",
+    ),
+    mutant(
+        "only what was said since the turn began is put before the hooks",
+        HOOKS_PLUGIN,
+        "(event.seq for event in reversed(events) if isinstance(event.data, StepStartEvent)), -1\n",
+        "(event.seq for event in reversed(events) if isinstance(event.data, StepStartEvent | TurnStartEvent)), -1\n",
+    ),
+    mutant(
+        "the first input that is stopped is the last that is looked at",
+        HOOKS_PLUGIN,
+        "                stopped.append(result.reason)\n",
+        '                return Reject(f"a hook stopped the input: {result.reason}")\n',
+    ),
+    mutant(
+        "an input that was stopped counts as one that was let through",
+        HOOKS_PLUGIN,
+        "            else:\n                self._passed[session].add(seq)\n",
+        "            self._passed[session].add(seq)\n",
+    ),
+    mutant(
+        "what goes wrong while the answer to an input is acted on ends the turn",
+        HOOKS_PLUGIN,
+        '            except Exception as error:\n                logger.error(_NOT_ACTED_ON, "UserPromptSubmit", exc_info=error)\n',
+        '            except ZeroDivisionError as error:\n                logger.error(_NOT_ACTED_ON, "UserPromptSubmit", exc_info=error)\n',
+    ),
+    mutant(
+        "the hook files are not read again when a turn begins",
+        HOOKS_PLUGIN,
+        "        anew = info.step == 1\n",
+        "        anew = False\n",
+    ),
+    mutant(
+        "a hook has somebody asked who answers for another agent",
+        HOOKS_PLUGIN,
+        "                outcome = await approval.ask(\n                    ctx,\n",
+        "                outcome = await approval.ask(\n                    self._ctx,\n",
+    ),
+    mutant(
+        "a reason to go on that cannot be handed over ends the turn with an error",
+        HOOKS_PLUGIN,
+        '        except Exception as error:\n            logger.error(_NOT_ACTED_ON, "Stop", exc_info=error)\n',
+        '        except ZeroDivisionError as error:\n            logger.error(_NOT_ACTED_ON, "Stop", exc_info=error)\n',
+    ),
+    mutant(
+        "a path that names no file keeps the hooks from being told of a call",
+        HOOKS_PLUGIN,
+        '            with contextlib.suppress(ToolFailure):\n                given["file_path"] = str(locate(invocation.run.cwd, path).path)\n',
+        '            given["file_path"] = str(locate(invocation.run.cwd, path).path)\n',
+    ),
+    mutant(
+        "the hooks are not asked about a call",
+        HOOKS_PLUGIN,
+        "    ctx.use(TOOLS).guards.add(ctx, name, bridge.guard)\n",
+        "",
+    ),
 )
 
 _TRUST = (
@@ -9495,14 +9669,14 @@ _TRUST = (
     mutant(
         "a command that is too long to be run is not marked",
         HOOKS_APP,
-        "                if len(hook.command) > MAX_COMMAND:\n",
+        "                if too_long(hook.command):\n",
         "                if False:\n",
     ),
     mutant(
-        "a command of just the length that is run is marked as too long",
+        "the listing counts a command otherwise than the one who runs it",
         HOOKS_APP,
+        "                if too_long(hook.command):\n",
         "                if len(hook.command) > MAX_COMMAND:\n",
-        "                if len(hook.command) >= MAX_COMMAND:\n",
     ),
     mutant(
         "what was passed over in a file is not told",
@@ -9681,20 +9855,20 @@ _TRUST = (
     mutant(
         "a file that was never trusted is said to be trusted no more",
         HOOKS_APP,
-        '    if left is None:\n        return f"The hook file of this project, {path}, was not trusted."\n',
+        '    if left is None:\n        show(f"The hook file of this project, {path}, was not trusted.")\n        return\n',
         '    if left is None:\n        left = b""\n',
     ),
     mutant(
         "whoever wants a file trusted has the trust taken back",
         HOOKS_APP,
-        "    if what == TRUST:\n        return _trusted(config, cwd)\n",
-        "",
+        "    elif what == TRUST:\n        _trusted(config, cwd, show)\n    else:\n",
+        "    else:\n",
     ),
     mutant(
-        "whoever looks at the hooks trusts them",
+        "whoever looks at the hooks takes the trust in them back",
         HOOKS_APP,
-        "    if what == LIST:\n        return _listed(config, cwd)\n",
-        "",
+        "    if what == LIST:\n        show(_listed(config, cwd))\n    elif what == TRUST:\n",
+        "    if what == TRUST:\n",
     ),
     mutant(
         "the hooks of the current directory are looked at, whichever was named",
@@ -9759,20 +9933,54 @@ _TRUST = (
     mutant(
         "what cannot be done with the hooks is said, and the program ends as if it were done",
         LAUNCHER,
-        "        _tell(str(error))\n        return 2\n    # What a hook file holds",
-        "        _tell(str(error))\n        return 0\n    # What a hook file holds",
+        "        _tell(str(error))\n        return 2\n    except OSError as error:\n",
+        "        _tell(str(error))\n        return 0\n    except OSError as error:\n",
     ),
     mutant(
         "what a hook file holds reaches the terminal as it is",
         LAUNCHER,
-        "whoever wrote the project.\n    print(harmless(told))\n",
-        "whoever wrote the project.\n    print(told)\n",
+        "        print(harmless(told))\n        # Whoever goes on after this",
+        "        print(told)\n        # Whoever goes on after this",
     ),
     mutant(
         "columbina hooks is taken for a conversation",
         LAUNCHER,
         "        if args.command == _HOOKS:\n            return _hooks(args, home, env)\n",
         "",
+    ),
+    mutant(
+        "a file whose commands could not be shown is trusted all the same",
+        HOOKS_APP,
+        '        show("\\n".join(lines))\n    except OSError as error:\n',
+        "        pass\n    except OSError as error:\n",
+    ),
+    mutant(
+        "a file is trusted before what it would run is shown",
+        HOOKS_APP,
+        "    # What is trusted is what was read here and shown above, whatever the file holds by now.\n    _kept(record, trust(record_at(record), theirs.path, theirs.content))\n",
+        "",
+        (
+            "    lines.extend(_passed_over(held))\n    try:\n",
+            "    lines.extend(_passed_over(held))\n    _kept(record, trust(record_at(record), theirs.path, theirs.content))\n    try:\n",
+        ),
+    ),
+    mutant(
+        "a file without hooks is said to hold hooks that run from now on",
+        HOOKS_APP,
+        '        trusted_now = "The file is trusted as it is now."\n',
+        '        trusted_now = "The file is trusted as it is now, and these hooks run from now on."\n',
+    ),
+    mutant(
+        "what was shown may still be on its way when the file is trusted",
+        LAUNCHER,
+        "        sys.stdout.flush()\n",
+        "",
+    ),
+    mutant(
+        "an answer about the hooks that cannot be written ends the program with a traceback",
+        LAUNCHER,
+        '    except OSError as error:\n        _tell(f"what there is to say about the hooks',
+        '    except ZeroDivisionError as error:\n        _tell(f"what there is to say about the hooks',
     ),
 )
 
@@ -10226,7 +10434,10 @@ SETS: dict[str, MutantSet] = {
     "stored": MutantSet(("tests/session/test_stored.py",), _STORED),
     "grants": MutantSet(("tests/permissions",), _GRANTS),
     "chat": MutantSet(("tests/apps", "tests/test_package.py"), _CHAT),
-    "unseen": MutantSet(("tests/test_unseen.py", "tests/apps/test_terminal_text.py"), _UNSEEN),
+    "unseen": MutantSet(
+        ("tests/test_unseen.py", "tests/apps/test_terminal_text.py", "tests/test_text.py"),
+        _UNSEEN,
+    ),
     "meter": MutantSet(("tests/token_meter",), _METER),
     "spill": MutantSet(("tests/spill",), _SPILL),
     "cap": MutantSet(("tests/spill/test_policy.py",), _CAP),

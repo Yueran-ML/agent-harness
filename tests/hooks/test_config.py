@@ -232,6 +232,23 @@ def test_a_matcher_that_the_reader_of_patterns_gives_up_on_is_passed_over(
     assert warning.endswith("). It is passed over")
 
 
+def test_a_command_with_half_a_character_in_it_is_passed_over() -> None:
+    content = (
+        rb'{"hooks": {"Stop": [{"hooks": ['
+        rb'{"command": "echo \ud83d"}, {"command": "echo \ud83d'
+        rb'\ude00"}]}]}}'
+    )
+
+    hooks = parsed(content)
+
+    # No shell can be handed half a character, and no log can hold one.
+    assert hooks.groups == {"Stop": (Group(None, (Hook("echo \U0001f600"),)),)}
+    assert hooks.warnings == (
+        "Stop, group 1, hook 1 has a command with half a character in it, which no shell can "
+        "be handed. It is passed over",
+    )
+
+
 def test_what_a_file_holds_is_never_shown_at_length() -> None:
     long = "x" * 20_000
     content = file(

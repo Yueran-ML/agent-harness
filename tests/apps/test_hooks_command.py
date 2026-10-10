@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -242,16 +243,28 @@ def test_a_command_that_is_too_long_to_be_run_is_marked(
     home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     longest = "x" * MAX_COMMAND
-    written(home / "hooks.json", {"Stop": [{"hooks": [command(longest + "x"), command(longest)]}]})
+    faces = chr(0x1F600) * (MAX_COMMAND // 2)
+    hooks = [command(longest + "x"), command(longest), command(faces + "x"), command(faces)]
+    written(home / "hooks.json", {"Stop": [{"hooks": hooks}]})
 
     _, out, _ = asked("list", "--profile", chosen(tmp_path), "--cwd", str(work), capsys=capsys)
 
-    assert out.splitlines()[1:7] == [
+    not_run = (
+        f"      (This command is longer than {MAX_COMMAND} characters, counted the way Windows "
+        "counts them. One that long is not run.)"
+    )
+    assert out.splitlines()[1:12] == [
         "  at Stop, within 60 seconds:",
         f"      {longest}x",
-        f"      (This command has more than {MAX_COMMAND} characters. One that long is not run.)",
+        not_run,
         "  at Stop, within 60 seconds:",
         f"      {longest}",
+        # A character outside the first plane counts twice, as it does where it is run.
+        "  at Stop, within 60 seconds:",
+        f"      {faces}x",
+        not_run,
+        "  at Stop, within 60 seconds:",
+        f"      {faces}",
         # Nothing is said about a command of just the length that is run.
         "",
     ]
@@ -317,10 +330,10 @@ def test_the_hooks_of_a_project_run_once_its_file_is_trusted(
 
     assert (code, err) == (0, "")
     assert out == (
-        f"The hook file of this project, {theirs(work)}, is trusted as it is now. These hooks "
-        "run from now on:\n"
+        f"The hook file of this project, {theirs(work)}, holds these hooks:\n"
         "  at UserPromptSubmit, within 60 seconds:\n"
-        f"      {hook}\n" + UNTIL_IT_CHANGES
+        f"      {hook}\n"
+        "The file is trusted as it is now, and these hooks run from now on.\n" + UNTIL_IT_CHANGES
     )
     assert recorded(home) == {"version": 1, "files": {str(theirs(work)): digest(content)}}
 
@@ -329,6 +342,108 @@ def test_the_hooks_of_a_project_run_once_its_file_is_trusted(
     # The session means the file that was trusted, by the same place.
     assert mark.read_text(encoding="utf-8") == "it ran"
     assert capsys.readouterr().err == ""
+
+
+class Shut:
+    """A standard output whose reader has gone.
+
+    What is written to it is kept for a while, as a pipe keeps it, and that
+    nobody takes it shows only when it is to leave the program.
+    """
+
+    encoding = "utf-8"
+
+    def write(self, text: str) -> int:
+        return len(text)
+
+    def flush(self) -> None:
+        raise BrokenPipeError(32, "Broken pipe")
+
+    def isatty(self) -> bool:
+        return False
+
+
+def test_a_file_whose_commands_could_not_be_shown_is_not_trusted(
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    written(theirs(work), VERIFY)
+    which = chosen(tmp_path)
+    capsys.readouterr()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "stdout", Shut())
+        code = main(["hooks", "trust", "--profile", which, "--cwd", str(work)])
+
+    # Nobody saw what would run, so nobody said yes to it.
+    assert code == 2
+    assert not home.exists()
+    assert capsys.readouterr().err == (
+        f"columbina: what the hook file {theirs(work)} would run could not be shown, so it is "
+        "not trusted: [Errno 32] Broken pipe\n"
+    )
+    assert asked("list", "--profile", which, "--cwd", str(work), capsys=capsys)[1].endswith(
+        NOT_TRUSTED
+    )
+
+
+@pytest.mark.parametrize("what", ["list", "distrust"])
+def test_an_answer_that_cannot_be_written_is_said_where_it_can(
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    what: str,
+) -> None:
+    which = chosen(tmp_path)
+    capsys.readouterr()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "stdout", Shut())
+        code = main(["hooks", what, "--profile", which, "--cwd", str(work)])
+
+    assert code == 2
+    assert capsys.readouterr().err == (
+        "columbina: what there is to say about the hooks could not be written: [Errno 32] "
+        "Broken pipe\n"
+    )
+
+
+def test_what_would_run_is_shown_before_it_is_trusted_and_that_it_is_trusted_after(
+    home: Path, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written(theirs(work), VERIFY)
+    seen: list[tuple[str, bool]] = []
+
+    class Watched:
+        """A standard output that notes, with each piece, whether the record was there."""
+
+        encoding = "utf-8"
+
+        def write(self, text: str) -> int:
+            if text.strip():
+                seen.append((text.splitlines()[0], (home / "trusted-hooks.json").exists()))
+            return len(text)
+
+        def flush(self) -> None:
+            return None
+
+        def isatty(self) -> bool:
+            return False
+
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "stdout", Watched())
+        code = main(["hooks", "trust", "--profile", chosen(tmp_path), "--cwd", str(work)])
+
+    assert code == 0
+    assert seen == [
+        (f"The hook file of this project, {theirs(work)}, holds these hooks:", False),
+        ("The file is trusted as it is now, and these hooks run from now on.", True),
+    ]
 
 
 def test_a_file_that_changes_has_to_be_trusted_again(
@@ -386,11 +501,11 @@ def test_a_file_without_hooks_is_trusted_all_the_same(
 
     assert (code, err) == (0, "")
     assert out == (
-        f"The hook file of this project, {theirs(work)}, is trusted as it is now. It holds no "
-        "hooks.\n"
+        f"The hook file of this project, {theirs(work)}, holds no hooks.\n"
         "Not all of the file is used:\n"
         '  Stop, group 1, hook 1 is of the type "prompt". Only hooks of the type "command" are '
-        "run, and this one is passed over\n" + UNTIL_IT_CHANGES
+        "run, and this one is passed over\n"
+        "The file is trusted as it is now.\n" + UNTIL_IT_CHANGES
     )
     assert recorded(home) == {"version": 1, "files": {str(theirs(work)): digest(content)}}
 
@@ -485,7 +600,13 @@ def test_a_record_that_cannot_be_written_is_said_and_nothing_is_left_behind(
 
     code, out, err = asked("trust", "--profile", which, "--cwd", str(work), capsys=capsys)
 
-    assert (code, out) == (2, "")
+    # What would run was shown, and that is all: nothing says that the file is trusted.
+    assert (code, out) == (
+        2,
+        f"The hook file of this project, {theirs(work)}, holds these hooks:\n"
+        "  at Stop, within 60 seconds:\n"
+        "      pytest -q\n",
+    )
     assert err.startswith(
         f"columbina: the record of trust, {home / 'trusted-hooks.json'}, cannot be written: "
     )
@@ -581,7 +702,8 @@ def test_the_hooks_of_a_project_are_meant_from_anywhere_inside_it(
     code, out, _ = asked("trust", "--profile", which, "--cwd", str(deep), capsys=capsys)
 
     assert code == 0
-    assert out.startswith(f"The hook file of this project, {theirs(work)}, is trusted")
+    assert out.startswith(f"The hook file of this project, {theirs(work)}, holds these hooks:\n")
+    assert "The file is trusted as it is now, and these hooks run from now on.\n" in out
     assert recorded(home) == {"version": 1, "files": {str(theirs(work)): digest(content)}}
     for inside in (work, deep):
         told = asked("list", "--profile", which, "--cwd", str(inside), capsys=capsys)[1]

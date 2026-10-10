@@ -56,6 +56,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeGuard, cast
 
+from columbina.text import whole
+
 __all__ = [
     "ALIASES",
     "DEFAULT_TIMEOUT",
@@ -183,6 +185,12 @@ def _hook(written: object, where: str, warnings: list[str]) -> Hook | None:
     command = entry.get("command")
     if not isinstance(command, str) or not command.strip():
         warnings.append(f"{where} names no command, and is passed over")
+        return None
+    if whole(command) != command:
+        warnings.append(
+            f"{where} has a command with half a character in it, which no shell can be "
+            "handed. It is passed over"
+        )
         return None
     timeout = entry.get("timeout", DEFAULT_TIMEOUT)
     # True is a number to Python, and no number of seconds to anybody.

@@ -18,14 +18,23 @@ import columbina.hooks
 import columbina.llm
 import columbina.session
 import columbina.tools
-from columbina import shells
-from columbina.agent import AGENTS, Agent, AgentSpec
+from columbina import process, shells
+from columbina.agent import (
+    AGENTS,
+    PRE_STEP,
+    Agent,
+    AgentSpec,
+    ContextSource,
+    Reject,
+    StepDecision,
+    StepInfo,
+)
 from columbina.approval import APPROVAL_ASK, ApprovalRequest, Outcome
 from columbina.hooks import HookInvokedEvent, HookResultEvent
 from columbina.hooks.config import Hook, trust
-from columbina.hooks.run import Result
+from columbina.hooks.run import Result, read
 from columbina.kernel import Context, Next
-from columbina.llm import LLM, LlmRequest
+from columbina.llm import LLM, LlmRequest, UserMessage
 from columbina.llm.adapters.scripted import Call, Reply, Scripted
 from columbina.session import ToolResultEvent, TurnEndEvent, UserMessageEvent
 from columbina.tools import (
@@ -652,7 +661,7 @@ async def test_a_run_that_fails_in_a_way_that_nobody_foresaw_leaves_the_turn_alo
     await turn(agent)
 
     assert results(agent) == [("noted x", None)]
-    assert logged(caplog, logging.ERROR) == ["running the PreToolUse hooks failed"]
+    assert logged(caplog, logging.ERROR) == ["the PreToolUse hook 'before' could not be run"]
     # What was begun is closed in the log all the same.
     statuses = [
         event.data.status
@@ -1002,3 +1011,361 @@ async def test_a_matcher_counts_only_at_the_moments_that_have_a_tool(
     await turn(agent)
 
     assert [command for _, command, _ in ran.calls] == ["check", "verify"]
+
+
+# What goes wrong with one hook, or with what is done about its answer
+
+
+def breaks(told: dict[str, Any]) -> Result:
+    raise RuntimeError("The run broke.")
+
+
+@pytest.mark.parametrize(
+    "first",
+    [Result("blocked", "block", "Not on a Friday.", exit_code=2), Result(decision="ask")],
+)
+async def test_what_one_hook_decided_stands_when_the_run_of_the_next_one_breaks(
+    harness: Harness, tmp_path: Path, ran: Ran, caplog: pytest.LogCaptureFixture, first: Result
+) -> None:
+    ran.answers["first"] = first
+    ran.answers["second"] = breaks
+    hooks = {
+        "PreToolUse": [
+            {"hooks": [{"command": "first"}, {"command": "second"}, {"command": "third"}]}
+        ]
+    }
+    agent = await working(harness, tmp_path, hooks, calls("note", text="x"), Reply(text="Done."))
+
+    await turn(agent)
+
+    # The call was held back by the first hook, and one that broke after it lets nothing go.
+    assert [code for _, code in results(agent)] == ["HOOK_BLOCKED"]
+    # The hook after the broken one was asked as well.
+    assert [command for _, command, _ in ran.calls] == ["first", "second", "third"]
+    assert ends(agent) == [("completed", None)]
+    (error,) = logged(caplog, logging.ERROR)
+    assert error == "the PreToolUse hook 'second' could not be run"
+    # Each of the three left its two events, the broken one as one that failed.
+    assert [
+        (event.data.command, event.data.status)
+        for event in agent.session.events
+        if isinstance(event.data, HookResultEvent)
+    ] == [("first", first.status), ("second", "failed"), ("third", "completed")]
+
+
+async def test_what_a_hook_adds_with_half_a_character_in_it_does_not_end_the_turn(
+    harness: Harness, tmp_path: Path, ran: Ran
+) -> None:
+    # What a real hook wrote, read the way the answer of a hook is read.
+    written = (
+        r'{"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", '
+        r'"additionalContext": "Mind \ud800 this."}}'
+    )
+    ran.answers["check"] = read(
+        "UserPromptSubmit", process.Completed(0, False, written, len(written), 0, 0, "", 0, 0), 500
+    )
+    agent = await working(harness, tmp_path, at("UserPromptSubmit", "check"))
+
+    await turn(agent)
+
+    assert ends(agent) == [("completed", None)]
+    assert from_hooks(agent) == [("hook/UserPromptSubmit", f"Mind {chr(0xFFFD)} this.")]
+
+
+async def test_a_note_of_a_hook_that_cannot_be_written_is_left_out_and_the_turn_goes_on(
+    harness: Harness,
+    tmp_path: Path,
+    ran: Ran,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran.answers["check"] = Result(context="Mind this.", exit_code=0)
+    ran.answers["after"] = Result(context="Run the tests next.", exit_code=0)
+    hooks = {**at("UserPromptSubmit", "check"), **at("PostToolUse", "after")}
+    agent = await working(harness, tmp_path, hooks, calls("note", text="x"), Reply(text="Done."))
+
+    def refuses(source: str, text: str) -> UserMessageEvent:
+        raise RuntimeError("No note can be made.")
+
+    monkeypatch.setattr(columbina.hooks, "_note", refuses)
+
+    await turn(agent)
+
+    assert ends(agent) == [("completed", None)]
+    assert from_hooks(agent) == []
+    # What a hook adds after a call is no note, and is there.
+    assert results(agent) == [("noted x\n\n[A hook of the user adds:]\nRun the tests next.", None)]
+    assert logged(caplog, logging.ERROR) == [
+        "what the UserPromptSubmit hooks answered could not be acted on"
+    ]
+
+
+async def test_an_input_that_a_hook_stops_is_stopped_even_if_no_note_can_take_its_place(
+    harness: Harness,
+    tmp_path: Path,
+    ran: Ran,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran.answers["check"] = no_keys
+    agent = await working(harness, tmp_path, at("UserPromptSubmit", "check"))
+
+    def refuses(source: str, text: str) -> UserMessageEvent:
+        raise RuntimeError("No note can be made.")
+
+    monkeypatch.setattr(columbina.hooks, "_note", refuses)
+
+    await turn(agent, "The key is 12345.")
+
+    assert ends(agent) == [("blocked", "a hook stopped the input: No keys in here.")]
+    assert harness.model.requests == []
+    assert logged(caplog, logging.ERROR) == [
+        "what the UserPromptSubmit hooks answered could not be acted on"
+    ]
+
+    # The input lies where a model would see it, so it is stopped again, turn after turn.
+    await turn(agent, "Say hello.")
+
+    assert [told["prompt"] for told in ran.told("UserPromptSubmit")] == [
+        "The key is 12345.",
+        "The key is 12345.",
+        "Say hello.",
+    ]
+    assert ends(agent)[-1] == ("blocked", "a hook stopped the input: No keys in here.")
+    assert harness.model.requests == []
+
+
+async def test_what_a_hook_answered_stands_though_its_run_cannot_be_written_into_the_log(
+    harness: Harness,
+    tmp_path: Path,
+    ran: Ran,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran.answers["before"] = Result("blocked", "block", "Not on a Friday.", exit_code=2)
+    agent = await working(
+        harness, tmp_path, at("PreToolUse", "before"), calls("note", text="x"), Reply(text="Done.")
+    )
+
+    def refuses(**fields: object) -> HookResultEvent:
+        raise RuntimeError("Nothing can be written.")
+
+    monkeypatch.setattr(columbina.hooks, "HookResultEvent", refuses)
+
+    await turn(agent)
+
+    assert results(agent) == [
+        ("The call was not allowed: a hook stopped the call: Not on a Friday.", "HOOK_BLOCKED")
+    ]
+    assert logged(caplog, logging.ERROR) == ["the PreToolUse hook 'before' could not be run"]
+
+
+async def test_a_call_with_a_path_that_names_no_file_is_put_before_the_hooks_all_the_same(
+    harness: Harness, tmp_path: Path, ran: Ran, caplog: pytest.LogCaptureFixture
+) -> None:
+    agent = await working(
+        harness, tmp_path, at("PreToolUse", "before"), calls("edit", path=""), Reply(text="Done.")
+    )
+
+    await turn(agent)
+
+    # Where the file lies cannot be said, and the rest is told as it is.
+    assert [(told["tool_name"], told["tool_input"]) for told in ran.told("PreToolUse")] == [
+        ("Edit", {"path": ""})
+    ]
+    assert logged(caplog, logging.ERROR) == []
+
+
+async def test_what_cannot_be_told_to_the_hooks_of_a_moment_leaves_the_turn_alone(
+    harness: Harness,
+    tmp_path: Path,
+    ran: Ran,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuses(*told: object) -> bytes:
+        raise RuntimeError("Nothing can be told.")
+
+    monkeypatch.setattr(columbina.hooks, "payload", refuses)
+    agent = await working(harness, tmp_path, at("UserPromptSubmit", "check"))
+
+    await turn(agent)
+
+    assert ran.calls == []
+    assert ends(agent) == [("completed", None)]
+    assert logged(caplog, logging.ERROR) == ["running the UserPromptSubmit hooks failed"]
+
+
+async def test_a_reason_to_go_on_that_cannot_be_handed_over_lets_the_turn_end(
+    harness: Harness,
+    tmp_path: Path,
+    ran: Ran,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ran.answers["verify"] = Result("blocked", "block", "The tests have not run.", exit_code=2)
+    agent = await working(harness, tmp_path, at("Stop", "verify"), Reply(text="Done."))
+
+    def refuses(content: object, *, source: str = "steer") -> None:
+        raise RuntimeError("Nobody takes this.")
+
+    monkeypatch.setattr(agent, "steer", refuses)
+
+    await turn(agent)
+
+    assert ends(agent) == [("completed", None)]
+    assert logged(caplog, logging.ERROR) == ["what the Stop hooks answered could not be acted on"]
+
+
+# No input reaches a model that the hooks were not asked about
+
+
+def no_keys(told: dict[str, Any]) -> Result:
+    if "key" in told["prompt"]:
+        return Result("blocked", "block", "No keys in here.", exit_code=2)
+    return Result(exit_code=0)
+
+
+def said_to_the_model(request: LlmRequest) -> list[str]:
+    return [
+        "".join(block.text for block in message.content)
+        for message in request.messages
+        if isinstance(message, UserMessage)
+    ]
+
+
+async def test_an_input_of_a_step_that_something_else_stopped_is_looked_at_before_the_next(
+    harness: Harness, tmp_path: Path, ran: Ran
+) -> None:
+    ran.answers["check"] = no_keys
+    agent = await working(harness, tmp_path, at("UserPromptSubmit", "check"), Reply(text="Hello!"))
+    out_of_steps = [True]
+
+    async def budget(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        if out_of_steps:
+            out_of_steps.clear()
+            return Reject("Out of steps.")
+        return await proceed(info)
+
+    # It stands before the hooks, and stops the step before they are asked.
+    harness.ctx.on(PRE_STEP, budget, prepend=True)
+
+    await turn(agent, "The key is 12345.")
+
+    assert ends(agent) == [("blocked", "Out of steps.")]
+    assert ran.calls == []
+
+    await turn(agent, "Say hello.")
+
+    # The input that was left where a model sees it is looked at now, before the new one.
+    assert [told["prompt"] for told in ran.told("UserPromptSubmit")] == [
+        "The key is 12345.",
+        "Say hello.",
+    ]
+    assert ends(agent)[-1] == ("blocked", "a hook stopped the input: No keys in here.")
+    assert harness.model.requests == []
+
+    await turn(agent, "Say it again.")
+
+    # What the hooks let through is not put before them a second time.
+    assert [told["prompt"] for told in ran.told("UserPromptSubmit")][2:] == ["Say it again."]
+    (request,) = harness.model.requests
+    assert said_to_the_model(request)[-3:] == [
+        "[A hook of the user stopped what was said here: No keys in here.]",
+        "Say hello.",
+        "Say it again.",
+    ]
+
+
+async def test_an_input_of_a_turn_that_failed_before_its_first_step_is_looked_at_as_well(
+    harness: Harness, tmp_path: Path, ran: Ran
+) -> None:
+    ran.answers["check"] = no_keys
+    agent = await working(harness, tmp_path, at("UserPromptSubmit", "check"), Reply(text="Hello!"))
+    broken = [True]
+
+    async def facts(agent: Agent) -> str | None:
+        if broken:
+            broken.clear()
+            raise RuntimeError("The facts cannot be had.")
+        return None
+
+    harness.agents.context.add(harness.ctx, "facts", ContextSource(facts, order=10, kind="note"))
+
+    await turn(agent, "The key is 12345.")
+
+    # The turn took the input up and failed before any listener of a step was asked.
+    assert [reason for reason, _ in ends(agent)] == ["error"]
+    assert ran.calls == []
+
+    await turn(agent, "Say hello.")
+
+    assert [told["prompt"] for told in ran.told("UserPromptSubmit")] == [
+        "The key is 12345.",
+        "Say hello.",
+    ]
+    assert harness.model.requests == []
+
+
+async def test_every_input_that_a_step_takes_up_is_looked_at_though_one_of_them_is_stopped(
+    harness: Harness, tmp_path: Path, ran: Ran
+) -> None:
+    ran.answers["check"] = no_keys
+    agent = await working(harness, tmp_path, at("UserPromptSubmit", "check"), Reply(text="Hello!"))
+
+    # One step takes up both.
+    agent.steer("The key is 12345.")
+    agent.followup("And the other key is 67890.")
+    await idle(agent)
+
+    assert [told["prompt"] for told in ran.told("UserPromptSubmit")] == [
+        "The key is 12345.",
+        "And the other key is 67890.",
+    ]
+    assert ends(agent) == [("blocked", "a hook stopped the input: No keys in here.")]
+
+    await turn(agent, "Say hello.")
+
+    (request,) = harness.model.requests
+    assert not any("key is" in text for text in said_to_the_model(request))
+    assert said_to_the_model(request)[-3:] == [
+        "[A hook of the user stopped what was said here: No keys in here.]",
+        "[A hook of the user stopped what was said here: No keys in here.]",
+        "Say hello.",
+    ]
+
+
+async def test_a_hook_has_the_one_asked_who_answers_for_the_agent_that_makes_the_call(
+    harness: Harness, tmp_path: Path, ran: Ran
+) -> None:
+    await harness.ctx.plugin(columbina.approval, {"policy": "ask"})
+    ran.answers["before"] = Result(decision="ask", exit_code=0)
+    one = await working(
+        harness,
+        tmp_path,
+        at("PreToolUse", "before"),
+        calls("note", text="of the other"),
+        Reply(text="Done."),
+        calls("note", text="of the one"),
+        Reply(text="Done."),
+    )
+    other = await harness.agents.create(harness.ctx, harness.spec(), session_id="s-2")
+    heard: list[tuple[str, str]] = []
+
+    def answering(who: str, answer: Outcome) -> Callable[[ApprovalRequest], Any]:
+        async def somebody(request: ApprovalRequest) -> Outcome:
+            heard.append((who, request.session.id))
+            return answer
+
+        return somebody
+
+    # Each of the two agents has somebody of its own, and the two do not agree.
+    one.ctx.on(APPROVAL_ASK, answering("one", "allowed-once"))
+    other.ctx.on(APPROVAL_ASK, answering("other", "rejected"))
+
+    await turn(other)
+    await turn(one)
+
+    assert heard == [("other", "s-2"), ("one", "s-1")]
+    assert [code for _, code in results(other)] == ["HOOK_BLOCKED"]
+    assert results(one) == [("noted of the one", None)]

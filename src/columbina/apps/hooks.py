@@ -9,9 +9,10 @@ here, and taken back here.
 ``list`` tells which commands would run at which moments in a working
 directory, and from which of the two files each comes. It tells what was
 passed over in a file, and whether the file of the project is trusted as it
-is now. ``trust`` writes the file of the project into the record of trust,
-by its place and by what it holds, and shows the commands that run from
-then on. ``distrust`` takes the file out of the record again.
+is now. ``trust`` shows the commands of the file of the project, and then
+writes the file into the record of trust, by its place and by what it holds.
+What is shown is shown first: a file whose commands nobody could be shown is
+not trusted. ``distrust`` takes the file out of the record again.
 
 None of this holds a conversation, and none of it runs a hook. All that it
 needs is the config of the hooks: where the file of the user and the record
@@ -19,13 +20,14 @@ of trust lie. The files are found and read the way a session finds and
 reads them, by :mod:`columbina.hooks.files`, so what is trusted here is what
 runs there.
 
-What comes back is text for a person. It repeats what the files hold, and
+What is shown is text for a person. It repeats what the files hold, and
 the file of a project is the work of somebody else. Whatever of a command
 cannot be seen is named in it, so that what is read is what would run, and
-whoever prints the text makes it fit for a terminal first.
+whoever shows the text makes it fit for a terminal first.
 """
 
 import secrets
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
@@ -50,9 +52,9 @@ from columbina.hooks.files import (
     project_of,
     record_at,
 )
-from columbina.hooks.run import MAX_COMMAND
+from columbina.hooks.run import MAX_COMMAND, too_long
 
-__all__ = ["DISTRUST", "LIST", "TRUST", "HooksError", "What", "run"]
+__all__ = ["DISTRUST", "LIST", "TRUST", "HooksError", "Show", "What", "run"]
 
 LIST = "list"
 TRUST = "trust"
@@ -60,6 +62,9 @@ DISTRUST = "distrust"
 
 What = Literal["list", "trust", "distrust"]
 """What is to be done with the hooks."""
+
+Show = Callable[[str], None]
+"""Shows a text to the person, and fails with an ``OSError`` if it cannot be shown."""
 
 _USER = "the user"
 _PROJECT = "this project"
@@ -96,10 +101,10 @@ def _hooks(hooks: Hooks) -> list[str]:
             for hook in group.hooks:
                 lines.append(f"  at {event}{tools}, within {_seconds(hook.timeout)}:")
                 lines.extend(f"      {line}" for line in _spelled(hook.command))
-                if len(hook.command) > MAX_COMMAND:
+                if too_long(hook.command):
                     lines.append(
-                        f"      (This command has more than {MAX_COMMAND} characters. One "
-                        "that long is not run.)"
+                        f"      (This command is longer than {MAX_COMMAND} characters, counted "
+                        "the way Windows counts them. One that long is not run.)"
                     )
     return lines
 
@@ -207,12 +212,13 @@ def _kept(path: Path, record: bytes) -> None:
         raise HooksError(f"the record of trust, {path}, cannot be written: {error}") from error
 
 
-def _trusted(config: Config, cwd: Path) -> str:
-    """Write the hook file of a project into the record of trust, and tell what runs from now on.
+def _trusted(config: Config, cwd: Path, show: Show) -> None:
+    """Show what the hook file of a project would run, and write it into the record of trust.
 
     Raises:
-        HooksError: There is no such file, it cannot be read or used, or the
-            record cannot be written.
+        HooksError: There is no such file, it cannot be read or used, what it
+            would run cannot be shown, or the record cannot be written.
+        OSError: The file is trusted, and that could not be said.
     """
     record = _record_of(config)
     theirs = of_the_project(project_of(cwd))
@@ -225,38 +231,50 @@ def _trusted(config: Config, cwd: Path) -> str:
     if isinstance(held, str):
         raise HooksError(held)
     assert theirs.content is not None
-    # What is trusted is what was read here and is shown below, whatever the file holds by now.
-    _kept(record, trust(record_at(record), theirs.path, theirs.content))
-    trusted_now = f"The hook file of this project, {theirs.path}, is trusted as it is now."
     if held.groups:
-        lines = [f"{trusted_now} These hooks run from now on:", *_hooks(held)]
+        lines = [f"The hook file of this project, {theirs.path}, holds these hooks:", *_hooks(held)]
+        trusted_now = "The file is trusted as it is now, and these hooks run from now on."
     else:
-        lines = [f"{trusted_now} It holds no hooks."]
+        lines = [f"The hook file of this project, {theirs.path}, holds no hooks."]
+        trusted_now = "The file is trusted as it is now."
     lines.extend(_passed_over(held))
-    lines.append(
+    try:
+        show("\n".join(lines))
+    except OSError as error:
+        # Nobody saw what would run, so nobody has said yes to it.
+        raise HooksError(
+            f"what the hook file {theirs.path} would run could not be shown, so it is not "
+            f"trusted: {error}"
+        ) from error
+    # What is trusted is what was read here and shown above, whatever the file holds by now.
+    _kept(record, trust(record_at(record), theirs.path, theirs.content))
+    show(
+        f"{trusted_now}\n"
         "When the file changes, its hooks stop until it is trusted again. "
         "'columbina hooks distrust' takes the trust back."
     )
-    return "\n".join(lines)
 
 
-def _distrusted(config: Config, cwd: Path) -> str:
+def _distrusted(config: Config, cwd: Path, show: Show) -> None:
     """Take the hook file of a project out of the record of trust, whatever the file holds.
 
     Raises:
         HooksError: The record cannot be written.
+        OSError: What was done could not be said.
     """
     record = _record_of(config)
     path = file_in(project_of(cwd))
     left = distrust(record_at(record), path)
     if left is None:
-        return f"The hook file of this project, {path}, was not trusted."
+        show(f"The hook file of this project, {path}, was not trusted.")
+        return
+    # Trust is taken back first and told after: nothing has to be seen for less to run.
     _kept(record, left)
-    return f"The hook file of this project, {path}, is trusted no more. Its hooks do not run."
+    show(f"The hook file of this project, {path}, is trusted no more. Its hooks do not run.")
 
 
-def run(config: Config, cwd: Path, what: What) -> str:
-    """Do one of the three things, and return what is to be printed.
+def run(config: Config, cwd: Path, what: What, show: Show) -> None:
+    """Do one of the three things, and show the person what there is to say.
 
     This reads the disk, and the two that change the record of trust write
     to it.
@@ -265,12 +283,16 @@ def run(config: Config, cwd: Path, what: What) -> str:
         config: The config of the hooks, as the profile has it.
         cwd: The working directory whose hooks are meant.
         what: What to do.
+        show: Shows a text to the person. A file is trusted only after what
+            it would run was shown.
 
     Raises:
         HooksError: What was asked for cannot be done.
+        OSError: What there is to say could not be shown.
     """
     if what == LIST:
-        return _listed(config, cwd)
-    if what == TRUST:
-        return _trusted(config, cwd)
-    return _distrusted(config, cwd)
+        show(_listed(config, cwd))
+    elif what == TRUST:
+        _trusted(config, cwd, show)
+    else:
+        _distrusted(config, cwd, show)

@@ -20,7 +20,8 @@ A root of a project is taken as it lies there. A link in it is not
 followed, be it the root itself, the directory of a skill or the file: what a
 repository holds was written by somebody else, and a link could lead to a
 place that is nobody's business. A root of the user is the user's own, and
-links in it are followed.
+links in it are followed. Both ways of going into a root are in
+:mod:`columbina.places`.
 
 A skill that cannot be used does not stand in the way of the others, and
 neither does one that cannot be read. Why is written down, in words for
@@ -28,19 +29,20 @@ whoever wrote the skill. Those words show little of what the file holds: a
 file of a few lines can give a value that fills a disk when it is written
 out.
 
+How the beginning of the file is read, and what a name may be, is in
+:mod:`columbina.frontmatter`. A kind of subagent is written the same way.
+
 Nothing here knows of agents or of tools. It reads, and says what it found.
 """
 
-import os
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
 
-import yaml
-
+from columbina import frontmatter, places
+from columbina.frontmatter import MAX_NAME, FrontMatterError
 from columbina.fs import bound
+from columbina.places import Root, RootError
 
 __all__ = [
     "FILE",
@@ -65,46 +67,17 @@ FILE = "SKILL.md"
 MAX_BYTES = 1024 * 1024
 """How long a skill file may be."""
 
-MAX_NAME = 64
-"""How long the name of a skill may be."""
-
 _MAX_ENTRIES = 1000
 """How many entries of a root are looked at."""
 
-_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-_DASHES = "---"
 _MODEL = "disable-model-invocation"
 _USER = "user-invocable"
 _MEANT = {"disablemodelinvocation": _MODEL, "modelinvocable": _MODEL, "userinvocable": _USER}
 """The key that a spelling was meant to be, going by its letters alone."""
 
-_SHOWN = 60
-"""How many characters of a value from a file are shown to whoever wrote it."""
-
-_SAID = 300
-"""How many characters of what the reader of YAML says are passed on."""
-
-_LINK = "it lies behind a link, and links are not followed in a project"
-
 
 class SkillError(Exception):
     """A skill cannot be used. The text says why, for whoever wrote the skill."""
-
-
-@dataclass(frozen=True, slots=True)
-class Root:
-    """A place where skills are looked for.
-
-    Attributes:
-        path: The directory whose directories are skills.
-        label: What the place is called before a person.
-        own: Whether the place is the user's own. Links are followed there,
-            and nowhere else.
-    """
-
-    path: Path
-    label: str
-    own: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,31 +147,6 @@ class Found:
     invalid: tuple[Invalid, ...] = ()
 
 
-def _split(text: str) -> tuple[str, str]:
-    """Take a skill file apart: the lines between the dashes, and what follows them."""
-    lines = text.split("\n")
-    if lines[0].rstrip() != _DASHES:
-        raise SkillError(f"{FILE} does not begin with a line of three dashes")
-    for at in range(1, len(lines)):
-        if lines[at].rstrip() == _DASHES:
-            return "\n".join(lines[1:at]), "\n".join(lines[at + 1 :])
-    raise SkillError(f"the lines at the beginning of {FILE} are not closed by three dashes")
-
-
-def _cut(text: str, limit: int) -> str:
-    return text if len(text) <= limit else f"{text[:limit]}..."
-
-
-def _shown(value: object) -> str:
-    """Return what a file gives in a few characters, whatever it is."""
-    # Lists that hold one another take a few lines in a file and no end of them written out.
-    if isinstance(value, list):
-        return "a list"
-    if isinstance(value, dict):
-        return "keys and values of its own"
-    return _cut(repr(value), _SHOWN)
-
-
 def _meant(key: object) -> str | None:
     """Return the key that a spelling is a slip of the pen for, or ``None`` if it is none.
 
@@ -212,39 +160,6 @@ def _meant(key: object) -> str | None:
     letters = key.lower().replace("-", "").replace("_", "").replace("invok", "invoc")
     meant = _MEANT.get(letters)
     return None if key == meant else meant
-
-
-def _text(fields: Mapping[object, object], key: str) -> str:
-    """Return the text that a key gives, which has to be there and to say something."""
-    if key not in fields:
-        raise SkillError(f"the key {key!r} is missing")
-    value = fields[key]
-    if value is None or (isinstance(value, str) and not value.strip()):
-        raise SkillError(f"the key {key!r} says nothing")
-    if not isinstance(value, str):
-        # YAML reads digits as a number, and yes as true. Quotes make a text of them.
-        raise SkillError(
-            f"the key {key!r} gives {_shown(value)}, which is no text. Put it in quotes"
-        )
-    return value
-
-
-def _flag(fields: Mapping[object, object], key: str, default: bool) -> bool:
-    value = fields.get(key, default)
-    if not isinstance(value, bool):
-        raise SkillError(f"the key {key!r} takes true or false, not {_shown(value)}")
-    return value
-
-
-def _followed(path: Path) -> Path:
-    """Return where a path leads, with every link followed.
-
-    Raises:
-        OSError: Nothing is there, or the links on the way go in a circle.
-    """
-    # Not ``Path.resolve``: before Python 3.13 it answers a circle of links with an error
-    # that is no ``OSError``, and nobody who reads files is ready for that one.
-    return Path(os.path.realpath(path, strict=True))
 
 
 def parsed(content: bytes, directory: str) -> tuple[str, bool, bool, str]:
@@ -263,50 +178,26 @@ def parsed(content: bytes, directory: str) -> tuple[str, bool, bool, str]:
         SkillError: The file is not one of a skill of that name.
     """
     try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise SkillError(f"{FILE} is not written in UTF-8") from None
-    front, rest = _split(text.replace("\r\n", "\n"))
-    try:
-        loaded: object = yaml.safe_load(front)
-    except RecursionError:
-        raise SkillError(f"the lines at the beginning of {FILE} are nested too deeply") from None
-    except yaml.YAMLError as error:
-        said = _cut(" ".join(str(error).split()), _SAID)
-        raise SkillError(f"the lines at the beginning of {FILE} are not YAML: {said}") from None
-    except Exception as error:
-        # The reader makes values of what it reads, and a value that cannot be made fails
-        # with whatever the making of it raises: a date that there is none of, a number of
-        # thousands of digits, a tag before something that it does not go with.
-        said = _cut(" ".join(str(error).split()), _SAID)
-        raise SkillError(
-            f"the lines at the beginning of {FILE} give a value that cannot be read: {said}"
-        ) from None
-    if loaded is None:
-        loaded = {}
-    if not isinstance(loaded, dict):
-        raise SkillError(f"the lines at the beginning of {FILE} do not give keys and values")
-    fields = cast("dict[object, object]", loaded)
-    for key in fields:
-        meant = _meant(key)
-        if meant is not None:
+        fields, text = frontmatter.read(content, FILE)
+        for key in fields:
+            meant = _meant(key)
+            if meant is not None:
+                raise SkillError(
+                    f"the key {frontmatter.shown(key)} is not known. What is meant is spelled "
+                    f"{meant!r}"
+                )
+        name = frontmatter.name(fields)
+        if name != directory:
             raise SkillError(
-                f"the key {_shown(key)} is not known. What is meant is spelled {meant!r}"
+                f"the file calls the skill {name!r} and its directory is called "
+                f"{directory!r}. The two have to be the same"
             )
-    name = _text(fields, "name")
-    if len(name) > MAX_NAME or _NAME.fullmatch(name) is None:
-        raise SkillError(
-            f"the name {_shown(name)} cannot be used: a name is made of lower-case letters, "
-            f"digits and single dashes between them, and has {MAX_NAME} characters at most"
-        )
-    if name != directory:
-        raise SkillError(
-            f"the file calls the skill {name!r} and its directory is called {directory!r}. "
-            "The two have to be the same"
-        )
-    description = _text(fields, "description")
-    model = not _flag(fields, _MODEL, default=False)
-    return description, model, _flag(fields, _USER, default=True), rest.strip("\n")
+        description = frontmatter.text(fields, "description")
+        model = not frontmatter.flag(fields, _MODEL, default=False)
+        return description, model, frontmatter.flag(fields, _USER, default=True), text
+    except FrontMatterError as error:
+        # What is wrong with the beginning of the file is what is wrong with the skill.
+        raise SkillError(str(error)) from None
 
 
 def _read(directory: Path, root: Root, name: str) -> tuple[Skill, str] | None:
@@ -322,22 +213,14 @@ def _read(directory: Path, root: Root, name: str) -> tuple[Skill, str] | None:
         SkillError: Something is there that looks like a skill and cannot be used.
         OSError: The file is there and cannot be read.
     """
-    file = directory / FILE
     try:
-        if root.own:
-            # The user's own: a file that is a link is read where it leads.
-            file = _followed(file)
-        opened, _ = bound.open_for_reading(file)
-    except (FileNotFoundError, NotADirectoryError):
-        # No such file, or the link that was followed leads to a file and not to a directory.
-        return None
+        opened = places.opened(root, directory / FILE)
     except bound.NotAFileError:
         raise SkillError(f"{FILE} is not a file") from None
-    except bound.MovedError:
-        if root.own:
-            # Its links were followed a moment before, so somebody is at work there.
-            raise
-        raise SkillError(_LINK) from None
+    except RootError as error:
+        raise SkillError(str(error)) from None
+    if opened is None:
+        return None
     with opened:
         # One byte more than is allowed is asked for, so a file that grows while it is read
         # is found out as well.
@@ -355,16 +238,12 @@ def _entry(there: Path, root: Root, entry: bound.Listed) -> Skill | None:
         SkillError: The entry looks like a skill and cannot be used.
         OSError: It cannot be read.
     """
-    directory = there
-    if entry.kind == "link":
-        if not root.own:
-            raise SkillError(_LINK)
-        try:
-            directory = _followed(there)
-        except FileNotFoundError:
-            raise SkillError("it is a link that leads nowhere") from None
-    elif entry.kind != "directory":
+    if entry.kind not in ("directory", "link"):
         return None
+    try:
+        directory = places.target(root, there, entry)
+    except RootError as error:
+        raise SkillError(str(error)) from None
     read = _read(directory, root, entry.name)
     return None if read is None else read[0]
 
@@ -380,18 +259,13 @@ def scan(root: Root) -> Scan:
         OSError: The root is there and cannot be looked into. That may pass,
             so whoever asks decides what to go by meanwhile.
     """
-    base = root.path
     try:
-        if root.own:
-            base = _followed(base)
-        entries, more = bound.listing(base, _MAX_ENTRIES)
-    except (FileNotFoundError, NotADirectoryError):
+        looked = places.listed(root, _MAX_ENTRIES)
+    except RootError as error:
+        return Scan(root, invalid=(Invalid(root.path, root, str(error)),))
+    if looked is None:
         return Scan(root)
-    except bound.MovedError:
-        if root.own:
-            # Its links were followed a moment before, so somebody is at work there.
-            raise
-        return Scan(root, invalid=(Invalid(base, root, _LINK),))
+    base, entries, more = looked
     skills: list[Skill] = []
     invalid: list[Invalid] = []
     if more:

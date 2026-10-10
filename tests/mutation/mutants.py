@@ -76,6 +76,7 @@ SPILL_LOCAL = "src/columbina/spill/local.py"
 SPILL_POLICY = "src/columbina/spill/policy.py"
 SPILL_SEAM = "src/columbina/spill/__init__.py"
 COMPACTION_SEAM = "src/columbina/compaction/__init__.py"
+TRIM = "src/columbina/compaction/basic/trim.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -5394,6 +5395,78 @@ _COMPACTION = (
         COMPACTION_SEAM,
         "        return bool(self.trimmed or self.summarised)\n",
         "        return bool(self.trimmed)\n",
+    ),
+    mutant(
+        "a result that the model has not read yet is cut down",
+        TRIM,
+        "    read = events[: replies[-1]] if replies else []\n",
+        "    read = events\n",
+    ),
+    mutant(
+        "a result of just the length that is let be is cut down",
+        TRIM,
+        "block if len(block.text) <= over else",
+        "block if len(block.text) < over else",
+    ),
+    mutant(
+        "no result is long enough to be cut down",
+        TRIM,
+        "block if len(block.text) <= over else",
+        "block if True else",
+    ),
+    mutant(
+        "the end of a result is not kept",
+        TRIM,
+        "    first, last = text[:head], text[len(text) - tail :]\n",
+        '    first, last = text[:head], ""\n',
+    ),
+    mutant(
+        "the beginning of a result is not kept",
+        TRIM,
+        "    first, last = text[:head], text[len(text) - tail :]\n",
+        '    first, last = "", text[len(text) - tail :]\n',
+    ),
+    mutant(
+        "the line about what was cut follows the beginning without a break",
+        TRIM,
+        '    between = "" if not first or first.endswith("\\n") else "\\n"\n',
+        '    between = ""\n',
+    ),
+    mutant(
+        "a result is replaced by something that is no shorter",
+        TRIM,
+        "    return cut if len(cut) < len(text) else text\n",
+        "    return cut\n",
+    ),
+    mutant(
+        "a result is said to have lost all of its characters",
+        TRIM,
+        '    cut = f"{first}{between}{_left_out(count)}\\n{last}"\n',
+        '    cut = f"{first}{between}{_left_out(len(text))}\\n{last}"\n',
+    ),
+    mutant(
+        "ends that reach each other are both shown with a line between them",
+        TRIM,
+        "    if count <= 0:\n        # The two ends reach each other: nothing would be left out.\n        return text\n",
+        "",
+    ),
+    mutant(
+        "a result that was cut down no longer says whether its call failed",
+        TRIM,
+        'data.model_copy(update={"message": message})',
+        "ToolResultEvent(message=message)",
+    ),
+    mutant(
+        "a result that was cut down is put at the end of the conversation",
+        TRIM,
+        'session.append(data.model_copy(update={"message": message}), replaces=[event.seq])',
+        'session.append(data.model_copy(update={"message": message}))',
+    ),
+    mutant(
+        "the results that were cut down are not counted",
+        TRIM,
+        "        cut += 1\n",
+        "        cut += 0\n",
     ),
 )
 

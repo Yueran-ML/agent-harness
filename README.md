@@ -9,8 +9,11 @@
 <h1 align="center">Columbina</h1>
 
 <p align="center">
-  <strong>A plugin-based agent harness, written from scratch in Python.</strong><br>
-  <sub>用 Python 从零写起的插件化 Agent harness</sub>
+  <strong>A plugin-based agent harness, written from scratch in Python.</strong>
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a>
 </p>
 
 <p align="center">
@@ -48,8 +51,6 @@ conversation with an agent at the terminal, and `columbina run` gives it one tas
 prints the answer. The agent talks to a model over the OpenAI Chat Completions protocol,
 DeepSeek by default. A conversation that outgrows its model is made shorter by itself,
 and a session can be taken up again after the program was killed.
-
-> **中文简介**　Columbina 是一个用 Python 从零写起的插件化 Agent harness。模型适配、工具注册、会话日志和 Agent 循环都是一个小型 asyncio 内核上的插件。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 在工作目录里读文件、搜索、改文件、执行命令，每次调用能做什么在执行之前判定。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。模型走 OpenAI Chat Completions 协议，默认接 DeepSeek。项目处于早期开发阶段，十个阶段做到第六个。
 
 ## What is there
 

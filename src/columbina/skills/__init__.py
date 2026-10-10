@@ -62,6 +62,7 @@ __all__ = [
     "inject",
     "loaded",
     "name",
+    "one_line",
     "skill_tool",
 ]
 
@@ -124,12 +125,14 @@ _GIVEN: Projection[bool] = Projection("skills-given", False, _given)
 """Whether a session was ever told of skills."""
 
 
+def one_line(description: str, width: int = MAX_DESCRIPTION) -> str:
+    """Return what a skill is for on one line, in no more characters than ``width``."""
+    told = " ".join(description.split())
+    return told if len(told) <= width else f"{told[: width - 1]}…"
+
+
 def _line(skill: Skill, width: int) -> str:
-    """Say what one skill is for, on one line and in no more characters than ``width``."""
-    told = " ".join(skill.description.split())
-    if len(told) > width:
-        told = f"{told[: width - 1]}…"
-    return f"- {skill.name}: {told}"
+    return f"- {skill.name}: {one_line(skill.description, width)}"
 
 
 def _left_out(count: int) -> str:

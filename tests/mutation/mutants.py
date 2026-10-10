@@ -70,6 +70,7 @@ COMMAND_PERMISSIONS = "src/columbina/commands/permissions.py"
 COMMAND_COMPACT = "src/columbina/commands/compact.py"
 COMMAND_TODOS = "src/columbina/commands/todos.py"
 COMMAND_FORK = "src/columbina/commands/fork.py"
+COMMAND_SKILLS = "src/columbina/commands/skills.py"
 AGENTS_SERVICE = "src/columbina/agent/agent.py"
 APPS_SESSIONS = "src/columbina/apps/sessions.py"
 TODO = "src/columbina/todo/__init__.py"
@@ -4871,6 +4872,132 @@ _SLASH = (
         '        called = f"{_MARK}{named.lower()}"\n',
         '        called = f"{_MARK}{named}"\n',
     ),
+    mutant(
+        "a skill is listed without the place where it was found",
+        COMMAND_SKILLS,
+        'f"{named.ljust(width)}  ({skill.root.label})  {one_line(skill.description)}{only}"',
+        'f"{named.ljust(width)}  {one_line(skill.description)}{only}"',
+    ),
+    mutant(
+        "the names of the skills do not stand in a column",
+        COMMAND_SKILLS,
+        'f"{named.ljust(width)}  ({skill.root.label})',
+        'f"{named}  ({skill.root.label})',
+    ),
+    mutant(
+        "what a skill is for is listed with its line breaks",
+        COMMAND_SKILLS,
+        "{one_line(skill.description)}{only}",
+        "{skill.description}{only}",
+    ),
+    mutant(
+        "the list does not say who can load a skill",
+        COMMAND_SKILLS,
+        "            if skill.model_invocable and skill.user_invocable\n",
+        "            if True\n",
+    ),
+    mutant(
+        "a skill that only a person hands over is listed as one that only the agent loads",
+        COMMAND_SKILLS,
+        '            else "  [only the agent loads it]"\n            if skill.model_invocable\n',
+        '            else "  [only the agent loads it]"\n            if skill.user_invocable\n',
+    ),
+    mutant(
+        "a skill that nobody can load is listed as one for a person to hand over",
+        COMMAND_SKILLS,
+        '            else "  [only with /skill]"\n            if skill.user_invocable\n',
+        '            else "  [only with /skill]"\n            if True\n',
+    ),
+    mutant(
+        "the skills that were passed over are not named",
+        COMMAND_SKILLS,
+        "    if found.shadowed:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "what cannot be used as a skill is not named",
+        COMMAND_SKILLS,
+        "    if found.invalid:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "where there are no skills the list says nothing",
+        COMMAND_SKILLS,
+        '    return "\\n".join(lines) if lines else "There are no skills."\n',
+        '    return "\\n".join(lines)\n',
+    ),
+    mutant(
+        "a person who names no skill is told that the skill of no name is not there",
+        COMMAND_SKILLS,
+        "        if not named:\n            return _USAGE\n",
+        "",
+    ),
+    mutant(
+        "a skill that cannot be used fails the command that hands it over",
+        COMMAND_SKILLS,
+        '        except SkillError as error:\n            return f"The skill {named} cannot be used: {error}."\n',
+        "",
+    ),
+    mutant(
+        "why a skill cannot be handed over is told with the number of the error",
+        COMMAND_SKILLS,
+        'return f"The skill {named} cannot be read: {error.strerror or error}."',
+        'return f"The skill {named} cannot be read: {error}."',
+    ),
+    mutant(
+        "an error without words of the system says nothing of why a skill is not handed over",
+        COMMAND_SKILLS,
+        'return f"The skill {named} cannot be read: {error.strerror or error}."',
+        'return f"The skill {named} cannot be read: {error.strerror}."',
+    ),
+    mutant(
+        "a skill that only the agent loads is handed over",
+        COMMAND_SKILLS,
+        "        if not now.user_invocable:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "who may hand a skill over is told by the list and not by the file as it is now",
+        COMMAND_SKILLS,
+        "        if not now.user_invocable:\n",
+        "        if not skill.user_invocable:\n",
+    ),
+    mutant(
+        "a skill is handed over without word of who wants it",
+        COMMAND_SKILLS,
+        'f"The user wants you to go by this skill.\\n\\n{loaded(now, text)}", source=SOURCE',
+        "loaded(now, text), source=SOURCE",
+    ),
+    mutant(
+        "a skill that is handed over is told as input of no known kind",
+        COMMAND_SKILLS,
+        '{loaded(now, text)}", source=SOURCE\n',
+        '{loaded(now, text)}"\n',
+    ),
+    mutant(
+        "a skill that is handed over begins a turn of its own",
+        COMMAND_SKILLS,
+        "        agent.inject(\n",
+        "        agent.followup(\n",
+    ),
+    mutant(
+        "a task after the name of a skill is not begun",
+        COMMAND_SKILLS,
+        '        if task:\n            agent.followup(task)\n            return ""\n',
+        "",
+    ),
+    mutant(
+        "a task after the name of a skill keeps the spaces before it",
+        COMMAND_SKILLS,
+        "        task = task.strip()\n",
+        "",
+    ),
+    mutant(
+        "a task that was begun is answered as if the skill only waited",
+        COMMAND_SKILLS,
+        '            agent.followup(task)\n            return ""\n',
+        "            agent.followup(task)\n",
+    ),
 )
 
 _TEXT = (
@@ -7802,26 +7929,26 @@ _SKILLS = (
     mutant(
         "what a skill is for keeps its line breaks",
         SKILLS_PLUGIN,
-        '    told = " ".join(skill.description.split())\n',
-        "    told = skill.description\n",
+        '    told = " ".join(description.split())\n',
+        "    told = description\n",
     ),
     mutant(
         "what a skill is for is told at whatever length",
         SKILLS_PLUGIN,
-        "    if len(told) > width:\n",
-        "    if False:\n",
+        '    return told if len(told) <= width else f"{told[: width - 1]}…"\n',
+        "    return told\n",
     ),
     mutant(
         "what a skill is for is cut though it is just short enough",
         SKILLS_PLUGIN,
-        "    if len(told) > width:\n",
-        "    if len(told) >= width:\n",
+        "    return told if len(told) <= width else",
+        "    return told if len(told) < width else",
     ),
     mutant(
         "what a skill is for is told in one character more than there is room for",
         SKILLS_PLUGIN,
-        '        told = f"{told[: width - 1]}…"\n',
-        '        told = f"{told[:width]}…"\n',
+        'else f"{told[: width - 1]}…"\n',
+        'else f"{told[:width]}…"\n',
     ),
     mutant(
         "one skill that is left out is told of as several",

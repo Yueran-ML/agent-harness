@@ -14,6 +14,7 @@ from columbina import cancellation
 from columbina.kernel import Context, EmitEvent, Registry, ServiceKey, WaterfallEvent
 from columbina.llm.types import TextBlock, ToolCallBlock, ToolMessage, ToolSchema
 from columbina.session.events import ToolError, ToolResultEvent
+from columbina.text import whole
 from columbina.tools.tool import Tool, ToolFailure, ToolRun
 
 logger = logging.getLogger("columbina.tools")
@@ -389,6 +390,9 @@ class PendingCall:
             except asyncio.CancelledError as error:
                 # Rendering does not wait, so no cancellation of ours can arrive in it.
                 raise cancellation.CancelledFromInside from error
+            # A tool repeats what it finds: the name of a file, a line of one. Either may
+            # hold half a character, and no log and no request can hold that.
+            text = whole(text)
         except _NotRunError as stopped:
             logger.error("a call of the tool %r was stopped: %s", tool.name, stopped.reason)
             return self._fail(stopped.code, stopped.reason)
@@ -412,7 +416,7 @@ class PendingCall:
             return self._settle(
                 ToolOutcome(
                     call=self.call,
-                    text=verdict.text or "(no output)",
+                    text=whole(verdict.text) or "(no output)",
                     value=value,
                     concludes_turn=invocation.run.concludes_turn,
                 )
@@ -442,6 +446,8 @@ class PendingCall:
         return self._fail("TOOL_ERROR", f"The tool {name} failed: {_describe(error)}")
 
     def _fail(self, code: str, text: str) -> ToolOutcome:
+        # The words of a failure may repeat what the call named or what a listener said.
+        text = whole(text)
         return self._settle(
             ToolOutcome(call=self.call, text=text, error=ToolError(code=code, reason=text))
         )

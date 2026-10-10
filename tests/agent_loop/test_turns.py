@@ -5,7 +5,16 @@ import asyncio
 from pydantic import BaseModel
 
 import columbina.system_prompt
-from columbina.agent import AGENTS, INBOX, STREAM, InboxItem, StreamFrame, enqueue
+from columbina.agent import (
+    AGENTS,
+    INBOX,
+    STREAM,
+    Agent,
+    ContextSource,
+    InboxItem,
+    StreamFrame,
+    enqueue,
+)
 from columbina.kernel import Next
 from columbina.llm import (
     BlockStart,
@@ -16,6 +25,7 @@ from columbina.llm import (
     SystemMessage,
     TextBlock,
     Usage,
+    UserMessage,
 )
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import (
@@ -34,7 +44,7 @@ from columbina.session import (
 )
 from columbina.system_prompt import SYSTEM_PROMPT, SYSTEM_PROMPT_ASSEMBLE, Draft, Section
 from columbina.tools import Tool, ToolRun
-from support.loop import MODEL, SYSTEM, Harness, assistant, idle, types, user
+from support.loop import MODEL, SYSTEM, Harness, assistant, context, idle, types, user
 
 
 async def test_a_task_becomes_a_turn_with_one_step(harness: Harness) -> None:
@@ -498,3 +508,68 @@ async def test_instructions_that_cannot_be_put_together_end_the_turn_and_take_th
     assert "user/message" in types(agent.session)
     assert not INBOX.of(agent.session).next_turn
     assert not INBOX.of(agent.session).next_step
+
+
+# Text that cannot be written down
+
+HALF = chr(0xD800)
+GONE = chr(0xFFFD)
+
+
+async def test_half_a_character_in_what_a_person_says_becomes_a_sign_that_can_be_written(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Hello!"))
+
+    # What is typed or pasted may hold half a character, and no log can hold one.
+    agent.inject(f"The file is notes{HALF}.txt.")
+    agent.steer(UserMessage(content=(TextBlock(text=f"Mind {HALF} this."),)))
+    agent.followup(f"Say {HALF}hello.")
+    await idle(agent)
+
+    said = [
+        event.data.message.content[0].text
+        for event in agent.session.events
+        if isinstance(event.data, UserMessageEvent)
+    ]
+    assert said == [f"The file is notes{GONE}.txt.", f"Mind {GONE} this.", f"Say {GONE}hello."]
+    assert [
+        event.data.reason for event in agent.session.events if isinstance(event.data, TurnEndEvent)
+    ] == ["completed"]
+
+
+async def test_what_a_person_says_without_half_a_character_is_taken_as_it_is(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Hello!"))
+    message = UserMessage(content=(TextBlock(text="Say hello."), TextBlock(text="And goodbye.")))
+
+    agent.followup(message)
+    await idle(agent)
+
+    (said,) = [
+        event.data.message
+        for event in agent.session.events
+        if isinstance(event.data, UserMessageEvent)
+    ]
+    assert said == message
+
+
+async def test_half_a_character_in_what_a_source_of_context_gives_becomes_a_sign(
+    harness: Harness,
+) -> None:
+    async def facts(agent: Agent) -> str | None:
+        # The working directory may be called anything that its disk takes.
+        return f"You work in /home/user/notes{HALF}."
+
+    harness.agents.context.add(harness.ctx, "facts", ContextSource(facts, order=10, kind="note"))
+    agent = await harness.agent(Reply(text="Hello!"))
+
+    agent.followup("Say hello.")
+    await idle(agent)
+
+    (request,) = harness.model.requests
+    assert request.messages[1] == context("facts", f"You work in /home/user/notes{GONE}.")
+    assert [
+        event.data.reason for event in agent.session.events if isinstance(event.data, TurnEndEvent)
+    ] == ["completed"]

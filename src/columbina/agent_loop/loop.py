@@ -69,6 +69,7 @@ from columbina.session import (
     UserMessageEvent,
 )
 from columbina.system_prompt import SYSTEM_PROMPT, SYSTEM_PROMPT_ASSEMBLE
+from columbina.text import whole
 from columbina.tools import PendingCall, ToolOutcome, ToolRun, Tools
 
 logger = logging.getLogger("columbina.agent_loop")
@@ -531,7 +532,9 @@ class LoopAgent(Agent):
         """
         session = self.session
         for name, source, text in given:
-            written = UserMessageEvent(message=_framed(name, text), source=_CONTEXT + name)
+            # A source tells what it found, such as the name of a directory, as it found it.
+            framed = _framed(name, whole(text))
+            written = UserMessageEvent(message=framed, source=_CONTEXT + name)
             last = _GIVEN.of(session).get(written.source)
             seen = last is not None and last.seq in session.surface
             if source.kind == "note":

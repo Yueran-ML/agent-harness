@@ -425,6 +425,24 @@ _LOOP = (
         "                parent=parent,\n",
         "",
     ),
+    mutant(
+        "half a character in what a person says is taken as it is",
+        AGENTS_SERVICE,
+        "    blocks = tuple(TextBlock(text=whole(text)) for text in said)\n",
+        "    blocks = tuple(TextBlock(text=text) for text in said)\n",
+    ),
+    mutant(
+        "of a message with several pieces of text only the first is taken",
+        AGENTS_SERVICE,
+        "[block.text for block in content.content]",
+        "[content.content[0].text]",
+    ),
+    mutant(
+        "half a character in what a source of context gives goes into the log",
+        LOOP,
+        "            framed = _framed(name, whole(text))\n",
+        "            framed = _framed(name, text)\n",
+    ),
 )
 
 _READ = (
@@ -983,6 +1001,24 @@ _TOOLS = (
         TOOL,
         '        if brought.get("type") != "object":\n',
         "        if False:\n",
+    ),
+    mutant(
+        "half a character in what a tool gives goes into its result",
+        PIPELINE,
+        "no log and no request can hold that.\n            text = whole(text)\n",
+        "no log and no request can hold that.\n",
+    ),
+    mutant(
+        "half a character that a listener puts into a result stays in it",
+        PIPELINE,
+        '                    text=whole(verdict.text) or "(no output)",\n',
+        '                    text=verdict.text or "(no output)",\n',
+    ),
+    mutant(
+        "half a character in the words of a failure stays in them",
+        PIPELINE,
+        "what the call named or what a listener said.\n        text = whole(text)\n",
+        "what the call named or what a listener said.\n",
     ),
 )
 

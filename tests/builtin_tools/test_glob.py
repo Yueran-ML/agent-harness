@@ -319,3 +319,22 @@ async def test_a_search_says_which_directory_it_acts_on(desk: Desk) -> None:
 
 def test_searches_may_run_beside_each_other(desk: Desk) -> None:
     assert desk.begin("glob", pattern="*.py").concurrency_safe
+
+
+async def test_a_file_whose_name_holds_half_a_character_is_listed_with_a_sign_in_its_place(
+    desk: Desk,
+) -> None:
+    # Windows takes any unit of UTF-16 in a name, and the others take any byte.
+    half = chr(0xD800) if sys.platform == "win32" else chr(0xDC80)
+    try:
+        (desk.work / f"notes{half}.txt").write_text("x")
+    except OSError:
+        pytest.skip("this disk takes no such name")
+    put(desk, "plain.txt")
+
+    names = await listed(desk, "*.txt")
+
+    # A text with half a character in it could not be written into the log of the session.
+    assert sorted(names) == sorted(["plain.txt", f"notes{chr(0xFFFD)}.txt"])
+    for name in names:
+        name.encode("utf-8")

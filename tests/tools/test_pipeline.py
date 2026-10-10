@@ -1618,3 +1618,78 @@ async def test_arguments_that_cannot_be_put_aside_are_an_error_of_the_call(
     assert "these arguments are not for writing down" in outcome.text
     assert ran == []
     assert "could not be put aside" in caplog.text
+
+
+# Text that cannot be written down
+
+HALF = chr(0xD800)
+GONE = chr(0xFFFD)
+
+
+async def test_half_a_character_in_what_a_tool_gives_becomes_a_sign_that_can_be_written(
+    ctx: Context, tools: Tools, run: ToolRun
+) -> None:
+    async def lists(args: EchoArgs, run: ToolRun) -> str:
+        # The name of a file may hold half a character, on every system that there is.
+        return f"notes{HALF}.txt"
+
+    async def fails(args: EchoArgs, run: ToolRun) -> str:
+        raise ToolFailure(f"There is no file notes{HALF}.txt.", code="NOT_FOUND")
+
+    tools.add(ctx, tool("list", lists), tool("fail", fails))
+
+    good = await tools.run(ctx, call("list", '{"text": "x"}'), run)
+    bad = await tools.run(ctx, call("fail", '{"text": "x"}', call_id="call-2"), run)
+
+    assert good.text == f"notes{GONE}.txt"
+    assert bad.text == f"There is no file notes{GONE}.txt."
+    assert bad.error == ToolError(code="NOT_FOUND", reason=bad.text)
+    # A log takes both. It takes no text with half a character in it.
+    for outcome in (good, bad):
+        run.session.append(outcome.to_event())
+
+
+async def test_half_a_character_that_a_listener_puts_into_a_result_becomes_a_sign_as_well(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+) -> None:
+    tools.add(ctx, tool("echo", journal.echo))
+
+    async def adds(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
+        return Accept(f"{executed.text}{HALF}")
+
+    async def withholds(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
+        return Block(f"It holds {HALF}.")
+
+    listening = ctx.on(POST_EXECUTE, adds)
+    added = await tools.run(ctx, call("echo", '{"text": "hello"}'), run)
+    await listening.dispose()
+    ctx.on(POST_EXECUTE, withholds)
+    withheld = await tools.run(ctx, call("echo", '{"text": "hello"}', call_id="call-2"), run)
+
+    assert added.text == f"hello{GONE}"
+    assert withheld.text == f"The result of the call is withheld: It holds {GONE}."
+    for outcome in (added, withheld):
+        run.session.append(outcome.to_event())
+
+
+async def test_whoever_listens_for_the_result_of_a_tool_is_handed_text_that_can_be_written(
+    ctx: Context, tools: Tools, run: ToolRun
+) -> None:
+    async def lists(args: EchoArgs, run: ToolRun) -> str:
+        return f"notes{HALF}.txt"
+
+    tools.add(ctx, tool("list", lists))
+    handed: list[str] = []
+
+    async def looks(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
+        # A listener may write the text somewhere, or tell a program of it.
+        handed.append(executed.text)
+        executed.text.encode("utf-8")
+        return await proceed(executed)
+
+    ctx.on(POST_EXECUTE, looks)
+
+    outcome = await tools.run(ctx, call("list", '{"text": "x"}'), run)
+
+    assert handed == [f"notes{GONE}.txt"]
+    assert outcome.text == f"notes{GONE}.txt"

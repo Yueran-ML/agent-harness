@@ -14,6 +14,7 @@ from columbina.kernel import Context, Registry, ServiceKey
 from columbina.llm.types import CallConfig, TextBlock, UserMessage
 from columbina.session import Session, Sessions
 from columbina.session.store import check_session_id, new_session_id
+from columbina.text import whole
 
 CancelCause = Literal["user", "parent", "hook", "budget", "disposed"]
 """Who cancelled what an agent was doing."""
@@ -154,9 +155,11 @@ class Agent(ABC):
 
 
 def _item(content: str | UserMessage, source: str) -> InboxItem:
-    if isinstance(content, str):
-        content = UserMessage(content=(TextBlock(text=content),))
-    return InboxItem(message=content, source=source)
+    """Make of what somebody says an item for the inbox, in text that a log can hold."""
+    said = (content,) if isinstance(content, str) else [block.text for block in content.content]
+    # What is typed or pasted may hold half a character.
+    blocks = tuple(TextBlock(text=whole(text)) for text in said)
+    return InboxItem(message=UserMessage(content=blocks), source=source)
 
 
 AgentFactory = Callable[[Context, AgentSpec, Session], Agent]

@@ -112,20 +112,21 @@ def cut(text: str, limit: int) -> str:
 
 
 def payload(
-    event: str, session_id: str, transcript: Path, cwd: Path, more: Mapping[str, object]
+    event: str, session_id: str, transcript: Path | None, cwd: Path, more: Mapping[str, object]
 ) -> bytes:
     """Return what a hook is told: one line of JSON, with a line end after it.
 
     Args:
         event: The moment.
         session_id: The id of the session.
-        transcript: Where the log of the session lies.
+        transcript: Where the log of the session lies, or ``None`` if it is kept
+            in memory alone. The hook is then told an empty path.
         cwd: The working directory of the agent.
         more: What this moment adds to what every hook is told.
     """
     told = {
         "session_id": session_id,
-        "transcript_path": str(transcript),
+        "transcript_path": "" if transcript is None else str(transcript),
         "cwd": str(cwd),
         "hook_event_name": event,
         **more,

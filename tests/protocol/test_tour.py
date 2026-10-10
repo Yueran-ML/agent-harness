@@ -30,21 +30,26 @@ import shutil
 from collections import deque
 from pathlib import Path
 
+import pytest
 from pydantic import BaseModel
 
 import columbina.approval
 import columbina.compaction.basic
 import columbina.fs
+import columbina.hooks
 import columbina.permissions
 import columbina.retry
 import columbina.sandbox
 import columbina.todo
 import columbina.token_meter
+from columbina import shells
 from columbina.agent import Agent, AgentSpec, ContextSource
 from columbina.approval import APPROVAL_ASK, ApprovalRequest, Outcome
 from columbina.apps.common import DEFAULT_PROMPT
 from columbina.builtin_tools import edit, read
 from columbina.compaction import COMPACTION, CompactionEndEvent
+from columbina.hooks.config import Hook
+from columbina.hooks.run import Result
 from columbina.llm import LLM, CallConfig, LlmFailure, Usage
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.permissions import PERMISSIONS, split_bash
@@ -94,6 +99,15 @@ mistake came in with commit 0029d5f.
 2. Constraints and preferences: Keep changes small. Committing was not allowed.
 3. Remaining steps: The fix is not committed.
 4. Key data: calc.py, commit 0029d5f."""
+
+
+HOOKS = {
+    "hooks": {
+        "PostToolUse": [
+            {"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "ruff format"}]}
+        ]
+    }
+}
 
 
 class Clock:
@@ -183,7 +197,9 @@ def noted(mended: str, checked: str) -> Call:
     )
 
 
-async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
+async def toured(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, list[ApprovalRequest]]:
     """Drive an agent through the session, and return its file and what was asked about."""
     ctx = harness.ctx
     clock = Clock()
@@ -201,6 +217,19 @@ async def toured(harness: Harness) -> tuple[str, list[ApprovalRequest]]:
     await ctx.plugin(read)
     await ctx.plugin(edit)
     await ctx.plugin(columbina.todo)
+    # The user has one hook, the most common one: a formatter after every change to a file.
+    # It is not run here. What stands in for it takes a third of a second of the clock.
+    hooks = harness.cwd.parent / "hooks.json"
+    hooks.write_text(json.dumps(HOOKS))
+
+    async def formatted(hook: Hook, event: str, told: bytes, **where: object) -> Result:
+        clock.now += 310
+        return Result(exit_code=0)
+
+    monkeypatch.setattr(shells, "find", lambda: "bash")
+    monkeypatch.setattr(columbina.hooks, "run", formatted)
+    monkeypatch.setattr(columbina.hooks, "_now", lambda: clock.now / 1000)
+    await ctx.plugin(columbina.hooks, {"user_file": hooks})
     for name in ("calc.py", "check.py"):
         shutil.copy(REPOSITORY / name, harness.cwd / name)
 
@@ -362,8 +391,10 @@ def events_of(text: str) -> list[dict[str, object]]:
     return [json.loads(line) for line in text.splitlines()[1:]]
 
 
-async def test_the_sample_is_what_such_a_session_leaves(harness: Harness, tmp_path: Path) -> None:
-    text, asked = await toured(harness)
+async def test_the_sample_is_what_such_a_session_leaves(
+    harness: Harness, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    text, asked = await toured(harness, monkeypatch)
 
     assert tmp_path.name not in text
     assert text == stored(SAMPLE, text)

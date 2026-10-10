@@ -272,7 +272,8 @@ def test_output_that_begins_like_json_and_is_none_is_a_failure() -> None:
     assert read("PreToolUse", done(0, '{"decision": "block"'), LIMIT) == Result(
         "failed", warnings=("its output begins like JSON and is none",), exit_code=0
     )
-    assert read("PreToolUse", done(0, "{" * 200_000), LIMIT).status == "failed"
+    # Objects in objects, deeper than the reader of JSON goes.
+    assert read("PreToolUse", done(0, '{"a":' * 100_000), LIMIT).status == "failed"
 
 
 # How much of it

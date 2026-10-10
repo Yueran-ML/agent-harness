@@ -796,6 +796,66 @@
           "additionalProperties": false
         },
         {
+          "title": "hook/invoked",
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "hook/invoked"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "time": {
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/HookInvokedEvent"
+            },
+            "ignorable": {
+              "const": true
+            }
+          },
+          "required": [
+            "type",
+            "seq",
+            "time",
+            "data",
+            "ignorable"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "hook/result",
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "hook/result"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "time": {
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/HookResultEvent"
+            },
+            "ignorable": {
+              "const": true
+            }
+          },
+          "required": [
+            "type",
+            "seq",
+            "time",
+            "data",
+            "ignorable"
+          ],
+          "additionalProperties": false
+        },
+        {
           "title": "llm/retry",
           "type": "object",
           "properties": {
@@ -1240,6 +1300,71 @@
         "failure"
       ],
       "title": "Finish",
+      "type": "object"
+    },
+    "HookInvokedEvent": {
+      "additionalProperties": false,
+      "description": "A hook is about to run.\n\nAttributes:\n    event: The moment that it runs for.\n    command: Its command.",
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "command"
+      ],
+      "title": "HookInvokedEvent",
+      "type": "object"
+    },
+    "HookResultEvent": {
+      "additionalProperties": false,
+      "description": "A hook has run.\n\nAttributes:\n    event: The moment that it ran for.\n    command: Its command.\n    status: How the run ended.\n    exit_code: The exit code of the command, if it came to its end.\n    duration_ms: How long the run took.\n    reason: Why the hook stops something or wants somebody asked, if it\n        does.",
+      "properties": {
+        "event": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "blocked",
+            "failed",
+            "timed-out"
+          ],
+          "type": "string"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "duration_ms": {
+          "type": "integer"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "command",
+        "status",
+        "exit_code",
+        "duration_ms",
+        "reason"
+      ],
+      "title": "HookResultEvent",
       "type": "object"
     },
     "InboxItem": {

@@ -262,8 +262,8 @@ async def test_nothing_is_written_somewhere_else_once_the_run_is_over(
     watches: list[Any] = []
     make: Any = vars(process)["_Watch"]
 
-    def remembered(kept: Any) -> Any:
-        watches.append(make(kept))
+    def remembered(kept: Any, errors: Any = None) -> Any:
+        watches.append(make(kept, errors))
         return watches[-1]
 
     monkeypatch.setattr(process, "_Watch", remembered)

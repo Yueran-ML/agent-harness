@@ -684,8 +684,8 @@ _PROCESS = (
     mutant(
         "the error stream is dropped",
         PROCESS,
-        "            stderr=subprocess.STDOUT,",
-        "            stderr=subprocess.DEVNULL,",
+        "            stderr=subprocess.STDOUT if errors is None",
+        "            stderr=subprocess.DEVNULL if errors is None",
     ),
     mutant(
         "a program given no input waits for some",
@@ -833,6 +833,48 @@ _PROCESS = (
         PROCESS,
         "        saved_bytes=written.saved,\n",
         "        saved_bytes=0,\n",
+    ),
+    mutant(
+        "what goes to the error stream is put with the output although the two were to be apart",
+        PROCESS,
+        "        if fd == 2 and self._errors is not None:\n            self._errors.add(data)\n        else:\n            self._kept.add(data)\n",
+        "        self._kept.add(data)\n",
+    ),
+    mutant(
+        "a program whose streams are to be apart writes to one pipe all the same",
+        PROCESS,
+        "            stderr=subprocess.STDOUT if errors is None else subprocess.PIPE,\n",
+        "            stderr=subprocess.STDOUT,\n",
+    ),
+    mutant(
+        "the error stream may be ten times as long as the output",
+        PROCESS,
+        '    errors = HeadTail(max_output_bytes) if streams == "apart" else None\n',
+        '    errors = HeadTail(10 * max_output_bytes) if streams == "apart" else None\n',
+    ),
+    mutant(
+        "what was written to the error stream is not counted",
+        PROCESS,
+        "        error_bytes=0 if errors is None else errors.total,\n",
+        "        error_bytes=0,\n",
+    ),
+    mutant(
+        "what is left out of the error stream is not counted",
+        PROCESS,
+        "        error_omitted_bytes=0 if errors is None else errors.omitted,\n",
+        "        error_omitted_bytes=0,\n",
+    ),
+    mutant(
+        "the whole output is kept elsewhere although the streams are apart",
+        PROCESS,
+        '    if streams == "apart" and overflow is not None:\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "a run does not wait for the error stream to be read to its end",
+        PROCESS,
+        "        self._writing = {1} if errors is None else {1, 2}\n",
+        "        self._writing = {1}\n",
     ),
 )
 

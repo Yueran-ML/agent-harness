@@ -102,6 +102,165 @@ async def test_what_goes_to_the_error_stream_comes_in_the_order_it_was_written(
 
     assert done.output.splitlines() == ["one", "two", "three"]
     assert done.exit_code == 0
+    # Where the two streams are one, nothing is told of the error stream by itself.
+    assert (done.error_output, done.error_bytes, done.error_omitted_bytes) == ("", 0, 0)
+
+
+# The two streams apart
+
+SAYS_ON_BOTH = (
+    "import sys\n"
+    "print('one', flush=True)\n"
+    "print('two', file=sys.stderr, flush=True)\n"
+    "print('three', flush=True)\n"
+    "sys.exit(2)\n"
+)
+
+
+async def test_the_two_streams_of_a_program_can_be_kept_apart(tmp_path: Path) -> None:
+    done = await process.run(
+        python(SAYS_ON_BOTH), cwd=tmp_path, timeout_seconds=30, streams="apart"
+    )
+
+    assert done.output.splitlines() == ["one", "three"]
+    assert done.error_output.splitlines() == ["two"]
+    assert (done.exit_code, done.timed_out) == (2, False)
+    # Each stream is counted by itself.
+    assert done.output_bytes == len(done.output.encode())
+    assert done.error_bytes == len(done.error_output.encode())
+    assert (done.omitted_bytes, done.error_omitted_bytes) == (0, 0)
+
+
+async def test_each_of_the_two_streams_has_the_limit_to_itself(tmp_path: Path) -> None:
+    code = "import sys\nsys.stdout.write('a' * 300)\nsys.stderr.write('x' * 3000 + 'y' * 3000)\n"
+
+    done = await process.run(
+        python(code), cwd=tmp_path, timeout_seconds=30, max_output_bytes=2000, streams="apart"
+    )
+
+    # Too much on one stream takes nothing from the other.
+    assert done.output == "a" * 300
+    assert done.omitted_bytes == 0
+    head, note, tail = done.error_output.split("\n")
+    assert (head, tail) == ("x" * 1000, "y" * 1000)
+    assert note == "[4000 bytes of output are left out here]"
+    assert (done.error_bytes, done.error_omitted_bytes) == (6000, 4000)
+
+
+async def test_a_program_that_writes_nothing_to_one_of_the_streams_is_awaited_all_the_same(
+    tmp_path: Path,
+) -> None:
+    quiet = await process.run(
+        python("import sys; sys.stderr.write('only here')"),
+        cwd=tmp_path,
+        timeout_seconds=30,
+        streams="apart",
+    )
+    assert (quiet.output, quiet.error_output) == ("", "only here")
+
+    loud = await process.run(
+        python("print('only here', end='')"), cwd=tmp_path, timeout_seconds=30, streams="apart"
+    )
+    assert (loud.output, loud.error_output) == ("only here", "")
+
+
+async def test_what_was_written_to_either_stream_just_before_the_end_is_not_lost(
+    tmp_path: Path,
+) -> None:
+    code = (
+        "import os, sys\n"
+        "sys.stdout.write('out' * 20000)\n"
+        "sys.stderr.write('err' * 20000)\n"
+        "sys.stdout.flush()\n"
+        "sys.stderr.flush()\n"
+        "os._exit(0)\n"
+    )
+
+    done = await process.run(
+        python(code), cwd=tmp_path, timeout_seconds=30, max_output_bytes=200_000, streams="apart"
+    )
+
+    assert (done.output, done.error_output) == ("out" * 20000, "err" * 20000)
+
+
+async def test_the_error_stream_is_read_to_its_end_although_the_output_was_closed_long_before(
+    tmp_path: Path,
+) -> None:
+    code = (
+        "import os, sys, time\n"
+        "os.close(1)\n"
+        "time.sleep(0.5)\n"
+        "sys.stderr.write('late ' * 30000)\n"
+        "sys.stderr.flush()\n"
+        "os._exit(0)\n"
+    )
+
+    done = await process.run(
+        python(code), cwd=tmp_path, timeout_seconds=30, max_output_bytes=400_000, streams="apart"
+    )
+
+    assert (done.output, done.error_output) == ("", "late " * 30000)
+
+
+async def test_a_run_goes_on_reading_until_both_streams_have_come_to_their_ends() -> None:
+    # What hears a program is asked by itself: a real program ends its two streams at
+    # nearly the same moment, and which of them is first is nothing that a test can arrange.
+    hears: Any = vars(process)["_Watch"]
+    keeps: Any = vars(process)["_Output"]
+
+    apart = hears(keeps(100, None, 0), HeadTail(100))
+    # The pipe that the program reads from says nothing about what it has written.
+    apart.pipe_connection_lost(0, None)
+    apart.pipe_connection_lost(1, None)
+    assert not apart.silent.done()
+    apart.pipe_connection_lost(2, None)
+    assert apart.silent.done()
+
+    late = hears(keeps(100, None, 0), HeadTail(100))
+    late.pipe_connection_lost(2, None)
+    assert not late.silent.done()
+    late.pipe_connection_lost(1, None)
+    assert late.silent.done()
+
+    joined = hears(keeps(100, None, 0))
+    joined.pipe_connection_lost(1, None)
+    assert joined.silent.done()
+
+
+async def test_input_reaches_a_program_whose_streams_are_kept_apart(tmp_path: Path) -> None:
+    code = "import sys; told = sys.stdin.read(); print(told.upper()); sys.stderr.write(told)"
+
+    done = await process.run(
+        python(code), cwd=tmp_path, stdin=b"hello", timeout_seconds=30, streams="apart"
+    )
+
+    assert (done.output.strip(), done.error_output) == ("HELLO", "hello")
+
+
+async def test_a_program_whose_streams_are_kept_apart_is_stopped_when_its_time_is_up(
+    tmp_path: Path,
+) -> None:
+    code = "import sys, time; sys.stderr.write('begun'); sys.stderr.flush(); time.sleep(60)"
+
+    began = time.monotonic()
+    done = await process.run(python(code), cwd=tmp_path, timeout_seconds=1, streams="apart")
+
+    assert (done.exit_code, done.timed_out) == (None, True)
+    assert done.error_output == "begun"
+    assert time.monotonic() - began < 20
+
+
+async def test_the_whole_output_is_kept_elsewhere_only_where_the_streams_are_one(
+    tmp_path: Path,
+) -> None:
+    class Place:
+        def write(self, data: bytes) -> None:
+            raise AssertionError("nothing is written where the run is refused")
+
+    with pytest.raises(ValueError, match="only where the two streams are one"):
+        await process.run(
+            python("pass"), cwd=tmp_path, timeout_seconds=30, streams="apart", overflow=Place
+        )
 
 
 async def test_a_program_runs_in_the_directory_it_is_given(tmp_path: Path) -> None:

@@ -46,7 +46,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 __all__ = ["Completed", "HeadTail", "Writable", "cleaned", "run"]
 
@@ -80,6 +80,13 @@ class Completed:
         omitted_bytes: How many of them are not in ``output``.
         saved_bytes: How many of them went somewhere else as well, from the
             first one on. It is 0 if none did.
+        error_output: What the program wrote to its error stream, if the two
+            streams were kept apart. ``output`` is then what it wrote to its
+            output alone, and the three counts above are of that. Where the
+            streams are one, this is empty.
+        error_bytes: How many bytes it wrote to its error stream, if the
+            streams were kept apart.
+        error_omitted_bytes: How many of them are not in ``error_output``.
     """
 
     exit_code: int | None
@@ -88,6 +95,9 @@ class Completed:
     output_bytes: int
     omitted_bytes: int
     saved_bytes: int
+    error_output: str = ""
+    error_bytes: int = 0
+    error_omitted_bytes: int = 0
 
 
 class Writable(Protocol):
@@ -435,20 +445,28 @@ class _Watch(asyncio.SubprocessProtocol):
         closed: Done when everything of the program has been let go.
     """
 
-    def __init__(self, kept: _Output) -> None:
+    def __init__(self, kept: _Output, errors: HeadTail | None = None) -> None:
         loop = asyncio.get_running_loop()
         self._kept = kept
+        self._errors = errors
+        # The pipes that the program writes to. With one stream there is one.
+        self._writing = {1} if errors is None else {1, 2}
         self.exited: asyncio.Future[None] = loop.create_future()
         self.silent: asyncio.Future[None] = loop.create_future()
         self.closed: asyncio.Future[None] = loop.create_future()
 
     def pipe_data_received(self, fd: int, data: bytes) -> None:
-        self._kept.add(data)
+        if fd == 2 and self._errors is not None:
+            self._errors.add(data)
+        else:
+            self._kept.add(data)
 
     def pipe_connection_lost(self, fd: int, exc: Exception | None) -> None:
-        # The other pipe is the one that the program reads its input from.
-        if fd == 1:
-            self.silent.set_result(None)
+        # The pipe that is not among them is the one that the program reads its input from.
+        if fd in self._writing:
+            self._writing.remove(fd)
+            if not self._writing:
+                self.silent.set_result(None)
 
     def process_exited(self) -> None:
         self.exited.set_result(None)
@@ -480,6 +498,7 @@ async def run(
     max_output_bytes: int = 64_000,
     overflow: Callable[[], Writable] | None = None,
     max_overflow_bytes: int = 64 * 1024 * 1024,
+    streams: Literal["joined", "apart"] = "joined",
 ) -> Completed:
     """Run a program to its end, or until its time is up.
 
@@ -503,16 +522,27 @@ async def run(
             the run is over, however it ended, so whoever passes this closes
             what it opened then.
         max_overflow_bytes: How much is written to that place at most.
+        streams: Whether what the program writes to its error stream is put
+            with its output, in the order in which the two were written, or
+            kept apart. Apart, each of the two is kept up to
+            ``max_output_bytes``. Nobody can tell afterwards which of the two
+            a piece was written to first, so the order between them is lost.
 
     Raises:
         OSError: The program could not be started.
-        ValueError: ``argv`` is empty, or one of the limits is negative.
+        ValueError: ``argv`` is empty, or one of the limits is negative, or
+            the whole output is to go elsewhere while the streams are apart.
     """
     if not argv:
         raise ValueError("there is no program to run")
+    if streams == "apart" and overflow is not None:
+        raise ValueError(
+            "the whole output of a program is kept elsewhere only where the two streams are one"
+        )
     written = _Output(max_output_bytes, overflow, max_overflow_bytes)
+    errors = HeadTail(max_output_bytes) if streams == "apart" else None
     try:
-        return await _run(argv, cwd, env, stdin, timeout_seconds, written)
+        return await _run(argv, cwd, env, stdin, timeout_seconds, written, errors)
     finally:
         # A program that was left behind may write on, and one whose caller left as it was
         # started has yet to come into being. Neither finds a place that its caller closed.
@@ -526,10 +556,11 @@ async def _run(
     stdin: bytes | None,
     timeout_seconds: float,
     written: _Output,
+    errors: HeadTail | None,
 ) -> Completed:
-    """Run a program, and hand what it writes to ``written``."""
+    """Run a program, and hand what it writes to ``written``, or its error stream to ``errors``."""
     kept = written.kept
-    watch = _Watch(written)
+    watch = _Watch(written, errors)
     loop = asyncio.get_running_loop()
     creating = asyncio.ensure_future(
         loop.subprocess_exec(
@@ -537,7 +568,7 @@ async def _run(
             *argv,
             stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.STDOUT if errors is None else subprocess.PIPE,
             cwd=cwd,
             env=cleaned(os.environ) if env is None else dict(env),
             **_SPAWN,
@@ -585,4 +616,7 @@ async def _run(
         output_bytes=kept.total,
         omitted_bytes=kept.omitted,
         saved_bytes=written.saved,
+        error_output="" if errors is None else errors.text(),
+        error_bytes=0 if errors is None else errors.total,
+        error_omitted_bytes=0 if errors is None else errors.omitted,
     )

@@ -16,6 +16,8 @@ jobs:
   check:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    # A test that fails and then never ends would hold a runner for six hours.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

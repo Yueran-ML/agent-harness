@@ -1,3 +1,4 @@
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -24,13 +25,21 @@ from support.loop import Harness
 settings.register_profile("steady", derandomize=True)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
+# How long the end of a test may take. Ending takes a moment at most.
+_END_SECONDS = 20
+
 
 @pytest.fixture
 async def ctx() -> AsyncIterator[Context]:
-    """A root context that is disposed when the test ends."""
+    """A root context that is disposed when the test ends.
+
+    A test that has failed may leave something behind that never lets go, and the limit
+    that every test has stops counting once a test has failed. So the end has a limit of
+    its own: such a test is reported, and does not hold the whole run up.
+    """
     root = Context()
     yield root
-    await root.fiber.dispose()
+    await asyncio.wait_for(root.fiber.dispose(), timeout=_END_SECONDS)
 
 
 @pytest.fixture

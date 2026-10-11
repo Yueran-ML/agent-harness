@@ -24,6 +24,17 @@ export interface AssistantItem extends ItemBase {
   interrupted: boolean;
 }
 
+/** A question that was put about a call before it ran. */
+export interface ToolApproval {
+  /** How it ended: `allowed-once`, `rejected`, `cancelled` or `unavailable`. Null while it waits. */
+  outcome: string | null;
+  /**
+   * The policy of approval that the log named when the question was put, or null if it
+   * named none. With `never` nobody is asked, and the answer is `rejected` all the same.
+   */
+  policy: string | null;
+}
+
 export interface ToolItem extends ItemBase {
   type: 'tool';
   callId: string;
@@ -34,12 +45,38 @@ export interface ToolItem extends ItemBase {
   durationMs: number | null;
   trimmed: boolean;
   interrupted: boolean;
+  /** Null for a call that nobody was asked about. */
+  approval: ToolApproval | null;
 }
+
+/** Why a request to the model failed, as the log has it. */
+export interface RequestFailure {
+  code: string;
+  message: string;
+  /** The HTTP status that came with the failure, or null if none did. */
+  status: number | null;
+  retryAfterMs: number | null;
+  requestId: string | null;
+}
+
+/**
+ * What a notice is about, for an interface that says it in words of its own.
+ *
+ * Of a `retry`, `attempt` is the attempt that failed, counted from 1. The next
+ * one is made `delayMs` after the notice.
+ */
+export type NoticeCause =
+  | { kind: 'attempt'; failure: RequestFailure }
+  | { kind: 'retry'; attempt: number; code: string; delayMs: number }
+  | { kind: 'turn-end'; reason: string; detail: string | null }
+  | { kind: 'compaction-failed'; detail: string }
+  | { kind: 'compaction-interrupted' };
 
 export interface NoticeItem extends ItemBase {
   type: 'notice';
   text: string;
   tone: 'info' | 'warning' | 'error';
+  cause: NoticeCause;
 }
 
 export interface CompactionItem extends ItemBase {
@@ -136,6 +173,8 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
   const approvedAt = new Map<ToolItem, number>();
   // The record of the turn that is under way, if one is.
   let openTurn: TurnRecord | null = null;
+  // The policy of approval that the log named last.
+  let approvalPolicy: string | null = null;
   const pendingCall = (callId: string) => {
     for (let i = calls.length - 1; i >= 0; i--) {
       if (calls[i].callId === callId && calls[i].result === null && !calls[i].interrupted) return calls[i];
@@ -148,8 +187,8 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
     // An item belongs to the turn that is under way when its event comes. The end of a turn
     // is such an event too, so the line that says how a turn ended belongs to that turn.
     const base = { id: `event-${event.seq}`, seq: event.seq, time: event.time, turn: projection.turn };
-    const notice = (text: string, tone: NoticeItem['tone'] = 'info') => {
-      projection.items.push({ ...base, type: 'notice', text, tone });
+    const notice = (text: string, tone: NoticeItem['tone'], cause: NoticeCause) => {
+      projection.items.push({ ...base, type: 'notice', text, tone, cause });
     };
 
     switch (event.type) {
@@ -178,21 +217,46 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
       case 'assistant/attempt': {
         const failure = record(data.failure);
         const detail = string(failure.message) || string(failure.code);
-        notice(detail ? `Model request failed: ${detail}` : 'Model request failed', 'warning');
+        notice(detail ? `Model request failed: ${detail}` : 'Model request failed', 'warning', {
+          kind: 'attempt',
+          failure: {
+            code: string(failure.code),
+            message: string(failure.message),
+            status: typeof failure.status === 'number' ? failure.status : null,
+            retryAfterMs: typeof failure.retry_after_ms === 'number' ? failure.retry_after_ms : null,
+            requestId: typeof failure.request_id === 'string' ? failure.request_id : null,
+          },
+        });
         break;
       }
       case 'tool/call': {
         const item: ToolItem = {
           ...base, type: 'tool', callId: string(data.call_id), name: string(data.name),
           arguments: string(data.arguments), result: null, error: null, durationMs: null, trimmed: false, interrupted: false,
+          approval: null,
         };
         calls.push(item);
         projection.items.push(item);
         break;
       }
+      case 'approval/policy':
+        approvalPolicy = string(data.policy) || null;
+        break;
+      case 'approval/asked': {
+        const call = pendingCall(string(data.call_id));
+        if (call) call.approval = { outcome: null, policy: approvalPolicy };
+        break;
+      }
       case 'approval/decided': {
         const call = pendingCall(string(data.call_id));
-        if (call) approvedAt.set(call, event.time);
+        if (call) {
+          approvedAt.set(call, event.time);
+          // The policy is the one that held when the question was put, if the log has the question.
+          call.approval = {
+            outcome: string(data.outcome) || null,
+            policy: call.approval ? call.approval.policy : approvalPolicy,
+          };
+        }
         break;
       }
       case 'tool/result': {
@@ -211,7 +275,7 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
         if (!call) {
           call = {
             ...base, type: 'tool', callId, name: 'Tool result', arguments: '', result: null,
-            error: null, durationMs: null, trimmed: false, interrupted: false,
+            error: null, durationMs: null, trimmed: false, interrupted: false, approval: null,
           };
           projection.items.push(call);
         } else {
@@ -285,14 +349,18 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
         };
         if (reason !== 'completed' && endings[reason]) {
           const detail = string(data.detail);
-          notice(`${endings[reason]}${detail ? `: ${detail}` : ''}`, reason === 'error' ? 'error' : 'info');
+          notice(`${endings[reason]}${detail ? `: ${detail}` : ''}`, reason === 'error' ? 'error' : 'info', {
+            kind: 'turn-end', reason, detail: typeof data.detail === 'string' ? data.detail : null,
+          });
         }
         break;
       }
       case 'llm/retry': {
         const code = string(data.code);
         const seconds = number(data.delay_ms) / 1000;
-        notice(`Retrying request${code ? ` (${code})` : ''} in ${seconds}s`, 'warning');
+        notice(`Retrying request${code ? ` (${code})` : ''} in ${seconds}s`, 'warning', {
+          kind: 'retry', attempt: number(data.attempt), code, delayMs: number(data.delay_ms),
+        });
         break;
       }
       case 'compaction/start':
@@ -304,14 +372,16 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
         if (outcome.error) {
           const detail = typeof outcome.error === 'string'
             ? outcome.error : string(record(outcome.error).message);
-          notice(`Conversation compaction did not finish${detail ? `: ${detail}` : ''}`, 'warning');
+          notice(`Conversation compaction did not finish${detail ? `: ${detail}` : ''}`, 'warning', {
+            kind: 'compaction-failed', detail,
+          });
         }
         break;
       }
       case 'session/end-seed':
         if (projection.compacting) {
           projection.compacting = false;
-          notice('Previous conversation compaction was interrupted', 'warning');
+          notice('Previous conversation compaction was interrupted', 'warning', { kind: 'compaction-interrupted' });
         }
         break;
       // System/context updates and unknown event types do not produce conversation cards.

@@ -129,6 +129,17 @@ class Agent(ABC):
     async def when_idle(self) -> None:
         """Wait until the agent is at rest: no turn is running and none is about to begin."""
 
+    @property
+    @abstractmethod
+    def at_rest(self) -> bool:
+        """Whether the agent is at rest at this moment, which is what :meth:`when_idle` waits for.
+
+        Whoever shows what an agent is doing asks this, and does not have to
+        work it out from what was sent to the agent and what came back. An
+        agent that has stopped for good is at rest too: nothing runs and
+        nothing will. That it has stopped is told by :meth:`when_idle` alone.
+        """
+
     @abstractmethod
     def run_maintenance(self, job: Callable[[], Awaitable[ResultT]]) -> Awaitable[ResultT]:
         """Do a piece of work on the conversation between two turns.

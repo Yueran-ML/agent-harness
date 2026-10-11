@@ -246,6 +246,11 @@ class LoopAgent(Agent):
         if self._failure is not None:
             raise self._failure
 
+    @property
+    def at_rest(self) -> bool:
+        """Whether the agent is at rest at this moment."""
+        return self._idle.is_set()
+
     def run_maintenance(self, job: Callable[[], Awaitable[ResultT]]) -> Awaitable[ResultT]:
         """Do a piece of work on the conversation between two turns.
 

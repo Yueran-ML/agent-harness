@@ -59,6 +59,10 @@ class Still(Agent):
     async def when_idle(self) -> None:
         return None
 
+    @property
+    def at_rest(self) -> bool:
+        return True
+
     def run_maintenance(self, job: Callable[[], Awaitable[ResultT]]) -> Awaitable[ResultT]:
         return job()
 

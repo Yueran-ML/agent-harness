@@ -461,6 +461,18 @@ _LOOP = (
         "            framed = _framed(name, whole(text))\n",
         "            framed = _framed(name, text)\n",
     ),
+    mutant(
+        "an agent says that it is at rest whatever it does",
+        LOOP,
+        "        return self._idle.is_set()\n",
+        "        return True\n",
+    ),
+    mutant(
+        "an agent is at rest for as long as no turn of it has begun",
+        LOOP,
+        "        return self._idle.is_set()\n",
+        "        return self._turn_task is None\n",
+    ),
 )
 
 _READ = (

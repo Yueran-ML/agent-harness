@@ -284,6 +284,13 @@ def test_the_composition_can_be_printed_instead_of_run(
         "spill-policy",
         "compaction",
         "todo",
+        "turn-budget",
+        "skills",
+        "hooks",
+        "subagents",
+        "subagent-spawn",
+        "tool-subagent",
+        "mcp",
         "frontend",
     ]
     assert entries["spill"] == {
@@ -303,6 +310,14 @@ def test_the_composition_can_be_printed_instead_of_run(
         "config": {"preset": "workspace-write", "user_file": "${COLUMBINA_HOME}/permissions.yml"},
     }
     assert entries["context-instructions"]["config"] == {"user_file": "${COLUMBINA_HOME}/AGENTS.md"}
+    # What the user adds to the program lies in the home of the program too.
+    assert entries["skills"]["config"] == {"home": "${COLUMBINA_HOME}/skills"}
+    assert entries["hooks"]["config"] == {
+        "user_file": "${COLUMBINA_HOME}/hooks.json",
+        "trust_file": "${COLUMBINA_HOME}/trusted-hooks.json",
+    }
+    assert entries["subagents"]["config"] == {"home": "${COLUMBINA_HOME}/agents"}
+    assert entries["mcp"]["config"] == {"log_dir": "${COLUMBINA_HOME}/logs"}
     # The model is another one. How much it takes stays as the profile has it.
     assert entries["frontend"]["config"] == {
         "model": {
@@ -781,7 +796,7 @@ def test_the_program_of_a_conversation_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-8:] == [
+    assert list(entries)[-10:] == [
         "commands",
         "command-tools",
         "command-permissions",
@@ -789,6 +804,8 @@ def test_the_program_of_a_conversation_can_be_printed_instead_of_run(
         "command-compact",
         "command-todos",
         "command-fork",
+        "command-skills",
+        "command-mcp",
         "frontend",
     ]
     assert entries["frontend"] == {

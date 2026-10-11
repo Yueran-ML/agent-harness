@@ -19,6 +19,13 @@ A task that is handed to a subagent is a call like any other, and what the
 subagent does is not shown. Two lines say that it has begun, with the
 session that holds its work, and how it ended.
 
+A hook of the user is a command that may take its time. While one runs, a
+word stands where a reply would grow and says which. What a hook stops is
+told where that takes effect, and once: a call that it refused fails with its
+reason, and a turn whose input it stopped ends with it. Only a hook that
+keeps a turn going when the model was through would leave no trace, so that
+is said in lines of its own, with the reason that the model is given.
+
 The lines are :class:`rich.text.Text`, so that they carry their colours with
 them. :func:`on_screen` turns them into what a terminal is sent. Nothing that
 a model or a tool wrote is ever read as markup, and nothing of it reaches the
@@ -42,6 +49,7 @@ from columbina.apps.common import how_it_ended
 from columbina.apps.terminal_text import harmless
 from columbina.commands.compact import told as what_came_of_it
 from columbina.compaction import CompactionEndEvent, CompactionStartEvent, Why
+from columbina.hooks import HookInvokedEvent, HookResultEvent
 from columbina.llm import BlockEnd, BlockStart, Chunk, TextDelta
 from columbina.retry import RetryEvent
 from columbina.session import (
@@ -74,12 +82,16 @@ _SUMMARY_CHARACTERS = 100
 _CHANGED_LINES = 6
 _OUTPUT_LINES = 5
 _ERROR_LINES = 3
+_REASON_LINES = 3
 _RECAP_LINES = 12
 _NAMED_FIRST = ("command", "path", "pattern", "description")
 """The arguments that say what a call acts on or is about, the most telling one first."""
 
 _SHORTER = "making the conversation shorter..."
 """What stands where a reply would grow, for as long as a conversation is being made shorter."""
+
+_KEPT_GOING = "hook/Stop"
+"""Where the words come from that a hook gives a model for going on with a turn."""
 
 _WHY_SHORTER: dict[Why, str | None] = {
     "pressure": "(the conversation has come near what the model takes. Making it shorter.)",
@@ -238,7 +250,16 @@ def _end(data: TurnEndEvent) -> list[Text]:
 class Transcript:
     """The lines that a conversation is shown as, made as the conversation goes on."""
 
-    __slots__ = ("_began", "_commands", "_handed", "_lines", "_shown", "_symbols", "_word")
+    __slots__ = (
+        "_began",
+        "_commands",
+        "_handed",
+        "_hooks",
+        "_lines",
+        "_shown",
+        "_symbols",
+        "_word",
+    )
 
     def __init__(self, symbols: Symbols) -> None:
         self._symbols = symbols
@@ -252,12 +273,17 @@ class Transcript:
         self._commands: set[str] = set()
         # What each task is about that a subagent works on, by its call.
         self._handed: dict[str, str] = {}
+        # The hooks that run, each by its moment and its command, the one that began last last.
+        self._hooks: list[tuple[str, str]] = []
 
     @property
     def partial(self) -> Text:
         """The line of the reply that is not complete yet, or a word about what the model does."""
         if self._lines.partial:
             return fit(self._lines.partial)
+        if self._hooks:
+            moment, command = self._hooks[-1]
+            return _note(f"running a {moment} hook ({_one_line(command)})...")
         return Text() if self._word is None else _note(self._word)
 
     def chunk(self, chunk: Chunk) -> list[Text]:
@@ -301,10 +327,14 @@ class Transcript:
         if isinstance(data, ToolResultEvent):
             return self._result(event.time, data)
         if isinstance(data, UserMessageEvent):
+            if data.source == _KEPT_GOING:
+                return _kept_going(data)
             if data.source != "steer":
                 return []
             return [fit(f"{self._symbols.steer} {line}") for line in _said(data).splitlines()]
         if isinstance(data, TurnEndEvent):
+            # No hook outlasts its turn. One whose end was never written is not waited for.
+            self._hooks.clear()
             # An empty line sets the turn apart from what comes after it.
             return [*_end(data), Text()]
         if isinstance(data, RetryEvent):
@@ -327,6 +357,13 @@ class Transcript:
             return self._handed_over(data)
         if isinstance(data, SubagentEndedEvent):
             return self._handed_back(data)
+        if isinstance(data, HookInvokedEvent):
+            self._hooks.append((data.event, data.command))
+            return []
+        if isinstance(data, HookResultEvent):
+            if (data.event, data.command) in self._hooks:
+                self._hooks.remove((data.event, data.command))
+            return []
         if isinstance(data, ApprovalDecidedEvent) and data.call_id in self._began:
             # The time that somebody took to answer is not the time that the call took.
             self._began[data.call_id] = event.time
@@ -413,6 +450,15 @@ def _things(data: TodoWriteEvent) -> list[Text]:
 
 def _said(data: UserMessageEvent) -> str:
     return "".join(block.text for block in data.message.content)
+
+
+def _kept_going(data: UserMessageEvent) -> list[Text]:
+    """Say that a hook keeps a turn going, with the beginning of the reason that it gave."""
+    lines = _said(data).strip().splitlines()
+    if not lines:
+        return [_note("(a Stop hook keeps the turn going.)")]
+    head = _note("(a Stop hook keeps the turn going. It says:)")
+    return [head, *_beginning(lines, _REASON_LINES, "    ")]
 
 
 def recap(events: Sequence[SessionEvent[EventData]], symbols: Symbols) -> list[Text]:

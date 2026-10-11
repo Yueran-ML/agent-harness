@@ -157,10 +157,13 @@ def test_the_program_that_is_shipped_has_its_commands(
         "/exit         Leave.\n"
         "/fork         Go on in a copy of this session, and leave the session as it is.\n"
         "/help         List the commands.\n"
+        "/mcp          List the MCP servers: how each is connected, and how many tools it has.\n"
         "/model        Show the model, or name another.\n"
         "/new          End this session and begin another one.\n"
         "/permissions  Show what the session may do, or change it to a preset.\n"
         "/sessions     List the sessions of this directory.\n"
+        "/skill        Hand a skill to the agent: /skill NAME [TASK].\n"
+        "/skills       List the skills, and what cannot be used as one.\n"
         "/todos        Show the list of things to do that the agent keeps.\n"
         "/tools        List the tools of the agent.\n"
     ) in printed()

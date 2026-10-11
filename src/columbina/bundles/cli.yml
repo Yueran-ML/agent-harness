@@ -18,6 +18,10 @@ patch:
         plugin: columbina.commands.todos
       - id: command-fork
         plugin: columbina.commands.fork
+      - id: command-skills
+        plugin: columbina.commands.skills
+      - id: command-mcp
+        plugin: columbina.commands.mcp
       - id: frontend
         plugin: columbina.apps.cli
         config:

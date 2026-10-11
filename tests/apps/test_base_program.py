@@ -4,6 +4,7 @@ Each test here runs ``columbina run`` on the bundle as it is shipped. Only the
 model is another one: what it says is written down in the profile.
 """
 
+import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ from columbina.session import (
     SystemMessageEvent,
     UserMessageEvent,
 )
+from support.hooks import needs_shell, python_hook
 from support.launch import lines, profile, stored
 
 SIX_TIMES_SEVEN = "python -c 'print(6 * 7)'"
@@ -127,6 +129,8 @@ def test_the_model_is_offered_the_tools_of_the_base_program(program: Program) ->
         "glob",
         "grep",
         "todo_write",
+        "skill",
+        "subagent",
         shell.NAME,
     ]
 
@@ -354,7 +358,16 @@ def test_without_the_permissions_and_the_shell_tool_the_other_tools_are_there(
 
     assert ran.errors == ""
     assert [error for _, error in ran.results] == [None, "UNKNOWN_TOOL"]
-    assert program.offered() == ["read", "write", "edit", "glob", "grep", "todo_write"]
+    assert program.offered() == [
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "todo_write",
+        "skill",
+        "subagent",
+    ]
 
 
 def test_without_a_sandbox_nothing_is_written(program: Program) -> None:
@@ -440,6 +453,104 @@ def test_a_plugin_adds_to_the_system_prompt(
     ]
     assert ran.errors == ""
     assert systems == [f"{DEFAULT_PROMPT}\n\nKeep every answer short."]
+
+
+# What the user adds to the program
+
+
+def test_the_skills_of_the_user_are_looked_for_in_the_home_of_the_program(
+    program: Program,
+) -> None:
+    skill = program.home / "skills" / "release-notes"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: release-notes\ndescription: Write the notes of a release.\n---\n"
+        "Take the changes from the log.\n",
+        encoding="utf-8",
+    )
+
+    load = {"calls": [{"name": "skill", "arguments": {"name": "release-notes"}}]}
+
+    ran = program.run(load)
+
+    (told,) = program.told("context/skills")
+    assert ran.errors == ""
+    assert told.splitlines()[1:] == ["- release-notes: Write the notes of a release."]
+    assert ran.results == [
+        (
+            "Skill: release-notes\n"
+            f"Directory of the skill: {skill}\n"
+            "A path in what follows that does not begin at a root is meant from that directory.\n"
+            "\n"
+            "Take the changes from the log.",
+            None,
+        )
+    ]
+
+
+def test_the_kinds_of_subagent_of_the_user_are_looked_for_in_the_home_of_the_program(
+    program: Program,
+) -> None:
+    kinds = program.home / "agents"
+    kinds.mkdir(parents=True)
+    (kinds / "reviewer.md").write_text(
+        "---\nname: reviewer\ndescription: Reviews a change.\n---\nYou review changes.\n",
+        encoding="utf-8",
+    )
+
+    ran = program.run()
+
+    (told,) = program.told("context/agents")
+    assert ran.errors == ""
+    assert told.splitlines()[1:] == ["- reviewer: Reviews a change."]
+
+
+@needs_shell
+def test_the_hooks_of_the_user_are_read_from_the_home_of_the_program(program: Program) -> None:
+    program.home.mkdir()
+    said = python_hook(program.tmp_path, "print('The branch is main.')")
+    hooks = {"SessionStart": [{"hooks": [{"type": "command", "command": said}]}]}
+    (program.home / "hooks.json").write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+
+    ran = program.run()
+
+    assert ran.errors == ""
+    assert program.told("context/hooks") == ["The branch is main."]
+
+
+@needs_shell
+def test_the_hooks_of_a_project_are_run_once_the_user_has_trusted_them(
+    program: Program,
+) -> None:
+    said = python_hook(program.tmp_path, "print('Run the checks with make.')")
+    hooks = {"SessionStart": [{"hooks": [{"type": "command", "command": said}]}]}
+    theirs = program.work / ".columbina" / "hooks.json"
+    theirs.parent.mkdir()
+    theirs.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+
+    # The way a user does it: with the program as it is shipped, in the directory of the project.
+    assert main(["hooks", "trust", "--cwd", str(program.work)]) == 0
+    program.capsys.readouterr()
+    ran = program.run()
+
+    assert ran.errors == ""
+    assert program.told("context/hooks") == ["Run the checks with make."]
+
+
+def test_the_hooks_of_a_project_that_nobody_trusted_are_not_run_and_that_is_said(
+    program: Program,
+) -> None:
+    hooks = {"SessionStart": [{"hooks": [{"type": "command", "command": "exit 2"}]}]}
+    theirs = program.work / ".columbina" / "hooks.json"
+    theirs.parent.mkdir()
+    theirs.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+
+    ran = program.run()
+
+    assert ran.code == 0
+    assert program.told("context/hooks") == []
+    assert "the hooks of this project are not run" in ran.errors
+    assert "'columbina hooks trust' trusts it" in ran.errors
 
 
 # What goes wrong on the way

@@ -54,3 +54,35 @@ patch:
       # The list of things to do that a model keeps for itself.
       - id: todo
         plugin: columbina.todo
+      # What one turn may take at most. Without a config nothing is limited but
+      # the steps of an agent whose spec says how many it has.
+      - id: turn-budget
+        plugin: columbina.guard.budget
+      # What a user adds to the program without changing it: skills that a
+      # model loads when a task calls for one, commands that run at fixed
+      # moments of a turn, tasks that are handed to an agent of their own, and
+      # the tools of servers that speak the Model Context Protocol.
+      - id: skills
+        plugin: columbina.skills
+        config:
+          home: ${COLUMBINA_HOME}/skills
+      - id: hooks
+        plugin: columbina.hooks
+        config:
+          user_file: ${COLUMBINA_HOME}/hooks.json
+          trust_file: ${COLUMBINA_HOME}/trusted-hooks.json
+      - id: subagents
+        plugin: columbina.subagents
+        config:
+          home: ${COLUMBINA_HOME}/agents
+      - id: subagent-spawn
+        plugin: columbina.subagents.spawn
+      - id: tool-subagent
+        plugin: columbina.builtin_tools.subagent
+      # A server is an entry of its own that loads columbina.mcp.server, and the
+      # user adds it. What a server writes to its standard error goes to a file
+      # in this directory.
+      - id: mcp
+        plugin: columbina.mcp
+        config:
+          log_dir: ${COLUMBINA_HOME}/logs

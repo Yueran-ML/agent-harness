@@ -15,6 +15,7 @@ from columbina.approval import ApprovalDecidedEvent
 from columbina.apps.cli.transcript import Symbols, Transcript, on_screen, recap
 from columbina.compaction import EVENTS as COMPACTION_EVENTS
 from columbina.compaction import CompactionEndEvent, CompactionStartEvent, Outcome
+from columbina.hooks import HookInvokedEvent, HookResultEvent
 from columbina.kernel import Context
 from columbina.llm import (
     AssistantMessage,
@@ -1067,3 +1068,193 @@ def test_the_words_about_a_task_are_shown_on_one_line_and_do_nothing_to_the_term
     assert chr(0x1B) not in first
     assert len(first) < 160
     assert second == "    (a subagent works in the session s-of-c-2)"
+
+
+# Hooks
+
+
+@pytest.fixture
+def hooks(ctx: Context, log: Session) -> None:
+    ctx.use(SESSIONS).declare(ctx, HookInvokedEvent, HookResultEvent)
+
+
+def invoked(command: str = "pytest -q", event: str = "Stop") -> HookInvokedEvent:
+    return HookInvokedEvent(event=event, command=command)
+
+
+def ran(
+    command: str = "pytest -q", event: str = "Stop", status: Any = "completed", reason: str = ""
+) -> HookResultEvent:
+    return HookResultEvent(
+        event=event, command=command, status=status, exit_code=0, duration_ms=40, reason=reason
+    )
+
+
+@pytest.mark.usefixtures("hooks")
+def test_while_a_hook_runs_a_word_says_what_is_waited_for(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    begun = show(transcript, log, invoked())
+    meanwhile = transcript.partial
+    over = show(transcript, log, ran())
+
+    assert (begun, over) == ([], [])
+    assert (meanwhile.plain, str(meanwhile.style)) == ("running a Stop hook (pytest -q)...", "dim")
+    assert transcript.partial.plain == ""
+
+
+@pytest.mark.usefixtures("hooks")
+def test_of_hooks_that_run_at_once_the_word_tells_of_one_that_still_runs(log: Session) -> None:
+    def word_after(*happened: EventData) -> str:
+        transcript = Transcript(PLAIN)
+        show(transcript, log, *happened)
+        return transcript.partial.plain
+
+    check, lint = ("check.py", "PreToolUse"), ("lint.py", "PreToolUse")
+    checking = "running a PreToolUse hook (check.py)..."
+    linting = "running a PreToolUse hook (lint.py)..."
+
+    # The one that began last, for as long as it runs.
+    assert word_after(invoked(*check), invoked(*lint)) == linting
+    assert word_after(invoked(*check), invoked(*lint), ran(*lint)) == checking
+    assert word_after(invoked(*check), invoked(*lint), ran(*check)) == linting
+    assert word_after(invoked(*check), invoked(*lint), ran(*check), ran(*lint)) == ""
+    # One hook that looks at two calls at once has ended when both of its runs have.
+    assert word_after(invoked(*check), invoked(*check), ran(*check)) == checking
+    assert word_after(invoked(*check), invoked(*check), ran(*check), ran(*check)) == ""
+    # The same command at another moment is another hook.
+    stop = ("check.py", "Stop")
+    assert word_after(invoked(*check), invoked(*stop), ran(*stop)) == checking
+    assert word_after(invoked(*check), invoked(*stop), ran(*check)) == (
+        "running a Stop hook (check.py)..."
+    )
+
+
+@pytest.mark.usefixtures("hooks")
+def test_when_a_hook_is_through_the_word_is_what_it_was_before(ctx: Context, log: Session) -> None:
+    ctx.use(SESSIONS).declare(ctx, *COMPACTION_EVENTS)
+    transcript = Transcript(PLAIN)
+
+    show(transcript, log, CompactionStartEvent(why="manual", tokens=900), invoked())
+    meanwhile = transcript.partial.plain
+    show(transcript, log, ran())
+
+    assert meanwhile == "running a Stop hook (pytest -q)..."
+    assert transcript.partial.plain == "making the conversation shorter..."
+
+
+@pytest.mark.usefixtures("hooks")
+def test_a_reply_that_is_being_written_is_not_hidden_by_a_hook_that_runs(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    transcript.chunk(TextDelta(index=0, text="Half a li"))
+    show(transcript, log, invoked())
+
+    assert transcript.partial.plain == "Half a li"
+
+
+@pytest.mark.usefixtures("hooks")
+def test_the_command_of_a_hook_is_told_on_one_line_and_does_nothing_to_the_terminal(
+    log: Session,
+) -> None:
+    transcript = Transcript(PLAIN)
+    command = "python\n  check.py " + chr(0x1B) + "[2J " + "x" * 200
+
+    show(transcript, log, invoked(command))
+    word = transcript.partial.plain
+
+    assert word.startswith("running a Stop hook (python check.py " + STAND_IN + "[2J xxx")
+    assert word.endswith("xxx...)...")
+    assert chr(0x1B) not in word
+    assert len(word) == len("running a Stop hook (") + 100 + len(")...")
+    # The run that ends is found by the command as it is, and not by what was shown of it.
+    show(transcript, log, ran(command))
+    assert transcript.partial.plain == ""
+
+
+@pytest.mark.usefixtures("hooks")
+def test_a_hook_whose_end_was_never_written_is_not_waited_for_once_the_turn_is_over(
+    log: Session,
+) -> None:
+    transcript = Transcript(PLAIN)
+
+    show(transcript, log, invoked(), TurnEndEvent(turn=1, reason="completed"))
+
+    assert transcript.partial.plain == ""
+    # And its end, should it come after all, is the end of nothing.
+    assert show(transcript, log, ran()) == []
+    assert transcript.partial.plain == ""
+
+
+@pytest.mark.usefixtures("hooks")
+def test_what_a_hook_stopped_is_told_where_it_takes_effect_and_not_twice(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+    refused = ran("check.py", "PreToolUse", "blocked", "Leave the build alone.")
+
+    shown = show(
+        transcript,
+        log,
+        call("shell", command="rm -rf build"),
+        invoked("check.py", "PreToolUse"),
+        refused,
+        result("a hook stopped the call: Leave the build alone.", error="HOOK_BLOCKED"),
+    )
+
+    assert shown == [
+        "* shell rm -rf build",
+        "  failed HOOK_BLOCKED, 750 ms",
+        "    a hook stopped the call: Leave the build alone.",
+    ]
+
+
+@pytest.mark.usefixtures("hooks")
+def test_a_hook_that_keeps_a_turn_going_is_told_with_what_it_says(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+    reason = "The tests fail.\nRun them, and mend what fails."
+
+    head, *lines = transcript.event(log.append(said(reason, source="hook/Stop")))
+
+    assert (head.plain, str(head.style)) == ("(a Stop hook keeps the turn going. It says:)", "dim")
+    assert plain(lines) == ["    The tests fail.", "    Run them, and mend what fails."]
+    assert [str(line.style) for line in lines] == ["", ""]
+
+
+@pytest.mark.usefixtures("hooks")
+def test_a_long_reason_of_a_hook_is_shown_by_its_beginning(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+    reason = "\n".join(f"FAILED test_{number}" for number in range(1, 6))
+
+    assert show(transcript, log, said(reason, source="hook/Stop")) == [
+        "(a Stop hook keeps the turn going. It says:)",
+        "    FAILED test_1",
+        "    FAILED test_2",
+        "    FAILED test_3",
+        "    ... 2 more lines",
+    ]
+
+
+@pytest.mark.usefixtures("hooks")
+def test_a_hook_that_keeps_a_turn_going_and_says_nothing_is_told_all_the_same(
+    log: Session,
+) -> None:
+    transcript = Transcript(PLAIN)
+
+    assert show(transcript, log, said(" \n", source="hook/Stop")) == [
+        "(a Stop hook keeps the turn going.)"
+    ]
+
+
+@pytest.mark.usefixtures("hooks")
+def test_what_a_hook_adds_for_the_model_to_read_is_not_shown(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    shown = show(
+        transcript,
+        log,
+        said("The branch is main.", source="hook/SessionStart"),
+        said("Remember the changelog.", source="hook/UserPromptSubmit"),
+        # An input that a hook stopped: the end of the turn says so.
+        said("[A hook of the user stopped what was said here: no]", source="hook/UserPromptSubmit"),
+    )
+
+    assert shown == []

@@ -39,14 +39,21 @@ VERIFY = {"Stop": [{"hooks": [{"type": "command", "command": "pytest -q"}]}]}
 
 
 def chosen(tmp_path: Path, config: dict[str, Any] | None = None, **entry: Any) -> str:
-    """Write a profile whose sessions run hooks, and return its path."""
-    hooks = {
-        "id": "hooks",
-        "plugin": "columbina.hooks",
-        "config": FROM_HOME if config is None else config,
-        **entry,
-    }
-    return profile(tmp_path, {"text": "Done."}, extra=[{"insert": [hooks]}])
+    """Write a profile whose sessions run hooks, and return its path.
+
+    The program that is shipped runs hooks, and reads them from the home of the program.
+    Without a config the profile is that program as it is. With one, the config of its entry
+    is said anew. An entry of another name is put in the place of the one that is shipped.
+    """
+    named = entry.pop("id", "hooks")
+    if named == "hooks":
+        change = {**({} if config is None else {"config": config}), **entry}
+        extra = [{"id": "hooks", **change}] if change else []
+        return profile(tmp_path, {"text": "Done."}, extra=extra)
+    said = {"config": FROM_HOME if config is None else config, **entry}
+    off = {"id": "hooks", "disabled": True}
+    another = {"id": named, "plugin": "columbina.hooks", **said}
+    return profile(tmp_path, {"text": "Done."}, extra=[off, {"insert": [another]}])
 
 
 def asked(*arguments: str, capsys: pytest.CaptureFixture[str]) -> tuple[int, str, str]:
@@ -213,10 +220,8 @@ def test_what_a_profile_leaves_out_is_said(
 ) -> None:
     written(theirs(work), VERIFY)
 
-    # Neither a file of the user nor a record of trust.
-    bare = profile(
-        tmp_path, {"text": "Done."}, extra=[{"insert": [{"id": "h", "plugin": "columbina.hooks"}]}]
-    )
+    # Neither a file of the user nor a record of trust: the entry of the hooks has no config.
+    bare = profile(tmp_path, {"text": "Done."}, extra=[{"id": "hooks", "config": None}])
     assert asked("list", "--profile", bare, "--cwd", str(work), capsys=capsys) == (
         0,
         "The profile names no hook file of the user.\n"
@@ -735,7 +740,7 @@ def test_a_working_directory_that_is_none_is_refused(
 def test_a_profile_that_runs_no_hooks_has_none_to_look_at(
     home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    plain = profile(tmp_path, {"text": "Done."})
+    plain = profile(tmp_path, {"text": "Done."}, extends="minimal")
     assert asked("list", "--profile", plain, "--cwd", str(work), capsys=capsys) == (
         2,
         "",
@@ -766,6 +771,7 @@ def test_the_entry_of_the_hooks_is_known_by_what_it_loads_and_not_by_its_name(
         tmp_path,
         {"text": "Done."},
         extra=[{"insert": [{"id": "hooks", "plugin": "columbina.todo", "config": FROM_HOME}]}],
+        extends="minimal",
     )
     assert asked("list", "--profile", other, "--cwd", str(work), capsys=capsys) == (
         2,

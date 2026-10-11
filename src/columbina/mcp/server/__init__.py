@@ -13,4 +13,9 @@ module that gives it a shape which a model and a service can take.
 
 None of the three talks to a server. The first two know nothing of the SDK
 of the protocol, and the third takes a result as the SDK hands it over.
+
+:mod:`~columbina.mcp.server.connection`
+    The connection to the server: made, kept, and made again where it is
+    lost. It hands out the tools as the server lists them, and calls them by
+    the names that the server gave them.
 """

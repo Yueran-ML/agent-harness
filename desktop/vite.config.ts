@@ -6,6 +6,10 @@ export default defineConfig({
   base: './',
   server: { watch: { ignored: ['**/release/**', '**/dist/**'] } },
   build: {
+    // Every asset is written as a file. Vite would put a small one into the
+    // stylesheet as a `data:` address, and the page refuses a font that comes
+    // that way: its policy is `font-src 'self'`.
+    assetsInlineLimit: 0,
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[name].js',

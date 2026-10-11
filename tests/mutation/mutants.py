@@ -248,8 +248,8 @@ _LOOP = (
     mutant(
         "cancel clears nothing from the inbox",
         LOOP,
-        "        if not keep_inbox and not self.session.closed:\n            clear_inbox(self.session)\n",
-        "        if False:\n            clear_inbox(self.session)\n",
+        "            if not keep_inbox and not self.session.closed:\n                clear_inbox(self.session)\n",
+        "            if False:\n                clear_inbox(self.session)\n",
     ),
     mutant(
         "listeners of the loop are awaited without a guard",
@@ -336,8 +336,8 @@ _LOOP = (
     mutant(
         "work that the agent is told to stop before it began is done all the same",
         LOOP,
-        "        self._drop_work()\n        task = self._turn_task\n",
-        "        task = self._turn_task\n",
+        "            self._drop_work()\n            task = self._turn_task\n",
+        "            task = self._turn_task\n",
     ),
     mutant(
         "work that waits when the driver of the agent ends is left waiting",
@@ -512,6 +512,17 @@ _LOOP = (
         INBOX,
         '    added = (event.seq,) * len(data.added)\n    if data.queue == "next-turn":\n        return Arrivals(',
         '    added = (event.seq,) * len(data.added)\n    if data.queue != "next-turn":\n        return Arrivals(',
+    ),
+    mutant(
+        "a turn goes on where what was dropped could not be written down",
+        LOOP,
+        "        try:\n"
+        "            if not keep_inbox and not self.session.closed:\n"
+        "                clear_inbox(self.session)\n"
+        "        finally:\n",
+        "        if not keep_inbox and not self.session.closed:\n"
+        "            clear_inbox(self.session)\n"
+        "        if True:\n",
     ),
 )
 

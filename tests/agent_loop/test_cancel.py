@@ -459,6 +459,34 @@ async def test_an_agent_that_cannot_write_its_log_stops_and_says_why(
     await asyncio.wait_for(agent.close(), timeout=5)
 
 
+async def test_a_turn_is_stopped_although_what_was_dropped_cannot_be_written_down(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def full(event: object) -> str:
+        raise OSError(28, "No space left on device")
+
+    agent = await harness.agent(Reply(text="thinking", hold=True))
+    agent.followup("Think.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+    # Something waits, so stopping has something to write down: that it was dropped.
+    agent.followup("And then this.")
+    monkeypatch.setattr("columbina.session.store.encode_event", full)
+
+    # Whoever stops the turn is told that this could not be written down.
+    with pytest.raises(SessionStoreError, match="No space left on device"):
+        agent.cancel()
+    # The turn is stopped all the same. Nobody goes on waiting for the model.
+    with (
+        caplog.at_level(logging.CRITICAL, logger="columbina.agent_loop"),
+        pytest.raises(SessionStoreError),
+    ):
+        await idle(agent)
+    monkeypatch.undo()
+
+    assert len(harness.model.requests) == 1
+    await asyncio.wait_for(agent.close(), timeout=5)
+
+
 async def test_history_without_instructions_gets_none_later(
     harness: Harness, caplog: pytest.LogCaptureFixture
 ) -> None:

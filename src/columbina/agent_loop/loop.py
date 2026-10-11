@@ -223,18 +223,26 @@ class LoopAgent(Agent):
 
         Until the agent is woken again it starts no further turn, even if
         tasks wait. Of several causes the first one is recorded.
+
+        Raises:
+            SessionStoreError: The input that waited was dropped, and that
+                could not be written down. The turn is stopped all the same.
         """
-        if not keep_inbox and not self.session.closed:
-            clear_inbox(self.session)
-        self._halted = True
-        self._wake.clear()
-        self._drop_work()
-        task = self._turn_task
-        if task is None:
-            self._idle.set()
-        elif self._cause is None:
-            self._cause = cause
-            task.cancel()
+        try:
+            if not keep_inbox and not self.session.closed:
+                clear_inbox(self.session)
+        finally:
+            # A log that takes nothing more fails the line above. Whoever stops a turn
+            # then may have no other way left to stop it, so it is stopped whatever happens.
+            self._halted = True
+            self._wake.clear()
+            self._drop_work()
+            task = self._turn_task
+            if task is None:
+                self._idle.set()
+            elif self._cause is None:
+                self._cause = cause
+                task.cancel()
 
     async def when_idle(self) -> None:
         """Wait until the agent is at rest.

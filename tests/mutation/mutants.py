@@ -114,6 +114,9 @@ CREDENTIALS = "src/columbina/llm/credentials.py"
 OPENAI_CHAT = "src/columbina/llm/adapters/openai_chat.py"
 SERVICES = "src/columbina/llm/services.py"
 SETUP_APP = "src/columbina/apps/setup.py"
+MCP_NAMES = "src/columbina/mcp/server/names.py"
+MCP_SCHEMA = "src/columbina/mcp/server/schema.py"
+MCP_CONTENT = "src/columbina/mcp/server/content.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -12828,6 +12831,336 @@ _SERVICES = (
     ),
 )
 
+_MCP = (
+    # Names
+    mutant(
+        "the name of a tool of a server begins otherwise",
+        MCP_NAMES,
+        'PREFIX = "mcp__"\n',
+        'PREFIX = "mcp_"\n',
+    ),
+    mutant(
+        "a name of one character more than a service takes stays as it is",
+        MCP_NAMES,
+        "MAX_NAME = 64\n",
+        "MAX_NAME = 65\n",
+    ),
+    mutant(
+        "a name of just the length that is allowed is cut",
+        MCP_NAMES,
+        "    if plain == raw and len(name) <= MAX_NAME:\n",
+        "    if plain == raw and len(name) < MAX_NAME:\n",
+    ),
+    mutant(
+        "a name that is too long is not cut",
+        MCP_NAMES,
+        "    if plain == raw and len(name) <= MAX_NAME:\n",
+        "    if plain == raw:\n",
+    ),
+    mutant(
+        "a name that was changed gets no digits",
+        MCP_NAMES,
+        "    if plain == raw and len(name) <= MAX_NAME:\n",
+        "    if len(name) <= MAX_NAME:\n",
+    ),
+    mutant(
+        "a dash of a name becomes an underscore",
+        MCP_NAMES,
+        '_OTHER = re.compile(r"[^A-Za-z0-9_-]")\n',
+        '_OTHER = re.compile(r"[^A-Za-z0-9_]")\n',
+    ),
+    mutant(
+        "a dot of a name stays",
+        MCP_NAMES,
+        '_OTHER = re.compile(r"[^A-Za-z0-9_-]")\n',
+        '_OTHER = re.compile(r"[^A-Za-z0-9_.-]")\n',
+    ),
+    mutant(
+        "a name that is cut keeps one character less",
+        MCP_NAMES,
+        "_KEPT = 51\n",
+        "_KEPT = 50\n",
+    ),
+    mutant(
+        "a name that is cut gets eleven digits",
+        MCP_NAMES,
+        "_DIGITS = 12\n",
+        "_DIGITS = 11\n",
+    ),
+    mutant(
+        "nothing stands between the two names whose digits are taken",
+        MCP_NAMES,
+        '    named = f"{server}\\0{raw}".encode("utf-8", "surrogatepass")\n',
+        '    named = f"{server}{raw}".encode("utf-8", "surrogatepass")\n',
+    ),
+    mutant(
+        "the digits of a name are those of the tool alone",
+        MCP_NAMES,
+        '    named = f"{server}\\0{raw}".encode("utf-8", "surrogatepass")\n',
+        '    named = raw.encode("utf-8", "surrogatepass")\n',
+    ),
+    mutant(
+        "half of a pair in a name crashes the program",
+        MCP_NAMES,
+        '    named = f"{server}\\0{raw}".encode("utf-8", "surrogatepass")\n',
+        '    named = f"{server}\\0{raw}".encode("utf-8")\n',
+    ),
+    mutant(
+        "a name that is too long gets its digits and is not cut",
+        MCP_NAMES,
+        '    return f"{name[:_KEPT]}_{digest[:_DIGITS]}"\n',
+        '    return f"{name}_{digest[:_DIGITS]}"\n',
+    ),
+    mutant(
+        "nothing parts a name from its digits",
+        MCP_NAMES,
+        '    return f"{name[:_KEPT]}_{digest[:_DIGITS]}"\n',
+        '    return f"{name[:_KEPT]}{digest[:_DIGITS]}"\n',
+    ),
+    mutant(
+        "a server may have a name of 33 characters",
+        MCP_NAMES,
+        'SERVER = re.compile(r"(?=.{1,32}\\Z)[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*")\n',
+        'SERVER = re.compile(r"(?=.{1,33}\\Z)[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*")\n',
+    ),
+    mutant(
+        "the name of a server may hold two underscores in a row",
+        MCP_NAMES,
+        'SERVER = re.compile(r"(?=.{1,32}\\Z)[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*")\n',
+        'SERVER = re.compile(r"(?=.{1,32}\\Z)[A-Za-z0-9-]+(?:_+[A-Za-z0-9-]+)*")\n',
+    ),
+    mutant(
+        "the name of a server may end with an underscore",
+        MCP_NAMES,
+        'SERVER = re.compile(r"(?=.{1,32}\\Z)[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*")\n',
+        'SERVER = re.compile(r"(?=.{1,32}\\Z)[A-Za-z0-9-]+(?:_[A-Za-z0-9-]*)*")\n',
+    ),
+    mutant(
+        "the name of a server may begin with an underscore",
+        MCP_NAMES,
+        'SERVER = re.compile(r"(?=.{1,32}\\Z)[A-Za-z0-9-]+(?:_[A-Za-z0-9-]+)*")\n',
+        'SERVER = re.compile(r"(?=.{1,32}\\Z)[A-Za-z0-9-]*(?:_[A-Za-z0-9-]+)*")\n',
+    ),
+    # What a tool is for, and its arguments
+    mutant(
+        "what a tool is for may be a character shorter",
+        MCP_SCHEMA,
+        "MAX_DESCRIPTION = 2048\n",
+        "MAX_DESCRIPTION = 2047\n",
+    ),
+    mutant(
+        "what a tool is for is cut though it is just as long as is allowed",
+        MCP_SCHEMA,
+        "    if len(text) <= MAX_DESCRIPTION:\n",
+        "    if len(text) < MAX_DESCRIPTION:\n",
+    ),
+    mutant(
+        "what a tool is for is a character too long once it is cut",
+        MCP_SCHEMA,
+        '    return f"{text[: MAX_DESCRIPTION - 1]}…"\n',
+        '    return f"{text[:MAX_DESCRIPTION]}…"\n',
+    ),
+    mutant(
+        "a tool of which the server says nothing crashes the program",
+        MCP_SCHEMA,
+        '    text = description or ""\n',
+        "    text = description\n",
+    ),
+    mutant(
+        "a schema that does not say what it takes is left so",
+        MCP_SCHEMA,
+        '    mended.setdefault("type", "object")\n',
+        "",
+    ),
+    mutant(
+        "a schema that says what it takes is made to say that it takes an object",
+        MCP_SCHEMA,
+        '    mended.setdefault("type", "object")\n',
+        '    mended["type"] = "object"\n',
+    ),
+    mutant(
+        "a schema that names no properties is left so",
+        MCP_SCHEMA,
+        '    mended.setdefault("properties", {})\n',
+        "",
+    ),
+    mutant(
+        "the properties that a schema names are thrown away",
+        MCP_SCHEMA,
+        '    mended.setdefault("properties", {})\n',
+        '    mended["properties"] = {}\n',
+    ),
+    mutant(
+        "the schema that the server sent is changed where it lies",
+        MCP_SCHEMA,
+        '    mended = cast("dict[str, JsonValue]", dict(schema))\n',
+        '    mended = cast("dict[str, JsonValue]", schema)\n',
+    ),
+    mutant(
+        "a tool whose arguments are no object is offered",
+        MCP_SCHEMA,
+        '    if kind != "object":\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "the size of a schema is counted with every letter written as an escape",
+        MCP_SCHEMA,
+        '        sent = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))\n',
+        '        sent = json.dumps(schema, separators=(",", ":"))\n',
+    ),
+    mutant(
+        "the size of a schema is counted with blanks that are not sent",
+        MCP_SCHEMA,
+        '        sent = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))\n',
+        "        sent = json.dumps(schema, ensure_ascii=False)\n",
+    ),
+    mutant(
+        "a schema that goes round in a circle crashes the program",
+        MCP_SCHEMA,
+        "    except (TypeError, ValueError):\n",
+        "    except TypeError:\n",
+    ),
+    mutant(
+        "a schema with something in it that is no JSON crashes the program",
+        MCP_SCHEMA,
+        "    except (TypeError, ValueError):\n",
+        "    except ValueError:\n",
+    ),
+    mutant(
+        "the size of a schema is counted in characters",
+        MCP_SCHEMA,
+        '    size = len(sent.encode("utf-8", "surrogatepass"))\n',
+        "    size = len(sent)\n",
+    ),
+    mutant(
+        "a schema of just the size that is allowed is not offered",
+        MCP_SCHEMA,
+        "    if size > MAX_SCHEMA_BYTES:\n",
+        "    if size >= MAX_SCHEMA_BYTES:\n",
+    ),
+    mutant(
+        "a schema may be twice as large",
+        MCP_SCHEMA,
+        "MAX_SCHEMA_BYTES = 16 * 1024\n",
+        "MAX_SCHEMA_BYTES = 32 * 1024\n",
+    ),
+    # What a call gave back
+    mutant(
+        "what stands for the end of what is left out is counted as bytes",
+        MCP_CONTENT,
+        '    return len(encoded) * 3 // 4 - encoded[-2:].count("=")\n',
+        "    return len(encoded) * 3 // 4\n",
+    ),
+    mutant(
+        "only the last sign of what stands for the end is taken off",
+        MCP_CONTENT,
+        '    return len(encoded) * 3 // 4 - encoded[-2:].count("=")\n',
+        '    return len(encoded) * 3 // 4 - encoded[-1:].count("=")\n',
+    ),
+    mutant(
+        "one byte is told as several",
+        MCP_CONTENT,
+        '    large = "1 byte" if size == 1 else f"{size} bytes"\n',
+        '    large = f"{size} bytes"\n',
+    ),
+    mutant(
+        "what has no named type is said to be of the type None",
+        MCP_CONTENT,
+        "    return f\"[{what} is left out here: {kind or 'of no named type'}, {large}]\"\n",
+        '    return f"[{what} is left out here: {kind}, {large}]"\n',
+    ),
+    mutant(
+        "a text does not count as text",
+        MCP_CONTENT,
+        "        return block.text, True\n",
+        "        return block.text, False\n",
+    ),
+    mutant(
+        "a picture counts as text",
+        MCP_CONTENT,
+        '        return _left_out("a picture", block.mime_type, block.data), False\n',
+        '        return _left_out("a picture", block.mime_type, block.data), True\n',
+    ),
+    mutant(
+        "a sound counts as text",
+        MCP_CONTENT,
+        '        return _left_out("a sound", block.mime_type, block.data), False\n',
+        '        return _left_out("a sound", block.mime_type, block.data), True\n',
+    ),
+    mutant(
+        "a link to a resource counts as text",
+        MCP_CONTENT,
+        '        return f"Resource link: {block.name} ({block.uri})", False\n',
+        '        return f"Resource link: {block.name} ({block.uri})", True\n',
+    ),
+    mutant(
+        "a resource that is text does not count as text",
+        MCP_CONTENT,
+        '        return f"{resource.uri}\\n{resource.text}", True\n',
+        '        return f"{resource.uri}\\n{resource.text}", False\n',
+    ),
+    mutant(
+        "a resource that is text is read without its address",
+        MCP_CONTENT,
+        '        return f"{resource.uri}\\n{resource.text}", True\n',
+        "        return resource.text, True\n",
+    ),
+    mutant(
+        "a resource that is no text counts as text",
+        MCP_CONTENT,
+        '    return _left_out(f"the resource {resource.uri}", resource.mime_type, resource.blob), False\n',
+        '    return _left_out(f"the resource {resource.uri}", resource.mime_type, resource.blob), True\n',
+    ),
+    mutant(
+        "only the last thing that was given back says whether there is text",
+        MCP_CONTENT,
+        "        has_text = has_text or is_text\n",
+        "        has_text = is_text\n",
+    ),
+    mutant(
+        "structured content is read beside a text",
+        MCP_CONTENT,
+        "    if not has_text and result.structured_content is not None:\n",
+        "    if result.structured_content is not None:\n",
+    ),
+    mutant(
+        "structured content that says nothing in particular is passed over",
+        MCP_CONTENT,
+        "    if not has_text and result.structured_content is not None:\n",
+        "    if not has_text and result.structured_content:\n",
+    ),
+    mutant(
+        "structured content is never read",
+        MCP_CONTENT,
+        "    if not has_text and result.structured_content is not None:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "the letters of structured content are written as escapes",
+        MCP_CONTENT,
+        "        parts.append(json.dumps(result.structured_content, ensure_ascii=False, default=str))\n",
+        "        parts.append(json.dumps(result.structured_content, default=str))\n",
+    ),
+    mutant(
+        "structured content that is no JSON crashes the program",
+        MCP_CONTENT,
+        "        parts.append(json.dumps(result.structured_content, ensure_ascii=False, default=str))\n",
+        "        parts.append(json.dumps(result.structured_content, ensure_ascii=False))\n",
+    ),
+    mutant(
+        "a result of nothing is an empty text",
+        MCP_CONTENT,
+        '    return "\\n".join(parts) if parts else NOTHING\n',
+        '    return "\\n".join(parts)\n',
+    ),
+    mutant(
+        "what was given back stands on one line",
+        MCP_CONTENT,
+        '    return "\\n".join(parts) if parts else NOTHING\n',
+        '    return " ".join(parts) if parts else NOTHING\n',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -12913,6 +13246,7 @@ SETS: dict[str, MutantSet] = {
     "trust": MutantSet(("tests/apps/test_hooks_command.py",), _TRUST),
     "subagents": MutantSet(("tests/subagents", "tests/builtin_tools/test_subagent.py"), _SUBAGENTS),
     "yaml": MutantSet(("tests/test_plain_yaml.py",), _YAML),
+    "mcp": MutantSet(("tests/mcp_client",), _MCP),
     "services": MutantSet(
         (
             "tests/llm/test_services.py",

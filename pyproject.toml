@@ -35,10 +35,16 @@ columbina = "columbina.apps.launcher:main"
 [project.urls]
 Repository = "https://github.com/Yueran-ML/agent-harness"
 
+# The SDK of the Model Context Protocol brings some thirty packages with it. Whoever uses
+# no MCP server does not need them: `pip install columbina[mcp]` installs them.
+[project.optional-dependencies]
+mcp = ["mcp>=2.3,<3"]
+
 [dependency-groups]
 dev = [
   "coverage>=7.6",
   "hypothesis>=6.115",
+  "mcp>=2.3,<3",
   "pyright>=1.1.400",
   "pytest>=8.3",
   "pytest-asyncio>=1.0",

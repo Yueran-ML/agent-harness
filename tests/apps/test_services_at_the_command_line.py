@@ -1,14 +1,18 @@
 """The command line and the service of the model: ``--provider``, what was stored, and ``setup``."""
 
+import contextlib
 import getpass
 import json
+import socket
+import socketserver
 import sys
 import threading
-from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Generator, Iterator
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import yaml
 
@@ -694,20 +698,61 @@ class _Service(BaseHTTPRequestHandler):
         """Say nothing of a request on the screen of the test."""
 
 
+class _OnThisMachine(socketserver.ThreadingTCPServer):
+    """The server of the stand-in. It asks nobody for the name of the machine that it runs on.
+
+    The server of ``http.server`` asks for that name when it starts, to have something to
+    call itself. On some machines the answer takes half a minute, and a test has less.
+    """
+
+    daemon_threads = True
+
+
+@contextlib.contextmanager
+def serving(requests: list[tuple[str, str | None, dict[str, Any]]]) -> Generator[str]:
+    """Run the stand-in for a service on this machine, and give its address."""
+    handler = type("Handler", (_Service,), {"requests": requests})
+    with _OnThisMachine(("127.0.0.1", 0), handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_address[1]}/v1"
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
 @pytest.fixture
 def service() -> Iterator[tuple[str, list[tuple[str, str | None, dict[str, Any]]]]]:
     """A service on this machine. Its address, and the requests that it was sent."""
     requests: list[tuple[str, str | None, dict[str, Any]]] = []
-    handler = type("Handler", (_Service,), {"requests": requests})
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    serving = threading.Thread(target=server.serve_forever, daemon=True)
-    serving.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}/v1", requests
-    finally:
-        server.shutdown()
-        server.server_close()
-        serving.join(timeout=5)
+    with serving(requests) as address:
+        yield address, requests
+
+
+def test_the_stand_in_for_a_service_asks_nobody_for_the_name_of_its_machine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def asked(*name: str) -> str:
+        raise AssertionError(f"the name of the machine was asked for: {name}")
+
+    # On the machines that run the tests for macOS, the answer to either question takes
+    # longer than a test may take.
+    monkeypatch.setattr(socket, "getfqdn", asked)
+    monkeypatch.setattr(socket, "gethostbyaddr", asked)
+    requests: list[tuple[str, str | None, dict[str, Any]]] = []
+
+    with serving(requests) as address:
+        answer = httpx.post(
+            f"{address}/chat/completions",
+            json={"model": "tiny"},
+            headers={"Authorization": "Bearer made-up"},
+            timeout=5,
+        )
+
+    assert answer.status_code == 200
+    assert "Hello." in answer.text
+    assert requests == [("/v1/chat/completions", "Bearer made-up", {"model": "tiny"})]
 
 
 def test_a_run_talks_to_the_service_that_was_chosen_with_the_key_that_was_stored(

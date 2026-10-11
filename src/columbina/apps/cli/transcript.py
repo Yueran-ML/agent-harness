@@ -15,6 +15,10 @@ A conversation that is made shorter says so: why it is, when it begins, and
 what came of it, when it is over. Where the user asked for it, the command
 that was given says what came of it, and nothing is said here a second time.
 
+A task that is handed to a subagent is a call like any other, and what the
+subagent does is not shown. Two lines say that it has begun, with the
+session that holds its work, and how it ended.
+
 The lines are :class:`rich.text.Text`, so that they carry their colours with
 them. :func:`on_screen` turns them into what a terminal is sent. Nothing that
 a model or a tool wrote is ever read as markup, and nothing of it reaches the
@@ -51,6 +55,7 @@ from columbina.session import (
     TurnStartEvent,
     UserMessageEvent,
 )
+from columbina.subagents import SubagentEndedEvent, SubagentStartedEvent
 from columbina.todo import TOOL as TODO_TOOL
 from columbina.todo import TodoWriteEvent
 from columbina.todo import shown as listed
@@ -70,8 +75,8 @@ _CHANGED_LINES = 6
 _OUTPUT_LINES = 5
 _ERROR_LINES = 3
 _RECAP_LINES = 12
-_NAMED_FIRST = ("command", "path", "pattern")
-"""The arguments that say what a call acts on, the most telling one first."""
+_NAMED_FIRST = ("command", "path", "pattern", "description")
+"""The arguments that say what a call acts on or is about, the most telling one first."""
 
 _SHORTER = "making the conversation shorter..."
 """What stands where a reply would grow, for as long as a conversation is being made shorter."""
@@ -233,7 +238,7 @@ def _end(data: TurnEndEvent) -> list[Text]:
 class Transcript:
     """The lines that a conversation is shown as, made as the conversation goes on."""
 
-    __slots__ = ("_began", "_commands", "_lines", "_shown", "_symbols", "_word")
+    __slots__ = ("_began", "_commands", "_handed", "_lines", "_shown", "_symbols", "_word")
 
     def __init__(self, symbols: Symbols) -> None:
         self._symbols = symbols
@@ -245,6 +250,8 @@ class Transcript:
         # When each call was written down, and which calls run a command.
         self._began: dict[str, int] = {}
         self._commands: set[str] = set()
+        # What each task is about that a subagent works on, by its call.
+        self._handed: dict[str, str] = {}
 
     @property
     def partial(self) -> Text:
@@ -316,10 +323,30 @@ class Transcript:
                 return []
             came = what_came_of_it(data.outcome)
             return [_note(f"({came[0].lower()}{came[1:]})")]
+        if isinstance(data, SubagentStartedEvent):
+            return self._handed_over(data)
+        if isinstance(data, SubagentEndedEvent):
+            return self._handed_back(data)
         if isinstance(data, ApprovalDecidedEvent) and data.call_id in self._began:
             # The time that somebody took to answer is not the time that the call took.
             self._began[data.call_id] = event.time
         return []
+
+    def _handed_over(self, data: SubagentStartedEvent) -> list[Text]:
+        about = _one_line(data.description)
+        self._handed[data.call_id] = about
+        who = "a subagent" if data.kind is None else f"a subagent of the kind {data.kind}"
+        on = f' works on "{about}"' if about else " works"
+        return [_note(f"    ({who}{on} in the session {data.session_id})")]
+
+    def _handed_back(self, data: SubagentEndedEvent) -> list[Text]:
+        # Several subagents may be at work at once, so each end says whose it is.
+        about = self._handed.pop(data.call_id, "")
+        who = f'the subagent for "{about}"' if about else "a subagent"
+        steps = _counted(data.steps, "step")
+        if data.reason == "completed":
+            return [_note(f"    ({who} is through, after {steps})")]
+        return [_note(f"    ({who} did not finish: {data.reason}, after {steps})")]
 
     def _close(self) -> list[Text]:
         """Hand over the line that is not complete, if there is one."""

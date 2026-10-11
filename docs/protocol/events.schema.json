@@ -1050,6 +1050,66 @@
           "additionalProperties": false
         },
         {
+          "title": "subagent/ended",
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "subagent/ended"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "time": {
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/SubagentEndedEvent"
+            },
+            "ignorable": {
+              "const": true
+            }
+          },
+          "required": [
+            "type",
+            "seq",
+            "time",
+            "data",
+            "ignorable"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "title": "subagent/started",
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "subagent/started"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "time": {
+              "type": "integer"
+            },
+            "data": {
+              "$ref": "#/$defs/SubagentStartedEvent"
+            },
+            "ignorable": {
+              "const": true
+            }
+          },
+          "required": [
+            "type",
+            "seq",
+            "time",
+            "data",
+            "ignorable"
+          ],
+          "additionalProperties": false
+        },
+        {
           "title": "system/message",
           "type": "object",
           "properties": {
@@ -1750,6 +1810,76 @@
         "step"
       ],
       "title": "StepStartEvent",
+      "type": "object"
+    },
+    "SubagentEndedEvent": {
+      "additionalProperties": false,
+      "description": "A subagent has ended. This is written into the log of its parent.\n\nAttributes:\n    call_id: The id of the call that handed the task over.\n    session_id: The id of the session of the subagent.\n    reason: Why its turn ended, in the words of the end of a turn, or\n        ``unknown`` if nobody can say.\n    detail: More about the reason, as its own log has it.\n    steps: How many steps its turn took.",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steps": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "call_id",
+        "session_id",
+        "reason",
+        "detail",
+        "steps"
+      ],
+      "title": "SubagentEndedEvent",
+      "type": "object"
+    },
+    "SubagentStartedEvent": {
+      "additionalProperties": false,
+      "description": "A subagent has started. This is written into the log of its parent.\n\nAttributes:\n    call_id: The id of the call that handed the task over.\n    session_id: The id of the session of the subagent.\n    kind: The kind of the subagent, if the call named one.\n    description: What the task is, in a few words for a person.",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "session_id",
+        "kind",
+        "description"
+      ],
+      "title": "SubagentStartedEvent",
       "type": "object"
     },
     "SurfaceOp": {

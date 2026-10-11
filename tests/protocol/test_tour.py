@@ -14,8 +14,9 @@ What happens, turn by turn:
    means to do, the user says something on the way, one request fails and is
    made again, and a command is asked about and allowed.
 2. A command is asked about and refused, and the user stops the reply.
-3. The program is left and the session taken up again. Two commands say a
-   lot, and the conversation is made shorter by cutting a result down.
+3. The program is left and the session taken up again. A question is handed
+   to a subagent. Two commands say a lot, and the conversation is made
+   shorter by cutting a result down.
 4. The user has the conversation summed up, and one more turn follows, in
    which the model is told again what it had written down.
 
@@ -40,13 +41,15 @@ import columbina.hooks
 import columbina.permissions
 import columbina.retry
 import columbina.sandbox
+import columbina.subagents
+import columbina.subagents.spawn
 import columbina.todo
 import columbina.token_meter
 from columbina import shells
 from columbina.agent import Agent, AgentSpec, ContextSource
 from columbina.approval import APPROVAL_ASK, ApprovalRequest, Outcome
 from columbina.apps.common import DEFAULT_PROMPT
-from columbina.builtin_tools import edit, read
+from columbina.builtin_tools import edit, read, subagent
 from columbina.compaction import COMPACTION, CompactionEndEvent
 from columbina.hooks.config import Hook
 from columbina.hooks.run import Result
@@ -180,6 +183,11 @@ def spent(fresh: int, written: int, cached: int = 0) -> Usage:
     return Usage(input_tokens=fresh, output_tokens=written, cache_read_tokens=cached)
 
 
+def made_up(size: int) -> str:
+    """What stands in for the part of the id of a session that nobody can know ahead."""
+    return "5eed" * (size // 2)
+
+
 def shell(command: str) -> Call:
     return Call(name="bash", arguments={"command": command})
 
@@ -217,6 +225,11 @@ async def toured(
     await ctx.plugin(read)
     await ctx.plugin(edit)
     await ctx.plugin(columbina.todo)
+    await ctx.plugin(columbina.subagents)
+    await ctx.plugin(columbina.subagents.spawn)
+    await ctx.plugin(subagent)
+    # The session of a subagent gets an id that is made up. Here it is the same every time.
+    monkeypatch.setattr("columbina.session.store.secrets.token_hex", made_up)
     # The user has one hook, the most common one: a formatter after every change to a file.
     # It is not run here. What stands in for it takes a third of a second of the clock.
     hooks = harness.cwd.parent / "hooks.json"
@@ -340,7 +353,24 @@ async def toured(
     clock.now += 95 * 60 * 1000
     agent = await harness.agents.resume(ctx, spec, "tour")
     model.add(
-        Reply(calls=(shell("git log --stat -- calc.py"),), usage=spent(131, 22, 1280)),
+        Reply(
+            text="While I go through the history, the uses of mean() can be looked up.",
+            calls=(
+                Call(
+                    name="subagent",
+                    arguments={
+                        "description": "find uses of mean",
+                        "prompt": "In the project in the working directory, find every place "
+                        "where the function mean() of calc.py is called. Give the files and "
+                        "the lines, and nothing else.",
+                    },
+                ),
+            ),
+            usage=spent(131, 64, 1280),
+        ),
+        # What the subagent answers. Its own steps are in its own session.
+        Reply(text="mean() is called in one place: check.py, line 14.", usage=spent(612, 17)),
+        Reply(calls=(shell("git log --stat -- calc.py"),), usage=spent(92, 22, 1408)),
         Reply(
             text="The file was changed often. The commit that takes the length once is the "
             "likely one.",

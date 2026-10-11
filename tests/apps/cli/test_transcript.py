@@ -47,6 +47,7 @@ from columbina.session import (
     TurnStartEvent,
     UserMessageEvent,
 )
+from columbina.subagents import SubagentEndedEvent, SubagentStartedEvent
 from columbina.todo import TOOL as TODO_TOOL
 from columbina.todo import Item, TodoWriteEvent
 
@@ -950,3 +951,119 @@ async def test_the_last_words_of_the_model_are_shown_also_when_a_reply_without_w
 async def test_a_session_without_a_turn_has_nothing_to_show(log: Session) -> None:
     assert recap(log.events, PLAIN) == []
     assert recap([], PLAIN) == []
+
+
+# Subagents
+
+
+@pytest.fixture
+def subagents(ctx: Context, log: Session) -> None:
+    ctx.use(SESSIONS).declare(ctx, SubagentStartedEvent, SubagentEndedEvent)
+
+
+def started(
+    description: str = "count files", call_id: str = "c-1", kind: str | None = None
+) -> SubagentStartedEvent:
+    return SubagentStartedEvent(
+        call_id=call_id, session_id=f"s-of-{call_id}", kind=kind, description=description
+    )
+
+
+def ended(reason: str = "completed", steps: int = 12, call_id: str = "c-1") -> SubagentEndedEvent:
+    return SubagentEndedEvent(
+        call_id=call_id, session_id=f"s-of-{call_id}", reason=reason, detail=None, steps=steps
+    )
+
+
+def test_a_task_that_is_handed_to_a_subagent_is_shown_by_the_few_words_about_it(
+    log: Session,
+) -> None:
+    transcript = Transcript(PLAIN)
+    handed = call("subagent", description="count files", prompt="Count the files in src.")
+
+    assert show(transcript, log, handed) == ["* subagent count files"]
+
+
+@pytest.mark.usefixtures("subagents")
+def test_a_subagent_that_begins_and_ends_is_told_in_two_lines(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    shown = show(transcript, log, started(), ended())
+
+    assert shown == [
+        '    (a subagent works on "count files" in the session s-of-c-1)',
+        '    (the subagent for "count files" is through, after 12 steps)',
+    ]
+
+
+@pytest.mark.usefixtures("subagents")
+def test_the_kind_of_a_subagent_is_told_where_it_has_one(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    shown = show(transcript, log, started(kind="reviewer"), ended(steps=1))
+
+    assert shown == [
+        '    (a subagent of the kind reviewer works on "count files" in the session s-of-c-1)',
+        '    (the subagent for "count files" is through, after 1 step)',
+    ]
+
+
+@pytest.mark.usefixtures("subagents")
+def test_a_subagent_that_did_not_finish_is_told_with_how_it_ended(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    shown = show(transcript, log, started(), ended("blocked", 50))
+
+    assert (
+        shown[1] == '    (the subagent for "count files" did not finish: blocked, after 50 steps)'
+    )
+
+
+@pytest.mark.usefixtures("subagents")
+def test_of_two_subagents_at_work_each_end_says_whose_it_is(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    shown = show(
+        transcript,
+        log,
+        started("count files", "c-1"),
+        started("find the parser", "c-2"),
+        ended(call_id="c-2", steps=3),
+        ended(call_id="c-1", steps=7),
+    )
+
+    assert shown[2:] == [
+        '    (the subagent for "find the parser" is through, after 3 steps)',
+        '    (the subagent for "count files" is through, after 7 steps)',
+    ]
+
+
+@pytest.mark.usefixtures("subagents")
+def test_the_end_of_a_subagent_whose_beginning_was_not_shown_names_no_task(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    assert show(transcript, log, ended(), ended("error", 2)) == [
+        "    (a subagent is through, after 12 steps)",
+        "    (a subagent did not finish: error, after 2 steps)",
+    ]
+    # And what is told of one task is told once.
+    again = Transcript(PLAIN)
+    assert show(again, log, started(), ended(), ended())[2:] == [
+        "    (a subagent is through, after 12 steps)"
+    ]
+
+
+@pytest.mark.usefixtures("subagents")
+def test_the_words_about_a_task_are_shown_on_one_line_and_do_nothing_to_the_terminal(
+    log: Session,
+) -> None:
+    transcript = Transcript(PLAIN)
+    words = "count\n the " + chr(0x1B) + "[2J files " + "x" * 200
+
+    first, second = show(transcript, log, started(words), started("", "c-2"))
+
+    assert first.startswith('    (a subagent works on "count the ' + STAND_IN + "[2J files xxx")
+    assert first.endswith('..." in the session s-of-c-1)')
+    assert chr(0x1B) not in first
+    assert len(first) < 160
+    assert second == "    (a subagent works in the session s-of-c-2)"

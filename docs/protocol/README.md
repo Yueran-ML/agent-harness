@@ -262,7 +262,7 @@
 | `assistant/message` | `message`、`usage`、`finish_reason` | 是 | 模型的一次回复 |
 | `assistant/attempt` | `message`、`usage`、`failure` | | 一次失败的请求，`message` 是失败前已经到达的部分 |
 | `request/header` | `config`、`tools` | | 之后的请求使用的模型配置和工具声明 |
-| `request/aside` | `purpose`、`usage`、`failure` | | 对话之外的一次请求，例如请模型写摘要。只用于记账 |
+| `request/aside` | `purpose`、`usage`、`failure` | | 对话之外的请求，例如请模型写摘要，或者一个子代理用掉的全部请求。只用于记账 |
 | `tool/call` | `call_id`、`name`、`arguments` | | 一次工具调用即将执行 |
 | `tool/result` | `message`、`error`、`meta` | 是 | 一次工具调用的结果 |
 | `agent/inbox/spliced` | `queue`、`removed`、`added` | | 等待中的输入有了变化，见第 9 节 |
@@ -274,6 +274,8 @@
 | `todo/write` | `call_id`、`items` | | 模型写下了自己的待办清单，整份顶替上一份 |
 | `hook/invoked` | `event`、`command` | | 用户的一个钩子即将运行 |
 | `hook/result` | `event`、`command`、`status`、`exit_code`、`duration_ms`、`reason` | | 这个钩子运行完了 |
+| `subagent/started` | `call_id`、`session_id`、`kind`、`description` | | 一个子代理开始做交给它的任务 |
+| `subagent/ended` | `call_id`、`session_id`、`reason`、`detail`、`steps` | | 这个子代理结束了 |
 | `compaction/start` | `why`、`tokens` | | 开始压缩对话 |
 | `compaction/summary` | `summary`、`replaces`、`region_tokens`、`summary_tokens`、`usage` | | 摘要写好了，带着它的消息紧随其后 |
 | `compaction/end` | `why`、`outcome` | | 压缩结束 |
@@ -290,6 +292,9 @@
 - `todo/write.items`：每项是 `{content, status}`，`status` 取 `pending`、`in_progress`、`completed`，同一时刻最多一项是 `in_progress`。`call_id` 是写下清单的那次调用。
 - `hook/*.event`：钩子运行的时刻，取 `SessionStart`、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`、`Stop`。`command` 是钩子的命令。
 - `hook/result.status`：`completed`、`blocked`、`failed`、`timed-out`。`blocked` 表示钩子拦下了它被问到的那件事，`reason` 是它给的理由，其余情况下 `reason` 为空或者是它要求先问人的理由。`exit_code` 在命令没有运行到结束时为 `null`。`duration_ms` 是这次运行的用时。钩子运行失败或者超时都不拦截任何事。
+- `request/aside.purpose`：`summary` 是请模型写摘要的一次请求。`subagent` 是一个子代理用掉的 token 的合计，在它结束时记一条，没有用量时不记。
+- `subagent/*`：`call_id` 是交出任务的那次工具调用，与 `tool/call` 和 `tool/result` 的 `call_id` 相同。`session_id` 是子代理自己的会话。`kind` 是子代理的类型，调用没有指定时为 `null`。`description` 是模型为这件任务写的几个词。
+- `subagent/ended.reason`：取 `turn/end.reason` 的那些值。子会话里没有回合结束的记录时是 `unknown`。`detail` 与子会话里 `turn/end.detail` 相同，`steps` 是子代理走过的步数。只有 `completed` 的子代理交回了回答，其余情况下这次调用的 `tool/result` 带着错误，错误的文字里写明它是怎样结束的。
 - `compaction/*.why`：`pressure`（对话接近模型的上限）、`overflow`（模型因为太长拒绝了请求）、`manual`（用户要求）。
 - `compaction/end.outcome`：`{trimmed, summarised, before, after, error}`。`trimmed` 是被裁短的工具结果的条数，`summarised` 是被摘要顶替的消息的条数，`before` 和 `after` 是压缩前后对话的 token 估计数，`error` 不为 `null` 时说明没有做完的原因。
 
@@ -313,7 +318,7 @@
 
 | `source` | 含义 | 建议的显示 |
 |---|---|---|
-| `user` | 人交给 Agent 的任务 | 正常显示 |
+| `user` | 人交给 Agent 的任务。在子代理的会话里，是把任务交给它的那个 Agent 写的任务 | 正常显示 |
 | `steer` | 人在回合中途说的话 | 正常显示，带转向的标记 |
 | `context/<名字>` | 程序告诉模型的上下文，例如项目里的说明文件和运行环境 | 不显示，或者折叠起来 |
 | `compaction` | 较早对话的摘要 | 显示为一条分隔线，可以展开 |
@@ -371,11 +376,13 @@
 
 **用量。** 上一次请求发给模型的 token 数，是最近一条 `assistant/message` 或 `assistant/attempt` 的 `input_tokens`、`cache_read_tokens`、`cache_write_tokens` 之和。它与 `session.status.model.context_window` 之比是上下文的占用率。缓存命中率是 `cache_read_tokens` 的总和除以上述三项的总和，求和的范围是全部 `assistant/message`、`assistant/attempt` 和 `request/aside`。
 
+**子代理。** 模型调用工具 `subagent` 把一件任务交给子代理。`subagent/started` 和 `subagent/ended` 按 `call_id` 与这次调用配对，一次回复里的几个调用各有一对，它们同时进行，结束的先后不固定。两者之间子代理在工作，界面可以在这次调用下面显示一行状态，写明 `description`、`kind` 和已经过去的时间。子代理做了什么不在这个会话里，在 `session_id` 指的那个会话里，那个会话的会话头写着它的来源，见第 13 节。子代理的用量在它结束时以一条 `purpose` 为 `subagent` 的 `request/aside` 记进这个会话，所以这个会话的合计里有它。程序在子代理工作时退出，日志里就只有 `subagent/started`，下次打开时写下的 `session/end-seed` 表示它不会再结束了。
+
 **待办清单。** 最近一条 `todo/write` 的 `items` 是当前的清单。没有这种事件，或者最近一条的 `items` 为空，就是没有清单。清单是模型给自己记的事，界面可以把它显示成一块面板。写下清单的工具叫 `todo_write`，它的调用不必再把参数显示一遍。
 
 **工具的声明。** 最近一条 `request/header` 的 `tools` 是模型现在能用的工具，每项是 `{name, description, parameters}`。
 
-内置工具的参数名可以用来把一次调用显示得更清楚。终端界面的做法是：依次取 `command`、`path`、`pattern` 中第一个存在的参数当作调用作用的对象；`edit` 的 `old` 和 `new` 显示成删去和加上的行；`write` 的 `content` 只显示行数；命令的输出显示末尾几行，因为报错和退出码在末尾。
+内置工具的参数名可以用来把一次调用显示得更清楚。终端界面的做法是：依次取 `command`、`path`、`pattern`、`description` 中第一个存在的参数当作调用作用的对象或者它的说明；`edit` 的 `old` 和 `new` 显示成删去和加上的行；`write` 的 `content` 只显示行数；命令的输出显示末尾几行，因为报错和退出码在末尾。
 
 ## 10. 界面必须遵守的规则
 
@@ -447,7 +454,7 @@
 |---|---|---|
 | 1 | 找出并改正一个文件里的错误 | 推理块、一次回复带两个调用、回合中途的转向、一次失败后重试的请求、三次写下的待办清单、改完文件之后运行的一个钩子、一次被同意的审批 |
 | 2 | 提交改动被拒绝，回复被用户停下 | 上下文更新、被拒绝的审批和带错误的结果、被打断的回复、`aborted` 的回合 |
-| 3 | 程序退出后重新打开会话，两个命令输出很长 | `session/end-seed`、说明上一个回合被停下的上下文、一次只裁短结果的压缩 |
+| 3 | 程序退出后重新打开会话，一件事交给子代理，两个命令输出很长 | `session/end-seed`、说明上一个回合被停下的上下文、一次交给子代理的调用和它的两条事件、记进这个会话的子代理用量、一次只裁短结果的压缩 |
 | 4 | 用户要求压缩，然后再问一句 | 一次带摘要的压缩、摘要之后的对话、作为上下文重新告诉模型的待办清单 |
 | 之后 | 用户再要求压缩一次 | 第二份摘要顶替了第一份摘要和它后面的旧消息，`source_event_seqs` 不是递增的 |
 
@@ -467,7 +474,8 @@ Schema 描述的是这个版本写出的数据，每个对象都不带多余的�
 下面这些还没有定义。界面的结构要留出位置，现在不必实现。
 
 - 会话分叉：命令 `/fork` 让对话转到当前会话的一份副本上，副本的会话头里 `parent_session` 是它的来源，日志里接着被复制的事件有一条 `inherited` 为真的 `session/end-seed`。服务进程怎样把"对话换到了另一个会话"告诉界面，还没有定义。
-- 子代理、MCP 工具：第 6 阶段。子代理有自己的会话，它的事件带着自己的 `session_id`。
+- 查看子代理的会话：子代理的过程在它自己的会话里。服务进程怎样把一个子会话的事件发给界面，还没有定义。
+- MCP 工具：第 6 阶段。
 - 图片内容块：尚无计划。
 
 协议的兼容规则只有一条：版本号不变时只增加，不修改已有字段的含义。新的事件类型、新的字段、新的方法、新的取值都算增加，所以界面要遵守第 10 节的第 2 条。

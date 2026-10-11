@@ -199,8 +199,9 @@ def test_a_document_leads_to_its_other_two_languages(name: str) -> None:
 
 @pytest.mark.parametrize(("readme", "guide"), list(zip(READMES, GUIDES, strict=True)))
 def test_a_readme_and_the_guide_in_its_language_lead_to_each_other(readme: str, guide: str) -> None:
-    assert [file for file in _files(readme) if file in GUIDES] == [guide]
-    assert [file for file in _files(guide) if file in READMES] == [readme]
+    # More than once is fine. Another language is not.
+    assert {file for file in _files(readme) if file in GUIDES} == {guide}
+    assert {file for file in _files(guide) if file in READMES} == {readme}
 
 
 @pytest.mark.parametrize(("english", "name"), TRANSLATIONS)

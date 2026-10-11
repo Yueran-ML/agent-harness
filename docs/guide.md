@@ -6,7 +6,7 @@ This is the longer account of Columbina: how it is used, how it is built, how it
 
 Columbina was written from scratch, with three existing harnesses as its reference: DeepSeek Harness for the kernel and the loop, and Codex and Claude Code where they do something better. What was taken from which is written down in [`docs/research`](research) and in the [design document](plans/2026-10-09-columbina-design.md).
 
-[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Permissions](#changing-files-and-running-commands) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Development](#development) · [Roadmap](#where-it-stands)
+[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Development](#development) · [Roadmap](#where-it-stands)
 
 ## What is there
 
@@ -234,7 +234,8 @@ Both commands take these options, except where one of them is named.
 | Option | What it does |
 |---|---|
 | `--cwd DIR` | The working directory of the agent, which has to exist. No file outside it is touched unless the session has full access. |
-| `--model ID` | The model to use. The default is `deepseek-flash`, or `COLUMBINA_MODEL` if it is set. |
+| `--provider NAME` | The service that the model comes from. See [Services and keys](#services-and-keys). |
+| `--model ID` | The model to use. [Services and keys](#services-and-keys) says which one is used where none is named. |
 | `--session-id ID` | The session to start. If a session with this id exists, it is continued. |
 | `--continue` | For the conversation: take up the session of the working directory that was used last. |
 | `--permission PRESET` | How much the agent may do: `read-only`, `workspace-write`, which is the default, or `full-access`. |
@@ -251,6 +252,68 @@ is made. It is 130 after an interruption with Ctrl+C.
 Sessions are stored under `~/.columbina/sessions`. The environment variable `COLUMBINA_HOME` puts
 `~/.columbina` somewhere else. A session is one file of JSON lines to which events are only
 ever appended.
+
+## Services and keys
+
+A model comes from a service, and one adapter talks to every service that speaks the OpenAI
+Chat Completions protocol. Eight of them are known by name.
+
+| Name | Service | Variable that may hold its key |
+|---|---|---|
+| `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
+| `openai` | OpenAI | `OPENAI_API_KEY` |
+| `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
+| `moonshot` | Moonshot AI (Kimi) | `MOONSHOT_API_KEY` |
+| `zhipu` | Zhipu AI (GLM) | `ZAI_API_KEY` |
+| `siliconflow` | SiliconFlow | `SILICONFLOW_API_KEY` |
+| `ollama` | Ollama on the same machine | None. It asks for no key. |
+| `lmstudio` | LM Studio on the same machine | None. It asks for no key. |
+
+The addresses and the variables were read in the documents of each service. The tests of
+this project talk to DeepSeek only, so the other seven entries have not been tried against
+their services. A service that is not in the table is added under a name of the user's own,
+by its address, and the variable `COLUMBINA_API_KEY` may hold its key.
+
+```console
+$ uv run columbina setup
+```
+
+`columbina setup` asks at a terminal for the service, the model, the number of tokens that
+the model takes where that is not known, and the key. Enter keeps what is offered in
+brackets. The answers go into two files in `~/.columbina`. `provider.yml` holds the services
+that were set up and the one that is in use, and it holds no key. `credentials.json` holds
+the keys. `columbina setup --forget NAME` deletes what is stored for a service.
+
+A service and a model can also be named for one run or for one shell. Where several places
+name one, the place that stands higher in this table counts.
+
+| Place | Service | Model |
+|---|---|---|
+| An option | `--provider NAME` | `--model ID` |
+| An environment variable | `COLUMBINA_PROVIDER` | `COLUMBINA_MODEL` |
+| `columbina setup` | The service that is in use. | The model that was named for it. |
+| The profile | `deepseek` | `deepseek-flash` |
+
+Only `deepseek` has a model that is used where none is named. The variable
+`COLUMBINA_CONTEXT_WINDOW` says how many tokens the model takes. Where nothing says so, a
+conversation is not made shorter before the service refuses it as too long. A patch file
+goes before what `columbina setup` stored, and an option goes before a patch file.
+
+A key is looked for when a request is made, first in the variable of the service and then
+in `credentials.json`. The following holds for a key.
+
+- It is typed without being shown. It is never taken from the command line, where the shell
+  would keep it in its history.
+- It lies in `credentials.json` as it is, without encryption. On Linux and macOS the file is
+  made with the mode 600, and a file that other users can read is not used. On Windows the
+  access rules of the directory decide who can read it.
+- It is never part of a profile, of the output of `--dump-config` or of a stored session,
+  and it is cut out of every error message before the message is shown or stored.
+- A command that the agent runs does not find it. Variables whose names contain `KEY`,
+  `TOKEN`, `SECRET` or `PASSWORD` are left out of the environment of a command, and a stored
+  key is in no environment at all.
+- Blanks and line breaks around it are not sent. A key with a character in it that no key
+  has, such as a blank in the middle, is refused before a request is made.
 
 ## Changing files and running commands
 

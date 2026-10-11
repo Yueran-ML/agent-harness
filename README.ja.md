@@ -77,7 +77,15 @@ uv sync
 
 `uv sync` は、クローンの中に仮想環境を作り、Columbina に必要なものをそこにインストールします。
 
-既定のプロファイルは DeepSeek に接続するため、DeepSeek の API キーが必要です。キーは環境変数 `DEEPSEEK_API_KEY` に設定します。Windows の PowerShell では次のようにします。
+モデルはサービスから提供され、サービスには API キーが必要です。Columbina はその両方を尋ねます。クローンの中で次のコマンドを実行します。
+
+```bash
+uv run columbina setup
+```
+
+どのサービスを使うか、どのモデルを使うか、そしてキーを尋ねます。DeepSeek、OpenAI、OpenRouter、Moonshot、Zhipu、SiliconFlow は名前で選べます。同じマシンで動く Ollama と LM Studio も同様です。OpenAI Chat Completions プロトコルに対応するほかのサービスは、アドレスを指定して追加できます。キーは入力しても画面に表示されず、`~/.columbina/credentials.json` に保存されます。保管の方法は[ガイド](docs/guide.ja.md#サービスとキー)で説明しています。
+
+キーは環境変数で渡すこともでき、環境変数は保存したキーより優先されます。何も選んでいない場合、Columbina は DeepSeek に接続し、`DEEPSEEK_API_KEY` を読みます。Windows の PowerShell では次のようにします。
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "your-key"
@@ -89,7 +97,7 @@ Linux や macOS のシェルでは次のようにします。
 export DEEPSEEK_API_KEY="your-key"
 ```
 
-このように設定した変数は、そのウィンドウを閉じるまで有効です。Columbina は、リクエストを送るときにこの変数を読み取ります。キーが設定ファイルに書かれることはなく、エラーメッセージからも、表示や保存の前に必ず取り除かれます。
+このように設定した変数は、そのウィンドウを閉じるまで有効です。キーはリクエストを送るときに読み取られます。プロファイルや保存されたセッションに書き込まれることはなく、エラーメッセージからも、表示や保存の前に必ず取り除かれます。
 
 クローンの中で次のコマンドを実行すると、ターミナルでの対話が始まります。
 
@@ -113,7 +121,7 @@ uv tool install .
 
 ## ドキュメント
 
-- [ガイド](docs/guide.ja.md)では、そのほかのことを説明しています。ターミナルとそのコマンド、長い対話、単一タスクの実行、権限、Columbina のアーキテクチャ、テストの方法、進捗です。
+- [ガイド](docs/guide.ja.md)では、そのほかのことを説明しています。ターミナルとそのコマンド、長い対話、単一タスクの実行、サービスとキー、権限、Columbina のアーキテクチャ、テストの方法、進捗です。
 - [設計文書](docs/plans/2026-10-09-columbina-design.md)は中国語で書かれています。各段階の計画も同じディレクトリにあります。
 - [`docs/research`](docs/research) には、Columbina が手本にしたハーネスから学んだことをまとめています。
 - [`docs/protocol`](docs/protocol) には、デスクトップアプリがプログラムとやり取りするメッセージを記述しています。

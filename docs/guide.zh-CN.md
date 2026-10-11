@@ -6,7 +6,7 @@
 
 Columbina 从零写起，以三个现有的 harness 为参考。内核和循环参考 DeepSeek Harness，Codex 和 Claude Code 做得更好的地方则取自它们。哪一处取自哪里，记在 [`docs/research`](research) 和[设计文档](plans/2026-10-09-columbina-design.md)里。
 
-[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [权限](#改文件与执行命令) · [架构](#架构) · [内核](#内核) · [开发](#开发) · [路线图](#进展)
+[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [服务与密钥](#模型服务与密钥) · [权限](#改文件与执行命令) · [架构](#架构) · [内核](#内核) · [开发](#开发) · [路线图](#进展)
 
 ## 功能一览
 
@@ -180,7 +180,8 @@ $ uv run columbina run "What is the codename of release 0.1? ..." --session-id d
 | 选项 | 作用 |
 |---|---|
 | `--cwd DIR` | Agent 的工作目录，必须已经存在。除非会话有完全访问权限，否则不碰它之外的任何文件。 |
-| `--model ID` | 要用的模型。默认是 `deepseek-flash`，设置了 `COLUMBINA_MODEL` 时取它的值。 |
+| `--provider NAME` | 模型来自哪个服务，见[模型服务与密钥](#模型服务与密钥)。 |
+| `--model ID` | 要用的模型。没有指定时用哪一个，见[模型服务与密钥](#模型服务与密钥)。 |
 | `--session-id ID` | 要开始的会话。这个 id 的会话已经存在时接着它继续。 |
 | `--continue` | 用于对话。接着工作目录里最近用过的会话继续。 |
 | `--permission PRESET` | Agent 能做多少，可以是 `read-only`、默认的 `workspace-write` 或 `full-access`。 |
@@ -193,6 +194,48 @@ $ uv run columbina run "What is the codename of release 0.1? ..." --session-id d
 回合正常完成时 `run` 的退出码是 0，因为别的原因结束时是 1。命令行、清单或某个插件有问题时是 2，这种情况下不发任何请求。被 Ctrl+C 中断之后是 130。
 
 会话保存在 `~/.columbina/sessions` 下。环境变量 `COLUMBINA_HOME` 可以把 `~/.columbina` 换到别处。一个会话是一个 JSON 行文件，事件只会往里追加。
+
+## 模型服务与密钥
+
+模型来自某个服务。凡是支持 OpenAI Chat Completions 协议的服务，都由同一个适配器对接，其中八个可以直接按名字使用。
+
+| 名字 | 服务 | 可以存放密钥的环境变量 |
+|---|---|---|
+| `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
+| `openai` | OpenAI | `OPENAI_API_KEY` |
+| `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
+| `moonshot` | Moonshot AI（Kimi） | `MOONSHOT_API_KEY` |
+| `zhipu` | 智谱（GLM） | `ZAI_API_KEY` |
+| `siliconflow` | 硅基流动 | `SILICONFLOW_API_KEY` |
+| `ollama` | 本机上的 Ollama | 没有，它不需要密钥。 |
+| `lmstudio` | 本机上的 LM Studio | 没有，它不需要密钥。 |
+
+地址和变量名取自各个服务的文档。本项目的测试只连接 DeepSeek，其余七项没有在对应的服务上实际试过。表里没有的服务可以起一个自己的名字、按地址添加，它的密钥可以放在环境变量 `COLUMBINA_API_KEY` 里。
+
+```console
+$ uv run columbina setup
+```
+
+`columbina setup` 在终端里依次询问服务、模型、模型能接收多少 token（不知道时才问）和密钥。直接按回车就采用方括号里给出的值。回答写进 `~/.columbina` 里的两个文件。`provider.yml` 记录设置过的服务和正在使用的那一个，里面没有密钥。`credentials.json` 存放密钥。`columbina setup --forget NAME` 删除为某个服务保存的内容。
+
+服务和模型也可以只为一次运行或一个 shell 指定。几处都指定了的时候，以下表中位置靠上的为准。
+
+| 位置 | 服务 | 模型 |
+|---|---|---|
+| 选项 | `--provider NAME` | `--model ID` |
+| 环境变量 | `COLUMBINA_PROVIDER` | `COLUMBINA_MODEL` |
+| `columbina setup` | 正在使用的服务。 | 为它指定的模型。 |
+| 清单（profile） | `deepseek` | `deepseek-flash` |
+
+只有 `deepseek` 在没有指定模型时有默认模型。环境变量 `COLUMBINA_CONTEXT_WINDOW` 说明模型能接收多少 token。哪里都没有说明时，对话不会提前压缩，要等服务以过长为由拒绝之后才缩短。补丁文件优先于 `columbina setup` 保存的内容，选项又优先于补丁文件。
+
+密钥在发请求时才查找，先看这个服务的环境变量，再看 `credentials.json`。关于密钥有以下几点。
+
+- 输入时屏幕上不显示。程序从不从命令行读取密钥，因为 shell 会把它留在历史记录里。
+- 它原样存放在 `credentials.json` 里，没有加密。在 Linux 和 macOS 上，这个文件以 600 权限创建，其他用户能读的文件不会被采用。在 Windows 上，谁能读它由所在目录的访问规则决定。
+- 它从不出现在清单（profile）、`--dump-config` 的输出或保存下来的会话里，每条报错信息在显示或保存之前也会先剔除它。
+- Agent 执行的命令拿不到它。名字里带有 `KEY`、`TOKEN`、`SECRET` 或 `PASSWORD` 的变量不会进入命令的环境，保存下来的密钥则不在任何环境里。
+- 密钥两端的空白和换行不会发出去。密钥里如果有任何密钥都不会有的字符，例如夹在中间的空格，程序在发请求之前就会拒绝它。
 
 ## 改文件与执行命令
 

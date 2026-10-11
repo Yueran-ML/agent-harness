@@ -639,12 +639,16 @@ async def test_a_server_that_was_never_connected_is_tried_as_often_and_then_give
     # The first attempt is over, and whoever waited for it goes on while the next ones are made.
     assert connection.state == "connecting"
     assert connection.failure == "no such program: mcp-nowhere"
+    # The keeper goes on by itself from here: it waits, and is held in that wait.
+    await asyncio.wait_for(naps.begun.wait(), 5)
     assert (len(tried), naps.asked) == (1, [FIRST_WAIT])
     naps.held = False
     naps.end()
     await until(lambda: connection.state == "gave up")
     assert len(tried) == ATTEMPTS + 1
     assert naps.asked == [0.5, 1, 2, 4, 8, 16, 30, 30, 30, 30]
+    # Why it is given up stays to be read.
+    assert connection.failure == "no such program: mcp-nowhere"
     # There were no tools, so nobody is told that there are none.
     assert told == []
 
@@ -765,6 +769,44 @@ async def test_tools_that_a_server_of_2026_says_have_changed_are_listed_anew(
     await until(lambda: names(connection) == [*BASE, "more1"])
     assert told == [BASE, [*BASE, "more1"]]
     assert shown(await connection.call("more1", {}, 5)) == "more1"
+
+
+@pytest.mark.parametrize(
+    ("mode", "grow"), [("auto", "grow"), ("legacy", "grow_as_before")], ids=["of 2026", "older"]
+)
+async def test_tools_that_change_while_they_are_listed_for_the_first_time_are_listed_anew(
+    make: Callable[..., Connection],
+    served: Served,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    grow: str,
+) -> None:
+    whole = Client.list_tools
+    first = [True]
+
+    async def and_then_one_more(self: Client, **what: Any) -> ListToolsResult:
+        listed = await whole(self)
+        if first[0]:
+            first[0] = False
+            # The server has one tool more before anybody has read this list, and says so.
+            await self.call_tool(grow, {})
+        return listed
+
+    monkeypatch.setattr(Client, "list_tools", and_then_one_more)
+    told: list[list[str]] = []
+    connection = make(
+        "served",
+        lambda: Cuttable(served),
+        mode=mode,
+        on_tools=telling(lambda: told.append(names(connection))),
+    )
+
+    await begun(connection)
+
+    # The server said that its tools changed before anybody held the list. That is heard
+    # all the same: the server was listened to before it was asked for its tools.
+    await until(lambda: names(connection) == [*BASE, "more1"])
+    assert told == [BASE, [*BASE, "more1"]]
 
 
 async def test_tools_that_an_older_server_says_have_changed_are_listed_anew(
@@ -910,12 +952,46 @@ async def test_a_list_that_names_a_tool_twice_is_not_used(
     doubled[0] = False
     await connection.call("grow", {}, 5)
     await until(lambda: names(connection) == [*BASE, "more1"])
+    # A list that can be used ends what was wrong with the one before it.
+    assert connection.failure is None
     # And a list like that leaves a good one in place, too.
     doubled[0] = True
     await connection.call("grow", {}, 5)
     await until(lambda: connection.failure == twice)
     assert names(connection) == [*BASE, "more1"]
     assert told == [[*BASE, "more1"]]
+    assert caplog.messages == [f"the MCP server served: {twice}"] * 2
+
+
+async def test_a_list_that_is_as_it_was_ends_what_was_wrong_with_the_one_before_it(
+    make: Callable[..., Connection], served: Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    whole = Client.list_tools
+    lists: list[ListToolsResult] = []
+
+    async def listing(self: Client, **what: Any) -> ListToolsResult:
+        lists.append(await whole(self))
+        if len(lists) == 2:
+            return lists[1].model_copy(update={"tools": [*lists[1].tools, lists[1].tools[1]]})
+        # The first list again, whatever the server has by now.
+        return lists[0]
+
+    monkeypatch.setattr(Client, "list_tools", listing)
+    told: list[list[str]] = []
+    connection = make(
+        "served", lambda: served.server, on_tools=telling(lambda: told.append(names(connection)))
+    )
+    await begun(connection)
+
+    await connection.call("grow", {}, 5)
+    await until(lambda: connection.failure is not None)
+    assert connection.failure == "the server lists the tool 'nap' twice, so its list is not used"
+    await connection.call("grow", {}, 5)
+    await until(lambda: connection.failure is None)
+
+    # Nobody was told of tools: they are the ones that were there.
+    assert names(connection) == BASE
+    assert told == [BASE]
 
 
 async def test_a_server_whose_word_of_its_tools_ends_in_good_order_is_asked_for_them_once_more(
@@ -951,11 +1027,19 @@ async def test_a_server_whose_word_of_its_tools_ends_in_good_order_is_asked_for_
 async def test_a_server_that_does_not_say_when_its_tools_change_is_none_the_worse_for_it(
     make: Callable[..., Connection], served: Served, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    whole = Client.list_tools
+    asked: list[None] = []
+
+    async def counted(self: Client, **what: Any) -> ListToolsResult:
+        asked.append(None)
+        return await whole(self)
+
     @asynccontextmanager
     async def refused(self: Client, **what: Any) -> AsyncGenerator[None]:
         raise MCPError(-32601, "Method not found")
         yield
 
+    monkeypatch.setattr(Client, "list_tools", counted)
     monkeypatch.setattr(Client, "listen", refused)
 
     connection = await begun(make("served", lambda: served.server))
@@ -963,6 +1047,8 @@ async def test_a_server_that_does_not_say_when_its_tools_change_is_none_the_wors
 
     assert connection.state == "connected"
     assert shown(await connection.call("add", TWO, 5)) == "2"
+    # Its tools were asked for once. Nothing will say that they changed, so nothing asks again.
+    assert len(asked) == 1
 
 
 async def test_whoever_is_told_of_the_tools_and_fails_does_not_end_the_connection(

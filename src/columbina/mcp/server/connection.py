@@ -26,10 +26,14 @@ A connection that is lost
 Tools that change
     A server may say that its tools changed. A server that speaks the
     protocol of 2026 says so to a client that listens, and an older one sends
-    a notification. Either way the tools are listed anew. A list that cannot
-    be had, or that names one tool twice, leaves the old one in place. A
-    server whose word breaks off is asked for its list as well, and that
-    shows whether the connection broke off with it.
+    a notification. Either way the tools are listed anew. A server says
+    nothing again of what changed before it was listened to. So it is asked
+    to say when its tools change first, and for its tools after that: no
+    change falls between the two. A list that cannot be had, or that names
+    one tool twice, leaves the old one in place, and the next list that can
+    be used ends what was wrong with it. A server whose word breaks off is
+    asked for its list as well, and that shows whether the connection broke
+    off with it.
 
 Nothing here knows what a tool is to the rest of the program. The tools are
 handed out as the server listed them, and a result as the SDK made it.
@@ -38,7 +42,7 @@ handed out as the server listed them, and a result as the SDK made it.
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
@@ -382,9 +386,12 @@ class Connection:
             try:
                 async with limit:
                     client = await stack.enter_async_context(self._made())
+                    # First the server listens, and then it lists. It says nothing again
+                    # of what changed before it listened, so nothing may change in between.
+                    said = await self._listening(stack, client)
                     listed = await _listed(client)
                 since = self._clock()
-                await self._held(client, listed)
+                await self._held(client, listed, said)
                 self._failure = "the connection was lost"
             finally:
                 # Whoever calls from now on waits for the next connection.
@@ -413,17 +420,49 @@ class Connection:
             cache=None,
         )
 
-    async def _held(self, client: Client, listed: Sequence[Tool]) -> None:
+    async def _listening(
+        self, stack: AsyncExitStack, client: Client
+    ) -> AsyncIterator[object] | None:
+        """Have a server say when its tools change, for as long as its client is entered.
+
+        Returns:
+            What gives something whenever the server says that its tools
+            changed, or ``None`` for a server that does not say so.
+        """
+        try:
+            return await stack.enter_async_context(client.listen(tools_list_changed=True))
+        except ListenNotSupportedError:
+            # An older server sends a notification without being asked, see :meth:`_told`.
+            return self._notified()
+        except Exception as error:
+            # It refuses, or its word broke off at once. Whether the connection broke off
+            # with it shows when the tools are asked for.
+            logger.debug(
+                "the MCP server %s does not say when its tools change: %s",
+                self.server,
+                self._why(error),
+            )
+            return None
+
+    async def _notified(self) -> AsyncIterator[None]:
+        """Give something whenever a server of the older protocol said that its tools changed."""
+        while True:
+            await self._changed.wait()
+            self._changed.clear()
+            yield
+
+    async def _held(
+        self, client: Client, listed: Sequence[Tool], said: AsyncIterator[object] | None
+    ) -> None:
         """Offer what a connection gives until the connection is lost."""
         self._lost.clear()
         self._client = client
         self._ever = True
         self._instructions = client.instructions
-        self._failure = None
         await self._offer(listed)
         self._move()
         self._settled.set()
-        watching = asyncio.ensure_future(self._watch(client))
+        watching = asyncio.ensure_future(self._watch(client, said))
         try:
             await self._lost.wait()
         finally:
@@ -446,6 +485,10 @@ class Connection:
             self._failure = f"the server lists the tool {twice!r} twice, so its list is not used"
             logger.warning("the MCP server %s: %s", self.server, self._failure)
             return
+        if self._client is not None:
+            # A list that can be used. What was wrong before it, with a list or with the
+            # connection, is over. Where the server is given up, why it is stays to be read.
+            self._failure = None
         if tuple(listed) == self._tools:
             return
         self._tools = tuple(listed)
@@ -463,25 +506,19 @@ class Connection:
         if isinstance(message, ToolListChangedNotification):
             self._changed.set()
 
-    async def _watch(self, client: Client) -> None:
+    async def _watch(self, client: Client, said: AsyncIterator[object] | None) -> None:
         """List the tools anew whenever the server says that they changed."""
+        if said is None:
+            return
         try:
-            async with client.listen(tools_list_changed=True) as said:
-                async for _ in said:
-                    await self._relist(client)
-        except ListenNotSupportedError:
-            # An older server sends a notification, see :meth:`_told`.
-            while True:
-                await self._changed.wait()
-                self._changed.clear()
+            async for _ in said:
                 await self._relist(client)
         except Exception as error:
             logger.debug(
                 "the MCP server %s says no more of its tools: %s", self.server, self._why(error)
             )
-        # The server says no more, because it ended that in good order, never began it, or
-        # its word broke off. Asking for the list once more shows whether the connection
-        # broke off with it.
+        # The server says no more, because it ended that in good order or its word broke
+        # off. Asking for the list once more shows whether the connection broke off with it.
         await self._relist(client)
 
     async def _relist(self, client: Client) -> None:

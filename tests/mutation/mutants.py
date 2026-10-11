@@ -14391,14 +14391,14 @@ _MCP = (
     mutant(
         "why a connection failed is still said after it was made again",
         MCP_CONNECTION,
-        "        self._failure = None\n        await self._offer(listed)\n",
-        "        await self._offer(listed)\n",
+        "            self._failure = None\n        if tuple(listed) == self._tools:\n",
+        "            pass\n        if tuple(listed) == self._tools:\n",
     ),
     mutant(
         "the tools of a connection that was made are not offered",
         MCP_CONNECTION,
-        "        self._failure = None\n        await self._offer(listed)\n",
-        "        self._failure = None\n",
+        "        self._instructions = client.instructions\n        await self._offer(listed)\n",
+        "        self._instructions = client.instructions\n",
     ),
     mutant(
         "whoever waits for a connection is not told that it was made",
@@ -14415,7 +14415,7 @@ _MCP = (
     mutant(
         "nobody listens to a server while it is connected",
         MCP_CONNECTION,
-        "        watching = asyncio.ensure_future(self._watch(client))\n",
+        "        watching = asyncio.ensure_future(self._watch(client, said))\n",
         "        watching = asyncio.ensure_future(asyncio.sleep(0))\n",
     ),
     mutant(
@@ -14481,26 +14481,26 @@ _MCP = (
     mutant(
         "a server of 2026 is not asked to say when its tools change",
         MCP_CONNECTION,
-        "            async with client.listen(tools_list_changed=True) as said:\n",
-        "            async with client.listen(tools_list_changed=False) as said:\n",
+        "            return await stack.enter_async_context(client.listen(tools_list_changed=True))\n",
+        "            return await stack.enter_async_context(client.listen(tools_list_changed=False))\n",
     ),
     mutant(
-        "tools that a server of 2026 says have changed are not listed anew",
+        "tools that a server says have changed are not listed anew",
         MCP_CONNECTION,
-        "                async for _ in said:\n                    await self._relist(client)\n",
-        "                async for _ in said:\n                    pass\n",
+        "            async for _ in said:\n                await self._relist(client)\n",
+        "            async for _ in said:\n                pass\n",
     ),
     mutant(
         "what an older server said once of its tools is heard without end",
         MCP_CONNECTION,
-        "                self._changed.clear()\n",
+        "            self._changed.clear()\n",
         "",
     ),
     mutant(
         "a server that says no more of its tools is not asked for them once more",
         MCP_CONNECTION,
-        "        # broke off with it.\n        await self._relist(client)\n",
-        "        # broke off with it.\n",
+        "        # off. Asking for the list once more shows whether the connection broke off with it.\n        await self._relist(client)\n",
+        "        # off. Asking for the list once more shows whether the connection broke off with it.\n",
     ),
     mutant(
         "a list that is asked for anew may take as long as it likes",
@@ -15053,6 +15053,54 @@ _MCP = (
         COMMAND_MCP,
         '        line = f"{named.ljust(width)}  {server.state}  {tools}"\n',
         '        line = f"{named}  {server.state}  {tools}"\n',
+    ),
+    mutant(
+        "a server is asked for its tools before it is asked to say when they change",
+        MCP_CONNECTION,
+        "                    said = await self._listening(stack, client)\n                    listed = await _listed(client)\n",
+        "                    listed = await _listed(client)\n                    said = await self._listening(stack, client)\n",
+    ),
+    mutant(
+        "an older server is taken for one that does not say when its tools change",
+        MCP_CONNECTION,
+        "            return self._notified()\n",
+        "            return None\n",
+    ),
+    mutant(
+        "a server that will not say when its tools change is not connected",
+        MCP_CONNECTION,
+        "                self._why(error),\n            )\n            return None\n",
+        "                self._why(error),\n            )\n            raise\n",
+    ),
+    mutant(
+        "a server that does not say when its tools change is asked for them once more",
+        MCP_CONNECTION,
+        "        if said is None:\n            return\n        try:\n            async for _ in said:\n",
+        "        try:\n            async for _ in said:\n",
+    ),
+    mutant(
+        "an older server is heard once when it says that its tools changed, and then no more",
+        MCP_CONNECTION,
+        "        while True:\n            await self._changed.wait()\n            self._changed.clear()\n            yield\n",
+        "        await self._changed.wait()\n        self._changed.clear()\n        yield\n",
+    ),
+    mutant(
+        "an older server is taken to say that its tools changed without its saying so",
+        MCP_CONNECTION,
+        "            await self._changed.wait()\n            self._changed.clear()\n            yield\n",
+        "            self._changed.clear()\n            yield\n",
+    ),
+    mutant(
+        "what was wrong with a list is over only once the tools are others",
+        MCP_CONNECTION,
+        "        if self._client is not None:\n            # A list that can be used. What was wrong before it, with a list or with the\n            # connection, is over. Where the server is given up, why it is stays to be read.\n            self._failure = None\n        if tuple(listed) == self._tools:\n            return\n",
+        "        if tuple(listed) == self._tools:\n            return\n        if self._client is not None:\n            self._failure = None\n",
+    ),
+    mutant(
+        "why a server was given up is no longer said once its tools are withdrawn",
+        MCP_CONNECTION,
+        "        if self._client is not None:\n            # A list that can be used.",
+        "        if True:\n            # A list that can be used.",
     ),
 )
 

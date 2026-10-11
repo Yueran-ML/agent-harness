@@ -13,6 +13,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+import columbina.llm
 from columbina.kernel import Context
 from columbina.llm import (
     LLM,
@@ -1691,6 +1692,18 @@ async def test_cancelling_the_reader_closes_the_response(ctx: Context, llm: Llm)
 # The plugin, over a real socket
 
 
+@pytest.fixture
+async def unhurried(ctx: Context) -> Llm:
+    """The model service for a request that goes over a real socket.
+
+    The other tests give a reply fifty milliseconds to begin. That is plenty for a reply
+    that is written down in the test. A socket takes longer than that to connect and to
+    carry its first bytes where the machine is busy, and the test would fail for it.
+    """
+    await ctx.plugin(columbina.llm, {"idle_timeout_seconds": 30})
+    return ctx.use(LLM)
+
+
 async def serve(reply: bytes, received: list[bytes]) -> asyncio.Server:
     """Start a server on a free local port that answers one request with ``reply`` and hangs up."""
 
@@ -1709,7 +1722,7 @@ def http(body: bytes) -> bytes:
     return b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n" + body
 
 
-async def test_the_plugin_talks_to_a_service_over_a_socket(ctx: Context, llm: Llm) -> None:
+async def test_the_plugin_talks_to_a_service_over_a_socket(ctx: Context, unhurried: Llm) -> None:
     received: list[bytes] = []
     server = await serve(http(TEXT_REPLY), received)
     port = server.sockets[0].getsockname()[1]
@@ -1718,7 +1731,7 @@ async def test_the_plugin_talks_to_a_service_over_a_socket(ctx: Context, llm: Ll
         {"provider": "local", "base_url": f"http://127.0.0.1:{port}/v1", "api_key_env": "TEST_KEY"},
     )
 
-    call = await ask(llm, config=CallConfig(provider="local", model="tiny"))
+    call = await ask(unhurried, config=CallConfig(provider="local", model="tiny"))
     await fiber.dispose()
     server.close()
     await server.wait_closed()
@@ -1732,7 +1745,7 @@ async def test_the_plugin_talks_to_a_service_over_a_socket(ctx: Context, llm: Ll
 
 
 async def test_a_key_with_a_line_break_after_it_reaches_a_service_without_it(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Over a socket the header is checked by the library that writes it. It refuses a line
     # break, and it names the header that it refuses, with the key in it.
@@ -1745,7 +1758,7 @@ async def test_a_key_with_a_line_break_after_it_reaches_a_service_without_it(
         {"provider": "local", "base_url": f"http://127.0.0.1:{port}/v1", "api_key_env": "TEST_KEY"},
     )
 
-    call = await ask(llm, config=CallConfig(provider="local", model="tiny"))
+    call = await ask(unhurried, config=CallConfig(provider="local", model="tiny"))
     server.close()
     await server.wait_closed()
 
@@ -1754,13 +1767,15 @@ async def test_a_key_with_a_line_break_after_it_reaches_a_service_without_it(
     assert f"Bearer {KEY}\r\n".encode() in received[0]
 
 
-async def test_a_service_that_hangs_up_in_the_middle_is_a_failure(ctx: Context, llm: Llm) -> None:
+async def test_a_service_that_hangs_up_in_the_middle_is_a_failure(
+    ctx: Context, unhurried: Llm
+) -> None:
     received: list[bytes] = []
     server = await serve(http(sse(delta(content="Hel"))), received)
     port = server.sockets[0].getsockname()[1]
     await ctx.plugin(openai_chat, {"provider": "local", "base_url": f"http://127.0.0.1:{port}"})
 
-    call = await ask(llm, config=CallConfig(provider="local", model="tiny"))
+    call = await ask(unhurried, config=CallConfig(provider="local", model="tiny"))
     server.close()
     await server.wait_closed()
 
@@ -1769,22 +1784,24 @@ async def test_a_service_that_hangs_up_in_the_middle_is_a_failure(ctx: Context, 
     assert call.message.text == "Hel"
 
 
-async def test_a_port_where_nothing_listens_is_a_transport_failure(ctx: Context, llm: Llm) -> None:
+async def test_a_port_where_nothing_listens_is_a_transport_failure(
+    ctx: Context, unhurried: Llm
+) -> None:
     server = await serve(b"", [])
     port = server.sockets[0].getsockname()[1]
     server.close()
     await server.wait_closed()
     await ctx.plugin(openai_chat, {"provider": "local", "base_url": f"http://127.0.0.1:{port}"})
 
-    call = await ask(llm, config=CallConfig(provider="local", model="tiny"))
+    call = await ask(unhurried, config=CallConfig(provider="local", model="tiny"))
 
+    # Windows takes two seconds to say that nothing listens, and then says so like the others.
     assert call.failure is not None
-    # Windows reports a refused connection as a timeout of the connect call.
-    assert call.failure.code in ("TRANSPORT", "TIMEOUT")
+    assert call.failure.code == "TRANSPORT"
 
 
 async def test_the_plugin_takes_the_file_of_keys_by_its_path(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     file = tmp_path / "credentials.json"
@@ -1802,7 +1819,7 @@ async def test_the_plugin_takes_the_file_of_keys_by_its_path(
         },
     )
 
-    call = await ask(llm, config=CallConfig(provider="local", model="tiny"))
+    call = await ask(unhurried, config=CallConfig(provider="local", model="tiny"))
     server.close()
     await server.wait_closed()
 

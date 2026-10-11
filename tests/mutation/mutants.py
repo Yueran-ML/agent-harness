@@ -124,6 +124,10 @@ MCP_OFFER = "src/columbina/mcp/server/offer.py"
 MCP_REACH = "src/columbina/mcp/server/reach.py"
 MCP_SERVED = "src/columbina/mcp/server/served.py"
 COMMAND_MCP = "src/columbina/commands/mcp.py"
+SERVE_RPC = "src/columbina/apps/serve/rpc.py"
+SERVE_WIRE = "src/columbina/apps/serve/wire.py"
+SERVE_SERVER = "src/columbina/apps/serve/server.py"
+SERVE_BUNDLE = "src/columbina/bundles/serve.yml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -3380,6 +3384,54 @@ _BASE = (
         "      - id: command-mcp\n        plugin: columbina.commands.mcp\n",
         "",
     ),
+    mutant(
+        "the program that serves takes its wire after its plugins are loaded",
+        LAUNCHER,
+        "            return asyncio.run(_serve(entries, env))\n",
+        "            return asyncio.run(_run(entries, env))\n",
+    ),
+    mutant(
+        "a process without standard streams is loaded all the same",
+        LAUNCHER,
+        '            f"has none: {error}"\n        )\n        return 2\n    return await _run(entries, env, wire)\n',
+        '            f"has none: {error}"\n        )\n    return await _run(entries, env, None)\n',
+    ),
+    mutant(
+        "the wire that was taken is not handed to the program",
+        LAUNCHER,
+        "        if wire is not None:\n            root.provide(WIRE, wire)\n",
+        "",
+    ),
+    mutant(
+        "the command line of the program that serves can name a session",
+        LAUNCHER,
+        '    _shared(serve, "serve", session=False)\n',
+        '    _shared(serve, "serve")\n',
+    ),
+    mutant(
+        "the program that serves loads the program of the terminal",
+        LAUNCHER,
+        '    _shared(serve, "serve", session=False)\n',
+        '    _shared(serve, "cli", session=False)\n',
+    ),
+    mutant(
+        "the program that serves has no command that lists the MCP servers",
+        SERVE_BUNDLE,
+        "      - id: command-mcp\n        plugin: columbina.commands.mcp\n",
+        "",
+    ),
+    mutant(
+        "the program that serves talks to another model than the one that is the default",
+        SERVE_BUNDLE,
+        "            model: ${COLUMBINA_MODEL:-deepseek-flash}\n",
+        "            model: ${COLUMBINA_MODEL:-deepseek-pro}\n",
+    ),
+    mutant(
+        "the program that serves is not told how much its model takes",
+        SERVE_BUNDLE,
+        "            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}\n",
+        "",
+    ),
 )
 
 _TRANSCRIPT = (
@@ -5898,8 +5950,8 @@ _CHAT = (
     mutant(
         "the wish to take up the last session is not handed to the conversation",
         LAUNCHER,
-        '            elif args.resume:\n                config["resume"] = True\n',
-        '            elif args.resume:\n                config["resume"] = False\n',
+        '            elif args.command == _CHAT and args.resume:\n                config["resume"] = True\n',
+        '            elif args.command == _CHAT and args.resume:\n                config["resume"] = False\n',
     ),
     mutant(
         "a conversation loads the program that runs one task",
@@ -15152,6 +15204,943 @@ _MCP = (
     ),
 )
 
+_SERVE = (
+    # A line and the message that it holds
+    mutant(
+        "a line that is no UTF-8 is read as well as it can be",
+        SERVE_RPC,
+        '        written = line.decode("utf-8")\n',
+        '        written = line.decode("utf-8", "replace")\n',
+    ),
+    mutant(
+        "a number that JSON does not have is taken for one",
+        SERVE_RPC,
+        "        read: object = json.loads(written, parse_constant=_no_such_number, parse_int=_whole)\n",
+        "        read: object = json.loads(written, parse_int=_whole)\n",
+    ),
+    mutant(
+        "several messages on one line are not told from something that is no message",
+        SERVE_RPC,
+        "    if isinstance(read, list):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a message of another version of the protocol is taken",
+        SERVE_RPC,
+        "    if not versioned:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "the request that a message of the wrong version was is not named in the answer",
+        SERVE_RPC,
+        '        raise MalformedLineError(INVALID_REQUEST, \'A message says "jsonrpc": "2.0".\', id)\n',
+        '        raise MalformedLineError(INVALID_REQUEST, \'A message says "jsonrpc": "2.0".\')\n',
+    ),
+    mutant(
+        "a method that is no text is taken for one",
+        SERVE_RPC,
+        "    if not isinstance(method, str):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "what a notification is said with is taken as it comes",
+        SERVE_RPC,
+        '        shaped = cast("dict[str, object]", params) if isinstance(params, dict) else {}\n',
+        '        shaped = cast("dict[str, object]", params)\n',
+    ),
+    mutant(
+        "a request whose id is none is taken for something that wants no answer",
+        SERVE_RPC,
+        '    if "id" not in message:\n',
+        "    if id is None:\n",
+    ),
+    mutant(
+        "params that are no object are taken as they come",
+        SERVE_RPC,
+        "    if not isinstance(params, dict):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "true and false count as ids",
+        SERVE_RPC,
+        "    if isinstance(given, str) or (isinstance(given, int) and not isinstance(given, bool)):\n",
+        "    if isinstance(given, str | int):\n",
+    ),
+    mutant(
+        "an answer that holds a result and an error is taken for a result",
+        SERVE_RPC,
+        '    proper = versioned and id is not None and "result" in message and "error" not in message\n',
+        '    proper = versioned and id is not None and "result" in message\n',
+    ),
+    mutant(
+        "an answer that is an error is not said to have failed",
+        SERVE_RPC,
+        '    return Response(id, message.get("result") if proper else None, failed=not proper)\n',
+        '    return Response(id, message.get("result") if proper else None, failed=False)\n',
+    ),
+    mutant(
+        "what an answer that failed holds is passed on",
+        SERVE_RPC,
+        '    return Response(id, message.get("result") if proper else None, failed=not proper)\n',
+        '    return Response(id, message.get("result"), failed=not proper)\n',
+    ),
+    mutant(
+        "what goes out has room between its parts",
+        SERVE_RPC,
+        '    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))\n',
+        "    return json.dumps(value, ensure_ascii=False)\n",
+    ),
+    mutant(
+        "every character beyond ASCII is spelled out in what goes out",
+        SERVE_RPC,
+        '    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))\n',
+        '    return json.dumps(value, separators=(",", ":"))\n',
+    ),
+    mutant(
+        "an error is sent in the place of a result",
+        SERVE_RPC,
+        '    return f\'{{"jsonrpc":"2.0","id":{text(id)},"error":{error}}}\'\n',
+        '    return f\'{{"jsonrpc":"2.0","id":{text(id)},"result":{error}}}\'\n',
+    ),
+    mutant(
+        "an answer does not name the request that it answers",
+        SERVE_RPC,
+        '    return f\'{{"jsonrpc":"2.0","id":{text(id)},"result":{result}}}\'\n',
+        '    return f\'{{"jsonrpc":"2.0","id":null,"result":{result}}}\'\n',
+    ),
+    mutant(
+        "a line with half a character in it cannot be sent",
+        SERVE_RPC,
+        '        return json.dumps(json.loads(line), separators=(",", ":")).encode("ascii") + b"\\n"\n',
+        "        raise\n",
+    ),
+    mutant(
+        "a line goes out without its line break",
+        SERVE_RPC,
+        '        return line.encode("utf-8") + b"\\n"\n',
+        '        return line.encode("utf-8")\n',
+    ),
+    # The wire
+    mutant(
+        "the carriage return before a line break stays in the line",
+        SERVE_WIRE,
+        '                    arrived = line.removesuffix(b"\\r")\n',
+        "                    arrived = line\n",
+    ),
+    mutant(
+        "a last line that was not ended is dropped",
+        SERVE_WIRE,
+        '        elif parts:\n            self._hand(b"".join(parts).removesuffix(b"\\r"))\n',
+        "",
+    ),
+    mutant(
+        "a line that is too long is handed over where it came in one piece",
+        SERVE_WIRE,
+        "                if too_long or len(line) > self._limit:\n",
+        "                if too_long:\n",
+    ),
+    mutant(
+        "a line that is as long as a line may be is dropped",
+        SERVE_WIRE,
+        "                if too_long or len(line) > self._limit:\n",
+        "                if too_long or len(line) >= self._limit:\n",
+    ),
+    mutant(
+        "the end of a line that was too long is taken for a line",
+        SERVE_WIRE,
+        "                        held = 0\n                        too_long = True\n",
+        "                        held = 0\n",
+    ),
+    mutant(
+        "a line that is too long and never ends is not said to have been one",
+        SERVE_WIRE,
+        "        if too_long:\n            self._hand(None)\n        elif parts:\n",
+        "        if parts and not too_long:\n",
+    ),
+    mutant(
+        "closing does not wait for what was sent to be written",
+        SERVE_WIRE,
+        "                await self._written.wait()\n",
+        "                pass\n",
+    ),
+    mutant(
+        "closing waits for good for an other side that does not read",
+        SERVE_WIRE,
+        "            async with asyncio.timeout(_LAST_WORDS_SECONDS):\n",
+        "            async with asyncio.timeout(None):\n",
+    ),
+    mutant(
+        "nobody is told that the other side is gone",
+        SERVE_WIRE,
+        "                    self._gone = True\n                    self._hand(_END)\n",
+        "                    self._gone = True\n",
+    ),
+    mutant(
+        "what is written to the standard output still goes there",
+        SERVE_WIRE,
+        "    os.dup2(errors, sink)\n",
+        "",
+    ),
+    mutant(
+        "what reads the standard input still reads the requests",
+        SERVE_WIRE,
+        "    _nothing_at(source, os.O_RDONLY)\n",
+        "",
+    ),
+    mutant(
+        "the copies of the two ways are handed on to a program that is started",
+        SERVE_WIRE,
+        "    incoming = os.dup(source)\n    try:\n",
+        "    incoming = os.dup(source)\n    os.set_inheritable(incoming, True)\n    try:\n",
+    ),
+    mutant(
+        "a copy is given the place of a log that the process does not have",
+        SERVE_WIRE,
+        "    try:\n        os.fstat(errors)\n    except OSError:\n        _nothing_at(errors, os.O_WRONLY)\n",
+        "",
+    ),
+    mutant(
+        "the way in and the way out are copied before anybody has looked at them",
+        SERVE_WIRE,
+        "    for needed in (source, sink):\n        os.fstat(needed)\n",
+        "",
+    ),
+    mutant(
+        "what was put in a free place is closed again",
+        SERVE_WIRE,
+        "    if nothing == where:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "what leads nowhere in a free place is not handed on to a program that is started",
+        SERVE_WIRE,
+        "        os.set_inheritable(where, True)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "a copy that was made stays open where the next one cannot be made",
+        SERVE_WIRE,
+        "    except OSError:\n        os.close(incoming)\n        raise\n",
+        "    except OSError:\n        raise\n",
+    ),
+    # Lines and requests
+    mutant(
+        "a line that was too long is passed over without a word",
+        SERVE_SERVER,
+        "                self._send(refused(None, INVALID_REQUEST, _TOO_LONG))\n                continue\n",
+        "                continue\n",
+    ),
+    mutant(
+        "a line of nothing is answered as something that is no message",
+        SERVE_SERVER,
+        "            if not line.strip():\n                continue\n",
+        "",
+    ),
+    mutant(
+        "what comes after the order to leave is still done",
+        SERVE_SERVER,
+        "                if self._leaving:\n                    return\n",
+        "",
+    ),
+    mutant(
+        "anything is done before the first request",
+        SERVE_SERVER,
+        '        if not self._greeted and request.method not in ("initialize", "shutdown"):\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "the program cannot be told to leave before the first request",
+        SERVE_SERVER,
+        '        if not self._greeted and request.method not in ("initialize", "shutdown"):\n',
+        '        if not self._greeted and request.method != "initialize":\n',
+    ),
+    mutant(
+        "what a newer interface adds to a request is refused",
+        SERVE_SERVER,
+        '    model_config = ConfigDict(extra="ignore", strict=True)\n',
+        '    model_config = ConfigDict(extra="forbid", strict=True)\n',
+    ),
+    mutant(
+        "a number that is written as text is taken for a number",
+        SERVE_SERVER,
+        '    model_config = ConfigDict(extra="ignore", strict=True)\n',
+        '    model_config = ConfigDict(extra="ignore")\n',
+    ),
+    mutant(
+        "a command is carried out before the next request is read",
+        SERVE_SERVER,
+        '        if request.method in ("session/command", "session/list"):\n',
+        '        if request.method == "session/list":\n',
+    ),
+    mutant(
+        "the sessions are listed before the next request is read",
+        SERVE_SERVER,
+        '        if request.method in ("session/command", "session/list"):\n',
+        '        if request.method == "session/command":\n',
+    ),
+    mutant(
+        "what went wrong inside is told to the other side",
+        SERVE_SERVER,
+        "            self._send(refused(request.id, INTERNAL_ERROR, _INSIDE))\n",
+        "            self._send(refused(request.id, INTERNAL_ERROR, str(error)))\n",
+    ),
+    mutant(
+        "a second answer to a question fails the program",
+        SERVE_SERVER,
+        "        if waiting is None or waiting.done():\n",
+        "        if waiting is None:\n",
+    ),
+    mutant(
+        "the first request can be made twice",
+        SERVE_SERVER,
+        "        if self._greeted:\n            raise RpcError(NOT_INITIALIZED, _GREETED)\n",
+        "",
+    ),
+    mutant(
+        "a version is agreed on that this program does not speak",
+        SERVE_SERVER,
+        '                "protocol": min(PROTOCOL, params.protocol),\n',
+        '                "protocol": params.protocol,\n',
+    ),
+    mutant(
+        "the commands are told in the order in which they were registered",
+        SERVE_SERVER,
+        "for name in sorted(registry)]\n",
+        "for name in registry]\n",
+    ),
+    mutant(
+        "who the interface is does not go into the log",
+        SERVE_SERVER,
+        '        who = f"{client.name} {client.version}".strip() or "an interface that gives no name"\n',
+        '        who = "an interface that gives no name"\n',
+    ),
+    # Sessions
+    mutant(
+        "a session that is taken up is said to be new",
+        SERVE_SERVER,
+        "            resumed = self._is_stored(named)\n",
+        "            resumed = False\n",
+    ),
+    mutant(
+        "the session that is open is not ended before it is opened again",
+        SERVE_SERVER,
+        "        if left is not None and named == left.id:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a session that cannot be opened ends the one that is open",
+        SERVE_SERVER,
+        "        try:\n            resumed = self._is_stored(named)\n",
+        "        self._let_go()\n        try:\n            resumed = self._is_stored(named)\n",
+    ),
+    mutant(
+        "an id that cannot name a session is answered as a session that cannot be opened",
+        SERVE_SERVER,
+        '            raise RpcError(INVALID_PARAMS, f"{error}.") from None\n',
+        '            raise RpcError(CANNOT_OPEN, f"{error}.") from None\n',
+    ),
+    mutant(
+        "what was known of the agent that was left is taken for the next one",
+        SERVE_SERVER,
+        "        self._let_go()\n        self._adopt(agent)\n",
+        "        self._adopt(agent)\n",
+    ),
+    mutant(
+        "where the agent stands is told before the answer to opening its session",
+        SERVE_SERVER,
+        "        self._send(answered(id, text(opened)))\n        self._look()\n",
+        "        self._look()\n        self._send(answered(id, text(opened)))\n",
+    ),
+    mutant(
+        "the session that the conversation left is not ended",
+        SERVE_SERVER,
+        "        if left is not None:\n            ending = asyncio.ensure_future(self._put_away(left))\n",
+        "        if False:\n            ending = asyncio.ensure_future(self._put_away(left))\n",
+    ),
+    mutant(
+        "an agent that is still being ended is not waited for before a session is opened",
+        SERVE_SERVER,
+        "        if self._ending:\n            # An agent that is still ending may hold the session that is asked for.\n            await asyncio.wait(self._ending)\n",
+        "",
+    ),
+    mutant(
+        "a session is said to hold one event more than it does",
+        SERVE_SERVER,
+        '            "events": len(agent.session.events),\n',
+        '            "events": len(agent.session.events) + 1,\n',
+    ),
+    mutant(
+        "a session that is taken up is said to have been created just now",
+        SERVE_SERVER,
+        '            "created_at": agent.session.created_at,\n',
+        '            "created_at": self._sessions.clock(),\n',
+    ),
+    mutant(
+        "a page of events has one more than was asked for",
+        SERVE_SERVER,
+        "        while position < len(events) and len(page) < most:\n",
+        "        while position < len(events) and len(page) <= most:\n",
+    ),
+    mutant(
+        "a page of events is as long as whoever asks wants it",
+        SERVE_SERVER,
+        "        most = min(params.limit, PAGE_EVENTS)\n",
+        "        most = params.limit\n",
+    ),
+    mutant(
+        "how long a page of events is does not count",
+        SERVE_SERVER,
+        "            if page and size + len(line) > PAGE_BYTES:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "an event that is too long for a page is never given",
+        SERVE_SERVER,
+        "            if page and size + len(line) > PAGE_BYTES:\n",
+        "            if size + len(line) > PAGE_BYTES:\n",
+    ),
+    mutant(
+        "a page that ends where the session ends says that more follows",
+        SERVE_SERVER,
+        "        following = position if position < len(events) else None\n",
+        "        following = position\n",
+    ),
+    # Turns
+    mutant(
+        "a task is given to the agent as something said on its way",
+        SERVE_SERVER,
+        "        self._give(agent, agent.followup, said)\n",
+        "        self._give(agent, agent.steer, said)\n",
+    ),
+    mutant(
+        "what is said on the way is given to the agent as a task of its own",
+        SERVE_SERVER,
+        "        self._give(agent, agent.steer, said)\n",
+        "        self._give(agent, agent.followup, said)\n",
+    ),
+    mutant(
+        "a task is given to the agent with the space around it",
+        SERVE_SERVER,
+        "        said = params.text.strip()\n",
+        "        said = params.text\n",
+    ),
+    mutant(
+        "a task of nothing is given to the agent",
+        SERVE_SERVER,
+        "        if not said:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "an agent that has stopped for good is given a task",
+        SERVE_SERVER,
+        "        if self._stopped is not None:\n            raise RpcError(STOPPED,",
+        "        if False:\n            raise RpcError(STOPPED,",
+    ),
+    mutant(
+        "stopping stops nothing",
+        SERVE_SERVER,
+        '        rested = agent.at_rest\n        agent.cancel("user")\n',
+        "        rested = agent.at_rest\n",
+    ),
+    mutant(
+        "the agent is not said to be at work when it is given a task",
+        SERVE_SERVER,
+        "        else:\n            give(said)\n        self._look()\n",
+        "        else:\n            give(said)\n",
+    ),
+    # Commands
+    mutant(
+        "a line that is no command is carried out as one",
+        SERVE_SERVER,
+        "        if not is_command(line):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the space around a command counts",
+        SERVE_SERVER,
+        "        line = params.line.strip()\n",
+        "        line = params.line\n",
+    ),
+    mutant(
+        "a command is carried out while the agent is at work",
+        SERVE_SERVER,
+        "        if not agent.at_rest or self._commanding is agent:\n",
+        "        if self._commanding is agent:\n",
+    ),
+    mutant(
+        "a second command is carried out beside the first",
+        SERVE_SERVER,
+        "        if not agent.at_rest or self._commanding is agent:\n",
+        "        if not agent.at_rest:\n",
+    ),
+    mutant(
+        "a command that has ended still counts as one that is carried out",
+        SERVE_SERVER,
+        "            mine = self._carrying is command\n            if mine:\n",
+        "            mine = self._carrying is command\n            if False:\n",
+    ),
+    mutant(
+        "a model that was named is told to nobody",
+        SERVE_SERVER,
+        '            self._model = self._model.model_copy(update={"model": rest})\n            self._look()\n',
+        '            self._model = self._model.model_copy(update={"model": rest})\n',
+    ),
+    mutant(
+        "the model that was named is not the one that is asked",
+        SERVE_SERVER,
+        '        return config.model_copy(update={"model": self._model.model})\n',
+        "        return config\n",
+    ),
+    # Where the agent stands
+    mutant(
+        "an agent at work is said to rest",
+        SERVE_SERVER,
+        "        elif agent.at_rest and not self._held:\n",
+        "        elif True:\n",
+    ),
+    mutant(
+        "an agent that has stopped for good is said to rest",
+        SERVE_SERVER,
+        '        if self._stopped is not None:\n            status, detail = "stopped", self._stopped\n',
+        '        if False:\n            status, detail = "stopped", self._stopped\n',
+    ),
+    mutant(
+        "what a session may do before its first turn is taken from elsewhere than its preset",
+        SERVE_SERVER,
+        "        mode, policy = (None, None) if permissions is None else permissions.in_force(session)\n",
+        "        mode, policy = None, None\n",
+    ),
+    mutant(
+        "where the agent stands is told again though nothing has changed",
+        SERVE_SERVER,
+        "        if said != self._said:\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "nobody waits for the agent to come to rest",
+        SERVE_SERVER,
+        "        if not agent.at_rest and self._watching is None:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "nobody waits for the agent to come to rest a second time",
+        SERVE_SERVER,
+        "        self._watching = None\n        self._look()\n",
+        "        self._look()\n",
+    ),
+    mutant(
+        "an agent that has come to rest is not said to have",
+        SERVE_SERVER,
+        "        self._watching = None\n        self._look()\n",
+        "        self._watching = None\n",
+    ),
+    mutant(
+        "an agent that stopped for good is said to have come to rest",
+        SERVE_SERVER,
+        "            self._stopped = str(error) or type(error).__name__\n",
+        "            pass\n",
+    ),
+    mutant(
+        "an event of another session is told as one of the session that is open",
+        SERVE_SERVER,
+        "            if agent is self._agent and committed.session is agent.session:\n",
+        "            if agent is self._agent:\n",
+    ),
+    mutant(
+        "what the agent that was left still writes is told",
+        SERVE_SERVER,
+        "            if agent is self._agent and committed.session is agent.session:\n",
+        "            if committed.session is agent.session:\n",
+    ),
+    mutant(
+        "a reply that is written elsewhere is told as one of the session that is open",
+        SERVE_SERVER,
+        "            if agent is self._agent and frame.agent is agent:\n",
+        "            if agent is self._agent:\n",
+    ),
+    mutant(
+        "the events of a session are told and where the agent stands is not looked at",
+        SERVE_SERVER,
+        '        self._send(told("session.event", f\'{{"session_id":{session},"event":{event}}}\'))\n        self._look()\n',
+        '        self._send(told("session.event", f\'{{"session_id":{session},"event":{event}}}\'))\n',
+    ),
+    # Questions
+    mutant(
+        "a question about another session is put to the interface",
+        SERVE_SERVER,
+        "            if agent is not self._agent or request.session is not agent.session:\n",
+        "            if agent is not self._agent:\n",
+    ),
+    mutant(
+        "an agent that the conversation has left puts its question to the interface",
+        SERVE_SERVER,
+        "            if agent is not self._agent or request.session is not agent.session:\n",
+        "            if request.session is not agent.session:\n",
+    ),
+    mutant(
+        "a longer yes is offered where nothing could write it down",
+        SERVE_SERVER,
+        "            standing = None if granting is None else request.standing\n",
+        "            standing = request.standing\n",
+    ),
+    mutant(
+        "whatever is not a no is a yes",
+        SERVE_SERVER,
+        '            if said.get("outcome") != "allowed-once":\n',
+        '            if said.get("outcome") == "rejected":\n',
+    ),
+    mutant(
+        "a yes is written down for the rest of the session without being asked to be",
+        SERVE_SERVER,
+        '            if said.get("remember") is True and granting is not None and standing is not None:\n',
+        "            if granting is not None and standing is not None:\n",
+    ),
+    mutant(
+        "anything that is not nothing asks for a yes to be written down",
+        SERVE_SERVER,
+        '            if said.get("remember") is True and granting is not None and standing is not None:\n',
+        '            if said.get("remember") and granting is not None and standing is not None:\n',
+    ),
+    mutant(
+        "a yes is written down for a call that has to be asked about every time",
+        SERVE_SERVER,
+        '            if said.get("remember") is True and granting is not None and standing is not None:\n',
+        '            if said.get("remember") is True and granting is not None:\n',
+    ),
+    mutant(
+        "every question has the same number",
+        SERVE_SERVER,
+        "            self._asked += 1\n",
+        "",
+    ),
+    # Leaving
+    mutant(
+        "a turn that runs when the program leaves is not written down as stopped",
+        SERVE_SERVER,
+        '        if TURN.of(agent.session).in_turn:\n            agent.cancel("user")\n',
+        "        pass\n",
+    ),
+    mutant(
+        "the program says that all went well though its agent stopped for good",
+        SERVE_SERVER,
+        "        return 1 if failed else 0\n",
+        "        return 0\n",
+    ),
+    mutant(
+        "the wire is left open when the program leaves",
+        SERVE_SERVER,
+        "            failed = await self._end()\n            await wire.close()\n",
+        "            failed = await self._end()\n",
+    ),
+    mutant(
+        "what is done on the side is given no moment to end",
+        SERVE_SERVER,
+        "        if self._working:\n            await asyncio.wait(self._working, timeout=_LAST_WORK_SECONDS)\n",
+        "",
+    ),
+    mutant(
+        "what does not end on the side is waited for for good",
+        SERVE_SERVER,
+        "        for doing in list(self._working):\n            doing.cancel()\n",
+        "",
+    ),
+    mutant(
+        "the program leaves while the session before the last is still being ended",
+        SERVE_SERVER,
+        "            await self._put_away(agent)\n        if self._ending:\n            await asyncio.wait(self._ending)\n",
+        "            await self._put_away(agent)\n",
+    ),
+    mutant(
+        "the frontend takes the wire of its process though it was given one",
+        SERVE_SERVER,
+        "        wire = self._ctx.get(WIRE)\n",
+        "        wire = None\n",
+    ),
+    # What a session knows of itself
+    mutant(
+        "a session that is taken up is said to have been created when it was taken up",
+        SESSION_SERVICE,
+        "            delegation_depth=header.delegation_depth,\n            created_at=header.created_at,\n",
+        "            delegation_depth=header.delegation_depth,\n",
+    ),
+    mutant(
+        "a new session does not know when it was created",
+        SESSION_SERVICE,
+        "            delegation_depth=depth,\n            created_at=created,\n",
+        "            delegation_depth=depth,\n            created_at=0,\n",
+    ),
+    mutant(
+        "a session asks its clock when it was created",
+        SESSION_LOG,
+        "        self.created_at = now_ms() if created_at is None else created_at\n",
+        "        self.created_at = clock() if created_at is None else created_at\n",
+    ),
+    mutant(
+        "a session that is told when it was created goes by the clock all the same",
+        SESSION_LOG,
+        "        self.created_at = now_ms() if created_at is None else created_at\n",
+        "        self.created_at = now_ms()\n",
+    ),
+    # What a review found before the service process was committed
+    mutant(
+        "a line that is nested too deeply ends the program",
+        SERVE_RPC,
+        "    except RecursionError:\n"
+        "        raise MalformedLineError(\n"
+        '            PARSE_ERROR, "The line is nested more deeply than this program reads."\n'
+        "        ) from None\n",
+        "",
+    ),
+    mutant(
+        "a whole number that is too long to be read is said to be no JSON",
+        SERVE_RPC,
+        "        read: object = json.loads(written, parse_constant=_no_such_number, parse_int=_whole)\n",
+        "        read: object = json.loads(written, parse_constant=_no_such_number)\n",
+    ),
+    mutant(
+        "an answer that does not say what it speaks is refused like a request",
+        SERVE_RPC,
+        "        return _response(message, id, versioned)\n",
+        "        if not versioned:\n"
+        '            raise MalformedLineError(INVALID_REQUEST, \'A message says "jsonrpc": "2.0".\', id)\n'
+        "        return _response(message, id, versioned)\n",
+    ),
+    mutant(
+        "an answer that does not say what it speaks is taken for a proper one",
+        SERVE_RPC,
+        '    proper = versioned and id is not None and "result" in message and "error" not in message\n',
+        '    proper = id is not None and "result" in message and "error" not in message\n',
+    ),
+    mutant(
+        "nothing is too much to pile up for an other side that does not read",
+        SERVE_WIRE,
+        "            piled_up = self._unsent > self._backlog\n",
+        "            piled_up = False\n",
+    ),
+    mutant(
+        "what was written out still counts as piled up",
+        SERVE_WIRE,
+        "                with self._counting:\n                    self._unsent -= len(data)\n",
+        "",
+    ),
+    mutant(
+        "the line that was too much is kept to be written all the same",
+        SERVE_WIRE,
+        "            self._arrived.put_nowait(_END)\n            return\n",
+        "            self._arrived.put_nowait(_END)\n",
+    ),
+    mutant(
+        "nobody is told that too much has piled up",
+        SERVE_WIRE,
+        "            self._gone = True\n            self._arrived.put_nowait(_END)\n",
+        "            self._gone = True\n",
+    ),
+    mutant(
+        "closing asks a thread of the pool to wait for the thread that writes",
+        SERVE_WIRE,
+        "                await self._written.wait()\n",
+        "                await self._loop.run_in_executor(None, self._writer.join)\n",
+    ),
+    mutant(
+        "the thread that writes does not say that it has ended",
+        SERVE_WIRE,
+        "            with contextlib.suppress(RuntimeError):\n"
+        "                self._loop.call_soon_threadsafe(self._written.set)\n",
+        "            pass\n",
+    ),
+    mutant(
+        "the thread that writes fails when its loop has ended before it",
+        SERVE_WIRE,
+        "            with contextlib.suppress(RuntimeError):\n"
+        "                self._loop.call_soon_threadsafe(self._written.set)\n",
+        "            self._loop.call_soon_threadsafe(self._written.set)\n",
+    ),
+    mutant(
+        "a request that is broken off when the program leaves is not answered",
+        SERVE_SERVER,
+        "            self._send(refused(request.id, LEAVING, _LEAVING))\n            raise\n",
+        "            raise\n",
+    ),
+    mutant(
+        "what is given right after a command goes ahead of the command",
+        SERVE_SERVER,
+        "        if self._commanding is agent:\n            self._held.append((give, said))\n",
+        "        if False:\n            self._held.append((give, said))\n",
+    ),
+    mutant(
+        "what is given to an agent is kept back for the command of another",
+        SERVE_SERVER,
+        "        if self._commanding is agent:\n            self._held.append((give, said))\n",
+        "        if self._commanding is not None:\n            self._held.append((give, said))\n",
+    ),
+    mutant(
+        "what was kept back is given without a word of where the agent stands",
+        SERVE_SERVER,
+        "        finally:\n            self._held = []\n        self._look()\n",
+        "        finally:\n            self._held = []\n",
+    ),
+    mutant(
+        "what was kept back is given to an agent that was ended because the program leaves",
+        SERVE_SERVER,
+        "            if self._ended is None:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "what was kept back is never given",
+        SERVE_SERVER,
+        "        if mine:\n            self._release()\n",
+        "",
+    ),
+    mutant(
+        "stopping leaves what was kept back to be given",
+        SERVE_SERVER,
+        "        self._held.clear()\n        rested = agent.at_rest\n",
+        "        rested = agent.at_rest\n",
+    ),
+    mutant(
+        "a command that was told to stop before it had begun is carried out",
+        SERVE_SERVER,
+        "        if rested and self._commanding is agent and self._carrying is not None:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a command at whose work the agent is, is broken off and cannot say how it ended",
+        SERVE_SERVER,
+        "        if rested and self._commanding is agent and self._carrying is not None:\n",
+        "        if self._commanding is agent and self._carrying is not None:\n",
+    ),
+    mutant(
+        "a command that was broken off is answered as a request that the program left",
+        SERVE_SERVER,
+        "            said = f\"The command {line.partition(' ')[0].lower()} was stopped.\"\n",
+        "            raise\n",
+    ),
+    mutant(
+        "the end of a command of a session that was left ends the command of the one that is open",
+        SERVE_SERVER,
+        "            mine = self._carrying is command\n",
+        "            mine = True\n",
+    ),
+    mutant(
+        "a command of a session that was left keeps the one that is open from its own",
+        SERVE_SERVER,
+        "        if not agent.at_rest or self._commanding is agent:\n",
+        "        if not agent.at_rest or self._commanding is not None:\n",
+    ),
+    mutant(
+        "what was kept back for a session is given to the one that is opened next",
+        SERVE_SERVER,
+        "        self._said = None\n        self._held = []\n",
+        "        self._said = None\n",
+    ),
+    mutant(
+        "the exit code does not tell of a session that could not be written to its end",
+        SERVE_SERVER,
+        "            self._lost = True\n",
+        "            pass\n",
+    ),
+    mutant(
+        "the log does not say which session could not be written to its end",
+        SERVE_SERVER,
+        '            logger.error("the agent of the session %s stopped for good: %s", agent.id, failure)\n',
+        "",
+    ),
+    mutant(
+        "a longer yes is gone when its session is opened again",
+        SERVE_SERVER,
+        "        self._adopt(agent)\n        self._grant_again(agent)\n",
+        "        self._adopt(agent)\n",
+    ),
+    mutant(
+        "a longer yes for one session is given to every session that is opened",
+        SERVE_SERVER,
+        "        for tool, target in self._granted.get(agent.session.id, ()):\n",
+        "        for tool, target in [one for held in self._granted.values() for one in held]:\n",
+    ),
+    mutant(
+        "a longer yes that could not be written down is tried again with every opening",
+        SERVE_SERVER,
+        "                else:\n"
+        "                    granted = self._granted.setdefault(request.session.id, [])\n"
+        "                    granted.append((request.tool, request.target))\n",
+        "                granted = self._granted.setdefault(request.session.id, [])\n"
+        "                granted.append((request.tool, request.target))\n",
+    ),
+    mutant(
+        "a longer yes that can no longer be given keeps its session from being opened",
+        SERVE_SERVER,
+        "            try:\n"
+        "                granting.grant(agent.session, tool, target)\n"
+        "            except ValueError as error:\n"
+        '                logger.warning("a longer yes could not be given again: %s", error)\n',
+        "            granting.grant(agent.session, tool, target)\n",
+    ),
+    # What a second review found, of the changes that the first one led to
+    mutant(
+        "an answer that names no request is refused, and may be refused back without end",
+        SERVE_RPC,
+        '    if id is None and "result" not in message and "error" not in message:\n',
+        "    if id is None:\n",
+    ),
+    mutant(
+        "an answer that names no request counts as a proper answer",
+        SERVE_RPC,
+        '    proper = versioned and id is not None and "result" in message and "error" not in message\n',
+        '    proper = versioned and "result" in message and "error" not in message\n',
+    ),
+    mutant(
+        "a turn that cannot be told to stop keeps its agent from being ended",
+        SERVE_SERVER,
+        "    try:\n"
+        "        if TURN.of(agent.session).in_turn:\n"
+        '            agent.cancel("user")\n'
+        "    except Exception as error:\n"
+        "        failure = error\n",
+        '    if TURN.of(agent.session).in_turn:\n        agent.cancel("user")\n',
+    ),
+    mutant(
+        "what kept a turn from being stopped is forgotten for what went wrong after it",
+        SERVE_SERVER,
+        "        failure = failure or error\n",
+        "        failure = error\n",
+    ),
+    mutant(
+        "the agent is said to rest while something is kept back for it",
+        SERVE_SERVER,
+        "        elif agent.at_rest and not self._held:\n",
+        "        elif agent.at_rest:\n",
+    ),
+    mutant(
+        "what is kept back is forgotten before the last of it is given",
+        SERVE_SERVER,
+        "                for give, said in self._held:\n                    give(said)\n",
+        "                held, self._held = self._held, []\n"
+        "                for give, said in held:\n"
+        "                    give(said)\n",
+    ),
+    mutant(
+        "what the thread is writing does not count as waiting to be written",
+        SERVE_WIRE,
+        "                if data is None:\n                    return\n",
+        "                if data is None:\n"
+        "                    return\n"
+        "                with self._counting:\n"
+        "                    self._unsent -= len(data)\n",
+    ),
+    mutant(
+        "what waits to be written is counted in characters",
+        SERVE_WIRE,
+        "            self._unsent += len(data)\n",
+        "            self._unsent += len(line)\n",
+    ),
+    mutant(
+        "what waits to be written may not come up to the limit",
+        SERVE_WIRE,
+        "            piled_up = self._unsent > self._backlog\n",
+        "            piled_up = self._unsent >= self._backlog\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -15247,5 +16236,14 @@ SETS: dict[str, MutantSet] = {
         _SERVICES,
     ),
     "keys": MutantSet(("tests/llm/test_credentials.py", "tests/llm/test_openai_chat.py"), _KEYS),
+    "serve": MutantSet(
+        (
+            "tests/apps/serve",
+            "tests/session/test_service.py",
+            "tests/session/test_fork.py",
+            "tests/session/test_log.py",
+        ),
+        _SERVE,
+    ),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

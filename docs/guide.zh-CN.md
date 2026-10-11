@@ -6,7 +6,7 @@
 
 Columbina 从零写起，以三个现有的 harness 为参考。内核和循环参考 DeepSeek Harness，Codex 和 Claude Code 做得更好的地方则取自它们。哪一处取自哪里，记在 [`docs/research`](research) 和[设计文档](plans/2026-10-09-columbina-design.md)里。
 
-[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [服务与密钥](#模型服务与密钥) · [权限](#改文件与执行命令) · [架构](#架构) · [内核](#内核) · [开发](#开发) · [路线图](#进展)
+[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [别的程序](#供另一个程序使用) · [服务与密钥](#模型服务与密钥) · [权限](#改文件与执行命令) · [架构](#架构) · [内核](#内核) · [开发](#开发) · [路线图](#进展)
 
 ## 功能一览
 
@@ -194,6 +194,27 @@ $ uv run columbina run "What is the codename of release 0.1? ..." --session-id d
 回合正常完成时 `run` 的退出码是 0，因为别的原因结束时是 1。命令行、清单或某个插件有问题时是 2，这种情况下不发任何请求。被 Ctrl+C 中断之后是 130。
 
 会话保存在 `~/.columbina/sessions` 下。环境变量 `COLUMBINA_HOME` 可以把 `~/.columbina` 换到别处。一个会话是一个 JSON 行文件，事件只会往里追加。
+
+## 供另一个程序使用
+
+`columbina serve` 替另一个程序，例如一个桌面应用，进行一段对话。那个程序启动它，把请求写进它的标准输入，再读它的标准输出。每条消息是一行 JSON-RPC 2.0。
+
+```console
+$ uv run columbina serve
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol":1}}
+{"jsonrpc":"2.0","id":1,"result":{"protocol":1,"server":{"name":"columbina","version":"0.1.0.dev0"},"cwd":"/work","commands":[{"name":"compact","summary":"Sum up the older part of the conversation to make room."}]}}
+{"jsonrpc":"2.0","id":2,"method":"session/open","params":{}}
+{"jsonrpc":"2.0","id":2,"result":{"session_id":"20261011T135342-5ee76ff2","resumed":false,"created_at":1791726822542,"events":0}}
+{"jsonrpc":"2.0","method":"session.status","params":{"session_id":"20261011T135342-5ee76ff2","status":"idle","detail":null,"model":{"provider":"deepseek","model":"deepseek-flash","context_window":1048576},"sandbox":{"mode":"workspace-write","strength":"none"},"approval":"ask"}}
+```
+
+带有 `method` 和 `id` 的两行是手动输入的。其余三行是程序在一次真实运行里写出的，其中的工作目录缩短过。第一条回答列出 10 个命令，这里只留了一个。
+
+从这里开始，另一个程序用 `session/prompt` 交给 Agent 一个任务。会话的每个事件一写下就发给那个程序，正在生成的回复的每个分片、Agent 所处的状态也都发给它。需要同意的调用执行之前，程序自己发出一条请求来询问，只有回答是 `allowed-once` 才放行。这些消息由 [docs/protocol](protocol/README.md) 规定。
+
+标准输出上只有这些消息。运行日志写到标准错误，插件打印的内容也写到那里。标准输入被关闭时，程序停下正在运行的回合，把这件事记下来，然后结束。
+
+`serve` 接受 `run` 的选项，`--session-id` 和 `--json` 除外。打开哪个会话由另一个程序指定。
 
 ## 模型服务与密钥
 

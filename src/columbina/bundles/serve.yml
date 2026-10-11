@@ -1,0 +1,33 @@
+# What `columbina serve` loads: the base program, the commands that a person gives the
+# program itself, and the interface that another program holds a conversation
+# through, such as a desktop application. It is the program of the terminal
+# but for one command: nothing tells whoever is served yet that a conversation
+# went over to a copy of its session, so `/fork` is left out.
+extends: base
+patch:
+  - insert:
+      - id: commands
+        plugin: columbina.commands
+      - id: command-tools
+        plugin: columbina.commands.tools
+      - id: command-permissions
+        plugin: columbina.commands.permissions
+      - id: command-sessions
+        plugin: columbina.commands.sessions
+      - id: command-compact
+        plugin: columbina.commands.compact
+      - id: command-todos
+        plugin: columbina.commands.todos
+      - id: command-skills
+        plugin: columbina.commands.skills
+      - id: command-mcp
+        plugin: columbina.commands.mcp
+      - id: frontend
+        plugin: columbina.apps.serve
+        config:
+          model:
+            provider: deepseek
+            model: ${COLUMBINA_MODEL:-deepseek-flash}
+            # How many tokens the model takes. The service says so itself when
+            # it refuses a request as too long.
+            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}

@@ -6,7 +6,7 @@
 
 Columbina は、既存の三つのハーネスを参考にしながら、ゼロから書かれました。カーネルとループは DeepSeek Harness を参考にし、Codex と Claude Code のほうが優れている部分はその二つから取り入れています。どこから何を取り入れたかは、[`docs/research`](research) と[設計文書](plans/2026-10-09-columbina-design.md)に記録しています。
 
-[主な機能](#主な機能) · [ターミナル](#ターミナルでの対話) · [長い対話](#長い対話) · [タスクの実行](#タスクの実行) · [サービスとキー](#サービスとキー) · [権限](#ファイルの変更とコマンドの実行) · [アーキテクチャ](#アーキテクチャ) · [カーネル](#カーネル) · [開発](#開発) · [ロードマップ](#進捗)
+[主な機能](#主な機能) · [ターミナル](#ターミナルでの対話) · [長い対話](#長い対話) · [タスクの実行](#タスクの実行) · [ほかのプログラム](#ほかのプログラムからの利用) · [サービスとキー](#サービスとキー) · [権限](#ファイルの変更とコマンドの実行) · [アーキテクチャ](#アーキテクチャ) · [カーネル](#カーネル) · [開発](#開発) · [ロードマップ](#進捗)
 
 ## 主な機能
 
@@ -194,6 +194,27 @@ $ uv run columbina run "What is the codename of release 0.1? ..." --session-id d
 `run` の終了コードは、ターンが完了した場合は 0、それ以外の理由で終わった場合は 1 です。コマンドライン、プロファイル、プラグインのいずれかに問題がある場合は 2 で、このときリクエストは送られません。Ctrl+C で中断された場合は 130 です。
 
 セッションは `~/.columbina/sessions` 以下に保存されます。環境変数 `COLUMBINA_HOME` で `~/.columbina` を別の場所に変更できます。セッションは JSON Lines 形式の一つのファイルで、イベントは追記されるだけです。
+
+## ほかのプログラムからの利用
+
+`columbina serve` は、デスクトップアプリなど、ほかのプログラムのために対話を受け持ちます。そのプログラムが `columbina serve` を起動し、その標準入力にリクエストを書き込み、標準出力を読みます。各メッセージは一行で、JSON-RPC 2.0 に従います。
+
+```console
+$ uv run columbina serve
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol":1}}
+{"jsonrpc":"2.0","id":1,"result":{"protocol":1,"server":{"name":"columbina","version":"0.1.0.dev0"},"cwd":"/work","commands":[{"name":"compact","summary":"Sum up the older part of the conversation to make room."}]}}
+{"jsonrpc":"2.0","id":2,"method":"session/open","params":{}}
+{"jsonrpc":"2.0","id":2,"result":{"session_id":"20261011T135342-5ee76ff2","resumed":false,"created_at":1791726822542,"events":0}}
+{"jsonrpc":"2.0","method":"session.status","params":{"session_id":"20261011T135342-5ee76ff2","status":"idle","detail":null,"model":{"provider":"deepseek","model":"deepseek-flash","context_window":1048576},"sandbox":{"mode":"workspace-write","strength":"none"},"approval":"ask"}}
+```
+
+`method` と `id` のある二行は手で入力したものです。残りの三行は、実際の実行でプログラムが書き出したもので、作業ディレクトリは短く書き換えてあります。最初の回答には 10 個のコマンドが並びますが、ここでは一つだけ残しています。
+
+ここから先は、相手のプログラムが `session/prompt` でエージェントにタスクを渡します。セッションのイベントは書き込まれるたびに、書かれている最中の応答はチャンクごとに相手のプログラムへ送られ、エージェントの状態も送られます。承認が必要な呼び出しの前には、プログラムの側からリクエストを出して尋ね、回答が `allowed-once` のときだけ呼び出しを通します。メッセージの仕様は [docs/protocol](protocol/README.md) にあります。
+
+標準出力に出るのはこれらのメッセージだけです。動作ログは標準エラー出力に書き出され、プラグインが出力するものも同様です。標準入力が閉じられると、プログラムは実行中のターンを止め、そのことを記録してから終了します。
+
+`serve` は `run` のオプションを受け付けます。ただし `--session-id` と `--json` は除きます。どのセッションを開くかは相手のプログラムが決めます。
 
 ## サービスとキー
 

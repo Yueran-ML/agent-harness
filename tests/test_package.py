@@ -10,7 +10,7 @@ import columbina
 from columbina.kernel import flatten, import_plugin
 from support.launch import bundle
 
-BUNDLES = ["base", "cli", "headless", "minimal"]
+BUNDLES = ["base", "cli", "headless", "minimal", "serve"]
 
 
 def test_version_matches_the_installed_distribution() -> None:
@@ -46,3 +46,20 @@ def test_every_bundle_builds_on_the_one_before_it() -> None:
     assert ids["headless"] == [*ids["base"], "frontend"]
     assert ids["cli"][: len(ids["base"])] == ids["base"]
     assert ids["cli"][-1] == "frontend"
+    # Whoever is served over a wire is given what a terminal is given, but for one command:
+    # nothing tells an interface yet that the conversation went over to a copy.
+    assert ids["serve"] == [entry for entry in ids["cli"] if entry != "command-fork"]
+
+
+def test_whoever_is_served_talks_to_the_model_that_the_terminal_talks_to() -> None:
+    model = {
+        name: next(
+            entry.config["model"]
+            for entry in flatten([bundle(name)], lookup=bundle)
+            if entry.id == "frontend"
+        )
+        for name in ("cli", "serve")
+    }
+
+    # The same service, the same model where none is named, and the same size of its window.
+    assert model["serve"] == model["cli"]

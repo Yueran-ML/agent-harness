@@ -11,9 +11,11 @@ import yaml
 
 import columbina
 from columbina.apps.launcher import main
+from columbina.apps.serve import wire as wire_module
 from columbina.session import TurnEndEvent
 from columbina.session.store import SESSION_FILE
 from support.launch import lines, profile, stored
+from support.wires import Far
 
 READ_THEN_ANSWER: tuple[dict[str, Any], ...] = (
     {"text": "I will look.", "calls": [{"name": "read", "arguments": {"path": "notes.txt"}}]},
@@ -543,7 +545,7 @@ def test_a_profile_that_does_not_exist_is_refused(
     assert captured.out == ""
     assert captured.err == (
         "columbina: there is no profile 'nowhere'. The profiles that come with Columbina are: "
-        "base, cli, headless, minimal\n"
+        "base, cli, headless, minimal, serve\n"
     )
 
 
@@ -890,6 +892,140 @@ def test_the_help_names_the_commands(capsys: pytest.CaptureFixture[str], flag: s
     # What each of the two commands is for, which only the help of the program says.
     assert "hold a conversation at the terminal" in shown
     assert "run one task and print the answer" in shown
+    assert "hold a conversation for another program" in shown
+
+
+def test_the_program_that_serves_can_be_printed_instead_of_run(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["serve", "--cwd", str(work), "--model", "other", "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert code == 0
+    assert list(entries)[-9:] == [
+        "commands",
+        "command-tools",
+        "command-permissions",
+        "command-sessions",
+        "command-compact",
+        "command-todos",
+        "command-skills",
+        "command-mcp",
+        "frontend",
+    ]
+    assert entries["frontend"] == {
+        "id": "frontend",
+        "plugin": "columbina.apps.serve",
+        "config": {
+            "model": {
+                "provider": "deepseek",
+                "model": "other",
+                "context_window": "${COLUMBINA_CONTEXT_WINDOW:-1048576}",
+            },
+            "cwd": str(work),
+        },
+    }
+    assert not home.exists()
+
+
+def test_serving_takes_what_a_session_may_do_from_the_command_line_like_the_others(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        [
+            "serve",
+            "--cwd",
+            str(work),
+            "--permission",
+            "read-only",
+            "--allow",
+            "run(git status*)",
+            "--dump-config",
+        ]
+    )
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert code == 0
+    assert entries["permissions"]["config"]["preset"] == "read-only"
+    assert entries["permissions"]["config"]["allow"] == ["run(git status*)"]
+
+
+HELLO = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocol": 1}}
+OPEN = {"jsonrpc": "2.0", "id": 2, "method": "session/open", "params": {"session_id": "s-1"}}
+LEAVE = {"jsonrpc": "2.0", "id": 3, "method": "shutdown"}
+
+
+def test_the_program_that_serves_holds_a_conversation_over_the_wire_of_its_process(
+    home: Path, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    far = Far()
+    monkeypatch.setattr(wire_module, "taken", lambda: far)
+    for message in (HELLO, OPEN, LEAVE):
+        far.say(message)
+    chosen = profile(tmp_path, extends="serve")
+
+    code = main(["serve", "--profile", chosen, "--cwd", str(work), "--model", "swift-2"])
+
+    assert code == 0
+    hello, opened, status, left = far.heard
+    assert hello["result"]["cwd"] == str(work)
+    # The commands of the program that is shipped, without the one that copies a session.
+    assert [command["name"] for command in hello["result"]["commands"]] == [
+        "compact",
+        "help",
+        "mcp",
+        "model",
+        "permissions",
+        "sessions",
+        "skill",
+        "skills",
+        "todos",
+        "tools",
+    ]
+    assert (opened["result"]["session_id"], opened["result"]["resumed"]) == ("s-1", False)
+    assert status["params"] == {
+        "session_id": "s-1",
+        "status": "idle",
+        "detail": None,
+        "model": {"provider": "deepseek", "model": "swift-2", "context_window": 1048576},
+        "sandbox": {"mode": "workspace-write", "strength": "none"},
+        "approval": "ask",
+    }
+    assert left == {"jsonrpc": "2.0", "id": 3, "result": {}}
+    assert far.closed
+
+
+def test_a_process_without_standard_input_and_output_cannot_serve(
+    home: Path, work: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def none() -> Far:
+        raise OSError(9, "Bad file descriptor")
+
+    monkeypatch.setattr(wire_module, "taken", none)
+
+    code = main(["serve", "--cwd", str(work)])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "columbina: 'columbina serve' talks over its standard input and output, and this "
+        "process has none: [Errno 9] Bad file descriptor\n"
+    )
+    # Nothing was loaded for it.
+    assert not home.exists()
+
+
+@pytest.mark.parametrize("flag", [["--session-id", "s-1"], ["--continue"], ["--json"]])
+def test_serving_names_no_session_and_no_task(
+    capsys: pytest.CaptureFixture[str], flag: list[str]
+) -> None:
+    # Which session is open is said over the wire, by whoever is served.
+    with pytest.raises(SystemExit) as stopped:
+        main(["serve", *flag])
+
+    assert stopped.value.code == 2
+    assert flag[0] in capsys.readouterr().err
 
 
 def test_a_task_loads_the_program_without_an_interface_unless_a_profile_is_named(

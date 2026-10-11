@@ -6,7 +6,7 @@ This is the longer account of Columbina: how it is used, how it is built, how it
 
 Columbina was written from scratch, with three existing harnesses as its reference: DeepSeek Harness for the kernel and the loop, and Codex and Claude Code where they do something better. What was taken from which is written down in [`docs/research`](research) and in the [design document](plans/2026-10-09-columbina-design.md).
 
-[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Development](#development) · [Roadmap](#where-it-stands)
+[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Development](#development) · [Roadmap](#where-it-stands)
 
 ## What is there
 
@@ -252,6 +252,38 @@ is made. It is 130 after an interruption with Ctrl+C.
 Sessions are stored under `~/.columbina/sessions`. The environment variable `COLUMBINA_HOME` puts
 `~/.columbina` somewhere else. A session is one file of JSON lines to which events are only
 ever appended.
+
+## Serving another program
+
+`columbina serve` holds a conversation for another program, such as a desktop application.
+That program starts it, writes requests to its standard input and reads its standard output.
+Each message is one line of JSON-RPC 2.0.
+
+```console
+$ uv run columbina serve
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol":1}}
+{"jsonrpc":"2.0","id":1,"result":{"protocol":1,"server":{"name":"columbina","version":"0.1.0.dev0"},"cwd":"/work","commands":[{"name":"compact","summary":"Sum up the older part of the conversation to make room."}]}}
+{"jsonrpc":"2.0","id":2,"method":"session/open","params":{}}
+{"jsonrpc":"2.0","id":2,"result":{"session_id":"20261011T135342-5ee76ff2","resumed":false,"created_at":1791726822542,"events":0}}
+{"jsonrpc":"2.0","method":"session.status","params":{"session_id":"20261011T135342-5ee76ff2","status":"idle","detail":null,"model":{"provider":"deepseek","model":"deepseek-flash","context_window":1048576},"sandbox":{"mode":"workspace-write","strength":"none"},"approval":"ask"}}
+```
+
+The two lines that name a `method` and an `id` were typed. The other three are what the
+program wrote in a real run, with the working directory shortened. The first answer names
+10 commands, of which one is shown.
+
+From here on the other program gives the agent a task with `session/prompt`. It is sent
+every event of the session as the event is written, every chunk of a reply while the reply
+is written, and where the agent stands. Before a call that needs a yes the program asks, in
+a request of its own, and only the answer `allowed-once` lets the call go ahead. The
+messages are specified in [docs/protocol](protocol/README.md).
+
+The standard output holds these messages and nothing else. What is logged goes to the
+standard error, and so does whatever a plugin prints. When the standard input is closed,
+the program stops the turn that is running, writes down that it did, and ends.
+
+`serve` takes the options of `run`, except `--session-id` and `--json`. Which session is
+open is for the other program to say.
 
 ## Services and keys
 

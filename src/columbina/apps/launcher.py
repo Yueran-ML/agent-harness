@@ -2,7 +2,9 @@
 
 ``columbina`` holds a conversation at the terminal, and ``columbina run TASK``
 gives an agent one task. Without a command the first is meant, so
-``columbina --continue`` is ``columbina chat --continue``. ``columbina sessions``
+``columbina --continue`` is ``columbina chat --continue``. ``columbina serve``
+holds a conversation for another program, which talks to it over its standard
+input and output. ``columbina sessions``
 lists, shows and copies the sessions that are stored, without a conversation.
 ``columbina hooks`` lists the hooks of a directory, and trusts those of its
 project or takes that trust back. ``columbina setup`` asks which service the
@@ -61,6 +63,8 @@ from columbina.apps import FRONTEND
 from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
 from columbina.apps import setup as chosen_service
+from columbina.apps.serve import wire as serve_wire
+from columbina.apps.serve.wire import WIRE, Wire
 from columbina.apps.terminal_text import harmless
 from columbina.hooks import Config as HooksConfig
 from columbina.kernel import (
@@ -85,6 +89,7 @@ _PERMISSIONS = "permissions"
 _INTERRUPTED = 130
 _CHAT = "chat"
 _RUN = "run"
+_SERVE = "serve"
 _SESSIONS = "sessions"
 _KNOW_THE_LOG = ("session", "agent")
 """The entries that are enough to read a stored session: its log, and the events of the inbox."""
@@ -353,7 +358,8 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                     raise _UsageError(f"the working directory {args.cwd!r} is not a directory")
                 config["cwd"] = str(Path(args.cwd).resolve())
             config.setdefault("cwd", str(Path().resolve()))
-            if args.session_id is not None:
+            # Whoever is served says over the wire which session is to be open.
+            if args.command != _SERVE and args.session_id is not None:
                 config["session_id"] = args.session_id
             if args.model is not None:
                 config["model"] = {**_call_of(config), "model": args.model.replace("$", "$$")}
@@ -361,7 +367,7 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                 config["task"] = args.task
                 if args.json is not None:
                     config["json_lines"] = args.json
-            elif args.resume:
+            elif args.command == _CHAT and args.resume:
                 config["resume"] = True
                 # Which session to take up is said here. One that a profile names is not it.
                 config.pop("session_id", None)
@@ -416,11 +422,23 @@ class _Parser(argparse.ArgumentParser):
 
 
 async def _loaded(
-    entries: Sequence[Entry], env: Mapping[str, str], then: Callable[[Context], Awaitable[int]]
+    entries: Sequence[Entry],
+    env: Mapping[str, str],
+    then: Callable[[Context], Awaitable[int]],
+    wire: Wire | None = None,
 ) -> int:
-    """Load the entries, do what is to be done with them, and unload everything again."""
+    """Load the entries, do what is to be done with them, and unload everything again.
+
+    Args:
+        entries: The entries.
+        env: The environment that their configs refer to.
+        then: Does what is to be done, and returns the exit code.
+        wire: The wire that the program speaks over, if it serves another one.
+    """
     root = Context()
     try:
+        if wire is not None:
+            root.provide(WIRE, wire)
         composition = mount(root, entries, env=env)
         await root.settled()
         problems = composition.problems()
@@ -433,7 +451,7 @@ async def _loaded(
         await root.fiber.dispose()
 
 
-async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
+async def _run(entries: Sequence[Entry], env: Mapping[str, str], wire: Wire | None = None) -> int:
     """Load the entries, run the frontend, and unload everything again."""
 
     async def run(root: Context) -> int:
@@ -444,7 +462,25 @@ async def _run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
             return 2
         return await frontend.run()
 
-    return await _loaded(entries, env, run)
+    return await _loaded(entries, env, run, wire)
+
+
+async def _serve(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
+    """Take the standard input and output for the protocol, and then load and run.
+
+    They are taken before a single plugin is loaded. A plugin that prints
+    while it loads would otherwise put its words where the first answer
+    belongs. From here on, what is printed goes to the standard error.
+    """
+    try:
+        wire = serve_wire.taken()
+    except OSError as error:
+        _tell(
+            "'columbina serve' talks over its standard input and output, and this process "
+            f"has none: {error}"
+        )
+        return 2
+    return await _run(entries, env, wire)
 
 
 async def _look(entries: Sequence[Entry], env: Mapping[str, str], args: argparse.Namespace) -> int:
@@ -549,8 +585,14 @@ def _from_the_profile(command: argparse.ArgumentParser, profile: str) -> None:
     )
 
 
-def _shared(command: argparse.ArgumentParser, profile: str) -> None:
-    """Add the arguments that every command takes that has an agent work."""
+def _shared(command: argparse.ArgumentParser, profile: str, *, session: bool = True) -> None:
+    """Add the arguments that every command takes that has an agent work.
+
+    Args:
+        command: The command.
+        profile: The profile that it loads unless another one is named.
+        session: Whether the command line can name the session.
+    """
     _from_the_profile(command, profile)
     command.add_argument("--model", metavar="ID", help="the model to use")
     command.add_argument(
@@ -565,7 +607,10 @@ def _shared(command: argparse.ArgumentParser, profile: str) -> None:
         metavar="DIR",
         help="the working directory of the agent; the current directory if nothing names one",
     )
-    command.add_argument("--session-id", metavar="ID", help="the session to start or to continue")
+    if session:
+        command.add_argument(
+            "--session-id", metavar="ID", help="the session to start or to continue"
+        )
     command.add_argument(
         "--permission",
         choices=get_args(Preset),
@@ -660,6 +705,11 @@ def _parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         help="report the run as lines of JSON, or as the answer alone",
     )
+    serve = commands.add_parser(
+        _SERVE,
+        help="hold a conversation for another program, over the standard input and output",
+    )
+    _shared(serve, "serve", session=False)
     stored = commands.add_parser(
         _SESSIONS, help="list, show or copy the sessions that are stored, without a conversation"
     )
@@ -713,6 +763,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             # A file or another program gets the entries as they are, to be read again.
             sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)
             return 0
+        if args.command == _SERVE:
+            return asyncio.run(_serve(entries, env))
         return asyncio.run(_run(entries, env))
     except (_UsageError, CompositionError, chosen_service.SetupError) as error:
         _tell(str(error))

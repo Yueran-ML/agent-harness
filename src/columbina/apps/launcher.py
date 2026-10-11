@@ -519,12 +519,16 @@ def _setup(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
             "be given in the environment variable of its service instead"
         )
     try:
-        chosen_service.run(home, env, asked, asked_unseen, show)
+        answers = chosen_service.asked(home, env, asked, asked_unseen, show)
     except (EOFError, KeyboardInterrupt):
-        # The line of the question that was not answered is still open.
+        # The line of the question that was not answered is still open. Nothing is stored
+        # before the last question is answered, so this much can be said for certain.
         print()
         _tell("nothing was stored")
         return _INTERRUPTED
+    # Whoever interrupts the storing itself is told nothing of what was stored: it may be
+    # the key, or the key and what was chosen.
+    chosen_service.store(home, env, answers, show)
     return 0
 
 

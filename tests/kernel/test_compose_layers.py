@@ -176,6 +176,16 @@ def test_extending_an_unknown_layer_is_an_error() -> None:
     ("text", "complaint"),
     [
         ("- insert: [", "not valid YAML"),
+        # The reader of YAML makes values of what it reads. One that cannot be made fails
+        # with an error that is not one of its own, and so does a text that is nested too
+        # deeply to be read.
+        ("- id: llm\n  config:\n    since: 2026-13-01\n", "a value in it cannot be read: month"),
+        ("- id: llm\n  config:\n    flag: !!bool maybe\n", "a value in it cannot be read: 'maybe'"),
+        pytest.param(
+            "- id: llm\n  config: " + "[" * 3000 + "]" * 3000,
+            "it is nested too deeply",
+            id="lists in lists, thousands deep",
+        ),
         ("just a string", "list of operations"),
         ("- {id: llm, colour: blue}", "colour"),
         ("- {insert: [], id: llm}", "id"),

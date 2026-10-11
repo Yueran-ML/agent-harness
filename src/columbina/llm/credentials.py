@@ -11,7 +11,8 @@ The file of keys
     A user who does not want to set a variable types a key in once, and it
     is kept in one file, by the name of the service that it is for::
 
-        {"version": 1, "keys": {"deepseek": "sk-..."}}
+        {"version": 1,
+         "keys": {"deepseek": {"key": "sk-...", "sent_to": "https://api.deepseek.com"}}}
 
     A key lies in that file as it is. It is not encrypted, so whoever can
     read the file has the keys, and the file has to be its user's alone. On
@@ -21,7 +22,17 @@ The file of keys
     keep other users out.
 
     The file is written whole or not at all: next to the old one first, and
-    then put in its place.
+    then put in its place. Where the file is a link, the file that it leads
+    to is the one that is read and the one that is written.
+
+Where a key goes
+    A key is stored with the place that it was typed in for: the scheme,
+    the machine and the port of the address of its service, see
+    :func:`origin_of`. It is handed out for a request to that place and to
+    no other. The name of a service says where its requests go only as long
+    as nothing changes the address behind the name, and a variable of the
+    environment can do that. A key that was typed in for one service is not
+    sent to wherever the name leads on another day.
 
 Nothing here says a key. An error names the file and what is wrong with it,
 and never what the file holds.
@@ -35,17 +46,39 @@ import stat
 import sys
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-__all__ = ["CredentialsError", "forget", "keep", "key_for", "sendable", "stored", "trimmed"]
+__all__ = [
+    "CredentialsError",
+    "forget",
+    "keep",
+    "key_for",
+    "origin_of",
+    "sendable",
+    "stored",
+    "trimmed",
+]
 
 _HAS_MODES = sys.platform != "win32"
 """Whether a file has a mode that says who may read it."""
 
+_PORTS = {"http": 80, "https": 443}
+"""The port that an address of a scheme leads to where it names none."""
+
 
 class CredentialsError(Exception):
-    """The file of stored keys cannot be used, or a key cannot be kept in it."""
+    """The file of stored keys cannot be used, or a key cannot be kept in it or had from it."""
+
+
+class _Entry(BaseModel):
+    """A key, and where it is sent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    sent_to: str
 
 
 class _Kept(BaseModel):
@@ -54,7 +87,7 @@ class _Kept(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     version: Literal[1]
-    keys: dict[str, str]
+    keys: dict[str, _Entry]
 
 
 def trimmed(key: str) -> str:
@@ -82,13 +115,41 @@ def sendable(key: str) -> bool:
     return bool(key) and all("!" <= character <= "~" for character in key)
 
 
+def origin_of(address: str) -> str:
+    """Return the place that an address leads to: its scheme, its machine and its port.
+
+    Two addresses that lead to the same place give the same text, however
+    they are written: the case of the letters, a port that is the usual one
+    for the scheme, and whatever path follows do not count. An address that
+    cannot be taken apart is its own place, as it is written.
+
+    Args:
+        address: The address of a service.
+    """
+    written = address.strip()
+    try:
+        parts = urlsplit(written)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return written
+    # The scheme and the machine come back in small letters.
+    scheme = parts.scheme
+    if not scheme or not host:
+        return written
+    if ":" in host:
+        host = f"[{host}]"
+    if port is None or port == _PORTS.get(scheme):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
 def _too_open(mode: int) -> bool:
     """Whether a file of this mode can be read or changed by its group or by the others."""
     return bool(stat.S_IMODE(mode) & 0o077)
 
 
-def _read(path: Path, *, whoever_can_read_it: bool) -> dict[str, str]:
-    """Return the keys of the file, or none if there is no file.
+def _read(path: Path, *, whoever_can_read_it: bool) -> dict[str, _Entry]:
+    """Return what the file holds, or nothing if there is no file.
 
     Args:
         path: The file.
@@ -96,17 +157,29 @@ def _read(path: Path, *, whoever_can_read_it: bool) -> dict[str, str]:
             alone. One who is about to write the file anew may: the new file
             is made for its user alone.
     """
+    # Opened without waiting. Something that is no file, a pipe for one, would otherwise keep
+    # whoever opens it waiting for somebody to write into it.
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
     try:
-        with path.open("rb") as file:
-            # Asked of the file that is open, and not of its name: what is read is then the
-            # file that the answer was about.
-            mode = os.fstat(file.fileno()).st_mode
+        descriptor = os.open(path, flags)
+        try:
+            # Asked of what is open, and not of its name: what is read is then the file that
+            # the answers were about. And asked before anything is made of it: a directory
+            # can be opened on some systems, and a pipe on all that have them.
+            mode = os.fstat(descriptor).st_mode
+            if not stat.S_ISREG(mode):
+                raise CredentialsError(
+                    f"the file of stored keys, {path}, is no file, so it is not used"
+                )
             if _HAS_MODES and not whoever_can_read_it and _too_open(mode):
                 raise CredentialsError(
                     f"the file of stored keys, {path}, can be read by other users of this "
                     f"machine, so it is not used. Make it yours alone with: chmod 600 {path}"
                 )
-            raw = file.read()
+            with os.fdopen(descriptor, "rb", closefd=False) as file:
+                raw = file.read()
+        finally:
+            os.close(descriptor)
     except FileNotFoundError:
         return {}
     except OSError as error:
@@ -126,53 +199,82 @@ def _read(path: Path, *, whoever_can_read_it: bool) -> dict[str, str]:
     return kept.keys
 
 
-def _write(path: Path, keys: dict[str, str]) -> None:
+def _write(path: Path, keys: dict[str, _Entry]) -> None:
     """Put a file of these keys in the place of the one that is there, whole or not at all."""
-    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True) + "\n"
-    beside = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    held = {name: entry.model_dump() for name, entry in keys.items()}
+    text = json.dumps({"version": 1, "keys": held}, indent=2, sort_keys=True) + "\n"
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # Where the file is a link, the file that it leads to is written, as it is the one
+        # that is read. Put in the place of the link, the new file would leave the old one
+        # lying where it was, with every key in it.
+        target = path.resolve()
+        beside = target.with_name(f".{target.name}.{secrets.token_hex(8)}.tmp")
+        target.parent.mkdir(parents=True, exist_ok=True)
         # Made anew, and for its user alone before a key is written into it.
         descriptor = os.open(beside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
                 file.write(text)
-            beside.replace(path)
+            beside.replace(target)
         finally:
             beside.unlink(missing_ok=True)
-    except OSError as error:
+    except (OSError, RuntimeError) as error:
+        why = error.strerror if isinstance(error, OSError) else str(error)
         raise CredentialsError(
-            f"the file of stored keys, {path}, cannot be written: {error.strerror}"
+            f"the file of stored keys, {path}, cannot be written: {why}"
         ) from None
 
 
 def stored(path: Path) -> dict[str, str]:
-    """Return the keys that the file holds, by the name of the service that each is for.
+    """Return which services a key is stored for, each with the place that its key is sent to.
+
+    No key is handed out here: whoever only shows what is stored has no use
+    for one.
 
     Args:
         path: The file of keys.
 
     Returns:
-        The keys, as they lie in the file. There are none if there is no file.
+        The place of each key, see :func:`origin_of`, by the name of its
+        service. There are none if there is no file.
 
     Raises:
         CredentialsError: The file cannot be read, is not what
             ``columbina setup`` writes, or is not its user's alone.
     """
-    return _read(path, whoever_can_read_it=False)
+    return {name: entry.sent_to for name, entry in _read(path, whoever_can_read_it=False).items()}
 
 
-def key_for(path: Path, provider: str) -> str | None:
-    """Return the key that is stored for a service, or ``None`` if none is.
+def key_for(path: Path, provider: str, origin: str) -> str | None:
+    """Return the key that is stored for a service, for a request to a place.
+
+    Args:
+        path: The file of keys.
+        provider: The name of the service.
+        origin: The place that the request goes to, see :func:`origin_of`.
+
+    Returns:
+        The key, or ``None`` if none is stored for the service.
 
     Raises:
         CredentialsError: The file cannot be read, is not what
-            ``columbina setup`` writes, or is not its user's alone.
+            ``columbina setup`` writes, or is not its user's alone. Or a key
+            is stored for the service, and it was stored for another place.
     """
-    return stored(path).get(provider)
+    entry = _read(path, whoever_can_read_it=False).get(provider)
+    if entry is None:
+        return None
+    if entry.sent_to != origin:
+        raise CredentialsError(
+            f"the key that is stored for {provider} was stored for {entry.sent_to}, and the "
+            f"requests for {provider} now go to {origin}. It is not sent there. Enter a key "
+            "for this address with 'columbina setup', or put it into the variable of the "
+            "service"
+        )
+    return entry.key
 
 
-def keep(path: Path, provider: str, key: str) -> None:
+def keep(path: Path, provider: str, key: str, origin: str) -> None:
     """Store a key for a service, in the place of the one that is stored for it.
 
     The file is written anew and for its user alone, whatever it was before.
@@ -181,6 +283,8 @@ def keep(path: Path, provider: str, key: str) -> None:
         path: The file of keys.
         provider: The name of the service.
         key: The key. The blanks and line breaks around it are not stored.
+        origin: The place that the key is for, see :func:`origin_of`. It is
+            handed out for requests to this place and to no other.
 
     Raises:
         CredentialsError: There is no key or it cannot be sent as it is,
@@ -195,7 +299,8 @@ def keep(path: Path, provider: str, key: str) -> None:
             "this cannot be a key: there is a character in it that no key has, such as a "
             "blank, a line break or a quotation mark of a word processor"
         )
-    _write(path, _read(path, whoever_can_read_it=True) | {provider: key})
+    entry = _Entry(key=key, sent_to=origin)
+    _write(path, _read(path, whoever_can_read_it=True) | {provider: entry})
 
 
 def forget(path: Path, provider: str) -> bool:

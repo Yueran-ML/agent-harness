@@ -404,6 +404,28 @@ def test_a_kind_that_cannot_be_used_does_not_hide_the_others(place: Path) -> Non
     ]
 
 
+@pytest.mark.parametrize("key", ["tools", "max_steps", "model", "description"])
+def test_a_number_of_thousands_of_digits_in_a_file_does_not_hide_the_others(
+    place: Path, key: str
+) -> None:
+    # Written by sixteens, such a number is made without a word, and it cannot be written out.
+    root = of_a_project(place / "agents")
+    kind(root.path, "good")
+    head = "---\nname: wide\n" if key == "description" else "---\nname: wide\ndescription: x\n"
+    kind(root.path, "wide", f"{head}{key}: 0x{'f' * 5000}\n---\nYou review changes.\n")
+
+    found = scan(root)
+
+    assert names(found) == ["good"]
+    assert [(name, reason[:103]) for name, reason in reasons(found)] == [
+        (
+            "wide.md",
+            "the lines at the beginning of wide.md give a value that cannot be read: Exceeds "
+            "the limit (4300 digits)",
+        )
+    ]
+
+
 def test_a_file_of_just_the_length_that_is_allowed_is_read(place: Path) -> None:
     root = of_a_project(place / "agents")
     head = written("long", text="")

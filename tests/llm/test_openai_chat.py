@@ -1129,12 +1129,23 @@ async def test_a_key_that_cannot_be_sent_is_refused_and_is_not_shown(
 # The keys that a user stored
 
 
+PLACE = "https://api.example.test"
+"""Where the address of the adapter of these tests leads."""
+
+
 def with_stored(tmp_path: Path, **keys: str) -> Config:
     """The config of an adapter that looks into a file of keys, with these keys in it."""
     file = tmp_path / "credentials.json"
     for provider, stored in keys.items():
-        keep(file, provider, stored)
+        keep(file, provider, stored, PLACE)
     return CONFIG.model_copy(update={"api_key_file": file})
+
+
+def by_hand(file: Path, key: str, place: str = PLACE) -> None:
+    """Write a file of keys by hand, with a key for the provider of these tests."""
+    held = {"version": 1, "keys": {"deepseek": {"key": key, "sent_to": place}}}
+    file.write_text(json.dumps(held), encoding="utf-8")
+    file.chmod(0o600)
 
 
 def sent_as_key(service: Service) -> list[str | None]:
@@ -1202,7 +1213,7 @@ async def test_a_key_that_is_stored_while_the_program_runs_is_found_at_the_next_
     connect(ctx, llm, service, config)
 
     first = await ask(llm)
-    keep(config.api_key_file, "deepseek", STORED)
+    keep(config.api_key_file, "deepseek", STORED, PLACE)
     second = await ask(llm)
 
     assert first.failure == LlmFailure(
@@ -1240,7 +1251,7 @@ async def test_a_service_that_asks_for_no_key_is_sent_one_only_if_one_is_found(
     connect(ctx, llm, service, config)
 
     without = await ask(llm)
-    keep(config.api_key_file, "deepseek", STORED)
+    keep(config.api_key_file, "deepseek", STORED, PLACE)
     await ask(llm)
     monkeypatch.setenv("TEST_KEY", KEY)
     await ask(llm)
@@ -1269,9 +1280,7 @@ async def test_what_is_around_a_stored_key_is_not_sent(
     config = with_stored(tmp_path)
     assert config.api_key_file is not None
     # Written by hand, and not by the command that stores a key.
-    by_hand = {"version": 1, "keys": {"deepseek": f" {STORED}\n"}}
-    config.api_key_file.write_text(json.dumps(by_hand), encoding="utf-8")
-    config.api_key_file.chmod(0o600)
+    by_hand(config.api_key_file, f" {STORED}\n")
     service = Service(streamed(TEXT_REPLY))
     connect(ctx, llm, service, config)
 
@@ -1287,9 +1296,7 @@ async def test_a_stored_key_that_cannot_be_sent_is_not_sent(
     monkeypatch.delenv("TEST_KEY")
     config = with_stored(tmp_path)
     assert config.api_key_file is not None
-    by_hand = {"version": 1, "keys": {"deepseek": stored}}
-    config.api_key_file.write_text(json.dumps(by_hand), encoding="utf-8")
-    config.api_key_file.chmod(0o600)
+    by_hand(config.api_key_file, stored)
     service = Service(streamed(TEXT_REPLY))
     connect(ctx, llm, service, config)
 
@@ -1341,6 +1348,71 @@ async def test_a_stored_key_never_shows_up_in_a_failure(
 
     assert call.failure is not None
     assert call.failure.message == "Incorrect API key provided: [key]"
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        "http://other-host.example.test/v1",
+        "http://api.example.test",
+        "https://api.example.test:8443/v1",
+        "https://api.example.test.other-host.example/v1",
+    ],
+    ids=["another machine", "without encryption", "another port", "a name that begins alike"],
+)
+async def test_a_stored_key_is_not_sent_where_it_was_not_stored_for(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, address: str
+) -> None:
+    # The address of an adapter may come from a variable of the environment. A key that
+    # was typed in for one place does not follow the name of its service to another one.
+    monkeypatch.delenv("TEST_KEY")
+    config = with_stored(tmp_path, deepseek=STORED).model_copy(update={"base_url": address})
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service, config)
+
+    call = await ask(llm)
+
+    assert call.failure is not None
+    assert call.failure.code == "AUTH"
+    assert call.failure.message.startswith(
+        "the key that is stored for deepseek was stored for https://api.example.test, and the "
+        "requests for deepseek now go to "
+    )
+    assert "It is not sent there." in call.failure.message
+    assert STORED not in call.failure.message
+    assert service.requests == []
+
+
+async def test_a_stored_key_is_sent_wherever_the_same_place_is_written_otherwise(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("TEST_KEY")
+    config = with_stored(tmp_path, deepseek=STORED).model_copy(
+        update={"base_url": "HTTPS://API.Example.Test:443/v2/"}
+    )
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service, config)
+
+    call = await ask(llm)
+
+    assert call.failure is None
+    assert sent_as_key(service) == [f"Bearer {STORED}"]
+
+
+async def test_a_key_of_the_variable_is_sent_wherever_the_address_leads(
+    ctx: Context, llm: Llm, tmp_path: Path
+) -> None:
+    # The variable and the address come from the same hands. Only a stored key has a place.
+    config = with_stored(tmp_path, deepseek=STORED).model_copy(
+        update={"base_url": "http://other-host.example.test/v1"}
+    )
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service, config)
+
+    call = await ask(llm)
+
+    assert call.failure is None
+    assert sent_as_key(service) == [f"Bearer {KEY}"]
 
 
 async def test_the_key_never_shows_up_in_a_failure(ctx: Context, llm: Llm) -> None:
@@ -1427,6 +1499,84 @@ async def test_a_refusal_that_held_the_key_does_not_travel_with_the_failure(
     assert raised.value.failure.message == "bad [key]"
     assert raised.value.__cause__ is None
     assert raised.value.__context__ is None
+
+
+ODD_KEY = "sk-a" + chr(92) + 'b/c+d"e&f<g'
+"""A key with signs in it that a text which repeats it may spell otherwise."""
+
+
+def spelled_as_json(key: str) -> str:
+    return json.dumps(key)[1:-1]
+
+
+@pytest.mark.parametrize(
+    ("body", "cleaned"),
+    [
+        # A gateway that answers in a shape of its own. Its body is passed on as it came,
+        # and JSON writes a backslash and a quotation mark with a backslash before them.
+        (
+            json.dumps({"detail": f"Invalid key {ODD_KEY}"}),
+            json.dumps({"detail": "Invalid key [key]"}),
+        ),
+        # Some writers of JSON put a backslash before a slash as well.
+        (
+            '{"detail": "Invalid key '
+            + spelled_as_json(ODD_KEY).replace("/", chr(92) + "/")
+            + '"}',
+            '{"detail": "Invalid key [key]"}',
+        ),
+        # A key that is repeated as a part of an address.
+        ("see /errors?key=sk-a%5Cb%2Fc%2Bd%22e%26f%3Cg for more", "see /errors?key=[key] for more"),
+        # A key that is repeated in a page of HTML.
+        (
+            "<p>Invalid key sk-a" + chr(92) + "b/c+d&quot;e&amp;f&lt;g</p>",
+            "<p>Invalid key [key]</p>",
+        ),
+        # And as it is.
+        (f"Invalid key {ODD_KEY}", "Invalid key [key]"),
+    ],
+    ids=["as JSON writes it", "with the slash escaped", "as an address", "as HTML", "as it is"],
+)
+async def test_a_key_is_cut_out_in_the_spellings_in_which_a_text_repeats_it(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, body: str, cleaned: str
+) -> None:
+    monkeypatch.setenv("TEST_KEY", ODD_KEY)
+    service = Service(refused(401, body))
+    connect(ctx, llm, service)
+
+    call = await ask(llm)
+
+    assert service.requests[0].headers["authorization"] == f"Bearer {ODD_KEY}"
+    assert call.failure is not None
+    assert call.failure.message == cleaned
+    assert call.failure.code == "AUTH"
+
+
+async def test_a_key_in_the_message_of_an_error_is_cut_out_whatever_signs_it_has(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_KEY", ODD_KEY)
+    connect(ctx, llm, Service(refused(401, {"message": f"Incorrect API key provided: {ODD_KEY}"})))
+
+    call = await ask(llm)
+
+    assert call.failure is not None
+    assert call.failure.message == "Incorrect API key provided: [key]"
+
+
+async def test_a_spelling_that_holds_another_one_is_cut_out_whole(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The key as an address writes it begins with the key as it is, where its first signs
+    # are plain. Cut out in the wrong order, the rest of the longer spelling would stay.
+    key = "sk-plain%"
+    monkeypatch.setenv("TEST_KEY", key)
+    connect(ctx, llm, Service(refused(401, f"no such key: sk-plain%25, sent as {key}")))
+
+    call = await ask(llm)
+
+    assert call.failure is not None
+    assert call.failure.message == "no such key: [key], sent as [key]"
 
 
 async def test_the_key_is_cut_out_of_the_id_of_a_request(ctx: Context, llm: Llm) -> None:
@@ -1582,10 +1732,10 @@ async def test_the_plugin_takes_the_file_of_keys_by_its_path(
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     file = tmp_path / "credentials.json"
-    keep(file, "local", STORED)
     received: list[bytes] = []
     server = await serve(http(TEXT_REPLY), received)
     port = server.sockets[0].getsockname()[1]
+    keep(file, "local", STORED, f"http://127.0.0.1:{port}")
     await ctx.plugin(
         openai_chat,
         {

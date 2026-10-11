@@ -14,8 +14,15 @@ import columbina.subagents
 from columbina.agent import Agent, AgentSpec
 from columbina.fs import bound
 from columbina.kernel import Context
-from columbina.llm import Usage
-from columbina.session import SESSIONS, AsideEvent, EventData, Session, TurnEndReason
+from columbina.llm import CallConfig, Usage
+from columbina.session import (
+    SESSIONS,
+    AsideEvent,
+    EventData,
+    Session,
+    SessionStoreError,
+    TurnEndReason,
+)
 from columbina.subagents import (
     SUBAGENTS,
     TOOL,
@@ -47,6 +54,8 @@ class Child:
         self.stopped: list[str] = []
         self.closed = False
         self.breaks: Exception | None = None
+        # What a subagent that was told to stop waits for before it has ended.
+        self.winding_down: asyncio.Event | None = None
         self._outcome = outcome
         self._gate = gate
 
@@ -54,6 +63,8 @@ class Child:
         if self.breaks is not None:
             raise self.breaks
         if self.stopped:
+            if self.winding_down is not None:
+                await self.winding_down.wait()
             return replace(self._outcome, reason="aborted", detail=self.stopped[-1])
         if self._gate is not None:
             await self._gate.wait()
@@ -832,3 +843,137 @@ async def test_a_subagent_of_which_nobody_can_say_how_it_ended_is_closed_and_wri
     finally:
         gate.set()
         run.cancel()
+
+
+# What a review found
+
+
+async def test_a_subagent_whose_beginning_cannot_be_written_down_is_closed(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = asyncio.Event()
+    provider = Provider(gate=gate)
+    subagents = await loaded(harness, provider, max_running=1)
+    parent = await harness.agent()
+    append = Session.append
+
+    def full(self: Session, data: EventData, **more: Any) -> Any:
+        if isinstance(data, SubagentStartedEvent):
+            raise SessionStoreError("the disk is full")
+        return append(self, data, **more)
+
+    monkeypatch.setattr(Session, "append", full)
+
+    with pytest.raises(SessionStoreError, match="the disk is full"):
+        await asyncio.wait_for(subagents.run(parent, task()), timeout=5)
+
+    # The subagent had begun to work by then. It does not go on by itself.
+    (child,) = provider.children
+    assert child.closed
+    # No end is told of a subagent of which no beginning was told.
+    assert of(parent.session, SubagentEndedEvent) == []
+    # And its place is free for the next one.
+    monkeypatch.undo()
+    gate.set()
+    again = subagents.run(parent, task(call_id="call-2"))
+    assert await asyncio.wait_for(again, timeout=5) == "Three files."
+
+
+async def test_a_call_that_is_cancelled_twice_still_writes_down_what_its_subagent_cost(
+    harness: Harness,
+) -> None:
+    gate, winding_down = asyncio.Event(), asyncio.Event()
+    provider = Provider(gate=gate, outcome=replace(DONE, usage=Usage(output_tokens=5)))
+    subagents = await loaded(harness, provider)
+    parent = await harness.agent()
+    run = asyncio.ensure_future(subagents.run(parent, task()))
+    try:
+        await settled()
+        (child,) = provider.children
+        child.winding_down = winding_down
+
+        run.cancel()
+        await settled()
+        # The subagent was told to stop and has not ended yet. Whoever waits is cancelled again.
+        run.cancel()
+        await settled()
+        still_waiting = not run.done()
+        winding_down.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=5)
+
+        assert still_waiting
+        assert child.stopped == ["parent"]
+        assert child.closed
+        assert of(parent.session, SubagentEndedEvent) == [
+            SubagentEndedEvent(
+                call_id="call-1", session_id="child-1", reason="aborted", detail="parent", steps=2
+            )
+        ]
+        assert of(parent.session, AsideEvent) == [
+            AsideEvent(purpose="subagent", usage=Usage(output_tokens=5))
+        ]
+    finally:
+        gate.set()
+        winding_down.set()
+        run.cancel()
+
+
+async def test_a_subagent_that_does_not_end_when_it_is_told_to_stop_is_given_up(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(columbina.subagents, "STOP_SECONDS", 0.05)
+    gate, never = asyncio.Event(), asyncio.Event()
+    provider = Provider(gate=gate, outcome=replace(DONE, usage=Usage(output_tokens=5)))
+    subagents = await loaded(harness, provider)
+    parent = await harness.agent()
+    run = asyncio.ensure_future(subagents.run(parent, task()))
+    try:
+        await settled()
+        (child,) = provider.children
+        child.winding_down = never
+
+        run.cancel()
+        await settled()
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=5)
+
+        # Nobody knows how it ended or what it cost. It is closed all the same.
+        assert child.closed
+        assert of(parent.session, SubagentEndedEvent) == [
+            SubagentEndedEvent(
+                call_id="call-1", session_id="child-1", reason="unknown", detail=None, steps=0
+            )
+        ]
+        assert of(parent.session, AsideEvent) == []
+    finally:
+        gate.set()
+        never.set()
+        run.cancel()
+
+
+def test_a_subagent_that_was_told_to_stop_is_waited_for_ten_seconds() -> None:
+    assert columbina.subagents.STOP_SECONDS == 10.0
+
+
+async def test_what_is_known_of_the_window_of_one_model_is_not_said_of_another(
+    harness: Harness, tmp_path: Path
+) -> None:
+    home = tmp_path / "home" / "agents"
+    provider = Provider()
+    subagents = await loaded(harness, provider, home=home)
+    a_kind(home, "thinker", "model: big-model")
+    a_kind(home, "same", "model: script")
+    wide = CallConfig(provider="scripted", model="script", context_window=1_000_000)
+    parent = await harness.agent(model=wide)
+
+    await subagents.run(parent, task(kind="thinker"))
+    await subagents.run(parent, task(kind="same", call_id="call-2"))
+    await subagents.run(parent, task(call_id="call-3"))
+
+    another, the_same, like_the_parent = (order.spec.model for order in provider.orders)
+    # A window of a million tokens is the window of the parent's model. Nothing says what
+    # the other model takes, so nothing is said of it.
+    assert another == CallConfig(provider="scripted", model="big-model")
+    assert the_same == wide == like_the_parent

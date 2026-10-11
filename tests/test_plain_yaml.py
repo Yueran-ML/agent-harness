@@ -117,6 +117,35 @@ def test_a_value_that_cannot_be_made_is_told_as_that(text: str, said: str) -> No
     assert (error.kind, error.said, error.line) == ("value", said, None)
 
 
+@pytest.mark.parametrize(
+    "number",
+    ["0x" + "f" * 5000, "-0x" + "f" * 5000, "0b" + "1" * 20000, "0" + "7" * 8000],
+    ids=["by sixteens", "below nought", "by twos", "by eights"],
+)
+def test_a_number_that_cannot_be_written_out_again_is_a_value_that_cannot_be_made(
+    number: str,
+) -> None:
+    # Such a number is made at once from a few lines, and whoever then names it in an error,
+    # or writes it down, fails on it with an error of another kind.
+    error = refused(f"steps: {number}\n")
+
+    assert error.kind == "value"
+    assert error.said.startswith("Exceeds the limit")
+    assert error.line is None
+
+
+def test_a_number_that_is_written_in_another_way_is_made_like_any_other() -> None:
+    assert load("a: 0xff\nb: 0b101\nc: 017\nd: -0x10\ne: 1:30\n") == {
+        "a": 255,
+        "b": 5,
+        "c": 15,
+        "d": -16,
+        "e": 90,
+    }
+    long_but_writable = load("a: 0x" + "f" * 1000)
+    assert long_but_writable == {"a": 16**1000 - 1}
+
+
 def test_a_value_of_python_itself_is_not_made() -> None:
     error = refused("a: !!python/object/apply:os.system ['echo no']\n")
 

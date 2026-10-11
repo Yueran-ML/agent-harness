@@ -15,7 +15,7 @@ import yaml
 from columbina.apps.launcher import main
 from columbina.apps.terminal_text import STAND_IN
 from columbina.kernel import interpolate
-from columbina.llm import CallConfig
+from columbina.llm import CallConfig, credentials
 from columbina.llm.adapters.openai_chat import Config
 from columbina.llm.credentials import keep, stored
 from support.launch import profile
@@ -553,7 +553,8 @@ def test_setup_asks_at_a_terminal_and_stores_the_answers(
         "use": "openai",
         "services": {"openai": {"model": "gpt-test", "context_window": 400000}},
     }
-    assert stored(home / "credentials.json") == {"openai": KEY}
+    assert stored(home / "credentials.json") == {"openai": "https://api.openai.com"}
+    assert KEY.encode() in (home / "credentials.json").read_bytes()
 
 
 def test_what_setup_stored_is_what_the_next_run_loads(
@@ -649,7 +650,7 @@ def test_what_is_stored_for_a_service_is_deleted_from_the_command_line(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     chosen(home, OPENAI_CHOSEN)
-    keep(home / "credentials.json", "openai", KEY)
+    keep(home / "credentials.json", "openai", KEY, "https://api.openai.com")
 
     first = main(["setup", "--forget", "openai"])
     told = capsys.readouterr()
@@ -744,3 +745,56 @@ def test_a_run_talks_to_the_service_that_was_chosen_with_the_key_that_was_stored
     ]
     assert holding == ["credentials.json"]
     assert len([found for found in home.rglob("*") if found.is_file()]) > 3
+
+
+# What a review found
+
+
+def test_setup_that_is_interrupted_while_it_stores_does_not_say_that_nothing_was_stored(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    Terminal(monkeypatch, "openai", "gpt-test", "", key=KEY)
+    kept = credentials.keep
+
+    def kept_and_then_interrupted(path: Path, provider: str, key: str, origin: str) -> None:
+        kept(path, provider, key, origin)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(credentials, "keep", kept_and_then_interrupted)
+
+    code = main(["setup"])
+
+    captured = capsys.readouterr()
+    assert code == 130
+    # The key is stored by now. Nothing is said that is not so.
+    assert stored(home / "credentials.json") == {"openai": "https://api.openai.com"}
+    assert "nothing was stored" not in captured.err + captured.out
+    assert captured.err == ""
+
+
+def test_a_stored_key_does_not_follow_a_variable_that_sends_the_requests_elsewhere(
+    home: Path,
+    work: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    service: tuple[str, list[tuple[str, str | None, dict[str, Any]]]],
+) -> None:
+    address, requests = service
+    keep(home / "credentials.json", "deepseek", KEY, "https://api.deepseek.com")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", address)
+    run = ["run", "Say hello.", "--cwd", str(work), "--no-json"]
+
+    with_the_stored_key = main([*run, "--session-id", "s-1"])
+    first = capsys.readouterr()
+    # A key that comes from the environment, like the address, goes where the address leads.
+    monkeypatch.setenv("DEEPSEEK_API_KEY", OTHER)
+    with_the_key_of_the_variable = main([*run, "--session-id", "s-2"])
+    second = capsys.readouterr()
+
+    assert with_the_stored_key == 1
+    assert "was stored for https://api.deepseek.com" in first.out + first.err
+    assert "It is not sent there." in first.out + first.err
+    assert KEY not in first.out + first.err
+    assert (with_the_key_of_the_variable, second.out) == (0, "Hello.\n")
+    # The one request that was made carries the key of the variable. The stored one went nowhere.
+    assert [key for _path, key, _body in requests] == [f"Bearer {OTHER}"]

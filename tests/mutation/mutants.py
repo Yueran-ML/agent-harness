@@ -10871,14 +10871,14 @@ _SUBAGENTS = (
     mutant(
         "a kind of a project chooses the model",
         SUBAGENTS_SEAM,
-        "                if kind.root.own:\n",
-        "                if True:\n",
+        "                if not kind.root.own:\n",
+        "                if False:\n",
     ),
     mutant(
         "a kind of the user cannot choose the model",
         SUBAGENTS_SEAM,
-        "                if kind.root.own:\n",
-        "                if False:\n",
+        "                if not kind.root.own:\n",
+        "                if True:\n",
     ),
     mutant(
         "nothing is said of the model that a kind of a project names",
@@ -10979,14 +10979,14 @@ _SUBAGENTS = (
     mutant(
         "the event of a subagent that started names the call for its session",
         SUBAGENTS_SEAM,
-        "                session_id=child.session_id,\n                kind=task.kind,\n",
-        "                session_id=task.call_id,\n                kind=task.kind,\n",
+        "                    session_id=child.session_id,\n                    kind=task.kind,\n",
+        "                    session_id=task.call_id,\n                    kind=task.kind,\n",
     ),
     mutant(
         "the event of a subagent that started does not say its kind",
         SUBAGENTS_SEAM,
-        "                session_id=child.session_id,\n                kind=task.kind,\n",
-        "                session_id=child.session_id,\n                kind=None,\n",
+        "                    session_id=child.session_id,\n                    kind=task.kind,\n",
+        "                    session_id=child.session_id,\n                    kind=None,\n",
     ),
     mutant(
         "half a character in the words about a task goes into the log",
@@ -11009,8 +11009,8 @@ _SUBAGENTS = (
     mutant(
         "a cancellation ends at the subagent",
         SUBAGENTS_SEAM,
-        "                outcome = await child.ended()\n                raise\n",
-        "                outcome = await child.ended()\n",
+        "                outcome = await _stopped(child)\n                raise\n",
+        "                outcome = await _stopped(child)\n",
     ),
     mutant(
         "how a subagent ended is not written into the log of its parent",
@@ -11422,6 +11422,49 @@ _SUBAGENTS = (
         '    agents.context.add(ctx, "agents", ContextSource(kinds, order=130, kind="replace"))\n',
         '    agents.context.add(ctx, "kinds", ContextSource(kinds, order=130, kind="replace"))\n',
     ),
+    # What a review found
+    mutant(
+        "the end of a subagent is told though its beginning could not be",
+        SUBAGENTS_SEAM,
+        "                if told:\n",
+        "                if True:\n",
+    ),
+    mutant(
+        "a second cancellation loses what a subagent cost",
+        SUBAGENTS_SEAM,
+        "                outcome = await _stopped(child)\n                raise\n",
+        "                outcome = await child.ended()\n                raise\n",
+    ),
+    mutant(
+        "whoever waits for a subagent to stop gives up at the next cancellation",
+        SUBAGENTS_SEAM,
+        "            # The first cancellation is on its way already. A second one changes nothing.\n            continue\n",
+        "            # The first cancellation is on its way already. A second one changes nothing.\n            raise\n",
+    ),
+    mutant(
+        "a subagent that does not stop is waited for for ever",
+        SUBAGENTS_SEAM,
+        "            await asyncio.wait({ending}, timeout=max(until - loop.time(), 0))\n",
+        "            await asyncio.wait({ending})\n",
+    ),
+    mutant(
+        "a subagent that was told to stop is waited for for a second",
+        SUBAGENTS_SEAM,
+        "STOP_SECONDS = 10.0\n",
+        "STOP_SECONDS = 1.0\n",
+    ),
+    mutant(
+        "a kind that names the model of the parent loses what is known of its window",
+        SUBAGENTS_SEAM,
+        "                elif kind.model != model.model:\n",
+        "                else:\n",
+    ),
+    mutant(
+        "another model is said to take what the model of the parent takes",
+        SUBAGENTS_SEAM,
+        '                    model = model.model_copy(update={"model": kind.model, "context_window": None})\n',
+        '                    model = model.model_copy(update={"model": kind.model})\n',
+    ),
 )
 
 _YAML = (
@@ -11490,6 +11533,12 @@ _YAML = (
         PLAIN_YAML,
         "        super().__init__(said or kind)\n",
         "        super().__init__(kind)\n",
+    ),
+    mutant(
+        "a number that cannot be written out again is made",
+        PLAIN_YAML,
+        "    number = loader.construct_yaml_int(node)\n    str(number)\n    return number\n",
+        "    number = loader.construct_yaml_int(node)\n    return number\n",
     ),
 )
 
@@ -11650,20 +11699,20 @@ _KEYS = (
     mutant(
         "the file of keys is written on one line",
         CREDENTIALS,
-        '    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True) + "\\n"\n',
-        '    text = json.dumps({"version": 1, "keys": keys}, sort_keys=True) + "\\n"\n',
+        '    text = json.dumps({"version": 1, "keys": held}, indent=2, sort_keys=True) + "\\n"\n',
+        '    text = json.dumps({"version": 1, "keys": held}, sort_keys=True) + "\\n"\n',
     ),
     mutant(
         "the file of keys is written in whatever order",
         CREDENTIALS,
-        '    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True) + "\\n"\n',
-        '    text = json.dumps({"version": 1, "keys": keys}, indent=2) + "\\n"\n',
+        '    text = json.dumps({"version": 1, "keys": held}, indent=2, sort_keys=True) + "\\n"\n',
+        '    text = json.dumps({"version": 1, "keys": held}, indent=2) + "\\n"\n',
     ),
     mutant(
         "the file of keys does not end with its line",
         CREDENTIALS,
-        '    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True) + "\\n"\n',
-        '    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True)\n',
+        '    text = json.dumps({"version": 1, "keys": held}, indent=2, sort_keys=True) + "\\n"\n',
+        '    text = json.dumps({"version": 1, "keys": held}, indent=2, sort_keys=True)\n',
     ),
     mutant(
         "the file of keys is made for everybody to read",
@@ -11688,13 +11737,13 @@ _KEYS = (
     mutant(
         "what was written beside the file of keys is left there",
         CREDENTIALS,
-        "            beside.replace(path)\n        finally:\n            beside.unlink(missing_ok=True)\n",
-        "            beside.replace(path)\n        finally:\n            pass\n",
+        "            beside.replace(target)\n        finally:\n            beside.unlink(missing_ok=True)\n",
+        "            beside.replace(target)\n        finally:\n            pass\n",
     ),
     mutant(
         "a key cannot be kept where the directory of the keys is not there yet",
         CREDENTIALS,
-        "        path.parent.mkdir(parents=True, exist_ok=True)\n",
+        "        target.parent.mkdir(parents=True, exist_ok=True)\n",
         "",
     ),
     mutant(
@@ -11718,14 +11767,14 @@ _KEYS = (
     mutant(
         "a key that is kept throws the keys of the other services away",
         CREDENTIALS,
-        "    _write(path, _read(path, whoever_can_read_it=True) | {provider: key})\n",
-        "    _write(path, {provider: key})\n",
+        "    _write(path, _read(path, whoever_can_read_it=True) | {provider: entry})\n",
+        "    _write(path, {provider: entry})\n",
     ),
     mutant(
         "the key that was kept stays where a new one is given",
         CREDENTIALS,
-        "    _write(path, _read(path, whoever_can_read_it=True) | {provider: key})\n",
-        "    _write(path, {provider: key} | _read(path, whoever_can_read_it=True))\n",
+        "    _write(path, _read(path, whoever_can_read_it=True) | {provider: entry})\n",
+        "    _write(path, {provider: entry} | _read(path, whoever_can_read_it=True))\n",
     ),
     mutant(
         "a key that was never kept is forgotten with a crash",
@@ -11754,8 +11803,8 @@ _KEYS = (
     mutant(
         "the key of whatever service comes first is the key of every service",
         CREDENTIALS,
-        "    return stored(path).get(provider)\n",
-        "    return next(iter(stored(path).values()), None)\n",
+        "    entry = _read(path, whoever_can_read_it=False).get(provider)\n",
+        "    entry = next(iter(_read(path, whoever_can_read_it=False).values()), None)\n",
     ),
     # The adapter, and the keys that a user stored
     mutant(
@@ -11773,8 +11822,8 @@ _KEYS = (
     mutant(
         "a stored key is sent with what stands around it",
         OPENAI_CHAT,
-        '                secret = trimmed(await asyncio.to_thread(key_for, file, config.provider) or "")\n',
-        '                secret = await asyncio.to_thread(key_for, file, config.provider) or ""\n',
+        '                secret = trimmed(stored or "")\n',
+        '                secret = stored or ""\n',
     ),
     mutant(
         "a file of keys that cannot be used is a failure of the connection",
@@ -11847,6 +11896,170 @@ _KEYS = (
         OPENAI_CHAT,
         '    max_tokens_field: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"\n',
         '    max_tokens_field: Literal["max_tokens", "max_completion_tokens"] = (\n        "max_completion_tokens"\n    )\n',
+    ),
+    # Where a key goes
+    mutant(
+        "a stored key is handed out for whatever place",
+        CREDENTIALS,
+        "    if entry.sent_to != origin:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a service for which no key is stored crashes the program",
+        CREDENTIALS,
+        "    if entry is None:\n        return None\n    if entry.sent_to != origin:\n",
+        "    if entry.sent_to != origin:\n",
+    ),
+    mutant(
+        "whoever asks what is stored is handed the keys",
+        CREDENTIALS,
+        "    return {name: entry.sent_to for name, entry in _read(path, whoever_can_read_it=False).items()}\n",
+        "    return {name: entry.key for name, entry in _read(path, whoever_can_read_it=False).items()}\n",
+    ),
+    mutant(
+        "a key with something beside its place is used",
+        CREDENTIALS,
+        '    model_config = ConfigDict(extra="forbid")\n\n    key: str\n',
+        '    model_config = ConfigDict(extra="ignore")\n\n    key: str\n',
+    ),
+    mutant(
+        "the blanks around an address are part of where it leads",
+        CREDENTIALS,
+        "    written = address.strip()\n",
+        "    written = address\n",
+    ),
+    mutant(
+        "an address that cannot be taken apart crashes the program",
+        CREDENTIALS,
+        "    except ValueError:\n        return written\n",
+        "    except KeyError:\n        return written\n",
+    ),
+    mutant(
+        "an address without a scheme leads somewhere",
+        CREDENTIALS,
+        "    if not scheme or not host:\n",
+        "    if not host:\n",
+    ),
+    mutant(
+        "an address without a machine leads somewhere",
+        CREDENTIALS,
+        "    if not scheme or not host:\n",
+        "    if not scheme:\n",
+    ),
+    mutant(
+        "a machine that is named by its newer number stands without its brackets",
+        CREDENTIALS,
+        '    if ":" in host:\n        host = f"[{host}]"\n',
+        "",
+    ),
+    mutant(
+        "the usual port of a scheme is named",
+        CREDENTIALS,
+        "    if port is None or port == _PORTS.get(scheme):\n",
+        "    if port is None:\n",
+    ),
+    mutant(
+        "an address without a port leads to a port of no number",
+        CREDENTIALS,
+        "    if port is None or port == _PORTS.get(scheme):\n",
+        "    if port == _PORTS.get(scheme):\n",
+    ),
+    mutant(
+        "the usual ports of the two schemes are each other's",
+        CREDENTIALS,
+        '_PORTS = {"http": 80, "https": 443}\n',
+        '_PORTS = {"http": 443, "https": 80}\n',
+    ),
+    mutant(
+        "a port that is not the usual one is not part of where an address leads",
+        CREDENTIALS,
+        '    return f"{scheme}://{host}:{port}"\n',
+        '    return f"{scheme}://{host}"\n',
+    ),
+    mutant(
+        "what is there and is no file is read",
+        CREDENTIALS,
+        "            if not stat.S_ISREG(mode):\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a link in the place of the file of keys is written over",
+        CREDENTIALS,
+        "        target = path.resolve()\n",
+        "        target = path\n",
+    ),
+    mutant(
+        "a name that leads round in a circle crashes the program",
+        CREDENTIALS,
+        "    except (OSError, RuntimeError) as error:\n",
+        "    except OSError as error:\n",
+    ),
+    mutant(
+        "why the file of keys cannot be written is said with the number of the error",
+        CREDENTIALS,
+        "        why = error.strerror if isinstance(error, OSError) else str(error)\n",
+        "        why = str(error)\n",
+    ),
+    mutant(
+        "a stored key is for an address as it is written and not for where it leads",
+        OPENAI_CHAT,
+        "                place = origin_of(config.base_url)\n",
+        "                place = config.base_url\n",
+    ),
+    # A key in another spelling
+    mutant(
+        "a key is looked for only as it is",
+        OPENAI_CHAT,
+        '        for spelling in _spellings(secret):\n            text = text.replace(spelling, "[key]")\n',
+        '        text = text.replace(secret, "[key]")\n',
+    ),
+    mutant(
+        "a key is not looked for as JSON writes it",
+        OPENAI_CHAT,
+        "        secret,\n        as_json,\n",
+        "        secret,\n",
+    ),
+    mutant(
+        "a key is not looked for with its slashes escaped",
+        OPENAI_CHAT,
+        '        as_json.replace("/", chr(92) + "/"),\n',
+        "",
+    ),
+    mutant(
+        "a key is not looked for as an address writes it",
+        OPENAI_CHAT,
+        '        quote(secret, safe=""),\n',
+        "",
+    ),
+    mutant(
+        "a slash of a key is taken to stay as it is in an address",
+        OPENAI_CHAT,
+        '        quote(secret, safe=""),\n',
+        "        quote(secret),\n",
+    ),
+    mutant(
+        "a key is not looked for as a page of HTML writes it",
+        OPENAI_CHAT,
+        "        html.escape(secret),\n",
+        "",
+    ),
+    mutant(
+        "the shorter spelling of a key is cut out of the longer one",
+        OPENAI_CHAT,
+        "    return sorted(spelled, key=len, reverse=True)\n",
+        "    return sorted(spelled, key=len)\n",
+    ),
+    mutant(
+        "what was opened to be read stays open",
+        CREDENTIALS,
+        "        finally:\n            os.close(descriptor)\n",
+        "        finally:\n            pass\n",
+    ),
+    mutant(
+        "the file of keys is closed twice",
+        CREDENTIALS,
+        '            with os.fdopen(descriptor, "rb", closefd=False) as file:\n',
+        '            with os.fdopen(descriptor, "rb") as file:\n',
     ),
 )
 
@@ -12171,7 +12384,7 @@ _SERVICES = (
     mutant(
         "a stored key is not told of",
         SETUP_APP,
-        '    if service.name in keys:\n        return "a key is stored"\n',
+        '    if _is_stored(service, keys):\n        return "a key is stored"\n',
         "",
     ),
     mutant(
@@ -12487,7 +12700,7 @@ _SERVICES = (
     mutant(
         "a stored key is not named before a key is asked for",
         SETUP_APP,
-        '    elif service.name in keys:\n        show(f"A key is stored for',
+        '    elif _is_stored(service, keys):\n        show(f"A key is stored for',
         '    elif False:\n        show(f"A key is stored for',
     ),
     mutant(
@@ -12518,14 +12731,14 @@ _SERVICES = (
     mutant(
         "a key that was typed is not stored",
         SETUP_APP,
-        "    if key is not None:\n        try:\n            credentials.keep(home / KEYS, service.name, key)\n",
-        "    if False:\n        try:\n            credentials.keep(home / KEYS, service.name, key)\n",
+        "    if answers.key is not None:\n        try:\n",
+        "    if False:\n        try:\n",
     ),
     mutant(
         "a key that cannot be stored is an error of another kind",
         SETUP_APP,
-        "            credentials.keep(home / KEYS, service.name, key)\n        except CredentialsError as error:\n            raise SetupError(str(error)) from None\n",
-        "            credentials.keep(home / KEYS, service.name, key)\n        except CredentialsError:\n            raise\n",
+        "            credentials.keep(home / KEYS, service.name, answers.key, place)\n        except CredentialsError as error:\n            raise SetupError(str(error)) from None\n",
+        "            credentials.keep(home / KEYS, service.name, answers.key, place)\n        except CredentialsError:\n            raise\n",
     ),
     mutant(
         "the address of a listed service is written down though nobody changed it",
@@ -12554,37 +12767,37 @@ _SERVICES = (
     mutant(
         "the service that was chosen is not the one in use",
         SETUP_APP,
-        "    _written(home, Chosen(use=service.name, services=services))\n",
-        "    _written(home, Chosen(use=before.use, services=services))\n",
+        "        chosen=Chosen(use=service.name, services=services),\n",
+        "        chosen=Chosen(use=before.use, services=services),\n",
     ),
     mutant(
         "the key is said to be stored though none was typed",
         SETUP_APP,
-        "    if key is not None:\n        show(\n",
+        "    if answers.key is not None:\n        show(\n",
         "    if True:\n        show(\n",
     ),
     mutant(
         "a service that asks for no key is said to miss one",
         SETUP_APP,
-        "    elif service.key_required and not (_in_its_variable(service, env) or service.name in keys):\n",
-        "    elif not (_in_its_variable(service, env) or service.name in keys):\n",
+        "        without_a_key=service.key_required and key is None and not there,\n",
+        "        without_a_key=key is None and not there,\n",
     ),
     mutant(
         "a key is said to be missing though its variable holds one",
         SETUP_APP,
-        "    elif service.key_required and not (_in_its_variable(service, env) or service.name in keys):\n",
-        "    elif service.key_required and not (service.name in keys):\n",
+        "    there = _in_its_variable(service, env) or _is_stored(service, keys)\n",
+        "    there = _is_stored(service, keys)\n",
     ),
     mutant(
         "a key is said to be missing though one is stored",
         SETUP_APP,
-        "    elif service.key_required and not (_in_its_variable(service, env) or service.name in keys):\n",
-        "    elif service.key_required and not _in_its_variable(service, env):\n",
+        "    there = _in_its_variable(service, env) or _is_stored(service, keys)\n",
+        "    there = _in_its_variable(service, env)\n",
     ),
     mutant(
         "nobody is told that a key is missing",
         SETUP_APP,
-        "    elif service.key_required and not (_in_its_variable(service, env) or service.name in keys):\n",
+        "    elif answers.without_a_key:\n",
         "    elif False:\n",
     ),
     mutant(
@@ -12808,8 +13021,8 @@ _SERVICES = (
     mutant(
         "the line of a question that was left open stays open",
         LAUNCHER,
-        "        # The line of the question that was not answered is still open.\n        print()\n",
-        "        # The line of the question that was not answered is still open.\n",
+        "        # before the last question is answered, so this much can be said for certain.\n        print()\n",
+        "        # before the last question is answered, so this much can be said for certain.\n",
     ),
     mutant(
         "setup that was left in the middle ends like one that went through",
@@ -12828,6 +13041,73 @@ _SERVICES = (
         LAUNCHER,
         "    if args.forget is not None:\n        chosen_service.forget(home, args.forget, show)\n        return 0\n",
         "",
+    ),
+    # What a review found
+    mutant(
+        "a key for another address counts as the key of a service",
+        SETUP_APP,
+        "    return keys.get(service.name) == origin_of(service.base_url)\n",
+        "    return service.name in keys\n",
+    ),
+    mutant(
+        "a key that is stored for another address is not told of",
+        SETUP_APP,
+        '    if service.name in keys:\n        return "a key is stored for another address"\n',
+        "",
+    ),
+    mutant(
+        "a key for another address is not named before a key is asked for",
+        SETUP_APP,
+        '    elif service.name in keys:\n        show(\n            f"The key that is stored for',
+        '    elif False:\n        show(\n            f"The key that is stored for',
+    ),
+    mutant(
+        "a key is stored for an address as it is written and not for where it leads",
+        SETUP_APP,
+        "            place = origin_of(service.base_url)\n",
+        "            place = service.base_url\n",
+    ),
+    mutant(
+        "a key is said to be stored though none was typed and the choice was not written",
+        SETUP_APP,
+        "        if answers.key is None:\n            raise\n",
+        "",
+    ),
+    mutant(
+        "a variable that leads to the same place is named as one that leads elsewhere",
+        SETUP_APP,
+        "    if elsewhere and origin_of(elsewhere) != origin_of(service.base_url):\n",
+        "    if elsewhere:\n",
+    ),
+    mutant(
+        "a variable that is not set is named as one that leads elsewhere",
+        SETUP_APP,
+        "    if elsewhere and origin_of(elsewhere) != origin_of(service.base_url):\n",
+        "    if origin_of(elsewhere) != origin_of(service.base_url):\n",
+    ),
+    mutant(
+        "a service without such a variable is looked up under a variable of no name",
+        SETUP_APP,
+        '    elsewhere = "" if named is None else env.get(named, "")\n',
+        '    elsewhere = env.get(named or "", "")\n',
+    ),
+    mutant(
+        "whatever shows the answers shows the key",
+        SETUP_APP,
+        "    key: str | None = field(repr=False)\n",
+        "    key: str | None\n",
+    ),
+    mutant(
+        "whoever interrupts the storing is told that nothing was stored",
+        LAUNCHER,
+        "        answers = chosen_service.asked(home, env, asked, asked_unseen, show)\n    except (EOFError, KeyboardInterrupt):\n",
+        "        answers = chosen_service.asked(home, env, asked, asked_unseen, show)\n        chosen_service.store(home, env, answers, show)\n    except (EOFError, KeyboardInterrupt):\n",
+    ),
+    mutant(
+        "a file of what was chosen with a date that there is none of crashes the program",
+        SETUP_APP,
+        "        data = plain_yaml.load(text)\n",
+        "        data = yaml.safe_load(text)\n",
     ),
 )
 

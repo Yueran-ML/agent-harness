@@ -16,13 +16,18 @@ What is written
     Two files in the home of the program. ``provider.yml`` holds the
     services that were set up and the one that is in use. It holds no key.
     ``credentials.json`` holds the keys, see :mod:`columbina.llm.credentials`.
-    Nothing is written before the last question is answered.
+    Nothing is written before the last question is answered: asking is one
+    step and storing another, see :func:`asked` and :func:`store`. So whoever
+    leaves in the middle of the questions has changed nothing, and can be
+    told so.
 
 The key
     A key is typed without being shown, and it is never repeated: not on the
     screen, and not where something is wrong with it. It is never taken
     from the command line, where the shell would keep it in its history and
-    every program could read it from the list of processes.
+    every program could read it from the list of processes. It is stored for
+    the address of its service as it is known here, and is sent nowhere
+    else, whatever a variable of the environment says of the address later.
 
 The environment goes first. A key in the variable of a service is used before
 the one that is stored, and the variables that name the service, the model
@@ -37,30 +42,35 @@ read from a file. Whoever shows the text makes it fit for a terminal first.
 import re
 import secrets
 from collections.abc import Callable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from columbina import plain_yaml
 from columbina.llm import credentials
-from columbina.llm.credentials import CredentialsError, sendable, trimmed
+from columbina.llm.credentials import CredentialsError, origin_of, sendable, trimmed
 from columbina.llm.services import PRESETS, Service, of_ones_own, preset
+from columbina.plain_yaml import PlainYamlError
 
 __all__ = [
     "CHOICE",
     "IN_THE_WAY",
     "KEYS",
+    "Answers",
     "Ask",
     "Chosen",
     "Own",
     "SetupError",
     "Show",
+    "asked",
     "chosen",
     "forget",
     "run",
     "service_named",
+    "store",
 ]
 
 CHOICE = "provider.yml"
@@ -82,6 +92,13 @@ _NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _LOCAL = frozenset({"localhost", "127.0.0.1", "::1"})
 _ENDPOINT = "/chat/completions"
 _AGAIN = "Run 'columbina setup' again, or delete the file"
+_NOT_READ: dict[plain_yaml.Kind, str] = {
+    "syntax": "is not YAML",
+    "depth": "is nested too deeply",
+    "value": "gives a value that cannot be read: {said}",
+    "alias": "uses a value again by its name, which is not read here",
+}
+"""What is said of a file of what was chosen that cannot be read, after its name."""
 
 
 class SetupError(Exception):
@@ -141,10 +158,13 @@ def chosen(home: Path) -> Chosen:
     except (OSError, UnicodeDecodeError) as error:
         raise SetupError(f"{path} cannot be read: {_reason(error)}") from error
     try:
-        data: object = yaml.safe_load(text)
+        # Read plainly: a file that this program wrote builds no values out of values.
+        data = plain_yaml.load(text)
+    except PlainYamlError as error:
+        why = _NOT_READ[error.kind].format(said=error.said)
+        raise SetupError(f"{path} {why}. {_AGAIN}") from None
+    try:
         return Chosen.model_validate({} if data is None else data)
-    except yaml.YAMLError as error:
-        raise SetupError(f"{path} is not YAML. {_AGAIN}") from error
     except ValidationError as error:
         first = error.errors()[0]
         place = ".".join(str(part) for part in first["loc"]) or "the whole of it"
@@ -238,12 +258,19 @@ def _in_its_variable(service: Service, env: Mapping[str, str]) -> bool:
     return service.key_env is not None and bool(trimmed(env.get(service.key_env, "")))
 
 
+def _is_stored(service: Service, keys: Mapping[str, str]) -> bool:
+    """Whether a key is stored for a service, for the place that its address leads to."""
+    return keys.get(service.name) == origin_of(service.base_url)
+
+
 def _of_the_key(service: Service, keys: Mapping[str, str], env: Mapping[str, str]) -> str:
     """Say where the key of a service comes from."""
     if _in_its_variable(service, env):
         return f"its key is in the variable {service.key_env}"
-    if service.name in keys:
+    if _is_stored(service, keys):
         return "a key is stored"
+    if service.name in keys:
+        return "a key is stored for another address"
     return "no key" if service.key_env is not None else "asks for no key"
 
 
@@ -378,9 +405,15 @@ def _key(
     if _in_its_variable(service, env):
         show(f"The variable {service.key_env} holds a key, and it goes before one that is stored.")
         question = "A key to store as well, or Enter for none: "
-    elif service.name in keys:
+    elif _is_stored(service, keys):
         show(f"A key is stored for {service.name}.")
         question = "A new key, or Enter to keep the one that is stored: "
+    elif service.name in keys:
+        show(
+            f"The key that is stored for {service.name} is for {keys[service.name]}, and it "
+            "is not sent to this address."
+        )
+        question = "A key for this address, or Enter to store none: "
     elif service.key_env is None:
         show(f"{service.title} asks for no key.")
         question = "A key, if yours asks for one, or Enter for none: "
@@ -399,10 +432,29 @@ def _key(
         )
 
 
-def run(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Show) -> None:
-    """Ask for the service, the model and the key, and store the answers.
+@dataclass(frozen=True, slots=True)
+class Answers:
+    """What a person answered, ready to be stored.
 
-    Nothing is stored before the last question is answered.
+    Attributes:
+        service: The service that was chosen.
+        model: The model that was named for it.
+        chosen: What is to be written down as chosen.
+        key: The key that was typed, or ``None`` if none is to be stored. It
+            is left out where the answers are shown.
+        without_a_key: Whether the service wants a key, and none was typed
+            and none is there.
+    """
+
+    service: Service
+    model: str
+    chosen: Chosen
+    key: str | None = field(repr=False)
+    without_a_key: bool
+
+
+def asked(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Show) -> Answers:
+    """Ask for the service, the model and the key. Nothing is stored here.
 
     Args:
         home: The home of the program.
@@ -412,9 +464,8 @@ def run(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Sho
         show: Shows a text.
 
     Raises:
-        SetupError: What is stored cannot be read, or the answers cannot be
-            stored.
-        EOFError: No answer can be given any more. Nothing was stored.
+        SetupError: What is stored cannot be read.
+        EOFError: No answer can be given any more.
     """
     before = chosen(home)
     keys = _keys(home)
@@ -429,11 +480,6 @@ def run(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Sho
     else:
         window = _window(ask, show)
     key = _key(service, keys, env, ask_unseen, show)
-    if key is not None:
-        try:
-            credentials.keep(home / KEYS, service.name, key)
-        except CredentialsError as error:
-            raise SetupError(str(error)) from None
     if preset(service.name) is None:
         address = service.base_url
     else:
@@ -442,15 +488,53 @@ def run(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Sho
     services = before.services | {
         service.name: Own(base_url=address, model=model, context_window=window)
     }
-    _written(home, Chosen(use=service.name, services=services))
+    there = _in_its_variable(service, env) or _is_stored(service, keys)
+    return Answers(
+        service=service,
+        model=model,
+        chosen=Chosen(use=service.name, services=services),
+        key=key,
+        without_a_key=service.key_required and key is None and not there,
+    )
+
+
+def store(home: Path, env: Mapping[str, str], answers: Answers, show: Show) -> None:
+    """Store what a person answered, and say what was stored.
+
+    The key is stored first. What was chosen can be said again without a
+    loss, and a key that was typed and thrown away cannot.
+
+    Args:
+        home: The home of the program.
+        env: The environment.
+        answers: What was answered.
+        show: Shows a text.
+
+    Raises:
+        SetupError: The answers cannot be stored. Where the key was stored
+            and what was chosen was not, the text says so.
+    """
+    service = answers.service
+    if answers.key is not None:
+        try:
+            place = origin_of(service.base_url)
+            credentials.keep(home / KEYS, service.name, answers.key, place)
+        except CredentialsError as error:
+            raise SetupError(str(error)) from None
+    try:
+        _written(home, answers.chosen)
+    except SetupError as error:
+        if answers.key is None:
+            raise
+        raise SetupError(f"{error}. The key was stored all the same, in {home / KEYS}") from None
     show("")
-    show(f"Stored. Columbina talks to {service.name} now, with the model {model}.")
+    show(f"Stored. Columbina talks to {service.name} now, with the model {answers.model}.")
     show(f"What was chosen is in {home / CHOICE}.")
-    if key is not None:
+    if answers.key is not None:
         show(
             f"The key is in {home / KEYS}, as it is and not encrypted. Keep that file to yourself."
         )
-    elif service.key_required and not (_in_its_variable(service, env) or service.name in keys):
+    elif answers.without_a_key:
         show(
             f"No key is stored for {service.name}. Set the variable {service.key_env} before "
             "the program is started, or run this again."
@@ -458,6 +542,24 @@ def run(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Sho
     for variable in IN_THE_WAY:
         if variable in env:
             show(f"The variable {variable} is set, and it goes before what is stored here.")
+    named = service.base_url_env
+    elsewhere = "" if named is None else env.get(named, "")
+    if elsewhere and origin_of(elsewhere) != origin_of(service.base_url):
+        show(
+            f"The variable {named} is set, and it sends the requests for "
+            f"{service.name} to another address. A stored key is not sent there."
+        )
+
+
+def run(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Show) -> None:
+    """Ask for the service, the model and the key, and store the answers.
+
+    Raises:
+        SetupError: What is stored cannot be read, or the answers cannot be
+            stored.
+        EOFError: No answer can be given any more. Nothing was stored.
+    """
+    store(home, env, asked(home, env, ask, ask_unseen, show), show)
 
 
 def forget(home: Path, name: str, show: Show) -> None:

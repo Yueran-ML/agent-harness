@@ -66,6 +66,7 @@ from columbina.text import whole
 from columbina.tools import TOOLS, Tools
 
 __all__ = [
+    "STOP_SECONDS",
     "SUBAGENTS",
     "TOOL",
     "Child",
@@ -93,6 +94,9 @@ TOOL = "subagent"
 
 PURPOSE = "subagent"
 """What the cost of a subagent is written down as in the log of its parent."""
+
+STOP_SECONDS = 10.0
+"""How long a subagent that was told to stop is waited for before it is given up."""
 
 
 class Config(BaseModel):
@@ -390,10 +394,11 @@ class Subagents:
             if kind.prompt is not None:
                 prompt = kind.prompt
             if kind.model is not None:
-                if kind.root.own:
-                    model = model.model_copy(update={"model": kind.model})
-                else:
+                if not kind.root.own:
                     self._say_of_the_model(kind)
+                elif kind.model != model.model:
+                    # What is known of the size of a window is known of the parent's model.
+                    model = model.model_copy(update={"model": kind.model, "context_window": None})
         return AgentSpec(
             cwd=spec.cwd,
             model=model,
@@ -467,31 +472,64 @@ class Subagents:
             raise SubagentFailed(
                 f"The subagent could not be started: {error}.", code="SUBAGENT_NOT_STARTED"
             ) from error
-        _write(
-            parent,
-            SubagentStartedEvent(
-                call_id=task.call_id,
-                session_id=child.session_id,
-                kind=task.kind,
-                description=whole(task.description),
-            ),
-        )
         outcome: Outcome | None = None
+        told = False
+        # From here on the subagent is at work, and whatever happens it is closed.
         try:
+            _write(
+                parent,
+                SubagentStartedEvent(
+                    call_id=task.call_id,
+                    session_id=child.session_id,
+                    kind=task.kind,
+                    description=whole(task.description),
+                ),
+            )
+            told = True
             try:
                 outcome = await child.ended()
             except asyncio.CancelledError:
                 # Whoever asked no longer waits. The subagent stops, and how far it came is
                 # written down before the cancellation goes on its way.
                 child.stop("parent")
-                outcome = await child.ended()
+                outcome = await _stopped(child)
                 raise
             return handed_back(outcome)
         finally:
             try:
-                _record(parent, task, child.session_id, outcome)
+                # No end is told of a subagent of which no beginning could be told.
+                if told:
+                    _record(parent, task, child.session_id, outcome)
             finally:
                 await child.close()
+
+
+async def _stopped(child: Child) -> Outcome | None:
+    """Wait for a subagent that was told to stop, and return how it ended.
+
+    Whoever waits here was cancelled, and may be cancelled again meanwhile.
+    The wait goes on then: what a subagent cost is known only once it has
+    ended, and it is its parent that is charged. The wait does not go on for
+    ever. A subagent that has not ended after :data:`STOP_SECONDS` is given
+    up, and nothing is known of its end.
+
+    Raises:
+        Exception: What the subagent failed with when it was asked how it
+            ended.
+    """
+    ending = asyncio.ensure_future(child.ended())
+    loop = asyncio.get_running_loop()
+    until = loop.time() + STOP_SECONDS
+    while not ending.done():
+        try:
+            await asyncio.wait({ending}, timeout=max(until - loop.time(), 0))
+        except asyncio.CancelledError:
+            # The first cancellation is on its way already. A second one changes nothing.
+            continue
+        if not ending.done():
+            ending.cancel()
+            return None
+    return ending.result()
 
 
 def _write(parent: Agent, event: EventData) -> None:

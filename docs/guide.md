@@ -307,6 +307,9 @@ in `credentials.json`. The following holds for a key.
 - It lies in `credentials.json` as it is, without encryption. On Linux and macOS the file is
   made with the mode 600, and a file that other users can read is not used. On Windows the
   access rules of the directory decide who can read it.
+- A stored key is sent only to the address that it was stored for, by its scheme, its
+  machine and its port. A variable that names another address for a service, such as
+  `DEEPSEEK_BASE_URL`, does not take a stored key there.
 - It is never part of a profile, of the output of `--dump-config` or of a stored session,
   and it is cut out of every error message before the message is shown or stored.
 - A command that the agent runs does not find it. Variables whose names contain `KEY`,

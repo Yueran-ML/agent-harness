@@ -6,12 +6,20 @@ provider name of its config. To talk to two services, load it twice.
 
 The API key is looked for when a request is made: first in an environment
 variable, then in the file of keys that the user stored, under the name of
-the provider. It is never part of the config, and it is cut out of the text
-of every failure that leaves the adapter, whether the service or the
-connection wrote that text. The error that was caught is not passed on with
-the failure. A key from the file is in the memory of this process and
-nowhere else: a command that an agent runs does not find it in its
-environment.
+the provider. A stored key is one that was typed in for an address, and it
+is used only for requests to the place that this address leads to: the
+address of an adapter may come from a variable of the environment, and a key
+does not follow it there. A key from the file is in the memory of this
+process and nowhere else: a command that an agent runs does not find it in
+its environment.
+
+The key is never part of the config, and it is cut out of the text of every
+failure that leaves the adapter, whether the service or the connection wrote
+that text. It is looked for as it is and in the spellings in which a text
+commonly repeats it: as JSON writes it, as an address writes it, as a page
+of HTML writes it. A service that shows a part of the key, with the rest
+blotted out, is shown as it wrote that. The error that was caught is not
+passed on with the failure.
 
 Blanks and line breaks around the key are not sent. A key with anything in it
 that a header cannot carry is refused before a request is made. The library
@@ -24,6 +32,8 @@ response as the service sent it.
 """
 
 import asyncio
+import html
+import json
 import math
 import os
 import time
@@ -34,12 +44,19 @@ from datetime import UTC
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from columbina.kernel import Context
-from columbina.llm.credentials import CredentialsError, key_for, sendable, trimmed
+from columbina.llm.credentials import (
+    CredentialsError,
+    key_for,
+    origin_of,
+    sendable,
+    trimmed,
+)
 from columbina.llm.runtime import LLM, LlmError
 from columbina.llm.types import (
     AssistantMessage,
@@ -528,9 +545,30 @@ def _failure(error: httpx.RequestError | LlmError, secret: str | None) -> LlmFai
     return failure.model_copy(update=cleaned)
 
 
+def _spellings(secret: str) -> list[str]:
+    """Return the ways in which a text may repeat a key, the longest first.
+
+    A text that somebody else wrote does not always hold the key as it is. A
+    body of JSON that is passed on unread writes a backslash and a quotation
+    mark with a backslash before them, and some writers of JSON do the same
+    for a slash. An address writes most signs as a percent sign and two
+    digits, and a page of HTML writes a few of them as names.
+    """
+    as_json = json.dumps(secret)[1:-1]
+    spelled = {
+        secret,
+        as_json,
+        as_json.replace("/", chr(92) + "/"),
+        quote(secret, safe=""),
+        html.escape(secret),
+    }
+    return sorted(spelled, key=len, reverse=True)
+
+
 def _cleaned(text: str, secret: str | None, limit: int) -> str:
     if secret:
-        text = text.replace(secret, "[key]")
+        for spelling in _spellings(secret):
+            text = text.replace(spelling, "[key]")
     return text[:limit]
 
 
@@ -622,7 +660,10 @@ class OpenAIChat:
         again = "Set it again"
         if not secret and file is not None:
             try:
-                secret = trimmed(await asyncio.to_thread(key_for, file, config.provider) or "")
+                # A stored key is for the place that it was typed in for, and for no other.
+                place = origin_of(config.base_url)
+                stored = await asyncio.to_thread(key_for, file, config.provider, place)
+                secret = trimmed(stored or "")
             except CredentialsError as error:
                 # The error says what is wrong with the file, and nothing that the file holds.
                 failure = LlmFailure(message=str(error), code="AUTH")

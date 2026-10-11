@@ -96,6 +96,13 @@ def written(home: Path) -> object:
 
 
 def keys(home: Path) -> dict[str, str]:
+    """The keys that are stored, as they lie in the file."""
+    held = json.loads((home / "credentials.json").read_text(encoding="utf-8"))
+    return {name: entry["key"] for name, entry in held["keys"].items()}
+
+
+def places(home: Path) -> dict[str, str]:
+    """Where each key that is stored is sent."""
     return credentials.stored(home / "credentials.json")
 
 
@@ -296,7 +303,7 @@ def test_a_service_of_ones_own_is_listed_from_then_on_and_keeps_its_address(home
 
     set_up(home, person)
 
-    assert "   9  my-server    https://models.example.test/v1  no key" in person.told
+    assert "   9  my-server    https://models.example.test/v1  no key" in person.told.splitlines()
     assert "In use: my-server, with the model tiny." in person.told
     assert person.asked == [
         "Service, by its number or its name [my-server]: ",
@@ -494,14 +501,16 @@ def test_what_cannot_be_a_key_is_asked_for_again_and_is_not_repeated(home: Path)
 
 
 def test_a_key_that_is_stored_stays_unless_a_new_one_is_typed(home: Path) -> None:
-    keep(home / "credentials.json", "deepseek", KEY)
+    keep(home / "credentials.json", "deepseek", KEY, "https://api.deepseek.com")
     stays, changes = Person("", ""), Person("", "", keys=(OTHER,))
 
     set_up(home, stays)
     kept = keys(home)
     set_up(home, changes)
 
-    assert "   1  deepseek     DeepSeek                   a key is stored" in stays.told
+    assert (
+        "   1  deepseek     DeepSeek                   a key is stored" in stays.told.splitlines()
+    )
     assert stays.shown[stays.shown.index(NOT_SHOWN) - 1] == "A key is stored for deepseek."
     assert stays.asked_unseen == ["A new key, or Enter to keep the one that is stored: "]
     assert kept == {"deepseek": KEY}
@@ -511,15 +520,15 @@ def test_a_key_that_is_stored_stays_unless_a_new_one_is_typed(home: Path) -> Non
 
 
 def test_a_key_in_the_variable_of_the_service_is_named_and_goes_first(home: Path) -> None:
-    keep(home / "credentials.json", "deepseek", KEY)
+    keep(home / "credentials.json", "deepseek", KEY, "https://api.deepseek.com")
     person = Person("", "")
 
     set_up(home, person, {"DEEPSEEK_API_KEY": f" {OTHER}\n", "OPENAI_API_KEY": " \n"})
 
     assert (
         "   1  deepseek     DeepSeek                   its key is in the variable DEEPSEEK_API_KEY"
-    ) in person.told
-    assert "   2  openai       OpenAI                     no key" in person.told
+    ) in person.told.splitlines()
+    assert "   2  openai       OpenAI                     no key" in person.told.splitlines()
     assert person.shown[person.shown.index(NOT_SHOWN) - 1] == (
         "The variable DEEPSEEK_API_KEY holds a key, and it goes before one that is stored."
     )
@@ -558,7 +567,9 @@ def test_a_service_on_this_machine_may_have_a_key_all_the_same(home: Path) -> No
     set_up(home, person)
 
     assert keys(home) == {"lmstudio": KEY}
-    assert "   8  lmstudio     LM Studio on this machine  a key is stored" in person.told
+    assert (
+        "   8  lmstudio     LM Studio on this machine  a key is stored" in person.told.splitlines()
+    )
     assert person.asked_unseen == ["A new key, or Enter to keep the one that is stored: "]
 
 
@@ -572,7 +583,7 @@ def test_the_key_of_a_service_of_ones_own_may_be_in_the_variable_for_such_keys(
 
     assert (
         "   9  mine         http://localhost:8000/v1   its key is in the variable COLUMBINA_API_KEY"
-    ) in person.told
+    ) in person.told.splitlines()
     assert person.asked_unseen == ["A key to store as well, or Enter for none: "]
 
 
@@ -674,6 +685,25 @@ def test_the_variables_that_go_before_what_is_stored_are_named(home: Path) -> No
             "is not what 'columbina setup' writes: services.mine.api_key: Extra inputs are not "
             "permitted. Run 'columbina setup' again, or delete the file",
         ),
+        (
+            "use: 2026-13-01\n",
+            "gives a value that cannot be read: month must be in 1..12. Run 'columbina setup' "
+            "again, or delete the file",
+        ),
+        (
+            "use: 2026-01-01\n",
+            "is not what 'columbina setup' writes: use: Input should be a valid string. Run "
+            "'columbina setup' again, or delete the file",
+        ),
+        (
+            "use: " + "[" * 3000 + "]" * 3000 + "\n",
+            "is nested too deeply. Run 'columbina setup' again, or delete the file",
+        ),
+        (
+            "services:\n  mine: &said\n    model: tiny\n  other: *said\n",
+            "uses a value again by its name, which is not read here. Run 'columbina setup' "
+            "again, or delete the file",
+        ),
     ],
     ids=[
         "no yaml",
@@ -681,6 +711,10 @@ def test_the_variables_that_go_before_what_is_stored_are_named(home: Path) -> No
         "something that is not written there",
         "a window of no size",
         "something that is not said of a service",
+        "a date that there is none of",
+        "a date for a name",
+        "lists in lists, thousands deep",
+        "a value that is used again by its name",
     ],
 )
 def test_a_file_of_another_shape_is_refused_with_what_is_wrong_with_it(
@@ -749,7 +783,7 @@ def test_keys_that_cannot_be_read_are_said_before_anything_is_asked(home: Path) 
 def test_a_key_that_cannot_be_stored_leaves_what_was_chosen_as_it_was(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def full(path: Path, provider: str, key: str) -> None:
+    def full(path: Path, provider: str, key: str, origin: str) -> None:
         raise CredentialsError(f"the file of stored keys, {path}, cannot be written: No space")
 
     monkeypatch.setattr(credentials, "keep", full)
@@ -888,7 +922,7 @@ def test_a_service_that_is_forgotten_is_no_longer_in_use(home: Path) -> None:
 
 
 def test_a_key_alone_and_a_use_alone_are_forgotten_too(home: Path) -> None:
-    keep(home / "credentials.json", "moonshot", KEY)
+    keep(home / "credentials.json", "moonshot", KEY, "https://api.moonshot.cn")
     by_hand(home, "use: gone\nservices:\n  openai:\n    model: gpt-test\n")
     before = (home / "provider.yml").read_text(encoding="utf-8")
     key: list[str] = []
@@ -931,3 +965,144 @@ def test_keys_that_cannot_be_read_are_not_forgotten(home: Path) -> None:
 
     assert "is not what 'columbina setup' writes" in str(refused.value)
     assert KEY not in str(refused.value)
+
+
+# Where a key goes, and what is said to be stored
+
+
+def test_a_key_is_stored_for_the_place_that_its_service_is_at(home: Path) -> None:
+    set_up(home, Person("", "", keys=(KEY,)))
+    set_up(home, Person("my-server", "http://10.0.0.5:8000/v1", "tiny", "", keys=(OTHER,)))
+    set_up(home, Person("ollama", "qwen3:14b", "", keys=(KEY,)))
+
+    assert places(home) == {
+        "deepseek": "https://api.deepseek.com",
+        "my-server": "http://10.0.0.5:8000",
+        "ollama": "http://localhost:11434",
+    }
+
+
+def test_a_key_that_was_stored_for_another_address_is_told_as_that_and_asked_for_again(
+    home: Path,
+) -> None:
+    keep(home / "credentials.json", "moonshot", KEY, "https://api.moonshot.cn")
+    by_hand(home, "services:\n  moonshot:\n    base_url: https://api.moonshot.ai/v1\n")
+    person = Person("moonshot", "kimi-test", "", keys=(OTHER,))
+
+    set_up(home, person)
+
+    assert (
+        "   4  moonshot     Moonshot AI (Kimi)         a key is stored for another address"
+    ) in person.told.splitlines()
+    assert person.shown[person.shown.index(NOT_SHOWN) - 1] == (
+        "The key that is stored for moonshot is for https://api.moonshot.cn, and it is not "
+        "sent to this address."
+    )
+    assert person.asked_unseen == ["A key for this address, or Enter to store none: "]
+    assert keys(home) == {"moonshot": OTHER}
+    assert places(home) == {"moonshot": "https://api.moonshot.ai"}
+
+
+def test_a_key_for_another_address_does_not_count_as_a_key_of_the_service(home: Path) -> None:
+    keep(home / "credentials.json", "moonshot", KEY, "https://api.moonshot.cn")
+    by_hand(home, "services:\n  moonshot:\n    base_url: https://api.moonshot.ai/v1\n")
+    person = Person("moonshot", "kimi-test", "")
+
+    set_up(home, person)
+
+    assert person.shown[-1] == (
+        "No key is stored for moonshot. Set the variable MOONSHOT_API_KEY before the program "
+        "is started, or run this again."
+    )
+    assert places(home) == {"moonshot": "https://api.moonshot.cn"}
+
+
+@pytest.mark.parametrize(
+    ("elsewhere", "told"),
+    [
+        ("http://other-host.example.test/v1", True),
+        ("https://api.deepseek.com:8443", True),
+        ("https://api.deepseek.com/beta", False),
+        ("", False),
+    ],
+    ids=["another machine", "another port", "the same place", "set to nothing"],
+)
+def test_a_variable_that_sends_the_requests_elsewhere_is_named(
+    home: Path, elsewhere: str, told: bool
+) -> None:
+    person = Person("", "", keys=(KEY,))
+
+    set_up(home, person, {"DEEPSEEK_BASE_URL": elsewhere})
+
+    note = (
+        "The variable DEEPSEEK_BASE_URL is set, and it sends the requests for deepseek to "
+        "another address. A stored key is not sent there."
+    )
+    assert (person.shown[-1] == note) is told
+    assert (note in person.shown) is told
+    # The key is stored for the service as it is known here, whatever the variable says.
+    assert places(home) == {"deepseek": "https://api.deepseek.com"}
+
+
+def test_a_service_without_such_a_variable_has_none_that_is_named(home: Path) -> None:
+    person = Person("openai", "gpt-test", "", keys=(KEY,))
+
+    set_up(home, person, {"DEEPSEEK_BASE_URL": "http://other-host.example.test/v1", "": "x"})
+
+    assert not any("to another address" in told for told in person.shown)
+
+
+def test_asking_stores_nothing_and_storing_asks_nothing(home: Path) -> None:
+    person = Person("openai", "gpt-test", "400000", keys=(KEY,))
+
+    answers = setup.asked(home, {}, person.ask, person.ask_unseen, person.show)
+
+    assert person.through
+    assert not home.exists()
+    assert (answers.service.name, answers.model, answers.key) == ("openai", "gpt-test", KEY)
+    assert answers.chosen == Chosen(
+        use="openai", services={"openai": Own(model="gpt-test", context_window=400000)}
+    )
+    assert not answers.without_a_key
+    # Whatever shows the answers shows no key.
+    assert KEY not in repr(answers)
+    assert KEY not in str(answers)
+    shown_while_asking = list(person.shown)
+
+    setup.store(home, {}, answers, person.show)
+
+    assert keys(home) == {"openai": KEY}
+    assert written(home) == {
+        "use": "openai",
+        "services": {"openai": {"model": "gpt-test", "context_window": 400000}},
+    }
+    assert person.shown[len(shown_while_asking) :] == [
+        "",
+        "Stored. Columbina talks to openai now, with the model gpt-test.",
+        f"What was chosen is in {home / 'provider.yml'}.",
+        f"The key is in {home / 'credentials.json'}, as it is and not encrypted. Keep that file "
+        "to yourself.",
+    ]
+
+
+def test_whoever_is_told_that_the_choice_could_not_be_written_is_told_of_the_key_that_was(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replace = Path.replace
+
+    def only_the_keys(self: Path, target: Path) -> Path:
+        if Path(target).name == "provider.yml":
+            raise PermissionError(13, "Permission denied")
+        return replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", only_the_keys)
+
+    with pytest.raises(SetupError) as refused:
+        set_up(home, Person("", "", keys=(KEY,)))
+
+    assert str(refused.value) == (
+        f"{home / 'provider.yml'} cannot be written: Permission denied. The key was stored all "
+        f"the same, in {home / 'credentials.json'}"
+    )
+    assert keys(home) == {"deepseek": KEY}
+    assert not (home / "provider.yml").exists()

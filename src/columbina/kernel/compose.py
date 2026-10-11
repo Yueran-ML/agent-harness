@@ -139,6 +139,13 @@ def parse_layer(text: str, *, source: str = "<layer>") -> Layer:
         data: object = yaml.safe_load(text)
     except yaml.YAMLError as error:
         raise CompositionError(f"{source}: not valid YAML: {error}") from error
+    except RecursionError:
+        raise CompositionError(f"{source}: it is nested too deeply to be read") from None
+    except Exception as error:
+        # The reader makes values of what it reads, and a value that cannot be made fails
+        # with whatever the making of it raises: a date that there is none of, a number of
+        # thousands of digits.
+        raise CompositionError(f"{source}: a value in it cannot be read: {error}") from error
     if data is None:
         data = {}
     elif isinstance(data, list):

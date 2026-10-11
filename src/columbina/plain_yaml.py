@@ -59,6 +59,23 @@ class _Plain(yaml.SafeLoader):
         return super().compose_node(parent, index)
 
 
+def _whole_number(loader: _Plain, node: yaml.ScalarNode) -> int:
+    """Make a whole number, and refuse one that cannot be written out again.
+
+    Python makes a number of any length from digits that count by twos, eights
+    or sixteens, and refuses to write a number out by tens beyond a length.
+    So a few lines give a number that whoever names it in an error, or writes
+    it down, fails on. It is refused here, like a number of as many digits
+    that is written by tens, which Python does not make in the first place.
+    """
+    number = loader.construct_yaml_int(node)
+    str(number)
+    return number
+
+
+_Plain.add_constructor("tag:yaml.org,2002:int", _whole_number)
+
+
 def _one_line(error: BaseException) -> str:
     said = " ".join(str(error).split())
     return said if len(said) <= _SAID else f"{said[:_SAID]}..."

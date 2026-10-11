@@ -187,6 +187,16 @@ def test_three_dashes_inside_a_value_do_not_end_the_first_lines() -> None:
             id="a number of thousands of digits",
         ),
         pytest.param(
+            "---\nname: deploy\ndescription: Deploy.\nbuild: 0x" + "f" * 5000 + "\n---\n",
+            "give a value that cannot be read: Exceeds the limit",
+            id="a number of thousands of digits, written by sixteens",
+        ),
+        pytest.param(
+            "---\nname: 0x" + "f" * 5000 + "\ndescription: Deploy.\n---\n",
+            "give a value that cannot be read: Exceeds the limit",
+            id="such a number for a name",
+        ),
+        pytest.param(
             "---\nname: deploy\ndescription: Deploy.\nnested: "
             + "[" * 20000
             + "]" * 20000

@@ -33,8 +33,6 @@ response as the service sent it.
 """
 
 import asyncio
-import html
-import json
 import math
 import os
 import time
@@ -45,7 +43,6 @@ from datetime import UTC
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, Field, JsonValue, ValidationError
@@ -56,6 +53,7 @@ from columbina.llm.credentials import (
     key_for,
     origin_of,
     sendable,
+    spellings,
     trimmed,
 )
 from columbina.llm.runtime import LLM, LlmError
@@ -547,29 +545,9 @@ def _failure(error: httpx.RequestError | LlmError, secret: str | None) -> LlmFai
     return failure.model_copy(update=cleaned)
 
 
-def _spellings(secret: str) -> list[str]:
-    """Return the ways in which a text may repeat a key, the longest first.
-
-    A text that somebody else wrote does not always hold the key as it is. A
-    body of JSON that is passed on unread writes a backslash and a quotation
-    mark with a backslash before them, and some writers of JSON do the same
-    for a slash. An address writes most signs as a percent sign and two
-    digits, and a page of HTML writes a few of them as names.
-    """
-    as_json = json.dumps(secret)[1:-1]
-    spelled = {
-        secret,
-        as_json,
-        as_json.replace("/", chr(92) + "/"),
-        quote(secret, safe=""),
-        html.escape(secret),
-    }
-    return sorted(spelled, key=len, reverse=True)
-
-
 def _cleaned(text: str, secret: str | None, limit: int) -> str:
     if secret:
-        for spelling in _spellings(secret):
+        for spelling in spellings(secret):
             text = text.replace(spelling, "[key]")
     return text[:limit]
 

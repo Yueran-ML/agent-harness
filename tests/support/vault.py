@@ -11,9 +11,23 @@ from typing import Self
 
 import keyring
 from keyring.backend import KeyringBackend
-from keyring.errors import KeyringLocked, PasswordDeleteError
+from keyring.backends.chainer import ChainerBackend
+from keyring.errors import KeyringLocked, PasswordDeleteError, PasswordSetError
 
-__all__ = ["Dropping", "Locked", "Memory", "Refusing", "Rewriting", "Waiting", "settled"]
+__all__ = [
+    "Dropping",
+    "LikeWindows",
+    "Locked",
+    "Losing",
+    "Memory",
+    "Refusing",
+    "Rewriting",
+    "Secrets",
+    "Waiting",
+    "Wallet",
+    "row",
+    "settled",
+]
 
 # How long a keyring of a test waits for its test at most. No test takes that long.
 _LONGEST = 5.0
@@ -32,6 +46,8 @@ class Memory(KeyringBackend):
     Attributes:
         held: What it keeps, by the name that it is filed under and the name
             of its user.
+        locked: Whether it does not open, whatever it is asked. A test sets
+            this for a keyring that was open a moment ago.
         asked: What was asked of it, in the order in which it was asked.
         asked_from: The name of every thread that asked, with whether the
             program waits for that thread when it ends.
@@ -42,6 +58,7 @@ class Memory(KeyringBackend):
     def __init__(self) -> None:
         super().__init__()
         self.held: dict[tuple[str, str], str] = {}
+        self.locked = False
         self.asked: list[tuple[str, str, str]] = []
         self.asked_from: set[tuple[str, bool]] = set()
 
@@ -49,6 +66,9 @@ class Memory(KeyringBackend):
         thread = threading.current_thread()
         self.asked.append((what, service, username))
         self.asked_from.add((thread.name, not thread.daemon))
+        if self.locked:
+            # The words of the keyring that a desktop of Linux has.
+            raise KeyringLocked("Failed to unlock the collection!")
 
     def get_password(self, service: str, username: str) -> str | None:
         self._note("get", service, username)
@@ -71,19 +91,11 @@ class Memory(KeyringBackend):
 
 
 class Locked(Memory):
-    """A keyring that is there and does not open, in the words of one that a desktop has."""
+    """A keyring that is there and does not open."""
 
-    def get_password(self, service: str, username: str) -> str | None:
-        self._note("get", service, username)
-        raise KeyringLocked("Failed to unlock the collection!")
-
-    def set_password(self, service: str, username: str, password: str) -> None:
-        self._note("set", service, username)
-        raise KeyringLocked("Failed to unlock the collection!")
-
-    def delete_password(self, service: str, username: str) -> None:
-        self._note("delete", service, username)
-        raise KeyringLocked("Failed to unlock the item!")
+    def __init__(self) -> None:
+        super().__init__()
+        self.locked = True
 
 
 class Dropping(Memory):
@@ -140,17 +152,107 @@ class Rewriting(Memory):
 class Waiting(Memory):
     """A keyring that answers nothing until its test lets it.
 
+    Args:
+        first_only: Whether only whoever asks first is kept waiting, and
+            whoever asks after that is answered at once.
+
     Attributes:
         reached: Set once the keyring was asked.
         released: Set by the test, to let the keyring answer.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, first_only: bool = False) -> None:
         super().__init__()
+        self.first_only = first_only
         self.reached = threading.Event()
         self.released = threading.Event()
 
     def get_password(self, service: str, username: str) -> str | None:
+        first = not self.reached.is_set()
         self.reached.set()
-        self.released.wait(_LONGEST)
+        if first or not self.first_only:
+            self.released.wait(_LONGEST)
         return super().get_password(service, username)
+
+
+class Losing(Memory):
+    """A keyring that puts a new value in the place of an old one in two steps, and fails between.
+
+    The one of macOS does it so: what is there is taken out, and then what is new is put in.
+
+    Args:
+        times: How often it fails. After that it takes what it is given.
+    """
+
+    def __init__(self, times: int = 1) -> None:
+        super().__init__()
+        self.times = times
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._note("set", service, username)
+        self.held.pop((service, username), None)
+        if self.times:
+            self.times -= 1
+            raise PasswordSetError("Can't store password on keychain")
+        self.held[service, username] = password
+
+
+class LikeWindows(Memory):
+    """A keyring that keeps what is written over, as the package uses the one of Windows.
+
+    That keyring has one entry for a name, with the user that it is of. The package wants
+    several users under one name, so before it writes an entry it puts the one that is there
+    under a name made of the user and the name, and it looks there when the entry itself is
+    of another user or gone. What is asked to be deleted is deleted in both places.
+
+    Attributes:
+        targets: The entries, by the names that they lie under: each a user and what is
+            kept for that user.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.targets: dict[str, tuple[str, str]] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        self._note("get", service, username)
+        found = self.targets.get(service)
+        if found is None or found[0] != username:
+            found = self.targets.get(f"{username}@{service}")
+        return None if found is None else found[1]
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self._note("set", service, username)
+        there = self.targets.get(service)
+        if there is not None:
+            self.targets[f"{there[0]}@{service}"] = there
+        self.targets[service] = (username, password)
+
+    def delete_password(self, service: str, username: str) -> None:
+        self._note("delete", service, username)
+        deleted = False
+        for target in (service, f"{username}@{service}"):
+            found = self.targets.get(target)
+            if found is not None and found[0] == username:
+                deleted = True
+                del self.targets[target]
+        if not deleted:
+            raise PasswordDeleteError(service)
+
+
+class Wallet(Memory):
+    """One keyring of a desktop that has two."""
+
+
+class Secrets(Memory):
+    """The other keyring of a desktop that has two."""
+
+
+def row(*backends: KeyringBackend) -> KeyringBackend:
+    """Return several keyrings in a row, as the package puts the ones of a desktop in one.
+
+    It is the row of the package itself, with these keyrings in the place of the ones that
+    it would find: a key is given to the first, and looked for in each until one has it.
+    """
+    made = type("Row", (ChainerBackend,), {"backends": list(backends)})
+    return made()

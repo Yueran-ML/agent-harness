@@ -11798,14 +11798,14 @@ _KEYS = (
     mutant(
         "a key that is forgotten is not taken out of the file",
         CREDENTIALS,
-        "        return in_the_keyring\n    _write(path, keys)\n    return True\n",
-        "        return in_the_keyring\n    return True\n",
+        "        return Forgotten(in_the_keyring, unasked)\n    _write(path, keys)\n",
+        "        return Forgotten(in_the_keyring, unasked)\n",
     ),
     mutant(
         "a key that is forgotten is said not to have been there",
         CREDENTIALS,
-        "    _write(path, keys)\n    return True\n",
-        "    _write(path, keys)\n    return False\n",
+        "    _write(path, keys)\n    return Forgotten(True, unasked)\n",
+        "    _write(path, keys)\n    return Forgotten(False, unasked)\n",
     ),
     mutant(
         "the key of whatever service comes first is the key of every service",
@@ -12017,42 +12017,42 @@ _KEYS = (
     mutant(
         "a key is looked for only as it is",
         OPENAI_CHAT,
-        '        for spelling in _spellings(secret):\n            text = text.replace(spelling, "[key]")\n',
+        '        for spelling in spellings(secret):\n            text = text.replace(spelling, "[key]")\n',
         '        text = text.replace(secret, "[key]")\n',
     ),
     mutant(
         "a key is not looked for as JSON writes it",
-        OPENAI_CHAT,
+        CREDENTIALS,
         "        secret,\n        as_json,\n",
         "        secret,\n",
     ),
     mutant(
         "a key is not looked for with its slashes escaped",
-        OPENAI_CHAT,
+        CREDENTIALS,
         '        as_json.replace("/", chr(92) + "/"),\n',
         "",
     ),
     mutant(
         "a key is not looked for as an address writes it",
-        OPENAI_CHAT,
+        CREDENTIALS,
         '        quote(secret, safe=""),\n',
         "",
     ),
     mutant(
         "a slash of a key is taken to stay as it is in an address",
-        OPENAI_CHAT,
+        CREDENTIALS,
         '        quote(secret, safe=""),\n',
         "        quote(secret),\n",
     ),
     mutant(
         "a key is not looked for as a page of HTML writes it",
-        OPENAI_CHAT,
+        CREDENTIALS,
         "        html.escape(secret),\n",
         "",
     ),
     mutant(
         "the shorter spelling of a key is cut out of the longer one",
-        OPENAI_CHAT,
+        CREDENTIALS,
         "    return sorted(spelled, key=len, reverse=True)\n",
         "    return sorted(spelled, key=len)\n",
     ),
@@ -12069,22 +12069,16 @@ _KEYS = (
         '            with os.fdopen(descriptor, "rb") as file:\n',
     ),
     mutant(
-        "a text spells a key as JSON writes it, and the key is passed on",
-        CREDENTIALS,
-        "    return {secret, json.dumps(secret)[1:-1], repr(secret)[1:-1]}\n",
-        "    return {secret, repr(secret)[1:-1]}\n",
-    ),
-    mutant(
         "a text spells a key as Python shows it, and the key is passed on",
         CREDENTIALS,
-        "    return {secret, json.dumps(secret)[1:-1], repr(secret)[1:-1]}\n",
-        "    return {secret, json.dumps(secret)[1:-1]}\n",
+        "        repr(secret)[1:-1],\n",
+        "",
     ),
     mutant(
         "a text spells a key as it is, and the key is passed on",
         CREDENTIALS,
-        "    return {secret, json.dumps(secret)[1:-1], repr(secret)[1:-1]}\n",
-        "    return {json.dumps(secret)[1:-1], repr(secret)[1:-1]}\n",
+        "        secret,\n        as_json,\n",
+        "        as_json,\n",
     ),
     mutant(
         "what a keyring says is passed on with the key in it",
@@ -12095,8 +12089,8 @@ _KEYS = (
     mutant(
         "the shortest spelling of a key is taken out first",
         CREDENTIALS,
-        "    for spelling in sorted(spellings, key=len, reverse=True):\n",
-        "    for spelling in sorted(spellings, key=len):\n",
+        "    for spelling in sorted(spelled, key=len, reverse=True):\n",
+        "    for spelling in sorted(spelled, key=len):\n",
     ),
     mutant(
         "what a keyring says is passed on with its line breaks",
@@ -12143,8 +12137,8 @@ _KEYS = (
     mutant(
         "a keyring is not called by what a person knows it by",
         CREDENTIALS,
-        "    known = _CALLED.get(type(vault).__module__)\n",
-        "    known = None\n",
+        "        known = _CALLED.get(type(self._vault).__module__)\n",
+        "        known = None\n",
     ),
     mutant(
         "the Credential Manager of Windows is called the Keychain of macOS",
@@ -12161,8 +12155,8 @@ _KEYS = (
     mutant(
         "a keyring that is not known by a name is not said to be which",
         CREDENTIALS,
-        '    return f"the keyring of this system ({vault.name})" if known is None else known\n',
-        '    return "the keyring of this system" if known is None else known\n',
+        '        return f"the keyring of this system ({self.named})" if known is None else known\n',
+        '        return "the keyring of this system" if known is None else known\n',
     ),
     mutant(
         "a program that lost what reaches a keyring crashes when it keeps a key",
@@ -12221,7 +12215,7 @@ _KEYS = (
     mutant(
         "a system without a keyring says so in the words of a package",
         CREDENTIALS,
-        '    if isinstance(error, NoKeyringError):\n        raise _NoKeyring("there is no keyring here")\n',
+        '    if isinstance(error, NoKeyringError):\n        raise _NoKeyring("there is no keyring here", none_here=True)\n',
         "",
     ),
     mutant(
@@ -12231,40 +12225,28 @@ _KEYS = (
         "    raise _NoKeyring(_said(error))\n",
     ),
     mutant(
-        "a keyring is left without what it held before",
-        CREDENTIALS,
-        "        if before is None:\n            vault.delete_password(name, provider)\n        else:\n            vault.set_password(name, provider, before)\n",
-        "        vault.delete_password(name, provider)\n",
-    ),
-    mutant(
-        "a keyring is left with a key where it held none before",
-        CREDENTIALS,
-        "        if before is None:\n            vault.delete_password(name, provider)\n        else:\n            vault.set_password(name, provider, before)\n",
-        "        if before is not None:\n            vault.set_password(name, provider, before)\n",
-    ),
-    mutant(
         "a keyring that does not give a key back is another failure",
         CREDENTIALS,
-        "    with contextlib.suppress(_NoKeyring):\n        _of_the_keyring(path, put)\n",
-        "    _of_the_keyring(path, put)\n",
+        "    with contextlib.suppress(_NoKeyring):\n        _of_the_keyring(path, lambda asked: asked.put_back(provider, before))\n",
+        "    _of_the_keyring(path, lambda asked: asked.put_back(provider, before))\n",
     ),
     mutant(
         "what a keyring held before is not asked for",
         CREDENTIALS,
-        "        before = vault.get_password(name, provider)\n        vault.set_password(name, provider, payload)\n",
-        "        before = None\n        vault.set_password(name, provider, payload)\n",
+        "        before = asked.get(provider)\n        try:\n            asked.put(provider, payload)\n",
+        "        before = None\n        try:\n            asked.put(provider, payload)\n",
     ),
     mutant(
         "a keyring is believed without being asked what it holds",
         CREDENTIALS,
-        "    if back == payload:\n        return called, before\n",
-        "    if True:\n        return called, before\n",
+        "        if back != payload:\n",
+        "        if False:\n",
     ),
     mutant(
         "what a keyring made of a key stays in it",
         CREDENTIALS,
-        '    _put_back(path, provider, before)\n    does = "keeps nothing"',
-        '    does = "keeps nothing"',
+        '            asked.put_back(provider, before)\n            does = "keeps nothing"',
+        '            does = "keeps nothing"',
     ),
     mutant(
         "a keyring that hands out something else is said to keep nothing",
@@ -12275,14 +12257,14 @@ _KEYS = (
     mutant(
         "the key alone is not kept out of what a keyring says",
         CREDENTIALS,
-        "    before, back, called = _of_the_keyring(path, give, payload, key)\n",
-        "    before, back, called = _of_the_keyring(path, give, payload)\n",
+        "    return _of_the_keyring(path, give, payload, key)\n",
+        "    return _of_the_keyring(path, give, payload)\n",
     ),
     mutant(
         "the whole of what a keyring was given is not kept out of what it says",
         CREDENTIALS,
-        "    before, back, called = _of_the_keyring(path, give, payload, key)\n",
-        "    before, back, called = _of_the_keyring(path, give, key)\n",
+        "    return _of_the_keyring(path, give, payload, key)\n",
+        "    return _of_the_keyring(path, give, key)\n",
     ),
     mutant(
         "a keyring that could not be asked for a key is said not to hold it",
@@ -12303,28 +12285,22 @@ _KEYS = (
         "    if entry is None:\n",
     ),
     mutant(
-        "a key that is not in the keyring is taken out of it all the same",
-        CREDENTIALS,
-        "        if vault.get_password(name, provider) is None:\n            return False\n        vault.delete_password(name, provider)\n",
-        "        vault.delete_password(name, provider)\n",
-    ),
-    mutant(
         "a key that is forgotten stays in the keyring",
         CREDENTIALS,
-        "            return False\n        vault.delete_password(name, provider)\n        return True\n",
-        "            return False\n        return True\n",
+        "        asked.put(provider, None)\n        asked.clear_behind(provider)\n        return there\n",
+        "        asked.clear_behind(provider)\n        return there\n",
     ),
     mutant(
         "a key that only the keyring knew of is said not to have been there",
         CREDENTIALS,
-        "        vault.delete_password(name, provider)\n        return True\n",
-        "        vault.delete_password(name, provider)\n        return False\n",
+        "        there = asked.get(provider) is not None\n        asked.put(provider, None)\n",
+        "        there = False\n        asked.put(provider, None)\n",
     ),
     mutant(
         "a key that a keyring took lies in the file as well",
         CREDENTIALS,
-        "    keys[provider] = _Entry(sent_to=origin)\n",
-        "    keys[provider] = _Entry(key=key, sent_to=origin)\n",
+        "    keys[provider] = _Entry(sent_to=origin, keyring=named)\n",
+        "    keys[provider] = _Entry(key=key, sent_to=origin, keyring=named)\n",
     ),
     mutant(
         "a key that no keyring took is kept nowhere",
@@ -12353,8 +12329,8 @@ _KEYS = (
     mutant(
         "where a key in the keyring goes is said by the file",
         CREDENTIALS,
-        "        key, sent_to = _from_the_keyring(path, provider)\n",
-        "        key, _ = _from_the_keyring(path, provider)\n        sent_to = entry.sent_to\n",
+        "        key, sent_to = _from_the_keyring(path, provider, entry.keyring)\n",
+        "        key, _ = _from_the_keyring(path, provider, entry.keyring)\n        sent_to = entry.sent_to\n",
     ),
     mutant(
         "a key that lies in the file is asked of the keyring",
@@ -12383,8 +12359,8 @@ _KEYS = (
     mutant(
         "a key that only the keyring knew of is forgotten without a word of it",
         CREDENTIALS,
-        "    if entry is None:\n        return in_the_keyring\n",
-        "    if entry is None:\n        return False\n",
+        "    if entry is None:\n        return Forgotten(in_the_keyring, unasked)\n",
+        "    if entry is None:\n        return Forgotten(False, unasked)\n",
     ),
     mutant(
         "the file says of a key in a keyring that it is nothing",
@@ -12401,8 +12377,104 @@ _KEYS = (
     mutant(
         "what reaches a keyring is loaded with the module",
         CREDENTIALS,
-        "import contextlib\nimport json\n",
-        "import contextlib\nimport json\n\nimport keyring as _loaded_at_once\n",
+        "import contextlib\nimport html\n",
+        "import contextlib\nimport html\n\nimport keyring as _loaded_at_once\n",
+    ),
+    mutant(
+        "a key is written over and not taken out first",
+        CREDENTIALS,
+        "        try:\n            self._vault.delete_password(self._name, provider)\n        except self._nothing_there:\n            # A keyring that showed nothing may hold something all the same, so it was asked.\n            if there:\n                raise\n",
+        "        if there and value is None:\n            self._vault.delete_password(self._name, provider)\n",
+    ),
+    mutant(
+        "a key that its keyring shows and does not give up is taken for gone",
+        CREDENTIALS,
+        "            if there:\n                raise\n",
+        "            pass\n",
+    ),
+    mutant(
+        "a keyring that holds nothing fails whoever gives it a key",
+        CREDENTIALS,
+        "            if there:\n                raise\n",
+        "            raise\n",
+    ),
+    mutant(
+        "what a keyring was asked on the side goes on though nobody waits for it",
+        CREDENTIALS,
+        "        if self._given_up.is_set():\n            raise _GivenUp\n",
+        "        return\n",
+    ),
+    mutant(
+        "what a keyring was asked on the side is not told that nobody waits for it",
+        CREDENTIALS,
+        "        given_up.set()\n",
+        "",
+    ),
+    mutant(
+        "of several keyrings the whole row is asked",
+        CREDENTIALS,
+        '            row = cast("Any", vault).backends if isinstance(vault, ChainerBackend) else [vault]\n',
+        "            row = [vault]\n",
+    ),
+    mutant(
+        "an earlier key stays in a keyring that stands further back",
+        CREDENTIALS,
+        "        asked.clear_behind(provider)\n        return asked.called, asked.named, before\n",
+        "        return asked.called, asked.named, before\n",
+    ),
+    mutant(
+        "a key is looked for in whatever keyring is reached",
+        CREDENTIALS,
+        "    if recorded is not None and asked.named != recorded:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a file that does not say which keyring took a key is refused",
+        CREDENTIALS,
+        "    if recorded is not None and asked.named != recorded:\n",
+        "    if asked.named != recorded:\n",
+    ),
+    mutant(
+        "which keyring took a key is not written down",
+        CREDENTIALS,
+        "    keys[provider] = _Entry(sent_to=origin, keyring=named)\n",
+        "    keys[provider] = _Entry(sent_to=origin)\n",
+    ),
+    mutant(
+        "a key is lost for a new one that the keyring did not take",
+        CREDENTIALS,
+        "            asked.put_back(provider, before)\n            raise\n",
+        "            raise\n",
+    ),
+    mutant(
+        "a keyring that cannot take back what it held says so in the place of why it failed",
+        CREDENTIALS,
+        "        with contextlib.suppress(Exception):\n            self.put(provider, before)\n",
+        "        self.put(provider, before)\n",
+    ),
+    mutant(
+        "what stands in the place of a keyring is asked like one",
+        CREDENTIALS,
+        "            if isinstance(vault, fail.Keyring):\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a system without a keyring is taken for one whose keyring could not be asked",
+        CREDENTIALS,
+        '        raise _NoKeyring("there is no keyring here", none_here=True)\n',
+        '        raise _NoKeyring("there is no keyring here")\n',
+    ),
+    mutant(
+        "whoever forgets a key is never told that the keyring could not be asked",
+        CREDENTIALS,
+        "    unasked = None if refused is None or refused.none_here else str(refused)\n",
+        "    unasked = None\n",
+    ),
+    mutant(
+        "a key is taken out of whatever keyring is reached when it is forgotten",
+        CREDENTIALS,
+        "        recorded = None if entry is None else entry.keyring\n",
+        "        recorded = None\n",
     ),
 )
 
@@ -13159,8 +13231,8 @@ _SERVICES = (
     mutant(
         "keys that cannot be read while one is forgotten are an error of another kind",
         SETUP_APP,
-        "        had_a_key = credentials.forget(home / KEYS, name)\n    except CredentialsError as error:\n        raise SetupError(str(error)) from None\n",
-        "        had_a_key = credentials.forget(home / KEYS, name)\n    except CredentialsError:\n        raise\n",
+        "        forgotten = credentials.forget(home / KEYS, name)\n    except CredentialsError as error:\n        raise SetupError(str(error)) from None\n",
+        "        forgotten = credentials.forget(home / KEYS, name)\n    except CredentialsError:\n        raise\n",
     ),
     mutant(
         "a service that is only in use is not forgotten",
@@ -13177,8 +13249,8 @@ _SERVICES = (
     mutant(
         "forgetting a service of which only one thing is stored is refused",
         SETUP_APP,
-        "    if not had_a_key and not was_set_up:\n",
-        "    if not had_a_key or not was_set_up:\n",
+        "    if not forgotten.was_there and not was_set_up:\n",
+        "    if not forgotten.was_there or not was_set_up:\n",
     ),
     mutant(
         "forgetting one service takes every service out of use",
@@ -13201,8 +13273,14 @@ _SERVICES = (
     mutant(
         "a key is said to be deleted where there was none",
         SETUP_APP,
-        '    if had_a_key:\n        show(f"The key of {name} is deleted.")\n',
+        '    if forgotten.was_there:\n        show(f"The key of {name} is deleted.")\n',
         '    if True:\n        show(f"The key of {name} is deleted.")\n',
+    ),
+    mutant(
+        "whoever forgets a key is not told that the keyring could not be asked",
+        SETUP_APP,
+        "    if forgotten.unasked is not None:\n",
+        "    if False:\n",
     ),
     mutant(
         "what was said of a service is said to be deleted where nothing was said",

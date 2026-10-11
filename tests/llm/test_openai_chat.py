@@ -1214,9 +1214,9 @@ async def test_a_key_that_its_keyring_does_not_give_is_a_failure_that_says_what_
     ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
-    Memory().install()
+    vault = Memory().install()
     config = with_stored(tmp_path, deepseek=STORED)
-    Locked().install()
+    vault.locked = True
     service = Service(streamed(TEXT_REPLY))
     connect(ctx, llm, service, config)
 

@@ -24,15 +24,28 @@ Where a key is kept
     A keyring is asked on the side and is waited for a while, and not for
     good. One that is locked asks its user to unlock it. On a machine
     without a screen it asks nobody, and waits for an answer all the same.
-    Whoever wants no keyring to be asked sets the variable
+    What was asked on the side goes no further once nobody waits for it: a
+    keyring that answers late is not given a key that was put elsewhere
+    meanwhile. Whoever wants no keyring to be asked sets the variable
     ``PYTHON_KEYRING_BACKEND`` to ``keyring.backends.null.Keyring``.
+
+    A key is taken out of a keyring before another one is given to it, and
+    is not written over. A keyring may keep what is written over under
+    another name, and the one of Windows does. Where giving the new key
+    fails, the keyring is left with what it held, as far as it lets one.
+
+    A desktop may have several keyrings, which stand in a row. One of them
+    is asked, the first, and its name is written down with the key. A key
+    is looked for in the keyring that it was given to and in no other, so a
+    key that was replaced is not found again in a keyring further back.
 
 The file of keys
     One file says which services a key is stored for, and where each key is
     sent. It holds the key itself only where no keyring took it::
 
         {"version": 1,
-         "keys": {"deepseek": {"sent_to": "https://api.deepseek.com"},
+         "keys": {"deepseek": {"sent_to": "https://api.deepseek.com",
+                               "keyring": "Windows WinVaultKeyring"},
                   "mine": {"key": "sk-...", "sent_to": "http://10.0.0.5:8000"}}}
 
     A key that lies in the file lies there as it is. It is not encrypted, so
@@ -45,6 +58,11 @@ The file of keys
     The file is written whole or not at all: next to the old one first, and
     then put in its place. Where the file is a link, the file that it leads
     to is the one that is read and the one that is written.
+
+    The file and the directory that it lies in are its user's to write, and
+    nobody else's. Whoever can write the file can put a key of their own
+    into it, and the requests then go out under that key. That is as true of
+    the file that says which service is in use.
 
     In a keyring the keys of a file are filed under the place of that file.
     Two homes of the program do not share their keys.
@@ -63,32 +81,32 @@ wrong with it, and never what either holds.
 """
 
 import contextlib
+import html
 import json
 import os
 import secrets
 import stat
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Thread
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
-from urllib.parse import urlsplit
+from threading import Event, Thread
+from typing import Any, Literal, Protocol, TypeVar, cast
+from urllib.parse import quote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-if TYPE_CHECKING:
-    from keyring.backend import KeyringBackend
-
 __all__ = [
     "CredentialsError",
+    "Forgotten",
     "Kept",
     "forget",
     "keep",
     "key_for",
     "origin_of",
     "sendable",
+    "spellings",
     "stored",
     "trimmed",
 ]
@@ -129,7 +147,20 @@ class CredentialsError(Exception):
 
 
 class _NoKeyring(Exception):  # noqa: N818 - what a keyring answered, and no error of a caller
-    """The keyring of the system did not do what it was asked. The text says why, without a key."""
+    """The keyring of the system did not do what it was asked. The text says why, without a key.
+
+    Attributes:
+        none_here: Whether the reason is that this system has no keyring at
+            all.
+    """
+
+    def __init__(self, said: str, *, none_here: bool = False) -> None:
+        super().__init__(said)
+        self.none_here = none_here
+
+
+class _GivenUp(Exception):  # noqa: N818 - how what was asked on the side is told to stop
+    """Nobody waits any more for what a keyring was asked, so it is asked nothing further."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,25 +178,52 @@ class Kept:
     said: str = ""
 
 
-class _Keyring(Protocol):
-    """What is asked of the package that reaches the keyring of a system."""
+@dataclass(frozen=True, slots=True)
+class Forgotten:
+    """What came of forgetting a key. It is true where there was one.
 
-    def get_keyring(self) -> "KeyringBackend": ...
+    Attributes:
+        was_there: Whether a key was stored for the service.
+        unasked: Why the keyring could not be asked whether it holds an
+            earlier key of the service, or ``None`` if it was asked or this
+            system has none. A key that lay in the file is gone all the same.
+    """
 
-    def get_password(self, service_name: str, username: str, /) -> str | None: ...
+    was_there: bool
+    unasked: str | None = None
 
-    def set_password(self, service_name: str, username: str, password: str, /) -> None: ...
+    def __bool__(self) -> bool:
+        return self.was_there
 
-    def delete_password(self, service_name: str, username: str, /) -> None: ...
+
+class _Backend(Protocol):
+    """What is asked of one keyring."""
+
+    @property
+    def name(self) -> str: ...
+
+    def get_password(self, service: str, username: str, /) -> str | None: ...
+
+    def set_password(self, service: str, username: str, password: str, /) -> None: ...
+
+    def delete_password(self, service: str, username: str, /) -> None: ...
 
 
 class _Entry(BaseModel):
-    """Where a key is sent, and the key itself where this is the place that holds it."""
+    """Where a key is sent, and where the key is: in this entry, or in a keyring.
+
+    Attributes:
+        sent_to: The place that the key is sent to.
+        key: The key, where no keyring took it.
+        keyring: What the keyring that took the key calls itself. A file
+            that an earlier version wrote does not say.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     sent_to: str
     key: str | None = None
+    keyring: str | None = None
 
 
 class _Kept(BaseModel):
@@ -286,9 +344,26 @@ def _read(path: Path, *, whoever_can_read_it: bool) -> dict[str, _Entry]:
     return kept.keys
 
 
-def _spelled(secret: str) -> set[str]:
-    """Return the ways in which the text of a program is likely to spell a secret."""
-    return {secret, json.dumps(secret)[1:-1], repr(secret)[1:-1]}
+def spellings(secret: str) -> list[str]:
+    """Return the ways in which a text may repeat a secret, the longest first.
+
+    A text that somebody else wrote does not always hold a key as it is. A
+    body of JSON that is passed on unread writes a backslash and a quotation
+    mark with a backslash before them, and some writers of JSON do the same
+    for a slash. Python shows a text with its backslashes doubled. An
+    address writes most signs as a percent sign and two digits, and a page
+    of HTML writes a few of them as names.
+    """
+    as_json = json.dumps(secret)[1:-1]
+    spelled = {
+        secret,
+        as_json,
+        as_json.replace("/", chr(92) + "/"),
+        repr(secret)[1:-1],
+        quote(secret, safe=""),
+        html.escape(secret),
+    }
+    return sorted(spelled, key=len, reverse=True)
 
 
 def _said(error: BaseException, *kept_out: str) -> str:
@@ -303,9 +378,9 @@ def _said(error: BaseException, *kept_out: str) -> str:
             however the text spells it.
     """
     said = str(error)
-    spellings = {spelling for secret in kept_out for spelling in _spelled(secret)}
+    spelled = {spelling for secret in kept_out for spelling in spellings(secret)}
     # The longest first. A spelling that is part of a longer one would leave the rest of it.
-    for spelling in sorted(spellings, key=len, reverse=True):
+    for spelling in sorted(spelled, key=len, reverse=True):
         said = said.replace(spelling, "[key]")
     said = " ".join(said.split())
     if len(said) > _SAID:
@@ -313,19 +388,95 @@ def _said(error: BaseException, *kept_out: str) -> str:
     return said.rstrip(".!") or type(error).__name__
 
 
-def _called(vault: "KeyringBackend") -> str:
-    """Return what a person knows a keyring by."""
-    known = _CALLED.get(type(vault).__module__)
-    return f"the keyring of this system ({vault.name})" if known is None else known
+class _Asked:
+    """One keyring, asked about the keys of one file for as long as somebody waits for it.
+
+    Args:
+        vault: The keyring that is asked.
+        behind: The keyrings that stand behind it in a row, if there is a
+            row. They are asked for nothing but to give up a key of which
+            they hold an earlier one.
+        name: The name under which the keys of the file are filed.
+        given_up: Set once nobody waits any more.
+        nothing_there: What the keyring raises where it is asked to give up
+            what it does not hold.
+    """
+
+    __slots__ = ("_behind", "_given_up", "_name", "_nothing_there", "_vault")
+
+    def __init__(
+        self,
+        vault: _Backend,
+        behind: Sequence[_Backend],
+        name: str,
+        given_up: Event,
+        nothing_there: type[Exception],
+    ) -> None:
+        self._vault = vault
+        self._behind = behind
+        self._name = name
+        self._given_up = given_up
+        self._nothing_there = nothing_there
+
+    @property
+    def called(self) -> str:
+        """What a person knows the keyring by."""
+        known = _CALLED.get(type(self._vault).__module__)
+        return f"the keyring of this system ({self.named})" if known is None else known
+
+    @property
+    def named(self) -> str:
+        """What the keyring calls itself."""
+        return str(self._vault.name)
+
+    def _still_wanted(self) -> None:
+        if self._given_up.is_set():
+            raise _GivenUp
+
+    def get(self, provider: str) -> str | None:
+        """Return what the keyring holds for a service."""
+        self._still_wanted()
+        return self._vault.get_password(self._name, provider)
+
+    def put(self, provider: str, value: str | None) -> None:
+        """Have the keyring hold a value for a service, or nothing, in the place of what it holds.
+
+        What it holds is taken out first, and is not written over. A keyring
+        may keep what is written over under another name, and hand that out
+        once the new value is gone.
+        """
+        there = self.get(provider) is not None
+        self._still_wanted()
+        try:
+            self._vault.delete_password(self._name, provider)
+        except self._nothing_there:
+            # A keyring that showed nothing may hold something all the same, so it was asked.
+            if there:
+                raise
+        if value is not None:
+            self._still_wanted()
+            self._vault.set_password(self._name, provider, value)
+
+    def put_back(self, provider: str, before: str | None) -> None:
+        """Leave the keyring with what it held before, as far as it lets one."""
+        with contextlib.suppress(Exception):
+            self.put(provider, before)
+
+    def clear_behind(self, provider: str) -> None:
+        """Take an earlier key of a service out of the keyrings that stand behind this one."""
+        for other in self._behind:
+            self._still_wanted()
+            with contextlib.suppress(Exception):
+                if other.get_password(self._name, provider) is not None:
+                    other.delete_password(self._name, provider)
 
 
-def _of_the_keyring(path: Path, ask: Callable[[_Keyring, str], _T], *kept_out: str) -> _T:
+def _of_the_keyring(path: Path, ask: Callable[[_Asked], _T], *kept_out: str) -> _T:
     """Ask the keyring of the system for something, and return what it answers.
 
     Args:
         path: The file of keys whose keys are asked about.
-        ask: Asks. It is given what reaches the keyring, and the name
-            under which the keys of the file are filed in it.
+        ask: Asks. It is given the keyring.
         kept_out: What the keyring is given. None of it is repeated where
             the keyring fails.
 
@@ -337,16 +488,27 @@ def _of_the_keyring(path: Path, ask: Callable[[_Keyring, str], _T], *kept_out: s
         # Loaded here and not at the head of the module: it takes a fifth of a second, and a
         # start of the program that finds its key in a variable has no use for it.
         import keyring
-        from keyring.errors import NoKeyringError
+        from keyring.backends import fail
+        from keyring.backends.chainer import ChainerBackend
+        from keyring.errors import NoKeyringError, PasswordDeleteError
 
         name = f"{_FILED_UNDER} {path.resolve()}"
     except Exception as error:
         raise _NoKeyring(_said(error)) from None
     answer: Future[_T] = Future()
+    given_up = Event()
 
     def run() -> None:
         try:
-            answer.set_result(ask(keyring, name))
+            vault = keyring.get_keyring()
+            if isinstance(vault, fail.Keyring):
+                # What stands in the place of a keyring where there is none. It is asked
+                # nothing, and nothing is made of what it is called.
+                raise NoKeyringError
+            # Of several keyrings in a row, the first is the one that a key is given to.
+            row = cast("Any", vault).backends if isinstance(vault, ChainerBackend) else [vault]
+            first, *behind = cast("list[_Backend]", list(row))
+            answer.set_result(ask(_Asked(first, behind, name, given_up, PasswordDeleteError)))
         except BaseException as error:
             # A keyring is the business of the system, and fails with whatever the system
             # fails with. All of it is for whoever waits for the answer.
@@ -358,65 +520,91 @@ def _of_the_keyring(path: Path, ask: Callable[[_Keyring, str], _T], *kept_out: s
     try:
         error = answer.exception(timeout=_WAIT)
     except TimeoutError:
+        # Whatever was asked on the side asks nothing further once it comes back.
+        given_up.set()
         raise _NoKeyring(f"the keyring did not answer within {_WAIT:g} seconds") from None
     if error is None:
         return answer.result()
+    if isinstance(error, _NoKeyring):
+        raise error
     if isinstance(error, NoKeyringError):
-        raise _NoKeyring("there is no keyring here")
+        raise _NoKeyring("there is no keyring here", none_here=True)
     raise _NoKeyring(_said(error, *kept_out))
 
 
 def _put_back(path: Path, provider: str, before: str | None) -> None:
     """Leave a keyring with what it held for a service before, as far as it lets one."""
-
-    def put(vault: _Keyring, name: str) -> None:
-        if before is None:
-            vault.delete_password(name, provider)
-        else:
-            vault.set_password(name, provider, before)
-
     with contextlib.suppress(_NoKeyring):
-        _of_the_keyring(path, put)
+        _of_the_keyring(path, lambda asked: asked.put_back(provider, before))
 
 
-def _into_the_keyring(path: Path, provider: str, key: str, origin: str) -> tuple[str, str | None]:
+def _into_the_keyring(
+    path: Path, provider: str, key: str, origin: str
+) -> tuple[str, str, str | None]:
     """Give a key to the keyring of the system.
 
     Returns:
-        What a person knows the keyring by that took the key, and what that
-        keyring held for the service until now.
+        What a person knows the keyring by that took the key, what that
+        keyring calls itself, and what it held for the service until now.
 
     Raises:
         _NoKeyring: No keyring took the key. The text says why.
     """
-    payload = _Entry(key=key, sent_to=origin).model_dump_json()
+    payload = _Entry(key=key, sent_to=origin).model_dump_json(exclude_none=True)
 
-    def give(vault: _Keyring, name: str) -> tuple[str | None, str | None, str]:
-        before = vault.get_password(name, provider)
-        vault.set_password(name, provider, payload)
-        return before, vault.get_password(name, provider), _called(vault.get_keyring())
+    def give(asked: _Asked) -> tuple[str, str, str | None]:
+        before = asked.get(provider)
+        try:
+            asked.put(provider, payload)
+            back = asked.get(provider)
+        except BaseException:
+            # What was begun is undone. The key that was there is not lost for a new one
+            # that did not arrive.
+            asked.put_back(provider, before)
+            raise
+        if back != payload:
+            # A keyring that is set up to keep nothing takes what it is given without a
+            # word. Whatever this one made of the key is not left in it.
+            asked.put_back(provider, before)
+            does = "keeps nothing" if back is None else "does not hand out what it was given"
+            raise _NoKeyring(f"the keyring that is set up here {does}")
+        asked.clear_behind(provider)
+        return asked.called, asked.named, before
 
-    before, back, called = _of_the_keyring(path, give, payload, key)
-    if back == payload:
-        return called, before
-    # A keyring that is set up to keep nothing takes what it is given without a word. Whatever
-    # this one made of the key is not left in it.
-    _put_back(path, provider, before)
-    does = "keeps nothing" if back is None else "does not hand out what it was given"
-    raise _NoKeyring(f"the keyring that is set up here {does}")
+    return _of_the_keyring(path, give, payload, key)
 
 
-def _from_the_keyring(path: Path, provider: str) -> tuple[str, str]:
+def _another(recorded: str | None, asked: _Asked) -> None:
+    """Refuse a keyring that is not the one that a key was given to."""
+    if recorded is not None and asked.named != recorded:
+        raise _NoKeyring(
+            f"it was given to the keyring {recorded}, and the keyring that is reached now "
+            f"is {asked.named}"
+        )
+
+
+def _from_the_keyring(path: Path, provider: str, recorded: str | None) -> tuple[str, str]:
     """Return a key that the keyring of the system keeps, and the place that it is sent to.
 
+    Args:
+        path: The file of keys.
+        provider: The name of the service.
+        recorded: What the keyring that took the key calls itself, if the
+            file says.
+
     Raises:
-        CredentialsError: The keyring cannot be asked, or does not hold what
-            was put there.
+        CredentialsError: The keyring cannot be asked, is another one than
+            the key was given to, or does not hold what was put there.
     """
+
+    def had(asked: _Asked) -> str | None:
+        _another(recorded, asked)
+        return asked.get(provider)
+
     back: str | None = None
     refused: str | None = None
     try:
-        back = _of_the_keyring(path, lambda vault, name: vault.get_password(name, provider))
+        back = _of_the_keyring(path, had)
     except _NoKeyring as error:
         refused = str(error)
     if refused is not None:
@@ -437,18 +625,20 @@ def _from_the_keyring(path: Path, provider: str) -> tuple[str, str]:
     return entry.key, entry.sent_to
 
 
-def _out_of_the_keyring(path: Path, provider: str) -> bool:
+def _out_of_the_keyring(path: Path, provider: str, recorded: str | None) -> bool:
     """Take a key out of the keyring of the system, and return whether there was one.
 
     Raises:
-        _NoKeyring: The keyring could not be asked. The text says why.
+        _NoKeyring: The keyring could not be asked, or is another one than
+            the key was given to. The text says why.
     """
 
-    def take(vault: _Keyring, name: str) -> bool:
-        if vault.get_password(name, provider) is None:
-            return False
-        vault.delete_password(name, provider)
-        return True
+    def take(asked: _Asked) -> bool:
+        _another(recorded, asked)
+        there = asked.get(provider) is not None
+        asked.put(provider, None)
+        asked.clear_behind(provider)
+        return there
 
     return _of_the_keyring(path, take)
 
@@ -523,7 +713,7 @@ def key_for(path: Path, provider: str, origin: str) -> str | None:
     if entry.key is None:
         # What the keyring holds says where the key goes. What the file says of that is for
         # whoever lists the keys, and whoever can change the file cannot send a key elsewhere.
-        key, sent_to = _from_the_keyring(path, provider)
+        key, sent_to = _from_the_keyring(path, provider, entry.keyring)
     else:
         key, sent_to = entry.key, entry.sent_to
     if sent_to != origin:
@@ -568,7 +758,7 @@ def keep(path: Path, provider: str, key: str, origin: str) -> Kept:
         )
     keys = _read(path, whoever_can_read_it=True)
     said = ""
-    taken: tuple[str, str | None] | None = None
+    taken: tuple[str, str, str | None] | None = None
     try:
         taken = _into_the_keyring(path, provider, key, origin)
     except _NoKeyring as refused:
@@ -577,9 +767,10 @@ def keep(path: Path, provider: str, key: str, origin: str) -> Kept:
         keys[provider] = _Entry(key=key, sent_to=origin)
         _write(path, keys)
         return Kept(keyring=None, said=said)
-    called, before = taken
-    # The file says that there is a key and where it is sent, and holds no key.
-    keys[provider] = _Entry(sent_to=origin)
+    called, named, before = taken
+    # The file says that there is a key, where it is sent and which keyring has it, and
+    # holds no key.
+    keys[provider] = _Entry(sent_to=origin, keyring=named)
     try:
         _write(path, keys)
     except CredentialsError:
@@ -589,11 +780,16 @@ def keep(path: Path, provider: str, key: str, origin: str) -> Kept:
     return Kept(keyring=called)
 
 
-def forget(path: Path, provider: str) -> bool:
+def forget(path: Path, provider: str) -> Forgotten:
     """Delete the key that is stored for a service.
 
+    The keyring is asked whatever the file says. A key that the file lost
+    sight of would lie in the keyring for good, and so would one that was
+    there before a later key went into the file.
+
     Returns:
-        Whether there was one.
+        Whether there was a key, and why the keyring could not be asked if
+        it could not.
 
     Raises:
         CredentialsError: The file that is there cannot be read or is not
@@ -603,21 +799,21 @@ def forget(path: Path, provider: str) -> bool:
     """
     keys = _read(path, whoever_can_read_it=True)
     entry = keys.pop(provider, None)
-    # The keyring is asked whatever the file says. A key that the file lost sight of would
-    # lie in the keyring for good, and so would one that was there before a later key went
-    # into the file.
     in_the_keyring = False
-    refused: str | None = None
+    refused: _NoKeyring | None = None
     try:
-        in_the_keyring = _out_of_the_keyring(path, provider)
+        recorded = None if entry is None else entry.keyring
+        in_the_keyring = _out_of_the_keyring(path, provider, recorded)
     except _NoKeyring as error:
-        refused = str(error)
+        refused = error
     if refused is not None and entry is not None and entry.key is None:
         raise CredentialsError(
             f"the key of {provider} is kept in the keyring of this system, and it could not "
             f"be taken out of it: {refused}"
         )
+    # A system without a keyring holds no earlier key in one.
+    unasked = None if refused is None or refused.none_here else str(refused)
     if entry is None:
-        return in_the_keyring
+        return Forgotten(in_the_keyring, unasked)
     _write(path, keys)
-    return True
+    return Forgotten(True, unasked)

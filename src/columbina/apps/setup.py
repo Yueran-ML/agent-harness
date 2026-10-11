@@ -584,17 +584,24 @@ def forget(home: Path, name: str, show: Show) -> None:
     """
     before = chosen(home)
     try:
-        had_a_key = credentials.forget(home / KEYS, name)
+        forgotten = credentials.forget(home / KEYS, name)
     except CredentialsError as error:
         raise SetupError(str(error)) from None
     was_set_up = name in before.services or before.use == name
-    if not had_a_key and not was_set_up:
+    if not forgotten.was_there and not was_set_up:
         raise SetupError(f"nothing is stored for {name!r}")
     if was_set_up:
         services = {other: said for other, said in before.services.items() if other != name}
         _written(home, Chosen(use=None if before.use == name else before.use, services=services))
-    if had_a_key:
+    if forgotten.was_there:
         show(f"The key of {name} is deleted.")
+    if forgotten.unasked is not None:
+        # A key that went into the file once the keyring took none may have one before it
+        # that lies in the keyring still.
+        show(
+            f"The keyring of this system could not be asked whether it holds an earlier key "
+            f"of {name}: {forgotten.unasked}. Run this again once it can be asked."
+        )
     if name in before.services:
         show(f"What was said of {name} is deleted.")
     if before.use == name:

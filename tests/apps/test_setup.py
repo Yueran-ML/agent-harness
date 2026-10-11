@@ -11,7 +11,7 @@ from columbina.apps.setup import Chosen, Own, SetupError, chosen, forget, servic
 from columbina.llm import credentials
 from columbina.llm.credentials import CredentialsError, keep
 from columbina.llm.services import PRESETS, Service
-from support.vault import Locked, Memory
+from support.vault import Memory
 
 KEY = "sk-test-0123456789"
 OTHER = "sk-other-9876543210"
@@ -967,10 +967,10 @@ def test_a_key_in_a_keyring_is_deleted_with_what_was_said_of_its_service(home: P
 
 
 def test_a_key_that_its_keyring_does_not_give_up_leaves_everything_as_it_was(home: Path) -> None:
-    Memory().install()
+    vault = Memory().install()
     set_up(home, Person("openai", "gpt-test", "", keys=(KEY,)))
     chosen_before = (home / "provider.yml").read_bytes()
-    Locked().install()
+    vault.locked = True
     shown: list[str] = []
 
     with pytest.raises(SetupError) as refused:
@@ -1187,3 +1187,23 @@ def test_whoever_is_told_that_the_choice_could_not_be_written_is_told_of_the_key
     )
     assert keys(home) == {"deepseek": None if in_a_keyring else KEY}
     assert not (home / "provider.yml").exists()
+
+
+def test_whoever_forgets_a_key_is_told_where_the_keyring_could_not_be_asked_for_an_earlier_one(
+    home: Path,
+) -> None:
+    vault = Memory().install()
+    vault.locked = True
+    set_up(home, Person("openai", "gpt-test", "", keys=(KEY,)))
+    shown: list[str] = []
+
+    forget(home, "openai", shown.append)
+
+    assert shown == [
+        "The key of openai is deleted.",
+        "The keyring of this system could not be asked whether it holds an earlier key of "
+        "openai: Failed to unlock the collection. Run this again once it can be asked.",
+        "What was said of openai is deleted.",
+        "openai is no longer in use. The profile says again where the model comes from.",
+    ]
+    assert places(home) == {}

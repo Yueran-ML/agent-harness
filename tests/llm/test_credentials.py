@@ -1,5 +1,6 @@
 """API keys: what one looks like, and where a user keeps them: a keyring, or a file."""
 
+import html
 import importlib.util
 import json
 import os
@@ -9,15 +10,17 @@ import subprocess
 import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from urllib.parse import quote
 
 import keyring
 import pytest
 from keyring.backends import fail, null
-from keyring.errors import PasswordSetError
+from keyring.errors import PasswordDeleteError, PasswordSetError
 
 from columbina.llm import credentials
 from columbina.llm.credentials import (
     CredentialsError,
+    Forgotten,
     Kept,
     forget,
     keep,
@@ -28,7 +31,20 @@ from columbina.llm.credentials import (
     trimmed,
 )
 from support.links import link_file
-from support.vault import Dropping, Locked, Memory, Refusing, Rewriting, Waiting, settled
+from support.vault import (
+    Dropping,
+    LikeWindows,
+    Locked,
+    Losing,
+    Memory,
+    Refusing,
+    Rewriting,
+    Secrets,
+    Waiting,
+    Wallet,
+    row,
+    settled,
+)
 
 KEY = "sk-test-0123456789"
 
@@ -781,11 +797,12 @@ def test_a_key_goes_into_the_keyring_and_the_file_says_only_that_there_is_one(fi
 
     assert kept == Kept(keyring=MEMORY)
     assert vault.held == {(filed(file), "deepseek"): payload(KEY, DEEPSEEK)}
-    # What was there is asked for, the key is given, and what is there now is asked for.
-    assert [what for what, _, _ in vault.asked] == ["get", "set", "get"]
+    # What is there is taken out before the key is given, and nothing is written over.
+    assert [what for what, _, _ in vault.asked if what != "get"] == ["delete", "set"]
+    assert [what for what, _, _ in vault.asked][-1] == "get"
     assert file.read_bytes() == (
-        b'{\n  "keys": {\n    "deepseek": {\n      "sent_to": "https://api.deepseek.com"\n'
-        b'    }\n  },\n  "version": 1\n}\n'
+        b'{\n  "keys": {\n    "deepseek": {\n      "keyring": "vault Memory",\n'
+        b'      "sent_to": "https://api.deepseek.com"\n    }\n  },\n  "version": 1\n}\n'
     )
     assert key_for(file, "deepseek", DEEPSEEK) == KEY
     assert key_for(file, "openai", OPENAI) is None
@@ -1013,6 +1030,14 @@ def the_key_as_json_writes_it(given: str) -> str:
     return json.dumps(the_key_in(given))
 
 
+def the_key_as_an_address_writes_it(given: str) -> str:
+    return quote(the_key_in(given), safe="")
+
+
+def the_key_as_a_page_writes_it(given: str) -> str:
+    return html.escape(the_key_in(given))
+
+
 @pytest.mark.parametrize("key", [KEY, ODD], ids=["a key", "a key that is spelled in many ways"])
 @pytest.mark.parametrize(
     ("spelled", "said"),
@@ -1023,6 +1048,8 @@ def the_key_as_json_writes_it(given: str) -> str:
         (the_key_in, "cannot keep [key]"),
         (the_key_as_python_shows_it, "cannot keep '[key]'"),
         (the_key_as_json_writes_it, 'cannot keep "[key]"'),
+        (the_key_as_an_address_writes_it, "cannot keep [key]"),
+        (the_key_as_a_page_writes_it, "cannot keep [key]"),
     ],
     ids=[
         "what it was given",
@@ -1031,6 +1058,8 @@ def the_key_as_json_writes_it(given: str) -> str:
         "the key alone",
         "the key alone, as Python shows it",
         "the key alone, as JSON writes it",
+        "the key alone, as an address writes it",
+        "the key alone, as a page writes it",
     ],
 )
 def test_what_a_keyring_says_is_passed_on_without_the_key_however_it_spells_it(
@@ -1109,9 +1138,10 @@ def test_a_keyring_that_does_not_answer_is_not_waited_for_for_good(
 
     kept = keep(file, "deepseek", KEY, DEEPSEEK)
 
-    assert unanswering.reached.is_set()
     assert kept == Kept(keyring=None, said="the keyring did not answer within 0.05 seconds")
     assert on_disk(file) == {"deepseek": (KEY, DEEPSEEK)}
+    # It was asked, if only after nobody waited for it any more.
+    assert unanswering.reached.wait(5)
 
 
 @pytest.mark.parametrize(
@@ -1141,7 +1171,7 @@ def test_a_keyring_that_has_nothing_to_give_back_is_one_that_keeps_nothing(file:
     kept = keep(file, "deepseek", KEY, DEEPSEEK)
 
     # It was asked to give the key back, and what it said to that is nobody's concern.
-    assert [what for what, _, _ in vault.asked] == ["get", "set", "get", "delete"]
+    assert [what for what, _, _ in vault.asked if what != "get"] == ["delete", "set", "delete"]
     assert kept == Kept(keyring=None, said=KEEPS_NOTHING)
     assert on_disk(file) == {"deepseek": (KEY, DEEPSEEK)}
 
@@ -1187,12 +1217,12 @@ def test_a_key_that_the_file_could_not_be_told_of_does_not_stay_in_the_keyring(
 # A key that is asked for and is not had from the keyring
 
 
-def no_keyring() -> None:
+def no_keyring(vault: Memory) -> None:
     keyring.set_keyring(fail.Keyring())
 
 
-def a_keyring_that_does_not_open() -> None:
-    Locked().install()
+def a_keyring_that_does_not_open(vault: Memory) -> None:
+    vault.locked = True
 
 
 @pytest.mark.parametrize(
@@ -1204,11 +1234,11 @@ def a_keyring_that_does_not_open() -> None:
     ids=["no keyring", "a keyring that does not open"],
 )
 def test_whoever_asks_for_a_key_that_the_keyring_does_not_give_is_told_what_to_do(
-    file: Path, there_is: Callable[[], None], said: str
+    file: Path, there_is: Callable[[Memory], None], said: str
 ) -> None:
-    Memory().install()
+    vault = Memory().install()
     keep(file, "deepseek", KEY, DEEPSEEK)
-    there_is()
+    there_is(vault)
 
     with pytest.raises(CredentialsError) as refused:
         key_for(file, "deepseek", DEEPSEEK)
@@ -1221,10 +1251,12 @@ def test_whoever_asks_for_a_key_that_the_keyring_does_not_give_is_told_what_to_d
 def test_whoever_asks_for_a_key_does_not_wait_for_the_keyring_for_good(
     file: Path, monkeypatch: pytest.MonkeyPatch, unanswering: Waiting
 ) -> None:
-    Memory().install()
+    # It answers at first, and then no more.
+    unanswering.released.set()
+    unanswering.install()
     keep(file, "deepseek", KEY, DEEPSEEK)
     monkeypatch.setattr(credentials, "_WAIT", 1.0)
-    unanswering.install()
+    unanswering.released.clear()
 
     with pytest.raises(CredentialsError) as refused:
         key_for(file, "deepseek", DEEPSEEK)
@@ -1322,9 +1354,9 @@ def test_a_key_that_went_into_the_file_later_does_not_leave_the_first_one_in_the
 def test_a_key_in_a_keyring_that_does_not_open_is_not_forgotten_and_the_file_still_says_so(
     file: Path,
 ) -> None:
-    Memory().install()
+    vault = Memory().install()
     keep(file, "deepseek", KEY, DEEPSEEK)
-    Locked().install()
+    vault.locked = True
 
     with pytest.raises(CredentialsError) as refused:
         forget(file, "deepseek")
@@ -1357,3 +1389,263 @@ def test_a_key_that_the_keyring_lost_is_forgotten_where_the_file_says_it(file: P
     assert forget(file, "deepseek")
 
     assert stored(file) == {}
+
+
+# What a second reader found
+
+
+@pytest.fixture
+def late_once() -> Iterator[Waiting]:
+    """A keyring that keeps whoever asks it first waiting, as long as the test lasts."""
+    vault = Waiting(first_only=True)
+    yield vault
+    vault.released.set()
+    settled()
+
+
+def test_a_keyring_that_answers_late_is_given_nothing_more(
+    file: Path, monkeypatch: pytest.MonkeyPatch, unanswering: Waiting
+) -> None:
+    monkeypatch.setattr(credentials, "_WAIT", 0.05)
+    unanswering.install()
+    keep(file, "deepseek", KEY, DEEPSEEK)
+
+    unanswering.released.set()
+    settled()
+
+    # It was asked what it held. By the time it answered, nobody wanted to give it a key.
+    assert [what for what, _, _ in unanswering.asked] == ["get"]
+    assert unanswering.held == {}
+    assert on_disk(file) == {"deepseek": (KEY, DEEPSEEK)}
+
+
+def test_a_key_is_not_written_over_by_one_that_a_keyring_was_asked_to_take_before_it(
+    file: Path, monkeypatch: pytest.MonkeyPatch, late_once: Waiting
+) -> None:
+    late_once.install()
+    monkeypatch.setattr(credentials, "_WAIT", 0.05)
+    assert keep(file, "deepseek", KEY, DEEPSEEK).keyring is None
+    monkeypatch.setattr(credentials, "_WAIT", 5.0)
+    assert keep(file, "deepseek", OTHER, DEEPSEEK).keyring is not None
+
+    # Now the keyring comes back to whoever asked it first.
+    late_once.released.set()
+    settled()
+
+    assert late_once.held == {(filed(file), "deepseek"): payload(OTHER, DEEPSEEK)}
+    assert key_for(file, "deepseek", DEEPSEEK) == OTHER
+
+
+def test_a_key_is_not_made_anew_by_a_keyring_that_answers_after_it_was_forgotten(
+    file: Path, monkeypatch: pytest.MonkeyPatch, late_once: Waiting
+) -> None:
+    late_once.install()
+    monkeypatch.setattr(credentials, "_WAIT", 0.05)
+    keep(file, "deepseek", KEY, DEEPSEEK)
+    monkeypatch.setattr(credentials, "_WAIT", 5.0)
+    assert forget(file, "deepseek")
+
+    late_once.released.set()
+    settled()
+
+    assert late_once.held == {}
+    assert stored(file) == {}
+
+
+def test_of_several_keyrings_one_is_given_a_key_and_the_key_is_looked_for_in_that_one(
+    file: Path,
+) -> None:
+    wallet, behind = Wallet(), Secrets()
+    # On a desktop with one keyring.
+    behind.install()
+    keep(file, "deepseek", KEY, DEEPSEEK)
+
+    # And on one where another keyring stands before it.
+    keyring.set_keyring(row(wallet, behind))
+    kept = keep(file, "deepseek", OTHER, DEEPSEEK)
+
+    assert kept == Kept(keyring="the keyring of this system (vault Wallet)")
+    assert wallet.held == {(filed(file), "deepseek"): payload(OTHER, DEEPSEEK)}
+    # The key that was replaced lies in no keyring any more.
+    assert behind.held == {}
+    assert on_disk(file) == {"deepseek": (None, DEEPSEEK)}
+    assert json.loads(file.read_text(encoding="utf-8"))["keys"]["deepseek"]["keyring"] == (
+        "vault Wallet"
+    )
+    assert key_for(file, "deepseek", DEEPSEEK) == OTHER
+
+
+def test_a_key_is_not_looked_for_in_another_keyring_than_the_one_that_it_was_given_to(
+    file: Path,
+) -> None:
+    wallet, behind = Wallet(), Secrets()
+    keyring.set_keyring(row(wallet, behind))
+    keep(file, "deepseek", OTHER, DEEPSEEK)
+    # A key of the same service that lies in the other keyring, from whenever.
+    behind.held[filed(file), "deepseek"] = payload(KEY, DEEPSEEK)
+
+    # The desktop of another day, on which the first keyring is not there.
+    behind.install()
+
+    another = (
+        "it was given to the keyring vault Wallet, and the keyring that is reached now is "
+        "vault Secrets"
+    )
+    with pytest.raises(CredentialsError) as refused:
+        key_for(file, "deepseek", DEEPSEEK)
+    assert str(refused.value) == not_asked(another)
+    with pytest.raises(CredentialsError) as kept_there:
+        forget(file, "deepseek")
+    assert str(kept_there.value) == (
+        "the key of deepseek is kept in the keyring of this system, and it could not be taken "
+        f"out of it: {another}"
+    )
+    assert stored(file) == {"deepseek": DEEPSEEK}
+    # A file that an earlier version wrote does not say which keyring it was, and is taken
+    # at its word.
+    written(file, {"version": 1, "keys": {"deepseek": {"sent_to": DEEPSEEK}}})
+    assert key_for(file, "deepseek", DEEPSEEK) == KEY
+
+
+def test_a_key_that_was_replaced_lies_in_no_corner_of_a_keyring_that_keeps_what_is_written_over(
+    file: Path,
+) -> None:
+    vault = LikeWindows().install()
+    keep(file, "deepseek", KEY, DEEPSEEK)
+
+    keep(file, "deepseek", OTHER, DEEPSEEK)
+
+    assert vault.targets == {filed(file): ("deepseek", payload(OTHER, DEEPSEEK))}
+    # So where somebody takes the entry out by hand, the key before it does not come back.
+    del vault.targets[filed(file)]
+    with pytest.raises(CredentialsError) as refused:
+        key_for(file, "deepseek", DEEPSEEK)
+    assert str(refused.value) == NOT_THERE
+
+
+def test_the_keys_of_several_services_lie_apart_in_such_a_keyring(file: Path) -> None:
+    vault = LikeWindows().install()
+    keep(file, "deepseek", KEY, DEEPSEEK)
+    keep(file, "openai", OTHER, OPENAI)
+    third = "sk-third-5555555555"
+
+    keep(file, "deepseek", third, DEEPSEEK)
+
+    assert key_for(file, "deepseek", DEEPSEEK) == third
+    assert key_for(file, "openai", OPENAI) == OTHER
+    assert forget(file, "deepseek")
+    assert key_for(file, "openai", OPENAI) == OTHER
+    assert [user for user, _ in vault.targets.values()] == ["openai"]
+    assert forget(file, "openai")
+    assert vault.targets == {}
+
+
+def test_a_key_is_not_lost_for_a_new_one_that_neither_the_keyring_nor_the_file_took(
+    file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = Losing(times=0).install()
+    keep(file, "deepseek", KEY, DEEPSEEK)
+    vault.times = 1
+
+    def refused_by_the_system(self: Path, target: Path) -> Path:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "replace", refused_by_the_system)
+
+    with pytest.raises(CredentialsError, match="cannot be written: Permission denied"):
+        keep(file, "deepseek", OTHER, DEEPSEEK)
+
+    monkeypatch.undo()
+    # The keyring took the old key out and did not take the new one. It has the old one again.
+    assert vault.held == {(filed(file), "deepseek"): payload(KEY, DEEPSEEK)}
+    assert key_for(file, "deepseek", DEEPSEEK) == KEY
+
+
+def test_whoever_forgets_a_key_is_told_where_the_keyring_could_not_be_asked(file: Path) -> None:
+    vault = Memory().install()
+    keep(file, "deepseek", KEY, DEEPSEEK)
+    Locked().install()
+    keep(file, "deepseek", OTHER, DEEPSEEK)
+
+    forgotten = forget(file, "deepseek")
+
+    # The key in the file is gone. Whether an earlier one lies in the keyring was not found out.
+    assert forgotten == Forgotten(True, unasked="Failed to unlock the collection")
+    assert stored(file) == {}
+    # It does, and it is taken out once the keyring can be asked.
+    vault.install()
+    assert forget(file, "deepseek") == Forgotten(True)
+    assert vault.held == {}
+    assert forget(file, "deepseek") == Forgotten(False)
+
+
+def test_a_system_without_a_keyring_holds_no_earlier_key_to_tell_of(file: Path) -> None:
+    written(file, holding(deepseek=KEY))
+    keyring.set_keyring(fail.Keyring())
+
+    assert forget(file, "deepseek") == Forgotten(True)
+    assert forget(file, "deepseek") == Forgotten(False)
+
+
+def test_a_key_that_its_keyring_shows_and_does_not_give_up_is_not_forgotten(file: Path) -> None:
+    class Keeping(Memory):
+        def delete_password(self, service: str, username: str) -> None:
+            self._note("delete", service, username)
+            # The words in which a keyring says that there is nothing to delete, too.
+            raise PasswordDeleteError("Can't delete password in keychain")
+
+    vault = Keeping().install()
+    written(file, {"version": 1, "keys": {"deepseek": {"sent_to": DEEPSEEK}}})
+    vault.held[filed(file), "deepseek"] = payload(KEY, DEEPSEEK)
+
+    with pytest.raises(CredentialsError) as refused:
+        forget(file, "deepseek")
+
+    assert str(refused.value) == (
+        "the key of deepseek is kept in the keyring of this system, and it could not be taken "
+        "out of it: Can't delete password in keychain"
+    )
+    assert stored(file) == {"deepseek": DEEPSEEK}
+    assert key_for(file, "deepseek", DEEPSEEK) == KEY
+
+
+def test_what_a_keyring_said_when_it_failed_is_not_lost_where_it_cannot_be_put_right(
+    file: Path,
+) -> None:
+    class Shutting(Memory):
+        def set_password(self, service: str, username: str, password: str) -> None:
+            self._note("set", service, username)
+            # It takes nothing, and from now on it does not open, so nothing can be put back
+            # either.
+            self.locked = True
+            raise PasswordSetError("Can't store password on keychain")
+
+    Shutting().install()
+
+    kept = keep(file, "deepseek", KEY, DEEPSEEK)
+
+    assert kept == Kept(keyring=None, said="Can't store password on keychain")
+    assert on_disk(file) == {"deepseek": (KEY, DEEPSEEK)}
+
+
+def test_a_keyring_that_does_not_answer_when_a_key_is_taken_back_fails_nobody(
+    file: Path, monkeypatch: pytest.MonkeyPatch, unanswering: Waiting
+) -> None:
+    unanswering.released.set()
+    unanswering.install()
+
+    def refused_by_the_system(self: Path, target: Path) -> Path:
+        # From here on the keyring answers no more.
+        unanswering.released.clear()
+        monkeypatch.setattr(credentials, "_WAIT", 0.05)
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "replace", refused_by_the_system)
+
+    with pytest.raises(CredentialsError) as refused:
+        keep(file, "deepseek", KEY, DEEPSEEK)
+
+    # Why the key could not be kept is what is said, and not what came of taking it back.
+    assert str(refused.value) == (
+        f"the file of stored keys, {file}, cannot be written: Permission denied"
+    )

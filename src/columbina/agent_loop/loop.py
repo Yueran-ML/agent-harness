@@ -34,6 +34,7 @@ from columbina.agent import (
     StepInfo,
     StreamFrame,
     TurnStopping,
+    arrivals,
     claim_for_step,
     claim_task,
     clear_inbox,
@@ -450,9 +451,15 @@ class LoopAgent(Agent):
         """
         if cancellation.requests():
             return ()
+        came = arrivals(self.session).next_step
         claimed = claim_for_step(self.session)
         if first_step and not cancellation.requests():
-            claimed = (*claimed, *claim_task(self.session))
+            # The task stands where it came: after what waited for it, and before what
+            # was said once it was given. A turn may be slow to begin, and what a person
+            # says meanwhile is said about the task.
+            first = arrivals(self.session).next_turn[:1]
+            earlier = sum(place < first[0] for place in came) if first else 0
+            claimed = (*claimed[:earlier], *claim_task(self.session), *claimed[earlier:])
         return claimed
 
     async def _heard(self, event: Event, answer: Awaitable[ResultT]) -> ResultT:

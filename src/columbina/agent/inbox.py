@@ -70,6 +70,42 @@ INBOX = Projection("inbox", Inbox(), _fold)
 """The input that waits for the agent of a session."""
 
 
+class Arrivals(Data):
+    """When each input that waits was given: the place in the log of the event that added it.
+
+    The two queues say what waits. This says in which order it came, which
+    the queues alone cannot say of an input in one and an input in the other.
+
+    Attributes:
+        next_turn: A place for each task that waits, in the order of the queue.
+        next_step: A place for each input for the next step, in the order of
+            the queue.
+    """
+
+    next_turn: tuple[int, ...] = ()
+    next_step: tuple[int, ...] = ()
+
+
+def _came(state: Arrivals, event: SessionEvent[EventData]) -> Arrivals:
+    data = event.data
+    if not isinstance(data, InboxSplicedEvent):
+        return state
+    added = (event.seq,) * len(data.added)
+    if data.queue == "next-turn":
+        return Arrivals(
+            next_turn=(*state.next_turn[data.removed :], *added), next_step=state.next_step
+        )
+    return Arrivals(next_turn=state.next_turn, next_step=(*state.next_step[data.removed :], *added))
+
+
+_ARRIVALS = Projection("inbox-arrivals", Arrivals(), _came)
+
+
+def arrivals(session: Session) -> Arrivals:
+    """Return when each input that waits in the inbox of a session was given."""
+    return _ARRIVALS.of(session)
+
+
 def enqueue(session: Session, queue: Queue, item: InboxItem) -> None:
     """Put ``item`` at the end of a queue."""
     session.append(InboxSplicedEvent(queue=queue, added=(item,)))
@@ -86,7 +122,8 @@ def claim_for_step(session: Session) -> tuple[InboxItem, ...]:
 def claim_task(session: Session) -> tuple[InboxItem, ...]:
     """Take the task that has waited longest, if one waits.
 
-    A turn begins with the input for its first step and then with one task.
+    A turn begins with the input for its first step and with one task, read
+    in the order in which they came, see :func:`arrivals`.
     The two are taken by two calls, because taking the first writes an event,
     and a listener of that event may have changed what waits. It may also have
     cancelled the agent, which the caller has to look at before it goes on.

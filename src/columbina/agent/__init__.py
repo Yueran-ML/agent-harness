@@ -45,10 +45,12 @@ from columbina.agent.events import (
 )
 from columbina.agent.inbox import (
     INBOX,
+    Arrivals,
     Inbox,
     InboxItem,
     InboxSplicedEvent,
     Queue,
+    arrivals,
     claim_for_step,
     claim_task,
     clear_inbox,
@@ -73,6 +75,7 @@ __all__ = [
     "AgentFactory",
     "AgentSpec",
     "Agents",
+    "Arrivals",
     "CancelCause",
     "ContextKind",
     "ContextSource",
@@ -93,6 +96,7 @@ __all__ = [
     "StreamFrame",
     "TurnStopping",
     "apply",
+    "arrivals",
     "claim_for_step",
     "claim_task",
     "clear_inbox",

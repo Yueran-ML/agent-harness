@@ -284,8 +284,8 @@ _LOOP = (
     mutant(
         "a turn that is being cancelled still takes the input for its next step",
         LOOP,
-        "        if cancellation.requests():\n            return ()\n        claimed = claim_for_step",
-        "        claimed = claim_for_step",
+        "        if cancellation.requests():\n            return ()\n        came = arrivals",
+        "        came = arrivals",
     ),
     mutant(
         "emptying the inbox drops what was given meanwhile",
@@ -472,6 +472,42 @@ _LOOP = (
         LOOP,
         "        return self._idle.is_set()\n",
         "        return self._turn_task is None\n",
+    ),
+    mutant(
+        "the task of a turn is read after everything that waits for its first step",
+        LOOP,
+        "            claimed = (*claimed[:earlier], *claim_task(self.session), *claimed[earlier:])\n",
+        "            claimed = (*claimed, *claim_task(self.session))\n",
+    ),
+    mutant(
+        "the task of a turn is read before everything that waits for its first step",
+        LOOP,
+        "            claimed = (*claimed[:earlier], *claim_task(self.session), *claimed[earlier:])\n",
+        "            claimed = (*claim_task(self.session), *claimed)\n",
+    ),
+    mutant(
+        "what was said after a task counts as said before it",
+        LOOP,
+        "            earlier = sum(place < first[0] for place in came) if first else 0\n",
+        "            earlier = sum(place > first[0] for place in came) if first else 0\n",
+    ),
+    mutant(
+        "when a task came is not forgotten once the task has left the inbox",
+        INBOX,
+        "            next_turn=(*state.next_turn[data.removed :], *added), next_step=state.next_step\n        )\n    return Arrivals(",
+        "            next_turn=(*state.next_turn, *added), next_step=state.next_step\n        )\n    return Arrivals(",
+    ),
+    mutant(
+        "when an input for a step came is not forgotten once it has left the inbox",
+        INBOX,
+        "    return Arrivals(next_turn=state.next_turn, next_step=(*state.next_step[data.removed :], *added))\n",
+        "    return Arrivals(next_turn=state.next_turn, next_step=(*state.next_step, *added))\n",
+    ),
+    mutant(
+        "when a task came is written down as when an input for a step came",
+        INBOX,
+        '    added = (event.seq,) * len(data.added)\n    if data.queue == "next-turn":\n        return Arrivals(',
+        '    added = (event.seq,) * len(data.added)\n    if data.queue != "next-turn":\n        return Arrivals(',
     ),
 )
 

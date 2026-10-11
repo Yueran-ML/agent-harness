@@ -180,6 +180,84 @@ async def test_injected_context_waits_for_a_task_and_is_read_before_it(harness: 
     assert sources == ["inject", "user"]
 
 
+async def test_what_is_said_after_a_task_that_has_not_begun_yet_is_read_after_it(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="On it."))
+
+    # Both are there before the turn has taken anything.
+    agent.followup("Read a.txt.")
+    agent.steer("And b.txt as well.")
+    await idle(agent)
+
+    assert harness.model.requests[0].messages == (
+        SYSTEM,
+        user("Read a.txt."),
+        user("And b.txt as well."),
+    )
+    said = [
+        (event.data.source, event.data.message.content[0].text)
+        for event in agent.session.events
+        if isinstance(event.data, UserMessageEvent)
+    ]
+    assert said == [("user", "Read a.txt."), ("steer", "And b.txt as well.")]
+    # One turn read both.
+    assert [
+        event.data.turn for event in agent.session.events if isinstance(event.data, TurnEndEvent)
+    ] == [1]
+
+
+async def test_what_a_turn_begins_with_is_read_in_the_order_in_which_it_came(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
+
+    agent.inject("Before everything.")
+    agent.followup("The first task.")
+    agent.steer("Said after it.")
+    agent.followup("The second task.")
+    agent.steer("Said last.")
+    await idle(agent)
+
+    # What is said on the way is for the turn that reads it first. The second task opens
+    # a turn of its own after that.
+    assert harness.model.requests[0].messages == (
+        SYSTEM,
+        user("Before everything."),
+        user("The first task."),
+        user("Said after it."),
+        user("Said last."),
+    )
+    assert harness.model.requests[1].messages[-2:] == (assistant("One."), user("The second task."))
+
+
+async def test_a_later_turn_begins_with_its_input_in_the_order_in_which_it_came_too(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
+    agent.steer("Said to open the first turn.")
+    agent.followup("The first task.")
+    await idle(agent)
+
+    # What left the inbox for the first turn has nothing to say about the second one.
+    agent.inject("Something that happened since.")
+    agent.followup("The second task.")
+    agent.steer("Said after it.")
+    await idle(agent)
+
+    assert harness.model.requests[0].messages == (
+        SYSTEM,
+        user("Said to open the first turn."),
+        user("The first task."),
+    )
+    assert harness.model.requests[1].messages[-4:] == (
+        assistant("One."),
+        user("Something that happened since."),
+        user("The second task."),
+        user("Said after it."),
+    )
+
+
 async def test_a_steer_opens_a_turn_when_none_is_running(harness: Harness) -> None:
     agent = await harness.agent(Reply(text="On it."))
 

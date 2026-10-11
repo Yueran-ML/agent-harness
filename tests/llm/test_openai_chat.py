@@ -43,6 +43,7 @@ from columbina.llm import (
 from columbina.llm.adapters import openai_chat
 from columbina.llm.adapters.openai_chat import Config, OpenAIChat
 from columbina.llm.credentials import keep
+from support.vault import Locked, Memory
 
 KEY = "sk-test-0123456789"
 STORED = "sk-stored-9876543210"
@@ -1189,6 +1190,61 @@ async def test_where_the_variable_holds_a_key_the_file_is_not_looked_into(
 
     assert call.failure is None
     assert sent_as_key(service) == [f"Bearer {KEY}"]
+
+
+async def test_a_key_that_lies_in_a_keyring_is_sent_as_one_from_the_file_is(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("TEST_KEY")
+    vault = Memory().install()
+    config = with_stored(tmp_path, another="sk-of-another", deepseek=STORED)
+    assert config.api_key_file is not None
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service, config)
+
+    call = await ask(llm)
+
+    assert call.failure is None
+    assert sent_as_key(service) == [f"Bearer {STORED}"]
+    assert STORED.encode() not in config.api_key_file.read_bytes()
+    assert sorted(provider for _, provider in vault.held) == ["another", "deepseek"]
+
+
+async def test_a_key_that_its_keyring_does_not_give_is_a_failure_that_says_what_to_do(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("TEST_KEY")
+    Memory().install()
+    config = with_stored(tmp_path, deepseek=STORED)
+    Locked().install()
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service, config)
+
+    call = await ask(llm)
+
+    assert call.failure == LlmFailure(
+        message="the key of deepseek is kept in the keyring of this system, and the keyring "
+        "could not be asked for it: Failed to unlock the collection. Put the key into the "
+        "variable of the service, or enter it again with 'columbina setup'",
+        code="AUTH",
+    )
+    assert service.requests == []
+
+
+async def test_where_the_variable_holds_a_key_no_keyring_is_asked(
+    ctx: Context, llm: Llm, tmp_path: Path
+) -> None:
+    Memory().install()
+    config = with_stored(tmp_path, deepseek=STORED)
+    vault = Locked().install()
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service, config)
+
+    call = await ask(llm)
+
+    assert call.failure is None
+    assert sent_as_key(service) == [f"Bearer {KEY}"]
+    assert vault.asked == []
 
 
 async def test_a_stored_key_needs_no_variable_to_be_named(

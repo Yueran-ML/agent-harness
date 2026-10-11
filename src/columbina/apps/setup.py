@@ -15,7 +15,10 @@ What is asked
 What is written
     Two files in the home of the program. ``provider.yml`` holds the
     services that were set up and the one that is in use. It holds no key.
-    ``credentials.json`` holds the keys, see :mod:`columbina.llm.credentials`.
+    ``credentials.json`` says which services have a key and where each key
+    is sent. The key itself goes into the keyring of the system where there
+    is one, and into that file where there is none, see
+    :mod:`columbina.llm.credentials`. Whoever typed the key is told which.
     Nothing is written before the last question is answered: asking is one
     step and storing another, see :func:`asked` and :func:`store`. So whoever
     leaves in the middle of the questions has changed nothing, and can be
@@ -515,24 +518,29 @@ def store(home: Path, env: Mapping[str, str], answers: Answers, show: Show) -> N
             and what was chosen was not, the text says so.
     """
     service = answers.service
+    kept: credentials.Kept | None = None
     if answers.key is not None:
         try:
             place = origin_of(service.base_url)
-            credentials.keep(home / KEYS, service.name, answers.key, place)
+            kept = credentials.keep(home / KEYS, service.name, answers.key, place)
         except CredentialsError as error:
             raise SetupError(str(error)) from None
     try:
         _written(home, answers.chosen)
     except SetupError as error:
-        if answers.key is None:
+        if kept is None:
             raise
-        raise SetupError(f"{error}. The key was stored all the same, in {home / KEYS}") from None
+        where = home / KEYS if kept.keyring is None else kept.keyring
+        raise SetupError(f"{error}. The key was stored all the same, in {where}") from None
     show("")
     show(f"Stored. Columbina talks to {service.name} now, with the model {answers.model}.")
     show(f"What was chosen is in {home / CHOICE}.")
-    if answers.key is not None:
+    if kept is not None and kept.keyring is not None:
+        show(f"The key is in {kept.keyring}. No file of Columbina holds it.")
+    elif kept is not None:
         show(
-            f"The key is in {home / KEYS}, as it is and not encrypted. Keep that file to yourself."
+            f"No keyring of this system took the key: {kept.said}. It is in {home / KEYS}, "
+            "as it is and not encrypted. Keep that file to yourself."
         )
     elif answers.without_a_key:
         show(

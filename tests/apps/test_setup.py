@@ -11,6 +11,7 @@ from columbina.apps.setup import Chosen, Own, SetupError, chosen, forget, servic
 from columbina.llm import credentials
 from columbina.llm.credentials import CredentialsError, keep
 from columbina.llm.services import PRESETS, Service
+from support.vault import Locked, Memory
 
 KEY = "sk-test-0123456789"
 OTHER = "sk-other-9876543210"
@@ -38,6 +39,16 @@ ADDED = (
     "A service that is not listed is added under a name of your own, if it speaks the OpenAI "
     "Chat Completions protocol."
 )
+IN_A_KEYRING = "the keyring of this system (vault Memory)"
+
+
+def in_the_file(home: Path) -> str:
+    """What a person is told of a key that no keyring took."""
+    return (
+        "No keyring of this system took the key: the keyring that is set up here keeps "
+        f"nothing. It is in {home / 'credentials.json'}, as it is and not encrypted. Keep that "
+        "file to yourself."
+    )
 
 
 class Person:
@@ -95,10 +106,10 @@ def written(home: Path) -> object:
     return yaml.safe_load((home / "provider.yml").read_text(encoding="utf-8"))
 
 
-def keys(home: Path) -> dict[str, str]:
-    """The keys that are stored, as they lie in the file."""
+def keys(home: Path) -> dict[str, str | None]:
+    """The keys that are stored, as they lie in the file. ``None`` where a keyring has the key."""
     held = json.loads((home / "credentials.json").read_text(encoding="utf-8"))
-    return {name: entry["key"] for name, entry in held["keys"].items()}
+    return {name: entry.get("key") for name, entry in held["keys"].items()}
 
 
 def places(home: Path) -> dict[str, str]:
@@ -151,11 +162,46 @@ def test_what_a_person_is_told_the_first_time(home: Path) -> None:
             "",
             "Stored. Columbina talks to deepseek now, with the model deepseek-flash.",
             f"What was chosen is in {home / 'provider.yml'}.",
-            f"The key is in {home / 'credentials.json'}, as it is and not encrypted. Keep that "
-            "file to yourself.",
+            in_the_file(home),
         ]
     )
     assert KEY not in person.told
+
+
+def test_a_key_that_a_keyring_took_lies_in_no_file_and_the_person_is_told_so(home: Path) -> None:
+    vault = Memory().install()
+    person = Person("", "", keys=(KEY,))
+
+    set_up(home, person)
+
+    assert person.shown[-3:] == [
+        "Stored. Columbina talks to deepseek now, with the model deepseek-flash.",
+        f"What was chosen is in {home / 'provider.yml'}.",
+        f"The key is in {IN_A_KEYRING}. No file of Columbina holds it.",
+    ]
+    assert KEY not in person.told
+    assert keys(home) == {"deepseek": None}
+    assert places(home) == {"deepseek": "https://api.deepseek.com"}
+    assert [provider for _, provider in vault.held] == ["deepseek"]
+    for found in home.iterdir():
+        assert KEY.encode() not in found.read_bytes()
+
+
+def test_a_key_in_a_keyring_is_known_to_be_stored_the_next_time(home: Path) -> None:
+    vault = Memory().install()
+    set_up(home, Person("", "", keys=(KEY,)))
+    held = dict(vault.held)
+    person = Person("", "", keys=("",))
+
+    set_up(home, person)
+
+    assert (
+        "   1  deepseek     DeepSeek                   a key is stored" in person.told.splitlines()
+    )
+    assert person.asked_unseen == ["A new key, or Enter to keep the one that is stored: "]
+    # Nothing is said of where a key is that was not typed this time.
+    assert person.shown[-1] == f"What was chosen is in {home / 'provider.yml'}."
+    assert vault.held == held
 
 
 # Which service
@@ -907,6 +953,38 @@ def test_what_is_stored_for_a_service_is_deleted_and_the_rest_stays(home: Path) 
     assert keys(home) == {"my-server": OTHER}
 
 
+def test_a_key_in_a_keyring_is_deleted_with_what_was_said_of_its_service(home: Path) -> None:
+    vault = Memory().install()
+    set_up(home, Person("openai", "gpt-test", "", keys=(KEY,)))
+    set_up(home, Person("my-server", "http://localhost:8000/v1", "tiny", "", keys=(OTHER,)))
+    shown: list[str] = []
+
+    forget(home, "openai", shown.append)
+
+    assert shown == ["The key of openai is deleted.", "What was said of openai is deleted."]
+    assert [provider for _, provider in vault.held] == ["my-server"]
+    assert places(home) == {"my-server": "http://localhost:8000"}
+
+
+def test_a_key_that_its_keyring_does_not_give_up_leaves_everything_as_it_was(home: Path) -> None:
+    Memory().install()
+    set_up(home, Person("openai", "gpt-test", "", keys=(KEY,)))
+    chosen_before = (home / "provider.yml").read_bytes()
+    Locked().install()
+    shown: list[str] = []
+
+    with pytest.raises(SetupError) as refused:
+        forget(home, "openai", shown.append)
+
+    assert str(refused.value) == (
+        "the key of openai is kept in the keyring of this system, and it could not be taken "
+        "out of it: Failed to unlock the collection"
+    )
+    assert shown == []
+    assert (home / "provider.yml").read_bytes() == chosen_before
+    assert places(home) == {"openai": "https://api.openai.com"}
+
+
 def test_a_service_that_is_forgotten_is_no_longer_in_use(home: Path) -> None:
     set_up(home, Person("openai", "gpt-test", ""))
     shown: list[str] = []
@@ -1080,14 +1158,17 @@ def test_asking_stores_nothing_and_storing_asks_nothing(home: Path) -> None:
         "",
         "Stored. Columbina talks to openai now, with the model gpt-test.",
         f"What was chosen is in {home / 'provider.yml'}.",
-        f"The key is in {home / 'credentials.json'}, as it is and not encrypted. Keep that file "
-        "to yourself.",
+        in_the_file(home),
     ]
 
 
+@pytest.mark.parametrize("in_a_keyring", [False, True], ids=["in the file", "in a keyring"])
 def test_whoever_is_told_that_the_choice_could_not_be_written_is_told_of_the_key_that_was(
-    home: Path, monkeypatch: pytest.MonkeyPatch
+    home: Path, monkeypatch: pytest.MonkeyPatch, in_a_keyring: bool
 ) -> None:
+    if in_a_keyring:
+        Memory().install()
+    where = IN_A_KEYRING if in_a_keyring else home / "credentials.json"
     replace = Path.replace
 
     def only_the_keys(self: Path, target: Path) -> Path:
@@ -1102,7 +1183,7 @@ def test_whoever_is_told_that_the_choice_could_not_be_written_is_told_of_the_key
 
     assert str(refused.value) == (
         f"{home / 'provider.yml'} cannot be written: Permission denied. The key was stored all "
-        f"the same, in {home / 'credentials.json'}"
+        f"the same, in {where}"
     )
-    assert keys(home) == {"deepseek": KEY}
+    assert keys(home) == {"deepseek": None if in_a_keyring else KEY}
     assert not (home / "provider.yml").exists()

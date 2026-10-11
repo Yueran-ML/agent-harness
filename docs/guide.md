@@ -281,8 +281,10 @@ $ uv run columbina setup
 `columbina setup` asks at a terminal for the service, the model, the number of tokens that
 the model takes where that is not known, and the key. Enter keeps what is offered in
 brackets. The answers go into two files in `~/.columbina`. `provider.yml` holds the services
-that were set up and the one that is in use, and it holds no key. `credentials.json` holds
-the keys. `columbina setup --forget NAME` deletes what is stored for a service.
+that were set up and the one that is in use, and it holds no key. `credentials.json` lists
+the services that a key is stored for, with the address that each key is sent to. The key
+goes into the keyring of the system, and `columbina setup` says where it went.
+`columbina setup --forget NAME` deletes what is stored for a service.
 
 A service and a model can also be named for one run or for one shell. Where several places
 name one, the place that stands higher in this table counts.
@@ -300,21 +302,32 @@ conversation is not made shorter before the service refuses it as too long. A pa
 goes before what `columbina setup` stored, and an option goes before a patch file.
 
 A key is looked for when a request is made, first in the variable of the service and then
-in `credentials.json`. The following holds for a key.
+among the stored keys. The following holds for a key.
 
 - It is typed without being shown. It is never taken from the command line, where the shell
   would keep it in its history.
-- It lies in `credentials.json` as it is, without encryption. On Linux and macOS the file is
-  made with the mode 600, and a file that other users can read is not used. On Windows the
-  access rules of the directory decide who can read it.
+- It is stored in the keyring of the system, which is the Credential Manager on Windows, the
+  Keychain on macOS and the Secret Service on a Linux desktop. `credentials.json` then holds
+  no key. A keyring keeps a key encrypted with the login of its user, so whoever gets hold
+  of the disk or of a backup cannot read it.
+- A keyring does not keep a key from the other programs that the same user runs. On Windows
+  and Linux such a program can ask the keyring for the key. On macOS the user is asked
+  first, unless the same Python runs that program.
+- Where no keyring takes the key, as on a server without a desktop, it lies in
+  `credentials.json` as it is, without encryption, and `columbina setup` says so. On Linux
+  and macOS the file is made with the mode 600, and a file that other users can read is not
+  used. On Windows the access rules of the directory decide who can read it.
+- A keyring is waited for for 30 seconds, since one that is locked asks its user to unlock
+  it. Setting the variable `PYTHON_KEYRING_BACKEND` to `keyring.backends.null.Keyring`
+  leaves the keyring out, and the key is then stored in `credentials.json`.
 - A stored key is sent only to the address that it was stored for, by its scheme, its
   machine and its port. A variable that names another address for a service, such as
   `DEEPSEEK_BASE_URL`, does not take a stored key there.
 - It is never part of a profile, of the output of `--dump-config` or of a stored session,
   and it is cut out of every error message before the message is shown or stored.
-- A command that the agent runs does not find it. Variables whose names contain `KEY`,
-  `TOKEN`, `SECRET` or `PASSWORD` are left out of the environment of a command, and a stored
-  key is in no environment at all.
+- A command that the agent runs does not find it in its environment. Variables whose names
+  contain `KEY`, `TOKEN`, `SECRET` or `PASSWORD` are left out of the environment of a
+  command, and a stored key is in no environment at all.
 - Blanks and line breaks around it are not sent. A key with a character in it that no key
   has, such as a blank in the middle, is refused before a request is made.
 

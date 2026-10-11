@@ -23,6 +23,7 @@ from columbina.llm import CallConfig, credentials
 from columbina.llm.adapters.openai_chat import Config
 from columbina.llm.credentials import keep, stored
 from support.launch import profile
+from support.vault import Memory
 
 KEY = "sk-test-0123456789"
 OTHER = "sk-other-9876543210"
@@ -549,8 +550,9 @@ def test_setup_asks_at_a_terminal_and_stores_the_answers(
     assert captured.out.endswith(
         "\nStored. Columbina talks to openai now, with the model gpt-test.\n"
         f"What was chosen is in {home / 'provider.yml'}.\n"
-        f"The key is in {home / 'credentials.json'}, as it is and not encrypted. Keep that file "
-        "to yourself.\n"
+        "No keyring of this system took the key: the keyring that is set up here keeps nothing. "
+        f"It is in {home / 'credentials.json'}, as it is and not encrypted. Keep that file to "
+        "yourself.\n"
     )
     assert KEY not in captured.out
     assert yaml.safe_load((home / "provider.yml").read_text(encoding="utf-8")) == {
@@ -559,6 +561,27 @@ def test_setup_asks_at_a_terminal_and_stores_the_answers(
     }
     assert stored(home / "credentials.json") == {"openai": "https://api.openai.com"}
     assert KEY.encode() in (home / "credentials.json").read_bytes()
+
+
+def test_setup_says_which_keyring_took_the_key(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vault = Memory().install()
+    Terminal(monkeypatch, "openai", "gpt-test", "400000", key=KEY)
+
+    code = main(["setup"])
+
+    captured = capsys.readouterr()
+    assert (code, captured.err) == (0, "")
+    assert captured.out.endswith(
+        f"What was chosen is in {home / 'provider.yml'}.\n"
+        "The key is in the keyring of this system (vault Memory). No file of Columbina holds "
+        "it.\n"
+    )
+    assert KEY not in captured.out
+    assert stored(home / "credentials.json") == {"openai": "https://api.openai.com"}
+    assert KEY.encode() not in (home / "credentials.json").read_bytes()
+    assert [provider for _, provider in vault.held] == ["openai"]
 
 
 def test_what_setup_stored_is_what_the_next_run_loads(
@@ -755,13 +778,16 @@ def test_the_stand_in_for_a_service_asks_nobody_for_the_name_of_its_machine(
     assert requests == [("/v1/chat/completions", "Bearer made-up", {"model": "tiny"})]
 
 
+@pytest.mark.parametrize("in_a_keyring", [False, True], ids=["in the file", "in a keyring"])
 def test_a_run_talks_to_the_service_that_was_chosen_with_the_key_that_was_stored(
     home: Path,
     work: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     service: tuple[str, list[tuple[str, str | None, dict[str, Any]]]],
+    in_a_keyring: bool,
 ) -> None:
+    vault = Memory().install() if in_a_keyring else None
     address, requests = service
     terminal = Terminal(monkeypatch, "local", address, "tiny", "32768", key=KEY)
     assert main(["setup"]) == 0
@@ -781,15 +807,18 @@ def test_a_run_talks_to_the_service_that_was_chosen_with_the_key_that_was_stored
         ("/v1/chat/completions", f"Bearer {KEY}", "tiny"),
         ("/v1/chat/completions", f"Bearer {OTHER}", "tiny"),
     ]
-    # The key lies in the file of keys, and nowhere else in what the program wrote down.
+    # The key lies where it was stored, and nowhere else in what the program wrote down:
+    # in the file of keys, or in the keyring and then in no file at all.
     holding = [
         found.relative_to(home).as_posix()
         for found in home.rglob("*")
         if found.is_file()
         and (KEY.encode() in found.read_bytes() or OTHER.encode() in found.read_bytes())
     ]
-    assert holding == ["credentials.json"]
+    assert holding == ([] if in_a_keyring else ["credentials.json"])
     assert len([found for found in home.rglob("*") if found.is_file()]) > 3
+    if vault is not None:
+        assert [provider for _, provider in vault.held] == ["local"]
 
 
 # What a review found

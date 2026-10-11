@@ -5,13 +5,14 @@ others. This module is a plugin: loading it registers one adapter under the
 provider name of its config. To talk to two services, load it twice.
 
 The API key is looked for when a request is made: first in an environment
-variable, then in the file of keys that the user stored, under the name of
-the provider. A stored key is one that was typed in for an address, and it
-is used only for requests to the place that this address leads to: the
-address of an adapter may come from a variable of the environment, and a key
-does not follow it there. A key from the file is in the memory of this
-process and nowhere else: a command that an agent runs does not find it in
-its environment.
+variable, then among the keys that the user stored, under the name of the
+provider. The file of keys says which there are, and a key lies in the
+keyring of the system or in that file, see :mod:`columbina.llm.credentials`.
+A stored key is one that was typed in for an address, and it is used only
+for requests to the place that this address leads to: the address of an
+adapter may come from a variable of the environment, and a key does not
+follow it there. A stored key is in the memory of this process and nowhere
+else: a command that an agent runs does not find it in its environment.
 
 The key is never part of the config, and it is cut out of the text of every
 failure that leaves the adapter, whether the service or the connection wrote
@@ -119,7 +120,8 @@ class Config(BaseModel):
             ``None`` if no variable does.
         api_key_file: The file of keys that the user stored, as
             ``columbina setup`` writes it, or ``None`` if there is none. The
-            key of ``provider`` in it is used when the variable holds none.
+            key that it knows of for ``provider`` is used when the variable
+            holds none.
         api_key_required: Whether a request is made only with a key. A
             service on the machine of the user asks for none, and is sent
             one only if one is found. Where neither a variable nor a file is
@@ -650,8 +652,7 @@ class OpenAIChat:
 
         Raises:
             LlmError: A key is needed and none is found, the key that is
-                found cannot be sent, or the file of stored keys cannot be
-                used.
+                found cannot be sent, or the stored keys cannot be used.
         """
         config = self._config
         variable, file = config.api_key_env, config.api_key_file
@@ -665,7 +666,7 @@ class OpenAIChat:
                 stored = await asyncio.to_thread(key_for, file, config.provider, place)
                 secret = trimmed(stored or "")
             except CredentialsError as error:
-                # The error says what is wrong with the file, and nothing that the file holds.
+                # The error says what is wrong with the stored keys, and holds none of them.
                 failure = LlmFailure(message=str(error), code="AUTH")
                 raise LlmError(failure) from None
             where = f"that is stored for {config.provider}"

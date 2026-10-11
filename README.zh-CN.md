@@ -83,7 +83,7 @@ uv sync
 uv run columbina setup
 ```
 
-它会问模型来自哪个服务、用哪个模型，以及密钥是什么。DeepSeek、OpenAI、OpenRouter、Moonshot、智谱和硅基流动可以直接按名字选，本机上的 Ollama 和 LM Studio 也一样。其他支持 OpenAI Chat Completions 协议的服务可以按地址添加。输入密钥时屏幕上不显示，密钥保存在 `~/.columbina/credentials.json` 里。[指南](docs/guide.zh-CN.md#模型服务与密钥)说明了它是怎样保管的。
+它会问模型来自哪个服务、用哪个模型，以及密钥是什么。DeepSeek、OpenAI、OpenRouter、Moonshot、智谱和硅基流动可以直接按名字选，本机上的 Ollama 和 LM Studio 也一样。其他支持 OpenAI Chat Completions 协议的服务可以按地址添加。输入密钥时屏幕上不显示。密钥保存在系统密钥环里，例如 Windows 的凭据管理器或 macOS 的钥匙串；系统没有密钥环时，保存在 `~/.columbina` 里的一个文件中。[指南](docs/guide.zh-CN.md#模型服务与密钥)说明了它是怎样保管的。
 
 密钥也可以放在环境变量里，环境变量优先于保存下来的密钥。什么都没选的时候，Columbina 接 DeepSeek，读取 `DEEPSEEK_API_KEY`。在 Windows 的 PowerShell 里这样写：
 

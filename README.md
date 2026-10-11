@@ -111,8 +111,9 @@ uv run columbina setup
 It asks which service the model is to come from, which model to use, and for the key.
 DeepSeek, OpenAI, OpenRouter, Moonshot, Zhipu and SiliconFlow are known by name, and so are
 Ollama and LM Studio on the same machine. Any other service that speaks the OpenAI Chat
-Completions protocol is added by its address. The key is typed without being shown, and it
-is stored in `~/.columbina/credentials.json`. The
+Completions protocol is added by its address. The key is typed without being shown. It is
+stored in the keyring of the system, such as the Credential Manager of Windows or the
+Keychain of macOS, and in a file in `~/.columbina` where the system has none. The
 [guide](docs/guide.md#services-and-keys) says how it is kept.
 
 A key can be given in an environment variable instead, and the variable goes before a

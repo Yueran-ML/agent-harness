@@ -1,10 +1,12 @@
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
+import keyring
 import pytest
 from hypothesis import settings
+from keyring.backends import null
 
 import columbina.agent
 import columbina.agent_loop
@@ -27,6 +29,23 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 # How long the end of a test may take. Ending takes a moment at most.
 _END_SECONDS = 20
+
+# No test asks the keyring of the system for anything or puts anything into it: what a test
+# stores there would lie among the passwords of whoever runs the tests. This is for the
+# programs that a test starts. The fixture below is for the tests themselves.
+os.environ["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+
+
+@pytest.fixture(autouse=True)
+def no_keyring_of_the_system() -> Iterator[None]:
+    """Give every test a keyring that keeps nothing, in the place of the one of the system.
+
+    A test of what a keyring does puts one of its own in, see :mod:`support.vault`, and
+    it is taken out again here.
+    """
+    keyring.set_keyring(null.Keyring())
+    yield
+    keyring.set_keyring(null.Keyring())
 
 
 @pytest.fixture

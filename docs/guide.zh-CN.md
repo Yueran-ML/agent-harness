@@ -216,7 +216,7 @@ $ uv run columbina run "What is the codename of release 0.1? ..." --session-id d
 $ uv run columbina setup
 ```
 
-`columbina setup` 在终端里依次询问服务、模型、模型能接收多少 token（不知道时才问）和密钥。直接按回车就采用方括号里给出的值。回答写进 `~/.columbina` 里的两个文件。`provider.yml` 记录设置过的服务和正在使用的那一个，里面没有密钥。`credentials.json` 存放密钥。`columbina setup --forget NAME` 删除为某个服务保存的内容。
+`columbina setup` 在终端里依次询问服务、模型、模型能接收多少 token（不知道时才问）和密钥。直接按回车就采用方括号里给出的值。回答写进 `~/.columbina` 里的两个文件。`provider.yml` 记录设置过的服务和正在使用的那一个，里面没有密钥。`credentials.json` 列出哪些服务存了密钥，以及每个密钥发往哪个地址。密钥本身存进系统密钥环，`columbina setup` 会说明它存到了哪里。`columbina setup --forget NAME` 删除为某个服务保存的内容。
 
 服务和模型也可以只为一次运行或一个 shell 指定。几处都指定了的时候，以下表中位置靠上的为准。
 
@@ -229,14 +229,17 @@ $ uv run columbina setup
 
 只有 `deepseek` 在没有指定模型时有默认模型。环境变量 `COLUMBINA_CONTEXT_WINDOW` 说明模型能接收多少 token。哪里都没有说明时，对话不会提前压缩，要等服务以过长为由拒绝之后才缩短。补丁文件优先于 `columbina setup` 保存的内容，选项又优先于补丁文件。
 
-密钥在发请求时才查找，先看这个服务的环境变量，再看 `credentials.json`。关于密钥有以下几点。
+密钥在发请求时才查找，先看这个服务的环境变量，再看保存下来的密钥。关于密钥有以下几点。
 
-- 输入时屏幕上不显示。程序从不从命令行读取密钥，因为 shell 会把它留在历史记录里。
-- 它原样存放在 `credentials.json` 里，没有加密。在 Linux 和 macOS 上，这个文件以 600 权限创建，其他用户能读的文件不会被采用。在 Windows 上，谁能读它由所在目录的访问规则决定。
-- 保存下来的密钥只发往保存时的那个地址，按协议、主机和端口来认。像 `DEEPSEEK_BASE_URL` 这样给服务另指地址的环境变量，不会把保存的密钥带过去。
-- 它从不出现在清单（profile）、`--dump-config` 的输出或保存下来的会话里，每条报错信息在显示或保存之前也会先剔除它。
-- Agent 执行的命令拿不到它。名字里带有 `KEY`、`TOKEN`、`SECRET` 或 `PASSWORD` 的变量不会进入命令的环境，保存下来的密钥则不在任何环境里。
-- 密钥两端的空白和换行不会发出去。密钥里如果有任何密钥都不会有的字符，例如夹在中间的空格，程序在发请求之前就会拒绝它。
+- 输入时屏幕上不显示。程序绝不从命令行读取密钥，因为 shell 会把它留在历史记录里。
+- 密钥保存在系统密钥环里，在 Windows 上是凭据管理器，在 macOS 上是钥匙串，在 Linux 桌面上是 Secret Service。这时 `credentials.json` 里没有密钥。密钥环以用户的登录凭据把密钥加密保存，所以拿到磁盘或备份的人读不出密钥。
+- 密钥环不能防止同一用户运行的其他程序取得密钥。在 Windows 和 Linux 上，这样的程序可以向密钥环索取密钥。在 macOS 上，系统会先询问用户，由同一个 Python 运行的程序除外。
+- 没有密钥环接收密钥时，例如在没有桌面环境的服务器上，密钥原样存放在 `credentials.json` 里，没有加密，`columbina setup` 会说明这一点。在 Linux 和 macOS 上，这个文件以 600 权限创建，其他用户能读的文件不会被采用。在 Windows 上，谁能读它由所在目录的访问规则决定。
+- 程序最多等待密钥环 30 秒，因为锁住的密钥环会要求用户解锁。把环境变量 `PYTHON_KEYRING_BACKEND` 设为 `keyring.backends.null.Keyring` 就不使用密钥环，密钥改存到 `credentials.json` 里。
+- 保存下来的密钥只发往保存时的那个地址，地址是否相同按协议、主机和端口判断。像 `DEEPSEEK_BASE_URL` 这样给服务另指地址的环境变量，不会让保存下来的密钥发往那个地址。
+- 密钥从不出现在清单（profile）、`--dump-config` 的输出或保存下来的会话里，每条报错信息在显示或保存之前也会先剔除密钥。
+- Agent 执行的命令在自己的环境里找不到它。名字里带有 `KEY`、`TOKEN`、`SECRET` 或 `PASSWORD` 的变量不会进入命令的环境，保存下来的密钥则不在任何环境里。
+- 密钥两端的空白和换行不会发出去。密钥里如果含有密钥中不可能出现的字符，例如夹在中间的空格，程序在发请求之前就会拒绝这个密钥。
 
 ## 改文件与执行命令
 

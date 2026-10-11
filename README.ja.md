@@ -83,7 +83,7 @@ uv sync
 uv run columbina setup
 ```
 
-どのサービスを使うか、どのモデルを使うか、そしてキーを尋ねます。DeepSeek、OpenAI、OpenRouter、Moonshot、Zhipu、SiliconFlow は名前で選べます。同じマシンで動く Ollama と LM Studio も同様です。OpenAI Chat Completions プロトコルに対応するほかのサービスは、アドレスを指定して追加できます。キーは入力しても画面に表示されず、`~/.columbina/credentials.json` に保存されます。保管の方法は[ガイド](docs/guide.ja.md#サービスとキー)で説明しています。
+どのサービスを使うか、どのモデルを使うか、そしてキーを尋ねます。DeepSeek、OpenAI、OpenRouter、Moonshot、Zhipu、SiliconFlow は名前で選べます。同じマシンで動く Ollama と LM Studio も同様です。OpenAI Chat Completions プロトコルに対応するほかのサービスは、アドレスを指定して追加できます。キーは入力しても画面に表示されません。キーはシステムのキーリングに保存されます。Windows の資格情報マネージャーや macOS のキーチェーンがこれに当たります。システムにキーリングがない場合は、`~/.columbina` の中のファイルに保存されます。保管の方法は[ガイド](docs/guide.ja.md#サービスとキー)で説明しています。
 
 キーは環境変数で渡すこともでき、環境変数は保存したキーより優先されます。何も選んでいない場合、Columbina は DeepSeek に接続し、`DEEPSEEK_API_KEY` を読みます。Windows の PowerShell では次のようにします。
 

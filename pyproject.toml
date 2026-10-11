@@ -23,6 +23,7 @@ classifiers = [
 ]
 dependencies = [
   "httpx>=0.27",
+  "keyring>=25",
   "prompt-toolkit>=3.0.50",
   "pydantic>=2.9",
   "pyyaml>=6.0.2",

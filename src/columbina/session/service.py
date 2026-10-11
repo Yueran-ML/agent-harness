@@ -175,6 +175,7 @@ class Sessions:
             events=events,
             parent=header.parent_session,
             delegation_depth=header.delegation_depth,
+            created_at=header.created_at,
         )
         self._adopt(ctx, session)
         self._take_over(session, inherited=False, reason="interrupted")
@@ -227,6 +228,7 @@ class Sessions:
             events=events,
             parent=parent,
             delegation_depth=depth,
+            created_at=created,
         )
         return self._adopt(ctx, session)
 

@@ -65,6 +65,8 @@ async def test_without_a_root_a_session_lives_in_memory(ctx: Context, tmp_path: 
 
     assert len(session) == 1
     assert list(tmp_path.iterdir()) == []
+    # It knows when it began all the same.
+    assert session.created_at <= session.events[0].time
     with pytest.raises(SessionError, match="sessions are kept in memory and cannot be resumed"):
         sessions.resume(ctx, tmp_path, session.id)
 
@@ -96,6 +98,8 @@ async def test_a_new_session_gets_an_id_a_time_and_its_working_directory(
     assert first.id != second.id
     header = sessions.read(work, first.id).header
     assert header.created_at == 1_791_234_567_890
+    # The session says the same of itself, each its own time.
+    assert (first.created_at, second.created_at) == (1_791_234_567_890, 1_791_234_568_890)
     assert header.cwd == str(work)
     assert header.parent_session is None
     assert sessions.read(work, second.id).header.parent_session == first.id
@@ -126,6 +130,8 @@ async def test_a_session_can_be_resumed_and_continued(
     event = second.append(TurnStartEvent(turn=2))
 
     assert second.id == "s-1"
+    # It was created when it was created, and not when it was taken up.
+    assert second.created_at == first.created_at == 1_791_234_567_890
     assert list(second.events[:3]) == list(first.events)
     assert second.messages == first.messages
     assert event.seq == 4

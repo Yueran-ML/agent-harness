@@ -178,6 +178,9 @@ async def test_a_fork_is_stored_as_a_session_of_its_own(
     stored = sessions.read(tmp_path, "s-2")
     assert stored.header.id == "s-2"
     assert stored.header.parent_session == "s-1"
+    # A copy was created when it was made, and not when what it copies was.
+    assert fork.created_at == stored.header.created_at
+    assert fork.created_at > sessions.read(tmp_path, "s-1").header.created_at
     assert stored.events == list(fork.events)
     assert (sessions.directory(tmp_path, "s-1") / SESSION_FILE).read_bytes() == before
 

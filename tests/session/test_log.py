@@ -56,6 +56,20 @@ async def test_the_default_clock_tells_the_time_in_milliseconds(ctx: Context) ->
     event = session.append(TurnStartEvent(turn=1))
 
     assert 1_700_000_000_000 < event.time < 4_000_000_000_000
+    # A session that is not told when it was created was created when it was made.
+    assert 1_700_000_000_000 < session.created_at <= event.time
+
+
+async def test_a_session_knows_when_it_was_created_and_asks_no_clock_of_its_own_for_it(
+    ctx: Context,
+) -> None:
+    clock = itertools.count(1000, 10)
+
+    session = Session(ctx, "s-1", KINDS, clock=lambda: next(clock), created_at=77)
+
+    # The clock is asked for the time of an event, and it has not been asked yet.
+    assert session.created_at == 77
+    assert session.append(TurnStartEvent(turn=1)).time == 1000
 
 
 async def test_the_log_keeps_its_own_copy_of_the_data(ctx: Context) -> None:

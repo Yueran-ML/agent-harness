@@ -80,6 +80,9 @@ class Session:
             the one it is a copy of, or the one whose agent delegated to it.
         delegation_depth: How many agents stand between a person and the
             agent of this session: 0 for a conversation.
+        created_at: When the session was created, in milliseconds since the
+            epoch. A session that is taken up again was created when it was
+            first begun, and a copy when the copy was made.
     """
 
     __slots__ = (
@@ -93,6 +96,7 @@ class Session:
         "_outbox",
         "_store",
         "_surface",
+        "created_at",
         "delegation_depth",
         "id",
         "parent",
@@ -109,10 +113,14 @@ class Session:
         events: Iterable[SessionEvent[EventData]] = (),
         parent: str | None = None,
         delegation_depth: int = 0,
+        created_at: int | None = None,
     ) -> None:
         self.id = session_id
         self.parent = parent
         self.delegation_depth = delegation_depth
+        # The clock that was given is asked for the time of an event, and for nothing else:
+        # whoever counts its ticks counts events.
+        self.created_at = now_ms() if created_at is None else created_at
         self._ctx = ctx
         self._kinds = kinds
         self._clock = clock

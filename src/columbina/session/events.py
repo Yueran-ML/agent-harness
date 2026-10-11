@@ -141,7 +141,8 @@ class UserMessageEvent(EventData):
     """Input for the model in the role of the user.
 
     ``source`` says where the input came from. ``user`` is what the person
-    typed. Other sources mark input that was supplied on their behalf.
+    typed, or for a subagent what the agent wrote that handed it its task.
+    Other sources mark input that was supplied on their behalf.
     """
 
     event_type: ClassVar[str] = "user/message"

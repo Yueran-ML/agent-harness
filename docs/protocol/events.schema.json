@@ -2200,7 +2200,7 @@
     },
     "UserMessageEvent": {
       "additionalProperties": false,
-      "description": "Input for the model in the role of the user.\n\n``source`` says where the input came from. ``user`` is what the person\ntyped. Other sources mark input that was supplied on their behalf.",
+      "description": "Input for the model in the role of the user.\n\n``source`` says where the input came from. ``user`` is what the person\ntyped, or for a subagent what the agent wrote that handed it its task.\nOther sources mark input that was supplied on their behalf.",
       "properties": {
         "message": {
           "$ref": "#/$defs/UserMessage"

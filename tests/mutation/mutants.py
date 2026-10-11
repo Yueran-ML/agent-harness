@@ -106,6 +106,7 @@ HOOK_RUN = "src/columbina/hooks/run.py"
 HOOKS_PLUGIN = "src/columbina/hooks/__init__.py"
 HOOK_PLACES = "src/columbina/hooks/files.py"
 HOOKS_APP = "src/columbina/apps/hooks.py"
+SESSION_LOG = "src/columbina/session/log.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -5383,6 +5384,42 @@ _STORED = (
         "        return stored_sessions(self.root / workspace_key(cwd), delegated=delegated)\n",
         "        return stored_sessions(self.root / workspace_key(cwd), delegated=True)\n",
     ),
+    mutant(
+        "an open session does not know who it comes from",
+        SESSION_LOG,
+        "        self.parent = parent\n",
+        "        self.parent = None\n",
+    ),
+    mutant(
+        "an open session takes itself for a conversation",
+        SESSION_LOG,
+        "        self.delegation_depth = delegation_depth\n",
+        "        self.delegation_depth = 0\n",
+    ),
+    mutant(
+        "a session that begins is not told who it comes from",
+        SESSION_SERVICE,
+        "            events=events,\n            parent=parent,\n            delegation_depth=depth,\n",
+        "            events=events,\n            delegation_depth=depth,\n",
+    ),
+    mutant(
+        "a session that begins is not told how deep it is",
+        SESSION_SERVICE,
+        "            events=events,\n            parent=parent,\n            delegation_depth=depth,\n",
+        "            events=events,\n            parent=parent,\n",
+    ),
+    mutant(
+        "a session that is taken up again has forgotten who it comes from",
+        SESSION_SERVICE,
+        "            parent=header.parent_session,\n",
+        "",
+    ),
+    mutant(
+        "a session that is taken up again has forgotten how deep it is",
+        SESSION_SERVICE,
+        "            delegation_depth=header.delegation_depth,\n",
+        "",
+    ),
 )
 
 _GRANTS = (
@@ -9253,8 +9290,8 @@ _HOOKS = (
     mutant(
         "the hooks of a session that begins run at every turn",
         HOOKS_PLUGIN,
-        "        if session in self._started:\n            return None\n",
-        "",
+        "        if session.delegation_depth or session in self._started:\n",
+        "        if session.delegation_depth:\n",
     ),
     mutant(
         "a session that is taken up again says that it is new",
@@ -9705,6 +9742,24 @@ _HOOKS = (
         HOOK_PLACES,
         "    if bound.link_on_the_way(path) is not None:\n        return Found(path, problem=LINK)\n",
         "",
+    ),
+    mutant(
+        "the hooks of a session that begins are run for a subagent",
+        HOOKS_PLUGIN,
+        "        if session.delegation_depth or session in self._started:\n",
+        "        if session in self._started:\n",
+    ),
+    mutant(
+        "what a subagent is given is put to the hooks of what a person says",
+        HOOKS_PLUGIN,
+        "        if session.delegation_depth:\n            # What a subagent is given",
+        "        if False:\n            # What a subagent is given",
+    ),
+    mutant(
+        "a hook of the end of a turn is run for a subagent",
+        HOOKS_PLUGIN,
+        "        if session.delegation_depth:\n            # Such a hook was written",
+        "        if False:\n            # Such a hook was written",
     ),
 )
 

@@ -1369,3 +1369,46 @@ async def test_a_hook_has_the_one_asked_who_answers_for_the_agent_that_makes_the
     assert heard == [("other", "s-2"), ("one", "s-1")]
     assert [code for _, code in results(other)] == ["HOOK_BLOCKED"]
     assert results(one) == [("noted of the one", None)]
+
+
+# Subagents
+
+
+async def test_only_the_hooks_of_the_tools_are_run_for_a_subagent(
+    harness: Harness, tmp_path: Path, ran: Ran
+) -> None:
+    hooks = {
+        **at("SessionStart", "start"),
+        **at("UserPromptSubmit", "prompt"),
+        **at("PreToolUse", "before"),
+        **at("PostToolUse", "after"),
+        **at("Stop", "stop"),
+    }
+    parent = await working(harness, tmp_path, hooks, calls("note", text="x"), Reply(text="Done."))
+    child = await harness.agents.create(
+        parent.ctx, harness.spec(), session_id="s-child", parent=parent.id, delegation_depth=1
+    )
+
+    await turn(child, "Count the files.")
+
+    # What a tool does is checked whoever calls it. The rest is about a person and their session.
+    assert ran.events() == ["PreToolUse", "PostToolUse"]
+    assert ends(child) == [("completed", None)]
+
+
+async def test_a_hook_cannot_keep_the_turn_of_a_subagent_going_or_stop_what_it_is_given(
+    harness: Harness, tmp_path: Path, ran: Ran
+) -> None:
+    hooks = {**at("UserPromptSubmit", "prompt"), **at("Stop", "stop")}
+    parent = await working(harness, tmp_path, hooks, Reply(text="Done."))
+    ran.answers["prompt"] = Result("blocked", decision="block", reason="No.")
+    ran.answers["stop"] = Result("blocked", decision="block", reason="Go on.")
+    child = await harness.agents.create(
+        parent.ctx, harness.spec(), session_id="s-child", parent=parent.id, delegation_depth=1
+    )
+
+    await turn(child, "Count the files.")
+
+    assert ran.events() == []
+    assert ends(child) == [("completed", None)]
+    assert len(harness.model.requests) == 1

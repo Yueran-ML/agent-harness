@@ -288,3 +288,52 @@ async def test_sessions_that_are_kept_in_memory_are_not_listed(
     session.append(said("One."))
 
     assert sessions.stored(tmp_path) == []
+
+
+# What an open session knows of where it comes from
+
+
+async def test_an_open_session_knows_who_delegated_it_and_how_deep(
+    sessions: Sessions, ctx: Context, tmp_path: Path
+) -> None:
+    work = tmp_path / "work"
+    talk = sessions.create(ctx, work, session_id="talk")
+    child = sessions.create(ctx, work, session_id="child", parent="talk", delegation_depth=1)
+
+    assert (talk.parent, talk.delegation_depth) == (None, 0)
+    assert (child.parent, child.delegation_depth) == ("talk", 1)
+
+
+async def test_a_session_that_is_taken_up_again_knows_it_as_its_file_says(
+    sessions: Sessions, ctx: Context, tmp_path: Path
+) -> None:
+    work = tmp_path / "work"
+    child = sessions.create(ctx, work, session_id="child", parent="talk", delegation_depth=2)
+    child.append(said("Find where the parser is."))
+    await child.flush()
+    child.close()
+
+    again = sessions.resume(ctx, work, "child")
+
+    assert (again.parent, again.delegation_depth) == ("talk", 2)
+
+
+async def test_a_copy_knows_what_it_is_a_copy_of_and_is_delegated_by_nobody(
+    sessions: Sessions, ctx: Context, tmp_path: Path
+) -> None:
+    work = tmp_path / "work"
+    child = sessions.create(ctx, work, session_id="child", parent="talk", delegation_depth=1)
+    child.append(said("Find where the parser is."))
+
+    copy = sessions.fork(ctx, work, child, session_id="copy")
+
+    assert (copy.parent, copy.delegation_depth) == ("child", 0)
+
+
+async def test_a_session_that_is_kept_in_memory_knows_it_too(ctx: Context, tmp_path: Path) -> None:
+    await ctx.plugin(columbina.session)
+    sessions = ctx.use(SESSIONS)
+
+    child = sessions.create(ctx, tmp_path, session_id="child", parent="talk", delegation_depth=1)
+
+    assert (child.parent, child.delegation_depth) == ("talk", 1)

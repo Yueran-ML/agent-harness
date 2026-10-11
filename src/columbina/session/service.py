@@ -165,8 +165,16 @@ class Sessions:
             ValueError: The id cannot name a directory.
         """
         store, events = SessionFile.open(self.directory(cwd, session_id), self.kinds)
+        header = store.header
         session = Session(
-            ctx, store.header.id, self.kinds, clock=self._now, store=store, events=events
+            ctx,
+            header.id,
+            self.kinds,
+            clock=self._now,
+            store=store,
+            events=events,
+            parent=header.parent_session,
+            delegation_depth=header.delegation_depth,
         )
         self._adopt(ctx, session)
         self._take_over(session, inherited=False, reason="interrupted")
@@ -210,7 +218,16 @@ class Sessions:
             store = SessionFile.create(self.directory(cwd, identity), header)
             for event in events:
                 store.write(event)
-        session = Session(ctx, identity, self.kinds, clock=self._now, store=store, events=events)
+        session = Session(
+            ctx,
+            identity,
+            self.kinds,
+            clock=self._now,
+            store=store,
+            events=events,
+            parent=parent,
+            delegation_depth=depth,
+        )
         return self._adopt(ctx, session)
 
     def _take_over(self, session: Session, *, inherited: bool, reason: CloseReason) -> None:

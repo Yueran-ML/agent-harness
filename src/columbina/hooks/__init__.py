@@ -31,6 +31,13 @@ counts only once the user has trusted it, see :mod:`columbina.hooks.config`,
 and a link in its place is not followed. Both files are read anew when a
 turn begins, so a change needs no restart.
 
+A subagent is no conversation of a person. What its tools do is checked by
+the two hooks of the tools like that of any agent. The other three moments
+are about a person and a session of theirs: no session of a person starts
+with a subagent, what it is given was written by an agent, and whether its
+turn may end is not for a hook to say that was written for a conversation.
+So those three are not run for it.
+
 Nothing that goes wrong with a hook goes wrong for the turn. A hook that
 fails, a file that cannot be read and a mistake in this module are written
 to the log, and the session goes on as if that hook were not there. What
@@ -416,7 +423,8 @@ class _Bridge:
     async def session_start(self, agent: Agent) -> str | None:
         """Run the hooks of a session that begins, once, and give what they write to the model."""
         session = agent.session
-        if session in self._started:
+        if session.delegation_depth or session in self._started:
+            # No session of a person begins with a subagent.
             return None
         self._started.add(session)
         turns = sum(isinstance(event.data, TurnStartEvent) for event in session.events)
@@ -457,6 +465,9 @@ class _Bridge:
         """Run the hooks for what a person said and a model has not been sent yet."""
         agent = info.agent
         session = agent.session
+        if session.delegation_depth:
+            # What a subagent is given was written by an agent, and no person said it.
+            return await proceed(info)
         stopped: list[str] = []
         # The hook files are read again when a turn begins.
         anew = info.step == 1
@@ -556,6 +567,9 @@ class _Bridge:
         """Run the hooks for a turn that is about to end, and keep it going if they say so."""
         agent = stopping.agent
         session = agent.session
+        if session.delegation_depth:
+            # Such a hook was written for the turns of a conversation.
+            return
         turn, count = self._kept_going.get(session, (stopping.turn, 0))
         if turn != stopping.turn:
             count = 0

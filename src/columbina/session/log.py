@@ -67,6 +67,8 @@ class Session:
             memory only.
         events: The events that the session starts with, as read from a store.
             They are not announced.
+        parent: The id of the session that this one comes from.
+        delegation_depth: How deep the session is delegated.
 
     Raises:
         InvalidEventError: ``events`` are not numbered from zero without a
@@ -74,6 +76,10 @@ class Session:
 
     Attributes:
         id: The id of the session.
+        parent: The id of the session that this one comes from, or ``None``:
+            the one it is a copy of, or the one whose agent delegated to it.
+        delegation_depth: How many agents stand between a person and the
+            agent of this session: 0 for a conversation.
     """
 
     __slots__ = (
@@ -87,7 +93,9 @@ class Session:
         "_outbox",
         "_store",
         "_surface",
+        "delegation_depth",
         "id",
+        "parent",
     )
 
     def __init__(
@@ -99,8 +107,12 @@ class Session:
         clock: Callable[[], int] = now_ms,
         store: SessionStore | None = None,
         events: Iterable[SessionEvent[EventData]] = (),
+        parent: str | None = None,
+        delegation_depth: int = 0,
     ) -> None:
         self.id = session_id
+        self.parent = parent
+        self.delegation_depth = delegation_depth
         self._ctx = ctx
         self._kinds = kinds
         self._clock = clock

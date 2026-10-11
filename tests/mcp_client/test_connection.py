@@ -87,7 +87,7 @@ def served() -> Served:
 
 
 @pytest.fixture
-async def make() -> AsyncIterator[Callable[..., Connection]]:
+async def make(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Callable[..., Connection]]:
     """Makes connections, and closes them when the test is over."""
     made: list[Connection] = []
 
@@ -97,6 +97,9 @@ async def make() -> AsyncIterator[Callable[..., Connection]]:
         return connection
 
     yield one
+    # A connection lets go in no time here. Should closing ever be broken, one test says so,
+    # and the others are not each held up for as long as a real server is given.
+    monkeypatch.setattr(connection_module, "LEAVE_SECONDS", 1.0)
     for connection in made:
         await connection.close()
 

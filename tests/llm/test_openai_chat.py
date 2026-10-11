@@ -1030,6 +1030,77 @@ async def test_without_the_key_nothing_is_sent(
     assert service.requests == []
 
 
+@pytest.mark.parametrize(
+    "found",
+    [f"{KEY}\n", f"{KEY}\r\n", f"  {KEY}", f"{KEY}\t ", f"\n{KEY}\n"],
+    ids=["a line break after", "a line break of Windows", "blanks before", "a tab after", "both"],
+)
+async def test_blanks_and_line_breaks_around_the_key_are_not_sent(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, found: str
+) -> None:
+    monkeypatch.setenv("TEST_KEY", found)
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service)
+
+    call = await ask(llm)
+
+    assert call.failure is None
+    assert service.requests[0].headers["authorization"] == f"Bearer {KEY}"
+
+
+async def test_a_variable_that_holds_only_blanks_holds_no_key(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TEST_KEY", " \n")
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service)
+
+    call = await ask(llm)
+
+    assert call.failure == LlmFailure(
+        message="the environment variable TEST_KEY is not set", code="AUTH"
+    )
+    assert service.requests == []
+
+
+@pytest.mark.parametrize(
+    "found",
+    [
+        "sk-test\n0123456789",
+        "sk-test 0123456789",
+        chr(0x201C) + KEY + chr(0x201D),
+        "sk-test-" + chr(0xE9) + "-0123456789",
+        KEY + chr(0x200B),
+        KEY + chr(0x7F),
+    ],
+    ids=[
+        "a line break in the middle",
+        "a blank in the middle",
+        "the quotation marks of a word processor",
+        "a letter with an accent",
+        "a mark that cannot be seen",
+        "a control character",
+    ],
+)
+async def test_a_key_that_cannot_be_sent_is_refused_and_is_not_shown(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, found: str
+) -> None:
+    monkeypatch.setenv("TEST_KEY", found)
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service)
+
+    call = await ask(llm)
+
+    # The words are the same for every such key, so nothing of the key is in them.
+    assert call.failure == LlmFailure(
+        message="the API key in the environment variable TEST_KEY cannot be sent: there is a "
+        "character in it that no key has, such as a blank, a line break or a quotation mark of "
+        "a word processor. Set it again",
+        code="AUTH",
+    )
+    assert service.requests == []
+
+
 async def test_the_key_never_shows_up_in_a_failure(ctx: Context, llm: Llm) -> None:
     echo = refused(401, {"message": f"Incorrect API key provided: {KEY}"})
     connect(ctx, llm, Service(echo))
@@ -1210,6 +1281,29 @@ async def test_the_plugin_talks_to_a_service_over_a_socket(ctx: Context, llm: Ll
     assert f"Bearer {KEY}".encode() in received[0]
     assert b'"model":"tiny"' in received[0]
     assert list(ctx.use(LLM).adapters) == []
+
+
+async def test_a_key_with_a_line_break_after_it_reaches_a_service_without_it(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Over a socket the header is checked by the library that writes it. It refuses a line
+    # break, and it names the header that it refuses, with the key in it.
+    monkeypatch.setenv("TEST_KEY", f"{KEY}\n")
+    received: list[bytes] = []
+    server = await serve(http(TEXT_REPLY), received)
+    port = server.sockets[0].getsockname()[1]
+    await ctx.plugin(
+        openai_chat,
+        {"provider": "local", "base_url": f"http://127.0.0.1:{port}/v1", "api_key_env": "TEST_KEY"},
+    )
+
+    call = await ask(llm, config=CallConfig(provider="local", model="tiny"))
+    server.close()
+    await server.wait_closed()
+
+    assert call.failure is None
+    assert call.message.text == "Hello"
+    assert f"Bearer {KEY}\r\n".encode() in received[0]
 
 
 async def test_a_service_that_hangs_up_in_the_middle_is_a_failure(ctx: Context, llm: Llm) -> None:

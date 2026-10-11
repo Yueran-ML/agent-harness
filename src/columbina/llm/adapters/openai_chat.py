@@ -9,6 +9,11 @@ is never part of the config, and it is cut out of the text of every failure
 that leaves the adapter, whether the service or the connection wrote that text.
 The error that was caught is not passed on with the failure.
 
+Blanks and line breaks around the key are not sent. A key with anything in it
+that a header cannot carry is refused before a request is made. The library
+that sends the request would refuse it too, and would say so with the key in
+its words, written in a form that is not found when the key is looked for.
+
 One thing is not in the hands of the adapter. The HTTP library has a logger of
 its own, ``httpx``, which at the level INFO writes the status line of every
 response as the service sent it.
@@ -28,6 +33,7 @@ import httpx
 from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from columbina.kernel import Context
+from columbina.llm.credentials import sendable, trimmed
 from columbina.llm.runtime import LLM, LlmError
 from columbina.llm.types import (
     AssistantMessage,
@@ -571,10 +577,19 @@ class OpenAIChat:
         variable = self._config.api_key_env
         if variable is None:
             return None
-        secret = os.environ.get(variable)
+        secret = trimmed(os.environ.get(variable, ""))
         if not secret:
             raise LlmError(
                 LlmFailure(message=f"the environment variable {variable} is not set", code="AUTH")
+            )
+        if not sendable(secret):
+            raise LlmError(
+                LlmFailure(
+                    message=f"the API key in the environment variable {variable} cannot be "
+                    "sent: there is a character in it that no key has, such as a blank, a "
+                    "line break or a quotation mark of a word processor. Set it again",
+                    code="AUTH",
+                )
             )
         return secret
 

@@ -110,6 +110,8 @@ SESSION_LOG = "src/columbina/session/log.py"
 SUBAGENTS_SEAM = "src/columbina/subagents/__init__.py"
 SPAWN = "src/columbina/subagents/spawn.py"
 TOOL_SUBAGENT = "src/columbina/builtin_tools/subagent.py"
+CREDENTIALS = "src/columbina/llm/credentials.py"
+OPENAI_CHAT = "src/columbina/llm/adapters/openai_chat.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -11486,6 +11488,101 @@ _YAML = (
     ),
 )
 
+_KEYS = (
+    mutant(
+        "what stands after a key is part of it",
+        CREDENTIALS,
+        "    return key.strip()\n",
+        "    return key.lstrip()\n",
+    ),
+    mutant(
+        "what stands before a key is part of it",
+        CREDENTIALS,
+        "    return key.strip()\n",
+        "    return key.rstrip()\n",
+    ),
+    mutant(
+        "a line break around a key is part of it",
+        CREDENTIALS,
+        "    return key.strip()\n",
+        '    return key.strip(" ")\n',
+    ),
+    mutant(
+        "nothing is a key that can be sent",
+        CREDENTIALS,
+        '    return bool(key) and all("!" <= character <= "~" for character in key)\n',
+        '    return all("!" <= character <= "~" for character in key)\n',
+    ),
+    mutant(
+        "one character of a key makes the whole key fit to be sent",
+        CREDENTIALS,
+        '    return bool(key) and all("!" <= character <= "~" for character in key)\n',
+        '    return bool(key) and any("!" <= character <= "~" for character in key)\n',
+    ),
+    mutant(
+        "a blank is a character of a key",
+        CREDENTIALS,
+        '    return bool(key) and all("!" <= character <= "~" for character in key)\n',
+        '    return bool(key) and all(" " <= character <= "~" for character in key)\n',
+    ),
+    mutant(
+        "the first of the visible characters is no character of a key",
+        CREDENTIALS,
+        '    return bool(key) and all("!" <= character <= "~" for character in key)\n',
+        '    return bool(key) and all("!" < character <= "~" for character in key)\n',
+    ),
+    mutant(
+        "the last of the visible characters is no character of a key",
+        CREDENTIALS,
+        '    return bool(key) and all("!" <= character <= "~" for character in key)\n',
+        '    return bool(key) and all("!" <= character < "~" for character in key)\n',
+    ),
+    mutant(
+        "the control character after the last visible one is a character of a key",
+        CREDENTIALS,
+        '    return bool(key) and all("!" <= character <= "~" for character in key)\n',
+        '    return bool(key) and all("!" <= character <= chr(127) for character in key)\n',
+    ),
+    mutant(
+        "a letter that is not plain is a character of a key",
+        CREDENTIALS,
+        '    return bool(key) and all("!" <= character <= "~" for character in key)\n',
+        '    return bool(key) and all("!" <= character for character in key)\n',
+    ),
+    mutant(
+        "a key is sent with what stands around it",
+        OPENAI_CHAT,
+        '        secret = trimmed(os.environ.get(variable, ""))\n',
+        '        secret = os.environ.get(variable, "")\n',
+    ),
+    mutant(
+        "a key that cannot be sent is sent",
+        OPENAI_CHAT,
+        "        if not sendable(secret):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "every key is refused as one that cannot be sent",
+        OPENAI_CHAT,
+        "        if not sendable(secret):\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "a key that cannot be sent is a failure of the connection",
+        OPENAI_CHAT,
+        '                    "line break or a quotation mark of a word processor. Set it again",\n'
+        '                    code="AUTH",\n',
+        '                    "line break or a quotation mark of a word processor. Set it again",\n'
+        '                    code="TRANSPORT",\n',
+    ),
+    mutant(
+        "a variable that holds no key is taken for one that holds a key that cannot be sent",
+        OPENAI_CHAT,
+        '        if not secret:\n            raise LlmError(\n                LlmFailure(message=f"the environment variable',
+        '        if False:\n            raise LlmError(\n                LlmFailure(message=f"the environment variable',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -11571,5 +11668,6 @@ SETS: dict[str, MutantSet] = {
     "trust": MutantSet(("tests/apps/test_hooks_command.py",), _TRUST),
     "subagents": MutantSet(("tests/subagents", "tests/builtin_tools/test_subagent.py"), _SUBAGENTS),
     "yaml": MutantSet(("tests/test_plain_yaml.py",), _YAML),
+    "keys": MutantSet(("tests/llm/test_credentials.py", "tests/llm/test_openai_chat.py"), _KEYS),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""

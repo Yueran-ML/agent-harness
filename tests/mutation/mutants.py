@@ -11552,8 +11552,8 @@ _KEYS = (
     mutant(
         "a key is sent with what stands around it",
         OPENAI_CHAT,
-        '        secret = trimmed(os.environ.get(variable, ""))\n',
-        '        secret = os.environ.get(variable, "")\n',
+        '        secret = "" if variable is None else trimmed(os.environ.get(variable, ""))\n',
+        '        secret = "" if variable is None else os.environ.get(variable, "")\n',
     ),
     mutant(
         "a key that cannot be sent is sent",
@@ -11570,16 +11570,278 @@ _KEYS = (
     mutant(
         "a key that cannot be sent is a failure of the connection",
         OPENAI_CHAT,
-        '                    "line break or a quotation mark of a word processor. Set it again",\n'
-        '                    code="AUTH",\n',
-        '                    "line break or a quotation mark of a word processor. Set it again",\n'
-        '                    code="TRANSPORT",\n',
+        '                    f"of a word processor. {again}",\n                    code="AUTH",\n',
+        '                    f"of a word processor. {again}",\n                    code="TRANSPORT",\n',
     ),
     mutant(
         "a variable that holds no key is taken for one that holds a key that cannot be sent",
         OPENAI_CHAT,
-        '        if not secret:\n            raise LlmError(\n                LlmFailure(message=f"the environment variable',
-        '        if False:\n            raise LlmError(\n                LlmFailure(message=f"the environment variable',
+        "        if not secret:\n            missing = _missing(config)\n",
+        "        if False:\n            missing = _missing(config)\n",
+    ),
+    # The file of keys
+    on_windows(
+        mutant(
+            "a file is asked for its mode where files have none",
+            CREDENTIALS,
+            '_HAS_MODES = sys.platform != "win32"\n',
+            "_HAS_MODES = True\n",
+        )
+    ),
+    mutant(
+        "a file that others can change and not read is used",
+        CREDENTIALS,
+        "    return bool(stat.S_IMODE(mode) & 0o077)\n",
+        "    return bool(stat.S_IMODE(mode) & 0o044)\n",
+    ),
+    mutant(
+        "what the others may do with a file is not looked at",
+        CREDENTIALS,
+        "    return bool(stat.S_IMODE(mode) & 0o077)\n",
+        "    return bool(stat.S_IMODE(mode) & 0o070)\n",
+    ),
+    mutant(
+        "what the group may do with a file is not looked at",
+        CREDENTIALS,
+        "    return bool(stat.S_IMODE(mode) & 0o077)\n",
+        "    return bool(stat.S_IMODE(mode) & 0o007)\n",
+    ),
+    mutant(
+        "a file that anybody can read is used",
+        CREDENTIALS,
+        "            if _HAS_MODES and not whoever_can_read_it and _too_open(mode):\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a file is refused for a mode that its system does not have",
+        CREDENTIALS,
+        "            if _HAS_MODES and not whoever_can_read_it and _too_open(mode):\n",
+        "            if not whoever_can_read_it and _too_open(mode):\n",
+    ),
+    mutant(
+        "a file that anybody can read cannot be written anew",
+        CREDENTIALS,
+        "            if _HAS_MODES and not whoever_can_read_it and _too_open(mode):\n",
+        "            if _HAS_MODES and _too_open(mode):\n",
+    ),
+    mutant(
+        "a file of keys that is not there cannot be read",
+        CREDENTIALS,
+        "    except FileNotFoundError:\n        return {}\n",
+        "",
+    ),
+    mutant(
+        "a file with something beside the keys in it is used",
+        CREDENTIALS,
+        '    model_config = ConfigDict(extra="forbid")\n\n    version: Literal[1]\n',
+        '    model_config = ConfigDict(extra="ignore")\n\n    version: Literal[1]\n',
+    ),
+    mutant(
+        "a file of whatever version is used",
+        CREDENTIALS,
+        "    version: Literal[1]\n",
+        "    version: int\n",
+    ),
+    mutant(
+        "the file of keys is written on one line",
+        CREDENTIALS,
+        '    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True) + "\\n"\n',
+        '    text = json.dumps({"version": 1, "keys": keys}, sort_keys=True) + "\\n"\n',
+    ),
+    mutant(
+        "the file of keys is written in whatever order",
+        CREDENTIALS,
+        '    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True) + "\\n"\n',
+        '    text = json.dumps({"version": 1, "keys": keys}, indent=2) + "\\n"\n',
+    ),
+    mutant(
+        "the file of keys does not end with its line",
+        CREDENTIALS,
+        '    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True) + "\\n"\n',
+        '    text = json.dumps({"version": 1, "keys": keys}, indent=2, sort_keys=True)\n',
+    ),
+    mutant(
+        "the file of keys is made for everybody to read",
+        CREDENTIALS,
+        "        descriptor = os.open(beside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n",
+        "        descriptor = os.open(beside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)\n",
+    ),
+    mutant(
+        "the keys are written into a file that may be there already",
+        CREDENTIALS,
+        "        descriptor = os.open(beside, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n",
+        "        descriptor = os.open(beside, os.O_WRONLY | os.O_CREAT, 0o600)\n",
+    ),
+    on_windows(
+        mutant(
+            "the lines of the file of keys end as the system ends lines",
+            CREDENTIALS,
+            '            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\\n") as file:\n',
+            '            with os.fdopen(descriptor, "w", encoding="utf-8") as file:\n',
+        )
+    ),
+    mutant(
+        "what was written beside the file of keys is left there",
+        CREDENTIALS,
+        "            beside.replace(path)\n        finally:\n            beside.unlink(missing_ok=True)\n",
+        "            beside.replace(path)\n        finally:\n            pass\n",
+    ),
+    mutant(
+        "a key cannot be kept where the directory of the keys is not there yet",
+        CREDENTIALS,
+        "        path.parent.mkdir(parents=True, exist_ok=True)\n",
+        "",
+    ),
+    mutant(
+        "a key is kept with what stands around it",
+        CREDENTIALS,
+        "    key = trimmed(key)\n    if not key:\n",
+        "    if not key:\n",
+    ),
+    mutant(
+        "nothing is told to be a key with a wrong character in it",
+        CREDENTIALS,
+        "    key = trimmed(key)\n    if not key:\n",
+        "    key = trimmed(key)\n    if False:\n",
+    ),
+    mutant(
+        "what cannot be sent is kept as a key",
+        CREDENTIALS,
+        '    if not sendable(key):\n        raise CredentialsError(\n            "this cannot be a key',
+        '    if False:\n        raise CredentialsError(\n            "this cannot be a key',
+    ),
+    mutant(
+        "a key that is kept throws the keys of the other services away",
+        CREDENTIALS,
+        "    _write(path, _read(path, whoever_can_read_it=True) | {provider: key})\n",
+        "    _write(path, {provider: key})\n",
+    ),
+    mutant(
+        "the key that was kept stays where a new one is given",
+        CREDENTIALS,
+        "    _write(path, _read(path, whoever_can_read_it=True) | {provider: key})\n",
+        "    _write(path, {provider: key} | _read(path, whoever_can_read_it=True))\n",
+    ),
+    mutant(
+        "a key that was never kept is forgotten with a crash",
+        CREDENTIALS,
+        "    if provider not in keys:\n        return False\n",
+        "",
+    ),
+    mutant(
+        "a key that is forgotten stays",
+        CREDENTIALS,
+        "    del keys[provider]\n    _write(path, keys)\n",
+        "    _write(path, keys)\n",
+    ),
+    mutant(
+        "a key that is forgotten is not taken out of the file",
+        CREDENTIALS,
+        "    del keys[provider]\n    _write(path, keys)\n",
+        "    del keys[provider]\n",
+    ),
+    mutant(
+        "a key that is forgotten is said not to have been there",
+        CREDENTIALS,
+        "    _write(path, keys)\n    return True\n",
+        "    _write(path, keys)\n    return False\n",
+    ),
+    mutant(
+        "the key of whatever service comes first is the key of every service",
+        CREDENTIALS,
+        "    return stored(path).get(provider)\n",
+        "    return next(iter(stored(path).values()), None)\n",
+    ),
+    # The adapter, and the keys that a user stored
+    mutant(
+        "a stored key goes before the variable",
+        OPENAI_CHAT,
+        "        if not secret and file is not None:\n",
+        "        if file is not None:\n",
+    ),
+    mutant(
+        "a stored key is never looked for",
+        OPENAI_CHAT,
+        "        if not secret and file is not None:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a stored key is sent with what stands around it",
+        OPENAI_CHAT,
+        '                secret = trimmed(await asyncio.to_thread(key_for, file, config.provider) or "")\n',
+        '                secret = await asyncio.to_thread(key_for, file, config.provider) or ""\n',
+    ),
+    mutant(
+        "a file of keys that cannot be used is a failure of the connection",
+        OPENAI_CHAT,
+        '                failure = LlmFailure(message=str(error), code="AUTH")\n',
+        '                failure = LlmFailure(message=str(error), code="TRANSPORT")\n',
+    ),
+    mutant(
+        "a stored key that cannot be sent is said to be in the variable",
+        OPENAI_CHAT,
+        '            where = f"that is stored for {config.provider}"\n',
+        "",
+    ),
+    mutant(
+        "a stored key that cannot be sent is to be set again as a variable",
+        OPENAI_CHAT,
+        "            again = \"Enter it again with 'columbina setup'\"\n",
+        "",
+    ),
+    mutant(
+        "a missing key is a failure of the connection",
+        OPENAI_CHAT,
+        '            raise LlmError(LlmFailure(message=missing, code="AUTH"))\n',
+        '            raise LlmError(LlmFailure(message=missing, code="TRANSPORT"))\n',
+    ),
+    mutant(
+        "a key is asked for where there is nowhere to find one",
+        OPENAI_CHAT,
+        "    if not config.api_key_required or (variable is None and file is None):\n",
+        "    if not config.api_key_required:\n",
+    ),
+    mutant(
+        "a service that asks for no key is not talked to without one",
+        OPENAI_CHAT,
+        "    if not config.api_key_required or (variable is None and file is None):\n",
+        "    if variable is None and file is None:\n",
+    ),
+    mutant(
+        "a request is made without a key wherever one of the two places is not named",
+        OPENAI_CHAT,
+        "    if not config.api_key_required or (variable is None and file is None):\n",
+        "    if not config.api_key_required or (variable is None or file is None):\n",
+    ),
+    mutant(
+        "where only a variable is named, a key is said to be missing from a file too",
+        OPENAI_CHAT,
+        '    if file is None:\n        return f"the environment variable {variable} is not set"\n',
+        "",
+    ),
+    mutant(
+        "where only a file is named, a variable without a name is said not to be set",
+        OPENAI_CHAT,
+        '    if variable is None:\n        return f"no API key is stored for',
+        '    if False:\n        return f"no API key is stored for',
+    ),
+    mutant(
+        "a service is talked to without a key by default",
+        OPENAI_CHAT,
+        "    api_key_required: bool = True\n",
+        "    api_key_required: bool = False\n",
+    ),
+    mutant(
+        "the limit of a reply is sent under one name to every service",
+        OPENAI_CHAT,
+        "        body[config.max_tokens_field] = call.max_output_tokens\n",
+        '        body["max_tokens"] = call.max_output_tokens\n',
+    ),
+    mutant(
+        "the limit of a reply is sent under the newer name by default",
+        OPENAI_CHAT,
+        '    max_tokens_field: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"\n',
+        '    max_tokens_field: Literal["max_tokens", "max_completion_tokens"] = (\n        "max_completion_tokens"\n    )\n',
     ),
 )
 

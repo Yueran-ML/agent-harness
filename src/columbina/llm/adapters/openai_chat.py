@@ -4,10 +4,14 @@ DeepSeek speaks it, and so do the ``/v1`` endpoint of Ollama, vLLM and many
 others. This module is a plugin: loading it registers one adapter under the
 provider name of its config. To talk to two services, load it twice.
 
-The API key is read from an environment variable when a request is made. It
-is never part of the config, and it is cut out of the text of every failure
-that leaves the adapter, whether the service or the connection wrote that text.
-The error that was caught is not passed on with the failure.
+The API key is looked for when a request is made: first in an environment
+variable, then in the file of keys that the user stored, under the name of
+the provider. It is never part of the config, and it is cut out of the text
+of every failure that leaves the adapter, whether the service or the
+connection wrote that text. The error that was caught is not passed on with
+the failure. A key from the file is in the memory of this process and
+nowhere else: a command that an agent runs does not find it in its
+environment.
 
 Blanks and line breaks around the key are not sent. A key with anything in it
 that a header cannot carry is refused before a request is made. The library
@@ -19,6 +23,7 @@ its own, ``httpx``, which at the level INFO writes the status line of every
 response as the service sent it.
 """
 
+import asyncio
 import math
 import os
 import time
@@ -27,13 +32,14 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import UTC
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from columbina.kernel import Context
-from columbina.llm.credentials import sendable, trimmed
+from columbina.llm.credentials import CredentialsError, key_for, sendable, trimmed
 from columbina.llm.runtime import LLM, LlmError
 from columbina.llm.types import (
     AssistantMessage,
@@ -93,12 +99,22 @@ class Config(BaseModel):
         base_url: The address of the service, up to but without
             ``/chat/completions``.
         api_key_env: The environment variable that holds the API key, or
-            ``None`` for a service that needs none.
+            ``None`` if no variable does.
+        api_key_file: The file of keys that the user stored, as
+            ``columbina setup`` writes it, or ``None`` if there is none. The
+            key of ``provider`` in it is used when the variable holds none.
+        api_key_required: Whether a request is made only with a key. A
+            service on the machine of the user asks for none, and is sent
+            one only if one is found. Where neither a variable nor a file is
+            named there is no key to look for, and none is sent.
         reasoning_style: How the service is told how much to reason.
             ``deepseek`` sends ``thinking``, ``openai`` sends
             ``reasoning_effort``, and ``none`` sends nothing.
         include_usage: Whether to ask for token counts at the end of the
             stream. Switch it off for a service that rejects the option.
+        max_tokens_field: The name under which the limit on the length of a
+            reply is sent. The models of OpenAI that reason take it only as
+            ``max_completion_tokens``.
         connect_timeout_seconds: How long connecting may take. Silence after
             that is the business of the model service, not of the adapter.
         headers: Further headers for every request. Do not put a key here.
@@ -107,8 +123,11 @@ class Config(BaseModel):
     provider: str
     base_url: str
     api_key_env: str | None = None
+    api_key_file: Path | None = None
+    api_key_required: bool = True
     reasoning_style: Literal["deepseek", "openai", "none"] = "none"
     include_usage: bool = True
+    max_tokens_field: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     connect_timeout_seconds: float = Field(default=10.0, gt=0)
     headers: dict[str, str] = Field(default_factory=dict[str, str])
 
@@ -234,7 +253,7 @@ def build_body(request: LlmRequest, config: Config) -> dict[str, JsonValue]:
             for tool in request.tools
         ]
     if call.max_output_tokens is not None:
-        body["max_tokens"] = call.max_output_tokens
+        body[config.max_tokens_field] = call.max_output_tokens
     if call.temperature is not None:
         body["temperature"] = call.temperature
     if call.top_p is not None:
@@ -515,6 +534,21 @@ def _cleaned(text: str, secret: str | None, limit: int) -> str:
     return text[:limit]
 
 
+def _missing(config: Config) -> str | None:
+    """Return what to say where no key is found, or ``None`` if a request is made without one."""
+    variable, file = config.api_key_env, config.api_key_file
+    if not config.api_key_required or (variable is None and file is None):
+        return None
+    if file is None:
+        return f"the environment variable {variable} is not set"
+    if variable is None:
+        return f"no API key is stored for {config.provider}. Enter one with 'columbina setup'"
+    return (
+        f"there is no API key for {config.provider}: the environment variable {variable} is "
+        "not set, and no key is stored. Enter one with 'columbina setup', or set the variable"
+    )
+
+
 class OpenAIChat:
     """Talks to one service that speaks the Chat Completions protocol.
 
@@ -547,7 +581,7 @@ class OpenAIChat:
             LlmError: The key is missing, the service could not be reached or
                 refused, or its reply cannot be read.
         """
-        secret = self._secret()
+        secret = await self._secret()
         headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}
         body = build_body(request, self._config)
         translator = _Translator(self._config.provider)
@@ -573,21 +607,39 @@ class OpenAIChat:
             # may hold the key, and so may that of its cause.
             raise LlmError(failure)
 
-    def _secret(self) -> str | None:
-        variable = self._config.api_key_env
-        if variable is None:
-            return None
-        secret = trimmed(os.environ.get(variable, ""))
+    async def _secret(self) -> str | None:
+        """Return the key to send, or ``None`` for a service that is sent none.
+
+        Raises:
+            LlmError: A key is needed and none is found, the key that is
+                found cannot be sent, or the file of stored keys cannot be
+                used.
+        """
+        config = self._config
+        variable, file = config.api_key_env, config.api_key_file
+        secret = "" if variable is None else trimmed(os.environ.get(variable, ""))
+        where = f"in the environment variable {variable}"
+        again = "Set it again"
+        if not secret and file is not None:
+            try:
+                secret = trimmed(await asyncio.to_thread(key_for, file, config.provider) or "")
+            except CredentialsError as error:
+                # The error says what is wrong with the file, and nothing that the file holds.
+                failure = LlmFailure(message=str(error), code="AUTH")
+                raise LlmError(failure) from None
+            where = f"that is stored for {config.provider}"
+            again = "Enter it again with 'columbina setup'"
         if not secret:
-            raise LlmError(
-                LlmFailure(message=f"the environment variable {variable} is not set", code="AUTH")
-            )
+            missing = _missing(config)
+            if missing is None:
+                return None
+            raise LlmError(LlmFailure(message=missing, code="AUTH"))
         if not sendable(secret):
             raise LlmError(
                 LlmFailure(
-                    message=f"the API key in the environment variable {variable} cannot be "
-                    "sent: there is a character in it that no key has, such as a blank, a "
-                    "line break or a quotation mark of a word processor. Set it again",
+                    message=f"the API key {where} cannot be sent: there is a character in "
+                    "it that no key has, such as a blank, a line break or a quotation mark "
+                    f"of a word processor. {again}",
                     code="AUTH",
                 )
             )

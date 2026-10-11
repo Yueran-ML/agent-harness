@@ -13,6 +13,7 @@ from typing import Any
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.shared.memory import create_client_server_memory_streams
+from mcp.types import ToolAnnotations
 
 __all__ = ["Cuttable", "Hanging", "Served"]
 
@@ -75,6 +76,19 @@ class Served:
                 warnings.simplefilter("ignore")
                 await ctx.session.send_resource_list_changed()
             return "stirred"
+
+    def with_a_reader(self) -> None:
+        """Add a tool of which the server says that it only reads."""
+
+        def peek() -> str:
+            return "peeked"
+
+        self.server.add_tool(
+            peek,
+            name="peek",
+            description="Look without touching.",
+            annotations=ToolAnnotations(read_only_hint=True),
+        )
 
     def one_more(self) -> str:
         """Add a tool to the server without a word, and return its name."""

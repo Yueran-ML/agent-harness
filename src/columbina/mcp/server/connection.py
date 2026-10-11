@@ -155,9 +155,10 @@ class Connection:
         mode: How the version of the protocol is agreed on. ``auto`` asks
             the server what it speaks, and ``legacy`` speaks to it as to a
             server from before 2026.
-        on_tools: Called when the tools are others than before: after a
-            connection was made, after the server listed them anew, and when
-            they are withdrawn.
+        on_tools: Called and waited for when the tools are others than
+            before: after a connection was made, after the server listed them
+            anew, and when they are withdrawn. Whoever waits for the first
+            attempt is told that it is over only after this has come back.
         kept_out: Texts that are in no reason for a failure: what the
             address or the headers of a server hold that is not for a log.
         sleep: Waits for a number of seconds. A test gives one that does not.
@@ -171,7 +172,7 @@ class Connection:
         *,
         startup_seconds: float = 30.0,
         mode: Literal["auto", "legacy"] = "auto",
-        on_tools: Callable[[], None] = lambda: None,
+        on_tools: Callable[[], Awaitable[None]] | None = None,
         kept_out: Sequence[str] = (),
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
@@ -181,7 +182,8 @@ class Connection:
         self._startup = startup_seconds
         self._mode: Literal["auto", "legacy"] = mode
         self._on_tools = on_tools
-        self._kept_out = tuple(kept_out)
+        # A text of no length is in every text, and nothing is kept out by taking it out.
+        self._kept_out = tuple(text for text in kept_out if text)
         self._sleep = sleep
         self._clock = clock
         self._tools: tuple[Tool, ...] = ()
@@ -362,7 +364,7 @@ class Connection:
                     failures,
                     self._failure,
                 )
-                self._offer(())
+                await self._offer(())
                 return
             await self._sleep(min(FIRST_WAIT * 2 ** (failures - 1), LONGEST_WAIT))
 
@@ -418,7 +420,7 @@ class Connection:
         self._ever = True
         self._instructions = client.instructions
         self._failure = None
-        self._offer(listed)
+        await self._offer(listed)
         self._move()
         self._settled.set()
         watching = asyncio.ensure_future(self._watch(client))
@@ -437,7 +439,7 @@ class Connection:
             # A connection that broke says so once more when it is left. Nothing follows from it.
             logger.debug("leaving the MCP server %s: %s", self.server, self._why(error))
 
-    def _offer(self, listed: Sequence[Tool]) -> None:
+    async def _offer(self, listed: Sequence[Tool]) -> None:
         """Offer the tools that were listed, unless the list names one of them twice."""
         twice = _named_twice(listed)
         if twice is not None:
@@ -447,8 +449,10 @@ class Connection:
         if tuple(listed) == self._tools:
             return
         self._tools = tuple(listed)
+        if self._on_tools is None:
+            return
         try:
-            self._on_tools()
+            await self._on_tools()
         except Exception:
             logger.exception(
                 "the MCP server %s: what was to be told of its tools failed", self.server
@@ -495,7 +499,7 @@ class Connection:
                 self._why(error),
             )
             return
-        self._offer(listed)
+        await self._offer(listed)
 
     def _why(self, error: BaseException) -> str:
         """Say in one line why something failed, without what is to be kept out of it."""

@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
@@ -35,6 +35,15 @@ TWO = {"a": 1, "b": 1}
 
 def names(connection: Connection) -> list[str]:
     return [tool.name for tool in connection.tools]
+
+
+def telling(act: Callable[[], object]) -> Callable[[], Awaitable[None]]:
+    """What a connection calls when its tools are others, made of something that a test does."""
+
+    async def told() -> None:
+        act()
+
+    return told
 
 
 class Naps:
@@ -125,7 +134,7 @@ async def test_a_connection_that_is_made_has_the_tools_and_what_the_server_says_
 ) -> None:
     told: list[list[str]] = []
     connection = make(
-        "served", lambda: served.server, on_tools=lambda: told.append(names(connection))
+        "served", lambda: served.server, on_tools=telling(lambda: told.append(names(connection)))
     )
 
     assert connection.state == "connecting"
@@ -309,7 +318,13 @@ async def test_a_call_that_waits_when_the_connection_is_lost_fails_and_the_conne
     naps = Naps()
     told: list[list[str]] = []
     connection = await begun(
-        make("served", lambda: transport, mode=mode, sleep=naps, on_tools=lambda: told.append([]))
+        make(
+            "served",
+            lambda: transport,
+            mode=mode,
+            sleep=naps,
+            on_tools=telling(lambda: told.append([])),
+        )
     )
     calling = asyncio.ensure_future(connection.call("nap", {"seconds": 30}, 60))
     await until(lambda: served.napping == 1)
@@ -422,7 +437,10 @@ async def test_tools_that_are_others_after_a_connection_was_made_again_are_told(
     transport = Cuttable(served)
     told: list[list[str]] = []
     connection = make(
-        "served", lambda: transport, sleep=Naps(), on_tools=lambda: told.append(names(connection))
+        "served",
+        lambda: transport,
+        sleep=Naps(),
+        on_tools=telling(lambda: told.append(names(connection))),
     )
     await begun(connection)
 
@@ -551,7 +569,7 @@ async def test_the_waits_double_up_to_the_longest_and_after_ten_failures_the_too
         "served",
         failing_after(transport, ConnectionRefusedError("nobody answers")),
         sleep=naps,
-        on_tools=lambda: told.append(names(connection)),
+        on_tools=telling(lambda: told.append(names(connection))),
     )
     await begun(connection)
 
@@ -614,7 +632,7 @@ async def test_a_server_that_was_never_connected_is_tried_as_often_and_then_give
         tried.append(None)
         raise FileNotFoundError("no such program: mcp-nowhere")
 
-    connection = make("served", target, sleep=naps, on_tools=lambda: told.append(None))
+    connection = make("served", target, sleep=naps, on_tools=telling(lambda: told.append(None)))
 
     await begun(connection)
 
@@ -738,7 +756,7 @@ async def test_tools_that_a_server_of_2026_says_have_changed_are_listed_anew(
 ) -> None:
     told: list[list[str]] = []
     connection = make(
-        "served", lambda: served.server, on_tools=lambda: told.append(names(connection))
+        "served", lambda: served.server, on_tools=telling(lambda: told.append(names(connection)))
     )
     await begun(connection)
 
@@ -763,7 +781,10 @@ async def test_tools_that_an_older_server_says_have_changed_are_listed_anew(
     transport = Cuttable(served)
     told: list[list[str]] = []
     connection = make(
-        "served", lambda: transport, mode="legacy", on_tools=lambda: told.append(names(connection))
+        "served",
+        lambda: transport,
+        mode="legacy",
+        on_tools=telling(lambda: told.append(names(connection))),
     )
     await begun(connection)
 
@@ -875,7 +896,7 @@ async def test_a_list_that_names_a_tool_twice_is_not_used(
     monkeypatch.setattr(Client, "list_tools", listing)
     told: list[list[str]] = []
     connection = make(
-        "served", lambda: served.server, on_tools=lambda: told.append(names(connection))
+        "served", lambda: served.server, on_tools=telling(lambda: told.append(names(connection)))
     )
 
     with caplog.at_level(logging.WARNING, logger=LOGGER):
@@ -947,7 +968,7 @@ async def test_a_server_that_does_not_say_when_its_tools_change_is_none_the_wors
 async def test_whoever_is_told_of_the_tools_and_fails_does_not_end_the_connection(
     make: Callable[..., Connection], served: Served, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def failing() -> None:
+    async def failing() -> None:
         raise RuntimeError("could not take the tools")
 
     with caplog.at_level(logging.ERROR, logger=LOGGER):
@@ -956,6 +977,30 @@ async def test_whoever_is_told_of_the_tools_and_fails_does_not_end_the_connectio
     assert caplog.messages == ["the MCP server served: what was to be told of its tools failed"]
     assert connection.state == "connected"
     assert shown(await connection.call("add", TWO, 5)) == "2"
+
+
+async def test_the_first_attempt_is_over_only_when_whoever_is_told_of_the_tools_has_them(
+    make: Callable[..., Connection], served: Served
+) -> None:
+    taken = asyncio.Event()
+    asked: list[list[str]] = []
+
+    async def taking() -> None:
+        asked.append(names(connection))
+        await taken.wait()
+
+    connection = make("served", lambda: served.server, on_tools=taking)
+    connection.start()
+    settling = asyncio.ensure_future(connection.settled())
+    await until(lambda: bool(asked))
+    await asyncio.sleep(0.05)
+
+    # The tools are there to be taken, and nobody is told yet that the attempt is over.
+    assert asked == [BASE]
+    assert not settling.done()
+    taken.set()
+    await asyncio.wait_for(settling, 5)
+    assert connection.state == "connected"
 
 
 # A connection that is closed

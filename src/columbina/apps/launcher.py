@@ -5,7 +5,8 @@ gives an agent one task. Without a command the first is meant, so
 ``columbina --continue`` is ``columbina chat --continue``. ``columbina sessions``
 lists, shows and copies the sessions that are stored, without a conversation.
 ``columbina hooks`` lists the hooks of a directory, and trusts those of its
-project or takes that trust back.
+project or takes that trust back. ``columbina setup`` asks which service the
+model is to come from and for its key, and writes both down.
 
 Either way the program is built from layers, which are lists of plugin
 entries: first the profile, then the patch of the user, then the patches named
@@ -28,11 +29,22 @@ profile goes by.
 What the agent may do is the business of the entry called ``permissions``:
 ``--permission`` names its preset, and each ``--allow`` adds a rule to the
 rules that it has.
+
+Where the model comes from is the business of two entries: the one called
+``model``, which loads the adapter, and the frontend, which says which model
+of which provider it talks to. A service is a name for what both of them
+need, see :mod:`columbina.llm.services`. The service that
+``columbina setup`` wrote down is put into the profile before the patches
+are applied, so a patch still has the last word. ``--provider`` and the
+variable ``COLUMBINA_PROVIDER`` are what the command line asks for, and are
+put in last. Either way only a profile whose entry ``model`` loads the
+adapter for the OpenAI Chat Completions protocol is changed.
 """
 
 import argparse
 import asyncio
 import contextlib
+import getpass
 import logging
 import os
 import sys
@@ -48,18 +60,21 @@ import columbina
 from columbina.apps import FRONTEND
 from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
+from columbina.apps import setup as chosen_service
 from columbina.apps.terminal_text import harmless
 from columbina.hooks import Config as HooksConfig
 from columbina.kernel import (
     CompositionError,
     Context,
     Entry,
+    Insert,
     Layer,
     flatten,
     interpolate,
     mount,
     parse_layer,
 )
+from columbina.llm.services import PRESETS, Service, adapter_config
 from columbina.permissions import Preset
 from columbina.session import SESSIONS, SessionError
 
@@ -78,6 +93,12 @@ _RUNS_THE_HOOKS = "columbina.hooks"
 """The plugin whose config says where the hook files and the record of trust lie."""
 _NOT_A_COMMAND = ("-h", "--help", "--version")
 """What may stand first on the command line without meaning the conversation."""
+_SETUP = "setup"
+_MODEL = "model"
+_SPEAKS_OPENAI = "columbina.llm.adapters.openai_chat"
+"""The plugin that talks to every service that has a name."""
+_STORED_KEYS = "${COLUMBINA_HOME}/" + chosen_service.KEYS
+"""Where the keys lie that the user stored, as a config says it."""
 
 
 class _UsageError(Exception):
@@ -130,6 +151,84 @@ def _config_of(entry: Entry) -> dict[str, Any]:
     return dict(cast("dict[str, Any]", config))
 
 
+def _call_of(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of what the config of the frontend says of the model."""
+    said: object = config.get("model")
+    if said is None:
+        return {}
+    if not isinstance(said, dict):
+        raise _UsageError(f"the entry {_FRONTEND!r} has a 'model' that is not a mapping")
+    return dict(cast("dict[str, Any]", said))
+
+
+def _served(
+    entries: list[Entry], service: Service, env: Mapping[str, str], model: str | None
+) -> bool:
+    """Point the adapter of the entries and their frontend at a service.
+
+    The config of the adapter is written anew as a whole: what a profile
+    says of one service says nothing of another. Of what the frontend says
+    of the model, the provider, the model and the size of its window change
+    and the rest stays.
+
+    Args:
+        entries: The entries. They are changed in place.
+        service: The service.
+        env: The environment. The variables that name the model and the size
+            of its window go before what is known of the service.
+        model: The model that the command line names, if it names one.
+
+    Returns:
+        Whether there was an adapter to point. Nothing is changed where
+        there is none.
+
+    Raises:
+        _UsageError: Nothing names a model, and the service has none that
+            is used by default.
+    """
+    at = next(
+        (
+            position
+            for position, entry in enumerate(entries)
+            if entry.id == _MODEL and entry.plugin == _SPEAKS_OPENAI and not entry.disabled
+        ),
+        None,
+    )
+    if at is None:
+        return False
+    named = model or env.get("COLUMBINA_MODEL") or service.model
+    if named is None:
+        raise _UsageError(
+            f"no model is named for the service {service.name}, and it has none that is used "
+            "by default. Name one with --model, or choose one with 'columbina setup'"
+        )
+    config = adapter_config(service, _STORED_KEYS, env)
+    entries[at] = entries[at].model_copy(update={"config": config})
+    for position, entry in enumerate(entries):
+        if entry.id == _FRONTEND and not entry.disabled:
+            config = _config_of(entry)
+            call = _call_of(config)
+            call["provider"] = service.name
+            # A dollar sign of a name stands for itself. The variable is named, and not
+            # what it holds, the way a profile names it.
+            call["model"] = (
+                "${COLUMBINA_MODEL}"
+                if model is None and env.get("COLUMBINA_MODEL")
+                else named.replace("$", "$$")
+            )
+            if env.get("COLUMBINA_CONTEXT_WINDOW"):
+                call["context_window"] = "${COLUMBINA_CONTEXT_WINDOW}"
+            elif service.context_window is not None and named == service.model:
+                call["context_window"] = service.context_window
+            else:
+                # What is known of the size is known of one model, and what a profile says
+                # of it is said of the model of another service.
+                call.pop("context_window", None)
+            config["model"] = call
+            entries[position] = entry.model_copy(update={"config": config})
+    return True
+
+
 def _permit(entries: list[Entry], args: argparse.Namespace) -> None:
     """Hand the preset and the rules of the command line to the entry of the permissions."""
     if args.permission is None and not args.allow:
@@ -154,14 +253,28 @@ def _permit(entries: list[Entry], args: argparse.Namespace) -> None:
     )
 
 
-def _flattened(args: argparse.Namespace, home: Path) -> list[Entry]:
-    """Return the entries of the profile, with the patches of the user and of the command line."""
-    layers = [_profile(args.profile)]
+def _flattened(
+    args: argparse.Namespace,
+    home: Path,
+    first: Callable[[list[Entry]], object] | None = None,
+) -> list[Entry]:
+    """Return the entries of the profile, with the patches of the user and of the command line.
+
+    Args:
+        args: What the command line says.
+        home: The home of the program.
+        first: Changes the entries of the profile before a patch is applied
+            to them.
+    """
+    entries = flatten([_profile(args.profile)], lookup=_bundle)
+    if first is not None:
+        first(entries)
+    layers = [Layer(patch=(Insert(insert=tuple(entries)),))]
     mine = home / "config.yml"
     if mine.is_file():
         layers.append(_file_layer(mine))
     layers.extend(_file_layer(Path(patch)) for patch in args.patch)
-    return flatten(layers, lookup=_bundle)
+    return flatten(layers)
 
 
 def _entries_that_know_the_log(args: argparse.Namespace, home: Path) -> list[Entry]:
@@ -202,15 +315,31 @@ def _config_of_the_hooks(
     )
 
 
-def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
+def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> list[Entry]:
     """Work out the plugin entries that the command line asks for."""
     if args.command == _CHAT and args.resume and args.session_id is not None:
         raise _UsageError(
             "--continue takes up the session that was used last, and --session-id names one: "
             "give one of the two"
         )
-    entries = _flattened(args, home)
+    stored = chosen_service.chosen(home)
+
+    def as_chosen(profile: list[Entry]) -> None:
+        # A profile that talks to its model in another way is left as it is.
+        if stored.use is not None:
+            service = chosen_service.service_named(stored.use, stored)
+            _served(profile, service, env, args.model)
+
+    entries = _flattened(args, home, as_chosen)
     _permit(entries, args)
+    named = args.provider or env.get("COLUMBINA_PROVIDER")
+    if named:
+        service = chosen_service.service_named(named, stored)
+        if not _served(entries, service, env, args.model):
+            raise _UsageError(
+                f"the profile has no entry {_MODEL!r} that loads {_SPEAKS_OPENAI}, or it is "
+                f"disabled, so there is nothing to point at the service {named}"
+            )
     for position, entry in enumerate(entries):
         if entry.id == _FRONTEND:
             if entry.disabled:
@@ -227,7 +356,7 @@ def _entries(args: argparse.Namespace, home: Path) -> list[Entry]:
             if args.session_id is not None:
                 config["session_id"] = args.session_id
             if args.model is not None:
-                config["model"] = {**config.get("model", {}), "model": args.model}
+                config["model"] = {**_call_of(config), "model": args.model.replace("$", "$$")}
             if args.command == _RUN:
                 config["task"] = args.task
                 if args.json is not None:
@@ -368,6 +497,37 @@ def _hooks(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     return 0
 
 
+def _setup(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Ask for the service of the model and its key and store them, or delete what is stored."""
+
+    def show(told: str) -> None:
+        # What is told names files, and repeats what a person typed or a file holds.
+        print(harmless(told))
+
+    def asked(question: str) -> str:
+        return input(harmless(question))
+
+    def asked_unseen(question: str) -> str:
+        return getpass.getpass(harmless(question))
+
+    if args.forget is not None:
+        chosen_service.forget(home, args.forget, show)
+        return 0
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise _UsageError(
+            "'columbina setup' asks its questions at a terminal, and this is none. A key can "
+            "be given in the environment variable of its service instead"
+        )
+    try:
+        chosen_service.run(home, env, asked, asked_unseen, show)
+    except (EOFError, KeyboardInterrupt):
+        # The line of the question that was not answered is still open.
+        print()
+        _tell("nothing was stored")
+        return _INTERRUPTED
+    return 0
+
+
 def _from_the_profile(command: argparse.ArgumentParser, profile: str) -> None:
     """Add the arguments that say which program is meant and where it works."""
     command.add_argument(
@@ -389,6 +549,13 @@ def _shared(command: argparse.ArgumentParser, profile: str) -> None:
     """Add the arguments that every command takes that has an agent work."""
     _from_the_profile(command, profile)
     command.add_argument("--model", metavar="ID", help="the model to use")
+    command.add_argument(
+        "--provider",
+        metavar="NAME",
+        help="the service that the model comes from: "
+        + ", ".join(service.name for service in PRESETS)
+        + ", or one that was added with 'columbina setup'",
+    )
     command.add_argument(
         "--cwd",
         metavar="DIR",
@@ -498,6 +665,15 @@ def _parser() -> argparse.ArgumentParser:
         help="list the hooks of a directory, and trust those of its project or trust them no more",
     )
     _written(written)
+    setup = commands.add_parser(
+        _SETUP,
+        help="choose the service that the model comes from, and store the API key for it",
+    )
+    setup.add_argument(
+        "--forget",
+        metavar="NAME",
+        help="delete what is stored for a service, its key and what was said of it, and stop",
+    )
     return parser
 
 
@@ -525,14 +701,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return asyncio.run(_look(_entries_that_know_the_log(args, home), env, args))
         if args.command == _HOOKS:
             return _hooks(args, home, env)
-        entries = _entries(args, home)
+        if args.command == _SETUP:
+            return _setup(args, home, env)
+        entries = _entries(args, home, env)
         if args.dump_config:
             dumped = _dump(entries)
             # A file or another program gets the entries as they are, to be read again.
             sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)
             return 0
         return asyncio.run(_run(entries, env))
-    except (_UsageError, CompositionError) as error:
+    except (_UsageError, CompositionError, chosen_service.SetupError) as error:
         _tell(str(error))
         return 2
     except KeyboardInterrupt:

@@ -7,6 +7,8 @@ interface ItemBase {
   id: string;
   seq: number;
   time: number;
+  /** The number of the turn that was under way when the item came, or null outside of every turn. */
+  turn: number | null;
 }
 
 export interface UserItem extends ItemBase {
@@ -47,8 +49,22 @@ export interface CompactionItem extends ItemBase {
 
 export type ConversationItem = UserItem | AssistantItem | ToolItem | NoticeItem | CompactionItem;
 
+/** A turn as the log tells of it: where it stands among the items, and how it ended. */
+export interface TurnRecord {
+  number: number;
+  /** How many items there were when the turn began. Its own items follow from there. */
+  at: number;
+  seq: number;
+  startedAt: number;
+  /** How many steps of the turn have begun. A step is one request to the model and the calls it leads to. */
+  steps: number;
+  /** Null while the turn runs, and for a turn whose end the log does not hold. */
+  end: { seq: number; time: number; reason: string; detail: string | null } | null;
+}
+
 export interface Projection {
   items: ConversationItem[];
+  turns: TurnRecord[];
   queues: { 'next-turn': InboxEntry[]; 'next-step': InboxEntry[] };
   usage: Usage;
   lastInputTokens: number;
@@ -64,6 +80,7 @@ export const emptyUsage = (): Usage => ({
 
 export const emptyProjection = (): Projection => ({
   items: [],
+  turns: [],
   queues: { 'next-turn': [], 'next-step': [] },
   usage: emptyUsage(),
   lastInputTokens: 0,
@@ -117,6 +134,8 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
   const calls: ToolItem[] = [];
   const resultsBySeq = new Map<number, ToolItem>();
   const approvedAt = new Map<ToolItem, number>();
+  // The record of the turn that is under way, if one is.
+  let openTurn: TurnRecord | null = null;
   const pendingCall = (callId: string) => {
     for (let i = calls.length - 1; i >= 0; i--) {
       if (calls[i].callId === callId && calls[i].result === null && !calls[i].interrupted) return calls[i];
@@ -126,7 +145,9 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
 
   for (const event of events) {
     const data = event.data;
-    const base = { id: `event-${event.seq}`, seq: event.seq, time: event.time };
+    // An item belongs to the turn that is under way when its event comes. The end of a turn
+    // is such an event too, so the line that says how a turn ended belongs to that turn.
+    const base = { id: `event-${event.seq}`, seq: event.seq, time: event.time, turn: projection.turn };
     const notice = (text: string, tone: NoticeItem['tone'] = 'info') => {
       projection.items.push({ ...base, type: 'notice', text, tone });
     };
@@ -225,9 +246,15 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
       case 'turn/start':
         projection.turn = number(data.turn);
         projection.step = null;
+        openTurn = {
+          number: projection.turn, at: projection.items.length, seq: event.seq, startedAt: event.time,
+          steps: 0, end: null,
+        };
+        projection.turns.push(openTurn);
         break;
       case 'step/start':
         projection.step = number(data.step);
+        if (openTurn && openTurn.number === data.turn) openTurn.steps += 1;
         break;
       case 'step/end':
         if (projection.step === data.step) projection.step = null;
@@ -239,6 +266,13 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
         if (projection.turn === data.turn) {
           projection.turn = null;
           projection.step = null;
+          if (openTurn) {
+            openTurn.end = {
+              seq: event.seq, time: event.time, reason: string(data.reason),
+              detail: typeof data.detail === 'string' ? data.detail : null,
+            };
+          }
+          openTurn = null;
         }
         const reason = string(data.reason);
         const endings: Record<string, string> = {

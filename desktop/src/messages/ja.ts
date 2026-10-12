@@ -386,6 +386,7 @@ export const ja: Messages = {
     input: '渡した内容',
     output: '返ってきた内容',
     noOutput: '出力なし',
+    showAllLines: (lines: number) => `全 ${lines} 行を表示`,
     before: '変更前',
     after: '変更後',
     thought: '考えたこと',

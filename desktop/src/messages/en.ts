@@ -416,6 +416,7 @@ export const en = {
     input: 'What it was given',
     output: 'What came back',
     noOutput: 'Nothing came back',
+    showAllLines: (lines: number) => `Show all ${lines} lines`,
     before: 'Before',
     after: 'After',
     thought: 'Thought',

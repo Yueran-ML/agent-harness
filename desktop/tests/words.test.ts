@@ -29,6 +29,7 @@ const samples: Record<string, unknown[][]> = {
   'model.named.noKey': [['DeepSeek'], ['my-own']],
   'model.named.keyRefused': [['DeepSeek'], ['my-own']],
   'model.named.keyProblem': [['DeepSeek'], ['my-own']],
+  'label.showAllLines': [[81], [1240]],
   'turn.took': [[1, 1], [42, 3], [125, 12]],
   'turn.limit.steps': [[1], [30]],
   'wait.retry': [[0, 3], [1, 1], [4, 2]],

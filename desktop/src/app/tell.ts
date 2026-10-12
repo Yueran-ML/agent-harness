@@ -315,9 +315,15 @@ export function objectOf(args: Record<string, unknown> | null): string {
   return '';
 }
 
-/** The last lines of a text, and how many lines before them were left out. */
-export function tail(text: string, most: number): { shown: string; cut: number } {
+/**
+ * The last lines of a text, and how many lines before them were left out.
+ *
+ * Args:
+ *   text: The text. A line break at its very end begins no line.
+ *   most: How many lines are shown at most, or null for all of them.
+ */
+export function tail(text: string, most: number | null): { shown: string; cut: number } {
   const lines = text.replace(/\n$/, '').split('\n');
-  if (lines.length <= most) return { shown: lines.join('\n'), cut: 0 };
+  if (most === null || lines.length <= most) return { shown: lines.join('\n'), cut: 0 };
   return { shown: lines.slice(-most).join('\n'), cut: lines.length - most };
 }

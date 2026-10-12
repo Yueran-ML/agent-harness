@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Check, ChevronRight, CircleSlash, FilePen, FileText, FolderSearch, Hand, ListChecks, Search,
   Sparkles, SquareTerminal, TriangleAlert, Users, Wrench, type LucideIcon,
@@ -53,7 +53,10 @@ function Mark({ tone }: { tone: Tone }) {
   return <TriangleAlert size={13} aria-hidden="true" />;
 }
 
-/** How many lines of what a tool gave back are shown. The rest is in the log. */
+/**
+ * How many lines of what a tool gave back are shown at first: the last ones, because what
+ * went wrong and how a command ended stand at the end. The rest is shown when it is asked for.
+ */
 const LINES_SHOWN = 80;
 
 /** This moment, and while `moving` holds the moment of a look that is taken twice a second. */
@@ -86,9 +89,25 @@ export function ToolRow({ item }: { item: ToolItem }) {
   const edit = item.name === 'edit' && typeof args?.old === 'string' && typeof args?.new === 'string'
     ? { before: args.old, after: args.new } : null;
   const written = item.name === 'write' && typeof args?.content === 'string' ? args.content : null;
-  const result = item.result === null ? null : tail(item.result, LINES_SHOWN);
+  // Whether the user has asked for all that came back.
+  const [whole, setWhole] = useState(false);
+  // What came back is taller than its place. The last lines are what is looked for first, so the
+  // place is opened at its end. All of it, once that is asked for, is read from the beginning.
+  const output = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (whole && output.current) output.current.scrollTop = 0;
+  }, [whole]);
+  const result = item.result === null ? null : tail(item.result, whole ? null : LINES_SHOWN);
 
-  return <details className="tool" data-tone={tone} data-test="tool">
+  return <details
+    className="tool"
+    data-tone={tone}
+    data-test="tool"
+    onToggle={event => {
+      const node = output.current;
+      if (event.currentTarget.open && node && !whole) node.scrollTop = node.scrollHeight;
+    }}
+  >
     <summary>
       <Icon size={15} className="tool-icon" aria-hidden="true" />
       <span className="tool-what">
@@ -120,8 +139,11 @@ export function ToolRow({ item }: { item: ToolItem }) {
       </>}
       {result !== null && <>
         <div className="overline">{words.label.output}</div>
+        {result.cut > 0 && <button type="button" className="btn btn-quiet tool-all" onClick={() => setWhole(true)} data-test="tool-all">
+          {words.label.showAllLines(result.cut + LINES_SHOWN)}
+        </button>}
         {result.shown
-          ? <pre className="block" tabIndex={0}>{result.cut > 0 ? `…\n${result.shown}` : result.shown}</pre>
+          ? <pre className="block" ref={output} tabIndex={0} data-test="tool-output">{result.cut > 0 ? `…\n${result.shown}` : result.shown}</pre>
           : <p className="caption">{words.label.noOutput}</p>}
       </>}
       {outcome.code && <p className="tool-code mono">{outcome.code}{outcome.detail ? ` · ${outcome.detail}` : ''}</p>}

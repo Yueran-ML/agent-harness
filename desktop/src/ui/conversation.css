@@ -248,6 +248,11 @@
   color: var(--moon-1);
 }
 
+/* The way to all that a call gave back, above the last lines of it. */
+.tool-all {
+  align-self: flex-start;
+}
+
 .tool-code {
   font-size: var(--text-caption);
   color: var(--moon-2);

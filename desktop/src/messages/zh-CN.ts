@@ -338,6 +338,7 @@ export const zhCN: Messages = {
     input: '给它的内容',
     output: '返回的内容',
     noOutput: '没有返回内容',
+    showAllLines: (lines: number) => `显示全部 ${lines} 行`,
     before: '改之前',
     after: '改之后',
     thought: '想了一下',

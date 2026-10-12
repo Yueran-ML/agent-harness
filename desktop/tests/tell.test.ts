@@ -561,6 +561,21 @@ describe('the last lines of a text', () => {
     // An empty line before the end is a line.
     expect(tail('one\n\n', 2)).toEqual({ shown: 'one\n', cut: 0 });
   });
+
+  it('are all the lines where all are asked for', () => {
+    const long = Array.from({ length: 300 }, (_line, index) => `line ${index}`).join('\n');
+    expect(tail(long, 80)).toEqual({ shown: long.split('\n').slice(220).join('\n'), cut: 220 });
+    expect(tail(long, null)).toEqual({ shown: long, cut: 0 });
+    // The end of the last line is no line then either.
+    expect(tail(`${long}\n`, null)).toEqual({ shown: long, cut: 0 });
+    expect(tail('', null)).toEqual({ shown: '', cut: 0 });
+  });
+
+  it('say with what is left out how many lines there are in all', () => {
+    // The button that shows everything names that number.
+    const cut = tail('a\nb\nc\nd\ne', 2);
+    expect(cut.cut + 2).toBe(5);
+  });
 });
 
 describe('several texts as one', () => {

@@ -7,7 +7,7 @@ import os
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +23,12 @@ import columbina.spill.policy
 import columbina.tools
 from columbina import process, shells
 from columbina.builtin_tools import read, shell
-from columbina.kernel import Context
+from columbina.kernel import Context, EffectHandle
 from columbina.llm import ToolCallBlock
 from columbina.permissions import PERMISSIONS, Permissions
 from columbina.permissions.commands import split_bash, split_powershell
 from columbina.process import Completed
-from columbina.sandbox import SANDBOX, Mode, Sandbox
+from columbina.sandbox import SANDBOX, Mode, Sandbox, SandboxProvider
 from columbina.session import SESSIONS, Session
 from columbina.spill import SPILL, Saved
 from columbina.token_meter import estimate
@@ -70,13 +70,15 @@ class Bench:
     permissions: Permissions
     session: Session
     work: Path
+    tool: str = shell.NAME
+    provided: EffectHandle | None = None
     _calls: int = 0
 
     async def call(self, command: str, **more: Any) -> ToolOutcome:
         self._calls += 1
         call_id = f"call-{self._calls}"
         arguments = json.dumps({"command": command, **more})
-        asked = ToolCallBlock(call_id=call_id, name=shell.NAME, arguments=arguments)
+        asked = ToolCallBlock(call_id=call_id, name=self.tool, arguments=arguments)
         return await self.tools.run(self.ctx, asked, ToolRun(call_id, self.work, self.session))
 
     async def said(self, command: str, **more: Any) -> str:
@@ -91,6 +93,7 @@ async def loaded(
     tmp_path: Path,
     work: str = "work",
     sandbox: dict[str, str] | None = None,
+    provider: SandboxProvider | None = None,
     **permissions: Any,
 ) -> Bench:
     directory = tmp_path / work
@@ -99,6 +102,10 @@ async def loaded(
     await ctx.plugin(columbina.tools)
     await ctx.plugin(columbina.fs)
     await ctx.plugin(columbina.sandbox, sandbox)
+    provided = None
+    if provider is not None:
+        # There before the tool is, as a provider that the sandbox brings with it would be.
+        provided = ctx.use(SANDBOX).providers.add(ctx, (sandbox or {})["provider"], provider)
     await ctx.plugin(columbina.approval)
     await ctx.plugin(columbina.permissions, permissions or {"allow": [shell.NAME]})
     await ctx.plugin(shell)
@@ -109,6 +116,7 @@ async def loaded(
         permissions=ctx.use(PERMISSIONS),
         session=ctx.use(SESSIONS).create(ctx, directory),
         work=directory,
+        provided=provided,
     )
 
 
@@ -692,10 +700,11 @@ async def test_a_command_that_cannot_be_started_is_a_failure_of_the_call(
 
 
 async def test_a_command_that_is_too_long_is_refused_before_anything_runs(
-    bench: Bench, monkeypatch: pytest.MonkeyPatch
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(shell, "HERE", replace(shell.HERE, max_command_bytes=20))
+    bench = await loaded(ctx, tmp_path)
     runs = watched(monkeypatch)
-    monkeypatch.setattr(shell, "MAX_COMMAND_BYTES", 20)
     moon = chr(0x6708)
 
     fits = await bench.call("echo " + "x" * 15)
@@ -741,6 +750,199 @@ async def test_a_command_runs_the_way_the_sandbox_hands_it_back(
     assert await bench.said("echo hi") == (
         f"held in workspace-write mode, {words} words\n[exit code 0]"
     )
+
+
+# The shells
+
+
+def test_bash_on_this_machine_takes_the_command_as_an_argument_and_no_input() -> None:
+    line = ["/usr/bin/bash", "--noprofile", "--norc", "-c", "echo 'a  b'"]
+
+    assert shell.BASH.invocation("/usr/bin/bash", "echo 'a  b'") == (line, None)
+    assert shell.BASH.max_command_bytes == 120_000
+
+
+def test_bash_in_another_place_takes_the_command_on_its_input() -> None:
+    moon = chr(0x6708)
+    line = ["bash", "--noprofile", "--norc", "-c", READ_AND_RUN]
+
+    assert shell.BASH_ELSEWHERE.invocation("bash", f"echo {moon}") == (
+        line,
+        f"echo {moon}".encode(),
+    )
+    assert shell.BASH_ELSEWHERE.max_command_bytes == 120_000
+    assert (shell.BASH_ELSEWHERE.name, shell.BASH_ELSEWHERE.splitter) == ("bash", split_bash)
+
+
+def test_the_shell_is_the_one_of_this_machine_unless_commands_run_elsewhere() -> None:
+    assert shell.flavour(None) is shell.HERE
+    assert shell.flavour("bash") is shell.BASH_ELSEWHERE
+    assert shell.HERE.name == shell.NAME == ("powershell" if WINDOWS else "bash")
+    assert WINDOWS or shell.HERE is shell.BASH
+
+
+# Commands that run somewhere else
+
+READ_AND_RUN = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null'
+CHANGED = (
+    "The command was not run: the place where the sandbox runs commands is another one "
+    "than when this tool was made. Start the program again."
+)
+
+
+class Elsewhere(Holding):
+    """A provider that says its commands run with bash, in another place than this machine.
+
+    Not every machine that runs these tests has a bash. So in the place of
+    a command this runs a program of this machine, which says what it was
+    given as input.
+    """
+
+    def __init__(self, shell: str = "bash") -> None:
+        super().__init__(shell=shell)
+
+    def held(self, argv: Sequence[str], mode: Mode) -> Sequence[str]:
+        return [PYTHON, "-c", "import sys; print('given:', sys.stdin.read())"]
+
+
+async def elsewhere(ctx: Context, tmp_path: Path, provider: Holding | None = None) -> Bench:
+    bench = await loaded(
+        ctx,
+        tmp_path,
+        sandbox={"provider": "elsewhere"},
+        provider=provider or Elsewhere(),
+        allow=["bash"],
+    )
+    bench.tool = "bash"
+    return bench
+
+
+async def test_where_commands_run_elsewhere_the_tool_is_the_shell_of_that_place(
+    ctx: Context, tmp_path: Path
+) -> None:
+    bench = await elsewhere(ctx, tmp_path)
+
+    there = [name for name in ("bash", "powershell") if bench.tools.registry.get(name)]
+    assert there == ["bash"]
+    assert bench.permissions.splitters.get("bash") is split_bash
+    assert bench.permissions.splitters.get("powershell") is None
+
+
+async def test_a_command_for_elsewhere_goes_to_a_fixed_line_on_its_input(
+    ctx: Context, tmp_path: Path
+) -> None:
+    # On its way to another place a command passes the command line of this system, and
+    # that of Windows has no room for a long one.
+    provider = Elsewhere()
+    bench = await elsewhere(ctx, tmp_path, provider)
+
+    said = await bench.said("echo 'a  b'; exit 3")
+
+    assert said == "given: echo 'a  b'; exit 3\n[exit code 0]"
+    line = ("bash", "--noprofile", "--norc", "-c", READ_AND_RUN)
+    assert provider.asked == [(line, "workspace-write", bench.work)]
+    assert provider.given == [b"echo 'a  b'; exit 3"]
+
+
+async def test_the_tool_for_elsewhere_needs_no_shell_on_this_machine(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def nowhere() -> None:
+        return None
+
+    monkeypatch.setattr(shells, "find", nowhere)
+
+    bench = await elsewhere(ctx, tmp_path)
+
+    assert await bench.said("echo hi") == "given: echo hi\n[exit code 0]"
+
+
+async def test_a_shell_that_the_tool_cannot_write_for_keeps_it_from_loading(
+    ctx: Context, tmp_path: Path
+) -> None:
+    with pytest.raises(RuntimeError, match="commands with 'fish'"):
+        await elsewhere(ctx, tmp_path, Elsewhere("fish"))
+
+
+async def test_a_command_for_elsewhere_may_be_as_long_as_an_argument_may_be_there(
+    ctx: Context, tmp_path: Path
+) -> None:
+    # In the other place the command ends up as one argument of bash, whatever this
+    # system would take.
+    provider = Elsewhere()
+    bench = await elsewhere(ctx, tmp_path, provider)
+
+    fits = await bench.call("echo " + "x" * 119_995)
+    too_long = await bench.call("echo " + "x" * 119_996)
+
+    assert fits.error is None, fits.text[:200]
+    assert too_long.error is not None
+    assert too_long.error.code == "COMMAND_TOO_LONG"
+    assert "longer than 120000 bytes" in too_long.text
+    assert len(provider.asked) == 1
+
+
+async def test_the_whole_output_of_a_command_for_elsewhere_is_saved_under_the_name_of_its_tool(
+    ctx: Context, tmp_path: Path
+) -> None:
+    class Wordy(Elsewhere):
+        def held(self, argv: Sequence[str], mode: Mode) -> Sequence[str]:
+            return [PYTHON, "-c", MUCH]
+
+    place = Place()
+    bench = await elsewhere(ctx, tmp_path, Wordy())
+    bench.ctx.provide(SPILL, place)
+
+    said = await bench.said("anything")
+
+    assert [file.name for file in place.files] == ["bash-output.txt"]
+    assert said.endswith("bytes and is in kept:bash-output.txt. Read it.)")
+
+
+async def test_the_model_is_told_that_it_writes_for_bash_where_commands_run_elsewhere(
+    ctx: Context, tmp_path: Path
+) -> None:
+    bench = await elsewhere(ctx, tmp_path)
+
+    (schema,) = [schema for schema in bench.tools.schemas() if schema.name == "bash"]
+    assert schema.description.startswith("Run a command in bash. The command runs in ")
+    assert "PowerShell" not in schema.description
+
+
+async def test_a_tool_that_was_made_for_one_shell_does_not_write_for_another(
+    ctx: Context, tmp_path: Path
+) -> None:
+    # The tool has its name from the shell, and its name stays while the program runs.
+    there = Elsewhere()
+    bench = await loaded(ctx, tmp_path, sandbox={"provider": "changing"})
+    first = bench.sandbox.providers.add(ctx, "changing", Holding())
+    assert (await bench.call("echo hi")).error is None
+    await first.dispose()
+    bench.sandbox.providers.add(ctx, "changing", there)
+
+    outcome = await bench.call("echo hi")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "SANDBOX_UNAVAILABLE"
+    assert outcome.text == CHANGED
+    assert there.asked == []
+
+
+async def test_a_tool_for_elsewhere_does_not_write_for_the_shell_of_this_machine(
+    ctx: Context, tmp_path: Path
+) -> None:
+    here = Holding()
+    bench = await elsewhere(ctx, tmp_path)
+    assert bench.provided is not None
+    await bench.provided.dispose()
+    bench.sandbox.providers.add(ctx, "elsewhere", here)
+
+    outcome = await bench.call("echo hi")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "SANDBOX_UNAVAILABLE"
+    assert outcome.text == CHANGED
+    assert here.asked == []
 
 
 # What the checks and the permissions are told
@@ -928,3 +1130,40 @@ else:
     async def test_the_exit_code_of_the_last_command_is_passed_on(bench: Bench) -> None:
         assert await bench.said("false; true") == "[exit code 0]"
         assert await bench.said("true; false") == "[exit code 1]"
+
+    # The fixed line that takes a command for another place, tried with the bash of this one.
+
+    async def on_the_input(ctx: Context, tmp_path: Path) -> Bench:
+        return await elsewhere(ctx, tmp_path, Holding(shell="bash"))
+
+    async def test_the_fixed_line_runs_what_comes_on_its_input_as_it_was_written(
+        ctx: Context, tmp_path: Path
+    ) -> None:
+        bench = await on_the_input(ctx, tmp_path)
+        several = (
+            "twice() {\n  echo $(($1 * 2))\n}\nif true; then\n  twice 21\nfi\n"
+            'printf \'%s|\' "a  b" \'c$d\' "e\\"f" "$0"; echo'
+        )
+
+        assert await bench.said(several) == '42\na  b|c$d|e"f|bash|\n[exit code 0]'
+
+    async def test_a_command_on_the_input_gets_no_input_of_its_own(
+        ctx: Context, tmp_path: Path
+    ) -> None:
+        bench = await on_the_input(ctx, tmp_path)
+
+        assert await bench.said(READ_A_LINE) == "no input\n[exit code 0]"
+
+    async def test_the_exit_code_of_a_command_on_the_input_is_passed_on(
+        ctx: Context, tmp_path: Path
+    ) -> None:
+        bench = await on_the_input(ctx, tmp_path)
+
+        assert await bench.said("echo out; exit 7") == "out\n[exit code 7]"
+        assert await bench.said("false; true") == "[exit code 0]"
+
+    async def test_a_long_command_on_the_input_runs(ctx: Context, tmp_path: Path) -> None:
+        bench = await on_the_input(ctx, tmp_path)
+        long = "echo '" + "x" * 100_000 + "' | wc -c"
+
+        assert (await bench.said(long)).split() == ["100001", "[exit", "code", "0]"]

@@ -1623,6 +1623,18 @@ _SANDBOX = (
         "            argv,\n            cwd=Path.cwd(),\n            env=shells.environment(),\n",
     ),
     mutant(
+        "the sandbox does not pass on the shell that its provider names",
+        SANDBOX,
+        "        return None if provider is None else provider.shell\n",
+        "        return None\n",
+    ),
+    mutant(
+        "the provider that holds nothing says that its commands run elsewhere",
+        SANDBOX,
+        '    strength: Strength = "none"\n    shell: str | None = None\n',
+        '    strength: Strength = "none"\n    shell: str | None = "bash"\n',
+    ),
+    mutant(
         "a provider that is not there is no reason to stop",
         SANDBOX,
         "        if provider is None:\n            raise SandboxUnavailableError(",
@@ -2629,8 +2641,8 @@ _SHELL = (
     mutant(
         "the length of a command is counted in letters",
         SHELL,
-        '        if len(args.command.encode("utf-8")) > MAX_COMMAND_BYTES:',
-        "        if len(args.command) > MAX_COMMAND_BYTES:",
+        '        if len(args.command.encode("utf-8")) > way.max_command_bytes:',
+        "        if len(args.command) > way.max_command_bytes:",
     ),
     mutant(
         "the tool runs its command on this machine whatever the sandbox is",
@@ -2672,7 +2684,7 @@ _SHELL = (
     mutant(
         "the permissions are not told how the commands of the tool are taken apart",
         SHELL,
-        "    ctx.use(PERMISSIONS).splitters.add(ctx, NAME, _SPLITTER)\n",
+        "    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, way.splitter)\n",
         "",
     ),
     on_windows(
@@ -2764,8 +2776,8 @@ _SHELL = (
     mutant(
         "the place is the one that was there when the tool was made",
         SHELL,
-        "shell_tool(ctx.use(SANDBOX), shell, lambda: ctx.get(SPILL))",
-        "shell_tool(ctx.use(SANDBOX), shell, lambda found=ctx.get(SPILL): found)",
+        "shell_tool(sandbox, shell, lambda: ctx.get(SPILL), elsewhere)",
+        "shell_tool(sandbox, shell, lambda found=ctx.get(SPILL): found, elsewhere)",
     ),
     mutant(
         "a fault of a place fails the call that it was saving for",
@@ -2776,8 +2788,124 @@ _SHELL = (
     mutant(
         "the saved output does not say which tool wrote it",
         SHELL,
-        'f"{NAME}-output.txt"',
+        'f"{tool}-output.txt"',
         '"output.txt"',
+    ),
+    mutant(
+        "a command for another place is handed over as an argument",
+        SHELL,
+        "BASH_ELSEWHERE = replace(BASH, invocation=_on_the_input)\n",
+        "BASH_ELSEWHERE = replace(BASH)\n",
+    ),
+    mutant(
+        "a command for another place gets the input that it came on",
+        SHELL,
+        """exec bash --noprofile --norc -c "$command" </dev/null'""",
+        """exec bash --noprofile --norc -c "$command"'""",
+    ),
+    mutant(
+        "a command for another place is run by the shell that read it",
+        SHELL,
+        """_READ_AND_RUN_BASH = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null'""",
+        """_READ_AND_RUN_BASH = 'command=$(cat) && eval "$command" </dev/null'""",
+    ),
+    mutant(
+        "a command on the input is taken for text in the encoding of the system",
+        SHELL,
+        '-c", _READ_AND_RUN_BASH], command.encode("utf-8")\n',
+        '-c", _READ_AND_RUN_BASH], command.encode("utf-16")\n',
+    ),
+    mutant(
+        "bash on this machine gets its command on the input",
+        SHELL,
+        '    return [shell, "--noprofile", "--norc", "-c", command], None\n',
+        '    return [shell, "--noprofile", "--norc", "-c", command], command.encode("utf-8")\n',
+    ),
+    mutant(
+        "where commands run elsewhere the tool is the one of this machine",
+        SHELL,
+        '    if elsewhere == "bash":\n        return BASH_ELSEWHERE\n',
+        '    if elsewhere == "bash":\n        return HERE\n',
+    ),
+    mutant(
+        "any shell of another place is taken for bash",
+        SHELL,
+        '    if elsewhere == "bash":\n        return BASH_ELSEWHERE\n',
+        "    if elsewhere is not None:\n        return BASH_ELSEWHERE\n",
+    ),
+    mutant(
+        "the tool for another place needs the shell of this machine",
+        SHELL,
+        "    shell = shells.find() if elsewhere is None else elsewhere\n",
+        "    shell = shells.find()\n",
+    ),
+    mutant(
+        "a tool that was made for one shell hands its command to another",
+        SHELL,
+        "        if sandbox.shell() != elsewhere:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the tool is not told that it was made for another place",
+        SHELL,
+        "shell_tool(sandbox, shell, lambda: ctx.get(SPILL), elsewhere)",
+        "shell_tool(sandbox, shell, lambda: ctx.get(SPILL))",
+    ),
+    on_windows(
+        mutant(
+            "a command for another place may be as long as one for this system",
+            SHELL,
+            '        if len(args.command.encode("utf-8")) > way.max_command_bytes:',
+            '        if len(args.command.encode("utf-8")) > HERE.max_command_bytes:',
+        )
+    ),
+    on_windows(
+        mutant(
+            "a command for another place is handed over in the way of this machine",
+            SHELL,
+            "        argv, given = way.invocation(shell, args.command)\n",
+            "        argv, given = HERE.invocation(shell, args.command)\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the tool for another place has the name of the shell of this machine",
+            SHELL,
+            "        name=way.name,\n",
+            "        name=NAME,\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the tool for another place is described as the shell of this machine",
+            SHELL,
+            '            f"{way.about} The command runs in the working directory',
+            '            f"{HERE.about} The command runs in the working directory',
+        )
+    ),
+    on_windows(
+        mutant(
+            "the commands of the tool for another place are taken apart under another name",
+            SHELL,
+            "    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, way.splitter)\n",
+            "    ctx.use(PERMISSIONS).splitters.add(ctx, NAME, way.splitter)\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the commands of the tool for another place are taken apart as those of this machine",
+            SHELL,
+            "    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, way.splitter)\n",
+            "    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, HERE.splitter)\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the saved output of a command for another place has the name of another tool",
+            SHELL,
+            "        place = None if store is None else _Place(store, run, way.name)\n",
+            "        place = None if store is None else _Place(store, run, NAME)\n",
+        )
     ),
     mutant(
         "a fault of a place is written down by the tool without its trace",
@@ -3023,8 +3151,16 @@ _FACTS = (
     mutant(
         "what runs commands is not told",
         SHELL,
-        '        gathered.lines["commands are run by"] = _FACT\n',
+        '        gathered.lines["commands are run by"] = way.fact\n',
         "        pass\n",
+    ),
+    on_windows(
+        mutant(
+            "a model is told of the shell of this machine where commands run elsewhere",
+            SHELL,
+            '        gathered.lines["commands are run by"] = way.fact\n',
+            '        gathered.lines["commands are run by"] = HERE.fact\n',
+        )
     ),
 )
 

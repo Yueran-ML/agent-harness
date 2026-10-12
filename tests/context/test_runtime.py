@@ -167,6 +167,25 @@ async def test_how_well_commands_are_held_is_told_by_what_holds_them(
     assert f"commands are held: {told}" in facts(agent)[0]
 
 
+async def test_where_commands_run_elsewhere_the_model_is_told_the_shell_of_that_place(
+    harness: Harness,
+) -> None:
+    ctx = harness.ctx
+    await ctx.plugin(columbina.fs)
+    await ctx.plugin(columbina.sandbox, {"provider": "elsewhere"})
+    ctx.use(SANDBOX).providers.add(ctx, "elsewhere", Holding(shell="bash"))
+    await ctx.plugin(columbina.approval)
+    await ctx.plugin(columbina.permissions)
+    await ctx.plugin(shell)
+    await ctx.plugin(runtime)
+    agent = await harness.agent(Reply(text="Hello!"))
+
+    await turn(agent, "Say hello.")
+
+    # Also on Windows, where the shell of this machine is another one.
+    assert "commands are run by: the tool bash" in facts(agent)[0]
+
+
 async def test_a_session_in_which_nobody_is_asked_is_told_so(harness: Harness) -> None:
     ctx = harness.ctx
     await ctx.plugin(columbina.approval)

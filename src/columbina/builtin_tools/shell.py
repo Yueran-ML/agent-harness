@@ -1,8 +1,12 @@
-"""The shell tool: a command, run by the shell of this platform.
+"""The shell tool: a command, run by the shell of the place where commands run.
 
-This module is a plugin. Loading it registers one tool: ``powershell`` on
-Windows and ``bash`` everywhere else. The name of a tool has to stay the same
-on one platform, because rules are written with it.
+This module is a plugin. Loading it registers one tool. Where commands run
+on this machine that is ``powershell`` on Windows and ``bash`` everywhere
+else. Where the sandbox runs them in another place, it is the shell of that
+place, and the only one that this tool writes for is ``bash``. The name of a
+tool has to stay the same while a program runs, because rules are written
+with it. So the sandbox is asked once, when the tool is made, and a call
+that finds commands running somewhere else than they did then is refused.
 
 Every call is a process of its own. Nothing is left of it when it ends: the
 processes that the command started are stopped with it, whether it came to
@@ -63,6 +67,14 @@ it looks where the system is, and that directory is often a repository.
 **bash.** Everywhere else the command is handed to ``bash -c``, with no
 input. A command can be as long as the system lets an argument be, which is
 about 128 KiB on Linux, so longer ones are refused here with a plain word.
+
+**bash in another place.** A command for another place is first an argument
+of the program on this machine that takes it there, and on Windows all the
+arguments of a program together have room for 32767 characters. So the
+command goes on the input, as with PowerShell, and a fixed line reads it
+there and runs it with no input of its own. In the other place it is one
+argument of bash in the end, so it may be as long as an argument may be
+there and no longer.
 """
 
 import logging
@@ -81,14 +93,18 @@ from columbina.spill import SPILL, Saved, SpillFile, SpillStore
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 
 __all__ = [
+    "BASH",
+    "BASH_ELSEWHERE",
     "DEFAULT_SECONDS",
-    "MAX_COMMAND_BYTES",
+    "HERE",
     "MAX_SAVED_BYTES",
     "MAX_SECONDS",
     "NAME",
+    "Flavour",
     "ShellArgs",
     "ShellResult",
     "apply",
+    "flavour",
     "inject",
     "name",
     "shell_tool",
@@ -116,35 +132,102 @@ more.
 _GRACE_SECONDS = 30.0
 """How much longer than its command a call may take, to stop what the command started."""
 
+
+@dataclass(frozen=True, slots=True)
+class Flavour:
+    """A shell, and the way a command is handed to it.
+
+    Attributes:
+        name: The name of the tool.
+        splitter: Takes a command of this shell apart.
+        about: What the description of the tool begins with.
+        fact: What a model is told about who runs commands.
+        max_command_bytes: How long a command may be.
+        invocation: Returns what to run for a command and what to give it as
+            input. It is given the program of the shell and the command.
+    """
+
+    name: str
+    splitter: Splitter
+    about: str
+    fact: str
+    max_command_bytes: int
+    invocation: Callable[[str, str], tuple[list[str], bytes | None]]
+
+
+def _as_an_argument(shell: str, command: str) -> tuple[list[str], bytes | None]:
+    return [shell, "--noprofile", "--norc", "-c", command], None
+
+
+_READ_AND_RUN_BASH = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null'
+
+
+def _on_the_input(shell: str, command: str) -> tuple[list[str], bytes | None]:
+    return [shell, "--noprofile", "--norc", "-c", _READ_AND_RUN_BASH], command.encode("utf-8")
+
+
+BASH = Flavour(
+    name="bash",
+    splitter=split_bash,
+    about="Run a command in bash.",
+    fact="the tool bash",
+    max_command_bytes=120_000,
+    invocation=_as_an_argument,
+)
+"""bash on this machine: the command is an argument."""
+
+BASH_ELSEWHERE = replace(BASH, invocation=_on_the_input)
+"""bash in another place: the command comes on the input of a fixed line."""
+
 if sys.platform == "win32":  # pragma: windows only
-    NAME = "powershell"
-    MAX_COMMAND_BYTES = 1_000_000
-
-    _SPLITTER: Splitter = split_powershell
     _READ_AND_RUN = f"{shells.PREAMBLE}; . ([ScriptBlock]::Create([Console]::In.ReadToEnd()))"
-    _FACT = "the tool powershell, which is Windows PowerShell 5.1 and not bash"
-    _ABOUT = (
-        "Run a command in Windows PowerShell 5.1. This is not bash: join commands with ; "
-        "(there is no && and no ||), write $env:NAME for a variable of the environment, and "
-        "use the cmdlets or programs of Windows (Get-ChildItem, Get-Content, Select-String)."
-    )
 
-    def _invocation(shell: str, command: str) -> tuple[list[str], bytes | None]:
-        """Return what to run for a command, and what to give it as input."""
+    def _with_what_follows(shell: str, command: str) -> tuple[list[str], bytes | None]:
         argv = [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", _READ_AND_RUN]
         return argv, (command + shells.AFTER).encode("utf-8")
 
+    POWERSHELL = Flavour(
+        name="powershell",
+        splitter=split_powershell,
+        about=(
+            "Run a command in Windows PowerShell 5.1. This is not bash: join commands with ; "
+            "(there is no && and no ||), write $env:NAME for a variable of the environment, "
+            "and use the cmdlets or programs of Windows (Get-ChildItem, Get-Content, "
+            "Select-String)."
+        ),
+        fact="the tool powershell, which is Windows PowerShell 5.1 and not bash",
+        max_command_bytes=1_000_000,
+        invocation=_with_what_follows,
+    )
+    """Windows PowerShell on this machine: the command comes on the input of a fixed line."""
+
+    HERE = POWERSHELL
+
 else:  # pragma: posix only
-    NAME = "bash"
-    MAX_COMMAND_BYTES = 120_000
+    HERE = BASH
 
-    _SPLITTER: Splitter = split_bash
-    _FACT = "the tool bash"
-    _ABOUT = "Run a command in bash."
+NAME = HERE.name
+"""The name of the tool where commands run on this machine."""
 
-    def _invocation(shell: str, command: str) -> tuple[list[str], bytes | None]:
-        """Return what to run for a command, and what to give it as input."""
-        return [shell, "--noprofile", "--norc", "-c", command], None
+
+def flavour(elsewhere: str | None) -> Flavour:
+    """Return the shell that commands are written for, and the way they are handed to it.
+
+    Args:
+        elsewhere: The shell of the place where the sandbox runs commands, or
+            ``None`` if they run on this machine.
+
+    Raises:
+        RuntimeError: The place has a shell that this tool cannot write for.
+    """
+    if elsewhere is None:
+        return HERE
+    if elsewhere == "bash":
+        return BASH_ELSEWHERE
+    raise RuntimeError(
+        f"the sandbox runs commands with {elsewhere!r}, and the tool that runs commands "
+        "writes for bash only where they run in another place"
+    )
 
 
 class ShellArgs(BaseModel):
@@ -183,16 +266,17 @@ class _Place:
     when the run asks for it.
     """
 
-    __slots__ = ("_file", "_run", "_store")
+    __slots__ = ("_file", "_name", "_run", "_store")
 
-    def __init__(self, store: SpillStore, run: ToolRun) -> None:
+    def __init__(self, store: SpillStore, run: ToolRun, tool: str) -> None:
         self._store = store
         self._run = run
+        self._name = f"{tool}-output.txt"
         self._file: SpillFile | None = None
 
     def open(self) -> SpillFile:
         """Make the file that takes the output."""
-        self._file = self._store.open(self._run.session, self._run.cwd, f"{NAME}-output.txt")
+        self._file = self._store.open(self._run.session, self._run.cwd, self._name)
         return self._file
 
     def close(self) -> Saved | None:
@@ -219,28 +303,45 @@ def _text(args: ShellArgs, result: ShellResult) -> str:
 
 
 def shell_tool(
-    sandbox: Sandbox, shell: str, spill: Callable[[], SpillStore | None]
+    sandbox: Sandbox,
+    shell: str,
+    spill: Callable[[], SpillStore | None],
+    elsewhere: str | None = None,
 ) -> Tool[ShellArgs, ShellResult]:
-    """Make the shell tool, which runs its commands with the program at ``shell``.
+    """Make the shell tool, which runs its commands with the program ``shell``.
 
     Args:
         sandbox: Runs a command so that it is held.
-        shell: The path of the program that runs the commands.
+        shell: The program that runs the commands: its path on this machine,
+            or its name in the place where the sandbox runs commands.
         spill: Returns the place for what is too large for a conversation, or
             ``None`` if the program has none. It is asked at every call.
+        elsewhere: The shell of the place where the sandbox runs commands, as
+            the sandbox names it, or ``None`` if they run on this machine.
+
+    Raises:
+        RuntimeError: The place has a shell that this tool cannot write for.
     """
+    way = flavour(elsewhere)
 
     async def run_command(args: ShellArgs, run: ToolRun) -> ShellResult:
-        if len(args.command.encode("utf-8")) > MAX_COMMAND_BYTES:
+        if len(args.command.encode("utf-8")) > way.max_command_bytes:
             raise ToolFailure(
-                f"The command is longer than {MAX_COMMAND_BYTES} bytes, which is more than "
-                "can be handed to the shell. Put what it does into a file and run that.",
+                f"The command is longer than {way.max_command_bytes} bytes, which is more "
+                "than can be handed to the shell. Put what it does into a file and run that.",
                 code="COMMAND_TOO_LONG",
             )
+        if sandbox.shell() != elsewhere:
+            # A command written for one shell is not handed to another one.
+            raise ToolFailure(
+                "The command was not run: the place where the sandbox runs commands is "
+                "another one than when this tool was made. Start the program again.",
+                code="SANDBOX_UNAVAILABLE",
+            )
         seconds = min(args.timeout_seconds or DEFAULT_SECONDS, MAX_SECONDS)
-        argv, given = _invocation(shell, args.command)
+        argv, given = way.invocation(shell, args.command)
         store = spill()
-        place = None if store is None else _Place(store, run)
+        place = None if store is None else _Place(store, run, way.name)
         try:
             done = await sandbox.run(
                 argv,
@@ -281,9 +382,9 @@ def shell_tool(
         return ShellResult(output + "\n".join(lines), complete)
 
     return Tool(
-        name=NAME,
+        name=way.name,
         description=(
-            f"{_ABOUT} The command runs in the working directory, in a process of its own: "
+            f"{way.about} The command runs in the working directory, in a process of its own: "
             "what it changes in the shell, such as the directory or a variable, is gone "
             "with the call, and so is every process that it started. Its output comes "
             "back with its exit code. It gets no input, so it must not wait for any."
@@ -301,15 +402,21 @@ def apply(ctx: Context, config: object) -> None:
     """Register the shell tool, and tell the permissions how its commands are taken apart.
 
     Raises:
-        RuntimeError: The shell of this platform is not installed.
+        RuntimeError: Commands run on this machine and its shell is not
+            installed, or they run in a place with a shell that this tool
+            cannot write for.
     """
-    shell = shells.find()
+    sandbox = ctx.use(SANDBOX)
+    elsewhere = sandbox.shell()
+    way = flavour(elsewhere)
+    # In another place the shell is found by its name, by whatever runs commands there.
+    shell = shells.find() if elsewhere is None else elsewhere
     if shell is None:
         raise RuntimeError(f"{NAME} is not installed, so there is no tool that runs commands")
-    ctx.use(TOOLS).add(ctx, shell_tool(ctx.use(SANDBOX), shell, lambda: ctx.get(SPILL)))
-    ctx.use(PERMISSIONS).splitters.add(ctx, NAME, _SPLITTER)
+    ctx.use(TOOLS).add(ctx, shell_tool(sandbox, shell, lambda: ctx.get(SPILL), elsewhere))
+    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, way.splitter)
 
     def facts(gathered: Facts) -> None:
-        gathered.lines["commands are run by"] = _FACT
+        gathered.lines["commands are run by"] = way.fact
 
     ctx.on(RUNTIME_FACTS, facts)

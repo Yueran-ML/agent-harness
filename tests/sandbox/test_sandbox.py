@@ -356,8 +356,9 @@ SAYS_WHERE_AND_WHAT = "import os, sys; print(os.getcwd()); print(sys.stdin.read(
 class Jail:
     """A provider for these tests. It runs nothing: it keeps what it was asked for."""
 
-    def __init__(self, strength: Strength) -> None:
+    def __init__(self, strength: Strength, shell: str | None = None) -> None:
         self.strength: Strength = strength
+        self.shell = shell
         self.asked: list[dict[str, object]] = []
 
     async def run(
@@ -495,6 +496,26 @@ async def test_a_provider_that_another_plugin_brings_runs_the_command_in_the_mod
     ]
     assert places == []
     assert sandbox.strength() == "full"
+
+
+async def test_the_provider_that_holds_nothing_runs_commands_with_the_shell_of_this_machine(
+    ctx: Context, tmp_path: Path
+) -> None:
+    _, _, sandbox = await program(ctx, tmp_path)
+
+    assert sandbox.shell() is None
+
+
+async def test_the_sandbox_tells_the_shell_of_the_place_where_its_provider_runs_commands(
+    ctx: Context, tmp_path: Path
+) -> None:
+    _, _, sandbox = await program(ctx, tmp_path, provider="jail")
+    # A provider that is not there runs nothing, in no shell.
+    assert sandbox.shell() is None
+
+    sandbox.providers.add(ctx, "jail", Jail("full", shell="bash"))
+
+    assert sandbox.shell() == "bash"
 
 
 async def test_a_command_is_not_run_unconfined_in_the_place_of_a_provider_that_is_not_there(

@@ -16,12 +16,17 @@ class Holding:
 
     Attributes:
         strength: What it says of itself.
+        shell: The shell of the place where it says that its commands run, if
+            that is not this machine.
         asked: What it was asked to run: the command, the mode and the directory of each.
+        given: The input that each of them came with.
     """
 
-    def __init__(self, strength: Strength = "full") -> None:
+    def __init__(self, strength: Strength = "full", shell: str | None = None) -> None:
         self.strength: Strength = strength
+        self.shell = shell
         self.asked: list[tuple[tuple[str, ...], Mode, Path]] = []
+        self.given: list[bytes | None] = []
 
     def held(self, argv: Sequence[str], mode: Mode) -> Sequence[str]:
         """Return what is run in the place of a command. A test may put something else there."""
@@ -40,6 +45,7 @@ class Holding:
         max_overflow_bytes: int,
     ) -> Completed:
         self.asked.append((tuple(argv), mode, cwd))
+        self.given.append(stdin)
         return await process.run(
             self.held(argv, mode),
             cwd=cwd,

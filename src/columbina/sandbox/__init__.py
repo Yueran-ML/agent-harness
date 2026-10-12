@@ -29,6 +29,10 @@ a command may have to be made before the command runs, and what the command
 left has to be stopped after it. The provider ``none`` runs a command on
 this machine as it is. It holds nothing and says so by its strength, and
 whoever decides about commands goes by that.
+
+A provider may run commands in another place than this machine, and that
+place has a shell of its own. The provider names it, and the tool that takes
+commands from a model writes for that shell.
 """
 
 import os
@@ -96,11 +100,20 @@ class SandboxProvider(Protocol):
         strength: How well it holds a command. A provider that cannot do what
             it says here raises from :meth:`run`. It does not run a command
             that is held less well.
+        shell: The shell of the place where it runs commands, such as
+            ``bash``, if that place is not this machine. ``None`` if commands
+            run on this machine, with the shell that it has. A provider says
+            the same for as long as it is there.
     """
 
     @property
     def strength(self) -> Strength:
         """How well it holds a command."""
+        ...
+
+    @property
+    def shell(self) -> str | None:
+        """The shell of the place where it runs commands, if that is not this machine."""
         ...
 
     async def run(
@@ -133,6 +146,7 @@ class _Unconfined:
     """The provider that holds nothing. A command runs on this machine, as it is."""
 
     strength: Strength = "none"
+    shell: str | None = None
 
     async def run(
         self,
@@ -247,6 +261,15 @@ class Sandbox:
         """Return how well commands are held: the strength of the provider, if it is there."""
         provider = self.providers.get(self._provider)
         return "none" if provider is None else provider.strength
+
+    def shell(self) -> str | None:
+        """Return the shell of the place where commands run, if that is not this machine.
+
+        ``None`` means the shell of this machine. That is also the answer
+        while the provider is not there: nothing runs then.
+        """
+        provider = self.providers.get(self._provider)
+        return None if provider is None else provider.shell
 
     async def run(
         self,

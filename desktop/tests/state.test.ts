@@ -257,6 +257,19 @@ describe('durable event projection', () => {
         .toEqual([{ seq: 2, source: 'steer', text: 'one' }, { seq: 2, source: 'steer', text: 'two' }]);
     });
 
+    it('is not taken for written down where an earlier input is written anew', () => {
+      const projection = projectEvents([
+        event(0, 'turn/start', { turn: 1 }),
+        event(1, 'user/message', said('look again', 'steer')),
+        event(2, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('look again', 'steer')] }),
+        event(3, 'agent/inbox/spliced', { queue: 'next-step', removed: 1, added: [] }),
+        // What the model is shown is made shorter: the earlier input is written again, in the place of the old.
+        event(4, 'user/message', said('look again', 'steer'), 400, replacement([1])),
+        event(5, 'turn/end', { turn: 1, reason: 'aborted', detail: 'user' }),
+      ]);
+      expect(projection.dropped).toEqual([{ seq: 3, source: 'steer', text: 'look again' }]);
+    });
+
     it('is what a hook kept from the model', () => {
       const projection = projectEvents([
         event(0, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry('secret')] }),

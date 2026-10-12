@@ -216,7 +216,9 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
       case 'user/message': {
         const source = string(data.source);
         const text = messageText(messageOf(data.message));
-        const written = taken.findIndex(input => input.source === source && input.text === text);
+        // An event that writes an earlier input anew, for what the model is shown, takes nothing.
+        const written = isReplacement(event) ? -1
+          : taken.findIndex(input => input.source === source && input.text === text);
         if (written >= 0) taken.splice(written, 1);
         if (source === 'compaction') {
           projection.items.push({ ...base, type: 'compaction', text });

@@ -936,15 +936,19 @@ select.field {
 
 /* What a service wrote last, under the line that says it has ended. */
 .last-words-title {
-  margin: var(--s2) 0 0 19px;
+  margin-top: var(--s2);
 }
 
 .last-words {
   max-height: 200px;
 }
 
-.banner .aside > .btn {
-  margin-left: 11px;
+/* What can be done about what a banner says, beside its words. */
+.banner-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
 }
 
 /* The projects of earlier times, on the page before any is open. */

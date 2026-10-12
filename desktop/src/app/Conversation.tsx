@@ -303,7 +303,8 @@ export function Conversation({ workspace, onLink, onAction }: {
               waiting={entry === liveTurn ? waiting : null}
               onLink={onLink}
               // Only about the end of the last turn can something be done, and only at rest.
-              onAction={entry === last && !running ? onAction : null}
+              // Nothing can be tried again while the service is gone.
+              onAction={entry === last && !running && workspace.connected ? onAction : null}
             />
           : entry.item.type === 'compaction'
             ? <Summary key={entry.item.id} text={entry.item.text} />

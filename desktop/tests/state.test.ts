@@ -392,6 +392,80 @@ describe('durable event projection', () => {
   });
 });
 
+describe('a service that is gone before a turn ended', () => {
+  const begun = [
+    event(0, 'turn/start', { turn: 1 }),
+    event(1, 'user/message', { message: message('Wait for half a minute.'), source: 'user' }),
+    event(2, 'step/start', { turn: 1, step: 1 }),
+    event(3, 'tool/call', { call_id: 'a', name: 'bash', arguments: '{"command":"sleep 30"}' }),
+    event(4, 'tool/call', { call_id: 'b', name: 'read', arguments: '{"path":"notes.txt"}' }),
+    event(5, 'tool/result', result('b', 'what the notes say')),
+  ];
+
+  it('leaves a turn under way for as long as the service is there', () => {
+    const projection = projectEvents(begun);
+    expect(projection.turn).toBe(1);
+    expect(projection.step).toBe(1);
+    expect(projection.turns[0].end).toBeNull();
+    expect(projection.items.filter(item => item.type === 'tool').map(item => item.type === 'tool' && item.interrupted))
+      .toEqual([false, false]);
+  });
+
+  it('takes the turn for cut short, as the service writes it down when the task is opened again', () => {
+    const projection = projectEvents(begun, true);
+    expect(projection.turn).toBeNull();
+    expect(projection.step).toBeNull();
+    // The turn ended where the log ends, and nobody ended it.
+    expect(projection.turns[0].end).toEqual({ seq: 5, time: 500, reason: 'interrupted', detail: null });
+    const calls = projection.items.filter(item => item.type === 'tool');
+    // A call that had no result has none. The one that had its result keeps it.
+    expect(calls.map(item => item.type === 'tool' && [item.callId, item.result, item.interrupted])).toEqual([
+      ['a', null, true], ['b', 'what the notes say', false],
+    ]);
+    // The log is as it was: nothing is written into it by the window.
+    expect(begun).toHaveLength(6);
+    expect(projectEvents(begun).turn).toBe(1);
+  });
+
+  it('is no longer summing up, if it was', () => {
+    const summing = [...begun, event(6, 'compaction/start', { why: 'pressure', tokens: 9000 })];
+    expect(projectEvents(summing).compacting).toBe(true);
+    expect(projectEvents(summing, true).compacting).toBe(false);
+  });
+
+  it('gives back nothing that the turn had taken: the service may still hold it when it is started again', () => {
+    const steer = { message: message('Never mind.'), source: 'steer' };
+    const taken = [
+      ...begun,
+      event(6, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [steer] }),
+      // The turn takes it out of the queue, and is gone before it has written it down.
+      event(7, 'agent/inbox/spliced', { queue: 'next-step', removed: 1, added: [] }),
+    ];
+    expect(projectEvents(taken, true).dropped).toEqual([]);
+    // Had the turn been stopped instead, it would have come back.
+    const stopped = [...taken, event(8, 'turn/end', { turn: 1, reason: 'aborted', detail: 'user' })];
+    expect(projectEvents(stopped).dropped.map(input => input.text)).toEqual(['Never mind.']);
+  });
+
+  it('changes nothing of a turn that came to its end, or of a task in which none ran', () => {
+    const ended = [...begun, event(6, 'tool/result', result('a', 'done')), event(7, 'turn/end', { turn: 1, reason: 'completed' })];
+    expect(projectEvents(ended, true)).toEqual(projectEvents(ended));
+    expect(projectEvents([], true)).toEqual(emptyProjection());
+  });
+
+  it('still gives back what was dropped while no turn ran', () => {
+    const entry = { message: message('One more thing.'), source: 'user' };
+    const dropped = [
+      ...begun,
+      event(6, 'turn/end', { turn: 1, reason: 'completed' }),
+      event(7, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry] }),
+      event(8, 'agent/inbox/spliced', { queue: 'next-turn', removed: 1, added: [] }),
+    ];
+    expect(projectEvents(dropped).dropped.map(input => input.text)).toEqual(['One more thing.']);
+    expect(projectEvents(dropped, true)).toEqual(projectEvents(dropped));
+  });
+});
+
 describe('stream previews', () => {
   it('assembles interleaved content by block index without mutating previous previews', () => {
     const chunks: StreamChunk[] = [

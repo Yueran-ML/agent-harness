@@ -5,6 +5,7 @@ import { canSubmitInput } from '../uiActions';
 import type { Workspace } from '../useWorkspace';
 import { composerKey, keyOf } from './keys';
 import { useWords } from './locale';
+import { goneWords } from './tell';
 
 /** How long the first Esc of two stays in mind. */
 const ESC_TWICE_MS = 2000;
@@ -124,7 +125,7 @@ export function Composer({ workspace, draft, onDraft, onSend, field, returned, d
   };
 
   const placeholder = !workspace.hasProject ? words.label.placeholderNoProject
-    : workspace.closed !== null ? words.hint.serviceEnded
+    : workspace.closed !== null ? goneWords(words, workspace.hello !== null)
       : stopped ? words.label.placeholderStopped
         : workspace.loading || !workspace.connected ? words.label.placeholderStarting
           : running ? words.label.placeholderRunning : words.label.placeholderIdle;

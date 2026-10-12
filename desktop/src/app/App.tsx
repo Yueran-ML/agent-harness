@@ -22,7 +22,7 @@ import { StatusLine } from './StatusLine';
 import { Drafts, samePlace, type Place } from './drafts';
 import { shownLanguage, storedLanguage, storeLanguage, Words, wordsFor, type LanguageChoice } from './locale';
 import { storedOpening, storeOpening } from './opening';
-import { folderName, joined, retryText, taskTitle } from './tell';
+import { folderName, goneWords, joined, retryText, taskTitle } from './tell';
 
 const tellingKey = 'columbina-tell-me';
 
@@ -375,22 +375,25 @@ export default function App() {
 
           {workspace.closed !== null && <div className="banner" data-tone="bad" role="alert" data-test="banner-closed">
             <div className="banner-words">
-              <p>{words.hint.serviceEnded}</p>
-              {(workspace.closed || workspace.lastWords.length > 0) && <details className="aside">
+              <p data-test="closed-what">{goneWords(words, workspace.hello !== null)}</p>
+              {/* Why is most often in what it wrote last, so that is not put away. */}
+              {workspace.lastWords.length > 0 && <>
+                <div className="overline last-words-title">{words.label.lastWords}</div>
+                <pre className="block last-words" tabIndex={0} data-test="last-words">{workspace.lastWords.join('\n')}</pre>
+              </>}
+              {workspace.closed && <details className="aside">
                 <summary><ChevronRight size={13} aria-hidden="true" />{words.label.details}</summary>
-                {workspace.closed && <p className="tool-code mono">{workspace.closed}</p>}
-                {workspace.lastWords.length > 0 && <>
-                  <div className="overline last-words-title">{words.label.lastWords}</div>
-                  <pre className="block last-words" tabIndex={0} data-test="last-words">{workspace.lastWords.join('\n')}</pre>
-                </>}
-                {window.columbina && <button type="button" className="btn btn-quiet" onClick={workspace.showLog} data-test="show-log">
-                  <FileText size={14} aria-hidden="true" />{words.label.showLog}
-                </button>}
+                <p className="tool-code mono">{workspace.closed}</p>
               </details>}
             </div>
-            <button type="button" className="btn" disabled={workspace.loading} onClick={() => void workspace.reconnect()} data-test="restart">
-              {words.label.restart}
-            </button>
+            <div className="banner-actions">
+              {window.columbina && <button type="button" className="btn btn-quiet" onClick={workspace.showLog} data-test="show-log">
+                <FileText size={14} aria-hidden="true" />{words.label.showLog}
+              </button>}
+              <button type="button" className="btn" disabled={workspace.loading} onClick={() => void workspace.reconnect()} data-test="restart">
+                {words.label.restart}
+              </button>
+            </div>
           </div>}
           {stopped && workspace.closed === null && <div className="banner" data-tone="bad" role="alert" data-test="banner-stopped">
             <div className="banner-words">

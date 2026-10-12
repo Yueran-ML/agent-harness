@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  agoOf, argumentsOf, contextPercent, countOf, folderName, joined, objectOf, presetOf, presets, retryText, scopeOf,
+  agoOf, argumentsOf, contextPercent, countOf, folderName, goneWords, joined, objectOf, presetOf, presets, retryText, scopeOf,
   stepped, tail, taskTitle, toolKind, verbOf,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
@@ -102,6 +102,18 @@ describe('how full the context is', () => {
     expect(contextPercent(500, undefined)).toBeNull();
     expect(contextPercent(500, 0)).toBeNull();
     expect(contextPercent(500, -1)).toBeNull();
+  });
+});
+
+describe('a service that is gone', () => {
+  it('has ended if it ever answered, and could not be started if it never did', () => {
+    expect(goneWords(en, true)).toBe('The service process has ended.');
+    expect(goneWords(en, false)).toBe('The service process could not be started.');
+    for (const words of [en, zhCN, ja]) {
+      expect(goneWords(words, true)).toBe(words.hint.serviceEnded);
+      expect(goneWords(words, false)).toBe(words.hint.serviceNotStarted);
+      expect(goneWords(words, true)).not.toBe(goneWords(words, false));
+    }
   });
 });
 

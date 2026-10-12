@@ -71,6 +71,14 @@ export function stepped<T>(row: readonly T[], from: T, key: string): T | null {
 }
 
 /**
+ * What is said of a service that is gone. One that never answered did not end:
+ * it could not be started.
+ */
+export function goneWords(words: Messages, answered: boolean): string {
+  return answered ? words.hint.serviceEnded : words.hint.serviceNotStarted;
+}
+
+/**
  * A count of tokens, as short as a language writes it: `2.7K` in English, and `1.2万` in
  * Chinese and in Japanese, which count in ten thousands.
  */

@@ -442,6 +442,7 @@ export const ja: Messages = {
     replay: 'これは記録済みセッションのリプレイです。モデルへのリクエストは行われません。',
     taskStopped: 'このタスクは停止しており、これ以上入力を受け付けません。続けるには、Columbina を再起動してください。',
     serviceEnded: 'サービスプロセスが終了しました。',
+    serviceNotStarted: 'サービスプロセスを起動できませんでした。',
     tellMe: 'このウィンドウが背面にあるときだけ知らせます。',
 
     consentRun: 'Columbina がこのコマンドを実行しようとしています。',

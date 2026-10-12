@@ -179,8 +179,15 @@ function inputTokens(usage: Usage): number {
   return usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
 }
 
-/** Rebuild presentation from the append-only log; model surface replacements do not erase history. */
-export function projectEvents(events: readonly SessionEvent[]): Projection {
+/**
+ * Rebuild presentation from the append-only log; model surface replacements do not erase history.
+ *
+ * Args:
+ *   events: The log, as far as the window has it.
+ *   gone: Whether the service that wrote it is gone. A turn that it left under way is then
+ *     shown as cut short.
+ */
+export function projectEvents(events: readonly SessionEvent[], gone = false): Projection {
   const projection = emptyProjection();
   const calls: ToolItem[] = [];
   const resultsBySeq = new Map<number, ToolItem>();
@@ -436,6 +443,23 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
       for (const key of Object.keys(projection.usage) as (keyof Usage)[]) projection.usage[key] += usage[key];
       if (event.type !== 'request/aside') projection.lastInputTokens = inputTokens(usage);
     }
+  }
+  if (gone && projection.turn !== null) {
+    // The service is gone before the turn ended, and nothing more of the turn will come. It
+    // is shown as the service writes it down when the task is opened again: cut short, with
+    // every call that had no result left without one. What waited in a queue is not given
+    // back: the service may still hold it when it is started again.
+    for (const call of calls) {
+      if (call.result === null) call.interrupted = true;
+    }
+    const last = events[events.length - 1];
+    if (openTurn && openTurn.number === projection.turn) {
+      openTurn.end = { seq: last.seq, time: last.time, reason: 'interrupted', detail: null };
+    }
+    projection.turn = null;
+    projection.step = null;
+    projection.compacting = false;
+    return projection;
   }
   // While a turn is under way, it may still write down what it took.
   if (projection.turn === null) settle();

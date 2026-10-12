@@ -471,6 +471,7 @@ export const en = {
     replay: 'This is a replay of a recorded session. No model is asked for anything.',
     taskStopped: 'This task has stopped and takes nothing more. Start Columbina again to go on with it.',
     serviceEnded: 'The service process has ended.',
+    serviceNotStarted: 'The service process could not be started.',
     tellMe: 'Only while this window is in the background.',
 
     consentRun: 'Columbina wants to run this command.',

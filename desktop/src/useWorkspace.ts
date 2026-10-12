@@ -208,6 +208,9 @@ export function useWorkspace() {
         setLoading(false);
         setApproval(null);
         setPreview(emptyPreview());
+        // Whatever the service was doing went with it. Its last word was that a turn runs.
+        setStatus(current => (current?.status === 'running' ? { ...current, status: 'idle' } : current));
+        setCancelling(false);
         setClosed(reason || '');
         // Why it ended is most often in what it wrote last.
         void bridge?.serviceTail().then(setLastWords).catch(() => {});
@@ -349,7 +352,7 @@ export function useWorkspace() {
     }
   }, [fail, refreshRecent]);
 
-  const projection = useMemo(() => projectEvents(events), [events]);
+  const projection = useMemo(() => projectEvents(events, closed !== null), [events, closed]);
   return {
     hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending,
     cancelling, error, closed, lastWords, openedAt, folder, recent, services, mode, projection,

@@ -394,6 +394,7 @@ export const zhCN: Messages = {
     replay: '这是一段录好的会话的回放，不会请求任何模型。',
     taskStopped: '这个任务已经停止，不再接受输入。重新启动 Columbina 之后可以接着做。',
     serviceEnded: '服务进程已经结束。',
+    serviceNotStarted: '服务进程没能启动。',
     tellMe: '只在这个窗口不在前台时通知。',
 
     consentRun: 'Columbina 想运行这条命令。',

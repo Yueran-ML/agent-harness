@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from mcp import Client, MCPError
+from mcp.shared import jsonrpc_dispatcher
 from mcp.types import CONNECTION_CLOSED, ListToolsResult
 
 from columbina.mcp.server import connection as connection_module
@@ -238,6 +239,72 @@ async def test_a_call_that_is_not_answered_in_time_fails_and_is_broken_off_at_th
     # The connection is as good as before.
     assert shown(await connection.call("add", TWO, 5)) == "2"
     assert connection.state == "connected"
+
+
+class Unread:
+    """The writing end of a way to a server. It takes things for as long as its server reads."""
+
+    def __init__(self, write: Any, way: "Wedged") -> None:
+        self._write = write
+        self._way = way
+
+    async def send(self, item: Any) -> None:
+        if self._way.stuck:
+            # As with a program that reads no more once its pipe is full.
+            await asyncio.Future[None]()
+        await self._write.send(item)
+
+    async def aclose(self) -> None:
+        await self._write.aclose()
+
+    async def __aenter__(self) -> "Unread":
+        await self._write.__aenter__()
+        return self
+
+    async def __aexit__(self, *raised: Any) -> bool | None:
+        return await self._write.__aexit__(*raised)
+
+
+class Wedged(Cuttable):
+    """A way to a server that reads no more from when a test says so.
+
+    Attributes:
+        stuck: Whether the server has stopped reading.
+    """
+
+    def __init__(self, served: Served) -> None:
+        super().__init__(served)
+        self.stuck = False
+
+    async def __aenter__(self) -> Any:
+        read, write = await super().__aenter__()
+        return read, Unread(write, self)
+
+
+async def test_a_call_that_cannot_be_written_to_its_server_is_given_up_when_its_time_is_over(
+    make: Callable[..., Connection], served: Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The SDK gives the word that tells a server to stop five seconds to be written. That
+    # word is not written here either, and the test does not wait so long for it.
+    monkeypatch.setattr(jsonrpc_dispatcher, "_ABANDON_WRITE_TIMEOUT", 0.1)
+    transport = Wedged(served)
+    connection = await begun(make("served", lambda: transport))
+    assert shown(await connection.call("add", TWO, 5)) == "2"
+    transport.stuck = True
+
+    with pytest.raises(CallError) as refused:
+        # Without an end of its own, the call would wait for as long as the server lives.
+        await asyncio.wait_for(connection.call("add", TWO, 0.2), 5)
+
+    assert str(refused.value) == (
+        "the MCP server served did not answer within 0.2 seconds. The call may have taken effect "
+        "all the same"
+    )
+    assert refused.value.__cause__ is None
+    # The connection is kept. Whether the server reads again is for the server to show.
+    assert connection.state == "connected"
+    transport.stuck = False
+    assert shown(await connection.call("add", TWO, 5)) == "2"
 
 
 async def test_a_call_whose_caller_is_cancelled_is_broken_off_at_the_server(

@@ -51,7 +51,6 @@ from mcp.client import IncomingMessage
 from mcp.client.subscriptions import ListenNotSupportedError
 from mcp.types import (
     CONNECTION_CLOSED,
-    REQUEST_TIMEOUT,
     CallToolResult,
     Implementation,
     Tool,
@@ -270,7 +269,8 @@ class Connection:
         Args:
             name: The name of the tool, as the server gave it.
             arguments: The arguments of the call.
-            seconds: How long the server has to answer.
+            seconds: How long the call may take: to be written to the server
+                and to be answered by it.
 
         Returns:
             What the server answered. It may say that the tool failed.
@@ -294,8 +294,12 @@ class Connection:
     async def _asked(self, name: str, arguments: dict[str, Any], seconds: float) -> CallToolResult:
         """Make a call over the connection, or say in the words of this program why not."""
         client = await self._connected()
+        # The whole call has so long, and not only its answer. The SDK would count from when
+        # the call is written, and a server that reads no more keeps it from being written.
+        limit = asyncio.timeout(seconds)
         try:
-            return await client.call_tool(name, arguments, read_timeout_seconds=seconds)
+            async with limit:
+                return await client.call_tool(name, arguments)
         except MCPError as error:
             if error.code == CONNECTION_CLOSED:
                 self._gone(client)
@@ -304,15 +308,16 @@ class Connection:
                     "was under way. It is not known how far the call got, and it was not made "
                     "again"
                 ) from None
-            if error.code == REQUEST_TIMEOUT:
-                raise CallError(
-                    f"the MCP server {self.server} did not answer within {seconds:g} seconds. "
-                    "The call may have taken effect all the same"
-                ) from None
             raise CallError(
                 f"the MCP server {self.server} answered the call with an error: {self._why(error)}"
             ) from None
         except Exception as error:
+            if limit.expired():
+                # The SDK has told the server to stop, as far as that could be written.
+                raise CallError(
+                    f"the MCP server {self.server} did not answer within {seconds:g} seconds. "
+                    "The call may have taken effect all the same"
+                ) from None
             raise CallError(
                 f"what the MCP server {self.server} answered cannot be used: {self._why(error)}"
             ) from None

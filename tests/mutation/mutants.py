@@ -14695,10 +14695,28 @@ _MCP = (
         "        except ZeroDivisionError:\n",
     ),
     mutant(
-        "the time that a server has to answer is not passed on",
+        "a call may take for ever",
         MCP_CONNECTION,
-        "            return await client.call_tool(name, arguments, read_timeout_seconds=seconds)\n",
-        "            return await client.call_tool(name, arguments)\n",
+        "        limit = asyncio.timeout(seconds)\n",
+        "        limit = asyncio.timeout(None)\n",
+    ),
+    mutant(
+        "a call has the seconds of the SDK only, which begin when it is written",
+        MCP_CONNECTION,
+        "        limit = asyncio.timeout(seconds)\n        try:\n            async with limit:\n                return await client.call_tool(name, arguments)\n",
+        "        limit = asyncio.timeout(None)\n        try:\n            async with limit:\n                return await client.call_tool(name, arguments, read_timeout_seconds=seconds)\n",
+    ),
+    mutant(
+        "a call that took too long is said to have been answered with what cannot be used",
+        MCP_CONNECTION,
+        "            if limit.expired():\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "an answer that cannot be used is said to have taken too long",
+        MCP_CONNECTION,
+        "            if limit.expired():\n",
+        "            if True:\n",
     ),
     mutant(
         "the keeper is not told by a call that the connection is closed",
@@ -14709,14 +14727,8 @@ _MCP = (
     mutant(
         "a call that took too long is taken for one that lost its connection",
         MCP_CONNECTION,
-        "            if error.code == CONNECTION_CLOSED:\n                self._gone(client)\n",
-        "            if error.code in (CONNECTION_CLOSED, REQUEST_TIMEOUT):\n                self._gone(client)\n",
-    ),
-    mutant(
-        "a call that took too long is said to have been answered with an error",
-        MCP_CONNECTION,
-        "            if error.code == REQUEST_TIMEOUT:\n",
-        "            if False:\n",
+        "            if limit.expired():\n",
+        "            if limit.expired():\n                self._gone(client)\n",
     ),
     mutant(
         "a call that lost its connection is said to have been answered with an error",

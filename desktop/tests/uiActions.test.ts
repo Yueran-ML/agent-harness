@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionStatus } from '../src/protocol';
-import { canSubmitInput, permissionNeedsConfirmation, permissionPresetFromCommand } from '../src/uiActions';
+import { canSubmitInput, isCommand, permissionNeedsConfirmation, permissionPresetFromCommand } from '../src/uiActions';
 
 const status = (mode: string, approval = 'ask'): SessionStatus => ({
   session_id: 'test', status: 'idle', detail: null,
@@ -54,5 +54,21 @@ describe('composer submission', () => {
     expect(canSubmitInput(' ', { unavailable: false, sending: false, running: false })).toBe(false);
     expect(canSubmitInput('hello', { unavailable: true, sending: false, running: false })).toBe(false);
     expect(canSubmitInput('hello', { unavailable: false, sending: true, running: false })).toBe(false);
+  });
+});
+
+describe('a line that is a command', () => {
+  it('begins with a slash, whatever stands before it that is blank', () => {
+    expect(isCommand('/compact')).toBe(true);
+    expect(isCommand('  /model deepseek-flash')).toBe(true);
+    expect(isCommand('\n/help')).toBe(true);
+    expect(isCommand('/')).toBe(true);
+  });
+
+  it('is no line that has its slash further in, and no empty one', () => {
+    expect(isCommand('Fix src/app.py')).toBe(false);
+    expect(isCommand('a /compact')).toBe(false);
+    expect(isCommand('')).toBe(false);
+    expect(isCommand('   ')).toBe(false);
   });
 });

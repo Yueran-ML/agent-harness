@@ -55,8 +55,13 @@ the input field.
 | Ctrl+Enter | Says yes, for this once, to what the agent asks |
 | Ctrl+N | Begins a new task |
 | Ctrl+B | Shows or hides the list of tasks |
-| Ctrl+K | Goes to the input field and opens the commands |
+| Ctrl+K | Goes to the input field. On an empty field it opens the list of commands |
 | Ctrl+, | Opens the settings |
+
+While the window is in the background, the system tells of a question that waits and
+of a turn that has ended. The settings switch that off. The first page offers the
+projects that were opened before. If the service process ends, the page shows the last
+lines that it wrote, which most often say why.
 
 The interface speaks English and Chinese and follows the language of the system
 unless another is chosen in the settings. It has a dark theme and a light one.
@@ -85,8 +90,8 @@ protocol, and the interface cannot read it. What the service process logs goes t
 - The window runs with context isolation and a sandbox, and without Node integration.
   Every call from the interface is checked to come from the page of the application.
 - A service process is started only in a folder that the user chose in the folder
-  dialog of the system. The interface cannot name another folder, another program or
-  other arguments.
+  dialog of the system, now or at an earlier time: the shell keeps the last eight. The
+  interface cannot name another folder, another program or other arguments.
 - The page loads only files of the application. Its content security policy allows no
   connection to the network, no frame and no script from elsewhere. Navigation and new
   windows are blocked. A link is opened in the browser of the system, after its full

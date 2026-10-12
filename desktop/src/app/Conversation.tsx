@@ -36,7 +36,14 @@ function Summary({ text }: { text: string }) {
  * The line of a request that is tried again. While the wait lasts it counts
  * down, and afterwards it tells what happened.
  */
-function Retry({ at, delayMs, attempt, live }: { at: number; delayMs: number; attempt: number; live: boolean }) {
+function Retry({ at, delayMs, attempt, live, came }: {
+  at: number;
+  delayMs: number;
+  attempt: number;
+  live: boolean;
+  /** Whether the request was made again. A turn that is stopped while it waits makes none. */
+  came: boolean;
+}) {
   const words = useWords();
   const [now, setNow] = useState(Date.now);
   const left = Math.max(0, Math.ceil((at + delayMs - now) / 1000));
@@ -45,7 +52,7 @@ function Retry({ at, delayMs, attempt, live }: { at: number; delayMs: number; at
     const timer = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(timer);
   }, [live, left === 0]);
-  if (!live) return <p className="note">{words.wait.retried(delayMs / 1000, attempt)}</p>;
+  if (!live) return <p className="note">{came ? words.wait.retried(delayMs / 1000, attempt) : words.wait.gaveUp}</p>;
   return <p className="note" role="status" data-test="retrying">
     <span className="moon" aria-hidden="true" />{words.wait.retry(left, attempt)}
   </p>;
@@ -56,8 +63,14 @@ function Retry({ at, delayMs, attempt, live }: { at: number; delayMs: number; at
  *
  * Args:
  *   live: Whether this is the last thing of a turn that is under way.
+ *   last: Whether nothing came after this in its turn.
  */
-function Step({ item, live = false, onLink }: { item: ConversationItem; live?: boolean; onLink: (url: string) => void }) {
+function Step({ item, live = false, last = false, onLink }: {
+  item: ConversationItem;
+  live?: boolean;
+  last?: boolean;
+  onLink: (url: string) => void;
+}) {
   const words = useWords();
   switch (item.type) {
     case 'tool':
@@ -87,7 +100,7 @@ function Step({ item, live = false, onLink }: { item: ConversationItem; live?: b
         return <p className="note" data-tone="warn">{saying.what}</p>;
       }
       if (cause.kind === 'retry') {
-        return <Retry at={item.time} delayMs={cause.delayMs} attempt={cause.attempt} live={live} />;
+        return <Retry at={item.time} delayMs={cause.delayMs} attempt={cause.attempt} live={live} came={!last} />;
       }
       if (cause.kind === 'compaction-failed') return <p className="note" data-tone="warn">{words.notice.compactionFailed.what}</p>;
       if (cause.kind === 'compaction-interrupted') return <p className="note" data-tone="warn">{words.notice.compactionInterrupted.what}</p>;
@@ -192,6 +205,8 @@ function TurnView({ turn, preview, waiting, onLink, onAction }: {
         key={item.id}
         item={item}
         live={turn.running && index === steps.length - 1}
+        // What the end of the turn tells of came after it all the same.
+        last={item === turn.steps.at(-1)}
         onLink={onLink}
       />)}
     </div>}

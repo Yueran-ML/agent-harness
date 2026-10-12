@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  agoOf, argumentsOf, contextPercent, folderName, objectOf, presetOf, presets, scopeOf, tail, taskTitle,
-  toolKind, verbOf,
+  agoOf, argumentsOf, contextPercent, folderName, joined, objectOf, presetOf, presets, retryText, scopeOf,
+  stepped, tail, taskTitle, toolKind, verbOf,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
 import { zhCN } from '../src/messages/zh-CN';
-import type { ToolItem } from '../src/state';
+import { projectEvents, type ToolItem } from '../src/state';
+import { groupTurns, type Turn } from '../src/turns';
 import { permissionPresetFromCommand } from '../src/uiActions';
 import { sayPermissions } from '../src/words';
 import { approvalPolicies, sandboxModes } from './appendix';
@@ -132,6 +133,23 @@ describe('what a longer yes covers', () => {
     expect(scopeOf(en, asked('write', null, 'write on null'))).toBe(en.hint.scope.other);
   });
 
+  it('says how far such a yes reaches: this task, and until the project is closed', () => {
+    // The service keeps it for one task, in memory, and its process ends with the project
+    // (`Server._granted` in the sources of the service). Words that promised more would be false.
+    const said = (words: typeof en) => [
+      words.hint.scope.thisCommand, words.hint.scope.anyCall('fetch'),
+      words.hint.scope.onTarget('write', 'notes.txt'), words.hint.scope.other,
+    ];
+    for (const sentence of said(en)) {
+      expect(sentence).toContain('in this task');
+      expect(sentence).toContain('until the project is closed');
+    }
+    for (const sentence of said(zhCN)) {
+      expect(sentence).toContain('这个任务');
+      expect(sentence).toContain('到项目关闭为止');
+    }
+  });
+
   it('knows the ways of the service as its sources have them', () => {
     // Should one of these be worded anew there, the interface falls back to general
     // words, and this test says where to look.
@@ -251,5 +269,97 @@ describe('the last lines of a text', () => {
     expect(tail('one\ntwo\nthree\n', 2)).toEqual({ shown: 'two\nthree', cut: 1 });
     // An empty line before the end is a line.
     expect(tail('one\n\n', 2)).toEqual({ shown: 'one\n', cut: 0 });
+  });
+});
+
+describe('several texts as one', () => {
+  it('stand on lines of their own, in their order', () => {
+    expect(joined(['first', 'second', 'third'])).toBe('first\nsecond\nthird');
+    expect(joined(['only'])).toBe('only');
+  });
+
+  it('leave out what has nothing in it', () => {
+    expect(joined(['', 'first', '  ', '\n', 'second', ''])).toBe('first\nsecond');
+    expect(joined(['', ' '])).toBe('');
+    expect(joined([])).toBe('');
+  });
+
+  it('keep each text as it was written', () => {
+    expect(joined(['  indented', 'two\nlines '])).toBe('  indented\ntwo\nlines ');
+  });
+});
+
+describe('what the agent is given when a turn is tried again', () => {
+  const at = (type: string, data: Record<string, unknown>) => ({ type, data });
+  const said = (text: string, source = 'user') => at('user/message', {
+    message: { role: 'user', content: [{ type: 'text', text }] }, source,
+  });
+  const failed = () => at('assistant/attempt', { failure: { code: 'TRANSPORT', message: 'no route' } });
+  const turnOf = (...events: ReturnType<typeof at>[]): Turn => {
+    const all = [
+      at('turn/start', { turn: 1 }), ...events,
+      at('turn/end', { turn: 1, reason: 'error', detail: 'TRANSPORT: no route' }),
+    ];
+    const entries = groupTurns(projectEvents(all.map((event, index) => ({ ...event, seq: index, time: index * 100 }))));
+    return entries.find((entry): entry is Turn => entry.kind === 'turn')!;
+  };
+  const goOn = en.prompt.goOn;
+
+  it('is the task of the turn where nothing of it was done yet', () => {
+    expect(retryText(turnOf(said('Fix the build.'), failed()), goOn)).toBe('Fix the build.');
+  });
+
+  it('is the task as it was written, also where it looks like a command', () => {
+    // Whoever sends it has to send it as words for the agent. See `useWorkspace.prompt`.
+    expect(retryText(turnOf(said('/permissions full-access'), failed()), goOn)).toBe('/permissions full-access');
+  });
+
+  it('is a word to go on where the turn had begun its work', () => {
+    const call = at('tool/call', { call_id: 'a', name: 'read', arguments: '{"path":"a.txt"}' });
+    const result = at('tool/result', {
+      message: { role: 'tool', call_id: 'a', content: [{ type: 'text', text: 'ok' }] }, error: null,
+    });
+    expect(retryText(turnOf(said('Fix the build.'), call, result, failed()), goOn)).toBe(goOn);
+    const wrote = at('assistant/message', {
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Looking.' }] }, finish_reason: 'stop',
+    });
+    expect(retryText(turnOf(said('Fix the build.'), wrote, failed()), goOn)).toBe(goOn);
+  });
+
+  it('is a word to go on where no person opened the turn', () => {
+    expect(retryText(turnOf(said('A note of a hook.', 'hook/SessionStart'), failed()), goOn)).toBe(goOn);
+    expect(retryText(turnOf(failed()), goOn)).toBe(goOn);
+  });
+});
+
+describe('an arrow key among things in a row', () => {
+  const row = ['changes', 'details', 'more'] as const;
+
+  it('leads to the next one and to the one before', () => {
+    expect(stepped(row, 'changes', 'ArrowRight')).toBe('details');
+    expect(stepped(row, 'details', 'ArrowLeft')).toBe('changes');
+    expect(stepped(row, 'changes', 'ArrowDown')).toBe('details');
+    expect(stepped(row, 'details', 'ArrowUp')).toBe('changes');
+  });
+
+  it('goes around the ends', () => {
+    expect(stepped(row, 'more', 'ArrowRight')).toBe('changes');
+    expect(stepped(row, 'changes', 'ArrowLeft')).toBe('more');
+  });
+
+  it('leads to the first and the last with Home and End', () => {
+    expect(stepped(row, 'details', 'Home')).toBe('changes');
+    expect(stepped(row, 'details', 'End')).toBe('more');
+  });
+
+  it('leads nowhere for another key, or from something that is not in the row', () => {
+    for (const key of ['Enter', ' ', 'Tab', 'a', 'PageDown']) expect(stepped(row, 'details', key)).toBeNull();
+    expect(stepped(row, 'elsewhere' as typeof row[number], 'ArrowRight')).toBeNull();
+    expect(stepped([] as string[], 'x', 'Home')).toBeNull();
+  });
+
+  it('stays where it is in a row of one', () => {
+    expect(stepped(['only'], 'only', 'ArrowRight')).toBe('only');
+    expect(stepped(['only'], 'only', 'ArrowLeft')).toBe('only');
   });
 });

@@ -12,9 +12,10 @@ const RECENT = 4;
  * What stands above the field on the page of a task in which nothing was said
  * yet. Before any project is open, it is the whole page.
  */
-export function StartHead({ workspace, onOpenProject, openButton }: {
+export function StartHead({ workspace, onOpenProject, onOpenRecent, openButton }: {
   workspace: Workspace;
   onOpenProject: () => void;
+  onOpenRecent: (folder: string) => void;
   openButton: RefObject<HTMLButtonElement | null>;
 }) {
   const words = useWords();
@@ -26,6 +27,19 @@ export function StartHead({ workspace, onOpenProject, openButton }: {
       <button type="button" ref={openButton} className="btn btn-main btn-large" onClick={onOpenProject} data-test="open-project-start">
         <FolderOpen size={16} aria-hidden="true" />{words.label.openProject}
       </button>
+      {workspace.recent.length > 0 && <div className="recent recent-projects" data-test="recent-projects">
+        <div className="overline">{words.label.recentProjects}</div>
+        {workspace.recent.map(project => <button
+          type="button"
+          className="task"
+          key={project.path}
+          title={project.path}
+          onClick={() => onOpenRecent(project.path)}
+        >
+          <span className="task-name">{project.name}</span>
+          <span className="task-when mono">{project.path}</span>
+        </button>)}
+      </div>}
     </div>;
   }
   return <div className="start-head" data-test="start">

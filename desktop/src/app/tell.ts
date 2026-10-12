@@ -5,6 +5,7 @@
  */
 import type { Messages } from '../messages/en';
 import type { ToolItem } from '../state';
+import { promptOf, type Turn } from '../turns';
 import type { PermissionPreset } from '../uiActions';
 
 /** The last part of a path: the name of the folder. */
@@ -26,6 +27,47 @@ export function agoOf(words: Messages, then: number, now: number): string {
 /** What a task is called in a list: the first line of what it began with. */
 export function taskTitle(words: Messages, firstInput: string | null): string {
   return firstInput?.trim().split('\n')[0].trim() || words.label.newTask;
+}
+
+/** Several texts as one, each on lines of its own. A text with nothing in it is left out. */
+export function joined(texts: string[]): string {
+  return texts.filter(text => text.trim() !== '').join('\n');
+}
+
+/**
+ * What the agent is given when the user asks it to try a turn again.
+ *
+ * A turn that had done nothing yet is given its task again. One that had
+ * begun is told to go on, because its task was read and part of it is done.
+ */
+export function retryText(turn: Turn, goOn: string): string {
+  const prompt = promptOf(turn);
+  const begun = turn.steps.some(item => item.type === 'tool' || item.type === 'assistant');
+  return begun || prompt === null ? goOn : prompt.text;
+}
+
+/**
+ * Where an arrow key leads among things that stand in a row, such as tabs: to
+ * the next one or the one before, around the ends, and Home and End to the
+ * first and the last. Null for a key that leads nowhere.
+ */
+export function stepped<T>(row: readonly T[], from: T, key: string): T | null {
+  const at = row.indexOf(from);
+  if (at < 0 || row.length === 0) return null;
+  switch (key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return row[(at + 1) % row.length];
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return row[(at - 1 + row.length) % row.length];
+    case 'Home':
+      return row[0];
+    case 'End':
+      return row[row.length - 1];
+    default:
+      return null;
+  }
 }
 
 /** How full the context of the model was at the last request, in percent, or null if its size is not known. */

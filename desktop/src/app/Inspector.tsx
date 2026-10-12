@@ -4,9 +4,10 @@ import type { Workspace } from '../useWorkspace';
 import { CopyButton } from './Markdown';
 import { ToolRow } from './ToolRow';
 import { useWords } from './locale';
-import { contextPercent } from './tell';
+import { contextPercent, stepped } from './tell';
 
 export type InspectorTab = 'changes' | 'details';
+const tabs: readonly InspectorTab[] = ['changes', 'details'];
 
 /** The calls of a task that change files. */
 export function changesOf(workspace: Workspace): ToolItem[] {
@@ -81,21 +82,39 @@ export function Inspector({ workspace, tab, onTab, onClose, locale }: {
 }) {
   const words = useWords();
   const changes = changesOf(workspace);
-  return <aside className="inspector" aria-label={tab === 'changes' ? words.label.changes : words.label.details} data-test="inspector">
+  const names = { changes: words.label.changes, details: words.label.details };
+  return <aside className="inspector" aria-label={names[tab]} data-test="inspector">
     <div className="inspector-head">
-      <div className="tabs" role="tablist">
-        <button type="button" role="tab" aria-selected={tab === 'changes'} onClick={() => onTab('changes')}>
-          {words.label.changes}{changes.length > 0 && <span className="count">{changes.length}</span>}
-        </button>
-        <button type="button" role="tab" aria-selected={tab === 'details'} onClick={() => onTab('details')}>
-          {words.label.details}
-        </button>
+      {/* Tabs as a keyboard knows them: one of them takes the Tab key, and the arrows go from one to the other. */}
+      <div
+        className="tabs"
+        role="tablist"
+        onKeyDown={event => {
+          const to = stepped(tabs, tab, event.key);
+          if (to === null || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+          event.preventDefault();
+          onTab(to);
+          document.getElementById(`inspector-tab-${to}`)?.focus();
+        }}
+      >
+        {tabs.map(name => <button
+          type="button"
+          role="tab"
+          key={name}
+          id={`inspector-tab-${name}`}
+          aria-selected={tab === name}
+          aria-controls="inspector-panel"
+          tabIndex={tab === name ? 0 : -1}
+          onClick={() => onTab(name)}
+        >
+          {names[name]}{name === 'changes' && changes.length > 0 && <span className="count">{changes.length}</span>}
+        </button>)}
       </div>
       <button type="button" className="icon-btn" onClick={onClose} aria-label={words.label.close} title={words.label.close}>
         <X size={15} />
       </button>
     </div>
-    <div className="inspector-body" role="tabpanel">
+    <div className="inspector-body" role="tabpanel" id="inspector-panel" aria-labelledby={`inspector-tab-${tab}`}>
       {tab === 'details' ? <Details workspace={workspace} locale={locale} />
         : changes.length === 0 ? <p className="caption inspector-none">{words.hint.noChanges}</p>
           : <div className="steps">{changes.map(item => <ToolRow key={item.id} item={item} />)}</div>}

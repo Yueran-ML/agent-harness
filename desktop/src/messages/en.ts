@@ -215,6 +215,8 @@ export const en = {
     retried: (seconds: number, retry: number) => (seconds > 0
       ? `Tried again after ${duration(seconds)} (retry ${retry}).`
       : `Tried again at once (retry ${retry}).`),
+    /** Of a request that was to be tried again, and never was. */
+    gaveUp: 'It was stopped before it tried again.',
   },
 
   /** What else a conversation tells of. */
@@ -282,6 +284,18 @@ export const en = {
     restart: 'Start it again',
     latest: 'Latest',
     replay: 'Replay',
+    showLog: 'Show the log',
+    lastWords: 'What it wrote last',
+    recentProjects: 'Recent projects',
+    notices: 'Notices',
+    tellMe: 'Tell me when Columbina waits for me or has finished',
+
+    /** What the system shows of this application while its window is in the background. */
+    notice: {
+      consent: 'Columbina needs your consent',
+      finished: 'Columbina has finished',
+      stopped: 'Columbina has stopped',
+    },
     mute: 'Turn the sound off',
     unmute: 'Turn the sound on',
     soundOn: 'Sound on',
@@ -432,6 +446,7 @@ export const en = {
     replay: 'This is a replay of a recorded session. No model is asked for anything.',
     taskStopped: 'This task has stopped and takes nothing more. Start Columbina again to go on with it.',
     serviceEnded: 'The service process has ended.',
+    tellMe: 'Only while this window is in the background.',
 
     consentRun: 'Columbina wants to run this command.',
     consentWrite: 'Columbina wants to change this file.',

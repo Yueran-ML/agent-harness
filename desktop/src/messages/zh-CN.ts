@@ -157,6 +157,7 @@ export const zhCN: Messages = {
     retried: (seconds: number, retry: number) => (seconds > 0
       ? `等了${duration(seconds)}，第 ${retry} 次重试。`
       : `随即第 ${retry} 次重试。`),
+    gaveUp: '还没来得及重试就停下了。',
   },
 
   notice: {
@@ -213,6 +214,17 @@ export const zhCN: Messages = {
     restart: '重新启动',
     latest: '回到最新',
     replay: '回放',
+    showLog: '查看日志',
+    lastWords: '它最后写下的内容',
+    recentProjects: '最近的项目',
+    notices: '通知',
+    tellMe: 'Columbina 等我或者做完时通知我',
+
+    notice: {
+      consent: 'Columbina 需要你同意',
+      finished: 'Columbina 做完了',
+      stopped: 'Columbina 停下了',
+    },
     mute: '关闭声音',
     unmute: '打开声音',
     soundOn: '声音开',
@@ -357,6 +369,7 @@ export const zhCN: Messages = {
     replay: '这是一段录好的会话的回放，不会请求任何模型。',
     taskStopped: '这个任务已经停止，不再接受输入。重新启动 Columbina 之后可以接着做。',
     serviceEnded: '服务进程已经结束。',
+    tellMe: '只在这个窗口不在前台时通知。',
 
     consentRun: 'Columbina 想运行这条命令。',
     consentWrite: 'Columbina 想修改这个文件。',

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { localeOf, storedLanguage, storeLanguage, wordsFor } from '../src/app/locale';
+import { localeOf, shownLanguage, storedLanguage, storeLanguage, wordsFor } from '../src/app/locale';
+import { languageFor } from '../src/i18n';
 import { en } from '../src/messages/en';
 import { zhCN } from '../src/messages/zh-CN';
 import { initialTheme, storeTheme, themes, themeStorageKey } from '../src/themes';
@@ -100,6 +101,20 @@ describe('the language', () => {
     expect(storedLanguage()).toBe('zh');
     expect(localeOf('zh')).toBe('zh');
     expect(wordsFor('zh')).toBe(zhCN);
+  });
+
+  it('is named to the page as the language of the words that are shown', () => {
+    // A page that says it is German and shows English words is read out wrongly.
+    vi.stubGlobal('localStorage', storage());
+    const shown = [['zh-CN', 'zh-CN'], ['zh-TW', 'zh-CN'], ['zh', 'zh-CN'], ['en-GB', 'en'], ['de-DE', 'en'], ['ja-JP', 'en']];
+    for (const [system, language] of shown) {
+      vi.stubGlobal('navigator', { language: system });
+      expect(shownLanguage('system')).toBe(language);
+      expect(languageFor(system)).toBe(language);
+    }
+    vi.stubGlobal('navigator', { language: 'de-DE' });
+    expect(shownLanguage('zh')).toBe('zh-CN');
+    expect(shownLanguage('en')).toBe('en');
   });
 
   it('goes by the system again once the choice is given up', () => {

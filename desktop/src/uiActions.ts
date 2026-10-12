@@ -25,7 +25,12 @@ export function permissionNeedsConfirmation(preset: PermissionPreset, status: Se
   return targetLevel > currentLevel || (preset === 'full-access' && status?.approval !== 'never');
 }
 
+/** Whether a line that was written in the field is a command, which the agent never reads. */
+export function isCommand(text: string): boolean {
+  return text.trim().startsWith('/');
+}
+
 export function canSubmitInput(text: string, state: { unavailable: boolean; sending: boolean; running: boolean }): boolean {
   return !!text.trim() && !state.unavailable && !state.sending
-    && !(state.running && text.trim().startsWith('/'));
+    && !(state.running && isCommand(text));
 }

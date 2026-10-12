@@ -3,6 +3,7 @@ import type { ApprovalRequest, Hello, RpcMessage, SessionEvent, SessionStatus, S
 import { emptyPreview, projectEvents, reduceChunk } from './state';
 import { createElectronTransport, RpcClient } from './transport';
 import { createMockTransport } from './mock';
+import { isCommand } from './uiActions';
 
 export interface PendingApproval extends ApprovalRequest { requestId: string | number }
 export interface CommandOutput { id: number; line: string; text: string }
@@ -28,6 +29,10 @@ export function useWorkspace() {
   const [openedAt, setOpenedAt] = useState(0);
   // The folder of the project, from the moment it is chosen.
   const [folder, setFolder] = useState<string | null>(null);
+  // The folders that were chosen at earlier times, as the shell keeps them.
+  const [recent, setRecent] = useState<{ path: string; name: string }[]>([]);
+  // The last lines that the service wrote for errors, asked for when its connection ends.
+  const [lastWords, setLastWords] = useState<string[]>([]);
   const [mode, setMode] = useState<'mock' | 'service'>('mock');
   const client = useRef<RpcClient | null>(null);
   const active = useRef<string | null>(null);
@@ -60,23 +65,23 @@ export function useWorkspace() {
     if (!rpc || opening.current) return;
     opening.current = true;
     const version = ++generation.current;
-    active.current = null;
+    // What comes for the other task before it is the one shown is kept until then.
     buffered.current.clear();
-    statuses.current.clear();
     approvalBuffer.current.clear();
     setLoading(true);
-    setApproval(null);
-    setPreview(emptyPreview());
-    setOutputs([]);
     setError(null);
-    setStatus(null);
-    setCancelling(false);
-    eventStore.current.clear();
-    setEvents([]);
     try {
       const opened = await rpc.request<{ session_id: string; events: number }>('session/open', id ? { session_id: id } : {});
       if (version !== generation.current) return;
+      // Only now is the task that was shown left behind. Had the other one not opened, this one
+      // would still be here, with whatever runs in it: the service keeps it then.
       active.current = opened.session_id;
+      eventStore.current.clear();
+      setEvents([]);
+      setPreview(emptyPreview());
+      streamKey.current = '';
+      setOutputs([]);
+      setCancelling(false);
       setOpenedAt(opened.events);
       setSessionId(opened.session_id);
       setStatus(statuses.current.get(opened.session_id) ?? null);
@@ -100,6 +105,14 @@ export function useWorkspace() {
     }
   }, [fail, publish, refreshSessions]);
 
+  const refreshRecent = useCallback(async () => {
+    try {
+      setRecent(await window.columbina?.recentProjects() ?? []);
+    } catch {
+      // Without the list, a folder can still be chosen in the dialog.
+    }
+  }, []);
+
   const connect = useCallback(async (cwd?: string, resumeId?: string) => {
     if (connecting.current || (window.columbina && !cwd)) return;
     connecting.current = true;
@@ -113,6 +126,7 @@ export function useWorkspace() {
     setConnected(false);
     setError(null);
     setClosed(null);
+    setLastWords([]);
     setHello(null);
     setStatus(null);
     setSessionId(null);
@@ -182,6 +196,8 @@ export function useWorkspace() {
         setApproval(null);
         setPreview(emptyPreview());
         setClosed(reason || '');
+        // Why it ended is most often in what it wrote last.
+        void bridge?.serviceTail().then(setLastWords).catch(() => {});
       });
       const offShutdown = bridge?.onShutdown(() => {
         void rpc.request('shutdown').catch(() => {}).finally(() => bridge.stop());
@@ -190,17 +206,19 @@ export function useWorkspace() {
       const greeting = await rpc.request<Hello>('initialize', { protocol: 1, client: { name: 'columbina-desktop', version: '0.1.0' } });
       setHello(greeting);
       setConnected(true);
+      void refreshRecent();
       await openSession(resumeId);
     } catch (problem) {
       fail(problem);
       setLoading(false);
     } finally { connecting.current = false; }
-  }, [fail, openSession, publish, refreshSessions]);
+  }, [fail, openSession, publish, refreshRecent, refreshSessions]);
 
   useEffect(() => {
     if (!window.columbina) void connect();
+    void refreshRecent();
     return () => { ++generation.current; connectionCleanup.current(); client.current?.close(); };
-  }, [connect]);
+  }, [connect, refreshRecent]);
 
   const command = useCallback(async (line: string) => {
     if (!client.current) return;
@@ -208,17 +226,36 @@ export function useWorkspace() {
     if (result.text) setOutputs(current => [...current, { id: Date.now(), line, text: result.text }]);
   }, []);
 
-  const send = useCallback(async (text: string) => {
-    if (!client.current || !text.trim()) return false;
+  const sent = useCallback(async (give: () => Promise<unknown>) => {
     setSending(true);
     setError(null);
     try {
-      if (text.trim().startsWith('/')) await command(text.trim());
-      else await client.current.request(status?.status === 'running' ? 'session/steer' : 'session/prompt', { text });
+      await give();
       return true;
-    } catch (problem) { fail(problem); return false; }
-    finally { setSending(false); }
-  }, [command, fail, status]);
+    } catch (problem) {
+      fail(problem);
+      return false;
+    } finally {
+      setSending(false);
+    }
+  }, [fail]);
+
+  /**
+   * Give the agent something to read: a task while it rests, words for its next step while it
+   * works. Whatever the text looks like, it is never carried out as a command.
+   */
+  const prompt = useCallback(async (text: string) => {
+    const rpc = client.current;
+    if (!rpc || !text.trim()) return false;
+    return sent(() => rpc.request(status?.status === 'running' ? 'session/steer' : 'session/prompt', { text }));
+  }, [sent, status]);
+
+  /** Send what was written in the field: a command if it begins with a slash, and input for the agent otherwise. */
+  const send = useCallback(async (text: string) => {
+    if (!isCommand(text)) return prompt(text);
+    if (!client.current) return false;
+    return sent(() => command(text.trim()));
+  }, [command, prompt, sent]);
 
   const cancel = useCallback(async () => {
     if (!client.current) return;
@@ -227,28 +264,62 @@ export function useWorkspace() {
     catch (problem) { fail(problem); setCancelling(false); }
   }, [fail]);
 
-  const answer = useCallback((outcome: 'allowed-once' | 'rejected', remember = false) => {
-    if (!approval || !client.current) return;
-    client.current.respond(approval.requestId, { outcome, remember });
+  /**
+   * Answer a question of the agent.
+   *
+   * Args:
+   *   requestId: The question that was on the screen when the answer was given. An answer
+   *     is for that question and for no other: if another one has taken its place, nothing is sent.
+   */
+  const answer = useCallback((requestId: string | number, outcome: 'allowed-once' | 'rejected', remember = false) => {
+    if (!approval || approval.requestId !== requestId || !client.current) return;
+    client.current.respond(requestId, { outcome, remember });
   }, [approval]);
 
-  const chooseFolder = useCallback(async () => {
-    if (!window.columbina) { setError('Folder selection is available in the desktop app. This preview uses the replay workspace.'); return; }
-    if (choosingDirectory.current || connecting.current) return;
+  /** Let the user choose a folder in the dialog of the system. Null if none was chosen. */
+  const pickFolder = useCallback(async (): Promise<string | null> => {
+    if (!window.columbina) { setError('Folder selection is available in the desktop app. This preview uses the replay workspace.'); return null; }
+    if (choosingDirectory.current || connecting.current) return null;
     choosingDirectory.current = true;
     try {
-      const folder = await window.columbina.selectFolder();
-      if (folder) {
-        selectedDirectory.current = folder;
-        setHasProject(true);
-        await connect(folder);
-      }
-    } catch (problem) { fail(problem); }
-    finally { choosingDirectory.current = false; }
-  }, [connect, fail]);
+      return await window.columbina.selectFolder();
+    } catch (problem) {
+      fail(problem);
+      return null;
+    } finally {
+      choosingDirectory.current = false;
+    }
+  }, [fail]);
+
+  /** Start the service in a folder that the shell has let through, and open a task there. */
+  const openFolder = useCallback(async (chosen: string) => {
+    selectedDirectory.current = chosen;
+    setHasProject(true);
+    await connect(chosen);
+  }, [connect]);
+
+  /** The folder to start in for one of the recent projects, or null if the shell does not let it through. */
+  const pickRecent = useCallback(async (kept: string): Promise<string | null> => {
+    if (!window.columbina || connecting.current) return null;
+    try {
+      return await window.columbina.openRecent(kept);
+    } catch (problem) {
+      fail(problem);
+      // It may be gone, or lead somewhere else now. The list says what is still there.
+      void refreshRecent();
+      return null;
+    }
+  }, [fail, refreshRecent]);
 
   const projection = useMemo(() => projectEvents(events), [events]);
-  return { hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending, cancelling, error, closed, openedAt, folder, mode, projection, openSession, send, cancel, answer, command, chooseFolder, reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined), clearError: () => setError(null), fail };
+  return {
+    hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending,
+    cancelling, error, closed, lastWords, openedAt, folder, recent, mode, projection,
+    openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder,
+    reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined),
+    showLog: () => void window.columbina?.showLog().catch(fail),
+    clearError: () => setError(null), fail,
+  };
 }
 
 export type Workspace = ReturnType<typeof useWorkspace>;

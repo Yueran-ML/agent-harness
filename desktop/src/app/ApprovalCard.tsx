@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, ShieldQuestion } from 'lucide-react';
 import type { PendingApproval } from '../useWorkspace';
+import { isYes, keyOf, settled, SETTLE_MS } from './keys';
 import { useWords } from './locale';
 import { commandTools, scopeOf } from './tell';
-
-/** For this long after a question appears, the keyboard cannot say yes to it. */
-const SETTLE_MS = 500;
 
 const writers = new Set(['write', 'edit']);
 
@@ -15,6 +13,11 @@ const writers = new Set(['write', 'edit']);
  * It stands above the field, and the conversation stays where it can be read.
  * It does not take the keyboard away from whoever is writing. Ctrl+Enter says
  * yes for this once, and Enter alone says yes to nothing.
+ *
+ * Every question has a card of its own: the caller gives each a key. So what
+ * a card remembers, such as that it was answered, is never taken for the
+ * next question. In its first moment nothing answers a card, neither a key
+ * nor a click, because either may have been on its way to something else.
  */
 export function ApprovalCard({ approval, cancelling, onAnswer, onStop }: {
   approval: PendingApproval;
@@ -24,24 +27,23 @@ export function ApprovalCard({ approval, cancelling, onAnswer, onStop }: {
 }) {
   const words = useWords();
   const [answered, setAnswered] = useState(false);
-  const shownAt = useRef(0);
+  const shownAt = useRef(Date.now());
+  // The buttons can be seen to wait out the first moment, so that a click in it is not lost without a sign.
+  const [ready, setReady] = useState(false);
   useEffect(() => {
-    shownAt.current = Date.now();
-    setAnswered(false);
-  }, [approval.requestId]);
+    const timer = setTimeout(() => setReady(true), SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, []);
 
   const answer = (outcome: 'allowed-once' | 'rejected', remember = false) => {
-    if (answered) return;
+    if (answered || !settled(shownAt.current, Date.now())) return;
     setAnswered(true);
     onAnswer(outcome, remember);
   };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Enter' || !(event.ctrlKey || event.metaKey) || event.shiftKey || event.altKey) return;
-      if (event.isComposing || event.repeat || document.querySelector('dialog[open]')) return;
-      // A key that was on its way when the question appeared was not meant for it.
-      if (Date.now() - shownAt.current < SETTLE_MS) return;
+      if (!isYes(keyOf(event)) || document.querySelector('dialog[open]')) return;
       event.preventDefault();
       answer('allowed-once');
     };
@@ -75,20 +77,20 @@ export function ApprovalCard({ approval, cancelling, onAnswer, onStop }: {
         {cancelling ? words.label.stopping : words.label.stopTurn}
       </button>
       <span className="consent-gap" />
-      <button type="button" className="btn" disabled={answered} onClick={() => answer('rejected')} data-test="consent-reject">
+      <button type="button" className="btn" disabled={answered || !ready} onClick={() => answer('rejected')} data-test="consent-reject">
         {words.label.reject}
       </button>
       {scope !== null && <button
         type="button"
         className="btn"
-        disabled={answered}
+        disabled={answered || !ready}
         aria-describedby="consent-scope"
         onClick={() => answer('allowed-once', true)}
         data-test="consent-always"
       >
         {words.label.allowAlways}
       </button>}
-      <button type="button" className="btn btn-main" disabled={answered} onClick={() => answer('allowed-once')} data-test="consent-once">
+      <button type="button" className="btn btn-main" disabled={answered || !ready} onClick={() => answer('allowed-once')} data-test="consent-once">
         {words.label.allowOnce}
         <kbd>Ctrl</kbd><kbd>Enter</kbd>
       </button>

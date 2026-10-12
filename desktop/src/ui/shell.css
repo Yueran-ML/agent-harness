@@ -812,7 +812,7 @@ select.field {
   color: var(--moon-0);
 }
 
-.segments button[aria-checked='true'] {
+.segments button[aria-pressed='true'] {
   background: var(--ink-4);
   color: var(--moon-0);
 }
@@ -854,12 +854,12 @@ select.field {
   background: var(--ink-3);
 }
 
-.choice[aria-checked='true'] {
+.choice[aria-pressed='true'] {
   border-color: var(--accent);
   background: var(--accent-wash);
 }
 
-.choice[data-tone='warn'][aria-checked='true'] {
+.choice[data-tone='warn'][aria-pressed='true'] {
   border-color: var(--warn);
   background: var(--warn-wash);
 }
@@ -877,12 +877,12 @@ select.field {
   border: 1.5px solid var(--moon-3);
 }
 
-.choice[aria-checked='true'] .choice-mark {
+.choice[aria-pressed='true'] .choice-mark {
   border-color: var(--accent);
   background: radial-gradient(circle, var(--accent) 0 42%, transparent 48%);
 }
 
-.choice[data-tone='warn'][aria-checked='true'] .choice-mark {
+.choice[data-tone='warn'][aria-pressed='true'] .choice-mark {
   border-color: var(--warn);
   background: radial-gradient(circle, var(--warn) 0 42%, transparent 48%);
 }
@@ -933,3 +933,31 @@ select.field {
   margin-right: auto;
 }
 
+
+/* What a service wrote last, under the line that says it has ended. */
+.last-words-title {
+  margin: var(--s2) 0 0 19px;
+}
+
+.last-words {
+  max-height: 200px;
+}
+
+.banner .aside > .btn {
+  margin-left: 11px;
+}
+
+/* The projects of earlier times, on the page before any is open. */
+.recent-projects {
+  margin-top: var(--s5);
+  width: min(100vw - 2 * var(--s5), 560px);
+  text-align: left;
+  animation: none;
+}
+
+.recent-projects .task-when {
+  max-width: 62%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

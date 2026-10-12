@@ -1,6 +1,6 @@
 /** The words of the interface, for every part of it that says something. */
 import { createContext, useContext } from 'react';
-import { messagesFor } from '../i18n';
+import { languageFor, messagesFor } from '../i18n';
 import { en, type Messages } from '../messages/en';
 
 /** What the user chose: a language, or to go by the system. */
@@ -40,6 +40,11 @@ export function localeOf(choice: LanguageChoice): string {
 
 export function wordsFor(choice: LanguageChoice): Messages {
   return messagesFor(localeOf(choice));
+}
+
+/** The language of the words that a choice leads to, as a page names its language. */
+export function shownLanguage(choice: LanguageChoice): string {
+  return languageFor(localeOf(choice));
 }
 
 export const Words = createContext<Messages>(en);

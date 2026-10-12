@@ -3,16 +3,13 @@ import { ArrowUp, Clock3, Square, SquareSlash } from 'lucide-react';
 import { messageText } from '../state';
 import { canSubmitInput } from '../uiActions';
 import type { Workspace } from '../useWorkspace';
+import { composerKey, keyOf } from './keys';
 import { useWords } from './locale';
 
 /** How long the first Esc of two stays in mind. */
 const ESC_TWICE_MS = 2000;
-
-/** Whether a key came while an input method was putting characters together. */
-function composing(event: KeyboardEvent): boolean {
-  // Some input methods report the key that ends a composition as key 229 only.
-  return event.nativeEvent.isComposing || event.keyCode === 229;
-}
+/** How high the field grows before it scrolls, in pixels. */
+const MOST_HEIGHT = 220;
 
 /**
  * The field where the user writes, with what belongs to it: the list of
@@ -23,8 +20,9 @@ function composing(event: KeyboardEvent): boolean {
  *   onSend: Send a line. It resolves to whether the line was taken.
  *   returned: Whether input that was dropped unread has just been put back into the field.
  *   declined: Whether the user has just said no to something that the agent asked for.
+ *   commandsAsked: How often the list of commands was asked for from outside the field.
  */
-export function Composer({ workspace, draft, onDraft, onSend, field, returned, declined }: {
+export function Composer({ workspace, draft, onDraft, onSend, field, returned, declined, commandsAsked }: {
   workspace: Workspace;
   draft: string;
   onDraft: (text: string) => void;
@@ -32,6 +30,7 @@ export function Composer({ workspace, draft, onDraft, onSend, field, returned, d
   field: RefObject<HTMLTextAreaElement | null>;
   returned: boolean;
   declined: boolean;
+  commandsAsked: number;
 }) {
   const words = useWords();
   const { status, hello, projection } = workspace;
@@ -49,6 +48,14 @@ export function Composer({ workspace, draft, onDraft, onSend, field, returned, d
   const listOpen = matching.length > 0 && closedFor !== draft && !unavailable;
   const active = Math.min(chosen, matching.length - 1);
   useEffect(() => setChosen(0), [typed]);
+  // Asked for from outside: the list opens again if it was closed, and on an empty field it
+  // opens with every command. Whatever else is written stays as it is.
+  useEffect(() => {
+    if (commandsAsked === 0) return;
+    setClosedFor(null);
+    if (draft.trim() === '' && !running) onDraft('/');
+    field.current?.focus();
+  }, [commandsAsked]);
 
   // The first Esc of two. It is forgotten after a moment, and when the turn is over.
   const [armed, setArmed] = useState(false);
@@ -64,8 +71,12 @@ export function Composer({ workspace, draft, onDraft, onSend, field, returned, d
     const node = field.current;
     if (!node) return;
     node.style.height = 'auto';
-    node.style.height = `${Math.min(220, node.scrollHeight)}px`;
-  }, [draft, field]);
+    node.style.height = `${Math.min(MOST_HEIGHT, node.scrollHeight)}px`;
+    // It scrolls only once it is as high as it gets. A field that was measured while it was
+    // hidden would show a bar otherwise.
+    node.style.overflowY = node.scrollHeight > MOST_HEIGHT ? 'auto' : 'hidden';
+    // Measured again when the field comes into view, because a hidden one has no height.
+  }, [draft, field, unavailable, workspace.hasProject, workspace.loading]);
 
   const submitting = useRef(false);
   const submit = async () => {
@@ -83,38 +94,32 @@ export function Composer({ workspace, draft, onDraft, onSend, field, returned, d
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (composing(event)) return;
-    if (listOpen) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault();
-        const step = event.key === 'ArrowDown' ? 1 : -1;
-        setChosen((active + step + matching.length) % matching.length);
-        return;
-      }
-      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
-        event.preventDefault();
+    const action = composerKey(keyOf(event), { listOpen, running, cancelling: workspace.cancelling, armed });
+    if (action === null) return;
+    event.preventDefault();
+    switch (action) {
+      case 'next':
+        setChosen((active + 1) % matching.length);
+        break;
+      case 'previous':
+        setChosen((active - 1 + matching.length) % matching.length);
+        break;
+      case 'take':
         fill(matching[active].name);
-        return;
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault();
+        break;
+      case 'closeList':
         setClosedFor(draft);
-        return;
-      }
-    }
-    if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
-      event.preventDefault();
-      void submit();
-      return;
-    }
-    if (event.key === 'Escape' && running && !workspace.cancelling) {
-      event.preventDefault();
-      if (armed) {
+        break;
+      case 'send':
+        void submit();
+        break;
+      case 'arm':
+        setArmed(true);
+        break;
+      case 'stop':
         setArmed(false);
         void workspace.cancel();
-      } else {
-        setArmed(true);
-      }
+        break;
     }
   };
 

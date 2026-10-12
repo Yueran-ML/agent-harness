@@ -11,8 +11,8 @@ import { presetOf, presets } from './tell';
 export type SettingsPart = 'appearance' | 'model' | 'permissions';
 
 export function Settings({
-  workspace, part, theme, onTheme, language, onLanguage, playOpening, onPlayOpening, onPlayNow, music,
-  onCommand, onClose,
+  workspace, part, theme, onTheme, language, onLanguage, playOpening, onPlayOpening, onPlayNow, tellMe, onTellMe,
+  music, onCommand, onClose,
 }: {
   workspace: Workspace;
   part: SettingsPart;
@@ -23,6 +23,8 @@ export function Settings({
   playOpening: boolean;
   onPlayOpening: (play: boolean) => void;
   onPlayNow: () => void;
+  tellMe: boolean;
+  onTellMe: (tell: boolean) => void;
   music: BackgroundMusic;
   /** Give a command to the service. A change that widens what the task may do is confirmed first. */
   onCommand: (line: string) => void;
@@ -64,12 +66,12 @@ export function Settings({
       <h3>{words.label.appearance}</h3>
       <div className="setting-row">
         <span className="setting-name" id="setting-theme">{words.label.theme}</span>
-        <div className="segments" role="radiogroup" aria-labelledby="setting-theme">
+        {/* Buttons that are pressed or not: they need no keys beyond those of a button. */}
+        <div className="segments" role="group" aria-labelledby="setting-theme">
           {themes.map(id => <button
             type="button"
-            role="radio"
             key={id}
-            aria-checked={theme === id}
+            aria-pressed={theme === id}
             onClick={() => onTheme(id)}
             data-test={`theme-${id}`}
           >
@@ -122,13 +124,12 @@ export function Settings({
       {running && <p className="caption">{words.hint.settingsWhenIdle}</p>}
       {/* What holds now, also where it is none of the three below. */}
       {status && !current && <p className="setting-now">{sayPermissions(words, mode, policy)}</p>}
-      <div className="choices" role="radiogroup" aria-label={words.label.permissions}>
+      <div className="choices" role="group" aria-label={words.label.permissions}>
         {presets.map(preset => <button
           type="button"
-          role="radio"
           key={preset.id}
           className="choice"
-          aria-checked={current === preset.id}
+          aria-pressed={current === preset.id}
           disabled={off || !canPermissions}
           data-tone={preset.id === 'full-access' ? 'warn' : undefined}
           onClick={() => { if (current !== preset.id) onCommand(`/permissions ${preset.id}`); }}
@@ -159,8 +160,22 @@ export function Settings({
     </section>
 
     <section className="setting">
+      <h3>{words.label.notices}</h3>
+      <div className="setting-row">
+        <label className="check">
+          <input type="checkbox" checked={tellMe} onChange={event => onTellMe(event.target.checked)} data-test="tell-me" />
+          {words.label.tellMe}
+        </label>
+      </div>
+      <p className="caption">{words.hint.tellMe}</p>
+    </section>
+
+    <section className="setting">
       <h3>{words.label.connection}</h3>
-      <p className="setting-now">{workspace.mode === 'mock' ? words.hint.replay : words.hint.connectedService}</p>
+      <p className="setting-now">
+        {!workspace.connected ? words.hint.serviceEnded
+          : workspace.mode === 'mock' ? words.hint.replay : words.hint.connectedService}
+      </p>
       {hello && <p className="caption mono setting-path">{hello.cwd}</p>}
       <div className="setting-row">
         <button type="button" className="btn" disabled={running || workspace.loading} onClick={() => void workspace.reconnect()}>

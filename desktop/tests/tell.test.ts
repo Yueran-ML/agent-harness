@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   agoOf, argumentsOf, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, objectOf, presetOf, presets, retryText, scopeOf,
-  stepped, STILL_STARTING_MS, tail, taskTitle, toolKind, verbOf, waitingWords,
+  servicesToTell, serviceTitle, stepped, STILL_STARTING_MS, tail, taskTitle, toolKind, verbOf, waitingWords,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
 import { ja } from '../src/messages/ja';
@@ -102,6 +102,84 @@ describe('how full the context is', () => {
     expect(contextPercent(500, undefined)).toBeNull();
     expect(contextPercent(500, 0)).toBeNull();
     expect(contextPercent(500, -1)).toBeNull();
+  });
+});
+
+describe('the name of the service that a model comes from', () => {
+  const service = (name: string, title: string, own = false) => ({
+    name, title, base_url: 'https://api.example.com/v1', own, model: null, context_window: null, key_env: null,
+    key: 'none' as const,
+  });
+  // As `columbina setup --list` tells of them: of a service of the user's own, the title is its address.
+  const listed = {
+    use: 'deepseek',
+    services: [service('deepseek', 'DeepSeek'), service('my-own', 'http://10.0.0.5:8000/v1', true)],
+  };
+
+  it('is the title that the list of services gives it', () => {
+    expect(serviceTitle('deepseek', listed)).toBe('DeepSeek');
+  });
+
+  it('is the name that its user gave it, for a service of the user\'s own', () => {
+    expect(serviceTitle('my-own', listed)).toBe('my-own');
+  });
+
+  it('is the name that the service process gives, where the list does not have it or is not there', () => {
+    expect(serviceTitle('moonshot', listed)).toBe('moonshot');
+    expect(serviceTitle('deepseek', null)).toBe('deepseek');
+  });
+
+  it('is not known where the service process names none', () => {
+    expect(serviceTitle(null, listed)).toBeNull();
+    expect(serviceTitle(undefined, listed)).toBeNull();
+    expect(serviceTitle('', listed)).toBeNull();
+  });
+});
+
+describe('the services that the settings tell of', () => {
+  const service = (name: string, key = 'none', own = false) => ({
+    name, title: name.toUpperCase(), base_url: 'https://api.example.com/v1', own, model: null, context_window: null,
+    key_env: 'A_KEY', key,
+  });
+  const all = [
+    service('deepseek'), service('openai', 'stored'), service('moonshot', 'environment'),
+    service('zhipu', 'stored-for-another-address'), service('ollama'), service('my-own', 'none', true),
+  ];
+  const names = (told: { known: { name: string }[] }) => told.known.map(known => known.name);
+
+  it('are the one in use, those that the user added and those that a key is there for', () => {
+    const told = servicesToTell({ use: 'ollama', services: all }, 'ollama');
+    expect(told.inUse).toBe('ollama');
+    // In the order of the list. `deepseek` has nothing to do with this user.
+    expect(names(told)).toEqual(['openai', 'moonshot', 'zhipu', 'ollama', 'my-own']);
+  });
+
+  it('take the service that was chosen for the one in use, whatever runs at the moment', () => {
+    // Another service was chosen in the window for the key, and the service process is not started again yet.
+    const told = servicesToTell({ use: 'ollama', services: all }, 'deepseek');
+    expect(told.inUse).toBe('ollama');
+    expect(names(told)).not.toContain('deepseek');
+  });
+
+  it('take the service that the service process names where none was chosen', () => {
+    // A first start: nothing is chosen, nothing is stored, and the program goes by its profile.
+    const fresh = all.map(one => ({ ...one, key: 'none', own: false }));
+    expect(servicesToTell({ use: null, services: fresh }, 'deepseek')).toEqual({ inUse: 'deepseek', known: [fresh[0]] });
+    expect(servicesToTell({ use: '', services: fresh }, 'deepseek').inUse).toBe('deepseek');
+    // No service process, or one that names no service: nothing is in use that the window knows of.
+    for (const provider of [null, undefined, '']) {
+      expect(servicesToTell({ use: null, services: fresh }, provider)).toEqual({ inUse: null, known: [] });
+    }
+  });
+
+  it('are none where the window has no list, though it knows what is in use', () => {
+    expect(servicesToTell(null, 'deepseek')).toEqual({ inUse: 'deepseek', known: [] });
+    expect(servicesToTell(null, null)).toEqual({ inUse: null, known: [] });
+  });
+
+  it('do not hold a service in use that the list does not have', () => {
+    // The profile names a service of its own. It is in use, and the list has nothing to say of it.
+    expect(servicesToTell({ use: null, services: [service('deepseek')] }, 'in-house')).toEqual({ inUse: 'in-house', known: [] });
   });
 });
 

@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ChevronRight, CornerDownRight, SquareTerminal } from 'lucide-react';
+import type { Listed } from '../key/form';
 import { classifyModelFailure, turnOutcome, type ActionKey, type TurnOutcome } from '../outcomes';
 import type { ConversationItem, StreamPreview, UserItem } from '../state';
 import { groupTurns, type Turn } from '../turns';
@@ -8,6 +9,10 @@ import { sayModelFailure, sayTurn } from '../words';
 import { CopyButton, Markdown } from './Markdown';
 import { ToolRow } from './ToolRow';
 import { useWords } from './locale';
+import { serviceTitle } from './tell';
+
+/** The services that are set up, for whatever part names the one that a request went to. */
+const Services = createContext<Listed | null>(null);
 
 /** After this long, a wait says how long it has lasted. */
 const SAY_HOW_LONG_AFTER = 5;
@@ -72,6 +77,7 @@ function Step({ item, live = false, last = false, onLink }: {
   onLink: (url: string) => void;
 }) {
   const words = useWords();
+  const services = useContext(Services);
   switch (item.type) {
     case 'tool':
       return <ToolRow item={item} />;
@@ -96,7 +102,8 @@ function Step({ item, live = false, last = false, onLink }: {
     case 'notice': {
       const cause = item.cause;
       if (cause.kind === 'attempt') {
-        const saying = sayModelFailure(words, classifyModelFailure(cause.failure));
+        // Of the service that the request went to. Another one may be in use by now.
+        const saying = sayModelFailure(words, classifyModelFailure(cause.failure), serviceTitle(cause.provider, services));
         return <p className="note" data-tone="warn">{saying.what}</p>;
       }
       if (cause.kind === 'retry') {
@@ -149,7 +156,7 @@ function Ending({ turn, outcome, onAction }: {
   onAction: ((action: ActionKey, turn: Turn) => void) | null;
 }) {
   const words = useWords();
-  const saying = sayTurn(words, outcome);
+  const saying = sayTurn(words, outcome, serviceTitle(turn.provider, useContext(Services)));
   if (saying === null) return null;
   // Somebody stopping a turn is no failure. Everything else here is something that went wrong.
   const calm = outcome.kind === 'stopped' || outcome.kind === 'interrupted' || outcome.kind === 'forked';
@@ -295,6 +302,7 @@ export function Conversation({ workspace, onLink, onAction }: {
       }}
     >
       <div className="talk" ref={content} data-test="talk">
+        <Services.Provider value={workspace.services}>
         {entries.map(entry => entry.kind === 'turn'
           ? <TurnView
               key={`turn-${entry.number}`}
@@ -309,6 +317,7 @@ export function Conversation({ workspace, onLink, onAction }: {
           : entry.item.type === 'compaction'
             ? <Summary key={entry.item.id} text={entry.item.text} />
             : <Step key={entry.item.id} item={entry.item} onLink={onLink} />)}
+        </Services.Provider>
 
         {/* Between a task and the turn that takes it, the agent is at work and no turn shows it. */}
         {waiting !== null && !liveTurn && <Waiting>{waiting}</Waiting>}

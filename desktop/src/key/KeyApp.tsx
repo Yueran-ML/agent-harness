@@ -4,7 +4,8 @@ import { Words } from '../app/locale';
 import { messagesFor } from '../i18n';
 import { themes } from '../themes';
 import {
-  chosen, complete, documentOf, formFor, listedOf, sentenceOf, serviceOf, storedOf, takesKey, tokensOf,
+  called, chosen, complete, documentOf, formFor, listedOf, sentenceOf, serviceCalled, serviceOf, storedOf, takesKey,
+  tokensOf,
   type Form, type Listed, type Stored,
 } from './form';
 
@@ -128,8 +129,7 @@ export function KeyApp() {
       {answer?.kind === 'stored' && <div className="key-done" role="status" data-test="key-done">
         <div className="key-said" data-tone="ok">
           <Check size={15} aria-hidden="true" />
-          {/* By the name that people know it by, where the list has one. */}
-          <p>{words.hint.key.done(listed?.services.find(known => known.name === answer.name)?.title ?? answer.name, answer.model)}</p>
+          <p>{words.hint.key.done(serviceCalled(answer.name, listed), answer.model)}</p>
         </div>
         {answer.keyIn === 'keyring' && <p className="caption">{words.hint.key.inKeyring}</p>}
         {answer.keyIn === 'file' && <div className="key-said" data-tone="warn">
@@ -155,7 +155,7 @@ export function KeyApp() {
             data-test="key-service"
           >
             {listed.services.map((candidate, index) => <option key={candidate.name} value={String(index)}>
-              {candidate.title}
+              {called(candidate)}
             </option>)}
             <option value={ADD}>{words.label.key.ownService}</option>
           </select>

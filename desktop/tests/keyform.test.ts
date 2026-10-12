@@ -1,17 +1,19 @@
 import { describe, expect, it } from 'vitest';
 import {
-  chosen, complete, documentOf, formFor, listedOf, sentenceOf, serviceOf, storedOf, takesKey, tokensOf,
+  called, chosen, complete, documentOf, formFor, listedOf, sentenceOf, serviceCalled, serviceOf, storedOf, takesKey,
+  tokensOf,
   type Form, type Listed,
 } from '../src/key/form';
 
 // What `columbina setup --list` wrote in a real run, shortened to three services, and one of the user's own.
+// Of that one the program knows only where it is, and gives the address as its title.
 const told = {
   use: 'openai',
   services: [
     { name: 'deepseek', title: 'DeepSeek', base_url: 'https://api.deepseek.com', own: false, model: 'deepseek-flash', context_window: 1048576, key_env: 'DEEPSEEK_API_KEY', key: 'none' },
     { name: 'openai', title: 'OpenAI', base_url: 'https://api.openai.com/v1', own: false, model: 'gpt-test', context_window: 400000, key_env: 'OPENAI_API_KEY', key: 'stored' },
     { name: 'ollama', title: 'Ollama on the same machine', base_url: 'http://localhost:11434/v1', own: false, model: null, context_window: null, key_env: null, key: 'none' },
-    { name: 'my-server', title: 'my-server', base_url: 'http://10.0.0.5:8000/v1', own: true, model: 'tiny', context_window: 32768, key_env: 'COLUMBINA_API_KEY', key: 'stored-for-another-address' },
+    { name: 'my-server', title: 'http://10.0.0.5:8000/v1', base_url: 'http://10.0.0.5:8000/v1', own: true, model: 'tiny', context_window: 32768, key_env: 'COLUMBINA_API_KEY', key: 'stored-for-another-address' },
   ],
 };
 const listed = listedOf(told) as Listed;
@@ -46,6 +48,24 @@ describe('what the shell says is set up', () => {
     expect(read?.services[0]).toEqual({
       name: 'mine', title: 'mine', base_url: '', own: false, model: null, context_window: null, key_env: null, key: 'none',
     });
+  });
+});
+
+describe('what a person calls a service', () => {
+  it('is its title, and the name that its user gave it for one that the user added', () => {
+    expect(listed.services.map(called)).toEqual(['DeepSeek', 'OpenAI', 'Ollama on the same machine', 'my-server']);
+    // A service that is known by name keeps its title, whatever its name is.
+    expect(called({ ...listed.services[3], own: false })).toBe('http://10.0.0.5:8000/v1');
+    expect(called({ ...listed.services[1], own: true })).toBe('openai');
+  });
+
+  it('is found by the name of the service, and is that name where the list does not have it', () => {
+    expect(serviceCalled('openai', listed)).toBe('OpenAI');
+    expect(serviceCalled('my-server', listed)).toBe('my-server');
+    expect(serviceCalled('gone', listed)).toBe('gone');
+    expect(serviceCalled('openai', null)).toBe('openai');
+    // Not the first of the list, and not one whose name only begins alike.
+    expect(serviceCalled('open', listed)).toBe('open');
   });
 });
 

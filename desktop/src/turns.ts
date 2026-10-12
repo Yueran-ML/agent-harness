@@ -31,6 +31,8 @@ export interface Turn {
   rounds: number;
   /** Whether the turn is under way. It has no answer and no end then. */
   running: boolean;
+  /** The service that the requests of the turn went to, by the name that the log gives it, or null. */
+  provider: string | null;
   /**
    * What the turn was given before anything else happened in it. As a rule
    * that is the task of the user. A skill that the user handed over stands
@@ -84,6 +86,7 @@ export function groupTurns(projection: Projection): Entry[] {
       rounds: record.steps,
       // Only the last turn of a log can be under way.
       running: record.end === null && record === lastRecord && projection.turn === record.number,
+      provider: record.provider,
       opening: [],
       steps: [],
       answer: null,
@@ -111,7 +114,7 @@ export function groupTurns(projection: Projection): Entry[] {
     // projection name one without a record, the turn begins with that item, so
     // that nothing is lost.
     const gathering = byNumber.get(item.turn) ?? begin({
-      number: item.turn, at: index, seq: item.seq, startedAt: item.time, steps: 0, end: null,
+      number: item.turn, at: index, seq: item.seq, startedAt: item.time, steps: 0, provider: null, end: null,
     });
     gathering.items.push(item);
   });

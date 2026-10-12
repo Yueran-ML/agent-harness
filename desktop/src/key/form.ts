@@ -37,6 +37,21 @@ export interface Form {
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 
+/**
+ * What a person calls a service. One that is known by name has a title. Of one of the
+ * user's own the program knows only where it is and gives that address as its title, so
+ * such a service is called by the name that its user gave it.
+ */
+export function called(service: ListedService): string {
+  return service.own ? service.name : service.title;
+}
+
+/** What a person calls the service of a name. One that the list does not have is called by that name. */
+export function serviceCalled(name: string, listed: Listed | null): string {
+  const service = listed?.services.find(candidate => candidate.name === name);
+  return service ? called(service) : name;
+}
+
 /** Read what the shell says is set up. Anything that is not a list of services is none. */
 export function listedOf(given: unknown): Listed | null {
   if (given === null || typeof given !== 'object') return null;

@@ -140,6 +140,8 @@ export const en = {
   /** Why a request to the model failed. */
   model: {
     noKey: { what: 'No API key is set up for the model service.' },
+    /** The same, where the window knows which service the model comes from. */
+    noKeyFor: (service: string) => ({ what: `No API key is set up for ${service}.` }),
     keyRefused: {
       what: 'The model service did not accept the API key.',
       why: 'The key may be mistyped or no longer valid, or it may not be allowed to use this model.',

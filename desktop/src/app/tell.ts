@@ -3,6 +3,7 @@
  * folder, how long ago, what a call acts on. Nothing here draws anything, so
  * all of it can be tried with plain values.
  */
+import { serviceCalled, type Listed, type ListedService } from '../key/form';
 import type { Messages } from '../messages/en';
 import type { ToolItem } from '../state';
 import { promptOf, type Turn } from '../turns';
@@ -68,6 +69,37 @@ export function stepped<T>(row: readonly T[], from: T, key: string): T | null {
     default:
       return null;
   }
+}
+
+/**
+ * What people call the service that a model comes from, or null where no service is named.
+ *
+ * Args:
+ *   provider: The name of the service, as the service process or its log gives it.
+ *   listed: The services that are set up, where the window has the list.
+ */
+export function serviceTitle(provider: string | null | undefined, listed: Listed | null): string | null {
+  return provider ? serviceCalled(provider, listed) : null;
+}
+
+/**
+ * The service in use, and the services that the settings tell of.
+ *
+ * In use is the service that was chosen. Where none was chosen the program goes by its
+ * profile, and the service in use is the one that the service process names. The settings
+ * tell of that one and of every service that the user has had to do with: one of their own,
+ * or one that a key is there for. The others are in the window that sets a service up.
+ *
+ * Args:
+ *   listed: The services that are set up, where the window has the list.
+ *   provider: The name of the service that the service process talks to, where one runs.
+ */
+export function servicesToTell(
+  listed: Listed | null, provider: string | null | undefined,
+): { inUse: string | null; known: ListedService[] } {
+  const inUse = listed?.use || provider || null;
+  const known = listed?.services.filter(service => service.name === inUse || service.own || service.key !== 'none') ?? [];
+  return { inUse, known };
 }
 
 /** How long a start may take before more is said of it, in milliseconds. */

@@ -26,6 +26,7 @@ const samples: Record<string, unknown[][]> = {
   'duration': [[0.5], [1], [42], [60], [125], [3600], [3725]],
   'tool.exited': [[1], [137]],
   'tool.timedOut.command': [[0.5], [120]],
+  'model.noKeyFor': [['DeepSeek'], ['my-own']],
   'turn.took': [[1, 1], [42, 3], [125, 12]],
   'turn.limit.steps': [[1], [30]],
   'wait.retry': [[0, 3], [1, 1], [4, 2]],
@@ -292,6 +293,32 @@ describe.each(catalogues)('what is said in %s', (_name, messages) => {
     }
   });
 
+  it('says of a key that is missing which service it is missing for, where that is known', () => {
+    const missing = classifyModelFailure({ code: 'AUTH', status: null });
+    expect(sayModelFailure(messages, missing)).toBe(messages.model.noKey);
+    expect(sayModelFailure(messages, missing, null)).toBe(messages.model.noKey);
+    expect(sayModelFailure(messages, missing, '')).toBe(messages.model.noKey);
+    const named = sayModelFailure(messages, missing, 'DeepSeek');
+    expect(named).toEqual(messages.model.noKeyFor('DeepSeek'));
+    expect(named.what).toContain('DeepSeek');
+    expect(named.what).not.toBe(messages.model.noKey.what);
+    // A turn that ended with that failure says the same.
+    const ended = classifyTurnEnd('error', 'AUTH: no key', { code: 'AUTH', message: 'no key', status: null });
+    expect(sayTurn(messages, ended, 'DeepSeek')).toEqual(messages.model.noKeyFor('DeepSeek'));
+    expect(sayTurn(messages, ended)).toBe(messages.model.noKey);
+    // An end that is no failure of a request has nothing to say of a service.
+    expect(sayTurn(messages, classifyTurnEnd('aborted', 'user'), 'DeepSeek')).toEqual(sayTurn(messages, classifyTurnEnd('aborted', 'user')));
+  });
+
+  it('names the service only where a key is missing', () => {
+    for (const code of modelFailureCodes) {
+      for (const status of [undefined, 401]) {
+        const failure = classifyModelFailure({ code, status });
+        expect(sayModelFailure(messages, failure, 'DeepSeek'), `${code} ${status}`).toBe(messages.model[failure.kind]);
+      }
+    }
+  });
+
   it('has words for a failure that it does not know', () => {
     expect(sayModelFailure(messages, classifyModelFailure({ code: 'HTTP_418' }))).toBe(messages.model.unknown);
   });
@@ -449,6 +476,12 @@ describe('the words of the design', () => {
     expect(ja.turn.limit.steps(30).what).toBe('このターンは、上限の 30 ステップに達しました。');
     expect(sayPermissions(ja, 'workspace-write', 'ask'))
       .toBe('このプロジェクトのファイルを変更できます。コマンドを実行する前に確認します。');
+  });
+
+  it('name the service that a key is missing for', () => {
+    expect(en.model.noKeyFor('DeepSeek')).toEqual({ what: 'No API key is set up for DeepSeek.' });
+    expect(zhCN.model.noKeyFor('DeepSeek')).toEqual({ what: '还没有配置 DeepSeek 的 API 密钥。' });
+    expect(ja.model.noKeyFor('DeepSeek')).toEqual({ what: 'DeepSeek の API キーが設定されていません。' });
   });
 
   it('are said in English too', () => {

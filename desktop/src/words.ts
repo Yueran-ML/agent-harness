@@ -15,8 +15,17 @@ export interface Saying {
   why?: string;
 }
 
-/** Say why a request to the model failed. */
-export function sayModelFailure(messages: Messages, failure: ModelFailure): Saying {
+/**
+ * Say why a request to the model failed.
+ *
+ * Args:
+ *   messages: The catalogue.
+ *   failure: The failure.
+ *   service: The name of the service that the model comes from, where the window knows
+ *     it. A key that is missing is then said to be missing for that service.
+ */
+export function sayModelFailure(messages: Messages, failure: ModelFailure, service: string | null = null): Saying {
+  if (failure.kind === 'noKey' && service) return messages.model.noKeyFor(service);
   return messages.model[failure.kind];
 }
 
@@ -69,7 +78,7 @@ export function sayTool(messages: Messages, outcome: ToolOutcome): Saying {
  * end: null. The line for it is `messages.turn.took`. Of a turn that a hook
  * stopped, the reason of the hook is in the outcome, as the hook gave it.
  */
-export function sayTurn(messages: Messages, outcome: TurnOutcome): Saying | null {
+export function sayTurn(messages: Messages, outcome: TurnOutcome, service: string | null = null): Saying | null {
   const turn = messages.turn;
   switch (outcome.kind) {
     case 'completed':
@@ -84,7 +93,7 @@ export function sayTurn(messages: Messages, outcome: TurnOutcome): Saying | null
     case 'blocked':
       return turn.blocked;
     case 'modelFailed':
-      return sayModelFailure(messages, outcome.failure);
+      return sayModelFailure(messages, outcome.failure, service);
     case 'crashed':
       return turn.crashed;
     case 'outputLimit':

@@ -96,6 +96,8 @@ describe('what the projection keeps of a notice', () => {
       failure: {
         code: 'RATE_LIMIT', message: 'Too many requests.', status: 429, retryAfterMs: 2000, requestId: 'r-1',
       },
+      // The log named no service before the request.
+      provider: null,
     });
     // The line of the earlier interface is as it was.
     expect(notice.text).toBe('Model request failed: Too many requests.');
@@ -108,6 +110,24 @@ describe('what the projection keeps of a notice', () => {
     expect(notice.cause).toMatchObject({
       kind: 'attempt', failure: { code: 'AUTH', status: null, retryAfterMs: null, requestId: null },
     });
+  });
+
+  it('is of the service that the log named last before the request', () => {
+    const refused: Written = ['assistant/attempt', { failure: { message: 'refused', code: 'AUTH', status: 401 } }];
+    const notices = noticesOf(log(
+      ['request/header', { config: { provider: 'deepseek', model: 'deepseek-flash' }, tools: [] }],
+      refused,
+      refused,
+      ['request/header', { config: { provider: 'my-own', model: 'echo-1' }, tools: [] }],
+      refused,
+      // A header that names no service: of the requests after it, the service is not known.
+      ['request/header', { tools: [] }],
+      refused,
+      ['request/header', { config: { provider: 7 }, tools: [] }],
+      refused,
+    ));
+    expect(notices.map(notice => (notice.cause.kind === 'attempt' ? notice.cause.provider : 'NO ATTEMPT')))
+      .toEqual(['deepseek', 'deepseek', 'my-own', null, null]);
   });
 
   it('is the wait before a request is made again', () => {
@@ -140,6 +160,7 @@ describe('what the projection keeps of a notice', () => {
           code: 'RATE_LIMIT', message: 'Too many requests. Try again in a moment.',
           status: 429, retryAfterMs: null, requestId: 'req_7f3a',
         },
+        provider: 'deepseek',
       },
       { kind: 'retry', attempt: 1, code: 'RATE_LIMIT', delayMs: 20 },
       { kind: 'turn-end', reason: 'aborted', detail: 'user' },

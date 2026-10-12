@@ -995,7 +995,16 @@ select.field {
   color: var(--moon-0);
 }
 
+/* An address is as long as it is, and gives way to the name before it and to what stands after it. */
+.service-at {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .service-key {
+  flex: none;
   margin-left: auto;
 }
 

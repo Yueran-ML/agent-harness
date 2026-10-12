@@ -62,11 +62,13 @@ export interface RequestFailure {
 /**
  * What a notice is about, for an interface that says it in words of its own.
  *
- * Of a `retry`, `attempt` is the attempt that failed, counted from 1. The next
- * one is made `delayMs` after the notice.
+ * Of an `attempt`, `provider` is the service that the request went to, by the
+ * name that the log gives it, or null where the log names none. Of a `retry`,
+ * `attempt` is the attempt that failed, counted from 1. The next one is made
+ * `delayMs` after the notice.
  */
 export type NoticeCause =
-  | { kind: 'attempt'; failure: RequestFailure }
+  | { kind: 'attempt'; failure: RequestFailure; provider: string | null }
   | { kind: 'retry'; attempt: number; code: string; delayMs: number }
   | { kind: 'turn-end'; reason: string; detail: string | null }
   | { kind: 'compaction-failed'; detail: string }
@@ -95,6 +97,11 @@ export interface TurnRecord {
   startedAt: number;
   /** How many steps of the turn have begun. A step is one request to the model and the calls it leads to. */
   steps: number;
+  /**
+   * The service that the requests of the turn went to, by the name that the log gives it:
+   * the one that was named last when the turn ended. Null where the log names none.
+   */
+  provider: string | null;
   /** Null while the turn runs, and for a turn whose end the log does not hold. */
   end: { seq: number; time: number; reason: string; detail: string | null } | null;
 }
@@ -194,6 +201,8 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
   const approvedAt = new Map<ToolItem, number>();
   // The record of the turn that is under way, if one is.
   let openTurn: TurnRecord | null = null;
+  // The service that the log named last as the one that requests go to.
+  let provider: string | null = null;
   // The policy of approval that the log named last.
   let approvalPolicy: string | null = null;
   // What was taken out of a queue and has not been written down as input since. A turn
@@ -271,6 +280,7 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
             retryAfterMs: typeof failure.retry_after_ms === 'number' ? failure.retry_after_ms : null,
             requestId: typeof failure.request_id === 'string' ? failure.request_id : null,
           },
+          provider,
         });
         break;
       }
@@ -353,6 +363,9 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
           const tool = record(value);
           return { name: string(tool.name), description: string(tool.description), parameters: record(tool.parameters) };
         }) : [];
+        // A header holds for the requests that follow it, until the next one.
+        provider = string(record(data.config).provider) || null;
+        if (openTurn) openTurn.provider = provider;
         break;
       }
       case 'turn/start':
@@ -362,7 +375,7 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
         projection.step = null;
         openTurn = {
           number: projection.turn, at: projection.items.length, seq: event.seq, startedAt: event.time,
-          steps: 0, end: null,
+          steps: 0, provider, end: null,
         };
         projection.turns.push(openTurn);
         break;

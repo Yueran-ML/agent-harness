@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { KeyRound } from 'lucide-react';
 import { MusicSettings, type BackgroundMusic } from '../BackgroundMusic';
+import { called } from '../key/form';
+import type { Hello } from '../protocol';
 import { themes, type ThemeId } from '../themes';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
-import { presetOf, presets } from './tell';
+import { presetOf, presets, servicesToTell, serviceTitle } from './tell';
 
 /** The part of the settings that a way into them leads to. */
 export type SettingsPart = 'appearance' | 'model' | 'permissions';
@@ -43,21 +45,21 @@ export function Settings({
 
   const [model, setModel] = useState(status?.model.model ?? '');
   useEffect(() => setModel(status?.model.model ?? ''), [status?.model.model]);
-  // Whether something was stored in the window for the key since these settings were opened.
-  const [stored, setStored] = useState(false);
+  // The greeting of the service process that ran when something was stored in the window for
+  // the key. That process knows nothing of what was stored. One that is started later does.
+  const [storedUnder, setStoredUnder] = useState<Hello | null | undefined>(undefined);
+  const stored = storedUnder !== undefined && storedUnder === hello;
   const [settingUp, setSettingUp] = useState(false);
   const setUp = async (service: string | null) => {
     setSettingUp(true);
     try {
-      if (await workspace.setUpService(service, shownLanguage)) setStored(true);
+      if (await workspace.setUpService(service, shownLanguage)) setStoredUnder(hello);
     } finally {
       setSettingUp(false);
     }
   };
   const services = workspace.services;
-  // The service in use, and every service that the user has had to do with: one of their own,
-  // or one that a key is there for. The others are in the window that sets one up.
-  const known = services?.services.filter(service => service.name === services.use || service.own || service.key !== 'none') ?? [];
+  const { inUse, known } = servicesToTell(services, status?.model.provider);
   const keyFrom = (service: { key: string; key_env: string | null }) => (service.key_env === null ? words.label.key.from.notNeeded
     : service.key === 'environment' ? words.label.key.from.environment
       : service.key === 'stored' ? words.label.key.from.stored
@@ -139,13 +141,15 @@ export function Settings({
           {words.label.apply}
         </button>
       </form>
-      {status && <p className="caption">{status.model.provider}</p>}
+      {status && <p className="caption" data-test="model-service">{serviceTitle(status.model.provider, services)}</p>}
 
       <div className="overline services-title">{words.label.key.title}</div>
       {known.length > 0 && <ul className="services" data-test="services">
         {known.map(service => <li key={service.name}>
-          <span className="service-name">{service.title}</span>
-          {service.name === services?.use && <span className="count">{words.label.key.inUse}</span>}
+          <span className="service-name">{called(service)}</span>
+          {service.name === inUse && <span className="count">{words.label.key.inUse}</span>}
+          {/* A service of the user's own is known by its name, so where it is stands beside it. */}
+          {service.own && <span className="caption mono service-at" title={service.base_url}>{service.base_url}</span>}
           <span className="caption service-key" data-key={service.key}>{keyFrom(service)}</span>
         </li>)}
       </ul>}
@@ -155,7 +159,7 @@ export function Settings({
           type="button"
           className="btn"
           disabled={services === null || settingUp}
-          onClick={() => void setUp(services?.use ?? null)}
+          onClick={() => void setUp(inUse)}
           data-test="set-up-service"
         >
           <KeyRound size={14} aria-hidden="true" />{words.label.key.setUp}

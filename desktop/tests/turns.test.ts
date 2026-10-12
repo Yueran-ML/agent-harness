@@ -101,17 +101,43 @@ describe('the record of a turn', () => {
     ));
     expect(projection.turns).toEqual([
       {
-        number: 1, at: 0, seq: 0, startedAt: 1000, steps: 2,
+        number: 1, at: 0, seq: 0, startedAt: 1000, steps: 2, provider: null,
         end: { seq: 9, time: 1900, reason: 'completed', detail: null },
       },
       {
         // Three items of the first turn stand before it, and the summary between the two.
-        number: 2, at: 4, seq: 11, startedAt: 2100, steps: 1,
+        number: 2, at: 4, seq: 11, startedAt: 2100, steps: 1, provider: null,
         end: { seq: 14, time: 2400, reason: 'error', detail: 'SERVER: the service is down' },
       },
-      { number: 3, at: 6, seq: 15, startedAt: 2500, steps: 0, end: null },
+      { number: 3, at: 6, seq: 15, startedAt: 2500, steps: 0, provider: null, end: null },
     ]);
     expect(emptyProjection().turns).toEqual([]);
+  });
+
+  it('names the service that the requests of the turn went to', () => {
+    const header = (provider?: string): Written =>
+      ['request/header', { config: provider === undefined ? {} : { provider, model: 'a-model' }, tools: [] }];
+    const projection = projectEvents(log(
+      // A header holds for the requests after it.
+      begin(1), user('first'), header('deepseek'), end(1, 'error', 'AUTH: no key'),
+      // The log writes a header only where something changed. The one before holds on.
+      begin(2), user('second'), end(2),
+      // Another service is in use from the middle of this turn: the turn ends as one of that service.
+      begin(3), user('third'), header('my-own'), end(3, 'error', 'AUTH: refused'),
+      begin(4), user('fourth'), header(), end(4),
+      begin(5),
+    ));
+    expect(projection.turns.map(record => record.provider)).toEqual(['deepseek', 'deepseek', 'my-own', null, null]);
+    expect(turns(groupTurns(projection)).map(turn => turn.provider)).toEqual(['deepseek', 'deepseek', 'my-own', null, null]);
+  });
+
+  it('names no service for a turn that the log has no record of', () => {
+    // An item that names a turn which never began: the turn is made up from the item.
+    const [made] = turns(groupTurns({
+      ...emptyProjection(),
+      items: [{ id: 'event-4', seq: 4, time: 1400, turn: 9, type: 'assistant', text: 'hello', reasoning: '', interrupted: false }],
+    }));
+    expect(made).toMatchObject({ number: 9, provider: null });
   });
 
   it('is not closed by the end of another turn', () => {

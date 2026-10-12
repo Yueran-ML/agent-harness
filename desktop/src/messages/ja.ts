@@ -135,6 +135,7 @@ export const ja: Messages = {
 
   model: {
     noKey: { what: 'モデルサービスの API キーが設定されていません。' },
+    noKeyFor: (service: string) => ({ what: `${service} の API キーが設定されていません。` }),
     keyRefused: {
       what: 'モデルサービスが API キーを受け付けませんでした。',
       why: 'キーの入力に誤りがあるか、すでに無効になっているか、このモデルを使う権限がない可能性があります。',

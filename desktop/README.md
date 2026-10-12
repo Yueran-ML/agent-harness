@@ -66,6 +66,9 @@ lines that it wrote, which most often say why.
 The interface speaks English, Chinese and Japanese and follows the language of the
 system unless another is chosen in the settings. It has a dark theme and a light one.
 
+The first start begins with a short film. Any key or a click leaves it, and the starts
+after that go without it unless the settings say that it is to play every time.
+
 ## The service of the model, and its key
 
 The settings list the services that are set up and say where the key of each comes

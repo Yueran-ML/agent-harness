@@ -308,7 +308,8 @@ export const ja: Messages = {
       play: 'オープニングを再生',
       again: 'もう一度再生',
       skip: 'スキップ',
-      begin: 'Enter で始める',
+      anyKey: '任意のキーかクリックでスキップ',
+      begin: '任意のキーで始める',
     },
 
     music: {

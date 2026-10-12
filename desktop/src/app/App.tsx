@@ -21,18 +21,10 @@ import { Recent, StartHead } from './Start';
 import { StatusLine } from './StatusLine';
 import { Drafts, samePlace, type Place } from './drafts';
 import { shownLanguage, storedLanguage, storeLanguage, Words, wordsFor, type LanguageChoice } from './locale';
+import { storedOpening, storeOpening } from './opening';
 import { folderName, joined, retryText, taskTitle } from './tell';
 
-const openingKey = 'columbina-play-intro';
 const tellingKey = 'columbina-tell-me';
-
-function storedOpening(): boolean {
-  try {
-    return localStorage.getItem(openingKey) !== 'false';
-  } catch {
-    return true;
-  }
-}
 
 /** Whether the user is told of what waits for them while the window is in the background. */
 function storedTelling(): boolean {
@@ -58,8 +50,11 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeId>(initialTheme);
   const [language, setLanguage] = useState<LanguageChoice>(storedLanguage);
   const words = useMemo(() => wordsFor(language), [language]);
-  const [playOpening, setPlayOpening] = useState(storedOpening);
-  const [showOpening, setShowOpening] = useState(playOpening);
+  // The opening plays at the first start. After that it plays where the user chose to see it
+  // at every start, which is what the switch in the settings says.
+  const [opening] = useState(storedOpening);
+  const [playOpening, setPlayOpening] = useState(opening.always);
+  const [showOpening, setShowOpening] = useState(opening.show);
   const [tellMe, setTellMe] = useState(storedTelling);
 
   const [sidebarHidden, setSidebarHidden] = useState(false);
@@ -92,12 +87,13 @@ export default function App() {
   }, [language]);
   useEffect(() => {
     try {
-      localStorage.setItem(openingKey, String(playOpening));
       localStorage.setItem(tellingKey, String(tellMe));
     } catch {
       // Without storage the choice holds for this window.
     }
-  }, [playOpening, tellMe]);
+  }, [tellMe]);
+  // Kept from the first moment on: a start that came this far has had its opening.
+  useEffect(() => storeOpening(playOpening), [playOpening]);
   // A question of the agent is not kept waiting behind a film.
   useEffect(() => { if (workspace.approval) setShowOpening(false); }, [workspace.approval]);
 

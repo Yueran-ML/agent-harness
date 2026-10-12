@@ -77,7 +77,7 @@
 .startup-video button:hover:not(:disabled) { background: #242337e8; border-color: #e1d6ff70; }
 .startup-video button:focus-visible { outline: 2px solid #dfd0ff; outline-offset: 4px; }
 .startup-video button:disabled { opacity: .45; cursor: default; }
-.startup-video-skip { margin-left: auto; }
+.startup-video-hint { margin-left: auto; color: #e3dff0; font-size: 12px; text-shadow: 0 1px 6px #050711cc; }
 .startup-video .startup-video-play { gap: 14px; min-height: 54px; padding: 15px 22px; font-size: 14px; }
 .startup-video kbd { padding: 2px 5px; border: 1px solid #e1d6ff38; border-radius: 4px; font-family: inherit; font-size: 10px; color: #d2cee1; }
 .startup-video-loading { padding: 5px; border-radius: 50%; background: #05071188; box-sizing: content-box; animation: startup-video-spin 1.2s linear infinite; }

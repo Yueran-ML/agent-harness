@@ -260,7 +260,8 @@ export const zhCN: Messages = {
       play: '播放开场',
       again: '再放一遍',
       skip: '跳过',
-      begin: '按回车进入',
+      anyKey: '按任意键或点击即可跳过',
+      begin: '按任意键进入',
     },
 
     music: {

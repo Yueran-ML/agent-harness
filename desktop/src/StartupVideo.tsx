@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { ArrowRight, LoaderCircle, Moon, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import { keyOf } from './app/keys';
 import { useWords } from './app/locale';
+import { openingKey } from './app/opening';
 import './StartupVideo.css';
 
 type Playback = 'loading' | 'ready' | 'playing' | 'revealing' | 'finished' | 'failed';
@@ -72,14 +74,13 @@ export function StartupVideo({ onComplete, hasBackgroundMusic, muted, onMutedCha
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
+      const place = showEntry ? 'end' : playing || playback === 'loading' ? 'film' : 'waiting';
+      const action = openingKey(keyOf(event), place, event.target instanceof HTMLButtonElement);
+      if (action !== null) {
         event.preventDefault();
         event.stopPropagation();
-        if (playing || !showEntry) finish();
-      } else if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) {
-        event.preventDefault();
-        if (showEntry) complete();
-        else if (!playing) void play();
+        if (action === 'play') void play();
+        else complete();
       } else if (event.key === 'Tab') {
         const buttons = [
           ...document.querySelectorAll<HTMLButtonElement>('[data-startup-control] button:not(:disabled)'),
@@ -95,9 +96,14 @@ export function StartupVideo({ onComplete, hasBackgroundMusic, muted, onMutedCha
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [complete, finish, play, playing, showEntry]);
+  }, [complete, play, playback, playing, showEntry]);
 
-  return <div ref={container} className={`startup-video${showEntry ? ' startup-video-finished' : ''}`} role="dialog" aria-label={words.label.opening.name} tabIndex={-1}>
+  // A click leaves the opening as a key does, unless it is a click on one of its controls.
+  const onClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (!(event.target as Element).closest('button')) complete();
+  };
+
+  return <div ref={container} className={`startup-video${showEntry ? ' startup-video-finished' : ''}`} role="dialog" aria-label={words.label.opening.name} tabIndex={-1} onClick={onClick}>
     <video ref={video} src="./columbina-intro-extended.mp4" poster="./moonlit-columbina.png"
       autoPlay={!reducedMotion} playsInline muted preload={reducedMotion ? 'metadata' : 'auto'}
       disablePictureInPicture disableRemotePlayback aria-label={words.label.opening.name}
@@ -132,7 +138,8 @@ export function StartupVideo({ onComplete, hasBackgroundMusic, muted, onMutedCha
         onClick={() => onMutedChange(!muted)}>
         {muted ? <VolumeX size={18} /> : <Volume2 size={18} />}<span>{muted ? words.label.soundOff : words.label.soundOn}</span>
       </button>}
-      <button className="startup-video-skip" onClick={finish}>{words.label.opening.skip} <ArrowRight size={16} /><kbd>Esc</kbd></button>
+      <span className="startup-video-hint">{words.label.opening.anyKey}</span>
+      <button className="startup-video-skip" onClick={complete}>{words.label.opening.skip} <ArrowRight size={16} /></button>
     </div>}
   </div>;
 }

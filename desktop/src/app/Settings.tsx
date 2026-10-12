@@ -199,7 +199,7 @@ export function Settings({
       <h3>{words.label.openingAndMusic}</h3>
       <div className="setting-row">
         <label className="check">
-          <input type="checkbox" checked={playOpening} onChange={event => onPlayOpening(event.target.checked)} />
+          <input type="checkbox" checked={playOpening} onChange={event => onPlayOpening(event.target.checked)} data-test="play-opening" />
           {words.label.playOpening}
         </label>
         <button type="button" className="btn" disabled={running || workspace.loading || workspace.approval !== null} onClick={onPlayNow}>

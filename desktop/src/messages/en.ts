@@ -332,7 +332,8 @@ export const en = {
       play: 'Play the opening',
       again: 'Play it again',
       skip: 'Skip',
-      begin: 'Press Enter to begin',
+      anyKey: 'Any key or a click skips',
+      begin: 'Press any key to begin',
     },
 
     /** The music that plays behind the work. */

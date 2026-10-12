@@ -8,7 +8,12 @@ import { createMockTransport } from './mock';
 import { isCommand } from './uiActions';
 
 export interface PendingApproval extends ApprovalRequest { requestId: string | number }
-export interface CommandOutput { id: number; line: string; text: string }
+/**
+ * What a command answered. The log does not hold it, so it is gone when the task is opened
+ * again. `after` is the number of the last event that the log had when the answer came, and
+ * -1 where it had none: that is where the answer stands in the conversation.
+ */
+export interface CommandOutput { id: number; line: string; text: string; after: number }
 
 export function useWorkspace() {
   const [hello, setHello] = useState<Hello | null>(null);
@@ -313,7 +318,11 @@ export function useWorkspace() {
   const command = useCallback(async (line: string) => {
     if (!client.current) return;
     const result = await client.current.request<{ text: string }>('session/command', { line });
-    if (result.text) setOutputs(current => [...current, { id: Date.now(), line, text: result.text }]);
+    if (!result.text) return;
+    // What the command did is in the log by now: the service tells of it before it answers.
+    let after = -1;
+    for (const seq of eventStore.current.keys()) if (seq > after) after = seq;
+    setOutputs(current => [...current, { id: (current.at(-1)?.id ?? 0) + 1, line, text: result.text, after }]);
   }, []);
 
   const sent = useCallback(async (give: () => Promise<unknown>) => {

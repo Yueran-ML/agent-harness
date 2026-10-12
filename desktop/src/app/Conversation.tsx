@@ -3,7 +3,7 @@ import { ArrowDown, ChevronRight, CornerDownRight, SquareTerminal } from 'lucide
 import type { Listed } from '../key/form';
 import { classifyModelFailure, turnOutcome, type ActionKey, type TurnOutcome } from '../outcomes';
 import type { ConversationItem, StreamPreview, UserItem } from '../state';
-import { groupTurns, type Turn } from '../turns';
+import { groupTurns, placed, type Turn } from '../turns';
 import type { Workspace } from '../useWorkspace';
 import { sayModelFailure, sayTurn } from '../words';
 import { CopyButton, Markdown } from './Markdown';
@@ -256,6 +256,8 @@ export function Conversation({ workspace, onLink, onAction }: {
   const words = useWords();
   const { projection, preview, outputs, status } = workspace;
   const entries = useMemo(() => groupTurns(projection), [projection]);
+  // What commands answered stands where it was asked, between the turns.
+  const drawn = useMemo(() => placed(entries, outputs), [entries, outputs]);
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const follows = useRef(true);
@@ -317,7 +319,12 @@ export function Conversation({ workspace, onLink, onAction }: {
     >
       <div className="talk" ref={content} data-test="talk">
         <Services.Provider value={services}>
-        {entries.map(entry => entry.kind === 'turn'
+        {drawn.map(entry => entry.kind === 'beside'
+          ? <div className="command-said" key={`said-${entry.said.id}`} data-test="command-said">
+              <div className="caption"><SquareTerminal size={12} aria-hidden="true" /><code>{entry.said.line}</code></div>
+              <pre className="block" tabIndex={0}>{entry.said.text}</pre>
+            </div>
+          : entry.kind === 'turn'
           ? <TurnView
               key={`turn-${entry.number}`}
               turn={entry}
@@ -335,11 +342,6 @@ export function Conversation({ workspace, onLink, onAction }: {
 
         {/* Between a task and the turn that takes it, the agent is at work and no turn shows it. */}
         {waiting !== null && !liveTurn && <Waiting>{waiting}</Waiting>}
-
-        {outputs.map(output => <div className="command-said" key={output.id} data-test="command-said">
-          <div className="caption"><SquareTerminal size={12} aria-hidden="true" /><code>{output.line}</code></div>
-          <pre className="block" tabIndex={0}>{output.text}</pre>
-        </div>)}
       </div>
     </div>
     {away && <button type="button" className="btn latest" onClick={toLatest} data-test="latest">

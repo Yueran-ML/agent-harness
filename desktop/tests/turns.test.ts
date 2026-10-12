@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionEvent } from '../src/protocol';
 import { emptyProjection, projectEvents, type ConversationItem } from '../src/state';
-import { groupTurns, itemsOf, promptOf, saidOnTheWay, type Entry, type Turn } from '../src/turns';
+import { groupTurns, itemsOf, placed, promptOf, saidOnTheWay, type Entry, type Turn } from '../src/turns';
 import { eventsOf, logs } from './logs';
 
 // A log is written here as a list of events. Each stands where it is listed,
@@ -362,5 +362,67 @@ describe('a conversation by turn', () => {
 
   it('has nothing to show for an empty log', () => {
     expect(groupTurns(emptyProjection())).toEqual([]);
+  });
+});
+
+describe('what was said beside the log', () => {
+  // The answer of a command, by the line that asked for it and how far the log had come.
+  const said = (line: string, after: number) => ({ line, after });
+  // The conversation in a line: a turn by its number, an answer by its command, anything else by its word.
+  const order = (written: Written[], beside: { line: string; after: number }[]) =>
+    placed(groupTurns(projectEvents(log(...written))), beside)
+      .map(entry => (entry.kind === 'beside' ? entry.said.line : entry.kind === 'turn' ? entry.number : sketch(entry.item)));
+
+  // Two turns with a summary between them. The events are numbered from nought:
+  // the first turn is 0 to 3, the summary is 4, the second turn is 5 to 8.
+  const two: Written[] = [
+    begin(1), user('first'), reply('done'), end(1),
+    summary('what was said so far'),
+    begin(2), user('second'), reply('done'), end(2),
+  ];
+
+  it('stands where it was said: after what the log held by then, and before what came later', () => {
+    // Asked after the first turn. The turn that followed does not come to stand above the answer.
+    expect(order(two, [said('/model', 3)])).toEqual([1, '/model', 'summary', 2]);
+    expect(order(two, [said('/compact', 4)])).toEqual([1, 'summary', '/compact', 2]);
+    expect(order(two, [said('/help', 8)])).toEqual([1, 'summary', 2, '/help']);
+  });
+
+  it('stands before everything where nothing was in the log yet', () => {
+    expect(order(two, [said('/help', -1)])).toEqual(['/help', 1, 'summary', 2]);
+    expect(order([], [said('/help', -1)])).toEqual(['/help']);
+  });
+
+  it('stands after a turn that had begun, also where the turn has gone on since', () => {
+    // The log had come to the middle of the second turn. The turn is one thing and is not cut in two.
+    expect(order(two, [said('/todos', 6)])).toEqual([1, 'summary', 2, '/todos']);
+    // The event that opened the turn was the last one: the turn had begun.
+    expect(order(two, [said('/todos', 5)])).toEqual([1, 'summary', 2, '/todos']);
+  });
+
+  it('keeps the order in which several things were said at one place', () => {
+    expect(order(two, [said('/model', 3), said('/permissions', 3), said('/help', 3)]))
+      .toEqual([1, '/model', '/permissions', '/help', 'summary', 2]);
+  });
+
+  it('is put in its place whatever the order in which it is handed over', () => {
+    expect(order(two, [said('/help', 8), said('/model', 3), said('/first', -1)]))
+      .toEqual(['/first', 1, '/model', 'summary', 2, '/help']);
+  });
+
+  it('loses nothing and adds nothing', () => {
+    const entries = groupTurns(projectEvents(log(...two)));
+    const beside = [said('/a', 100), said('/b', -1), said('/c', 4)];
+    const all = placed(entries, beside);
+    expect(all.filter(entry => entry.kind !== 'beside')).toEqual(entries);
+    expect(all.filter(entry => entry.kind === 'beside').map(entry => entry.kind === 'beside' && entry.said).sort((a, b) => (a && b ? a.after - b.after : 0)))
+      .toEqual([...beside].sort((a, b) => a.after - b.after));
+    // What was handed over is left as it was.
+    expect(beside.map(one => one.line)).toEqual(['/a', '/b', '/c']);
+    expect(placed(entries, [])).toEqual(entries);
+  });
+
+  it('knows where a turn began in the log', () => {
+    expect(turnsOf(...two).map(turn => turn.seq)).toEqual([0, 5]);
   });
 });

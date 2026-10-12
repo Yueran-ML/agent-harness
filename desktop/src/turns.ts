@@ -22,6 +22,8 @@ export interface TurnEnd {
 export interface Turn {
   kind: 'turn';
   number: number;
+  /** Where the turn began in the log: the number of the event that opened it. */
+  seq: number;
   /** When the turn began, in milliseconds since 1970. */
   startedAt: number;
   /**
@@ -82,6 +84,7 @@ export function groupTurns(projection: Projection): Entry[] {
     const turn: Turn = {
       kind: 'turn',
       number: record.number,
+      seq: record.seq,
       startedAt: record.startedAt,
       rounds: record.steps,
       // Only the last turn of a log can be under way.
@@ -152,6 +155,35 @@ function arrange({ turn, items, end }: Gathering): void {
     rest = rest.slice(0, -1);
   }
   turn.steps = rest;
+}
+
+/** Something that was said beside the log, such as what a command answered. */
+export interface Beside<Said> {
+  kind: 'beside';
+  said: Said;
+}
+
+/**
+ * Put what was said beside the log among the entries of a conversation, each where it was said.
+ *
+ * The log does not hold what a command answered. It is known how far the log had come when
+ * the answer came: `after` is the number of the last event that there was then, and less than
+ * nought where there was none. The answer stands after every entry that had begun by then and
+ * before every entry that began later, so that a turn that follows it does not come to stand
+ * above it. Several that were said at the same place keep the order in which they were said.
+ */
+export function placed<Said extends { after: number }>(
+  entries: readonly Entry[], said: readonly Said[],
+): (Entry | Beside<Said>)[] {
+  const waiting = [...said].sort((one, other) => one.after - other.after);
+  const all: (Entry | Beside<Said>)[] = [];
+  for (const entry of entries) {
+    const began = entry.kind === 'turn' ? entry.seq : entry.item.seq;
+    while (waiting.length > 0 && waiting[0].after < began) all.push({ kind: 'beside', said: waiting.shift()! });
+    all.push(entry);
+  }
+  for (const left of waiting) all.push({ kind: 'beside', said: left });
+  return all;
 }
 
 /** The items of an entry, in the order of the log. */

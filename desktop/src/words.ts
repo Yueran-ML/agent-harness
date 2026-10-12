@@ -21,12 +21,14 @@ export interface Saying {
  * Args:
  *   messages: The catalogue.
  *   failure: The failure.
- *   service: The name of the service that the model comes from, where the window knows
- *     it. A key that is missing is then said to be missing for that service.
+ *   service: What people call the service that the request went to, where the window
+ *     knows it. What is said of a key then names that service: a user who has set up
+ *     more than one is told which key is meant.
  */
 export function sayModelFailure(messages: Messages, failure: ModelFailure, service: string | null = null): Saying {
-  if (failure.kind === 'noKey' && service) return messages.model.noKeyFor(service);
-  return messages.model[failure.kind];
+  const named: Partial<Record<ModelFailure['kind'], (service: string) => Saying>> = messages.model.named;
+  const said = named[failure.kind];
+  return service && said ? said(service) : messages.model[failure.kind];
 }
 
 /**

@@ -26,7 +26,9 @@ const samples: Record<string, unknown[][]> = {
   'duration': [[0.5], [1], [42], [60], [125], [3600], [3725]],
   'tool.exited': [[1], [137]],
   'tool.timedOut.command': [[0.5], [120]],
-  'model.noKeyFor': [['DeepSeek'], ['my-own']],
+  'model.named.noKey': [['DeepSeek'], ['my-own']],
+  'model.named.keyRefused': [['DeepSeek'], ['my-own']],
+  'model.named.keyProblem': [['DeepSeek'], ['my-own']],
   'turn.took': [[1, 1], [42, 3], [125, 12]],
   'turn.limit.steps': [[1], [30]],
   'wait.retry': [[0, 3], [1, 1], [4, 2]],
@@ -293,30 +295,41 @@ describe.each(catalogues)('what is said in %s', (_name, messages) => {
     }
   });
 
-  it('says of a key that is missing which service it is missing for, where that is known', () => {
-    const missing = classifyModelFailure({ code: 'AUTH', status: null });
-    expect(sayModelFailure(messages, missing)).toBe(messages.model.noKey);
-    expect(sayModelFailure(messages, missing, null)).toBe(messages.model.noKey);
-    expect(sayModelFailure(messages, missing, '')).toBe(messages.model.noKey);
-    const named = sayModelFailure(messages, missing, 'DeepSeek');
-    expect(named).toEqual(messages.model.noKeyFor('DeepSeek'));
+  // The three things that can be wrong with a key, each by the status that tells it apart.
+  const ofAKey = [['noKey', null], ['keyRefused', 401], ['keyProblem', undefined]] as const;
+
+  it.each(ofAKey)('says of %s which service is meant, where that is known', (kind, status) => {
+    const failure = classifyModelFailure({ code: 'AUTH', message: 'what the service wrote', status });
+    expect(failure.kind).toBe(kind);
+    expect(sayModelFailure(messages, failure)).toBe(messages.model[kind]);
+    expect(sayModelFailure(messages, failure, null)).toBe(messages.model[kind]);
+    expect(sayModelFailure(messages, failure, '')).toBe(messages.model[kind]);
+    const named = sayModelFailure(messages, failure, 'DeepSeek');
+    expect(named).toEqual(messages.model.named[kind]('DeepSeek'));
     expect(named.what).toContain('DeepSeek');
-    expect(named.what).not.toBe(messages.model.noKey.what);
+    const unnamed: Saying = messages.model[kind];
+    expect(named.what).not.toBe(unnamed.what);
+    // What can be done about it is said as it is said without the name.
+    expect(named.why).toBe(unnamed.why);
     // A turn that ended with that failure says the same.
-    const ended = classifyTurnEnd('error', 'AUTH: no key', { code: 'AUTH', message: 'no key', status: null });
-    expect(sayTurn(messages, ended, 'DeepSeek')).toEqual(messages.model.noKeyFor('DeepSeek'));
-    expect(sayTurn(messages, ended)).toBe(messages.model.noKey);
-    // An end that is no failure of a request has nothing to say of a service.
+    const ended = classifyTurnEnd('error', 'AUTH: what the service wrote', { code: 'AUTH', message: 'what the service wrote', status });
+    expect(sayTurn(messages, ended, 'DeepSeek')).toEqual(messages.model.named[kind]('DeepSeek'));
+    expect(sayTurn(messages, ended)).toBe(messages.model[kind]);
+  });
+
+  it('has nothing to say of a service where a turn did not end with the failure of a request', () => {
     expect(sayTurn(messages, classifyTurnEnd('aborted', 'user'), 'DeepSeek')).toEqual(sayTurn(messages, classifyTurnEnd('aborted', 'user')));
   });
 
-  it('names the service only where a key is missing', () => {
-    for (const code of modelFailureCodes) {
-      for (const status of [undefined, 401]) {
+  it('names the service only where something is wrong with a key', () => {
+    for (const code of modelFailureCodes.filter(code => code !== 'AUTH')) {
+      for (const status of [undefined, null, 401]) {
         const failure = classifyModelFailure({ code, status });
         expect(sayModelFailure(messages, failure, 'DeepSeek'), `${code} ${status}`).toBe(messages.model[failure.kind]);
       }
     }
+    // Every kind that is said with a name is one that is said without, too.
+    expect(Object.keys(messages.model.named).sort()).toEqual(['keyProblem', 'keyRefused', 'noKey']);
   });
 
   it('has words for a failure that it does not know', () => {
@@ -478,10 +491,16 @@ describe('the words of the design', () => {
       .toBe('このプロジェクトのファイルを変更できます。コマンドを実行する前に確認します。');
   });
 
-  it('name the service that a key is missing for', () => {
-    expect(en.model.noKeyFor('DeepSeek')).toEqual({ what: 'No API key is set up for DeepSeek.' });
-    expect(zhCN.model.noKeyFor('DeepSeek')).toEqual({ what: '还没有配置 DeepSeek 的 API 密钥。' });
-    expect(ja.model.noKeyFor('DeepSeek')).toEqual({ what: 'DeepSeek の API キーが設定されていません。' });
+  it('name the service that a key is missing for, or that did not accept one', () => {
+    expect(en.model.named.noKey('DeepSeek')).toEqual({ what: 'No API key is set up for DeepSeek.' });
+    expect(zhCN.model.named.noKey('DeepSeek')).toEqual({ what: '还没有配置 DeepSeek 的 API 密钥。' });
+    expect(ja.model.named.noKey('DeepSeek')).toEqual({ what: 'DeepSeek の API キーが設定されていません。' });
+    expect(en.model.named.keyRefused('my-own').what).toBe('my-own did not accept the API key.');
+    expect(zhCN.model.named.keyRefused('my-own').what).toBe('my-own 没有接受这个 API 密钥。');
+    expect(ja.model.named.keyRefused('my-own').what).toBe('my-own が API キーを受け付けませんでした。');
+    expect(en.model.named.keyProblem('DeepSeek').what).toBe('DeepSeek cannot be used with the API key as it is.');
+    expect(zhCN.model.named.keyProblem('DeepSeek').what).toBe('现在的 API 密钥用不了 DeepSeek。');
+    expect(ja.model.named.keyProblem('DeepSeek').what).toBe('現在の API キーでは、DeepSeek を利用できません。');
   });
 
   it('are said in English too', () => {

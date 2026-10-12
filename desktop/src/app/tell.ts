@@ -102,6 +102,27 @@ export function servicesToTell(
   return { inUse, known };
 }
 
+/**
+ * Whether the next request is not known to fail for want of a key.
+ *
+ * A turn that failed for its key is worth trying again then, and not before. The service
+ * process looks for the key with every request, so a key that was stored since is found
+ * without a new start. Only of a service that is known by name and asks for a key can the
+ * window tell that a request will fail: one of the user's own is asked without a key where
+ * none is stored, and so is one that the list does not have. A window without a list of
+ * services knows nothing, and offers nothing.
+ *
+ * Args:
+ *   provider: The name of the service that the service process talks to.
+ *   listed: The services that are set up, where the window has the list.
+ */
+export function keyAtHand(provider: string | null | undefined, listed: Listed | null): boolean {
+  if (!provider || listed === null) return false;
+  const service = listed.services.find(candidate => candidate.name === provider);
+  if (!service || service.own || service.key_env === null) return true;
+  return service.key === 'stored' || service.key === 'environment';
+}
+
 /** How long a start may take before more is said of it, in milliseconds. */
 export const STILL_STARTING_MS = 3000;
 

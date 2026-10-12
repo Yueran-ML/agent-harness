@@ -4,7 +4,7 @@ import type { Workspace } from '../useWorkspace';
 import { CopyButton } from './Markdown';
 import { ToolRow } from './ToolRow';
 import { useWords } from './locale';
-import { contextPercent, countOf, stepped } from './tell';
+import { contextPercent, countOf, serviceTitle, stepped } from './tell';
 
 export type InspectorTab = 'changes' | 'details';
 const tabs: readonly InspectorTab[] = ['changes', 'details'];
@@ -29,7 +29,7 @@ function Details({ workspace, locale }: { workspace: Workspace; locale: string }
     {status && <section>
       <div className="overline">{words.label.model}</div>
       <p className="details-main">{status.model.model}</p>
-      <p className="caption">{status.model.provider}</p>
+      <p className="caption">{serviceTitle(status.model.provider, workspace.services)}</p>
     </section>}
 
     <section>

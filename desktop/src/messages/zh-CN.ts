@@ -101,7 +101,6 @@ export const zhCN: Messages = {
 
   model: {
     noKey: { what: '还没有配置模型服务的 API 密钥。' },
-    noKeyFor: (service: string) => ({ what: `还没有配置 ${service} 的 API 密钥。` }),
     keyRefused: {
       what: '模型服务没有接受这个 API 密钥。',
       why: '密钥可能填错了或者已经失效，也可能没有使用这个模型的权限。',
@@ -109,6 +108,17 @@ export const zhCN: Messages = {
     keyProblem: {
       what: '现在的 API 密钥用不了模型服务。',
       why: '密钥还没有配置，或者没有被服务接受。',
+    },
+    named: {
+      noKey: (service: string) => ({ what: `还没有配置 ${service} 的 API 密钥。` }),
+      keyRefused: (service: string) => ({
+        what: `${service} 没有接受这个 API 密钥。`,
+        why: '密钥可能填错了或者已经失效，也可能没有使用这个模型的权限。',
+      }),
+      keyProblem: (service: string) => ({
+        what: `现在的 API 密钥用不了 ${service}。`,
+        why: '密钥还没有配置，或者没有被服务接受。',
+      }),
     },
     quota: { what: '模型服务的账户余额不足。' },
     rateLimit: { what: '模型服务正忙。', why: '它眼下收到的请求太多。' },

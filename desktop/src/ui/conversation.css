@@ -407,6 +407,15 @@
   gap: 2px;
 }
 
+/* What can be done about the end of a turn. On a narrow page the buttons go under one another. */
+.ending-actions {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s2);
+}
+
 .ending[data-tone='calm'] {
   font-size: var(--text-caption);
   color: var(--moon-2);

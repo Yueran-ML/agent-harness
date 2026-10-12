@@ -135,7 +135,6 @@ export const ja: Messages = {
 
   model: {
     noKey: { what: 'モデルサービスの API キーが設定されていません。' },
-    noKeyFor: (service: string) => ({ what: `${service} の API キーが設定されていません。` }),
     keyRefused: {
       what: 'モデルサービスが API キーを受け付けませんでした。',
       why: 'キーの入力に誤りがあるか、すでに無効になっているか、このモデルを使う権限がない可能性があります。',
@@ -143,6 +142,17 @@ export const ja: Messages = {
     keyProblem: {
       what: '現在の API キーでは、モデルサービスを利用できません。',
       why: 'キーが設定されていないか、サービスに受け付けられませんでした。',
+    },
+    named: {
+      noKey: (service: string) => ({ what: `${service} の API キーが設定されていません。` }),
+      keyRefused: (service: string) => ({
+        what: `${service} が API キーを受け付けませんでした。`,
+        why: 'キーの入力に誤りがあるか、すでに無効になっているか、このモデルを使う権限がない可能性があります。',
+      }),
+      keyProblem: (service: string) => ({
+        what: `現在の API キーでは、${service} を利用できません。`,
+        why: 'キーが設定されていないか、サービスに受け付けられませんでした。',
+      }),
     },
     quota: { what: 'モデルサービスのアカウントに残高がありません。' },
     rateLimit: {

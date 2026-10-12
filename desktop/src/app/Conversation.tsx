@@ -9,10 +9,13 @@ import { sayModelFailure, sayTurn } from '../words';
 import { CopyButton, Markdown } from './Markdown';
 import { ToolRow } from './ToolRow';
 import { useWords } from './locale';
-import { serviceTitle } from './tell';
+import { keyAtHand, serviceTitle } from './tell';
 
-/** The services that are set up, for whatever part names the one that a request went to. */
-const Services = createContext<Listed | null>(null);
+/**
+ * The services that are set up and the one that the service process talks to, for whatever
+ * part names the service of a request or asks whether a key is there for the next one.
+ */
+const Services = createContext<{ listed: Listed | null; inUse: string | null }>({ listed: null, inUse: null });
 
 /** After this long, a wait says how long it has lasted. */
 const SAY_HOW_LONG_AFTER = 5;
@@ -77,7 +80,7 @@ function Step({ item, live = false, last = false, onLink }: {
   onLink: (url: string) => void;
 }) {
   const words = useWords();
-  const services = useContext(Services);
+  const services = useContext(Services).listed;
   switch (item.type) {
     case 'tool':
       return <ToolRow item={item} />;
@@ -156,11 +159,15 @@ function Ending({ turn, outcome, onAction }: {
   onAction: ((action: ActionKey, turn: Turn) => void) | null;
 }) {
   const words = useWords();
-  const saying = sayTurn(words, outcome, serviceTitle(turn.provider, useContext(Services)));
+  const services = useContext(Services);
+  const saying = sayTurn(words, outcome, serviceTitle(turn.provider, services.listed));
   if (saying === null) return null;
   // Somebody stopping a turn is no failure. Everything else here is something that went wrong.
   const calm = outcome.kind === 'stopped' || outcome.kind === 'interrupted' || outcome.kind === 'forked';
   const action = outcome.next === 'none' ? null : outcome.next;
+  // A turn that failed for its key leads to the settings. Once a key is there it can be tried
+  // again as well, without the task being typed a second time.
+  const again = action === 'openModelSettings' && keyAtHand(services.inUse, services.listed);
   return <div className="ending" data-tone={calm ? 'calm' : 'bad'} data-test="ending" role={calm ? undefined : 'alert'}>
     <div className="ending-words">
       <p className="ending-what">{saying.what}</p>
@@ -172,9 +179,14 @@ function Ending({ turn, outcome, onAction }: {
         <p className="tool-code mono">{outcome.detail}</p>
       </details>}
     </div>
-    {action && onAction && <button type="button" className="btn" onClick={() => onAction(action, turn)} data-test="ending-action">
-      {words.actions[action]}
-    </button>}
+    {action && onAction && <div className="ending-actions">
+      <button type="button" className="btn" onClick={() => onAction(action, turn)} data-test="ending-action">
+        {words.actions[action]}
+      </button>
+      {again && <button type="button" className="btn" onClick={() => onAction('retry', turn)} data-test="ending-again">
+        {words.actions.retry}
+      </button>}
+    </div>}
   </div>;
 }
 
@@ -251,6 +263,8 @@ export function Conversation({ workspace, onLink, onAction }: {
 
   const writing = preview.text !== '' || preview.reasoning !== '' || preview.tools.length > 0;
   const running = status?.status === 'running';
+  const inUse = status?.model.provider ?? null;
+  const services = useMemo(() => ({ listed: workspace.services, inUse }), [workspace.services, inUse]);
   const last = entries.at(-1);
   const liveTurn = last?.kind === 'turn' && last.running ? last : null;
   const lastItem = projection.items.at(-1);
@@ -302,7 +316,7 @@ export function Conversation({ workspace, onLink, onAction }: {
       }}
     >
       <div className="talk" ref={content} data-test="talk">
-        <Services.Provider value={workspace.services}>
+        <Services.Provider value={services}>
         {entries.map(entry => entry.kind === 'turn'
           ? <TurnView
               key={`turn-${entry.number}`}

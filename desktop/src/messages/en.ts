@@ -140,8 +140,6 @@ export const en = {
   /** Why a request to the model failed. */
   model: {
     noKey: { what: 'No API key is set up for the model service.' },
-    /** The same, where the window knows which service the model comes from. */
-    noKeyFor: (service: string) => ({ what: `No API key is set up for ${service}.` }),
     keyRefused: {
       what: 'The model service did not accept the API key.',
       why: 'The key may be mistyped or no longer valid, or it may not be allowed to use this model.',
@@ -149,6 +147,18 @@ export const en = {
     keyProblem: {
       what: 'The model service cannot be used with the API key as it is.',
       why: 'No key is set up, or the service did not accept it.',
+    },
+    /** What is said of a key, where the window knows which service the request went to. */
+    named: {
+      noKey: (service: string) => ({ what: `No API key is set up for ${service}.` }),
+      keyRefused: (service: string) => ({
+        what: `${service} did not accept the API key.`,
+        why: 'The key may be mistyped or no longer valid, or it may not be allowed to use this model.',
+      }),
+      keyProblem: (service: string) => ({
+        what: `${service} cannot be used with the API key as it is.`,
+        why: 'No key is set up, or the service did not accept it.',
+      }),
     },
     quota: { what: 'The account at the model service has no credit left.' },
     rateLimit: {

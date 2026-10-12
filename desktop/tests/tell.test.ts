@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  agoOf, argumentsOf, callSeconds, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, objectOf, presetOf, presets,
+  agoOf, argumentsOf, callSeconds, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, keyAtHand, objectOf, presetOf,
+  presets,
   retryText, scopeOf, servicesToTell, serviceTitle, stepped, STILL_STARTING_MS, subagentKind, tail, taskTitle,
   TIME_WORTH_SAYING_MS, toolKind, verbOf, waitingWords,
 } from '../src/app/tell';
@@ -134,6 +135,54 @@ describe('the name of the service that a model comes from', () => {
     expect(serviceTitle(null, listed)).toBeNull();
     expect(serviceTitle(undefined, listed)).toBeNull();
     expect(serviceTitle('', listed)).toBeNull();
+  });
+});
+
+describe('a key that is at hand for the next request', () => {
+  const service = (name: string, key: string, key_env: string | null = 'A_KEY', own = false) => ({
+    name, title: name, base_url: 'https://api.example.com/v1', own, model: null, context_window: null, key_env, key,
+  });
+  const listed = {
+    use: 'deepseek',
+    services: [
+      service('deepseek', 'none'), service('openai', 'stored'), service('moonshot', 'environment'),
+      service('zhipu', 'stored-for-another-address'), service('ollama', 'none', null),
+      service('my-own', 'none', 'COLUMBINA_API_KEY', true), service('my-other', 'stored-for-another-address', 'COLUMBINA_API_KEY', true),
+    ],
+  };
+
+  it('is there where the service has one, stored or in its variable', () => {
+    expect(keyAtHand('openai', listed)).toBe(true);
+    expect(keyAtHand('moonshot', listed)).toBe(true);
+  });
+
+  it('is not there where none is, or one that was typed in for another address', () => {
+    expect(keyAtHand('deepseek', listed)).toBe(false);
+    // A key is sent only to the place that it was typed in for.
+    expect(keyAtHand('zhipu', listed)).toBe(false);
+  });
+
+  it('is not needed where the service asks for none', () => {
+    expect(keyAtHand('ollama', listed)).toBe(true);
+  });
+
+  it('is not known to be needed by a service that the user added', () => {
+    // Such a service is asked without a key where none is stored for it. It may answer.
+    expect(keyAtHand('my-own', listed)).toBe(true);
+    expect(keyAtHand('my-other', listed)).toBe(true);
+  });
+
+  it('is not known to be there where the window has no list, or knows of no service', () => {
+    expect(keyAtHand('openai', null)).toBe(false);
+    for (const provider of [null, undefined, '']) expect(keyAtHand(provider, listed)).toBe(false);
+  });
+
+  it('is left to the user to try where the list does not have the service', () => {
+    // A profile may name a service of its own, which the window knows nothing of.
+    expect(keyAtHand('in-house', listed)).toBe(true);
+    // Not one whose name only begins alike.
+    expect(keyAtHand('deep', listed)).toBe(true);
+    expect(keyAtHand('deep', { use: null, services: [service('deepseek', 'none')] })).toBe(true);
   });
 });
 

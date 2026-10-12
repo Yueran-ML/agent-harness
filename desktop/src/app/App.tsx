@@ -96,6 +96,7 @@ export default function App() {
 
   const field = useRef<HTMLTextAreaElement>(null);
   const openButton = useRef<HTMLButtonElement>(null);
+  const restartButton = useRef<HTMLButtonElement>(null);
 
   const running = status?.status === 'running';
   const stopped = status?.status === 'stopped';
@@ -309,7 +310,9 @@ export default function App() {
     if (document.activeElement !== document.body && document.activeElement !== document.documentElement) return;
     if (!workspace.hasProject) openButton.current?.focus();
     else if (!unavailable) field.current?.focus();
-  }, [showOpening, unavailable, workspace.hasProject, workspace.sessionId]);
+    // The field cannot be used and has let go of the keyboard. What is done next is a new start.
+    else if (workspace.closed !== null || stopped) restartButton.current?.focus();
+  }, [showOpening, unavailable, workspace.hasProject, workspace.sessionId, workspace.closed, stopped]);
 
   // --- What is shown.
   const folder = workspace.hello ? folderName(workspace.hello.cwd)
@@ -426,7 +429,7 @@ export default function App() {
               {window.columbina && <button type="button" className="btn btn-quiet" onClick={workspace.showLog} data-test="show-log">
                 <FileText size={14} aria-hidden="true" />{words.label.showLog}
               </button>}
-              <button type="button" className="btn" disabled={workspace.loading} onClick={() => void workspace.reconnect()} data-test="restart">
+              <button type="button" ref={restartButton} className="btn" disabled={workspace.loading} onClick={() => void workspace.reconnect()} data-test="restart">
                 {words.label.restart}
               </button>
             </div>
@@ -439,7 +442,7 @@ export default function App() {
                 <p className="tool-code mono">{status.detail}</p>
               </details>}
             </div>
-            <button type="button" className="btn" disabled={workspace.loading} onClick={() => void workspace.reconnect()} data-test="restart">
+            <button type="button" ref={restartButton} className="btn" disabled={workspace.loading} onClick={() => void workspace.reconnect()} data-test="restart">
               {words.label.restart}
             </button>
           </div>}

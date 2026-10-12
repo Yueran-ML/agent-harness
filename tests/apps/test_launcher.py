@@ -278,6 +278,7 @@ def test_the_composition_can_be_printed_instead_of_run(
         "tool-grep",
         "tool-shell",
         "system-prompt",
+        "system-prompt-conduct",
         "context-instructions",
         "context-runtime",
         "retry",

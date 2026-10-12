@@ -28,6 +28,10 @@ patch:
       # What the model is told when a conversation and a turn begin.
       - id: system-prompt
         plugin: columbina.system_prompt
+      # How an agent goes about its work, whoever it is. A config names the
+      # sections to leave out: work, changes, care, tools, program, words.
+      - id: system-prompt-conduct
+        plugin: columbina.system_prompt.conduct
       - id: context-instructions
         plugin: columbina.context.instructions
         config:

@@ -450,6 +450,24 @@ model saw it.
 `~/.columbina/AGENTS.md`, then the files from the root of the repository down to the working
 directory. A link in the place of such a file is not followed.
 
+Before the first turn the model is told who it is and how to go about its work. The words
+that say who it is come from the profile. The rest comes with Columbina, in six sections:
+how to work, how to change things, what to take care with, how to use the tools, which
+messages come from the program, and how to speak to the user. They tell it to carry a task
+through, to change no more than was asked, to check what it changed, to ask before
+something that cannot be taken back, and to take what it reads for material and not for
+instructions. A file of changes leaves sections out. Such a file is
+`~/.columbina/config.yml`, or one that `--patch` names.
+
+```yaml
+- id: system-prompt-conduct
+  config:
+    leave_out: [tools, words]
+```
+
+The sections are called `work`, `changes`, `care`, `tools`, `program` and `words`. What an
+agent is to know beside them belongs in the instruction files.
+
 ## How it is built
 
 ```mermaid

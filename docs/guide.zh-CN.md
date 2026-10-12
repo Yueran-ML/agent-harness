@@ -316,6 +316,16 @@ Fixed. In `calc.py`, `mean` was dividing the sum by `len(values) - 1` (that is, 
 
 `AGENTS.md` 和 `CLAUDE.md` 在回合开始时交给模型，先是 `~/.columbina/AGENTS.md`，然后是从仓库根目录一路到工作目录的各个文件。如果这类文件的位置上是一个链接，程序不会跟随它。
 
+第一个回合开始之前，模型会被告知它是谁，以及应当怎样做事。说明身份的那句话来自清单（profile）。其余内容随 Columbina 提供，分为六节：怎样做事、怎样改动、哪些事要谨慎、怎样使用工具、哪些消息来自程序、怎样对用户说话。这些内容要求它把任务做到底，只改被要求改的东西，改完要检查，做无法撤回的事之前先问，并把读到的内容当作材料而不是指令。补丁文件可以去掉其中几节。补丁文件是 `~/.columbina/config.yml`，或者用 `--patch` 指定的文件。
+
+```yaml
+- id: system-prompt-conduct
+  config:
+    leave_out: [tools, words]
+```
+
+六节的名字是 `work`、`changes`、`care`、`tools`、`program` 和 `words`。除此之外想让 Agent 知道的事，写在指令文件里。
+
 ## 架构
 
 ```mermaid

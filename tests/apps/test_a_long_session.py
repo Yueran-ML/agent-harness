@@ -1,8 +1,11 @@
 """Where stage 5 ends: a conversation that outgrows its model is made shorter, and goes on.
 
-The program is the one that is shipped, run by its command line. Two things
-are other than in a real run. The model is scripted. And the profile says
-that the model takes little, so that five files are more than it takes.
+The program is the one that is shipped, run by its command line. Three things
+are other than in a real run. The model is scripted. The profile says that
+the model takes little, so that five files are more than it takes. And the
+conduct, which is most of what a model is told before a conversation, is
+left out: beside a window this small it would be a large part of what the
+model takes, and every number here would move with every word of it.
 
 Three runs are told here. In the first the conversation comes near the limit
 while the model is at work, and its oldest part is summed up between two
@@ -114,7 +117,8 @@ def ran(tmp_path: Path, woods: Path, *replies: dict[str, Any], window: int | Non
     """Run the task with a model that says these things and takes so many tokens."""
     model = {"provider": "deepseek", "model": "deepseek-flash", "context_window": window}
     frontend = {"id": "frontend", "config": {"model": model}}
-    chosen = profile(tmp_path, *replies, extra=[frontend])
+    conduct = {"id": "system-prompt-conduct", "disabled": True}
+    chosen = profile(tmp_path, *replies, extra=[frontend, conduct])
     return main(["run", TASK, "--profile", chosen, "--cwd", str(woods), "--session-id", "s-1"])
 
 

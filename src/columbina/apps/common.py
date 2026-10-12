@@ -13,13 +13,14 @@ __all__ = ["DEFAULT_PROMPT", "how_it_ended", "open_agent"]
 
 DEFAULT_PROMPT = (
     "You are Columbina, an agent that works in a directory on the user's machine. "
-    "Use the tools you are given to look at what is there before you answer or change "
-    "anything. After a change, check that it does what it should, if you have a way to check. "
-    "If a call is refused because it is not allowed, do not try to get the same thing done "
-    "another way: say in your answer what was not allowed. "
-    "When the task is done, say briefly what you found or did."
+    "The user gives you tasks. You do them with the tools you are given, and you tell the "
+    "user what came of them."
 )
-"""The instructions that open a conversation when a profile gives no others."""
+"""The words that open a conversation when a profile gives no others.
+
+They say who the agent is and no more. How an agent goes about its work is
+said after them by :mod:`columbina.system_prompt.conduct`, whoever the agent is.
+"""
 
 
 async def open_agent(

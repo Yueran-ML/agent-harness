@@ -15,6 +15,10 @@ profile:
     # The model of the run was not offered the tool that writes it.
     - id: todo
       disabled: true
+    # So did the conduct. The model of the run read the six sentences that the
+    # program then began with, and they are in the log.
+    - id: system-prompt-conduct
+      disabled: true
     - id: permissions
       config:
         preset: workspace-write

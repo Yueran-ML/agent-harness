@@ -2,8 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   agoOf, argumentsOf, callSeconds, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, keyAtHand, objectOf, presetOf,
-  presets,
-  retryText, scopeOf, servicesToTell, serviceTitle, stepped, STILL_STARTING_MS, subagentKind, tail, taskTitle,
+  presets, retryText, scopeOf, servicesToTell, serviceTitle, standingOf, stepped, STILL_STARTING_MS, subagentKind, tail, taskTitle,
   TIME_WORTH_SAYING_MS, toolKind, verbOf, waitingWords,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
@@ -230,6 +229,45 @@ describe('the services that the settings tell of', () => {
   it('do not hold a service in use that the list does not have', () => {
     // The profile names a service of its own. It is in use, and the list has nothing to say of it.
     expect(servicesToTell({ use: null, services: [service('deepseek')] }, 'in-house')).toEqual({ inUse: 'in-house', known: [] });
+  });
+});
+
+describe('how the task that is open stands', () => {
+  const resting = { status: 'idle', cancelling: false, loading: false, greeted: true, connected: true };
+  const said = (at: Partial<Omit<typeof resting, 'status'>> & { status?: string | null }) => standingOf(en, { ...resting, ...at });
+
+  it('is at rest where nothing runs and the service is there', () => {
+    expect(said({})).toEqual({ words: 'At rest', tone: 'rest' });
+  });
+
+  it('is at work while a turn runs, and stopping once the user has asked for that', () => {
+    expect(said({ status: 'running' })).toEqual({ words: 'At work', tone: 'live' });
+    // It is still at work until the service says otherwise.
+    expect(said({ status: 'running', cancelling: true })).toEqual({ words: 'Stopping', tone: 'live' });
+  });
+
+  it('is of no use where its agent has stopped for good', () => {
+    expect(said({ status: 'stopped' })).toEqual({ words: 'Stopped', tone: 'off' });
+    // Whatever else holds: an agent that has stopped is not brought back by a list that is being read.
+    expect(said({ status: 'stopped', loading: true })).toEqual({ words: 'Stopped', tone: 'off' });
+  });
+
+  it('is starting before the service has answered, and opening once it has', () => {
+    expect(said({ status: null, loading: true, greeted: false, connected: false })).toEqual({ words: 'Starting', tone: 'rest' });
+    expect(said({ status: null, loading: true, greeted: true })).toEqual({ words: 'Opening', tone: 'rest' });
+    expect(said({ status: undefined, loading: true, greeted: true })).toEqual({ words: 'Opening', tone: 'rest' });
+  });
+
+  it('is not connected where the service is gone and nothing is under way to bring it back', () => {
+    expect(said({ status: 'idle', connected: false })).toEqual({ words: 'Not connected', tone: 'off' });
+    expect(said({ status: null, connected: false, greeted: false })).toEqual({ words: 'Not connected', tone: 'off' });
+    // A start that is under way is no failure yet.
+    expect(said({ status: null, connected: false, loading: true, greeted: false }).tone).toBe('rest');
+  });
+
+  it('is said in the language of the page', () => {
+    expect(standingOf(zhCN, resting).words).toBe(zhCN.label.status.ready);
+    expect(standingOf(ja, { ...resting, status: 'running' }).words).toBe(ja.label.status.working);
   });
 });
 

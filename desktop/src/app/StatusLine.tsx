@@ -2,7 +2,7 @@ import { ShieldAlert, ShieldCheck, TriangleAlert } from 'lucide-react';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { useWords } from './locale';
-import { contextPercent } from './tell';
+import { contextPercent, standingOf } from './tell';
 
 /** A ring that fills with the context. */
 function Ring({ percent }: { percent: number }) {
@@ -33,13 +33,10 @@ export function StatusLine({ workspace, onPermissions, onDetails }: {
   const loose = status?.sandbox?.strength === 'none' || status?.sandbox?.strength === 'partial';
   const percent = contextPercent(workspace.projection.lastInputTokens, status?.model.context_window);
 
-  const stands = workspace.cancelling ? words.label.status.stopping
-    : status?.status === 'running' ? words.label.status.working
-      : status?.status === 'stopped' ? words.label.status.stopped
-        : workspace.loading ? (workspace.hello ? words.label.status.opening : words.label.status.starting)
-          : !workspace.connected ? words.label.status.offline : words.label.status.ready;
-  const tone = status?.status === 'running' ? 'live'
-    : status?.status === 'stopped' || (!workspace.connected && !workspace.loading) ? 'off' : 'rest';
+  const { words: stands, tone } = standingOf(words, {
+    status: status?.status, cancelling: workspace.cancelling, loading: workspace.loading,
+    greeted: workspace.hello !== null, connected: workspace.connected,
+  });
 
   // Under full access the whole line is in the colour of a warning, not its sentence alone.
   return <footer className="status" data-tone={full ? 'warn' : undefined} data-test="status">

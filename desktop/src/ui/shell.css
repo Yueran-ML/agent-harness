@@ -527,7 +527,8 @@ button.task:hover:not(:disabled) {
   background: var(--moon-3);
 }
 
-.status-stands[data-tone='rest'] .dot {
+.status-stands[data-tone='rest'] .dot,
+.dot[data-tone='rest'] {
   background: var(--ok);
 }
 
@@ -540,8 +541,15 @@ button.task:hover:not(:disabled) {
   box-shadow: 0 0 0 3px var(--accent-wash);
 }
 
-.status-stands[data-tone='off'] .dot {
+.status-stands[data-tone='off'] .dot,
+.dot[data-tone='off'] {
   background: var(--bad);
+}
+
+/* In the line of the task that is open, the dot is as wide as the moon that takes its place. */
+.task .dot {
+  flex: none;
+  margin: 0 3px;
 }
 
 .ring {

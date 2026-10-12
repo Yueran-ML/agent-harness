@@ -123,6 +123,35 @@ export function keyAtHand(provider: string | null | undefined, listed: Listed | 
   return service.key === 'stored' || service.key === 'environment';
 }
 
+/** How the task that is open stands, in a word and in the tone that goes with it. */
+export interface Standing {
+  words: string;
+  /** At work, at rest, or of no use until something is done about it. */
+  tone: 'live' | 'rest' | 'off';
+}
+
+/**
+ * Say how the task that is open stands.
+ *
+ * Args:
+ *   words: The catalogue.
+ *   at: What is known of it. `status` is what the service process says of the task, `greeted`
+ *     whether that process has answered at all, and `cancelling` whether the user has asked
+ *     for the turn to be stopped and it is not stopped yet.
+ */
+export function standingOf(words: Messages, at: {
+  status: string | null | undefined; cancelling: boolean; loading: boolean; greeted: boolean; connected: boolean;
+}): Standing {
+  const said = at.cancelling ? words.label.status.stopping
+    : at.status === 'running' ? words.label.status.working
+      : at.status === 'stopped' ? words.label.status.stopped
+        : at.loading ? (at.greeted ? words.label.status.opening : words.label.status.starting)
+          : !at.connected ? words.label.status.offline : words.label.status.ready;
+  const tone = at.status === 'running' ? 'live'
+    : at.status === 'stopped' || (!at.connected && !at.loading) ? 'off' : 'rest';
+  return { words: said, tone };
+}
+
 /** How long a start may take before more is said of it, in milliseconds. */
 export const STILL_STARTING_MS = 3000;
 

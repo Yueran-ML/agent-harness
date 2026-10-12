@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Folder, PanelLeftClose, Search, Settings2, SquarePen } from 'lucide-react';
 import type { Workspace } from '../useWorkspace';
 import { useWords } from './locale';
-import { agoOf, folderName, taskTitle } from './tell';
+import { agoOf, folderName, standingOf, taskTitle } from './tell';
 
 /** The time, told anew every minute. */
 export function useNow(): number {
@@ -30,6 +30,14 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
   const [search, setSearch] = useState('');
   const { sessions, sessionId, hello } = workspace;
   const running = workspace.status?.status === 'running';
+  // How the task that is open stands. Its line in the list says so, as the status line does.
+  const standing = standingOf(words, {
+    status: workspace.status?.status, cancelling: workspace.cancelling, loading: workspace.loading,
+    greeted: workspace.hello !== null, connected: workspace.connected,
+  });
+  const mark = running
+    ? <span className="moon" role="img" aria-label={standing.words} data-test="task-stands" data-tone="live" />
+    : <span className="dot" role="img" aria-label={standing.words} data-test="task-stands" data-tone={standing.tone} />;
   // While the log of a long task is read, another task can be opened in its place.
   const busy = (workspace.loading && workspace.reading === null) || !workspace.connected;
 
@@ -64,7 +72,7 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
     <nav className="tasks" aria-label={words.label.tasks}>
       {fresh && !wanted && <div className="task" aria-current="true" title={title}>
         <span className="task-name">{title}</span>
-        {running && <span className="moon" role="img" aria-label={words.label.status.working} />}
+        {mark}
       </div>}
       {shown.map(session => {
         const current = session.id === sessionId;
@@ -80,9 +88,9 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
           data-test="task"
         >
           <span className="task-name">{title}</span>
-          {current && running
-            ? <span className="moon" role="img" aria-label={words.label.status.working} />
-            : <span className="task-when">{agoOf(words, session.modified_ms, now)}</span>}
+          {current && mark}
+          {/* While the task is at work, when it was last written is this moment. */}
+          {!(current && running) && <span className="task-when">{agoOf(words, session.modified_ms, now)}</span>}
         </button>;
       })}
       {shown.length === 0 && !(fresh && !wanted) && <p className="caption tasks-none">

@@ -136,4 +136,8 @@ npm run build
 
 `npm test` runs the unit tests: the state that is computed from events, the grouping
 into turns, the words for every way a call or a turn can end, the matching of requests
-and answers, the shell, and the replay process. They ask no model for anything.
+and answers, the shell, and the replay process. Two of the files mount parts of the page
+in a DOM without a browser, and read what stands there and what a click calls: the
+conversation, the status line, the list of tasks, the page of a new task and the
+settings. None of the tests asks a model for anything, and none sees how the page is
+laid out or what it looks like.

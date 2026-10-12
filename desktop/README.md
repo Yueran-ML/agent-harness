@@ -136,8 +136,11 @@ npm run build
 
 `npm test` runs the unit tests: the state that is computed from events, the grouping
 into turns, the words for every way a call or a turn can end, the matching of requests
-and answers, the shell, and the replay process. Two of the files mount parts of the page
-in a DOM without a browser, and read what stands there and what a click calls: the
-conversation, the status line, the list of tasks, the page of a new task and the
-settings. None of the tests asks a model for anything, and none sees how the page is
-laid out or what it looks like.
+and answers, the shell, and the replay process. Four of the files mount the page in a
+DOM without a browser, part by part and as a whole, and read what stands there and what
+a click or a key calls: the conversation, the question of the agent, the field, the
+status line, the list of tasks, the page of a new task, the settings and the panel
+beside the conversation. The whole page is mounted with a workspace that the test
+holds, so what one part does to another is tried without a service process. None of the
+tests asks a model for anything, and none sees how the page is laid out or what it looks
+like.

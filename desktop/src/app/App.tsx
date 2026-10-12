@@ -288,7 +288,8 @@ export default function App() {
   }, [running]);
   useEffect(() => {
     if (workspace.closed === null || !tellMe || document.hasFocus()) return;
-    void window.columbina?.notify({ title: words.label.notice.stopped, body: words.hint.serviceEnded }).catch(() => {});
+    void window.columbina?.notify({ title: words.label.notice.stopped, body: goneWords(words, workspace.hello !== null) })
+      .catch(() => {});
   }, [workspace.closed]);
 
   // --- The keyboard.

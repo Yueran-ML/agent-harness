@@ -27,6 +27,19 @@ const samples: Record<string, unknown[][]> = {
   'turn.took': [[1, 1], [42, 3], [125, 12]],
   'turn.limit.steps': [[1], [30]],
   'wait.retry': [[0, 3], [1, 1], [4, 2]],
+  'wait.retried': [[0, 3], [1, 1], [4, 2]],
+  'label.ago.minutes': [[1], [45]],
+  'label.ago.hours': [[1], [23]],
+  'label.ago.days': [[1], [30]],
+  'label.context': [[0], [87]],
+  'label.verb.other': [['fetch']],
+  'hint.starting': [['F:\\work\\project']],
+  'hint.consentOther': [['fetch']],
+  'hint.scope.anyCall': [['fetch']],
+  'hint.scope.onTarget': [['peek', 'notes.txt']],
+  'hint.contextOf': [['12.4K', '128K']],
+  'hint.contextUnknown': [['950']],
+  'hint.about': [['0.1.0', 1]],
 };
 
 type Said = { path: string; text: string };
@@ -123,9 +136,11 @@ describe('the two catalogues', () => {
 
   it('end a sentence with a full stop, and a line that is no sentence without one', () => {
     // In the row of a call, `what` is a few words. The name of an action is the
-    // face of a button. A duration and the time that a turn took are parts of a line.
+    // face of a button, and so is a label. A duration and the time that a turn took
+    // are parts of a line.
     const isSentence = (path: string) => path.endsWith('.why') || !(
-      path.startsWith('tool.') || path.startsWith('actions.') || path === 'duration' || path === 'turn.took'
+      path.startsWith('tool.') || path.startsWith('actions.') || path.startsWith('label.')
+      || path === 'duration' || path === 'turn.took'
     );
     for (const [, messages] of catalogues) {
       const stop = messages === en ? '.' : '。';

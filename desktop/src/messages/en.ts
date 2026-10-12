@@ -211,6 +211,10 @@ export const en = {
     retry: (seconds: number, retry: number) => (seconds > 0
       ? `Trying again in ${duration(seconds)} (retry ${retry}).`
       : `Trying again now (retry ${retry}).`),
+    /** The same, told afterwards. */
+    retried: (seconds: number, retry: number) => (seconds > 0
+      ? `Tried again after ${duration(seconds)} (retry ${retry}).`
+      : `Tried again at once (retry ${retry}).`),
   },
 
   /** What else a conversation tells of. */
@@ -244,6 +248,240 @@ export const en = {
     openModelSettings: 'Open model settings',
     openPermissions: 'Open permissions',
     compact: 'Sum up earlier messages',
+  },
+
+  /** What the interface says to the agent in the place of the user, when a button asks for it. */
+  prompt: {
+    goOn: 'Go on from where the turn broke off.',
+  },
+
+  /**
+   * The faces of controls, headings, and other short lines that are no
+   * sentences. None ends with a full stop.
+   */
+  label: {
+    newTask: 'New task',
+    searchTasks: 'Search tasks',
+    tasks: 'Tasks',
+    openProject: 'Open a project',
+    settings: 'Settings',
+    hideTasks: 'Hide the list of tasks',
+    showTasks: 'Show the list of tasks',
+    changes: 'Changes',
+    details: 'Details',
+    close: 'Close',
+    cancel: 'Cancel',
+    done: 'Done',
+    apply: 'Apply',
+    copy: 'Copy',
+    copied: 'Copied',
+    send: 'Send',
+    stop: 'Stop',
+    stopping: 'Stopping',
+    commands: 'Commands',
+    restart: 'Start it again',
+    latest: 'Latest',
+    replay: 'Replay',
+    mute: 'Turn the sound off',
+    unmute: 'Turn the sound on',
+    soundOn: 'Sound on',
+    soundOff: 'Sound off',
+
+    /** The film that plays when the application starts. */
+    opening: {
+      name: 'Opening',
+      loading: 'Loading the opening',
+      play: 'Play the opening',
+      again: 'Play it again',
+      skip: 'Skip',
+      begin: 'Press Enter to begin',
+    },
+
+    /** The music that plays behind the work. */
+    music: {
+      none: 'No music chosen',
+      choose: 'Choose a file',
+      change: 'Choose another file',
+      play: 'Play',
+      useKept: 'Use the music of the application folder',
+      remove: 'Remove',
+      stands: {
+        loading: 'Loading',
+        none: 'No music chosen',
+        unavailable: 'Cannot be played',
+        blocked: 'Waits for you to press play',
+        muted: 'Muted',
+        playing: 'Playing',
+      },
+    },
+    otherProject: 'Open another project',
+    skipToInput: 'Go to the input field',
+    confirmLeave: 'Stop the turn that is under way?',
+    stay: 'Stay here',
+    stopAndLeave: 'Stop it and leave',
+
+    /** How long ago a task was last worked on. */
+    ago: {
+      now: 'just now',
+      minutes: (count: number) => `${count} min ago`,
+      hours: (count: number) => `${count} h ago`,
+      days: (count: number) => `${count} d ago`,
+    },
+
+    /** Where the agent stands, in a word. */
+    status: {
+      ready: 'At rest',
+      working: 'At work',
+      stopping: 'Stopping',
+      stopped: 'Stopped',
+      offline: 'Not connected',
+      starting: 'Starting',
+    },
+    context: (percent: number) => `Context ${percent}%`,
+    contextWindow: 'Context',
+    usage: 'Tokens of this task',
+    usageIn: 'Read',
+    usageOut: 'Written',
+    usageCached: 'Cached',
+    tools: 'Tools',
+    taskId: 'Task',
+
+    /** What a tool does, in a word that fits before what it does it to. */
+    verb: {
+      read: 'Read',
+      write: 'Write',
+      edit: 'Edit',
+      list: 'List',
+      search: 'Search',
+      run: 'Run',
+      todo: 'Keep a list',
+      skill: 'Use a skill',
+      subagent: 'Hand over',
+      other: (tool: string) => `Call ${tool}`,
+    },
+    input: 'What it was given',
+    output: 'What came back',
+    noOutput: 'Nothing came back',
+    before: 'Before',
+    after: 'After',
+    thought: 'Thought',
+    thinking: 'Thinking',
+    writing: 'Writing',
+    preparing: 'Preparing a call',
+    saidOnTheWay: 'Added on the way',
+    waiting: 'Waiting',
+    summary: 'Earlier messages, summed up',
+
+    placeholderIdle: 'Give Columbina something to do',
+    placeholderRunning: 'Add something for its next step',
+    placeholderNoProject: 'Open a project first',
+    placeholderStarting: 'Columbina is starting',
+    placeholderStopped: 'This task has stopped',
+
+    consentTitle: 'Your consent is needed',
+    allowOnce: 'Allow this once',
+    allowAlways: 'Allow, and do not ask again',
+    reject: 'Do not allow',
+    stopTurn: 'Stop the turn',
+    whyItAsks: 'Why it asks',
+
+    emptyTitle: 'What shall we work on?',
+    emptyNoProjectTitle: 'Open a project to begin',
+    recentTasks: 'Recent tasks',
+
+    appearance: 'Appearance',
+    theme: 'Theme',
+    themeNames: { moonveil: 'Moonveil', moonwhite: 'Moonwhite' },
+    language: 'Language',
+    languageSystem: 'As the system has it',
+    model: 'Model',
+    permissions: 'Permissions',
+    presets: {
+      readOnly: 'Read only',
+      workspaceWrite: 'Change files of the project',
+      fullAccess: 'Full access',
+    },
+    openingAndMusic: 'Opening and music',
+    playOpening: 'Play the opening when the application starts',
+    playOpeningNow: 'Play the opening now',
+    connection: 'Connection',
+
+    confirmFullAccess: 'Allow full access?',
+    confirmWrite: 'Let Columbina change files?',
+    allowFullAccess: 'Allow full access',
+    allowWrite: 'Allow changes',
+    openLinkTitle: 'Open this link?',
+    openLink: 'Open it',
+  },
+
+  /** Sentences that explain: under a field, in an empty place, while something is waited for. */
+  hint: {
+    keysIdle: 'Enter sends. Shift+Enter starts a new line. A slash opens the commands.',
+    keysRunning: 'What you send now is read at the next step. Esc, pressed twice, stops the turn.',
+    escAgain: 'Press Esc once more to stop the turn.',
+    returned: 'What you had sent was not read. It is back in the field.',
+    confirmLeave: 'Columbina is still at work on this task. Leaving it stops the turn.',
+    requestFailed: 'That did not go through.',
+    commandsWhenIdle: 'A command waits until Columbina is at rest.',
+    starting: (folder: string) => `Starting Columbina in ${folder}.`,
+    openingTask: 'Opening the task.',
+    compacting: 'Summing up earlier messages.',
+    noTasks: 'No task yet in this project.',
+    noMatch: 'No task matches.',
+    emptyNoProject: 'Choose the folder that Columbina is to work in.',
+    replay: 'This is a replay of a recorded session. No model is asked for anything.',
+    taskStopped: 'This task has stopped and takes nothing more. Start Columbina again to go on with it.',
+    serviceEnded: 'The service process has ended.',
+
+    consentRun: 'Columbina wants to run this command.',
+    consentWrite: 'Columbina wants to change this file.',
+    consentOther: (tool: string) => `Columbina wants to use ${tool}.`,
+    consentWaiting: 'Columbina waits for your answer.',
+    consentSent: 'Your answer is on its way.',
+    /**
+     * What a longer yes covers. The service process keeps it in mind, and that
+     * process ends when the project is closed.
+     */
+    scope: {
+      thisCommand: 'Not asking again holds for this command, word for word, in this task, until the project is closed.',
+      anyCall: (tool: string) =>
+        `Not asking again holds for every call of ${tool} in this task, until the project is closed.`,
+      onTarget: (tool: string, target: string) =>
+        `Not asking again holds for ${tool} on ${target} in this task, until the project is closed.`,
+      other: 'Not asking again holds for the same call in this task, until the project is closed.',
+    },
+
+    settingsWhenIdle: 'The model and the permissions can be changed when Columbina is at rest.',
+    confirmFullAccess: 'Columbina will run commands without asking, and nothing will hold them back.',
+    confirmWrite: 'Columbina will be able to change the files of this project. It still asks before it runs a command.',
+    openLink: 'It was written in the conversation. It opens in your browser.',
+    commandsList: 'A command is carried out by Columbina itself. The model does not see it.',
+    connectedService: 'Connected to the service process that runs in this folder.',
+    contextOf: (used: string, window: string) => `${used} of ${window} tokens in the last request.`,
+    contextUnknown: (used: string) => `${used} tokens in the last request.`,
+    noToolsYet: 'The tools are known once the first request is made.',
+    noChanges: 'No file was changed in this task.',
+    about: (version: string, protocol: number) => `Columbina ${version}, protocol ${protocol}.`,
+    openingUnavailable: 'The opening cannot be played.',
+
+    music: {
+      about: 'It plays on repeat, through the opening and while you work.',
+      kinds: 'MP3, WAV, M4A, OGG or FLAC, up to 100 MB. The file is kept on this computer.',
+      problem: {
+        cannotPlay: 'This file cannot be played. Choose another one.',
+        cannotOpenKept: 'The music of the application folder cannot be opened. Choose another file.',
+        wrongKind: 'Choose a file of one of these kinds: MP3, WAV, M4A, OGG, FLAC.',
+        wrongSize: 'Choose a file that is not empty and no larger than 100 MB.',
+        noKept: 'There is no music in the application folder. Choose a file.',
+      },
+      unkept: {
+        cannotRead: 'What was chosen earlier cannot be read. A choice made now holds for this window only.',
+        thisWindowOnly: 'This file plays in this window only. It could not be kept for the next start.',
+        notCleared: 'The music was removed from this window. The kept copy could not be cleared, '
+          + 'and may be back after the next start.',
+        choiceNotKept: 'The music of the application folder plays in this window. The choice could not be kept.',
+      },
+    },
   },
 };
 

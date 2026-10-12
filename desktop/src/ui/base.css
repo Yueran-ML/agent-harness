@@ -27,12 +27,28 @@ body {
   overflow: hidden;
 }
 
+/*
+ * A line of Japanese may break between any two characters, which cuts a word in
+ * two and can leave the last character of a sentence alone on a line. Where the
+ * page is in Japanese a line breaks between phrases, and the end of a paragraph
+ * is not left with a character or two.
+ */
+:root:lang(ja) {
+  word-break: auto-phrase;
+  text-wrap: pretty;
+}
+
 button,
 input,
 textarea,
 select {
   font: inherit;
   color: inherit;
+}
+
+/* What is being typed keeps its lines where they are, whatever is typed after them. */
+:root:lang(ja) :is(input, textarea) {
+  text-wrap: wrap;
 }
 
 button {

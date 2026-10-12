@@ -63,8 +63,8 @@ of a turn that has ended. The settings switch that off. The first page offers th
 projects that were opened before. If the service process ends, the page shows the last
 lines that it wrote, which most often say why.
 
-The interface speaks English and Chinese and follows the language of the system
-unless another is chosen in the settings. It has a dark theme and a light one.
+The interface speaks English, Chinese and Japanese and follows the language of the
+system unless another is chosen in the settings. It has a dark theme and a light one.
 
 ## The service of the model, and its key
 

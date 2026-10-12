@@ -41,7 +41,7 @@ describe('the window for the key', () => {
     }
     // And what it shares takes nothing from that part either.
     expect(importsOf(read('src/app/locale.ts')).sort()).toEqual(['../i18n', '../messages/en', 'react']);
-    expect(importsOf(read('src/i18n.ts')).sort()).toEqual(['./messages/en', './messages/zh-CN']);
+    expect(importsOf(read('src/i18n.ts')).sort()).toEqual(['./messages/en', './messages/ja', './messages/zh-CN']);
     expect(importsOf(read('src/themes.ts'))).toEqual([]);
   });
 

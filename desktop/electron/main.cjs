@@ -39,7 +39,7 @@ const SETUP_MS = 45_000;
 const SETUP_OUTPUT_MOST = 512 * 1024;
 const NO_SETUP = 'No service program is set up for this application, so its services cannot be set up from here.';
 // The languages that the window for the key can speak, as a page names them.
-const LANGUAGES = ['en', 'zh-CN'];
+const LANGUAGES = ['en', 'ja', 'zh-CN'];
 // The window for the key while it is open, what it was opened for, whether something was
 // stored from it, and the promise that says so when it has closed.
 let keyWindow = null;

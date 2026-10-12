@@ -159,6 +159,24 @@
   --display-weight: 300;
 }
 
+/*
+ * In Japanese every face is one that is drawn for Japanese. A face for Chinese
+ * has the kana and most of the kanji too, and would be taken first, with the
+ * strokes that a Chinese reader expects and a Japanese reader does not.
+ *
+ * The display face is a light sans here as well. A Mincho face is not on every
+ * computer: on Windows it comes only with the Japanese fonts of the system.
+ */
+:root:lang(ja) {
+  --font-ui: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", "Yu Gothic UI", "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP", "Meiryo UI", system-ui, sans-serif;
+  --font-display: "Inter Variable", "Yu Gothic UI", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Noto Sans CJK JP", "Meiryo UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "Cascadia Code", "Cascadia Mono", Consolas,
+    "Sarasa Mono J", "Noto Sans Mono CJK JP", ui-monospace, monospace;
+  --display-weight: 300;
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root {
     --quick: 0ms;

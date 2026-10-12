@@ -5,6 +5,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
+import { languages } from '../src/app/locale';
+import { languageFor } from '../src/i18n';
 import { themes } from '../src/themes';
 import { themeColour } from './stylesheet';
 
@@ -880,6 +882,16 @@ describe('the window for the key', () => {
       service: 'deepseek', language: 'zh-CN', theme: 'moonwhite', list,
     });
     expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'setup', '--list']);
+  });
+
+  it('is told of every language that the main window can show', async () => {
+    // The shell has a list of its own. A language that is missing there opens this window in English.
+    const shown = languages.map(offered => languageFor(offered.id));
+    expect(shown).toEqual(['zh-CN', 'en', 'ja']);
+    for (const language of shown) {
+      const { shell } = await opened({ service: null, language });
+      await expect(shell.asKeyWindow('context')).resolves.toMatchObject({ language });
+    }
   });
 
   it('is told of no service and of English where what it was opened for is not what it may be', async () => {

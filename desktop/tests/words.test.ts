@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { messagesFor } from '../src/i18n';
 import { splitDuration } from '../src/messages/duration';
 import { en, type Messages } from '../src/messages/en';
+import { ja } from '../src/messages/ja';
 import { zhCN } from '../src/messages/zh-CN';
 import {
   classifyModelFailure, classifyTool, classifyTurnEnd, turnOutcome, type ActionKey,
@@ -16,7 +17,7 @@ import {
 } from './appendix';
 import { eventsOf, logs } from './logs';
 
-const catalogues: [name: string, messages: Messages][] = [['English', en], ['Chinese', zhCN]];
+const catalogues: [name: string, messages: Messages][] = [['English', en], ['Chinese', zhCN], ['Japanese', ja]];
 
 // A sentence that takes numbers is a function. These are the numbers it is tried with:
 // one and many, short and long. A count comes as short as its language writes it, which
@@ -89,9 +90,10 @@ const hasWords = (saying: Saying) => {
   if ('why' in saying) expect(saying.why?.trim()).not.toBe('');
 };
 
-describe('the two catalogues', () => {
+describe('the catalogues', () => {
   it('have the same shape', () => {
     expect(shapeOf(zhCN)).toEqual(shapeOf(en));
+    expect(shapeOf(ja)).toEqual(shapeOf(en));
   });
 
   it('are tried with numbers wherever a sentence takes some', () => {
@@ -174,6 +176,8 @@ describe('the two catalogues', () => {
     };
     expect(lines(en).filter(line => line.length > 30)).toEqual([]);
     expect(lines(zhCN).filter(line => line.length > 10)).toEqual([]);
+    // A word of Japanese that is written in katakana is long.
+    expect(lines(ja).filter(line => line.length > 12)).toEqual([]);
   });
 
   it('are written as Chinese is written, in the Chinese one', () => {
@@ -195,6 +199,36 @@ describe('the two catalogues', () => {
     expect(said.filter(({ text }) => english.has(text))).toEqual([]);
     expect(said.filter(({ text }) => !new RegExp(chinese).test(text))).toEqual([]);
   });
+
+  it('are written as Japanese is written, in the Japanese one', () => {
+    const said = everythingSaid(ja);
+    const kana = '[\\u3040-\\u30ff]';
+    const japanese = '[\\u3005\\u3040-\\u30ff\\u4e00-\\u9fff]';
+    // No blank between two Japanese characters, and no punctuation of half width beside one.
+    const blank = new RegExp(`${japanese}\\s+${japanese}`);
+    const halfWidth = new RegExp(`${japanese}\\s*[,;:?()]|[,;:?()]\\s*${japanese}|${japanese}\\.(\\s|$)`);
+    expect(said.filter(({ text }) => blank.test(text))).toEqual([]);
+    expect(said.filter(({ text }) => halfWidth.test(text))).toEqual([]);
+    // A blank between Japanese and a number or a word in Latin letters. A count that is
+    // written with 万 is one number, and has none inside.
+    const touching = new RegExp(`${japanese}[A-Za-z0-9]|[A-Za-z0-9%](?![万億兆])${japanese}`);
+    expect(said.filter(({ text }) => touching.test(text))).toEqual([]);
+    // Every line is in Japanese: none was left as it is in English.
+    const english = new Set(everythingSaid(en).map(({ text }) => text));
+    expect(said.filter(({ text }) => english.has(text))).toEqual([]);
+    expect(said.filter(({ text }) => !new RegExp(japanese).test(text))).toEqual([]);
+    // And none was left as it is in Chinese, which has no kana. A sentence of Japanese has some.
+    expect(said.filter(({ text }) => text.endsWith('。') && !new RegExp(kana).test(text))).toEqual([]);
+    // A sentence is in the polite form. The one that names the version is no sentence but a line with a stop.
+    const polite = /(です|ます|ました|ません|でした|ください)(（[^（）]*）)?$/;
+    const sentences = said.filter(({ path, text }) => text.endsWith('。') && path !== 'hint.about')
+      .flatMap(({ path, text }) => text.split('。').filter(Boolean).map(sentence => ({ path, sentence })));
+    expect(sentences.length).toBeGreaterThan(150);
+    expect(sentences.filter(({ sentence }) => !polite.test(sentence))).toEqual([]);
+    // A word from English that ends in a long vowel keeps its long mark.
+    const clipped = /(フォルダ|ブラウザ|コンピュータ|フィルタ|サーバ|ユーザ|プロバイダ|メモリ)(?!ー)/;
+    expect(said.filter(({ text }) => clipped.test(text))).toEqual([]);
+  });
 });
 
 describe('picking a catalogue', () => {
@@ -204,7 +238,13 @@ describe('picking a catalogue', () => {
     },
   );
 
-  it.each(['en', 'en-US', 'en_GB', 'ja', 'ja-JP', 'fr-FR', 'zhuang', '', 'C'])(
+  it.each(['ja', 'ja-JP', 'ja_JP', 'JA-jp', 'ja-Jpan-JP'])(
+    'gives the Japanese one for %s', (locale) => {
+      expect(messagesFor(locale)).toBe(ja);
+    },
+  );
+
+  it.each(['en', 'en-US', 'en_GB', 'ko', 'ko-KR', 'fr-FR', 'zhuang', 'jam', 'jv-ID', '', 'C'])(
     'gives the English one for %s', (locale) => {
       expect(messagesFor(locale)).toBe(en);
     },
@@ -237,6 +277,9 @@ describe('the parts of a duration', () => {
     ]);
     expect([0.5, 1, 42, 60, 125, 3600, 3725].map(zhCN.duration)).toEqual([
       '0.5 秒', '1 秒', '42 秒', '1 分钟', '2 分 5 秒', '1 小时', '1 小时 2 分',
+    ]);
+    expect([0.5, 1, 42, 60, 125, 3600, 3725].map(ja.duration)).toEqual([
+      '0.5 秒', '1 秒', '42 秒', '1 分', '2 分 5 秒', '1 時間', '1 時間 2 分',
     ]);
   });
 });
@@ -391,6 +434,20 @@ describe('the words of the design', () => {
     expect(zhCN.tool.declined.what).toBe('你没有同意');
     // Section 5.6: the permissions in a sentence.
     expect(sayPermissions(zhCN, 'workspace-write', 'ask')).toBe('可以修改这个项目里的文件，运行命令之前会问。');
+  });
+
+  it('are said in Japanese too', () => {
+    const [first, second] = turnsOf('tour');
+    expect(sayTurn(ja, turnOutcome(second)!)).toEqual({ what: 'あなたがこのターンを止めました。' });
+    expect(ja.turn.took((first.end!.time - first.startedAt) / 1000, first.rounds)).toBe('14 秒、5 ステップで完了');
+    expect(ja.wait.retry(4, 2)).toBe('4 秒後に再試行します（2 回目）。');
+    expect(ja.wait.retry(0, 3)).toBe('再試行しています（3 回目）。');
+    expect(ja.tool.allowedByYou).toBe('あなたが承認');
+    expect(ja.tool.declined.what).toBe('あなたが却下');
+    expect(ja.tool.exited(1).what).toBe('終了コード 1');
+    expect(ja.turn.limit.steps(30).what).toBe('このターンは、上限の 30 ステップに達しました。');
+    expect(sayPermissions(ja, 'workspace-write', 'ask'))
+      .toBe('このプロジェクトのファイルを変更できます。コマンドを実行する前に確認します。');
   });
 
   it('are said in English too', () => {

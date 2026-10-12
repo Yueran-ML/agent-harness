@@ -5,6 +5,7 @@ import {
   stepped, tail, taskTitle, toolKind, verbOf,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
+import { ja } from '../src/messages/ja';
 import { zhCN } from '../src/messages/zh-CN';
 import { projectEvents, type ToolItem } from '../src/state';
 import { groupTurns, type Turn } from '../src/turns';
@@ -119,6 +120,17 @@ describe('a count of tokens', () => {
     expect(said(12_400, 1_048_576)).toBe('最近一次请求用了 1.2万个 token，上限是 104.9万。');
     expect(zhCN.hint.contextUnknown(countOf(950, 'zh-CN'))).toBe('最近一次请求用了 950 个 token。');
     expect(zhCN.hint.contextUnknown(countOf(12_400, 'zh-CN'))).toBe('最近一次请求用了 1.2万个 token。');
+  });
+
+  it('stands in a sentence of Japanese in the same way', () => {
+    expect([950, 2670, 12_400, 128_000, 1_048_576].map(count => countOf(count, 'ja')))
+      .toEqual(['950', '2670', '1.2万', '12.8万', '104.9万']);
+    const said = (used: number, window: number) => ja.hint.contextOf(countOf(used, 'ja'), countOf(window, 'ja'));
+    expect(said(2670, 8192)).toBe('直近のリクエストで、8192 トークンのうち 2670 を使いました。');
+    expect(said(2670, 1_048_576)).toBe('直近のリクエストで、104.9万トークンのうち 2670 を使いました。');
+    expect(said(12_400, 128_000)).toBe('直近のリクエストで、12.8万トークンのうち 1.2万を使いました。');
+    expect(ja.hint.contextUnknown(countOf(950, 'ja'))).toBe('直近のリクエストで 950 トークンを使いました。');
+    expect(ja.hint.contextUnknown(countOf(12_400, 'ja'))).toBe('直近のリクエストで 1.2万トークンを使いました。');
   });
 
   it('stands in a sentence of English as it is', () => {

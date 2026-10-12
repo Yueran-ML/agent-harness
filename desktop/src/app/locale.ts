@@ -4,12 +4,13 @@ import { languageFor, messagesFor } from '../i18n';
 import { en, type Messages } from '../messages/en';
 
 /** What the user chose: a language, or to go by the system. */
-export type LanguageChoice = 'system' | 'en' | 'zh';
+export type LanguageChoice = 'system' | 'en' | 'ja' | 'zh';
 
 /** The languages that can be chosen, each named in itself. */
 export const languages: { id: Exclude<LanguageChoice, 'system'>; name: string }[] = [
   { id: 'zh', name: '中文' },
   { id: 'en', name: 'English' },
+  { id: 'ja', name: '日本語' },
 ];
 
 const storageKey = 'columbina-language';
@@ -17,7 +18,8 @@ const storageKey = 'columbina-language';
 export function storedLanguage(): LanguageChoice {
   try {
     const stored = localStorage.getItem(storageKey);
-    if (stored === 'en' || stored === 'zh') return stored;
+    const kept = languages.find(language => language.id === stored);
+    if (kept) return kept.id;
   } catch {
     // Without storage the choice holds for this window.
   }

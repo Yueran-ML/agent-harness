@@ -1,11 +1,13 @@
 /** Picking the words of the interface by the language of the user. */
 import { en, type Messages } from './messages/en';
+import { ja } from './messages/ja';
 import { zhCN } from './messages/zh-CN';
 
 // The catalogues by language, each with the name that a page gives its language. A
 // language that has several, one for each region, would need more than this.
 const byLanguage: Record<string, { words: Messages; tag: string }> = {
   en: { words: en, tag: 'en' },
+  ja: { words: ja, tag: 'ja' },
   zh: { words: zhCN, tag: 'zh-CN' },
 };
 

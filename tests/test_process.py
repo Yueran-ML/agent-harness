@@ -12,7 +12,7 @@ import pytest
 
 from columbina import process
 from columbina.process import Completed, HeadTail, cleaned
-from support.processes import end, gone, python
+from support.processes import alive, end, gone, python
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -40,6 +40,17 @@ SAYS_WHO_AND_STAYS = (
 )
 
 LEAVES_A_NOTE = "import sys; open(sys.argv[1], 'w').close()"
+
+STAYS_UNTIL_A_WORD = (
+    "import os, sys, time\n"
+    "with open(sys.argv[1], 'w') as note:\n"
+    "    print(os.getpid(), file=note)\n"
+    "while not os.path.exists(sys.argv[2]):\n"
+    "    time.sleep(0.02)\n"
+    "print('heard', flush=True)\n"
+    "sys.exit(5)\n"
+)
+"""Says which process it is and stays until a file is there. Then it ends by itself."""
 
 
 async def told(note: Path, within: float = 20.0) -> int:
@@ -646,6 +657,322 @@ async def test_a_caller_cancelled_again_while_a_run_winds_down_is_not_held_up(
         await asyncio.wait_for(running, timeout=20)
     assert time.monotonic() - began < 10
     assert await gone(program)
+
+
+# What a caller does before its program is stopped
+
+
+async def test_a_caller_is_heard_before_its_program_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    patient(monkeypatch)
+    note = tmp_path / "started"
+    seen: list[tuple[bool, bool]] = []
+
+    async def hears(exited: asyncio.Future[None]) -> None:
+        # The program still runs: its caller comes first.
+        seen.append((exited.done(), alive(await told(note))))
+
+    done = await process.run(
+        python(SAYS_WHO_AND_STAYS, str(note)), cwd=tmp_path, timeout_seconds=1.0, before_stop=hears
+    )
+
+    assert seen == [(False, True)]
+    assert done.timed_out
+    assert await gone(int(done.output.strip()))
+
+
+async def test_a_caller_can_end_in_its_own_way_what_its_program_stands_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    patient(monkeypatch)
+    note, word = tmp_path / "started", tmp_path / "word"
+    ended: list[bool] = []
+
+    async def says_the_word(exited: asyncio.Future[None]) -> None:
+        word.touch()
+        await asyncio.wait_for(exited, timeout=30)
+        ended.append(exited.done())
+
+    done = await process.run(
+        python(STAYS_UNTIL_A_WORD, str(note), str(word)),
+        cwd=tmp_path,
+        timeout_seconds=1.0,
+        before_stop=says_the_word,
+    )
+
+    # The program came to its end by itself and said so. Its time was up all the same.
+    assert ended == [True]
+    assert (done.timed_out, done.exit_code, done.output.strip()) == (True, None, "heard")
+
+
+async def test_a_program_that_ends_by_itself_is_no_reason_to_hear_its_caller(
+    tmp_path: Path,
+) -> None:
+    heard: list[object] = []
+
+    async def hears(exited: asyncio.Future[None]) -> None:
+        heard.append(exited)
+
+    done = await process.run(
+        python("print('hi')"), cwd=tmp_path, timeout_seconds=30, before_stop=hears
+    )
+
+    assert (done.exit_code, heard) == (0, [])
+
+
+async def test_a_program_that_never_ran_is_no_reason_to_hear_its_caller(tmp_path: Path) -> None:
+    heard: list[object] = []
+
+    async def hears(exited: asyncio.Future[None]) -> None:
+        heard.append(exited)
+
+    with pytest.raises(OSError, match="could not be started"):
+        await process.run(
+            ["no-such-program-anywhere"], cwd=tmp_path, timeout_seconds=30, before_stop=hears
+        )
+
+    assert heard == []
+
+
+async def test_a_caller_that_is_cancelled_is_heard_before_its_program_is_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    patient(monkeypatch)
+    note = tmp_path / "started"
+    seen: list[bool] = []
+
+    async def hears(exited: asyncio.Future[None]) -> None:
+        seen.append(alive(await told(note)))
+
+    running = asyncio.ensure_future(
+        process.run(
+            python(SAYS_WHO_AND_STAYS, str(note)),
+            cwd=tmp_path,
+            timeout_seconds=60,
+            before_stop=hears,
+        )
+    )
+    program = await told(note)
+
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, timeout=20)
+    assert seen == [True]
+    assert await gone(program)
+
+
+class Slowly:
+    """What a caller does before its program is stopped, taking its time."""
+
+    def __init__(self, program: Path) -> None:
+        self.program = program
+        self.begun = asyncio.Event()
+        self.go_on = asyncio.Event()
+        self.finished: list[bool] = []
+
+    async def __call__(self, exited: asyncio.Future[None]) -> None:
+        self.begun.set()
+        await self.go_on.wait()
+        # Whether the program was left alone all the while.
+        self.finished.append(alive(await told(self.program)))
+
+
+async def test_a_second_cancellation_does_not_cut_short_what_the_caller_does_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    patient(monkeypatch)
+    note = tmp_path / "started"
+    slowly = Slowly(note)
+    running = asyncio.ensure_future(
+        process.run(
+            python(SAYS_WHO_AND_STAYS, str(note)),
+            cwd=tmp_path,
+            timeout_seconds=60,
+            before_stop=slowly,
+        )
+    )
+    program = await told(note)
+    running.cancel()
+    await slowly.begun.wait()
+
+    running.cancel()
+    await asyncio.sleep(0.3)
+    still_at_it = not running.done() and slowly.finished == []
+    slowly.go_on.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, timeout=20)
+    assert still_at_it
+    assert slowly.finished == [True]
+    assert await gone(program)
+
+
+async def test_a_cancellation_that_comes_while_the_caller_is_heard_is_not_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The time of the program was up. Its caller is cancelled while it stops things its own way.
+    patient(monkeypatch)
+    note = tmp_path / "started"
+    slowly = Slowly(note)
+    running = asyncio.ensure_future(
+        process.run(
+            python(SAYS_WHO_AND_STAYS, str(note)),
+            cwd=tmp_path,
+            timeout_seconds=0.5,
+            before_stop=slowly,
+        )
+    )
+    program = await told(note)
+    await slowly.begun.wait()
+
+    running.cancel()
+    await asyncio.sleep(0.3)
+    still_at_it = not running.done()
+    slowly.go_on.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, timeout=20)
+    assert still_at_it
+    assert slowly.finished == [True]
+    assert await gone(program)
+
+
+async def test_a_caller_that_fails_when_it_is_heard_does_not_keep_its_program_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    patient(monkeypatch)
+
+    async def fails(exited: asyncio.Future[None]) -> None:
+        raise RuntimeError("the service did not answer")
+
+    with caplog.at_level(logging.ERROR, logger="columbina.process"):
+        done = await process.run(
+            python(SAYS_WHO_AND_STAYS), cwd=tmp_path, timeout_seconds=1.0, before_stop=fails
+        )
+
+    assert done.timed_out
+    assert await gone(int(done.output.strip()))
+    assert "what was to be done before a program is stopped failed" in caplog.text
+    assert "the service did not answer" in caplog.text
+
+
+async def test_a_caller_that_takes_too_long_when_it_is_heard_is_given_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    patient(monkeypatch)
+    monkeypatch.setattr(process, "_BEFORE_STOP_SECONDS", 0.3)
+    left: list[str] = []
+
+    async def never_ends(exited: asyncio.Future[None]) -> None:
+        try:
+            await asyncio.sleep(60)
+        finally:
+            left.append("told to stop")
+
+    began = time.monotonic()
+    with caplog.at_level(logging.ERROR, logger="columbina.process"):
+        done = await process.run(
+            python(SAYS_WHO_AND_STAYS), cwd=tmp_path, timeout_seconds=0.5, before_stop=never_ends
+        )
+
+    assert done.timed_out
+    assert time.monotonic() - began < 20
+    assert await gone(int(done.output.strip()))
+    assert left == ["told to stop"]
+    assert "took longer than 0.3 seconds and was given up" in caplog.text
+    # Giving it up is not a failure of it.
+    assert "before a program is stopped failed" not in caplog.text
+
+
+async def test_a_caller_that_does_not_let_go_when_it_is_given_up_does_not_hold_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    patient(monkeypatch)
+    monkeypatch.setattr(process, "_BEFORE_STOP_SECONDS", 0.3)
+    over = asyncio.Event()
+
+    async def holds_on(exited: asyncio.Future[None]) -> None:
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            # Told to stop, and going on regardless.
+            await asyncio.sleep(3.0)
+        over.set()
+
+    began = time.monotonic()
+    with caplog.at_level(logging.ERROR, logger="columbina.process"):
+        done = await process.run(
+            python(SAYS_WHO_AND_STAYS), cwd=tmp_path, timeout_seconds=0.5, before_stop=holds_on
+        )
+    took = time.monotonic() - began
+
+    assert done.timed_out
+    assert await gone(int(done.output.strip()))
+    assert took < 2.5
+    assert caplog.text.count("was given up") == 1
+    await asyncio.wait_for(over.wait(), timeout=20)
+
+
+async def test_a_caller_that_is_cancelled_inside_what_it_does_is_no_cancellation_of_the_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    patient(monkeypatch)
+
+    async def gives_up(exited: asyncio.Future[None]) -> None:
+        raise asyncio.CancelledError
+
+    with caplog.at_level(logging.ERROR, logger="columbina.process"):
+        done = await process.run(
+            python(SAYS_WHO_AND_STAYS), cwd=tmp_path, timeout_seconds=1.0, before_stop=gives_up
+        )
+
+    assert done.timed_out
+    assert await gone(int(done.output.strip()))
+    assert caplog.records == []
+
+
+async def test_the_caller_has_as_long_as_it_is_given_and_no_longer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    patient(monkeypatch)
+    monkeypatch.setattr(process, "_BEFORE_STOP_SECONDS", 1.5)
+    took: list[float] = []
+
+    async def takes_a_second(exited: asyncio.Future[None]) -> None:
+        began = time.monotonic()
+        try:
+            await asyncio.sleep(1.0)
+        finally:
+            took.append(time.monotonic() - began)
+
+    await process.run(
+        python(SAYS_WHO_AND_STAYS), cwd=tmp_path, timeout_seconds=0.5, before_stop=takes_a_second
+    )
+
+    assert len(took) == 1
+    assert 0.9 < took[0] < 1.4
+
+
+async def test_what_the_caller_is_given_is_not_what_the_run_waits_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    patient(monkeypatch)
+
+    async def lets_go(exited: asyncio.Future[None]) -> None:
+        exited.cancel()
+
+    with caplog.at_level(logging.ERROR):
+        done = await process.run(
+            python(SAYS_WHO_AND_STAYS), cwd=tmp_path, timeout_seconds=1.0, before_stop=lets_go
+        )
+        await asyncio.sleep(0.1)
+
+    assert done.timed_out
+    assert await gone(int(done.output.strip()))
+    # The end of the program was heard as usual, with nothing going wrong on the way.
+    assert caplog.records == []
 
 
 if sys.platform == "win32":

@@ -33,6 +33,13 @@ console without a window, elsewhere a session without a terminal, and its
 input is what the caller gives it. So a program that asks the user for
 something finds its input at an end. One that turns to the console itself gets
 no answer there, and ends when its time is up.
+
+A program may only stand for something that runs elsewhere: it asked a
+service to run a command, and waits for it. Stopping such a program stops
+nothing of the command. So a caller can ask to be heard first. When the
+program is to be stopped before it has ended, what the caller does then is
+waited for, also if the caller is cancelled meanwhile, and only then is the
+program stopped. This wait is bounded like the others.
 """
 
 import asyncio
@@ -43,7 +50,7 @@ import os
 import signal
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -54,6 +61,9 @@ logger = logging.getLogger(__name__)
 
 _REAP_SECONDS = 5.0
 """How long a program that was stopped is waited for."""
+
+_BEFORE_STOP_SECONDS = 30.0
+"""How long a caller may take over what it does before its program is stopped."""
 
 _DRAIN_SECONDS = 2.0
 """How long the rest of the output is waited for once the program is gone."""
@@ -488,6 +498,48 @@ async def _within(awaited: asyncio.Future[None], seconds: float) -> bool:
     return bool(done)
 
 
+async def _heard(
+    before_stop: Callable[[asyncio.Future[None]], Awaitable[None]], exited: asyncio.Future[None]
+) -> None:
+    """Wait for what a caller does before its program is stopped.
+
+    Whoever waits here may be cancelled meanwhile. The wait goes on then,
+    because what the caller stops in its own way would otherwise go on
+    running, and the cancellation is passed on afterwards. The wait does not
+    go on for ever, and a caller that fails is written down and no more: the
+    program is stopped in any case.
+
+    Raises:
+        asyncio.CancelledError: Whoever waited was cancelled meanwhile.
+    """
+    # The caller waits on a future of its own. Whatever it does to that one, the run goes
+    # on hearing of the end of the program.
+    doing = asyncio.ensure_future(before_stop(asyncio.shield(exited)))
+    loop = asyncio.get_running_loop()
+    until = loop.time() + _BEFORE_STOP_SECONDS
+    cancelled = False
+    while not doing.done():
+        try:
+            await asyncio.wait({doing}, timeout=max(until - loop.time(), 0))
+        except asyncio.CancelledError:
+            cancelled = True
+            continue
+        if not doing.done():
+            doing.cancel()
+            logger.error(
+                "what was to be done before a program is stopped took longer than %g seconds "
+                "and was given up",
+                _BEFORE_STOP_SECONDS,
+            )
+            break
+    if doing.done() and not doing.cancelled() and doing.exception() is not None:
+        logger.error(
+            "what was to be done before a program is stopped failed", exc_info=doing.exception()
+        )
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 async def run(
     argv: Sequence[str],
     *,
@@ -499,6 +551,7 @@ async def run(
     overflow: Callable[[], Writable] | None = None,
     max_overflow_bytes: int = 64 * 1024 * 1024,
     streams: Literal["joined", "apart"] = "joined",
+    before_stop: Callable[[asyncio.Future[None]], Awaitable[None]] | None = None,
 ) -> Completed:
     """Run a program to its end, or until its time is up.
 
@@ -527,6 +580,14 @@ async def run(
             kept apart. Apart, each of the two is kept up to
             ``max_output_bytes``. Nobody can tell afterwards which of the two
             a piece was written to first, so the order between them is lost.
+        before_stop: Called when the program is to be stopped before it has
+            ended, because its time is up or the caller was cancelled. It is
+            for a program that stands for something elsewhere, which
+            stopping the program does not stop. It is given a future that is
+            done once the program has ended, and what it returns is waited
+            for before the program is stopped. It is not called for a
+            program that ended by itself, nor for one that never came to
+            run. If it fails, that is written down.
 
     Raises:
         OSError: The program could not be started.
@@ -542,7 +603,7 @@ async def run(
     written = _Output(max_output_bytes, overflow, max_overflow_bytes)
     errors = HeadTail(max_output_bytes) if streams == "apart" else None
     try:
-        return await _run(argv, cwd, env, stdin, timeout_seconds, written, errors)
+        return await _run(argv, cwd, env, stdin, timeout_seconds, written, errors, before_stop)
     finally:
         # A program that was left behind may write on, and one whose caller left as it was
         # started has yet to come into being. Neither finds a place that its caller closed.
@@ -557,6 +618,7 @@ async def _run(
     timeout_seconds: float,
     written: _Output,
     errors: HeadTail | None,
+    before_stop: Callable[[asyncio.Future[None]], Awaitable[None]] | None,
 ) -> Completed:
     """Run a program, and hand what it writes to ``written``, or its error stream to ``errors``."""
     kept = written.kept
@@ -597,18 +659,23 @@ async def _run(
             feed.write_eof()
         timed_out = not await _within(watch.exited, timeout_seconds)
     finally:
-        # However the wait ended, nothing that the program started goes on.
-        tree.stop()
         try:
-            await _within(watch.exited, _REAP_SECONDS)
-            await _within(watch.silent, _DRAIN_SECONDS)
+            if before_stop is not None and not watch.exited.done():
+                await _heard(before_stop, watch.exited)
         finally:
-            # A caller that is cancelled again gets here at once. Letting go is done without
-            # waiting, and then the event loop is given the moment it needs to take note of it.
-            exit_code = transport.get_returncode()
-            transport.close()
-            tree.close()
-            await _within(watch.closed, _CLOSE_SECONDS)
+            # However the wait ended, nothing that the program started goes on.
+            tree.stop()
+            try:
+                await _within(watch.exited, _REAP_SECONDS)
+                await _within(watch.silent, _DRAIN_SECONDS)
+            finally:
+                # A caller that is cancelled again gets here at once. Letting go is done
+                # without waiting, and then the event loop is given the moment it needs to
+                # take note of it.
+                exit_code = transport.get_returncode()
+                transport.close()
+                tree.close()
+                await _within(watch.closed, _CLOSE_SECONDS)
     return Completed(
         exit_code=None if timed_out else exit_code,
         timed_out=timed_out,

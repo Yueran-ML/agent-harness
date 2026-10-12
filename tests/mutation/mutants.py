@@ -704,9 +704,109 @@ _PROCESS = (
     mutant(
         "what a program started is not stopped",
         PROCESS,
-        "        # However the wait ended, nothing that the program started goes on.\n"
-        "        tree.stop()\n",
-        "        # However the wait ended, nothing that the program started goes on.\n",
+        "            # However the wait ended, nothing that the program started goes on.\n"
+        "            tree.stop()\n",
+        "            # However the wait ended, nothing that the program started goes on.\n",
+    ),
+    mutant(
+        "a caller is not heard before its program is stopped",
+        PROCESS,
+        "            if before_stop is not None and not watch.exited.done():\n"
+        "                await _heard(before_stop, watch.exited)\n",
+        "            pass\n",
+    ),
+    mutant(
+        "a caller is heard although its program ended by itself",
+        PROCESS,
+        "            if before_stop is not None and not watch.exited.done():\n",
+        "            if before_stop is not None:\n",
+    ),
+    mutant(
+        "a program is stopped before its caller is heard",
+        PROCESS,
+        "        try:\n            if before_stop is not None and not watch.exited.done():\n",
+        "        try:\n            tree.stop()\n"
+        "            if before_stop is not None and not watch.exited.done():\n",
+    ),
+    mutant(
+        "a second cancellation cuts short what a caller does before the stop",
+        PROCESS,
+        "        except asyncio.CancelledError:\n            cancelled = True\n            continue\n",
+        "        except asyncio.CancelledError:\n            raise\n",
+    ),
+    mutant(
+        "a cancellation that comes while a caller is heard is lost",
+        PROCESS,
+        "    if cancelled:\n        raise asyncio.CancelledError\n",
+        "",
+    ),
+    mutant(
+        "what a caller does before the stop is waited for without end",
+        PROCESS,
+        "            await asyncio.wait({doing}, timeout=max(until - loop.time(), 0))\n",
+        "            await asyncio.wait({doing})\n",
+    ),
+    mutant(
+        "a caller has no time for what it does before the stop",
+        PROCESS,
+        "    until = loop.time() + _BEFORE_STOP_SECONDS\n",
+        "    until = loop.time()\n",
+    ),
+    mutant(
+        "a caller that is given up is not told to stop",
+        PROCESS,
+        "        if not doing.done():\n            doing.cancel()\n",
+        "        if not doing.done():\n",
+    ),
+    mutant(
+        "a caller that is given up is waited for until it lets go",
+        PROCESS,
+        "                _BEFORE_STOP_SECONDS,\n            )\n            break\n",
+        "                _BEFORE_STOP_SECONDS,\n            )\n",
+    ),
+    mutant(
+        "giving a caller up is not written down",
+        PROCESS,
+        "            logger.error(\n"
+        '                "what was to be done before a program is stopped took longer than %g seconds "\n'
+        '                "and was given up",\n'
+        "                _BEFORE_STOP_SECONDS,\n"
+        "            )\n",
+        "",
+    ),
+    mutant(
+        "a caller is given the very thing that the run waits on",
+        PROCESS,
+        "    doing = asyncio.ensure_future(before_stop(asyncio.shield(exited)))\n",
+        "    doing = asyncio.ensure_future(before_stop(exited))\n",
+    ),
+    mutant(
+        "a failure of what a caller does before the stop ends the run",
+        PROCESS,
+        "        logger.error(\n"
+        '            "what was to be done before a program is stopped failed", exc_info=doing.exception()\n'
+        "        )\n",
+        '        raise RuntimeError("what was to be done before a program is stopped failed")\n',
+    ),
+    mutant(
+        "a failure of what a caller does before the stop is not written down",
+        PROCESS,
+        "        logger.error(\n"
+        '            "what was to be done before a program is stopped failed", exc_info=doing.exception()\n'
+        "        )\n",
+        "        pass\n",
+    ),
+    mutant(
+        "a failure of what a caller does before the stop is written down without its trace",
+        PROCESS,
+        '"what was to be done before a program is stopped failed", exc_info=doing.exception()\n',
+        '"what was to be done before a program is stopped failed"\n',
+    ),
+    mutant(
+        "a caller that is cancelled inside what it does cancels the run",
+        PROCESS,
+        "    if doing.done() and not doing.cancelled() and doing.exception() is not None:\n",
+        "    if doing.done() and doing.exception() is not None:\n",
     ),
     mutant(
         "the rest of the output is waited for without end",

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { FileText, KeyRound } from 'lucide-react';
 import { MusicSettings, type BackgroundMusic } from '../BackgroundMusic';
-import { called } from '../key/form';
+import { called, changedBeyondKey } from '../key/form';
 import type { Hello } from '../protocol';
 import { sizes, type SizeId } from '../size';
 import { themes, type ThemeId } from '../themes';
@@ -9,7 +9,7 @@ import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
-import { presetOf, presets, servicesToTell, serviceTitle } from './tell';
+import { anotherServiceChosen, presetOf, presets, servicesToTell, serviceTitle } from './tell';
 
 /** The part of the settings that a way into them leads to. */
 export type SettingsPart = 'appearance' | 'model' | 'permissions';
@@ -48,20 +48,26 @@ export function Settings({
 
   const [model, setModel] = useState(status?.model.model ?? '');
   useEffect(() => setModel(status?.model.model ?? ''), [status?.model.model]);
-  // The greeting of the service process that ran when something was stored in the window for
-  // the key. That process knows nothing of what was stored. One that is started later does.
+  const services = workspace.services;
+  // The greeting of the service process that ran when something was stored that it does not
+  // know of: another address, model or window for its service. One that is started later does.
+  // A key alone is no such thing: the process looks for the key with every request.
   const [storedUnder, setStoredUnder] = useState<Hello | null | undefined>(undefined);
-  const stored = storedUnder !== undefined && storedUnder === hello;
+  // What was stored is in use once the service process is started again: it talks to another
+  // service than the one that is chosen, or more than a key was stored for its own.
+  const stored = (storedUnder !== undefined && storedUnder === hello)
+    || anotherServiceChosen(services, status?.model.provider);
   const [settingUp, setSettingUp] = useState(false);
   const setUp = async (service: string | null) => {
     setSettingUp(true);
     try {
-      if (await workspace.setUpService(service, shownLanguage)) setStoredUnder(hello);
+      const before = services;
+      const after = await workspace.setUpService(service, shownLanguage);
+      if (after !== null && changedBeyondKey(before, after.listed, inUse)) setStoredUnder(hello);
     } finally {
       setSettingUp(false);
     }
   };
-  const services = workspace.services;
   const { inUse, known } = servicesToTell(services, status?.model.provider);
   const keyFrom = (service: { key: string; key_env: string | null }) => (service.key_env === null ? words.label.key.from.notNeeded
     : service.key === 'environment' ? words.label.key.from.environment

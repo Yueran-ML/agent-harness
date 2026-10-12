@@ -466,6 +466,7 @@ export const zhCN: Messages = {
       inKeyring: '密钥已经存进系统密钥环。',
       inFile: '没有密钥环接收这个密钥。它原样存在 Columbina 文件夹里的一个文件中，没有加密。',
       restart: '重新启动 Columbina 之后，新保存的内容才会生效。',
+      atOnce: 'Columbina 每次请求都会重新读取密钥，不需要重新启动。',
     },
 
     music: {

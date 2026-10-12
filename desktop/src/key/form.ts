@@ -121,6 +121,43 @@ export function takesKey(form: Form, listed: Listed): boolean {
   return service === null || service.key_env !== null;
 }
 
+/**
+ * Whether sending a form changes nothing but the key: it is of the service in use, with the
+ * model and the size of its window as they are known.
+ *
+ * A key is looked for with every request. Which service is asked, at which address and for
+ * which model is read when the program starts, so anything else needs a new start.
+ *
+ * Args:
+ *   form: What is written in the window.
+ *   listed: The services as they were set up when the window opened.
+ *   inUse: The service that the program talks to where none was chosen: the one of its profile.
+ */
+export function onlyTheKey(form: Form, listed: Listed, inUse: string | null): boolean {
+  const service = serviceOf(form, listed);
+  if (service === null || service.name !== (listed.use ?? inUse)) return false;
+  return form.model.trim() === (service.model ?? '') && tokensOf(form.window) === service.context_window;
+}
+
+/**
+ * Whether what was stored changed more than a key of the service in use: another service was
+ * chosen, or the address, the model or the window of the one in use is another. Where either
+ * list is not known, that cannot be ruled out.
+ *
+ * Args:
+ *   before, after: The services as they were set up before and after.
+ *   inUse: The service that the program talks to where none was chosen before.
+ */
+export function changedBeyondKey(before: Listed | null, after: Listed | null, inUse: string | null): boolean {
+  if (before === null || after === null) return true;
+  const used = before.use ?? inUse;
+  if (used !== after.use) return true;
+  const was = before.services.find(service => service.name === used);
+  const is = after.services.find(service => service.name === used);
+  if (!was || !is) return true;
+  return was.base_url !== is.base_url || was.model !== is.model || was.context_window !== is.context_window;
+}
+
 /** How many tokens were typed: null where nothing was, and NaN where it is no number of tokens. */
 export function tokensOf(typed: string): number | null {
   const written = typed.replace(/[\s,_]/g, '');

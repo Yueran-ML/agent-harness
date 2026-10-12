@@ -517,6 +517,7 @@ export const ja: Messages = {
       inKeyring: 'キーはシステムのキーリングに保存されました。',
       inFile: 'キーを受け取るキーリングがありませんでした。キーは Columbina のフォルダー内のファイルに、暗号化されずそのまま保存されています。',
       restart: '保存した内容は、Columbina を再起動した後に使われます。',
+      atOnce: 'Columbina は要求のたびにキーを読み込むため、再起動は必要ありません。',
     },
 
     music: {

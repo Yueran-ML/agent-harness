@@ -555,6 +555,8 @@ export const en = {
       inKeyring: 'The key is in the keyring of the system.',
       inFile: 'No keyring took the key. It lies in a file in the folder of Columbina, as it is and not encrypted.',
       restart: 'What was stored is used once Columbina is started again.',
+      /** After a key alone was stored for the service that is chosen. */
+      atOnce: 'Columbina looks for the key with every request, so it needs no new start.',
     },
 
     music: {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  called, chosen, complete, documentOf, formFor, listedOf, sentenceOf, serviceCalled, serviceOf, storedOf, takesKey,
-  tokensOf,
+  called, changedBeyondKey, chosen, complete, documentOf, formFor, listedOf, onlyTheKey, sentenceOf, serviceCalled, serviceOf,
+  storedOf, takesKey, tokensOf,
   type Form, type Listed,
 } from '../src/key/form';
 
@@ -116,6 +116,96 @@ describe('choosing another service', () => {
     const begun = form({ adding: true, service: '', name: 'lab', address: 'http://10.0.0.9/v1' });
     const away = chosen(begun, listed, 'openai');
     expect(chosen(away, listed, null)).toMatchObject({ adding: true, name: 'lab', address: 'http://10.0.0.9/v1' });
+  });
+});
+
+describe('a form that changes nothing but the key', () => {
+  // The form as the window opens with it for the service in use: its model and its window as they are known.
+  const opened = formFor(listed, 'openai');
+
+  it('is one of the service in use, with its model and its window as they are', () => {
+    expect(onlyTheKey({ ...opened, key: 'sk-a-key' }, listed, null)).toBe(true);
+    // Blanks around what stands there change nothing.
+    expect(onlyTheKey({ ...opened, model: ' gpt-test ', window: '400 000', key: 'sk-a-key' }, listed, null)).toBe(true);
+  });
+
+  it('is none that names another model or another size of the window', () => {
+    expect(onlyTheKey({ ...opened, model: 'gpt-other' }, listed, null)).toBe(false);
+    expect(onlyTheKey({ ...opened, window: '128000' }, listed, null)).toBe(false);
+    expect(onlyTheKey({ ...opened, window: '' }, listed, null)).toBe(false);
+  });
+
+  it('is none of another service than the one in use, or of one that is being added', () => {
+    expect(onlyTheKey(formFor(listed, 'deepseek'), listed, null)).toBe(false);
+    expect(onlyTheKey({ ...opened, adding: true, service: '' }, listed, null)).toBe(false);
+    expect(onlyTheKey({ ...opened, service: 'gone' }, listed, null)).toBe(false);
+  });
+
+  it('goes by the service that the program talks to, where none was chosen', () => {
+    const fresh = { ...listed, use: null };
+    // The program goes by its profile then, and the main window says which service that is.
+    expect(onlyTheKey(formFor(fresh, 'deepseek'), fresh, 'deepseek')).toBe(true);
+    expect(onlyTheKey(formFor(fresh, 'openai'), fresh, 'deepseek')).toBe(false);
+    expect(onlyTheKey(formFor(fresh, 'deepseek'), fresh, null)).toBe(false);
+    // What was chosen goes before what the main window said.
+    expect(onlyTheKey(formFor(listed, 'deepseek'), listed, 'deepseek')).toBe(false);
+  });
+
+  it('is one of a service that has no model or window yet, as long as none is given', () => {
+    const local = { ...listed, use: 'ollama' };
+    // A form cannot be sent without a model, so this one would not be. It changes nothing all the same.
+    expect(onlyTheKey(formFor(local, 'ollama'), local, null)).toBe(true);
+    expect(onlyTheKey({ ...formFor(local, 'ollama'), model: 'llama3' }, local, null)).toBe(false);
+  });
+});
+
+describe('what was stored beside a key', () => {
+  const after = (change: (services: Listed['services']) => void, use: string | null = listed.use): Listed => {
+    const copy: Listed = JSON.parse(JSON.stringify(listed));
+    copy.use = use;
+    change(copy.services);
+    return copy;
+  };
+  const of = (services: Listed['services'], name: string) => services.find(service => service.name === name)!;
+
+  it('is nothing where only the key of the service in use is another', () => {
+    expect(changedBeyondKey(listed, after((services) => { of(services, 'openai').key = 'environment'; }), null)).toBe(false);
+    // Nor where a key was stored for a service that is not in use.
+    expect(changedBeyondKey(listed, after((services) => { of(services, 'deepseek').key = 'stored'; }), null)).toBe(false);
+    expect(changedBeyondKey(listed, after(() => {}), null)).toBe(false);
+  });
+
+  it('is another service', () => {
+    expect(changedBeyondKey(listed, after(() => {}, 'deepseek'), null)).toBe(true);
+    expect(changedBeyondKey(listed, after(() => {}, null), null)).toBe(true);
+  });
+
+  it('is another address, model or window of the service in use', () => {
+    expect(changedBeyondKey(listed, after((services) => { of(services, 'openai').base_url = 'https://proxy.example.com/v1'; }), null)).toBe(true);
+    expect(changedBeyondKey(listed, after((services) => { of(services, 'openai').model = 'gpt-other'; }), null)).toBe(true);
+    expect(changedBeyondKey(listed, after((services) => { of(services, 'openai').context_window = 128000; }), null)).toBe(true);
+    // The same of a service that is not in use changes nothing for the program that runs.
+    expect(changedBeyondKey(listed, after((services) => { of(services, 'deepseek').model = 'deepseek-other'; }), null)).toBe(false);
+  });
+
+  it('is measured against the service that the program talks to, where none was chosen before', () => {
+    const fresh = { ...listed, use: null };
+    // A first key for the service of the profile: the choice is written down, and nothing changes for the program.
+    expect(changedBeyondKey(fresh, after((services) => { of(services, 'deepseek').key = 'stored'; }, 'deepseek'), 'deepseek')).toBe(false);
+    expect(changedBeyondKey(fresh, after(() => {}, 'openai'), 'deepseek')).toBe(true);
+    expect(changedBeyondKey(fresh, after((services) => { of(services, 'deepseek').model = 'deepseek-other'; }, 'deepseek'), 'deepseek')).toBe(true);
+    // Nobody knows which service the program talks to: it cannot be ruled out that this is another.
+    expect(changedBeyondKey(fresh, after(() => {}, 'deepseek'), null)).toBe(true);
+    expect(changedBeyondKey(fresh, after(() => {}, null), null)).toBe(true);
+    // What was chosen before goes before what the main window says of the program that runs.
+    expect(changedBeyondKey(listed, after((services) => { of(services, 'openai').key = 'environment'; }), 'deepseek')).toBe(false);
+  });
+
+  it('cannot be ruled out where a list is not known, or does not have the service', () => {
+    expect(changedBeyondKey(null, listed, 'openai')).toBe(true);
+    expect(changedBeyondKey(listed, null, 'openai')).toBe(true);
+    expect(changedBeyondKey(listed, after((services) => { services.splice(1, 1); }), null)).toBe(true);
+    expect(changedBeyondKey({ ...listed, use: 'gone' }, { ...listed, use: 'gone' }, null)).toBe(true);
   });
 });
 

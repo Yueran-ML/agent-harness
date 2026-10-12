@@ -104,6 +104,14 @@ export function servicesToTell(
 }
 
 /**
+ * Whether the service that was chosen is another than the one that the service process talks
+ * to. The process reads the choice when it starts, so it takes a new start to follow it.
+ */
+export function anotherServiceChosen(listed: Listed | null, provider: string | null | undefined): boolean {
+  return !!listed?.use && !!provider && listed.use !== provider;
+}
+
+/**
  * Whether the next request is not known to fail for want of a key.
  *
  * A turn that failed for its key is worth trying again then, and not before. The service

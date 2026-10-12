@@ -4,8 +4,8 @@ import { Words } from '../app/locale';
 import { messagesFor } from '../i18n';
 import { themes } from '../themes';
 import {
-  called, chosen, complete, documentOf, formFor, listedOf, sentenceOf, serviceCalled, serviceOf, storedOf, takesKey,
-  tokensOf,
+  called, chosen, complete, documentOf, formFor, listedOf, onlyTheKey, sentenceOf, serviceCalled, serviceOf, storedOf,
+  takesKey, tokensOf,
   type Form, type Listed, type Stored,
 } from './form';
 
@@ -28,6 +28,10 @@ export function KeyApp() {
   const [form, setForm] = useState<Form | null>(null);
   const [storing, setStoring] = useState(false);
   const [answer, setAnswer] = useState<Stored | null>(null);
+  // Whether what was stored last was a key and nothing else. A key needs no new start.
+  const [keyAlone, setKeyAlone] = useState(false);
+  // The service that the window was opened for: the one in use, where the main window knows it.
+  const [asked, setAsked] = useState<string | null>(null);
   const first = useRef<HTMLSelectElement>(null);
   const keyField = useRef<HTMLInputElement>(null);
   const done = useRef<HTMLButtonElement>(null);
@@ -48,6 +52,7 @@ export function KeyApp() {
           return;
         }
         setListed(read);
+        setAsked(typeof context.service === 'string' ? context.service : null);
         setForm(formFor(read, context.service));
       } catch (problem) {
         if (here) setFailed(problem instanceof Error ? problem.message : String(problem));
@@ -91,6 +96,7 @@ export function KeyApp() {
     setAnswer(null);
     try {
       const told = storedOf(await window.columbinaKey!.store(documentOf(form, listed)));
+      setKeyAlone(onlyTheKey(form, listed, asked));
       setAnswer(told);
       // Once it is stored, the key has no business in this window any more.
       if (told.kind === 'stored') setForm(current => (current === null ? current : { ...current, key: '' }));
@@ -136,7 +142,7 @@ export function KeyApp() {
           <TriangleAlert size={15} aria-hidden="true" />
           <p>{words.hint.key.inFile}</p>
         </div>}
-        <p className="caption">{words.hint.key.restart}</p>
+        <p className="caption" data-test="key-when">{keyAlone ? words.hint.key.atOnce : words.hint.key.restart}</p>
       </div>}
 
       {form !== null && listed !== null && answer?.kind !== 'stored' && <form className="key-form" onSubmit={event => void submit(event)}>

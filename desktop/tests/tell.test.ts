@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  agoOf, argumentsOf, callSeconds, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, keyAtHand, objectOf, presetOf,
+  agoOf, anotherServiceChosen, argumentsOf, callSeconds, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, keyAtHand,
+  objectOf, presetOf,
   presets, retryText, scopeOf, servicesToTell, serviceTitle, skillLine, skillNamed, SKILLS_SHOWN, skillsOf, skillsToShow, standingOf,
   stepped,
   STILL_STARTING_MS, subagentKind, tail, taskTitle, TIME_WORTH_SAYING_MS, toolKind, verbOf, waitingWords,
@@ -135,6 +136,25 @@ describe('the name of the service that a model comes from', () => {
     expect(serviceTitle(null, listed)).toBeNull();
     expect(serviceTitle(undefined, listed)).toBeNull();
     expect(serviceTitle('', listed)).toBeNull();
+  });
+});
+
+describe('a choice of service that the service process has not taken up', () => {
+  const listed = (use: string | null) => ({ use, services: [] });
+
+  it('is one of another service than the process talks to', () => {
+    expect(anotherServiceChosen(listed('my-own'), 'deepseek')).toBe(true);
+    expect(anotherServiceChosen(listed('deepseek'), 'deepseek')).toBe(false);
+  });
+
+  it('is none where nothing was chosen: the process goes by its profile, as it does', () => {
+    expect(anotherServiceChosen(listed(null), 'deepseek')).toBe(false);
+    expect(anotherServiceChosen(listed(''), 'deepseek')).toBe(false);
+    expect(anotherServiceChosen(null, 'deepseek')).toBe(false);
+  });
+
+  it('is not known where no process says which service it talks to', () => {
+    for (const provider of [null, undefined, '']) expect(anotherServiceChosen(listed('my-own'), provider)).toBe(false);
   });
 });
 

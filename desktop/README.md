@@ -45,7 +45,11 @@ what can be done next.
 When the agent needs a yes, a card with the full command or path stands above the
 input field, and the conversation stays readable. What is sent while a turn runs is
 read at its next step. If the turn is stopped first, what was not read comes back into
-the input field.
+the input field. If the task is left first, it is the draft of that task when the task
+is opened again.
+
+The page of a new task says what the task may do and names the skills that there are.
+A click on a skill writes the command that hands it to the agent into the input field.
 
 | Key | What it does |
 |---|---|
@@ -64,7 +68,8 @@ projects that were opened before. If the service process ends, the page shows th
 lines that it wrote, which most often say why.
 
 The interface speaks English, Chinese and Japanese and follows the language of the
-system unless another is chosen in the settings. It has a dark theme and a light one.
+system unless another is chosen in the settings. It has a dark theme and a light one,
+and three sizes of type.
 
 The first start begins with a short film. Any key or a click leaves it, and the starts
 after that go without it unless the settings say that it is to play every time.
@@ -80,8 +85,11 @@ or in a file where no keyring takes it, and the window says which. The key is on
 command line, in no environment and in no message of the protocol, and the window that
 shows the conversation is told only that something was stored.
 
-This works where the application runs the service itself, and not in a replay. What
-was stored is used once the service is started again.
+This works where the application runs the service itself, and not in a replay. The
+service looks for the key with every request, so a key is used as soon as it is stored,
+and a turn that failed for want of it can be tried again with the button under it.
+Another service, address or model is used once the service is started again, and the
+settings say so until it is.
 
 ## With the real service
 

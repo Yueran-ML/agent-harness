@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
+import { useState } from 'react';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackgroundMusic } from '../src/BackgroundMusic';
+import { Inspector, type InspectorTab } from '../src/app/Inspector';
 import { Settings, type SettingsPart } from '../src/app/Settings';
 import { Sheet } from '../src/app/Sheet';
 import { Sidebar } from '../src/app/Sidebar';
@@ -10,7 +12,7 @@ import { StatusLine } from '../src/app/StatusLine';
 import type { Listed } from '../src/key/form';
 import { projectEvents } from '../src/state';
 import type { Workspace } from '../src/useWorkspace';
-import { likeABrowser, service, statusOf, workspaceWith } from './mounted';
+import { begin, call, end, likeABrowser, log, reply, result, service, statusOf, user, workspaceWith } from './mounted';
 
 beforeEach(likeABrowser);
 afterEach(() => {
@@ -792,5 +794,162 @@ describe('the settings', () => {
     fireEvent.click(one('about-log'));
     expect(workspace.showLog).toHaveBeenCalledTimes(1);
     expect(one('about').lastElementChild?.textContent).toBe('What goes wrong in the service process is written to a log on this computer.');
+  });
+});
+
+describe('the panel beside the conversation', () => {
+  /** The panel with its tab kept by whoever shows it, as the page does. */
+  function Kept({ workspace, first, locale = 'en', onClose = () => {} }: {
+    workspace: Workspace;
+    first: InspectorTab;
+    locale?: string;
+    onClose?: () => void;
+  }) {
+    const [tab, setTab] = useState(first);
+    return <Inspector workspace={workspace} tab={tab} onTab={setTab} onClose={onClose} locale={locale} />;
+  }
+  const tabs = () => [...document.querySelectorAll<HTMLElement>('[role="tab"]')];
+  const tabsShown = () => tabs().map(tab => [tab.textContent, tab.getAttribute('aria-selected'), tab.tabIndex]);
+  const panel = () => document.querySelector<HTMLElement>('[role="tabpanel"]')!;
+  /** What each part of the details says, child by child. */
+  const parts = () => [...panel().querySelectorAll('section')].map(part => [...part.children].map(child => child.textContent));
+  const used = {
+    ...projectEvents([], false),
+    usage: { input_tokens: 9000, output_tokens: 1500, cache_read_tokens: 2000, cache_write_tokens: 1000 },
+    lastInputTokens: 26_500,
+    tools: [{ name: 'read', description: 'Read a file of the project.', parameters: {} }],
+  };
+  const window32 = statusOf({ model: { provider: 'deepseek', model: 'deepseek-flash', context_window: 32_000 } });
+
+  it('has two tabs that the arrows go between, and one of them is a stop for Tab', () => {
+    const onClose = vi.fn();
+    render(<Kept workspace={workspaceWith()} first="changes" onClose={onClose} />);
+    expect(one('inspector').getAttribute('aria-label')).toBe('Changes');
+    expect(tabsShown()).toEqual([['Changes', 'true', 0], ['Details', 'false', -1]]);
+    expect(panel().getAttribute('aria-labelledby')).toBe('inspector-tab-changes');
+    expect(tabs().map(tab => tab.getAttribute('aria-controls'))).toEqual([panel().id, panel().id]);
+    const row = document.querySelector('[role="tablist"]')!;
+    const key = (name: string, held: KeyboardEventInit = {}) => !fireEvent.keyDown(row, { key: name, ...held });
+
+    expect(key('ArrowRight')).toBe(true);
+    expect(tabsShown()).toEqual([['Changes', 'false', -1], ['Details', 'true', 0]]);
+    expect(document.activeElement?.id).toBe('inspector-tab-details');
+    expect(one('inspector').getAttribute('aria-label')).toBe('Details');
+    expect(panel().getAttribute('aria-labelledby')).toBe('inspector-tab-details');
+    // The row goes round, and Home and End go to its ends.
+    key('ArrowRight');
+    expect(document.activeElement?.id).toBe('inspector-tab-changes');
+    key('End');
+    expect(document.activeElement?.id).toBe('inspector-tab-details');
+    key('Home');
+    expect(document.activeElement?.id).toBe('inspector-tab-changes');
+    // A key with another one held down is meant for something else, and so is any other key.
+    for (const held of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }, { shiftKey: true }]) {
+      expect(key('ArrowRight', held)).toBe(false);
+    }
+    expect(key('a')).toBe(false);
+    expect(tabsShown()).toEqual([['Changes', 'true', 0], ['Details', 'false', -1]]);
+
+    fireEvent.click(tabs()[1]);
+    expect(tabsShown()).toEqual([['Changes', 'false', -1], ['Details', 'true', 0]]);
+    fireEvent.click(document.querySelector('.inspector-head > [aria-label="Close"]')!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists the calls that changed a file, and counts them on their tab', () => {
+    const events = log(
+      begin(1), user('Tidy the notes.'),
+      call('c-1', 'read', { path: 'notes.md' }), result('c-1', 'The notes.'),
+      call('c-2', 'edit', { path: 'notes.md', old: 'teh', new: 'the' }), result('c-2', 'Edited notes.md.'),
+      call('c-3', 'bash', { command: 'git status' }), result('c-3', 'Nothing to commit.'),
+      call('c-4', 'write', { path: 'todo.md', content: 'Nothing.' }), result('c-4', 'Wrote todo.md.'),
+      reply('Done.'), end(1),
+    );
+    render(<Kept workspace={workspaceWith({ events })} first="changes" />);
+    expect(tabsShown().map(([says]) => says)).toEqual(['Changes2', 'Details']);
+    expect([...panel().querySelectorAll('[data-test="tool"] .tool-object')].map(row => row.textContent)).toEqual(['notes.md', 'todo.md']);
+    cleanup();
+    render(<Kept workspace={workspaceWith()} first="changes" />);
+    expect(tabsShown().map(([says]) => says)).toEqual(['Changes', 'Details']);
+    expect(panel().textContent).toBe('No file was changed in this task.');
+  });
+
+  it('tells of the model, of how full its context is and of what the task has used', () => {
+    const workspace = workspaceWith({ projection: used, status: window32, services: { use: null, services: [service('deepseek', 'DeepSeek')] } });
+    render(<Kept workspace={workspace} first="details" />);
+    expect(parts()).toEqual([
+      ['Model', 'deepseek-flash', 'DeepSeek'],
+      ['Context', '', '26.5K of 32K tokens in the last request.'],
+      // What was read is what was sent anew together with what the service had kept.
+      ['Tokens of this task', 'Read12KWritten1.5KCached17%'],
+      ['Tools', 'readRead a file of the project.'],
+      ['Task', 's-1'],
+    ]);
+    const meter = panel().querySelector<HTMLElement>('.meter')!;
+    expect([meter.getAttribute('role'), meter.getAttribute('aria-label')]).toEqual(['img', 'Context 83%']);
+    expect([meter.querySelector('span')!.style.width, meter.querySelector('span')!.dataset.tone]).toEqual(['83%', 'warn']);
+  });
+
+  it('shows the context in the tone that the status line shows it in', () => {
+    const tone = (tokens: number) => {
+      cleanup();
+      render(<Kept workspace={workspaceWith({ projection: { ...used, lastInputTokens: tokens }, status: window32 })} first="details" />);
+      return panel().querySelector<HTMLElement>('.meter span')!.dataset.tone;
+    };
+    expect([tone(25_200), tone(25_600), tone(30_200), tone(30_400)]).toEqual([undefined, 'warn', 'warn', 'bad']);
+  });
+
+  it('counts as the language of the page counts', () => {
+    render(<Kept workspace={workspaceWith({ projection: { ...used, lastInputTokens: 12_000 }, status: window32 })} first="details" locale="zh" />);
+    expect(parts()[1][2]).toBe('1.2万 of 3.2万 tokens in the last request.');
+    expect(parts()[2][1]).toBe('Read1.2万Written1500Cached17%');
+  });
+
+  it('says what it does not know of: the window of a model, the tools, a task', () => {
+    const unknown = statusOf({ model: { provider: 'my-own', model: 'a-model', context_window: null } });
+    render(<Kept workspace={workspaceWith({ sessionId: null, status: unknown })} first="details" />);
+    expect(parts()).toEqual([
+      ['Model', 'a-model', 'my-own'],
+      ['Context', '0 tokens in the last request.'],
+      ['Tokens of this task', 'Read0Written0Cached0%'],
+      ['Tools', 'The tools are known once the first request is made.'],
+    ]);
+    cleanup();
+    render(<Kept workspace={workspaceWith({ sessionId: null, status: null })} first="details" />);
+    expect(parts().map(([title]) => title)).toEqual(['Context', 'Tokens of this task', 'Tools']);
+  });
+
+  it('copies the name of the task, and says for a moment that it did', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      vi.useFakeTimers();
+      render(<Kept workspace={workspaceWith()} first="details" />);
+      const copy = panel().querySelector<HTMLButtonElement>('.task-id button')!;
+      expect([copy.getAttribute('aria-label'), copy.title]).toEqual(['Copy', 'Copy']);
+      await act(async () => { fireEvent.click(copy); });
+      expect(writeText.mock.calls).toEqual([['s-1']]);
+      expect([copy.getAttribute('aria-label'), copy.title]).toEqual(['Copied', 'Copied']);
+      act(() => { vi.advanceTimersByTime(1599); });
+      expect(copy.getAttribute('aria-label')).toBe('Copied');
+      act(() => { vi.advanceTimersByTime(1); });
+      expect(copy.getAttribute('aria-label')).toBe('Copy');
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
+  });
+
+  it('does not say that it copied what could not be copied', async () => {
+    const writeText = vi.fn(async (_text: string) => { throw new Error('The clipboard is not allowed.'); });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      render(<Kept workspace={workspaceWith()} first="details" />);
+      const copy = panel().querySelector<HTMLButtonElement>('.task-id button')!;
+      await act(async () => { fireEvent.click(copy); });
+      expect(writeText).toHaveBeenCalledTimes(1);
+      expect(copy.getAttribute('aria-label')).toBe('Copy');
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
   });
 });

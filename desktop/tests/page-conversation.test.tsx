@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Conversation } from '../src/app/Conversation';
+import { Markdown } from '../src/app/Markdown';
 import type { Workspace } from '../src/useWorkspace';
 import {
   begin, call, end, failed, header, likeABrowser, log, reply, result, service, statusOf, user, workspaceWith,
@@ -257,5 +258,51 @@ describe('the line of a call', () => {
     fireEvent.click(marked('steps-toggle')[0]);
     expect(marked('tool-all')).toEqual([]);
     expect(marked('tool-output')[0].textContent).toBe('one\ntwo');
+  });
+});
+
+describe('what a model wrote, once it stands on the page', () => {
+  const links = () => [...document.querySelectorAll<HTMLButtonElement>('button.link')];
+
+  it('hands the address of a link to the page, and opens nothing by itself', () => {
+    const onLink = vi.fn();
+    render(<Markdown text="See [the documentation](https://example.com/docs), or https://example.com/bare, or [the notes](notes.md)." onLink={onLink} />);
+    expect(links().map(link => link.textContent)).toEqual(['the documentation', 'https://example.com/bare', 'the notes']);
+    for (const link of links()) fireEvent.click(link);
+    // An address that is no address of the web is handed over too: the page shows it and opens only the web.
+    expect(onLink.mock.calls).toEqual([['https://example.com/docs'], ['https://example.com/bare'], ['notes.md']]);
+    expect(document.querySelector('a')).toBeNull();
+  });
+
+  it('hands over no address that would run something or read a file', () => {
+    const onLink = vi.fn();
+    render(<Markdown
+      text="[one](javascript:alert(1)) and [two](vbscript:x) and [three](data:text/html,x) and [four](file:///C:/Windows/system.ini)"
+      onLink={onLink}
+    />);
+    expect(links().map(link => link.textContent)).toEqual(['one', 'two', 'three', 'four']);
+    for (const link of links()) fireEvent.click(link);
+    expect(onLink).not.toHaveBeenCalled();
+  });
+
+  it('says in words that a picture stood there, also where the picture had none', () => {
+    render(<Markdown text="Look: ![a chart](https://example.com/chart.png) and ![](https://example.com/pixel.gif)" onLink={() => {}} />);
+    expect([...document.querySelectorAll('.markdown .caption')].map(said => said.textContent)).toEqual(['[a chart]', '[…]']);
+    expect(document.querySelector('img')).toBeNull();
+  });
+
+  it('copies a block of code as it was written, without the line that ends it', async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      render(<Markdown text={'Run this:\n\n```python\nprint("a")\n\nprint("b")\n```\n'} onLink={() => {}} />);
+      const block = document.querySelector('.code-block')!;
+      // A line of code can be longer than its block: the keyboard reaches the block to scroll it.
+      expect(block.querySelector('pre')?.tabIndex).toBe(0);
+      await act(async () => { fireEvent.click(block.querySelector('button.code-copy')!); });
+      expect(writeText.mock.calls).toEqual([['print("a")\n\nprint("b")']]);
+    } finally {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
   });
 });

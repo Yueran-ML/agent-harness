@@ -448,8 +448,10 @@ button.task:hover:not(:disabled) {
   display: flex;
   align-items: center;
   gap: var(--s3);
-  min-height: 32px;
-  padding: 0 var(--s4) var(--s1) var(--s5);
+  /* Apart from the field above it: as a band of colour, the line must not touch the field. */
+  min-height: 30px;
+  margin-top: var(--s2);
+  padding: 0 var(--s4) 0 var(--s5);
   font-size: var(--text-caption);
   color: var(--moon-2);
 }
@@ -485,7 +487,13 @@ button.task:hover:not(:disabled) {
   color: var(--moon-0);
 }
 
-.status-may[data-tone='warn'],
+/* Full access: the whole line is in the colour of a warning, so that it is not read past. */
+.status[data-tone='warn'] {
+  background: var(--warn-wash);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--warn) 30%, transparent);
+  color: var(--warn);
+}
+
 .status-loose {
   color: var(--warn);
 }

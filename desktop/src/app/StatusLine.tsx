@@ -41,8 +41,9 @@ export function StatusLine({ workspace, onPermissions, onDetails }: {
   const tone = status?.status === 'running' ? 'live'
     : status?.status === 'stopped' || (!workspace.connected && !workspace.loading) ? 'off' : 'rest';
 
-  return <footer className="status" data-test="status">
-    {status && <button type="button" className="status-may" data-tone={full ? 'warn' : undefined} onClick={onPermissions} data-test="status-may">
+  // Under full access the whole line is in the colour of a warning, not its sentence alone.
+  return <footer className="status" data-tone={full ? 'warn' : undefined} data-test="status">
+    {status && <button type="button" className="status-may" onClick={onPermissions} data-test="status-may">
       {full ? <ShieldAlert size={13} aria-hidden="true" /> : <ShieldCheck size={13} aria-hidden="true" />}
       <span>{sayPermissions(words, status.sandbox?.mode ?? null, status.approval)}</span>
     </button>}

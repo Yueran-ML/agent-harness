@@ -6,7 +6,7 @@ import { en } from '../src/messages/en';
 import { ja } from '../src/messages/ja';
 import { zhCN } from '../src/messages/zh-CN';
 import { initialTheme, storeTheme, themes, themeStorageKey } from '../src/themes';
-import { blockOf, colourOf, selectorOf, themeColour, tokens } from './stylesheet';
+import { blockOf, colourOf, contrast, over, rgbOf, selectorOf, themeColour, tokens, washOf } from './stylesheet';
 
 const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
 
@@ -142,6 +142,46 @@ describe('the lines of a paragraph', () => {
     // Lines that were filled to their end one after the other cut the name of a model at its
     // hyphen, in English as in Japanese: "with the model deepseek-" and then "flash."
     expect(rulesIn(read('src/key/key.css'), '.key-said p')).toEqual(['text-wrap: balance;']);
+  });
+});
+
+describe('the status line under full access', () => {
+  const shell = read('src/ui/shell.css');
+  const line = read('src/app/StatusLine.tsx');
+  const rules = blockOf(shell, ".status[data-tone='warn']").split('\n').slice(2).map(rule => rule.trim());
+
+  it('is in the colour of a warning as a whole', () => {
+    expect(rules).toContain('background: var(--warn-wash);');
+    expect(rules).toContain('color: var(--warn);');
+    // The line has the tone, and not one part of it. Full access is what gives it.
+    expect(line).toContain("const full = status?.sandbox?.mode === 'danger-full-access';");
+    expect(line).toContain(`<footer className="status" data-tone={full ? 'warn' : undefined} data-test="status">`);
+    expect(line.match(/data-tone=\{full/g)).toHaveLength(1);
+  });
+
+  it('keeps its height, so that nothing moves when it comes and goes', () => {
+    // A border would add to the line. The edge is drawn inside it.
+    expect(rules.filter(rule => /^(border|padding|margin|min-height|height)/.test(rule))).toEqual([]);
+    expect(rules.some(rule => rule.startsWith('box-shadow: inset 0 1px 0 '))).toBe(true);
+    // As a band of colour it has an edge, which must not lie against the field above it.
+    expect(blockOf(shell, '.status')).toContain('  margin-top: var(--s2);');
+  });
+
+  it.each(themes)('can be read in the theme %s', (theme) => {
+    // The words of a warning on the wash of a warning, over the page.
+    const under = over(washOf(theme, 'warn-wash'), rgbOf(themeColour(theme, 'ink-0')));
+    expect(contrast(rgbOf(themeColour(theme, 'warn')), under)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('measures contrast as the guidelines do', () => {
+    expect(contrast([0, 0, 0], [255, 255, 255])).toBeCloseTo(21, 5);
+    expect(contrast([255, 255, 255], [0, 0, 0])).toBeCloseTo(21, 5);
+    expect(contrast([119, 119, 119], [255, 255, 255])).toBeCloseTo(4.48, 2);
+    expect(contrast([10, 20, 30], [10, 20, 30])).toBe(1);
+    expect(rgbOf('#e9c98b')).toEqual([233, 201, 139]);
+    // Half of white over black is the grey between them.
+    expect(over({ rgb: [255, 255, 255], alpha: 0.5 }, [0, 0, 0])).toEqual([127.5, 127.5, 127.5]);
+    expect(washOf(themes[0], 'warn-wash')).toEqual({ rgb: [233, 201, 139], alpha: 0.1 });
   });
 });
 

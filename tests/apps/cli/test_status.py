@@ -27,6 +27,7 @@ from columbina.session import (
     UserMessageEvent,
 )
 from columbina.token_meter import TOKEN_METER, TokenMeter
+from support.sandboxes import Holding
 
 MODEL = CallConfig(provider="deepseek", model="deepseek-flash")
 SAID = AssistantMessage(content=(TextBlock(text="Hello."),))
@@ -90,15 +91,8 @@ async def test_a_mode_that_is_not_written_down_yet_is_shown_if_somebody_knows_it
 async def test_how_well_commands_are_held_is_shown(
     ctx: Context, session: Session, strength: Strength, told: str
 ) -> None:
-    class Holding:
-        def __init__(self) -> None:
-            self.strength: Strength = strength
-
-        def confine(self, argv: object, *, mode: Mode, cwd: object) -> object:
-            return argv
-
     sandbox = await sandbox_of(ctx, provider="holding")
-    sandbox.providers.add(ctx, "holding", Holding())  # pyright: ignore[reportArgumentType]
+    sandbox.providers.add(ctx, "holding", Holding(strength))
 
     assert (
         status(session, MODEL, sandbox, busy=False) == f"deepseek-flash | workspace-write, {told}"

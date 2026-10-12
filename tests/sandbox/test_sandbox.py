@@ -1,8 +1,10 @@
 """The sandbox: the mode of a session, what it lets tools do to files, and who confines commands."""
 
 import itertools
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -10,11 +12,12 @@ from pydantic import ValidationError
 import columbina.fs
 import columbina.sandbox
 import columbina.session
+from columbina import process, shells
 from columbina.fs import FS, Access, Fs, Kind, locate
 from columbina.kernel import Context, Plugin
+from columbina.process import Completed, Writable
 from columbina.sandbox import (
     SANDBOX,
-    Confined,
     Mode,
     Sandbox,
     SandboxModeEvent,
@@ -347,59 +350,170 @@ async def test_what_the_sandbox_registered_leaves_with_it(
 # Who confines commands
 
 
+SAYS_WHERE_AND_WHAT = "import os, sys; print(os.getcwd()); print(sys.stdin.read().upper())"
+
+
 class Jail:
-    """A provider for these tests, which puts a word in front of a command."""
+    """A provider for these tests. It runs nothing: it keeps what it was asked for."""
 
     def __init__(self, strength: Strength) -> None:
         self.strength: Strength = strength
-        self.asked: list[tuple[Mode, Path]] = []
+        self.asked: list[dict[str, object]] = []
 
-    def confine(self, argv: Sequence[str], *, mode: Mode, cwd: Path) -> Sequence[str]:
-        self.asked.append((mode, cwd))
-        return ["jail", f"--{mode}", *argv]
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        session: Session,
+        mode: Mode,
+        cwd: Path,
+        stdin: bytes | None,
+        timeout_seconds: float,
+        overflow: Callable[[], Writable] | None,
+        max_overflow_bytes: int,
+    ) -> Completed:
+        self.asked.append(
+            {
+                "argv": tuple(argv),
+                "session": session,
+                "mode": mode,
+                "cwd": cwd,
+                "stdin": stdin,
+                "seconds": timeout_seconds,
+                "overflow": overflow,
+                "kept": max_overflow_bytes,
+            }
+        )
+        return Completed(
+            exit_code=3,
+            timed_out=False,
+            output="held\n",
+            output_bytes=5,
+            omitted_bytes=0,
+            saved_bytes=0,
+        )
 
 
-async def test_the_provider_that_holds_nothing_returns_a_command_as_it_is(
+async def test_the_provider_that_holds_nothing_runs_a_command_as_it_is(
     ctx: Context, tmp_path: Path, work: Path
 ) -> None:
     sessions, _, sandbox = await program(ctx, tmp_path)
     session = sessions.create(ctx, work)
 
-    confined = sandbox.confine(["python", "check.py"], session=session, cwd=work)
+    done = await sandbox.run(
+        [sys.executable, "-c", SAYS_WHERE_AND_WHAT],
+        session=session,
+        cwd=work,
+        stdin=b"hi",
+        timeout_seconds=60,
+    )
 
-    assert confined == Confined(argv=("python", "check.py"), strength="none")
+    where, said = done.output.split()
+    assert (done.exit_code, done.timed_out, said) == (0, False, "HI")
+    assert Path(where).samefile(work)
     assert sandbox.strength() == "none"
 
 
-async def test_a_provider_that_another_plugin_brings_confines_in_the_mode_of_the_session(
+async def test_the_provider_that_holds_nothing_stops_a_command_whose_time_is_up(
+    ctx: Context, tmp_path: Path, work: Path
+) -> None:
+    sessions, _, sandbox = await program(ctx, tmp_path)
+    session = sessions.create(ctx, work)
+
+    # Long enough to be stopped, and short enough that a test which fails to stop it ends.
+    done = await sandbox.run(
+        [sys.executable, "-c", "import time; time.sleep(8)"],
+        session=session,
+        cwd=work,
+        timeout_seconds=0.5,
+    )
+
+    assert (done.exit_code, done.timed_out) == (None, True)
+
+
+async def test_the_provider_that_holds_nothing_gives_a_command_the_environment_for_commands(
+    ctx: Context, tmp_path: Path, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    given: list[object] = []
+    really_run: Any = process.run
+
+    async def running(argv: Any, **options: Any) -> Any:
+        given.append(options.get("env"))
+        return await really_run(argv, **options)
+
+    monkeypatch.setattr(process, "run", running)
+    sessions, _, sandbox = await program(ctx, tmp_path)
+    session = sessions.create(ctx, work)
+
+    await sandbox.run([sys.executable, "-c", "pass"], session=session, cwd=work, timeout_seconds=60)
+
+    # Not the environment of this program as it is: the one that every command gets.
+    assert given == [shells.environment()]
+
+
+async def test_a_provider_that_another_plugin_brings_runs_the_command_in_the_mode_of_the_session(
     ctx: Context, tmp_path: Path, work: Path
 ) -> None:
     jail = Jail("full")
+    places: list[object] = []
 
     def apply(inner: Context, config: object) -> None:
         inner.use(SANDBOX).providers.add(inner, "jail", jail)
+
+    def place() -> Writable:
+        places.append(None)
+        raise AssertionError("nothing is written in this test")
 
     sessions, _, sandbox = await program(ctx, tmp_path, provider="jail")
     session = sessions.create(ctx, work)
     sandbox.set_mode(session, "read-only")
     await ctx.plugin(Plugin("jail", apply, inject=(SANDBOX,)))
 
-    confined = sandbox.confine(["python", "check.py"], session=session, cwd=work)
+    done = await sandbox.run(
+        ["python", "check.py"],
+        session=session,
+        cwd=work,
+        stdin=b"x",
+        timeout_seconds=7,
+        overflow=place,
+        max_overflow_bytes=99,
+    )
 
-    assert confined == Confined(argv=("jail", "--read-only", "python", "check.py"), strength="full")
-    assert jail.asked == [("read-only", work)]
+    # What the provider gave back is what comes back, and it was told everything.
+    assert (done.exit_code, done.output) == (3, "held\n")
+    assert jail.asked == [
+        {
+            "argv": ("python", "check.py"),
+            "session": session,
+            "mode": "read-only",
+            "cwd": work,
+            "stdin": b"x",
+            "seconds": 7,
+            "overflow": place,
+            "kept": 99,
+        }
+    ]
+    assert places == []
     assert sandbox.strength() == "full"
 
 
 async def test_a_command_is_not_run_unconfined_in_the_place_of_a_provider_that_is_not_there(
-    ctx: Context, tmp_path: Path, work: Path
+    ctx: Context, tmp_path: Path, work: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    ran: list[object] = []
+
+    async def running(argv: object, **options: object) -> object:
+        ran.append(argv)
+        raise AssertionError("no program is run in this test")
+
+    monkeypatch.setattr(process, "run", running)
     sessions, _, sandbox = await program(ctx, tmp_path, provider="jail")
     session = sessions.create(ctx, work)
 
     with pytest.raises(SandboxUnavailableError, match="'jail' is not there"):
-        sandbox.confine(["python", "check.py"], session=session, cwd=work)
+        await sandbox.run(["python", "check.py"], session=session, cwd=work, timeout_seconds=5)
 
+    assert ran == []
     assert sandbox.strength() == "none"
 
 
@@ -418,4 +532,4 @@ async def test_a_provider_leaves_with_the_plugin_that_brought_it(
 
     assert list(sandbox.providers) == ["none"]
     with pytest.raises(SandboxUnavailableError):
-        sandbox.confine(["python", "check.py"], session=session, cwd=work)
+        await sandbox.run(["python", "check.py"], session=session, cwd=work, timeout_seconds=5)

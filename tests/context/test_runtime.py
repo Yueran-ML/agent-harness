@@ -1,8 +1,5 @@
 """The facts about where an agent runs: gathered from the plugins that know them."""
 
-from collections.abc import Sequence
-from pathlib import Path
-
 import pytest
 
 import columbina.approval
@@ -17,6 +14,7 @@ from columbina.llm.adapters.scripted import Reply
 from columbina.sandbox import SANDBOX, Mode, Strength
 from columbina.session import UserMessageEvent
 from support.loop import SYSTEM, Harness, context, idle, user
+from support.sandboxes import Holding
 
 HELD = "commands are held: not at all. A command can do whatever the user of this machine can do."
 ASK = "approval: ask. A call that needs a yes is put to the user, if somebody is there to ask."
@@ -157,17 +155,10 @@ async def test_the_mode_of_the_sandbox_is_told_with_what_it_means(
 async def test_how_well_commands_are_held_is_told_by_what_holds_them(
     harness: Harness, strength: Strength, told: str
 ) -> None:
-    class Holding:
-        def __init__(self) -> None:
-            self.strength: Strength = strength
-
-        def confine(self, argv: Sequence[str], *, mode: Mode, cwd: Path) -> Sequence[str]:
-            return argv
-
     ctx = harness.ctx
     await ctx.plugin(columbina.fs)
     await ctx.plugin(columbina.sandbox, {"provider": "holding"})
-    ctx.use(SANDBOX).providers.add(ctx, "holding", Holding())
+    ctx.use(SANDBOX).providers.add(ctx, "holding", Holding(strength))
     await ctx.plugin(runtime)
     agent = await harness.agent(Reply(text="Hello!"))
 

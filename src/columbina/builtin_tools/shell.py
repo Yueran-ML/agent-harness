@@ -22,7 +22,7 @@ can fill up. The result then says how much of it did.
 
 What a command does once it runs cannot be checked from here. That is why
 the tool needs two services and is not loaded without them: the sandbox,
-which says how well a command is held, and the permissions, which decide
+which runs a command so that it is held, and the permissions, which decide
 whether a command runs and whom to ask. The tool tells the permissions how
 its commands are taken apart.
 
@@ -72,7 +72,7 @@ from dataclasses import dataclass, replace
 
 from pydantic import BaseModel, Field
 
-from columbina import process, shells
+from columbina import shells
 from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.kernel import Context
 from columbina.permissions import PERMISSIONS, Splitter, split_bash, split_powershell
@@ -224,7 +224,7 @@ def shell_tool(
     """Make the shell tool, which runs its commands with the program at ``shell``.
 
     Args:
-        sandbox: Says how a command is held.
+        sandbox: Runs a command so that it is held.
         shell: The path of the program that runs the commands.
         spill: Returns the place for what is too large for a conversation, or
             ``None`` if the program has none. It is asked at every call.
@@ -239,24 +239,22 @@ def shell_tool(
             )
         seconds = min(args.timeout_seconds or DEFAULT_SECONDS, MAX_SECONDS)
         argv, given = _invocation(shell, args.command)
-        try:
-            confined = sandbox.confine(argv, session=run.session, cwd=run.cwd)
-        except SandboxUnavailableError as error:
-            raise ToolFailure(
-                f"The command was not run: {error}.", code="SANDBOX_UNAVAILABLE"
-            ) from None
         store = spill()
         place = None if store is None else _Place(store, run)
         try:
-            done = await process.run(
-                confined.argv,
+            done = await sandbox.run(
+                argv,
+                session=run.session,
                 cwd=run.cwd,
-                env=shells.environment(),
                 stdin=given,
                 timeout_seconds=seconds,
                 overflow=None if place is None else place.open,
                 max_overflow_bytes=MAX_SAVED_BYTES,
             )
+        except SandboxUnavailableError as error:
+            raise ToolFailure(
+                f"The command was not run: {error}.", code="SANDBOX_UNAVAILABLE"
+            ) from None
         except OSError as error:
             raise ToolFailure(f"The command could not be run: {error}") from error
         finally:

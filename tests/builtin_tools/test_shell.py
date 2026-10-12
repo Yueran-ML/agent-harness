@@ -28,12 +28,13 @@ from columbina.llm import ToolCallBlock
 from columbina.permissions import PERMISSIONS, Permissions
 from columbina.permissions.commands import split_bash, split_powershell
 from columbina.process import Completed
-from columbina.sandbox import SANDBOX, Mode, Sandbox, Strength
+from columbina.sandbox import SANDBOX, Mode, Sandbox
 from columbina.session import SESSIONS, Session
 from columbina.spill import SPILL, Saved
 from columbina.token_meter import estimate
 from columbina.tools import TOOLS, Deny, Invocation, ToolOutcome, ToolRun, Tools
 from support.processes import gone
+from support.sandboxes import Holding
 
 WINDOWS = sys.platform == "win32"
 PYTHON = sys.executable
@@ -729,10 +730,8 @@ async def test_a_command_is_not_run_unheld_where_something_is_to_hold_it(
 async def test_a_command_runs_the_way_the_sandbox_hands_it_back(
     ctx: Context, tmp_path: Path
 ) -> None:
-    class Marking:
-        strength: Strength = "full"
-
-        def confine(self, argv: Sequence[str], *, mode: Mode, cwd: Path) -> Sequence[str]:
+    class Marking(Holding):
+        def held(self, argv: Sequence[str], mode: Mode) -> Sequence[str]:
             return [PYTHON, "-c", f"print('held in {mode} mode, {len(argv)} words')"]
 
     bench = await loaded(ctx, tmp_path, sandbox={"provider": "marking"})

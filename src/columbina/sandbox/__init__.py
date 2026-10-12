@@ -1,4 +1,4 @@
-"""The sandbox: how much a session may change, and how its commands are confined.
+"""The sandbox: how much a session may change, and who runs its commands so that they are held.
 
 This module is a plugin. Loading it provides :data:`SANDBOX`.
 
@@ -24,28 +24,31 @@ then no tool writes a file.
 
 A command is another matter. What a program does once it runs cannot be
 checked from in here, so it is run inside something that holds it. That is
-the job of a provider. The only one so far is ``none``, which holds nothing
-and says so by its strength, and whoever decides about commands goes by that.
+the job of a provider, and the provider runs the command itself: what holds
+a command may have to be made before the command runs, and what the command
+left has to be stopped after it. The provider ``none`` runs a command on
+this machine as it is. It holds nothing and says so by its strength, and
+whoever decides about commands goes by that.
 """
 
 import os
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import ClassVar, Literal, Protocol
 
 from pydantic import BaseModel
 
+from columbina import process, shells
 from columbina.agent import RUNTIME_FACTS, Facts
 from columbina.fs import FS, Access, Refuse
 from columbina.kernel import Context, Registry, ServiceKey
+from columbina.process import Completed, Writable
 from columbina.session import SESSIONS, EventData, Projection, Session, SessionEvent
 
 __all__ = [
     "PROTECTED",
     "SANDBOX",
     "Config",
-    "Confined",
     "Mode",
     "Sandbox",
     "SandboxModeEvent",
@@ -80,16 +83,19 @@ class SandboxModeEvent(EventData):
 
 
 class SandboxUnavailableError(Exception):
-    """The provider that is to confine commands is not there."""
+    """What is to hold commands is not there, or could not hold this one.
+
+    The text says what is missing, in words for whoever can put it right.
+    """
 
 
 class SandboxProvider(Protocol):
-    """Something that can run a command so that it is held.
+    """Something that runs a command so that it is held.
 
     Attributes:
         strength: How well it holds a command. A provider that cannot do what
-            it says here raises from :meth:`confine`. It does not hand back a
-            command that is held less well.
+            it says here raises from :meth:`run`. It does not run a command
+            that is held less well.
     """
 
     @property
@@ -97,31 +103,58 @@ class SandboxProvider(Protocol):
         """How well it holds a command."""
         ...
 
-    def confine(self, argv: Sequence[str], *, mode: Mode, cwd: Path) -> Sequence[str]:
-        """Return the command that runs ``argv`` held, in the given mode."""
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        session: Session,
+        mode: Mode,
+        cwd: Path,
+        stdin: bytes | None,
+        timeout_seconds: float,
+        overflow: Callable[[], Writable] | None,
+        max_overflow_bytes: int,
+    ) -> Completed:
+        """Run a command to its end, held in the given mode, and say how it ended.
+
+        When this returns or raises, everything that the command started has
+        been stopped, as with :func:`columbina.process.run`, whose arguments
+        the last four are.
+
+        Raises:
+            SandboxUnavailableError: The command could not be held, so it was
+                not run.
+            OSError: The command could not be started.
+        """
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class Confined:
-    """A command that is ready to run.
-
-    Attributes:
-        argv: The command to run in the place of the one that was given.
-        strength: How well it is held.
-    """
-
-    argv: tuple[str, ...]
-    strength: Strength
-
-
 class _Unconfined:
-    """The provider that holds nothing. A command runs as it is."""
+    """The provider that holds nothing. A command runs on this machine, as it is."""
 
     strength: Strength = "none"
 
-    def confine(self, argv: Sequence[str], *, mode: Mode, cwd: Path) -> Sequence[str]:
-        return argv
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        session: Session,
+        mode: Mode,
+        cwd: Path,
+        stdin: bytes | None,
+        timeout_seconds: float,
+        overflow: Callable[[], Writable] | None,
+        max_overflow_bytes: int,
+    ) -> Completed:
+        return await process.run(
+            argv,
+            cwd=cwd,
+            env=shells.environment(),
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            overflow=overflow,
+            max_overflow_bytes=max_overflow_bytes,
+        )
 
 
 _MODES: dict[Mode, str] = {
@@ -176,7 +209,7 @@ class Config(BaseModel):
 
     Attributes:
         mode: The mode of a session whose log names none.
-        provider: The name of the provider that confines commands.
+        provider: The name of the provider that runs commands.
     """
 
     mode: Mode = "workspace-write"
@@ -184,7 +217,7 @@ class Config(BaseModel):
 
 
 class Sandbox:
-    """The mode of each session, and the provider that confines commands.
+    """The mode of each session, and the provider that runs commands.
 
     Attributes:
         providers: The providers, by name.
@@ -215,20 +248,43 @@ class Sandbox:
         provider = self.providers.get(self._provider)
         return "none" if provider is None else provider.strength
 
-    def confine(self, argv: Sequence[str], *, session: Session, cwd: Path) -> Confined:
-        """Return the command that runs ``argv`` held, in the mode of the session.
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        session: Session,
+        cwd: Path,
+        stdin: bytes | None = None,
+        timeout_seconds: float,
+        overflow: Callable[[], Writable] | None = None,
+        max_overflow_bytes: int = 64 * 1024 * 1024,
+    ) -> Completed:
+        """Run a command to its end, held in the mode of the session.
+
+        The arguments after the directory are those of
+        :func:`columbina.process.run`.
 
         Raises:
             SandboxUnavailableError: The provider that the config names is not
-                there. A command is not run unconfined in its place.
+                there, or it could not hold the command. A command is not run
+                unconfined in its place.
+            OSError: The command could not be started.
         """
         provider = self.providers.get(self._provider)
         if provider is None:
             raise SandboxUnavailableError(
                 f"the sandbox provider {self._provider!r} is not there, so no command can be run"
             )
-        held = provider.confine(argv, mode=self.mode(session), cwd=cwd)
-        return Confined(tuple(held), provider.strength)
+        return await provider.run(
+            argv,
+            session=session,
+            mode=self.mode(session),
+            cwd=cwd,
+            stdin=stdin,
+            timeout_seconds=timeout_seconds,
+            overflow=overflow,
+            max_overflow_bytes=max_overflow_bytes,
+        )
 
     def grants(self, access: Access) -> bool:
         """Tell whether the mode of the session allows what the seam does not allow by itself."""

@@ -435,6 +435,80 @@ async def test_a_tool_without_anything_that_it_acts_on_is_allowed_as_a_whole(
     assert at.permissions.granted(at.session) == (("note", None),)
 
 
+def served(at: Bench, ctx: Context, name: str = "mcp__notes__add") -> list[str]:
+    """Add a tool as a server of tools offers one, and return what its calls were given.
+
+    It runs something that somebody else wrote, it names nothing that a call acts on, and
+    nothing takes a command of it apart, since it has none.
+    """
+    given: list[str] = []
+
+    async def add(args: NoteArgs, run: ToolRun) -> str:
+        given.append(args.text)
+        return "added"
+
+    at.tools.add(
+        ctx,
+        Tool(name=name, description="Add a note.", parameters=NoteArgs, execute=add, effect="run"),
+    )
+    return given
+
+
+async def test_a_tool_of_a_server_can_be_allowed_as_a_whole_for_the_rest_of_a_session(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path)
+    given = served(at, ctx)
+    at.answer = "allowed-once"
+
+    assert await at.code("mcp__notes__add", text="one") is None
+
+    # The question offers a longer yes, and it is for the tool: one call of it cannot be
+    # told from another by anything that the tool names.
+    (asked,) = at.asked
+    assert asked.reason == "No rule allows calls of this tool."
+    assert asked.standing == "any call of mcp__notes__add"
+    at.permissions.grant(at.session, "mcp__notes__add", None)
+    # From here on nobody is there to ask, and the call goes ahead all the same.
+    at.answer = None
+    assert await at.code("mcp__notes__add", text="two") is None
+    assert given == ["one", "two"]
+    assert len(at.asked) == 1
+    assert at.permissions.granted(at.session) == (("mcp__notes__add", None),)
+
+
+async def test_a_yes_for_one_tool_of_a_server_is_none_for_another_or_for_another_session(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path)
+    given = served(at, ctx)
+    others = served(at, ctx, "mcp__notes__drop")
+    at.permissions.grant(at.session, "mcp__notes__add", None)
+    other = at.sessions.create(ctx, at.work)
+
+    assert await at.code("mcp__notes__drop", text="one") == "APPROVAL_UNAVAILABLE"
+    outcome = await at.tools.run(
+        ctx,
+        ToolCallBlock(call_id="elsewhere", name="mcp__notes__add", arguments='{"text": "two"}'),
+        ToolRun("elsewhere", at.work, other),
+    )
+
+    assert outcome.error is not None
+    assert outcome.error.code == "APPROVAL_UNAVAILABLE"
+    assert (given, others) == ([], [])
+
+
+async def test_a_rule_against_a_tool_of_a_server_stands_above_a_yes_for_the_session(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, deny=["mcp__notes__*"])
+    given = served(at, ctx)
+    at.permissions.grant(at.session, "mcp__notes__add", None)
+
+    assert await at.code("mcp__notes__add", text="one") == "DENIED"
+    assert given == []
+
+
 @pytest.mark.parametrize(
     ("tool", "target"),
     [("shell", "rm $TARGET"), ("shell", None), ("nowhere", "x"), ("bare", "git status")],

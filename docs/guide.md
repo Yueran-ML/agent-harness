@@ -613,8 +613,9 @@ which keeps a token out of the file.
 The tools of a server have names like `mcp__files__read_file`: the name that the entry gives
 the server, and the name that the server gives the tool. A tool of which its server says
 that it only reads counts as reading. Every other one counts as running a command, so its
-calls need a yes or a rule such as `--allow "mcp__files__*"`. What a server says of how its
-tools are meant is added to the system prompt, marked as the words of the server.
+calls need a yes or a rule such as `--allow "mcp__files__*"`. A yes can be given for one call,
+or for every call of that tool until the session ends. What a server says of how its tools
+are meant is added to the system prompt, marked as the words of the server.
 
 A server that cannot be reached is logged and left out, and the rest goes on. A server whose
 connection is lost is connected again, after waits that grow up to 30 seconds, and it is

@@ -5845,14 +5845,50 @@ _GRANTS = (
     mutant(
         "what was allowed for the rest of a session does not count for a command",
         PERMISSIONS,
-        '    if granted and apart is not None:\n        return Decided("allow", None, _GRANTED)\n',
-        '    if granted and apart is None:\n        return Decided("allow", None, _GRANTED)\n',
+        '    if granted and (apart is not None or as_a_whole):\n        return Decided("allow", None, _GRANTED)\n',
+        '    if granted and (apart is None or as_a_whole):\n        return Decided("allow", None, _GRANTED)\n',
     ),
     mutant(
         "a command that cannot be taken apart runs because it was allowed for the session",
         PERMISSIONS,
-        "    if granted and apart is not None:\n",
+        "    if granted and (apart is not None or as_a_whole):\n",
         "    if granted:\n",
+    ),
+    mutant(
+        "a tool of a server that was allowed for the session is asked about again",
+        PERMISSIONS,
+        "    if granted and (apart is not None or as_a_whole):\n",
+        "    if granted and apart is not None:\n",
+    ),
+    mutant(
+        "a command that nothing takes apart runs because it was allowed for the session",
+        PERMISSIONS,
+        "    as_a_whole = target is None and splitter is None\n",
+        "    as_a_whole = splitter is None\n",
+    ),
+    mutant(
+        "a tool for commands that names none runs because it was allowed for the session",
+        PERMISSIONS,
+        "    as_a_whole = target is None and splitter is None\n",
+        "    as_a_whole = target is None\n",
+    ),
+    mutant(
+        "a yes for the session is not offered for a tool of a server",
+        PERMISSIONS,
+        '            if target is None and splitter is None:\n                return f"any call of {tool}"\n',
+        "",
+    ),
+    mutant(
+        "a yes for the session is offered for a tool for commands that names none",
+        PERMISSIONS,
+        "            if target is None and splitter is None:\n",
+        "            if target is None:\n",
+    ),
+    mutant(
+        "a yes for the session is offered for every command that nothing takes apart",
+        PERMISSIONS,
+        "            if target is None and splitter is None:\n",
+        "            if splitter is None:\n",
     ),
     mutant(
         "what was allowed for the session counts for the tool, whatever it acts on",

@@ -268,7 +268,8 @@ def decide(
         granted: Whether this very call was allowed for the rest of the
             session. That counts after the rules that refuse and before
             those that ask. It does not count for a command that cannot be
-            taken apart.
+            taken apart. For a tool that runs something and names no
+            command, such a yes is for every call of the tool.
     """
     if effect != "run":
         for rule in rules.deny:
@@ -291,7 +292,10 @@ def decide(
     for rule in rules.deny:
         if any(covers_command(rule, tool, text) for text in spoken_of):
             return Decided("deny", rule, _said_by("deny", rule))
-    if granted and apart is not None:
+    # A tool that names nothing and has nothing that takes commands apart is no tool for
+    # commands. A yes for it is a yes for the tool, as a rule that names it would be.
+    as_a_whole = target is None and splitter is None
+    if granted and (apart is not None or as_a_whole):
         return Decided("allow", None, _GRANTED)
     for rule in rules.ask:
         if any(covers_command(rule, tool, text) for text in spoken_of):
@@ -495,6 +499,11 @@ class Permissions:
         and only a line that can be taken apart, because a line with a
         variable in it may do another thing the next time.
 
+        A tool that runs something and is no tool for commands, such as a
+        tool of a server, names nothing that one of its calls could be told
+        from another by. A yes for it is for every call of the tool, which
+        is what a rule that names the tool allows as well.
+
         Args:
             session: The session.
             tool: The name of the tool.
@@ -509,6 +518,8 @@ class Permissions:
             return None
         if known.effect == "run":
             splitter = self.splitters.get(tool)
+            if target is None and splitter is None:
+                return f"any call of {tool}"
             if target is None or splitter is None or splitter(target) is None:
                 return None
             return "this command, word for word"

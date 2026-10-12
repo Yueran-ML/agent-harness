@@ -209,6 +209,59 @@ def test_a_tool_that_runs_something_and_names_no_command_is_asked_about_as_a_too
     assert of_a_server(RuleSet(), "danger-full-access").why == "The session has full access."
 
 
+def test_a_tool_that_names_no_command_goes_ahead_once_it_was_allowed_for_the_session() -> None:
+    def of_a_server(held: RuleSet) -> Decided:
+        return decide(
+            held,
+            "mcp__files__write",
+            "run",
+            None,
+            None,
+            mode="workspace-write",
+            splitter=None,
+            granted=True,
+        )
+
+    assert of_a_server(RuleSet()).why == "It was allowed for the rest of this session."
+    # Such a yes counts before a rule that asks and after one that refuses, like every yes.
+    assert of_a_server(rules(ask="mcp__files__write")).verdict == "allow"
+    assert of_a_server(rules(deny="mcp__files__*")).verdict == "deny"
+
+
+def test_a_command_that_nothing_takes_apart_is_asked_about_although_it_was_allowed() -> None:
+    # A tool that runs a command and has nothing that takes commands apart names what it
+    # acts on. A yes for one line of it says nothing of what the line does the next time.
+    decided = decide(
+        RuleSet(),
+        "bare",
+        "run",
+        "git status",
+        None,
+        mode="workspace-write",
+        splitter=None,
+        granted=True,
+    )
+
+    assert decided.verdict == "ask"
+
+
+def test_a_tool_for_commands_that_names_none_is_not_allowed_as_a_whole() -> None:
+    # A shell that says nothing of what it runs is no tool of another kind. A yes for every
+    # call of it would be a yes for every command.
+    decided = decide(
+        RuleSet(),
+        "shell",
+        "run",
+        None,
+        None,
+        mode="workspace-write",
+        splitter=split_bash,
+        granted=True,
+    )
+
+    assert decided.verdict == "ask"
+
+
 # What was allowed for the rest of a session
 
 

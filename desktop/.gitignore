@@ -1,0 +1,10 @@
+node_modules/
+.npm-cache/
+dist/
+release/
+test-results/
+*.log
+# Artwork is supplied from a local external directory at build time.
+public/
+electron/icon.ico
+assets.local.json

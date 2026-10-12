@@ -70,6 +70,23 @@ export function stepped<T>(row: readonly T[], from: T, key: string): T | null {
   }
 }
 
+/** How long a start may take before more is said of it, in milliseconds. */
+export const STILL_STARTING_MS = 3000;
+
+/** How many events of a log are asked for at once. A log of more than that is a long one. */
+export const HISTORY_PAGE = 500;
+
+/**
+ * What is said while the page waits for the service: that it is being started, that a task
+ * is being opened, or how far the log of a long task is read.
+ */
+export function waitingWords(
+  words: Messages, at: { answered: boolean; folder: string | null; reading: { read: number; of: number } | null },
+): string {
+  if (at.reading) return words.hint.reading(at.reading.read, at.reading.of);
+  return at.answered || !at.folder ? words.hint.openingTask : words.hint.starting(at.folder);
+}
+
 /**
  * What is said of a service that is gone. One that never answered did not end:
  * it could not be started.

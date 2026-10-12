@@ -1007,3 +1007,15 @@ select.field {
 .setting-grow {
   flex: 1;
 }
+
+/* The line that stands while the page waits for the service, and the way out of a long wait. */
+.starting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.working-more {
+  color: var(--moon-2);
+}

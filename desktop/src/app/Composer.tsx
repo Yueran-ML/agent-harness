@@ -127,7 +127,8 @@ export function Composer({ workspace, draft, onDraft, onSend, field, returned, d
   const placeholder = !workspace.hasProject ? words.label.placeholderNoProject
     : workspace.closed !== null ? goneWords(words, workspace.hello !== null)
       : stopped ? words.label.placeholderStopped
-        : workspace.loading || !workspace.connected ? words.label.placeholderStarting
+        : !workspace.connected ? words.label.placeholderStarting
+          : workspace.loading ? words.label.placeholderOpening
           : running ? words.label.placeholderRunning : words.label.placeholderIdle;
   const hint = unavailable ? ''
     : workspace.cancelling ? words.label.stopping

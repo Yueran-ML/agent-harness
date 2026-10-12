@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ApprovalRequest, Hello, RpcMessage, SessionEvent, SessionStatus, SessionSummary, StreamNotification } from './protocol';
 import { emptyPreview, projectEvents, reduceChunk } from './state';
 import { createElectronTransport, RpcClient } from './transport';
+import { HISTORY_PAGE } from './app/tell';
 import { listedOf, type Listed } from './key/form';
 import { createMockTransport } from './mock';
 import { isCommand } from './uiActions';
@@ -37,6 +38,8 @@ export function useWorkspace() {
   const [services, setServices] = useState<Listed | null>(null);
   // The last lines that the service wrote for errors, asked for when its connection ends.
   const [lastWords, setLastWords] = useState<string[]>([]);
+  // How far the log of a long task is read. Null for a log of one page, and when none is read.
+  const [reading, setReading] = useState<{ read: number; of: number } | null>(null);
   const [mode, setMode] = useState<'mock' | 'service'>('mock');
   const client = useRef<RpcClient | null>(null);
   const active = useRef<string | null>(null);
@@ -48,7 +51,11 @@ export function useWorkspace() {
   const connectionCleanup = useRef<() => void>(() => {});
   const streamKey = useRef('');
   const opening = useRef(false);
+  // Whether the task that is being opened has answered, and its log is being read.
+  const paging = useRef(false);
   const connecting = useRef(false);
+  // The starts that were asked for, by number. One that is given up is no longer the last.
+  const attempts = useRef(0);
   const choosingDirectory = useRef(false);
   const selectedDirectory = useRef<string | null>(null);
 
@@ -66,13 +73,16 @@ export function useWorkspace() {
 
   const openSession = useCallback(async (id?: string) => {
     const rpc = client.current;
-    if (!rpc || opening.current) return;
+    // While the log of a task is being read, another task may be opened in its place.
+    if (!rpc || (opening.current && !paging.current)) return;
     opening.current = true;
+    paging.current = false;
     const version = ++generation.current;
     // What comes for the other task before it is the one shown is kept until then.
     buffered.current.clear();
     approvalBuffer.current.clear();
     setLoading(true);
+    setReading(null);
     setError(null);
     try {
       const opened = await rpc.request<{ session_id: string; events: number }>('session/open', id ? { session_id: id } : {});
@@ -91,21 +101,32 @@ export function useWorkspace() {
       setStatus(statuses.current.get(opened.session_id) ?? null);
       setApproval(approvalBuffer.current.get(opened.session_id) ?? null);
       publish(buffered.current.get(opened.session_id) ?? []);
+      paging.current = true;
+      // A log of more than one page takes long enough to be told of.
+      const long = opened.events > HISTORY_PAGE;
+      if (long) setReading({ read: 0, of: opened.events });
       let from = 0;
       while (from < opened.events) {
-        const page = await rpc.request<{ events: SessionEvent[]; next: number | null }>('session/events', { from, limit: Math.min(500, opened.events - from) });
+        const page = await rpc.request<{ events: SessionEvent[]; next: number | null }>('session/events', { from, limit: Math.min(HISTORY_PAGE, opened.events - from) });
         if (version !== generation.current) return;
         publish(page.events.filter(event => event.seq < opened.events));
         const next = page.next ?? opened.events;
         if (next <= from) throw new Error('The service did not advance the history page. Reconnect to try again.');
         from = next;
+        if (long) setReading({ read: Math.min(from, opened.events), of: opened.events });
       }
       await refreshSessions();
     } catch (problem) {
       if (version === generation.current) fail(problem);
     } finally {
-      opening.current = false;
-      if (version === generation.current) setLoading(false);
+      // Only the opening that is still wanted puts things back. One that another overtook is
+      // over without a word, and the other has the say.
+      if (version === generation.current) {
+        opening.current = false;
+        paging.current = false;
+        setLoading(false);
+        setReading(null);
+      }
     }
   }, [fail, publish, refreshSessions]);
 
@@ -129,12 +150,19 @@ export function useWorkspace() {
   const connect = useCallback(async (cwd?: string, resumeId?: string) => {
     if (connecting.current || (window.columbina && !cwd)) return;
     connecting.current = true;
+    const attempt = ++attempts.current;
+    // A start that was given up goes on to its next wait, and is to change nothing after that.
+    const wanted = () => attempt === attempts.current;
     if (cwd) setFolder(cwd);
     connectionCleanup.current();
     client.current?.close();
     client.current = null;
     active.current = null;
     ++generation.current;
+    // Whatever task was being opened belonged to the service before this one.
+    opening.current = false;
+    paging.current = false;
+    setReading(null);
     setLoading(true);
     setConnected(false);
     setError(null);
@@ -153,7 +181,9 @@ export function useWorkspace() {
       const bridge = window.columbina;
       if (bridge) {
         await bridge.stop();
+        if (!wanted()) return;
         const started = await bridge.start({ cwd: cwd! });
+        if (!wanted()) return;
         selectedDirectory.current = started.cwd;
         setMode(started.mode);
       } else setMode('mock');
@@ -220,16 +250,59 @@ export function useWorkspace() {
       });
       connectionCleanup.current = () => { unsubscribe(); offClose?.(); offShutdown?.(); };
       const greeting = await rpc.request<Hello>('initialize', { protocol: 1, client: { name: 'columbina-desktop', version: '0.1.0' } });
+      if (!wanted()) return;
       setHello(greeting);
       setConnected(true);
       void refreshRecent();
       void refreshServices();
       await openSession(resumeId);
     } catch (problem) {
-      fail(problem);
-      setLoading(false);
-    } finally { connecting.current = false; }
+      if (wanted()) {
+        fail(problem);
+        setLoading(false);
+      }
+    } finally {
+      // A start that was given up is put away by whoever gave it up.
+      if (wanted()) connecting.current = false;
+    }
   }, [fail, openSession, publish, refreshRecent, refreshServices, refreshSessions]);
+
+  /**
+   * Give up a start that has not been answered, and go back to where no project is open.
+   *
+   * The service may be starting, or may have started and say nothing. Either way it is
+   * told to stop. The shell takes its orders one after the other, so this one comes after
+   * the start that is under way and before any start that is asked for later: no service is
+   * left behind, and none that is started next is ended by it.
+   */
+  const cancelStart = useCallback(async () => {
+    if (!connecting.current) return;
+    ++attempts.current;
+    ++generation.current;
+    connectionCleanup.current();
+    connectionCleanup.current = () => {};
+    client.current?.close();
+    client.current = null;
+    active.current = null;
+    opening.current = false;
+    paging.current = false;
+    selectedDirectory.current = null;
+    setLoading(false);
+    setConnected(false);
+    setReading(null);
+    setHello(null);
+    setStatus(null);
+    setClosed(null);
+    setError(null);
+    setFolder(null);
+    setHasProject(false);
+    connecting.current = false;
+    try {
+      await window.columbina?.stop();
+    } catch (problem) {
+      fail(problem);
+    }
+  }, [fail]);
 
   useEffect(() => {
     if (!window.columbina) void connect();
@@ -355,8 +428,8 @@ export function useWorkspace() {
   const projection = useMemo(() => projectEvents(events, closed !== null), [events, closed]);
   return {
     hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending,
-    cancelling, error, closed, lastWords, openedAt, folder, recent, services, mode, projection,
-    openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, setUpService,
+    cancelling, error, closed, lastWords, openedAt, folder, recent, services, mode, projection, reading,
+    openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, setUpService, cancelStart,
     reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined),
     showLog: () => void window.columbina?.showLog().catch(fail),
     clearError: () => setError(null), fail,

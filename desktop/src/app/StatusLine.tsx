@@ -36,7 +36,7 @@ export function StatusLine({ workspace, onPermissions, onDetails }: {
   const stands = workspace.cancelling ? words.label.status.stopping
     : status?.status === 'running' ? words.label.status.working
       : status?.status === 'stopped' ? words.label.status.stopped
-        : workspace.loading ? words.label.status.starting
+        : workspace.loading ? (workspace.hello ? words.label.status.opening : words.label.status.starting)
           : !workspace.connected ? words.label.status.offline : words.label.status.ready;
   const tone = status?.status === 'running' ? 'live'
     : status?.status === 'stopped' || (!workspace.connected && !workspace.loading) ? 'off' : 'rest';

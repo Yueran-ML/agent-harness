@@ -9,7 +9,7 @@ import type { Turn } from '../turns';
 import {
   canSubmitInput, permissionNeedsConfirmation, permissionPresetFromCommand, type PermissionPreset,
 } from '../uiActions';
-import { useWorkspace } from '../useWorkspace';
+import { useWorkspace, type Workspace } from '../useWorkspace';
 import { ApprovalCard } from './ApprovalCard';
 import { Composer } from './Composer';
 import { Conversation } from './Conversation';
@@ -20,11 +20,38 @@ import { Sidebar } from './Sidebar';
 import { Recent, StartHead } from './Start';
 import { StatusLine } from './StatusLine';
 import { Drafts, samePlace, type Place } from './drafts';
-import { shownLanguage, storedLanguage, storeLanguage, Words, wordsFor, type LanguageChoice } from './locale';
+import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
 import { storedOpening, storeOpening } from './opening';
-import { folderName, goneWords, joined, retryText, taskTitle } from './tell';
+import { folderName, goneWords, joined, retryText, STILL_STARTING_MS, taskTitle, waitingWords } from './tell';
 
 const tellingKey = 'columbina-tell-me';
+
+/**
+ * The line that stands while the page waits for the service. A start that takes long says
+ * so, and can be given up then: a service that starts and never answers would otherwise
+ * leave no way out but to close the window.
+ */
+function Starting({ workspace }: { workspace: Workspace }) {
+  const words = useWords();
+  const answered = workspace.hello !== null;
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (answered) return undefined;
+    const timer = setTimeout(() => setSlow(true), STILL_STARTING_MS);
+    return () => clearTimeout(timer);
+  }, [answered, workspace.folder]);
+  return <div className="starting" data-test="starting">
+    <p className="working" role="status">
+      <span className="moon" aria-hidden="true" />
+      {waitingWords(words, { answered, folder: workspace.folder, reading: workspace.reading })}
+      {slow && <span className="working-more" data-test="still-starting">{words.hint.stillStarting}</span>}
+    </p>
+    {slow && <button type="button" className="btn btn-quiet" onClick={() => void workspace.cancelStart()} data-test="cancel-start">
+      {words.label.cancel}
+    </button>}
+  </div>;
+}
 
 /** Whether the user is told of what waits for them while the window is in the background. */
 function storedTelling(): boolean {
@@ -283,7 +310,8 @@ export default function App() {
   const writing = workspace.preview.text !== '' || workspace.preview.reasoning !== '' || workspace.preview.tools.length > 0;
   const empty = projection.items.length === 0 && projection.turns.length === 0
     && workspace.outputs.length === 0 && !writing && !running;
-  const starting = workspace.hasProject && workspace.loading && empty;
+  // A long log is not shown page by page as it comes: the line that counts stands until all of it is there.
+  const starting = workspace.hasProject && workspace.loading && (empty || workspace.reading !== null);
   // A page with nothing on it yet: the field stands in its middle.
   const bare = !workspace.hasProject || empty;
   // A service that ended with nothing on the page: there is nothing to welcome anyone to,
@@ -421,10 +449,7 @@ export default function App() {
           {/* The field keeps its place among these, so that it keeps the keyboard when the page changes. */}
           <div className="stage" data-empty={bare ? '' : undefined}>
             {starting
-              ? <p className="working" role="status" data-test="starting">
-                <span className="moon" aria-hidden="true" />
-                {workspace.hello || !workspace.folder ? words.hint.openingTask : words.hint.starting(workspace.folder)}
-              </p>
+              ? <Starting workspace={workspace} />
               : gone ? null
                 : bare
                   ? <StartHead workspace={workspace} onOpenProject={openProject} onOpenRecent={openRecent} openButton={openButton} />

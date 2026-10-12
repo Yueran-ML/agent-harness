@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  agoOf, argumentsOf, contextPercent, countOf, folderName, goneWords, joined, objectOf, presetOf, presets, retryText, scopeOf,
-  stepped, tail, taskTitle, toolKind, verbOf,
+  agoOf, argumentsOf, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, objectOf, presetOf, presets, retryText, scopeOf,
+  stepped, STILL_STARTING_MS, tail, taskTitle, toolKind, verbOf, waitingWords,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
 import { ja } from '../src/messages/ja';
@@ -102,6 +102,37 @@ describe('how full the context is', () => {
     expect(contextPercent(500, undefined)).toBeNull();
     expect(contextPercent(500, 0)).toBeNull();
     expect(contextPercent(500, -1)).toBeNull();
+  });
+});
+
+describe('what is said while the page waits for the service', () => {
+  const nothing = { answered: false, folder: null, reading: null };
+
+  it('is that the service is being started in the folder, until it answers', () => {
+    expect(waitingWords(en, { ...nothing, folder: 'F:/work' })).toBe('Starting Columbina in F:/work.');
+    expect(waitingWords(zhCN, { ...nothing, folder: 'F:/work' })).toBe(zhCN.hint.starting('F:/work'));
+  });
+
+  it('is that the task is being opened, once the service has answered or where no folder is named', () => {
+    expect(waitingWords(en, { ...nothing, answered: true, folder: 'F:/work' })).toBe('Opening the task.');
+    expect(waitingWords(en, nothing)).toBe('Opening the task.');
+  });
+
+  it('is how far a long log is read, whatever else holds', () => {
+    const reading = { read: 1500, of: 4200 };
+    expect(waitingWords(en, { answered: true, folder: 'F:/work', reading })).toBe('Read 1500 of 4200 events.');
+    expect(waitingWords(en, { ...nothing, reading: { read: 0, of: 501 } })).toBe('Read 0 of 501 events.');
+    expect(waitingWords(zhCN, { ...nothing, reading })).toBe('已读取 1500 / 4200 条。');
+    expect(waitingWords(ja, { ...nothing, reading })).toBe('4200 件のうち 1500 件を読み込みました。');
+  });
+
+  it('says more of a start after three seconds, as the design has it', () => {
+    expect(STILL_STARTING_MS).toBe(3000);
+    expect(en.hint.stillStarting).toBe('It is still starting.');
+  });
+
+  it('takes a log of more than one page for a long one', () => {
+    expect(HISTORY_PAGE).toBe(500);
   });
 });
 

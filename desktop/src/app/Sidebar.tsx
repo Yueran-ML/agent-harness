@@ -30,7 +30,8 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
   const [search, setSearch] = useState('');
   const { sessions, sessionId, hello } = workspace;
   const running = workspace.status?.status === 'running';
-  const busy = workspace.loading || !workspace.connected;
+  // While the log of a long task is read, another task can be opened in its place.
+  const busy = (workspace.loading && workspace.reading === null) || !workspace.connected;
 
   const wanted = search.trim().toLowerCase();
   const shown = sessions.filter(session => (session.first_input ?? '').toLowerCase().includes(wanted));

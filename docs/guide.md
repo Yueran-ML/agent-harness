@@ -532,9 +532,9 @@ its name in Columbina and by the name that Claude Code gives its tool of that ki
 | `PostToolUse` | After a tool has done its work. | Put a reason in the place of the result, or add context after it. |
 | `Stop` | When a turn is about to end. | Give a reason for the model to go on. |
 
-A hook reads one line of JSON on its standard input, which says what is about to happen. It
-stops that by ending with the exit code 2, and what it wrote to its standard error is the
-reason that the model reads. A hook that ends with the exit code 0 can answer in JSON on its
+A hook reads one line of JSON on its standard input, which says what moment it is and what
+the moment is about. It says no by ending with the exit code 2, and what it wrote to its
+standard error is the reason that the model reads. A hook that ends with the exit code 0 can answer in JSON on its
 standard output. Any other end is a failure of the hook: it is logged, and nothing is
 stopped. A hook makes things stricter and never looser. A call that a hook has nothing
 against is still put to the rules and to the sandbox.
@@ -590,7 +590,8 @@ uv tool install ".[mcp]"
 
 Each server is an entry in a file of changes, such as `~/.columbina/config.yml`. A server is
 a program that Columbina starts and talks to over its standard input and output, or an
-address that it talks to over HTTP.
+address that it talks to over HTTP. A value may name an environment variable as `${NAME}`,
+which keeps a token out of the file.
 
 ```yaml
 - insert:

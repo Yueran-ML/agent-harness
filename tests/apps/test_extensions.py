@@ -423,6 +423,9 @@ def sums(starts: Path) -> dict[str, Any]:
     return {"id": "sums", "plugin": "columbina.mcp.server", "config": config}
 
 
+# The server is a program of its own, and it is started twice here. A machine that starts
+# an interpreter slowly, and reads the SDK for the first time, gets the time for it.
+@pytest.mark.timeout(120)
 def test_a_server_of_tools_is_started_and_called_and_started_again_when_it_has_died(
     home: Path,
     work: Path,
@@ -474,9 +477,9 @@ def test_a_server_of_tools_is_started_and_called_and_started_again_when_it_has_d
     assert [line for line in said.err.splitlines() if line.startswith("columbina: ")] == [
         "columbina: the connection to the MCP server sums was lost. It is being made again"
     ]
-    # Two processes were started: the one that died, and the one in its place.
+    # The server was started twice: the process that died, and the one in its place. A system
+    # may give the second the number that the first had, so the numbers are not compared.
     died, came = (json.loads(line) for line in starts.read_text("utf-8").splitlines())
-    assert died["pid"] != came["pid"]
     for started in (died, came):
         # A server gets what its entry names and the few variables that every program needs.
         # What else the user has in the environment does not reach it, a key least of all.
@@ -490,6 +493,7 @@ def test_a_server_of_tools_is_started_and_called_and_started_again_when_it_has_d
     assert "listens" not in said.err
 
 
+@pytest.mark.timeout(120)
 def test_a_tool_of_a_server_is_not_called_where_no_rule_allows_it_and_nobody_can_be_asked(
     home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

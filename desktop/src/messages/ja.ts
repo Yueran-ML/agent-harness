@@ -372,6 +372,7 @@ export const ja: Messages = {
       subagent: '委任',
       other: (tool: string) => `${tool} を呼び出し`,
     },
+    subagentKind: 'サブエージェントの種類',
     input: '渡した内容',
     output: '返ってきた内容',
     noOutput: '出力なし',

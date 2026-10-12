@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   Check, ChevronRight, CircleSlash, FilePen, FileText, FolderSearch, Hand, ListChecks, Search,
   Sparkles, SquareTerminal, TriangleAlert, Users, Wrench, type LucideIcon,
@@ -6,7 +7,9 @@ import { classifyTool, type ToolOutcome } from '../outcomes';
 import type { ToolItem } from '../state';
 import { sayTool } from '../words';
 import { useWords } from './locale';
-import { argumentsOf, commandTools, objectOf, tail, toolKind, verbOf, type ToolKind } from './tell';
+import {
+  argumentsOf, callSeconds, commandTools, objectOf, subagentKind, tail, toolKind, verbOf, type ToolKind,
+} from './tell';
 
 /** The picture that goes with each kind of tool. */
 const icons: Record<ToolKind, LucideIcon> = {
@@ -53,6 +56,18 @@ function Mark({ tone }: { tone: Tone }) {
 /** How many lines of what a tool gave back are shown. The rest is in the log. */
 const LINES_SHOWN = 80;
 
+/** This moment, and while `moving` holds the moment of a look that is taken twice a second. */
+function useNow(moving: boolean): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!moving) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, [moving]);
+  return now;
+}
+
 /**
  * One call of a tool, as a line: what it does, to what, and how it stands.
  * Opened, it shows what it was given and what came back.
@@ -65,7 +80,9 @@ export function ToolRow({ item }: { item: ToolItem }) {
   const outcome = classifyTool(item);
   const saying = sayTool(words, outcome);
   const tone = toneOf(outcome);
-  const seconds = item.durationMs !== null && item.durationMs >= 1000 ? item.durationMs / 1000 : null;
+  const running = outcome.kind === 'running';
+  const seconds = callSeconds(item, running, useNow(running));
+  const kind = subagentKind(item.name, args);
   const edit = item.name === 'edit' && typeof args?.old === 'string' && typeof args?.new === 'string'
     ? { before: args.old, after: args.new } : null;
   const written = item.name === 'write' && typeof args?.content === 'string' ? args.content : null;
@@ -77,9 +94,10 @@ export function ToolRow({ item }: { item: ToolItem }) {
       <span className="tool-what">
         <span className="tool-verb">{verbOf(words, item.name)}</span>
         {object && <code className="tool-object" title={object}>{object.split('\n')[0]}</code>}
+        {kind && <span className="tool-kind" title={words.label.subagentKind} data-test="tool-kind">{kind}</span>}
       </span>
       <span className="tool-state">
-        {seconds !== null && <span className="tool-time">{words.duration(seconds)}</span>}
+        {seconds !== null && <span className="tool-time" data-test="tool-time">{words.duration(seconds)}</span>}
         {outcome.allowedByYou && <span className="tool-note"><Hand size={12} aria-hidden="true" />{words.tool.allowedByYou}</span>}
         {tone === 'ok'
           ? <span className="sr-only">{saying.what}</span>

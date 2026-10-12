@@ -219,6 +219,34 @@ export function toolKind(name: string): ToolKind {
   }
 }
 
+/** The kind of subagent that a call hands its task to, or null where it names none or hands nothing over. */
+export function subagentKind(name: string, args: Record<string, unknown> | null): string | null {
+  if (toolKind(name) !== 'subagent') return null;
+  const kind = args?.type;
+  return typeof kind === 'string' && kind.trim() ? kind.trim() : null;
+}
+
+/** From this long on, a call says how long it runs or ran. A shorter time is not worth a number. */
+export const TIME_WORTH_SAYING_MS = 1000;
+
+/**
+ * How long a call ran or has run so far, in seconds, or null where that is not worth saying.
+ *
+ * A call that is through says the time that it took. One that runs says the whole seconds
+ * that have gone by, so that its number moves once a second and no more often.
+ *
+ * Args:
+ *   item: The call.
+ *   running: Whether the call runs at this moment. One that waits for an answer does not.
+ *   now: This moment, in milliseconds since 1970.
+ */
+export function callSeconds(item: ToolItem, running: boolean, now: number): number | null {
+  if (item.durationMs !== null) return item.durationMs >= TIME_WORTH_SAYING_MS ? item.durationMs / 1000 : null;
+  if (!running) return null;
+  const gone = now - item.beganAt;
+  return gone >= TIME_WORTH_SAYING_MS ? Math.floor(gone / 1000) : null;
+}
+
 /** What a tool does, in a word that fits before what it does it to. */
 export function verbOf(words: Messages, name: string): string {
   const kind = toolKind(name);

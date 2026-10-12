@@ -32,7 +32,7 @@ const turnsOf = (events: SessionEvent[]): Turn[] =>
 // A call as the projection holds it. By default it has come back with a result.
 const call = (given: Partial<ToolItem> = {}): ToolItem => ({
   id: 'event-1', seq: 1, time: 0, turn: 1, type: 'tool', callId: 'a', name: 'read', arguments: '{}',
-  result: 'ok', error: null, durationMs: 10, trimmed: false, interrupted: false, approval: null,
+  result: 'ok', error: null, beganAt: 0, durationMs: 10, trimmed: false, interrupted: false, approval: null,
   ...given,
 });
 const refusedWith = (code: string, given: Partial<ToolItem> = {}): ToolItem =>

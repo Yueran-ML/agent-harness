@@ -401,6 +401,8 @@ export const en = {
       subagent: 'Hand over',
       other: (tool: string) => `Call ${tool}`,
     },
+    /** What the name beside a task that was handed over is. */
+    subagentKind: 'Kind of subagent',
     input: 'What it was given',
     output: 'What came back',
     noOutput: 'Nothing came back',

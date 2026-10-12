@@ -324,6 +324,7 @@ export const zhCN: Messages = {
       subagent: '交给子代理',
       other: (tool: string) => `调用 ${tool}`,
     },
+    subagentKind: '子代理的类型',
     input: '给它的内容',
     output: '返回的内容',
     noOutput: '没有返回内容',

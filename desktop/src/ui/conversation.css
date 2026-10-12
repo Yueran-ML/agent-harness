@@ -179,6 +179,18 @@
   color: var(--moon-0);
 }
 
+/* The kind of subagent that a task was handed to. */
+.tool-kind {
+  flex: none;
+  align-self: center;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+  line-height: 18px;
+}
+
 .tool-state {
   flex: none;
   display: inline-flex;

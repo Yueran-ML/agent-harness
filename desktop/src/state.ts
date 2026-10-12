@@ -42,6 +42,12 @@ export interface ToolItem extends ItemBase {
   arguments: string;
   result: string | null;
   error: { code: string; reason: string } | null;
+  /**
+   * When the call began to run, in milliseconds since 1970: when it was allowed, where
+   * somebody was asked about it, and otherwise when it was made.
+   */
+  beganAt: number;
+  /** How long the call ran, from there to its result. Null while it has none. */
   durationMs: number | null;
   trimmed: boolean;
   interrupted: boolean;
@@ -198,7 +204,6 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
   const projection = emptyProjection();
   const calls: ToolItem[] = [];
   const resultsBySeq = new Map<number, ToolItem>();
-  const approvedAt = new Map<ToolItem, number>();
   // The record of the turn that is under way, if one is.
   let openTurn: TurnRecord | null = null;
   // The service that the log named last as the one that requests go to.
@@ -287,8 +292,8 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
       case 'tool/call': {
         const item: ToolItem = {
           ...base, type: 'tool', callId: string(data.call_id), name: string(data.name),
-          arguments: string(data.arguments), result: null, error: null, durationMs: null, trimmed: false, interrupted: false,
-          approval: null,
+          arguments: string(data.arguments), result: null, error: null, beganAt: event.time, durationMs: null,
+          trimmed: false, interrupted: false, approval: null,
         };
         calls.push(item);
         projection.items.push(item);
@@ -305,7 +310,8 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
       case 'approval/decided': {
         const call = pendingCall(string(data.call_id));
         if (call) {
-          approvedAt.set(call, event.time);
+          // The time that a person takes to answer is no time of the call.
+          call.beganAt = event.time;
           // The policy is the one that held when the question was put, if the log has the question.
           call.approval = {
             outcome: string(data.outcome) || null,
@@ -330,11 +336,11 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
         if (!call) {
           call = {
             ...base, type: 'tool', callId, name: 'Tool result', arguments: '', result: null,
-            error: null, durationMs: null, trimmed: false, interrupted: false, approval: null,
+            error: null, beganAt: event.time, durationMs: null, trimmed: false, interrupted: false, approval: null,
           };
           projection.items.push(call);
         } else {
-          call.durationMs = Math.max(0, event.time - (approvedAt.get(call) ?? call.time));
+          call.durationMs = Math.max(0, event.time - call.beganAt);
         }
         call.result = messageText(message);
         const error = record(data.error);

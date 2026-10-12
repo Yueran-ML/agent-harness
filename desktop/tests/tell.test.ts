@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  agoOf, argumentsOf, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, objectOf, presetOf, presets, retryText, scopeOf,
-  servicesToTell, serviceTitle, stepped, STILL_STARTING_MS, tail, taskTitle, toolKind, verbOf, waitingWords,
+  agoOf, argumentsOf, callSeconds, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, objectOf, presetOf, presets,
+  retryText, scopeOf, servicesToTell, serviceTitle, stepped, STILL_STARTING_MS, subagentKind, tail, taskTitle,
+  TIME_WORTH_SAYING_MS, toolKind, verbOf, waitingWords,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
 import { ja } from '../src/messages/ja';
@@ -360,9 +361,56 @@ describe('the presets of the permissions', () => {
 });
 
 describe('a call of a tool', () => {
-  const call = (name: string, args: string): ToolItem => ({
+  const call = (name: string, args: string, given: Partial<ToolItem> = {}): ToolItem => ({
     id: 'event-1', seq: 1, time: 0, turn: 1, type: 'tool', callId: 'a', name, arguments: args,
-    result: null, error: null, durationMs: null, trimmed: false, interrupted: false, approval: null,
+    result: null, error: null, beganAt: 0, durationMs: null, trimmed: false, interrupted: false, approval: null,
+    ...given,
+  });
+
+  it('says how long it ran once it is through, from a second on', () => {
+    expect(TIME_WORTH_SAYING_MS).toBe(1000);
+    const ran = (durationMs: number) => callSeconds(call('bash', '{}', { result: 'ok', durationMs }), false, 999_999);
+    expect(ran(0)).toBeNull();
+    expect(ran(999)).toBeNull();
+    expect(ran(1000)).toBe(1);
+    // To the part of a second that it took. The catalogue rounds it for the eye.
+    expect(ran(1234)).toBe(1.234);
+    expect(ran(30_412)).toBe(30.412);
+    // What the clock says does not count for a call that is through, running or not.
+    expect(callSeconds(call('bash', '{}', { result: 'ok', durationMs: 2000, beganAt: 5000 }), true, 60_000)).toBe(2);
+  });
+
+  it('says how long it has run so far while it runs, in whole seconds and from a second on', () => {
+    const runs = call('bash', '{}', { beganAt: 10_000 });
+    expect(callSeconds(runs, true, 10_000)).toBeNull();
+    expect(callSeconds(runs, true, 10_999)).toBeNull();
+    expect(callSeconds(runs, true, 11_000)).toBe(1);
+    expect(callSeconds(runs, true, 11_999)).toBe(1);
+    expect(callSeconds(runs, true, 12_000)).toBe(2);
+    expect(callSeconds(runs, true, 100_500)).toBe(90);
+    // A clock that is behind the log says nothing rather than a time before the beginning.
+    expect(callSeconds(runs, true, 4000)).toBeNull();
+  });
+
+  it('says no time for a call that neither runs nor is through', () => {
+    // It waits for an answer, or its turn was cut short: it began, and has no time to tell of.
+    const waits = call('bash', '{}', { beganAt: 10_000, approval: { outcome: null, policy: 'ask' } });
+    expect(callSeconds(waits, false, 70_000)).toBeNull();
+    expect(callSeconds(call('bash', '{}', { beganAt: 10_000, interrupted: true }), false, 70_000)).toBeNull();
+  });
+
+  it('names the kind of subagent that a task is handed to', () => {
+    expect(subagentKind('subagent', { description: 'Read the change', prompt: '...', type: 'reviewer' })).toBe('reviewer');
+    expect(subagentKind('subagent', { type: '  reviewer ' })).toBe('reviewer');
+    // No kind is named: the task goes to a subagent like the agent itself.
+    expect(subagentKind('subagent', { description: 'Read the change', prompt: '...' })).toBeNull();
+    for (const kind of [null, '', '   ', 7, ['reviewer'], { name: 'reviewer' }]) {
+      expect(subagentKind('subagent', { type: kind })).toBeNull();
+    }
+    expect(subagentKind('subagent', null)).toBeNull();
+    // Another tool may have an argument of that name. It hands nothing over.
+    expect(subagentKind('read', { type: 'reviewer' })).toBeNull();
+    expect(subagentKind('mcp__files__open', { type: 'text' })).toBeNull();
   });
 
   it('has its arguments read as an object, and as nothing where they are none', () => {

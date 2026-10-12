@@ -81,7 +81,7 @@ function shapeOf(value: unknown, path = ''): unknown {
 
 const call = (given: Partial<ToolItem> = {}): ToolItem => ({
   id: 'event-1', seq: 1, time: 0, turn: 1, type: 'tool', callId: 'a', name: 'bash', arguments: '{}',
-  result: 'ok', error: null, durationMs: 10, trimmed: false, interrupted: false, approval: null,
+  result: 'ok', error: null, beganAt: 0, durationMs: 10, trimmed: false, interrupted: false, approval: null,
   ...given,
 });
 const failedWith = (code: string, given: Partial<ToolItem> = {}): ToolItem =>

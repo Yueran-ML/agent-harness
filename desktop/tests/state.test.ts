@@ -60,6 +60,24 @@ describe('durable event projection', () => {
     expect(projection.items[1]).toMatchObject({ callId: 'b', result: 'read output', durationMs: 30 });
   });
 
+  it('says when a call began to run: when it was made, or when it was allowed', () => {
+    const began = (events: SessionEvent[]) =>
+      projectEvents(events).items.map(item => item.type === 'tool' && [item.callId, item.beganAt, item.durationMs]);
+    const made = event(0, 'tool/call', { call_id: 'a', name: 'powershell', arguments: 'run' }, 10);
+    const asked = event(1, 'approval/asked', { call_id: 'a', tool: 'powershell', summary: 'run' }, 30);
+    // Nobody is asked: it runs from where it was made.
+    expect(began([made])).toEqual([['a', 10, null]]);
+    // While somebody is asked it does not run. Its time is still that of the call.
+    expect(began([made, asked])).toEqual([['a', 10, null]]);
+    // The answer came half a minute later: it runs from there.
+    const allowed = event(2, 'approval/decided', { call_id: 'a', outcome: 'allowed-once' }, 30000);
+    expect(began([made, asked, allowed])).toEqual([['a', 30000, null]]);
+    // Its result does not move where it began.
+    expect(began([made, asked, allowed, event(3, 'tool/result', result('a', 'done'), 30150)])).toEqual([['a', 30000, 150]]);
+    // A result that no call asked for began and ended where it stands.
+    expect(began([event(0, 'tool/result', result('lost', 'something'), 70)])).toEqual([['lost', 70, null]]);
+  });
+
   it('marks tools without a result as interrupted when a turn ends, without inventing output', () => {
     const projection = projectEvents([
       event(0, 'turn/start', { turn: 1 }),

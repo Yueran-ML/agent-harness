@@ -397,6 +397,63 @@ button.task:hover:not(:disabled) {
   margin-top: var(--s3);
 }
 
+/* What the task that is about to begin may do. A click leads to where that is chosen. */
+.start-may {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  color: var(--moon-2);
+  font-size: var(--text-caption);
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.start-may:hover {
+  background: var(--ink-2);
+  color: var(--moon-0);
+}
+
+.start-may[data-tone='warn'] {
+  color: var(--warn);
+}
+
+/* The skills that there are, below the earlier tasks. */
+.start-skills {
+  animation-delay: 150ms;
+}
+
+.skill > svg {
+  flex: none;
+  color: var(--moon-3);
+}
+
+.skill-name {
+  flex: none;
+  color: var(--moon-0);
+  font-size: calc(12.5px * var(--type));
+}
+
+.skill-for {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--moon-2);
+  font-size: var(--text-caption);
+}
+
+.skill[data-own='agent'] .skill-name {
+  color: var(--moon-1);
+}
+
+.skills-more {
+  padding: var(--s1) var(--s3) 0;
+}
+
 .btn-large {
   min-height: 40px;
   padding: 0 var(--s5);

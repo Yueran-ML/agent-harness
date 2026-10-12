@@ -94,6 +94,7 @@ from columbina.session import (
     encode_event,
 )
 from columbina.session.store import SESSION_FILE
+from columbina.skills import SKILLS, one_line
 
 __all__ = ["PAGE_BYTES", "PAGE_EVENTS", "PROTOCOL", "Config", "Server"]
 
@@ -261,6 +262,7 @@ class Server:
             "session/steer": (_Said, self._steer),
             "session/cancel": (_Nothing, self._cancel),
             "session/command": (_Line, self._command),
+            "session/skills": (_Nothing, self._skills),
             "shutdown": (_Nothing, self._shutdown),
         }
 
@@ -350,7 +352,7 @@ class Server:
         except RpcError as error:
             self._send(refused(request.id, error.code, error.message))
             return
-        if request.method in ("session/command", "session/list"):
+        if request.method in ("session/command", "session/list", "session/skills"):
             doing = asyncio.ensure_future(self._answer(request, work))
             self._working.add(doing)
             doing.add_done_callback(self._working.discard)
@@ -509,6 +511,29 @@ class Server:
             position += 1
         following = position if position < len(events) else None
         return f'{{"events":[{",".join(page)}],"next":{text(following)}}}'
+
+    async def _skills(self, params: _Nothing, id: Id) -> str:
+        """List the skills that there are for the session that is open.
+
+        They are looked for anew, as they are at the beginning of every turn, so a
+        skill that was written a moment ago is among them. A program without skills
+        has none to list.
+        """
+        agent = self._open_agent()
+        skills = self._ctx.get(SKILLS)
+        if skills is None:
+            return text({"skills": []})
+        found = await skills.found(agent.session, self._config.cwd)
+        listed = [
+            {
+                "name": named,
+                "description": one_line(skill.description),
+                "user_invocable": skill.user_invocable,
+                "model_invocable": skill.model_invocable,
+            }
+            for named, skill in found.skills.items()
+        ]
+        return text({"skills": listed})
 
     async def _prompt(self, params: _Said, id: Id) -> str:
         agent, said = self._working_agent(), self._words(params)

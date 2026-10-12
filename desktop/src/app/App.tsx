@@ -18,12 +18,14 @@ import { changesOf, Inspector, type InspectorTab } from './Inspector';
 import { Settings, type SettingsPart } from './Settings';
 import { Sheet } from './Sheet';
 import { Sidebar } from './Sidebar';
-import { Recent, StartHead } from './Start';
+import { Recent, StartHead, StartSkills } from './Start';
 import { StatusLine } from './StatusLine';
 import { Drafts, samePlace, Unread, type Place } from './drafts';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
 import { storedOpening, storeOpening } from './opening';
-import { folderName, goneWords, joined, retryText, STILL_STARTING_MS, taskTitle, waitingWords } from './tell';
+import {
+  folderName, goneWords, joined, retryText, skillLine, STILL_STARTING_MS, taskTitle, waitingWords,
+} from './tell';
 
 const tellingKey = 'columbina-tell-me';
 
@@ -68,6 +70,8 @@ interface PendingPermission {
   preset: PermissionPreset;
   line: string;
   sessionId: string | null;
+  /** Whether the change was made in the settings, where it shows without a line in the conversation. */
+  quiet: boolean;
 }
 
 export default function App() {
@@ -190,14 +194,14 @@ export default function App() {
 
   // --- Sending.
   const state = { unavailable, sending: workspace.sending, running };
-  const send = async (line: string): Promise<boolean> => {
+  const send = async (line: string, quiet = false): Promise<boolean> => {
     if (!canSubmitInput(line, state)) return false;
     const preset = permissionPresetFromCommand(line);
     if (preset && permissionNeedsConfirmation(preset, status)) {
-      setPendingPermission({ preset, line, sessionId: workspace.sessionId });
+      setPendingPermission({ preset, line, sessionId: workspace.sessionId, quiet });
       return false;
     }
-    return workspace.send(line);
+    return workspace.send(line, quiet);
   };
   /** What was sent from a task is no draft of it any more, wherever the user is by the time the answer comes. */
   const forget = (from: Place | null, line: string) => {
@@ -219,7 +223,7 @@ export default function App() {
     setPendingPermission(null);
     if (!change || change.sessionId !== workspace.sessionId || !canSubmitInput(change.line, state)) return;
     const from = placeNow.current;
-    if (await workspace.send(change.line)) forget(from, change.line);
+    if (await workspace.send(change.line, change.quiet)) forget(from, change.line);
   };
 
   // --- Leaving a task. A turn that is under way is not stopped without a yes.
@@ -469,7 +473,13 @@ export default function App() {
               ? <Starting workspace={workspace} />
               : gone ? null
                 : bare
-                  ? <StartHead workspace={workspace} onOpenProject={openProject} onOpenRecent={openRecent} openButton={openButton} />
+                  ? <StartHead
+                      workspace={workspace}
+                      onOpenProject={openProject}
+                      onOpenRecent={openRecent}
+                      onPermissions={() => setSettings('permissions')}
+                      openButton={openButton}
+                    />
                   : <Conversation workspace={workspace} onLink={setLink} onAction={onAction} />}
             <div className="dock" hidden={!workspace.hasProject || starting || gone}>
               {/* A card of its own for every question, so that nothing of one question is left for the next. */}
@@ -494,7 +504,17 @@ export default function App() {
                 commandsAsked={commandsAsked}
               />
             </div>
-            {bare && !starting && !gone && workspace.hasProject && <Recent workspace={workspace} onOpenTask={openTask} />}
+            {bare && !starting && !gone && workspace.hasProject && <>
+              <Recent workspace={workspace} onOpenTask={openTask} />
+              <StartSkills
+                workspace={workspace}
+                onUse={(name) => {
+                  // The command that hands the skill over, with the field ready for the task to do by it.
+                  write(skillLine(name));
+                  field.current?.focus();
+                }}
+              />
+            </>}
           </div>
 
           <StatusLine
@@ -529,7 +549,8 @@ export default function App() {
         onTellMe={setTellMe}
         onPlayNow={() => { setSettings(null); setShowOpening(true); }}
         music={music}
-        onCommand={line => void send(line)}
+        // What is changed here shows here: the answer of the command is not written into the conversation.
+        onCommand={line => void send(line, true)}
         onClose={() => setSettings(null)}
       />}
 

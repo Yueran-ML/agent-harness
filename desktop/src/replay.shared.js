@@ -9,6 +9,12 @@ const commands = [
   { name: 'permissions', summary: 'Show or change the session permission preset.' },
   { name: 'compact', summary: 'Sum up earlier messages to make room for the next task.' },
 ];
+// Two skills, so that a page under development has some to show: one that anybody may load,
+// and one that only the agent loads.
+const skills = [
+  { name: 'review', description: 'Reads a change and says what is wrong with it. Changes nothing.', user_invocable: true, model_invocable: true },
+  { name: 'house-style', description: 'How this project names things and writes its comments.', user_invocable: false, model_invocable: true },
+];
 
 /** An in-memory protocol peer shared by the browser preview and the stdio process.
  * Model/tool output is a real recorded run; approval and compaction are synthetic.
@@ -262,6 +268,7 @@ export function createReplayService(output, options = {}) {
       status(); return;
     }
     if (!current) { fail(id, 1001, 'Open a session first.'); return; }
+    if (method === 'session/skills') { reply(id, { skills: copy(skills) }); return; }
     if (method === 'session/events') {
       if (!Number.isInteger(params.from) || params.from < 0 || (params.limit !== undefined && (!Number.isInteger(params.limit) || params.limit < 1 || params.limit > 500))) { fail(id, -32602, 'The history page parameters are not valid.'); return; }
       const end = Math.min(current.events.length, params.from + (params.limit || 500));

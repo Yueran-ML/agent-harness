@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ApprovalRequest, Hello, RpcMessage, SessionEvent, SessionStatus, SessionSummary, StreamNotification } from './protocol';
+import { skillsOf } from './app/tell';
+import type {
+  ApprovalRequest, Hello, RpcMessage, SessionEvent, SessionStatus, SessionSummary, SkillSummary, StreamNotification,
+} from './protocol';
 import { emptyPreview, projectEvents, reduceChunk } from './state';
 import { createElectronTransport, RpcClient } from './transport';
 import { HISTORY_PAGE } from './app/tell';
@@ -41,6 +44,8 @@ export function useWorkspace() {
   // The services of the model and where the key of each comes from, as the program of the
   // service tells of them. Null where the application does not run that program, or before it answered.
   const [services, setServices] = useState<Listed | null>(null);
+  // The skills of the task that is open, as the service process lists them.
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
   // The last lines that the service wrote for errors, asked for when its connection ends.
   const [lastWords, setLastWords] = useState<string[]>([]);
   // How far the log of a long task is read. Null for a log of one page, and when none is read.
@@ -76,6 +81,20 @@ export function useWorkspace() {
     setSessions(result.sessions);
   }, []);
 
+  const refreshSkills = useCallback(async () => {
+    const rpc = client.current;
+    const asked = active.current;
+    if (!rpc || asked === null) return;
+    let found: SkillSummary[] = [];
+    try {
+      found = skillsOf(await rpc.request('session/skills'));
+    } catch {
+      // A service process of an earlier day does not know the request. There are no skills to name then.
+    }
+    // The answer is of the task that was open when it was asked for.
+    if (active.current === asked) setSkills(found);
+  }, []);
+
   const openSession = useCallback(async (id?: string) => {
     const rpc = client.current;
     // While the log of a task is being read, another task may be opened in its place.
@@ -102,6 +121,7 @@ export function useWorkspace() {
       setOutputs([]);
       setCancelling(false);
       setOpenedAt(opened.events);
+      setSkills([]);
       setSessionId(opened.session_id);
       setStatus(statuses.current.get(opened.session_id) ?? null);
       setApproval(approvalBuffer.current.get(opened.session_id) ?? null);
@@ -121,6 +141,7 @@ export function useWorkspace() {
         if (long) setReading({ read: Math.min(from, opened.events), of: opened.events });
       }
       await refreshSessions();
+      await refreshSkills();
     } catch (problem) {
       if (version === generation.current) fail(problem);
     } finally {
@@ -133,7 +154,7 @@ export function useWorkspace() {
         setReading(null);
       }
     }
-  }, [fail, publish, refreshSessions]);
+  }, [fail, publish, refreshSessions, refreshSkills]);
 
   const refreshRecent = useCallback(async () => {
     try {
@@ -315,10 +336,19 @@ export function useWorkspace() {
     return () => { ++generation.current; connectionCleanup.current(); client.current?.close(); };
   }, [connect, refreshRecent]);
 
-  const command = useCallback(async (line: string) => {
+  /**
+   * Have a command carried out.
+   *
+   * Args:
+   *   line: The command.
+   *   quiet: Whether what it answers is left out of the conversation. A change that the user
+   *     made in the settings shows there, and a line of the service about it would stand in
+   *     a conversation in which nobody typed a command.
+   */
+  const command = useCallback(async (line: string, quiet = false) => {
     if (!client.current) return;
     const result = await client.current.request<{ text: string }>('session/command', { line });
-    if (!result.text) return;
+    if (!result.text || quiet) return;
     // What the command did is in the log by now: the service tells of it before it answers.
     let after = -1;
     for (const seq of eventStore.current.keys()) if (seq > after) after = seq;
@@ -349,11 +379,14 @@ export function useWorkspace() {
     return sent(() => rpc.request(status?.status === 'running' ? 'session/steer' : 'session/prompt', { text }));
   }, [sent, status]);
 
-  /** Send what was written in the field: a command if it begins with a slash, and input for the agent otherwise. */
-  const send = useCallback(async (text: string) => {
+  /**
+   * Send a line: a command if it begins with a slash, and input for the agent otherwise.
+   * `quiet` keeps what a command answers out of the conversation, see `command`.
+   */
+  const send = useCallback(async (text: string, quiet = false) => {
     if (!isCommand(text)) return prompt(text);
     if (!client.current) return false;
-    return sent(() => command(text.trim()));
+    return sent(() => command(text.trim(), quiet));
   }, [command, prompt, sent]);
 
   const cancel = useCallback(async () => {
@@ -437,7 +470,7 @@ export function useWorkspace() {
   const projection = useMemo(() => projectEvents(events, closed !== null), [events, closed]);
   return {
     hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending,
-    cancelling, error, closed, lastWords, openedAt, folder, recent, services, mode, projection, reading,
+    cancelling, error, closed, lastWords, openedAt, folder, recent, services, skills, mode, projection, reading,
     openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, setUpService, cancelStart,
     reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined),
     showLog: () => void window.columbina?.showLog().catch(fail),

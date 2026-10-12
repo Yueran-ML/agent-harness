@@ -55,6 +55,7 @@
 | `session/steer` | `{text}` | `{}` |
 | `session/cancel` | 无 | `{}` |
 | `session/command` | `{line}` | `{text}` |
+| `session/skills` | 无 | `{skills}` |
 | `shutdown` | 无 | `{}` |
 
 ### `initialize`
@@ -139,6 +140,14 @@
 命令被接受之后，排在它后面的请求不会抢到它前面。命令执行期间发来的 `session/prompt` 和 `session/steer` 照常被接受，由服务进程留着，命令一结束就按原来的先后交给 Agent。这之前日志里没有它们，界面要自己记着它们在等。有输入留着的时候 `session.status` 是 `running`，因为有回合即将开始。`session/cancel` 停下命令，这些输入也一并丢弃。命令还没有开始就被停下时，它不会执行，`text` 是 `The command /NAME was stopped.`。
 
 有的命令要让 Agent 做事，例如 `/compact` 要请模型写摘要。这段时间里 `session.status` 是 `running`，`session/cancel` 可以把它停下。立刻执行完的命令不改变 `session.status`，例如 `/help`。命令改了状态里的某一项时，例如 `/model` 换了模型、`/permissions` 换了沙箱模式，服务进程发一条新的 `session.status`。
+
+### `session/skills`
+
+列出已打开的会话现在有哪些技能。`skills` 的每一项是 `{name, description, user_invocable, model_invocable}`，按名字排序。`description` 是这个技能的用途，压成一行，最长 500 个字符。`user_invocable` 为真的技能可以由人用命令 `/skill NAME` 交给 Agent，`model_invocable` 为真的技能模型会在用得上的时候自己加载。
+
+技能每次都重新找，与每个回合开始时一样，所以刚写好的技能马上就在里面。程序没有加载技能这个部件时 `skills` 为空。没有会话打开时回答错误 1001。这个请求在后台办理，不挡住排在它后面的请求。
+
+这个方法是后来加的。不认识它的服务进程回答 -32601，界面这时当作没有技能。
 
 ### `shutdown`
 
@@ -486,7 +495,7 @@ Schema 描述的是这个版本写出的数据，每个对象都不带多余的�
 
 **假的服务进程。** 界面也可以对着一个回放日志的假进程开发，这样不需要模型和密钥。它读一份会话文件，按下面的规则回答：
 
-- `initialize`、`session/list`、`session/open` 给出固定的结果。`session/open` 的 `events` 为 0。
+- `initialize`、`session/list`、`session/open`、`session/skills` 给出固定的结果。`session/open` 的 `events` 为 0。
 - 收到 `session/prompt` 之后，按顺序把日志里的事件逐条作为 `session.event` 发出，中间留一点间隔。第一条之前发 `session.status running`，最后一条之后发 `session.status idle`。
 - 每条 `assistant/message` 之前，按它的内容块合成片段：每块一个 `block-start`，把文字切成小段作为增量，再一个 `block-end`，最后是 `usage` 和 `finish`。
 - 每条 `approval/asked` 之后发一个 `approval/ask` 请求，收到回答再继续。

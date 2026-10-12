@@ -5,6 +5,7 @@
  */
 import { serviceCalled, type Listed, type ListedService } from '../key/form';
 import type { Messages } from '../messages/en';
+import type { SkillSummary } from '../protocol';
 import type { ToolItem } from '../state';
 import { promptOf, type Turn } from '../turns';
 import type { PermissionPreset } from '../uiActions';
@@ -121,6 +122,59 @@ export function keyAtHand(provider: string | null | undefined, listed: Listed | 
   const service = listed.services.find(candidate => candidate.name === provider);
   if (!service || service.own || service.key_env === null) return true;
   return service.key === 'stored' || service.key === 'environment';
+}
+
+/**
+ * Read what the service process answers when it is asked for the skills of a session.
+ *
+ * Whatever is no list of skills is none. Of a skill that says nothing of who may load it,
+ * both may: that is what a skill is unless its file says otherwise.
+ */
+export function skillsOf(given: unknown): SkillSummary[] {
+  const listed = (given as { skills?: unknown } | null)?.skills;
+  if (!Array.isArray(listed)) return [];
+  const read: SkillSummary[] = [];
+  for (const one of listed as unknown[]) {
+    if (one === null || typeof one !== 'object') continue;
+    const said = one as Record<string, unknown>;
+    if (typeof said.name !== 'string' || said.name === '') continue;
+    read.push({
+      name: said.name,
+      description: typeof said.description === 'string' ? said.description : '',
+      user_invocable: said.user_invocable !== false,
+      model_invocable: said.model_invocable !== false,
+    });
+  }
+  return read;
+}
+
+/** How many skills the page of a new task names. The command `/skills` lists them all. */
+export const SKILLS_SHOWN = 6;
+
+/**
+ * The skills that the page of a new task names, and how many more there are.
+ *
+ * Those that a person can hand over stand first, because a click on one of them does
+ * something. Among each kind the order of the service process is kept, which is by name.
+ */
+export function skillsToShow(skills: readonly SkillSummary[], most = SKILLS_SHOWN): { shown: SkillSummary[]; more: number } {
+  const ordered = [...skills.filter(skill => skill.user_invocable), ...skills.filter(skill => !skill.user_invocable)];
+  return { shown: ordered.slice(0, most), more: Math.max(0, ordered.length - most) };
+}
+
+/**
+ * The name of the skill that a message hands to the agent, or null where it names none.
+ *
+ * The service process writes the name at the head of such a message, on a line of its own.
+ */
+export function skillNamed(text: string): string | null {
+  const found = /^Skill: (.+)$/m.exec(text);
+  return found ? found[1].trim() || null : null;
+}
+
+/** What stands in the field after a skill was chosen: the command that hands it over, ready for the task. */
+export function skillLine(name: string): string {
+  return `/skill ${name} `;
 }
 
 /** How the task that is open stands, in a word and in the tone that goes with it. */

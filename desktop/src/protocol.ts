@@ -84,6 +84,17 @@ export interface Hello {
   commands: { name: string; summary: string }[];
 }
 
+/** A skill of the session that is open, as `session/skills` lists it. */
+export interface SkillSummary {
+  name: string;
+  /** What it is for, on one line. */
+  description: string;
+  /** Whether a person may hand it to the agent, with `/skill NAME`. */
+  user_invocable: boolean;
+  /** Whether the model loads it by itself when a task calls for it. */
+  model_invocable: boolean;
+}
+
 export interface SessionSummary {
   id: string;
   modified_ms: number;

@@ -15855,14 +15855,64 @@ _SERVE = (
     mutant(
         "a command is carried out before the next request is read",
         SERVE_SERVER,
-        '        if request.method in ("session/command", "session/list"):\n',
-        '        if request.method == "session/list":\n',
+        '        if request.method in ("session/command", "session/list", "session/skills"):\n',
+        '        if request.method in ("session/list", "session/skills"):\n',
     ),
     mutant(
         "the sessions are listed before the next request is read",
         SERVE_SERVER,
+        '        if request.method in ("session/command", "session/list", "session/skills"):\n',
+        '        if request.method in ("session/command", "session/skills"):\n',
+    ),
+    mutant(
+        "the skills are looked for before the next request is read",
+        SERVE_SERVER,
+        '        if request.method in ("session/command", "session/list", "session/skills"):\n',
         '        if request.method in ("session/command", "session/list"):\n',
-        '        if request.method == "session/command":\n',
+    ),
+    mutant(
+        "the skills are looked for in the directory that the program was started in",
+        SERVE_SERVER,
+        "        found = await skills.found(agent.session, self._config.cwd)\n",
+        "        found = await skills.found(agent.session, Path.cwd())\n",
+    ),
+    mutant(
+        "what a skill is for is listed as its file has it, on however many lines",
+        SERVE_SERVER,
+        '                "description": one_line(skill.description),\n',
+        '                "description": skill.description,\n',
+    ),
+    mutant(
+        "a skill that a person may not hand over is listed as one that may be",
+        SERVE_SERVER,
+        '                "user_invocable": skill.user_invocable,\n',
+        '                "user_invocable": True,\n',
+    ),
+    mutant(
+        "a skill that the model may not load is listed as one that it loads",
+        SERVE_SERVER,
+        '                "model_invocable": skill.model_invocable,\n',
+        '                "model_invocable": True,\n',
+    ),
+    mutant(
+        "who may load a skill is listed the other way round",
+        SERVE_SERVER,
+        '                "user_invocable": skill.user_invocable,\n'
+        '                "model_invocable": skill.model_invocable,\n',
+        '                "user_invocable": skill.model_invocable,\n'
+        '                "model_invocable": skill.user_invocable,\n',
+    ),
+    mutant(
+        "a program without skills fails whoever asks for them",
+        SERVE_SERVER,
+        '        if skills is None:\n            return text({"skills": []})\n',
+        "",
+    ),
+    mutant(
+        "the skills are listed where no session is open",
+        SERVE_SERVER,
+        "        agent = self._open_agent()\n        skills = self._ctx.get(SKILLS)\n",
+        "        agent = cast(Agent, self._agent)\n        skills = self._ctx.get(SKILLS)\n",
     ),
     mutant(
         "what went wrong inside is told to the other side",

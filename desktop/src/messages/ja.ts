@@ -414,6 +414,9 @@ export const ja: Messages = {
     emptyTitle: '今日は何をしましょうか？',
     emptyNoProjectTitle: 'プロジェクトを開いて始めましょう',
     recentTasks: '最近のタスク',
+    skills: 'スキル',
+    skillGiven: (name: string | null) => (name ? `スキル：${name}` : 'スキル'),
+    skillOfTheAgent: 'Columbina が自分で読み込みます',
 
     appearance: '外観',
     theme: 'テーマ',
@@ -458,6 +461,7 @@ export const ja: Messages = {
     noTasks: 'このプロジェクトには、まだタスクがありません。',
     noMatch: '一致するタスクはありません。',
     emptyNoProject: 'Columbina が作業するフォルダーを選んでください。',
+    moreSkills: (count: number) => `ほかに ${count} 件あります。/skills ですべて表示できます。`,
     replay: 'これは記録済みセッションのリプレイです。モデルへのリクエストは行われません。',
     taskStopped: 'このタスクは停止しており、これ以上入力を受け付けません。続けるには、Columbina を再起動してください。',
     serviceEnded: 'サービスプロセスが終了しました。',

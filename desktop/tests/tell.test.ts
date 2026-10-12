@@ -2,8 +2,9 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   agoOf, argumentsOf, callSeconds, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, keyAtHand, objectOf, presetOf,
-  presets, retryText, scopeOf, servicesToTell, serviceTitle, standingOf, stepped, STILL_STARTING_MS, subagentKind, tail, taskTitle,
-  TIME_WORTH_SAYING_MS, toolKind, verbOf, waitingWords,
+  presets, retryText, scopeOf, servicesToTell, serviceTitle, skillLine, skillNamed, SKILLS_SHOWN, skillsOf, skillsToShow, standingOf,
+  stepped,
+  STILL_STARTING_MS, subagentKind, tail, taskTitle, TIME_WORTH_SAYING_MS, toolKind, verbOf, waitingWords,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
 import { ja } from '../src/messages/ja';
@@ -229,6 +230,84 @@ describe('the services that the settings tell of', () => {
   it('do not hold a service in use that the list does not have', () => {
     // The profile names a service of its own. It is in use, and the list has nothing to say of it.
     expect(servicesToTell({ use: null, services: [service('deepseek')] }, 'in-house')).toEqual({ inUse: 'in-house', known: [] });
+  });
+});
+
+describe('the skills of a task', () => {
+  const skill = (name: string, user_invocable = true, model_invocable = true) => ({
+    name, description: `What ${name} is for.`, user_invocable, model_invocable,
+  });
+
+  it('are read as the service process lists them', () => {
+    const listed = { skills: [skill('release', true, false), skill('review'), skill('style', false)] };
+    expect(skillsOf(listed)).toEqual(listed.skills);
+  });
+
+  it('are none where the answer is no list of skills', () => {
+    for (const given of [null, undefined, 'review', 7, [], {}, { skills: 'review' }, { skills: null }, { error: 'no such method' }]) {
+      expect(skillsOf(given)).toEqual([]);
+    }
+  });
+
+  it('hold only what is a skill with a name, and take of each what is of its kind', () => {
+    expect(skillsOf({ skills: [null, 'review', 3, {}, { name: '' }, { name: 7 }, { name: 'mine' }] }))
+      .toEqual([{ name: 'mine', description: '', user_invocable: true, model_invocable: true }]);
+    expect(skillsOf({ skills: [{ name: 'mine', description: 7, user_invocable: 'no', model_invocable: 0 }] }))
+      .toEqual([{ name: 'mine', description: '', user_invocable: true, model_invocable: true }]);
+    // Only a plain no keeps somebody from loading a skill.
+    expect(skillsOf({ skills: [{ name: 'mine', user_invocable: false, model_invocable: false }] }))
+      .toEqual([{ name: 'mine', description: '', user_invocable: false, model_invocable: false }]);
+  });
+
+  it('are named on the page of a new task, those first that a person can hand over', () => {
+    const all = [skill('a', false), skill('b'), skill('c', false), skill('d'), skill('e')];
+    expect(skillsToShow(all)).toEqual({ shown: [all[1], all[3], all[4], all[0], all[2]], more: 0 });
+    expect(skillsToShow([])).toEqual({ shown: [], more: 0 });
+    // What was handed over is left as it was.
+    expect(all.map(one => one.name)).toEqual(['a', 'b', 'c', 'd', 'e']);
+  });
+
+  it('are named up to a number, and the page says how many more there are', () => {
+    expect(SKILLS_SHOWN).toBe(6);
+    const many = Array.from({ length: 9 }, (_one, index) => skill(`skill-${index}`, index !== 0));
+    const told = skillsToShow(many);
+    expect(told.shown.map(one => one.name)).toEqual(['skill-1', 'skill-2', 'skill-3', 'skill-4', 'skill-5', 'skill-6']);
+    expect(told.more).toBe(3);
+    expect(skillsToShow(many.slice(0, 6))).toEqual({ shown: [...many.slice(1, 6), many[0]], more: 0 });
+    expect(skillsToShow(many, 2)).toEqual({ shown: [many[1], many[2]], more: 7 });
+  });
+
+  it('are handed over by a command that the field is given, ready for the task', () => {
+    expect(skillLine('review')).toBe('/skill review ');
+    // The line is a command for the shell that takes commands: it begins with a slash and names the skill whole.
+    expect(permissionPresetFromCommand(skillLine('review'))).toBeNull();
+    expect(skillLine('house-style').trim().split(' ')).toEqual(['/skill', 'house-style']);
+  });
+
+  it('are known by name where one was handed to the agent', () => {
+    // As the service process writes it: a sentence, the name on a line of its own, where it lies, and its text.
+    const handed = 'The user wants you to go by this skill.\n\nSkill: house-style\nDirectory of the skill: F:\\work\\.columbina\\skills\\house-style\n\nName things as they are.';
+    expect(skillNamed(handed)).toBe('house-style');
+    expect(skillNamed('Skill: review')).toBe('review');
+    expect(skillNamed('Skill:   review  \nmore')).toBe('review');
+    // A line that only speaks of a skill names none.
+    expect(skillNamed('The Skill: review is good')).toBeNull();
+    expect(skillNamed('Skill review')).toBeNull();
+    expect(skillNamed('Skill: ')).toBeNull();
+    expect(skillNamed('')).toBeNull();
+    // The first such line is the name: the text of a skill may hold another.
+    expect(skillNamed('Skill: first\n\nSkill: second')).toBe('first');
+    expect(en.label.skillGiven('review')).toBe('Skill: review');
+    expect(en.label.skillGiven(null)).toBe('A skill');
+    expect(zhCN.label.skillGiven('review')).toBe('技能：review');
+    expect(ja.label.skillGiven('review')).toBe('スキル：review');
+  });
+
+  it('are said in each language where there are more than the page names', () => {
+    expect(en.hint.moreSkills(1)).toBe('And 1 more. /skills lists them all.');
+    expect(en.hint.moreSkills(3)).toBe('And 3 more. /skills lists them all.');
+    expect(zhCN.hint.moreSkills(3)).toBe('还有 3 个，用 /skills 可以全部列出。');
+    expect(ja.hint.moreSkills(3)).toBe('ほかに 3 件あります。/skills ですべて表示できます。');
   });
 });
 

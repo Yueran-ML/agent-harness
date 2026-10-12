@@ -9,7 +9,7 @@ import { sayModelFailure, sayTurn } from '../words';
 import { CopyButton, Markdown } from './Markdown';
 import { ToolRow } from './ToolRow';
 import { useWords } from './locale';
-import { keyAtHand, serviceTitle } from './tell';
+import { keyAtHand, serviceTitle, skillNamed } from './tell';
 
 /**
  * The services that are set up and the one that the service process talks to, for whatever
@@ -22,10 +22,13 @@ const SAY_HOW_LONG_AFTER = 5;
 
 /** What a person said, as the block that a turn opens with. */
 function Said({ item }: { item: UserItem }) {
+  const words = useWords();
   // What a plugin or a hook put in is of interest to few, and is kept folded.
   if (item.source !== 'user' && item.source !== 'steer') {
+    // A skill that the user handed over is known by its name, not by where the message came from.
+    const title = item.source === 'skill' ? words.label.skillGiven(skillNamed(item.text)) : item.source;
     return <details className="aside">
-      <summary><ChevronRight size={13} aria-hidden="true" />{item.source}</summary>
+      <summary><ChevronRight size={13} aria-hidden="true" />{title}</summary>
       <pre className="block" tabIndex={0}>{item.text}</pre>
     </details>;
   }

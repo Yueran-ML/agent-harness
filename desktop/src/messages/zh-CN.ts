@@ -366,6 +366,9 @@ export const zhCN: Messages = {
     emptyTitle: '今天想做点什么？',
     emptyNoProjectTitle: '从打开一个项目开始',
     recentTasks: '最近的任务',
+    skills: '技能',
+    skillGiven: (name: string | null) => (name ? `技能：${name}` : '一个技能'),
+    skillOfTheAgent: '由 Columbina 自己加载',
 
     appearance: '外观',
     theme: '主题',
@@ -410,6 +413,7 @@ export const zhCN: Messages = {
     noTasks: '这个项目里还没有任务。',
     noMatch: '没有匹配的任务。',
     emptyNoProject: '先选一个文件夹，Columbina 就在里面工作。',
+    moreSkills: (count: number) => `还有 ${count} 个，用 /skills 可以全部列出。`,
     replay: '这是一段录好的会话的回放，不会请求任何模型。',
     taskStopped: '这个任务已经停止，不再接受输入。重新启动 Columbina 之后可以接着做。',
     serviceEnded: '服务进程已经结束。',

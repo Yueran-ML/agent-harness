@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { skillsOf } from '../src/app/tell';
 import { RpcClient, type Transport } from '../src/transport';
 import { createMockTransport } from '../src/mock';
 import type { RpcMessage, SessionStatus } from '../src/protocol';
@@ -101,6 +102,11 @@ describe('replay protocol peer', () => {
     expect(first.next).toBe(10);
     expect(eventsOf(messages)).toHaveLength(0);
     await expect(client.request('session/permissions-unknown')).rejects.toMatchObject({ code: -32601 });
+    // The skills of the session, as a service process lists them: by name, with who may load each.
+    const listed = skillsOf(await client.request('session/skills'));
+    expect(listed.map((skill) => [skill.name, skill.user_invocable, skill.model_invocable]))
+      .toEqual([['review', true, true], ['house-style', false, true]]);
+    expect(listed.every((skill) => skill.description.length > 0 && !skill.description.includes('\n'))).toBe(true);
     await client.request('session/prompt', { text: '继续演示' });
     expect(eventsOf(messages)[0].seq).toBe(resumed.events);
     await client.request('session/cancel');

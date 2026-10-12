@@ -444,6 +444,11 @@ export const en = {
     emptyTitle: 'What shall we work on?',
     emptyNoProjectTitle: 'Open a project to begin',
     recentTasks: 'Recent tasks',
+    skills: 'Skills',
+    /** Over the text of a skill that the user handed to the agent. */
+    skillGiven: (name: string | null) => (name ? `Skill: ${name}` : 'A skill'),
+    /** Beside a skill that a person cannot hand over. */
+    skillOfTheAgent: 'Columbina loads it itself',
 
     appearance: 'Appearance',
     theme: 'Theme',
@@ -489,6 +494,7 @@ export const en = {
     noTasks: 'No task yet in this project.',
     noMatch: 'No task matches.',
     emptyNoProject: 'Choose the folder that Columbina is to work in.',
+    moreSkills: (count: number) => (count === 1 ? 'And 1 more. /skills lists them all.' : `And ${count} more. /skills lists them all.`),
     replay: 'This is a replay of a recorded session. No model is asked for anything.',
     taskStopped: 'This task has stopped and takes nothing more. Start Columbina again to go on with it.',
     serviceEnded: 'The service process has ended.',

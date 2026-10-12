@@ -4,6 +4,7 @@ import { MusicTitlebar, useBackgroundMusic } from '../BackgroundMusic';
 import { StartupVideo } from '../StartupVideo';
 import type { ActionKey } from '../outcomes';
 import { messageText, type UserItem } from '../state';
+import { initialSize, storeSize, type SizeId } from '../size';
 import { initialTheme, storeTheme, type ThemeId } from '../themes';
 import type { Turn } from '../turns';
 import {
@@ -75,6 +76,7 @@ export default function App() {
   const { projection, status } = workspace;
 
   const [theme, setTheme] = useState<ThemeId>(initialTheme);
+  const [size, setSize] = useState<SizeId>(initialSize);
   const [language, setLanguage] = useState<LanguageChoice>(storedLanguage);
   const words = useMemo(() => wordsFor(language), [language]);
   // The opening plays at the first start. After that it plays where the user chose to see it
@@ -108,6 +110,10 @@ export default function App() {
     storeTheme(theme);
     void window.columbina?.setTheme(theme).catch(workspace.fail);
   }, [theme, workspace.fail]);
+  useEffect(() => {
+    document.documentElement.dataset.size = size;
+    storeSize(size);
+  }, [size]);
   useEffect(() => {
     // The language that is shown, which is English where the system has one that there are no words for.
     document.documentElement.lang = shownLanguage(language);
@@ -512,6 +518,8 @@ export default function App() {
         part={settings}
         theme={theme}
         onTheme={setTheme}
+        size={size}
+        onSize={setSize}
         language={language}
         onLanguage={setLanguage}
         shownLanguage={shownLanguage(language)}

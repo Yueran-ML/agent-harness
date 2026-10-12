@@ -29,7 +29,7 @@ describe('the window for the key', () => {
     // The words, the look and the themes are shared. Nothing that reads the log of a task,
     // draws what a model wrote or talks to the service process is.
     const shared = new Set([
-      '../app/locale', '../i18n', '../themes', '../ui/tokens.css', '../ui/base.css',
+      '../app/locale', '../i18n', '../size', '../themes', '../ui/tokens.css', '../ui/base.css',
       './KeyApp', './form', './key.css',
     ]);
     const packages = new Set([
@@ -43,6 +43,7 @@ describe('the window for the key', () => {
     expect(importsOf(read('src/app/locale.ts')).sort()).toEqual(['../i18n', '../messages/en', 'react']);
     expect(importsOf(read('src/i18n.ts')).sort()).toEqual(['./messages/en', './messages/ja', './messages/zh-CN']);
     expect(importsOf(read('src/themes.ts'))).toEqual([]);
+    expect(importsOf(read('src/size.ts'))).toEqual([]);
   });
 
   it('never reaches for the bridge of the main window', () => {

@@ -5,6 +5,7 @@ import { languageFor } from '../src/i18n';
 import { en } from '../src/messages/en';
 import { ja } from '../src/messages/ja';
 import { zhCN } from '../src/messages/zh-CN';
+import { initialSize, sizes, sizeStorageKey, storeSize } from '../src/size';
 import { initialTheme, storeTheme, themes, themeStorageKey } from '../src/themes';
 import { blockOf, colourOf, contrast, over, rgbOf, selectorOf, themeColour, tokens, washOf } from './stylesheet';
 
@@ -77,6 +78,113 @@ describe('the themes', () => {
     vi.stubGlobal('localStorage', broken);
     expect(initialTheme()).toBe('moonveil');
     expect(() => storeTheme('moonwhite')).not.toThrow();
+  });
+});
+
+describe('the size of type', () => {
+  const sheets = ['src/ui/tokens.css', 'src/ui/base.css', 'src/ui/shell.css', 'src/ui/conversation.css', 'src/ui/composer.css', 'src/key/key.css'];
+  const scaleOf = (block: string) => Number(/^\s*--type:\s*([\d.]+);/m.exec(block)?.[1]);
+
+  it('is the standard one until another is chosen', () => {
+    vi.stubGlobal('localStorage', storage());
+    expect(initialSize()).toBe('standard');
+    expect(sizes).toEqual(['small', 'standard', 'large']);
+  });
+
+  it('is the one that was chosen last', () => {
+    const kept = storage();
+    vi.stubGlobal('localStorage', kept);
+    storeSize('large');
+    expect(kept.kept).toEqual({ [sizeStorageKey]: 'large' });
+    expect(initialSize()).toBe('large');
+    storeSize('small');
+    expect(initialSize()).toBe('small');
+    storeSize('standard');
+    expect(initialSize()).toBe('standard');
+  });
+
+  it('is the standard one where what was kept names no size', () => {
+    for (const kept of ['huge', '', 'LARGE', 'constructor', '1.14']) {
+      vi.stubGlobal('localStorage', storage({ [sizeStorageKey]: kept }));
+      expect(initialSize()).toBe('standard');
+    }
+  });
+
+  it('does without a place to keep the choice', () => {
+    vi.stubGlobal('localStorage', broken);
+    expect(initialSize()).toBe('standard');
+    expect(() => storeSize('large')).not.toThrow();
+  });
+
+  it('has a name in every language', () => {
+    for (const words of [en, zhCN, ja]) {
+      expect(Object.keys(words.label.typeSizes).sort()).toEqual([...sizes].sort());
+      expect(new Set(Object.values(words.label.typeSizes)).size).toBe(sizes.length);
+    }
+  });
+
+  it('is smaller and larger than the standard one by a step that can be seen and does not break a line of buttons', () => {
+    expect(scaleOf(blockOf(tokens, ':root'))).toBe(1);
+    const small = scaleOf(blockOf(tokens, ":root[data-size='small']"));
+    const large = scaleOf(blockOf(tokens, ":root[data-size='large']"));
+    expect(small).toBeGreaterThanOrEqual(0.88);
+    expect(small).toBeLessThanOrEqual(0.95);
+    expect(large).toBeGreaterThanOrEqual(1.1);
+    expect(large).toBeLessThanOrEqual(1.2);
+    // No size in the stylesheet that cannot be chosen, and none that can be chosen without its rule.
+    const named = [...tokens.matchAll(/data-size='([a-z]+)'/g)].map(found => found[1]);
+    expect(named.sort()).toEqual(sizes.filter(size => size !== 'standard').sort());
+  });
+
+  it('is followed by every size that a stylesheet writes', () => {
+    // A size that is written in pixels alone would stay as it is when the user chooses another.
+    for (const sheet of sheets) {
+      const written = [...read(sheet).matchAll(/font-size:\s*([^;]+);/g)].map(found => found[1]);
+      for (const size of written) {
+        expect(size, sheet).toMatch(/^(var\(--text-[a-z]+\)|calc\([\d.]+px \* var\(--type\)\)|[\d.]+em)$/);
+      }
+    }
+    for (const name of ['caption', 'ui', 'read', 'title', 'display']) {
+      expect(blockOf(tokens, ':root')).toMatch(new RegExp(`^\\s*--text-${name}: calc\\([\\d.]+px \\* var\\(--type\\)\\);$`, 'm'));
+    }
+  });
+
+  it('is kept under a name that nothing else is kept under', () => {
+    // Every choice that the window keeps has a name of its own. Two under one name would undo each other.
+    const sources = ['src/app/App.tsx', 'src/app/locale.ts', 'src/app/opening.ts', 'src/BackgroundMusic.tsx', 'src/size.ts', 'src/themes.ts'];
+    const names = sources.flatMap(file => [...read(file).matchAll(/[kK]ey = '(columbina-[^']+)';/g)].map(found => found[1]));
+    expect(names).toHaveLength(6);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain(sizeStorageKey);
+    expect(names).toContain(themeStorageKey);
+  });
+
+  it('is on both pages before anything is drawn on them', () => {
+    for (const page of ['src/main.tsx', 'src/key/main.tsx']) {
+      expect(read(page), page).toContain('document.documentElement.dataset.size = initialSize();');
+    }
+  });
+});
+
+describe('a sheet', () => {
+  const base = read('src/ui/base.css');
+  const rulesOf = (selector: string) => blockOf(base, selector).split('\n').slice(2).map(rule => rule.trim());
+
+  it('gives its head and its foot the room that they take, and what lies between them the rest', () => {
+    // Were the three taller together than the sheet, whatever is scrolled into view in it would
+    // push its head out at the top: the settings do that when they open at one of their parts.
+    expect(rulesOf('dialog.sheet[open]')).toEqual(expect.arrayContaining(['display: flex;', 'flex-direction: column;']));
+    expect(rulesOf('.sheet-head')).toContain('flex: none;');
+    expect(rulesOf('.sheet-foot')).toContain('flex: none;');
+    expect(rulesOf('.sheet-body')).toEqual(expect.arrayContaining(['flex: 1;', 'min-height: 0;', 'overflow: auto;']));
+    // The sheet is as tall as the window lets it be. Nothing in it has a height of its own to add to that.
+    expect(rulesOf('dialog.sheet')).toContain('max-height: calc(100vh - 96px);');
+    expect(rulesOf('.sheet-body').filter(rule => rule.includes('height') && rule !== 'min-height: 0;')).toEqual([]);
+  });
+
+  it('is laid out only while it is open', () => {
+    // A dialog that is closed is not shown. A rule of the page that lays it out would show it.
+    expect(rulesOf('dialog.sheet').filter(rule => rule.startsWith('display'))).toEqual([]);
   });
 });
 

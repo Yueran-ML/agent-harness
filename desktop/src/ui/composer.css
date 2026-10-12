@@ -223,7 +223,7 @@
 .consent-target {
   max-height: 168px;
   color: var(--moon-0);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--type));
 }
 
 .consent-why {

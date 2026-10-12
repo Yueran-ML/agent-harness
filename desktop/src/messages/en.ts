@@ -449,6 +449,8 @@ export const en = {
     themeNames: { moonveil: 'Moonveil', moonwhite: 'Moonwhite' },
     language: 'Language',
     languageSystem: 'As the system has it',
+    typeSize: 'Size of type',
+    typeSizes: { small: 'Small', standard: 'Standard', large: 'Large' },
     model: 'Model',
     permissions: 'Permissions',
     presets: {
@@ -459,7 +461,7 @@ export const en = {
     openingAndMusic: 'Opening and music',
     playOpening: 'Play the opening when the application starts',
     playOpeningNow: 'Play the opening now',
-    connection: 'Connection',
+    about: 'About',
 
     confirmFullAccess: 'Allow full access?',
     confirmWrite: 'Let Columbina change files?',
@@ -522,6 +524,7 @@ export const en = {
     noToolsYet: 'The tools are known once the first request is made.',
     noChanges: 'No file was changed in this task.',
     about: (version: string, protocol: number) => `Columbina ${version}, protocol ${protocol}.`,
+    logKept: 'What goes wrong in the service process is written to a log on this computer.',
     openingUnavailable: 'The opening cannot be played.',
 
     /** The window in which a service is chosen and its key is given. */

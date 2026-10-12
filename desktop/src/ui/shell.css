@@ -33,7 +33,7 @@
   gap: 9px;
   /* The name is a Latin word in every language, and keeps the face it has in English. */
   font-family: "Sitka Display", "Sitka Heading", "Iowan Old Style", "Palatino Linotype", "New York", ui-serif, Georgia, serif;
-  font-size: 16px;
+  font-size: calc(16px * var(--type));
   letter-spacing: 0.01em;
   color: var(--moon-0);
 }
@@ -299,7 +299,7 @@ button.task:hover:not(:disabled) {
   border-radius: 999px;
   background: var(--accent-wash);
   color: var(--accent);
-  font-size: 11px;
+  font-size: calc(11px * var(--type));
   font-weight: 600;
   line-height: 18px;
   text-align: center;
@@ -401,7 +401,7 @@ button.task:hover:not(:disabled) {
   min-height: 40px;
   padding: 0 var(--s5);
   border-radius: var(--r2);
-  font-size: 14px;
+  font-size: calc(14px * var(--type));
 }
 
 .crescent {
@@ -693,7 +693,7 @@ button.task:hover:not(:disabled) {
 
 .figures dd {
   margin-top: 2px;
-  font-size: 18px;
+  font-size: calc(18px * var(--type));
   font-variant-numeric: tabular-nums;
   color: var(--moon-0);
 }

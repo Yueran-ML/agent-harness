@@ -220,7 +220,7 @@ kbd {
 .btn kbd,
 .keys kbd {
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: calc(11px * var(--type));
   font-weight: 500;
   padding: 1px 5px;
   border-radius: 4px;
@@ -298,7 +298,7 @@ kbd {
 }
 
 .overline {
-  font-size: 11px;
+  font-size: calc(11px * var(--type));
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -394,11 +394,21 @@ dialog.sheet {
   overflow: hidden;
 }
 
+/* Its head and its foot are as tall as they are, and what lies between them takes the rest
+   and scrolls. Were the three taller together than the sheet, whatever is scrolled into view
+   in it would push its head out at the top. Only an open one is laid out: a dialog that is
+   closed is not shown, and a rule of the page would show it. */
+dialog.sheet[open] {
+  display: flex;
+  flex-direction: column;
+}
+
 dialog.sheet::backdrop {
   background: var(--scrim);
 }
 
 .sheet-head {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -414,12 +424,14 @@ dialog.sheet::backdrop {
 }
 
 .sheet-body {
+  flex: 1;
+  min-height: 0;
   padding: 0 var(--s5) var(--s5);
   overflow: auto;
-  max-height: calc(100vh - 200px);
 }
 
 .sheet-foot {
+  flex: none;
   display: flex;
   justify-content: flex-end;
   gap: var(--s2);

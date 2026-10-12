@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { KeyRound } from 'lucide-react';
+import { FileText, KeyRound } from 'lucide-react';
 import { MusicSettings, type BackgroundMusic } from '../BackgroundMusic';
 import { called } from '../key/form';
 import type { Hello } from '../protocol';
+import { sizes, type SizeId } from '../size';
 import { themes, type ThemeId } from '../themes';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
@@ -14,13 +15,15 @@ import { presetOf, presets, servicesToTell, serviceTitle } from './tell';
 export type SettingsPart = 'appearance' | 'model' | 'permissions';
 
 export function Settings({
-  workspace, part, theme, onTheme, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
+  workspace, part, theme, onTheme, size, onSize, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
   tellMe, onTellMe, music, onCommand, onClose,
 }: {
   workspace: Workspace;
   part: SettingsPart;
   theme: ThemeId;
   onTheme: (theme: ThemeId) => void;
+  size: SizeId;
+  onSize: (size: SizeId) => void;
   language: LanguageChoice;
   onLanguage: (language: LanguageChoice) => void;
   /** The language of the words that are shown, as a page names it. */
@@ -82,10 +85,7 @@ export function Settings({
     title={words.label.settings}
     onClose={onClose}
     wide
-    foot={<>
-      <span className="caption">{hello ? words.hint.about(hello.server.version, hello.protocol) : ''}</span>
-      <button type="button" className="btn btn-main" onClick={onClose}>{words.label.done}</button>
-    </>}
+    foot={<button type="button" className="btn btn-main" onClick={onClose}>{words.label.done}</button>}
   >
     <section className="setting" ref={at('appearance')}>
       <h3>{words.label.appearance}</h3>
@@ -116,6 +116,20 @@ export function Settings({
           <option value="system">{words.label.languageSystem}</option>
           {languages.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
+      </div>
+      <div className="setting-row">
+        <span className="setting-name" id="setting-size">{words.label.typeSize}</span>
+        <div className="segments" role="group" aria-labelledby="setting-size">
+          {sizes.map(id => <button
+            type="button"
+            key={id}
+            aria-pressed={size === id}
+            onClick={() => onSize(id)}
+            data-test={`size-${id}`}
+          >
+            {words.label.typeSizes[id]}
+          </button>)}
+        </div>
       </div>
     </section>
 
@@ -224,9 +238,10 @@ export function Settings({
       <p className="caption">{words.hint.tellMe}</p>
     </section>
 
-    <section className="setting">
-      <h3>{words.label.connection}</h3>
-      <p className="setting-now">
+    <section className="setting" data-test="about">
+      <h3>{words.label.about}</h3>
+      {hello && <p className="setting-now">{words.hint.about(hello.server.version, hello.protocol)}</p>}
+      <p className="caption">
         {!workspace.connected ? words.hint.serviceEnded
           : workspace.mode === 'mock' ? words.hint.replay : words.hint.connectedService}
       </p>
@@ -235,7 +250,12 @@ export function Settings({
         <button type="button" className="btn" disabled={running || workspace.loading} onClick={() => void workspace.reconnect()}>
           {words.label.restart}
         </button>
+        {/* Where the service process writes what goes wrong. The shell shows the file in its folder. */}
+        {window.columbina && <button type="button" className="btn btn-quiet" onClick={workspace.showLog} data-test="about-log">
+          <FileText size={14} aria-hidden="true" />{words.label.showLog}
+        </button>}
       </div>
+      {window.columbina && <p className="caption">{words.hint.logKept}</p>}
     </section>
   </Sheet>;
 }

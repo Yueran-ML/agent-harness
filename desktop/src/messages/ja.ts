@@ -419,6 +419,8 @@ export const ja: Messages = {
     themeNames: { moonveil: '月夜', moonwhite: '月白' },
     language: '言語',
     languageSystem: 'システムに合わせる',
+    typeSize: '文字サイズ',
+    typeSizes: { small: '小', standard: '標準', large: '大' },
     model: 'モデル',
     permissions: '権限',
     presets: {
@@ -429,7 +431,7 @@ export const ja: Messages = {
     openingAndMusic: 'オープニングと音楽',
     playOpening: '起動時にオープニングを再生する',
     playOpeningNow: '今すぐオープニングを再生',
-    connection: '接続',
+    about: 'このアプリについて',
 
     confirmFullAccess: 'フルアクセスを許可しますか？',
     confirmWrite: 'Columbina にファイルの変更を許可しますか？',
@@ -487,6 +489,7 @@ export const ja: Messages = {
     noToolsYet: 'ツールは、最初のリクエストを送った後に分かります。',
     noChanges: 'このタスクでは、ファイルは変更されていません。',
     about: (version: string, protocol: number) => `Columbina ${version}、プロトコル ${protocol}。`,
+    logKept: 'サービスプロセスで起きた問題は、このコンピューター上のログに書き込まれます。',
     openingUnavailable: 'オープニングを再生できません。',
 
     key: {

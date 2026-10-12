@@ -64,11 +64,14 @@
     "Sarasa Mono SC", ui-monospace, monospace;
   --display-weight: 400;
 
-  --text-caption: 12px;
-  --text-ui: 13px;
-  --text-read: 15px;
-  --text-title: 22px;
-  --text-display: 34px;
+  /* The size of type. Every size on the page is one of these or is written as a multiple of
+     `--type`, so that the size that the user chose changes all of them alike. */
+  --type: 1;
+  --text-caption: calc(12px * var(--type));
+  --text-ui: calc(13px * var(--type));
+  --text-read: calc(15px * var(--type));
+  --text-title: calc(22px * var(--type));
+  --text-display: calc(34px * var(--type));
   --leading-ui: 1.4;
   --leading-read: 1.65;
 
@@ -107,6 +110,15 @@
   --green: var(--ok);
   --red: var(--bad);
   --amber: var(--warn);
+}
+
+/* The sizes of type that can be chosen beside the standard one. */
+:root[data-size='small'] {
+  --type: 0.92;
+}
+
+:root[data-size='large'] {
+  --type: 1.14;
 }
 
 :root[data-theme='moonwhite'] {

@@ -371,6 +371,8 @@ export const zhCN: Messages = {
     themeNames: { moonveil: '月夜', moonwhite: '月白' },
     language: '语言',
     languageSystem: '跟随系统',
+    typeSize: '字号',
+    typeSizes: { small: '小', standard: '标准', large: '大' },
     model: '模型',
     permissions: '权限',
     presets: {
@@ -381,7 +383,7 @@ export const zhCN: Messages = {
     openingAndMusic: '开场与音乐',
     playOpening: '启动时播放开场',
     playOpeningNow: '现在播放开场',
-    connection: '连接',
+    about: '关于',
 
     confirmFullAccess: '允许完全访问？',
     confirmWrite: '允许 Columbina 修改文件？',
@@ -438,6 +440,7 @@ export const zhCN: Messages = {
     noToolsYet: '发出第一次请求之后才知道有哪些工具。',
     noChanges: '这个任务没有改动任何文件。',
     about: (version: string, protocol: number) => `Columbina ${version}，协议版本 ${protocol}。`,
+    logKept: '服务进程出的问题会写进这台电脑上的一份日志。',
     openingUnavailable: '开场无法播放。',
 
     key: {

@@ -4,7 +4,7 @@ import type { Workspace } from '../useWorkspace';
 import { CopyButton } from './Markdown';
 import { ToolRow } from './ToolRow';
 import { useWords } from './locale';
-import { contextPercent, stepped } from './tell';
+import { contextPercent, countOf, stepped } from './tell';
 
 export type InspectorTab = 'changes' | 'details';
 const tabs: readonly InspectorTab[] = ['changes', 'details'];
@@ -16,17 +16,13 @@ export function changesOf(workspace: Workspace): ToolItem[] {
   );
 }
 
-function short(count: number, locale: string): string {
-  return Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(count);
-}
-
 function Details({ workspace, locale }: { workspace: Workspace; locale: string }) {
   const words = useWords();
   const { projection, status } = workspace;
   const read = projection.usage.input_tokens + projection.usage.cache_read_tokens + projection.usage.cache_write_tokens;
   const cached = read > 0 ? Math.round(projection.usage.cache_read_tokens / read * 100) : 0;
   const percent = contextPercent(projection.lastInputTokens, status?.model.context_window);
-  const used = short(projection.lastInputTokens, locale);
+  const used = countOf(projection.lastInputTokens, locale);
   const window = status?.model.context_window;
 
   return <div className="details">
@@ -42,15 +38,15 @@ function Details({ workspace, locale }: { workspace: Workspace; locale: string }
         <span style={{ width: `${percent}%` }} data-tone={percent >= 95 ? 'bad' : percent >= 80 ? 'warn' : undefined} />
       </div>}
       <p className="caption">
-        {window ? words.hint.contextOf(used, short(window, locale)) : words.hint.contextUnknown(used)}
+        {window ? words.hint.contextOf(used, countOf(window, locale)) : words.hint.contextUnknown(used)}
       </p>
     </section>
 
     <section>
       <div className="overline">{words.label.usage}</div>
       <dl className="figures">
-        <div><dt>{words.label.usageIn}</dt><dd>{short(read, locale)}</dd></div>
-        <div><dt>{words.label.usageOut}</dt><dd>{short(projection.usage.output_tokens, locale)}</dd></div>
+        <div><dt>{words.label.usageIn}</dt><dd>{countOf(read, locale)}</dd></div>
+        <div><dt>{words.label.usageOut}</dt><dd>{countOf(projection.usage.output_tokens, locale)}</dd></div>
         <div><dt>{words.label.usageCached}</dt><dd>{cached}%</dd></div>
       </dl>
     </section>

@@ -19,7 +19,8 @@ import { eventsOf, logs } from './logs';
 const catalogues: [name: string, messages: Messages][] = [['English', en], ['Chinese', zhCN]];
 
 // A sentence that takes numbers is a function. These are the numbers it is tried with:
-// one and many, short and long.
+// one and many, short and long. A count comes as short as its language writes it, which
+// is 12.4K in English and 1.2万 in Chinese and Japanese.
 const samples: Record<string, unknown[][]> = {
   'duration': [[0.5], [1], [42], [60], [125], [3600], [3725]],
   'tool.exited': [[1], [137]],
@@ -37,8 +38,8 @@ const samples: Record<string, unknown[][]> = {
   'hint.consentOther': [['fetch']],
   'hint.scope.anyCall': [['fetch']],
   'hint.scope.onTarget': [['peek', 'notes.txt']],
-  'hint.contextOf': [['12.4K', '128K']],
-  'hint.contextUnknown': [['950']],
+  'hint.contextOf': [['12.4K', '128K'], ['2670', '104.9万'], ['1.2万', '100万']],
+  'hint.contextUnknown': [['950'], ['1.2万']],
   'hint.about': [['0.1.0', 1]],
   // The name of a variable, which is written in capitals. A name with an underscore in it
   // would be taken for a code of the service by the test below.
@@ -183,6 +184,10 @@ describe('the two catalogues', () => {
     const halfWidth = new RegExp(`${chinese}\\s*[,;:?()]|[,;:?()]\\s*${chinese}|${chinese}\\.(\\s|$)`);
     expect(said.filter(({ text }) => blank.test(text))).toEqual([]);
     expect(said.filter(({ text }) => halfWidth.test(text))).toEqual([]);
+    // A blank between Chinese and a number or a word in Latin letters. A count that is
+    // written with 万 is one number, and has none inside.
+    const touching = new RegExp(`${chinese}[A-Za-z0-9]|[A-Za-z0-9%](?![万亿])${chinese}`);
+    expect(said.filter(({ text }) => touching.test(text))).toEqual([]);
     // The user is addressed as 你.
     expect(said.filter(({ text }) => text.includes('您'))).toEqual([]);
     // Every sentence is in Chinese: none was left as it is in English.

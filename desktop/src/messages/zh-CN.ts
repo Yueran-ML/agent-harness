@@ -14,6 +14,7 @@
  */
 import { splitDuration } from './duration';
 import type { Messages } from './en';
+import { beforeWord } from './spacing';
 
 function duration(seconds: number): string {
   const time = splitDuration(seconds);
@@ -155,7 +156,7 @@ export const zhCN: Messages = {
       ? `${duration(seconds)}后第 ${retry} 次重试。`
       : `正在第 ${retry} 次重试。`),
     retried: (seconds: number, retry: number) => (seconds > 0
-      ? `等了${duration(seconds)}，第 ${retry} 次重试。`
+      ? `等了 ${duration(seconds)}，第 ${retry} 次重试。`
       : `随即第 ${retry} 次重试。`),
     gaveUp: '还没来得及重试就停下了。',
   },
@@ -414,8 +415,8 @@ export const zhCN: Messages = {
     openLink: '它出现在对话里，会在你的浏览器里打开。',
     commandsList: '命令由 Columbina 自己执行，模型看不到它。',
     connectedService: '已连接到在这个文件夹里运行的服务进程。',
-    contextOf: (used: string, window: string) => `最近一次请求用了 ${used} 个 token，上限是 ${window}。`,
-    contextUnknown: (used: string) => `最近一次请求用了 ${used} 个 token。`,
+    contextOf: (used: string, window: string) => `最近一次请求用了 ${beforeWord(used)}个 token，上限是 ${window}。`,
+    contextUnknown: (used: string) => `最近一次请求用了 ${beforeWord(used)}个 token。`,
     noToolsYet: '发出第一次请求之后才知道有哪些工具。',
     noChanges: '这个任务没有改动任何文件。',
     about: (version: string, protocol: number) => `Columbina ${version}，协议版本 ${protocol}。`,

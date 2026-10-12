@@ -70,6 +70,14 @@ export function stepped<T>(row: readonly T[], from: T, key: string): T | null {
   }
 }
 
+/**
+ * A count of tokens, as short as a language writes it: `2.7K` in English, and `1.2万` in
+ * Chinese and in Japanese, which count in ten thousands.
+ */
+export function countOf(count: number, locale: string): string {
+  return Intl.NumberFormat(locale, { notation: 'compact', maximumFractionDigits: 1 }).format(count);
+}
+
 /** How full the context of the model was at the last request, in percent, or null if its size is not known. */
 export function contextPercent(lastInputTokens: number, window: number | null | undefined): number | null {
   if (!window || window <= 0) return null;

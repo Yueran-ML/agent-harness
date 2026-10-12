@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  agoOf, argumentsOf, contextPercent, folderName, joined, objectOf, presetOf, presets, retryText, scopeOf,
+  agoOf, argumentsOf, contextPercent, countOf, folderName, joined, objectOf, presetOf, presets, retryText, scopeOf,
   stepped, tail, taskTitle, toolKind, verbOf,
 } from '../src/app/tell';
 import { en } from '../src/messages/en';
@@ -101,6 +101,29 @@ describe('how full the context is', () => {
     expect(contextPercent(500, undefined)).toBeNull();
     expect(contextPercent(500, 0)).toBeNull();
     expect(contextPercent(500, -1)).toBeNull();
+  });
+});
+
+describe('a count of tokens', () => {
+  it('is as short as the language writes it', () => {
+    expect([950, 2670, 12_400, 128_000, 1_048_576].map(count => countOf(count, 'en')))
+      .toEqual(['950', '2.7K', '12.4K', '128K', '1M']);
+    // Chinese counts in ten thousands, and names them with a character of its own.
+    expect([950, 2670, 12_400, 128_000, 1_048_576].map(count => countOf(count, 'zh-CN')))
+      .toEqual(['950', '2670', '1.2万', '12.8万', '104.9万']);
+  });
+
+  it('stands in a sentence of Chinese with a blank after a digit, and with none after a character', () => {
+    const said = (used: number, window: number) => zhCN.hint.contextOf(countOf(used, 'zh-CN'), countOf(window, 'zh-CN'));
+    expect(said(2670, 1_048_576)).toBe('最近一次请求用了 2670 个 token，上限是 104.9万。');
+    expect(said(12_400, 1_048_576)).toBe('最近一次请求用了 1.2万个 token，上限是 104.9万。');
+    expect(zhCN.hint.contextUnknown(countOf(950, 'zh-CN'))).toBe('最近一次请求用了 950 个 token。');
+    expect(zhCN.hint.contextUnknown(countOf(12_400, 'zh-CN'))).toBe('最近一次请求用了 1.2万个 token。');
+  });
+
+  it('stands in a sentence of English as it is', () => {
+    expect(en.hint.contextOf(countOf(2670, 'en'), countOf(1_048_576, 'en'))).toBe('2.7K of 1M tokens in the last request.');
+    expect(en.hint.contextUnknown(countOf(950, 'en'))).toBe('950 tokens in the last request.');
   });
 });
 

@@ -14824,8 +14824,8 @@ _MCP = (
     mutant(
         "nobody is told that a connection was lost",
         MCP_CONNECTION,
-        '                logger.warning(\n                    "the connection to the MCP server %s was lost. It is being made again",\n',
-        '                logger.debug(\n                    "the connection to the MCP server %s was lost. It is being made again",\n',
+        '                logger.warning(\n                    "the connection to the MCP server %s was lost%s. It is being made again",\n',
+        '                logger.debug(\n                    "the connection to the MCP server %s was lost%s. It is being made again",\n',
     ),
     mutant(
         "an attempt that failed is told as a connection that was lost",
@@ -14866,7 +14866,7 @@ _MCP = (
     mutant(
         "a connection that was lost is said to have failed with nothing",
         MCP_CONNECTION,
-        '                self._failure = "the connection was lost"\n',
+        "                self._failure = _LOST\n",
         "",
     ),
     mutant(
@@ -15118,19 +15118,19 @@ _MCP = (
     mutant(
         "why something failed is said on as many lines as it was",
         MCP_CONNECTION,
-        '            said = " ".join(str(error).split()) or type(error).__name__\n',
-        "            said = str(error) or type(error).__name__\n",
+        '            said = " ".join(self._blotted(str(error)).split()) or type(error).__name__\n',
+        "            said = self._blotted(str(error)) or type(error).__name__\n",
     ),
     mutant(
         "a failure without a word is said as nothing",
         MCP_CONNECTION,
-        '            said = " ".join(str(error).split()) or type(error).__name__\n',
-        '            said = " ".join(str(error).split())\n',
+        '            said = " ".join(self._blotted(str(error)).split()) or type(error).__name__\n',
+        '            said = " ".join(self._blotted(str(error)).split())\n',
     ),
     mutant(
         "what is to be kept out of the reason for a failure stays in it",
         MCP_CONNECTION,
-        '            said = said.replace(secret, "[...]")\n',
+        '            text = text.replace(secret, "[...]")\n',
         "            pass\n",
     ),
     mutant(
@@ -15430,7 +15430,7 @@ _MCP = (
     mutant(
         "a result that says that the tool failed is read as one that it gave",
         MCP_OFFER,
-        "        if result.is_error:\n            raise ToolFailure(text)\n",
+        "        if result.is_error:\n            # A failure is not looked at by what keeps results short.\n            raise ToolFailure(in_part(text))\n",
         "",
     ),
     mutant(
@@ -15496,14 +15496,14 @@ _MCP = (
     mutant(
         "a text of six characters is none that is kept out of a log",
         MCP_REACH,
-        "if len(text) >= _SECRET_FROM",
-        "if len(text) > _SECRET_FROM",
+        "if len(form) >= _SECRET_FROM",
+        "if len(form) > _SECRET_FROM",
     ),
     mutant(
         "a text of a few characters is blotted out of every word",
         MCP_REACH,
-        "if len(text) >= _SECRET_FROM",
-        "if text",
+        "if len(form) >= _SECRET_FROM",
+        "if form",
     ),
     mutant(
         "what an address holds before its machine is not kept out of a log",
@@ -16816,6 +16816,123 @@ _CONDUCT = (
     ),
 )
 
+_MCP_REVIEWED = (
+    mutant(
+        "a connection that broke with an error is told twice",
+        MCP_CONNECTION,
+        "                if lasted is None:\n",
+        "                if True:\n",
+    ),
+    mutant(
+        "why a connection broke is not told",
+        MCP_CONNECTION,
+        '                why = "" if self._failure in (None, _LOST) else f": {self._failure}"\n',
+        '                why = ""\n',
+    ),
+    mutant(
+        "a connection that ended without an error is told with a reason",
+        MCP_CONNECTION,
+        '                why = "" if self._failure in (None, _LOST) else f": {self._failure}"\n',
+        '                why = f": {self._failure}"\n',
+    ),
+    mutant(
+        "what is kept out is looked for only once the failure is on one line",
+        MCP_CONNECTION,
+        '            said = " ".join(self._blotted(str(error)).split()) or type(error).__name__\n',
+        '            said = " ".join(str(error).split()) or type(error).__name__\n',
+    ),
+    mutant(
+        "what is kept out is not looked for on the one line",
+        MCP_CONNECTION,
+        "        said = self._blotted(said)\n",
+        "",
+    ),
+    mutant(
+        "what is kept out is known only as it was written",
+        MCP_REACH,
+        "    return plain | escaped\n",
+        "    return {text}\n",
+    ),
+    mutant(
+        "what is kept out is not known as a failure writes what it cannot print",
+        MCP_REACH,
+        "    return plain | escaped\n",
+        "    return plain\n",
+    ),
+    mutant(
+        "what is kept out is not known without the blanks around it",
+        MCP_REACH,
+        '    plain = {text, text.strip(), " ".join(text.split())}\n',
+        '    plain = {text, " ".join(text.split())}\n',
+    ),
+    mutant(
+        "what is kept out is not known with one blank for several",
+        MCP_REACH,
+        '    plain = {text, text.strip(), " ".join(text.split())}\n',
+        "    plain = {text, text.strip()}\n",
+    ),
+    mutant(
+        "something that a server wrote is repeated at any length",
+        MCP_SCHEMA,
+        '    return said if len(said) <= _SHOWN else f"{said[:_SHOWN]}…"\n',
+        "    return said\n",
+    ),
+    mutant(
+        "something of just the length that is repeated is cut",
+        MCP_SCHEMA,
+        "    return said if len(said) <= _SHOWN else",
+        "    return said if len(said) < _SHOWN else",
+    ),
+    mutant(
+        "a type that is nested too deeply to be written out ends the program",
+        MCP_SCHEMA,
+        "    except RecursionError:\n",
+        "    except KeyError:\n",
+    ),
+    mutant(
+        "a tool whose properties are no object is offered",
+        MCP_SCHEMA,
+        '    if not isinstance(schema.get("properties", {}), Mapping):\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "a schema that names no properties is not offered",
+        MCP_SCHEMA,
+        'schema.get("properties", {})',
+        'schema.get("properties")',
+    ),
+    mutant(
+        "what a failed tool says is told at any length",
+        MCP_OFFER,
+        "            raise ToolFailure(in_part(text))\n",
+        "            raise ToolFailure(text)\n",
+    ),
+    mutant(
+        "what a failed tool says in just as much as is told is cut",
+        MCP_CONTENT,
+        "    if len(text) <= limit:\n        return text\n    half = limit // 2\n",
+        "    if len(text) < limit:\n        return text\n    half = limit // 2\n",
+    ),
+    mutant(
+        "the end of what a failed tool said is not told",
+        MCP_CONTENT,
+        " + text[len(text) - half :]\n",
+        "\n",
+    ),
+    mutant(
+        "how much of what a failed tool said is left out is told wrongly",
+        MCP_CONTENT,
+        "_LEFT_OUT.format(len(text) - 2 * half)",
+        "_LEFT_OUT.format(len(text) - half)",
+    ),
+    mutant(
+        "the name of a tool that is passed over is told at any length",
+        MCP_OFFER,
+        '            passed_over.append(f"the tool {briefly(raw)} is not offered: {reason}")\n',
+        '            passed_over.append(f"the tool {raw!r} is not offered: {reason}")\n',
+    ),
+)
+
 _SCRIPTED = (
     mutant(
         "a reply that is meant for a request answers any request",
@@ -16985,7 +17102,7 @@ SETS: dict[str, MutantSet] = {
     "trust": MutantSet(("tests/apps/test_hooks_command.py",), _TRUST),
     "subagents": MutantSet(("tests/subagents", "tests/builtin_tools/test_subagent.py"), _SUBAGENTS),
     "yaml": MutantSet(("tests/test_plain_yaml.py",), _YAML),
-    "mcp": MutantSet(("tests/mcp_client",), _MCP),
+    "mcp": MutantSet(("tests/mcp_client",), _MCP + _MCP_REVIEWED),
     "scripted": MutantSet(("tests/llm/test_scripted.py",), _SCRIPTED),
     "extensions": MutantSet(("tests/apps/test_extensions.py",), _EXTENSIONS),
     "services": MutantSet(

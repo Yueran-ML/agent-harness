@@ -110,13 +110,28 @@ def reached(url: str, headers: Mapping[str, str]) -> Target:
     return _reached(url, headers)
 
 
+def _spellings(text: str) -> set[str]:
+    """Return a text in the forms in which a failure may repeat it.
+
+    As it is, without the blanks around it, and with one blank where it has
+    several: a failure is told on one line. And each of these as it is
+    written where a sign that cannot be printed, a line break for one, is
+    shown as an escape.
+    """
+    plain = {text, text.strip(), " ".join(text.split())}
+    escaped = {repr(form)[1:-1] for form in plain}
+    escaped |= {repr(form.encode("utf-8", "surrogatepass"))[2:-1] for form in plain}
+    return plain | escaped
+
+
 def kept_out(url: str | None, headers: Mapping[str, str]) -> tuple[str, ...]:
     """Return the texts of an address and of headers that are for no log.
 
     They are what the address holds before the name of its machine, what it
-    holds after its question mark, and the values of the headers. A text of
-    a few characters is none that lets anybody in, and it is left alone: it
-    would be blotted out of every word that holds it.
+    holds after its question mark, and the values of the headers, each in
+    the forms in which a failure may repeat it. A text of a few characters is
+    none that lets anybody in, and it is left alone: it would be blotted out
+    of every word that holds it.
     """
     found = list(headers.values())
     if url is not None:
@@ -127,4 +142,5 @@ def kept_out(url: str | None, headers: Mapping[str, str]) -> tuple[str, ...]:
         except ValueError:
             # An address that cannot be taken apart is kept out as a whole.
             found.append(url)
-    return tuple(sorted({text for text in found if len(text) >= _SECRET_FROM}))
+    spelled = {form for text in found for form in _spellings(text)}
+    return tuple(sorted(form for form in spelled if len(form) >= _SECRET_FROM))

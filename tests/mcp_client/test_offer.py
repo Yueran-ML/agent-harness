@@ -119,6 +119,38 @@ async def test_a_result_that_says_that_the_tool_failed_is_a_failure_with_its_tex
     assert str(failed.value) == "no such notebook"
 
 
+async def test_what_a_failed_tool_says_at_great_length_is_told_in_part() -> None:
+    # A failure is not put through what keeps results short, and a server can make one of any
+    # length. Its beginning and its end are told, and how much lies between them.
+    (tool,) = made(listed("find"), call=answering("A" * 20_000 + "the end", failed=True)).tools
+
+    with pytest.raises(ToolFailure) as failed:
+        await tool.execute(JsonArguments({}), NO_RUN)
+
+    assert str(failed.value) == (
+        "A" * 5000 + "\n[10007 characters are left out here]\n" + "A" * 4993 + "the end"
+    )
+
+
+async def test_what_a_failed_tool_says_in_just_as_much_as_is_told_is_told_whole() -> None:
+    (tool,) = made(listed("find"), call=answering("B" * 10_000, failed=True)).tools
+
+    with pytest.raises(ToolFailure) as failed:
+        await tool.execute(JsonArguments({}), NO_RUN)
+
+    assert str(failed.value) == "B" * 10_000
+
+
+def test_the_name_of_a_tool_that_is_passed_over_is_told_in_a_few_characters() -> None:
+    offered = made(listed("n" * 100_000, schema={"type": "string"}))
+
+    (told,) = offered.passed_over
+    assert told == (
+        f"the tool '{'n' * 79}… is not offered: its arguments are said to be of the type "
+        "'string', and only an object is taken"
+    )
+
+
 async def test_a_call_that_did_not_come_to_a_result_is_a_failure_with_the_reason() -> None:
     async def lost(name: str, arguments: dict[str, Any], seconds: float) -> CallToolResult:
         raise CallError("the connection to the MCP server notes was lost")
@@ -263,6 +295,19 @@ def test_what_an_address_and_headers_hold_that_lets_somebody_in_is_for_no_log() 
         "pass-word-1",
         "reader",
         "s3cret-value",
+    )
+
+
+def test_what_lets_somebody_in_is_kept_out_in_the_forms_in_which_a_failure_repeats_it() -> None:
+    found = kept_out(None, {"Authorization": "Bearer  abcdefgh\r\n"})
+
+    # As it is, without the blanks around it, with one blank for several, and as a failure
+    # writes a line break that it cannot print.
+    assert found == (
+        "Bearer  abcdefgh",
+        "Bearer  abcdefgh\r\n",
+        "Bearer  abcdefgh\\r\\n",
+        "Bearer abcdefgh",
     )
 
 

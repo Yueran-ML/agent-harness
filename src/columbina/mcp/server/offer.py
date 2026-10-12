@@ -33,9 +33,9 @@ from mcp.types import CallToolResult
 from mcp.types import Tool as Listed
 
 from columbina.mcp.server.connection import CallError
-from columbina.mcp.server.content import shown
+from columbina.mcp.server.content import in_part, shown
 from columbina.mcp.server.names import tool_name
-from columbina.mcp.server.schema import described, refused, repaired
+from columbina.mcp.server.schema import briefly, described, refused, repaired
 from columbina.tools import JsonArguments, Tool, ToolFailure, ToolRun
 
 __all__ = ["Call", "Offer", "offer"]
@@ -67,7 +67,8 @@ def _calling(raw: str, call: Call, seconds: float) -> Callable[..., Awaitable[st
             raise ToolFailure(str(error)) from None
         text = shown(result)
         if result.is_error:
-            raise ToolFailure(text)
+            # A failure is not looked at by what keeps results short.
+            raise ToolFailure(in_part(text))
         return text
 
     return execute
@@ -103,7 +104,7 @@ def offer(
         schema = repaired(tool.input_schema)
         reason = refused(schema)
         if reason is not None:
-            passed_over.append(f"the tool {raw!r} is not offered: {reason}")
+            passed_over.append(f"the tool {briefly(raw)} is not offered: {reason}")
             continue
         hints = tool.annotations
         reads = hints is not None and hints.read_only_hint is True

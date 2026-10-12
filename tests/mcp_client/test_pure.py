@@ -248,6 +248,40 @@ def test_a_tool_whose_arguments_are_no_object_is_not_offered(kind: object, said:
     )
 
 
+def test_what_a_schema_gives_as_its_type_is_told_in_a_few_characters() -> None:
+    # The words go to a log, and a server can write a type of any length.
+    said = refused({"type": "x" * 1_000_000, "properties": {}})
+
+    assert said == (
+        f"its arguments are said to be of the type '{'x' * 79}…, and only an object is taken"
+    )
+    # One of just the length that is repeated is told whole.
+    whole = "x" * 78
+    assert refused({"type": whole, "properties": {}}) == (
+        f"its arguments are said to be of the type '{whole}', and only an object is taken"
+    )
+
+
+def test_a_type_that_is_nested_too_deeply_to_be_written_out_is_said_to_be_that() -> None:
+    deep: list[object] = []
+    for _ in range(100_000):
+        deep = [deep]
+
+    assert refused({"type": deep, "properties": {}}) == (
+        "its arguments are said to be of the type something that is nested too deeply to be "
+        "written out, and only an object is taken"
+    )
+
+
+@pytest.mark.parametrize("properties", [[], None, "a", 3])
+def test_a_tool_whose_properties_are_no_object_is_not_offered(properties: object) -> None:
+    # A service checks the parameters of every function that a request offers. One that is
+    # written wrongly has the whole request refused, with every other tool in it.
+    assert refused({"type": "object", "properties": properties}) == (
+        "the properties of its arguments are not written as an object"
+    )
+
+
 def test_a_schema_that_is_too_large_to_be_sent_with_every_request_is_not_offered() -> None:
     def of_size(size: int) -> dict[str, object]:
         empty = len(json.dumps({"type": "object", "description": ""}, separators=(",", ":")))

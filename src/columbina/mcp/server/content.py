@@ -39,10 +39,32 @@ from mcp.types import (
     TextResourceContents,
 )
 
-__all__ = ["NOTHING", "shown"]
+__all__ = ["MAX_FAILURE", "NOTHING", "in_part", "shown"]
 
 NOTHING = "[the tool gave back nothing that can be shown]"
 """What a model reads where a result holds nothing."""
+
+MAX_FAILURE = 10_000
+"""How many characters of what a tool said when it failed a model is told."""
+
+_LEFT_OUT = "\n[{} characters are left out here]\n"
+
+
+def in_part(text: str, limit: int = MAX_FAILURE) -> str:
+    """Return a text by its beginning and its end where it is longer than a model is told.
+
+    What a tool gave back is kept short by what every result goes through.
+    What a tool said when it failed does not go that way, and a server can
+    make it as long as it likes.
+
+    Args:
+        text: What the tool said.
+        limit: How many of its characters are told at most.
+    """
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return text[:half] + _LEFT_OUT.format(len(text) - 2 * half) + text[len(text) - half :]
 
 
 def _size(encoded: str) -> int:

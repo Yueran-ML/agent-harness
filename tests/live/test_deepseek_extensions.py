@@ -82,6 +82,18 @@ def called(reported: list[dict[str, Any]]) -> list[list[tuple[str, dict[str, Any
     return [reply for reply in replies if reply]
 
 
+def answered(
+    reported: list[dict[str, Any]], tool: str
+) -> list[tuple[dict[str, Any], str, str | None]]:
+    """The calls of one tool in a run: the arguments of each, what came of it, and its error."""
+    came = {line["id"]: line for line in reported if line["type"] == "tool_result"}
+    return [
+        (json.loads(line["arguments"]), came[line["id"]]["text"], came[line["id"]]["error"])
+        for line in reported
+        if line["type"] == "tool_call" and line["name"] == tool
+    ]
+
+
 def left(home: Path, work: Path, reported: list[dict[str, Any]]) -> StoredSession:
     """Read the session that a run left behind."""
     kinds = {**KINDS, **{kind.event_type: kind for kind in ALSO}}
@@ -175,6 +187,11 @@ def test_two_tasks_that_have_nothing_to_do_with_each_other_are_handed_out_in_one
     ]
     # Both were under way before either was done.
     assert told[:2] == [SubagentStartedEvent, SubagentStartedEvent]
+    # Each file was read by a helper that came to its end, and gave back the number of that
+    # file and not the other one: the one who asked did not have to read for them.
+    found = [text for _, text, error in answered(reported, "subagent") if error is None]
+    assert any("7391" in text and "2846" not in text for text in found)
+    assert any("2846" in text and "7391" not in text for text in found)
     # What the helpers found came back to the one who asked.
     assert "7391" in reported[-1]["text"]
     assert "2846" in reported[-1]["text"]
@@ -202,13 +219,12 @@ def test_a_tool_of_a_server_is_called_where_the_server_says_what_it_is_for(
         task, "--cwd", str(work), "--patch", str(patch), "--allow", "mcp__sums__*", capsys=capsys
     )
 
-    # The server says of itself that sums are done with its tool, and the model does so.
+    # The server says of itself that sums are done with its tool. The model calls the tool
+    # with the two numbers, and the tool gives the sum: a call that failed would not do.
     sums_done = [
-        sorted(arguments.values())
-        for reply in called(reported)
-        for tool, arguments in reply
-        if tool == "mcp__sums__add"
+        (sorted(arguments.values()), text, error)
+        for arguments, text, error in answered(reported, "mcp__sums__add")
     ]
-    assert [123456789, 987654321] in sums_done
+    assert ([123456789, 987654321], "1111111110", None) in sums_done
     digits = "".join(sign for sign in reported[-1]["text"] if sign.isdigit())
     assert "1111111110" in digits

@@ -22,6 +22,7 @@ from columbina.mcp.server.connection import (
     Connection,
 )
 from columbina.mcp.server.content import shown
+from columbina.mcp.server.reach import kept_out
 from support.mcp_servers import INSTRUCTIONS, Cuttable, Hanging, Served
 from support.terminal import until
 
@@ -896,6 +897,60 @@ async def test_why_an_attempt_failed_is_said_in_one_line_and_without_what_is_kep
 
     assert connection.failure == said
     assert connection.state == "connecting"
+
+
+async def test_what_is_kept_out_is_not_told_however_a_failure_spells_it(
+    make: Callable[..., Connection],
+) -> None:
+    def target() -> Any:
+        # A line break in a header: the library says the value as bytes are written. Here it
+        # stands once more as it is, and once with its blanks written otherwise.
+        raise ValueError(
+            "Illegal header value b'Bearer  abcdefgh\\n' and again Bearer  abcdefgh\n. "
+            "Or Bearer\tabcdefgh"
+        )
+
+    kept = kept_out(None, {"Authorization": "Bearer  abcdefgh\n"})
+    connection = make("served", target, sleep=Naps(held=True), kept_out=kept)
+
+    await begun(connection)
+
+    assert connection.failure == "Illegal header value b'[...]' and again [...]. Or [...]"
+
+
+async def test_a_connection_that_breaks_with_an_error_is_told_once_and_with_the_reason(
+    make: Callable[..., Connection],
+    served: Served,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = Cuttable(served)
+    whole = Connection._held  # pyright: ignore[reportPrivateUsage]
+    burned: list[None] = []
+
+    async def burning(self: Connection, *held: Any) -> None:
+        # The first connection is there for a moment, and then something of the transport
+        # raises into the task that holds it, as a failed request over HTTP does.
+        if burned:
+            await whole(self, *held)
+            return
+        burned.append(None)
+        holding = asyncio.ensure_future(whole(self, *held))
+        await until(lambda: self.state == "connected")
+        holding.cancel()
+        await asyncio.wait([holding])
+        raise OSError("the wire burned")
+
+    monkeypatch.setattr(Connection, "_held", burning)
+    connection = make("served", lambda: transport, sleep=Naps())
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        connection.start()
+        await until(lambda: transport.entered == 2 and connection.state == "connected")
+
+    assert caplog.messages == [
+        "the connection to the MCP server served was lost: the wire burned. It is being made again"
+    ]
 
 
 # Tools that change

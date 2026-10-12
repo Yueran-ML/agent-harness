@@ -114,6 +114,9 @@ LEAVE_SECONDS = 10.0
 _SAID = 300
 """How many characters of the reason for a failure are passed on."""
 
+_LOST = "the connection was lost"
+"""Why a server is not connected where its connection ended without an error."""
+
 
 class CallError(Exception):
     """A call did not come to a result. The text says why, to whoever made the call.
@@ -379,9 +382,11 @@ class Connection:
             if lasted is not None:
                 # An attempt that failed was logged where it failed. A connection that was
                 # there and is lost is logged here, once, however many found it closed.
+                why = "" if self._failure in (None, _LOST) else f": {self._failure}"
                 logger.warning(
-                    "the connection to the MCP server %s was lost. It is being made again",
+                    "the connection to the MCP server %s was lost%s. It is being made again",
                     self.server,
+                    why,
                 )
             await self._sleep(min(FIRST_WAIT * 2 ** (failures - 1), LONGEST_WAIT))
 
@@ -410,7 +415,7 @@ class Connection:
                     # It lasted until it was lost. Leaving it may take seconds more, and in
                     # those the server was of no use to anyone.
                     lasted = self._clock() - since
-                self._failure = "the connection was lost"
+                self._failure = _LOST
             finally:
                 # Whoever calls from now on waits for the next connection.
                 self._client = None
@@ -422,7 +427,12 @@ class Connection:
                     if limit.expired()
                     else self._why(error)
                 )
-                logger.warning("the MCP server %s is not connected: %s", self.server, self._failure)
+                if lasted is None:
+                    # A connection that was there and broke is told by the keeper, like
+                    # every loss, and with this reason.
+                    logger.warning(
+                        "the MCP server %s is not connected: %s", self.server, self._failure
+                    )
         self._settled.set()
         return lasted
 
@@ -567,8 +577,16 @@ class Connection:
         elif isinstance(error, asyncio.CancelledError):
             said = "it was broken off from inside"
         else:
-            said = " ".join(str(error).split()) or type(error).__name__
+            # What is kept out is taken out before the failure is put on one line: a text
+            # with a line break or with several blanks in it would not be found afterwards.
+            said = " ".join(self._blotted(str(error)).split()) or type(error).__name__
+        # And once more on the one line, where a failure wrote the blanks of a text otherwise.
+        said = self._blotted(said)
+        return said if len(said) <= _SAID else f"{said[:_SAID].rstrip()} [...]"
+
+    def _blotted(self, text: str) -> str:
+        """Return a text without what is to be kept out of it."""
         # The longest first. A text that is part of a longer one would leave the rest of it.
         for secret in sorted(self._kept_out, key=len, reverse=True):
-            said = said.replace(secret, "[...]")
-        return said if len(said) <= _SAID else f"{said[:_SAID].rstrip()} [...]"
+            text = text.replace(secret, "[...]")
+        return text

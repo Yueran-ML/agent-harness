@@ -13,13 +13,37 @@ from typing import cast
 
 from pydantic import JsonValue
 
-__all__ = ["MAX_DESCRIPTION", "MAX_SCHEMA_BYTES", "described", "refused", "repaired"]
+__all__ = [
+    "MAX_DESCRIPTION",
+    "MAX_SCHEMA_BYTES",
+    "briefly",
+    "described",
+    "refused",
+    "repaired",
+]
 
 MAX_DESCRIPTION = 2048
 """How many characters of what a tool is for a model is told at most."""
 
 MAX_SCHEMA_BYTES = 16 * 1024
 """How large the schema of the arguments of a tool may be, as the JSON that is sent."""
+
+_SHOWN = 80
+"""How many characters of something that a server wrote are repeated in a reason."""
+
+
+def briefly(value: object) -> str:
+    """Write something that a server sent in a few characters.
+
+    A reason why a tool is not offered goes to a log, and it names what was
+    wrong. A server can make that as long as it likes, so only its beginning
+    is repeated.
+    """
+    try:
+        said = repr(value)
+    except RecursionError:
+        return "something that is nested too deeply to be written out"
+    return said if len(said) <= _SHOWN else f"{said[:_SHOWN]}…"
 
 
 def described(description: str | None) -> str:
@@ -64,7 +88,13 @@ def refused(schema: Mapping[str, object]) -> str | None:
     """
     kind = schema.get("type")
     if kind != "object":
-        return f"its arguments are said to be of the type {kind!r}, and only an object is taken"
+        return (
+            f"its arguments are said to be of the type {briefly(kind)}, and only an object is taken"
+        )
+    if not isinstance(schema.get("properties", {}), Mapping):
+        # A service looks at the parameters of every function that a request offers, and
+        # refuses the whole request for one that is written wrongly.
+        return "the properties of its arguments are not written as an object"
     try:
         sent = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
     except (TypeError, ValueError):

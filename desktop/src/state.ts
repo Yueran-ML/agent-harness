@@ -192,9 +192,13 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
   // What was taken out of a queue and has not been written down as input since. A turn
   // writes down what it takes. What a stop takes is written down nowhere.
   let taken: DroppedInput[] = [];
+  // What the turn that is under way wrote down as input, by the event that holds it. A hook may
+  // still keep it from the model: it puts a note in its place.
+  const written = new Map<number, DroppedInput>();
   const settle = () => {
     projection.dropped.push(...taken);
     taken = [];
+    written.clear();
   };
   const pendingCall = (callId: string) => {
     for (let i = calls.length - 1; i >= 0; i--) {
@@ -216,10 +220,19 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
       case 'user/message': {
         const source = string(data.source);
         const text = messageText(messageOf(data.message));
-        // An event that writes an earlier input anew, for what the model is shown, takes nothing.
-        const written = isReplacement(event) ? -1
-          : taken.findIndex(input => input.source === source && input.text === text);
-        if (written >= 0) taken.splice(written, 1);
+        if (isReplacement(event)) {
+          // An event that stands in the place of earlier ones takes nothing out of the queue. Where a
+          // hook put it in the place of input of this turn, no model reads that input.
+          if (source.startsWith('hook/')) {
+            for (const seq of event.source_event_seqs ?? []) {
+              const stopped = written.get(seq);
+              if (stopped) projection.dropped.push({ ...stopped, seq: event.seq });
+            }
+          }
+        } else {
+          const read = taken.findIndex(input => input.source === source && input.text === text);
+          if (read >= 0) written.set(event.seq, taken.splice(read, 1)[0]);
+        }
         if (source === 'compaction') {
           projection.items.push({ ...base, type: 'compaction', text });
         } else if (!source.startsWith('context/') && !isReplacement(event)) {

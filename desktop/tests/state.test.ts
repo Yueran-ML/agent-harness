@@ -270,14 +270,66 @@ describe('durable event projection', () => {
       expect(projection.dropped).toEqual([{ seq: 3, source: 'steer', text: 'look again' }]);
     });
 
-    it('is what a hook kept from the model', () => {
+    // A hook that stops an input finds it written down already. It puts a note in its place,
+    // so that no model reads it, and the turn ends (`hooks/__init__.py` in the sources of the
+    // service, and `test_an_input_that_a_hook_stops_ends_the_turn_and_is_taken_from_the_model`).
+    const note = (reason: string) =>
+      said(`[A hook of the user stopped what was said here: ${reason}]`, 'hook/UserPromptSubmit');
+
+    it('is what a hook kept from the model, although the turn had written it down', () => {
       const projection = projectEvents([
-        event(0, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry('secret')] }),
+        event(0, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry('My password is hunter2.')] }),
         event(1, 'turn/start', { turn: 1 }),
         event(2, 'agent/inbox/spliced', { queue: 'next-turn', removed: 1, added: [] }),
-        event(3, 'turn/end', { turn: 1, reason: 'blocked', detail: 'a hook stopped the input' }),
+        event(3, 'user/message', said('My password is hunter2.')),
+        event(4, 'user/message', note('No secrets.'), 400, replacement([3])),
+        event(5, 'turn/end', { turn: 1, reason: 'blocked', detail: 'a hook stopped the input: No secrets.' }),
       ]);
-      expect(projection.dropped).toEqual([{ seq: 2, source: 'user', text: 'secret' }]);
+      expect(projection.dropped).toEqual([{ seq: 4, source: 'user', text: 'My password is hunter2.' }]);
+      // What was said still stands in the conversation, and the note that the model reads does not.
+      expect(projection.items.filter(item => item.type === 'user').map(item => item.text))
+        .toEqual(['My password is hunter2.']);
+    });
+
+    it('is of several inputs only the one that the hook stopped', () => {
+      const projection = projectEvents([
+        event(0, 'turn/start', { turn: 1 }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('fine', 'steer'), entry('not fine', 'steer')] }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-step', removed: 2, added: [] }),
+        event(3, 'user/message', said('fine', 'steer')),
+        event(4, 'user/message', said('not fine', 'steer')),
+        event(5, 'user/message', note('Not that.'), 500, replacement([4])),
+        event(6, 'turn/end', { turn: 1, reason: 'blocked', detail: 'a hook stopped the input: Not that.' }),
+      ]);
+      expect(projection.dropped).toEqual([{ seq: 5, source: 'steer', text: 'not fine' }]);
+    });
+
+    it('is not what a summary stands for, which the model has read', () => {
+      const projection = projectEvents([
+        event(0, 'turn/start', { turn: 1 }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('one more thing', 'steer')] }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-step', removed: 1, added: [] }),
+        event(3, 'user/message', said('one more thing', 'steer')),
+        // The conversation is summed up in the same turn. The summary stands in the place of the input.
+        event(4, 'user/message', said('Earlier: one more thing was asked.', 'compaction'), 400, replacement([3])),
+        event(5, 'turn/end', { turn: 1, reason: 'completed', detail: null }),
+      ]);
+      expect(projection.dropped).toEqual([]);
+    });
+
+    it('is not what a hook wrote over in a turn that came later', () => {
+      const projection = projectEvents([
+        event(0, 'turn/start', { turn: 1 }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('early', 'steer')] }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-step', removed: 1, added: [] }),
+        event(3, 'user/message', said('early', 'steer')),
+        event(4, 'turn/end', { turn: 1, reason: 'completed', detail: null }),
+        event(5, 'turn/start', { turn: 2 }),
+        // Whatever stands in the place of an input of an earlier turn, the model had read that input.
+        event(6, 'user/message', note('Too late.'), 600, replacement([3])),
+        event(7, 'turn/end', { turn: 2, reason: 'completed', detail: null }),
+      ]);
+      expect(projection.dropped).toEqual([]);
     });
   });
 

@@ -19,5 +19,7 @@ contextBridge.exposeInMainWorld('columbina', {
   notify: (message) => ipcRenderer.invoke('columbina:notify', { title: message?.title, body: message?.body }),
   recentProjects: () => ipcRenderer.invoke('columbina:recent-projects'),
   openRecent: (folder) => ipcRenderer.invoke('columbina:open-recent', folder),
+  services: () => ipcRenderer.invoke('columbina:services'),
+  setUpService: (asked) => ipcRenderer.invoke('columbina:set-up-service', { service: asked?.service, language: asked?.language }),
   openExternal: (url) => ipcRenderer.invoke('columbina:open-external', url),
 });

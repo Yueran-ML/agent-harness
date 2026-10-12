@@ -18,6 +18,16 @@ export interface ColumbinaBridge {
   recentProjects(): Promise<{ path: string; name: string }[]>;
   /** Choose one of the recent projects again. The answer is the folder to start in. */
   openRecent(folder: string): Promise<string>;
+  /**
+   * What `columbina setup --list` says: the services, and where the key of each comes from.
+   * It holds no key. Null where the application does not run the service itself.
+   */
+  services(): Promise<unknown>;
+  /**
+   * Open the window in which a service is chosen and its key is given, and wait until it is
+   * closed. This window is told whether something was stored, and nothing of what.
+   */
+  setUpService(asked: { service: string | null; language: string }): Promise<{ stored: boolean }>;
   openExternal(url: string): Promise<void>;
 }
 

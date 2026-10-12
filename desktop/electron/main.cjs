@@ -19,6 +19,9 @@ let closeTimer;
 const approvedDirectories = new Set();
 const indexPath = path.resolve(__dirname, '../dist/index.html');
 const indexUrl = pathToFileURL(indexPath).href;
+// The page of the window that takes a key. It shows nothing that a model wrote.
+const keyPath = path.resolve(__dirname, '../dist/key.html');
+const keyUrl = pathToFileURL(keyPath).href;
 // The bar of the window in each theme: the furthest surface of `src/ui/tokens.css`, and its text.
 const titleBarThemes = {
   moonveil: { color: '#090b12', symbolColor: '#eef0f8', height: 40 },
@@ -30,6 +33,19 @@ const TAIL_LINES = 30;
 const TAIL_LINE_CHARS = 400;
 // How many folders are kept as recent projects.
 const RECENT_MOST = 8;
+// How long `columbina setup` may take. It waits up to 30 seconds for a keyring that is locked.
+const SETUP_MS = 45_000;
+// How much of what it writes is read, in characters. Its answer is one line.
+const SETUP_OUTPUT_MOST = 512 * 1024;
+const NO_SETUP = 'No service program is set up for this application, so its services cannot be set up from here.';
+// The languages that the window for the key can speak, as a page names them.
+const LANGUAGES = ['en', 'zh-CN'];
+// The window for the key while it is open, what it was opened for, whether something was
+// stored from it, and the promise that says so when it has closed.
+let keyWindow = null;
+let keyAsked = { service: null, language: 'en' };
+let keyStored = false;
+let keyClosed = null;
 // What the service of the moment wrote last for errors. It is told of when the service has ended.
 let lastWords = { lines: [], rest: '' };
 // What is kept from one start to the next. Read when the application is ready.
@@ -114,6 +130,17 @@ function checkSender(event) {
     throw new Error('IPC sender is not the application window.');
   }
 }
+function checkKeySender(event) {
+  if (!keyWindow || event.sender !== keyWindow.webContents || event.senderFrame !== keyWindow.webContents.mainFrame || event.senderFrame.url !== keyUrl) {
+    throw new Error('IPC sender is not the window for the key.');
+  }
+}
+/** A window opens no other window, goes to no other page and holds no page inside its own. */
+function closeToTheWorld(opened) {
+  opened.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  opened.webContents.on('will-navigate', (event) => event.preventDefault());
+  opened.webContents.on('will-attach-webview', (event) => event.preventDefault());
+}
 function tell(channel, value) {
   if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, value);
 }
@@ -174,6 +201,74 @@ function serviceCommand() {
   const args = process.env.COLUMBINA_SERVICE_ARGS ? JSON.parse(process.env.COLUMBINA_SERVICE_ARGS) : ['-m', 'columbina', 'serve'];
   if (!Array.isArray(args) || args.some((value) => typeof value !== 'string')) throw new Error('COLUMBINA_SERVICE_ARGS must be a JSON array of strings.');
   return { executable, args, mode: 'service', env: { ...process.env } };
+}
+/**
+ * The command that sets a service up, made from the command of the service process.
+ * Null where there is none to make it from: in a replay, or where the command does not serve.
+ */
+function setupCommand(more) {
+  const config = serviceCommand();
+  const serves = config.args.indexOf('serve');
+  if (config.mode !== 'service' || serves < 0) return null;
+  // What follows `serve` was meant for serving, such as a profile.
+  return { executable: config.executable, args: [...config.args.slice(0, serves), 'setup', ...more], env: config.env };
+}
+/**
+ * Run `columbina setup` in a form that asks nothing, and return the document that it answers with.
+ *
+ * What it is given goes to its standard input and nowhere else: not to its command line, not
+ * into its environment, not into a file. That is how a key reaches it.
+ */
+function runSetup(more, input = '') {
+  const command = setupCommand(more);
+  if (!command) return Promise.reject(new Error(NO_SETUP));
+  return new Promise((resolve, reject) => {
+    const child = spawn(command.executable, command.args, {
+      cwd: app.getPath('home'), env: command.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const decoder = new StringDecoder('utf8');
+    let written = '';
+    let over = false;
+    let done = false;
+    const settle = (act, value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      act(value);
+    };
+    const timer = setTimeout(() => {
+      killTree(child);
+      settle(reject, new Error('The setup program did not end in time.'));
+    }, SETUP_MS);
+    child.stdout.on('data', (chunk) => {
+      if (over) return;
+      written += decoder.write(chunk);
+      if (written.length > SETUP_OUTPUT_MOST) {
+        over = true;
+        written = '';
+      }
+    });
+    // What a person would be shown. It is taken so that the program is not held up, and kept nowhere.
+    child.stderr.on('data', () => {});
+    // A program that ended before it read is told of by how it ended.
+    child.stdin.on('error', () => {});
+    child.on('error', (error) => settle(reject, new Error(`The setup program could not be started: ${error.message}`)));
+    child.on('close', () => {
+      if (over) {
+        settle(reject, new Error('The setup program wrote more than is read.'));
+        return;
+      }
+      let document = null;
+      try { document = JSON.parse((written + decoder.end()).trim().split('\n').at(-1)); } catch { /* It wrote no document. */ }
+      if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+        settle(reject, new Error('The setup program did not answer with a document.'));
+      } else {
+        settle(resolve, document);
+      }
+    });
+    // Its input is closed after what it is given, so that it waits for nothing more.
+    child.stdin.end(input);
+  });
 }
 function installHandlers() {
   ipcMain.handle('columbina:select-folder', async (event) => {
@@ -319,6 +414,67 @@ function installHandlers() {
     }
     return true;
   });
+  ipcMain.handle('columbina:services', async (event) => {
+    checkSender(event);
+    if (!setupCommand([])) return null;
+    // The document says which services there are and where their keys come from. It holds no key.
+    const document = await runSetup(['--list']);
+    if (typeof document.error === 'string') throw new Error(document.error);
+    return document;
+  });
+  ipcMain.handle('columbina:set-up-service', async (event, asked) => {
+    checkSender(event);
+    if (!setupCommand([])) throw new Error(NO_SETUP);
+    if (keyWindow) {
+      keyWindow.focus();
+      return keyClosed;
+    }
+    keyAsked = {
+      service: typeof asked?.service === 'string' && asked.service ? asked.service : null,
+      language: LANGUAGES.includes(asked?.language) ? asked.language : 'en',
+    };
+    keyStored = false;
+    // A window of its own, so that the key is never in the window that shows what a model wrote.
+    const opened = new BrowserWindow({
+      parent: window, modal: true, width: 540, height: 680, resizable: false, minimizable: false, maximizable: false,
+      show: false, backgroundColor: titleBarThemes[preferences.theme].color, title: 'Columbina',
+      icon: path.join(__dirname, 'icon.ico'),
+      webPreferences: { preload: path.join(__dirname, 'key-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+    });
+    keyWindow = opened;
+    opened.setMenuBarVisibility(false);
+    closeToTheWorld(opened);
+    opened.once('ready-to-show', () => opened.show());
+    keyClosed = new Promise((resolve) => {
+      opened.once('closed', () => {
+        if (keyWindow === opened) keyWindow = null;
+        // The main window is told that something was stored, and nothing of what.
+        resolve({ stored: keyStored });
+      });
+    });
+    void opened.loadFile(keyPath);
+    return keyClosed;
+  });
+  ipcMain.handle('columbina-key:context', async (event) => {
+    checkKeySender(event);
+    return { ...keyAsked, theme: preferences.theme, list: await runSetup(['--list']) };
+  });
+  ipcMain.handle('columbina-key:store', async (event, given) => {
+    checkKeySender(event);
+    // The five things that the program reads, each of its kind. The program checks the rest.
+    const document = {};
+    for (const name of ['service', 'base_url', 'model', 'api_key']) {
+      if (typeof given?.[name] === 'string') document[name] = given[name];
+    }
+    if (Number.isInteger(given?.context_window)) document.context_window = given.context_window;
+    const answer = await runSetup(['--from-stdin'], JSON.stringify(document));
+    if (answer.stored) keyStored = true;
+    return answer;
+  });
+  ipcMain.handle('columbina-key:close', (event) => {
+    checkKeySender(event);
+    keyWindow.close();
+  });
   ipcMain.handle('columbina:open-external', async (event, address) => {
     checkSender(event);
     if (typeof address !== 'string') throw new Error('The link address must be a string.');
@@ -371,9 +527,7 @@ app.whenReady().then(() => {
       'Content-Security-Policy': ["default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'; frame-src 'none'"],
     },
   }));
-  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  window.webContents.on('will-navigate', (event) => event.preventDefault());
-  window.webContents.on('will-attach-webview', (event) => event.preventDefault());
+  closeToTheWorld(window);
   window.on('close', (event) => { if ((service || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
   window.webContents.on('render-process-gone', () => { void enqueueService(stopService); });
   void window.loadFile(indexPath);

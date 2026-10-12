@@ -14,13 +14,23 @@ const source = readFileSync(mainPath, 'utf8');
 const preferencesFile = path.resolve('/columbina-test/userData/preferences.json');
 const logFile = path.resolve('/columbina-test/logs/columbina-service.log');
 
+const keyPage = pathToFileURL(path.resolve(path.dirname(mainPath), '../dist/key.html')).href;
+const python = path.resolve('/tools/python.exe');
+
+/** What a made-up run of `columbina setup` writes to its standard output, and how it ends. */
+interface SetupRun {
+  out: string;
+  code: number;
+}
+
 /**
  * The shell, with everything around it made up.
  *
  * Args:
  *   kept: What the file of preferences holds when the shell starts, as text. Without it there is no such file.
+ *   env: The environment of the shell. Without the variable that names the service, the shell replays.
  */
-async function shellHarness(kept?: string) {
+async function shellHarness(kept?: string, env: Record<string, string> = {}) {
   const handlers = new Map<string, (...args: any[]) => any>();
   // The files that the shell reads and writes whole, by their paths.
   const files = new Map<string, string>();
@@ -38,6 +48,8 @@ async function shellHarness(kept?: string) {
   });
   const dialog = { showOpenDialog: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }) };
   const sent: [string, unknown][] = [];
+  // Every window that the shell opened, the main one first.
+  const windows: any[] = [];
   let window: any;
   class TestWindow extends EventEmitter {
     webContents = Object.assign(new EventEmitter(), {
@@ -48,7 +60,9 @@ async function shellHarness(kept?: string) {
       setWindowOpenHandler: vi.fn(),
     });
     options: any;
-    constructor(options: unknown) { super(); this.options = options; window = this; }
+    constructor(options: unknown) { super(); this.options = options; windows.push(this); window ??= this; }
+    loadFile = vi.fn((file: string) => { this.webContents.mainFrame.url = pathToFileURL(path.resolve(file)).href; });
+    close = vi.fn(() => { this.emit('closed'); });
     focused = true;
     minimized = false;
     isFocused = () => this.focused;
@@ -59,7 +73,6 @@ async function shellHarness(kept?: string) {
     restore = vi.fn();
     isDestroyed = () => false;
     setMenuBarVisibility = vi.fn();
-    loadFile = vi.fn();
     destroy = vi.fn();
     setBackgroundColor = vi.fn();
     setTitleBarOverlay = vi.fn();
@@ -67,7 +80,34 @@ async function shellHarness(kept?: string) {
   let live = 0;
   let peakLive = 0;
   const children: any[] = [];
-  const spawn = vi.fn((_executable, _args, options) => {
+  // The runs of `columbina setup`: what each was started with and given, and what it answers.
+  const setups: { args: string[]; cwd: string; input: string | null; child: any }[] = [];
+  const setup = {
+    answer: ((): SetupRun => ({ out: '{"use": null, "services": []}\n', code: 0 })) as (args: string[], input: string) => SetupRun | null,
+  };
+  const spawn = vi.fn((_executable, args: string[], options) => {
+    if (args.includes('setup')) {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 500 + setups.length, exitCode: null as number | null, signalCode: null,
+        stdout: new EventEmitter(), stderr: new EventEmitter(),
+        stdin: Object.assign(new EventEmitter(), { end: vi.fn() }),
+      });
+      const run: { args: string[]; cwd: string; input: string | null; child: any } = { args, cwd: options.cwd, input: null, child };
+      setups.push(run);
+      // The program reads its input to the end, and answers then.
+      child.stdin.end.mockImplementation((input?: string) => {
+        run.input = input ?? '';
+        const answer = setup.answer(args, run.input);
+        if (answer === null) return;
+        queueMicrotask(() => {
+          if (answer.out) child.stdout.emit('data', Buffer.from(answer.out, 'utf8'));
+          child.exitCode = answer.code;
+          child.emit('close', answer.code, null);
+        });
+      });
+      return child;
+    }
+    if (args.includes('/pid')) return Object.assign(new EventEmitter(), { killed: args });
     live += 1;
     peakLive = Math.max(peakLive, live);
     const child = Object.assign(new EventEmitter(), {
@@ -139,7 +179,7 @@ async function shellHarness(kept?: string) {
   };
   runInNewContext(source, {
     require: (name: string) => { if (!(name in modules)) throw new Error(`Unexpected module: ${name}`); return modules[name]; },
-    __dirname: path.dirname(mainPath), process: { platform: 'win32', env: {}, execPath: 'Columbina.exe' },
+    __dirname: path.dirname(mainPath), process: { platform: 'win32', env, execPath: 'Columbina.exe' },
     URL, setTimeout, clearTimeout,
   }, { filename: mainPath });
   await Promise.resolve();
@@ -151,9 +191,14 @@ async function shellHarness(kept?: string) {
   };
   const unrelated = { sender: window.webContents, senderFrame: { url: window.webContents.mainFrame.url } };
   const preferences = () => JSON.parse(files.get(preferencesFile) ?? 'null');
+  // The window for the key, once the shell has opened it, and a call as that window makes it.
+  const keyWindow = () => windows[1];
+  const asKeyWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-key:${name}`)!(
+    { sender: keyWindow().webContents, senderFrame: keyWindow().webContents.mainFrame }, ...args);
   return {
-    handlers, invoke, select, app, window, event, unrelated, children, spawn, realpathSync, disk, file, sent, dialog,
-    files, gone, preferences, writeFileSync, notifications, Notification: TestNotification, system,
+    handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, file, sent,
+    dialog, files, gone, preferences, writeFileSync, notifications, Notification: TestNotification, system,
+    setups, setup, keyWindow, asKeyWindow,
     live: () => live, peakLive: () => peakLive,
   };
 }
@@ -223,6 +268,20 @@ describe('Electron project and process boundary', () => {
     await shell.invoke('stop');
     expect(shell.window.destroy).toHaveBeenCalledOnce();
     expect(shell.live()).toBe(0);
+  });
+});
+
+describe('Electron window and the world', () => {
+  it('opens no other window, goes to no other page and holds no page inside its own', async () => {
+    const shell = await shellHarness();
+    const page = shell.window.webContents;
+    expect(page.setWindowOpenHandler).toHaveBeenCalledOnce();
+    expect(page.setWindowOpenHandler.mock.calls[0][0]({ url: 'https://example.com' })).toEqual({ action: 'deny' });
+    for (const happening of ['will-navigate', 'will-attach-webview']) {
+      const event = { preventDefault: vi.fn() };
+      page.emit(happening, event);
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+    }
   });
 });
 
@@ -648,5 +707,294 @@ describe('what the shell keeps from one start to the next', () => {
       expect(() => shell.handlers.get(`columbina:${method}`)!(shell.unrelated, folder('a'))).toThrow('IPC sender');
     }
     await expect(shell.invoke('start', { cwd: folder('a') })).rejects.toThrow('native folder dialog');
+  });
+});
+
+describe('asking the program of the service what is set up', () => {
+  const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
+  const list = { use: 'openai', services: [{ name: 'openai', title: 'OpenAI', base_url: 'https://api.openai.com/v1', own: false, model: 'gpt-test', context_window: 400000, key_env: 'OPENAI_API_KEY', key: 'stored' }] };
+
+  it('cannot be done while the shell replays a recorded session', async () => {
+    const shell = await shellHarness();
+    await expect(shell.invoke('services')).resolves.toBeNull();
+    await expect(shell.invoke('set-up-service', {})).rejects.toThrow('No service program is set up');
+    expect(shell.spawn).not.toHaveBeenCalled();
+    expect(shell.windows).toHaveLength(1);
+  });
+
+  it('starts the program of the service with the words for it, and gives back its document', async () => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => ({ out: `${JSON.stringify(list)}\n`, code: 0 });
+    await expect(shell.invoke('services')).resolves.toEqual(list);
+    expect(shell.spawn).toHaveBeenCalledOnce();
+    expect(shell.spawn.mock.calls[0][0]).toBe(python);
+    expect(shell.spawn.mock.calls[0][1]).toEqual(['-m', 'columbina', 'setup', '--list']);
+    // Nothing is written to it, and its input is closed, so that it waits for nothing.
+    expect(shell.setups[0].input).toBe('');
+    // It runs in the home of the user and in no project.
+    expect(shell.setups[0].cwd).toBe(path.resolve('/columbina-test/home'));
+  });
+
+  it('makes the command from the command of the service, without what was meant for serving', async () => {
+    const shell = await shellHarness(undefined, {
+      ...real, COLUMBINA_SERVICE_ARGS: JSON.stringify(['-X', 'utf8', '-m', 'columbina', 'serve', '--profile', 'F:\\x\\serve.yml']),
+    });
+    await shell.invoke('services');
+    expect(shell.spawn.mock.calls[0][1]).toEqual(['-X', 'utf8', '-m', 'columbina', 'setup', '--list']);
+  });
+
+  it('cannot be done where the command of the service does not serve', async () => {
+    const shell = await shellHarness(undefined, { ...real, COLUMBINA_SERVICE_ARGS: JSON.stringify(['run-it.py']) });
+    await expect(shell.invoke('services')).resolves.toBeNull();
+    await expect(shell.invoke('set-up-service', {})).rejects.toThrow('No service program is set up');
+    expect(shell.spawn).not.toHaveBeenCalled();
+  });
+
+  it('gives what the program says is wrong as it says it', async () => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => ({ out: '{"error": "the file provider.yml is not YAML"}\n', code: 2 });
+    await expect(shell.invoke('services')).rejects.toThrow('the file provider.yml is not YAML');
+  });
+
+  it.each([
+    ['nothing', ''],
+    ['a trace and no document', 'Traceback (most recent call last):\n  File "x.py", line 1\n'],
+    ['a document that is cut off', '{"use": "openai", "services": [{"name"'],
+    ['a list', '["openai"]\n'],
+    ['a text', '"openai"\n'],
+    ['null', 'null\n'],
+  ])('says that the program did not answer where it wrote %s', async (_what, out) => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => ({ out, code: 1 });
+    await expect(shell.invoke('services')).rejects.toThrow('did not answer with a document');
+  });
+
+  it('reads the document from the last line that the program wrote', async () => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => ({ out: `a line that a plugin printed\r\n${JSON.stringify(list)}\r\n\r\n`, code: 0 });
+    await expect(shell.invoke('services')).resolves.toEqual(list);
+  });
+
+  it('puts a document together that came in pieces, also in the middle of a character', async () => {
+    const shell = await shellHarness(undefined, real);
+    const bytes = Buffer.from(`${JSON.stringify({ use: null, services: [{ name: 'mine', title: '我的服务' }] })}\n`, 'utf8');
+    const cut = bytes.indexOf(Buffer.from('的', 'utf8')) + 1;
+    shell.setup.answer = () => null;
+    const asked = shell.invoke('services');
+    await Promise.resolve();
+    const child = shell.setups[0].child;
+    child.stdout.emit('data', bytes.subarray(0, cut));
+    child.stdout.emit('data', bytes.subarray(cut));
+    child.emit('close', 0, null);
+    await expect(asked).resolves.toEqual({ use: null, services: [{ name: 'mine', title: '我的服务' }] });
+  });
+
+  it('does not read without end what a program writes', async () => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => ({ out: `${JSON.stringify({ use: null, services: [], padding: 'x'.repeat(600_000) })}\n`, code: 0 });
+    await expect(shell.invoke('services')).rejects.toThrow('wrote more than is read');
+  });
+
+  it('says so where the program cannot be started', async () => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => null;
+    const asked = shell.invoke('services');
+    await Promise.resolve();
+    shell.setups[0].child.emit('error', new Error('spawn ENOENT'));
+    await expect(asked).rejects.toThrow('could not be started: spawn ENOENT');
+  });
+
+  it('does not wait for ever for a program that does not end', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await shellHarness(undefined, real);
+      shell.setup.answer = () => null;
+      const asked = shell.invoke('services');
+      const failed = expect(asked).rejects.toThrow('did not end in time');
+      await vi.advanceTimersByTimeAsync(44_000);
+      expect(shell.spawn).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await failed;
+      // It is ended, with whatever it started.
+      expect(shell.spawn.mock.calls.at(-1)![0]).toBe('taskkill.exe');
+      expect(shell.spawn.mock.calls.at(-1)![1]).toEqual(['/pid', '500', '/T', '/F']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('answers only its own window', async () => {
+    const shell = await shellHarness(undefined, real);
+    for (const method of ['services', 'set-up-service']) {
+      await expect((async () => shell.handlers.get(`columbina:${method}`)!(shell.unrelated, {}))()).rejects.toThrow('IPC sender');
+    }
+    expect(shell.spawn).not.toHaveBeenCalled();
+    expect(shell.windows).toHaveLength(1);
+  });
+});
+
+describe('the window for the key', () => {
+  const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
+  const list = { use: 'deepseek', services: [{ name: 'deepseek', title: 'DeepSeek', key: 'none' }] };
+  const stored = { stored: { name: 'deepseek', base_url: 'https://api.deepseek.com', model: 'deepseek-flash', context_window: 1048576 }, key_in: 'keyring' };
+  const KEY = 'sk-made-up-for-a-test-0123456789';
+  const opened = async (asked: unknown = {}, kept?: string) => {
+    const shell = await shellHarness(kept, real);
+    shell.setup.answer = (args) => (args.includes('--list')
+      ? { out: `${JSON.stringify(list)}\n`, code: 0 } : { out: `${JSON.stringify(stored)}\n`, code: 0 });
+    const closed = shell.invoke('set-up-service', asked) as Promise<unknown>;
+    await Promise.resolve();
+    return { shell, closed };
+  };
+
+  it('is a window of its own under the main one, as closed to the world as the main one', async () => {
+    const { shell } = await opened();
+    expect(shell.windows).toHaveLength(2);
+    const options = shell.keyWindow().options;
+    expect(options.parent).toBe(shell.window);
+    expect(options.modal).toBe(true);
+    expect(options.webPreferences).toEqual({
+      preload: path.join(path.dirname(mainPath), 'key-preload.cjs'),
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+    });
+    expect(shell.keyWindow().loadFile).toHaveBeenCalledWith(path.resolve(path.dirname(mainPath), '../dist/key.html'));
+    expect(shell.keyWindow().webContents.mainFrame.url).toBe(keyPage);
+    // It opens no window and goes nowhere.
+    expect(shell.keyWindow().webContents.setWindowOpenHandler).toHaveBeenCalledOnce();
+    expect(shell.keyWindow().webContents.setWindowOpenHandler.mock.calls[0][0]()).toEqual({ action: 'deny' });
+    for (const happening of ['will-navigate', 'will-attach-webview']) {
+      const event = { preventDefault: vi.fn() };
+      shell.keyWindow().webContents.emit(happening, event);
+      expect(event.preventDefault).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('opens in the theme of the main window', async () => {
+    const { shell } = await opened({}, JSON.stringify({ theme: 'moonwhite' }));
+    expect(shell.keyWindow().options.backgroundColor).toBe(themeColour('moonwhite', 'ink-0'));
+  });
+
+  it('is told what is set up, and what it was opened for', async () => {
+    const { shell } = await opened({ service: 'deepseek', language: 'zh-CN' }, JSON.stringify({ theme: 'moonwhite' }));
+    await expect(shell.asKeyWindow('context')).resolves.toEqual({
+      service: 'deepseek', language: 'zh-CN', theme: 'moonwhite', list,
+    });
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'setup', '--list']);
+  });
+
+  it('is told of no service and of English where what it was opened for is not what it may be', async () => {
+    for (const asked of [undefined, null, 'deepseek', {}, { service: 7, language: 'de' }, { service: ['deepseek'], language: { toString: () => 'zh-CN' } }, { service: '', language: 'constructor' }]) {
+      const { shell } = await opened(asked);
+      await expect(shell.asKeyWindow('context')).resolves.toMatchObject({ service: null, language: 'en' });
+    }
+  });
+
+  it('hands what it is given to the program on its standard input, and nowhere else', async () => {
+    const { shell } = await opened();
+    const document = { service: 'deepseek', model: 'deepseek-flash', context_window: 1048576, api_key: KEY };
+    await expect(shell.asKeyWindow('store', document)).resolves.toEqual(stored);
+    const run = shell.setups.at(-1)!;
+    expect(run.args).toEqual(['-m', 'columbina', 'setup', '--from-stdin']);
+    expect(JSON.parse(run.input!)).toEqual(document);
+    // Not on the command line, not in the environment, and not in a file.
+    expect(JSON.stringify(shell.spawn.mock.calls.map(call => [call[0], call[1], call[2].env]))).not.toContain(KEY);
+    expect([...shell.files.values()].join('')).not.toContain(KEY);
+  });
+
+  it('hands on only the five things that the program reads, each of its kind', async () => {
+    const { shell } = await opened();
+    await shell.asKeyWindow('store', {
+      service: 'mine', base_url: 'http://10.0.0.5:8000/v1', model: 'tiny', context_window: 32768, api_key: KEY,
+      extra: 'x', __proto__: { polluted: true }, toString: 'x',
+    });
+    expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({
+      service: 'mine', base_url: 'http://10.0.0.5:8000/v1', model: 'tiny', context_window: 32768, api_key: KEY,
+    });
+    await shell.asKeyWindow('store', { service: 7, model: ['tiny'], base_url: null, context_window: '32768', api_key: { key: KEY } });
+    expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({});
+    await shell.asKeyWindow('store', { service: 'mine', model: 'tiny', context_window: 1.5 });
+    expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({ service: 'mine', model: 'tiny' });
+    for (const given of [undefined, null, 'x', 7, []]) {
+      await shell.asKeyWindow('store', given);
+      expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({});
+    }
+  });
+
+  it('gives back what the program says is wrong, for the window to show', async () => {
+    const { shell } = await opened();
+    shell.setup.answer = () => ({ out: '{"error": "the document names no model"}\n', code: 2 });
+    await expect(shell.asKeyWindow('store', { service: 'deepseek' })).resolves.toEqual({ error: 'the document names no model' });
+  });
+
+  it('takes the key from that window and from no other', async () => {
+    const { shell } = await opened();
+    const before = shell.setups.length;
+    for (const method of ['context', 'store', 'close']) {
+      // The main window shows what a model wrote. It has no way to this.
+      await expect((async () => shell.handlers.get(`columbina-key:${method}`)!(shell.event, { api_key: KEY }))()).rejects.toThrow('IPC sender');
+      await expect((async () => shell.handlers.get(`columbina-key:${method}`)!(shell.unrelated, { api_key: KEY }))()).rejects.toThrow('IPC sender');
+      // Nor a frame inside the window for the key, or a page that it does not start with.
+      const frame = { sender: shell.keyWindow().webContents, senderFrame: { url: keyPage } };
+      await expect((async () => shell.handlers.get(`columbina-key:${method}`)!(frame, { api_key: KEY }))()).rejects.toThrow('IPC sender');
+    }
+    shell.keyWindow().webContents.mainFrame.url = pathToFileURL(path.resolve(path.dirname(mainPath), '../dist/index.html')).href;
+    await expect((async () => shell.asKeyWindow('store', { api_key: KEY }))()).rejects.toThrow('IPC sender');
+    expect(shell.setups).toHaveLength(before);
+  });
+
+  it('answers nothing before it is open, and nothing after it is closed', async () => {
+    const shell = await shellHarness(undefined, real);
+    const nobody = { sender: {}, senderFrame: { url: keyPage } };
+    await expect((async () => shell.handlers.get('columbina-key:store')!(nobody, {}))()).rejects.toThrow('IPC sender');
+    const closed = shell.invoke('set-up-service', {});
+    await Promise.resolve();
+    const was = { sender: shell.keyWindow().webContents, senderFrame: shell.keyWindow().webContents.mainFrame };
+    shell.keyWindow().close();
+    await closed;
+    await expect((async () => shell.handlers.get('columbina-key:store')!(was, {}))()).rejects.toThrow('IPC sender');
+  });
+
+  it('tells the main window only whether something was stored, when it is closed', async () => {
+    const { shell, closed } = await opened();
+    await shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash', api_key: KEY });
+    await shell.asKeyWindow('close');
+    await expect(closed).resolves.toEqual({ stored: true });
+    expect(JSON.stringify(shell.sent)).not.toContain(KEY);
+  });
+
+  it('says that nothing was stored where nothing was, or where the program refused', async () => {
+    const first = await opened();
+    first.shell.keyWindow().close();
+    await expect(first.closed).resolves.toEqual({ stored: false });
+
+    const second = await opened();
+    second.shell.setup.answer = () => ({ out: '{"error": "what the document says under \'api_key\' cannot be a key"}\n', code: 2 });
+    await second.shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash', api_key: 'a b' });
+    second.shell.keyWindow().close();
+    await expect(second.closed).resolves.toEqual({ stored: false });
+  });
+
+  it('is one window, however often it is asked for, and everyone who asked is told how it ended', async () => {
+    const { shell, closed } = await opened();
+    const again = shell.invoke('set-up-service', {}) as Promise<unknown>;
+    await Promise.resolve();
+    expect(shell.windows).toHaveLength(2);
+    expect(shell.keyWindow().focus).toHaveBeenCalledOnce();
+    await shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash' });
+    shell.keyWindow().close();
+    await expect(closed).resolves.toEqual({ stored: true });
+    await expect(again).resolves.toEqual({ stored: true });
+  });
+
+  it('can be opened again after it was closed, and begins anew', async () => {
+    const { shell, closed } = await opened();
+    await shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash' });
+    shell.keyWindow().close();
+    await expect(closed).resolves.toEqual({ stored: true });
+    const second = shell.invoke('set-up-service', {}) as Promise<unknown>;
+    await Promise.resolve();
+    expect(shell.windows).toHaveLength(3);
+    shell.windows[2].close();
+    await expect(second).resolves.toEqual({ stored: false });
   });
 });

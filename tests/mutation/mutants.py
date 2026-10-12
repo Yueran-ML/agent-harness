@@ -16820,8 +16820,8 @@ _SCRIPTED = (
     mutant(
         "a reply is meant for a request by what anybody said last in it",
         SCRIPTED,
-        "        if isinstance(message, UserMessage):\n            return \"\".join(block.text for block in message.content)\n",
-        "        if not isinstance(message, ToolMessage):\n            return \"\".join(getattr(block, \"text\", \"\") for block in message.content)\n",
+        '        if isinstance(message, UserMessage):\n            return "".join(block.text for block in message.content)\n',
+        '        if not isinstance(message, ToolMessage):\n            return "".join(getattr(block, "text", "") for block in message.content)\n',
         ("    UserMessage,\n)\n", "    ToolMessage,\n    UserMessage,\n)\n"),
     ),
     mutant(
@@ -16865,6 +16865,17 @@ _SCRIPTED = (
         SCRIPTED,
         "    when: str | None = Field(default=None, min_length=1)\n",
         "    when: str | None = None\n",
+    ),
+)
+
+_EXTENSIONS = (
+    # The SDK gives a server a few variables and no more, and the program counts on that.
+    # Only a server that is a process of its own shows what reached it.
+    mutant(
+        "what the user has in the environment reaches a server that is started",
+        MCP_REACH,
+        "env=dict(env) or None, cwd=cwd",
+        "env={**os.environ, **env}, cwd=cwd",
     ),
 )
 
@@ -16964,6 +16975,7 @@ SETS: dict[str, MutantSet] = {
     "yaml": MutantSet(("tests/test_plain_yaml.py",), _YAML),
     "mcp": MutantSet(("tests/mcp_client",), _MCP),
     "scripted": MutantSet(("tests/llm/test_scripted.py",), _SCRIPTED),
+    "extensions": MutantSet(("tests/apps/test_extensions.py",), _EXTENSIONS),
     "services": MutantSet(
         (
             "tests/llm/test_services.py",

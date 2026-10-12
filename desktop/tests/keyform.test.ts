@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  called, changedBeyondKey, chosen, complete, documentOf, formFor, listedOf, onlyTheKey, sentenceOf, serviceCalled, serviceOf,
-  storedOf, takesKey, tokensOf,
+  called, changedBeyondKey, chosen, complete, documentOf, formFor, listedOf, nameFits, onlyTheKey, sentenceOf, serviceCalled,
+  serviceOf, storedOf, takesKey, tokensOf,
   type Form, type Listed,
 } from '../src/key/form';
 
@@ -264,6 +264,23 @@ describe('a form that can be sent', () => {
     expect(complete({ ...adding, address: '' })).toBe(false);
     // A listed service needs neither.
     expect(complete(form({ name: '', address: '' }))).toBe(true);
+  });
+
+  it('adds a service only under a name that the program takes for one', () => {
+    // `_NAME` in `apps/setup.py`: a small letter, then small letters, digits, `-` and `_`, 32 characters at most.
+    for (const name of ['a', 'lab', 'my-lab_2', 'x9', 'a-', 'a_', 'a'.repeat(32), '  lab  ']) {
+      expect([name, nameFits(name)]).toEqual([name, true]);
+    }
+    for (const name of [
+      '', ' ', 'Lab', 'lAb', '9lab', '-lab', '_lab', 'my lab', 'my.lab', 'my/lab', 'lab!', 'läb', '实验室', 'a'.repeat(33), 'lab\nx',
+    ]) {
+      expect([name, nameFits(name)]).toEqual([name, false]);
+    }
+    const adding = form({ adding: true, service: '', name: 'lab', address: 'http://10.0.0.9/v1' });
+    expect(complete({ ...adding, name: 'My Lab' })).toBe(false);
+    expect(complete({ ...adding, name: ' lab ' })).toBe(true);
+    // The name of a listed service is not the user's to choose, and is not looked at.
+    expect(complete(form({ name: 'My Lab' }))).toBe(true);
   });
 
   it('needs no key', () => {

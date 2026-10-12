@@ -4,8 +4,8 @@ import { Words } from '../app/locale';
 import { messagesFor } from '../i18n';
 import { themes } from '../themes';
 import {
-  called, chosen, complete, documentOf, formFor, listedOf, onlyTheKey, sentenceOf, serviceCalled, serviceOf, storedOf,
-  takesKey, tokensOf,
+  called, chosen, complete, documentOf, formFor, listedOf, nameFits, onlyTheKey, sentenceOf, serviceCalled, serviceOf,
+  storedOf, takesKey, tokensOf,
   type Form, type Listed, type Stored,
 } from './form';
 
@@ -72,6 +72,12 @@ export function KeyApp() {
     else first.current?.focus();
   }, [form, listed]);
   useEffect(() => { if (answer?.kind === 'stored') done.current?.focus(); }, [answer]);
+  // The field of the key holds what was typed in it and is not told what to hold. So when the
+  // key is taken out of the form, as it is when another service is chosen, the field is emptied.
+  const typedKey = form?.key ?? '';
+  useEffect(() => {
+    if (typedKey === '' && keyField.current) keyField.current.value = '';
+  }, [typedKey]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -115,6 +121,8 @@ export function KeyApp() {
           : service.key === 'stored-for-another-address' ? words.hint.key.storedElsewhere
             : words.hint.key.none;
   const badWindow = form !== null && Number.isNaN(tokensOf(form.window));
+  // A name that is not written yet is missing, and nothing is wrong with it.
+  const badName = form !== null && form.adding && form.name.trim() !== '' && !nameFits(form.name);
 
   return <Words.Provider value={words}>
     <main className="key-page" data-test="key-page">
@@ -171,9 +179,11 @@ export function KeyApp() {
           <label className="key-row">
             <span className="key-name">{words.label.key.name}</span>
             <input className="field mono" value={form.name} disabled={storing} spellCheck={false} autoComplete="off"
+              aria-invalid={badName || undefined}
               onChange={event => change({ name: event.target.value })} aria-describedby="key-own-name" data-test="key-name" />
           </label>
-          <p className="caption key-under" id="key-own-name">{words.hint.key.ownName}</p>
+          {/* What a name may be stands here from the beginning. It is marked once a name breaks it. */}
+          <p className="caption key-under" id="key-own-name" data-tone={badName ? 'bad' : undefined}>{words.hint.key.ownName}</p>
           <label className="key-row">
             <span className="key-name">{words.label.key.address}</span>
             <input className="field mono" value={form.address} disabled={storing} spellCheck={false} autoComplete="off"
@@ -203,8 +213,10 @@ export function KeyApp() {
 
         {takesKey(form, listed) && <label className="key-row">
           <span className="key-name">{words.label.key.apiKey}</span>
-          {/* Never shown, and never offered to be remembered by anything but the program that it is for. */}
-          <input ref={keyField} className="field mono" type="password" value={form.key} disabled={storing}
+          {/* Never shown, and never offered to be remembered by anything but the program that it is for.
+              The field is given no value by the page: what is given one is written into the markup
+              of the page as well, where whatever reads the page as text would find the key. */}
+          <input ref={keyField} className="field mono" type="password" disabled={storing}
             spellCheck={false} autoComplete="off"
             onChange={event => change({ key: event.target.value })} aria-describedby="key-note" data-test="key-key" />
         </label>}

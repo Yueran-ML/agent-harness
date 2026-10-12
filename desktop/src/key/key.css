@@ -83,6 +83,11 @@ body {
   overflow-wrap: anywhere;
 }
 
+/* What is typed in the field above breaks what is said here. */
+.key-under[data-tone='bad'] {
+  color: var(--bad);
+}
+
 select.field {
   appearance: none;
   padding-right: var(--s6);

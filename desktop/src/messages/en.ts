@@ -539,7 +539,8 @@ export const en = {
       lead: 'Which service the model comes from, and the key for it.',
       reading: 'Reading what is set up.',
       unavailable: 'Services are set up here when the application runs the service itself, not a replay.',
-      ownName: 'A name of your own: small letters, digits, - and _.',
+      ownName: 'A name of your own. It begins with a small letter and goes on with small letters, digits, - and _, '
+        + '32 characters at most.',
       ownAddress: 'Where the service is, such as https://api.example.com/v1.',
       modelName: 'The name of the model, as the service has it.',
       windowSize: 'How many tokens the model takes. It may be left empty.',

@@ -165,10 +165,26 @@ export function tokensOf(typed: string): number | null {
   return /^[1-9]\d{0,11}$/.test(written) ? Number(written) : Number.NaN;
 }
 
-/** Whether enough is written to send it. The program checks the rest and says what is wrong. */
+// A name of the user's own, as the program takes one (`_NAME` in `apps/setup.py`).
+const OWN_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+
+/**
+ * Whether what is typed can be the name of a service of the user's own: it begins with a
+ * small letter and goes on with small letters, digits, `-` and `_`, 32 characters at most.
+ * The program holds a name to the same, and says so in English only. So the window says it
+ * first, in the language of its words.
+ */
+export function nameFits(typed: string): boolean {
+  return OWN_NAME.test(typed.trim());
+}
+
+/**
+ * Whether enough is written to send it, and none of it is what the window can see to be
+ * wrong. The program checks the rest and says what is wrong.
+ */
 export function complete(form: Form): boolean {
   if (form.model.trim() === '' || Number.isNaN(tokensOf(form.window))) return false;
-  return !form.adding || (form.name.trim() !== '' && form.address.trim() !== '');
+  return !form.adding || (nameFits(form.name) && form.address.trim() !== '');
 }
 
 /**

@@ -452,7 +452,7 @@ export const zhCN: Messages = {
       lead: '选择模型来自哪个服务，并填写它的密钥。',
       reading: '正在读取已有的设置。',
       unavailable: '应用运行真实的服务进程时才能在这里设置服务，回放时不能。',
-      ownName: '自己起一个名字：小写字母、数字、- 和 _。',
+      ownName: '自己起一个名字：以小写字母开头，后面可以用小写字母、数字、- 和 _，最多 32 个字符。',
       ownAddress: '服务所在的地址，例如 https://api.example.com/v1。',
       modelName: '模型的名字，以服务那边的写法为准。',
       windowSize: '模型能接收多少 token，可以留空。',

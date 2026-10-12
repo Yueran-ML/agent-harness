@@ -82,8 +82,10 @@ nothing that a model wrote, and it is the only part of the application that ever
 a key. What is typed there goes to the shell, and the shell writes it to the standard
 input of `columbina setup --from-stdin`, which stores it: in the keyring of the system,
 or in a file where no keyring takes it, and the window says which. The key is on no
-command line, in no environment and in no message of the protocol, and the window that
-shows the conversation is told only that something was stored.
+command line, in no environment and in no message of the protocol. Its field is given
+no value by the page, so the key is in no markup of the window either. The window that
+shows the conversation is told only that something was stored. A service of the user's
+own gets a name there, which the window holds to what the program takes for one.
 
 This works where the application runs the service itself, and not in a replay. The
 service looks for the key with every request, so a key is used as soon as it is stored,

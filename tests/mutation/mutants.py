@@ -115,6 +115,7 @@ TOOL_SUBAGENT = "src/columbina/builtin_tools/subagent.py"
 CREDENTIALS = "src/columbina/llm/credentials.py"
 OPENAI_CHAT = "src/columbina/llm/adapters/openai_chat.py"
 SERVICES = "src/columbina/llm/services.py"
+SCRIPTED = "src/columbina/llm/adapters/scripted.py"
 SETUP_APP = "src/columbina/apps/setup.py"
 MCP_NAMES = "src/columbina/mcp/server/names.py"
 MCP_SCHEMA = "src/columbina/mcp/server/schema.py"
@@ -16779,6 +16780,70 @@ _CONDUCT = (
     ),
 )
 
+_SCRIPTED = (
+    mutant(
+        "a reply that is meant for a request answers any request",
+        SCRIPTED,
+        "    return said is not None and step.when in said\n",
+        "    return True\n",
+    ),
+    mutant(
+        "a reply that is meant for a request answers none",
+        SCRIPTED,
+        "    return said is not None and step.when in said\n",
+        "    return False\n",
+    ),
+    mutant(
+        "a reply is meant for a request by what anybody said last in it",
+        SCRIPTED,
+        "        if isinstance(message, UserMessage):\n            return \"\".join(block.text for block in message.content)\n",
+        "        if not isinstance(message, ToolMessage):\n            return \"\".join(getattr(block, \"text\", \"\") for block in message.content)\n",
+        ("    UserMessage,\n)\n", "    ToolMessage,\n    UserMessage,\n)\n"),
+    ),
+    mutant(
+        "a reply is meant for a request by what the user said first",
+        SCRIPTED,
+        "    for message in reversed(request.messages):\n",
+        "    for message in request.messages:\n",
+    ),
+    mutant(
+        "a reply for anyone answers before one that is meant for the request",
+        SCRIPTED,
+        "        for wanted in (True, None):\n",
+        "        for wanted in (None, True):\n",
+    ),
+    mutant(
+        "a reply that is meant for another request answers where nothing else is left",
+        SCRIPTED,
+        "        for wanted in (True, None):\n",
+        "        for wanted in (True, None, False):\n",
+    ),
+    mutant(
+        "a request for which no reply is meant gets none",
+        SCRIPTED,
+        "        for wanted in (True, None):\n",
+        "        for wanted in (True,):\n",
+    ),
+    mutant(
+        "a reply that was played stays in the script",
+        SCRIPTED,
+        "                    del self._script[at]\n",
+        "",
+    ),
+    mutant(
+        "the first step leaves the script whichever one is played",
+        SCRIPTED,
+        "                    del self._script[at]\n",
+        "                    del self._script[0]\n",
+    ),
+    mutant(
+        "a reply may be meant for every request by a text of no length",
+        SCRIPTED,
+        "    when: str | None = Field(default=None, min_length=1)\n",
+        "    when: str | None = None\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
@@ -16874,6 +16939,7 @@ SETS: dict[str, MutantSet] = {
     "subagents": MutantSet(("tests/subagents", "tests/builtin_tools/test_subagent.py"), _SUBAGENTS),
     "yaml": MutantSet(("tests/test_plain_yaml.py",), _YAML),
     "mcp": MutantSet(("tests/mcp_client",), _MCP),
+    "scripted": MutantSet(("tests/llm/test_scripted.py",), _SCRIPTED),
     "services": MutantSet(
         (
             "tests/llm/test_services.py",

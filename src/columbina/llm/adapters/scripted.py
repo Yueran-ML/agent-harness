@@ -28,6 +28,7 @@ from columbina.llm.types import (
     ToolCallDelta,
     Usage,
     UsageChunk,
+    UserMessage,
 )
 
 
@@ -65,6 +66,11 @@ class Reply(Data):
             and ``finish`` is not used.
         hold: Whether the reply pauses once its content is sent, until
             :meth:`Scripted.release` lets it go on.
+        when: A text that the user has to have said last in a request for
+            this reply to answer it. Such a reply waits in the script for
+            its request, whichever request comes before it. Replies with the
+            same text are used once each, in the order in which they stand.
+            Where two agents ask at once, this is how each gets its own.
     """
 
     text: str = ""
@@ -75,6 +81,7 @@ class Reply(Data):
     finish: Literal["stop", "tool-calls", "max-tokens"] | None = None
     failure: LlmFailure | None = None
     hold: bool = False
+    when: str | None = Field(default=None, min_length=1)
 
 
 Fixed = Reply | list[Chunk] | tuple[Chunk, ...] | Exception
@@ -91,6 +98,25 @@ def _resolve(step: Step, request: LlmRequest) -> Fixed:
     if isinstance(step, (list, tuple)):
         return cast("list[Chunk] | tuple[Chunk, ...]", step)
     return step(request)
+
+
+def _said_last(request: LlmRequest) -> str | None:
+    """Return what the user said last in a request, or ``None`` if they said nothing."""
+    for message in reversed(request.messages):
+        if isinstance(message, UserMessage):
+            return "".join(block.text for block in message.content)
+    return None
+
+
+def _meant_for(step: Step, said: str | None) -> bool | None:
+    """Tell whether a step is meant for a request in which the user said this last.
+
+    Returns:
+        ``None`` for a step that is meant for no request in particular.
+    """
+    if not isinstance(step, Reply) or step.when is None:
+        return None
+    return said is not None and step.when in said
 
 
 def _content(reply: Reply, numbers: Iterator[int]) -> Iterator[Chunk]:
@@ -120,7 +146,10 @@ def _content(reply: Reply, numbers: Iterator[int]) -> Iterator[Chunk]:
 class Scripted:
     """An adapter that plays a script, one step for each call.
 
-    A script that has run out answers with the failure ``SCRIPT_EXHAUSTED``.
+    A request is answered by the first reply that is meant for it, see
+    :attr:`Reply.when`, and otherwise by the first step that is meant for no
+    request in particular. A script that has no step for a request answers
+    with the failure ``SCRIPT_EXHAUSTED``.
 
     Attributes:
         requests: Every request received so far, in order.
@@ -159,14 +188,15 @@ class Scripted:
     async def stream(self, request: LlmRequest) -> AsyncIterator[Chunk]:
         """Play the next step of the script."""
         self.requests.append(request)
-        if not self._script:
+        step = self._taken(request)
+        if step is None:
             raise LlmError(
                 LlmFailure(
                     message=f"the script has no reply left for call {len(self.requests)}",
                     code="SCRIPT_EXHAUSTED",
                 )
             )
-        fixed = _resolve(self._script.popleft(), request)
+        fixed = _resolve(step, request)
         if isinstance(fixed, Exception):
             raise fixed
         if not isinstance(fixed, Reply):
@@ -183,6 +213,16 @@ class Scripted:
             yield Finish(reason="error", failure=fixed.failure)
         else:
             yield Finish(reason=fixed.finish or ("tool-calls" if fixed.calls else "stop"))
+
+    def _taken(self, request: LlmRequest) -> Step | None:
+        """Take the step that answers a request out of the script, if there is one."""
+        said = _said_last(request)
+        for wanted in (True, None):
+            for at, step in enumerate(self._script):
+                if _meant_for(step, said) is wanted:
+                    del self._script[at]
+                    return step
+        return None
 
     async def _hold(self) -> None:
         self._held.set()

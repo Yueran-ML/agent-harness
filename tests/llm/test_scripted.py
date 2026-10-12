@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
 from columbina.kernel import Context
 from columbina.llm import (
@@ -314,3 +315,136 @@ async def test_the_plugin_answers_for_the_provider_scripted_by_default(
 
     assert list(llm.adapters) == ["scripted"]
     assert (await ask(llm)).message.text == "hi"
+
+
+def asked_with(*said: str) -> LlmRequest:
+    """A request in which the user said these things, each answered but the last."""
+    messages: list[UserMessage | AssistantMessage] = []
+    for text in said:
+        messages.append(UserMessage(content=(TextBlock(text=text),)))
+        messages.append(AssistantMessage(content=(TextBlock(text="I see."),)))
+    return LlmRequest(
+        config=CallConfig(provider="scripted", model="script"), messages=tuple(messages[:-1])
+    )
+
+
+async def answered(llm: Llm, asked: LlmRequest) -> LlmCall:
+    call = llm.call(asked)
+    async for _ in call:
+        pass
+    return call
+
+
+async def test_a_reply_that_is_meant_for_a_request_answers_it_whenever_it_comes(
+    ctx: Context, llm: Llm
+) -> None:
+    adapter = play(
+        ctx,
+        llm,
+        Reply(text="for the second", when="task B"),
+        Reply(text="for anyone"),
+        Reply(text="for the first", when="task A"),
+    )
+
+    # Two agents ask at once, and which of them asks first is not known.
+    first = await ask(llm, "Here is task A for you.")
+    other = await ask(llm, "Something else.")
+    second = await ask(llm, "And task B.")
+
+    assert [call.message.text for call in (first, other, second)] == [
+        "for the first",
+        "for anyone",
+        "for the second",
+    ]
+    assert adapter.remaining == 0
+
+
+async def test_replies_that_are_meant_for_the_same_request_are_played_in_order_once_each(
+    ctx: Context, llm: Llm
+) -> None:
+    adapter = play(
+        ctx,
+        llm,
+        Reply(text="one", when="task A"),
+        Reply(text="two", when="task A"),
+        Reply(text="for anyone"),
+    )
+
+    said = [(await ask(llm, "task A")).message.text for _ in range(3)]
+
+    # When none of its own is left, a request is answered as any other is.
+    assert said == ["one", "two", "for anyone"]
+    assert adapter.remaining == 0
+
+
+async def test_a_reply_that_is_meant_for_a_request_answers_no_other(ctx: Context, llm: Llm) -> None:
+    adapter = play(ctx, llm, Reply(text="for the first", when="task A"))
+
+    call = await ask(llm, "task B")
+
+    assert call.failure == LlmFailure(
+        message="the script has no reply left for call 1", code="SCRIPT_EXHAUSTED"
+    )
+    # It is still there for the request that it is meant for.
+    assert adapter.remaining == 1
+    assert (await ask(llm, "task A")).message.text == "for the first"
+
+
+async def test_a_reply_is_meant_for_a_request_by_what_the_user_said_last(
+    ctx: Context, llm: Llm
+) -> None:
+    play(
+        ctx,
+        llm,
+        Reply(text="about the first", when="task A"),
+        Reply(text="about the second", when="task B"),
+        Reply(text="about neither"),
+    )
+
+    later = await answered(llm, asked_with("Here is task A.", "Now task B."))
+    # What an assistant or a tool said after it does not make it less the last thing the user said.
+    told = asked_with("No task.")
+    told = told.model_copy(
+        update={
+            "messages": (
+                *told.messages,
+                AssistantMessage(content=(TextBlock(text="I looked at task A."),)),
+            )
+        }
+    )
+    neither = await answered(llm, told)
+    earlier = await answered(llm, asked_with("Here is task A."))
+
+    assert [call.message.text for call in (later, earlier, neither)] == [
+        "about the second",
+        "about the first",
+        "about neither",
+    ]
+
+
+async def test_a_request_in_which_the_user_said_nothing_is_answered_by_a_reply_for_anyone(
+    ctx: Context, llm: Llm
+) -> None:
+    adapter = play(ctx, llm, Reply(text="for the first", when="task A"), Reply(text="for anyone"))
+    nobody = LlmRequest(config=CallConfig(provider="scripted", model="script"), messages=())
+
+    call = await answered(llm, nobody)
+
+    assert call.message.text == "for anyone"
+    assert adapter.remaining == 1
+
+
+def test_a_reply_cannot_be_meant_for_a_request_by_a_text_of_no_length() -> None:
+    # A text of no length is in every text, so it would tell no request from another.
+    with pytest.raises(ValidationError):
+        Reply(text="for whom", when="")
+
+
+async def test_the_plugin_reads_which_request_a_reply_is_meant_for(ctx: Context, llm: Llm) -> None:
+    await ctx.plugin(
+        scripted,
+        {"replies": [{"text": "for the first", "when": "task A"}, {"text": "for anyone"}]},
+    )
+
+    assert (await ask(llm, "task B")).message.text == "for anyone"
+    assert (await ask(llm, "task A")).message.text == "for the first"

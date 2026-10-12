@@ -14853,14 +14853,32 @@ _MCP = (
     mutant(
         "nobody who waits for the first attempt is told that it failed",
         MCP_CONNECTION,
-        "        self._settled.set()\n        return None if since is None else self._clock() - since\n",
-        "        return None if since is None else self._clock() - since\n",
+        "        self._settled.set()\n        return lasted\n",
+        "        return lasted\n",
     ),
     mutant(
         "how long a connection lasted is not known",
         MCP_CONNECTION,
-        "        return None if since is None else self._clock() - since\n",
+        "        return lasted\n",
         "        return None\n",
+    ),
+    mutant(
+        "the time that it takes to leave a connection counts as time that it lasted",
+        MCP_CONNECTION,
+        "        return lasted\n",
+        "        return lasted if lasted is None else self._clock() - since\n",
+    ),
+    mutant(
+        "a connection is said to have lasted no time at all",
+        MCP_CONNECTION,
+        "                    lasted = self._clock() - since\n",
+        "                    lasted = 0.0\n",
+    ),
+    mutant(
+        "a connection is said to have lasted for as long as the clock has run",
+        MCP_CONNECTION,
+        "                    lasted = self._clock() - since\n",
+        "                    lasted = self._clock()\n",
     ),
     mutant(
         "a server is spoken to as its own protocol whatever was asked for",

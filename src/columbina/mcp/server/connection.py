@@ -379,7 +379,7 @@ class Connection:
             How many seconds the connection lasted, or ``None`` if none was
             made.
         """
-        since: float | None = None
+        lasted: float | None = None
         stack = AsyncExitStack()
         limit = asyncio.timeout(self._startup)
         try:
@@ -391,7 +391,12 @@ class Connection:
                     said = await self._listening(stack, client)
                     listed = await _listed(client)
                 since = self._clock()
-                await self._held(client, listed, said)
+                try:
+                    await self._held(client, listed, said)
+                finally:
+                    # It lasted until it was lost. Leaving it may take seconds more, and in
+                    # those the server was of no use to anyone.
+                    lasted = self._clock() - since
                 self._failure = "the connection was lost"
             finally:
                 # Whoever calls from now on waits for the next connection.
@@ -406,7 +411,7 @@ class Connection:
                 )
                 logger.warning("the MCP server %s is not connected: %s", self.server, self._failure)
         self._settled.set()
-        return None if since is None else self._clock() - since
+        return lasted
 
     def _made(self) -> Client:
         """Make a client for one attempt."""

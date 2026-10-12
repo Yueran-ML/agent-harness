@@ -696,6 +696,45 @@ async def test_the_count_of_failures_begins_anew_once_a_connection_lasted_half_a
     assert naps.asked == [0.5, 1, 2, 0.5]
 
 
+class Lingering(Cuttable):
+    """A way to a server that takes its time to be left.
+
+    Args:
+        served: The server.
+        clock: The time of the test.
+        seconds: How much of that time passes while it is left.
+    """
+
+    def __init__(self, served: Served, clock: Clock, seconds: float) -> None:
+        super().__init__(served)
+        self._clock = clock
+        self._seconds = seconds
+
+    async def __aexit__(self, *raised: Any) -> None:
+        self._clock.now += self._seconds
+        await super().__aexit__(*raised)
+
+
+async def test_the_time_that_it_takes_to_leave_a_lost_connection_is_no_time_that_it_lasted(
+    make: Callable[..., Connection], served: Served
+) -> None:
+    naps = Naps()
+    clock = Clock()
+    transport = Lingering(served, clock, 6.0)
+    connection = await begun(make("served", lambda: transport, sleep=naps, clock=clock))
+
+    # The server lives for 25 seconds each time, and takes six more to be left.
+    for _ in range(3):
+        entered = transport.entered
+        clock.now += STABLE_SECONDS - 5
+        await lose(connection, transport)
+        await until(lambda: transport.entered == entered + 1 and connection.state == "connected")  # noqa: B023
+
+    # It never lasted half a minute. The waits go on growing, as they do for a server that
+    # dies as often as it is started.
+    assert naps.asked == [0.5, 1, 2]
+
+
 async def test_an_attempt_that_takes_too_long_is_given_up_and_the_next_one_is_made(
     make: Callable[..., Connection],
 ) -> None:

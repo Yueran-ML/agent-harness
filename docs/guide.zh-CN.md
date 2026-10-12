@@ -239,6 +239,31 @@ $ uv run columbina setup
 
 `columbina setup` 在终端里依次询问服务、模型、模型能接收多少 token（不知道时才问）和密钥。直接按回车就采用方括号里给出的值。回答写进 `~/.columbina` 里的两个文件。`provider.yml` 记录设置过的服务和正在使用的那一个，里面没有密钥。`credentials.json` 列出哪些服务存了密钥，以及每个密钥发往哪个地址。密钥本身存进系统密钥环，`columbina setup` 会说明它存到了哪里。`columbina setup --forget NAME` 删除为某个服务保存的内容。
 
+没有终端的程序，例如桌面应用，使用这条命令的另外两种形式。两者都不提问，各自向标准输出写一行 JSON。
+
+```console
+$ uv run columbina setup --list
+{"use": "openai", "services": [{"name": "deepseek", "title": "DeepSeek", "base_url": "https://api.deepseek.com", "own": false, "model": "deepseek-flash", "context_window": 1048576, "key_env": "DEEPSEEK_API_KEY", "key": "none"}, {"name": "openai", "title": "OpenAI", "base_url": "https://api.openai.com/v1", "own": false, "model": "gpt-test", "context_window": 400000, "key_env": "OPENAI_API_KEY", "key": "stored"}]}
+```
+
+这一行取自一次真实运行，八个服务只保留了两个。`use` 是正在使用的服务。`own` 为真表示这个服务是用户自己添加的。`model` 和 `context_window` 是这个服务已知的或者用户说过的值。`key` 说明密钥从哪里来：`environment` 表示来自它的环境变量，`stored` 表示已经保存，`stored-for-another-address` 表示保存过密钥，但不会发往这个服务现在的地址，`none` 表示没有。这一行里没有任何密钥，系统密钥环也不会被查询。
+
+`columbina setup --from-stdin` 从标准输入读一个 JSON 对象，读到输入关闭为止，然后按保存提问答案的同一条路径保存。
+
+| 名字 | 含义 |
+|---|---|
+| `service` | 服务的名字。 |
+| `model` | 模型。 |
+| `base_url` | 地址，只用于用户自己添加的服务。按名字就认识的服务不接受地址。 |
+| `context_window` | 模型能接收多少 token。不给时，之前为这个模型说过的大小保持不变。 |
+| `api_key` | 密钥。不给时不保存密钥，已经保存的密钥保持不变。 |
+
+```json
+{"stored": {"name": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-test", "context_window": 400000}, "key_in": "file"}
+```
+
+这是一次真实运行的回答，那台机器上没有密钥环接收密钥。`stored` 是写下的内容，`key_in` 说明密钥进了 `keyring` 还是 `file`，没有给密钥时为 `null`。出错时回答 `{"error": "..."}`，退出码为 2，这时什么都没有保存。密钥只随这个对象进来，没有别的途径，也不会出现在任何回答和任何消息里。标准输入是终端时不读取，因为在终端里键入的密钥会显示出来。原本给人看的话写到标准错误。
+
 服务和模型也可以只为一次运行或一个 shell 指定。几处都指定了的时候，以下表中位置靠上的为准。
 
 | 位置 | 服务 | 模型 |

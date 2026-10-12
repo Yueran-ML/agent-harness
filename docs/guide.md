@@ -318,6 +318,45 @@ the services that a key is stored for, with the address that each key is sent to
 goes into the keyring of the system, and `columbina setup` says where it went.
 `columbina setup --forget NAME` deletes what is stored for a service.
 
+A program without a terminal, such as the desktop application, uses two other forms of the
+command. Neither asks a question, and each writes one line of JSON to its standard output.
+
+```console
+$ uv run columbina setup --list
+{"use": "openai", "services": [{"name": "deepseek", "title": "DeepSeek", "base_url": "https://api.deepseek.com", "own": false, "model": "deepseek-flash", "context_window": 1048576, "key_env": "DEEPSEEK_API_KEY", "key": "none"}, {"name": "openai", "title": "OpenAI", "base_url": "https://api.openai.com/v1", "own": false, "model": "gpt-test", "context_window": 400000, "key_env": "OPENAI_API_KEY", "key": "stored"}]}
+```
+
+The line is from a real run and is shortened to two of its eight services. `use` names the
+service that is in use. `own` is true for a service that the user added. `model` and
+`context_window` are what is known of a service or was said of it. `key` says where the key
+of a service comes from: `environment` for its variable, `stored`,
+`stored-for-another-address` for a key that is stored and is not sent to the address that
+the service has now, or `none`. No key is in the line, and the keyring is not asked for
+anything.
+
+`columbina setup --from-stdin` reads one object of JSON from its standard input, until the
+input is closed, and stores it as the answers to the questions are stored.
+
+| Name | What it says |
+|---|---|
+| `service` | The name of the service. |
+| `model` | The model. |
+| `base_url` | The address, for a service of the user's own. A service that is known by name takes none. |
+| `context_window` | How many tokens the model takes. Without it, what was said of the size for this model stays. |
+| `api_key` | The key. Without it no key is stored, and one that is stored stays. |
+
+```json
+{"stored": {"name": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-test", "context_window": 400000}, "key_in": "file"}
+```
+
+This is the answer of a real run on a machine where no keyring took the key. `stored` says
+what was written down, and `key_in` says whether the key went into the `keyring` or into the
+`file`. It is `null` where no key came. What is wrong is answered with `{"error": "..."}`
+and the exit code 2, and nothing is stored then. The key comes in with that document and by
+no other way, and it is in no answer and in no message. A document is not read from a
+terminal, where the key would be shown as it is typed. What a person would be shown goes to
+the standard error.
+
 A service and a model can also be named for one run or for one shell. Where several places
 name one, the place that stands higher in this table counts.
 

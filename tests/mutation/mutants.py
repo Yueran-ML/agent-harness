@@ -37,6 +37,7 @@ SEAM = "src/columbina/fs/__init__.py"
 PATHS = "src/columbina/fs/paths.py"
 BOUND = "src/columbina/fs/bound.py"
 SANDBOX = "src/columbina/sandbox/__init__.py"
+DOCKER = "src/columbina/sandbox/docker.py"
 WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
 WALK = "src/columbina/fs/walk.py"
@@ -169,6 +170,10 @@ def mutant(name: str, path: str, old: str, new: str, *more: tuple[str, str]) -> 
 
 def on_windows(fault: Mutant) -> Mutant:
     return replace(fault, only_on="win32")
+
+
+def on_linux(fault: Mutant) -> Mutant:
+    return replace(fault, only_on="linux")
 
 
 _LOOP = (
@@ -1739,6 +1744,590 @@ _SANDBOX = (
         SANDBOX,
         "        if provider is None:\n            raise SandboxUnavailableError(",
         "        if False:\n            raise SandboxUnavailableError(",
+    ),
+)
+
+_DOCKER = (
+    mutant(
+        "an entry of the search path that is no whole path is looked into",
+        DOCKER,
+        "        if not entry.is_absolute():\n            continue\n",
+        "",
+    ),
+    mutant(
+        "a program in a working directory is taken",
+        DOCKER,
+        "        if any(real == directory or directory in real.parents for directory in apart):\n"
+        "            continue\n",
+        "",
+    ),
+    mutant(
+        "a program is not taken only if it lies at the top of a working directory",
+        DOCKER,
+        "        if any(real == directory or directory in real.parents for directory in apart):\n",
+        "        if any(real.parent == directory for directory in apart):\n",
+    ),
+    mutant(
+        "a working directory is known only by the name it was given",
+        DOCKER,
+        "    apart = [Path(os.path.realpath(directory)) for directory in outside]\n",
+        "    apart = [Path(directory) for directory in outside]\n",
+    ),
+    mutant(
+        "a program is known by where it is written, not by where that leads",
+        DOCKER,
+        "        real = Path(os.path.realpath(entry / _PROGRAM))\n",
+        "        real = entry / _PROGRAM\n",
+    ),
+    mutant(
+        "a directory passes for the program",
+        DOCKER,
+        "        if real.is_file() and os.access(real, os.X_OK):\n",
+        "        if real.exists() and os.access(real, os.X_OK):\n",
+    ),
+    on_linux(
+        mutant(
+            "a file that cannot be run passes for the program",
+            DOCKER,
+            "        if real.is_file() and os.access(real, os.X_OK):\n",
+            "        if real.is_file():\n",
+        )
+    ),
+    mutant(
+        "quotes around an entry of the search path hide it",
+        DOCKER,
+        """        entry = Path(written.strip('"'))\n""",
+        "        entry = Path(written)\n",
+    ),
+    mutant(
+        "the program is said to be where the search path does not have it",
+        DOCKER,
+        "            return str(entry / _PROGRAM)\n",
+        "            return str(real)\n",
+    ),
+    mutant(
+        "an engine of another system passes",
+        DOCKER,
+        '    if told.os != "linux":\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "an old engine passes",
+        DOCKER,
+        "    if number is None or int(number.group(1)) < _OLDEST:\n",
+        "    if number is None:\n",
+    ),
+    mutant(
+        "an engine whose version cannot be read passes",
+        DOCKER,
+        "    if number is None or int(number.group(1)) < _OLDEST:\n",
+        "    if number is not None and int(number.group(1)) < _OLDEST:\n",
+    ),
+    mutant(
+        "the oldest engine that will do is refused",
+        DOCKER,
+        "    if number is None or int(number.group(1)) < _OLDEST:\n",
+        "    if number is None or int(number.group(1)) <= _OLDEST:\n",
+    ),
+    mutant(
+        "an engine that maps users passes",
+        DOCKER,
+        '        if any(option.startswith(f"name={mapping}") for option in told.security or ()):\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "an engine that maps users to a range of its own passes",
+        DOCKER,
+        '    for mapping in ("rootless", "userns"):\n',
+        '    for mapping in ("rootless",):\n',
+    ),
+    mutant(
+        "an engine that runs without root passes",
+        DOCKER,
+        '    for mapping in ("rootless", "userns"):\n',
+        '    for mapping in ("userns",):\n',
+    ),
+    mutant(
+        "an engine is refused for an option that only has such a word in it",
+        DOCKER,
+        '        if any(option.startswith(f"name={mapping}") for option in told.security or ()):\n',
+        "        if any(mapping in option for option in told.security or ()):\n",
+    ),
+    mutant(
+        "a command on Linux is the same user on every machine",
+        DOCKER,
+        '    if platform != "linux":\n        return "1000:1000"\n',
+        '    if True:\n        return "1000:1000"\n',
+    ),
+    mutant(
+        "a command is root where files come through a share",
+        DOCKER,
+        '    if platform != "linux":\n        return "1000:1000"\n',
+        '    if platform != "linux":\n        return "0:0"\n',
+    ),
+    mutant(
+        "a program that runs as root on Linux gets a container",
+        DOCKER,
+        "    if uid == 0:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a command on Linux has the group of root",
+        DOCKER,
+        '    return f"{uid}:{gid}"\n',
+        '    return f"{uid}:0"\n',
+    ),
+    mutant(
+        "a protected name in another case is not known",
+        DOCKER,
+        "            if entry.name.casefold() not in PROTECTED:\n",
+        "            if entry.name not in PROTECTED:\n",
+    ),
+    mutant(
+        "a link is told as what it leads to",
+        DOCKER,
+        "            if real != cwd / entry.name:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a file is told as a directory",
+        DOCKER,
+        'kind = "directory" if real.is_dir() else "file" if real.is_file() else "other"\n',
+        'kind = "directory" if real.exists() else "other"\n',
+    ),
+    mutant(
+        "the shape depends on the order in which the disk lists names",
+        DOCKER,
+        "    return sorted(names)\n",
+        "    return names\n",
+    ),
+    mutant(
+        "a comma in a path ends a field of a mount",
+        DOCKER,
+        """    if any(character in field for character in ',"\\r\\n'):\n""",
+        """    if any(character in field for character in '"\\r\\n'):\n""",
+    ),
+    mutant(
+        "a quote in a path is written as it is",
+        DOCKER,
+        """    if any(character in field for character in ',"\\r\\n'):\n""",
+        """    if any(character in field for character in ',\\r\\n'):\n""",
+    ),
+    mutant(
+        "the end of a line in a path ends a mount",
+        DOCKER,
+        """    if any(character in field for character in ',"\\r\\n'):\n""",
+        """    if any(character in field for character in ',"\\n'):\n""",
+    ),
+    mutant(
+        "a quote in a quoted field is written once",
+        DOCKER,
+        """        return '"' + field.replace('"', '""') + '"'\n""",
+        """        return '"' + field + '"'\n""",
+    ),
+    mutant(
+        "a mount is not read-only when it is to be",
+        DOCKER,
+        '    if readonly:\n        fields.append("readonly")\n',
+        "",
+    ),
+    mutant(
+        "what is mounted below a source comes into the container with it",
+        DOCKER,
+        '    fields.append("bind-recursive=disabled")\n',
+        "",
+    ),
+    mutant(
+        "a session with full access gets the protected names mounted over its directory",
+        DOCKER,
+        '    if mode == "danger-full-access":\n        return [_mount(cwd, target, readonly=False)]\n',
+        "",
+    ),
+    mutant(
+        "a session that is read-only can write its directory",
+        DOCKER,
+        '    whole = mode == "read-only" or any(',
+        "    whole = any(",
+    ),
+    mutant(
+        "a working directory inside a protected directory is written",
+        DOCKER,
+        '    whole = mode == "read-only" or any(part.casefold() in PROTECTED for part in cwd.parts)\n',
+        '    whole = mode == "read-only"\n',
+    ),
+    mutant(
+        "a working directory inside a protected directory in another case is written",
+        DOCKER,
+        "any(part.casefold() in PROTECTED for part in cwd.parts)\n",
+        "any(part in PROTECTED for part in cwd.parts)\n",
+    ),
+    mutant(
+        "a protected name that leads to the working directory itself protects nothing",
+        DOCKER,
+        "            if real == cwd:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a link that leads out of the directory is given to the engine as a source",
+        DOCKER,
+        "        for _, _, real in _led(cwd):\n",
+        "        for name, _, real in _led(cwd):\n",
+        (
+            "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n"
+            '                over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real\n',
+            "            elif real.is_dir() or real.is_file():\n"
+            '                over[f"{target}/{name}"] = cwd / name\n',
+        ),
+    ),
+    mutant(
+        "what a link leads to outside the directory is mounted in it",
+        DOCKER,
+        "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n"
+        '                over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real\n',
+        "            elif real.is_dir() or real.is_file():\n"
+        '                over[f"{target}/{real.name}"] = real\n',
+    ),
+    mutant(
+        "a source that is not there is named to the engine",
+        DOCKER,
+        "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n",
+        "            elif cwd in real.parents:\n",
+    ),
+    mutant(
+        "a protected file is not mounted",
+        DOCKER,
+        "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n",
+        "            elif cwd in real.parents and real.is_dir():\n",
+    ),
+    mutant(
+        "what is protected is mounted so that it can be written",
+        DOCKER,
+        "        *(_mount(real, inside, readonly=True) for inside, real in sorted(over.items())),\n",
+        "        *(_mount(real, inside, readonly=False) for inside, real in sorted(over.items())),\n",
+    ),
+    mutant(
+        "a directory that is to be read-only as a whole can be written",
+        DOCKER,
+        "    if whole:\n        return [_mount(cwd, target, readonly=True)]\n",
+        "    if whole:\n        return [_mount(cwd, target, readonly=False)]\n",
+    ),
+    mutant(
+        "a directory that may be written is mounted read-only",
+        DOCKER,
+        "    return [\n        _mount(cwd, target, readonly=False),\n",
+        "    return [\n        _mount(cwd, target, readonly=True),\n",
+    ),
+    mutant(
+        "an image is fetched for a command",
+        DOCKER,
+        '"--interactive", "--pull", "never", "--init"]\n',
+        '"--interactive", "--pull", "missing", "--init"]\n',
+    ),
+    mutant(
+        "a container that has ended is kept by the engine",
+        DOCKER,
+        '    argv = [program, "run", "--rm", "--interactive", ',
+        '    argv = [program, "run", "--interactive", ',
+    ),
+    mutant(
+        "a container is not tied to its input",
+        DOCKER,
+        '    argv = [program, "run", "--rm", "--interactive", ',
+        '    argv = [program, "run", "--rm", ',
+    ),
+    mutant(
+        "nothing in a container takes over what a command left without a parent",
+        DOCKER,
+        '"--pull", "never", "--init"]\n',
+        '"--pull", "never"]\n',
+    ),
+    mutant(
+        "what keeps a container is the user that the image names",
+        DOCKER,
+        '    argv += ["--user", "0:0", "--name", name, "--label", "columbina=1"]\n',
+        '    argv += ["--name", name, "--label", "columbina=1"]\n',
+    ),
+    mutant(
+        "a container has a network whatever the config says",
+        DOCKER,
+        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", "bridge", "--cap-drop", "ALL"]\n',
+    ),
+    mutant(
+        "a container keeps the capabilities that Docker gives it",
+        DOCKER,
+        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", config.network]\n',
+    ),
+    mutant(
+        "a command can gain what a program with a set-user bit gives",
+        DOCKER,
+        '    argv += ["--security-opt", "no-new-privileges", "--pids-limit", str(config.pids_limit)]\n',
+        '    argv += ["--pids-limit", str(config.pids_limit)]\n',
+    ),
+    mutant(
+        "a container may have any number of processes",
+        DOCKER,
+        '    argv += ["--security-opt", "no-new-privileges", "--pids-limit", str(config.pids_limit)]\n',
+        '    argv += ["--security-opt", "no-new-privileges"]\n',
+    ),
+    mutant(
+        "the memory that the config allows is not passed on",
+        DOCKER,
+        "    if config.memory is not None:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "the processors that the config allows are not passed on",
+        DOCKER,
+        "    if config.cpus is not None:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a container is not given the token",
+        DOCKER,
+        "    for one in (*mounted, _mount(probe, PROBE, readonly=True)):\n",
+        "    for one in mounted:\n",
+    ),
+    mutant(
+        "a container can write where the token is",
+        DOCKER,
+        "    for one in (*mounted, _mount(probe, PROBE, readonly=True)):\n",
+        "    for one in (*mounted, _mount(probe, PROBE, readonly=False)):\n",
+    ),
+    mutant(
+        "a container runs what its image says, not the keeper",
+        DOCKER,
+        '    return [*argv, "--workdir", "/", "--entrypoint", "sh", config.image, "-c", _ENTRY]\n',
+        '    return [*argv, "--workdir", "/", config.image, "sh", "-c", _ENTRY]\n',
+    ),
+    mutant(
+        "a container without bash says that it is ready",
+        DOCKER,
+        '    "if command -v bash >/dev/null 2>&1; "\n',
+        '    "if true; "\n',
+    ),
+    mutant(
+        "a container says that it is ready without the token",
+        DOCKER,
+        """    f'then echo "ready $(cat {PROBE}/token 2>/dev/null)"; '\n""",
+        """    'then echo "ready"; '\n""",
+    ),
+    mutant(
+        "a container ends as soon as it has said that it is ready",
+        DOCKER,
+        '    "else echo missing; fi; exec cat"\n',
+        '    "else echo missing; fi"\n',
+    ),
+    mutant(
+        "a command is run as root",
+        DOCKER,
+        '    start = [program, "exec", "--interactive", "--user", user, "--workdir", target, *given, name]\n',
+        '    start = [program, "exec", "--interactive", "--workdir", target, *given, name]\n',
+    ),
+    mutant(
+        "a command gets no input",
+        DOCKER,
+        '    start = [program, "exec", "--interactive", "--user", user, ',
+        '    start = [program, "exec", "--user", user, ',
+    ),
+    mutant(
+        "a command is run in the root of the container",
+        DOCKER,
+        '"--user", user, "--workdir", target, *given, name]\n',
+        '"--user", user, *given, name]\n',
+    ),
+    mutant(
+        "the config can move the home of a command",
+        DOCKER,
+        '    env = {"LANG": "C.UTF-8", "TERM": "dumb", **config.env, "HOME": HOME}\n',
+        '    env = {"HOME": HOME, "LANG": "C.UTF-8", "TERM": "dumb", **config.env}\n',
+    ),
+    mutant(
+        "the config cannot say in which language a command speaks",
+        DOCKER,
+        '    env = {"LANG": "C.UTF-8", "TERM": "dumb", **config.env, "HOME": HOME}\n',
+        '    env = {**config.env, "LANG": "C.UTF-8", "TERM": "dumb", "HOME": HOME}\n',
+    ),
+    mutant(
+        "a command does not get the variables of the config",
+        DOCKER,
+        '    env = {"LANG": "C.UTF-8", "TERM": "dumb", **config.env, "HOME": HOME}\n',
+        '    env = {"LANG": "C.UTF-8", "TERM": "dumb", "HOME": HOME}\n',
+    ),
+    mutant(
+        "the home of a command is not made",
+        DOCKER,
+        """_CALL = 'mkdir -p "$HOME" && exec "$@"'\n""",
+        """_CALL = 'exec "$@"'\n""",
+    ),
+    mutant(
+        "the shell that makes the home of a command stays as its parent",
+        DOCKER,
+        """_CALL = 'mkdir -p "$HOME" && exec "$@"'\n""",
+        """_CALL = 'mkdir -p "$HOME" && "$@"'\n""",
+    ),
+    mutant(
+        "what commands left is stopped as root, and the keeper with it",
+        DOCKER,
+        '    return [program, "exec", "--user", user, name, "sh", "-c", _STOP, "sh", number]\n',
+        '    return [program, "exec", name, "sh", "-c", _STOP, "sh", number]\n',
+    ),
+    mutant(
+        "what commands left is looked for by the number of their group",
+        DOCKER,
+        '    number = user.partition(":")[0]\n',
+        '    number = user.partition(":")[2]\n',
+    ),
+    mutant(
+        "what commands left is asked to end, and may refuse",
+        DOCKER,
+        "  kill -KILL -1 2>/dev/null\n",
+        "  kill -TERM -1 2>/dev/null\n",
+    ),
+    mutant(
+        "the directory is looked at as root",
+        DOCKER,
+        '    return [program, "exec", "--user", user, "--workdir", target, name, "sh", "-c", _USABLE]\n',
+        '    return [program, "exec", "--workdir", target, name, "sh", "-c", _USABLE]\n',
+    ),
+    mutant(
+        "another directory than the working directory is looked at",
+        DOCKER,
+        '    return [program, "exec", "--user", user, "--workdir", target, name, "sh", "-c", _USABLE]\n',
+        '    return [program, "exec", "--user", user, name, "sh", "-c", _USABLE]\n',
+    ),
+    mutant(
+        "a container is asked for by a part of its name",
+        DOCKER,
+        'f"name=^{name}$"',
+        'f"name={name}"',
+    ),
+    mutant(
+        "a container that is being stopped counts as gone",
+        DOCKER,
+        '    return [program, "ps", "--all", "--filter", ',
+        '    return [program, "ps", "--filter", ',
+    ),
+    mutant(
+        "a container is removed only if nothing runs in it",
+        DOCKER,
+        '    return [program, "rm", "--force", name]\n',
+        '    return [program, "rm", name]\n',
+    ),
+    mutant(
+        "an image that is not there is told as any other failure",
+        DOCKER,
+        '    if "no such image" in low or "unable to find image" in low:\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "an image that the engine does not have is not known by its word for it",
+        DOCKER,
+        '    if "no such image" in low or "unable to find image" in low:\n',
+        '    if "unable to find image" in low:\n',
+    ),
+    mutant(
+        "an image that the program did not find is not known by its word for it",
+        DOCKER,
+        '    if "no such image" in low or "unable to find image" in low:\n',
+        '    if "no such image" in low:\n',
+    ),
+    mutant(
+        "an engine that does not answer is told as any other failure",
+        DOCKER,
+        "    if any(words in low for words in _UNREACHABLE):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "an engine of Docker Desktop that does not answer is not known",
+        DOCKER,
+        '    "failed to connect to the docker api",\n',
+        "",
+    ),
+    mutant(
+        "a service of Docker that does not answer is not known",
+        DOCKER,
+        '    "cannot connect to the docker daemon",\n',
+        "",
+    ),
+    mutant(
+        "an engine that was not reached is not known",
+        DOCKER,
+        '    "error during connect",\n',
+        "",
+    ),
+    mutant(
+        "an engine that is said not to run is not known",
+        DOCKER,
+        '    "docker daemon is not running",\n',
+        "",
+    ),
+    mutant(
+        "what Docker wrote is read with its capitals",
+        DOCKER,
+        "    low = said.casefold()\n",
+        "    low = said\n",
+    ),
+    mutant(
+        "a failure is told in the last words of Docker",
+        DOCKER,
+        '    told = lines[0][:300] if lines else "it did not say why"\n',
+        '    told = lines[-1][:300] if lines else "it did not say why"\n',
+    ),
+    mutant(
+        "a failure is told at whatever length",
+        DOCKER,
+        '    told = lines[0][:300] if lines else "it did not say why"\n',
+        '    told = lines[0] if lines else "it did not say why"\n',
+    ),
+    mutant(
+        "a program that is named by a part of a path is taken",
+        DOCKER,
+        "        if program is not None and not Path(program).is_absolute():\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "any text is the name of a variable",
+        DOCKER,
+        '            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "the name of a variable may begin with a digit",
+        DOCKER,
+        '            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:\n',
+        '            if re.fullmatch(r"[A-Za-z0-9_]+", key) is None:\n',
+    ),
+    mutant(
+        "a value may have the character that ends a text",
+        DOCKER,
+        '            if "\\0" in value:\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "what the config says besides what is known is passed over",
+        DOCKER,
+        '    model_config = ConfigDict(extra="forbid")\n\n    program: str | None = None\n',
+        "    program: str | None = None\n",
+    ),
+    mutant(
+        "an image may be named so that Docker takes the name for an option",
+        DOCKER,
+        '    image: str = Field(default=DEFAULT_IMAGE, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")\n',
+        '    image: str = Field(default=DEFAULT_IMAGE, pattern=r"^[A-Za-z0-9._/:@-]+$")\n',
+    ),
+    mutant(
+        "a container may have the network of this machine",
+        DOCKER,
+        '    network: Literal["none", "bridge"] = "none"\n',
+        '    network: Literal["none", "bridge", "host"] = "none"\n',
+    ),
+    mutant(
+        "a container has a network unless the config says otherwise",
+        DOCKER,
+        '    network: Literal["none", "bridge"] = "none"\n',
+        '    network: Literal["none", "bridge"] = "bridge"\n',
     ),
 )
 
@@ -17357,6 +17946,7 @@ SETS: dict[str, MutantSet] = {
         _CONDUCT,
     ),
     "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),
+    "docker": MutantSet(("tests/sandbox/test_docker.py",), _DOCKER),
     "permissions": MutantSet(("tests/permissions",), _PERMISSIONS),
     "search": MutantSet(
         (

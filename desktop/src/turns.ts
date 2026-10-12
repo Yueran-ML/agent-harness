@@ -157,6 +157,24 @@ function arrange({ turn, items, end }: Gathering): void {
   turn.steps = rest;
 }
 
+/**
+ * What the model thought before it wrote the answer of a turn, or nothing.
+ *
+ * It belongs to the way to the answer and not to the answer: it is shown with the steps of
+ * the turn, at their end, and is put away with them.
+ */
+export function lastThought(turn: Turn): string {
+  return turn.answer?.reasoning ?? '';
+}
+
+/**
+ * Whether a turn has a way to its answer that can be put away under one line: steps, or a
+ * thought before the answer. A turn without an answer shows all that it has.
+ */
+export function foldsAway(turn: Turn): boolean {
+  return turn.answer !== null && (turn.steps.length > 0 || lastThought(turn) !== '');
+}
+
 /** Something that was said beside the log, such as what a command answered. */
 export interface Beside<Said> {
   kind: 'beside';

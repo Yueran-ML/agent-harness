@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionEvent } from '../src/protocol';
 import { emptyProjection, projectEvents, type ConversationItem } from '../src/state';
-import { groupTurns, itemsOf, placed, promptOf, saidOnTheWay, type Entry, type Turn } from '../src/turns';
+import { foldsAway, groupTurns, itemsOf, lastThought, placed, promptOf, saidOnTheWay, type Entry, type Turn } from '../src/turns';
 import { eventsOf, logs } from './logs';
 
 // A log is written here as a list of events. Each stands where it is listed,
@@ -424,5 +424,61 @@ describe('what was said beside the log', () => {
 
   it('knows where a turn began in the log', () => {
     expect(turnsOf(...two).map(turn => turn.seq)).toEqual([0, 5]);
+  });
+});
+
+describe('the way to the answer of a turn', () => {
+  const answered = (thoughts: string, words: string): Written =>
+    ['assistant/message', {
+      message: { role: 'assistant', content: [...(thoughts ? [{ type: 'reasoning', text: thoughts }] : []), ...text(words)] },
+      finish_reason: 'stop',
+    }];
+
+  it('holds what the model thought before it wrote the answer', () => {
+    const [turn] = turnsOf(begin(1), user('ask'), answered('first this, then that', 'Done.'), end(1));
+    expect(turn.answer?.text).toBe('Done.');
+    expect(lastThought(turn)).toBe('first this, then that');
+    // Nothing else happened on the way, and still there is something to put away and to open.
+    expect(turn.steps).toEqual([]);
+    expect(foldsAway(turn)).toBe(true);
+  });
+
+  it('is nothing where the model wrote its answer at once', () => {
+    const [turn] = turnsOf(begin(1), user('ask'), answered('', 'Done.'), end(1));
+    expect(lastThought(turn)).toBe('');
+    expect(foldsAway(turn)).toBe(false);
+  });
+
+  it('can be put away where steps led to the answer, thought or not', () => {
+    const [plain, thinking] = turnsOf(
+      begin(1), user('ask'), call('a'), result('a'), answered('', 'Done.'), end(1),
+      begin(2), user('ask'), call('b'), result('b'), answered('so that is it', 'Done.'), end(2),
+    );
+    expect(foldsAway(plain)).toBe(true);
+    expect(lastThought(plain)).toBe('');
+    expect(foldsAway(thinking)).toBe(true);
+    expect(lastThought(thinking)).toBe('so that is it');
+  });
+
+  it('is shown in full where the turn has no answer', () => {
+    // A turn that runs, and one that was stopped before the model answered.
+    const [stopped, running] = turnsOf(
+      begin(1), user('ask'), thought('hm'), call('a'), result('a'), end(1, 'aborted', 'user'),
+      begin(2), user('ask'), call('b'),
+    );
+    expect(foldsAway(stopped)).toBe(false);
+    expect(lastThought(stopped)).toBe('');
+    expect(foldsAway(running)).toBe(false);
+    expect(lastThought(running)).toBe('');
+  });
+
+  it('keeps what was thought at earlier steps where it was thought', () => {
+    const [turn] = turnsOf(
+      begin(1), user('ask'),
+      ['assistant/message', { message: { role: 'assistant', content: [{ type: 'reasoning', text: 'look first' }, ...text('I will look.')] }, finish_reason: 'tool-calls' }],
+      call('a'), result('a'), answered('now I know', 'Done.'), end(1),
+    );
+    expect(turn.steps.map(item => (item.type === 'assistant' ? item.reasoning : item.type))).toEqual(['look first', 'tool']);
+    expect(lastThought(turn)).toBe('now I know');
   });
 });

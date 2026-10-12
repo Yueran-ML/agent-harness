@@ -3,7 +3,7 @@ import { ArrowDown, ChevronRight, CornerDownRight, SquareTerminal } from 'lucide
 import type { Listed } from '../key/form';
 import { classifyModelFailure, turnOutcome, type ActionKey, type TurnOutcome } from '../outcomes';
 import type { ConversationItem, StreamPreview, UserItem } from '../state';
-import { groupTurns, placed, type Turn } from '../turns';
+import { foldsAway, groupTurns, lastThought, placed, type Turn } from '../turns';
 import type { Workspace } from '../useWorkspace';
 import { sayModelFailure, sayTurn } from '../words';
 import { CopyButton, Markdown } from './Markdown';
@@ -200,9 +200,11 @@ function TurnView({ turn, preview, waiting, onLink, onAction }: {
 }) {
   const words = useWords();
   const outcome = turnOutcome(turn);
+  // What the model thought before it wrote its answer stands at the end of the steps.
+  const thought = lastThought(turn);
   // With an answer below them, the steps fold into one line. The user may unfold them,
   // and what the user chose stays.
-  const folds = turn.answer !== null && turn.steps.length > 0;
+  const folds = foldsAway(turn);
   const [chosen, setChosen] = useState<boolean | null>(null);
   const open = chosen ?? !folds;
   const seconds = turn.end ? Math.max(0, (turn.end.time - turn.startedAt) / 1000) : 0;
@@ -219,7 +221,7 @@ function TurnView({ turn, preview, waiting, onLink, onAction }: {
       <ChevronRight size={13} aria-hidden="true" />
       {words.turn.took(seconds, turn.rounds)}
     </button>}
-    {open && steps.length > 0 && <div className="steps">
+    {open && (steps.length > 0 || thought !== '') && <div className="steps">
       {steps.map((item, index) => <Step
         key={item.id}
         item={item}
@@ -228,6 +230,12 @@ function TurnView({ turn, preview, waiting, onLink, onAction }: {
         last={item === turn.steps.at(-1)}
         onLink={onLink}
       />)}
+      {thought !== '' && <div className="step-text" data-test="last-thought">
+        <details className="aside">
+          <summary><ChevronRight size={13} aria-hidden="true" />{words.label.thought}</summary>
+          <p className="thought">{thought}</p>
+        </details>
+      </div>}
     </div>}
 
     {preview && <Live preview={preview} onLink={onLink} />}

@@ -14810,6 +14810,24 @@ _MCP = (
         "                return\n",
     ),
     mutant(
+        "nobody is told that a connection was lost",
+        MCP_CONNECTION,
+        '                logger.warning(\n                    "the connection to the MCP server %s was lost. It is being made again",\n',
+        '                logger.debug(\n                    "the connection to the MCP server %s was lost. It is being made again",\n',
+    ),
+    mutant(
+        "an attempt that failed is told as a connection that was lost",
+        MCP_CONNECTION,
+        "            if lasted is not None:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "a server that is given up is said to come back",
+        MCP_CONNECTION,
+        "            if failures > ATTEMPTS:\n                self._gave_up = True\n",
+        '            if failures > ATTEMPTS:\n                logger.warning(\n                    "the connection to the MCP server %s was lost. It is being made again",\n                    self.server,\n                )\n                self._gave_up = True\n',
+    ),
+    mutant(
         "the waits of the keeper do not grow",
         MCP_CONNECTION,
         "            await self._sleep(min(FIRST_WAIT * 2 ** (failures - 1), LONGEST_WAIT))\n",
@@ -15052,8 +15070,14 @@ _MCP = (
     mutant(
         "a server that is gone is not missed when it is asked for its tools",
         MCP_CONNECTION,
-        "            if isinstance(error, MCPError) and error.code == CONNECTION_CLOSED:\n                self._gone(client)\n",
-        "",
+        "                self._gone(client)\n                return\n            logger.warning(\n",
+        "                return\n            logger.warning(\n",
+    ),
+    mutant(
+        "a list that could not be had because the server is gone is told as a list that stays",
+        MCP_CONNECTION,
+        "                self._gone(client)\n                return\n            logger.warning(\n",
+        "                self._gone(client)\n            logger.warning(\n",
     ),
     mutant(
         "a list that could not be had is taken for a connection that was lost",

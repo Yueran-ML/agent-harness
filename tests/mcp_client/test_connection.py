@@ -4,6 +4,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from typing import Any
 
 import pytest
@@ -31,6 +32,7 @@ LOST = (
     "known how far the call got, and it was not made again"
 )
 CLOSED = "the connection to the MCP server served is closed"
+AGAIN = "the connection to the MCP server served was lost. It is being made again"
 TWO = {"a": 1, "b": 1}
 
 
@@ -382,7 +384,7 @@ async def test_a_call_that_the_server_does_not_answer_with_a_result_fails_in_wor
 
 @pytest.mark.parametrize("mode", ["auto", "legacy"])
 async def test_a_call_that_waits_when_the_connection_is_lost_fails_and_the_connection_is_made_again(
-    make: Callable[..., Connection], served: Served, mode: str
+    make: Callable[..., Connection], served: Served, mode: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     transport = Cuttable(served)
     naps = Naps()
@@ -399,12 +401,16 @@ async def test_a_call_that_waits_when_the_connection_is_lost_fails_and_the_conne
     calling = asyncio.ensure_future(connection.call("nap", {"seconds": 30}, 60))
     await until(lambda: served.napping == 1)
 
-    await transport.cut()
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        await transport.cut()
 
-    with pytest.raises(CallError) as refused:
-        await asyncio.wait_for(calling, 5)
-    assert str(refused.value) == LOST
-    await until(lambda: transport.entered == 2 and connection.state == "connected")
+        with pytest.raises(CallError) as refused:
+            await asyncio.wait_for(calling, 5)
+        assert str(refused.value) == LOST
+        await until(lambda: transport.entered == 2 and connection.state == "connected")
+    # The user is told once what happened, however many found the connection closed: the
+    # call, and whoever listened for a change of the tools.
+    assert caplog.messages == [AGAIN]
     assert naps.asked == [FIRST_WAIT]
     assert transport.left == 1
     assert connection.failure is None
@@ -434,15 +440,19 @@ async def test_two_calls_that_find_one_connection_closed_have_it_made_again_once
 
 
 async def test_a_server_of_2026_that_dies_while_nothing_is_called_is_connected_again(
-    make: Callable[..., Connection], served: Served
+    make: Callable[..., Connection], served: Served, caplog: pytest.LogCaptureFixture
 ) -> None:
     transport = Cuttable(served)
     connection = await begun(make("served", lambda: transport, sleep=Naps()))
 
-    await transport.cut()
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        await transport.cut()
 
-    # Its word of its tools broke off, and asking for them showed that it is gone.
-    await until(lambda: transport.entered == 2 and connection.state == "connected")
+        # Its word of its tools broke off, and asking for them showed that it is gone.
+        await until(lambda: transport.entered == 2 and connection.state == "connected")
+    # A list that could not be had because the server is gone is the loss of the connection,
+    # and it is told as that.
+    assert caplog.messages == [AGAIN]
 
 
 async def test_an_older_server_that_dies_while_nothing_is_called_is_missed_at_the_next_call(
@@ -724,7 +734,7 @@ async def test_a_server_that_was_never_connected_is_tried_as_often_and_then_give
 
 
 async def test_a_server_that_is_reached_after_some_failures_has_its_tools_from_then_on(
-    make: Callable[..., Connection], served: Served
+    make: Callable[..., Connection], served: Served, caplog: pytest.LogCaptureFixture
 ) -> None:
     transport = Cuttable(served)
     left = [3]
@@ -736,13 +746,16 @@ async def test_a_server_that_is_reached_after_some_failures_has_its_tools_from_t
         return transport
 
     naps = Naps()
-    connection = await begun(make("served", target, sleep=naps))
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        connection = await begun(make("served", target, sleep=naps))
 
-    await until(lambda: connection.state == "connected")
+        await until(lambda: connection.state == "connected")
 
     assert naps.asked == [0.5, 1, 2]
     assert names(connection) == BASE
     assert connection.failure is None
+    # An attempt that failed is told as that. No connection was lost here.
+    assert caplog.messages == ["the MCP server served is not connected: not yet"] * 3
 
 
 async def test_the_count_of_failures_begins_anew_once_a_connection_lasted_half_a_minute(
@@ -761,6 +774,30 @@ async def test_the_count_of_failures_begins_anew_once_a_connection_lasted_half_a
 
     # Half a minute, and the count begins anew. Less, and it goes on.
     assert naps.asked == [0.5, 1, 2, 0.5]
+
+
+async def test_a_server_that_is_lost_again_and_again_is_given_up_and_no_longer_said_to_come_back(
+    make: Callable[..., Connection], served: Served, caplog: pytest.LogCaptureFixture
+) -> None:
+    transport = Cuttable(served)
+    connection = await begun(make("served", lambda: transport, sleep=Naps()))
+
+    def there(for_the: int) -> bool:
+        return transport.entered == for_the and connection.state == "connected"
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        for time in range(2, ATTEMPTS + 2):
+            await lose(connection, transport)
+            await until(partial(there, time))
+        await lose(connection, transport)
+        await until(lambda: connection.state == "gave up")
+
+    assert transport.entered == ATTEMPTS + 1
+    assert connection.tools == ()
+    assert caplog.messages == [AGAIN] * ATTEMPTS + [
+        "the MCP server served is no longer tried after 11 failures in a row: "
+        "the connection was lost"
+    ]
 
 
 class Lingering(Cuttable):

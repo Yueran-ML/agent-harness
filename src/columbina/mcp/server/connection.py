@@ -13,9 +13,10 @@ A connection that is lost
     hears this tells the keeper, see :meth:`Connection.call`. That call is
     answered with an error and is not made again, since nobody knows how far
     it got. The keeper leaves the old client, whatever leaving it raises,
-    waits, and connects again. The waits begin at half a second and double up
-    to thirty seconds. After ten failures in a row the keeper gives up, and
-    the tools are withdrawn. The count begins anew once a connection has
+    waits, and connects again. It logs the loss in one line, however many
+    found the connection closed. The waits begin at half a second and double
+    up to thirty seconds. After ten failures in a row the keeper gives up,
+    and the tools are withdrawn. The count begins anew once a connection has
     lasted thirty seconds, so a server that dies as often as it is started is
     not started without end.
 
@@ -375,6 +376,13 @@ class Connection:
                 )
                 await self._offer(())
                 return
+            if lasted is not None:
+                # An attempt that failed was logged where it failed. A connection that was
+                # there and is lost is logged here, once, however many found it closed.
+                logger.warning(
+                    "the connection to the MCP server %s was lost. It is being made again",
+                    self.server,
+                )
             await self._sleep(min(FIRST_WAIT * 2 ** (failures - 1), LONGEST_WAIT))
 
     async def _attempt(self) -> float | None:
@@ -538,7 +546,10 @@ class Connection:
                 listed = await _listed(client)
         except Exception as error:
             if isinstance(error, MCPError) and error.code == CONNECTION_CLOSED:
+                # No list, because there is no connection. That is told by the keeper, once
+                # for everybody who found it so.
                 self._gone(client)
+                return
             logger.warning(
                 "the MCP server %s did not list its tools anew, and the list that was there "
                 "stays: %s",

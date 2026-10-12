@@ -7692,6 +7692,30 @@ _COMPACTION = (
         "            enough = plan.target is not None and plan.size <= plan.target\n",
     ),
     mutant(
+        "a part that no summary could be shorter than is summed up",
+        BASIC,
+        '                if region is not None and region.tokens > size(carried("")):\n',
+        "                if region is not None:\n",
+    ),
+    mutant(
+        "a part that comes to just the frame of a summary is summed up",
+        BASIC,
+        '                if region is not None and region.tokens > size(carried("")):\n',
+        '                if region is not None and region.tokens >= size(carried("")):\n',
+    ),
+    mutant(
+        "a part that comes to one token more than the frame of a summary is left alone",
+        BASIC,
+        '                if region is not None and region.tokens > size(carried("")):\n',
+        '                if region is not None and region.tokens > size(carried("")) + 1:\n',
+    ),
+    mutant(
+        "a part is measured against a frame with a word in it",
+        BASIC,
+        '                if region is not None and region.tokens > size(carried("")):\n',
+        '                if region is not None and region.tokens > size(carried("word")):\n',
+    ),
+    mutant(
         "a summary is never enough",
         BASIC,
         "                        enough = plan.target is None or now <= plan.target\n",

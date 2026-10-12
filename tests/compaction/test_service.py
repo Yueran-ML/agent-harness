@@ -54,7 +54,7 @@ from columbina.session import (
     UsageTotal,
     UserMessageEvent,
 )
-from columbina.token_meter import TOKEN_METER, Measure, estimate
+from columbina.token_meter import TOKEN_METER, Measure, estimate, estimate_message
 from columbina.tools import Tool, ToolRun
 from support.loop import SYSTEM, Harness, assistant, idle, types, user
 
@@ -1060,6 +1060,69 @@ async def test_asking_for_it_where_nothing_can_go_is_no_failure(harness: Harness
     assert outcome.error is None
     assert outcome.before == outcome.after
     assert sums(harness) == []
+
+
+def exactly(tokens: int) -> str:
+    """A text whose message is estimated at just so many tokens."""
+    text = "word " * (tokens // 2)
+    while estimate_message(user(text)) < tokens:
+        text += "a"
+    assert estimate_message(user(text)) == tokens
+    return text
+
+
+async def test_a_part_that_no_summary_could_be_shorter_than_is_not_summed_up(
+    harness: Harness,
+) -> None:
+    # All that could go is what the user said first: the long reply after it is among the
+    # newest 3200 tokens, which stay. The frame that a summary stands in comes to as much.
+    frame = estimate_message(carried(""))
+    service = await loaded(harness)
+    agent = await harness.agent(Reply(text=words(4000)), Reply(text="Two."), model=MODEL)
+    await turn(agent, exactly(frame))
+    await turn(agent, "Say two.")
+    seen = agent.session.messages
+
+    outcome = await service.compact(agent, "manual")
+
+    # The model is not asked for a summary that could not be taken.
+    assert sums(harness) == []
+    assert (outcome.changed, outcome.error) == (False, None)
+    assert agent.session.messages == seen
+
+
+async def test_a_part_that_comes_to_more_than_the_frame_of_a_summary_is_summed_up(
+    harness: Harness,
+) -> None:
+    frame = estimate_message(carried(""))
+    service = await loaded(harness)
+    agent = await harness.agent(Reply(text=words(4000)), Reply(text="Two."), model=MODEL)
+    await turn(agent, exactly(frame + 1))
+    await turn(agent, "Say two.")
+    harness.model.add(Reply(text="They said words."))
+
+    outcome = await service.compact(agent, "manual")
+
+    # One token more, and a summary could be shorter. This one is not, and is not taken.
+    assert len(sums(harness)) == 1
+    assert outcome.error == "the summary is no shorter than what it sums up"
+
+
+async def test_a_part_that_no_summary_could_be_shorter_than_is_left_alone_before_a_step(
+    harness: Harness,
+) -> None:
+    await loaded(harness)
+    agent = await harness.agent(Reply(text=words(17_000)), Reply(text="Two."), model=MODEL)
+
+    await turn(agent, "Say many words.")
+    await turn(agent, "And?")
+
+    # What the user said first is all that could go. Nothing is asked of the model for it.
+    assert [(why, o.error) for why, o in attempts(agent) if o is not None] == [
+        ("pressure", "nothing of this conversation can go"),
+    ]
+    assert sums(harness) == []
+    assert agent.session.messages[-1] == assistant("Two.")
 
 
 async def test_a_summary_can_be_asked_for_where_nothing_says_how_much_the_model_takes(

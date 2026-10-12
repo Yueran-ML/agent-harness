@@ -28,7 +28,9 @@ Making it shorter is done in this order.
 2. Otherwise the oldest part is summed up by the model, as it stands: with
    the results whole, the summary is better, and the request is one whose
    beginning the service has seen before. See :mod:`.region` for what goes
-   and :mod:`.summary` for how it is asked for.
+   and :mod:`.summary` for how it is asked for. A part that comes to no more
+   than the frame that a summary stands in is not summed up: no summary of
+   it could be shorter, and asking for one costs a request.
 3. If that is still not enough, the results that are left are cut down. So
    are they if no summary came of it.
 
@@ -430,7 +432,9 @@ class Basic:
                     shed=plan.shed,
                     size=size,
                 )
-                if region is not None:
+                # No summary could be shorter than the frame that it stands in. A part that
+                # comes to no more than that is left alone, and the model is not asked.
+                if region is not None and region.tokens > size(carried("")):
                     try:
                         summarised = await self._sum_up(
                             agent.session, model, region, limits.headroom, size

@@ -108,6 +108,15 @@ select.field {
   margin-top: 3px;
 }
 
+/*
+ * A sentence or two, in lines of about the same length. A line that is filled to
+ * its end first leaves the last one with a word or two, or cuts a name at its hyphen
+ * to give it more.
+ */
+.key-said p {
+  text-wrap: balance;
+}
+
 .key-said[data-tone='bad'] {
   border-color: color-mix(in srgb, var(--bad) 40%, transparent);
   background: var(--bad-wash);

@@ -123,7 +123,9 @@ describe('the faces of the type', () => {
 
 describe('the lines of a paragraph', () => {
   const base = read('src/ui/base.css');
-  const rulesOf = (selector: string) => blockOf(base, selector).split('\n').slice(2).map(rule => rule.trim());
+  const rulesIn = (stylesheet: string, selector: string) =>
+    blockOf(stylesheet, selector).split('\n').slice(2).map(rule => rule.trim());
+  const rulesOf = (selector: string) => rulesIn(base, selector);
 
   it('break between phrases where the page is in Japanese, and do not end with a character or two', () => {
     // Japanese may break between any two characters: in the middle of a word, and before the last one of a sentence.
@@ -134,6 +136,12 @@ describe('the lines of a paragraph', () => {
     expect(rulesOf(':root:lang(ja) :is(input, textarea)')).toEqual(['text-wrap: wrap;']);
     // The rule for a field comes after the one for the page, and so goes before it.
     expect(base.indexOf(':root:lang(ja) :is(input, textarea) {')).toBeGreaterThan(base.indexOf(':root:lang(ja) {'));
+  });
+
+  it('are of about the same length in what the window for the key says', () => {
+    // Lines that were filled to their end one after the other cut the name of a model at its
+    // hyphen, in English as in Japanese: "with the model deepseek-" and then "flash."
+    expect(rulesIn(read('src/key/key.css'), '.key-said p')).toEqual(['text-wrap: balance;']);
   });
 });
 

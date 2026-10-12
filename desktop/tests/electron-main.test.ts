@@ -217,6 +217,32 @@ describe('Electron project and process boundary', () => {
     expect(shell.app.getPath).not.toHaveBeenCalledWith('documents');
   });
 
+  it('titles the dialog for a folder in the language of the interface', async () => {
+    const shell = await shellHarness();
+    const titled = async (...asked: unknown[]) => {
+      await shell.invoke('select-folder', ...asked);
+      const [over, options] = shell.dialog.showOpenDialog.mock.calls.at(-1)!;
+      expect(over).toBe(shell.window);
+      expect(options.properties).toEqual(['openDirectory']);
+      return options.title as string;
+    };
+    expect(await titled({ language: 'en' })).toBe('Choose a project folder');
+    expect(await titled({ language: 'zh-CN' })).toBe('选择项目文件夹');
+    expect(await titled({ language: 'ja' })).toBe('プロジェクトフォルダーを選択');
+    // The shell has words of its own for every language that the main window can show.
+    const shown = languages.map(offered => languageFor(offered.id));
+    const titles = new Set<string>();
+    for (const language of shown) titles.add(await titled({ language }));
+    expect(titles.size).toBe(shown.length);
+    // In English where no language is named, or one that the shell does not speak.
+    const unknown = [
+      undefined, null, 'ja', {}, { language: 'de' }, { language: 'zh' }, { language: ['ja'] }, { language: 'constructor' },
+      { language: { toString: () => 'ja' } },
+    ];
+    for (const asked of unknown) expect(await titled(asked)).toBe('Choose a project folder');
+    expect(await titled()).toBe('Choose a project folder');
+  });
+
   it('starts only a directory approved by the native dialog and keeps that service for invalid requests', async () => {
     const shell = await shellHarness();
     const cwd = await shell.select('/selected-project');

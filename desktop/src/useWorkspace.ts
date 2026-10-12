@@ -308,13 +308,19 @@ export function useWorkspace() {
     }
   }, [fail, refreshServices]);
 
-  /** Let the user choose a folder in the dialog of the system. Null if none was chosen. */
-  const pickFolder = useCallback(async (): Promise<string | null> => {
+  /**
+   * Let the user choose a folder in the dialog of the system. Null if none was chosen.
+   *
+   * Args:
+   *   language: The language of the words that are shown, as a page names it. The dialog is
+   *     titled in it.
+   */
+  const pickFolder = useCallback(async (language: string): Promise<string | null> => {
     if (!window.columbina) { setError('Folder selection is available in the desktop app. This preview uses the replay workspace.'); return null; }
     if (choosingDirectory.current || connecting.current) return null;
     choosingDirectory.current = true;
     try {
-      return await window.columbina.selectFolder();
+      return await window.columbina.selectFolder({ language });
     } catch (problem) {
       fail(problem);
       return null;

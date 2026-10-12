@@ -5,7 +5,7 @@ const subscribe = (channel, callback) => {
   return () => ipcRenderer.removeListener(channel, listener);
 };
 contextBridge.exposeInMainWorld('columbina', {
-  selectFolder: () => ipcRenderer.invoke('columbina:select-folder'),
+  selectFolder: (asked) => ipcRenderer.invoke('columbina:select-folder', { language: asked?.language }),
   getLocalMusic: () => ipcRenderer.invoke('columbina:local-music'),
   start: (options) => ipcRenderer.invoke('columbina:start', { cwd: options?.cwd }),
   send: (line) => ipcRenderer.send('columbina:send', line),

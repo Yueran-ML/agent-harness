@@ -202,7 +202,7 @@ export default function App() {
     if (unread.current.length > 0) setDraft(current => joined([...unread.current, current]));
     await workspace.openFolder(folder);
   };
-  const openProject = () => leave(() => void leaveProject(workspace.pickFolder()));
+  const openProject = () => leave(() => void leaveProject(workspace.pickFolder(shownLanguage(language))));
   const openRecent = (kept: string) => leave(() => void leaveProject(workspace.pickRecent(kept)));
 
   // --- What a button under the end of a turn does. One press does it once.

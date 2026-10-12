@@ -1,5 +1,9 @@
 export interface ColumbinaBridge {
-  selectFolder(): Promise<string | null>;
+  /**
+   * Let the user choose a folder in the dialog of the system, which the shell titles in the
+   * language that is named. Null if none was chosen.
+   */
+  selectFolder(asked: { language: string }): Promise<string | null>;
   getLocalMusic(): Promise<{ name: string; bytes: ArrayBuffer; mimeType: string } | null>;
   start(options: { cwd: string }): Promise<{ mode: 'mock' | 'service'; cwd: string }>;
   send(line: string): void;

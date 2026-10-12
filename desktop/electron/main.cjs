@@ -38,8 +38,15 @@ const SETUP_MS = 45_000;
 // How much of what it writes is read, in characters. Its answer is one line.
 const SETUP_OUTPUT_MOST = 512 * 1024;
 const NO_SETUP = 'No service program is set up for this application, so its services cannot be set up from here.';
-// The languages that the window for the key can speak, as a page names them.
-const LANGUAGES = ['en', 'ja', 'zh-CN'];
+// What the shell says by itself, in every language that the interface speaks, each under the
+// name that a page gives it. Everything else that is said is said by a page.
+const WORDS = {
+  en: { chooseFolder: 'Choose a project folder' },
+  ja: { chooseFolder: 'プロジェクトフォルダーを選択' },
+  'zh-CN': { chooseFolder: '选择项目文件夹' },
+};
+/** The language that a page names, if the shell speaks it, and English if not. */
+const spoken = (language) => (typeof language === 'string' && Object.hasOwn(WORDS, language) ? language : 'en');
 // The window for the key while it is open, what it was opened for, whether something was
 // stored from it, and the promise that says so when it has closed.
 let keyWindow = null;
@@ -271,9 +278,11 @@ function runSetup(more, input = '') {
   });
 }
 function installHandlers() {
-  ipcMain.handle('columbina:select-folder', async (event) => {
+  ipcMain.handle('columbina:select-folder', async (event, asked) => {
     checkSender(event);
-    const result = await dialog.showOpenDialog(window, { title: 'Choose a project folder', properties: ['openDirectory'] });
+    // The page names its language and nothing more: the words of the dialog are the shell's own.
+    const title = WORDS[spoken(asked?.language)].chooseFolder;
+    const result = await dialog.showOpenDialog(window, { title, properties: ['openDirectory'] });
     if (result.canceled || !result.filePaths[0]) return null;
     const cwd = realpathSync(result.filePaths[0]);
     if (!statSync(cwd).isDirectory()) throw new Error('The selected path is not a folder.');
@@ -431,7 +440,7 @@ function installHandlers() {
     }
     keyAsked = {
       service: typeof asked?.service === 'string' && asked.service ? asked.service : null,
-      language: LANGUAGES.includes(asked?.language) ? asked.language : 'en',
+      language: spoken(asked?.language),
     };
     keyStored = false;
     // A window of its own, so that the key is never in the window that shows what a model wrote.

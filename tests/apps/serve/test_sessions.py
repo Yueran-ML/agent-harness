@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from columbina.agent.inbox import INBOX, InboxItem, InboxSplicedEvent
 from columbina.apps.serve import server as server_module
 from columbina.apps.serve.rpc import CANNOT_OPEN, INVALID_PARAMS, NO_SESSION
 from columbina.llm import TextBlock, UserMessage
@@ -287,6 +288,63 @@ async def test_opening_another_session_ends_the_one_that_was_open_and_tells_no_m
     # Nothing of that was told: from the answer on, the conversation is the second one.
     assert {message["params"]["session_id"] for message in after(served, answer)} == {"second"}
     assert [message["method"] for message in after(served, answer)] == ["session.status"]
+
+
+def waits_in(served: Served, session_id: str) -> list[str]:
+    """What waits unread in a stored session, as its log has it: tasks first, then the rest."""
+    waiting: dict[str, tuple[InboxItem, ...]] = {"next-turn": (), "next-step": ()}
+    for event in served.harness.sessions.read(served.harness.cwd, session_id).events:
+        data = event.data
+        if isinstance(data, InboxSplicedEvent):
+            waiting[data.queue] = (*waiting[data.queue][data.removed :], *data.added)
+    items = (*waiting["next-turn"], *waiting["next-step"])
+    return [block.text for item in items for block in item.message.content]
+
+
+async def test_what_waited_in_a_session_that_is_left_in_the_middle_of_a_turn_is_dropped_untold(
+    served: Served,
+) -> None:
+    harness = served.harness
+    await served.opened("first")
+    harness.model.add(Reply(text="Thinking...", hold=True))
+    await served.far.result("session/prompt", {"text": "Think."})
+    await harness.model.held()
+    await served.far.result("session/steer", {"text": "Think of this too."})
+    await until(lambda: INBOX.of(harness.agents.live["first"].session).next_step != ())
+
+    answer = await served.far.answer(served.far.ask("session/open", {"session_id": "second"}))
+    await until(lambda: list(harness.agents.live) == ["second"])
+
+    # The turn was stopped as a turn is stopped, and what waited went with it.
+    assert waits_in(served, "first") == []
+    changes = [
+        (event.data.removed, len(event.data.added))
+        for event in harness.sessions.read(harness.cwd, "first").events
+        if isinstance(event.data, InboxSplicedEvent) and event.data.queue == "next-step"
+    ]
+    assert changes == [(0, 1), (1, 0)]
+    # Whoever holds the conversation is not told. What waited is theirs to remember.
+    assert {message["params"]["session_id"] for message in after(served, answer)} == {"second"}
+
+
+async def test_what_waits_in_a_session_at_rest_still_waits_after_the_session_is_left(
+    served: Served,
+) -> None:
+    harness = served.harness
+    waiting = InboxItem(
+        message=UserMessage(content=(TextBlock(text="Read this next."),)), source="steer"
+    )
+    # A run that was killed leaves this behind: something was said and never read.
+    await keep(
+        served, "first", said("Hello."), InboxSplicedEvent(queue="next-step", added=(waiting,))
+    )
+    await served.opened("first")
+    assert harness.agents.live["first"].at_rest
+
+    await served.opened("second")
+    await until(lambda: list(harness.agents.live) == ["second"])
+
+    assert waits_in(served, "first") == ["Read this next."]
 
 
 async def test_the_session_that_is_open_can_be_opened_again(served: Served) -> None:

@@ -19,7 +19,7 @@ import { Sheet } from './Sheet';
 import { Sidebar } from './Sidebar';
 import { Recent, StartHead } from './Start';
 import { StatusLine } from './StatusLine';
-import { Drafts, samePlace, type Place } from './drafts';
+import { Drafts, samePlace, Unread, type Place } from './drafts';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
 import { storedOpening, storeOpening } from './opening';
 import { folderName, goneWords, joined, retryText, STILL_STARTING_MS, taskTitle, waitingWords } from './tell';
@@ -130,17 +130,30 @@ export default function App() {
   const drafts = useRef(new Drafts());
   const draftNow = useRef(draft);
   draftNow.current = draft;
+  const returnedNow = useRef(returned);
+  returnedNow.current = returned;
   const project = workspace.hello?.cwd ?? null;
   const place = useMemo<Place | null>(
     () => (workspace.sessionId === null ? null : { project, task: workspace.sessionId }),
     [project, workspace.sessionId],
   );
   const placeNow = useRef<Place | null>(null);
+  // What waits unread in the task that is shown. The service drops it without a word when a
+  // task is left while its turn is under way, so it is kept with the task as a part of its draft.
+  const unread = useRef(new Unread());
+  const waiting = [...projection.queues['next-turn'], ...projection.queues['next-step']]
+    .filter(entry => entry.source === 'user' || entry.source === 'steer')
+    .map(entry => messageText(entry.message));
+  unread.current.see(place, running, waiting);
   useEffect(() => {
-    if (placeNow.current !== null) drafts.current.keep(placeNow.current, draftNow.current);
+    const left = unread.current.take(place, running, waiting);
+    if (placeNow.current !== null) {
+      drafts.current.keep(placeNow.current, joined([...left, draftNow.current]), returnedNow.current || left.length > 0);
+    }
     placeNow.current = place;
     setDraft(place === null ? '' : drafts.current.of(place));
-    setReturned(false);
+    // What came back unread is still what the field holds, and the field goes on saying so.
+    setReturned(place !== null && drafts.current.returned(place));
     setPendingPermission(null);
   }, [place]);
   // Whether the user has just said no to what the agent asked for. The field says then what can be done.
@@ -182,8 +195,11 @@ export default function App() {
   /** What was sent from a task is no draft of it any more, wherever the user is by the time the answer comes. */
   const forget = (from: Place | null, line: string) => {
     if (from === null) return;
-    if (samePlace(from, placeNow.current)) setDraft(current => (current === line ? '' : current));
-    else drafts.current.sent(from, line);
+    if (samePlace(from, placeNow.current)) {
+      setDraft(current => (current === line ? '' : current));
+      // Whatever came back unread has been sent again, or was written over before this.
+      setReturned(false);
+    } else drafts.current.sent(from, line);
   };
   const sendDraft = async (line: string): Promise<boolean> => {
     const from = placeNow.current;
@@ -209,21 +225,13 @@ export default function App() {
     if (workspace.sessionId !== null && workspace.events.length === 0 && !running) field.current?.focus();
     else leave(() => void workspace.openSession());
   };
-  // The service stops the turn of the task that is left, and tells of what it dropped before it
-  // answers. So what was not read is back in the field by the time the task is left, and stays
-  // with it as its draft.
+  // The service stops the turn of a task that is left and drops what waited in it, and it does
+  // not tell of either: the conversation is with another task by then. What waited is kept
+  // above, with the draft of the task.
   const openTask = (id: string) => leave(() => void workspace.openSession(id));
-  // A project is left without a word from its service. What waits there unread is kept as a draft.
-  const unread = useRef<string[]>([]);
-  unread.current = [...projection.queues['next-turn'], ...projection.queues['next-step']]
-    .filter(entry => entry.source === 'user' || entry.source === 'steer')
-    .map(entry => messageText(entry.message));
   const leaveProject = async (chosen: Promise<string | null>) => {
     const folder = await chosen;
-    if (folder === null) return;
-    // It goes into the field, and from there into the draft of the task as the task is left.
-    if (unread.current.length > 0) setDraft(current => joined([...unread.current, current]));
-    await workspace.openFolder(folder);
+    if (folder !== null) await workspace.openFolder(folder);
   };
   const openProject = () => leave(() => void leaveProject(workspace.pickFolder(shownLanguage(language))));
   const openRecent = (kept: string) => leave(() => void leaveProject(workspace.pickRecent(kept)));

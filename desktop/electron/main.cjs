@@ -1,9 +1,12 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Notification, dialog, ipcMain, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
-const { createWriteStream, existsSync, mkdirSync, realpathSync, statSync } = require('node:fs');
+const {
+  createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync,
+} = require('node:fs');
 const { open, realpath } = require('node:fs/promises');
 const path = require('node:path');
+const { StringDecoder } = require('node:string_decoder');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 
 let window;
@@ -22,8 +25,89 @@ const titleBarThemes = {
   moonwhite: { color: '#f5f4f0', symbolColor: '#1b1c24', height: 40 },
 };
 
+// How much is kept of what a service wrote for errors: so many lines, and of a line so many characters.
+const TAIL_LINES = 30;
+const TAIL_LINE_CHARS = 400;
+// How many folders are kept as recent projects.
+const RECENT_MOST = 8;
+// What the service of the moment wrote last for errors. It is told of when the service has ended.
+let lastWords = { lines: [], rest: '' };
+// What is kept from one start to the next. Read when the application is ready.
+let preferences = { theme: 'moonveil', recent: [] };
+let flashing = false;
+// The notification that shows, held so that it is not cleared away while it does.
+let shown = null;
+
 app.setName('Columbina');
 if (process.platform === 'win32') app.setAppUserModelId('dev.columbina.desktop');
+
+const logPath = () => path.join(app.getPath('logs'), 'columbina-service.log');
+const preferencesPath = () => path.join(app.getPath('userData'), 'preferences.json');
+
+/** Text as it may be shown: on one line, without what steers a terminal. */
+function plain(text) {
+  return text
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+/** The beginning of a text that is longer than it may be, marked as cut. */
+function short(text, most) {
+  const characters = Array.from(text);
+  return characters.length > most ? `${characters.slice(0, most).join('')}…` : text;
+}
+/** Keep the last lines that a service writes for errors, and return where they are kept. */
+function listenForErrors(child) {
+  const words = { lines: [], rest: '' };
+  const decoder = new StringDecoder('utf8');
+  child.stderr.on('data', (chunk) => {
+    // What ends a line on Windows beside the line feed is taken out with whatever else steers a terminal.
+    const parts = (words.rest + decoder.write(chunk)).split('\n');
+    // A line without an end is not held without bound either.
+    words.rest = parts.pop().slice(0, 4 * TAIL_LINE_CHARS);
+    for (const part of parts) {
+      const line = plain(part);
+      if (line) words.lines.push(short(line, TAIL_LINE_CHARS));
+    }
+    if (words.lines.length > TAIL_LINES) words.lines.splice(0, words.lines.length - TAIL_LINES);
+  });
+  return words;
+}
+/** What was kept at the last start, as far as it can be used. Anything else is left out. */
+function readPreferences() {
+  let kept = null;
+  try { kept = JSON.parse(readFileSync(preferencesPath(), 'utf8')); } catch { /* Nothing was kept, or it cannot be read. */ }
+  // Whatever the file holds, only a theme that there is and folders that can be folders are taken from it.
+  const given = kept ?? {};
+  const theme = typeof given.theme === 'string' && Object.hasOwn(titleBarThemes, given.theme) ? given.theme : 'moonveil';
+  const recent = [];
+  for (const folder of Array.isArray(given.recent) ? given.recent : []) {
+    if (typeof folder !== 'string' || !path.isAbsolute(folder)) continue;
+    if (recent.some((known) => directoryKey(known) === directoryKey(folder))) continue;
+    recent.push(folder);
+    if (recent.length === RECENT_MOST) break;
+  }
+  return { theme, recent };
+}
+/** Write down what is kept. It is written beside its place and moved there, so that a start never finds half of it. */
+function keepPreferences() {
+  const file = preferencesPath();
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(`${file}.tmp`, `${JSON.stringify(preferences, null, 2)}\n`, 'utf8');
+    renameSync(`${file}.tmp`, file);
+  } catch { /* What cannot be kept is chosen again at the next start. */ }
+}
+/** Put a folder that the user chose first among the recent projects. */
+function remember(cwd) {
+  const others = preferences.recent.filter((known) => directoryKey(known) !== directoryKey(cwd));
+  preferences.recent = [cwd, ...others].slice(0, RECENT_MOST);
+  keepPreferences();
+}
+function isFolder(folder) {
+  try { return statSync(folder).isDirectory(); } catch { return false; }
+}
 
 function checkSender(event) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== indexUrl) {
@@ -99,6 +183,24 @@ function installHandlers() {
     const cwd = realpathSync(result.filePaths[0]);
     if (!statSync(cwd).isDirectory()) throw new Error('The selected path is not a folder.');
     approvedDirectories.add(directoryKey(cwd));
+    remember(cwd);
+    return cwd;
+  });
+  ipcMain.handle('columbina:recent-projects', (event) => {
+    checkSender(event);
+    return preferences.recent.filter(isFolder).map((folder) => ({ path: folder, name: path.basename(folder) }));
+  });
+  ipcMain.handle('columbina:open-recent', (event, asked) => {
+    checkSender(event);
+    // Only a folder that the user chose in the dialog at an earlier time, and that the shell wrote down then.
+    const kept = typeof asked === 'string'
+      ? preferences.recent.find((known) => directoryKey(known) === directoryKey(asked)) : undefined;
+    if (kept === undefined) throw new Error('That folder is not among the recent projects.');
+    const cwd = realpathSync(kept);
+    if (directoryKey(cwd) !== directoryKey(kept)) throw new Error('That folder leads somewhere else than when it was chosen.');
+    if (!statSync(cwd).isDirectory()) throw new Error('The selected path is not a folder.');
+    approvedDirectories.add(directoryKey(cwd));
+    remember(cwd);
     return cwd;
   });
   ipcMain.handle('columbina:start', async (event, options) => {
@@ -111,15 +213,15 @@ function installHandlers() {
       await stopService();
       if (exiting) throw new Error('The application is closing.');
       const config = serviceCommand();
-      const logDirectory = app.getPath('logs');
-      mkdirSync(logDirectory, { recursive: true });
-      const log = createWriteStream(path.join(logDirectory, 'columbina-service.log'), { flags: 'a' });
+      mkdirSync(path.dirname(logPath()), { recursive: true });
+      const log = createWriteStream(logPath(), { flags: 'a' });
       log.on('error', () => {});
       const child = spawn(config.executable, config.args, {
         cwd, env: config.env, windowsHide: true,
         detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
       });
       service = child;
+      lastWords = listenForErrors(child);
       const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
       lines.on('line', (line) => { if (service === child) tell('columbina:line', line); });
       child.stderr.pipe(log);
@@ -177,6 +279,45 @@ function installHandlers() {
     if (!Object.hasOwn(titleBarThemes, theme)) throw new Error('Unknown application theme.');
     if (process.platform === 'win32' || process.platform === 'linux') window.setTitleBarOverlay(titleBarThemes[theme]);
     window.setBackgroundColor(titleBarThemes[theme].color);
+    // The next start opens in this theme, before the page has read anything.
+    if (preferences.theme !== theme) {
+      preferences.theme = theme;
+      keepPreferences();
+    }
+  });
+  ipcMain.handle('columbina:service-tail', (event) => {
+    checkSender(event);
+    // A line that is still being written is told of as far as it has come.
+    const rest = plain(lastWords.rest);
+    return rest ? [...lastWords.lines.slice(1 - TAIL_LINES), short(rest, TAIL_LINE_CHARS)] : [...lastWords.lines];
+  });
+  ipcMain.handle('columbina:show-log', (event) => {
+    checkSender(event);
+    shell.showItemInFolder(logPath());
+  });
+  ipcMain.handle('columbina:notify', (event, message) => {
+    checkSender(event);
+    // What is shown may hold what a model wrote, such as a command: one line, and not a long one.
+    const said = (value, most) => (typeof value === 'string' ? short(plain(value), most) : '');
+    const title = said(message?.title, 80);
+    if (!title) throw new Error('A notification needs a title.');
+    // Whoever looks at the window sees it there.
+    if (window.isFocused()) return false;
+    window.flashFrame(true);
+    if (!flashing) {
+      flashing = true;
+      window.once('focus', () => { flashing = false; window.flashFrame(false); });
+    }
+    if (Notification.isSupported()) {
+      shown = new Notification({ title, body: said(message?.body, 240) });
+      shown.on('click', () => {
+        if (window.isMinimized()) window.restore();
+        window.show();
+        window.focus();
+      });
+      shown.show();
+    }
+    return true;
   });
   ipcMain.handle('columbina:open-external', async (event, address) => {
     checkSender(event);
@@ -202,10 +343,13 @@ function requestWindowClose() {
 app.whenReady().then(() => {
   if (!existsSync(indexPath)) throw new Error('Build the desktop client before starting Electron: npm run build');
   installHandlers();
+  preferences = readPreferences();
+  // The window opens in the theme that was chosen last, so that it does not begin in another one.
+  const theme = titleBarThemes[preferences.theme];
   window = new BrowserWindow({
-    width: 1380, height: 920, minWidth: 860, minHeight: 640, backgroundColor: titleBarThemes.moonveil.color, title: 'Columbina',
+    width: 1380, height: 920, minWidth: 860, minHeight: 640, backgroundColor: theme.color, title: 'Columbina',
     icon: path.join(__dirname, 'icon.ico'),
-    titleBarStyle: 'hidden', titleBarOverlay: titleBarThemes.moonveil,
+    titleBarStyle: 'hidden', titleBarOverlay: theme,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, autoplayPolicy: 'no-user-gesture-required' },
   });
   window.setMenuBarVisibility(false);

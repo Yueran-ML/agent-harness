@@ -14,5 +14,10 @@ contextBridge.exposeInMainWorld('columbina', {
   onShutdown: (callback) => subscribe('columbina:shutdown', callback),
   stop: () => ipcRenderer.invoke('columbina:stop'),
   setTheme: (theme) => ipcRenderer.invoke('columbina:set-theme', theme),
+  serviceTail: () => ipcRenderer.invoke('columbina:service-tail'),
+  showLog: () => ipcRenderer.invoke('columbina:show-log'),
+  notify: (message) => ipcRenderer.invoke('columbina:notify', { title: message?.title, body: message?.body }),
+  recentProjects: () => ipcRenderer.invoke('columbina:recent-projects'),
+  openRecent: (folder) => ipcRenderer.invoke('columbina:open-recent', folder),
   openExternal: (url) => ipcRenderer.invoke('columbina:open-external', url),
 });

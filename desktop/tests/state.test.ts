@@ -161,6 +161,113 @@ describe('durable event projection', () => {
     ]).queues['next-turn']).toEqual([]);
   });
 
+  describe('input that was dropped unread', () => {
+    const entry = (text: string, source = 'user') => ({ message: message(text), source });
+    const said = (text: string, source = 'user') => ({ message: message(text), source });
+
+    it('is none where a turn took what waited', () => {
+      const projection = projectEvents([
+        event(0, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry('fix it')] }),
+        event(1, 'turn/start', { turn: 1 }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-turn', removed: 1, added: [] }),
+        event(3, 'user/message', said('fix it')),
+        event(4, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('and test it', 'steer')] }),
+        event(5, 'agent/inbox/spliced', { queue: 'next-step', removed: 1, added: [] }),
+        event(6, 'user/message', said('and test it', 'steer')),
+        event(7, 'turn/end', { turn: 1, reason: 'completed', detail: null }),
+      ]);
+      expect(projection.dropped).toEqual([]);
+    });
+
+    it('is what a stopped turn left unread, with the event that dropped it', () => {
+      const projection = projectEvents([
+        event(0, 'turn/start', { turn: 1 }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('never mind', 'steer'), entry('wait', 'steer')] }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-step', removed: 2, added: [] }),
+        event(3, 'tool/result', result('gone', 'late')),
+        event(4, 'turn/end', { turn: 1, reason: 'aborted', detail: 'user' }),
+      ]);
+      expect(projection.dropped).toEqual([
+        { seq: 2, source: 'steer', text: 'never mind' },
+        { seq: 2, source: 'steer', text: 'wait' },
+      ]);
+    });
+
+    it('waits for the log while a turn may still write what it took', () => {
+      const events = [
+        event(0, 'turn/start', { turn: 1 }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('one more thing', 'steer')] }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-step', removed: 1, added: [] }),
+      ];
+      expect(projectEvents(events).dropped).toEqual([]);
+      expect(projectEvents([...events, event(3, 'user/message', said('one more thing', 'steer'))]).dropped).toEqual([]);
+    });
+
+    it('is a task that was dropped before any turn took it', () => {
+      const waiting = [
+        event(0, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry('first')] }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-turn', removed: 1, added: [] }),
+      ];
+      // No turn is under way, so nothing can still write it down.
+      expect(projectEvents(waiting).dropped).toEqual([{ seq: 1, source: 'user', text: 'first' }]);
+      // A turn that begins later begins with what was given later.
+      expect(projectEvents([
+        ...waiting,
+        event(2, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry('second')] }),
+        event(3, 'turn/start', { turn: 1 }),
+        event(4, 'agent/inbox/spliced', { queue: 'next-turn', removed: 1, added: [] }),
+        event(5, 'user/message', said('second')),
+      ]).dropped).toEqual([{ seq: 1, source: 'user', text: 'first' }]);
+    });
+
+    it('is the one of two equal inputs that was not written down', () => {
+      const projection = projectEvents([
+        event(0, 'turn/start', { turn: 1 }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('again', 'steer')] }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-step', removed: 1, added: [] }),
+        event(3, 'user/message', said('again', 'steer')),
+        event(4, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('again', 'steer')] }),
+        event(5, 'agent/inbox/spliced', { queue: 'next-step', removed: 1, added: [] }),
+        event(6, 'turn/end', { turn: 1, reason: 'aborted', detail: 'user' }),
+      ]);
+      expect(projection.dropped).toEqual([{ seq: 5, source: 'steer', text: 'again' }]);
+    });
+
+    it('is only what was taken, and what still waits is not among it', () => {
+      const projection = projectEvents([
+        event(0, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry('first'), entry('second')] }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-turn', removed: 1, added: [] }),
+      ]);
+      expect(projection.dropped).toEqual([{ seq: 1, source: 'user', text: 'first' }]);
+      expect(projection.queues['next-turn'].map(waiting => waiting.message.content[0].text)).toEqual(['second']);
+    });
+
+    it('is told from what was written down by its words and by who gave it', () => {
+      const taken = [
+        event(0, 'turn/start', { turn: 1 }),
+        event(1, 'agent/inbox/spliced', { queue: 'next-step', removed: 0, added: [entry('one', 'steer'), entry('two', 'steer')] }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-step', removed: 2, added: [] }),
+      ];
+      const end = event(9, 'turn/end', { turn: 1, reason: 'aborted', detail: 'user' });
+      // Only the second was written down.
+      expect(projectEvents([...taken, event(3, 'user/message', said('two', 'steer')), end]).dropped)
+        .toEqual([{ seq: 2, source: 'steer', text: 'one' }]);
+      // The same words from a hook are not the words of the user.
+      expect(projectEvents([...taken, event(3, 'user/message', said('one', 'hook')), end]).dropped)
+        .toEqual([{ seq: 2, source: 'steer', text: 'one' }, { seq: 2, source: 'steer', text: 'two' }]);
+    });
+
+    it('is what a hook kept from the model', () => {
+      const projection = projectEvents([
+        event(0, 'agent/inbox/spliced', { queue: 'next-turn', removed: 0, added: [entry('secret')] }),
+        event(1, 'turn/start', { turn: 1 }),
+        event(2, 'agent/inbox/spliced', { queue: 'next-turn', removed: 1, added: [] }),
+        event(3, 'turn/end', { turn: 1, reason: 'blocked', detail: 'a hook stopped the input' }),
+      ]);
+      expect(projection.dropped).toEqual([{ seq: 2, source: 'user', text: 'secret' }]);
+    });
+  });
+
   it('finishes orphaned compaction at an inherited-history boundary and reports compaction failure', () => {
     expect(projectEvents([event(0, 'compaction/start', { why: 'pressure' })]).compacting).toBe(true);
     const projection = projectEvents([

@@ -99,10 +99,23 @@ export interface TurnRecord {
   end: { seq: number; time: number; reason: string; detail: string | null } | null;
 }
 
+/**
+ * Input that waited and was dropped unread: a turn was stopped before it read
+ * what was said on the way, or a hook kept a task from the model.
+ */
+export interface DroppedInput {
+  /** The event that took it out of its queue. */
+  seq: number;
+  source: string;
+  text: string;
+}
+
 export interface Projection {
   items: ConversationItem[];
   turns: TurnRecord[];
   queues: { 'next-turn': InboxEntry[]; 'next-step': InboxEntry[] };
+  /** In the order in which it was dropped. */
+  dropped: DroppedInput[];
   usage: Usage;
   lastInputTokens: number;
   tools: ToolDeclaration[];
@@ -119,6 +132,7 @@ export const emptyProjection = (): Projection => ({
   items: [],
   turns: [],
   queues: { 'next-turn': [], 'next-step': [] },
+  dropped: [],
   usage: emptyUsage(),
   lastInputTokens: 0,
   tools: [],
@@ -175,6 +189,13 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
   let openTurn: TurnRecord | null = null;
   // The policy of approval that the log named last.
   let approvalPolicy: string | null = null;
+  // What was taken out of a queue and has not been written down as input since. A turn
+  // writes down what it takes. What a stop takes is written down nowhere.
+  let taken: DroppedInput[] = [];
+  const settle = () => {
+    projection.dropped.push(...taken);
+    taken = [];
+  };
   const pendingCall = (callId: string) => {
     for (let i = calls.length - 1; i >= 0; i--) {
       if (calls[i].callId === callId && calls[i].result === null && !calls[i].interrupted) return calls[i];
@@ -195,6 +216,8 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
       case 'user/message': {
         const source = string(data.source);
         const text = messageText(messageOf(data.message));
+        const written = taken.findIndex(input => input.source === source && input.text === text);
+        if (written >= 0) taken.splice(written, 1);
         if (source === 'compaction') {
           projection.items.push({ ...base, type: 'compaction', text });
         } else if (!source.startsWith('context/') && !isReplacement(event)) {
@@ -297,6 +320,9 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
           const entry = record(value);
           return { message: messageOf(entry.message), source: string(entry.source) };
         }) : [];
+        for (const entry of projection.queues[queue].slice(0, removed)) {
+          taken.push({ seq: event.seq, source: entry.source, text: messageText(entry.message) });
+        }
         projection.queues[queue] = projection.queues[queue].slice(removed).concat(added);
         break;
       }
@@ -308,6 +334,8 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
         break;
       }
       case 'turn/start':
+        // A turn takes what it begins with after it has begun.
+        settle();
         projection.turn = number(data.turn);
         projection.step = null;
         openTurn = {
@@ -324,6 +352,7 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
         if (projection.step === data.step) projection.step = null;
         break;
       case 'turn/end': {
+        settle();
         for (const call of calls) {
           if (call.result === null) call.interrupted = true;
         }
@@ -393,6 +422,8 @@ export function projectEvents(events: readonly SessionEvent[]): Projection {
       if (event.type !== 'request/aside') projection.lastInputTokens = inputTokens(usage);
     }
   }
+  // While a turn is under way, it may still write down what it took.
+  if (projection.turn === null) settle();
   return projection;
 }
 

@@ -6,7 +6,7 @@
 
 Columbina 从零写起，以三个现有的 harness 为参考。内核和循环参考 DeepSeek Harness，Codex 和 Claude Code 做得更好的地方则取自它们。哪一处取自哪里，记在 [`docs/research`](research) 和[设计文档](plans/2026-10-09-columbina-design.md)里。
 
-[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [别的程序](#供另一个程序使用) · [服务与密钥](#模型服务与密钥) · [权限](#改文件与执行命令) · [架构](#架构) · [内核](#内核) · [开发](#开发) · [路线图](#进展)
+[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [别的程序](#供另一个程序使用) · [服务与密钥](#模型服务与密钥) · [权限](#改文件与执行命令) · [扩展](#扩展-agent) · [架构](#架构) · [内核](#内核) · [开发](#开发) · [路线图](#进展)
 
 ## 功能一览
 
@@ -326,6 +326,116 @@ Fixed. In `calc.py`, `mean` was dividing the sum by `len(values) - 1` (that is, 
 
 六节的名字是 `work`、`changes`、`care`、`tools`、`program` 和 `words`。除此之外想让 Agent 知道的事，写在指令文件里。
 
+## 扩展 Agent
+
+有四样东西可以在不改程序的情况下给 Agent 增加能力：技能、钩子、子代理和工具服务器。它们各是随 Columbina 提供的清单里的一个插件，各自用用户或项目的文件来配置。
+
+### 技能
+
+一个技能是做某一类任务的说明。它是一个目录，里面有一个 `SKILL.md`，旁边可以放别的文件。
+
+```text
+.columbina/skills/release-notes/
+    SKILL.md
+    codenames.txt
+```
+
+`SKILL.md` 的开头写技能的名字和一行用途，名字就是目录的名字。之后是模型要读的正文。
+
+```markdown
+---
+name: release-notes
+description: Writes the notes of a release in the form that this project uses.
+---
+Write the notes as a list, one line for each change, under the codename of the release.
+The codenames are in codenames.txt.
+```
+
+每个技能只用一行告诉模型，任务用得上时，模型用工具 `skill` 把正文读进来。所以一个技能在用到之前只占一行。技能先在项目的 `.columbina/skills` 和 `.agents/skills` 里找，然后在 `~/.columbina/skills` 里找。两个技能同名时，先找到的那个算数。每个回合开始时都重新找一遍，所以对话进行中写下的技能不用重启就能用。
+
+`/skills` 列出技能，不能用的也列出来，并说明原因。`/skill NAME` 直接把一个技能交给模型，不等模型自己去选。开头几行里写了 `disable-model-invocation: true` 的技能只能这样加载。
+
+### 钩子
+
+钩子是用户的一条命令，在会话的某个固定时刻运行。钩子写在 `~/.columbina/hooks.json` 里，格式与 Claude Code 的钩子相同。
+
+```json
+{"hooks": {"PostToolUse": [
+  {"matcher": "Edit|Write",
+   "hooks": [{"type": "command", "command": "ruff format", "timeout": 30}]}
+]}}
+```
+
+一组钩子可以用 `matcher` 说明它针对哪些工具。那里既认工具在 Columbina 里的名字，也认 Claude Code 给同类工具起的名字，例如执行命令的工具叫 `Bash`。只有类型为 `command` 的钩子会运行。
+
+| 时刻 | 钩子何时运行 | 钩子能做什么 |
+|---|---|---|
+| `SessionStart` | 会话的第一个回合开始时。 | 给模型提供上下文。 |
+| `UserPromptSubmit` | 人说的话发给模型之前。 | 拦下这条输入，或者给它附加上下文。 |
+| `PreToolUse` | 调用一个工具之前。 | 拦下这次调用，或者让程序先问用户。 |
+| `PostToolUse` | 工具执行完之后。 | 用一段理由替换结果，或者在结果后面附加上下文。 |
+| `Stop` | 回合即将结束时。 | 给出理由，让模型继续做下去。 |
+
+钩子从标准输入读到一行 JSON，说明即将发生什么。它以退出码 2 结束就是拦截，写到标准错误的内容就是模型读到的理由。以退出码 0 结束的钩子可以在标准输出上用 JSON 回答。以别的方式结束都算钩子自己失败，只记日志，什么也不拦。钩子只能让事情更严，不能更松。钩子没有异议的调用，照样要过规则和沙箱。
+
+项目可以在 `.columbina/hooks.json` 里带上自己的钩子。它们是别人写的命令，所以要等用户信任这个文件之后才生效。
+
+```console
+$ columbina hooks list
+$ columbina hooks trust
+```
+
+`trust` 把文件里的命令显示出来，并按文件此刻的内容记下它。文件一变，其中的钩子就不再运行，直到重新信任。
+
+### 子代理
+
+Agent 可以用工具 `subagent` 把一件独立的任务交给一个子代理。子代理在同一个目录里工作，有自己的对话，从空白开始，最后交回它的最后一条回答。交出任务的 Agent 只读到这条回答，读不到得出它的那些步骤。同一条回复里交出的几个任务同时进行，至多 4 个一起。子代理没有人可以问，所以需要同意的调用对它一律拒绝。子代理不能再把任务交出去。
+
+子代理的类型是一个 Markdown 文件，放在项目的 `.columbina/agents` 或 `~/.columbina/agents` 里。开头几行之后的内容是这类子代理的系统提示。
+
+```markdown
+---
+name: reviewer
+description: Reads a change and says what is wrong with it. Changes nothing.
+tools: [read, glob, grep]
+max_steps: 30
+---
+You review a change that somebody else made.
+```
+
+类型可以让子代理的工具和步数比原本的少，不能更多。用户主目录里的类型还可以指定 `model`。项目里的类型不行，因为用模型花的是用户的钱。每个子代理有自己的会话，`columbina sessions list` 不列出它们。
+
+### 工具服务器
+
+使用 Model Context Protocol（简称 MCP）的服务器提供它自己的工具，模型像调用 Columbina 自带的工具一样调用它们。这个协议的 SDK 是安装包的一项附加依赖。克隆下来的仓库在 `uv sync` 之后就有它。用 `uv tool install` 装到路径上的命令，要写明这项附加依赖才有它。
+
+```bash
+uv tool install ".[mcp]"
+```
+
+每个服务器是补丁文件里的一项，例如写在 `~/.columbina/config.yml` 里。服务器可以是一个由 Columbina 启动、通过标准输入和标准输出对话的程序，也可以是一个通过 HTTP 对话的地址。
+
+```yaml
+- insert:
+    - id: mcp-files
+      plugin: columbina.mcp.server
+      config:
+        server: files
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    - id: mcp-docs
+      plugin: columbina.mcp.server
+      config:
+        server: docs
+        url: https://example.com/mcp
+        headers:
+          Authorization: Bearer ${DOCS_TOKEN}
+```
+
+服务器的工具名形如 `mcp__files__read_file`，由这一项给服务器起的名字和服务器给工具起的名字组成。服务器声明只读的工具算作读取。别的工具都算作执行命令，所以调用它们需要一次同意，或者一条规则，例如 `--allow "mcp__files__*"`。服务器对其工具用法的说明会加进系统提示，并标明这是服务器的话。
+
+连不上的服务器只记一条日志并被略过，其余照常运行。连接断开的服务器会被重新连接，等待的间隔逐次加长，最长 30 秒，连续 10 次都失败后放弃。断开时正在进行的调用以失败告终，不会再发一次。`/mcp` 显示每个服务器的状态。服务器写到标准错误的内容进入 `~/.columbina/logs`。被启动的程序只拿到 `PATH` 之类的少数几个变量，以及它那一项在 `env` 下写明的变量。环境里的其他内容到不了它那里，你的密钥也到不了。
+
 ## 架构
 
 ```mermaid
@@ -454,12 +564,12 @@ uv run python tests/mutation/mutate.py loop   # put faults into the code and see
 | 🌕 | 3 | 文件与命令工具、权限与审批、系统提示、指令文件 |
 | 🌕 | 4 | 终端界面 |
 | 🌕 | 5 | 长对话，包括估算、压缩、恢复会话和副本 |
-| 🌓 | 6 | 技能、钩子、子代理、MCP |
+| 🌕 | 6 | 技能、钩子、子代理、MCP |
 | 🌑 | 7 | 供 Agent 执行命令用的容器沙箱 |
 | 🌑 | 8 | 基准测试，以及本地模型的能力对照表 |
 | 🌑 | 9 | PyPI 上的发行包、文档、工程报告 |
-| 🌑 | 10 | JSON-RPC 服务，以及建在它之上的桌面应用 |
+| 🌓 | 10 | JSON-RPC 服务，以及建在它之上的桌面应用 |
 
 🌕 已完成  ·  🌓 进行中  ·  🌑 未开始
 
-第六阶段里，技能和钩子已经完成并通过测试。它们将在这个阶段结束时与子代理和 MCP 一起加入默认清单。桌面应用要使用的协议已经写好，见 [`docs/protocol`](protocol)。
+第六阶段已经结束，它带来的东西见[扩展 Agent](#扩展-agent)。第十阶段里，服务已经做好，见[供另一个程序使用](#供另一个程序使用)和 [`docs/protocol`](protocol)。建在它之上的桌面应用正在进行。

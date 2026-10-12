@@ -6,7 +6,7 @@ This is the longer account of Columbina: how it is used, how it is built, how it
 
 Columbina was written from scratch, with three existing harnesses as its reference: DeepSeek Harness for the kernel and the loop, and Codex and Claude Code where they do something better. What was taken from which is written down in [`docs/research`](research) and in the [design document](plans/2026-10-09-columbina-design.md).
 
-[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Development](#development) · [Roadmap](#where-it-stands)
+[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Extensions](#extending-the-agent) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Development](#development) · [Roadmap](#where-it-stands)
 
 ## What is there
 
@@ -468,6 +468,161 @@ instructions. A file of changes leaves sections out. Such a file is
 The sections are called `work`, `changes`, `care`, `tools`, `program` and `words`. What an
 agent is to know beside them belongs in the instruction files.
 
+## Extending the agent
+
+Four things add to the agent without a change to the program: skills, hooks, subagents and
+servers of tools. Each is a plugin of the profiles that come with Columbina, and each is set
+up with files of the user or of a project.
+
+### Skills
+
+A skill holds the instructions for one kind of task. It is a directory with a file
+`SKILL.md` in it, and other files may lie beside that one.
+
+```text
+.columbina/skills/release-notes/
+    SKILL.md
+    codenames.txt
+```
+
+`SKILL.md` begins with the name of the skill, which is the name of its directory, and with a
+line on what the skill is for. What follows is the text that the model reads.
+
+```markdown
+---
+name: release-notes
+description: Writes the notes of a release in the form that this project uses.
+---
+Write the notes as a list, one line for each change, under the codename of the release.
+The codenames are in codenames.txt.
+```
+
+The model is told of every skill in one line, and it loads the text of a skill with the tool
+`skill` when a task calls for it. So a skill costs one line until it is used. Skills are
+looked for in `.columbina/skills` and `.agents/skills` of the project, and then in
+`~/.columbina/skills`. Of two skills of one name, the one that is found first counts. They
+are looked for anew when a turn begins, so a skill that is written during a conversation
+needs no restart.
+
+`/skills` lists the skills, also those that cannot be used, and says why. `/skill NAME`
+hands a skill to the model without waiting for it to choose one. A skill whose first lines
+say `disable-model-invocation: true` is loaded only in that way.
+
+### Hooks
+
+A hook is a command of the user that runs at a fixed moment of a session. Hooks are written
+down in `~/.columbina/hooks.json`, in the form that Claude Code uses for its hooks.
+
+```json
+{"hooks": {"PostToolUse": [
+  {"matcher": "Edit|Write",
+   "hooks": [{"type": "command", "command": "ruff format", "timeout": 30}]}
+]}}
+```
+
+A group of hooks may say in its `matcher` which tools it is for. A tool is known there by
+its name in Columbina and by the name that Claude Code gives its tool of that kind, such as
+`Bash` for the tool that runs commands. Only hooks of the type `command` are run.
+
+| Moment | When its hooks run | What a hook can do |
+|---|---|---|
+| `SessionStart` | When the first turn of a session begins. | Give the model context. |
+| `UserPromptSubmit` | Before the model is sent what a person said. | Stop that input, or add context to it. |
+| `PreToolUse` | Before a tool is called. | Stop the call, or have the user asked about it. |
+| `PostToolUse` | After a tool has done its work. | Put a reason in the place of the result, or add context after it. |
+| `Stop` | When a turn is about to end. | Give a reason for the model to go on. |
+
+A hook reads one line of JSON on its standard input, which says what is about to happen. It
+stops that by ending with the exit code 2, and what it wrote to its standard error is the
+reason that the model reads. A hook that ends with the exit code 0 can answer in JSON on its
+standard output. Any other end is a failure of the hook: it is logged, and nothing is
+stopped. A hook makes things stricter and never looser. A call that a hook has nothing
+against is still put to the rules and to the sandbox.
+
+A project can bring hooks of its own, in `.columbina/hooks.json`. They are commands that
+somebody else wrote, so they count only once the user has trusted the file.
+
+```console
+$ columbina hooks list
+$ columbina hooks trust
+```
+
+`trust` shows the commands of the file and records the file as it is. When the file
+changes, its hooks no longer run until it is trusted again.
+
+### Subagents
+
+The agent can hand a task that stands by itself to a subagent, with the tool `subagent`. A
+subagent works in the same directory, in a conversation of its own that begins empty, and
+hands back its last answer. The agent that handed the task over reads that answer and none
+of the steps that led to it. Tasks that one reply hands out are worked on side by side, 4 at
+a time at most. Nobody is there for a subagent to ask, so a call that would need a yes is
+refused for it. A subagent hands no task on.
+
+A kind of subagent is a file of Markdown in `.columbina/agents` of the project or in
+`~/.columbina/agents`. What follows its first lines is the system prompt of such a helper.
+
+```markdown
+---
+name: reviewer
+description: Reads a change and says what is wrong with it. Changes nothing.
+tools: [read, glob, grep]
+max_steps: 30
+---
+You review a change that somebody else made.
+```
+
+A kind can give a subagent fewer tools and fewer steps than it would have, and never more.
+A kind in the home of the user can name a `model` as well. A kind of a project cannot,
+since a model costs the money of the user. Every subagent has a session of its own, and
+`columbina sessions list` leaves these out.
+
+### Servers of tools
+
+A server that speaks the Model Context Protocol, MCP for short, offers tools of its own, and
+the model calls them like the tools that come with Columbina. The SDK of the protocol is an
+extra of the package. A clone has it after `uv sync`. The command that `uv tool install`
+puts on the path has it when the extra is named.
+
+```bash
+uv tool install ".[mcp]"
+```
+
+Each server is an entry in a file of changes, such as `~/.columbina/config.yml`. A server is
+a program that Columbina starts and talks to over its standard input and output, or an
+address that it talks to over HTTP.
+
+```yaml
+- insert:
+    - id: mcp-files
+      plugin: columbina.mcp.server
+      config:
+        server: files
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    - id: mcp-docs
+      plugin: columbina.mcp.server
+      config:
+        server: docs
+        url: https://example.com/mcp
+        headers:
+          Authorization: Bearer ${DOCS_TOKEN}
+```
+
+The tools of a server have names like `mcp__files__read_file`: the name that the entry gives
+the server, and the name that the server gives the tool. A tool of which its server says
+that it only reads counts as reading. Every other one counts as running a command, so its
+calls need a yes or a rule such as `--allow "mcp__files__*"`. What a server says of how its
+tools are meant is added to the system prompt, marked as the words of the server.
+
+A server that cannot be reached is logged and left out, and the rest goes on. A server whose
+connection is lost is connected again, after waits that grow up to 30 seconds, and it is
+given up once 10 attempts in a row have failed. A call that was under way when the
+connection was lost fails, and it is not made a second time. `/mcp` shows how every server is doing. What a
+server writes to its standard error goes to `~/.columbina/logs`. A program that is started
+gets a few variables such as `PATH` and those that its entry names under `env`. Nothing else
+of the environment reaches it, and so no key of yours does.
+
 ## How it is built
 
 ```mermaid
@@ -641,14 +796,15 @@ The work goes in ten stages, and each one ends with something that can be shown.
 | 🌕 | 3 | Tools for files and commands, permissions and approval, the system prompt, instruction files |
 | 🌕 | 4 | The terminal interface |
 | 🌕 | 5 | Long conversations: estimates, shortening, taking a session up again, copies |
-| 🌓 | 6 | Skills, hooks, subagents, MCP |
+| 🌕 | 6 | Skills, hooks, subagents, MCP |
 | 🌑 | 7 | A sandbox in a container for the commands that the agent runs |
 | 🌑 | 8 | Benchmarks, and a table of what local models can do |
 | 🌑 | 9 | A package on PyPI, documentation, an engineering report |
-| 🌑 | 10 | A JSON-RPC service, and a desktop app on top of it |
+| 🌓 | 10 | A JSON-RPC service, and a desktop app on top of it |
 
 🌕 done  ·  🌓 under way  ·  🌑 to come
 
-Of the sixth stage, skills and hooks are built and tested. They join the default
-profile when the stage is closed, together with subagents and MCP. The protocol that the
-desktop app will speak is written down already, in [`docs/protocol`](protocol).
+The sixth stage is closed, and what it brought is told in
+[Extending the agent](#extending-the-agent). Of the tenth, the service is built: see
+[Serving another program](#serving-another-program) and [`docs/protocol`](protocol). The
+desktop app on top of it is under way.

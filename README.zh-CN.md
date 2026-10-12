@@ -63,7 +63,7 @@
 
 Columbina 让一个 Agent 接上语言模型，在你指定的目录里工作。Agent 读文件、搜索、改文件、执行命令，每次调用能做什么在执行之前判定。Columbina 的各个组成部分都是一个小型 asyncio 内核上的插件，包括模型适配器、工具注册表、会话日志，以及 Agent 循环本身。
 
-**状态**：处于早期开发阶段，十个阶段做到第六个。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 通过 OpenAI Chat Completions 协议与模型通信，默认接 DeepSeek。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。
+**状态**：处于早期开发阶段，十个阶段已完成六个。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 通过 OpenAI Chat Completions 协议与模型通信，默认接 DeepSeek。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。技能、钩子、子代理和 MCP 服务器的工具可以在不改程序的情况下扩展 Agent。
 
 ## 下载与部署
 
@@ -121,7 +121,7 @@ uv tool install .
 
 ## 文档
 
-- [指南](docs/guide.zh-CN.md)讲其余的内容，包括终端及其命令、长对话、执行单个任务、模型服务与密钥、权限、Columbina 的架构、测试方式和进展。
+- [指南](docs/guide.zh-CN.md)讲其余的内容，包括终端及其命令、长对话、执行单个任务、模型服务与密钥、权限、技能、钩子、子代理与工具服务器、Columbina 的架构、测试方式和进展。
 - [设计文档](docs/plans/2026-10-09-columbina-design.md)是中文的，各阶段的计划也在同一个目录里。
 - [`docs/research`](docs/research) 记录了从 Columbina 参考的几个 harness 里学到的东西。
 - [`docs/protocol`](docs/protocol) 描述桌面应用将要与程序交换的消息。

@@ -257,7 +257,9 @@ def decide(
         rules: The rules that count.
         tool: The name of the tool.
         effect: What the tool does.
-        target: What the call acts on, as the tool says it.
+        target: What the call acts on, as the tool says it. A tool that runs
+            something may name nothing, as a tool of a server does. Its call
+            is then asked about as a call of the tool, and not as a command.
         place: Where the file is that the call names, for a tool that reads
             or writes one.
         mode: The mode of the sandbox of the session.
@@ -307,6 +309,10 @@ def decide(
             return Decided("allow", allowing[0], "Rules allow every command in the line.")
     if mode == "danger-full-access":
         return Decided("allow", None, "The session has full access.")
+    if target is None:
+        # Nothing of a command here: a tool that does what somebody else's program likes,
+        # such as a tool of a server. What is said of commands would lead astray.
+        return Decided("ask", None, "No rule allows calls of this tool.")
     if apart is None and rules.allow:
         return Decided(
             "ask",

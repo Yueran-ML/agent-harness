@@ -2432,6 +2432,18 @@ _PERMISSIONS = (
         "    if False:",
     ),
     mutant(
+        "a tool that names no command is asked about in the words for a command",
+        PERMISSIONS,
+        "    if target is None:\n        # Nothing of a command here",
+        "    if False:\n        # Nothing of a command here",
+    ),
+    mutant(
+        "a command that no rule allows is asked about in the words for a tool",
+        PERMISSIONS,
+        "    if target is None:\n        # Nothing of a command here",
+        "    if True:\n        # Nothing of a command here",
+    ),
+    mutant(
         "a project may allow",
         PERMISSIONS,
         "    return RuleSet(held.deny, held.ask)",

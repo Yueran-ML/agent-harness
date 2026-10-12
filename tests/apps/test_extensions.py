@@ -412,6 +412,17 @@ LOST = (
 )
 
 
+def sums(starts: Path) -> dict[str, Any]:
+    """The entry of a profile for the server, which writes its starts into this file."""
+    config = {
+        "server": "sums",
+        "command": sys.executable,
+        "args": [str(SUMS)],
+        "env": {"STARTS": str(starts)},
+    }
+    return {"id": "sums", "plugin": "columbina.mcp.server", "config": config}
+
+
 def test_a_server_of_tools_is_started_and_called_and_started_again_when_it_has_died(
     home: Path,
     work: Path,
@@ -421,16 +432,7 @@ def test_a_server_of_tools_is_started_and_called_and_started_again_when_it_has_d
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     starts = tmp_path / "starts.jsonl"
-    listed = {
-        "id": "sums",
-        "plugin": "columbina.mcp.server",
-        "config": {
-            "server": "sums",
-            "command": sys.executable,
-            "args": [str(SUMS)],
-            "env": {"STARTS": str(starts)},
-        },
-    }
+    listed = sums(starts)
     # Something that the user has in the environment, and that is nothing to a server.
     monkeypatch.setenv("KEY_OF_THE_USER", "made-up")
     chosen = profile(
@@ -486,3 +488,31 @@ def test_a_server_of_tools_is_started_and_called_and_started_again_when_it_has_d
         f"sums: process {started['pid']} listens" for started in (died, came)
     ]
     assert "listens" not in said.err
+
+
+def test_a_tool_of_a_server_is_not_called_where_no_rule_allows_it_and_nobody_can_be_asked(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    listed = sums(tmp_path / "starts.jsonl")
+    chosen = profile(
+        tmp_path,
+        call("mcp__sums__add", a=2, b=3),
+        {"text": "The sum was not done."},
+        extra=[{"insert": [listed]}],
+    )
+
+    code = main(["run", "Add 2 and 3.", "--profile", chosen, "--cwd", str(work), "--json"])
+
+    reported = lines(capsys.readouterr().out)
+    assert code == 0
+    # A server may say of a tool that it only reads, and this one does not. So the tool may do
+    # whatever its server likes, and its call needs a yes. The model reads that in words about
+    # a tool: what is said of a command that cannot be taken apart would lead it astray.
+    assert results(reported) == [
+        (
+            "The call was not allowed: No rule allows calls of this tool. Nobody is here who "
+            "could be asked, so it was not done.",
+            "APPROVAL_UNAVAILABLE",
+        )
+    ]
+    assert reported[-1]["text"] == "The sum was not done."

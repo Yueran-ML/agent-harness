@@ -193,6 +193,22 @@ def test_a_command_is_asked_about_in_words_that_say_why() -> None:
     assert command(RuleSet(), "make", "danger-full-access").why == "The session has full access."
 
 
+def test_a_tool_that_runs_something_and_names_no_command_is_asked_about_as_a_tool() -> None:
+    def of_a_server(held: RuleSet, mode: Mode = "workspace-write") -> Decided:
+        return decide(held, "mcp__files__write", "run", None, None, mode=mode, splitter=None)
+
+    # A tool of a server does what its server likes. There is no line to take apart, so the
+    # words about commands are not for it, whatever other rules there are.
+    for held in (RuleSet(), rules(allow="shell(git status*)")):
+        asked = of_a_server(held)
+        assert (asked.verdict, asked.rule) == ("ask", None)
+        assert asked.why == "No rule allows calls of this tool."
+    # A rule that names the tool decides about it, and so does a session with full access.
+    assert of_a_server(rules(allow="mcp__files__*")).verdict == "allow"
+    assert of_a_server(rules(deny="mcp__files__write")).verdict == "deny"
+    assert of_a_server(RuleSet(), "danger-full-access").why == "The session has full access."
+
+
 # What was allowed for the rest of a session
 
 

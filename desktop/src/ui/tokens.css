@@ -1,0 +1,167 @@
+/*
+ * The palette, the type and the measures of the interface.
+ *
+ * The look is a night with a moon in it: surfaces of deep ink, text in the
+ * white of moonlight, and one accent, the pale blue that moonlight has on
+ * water. The light theme is the same moon by day, on paper. Both themes have
+ * the same names, and only the values differ.
+ *
+ * Every text colour is measured against the surface it stands on: 7 to 1 or
+ * more for what is read, 4.5 to 1 or more for what explains.
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces, from the furthest to the nearest. */
+  --ink-0: #090b12;
+  --ink-1: #0e111b;
+  --ink-2: #151927;
+  --ink-3: #1d2233;
+  --ink-4: #272d42;
+
+  /* Text. The last one is for marks and for what cannot be used, not for words to read. */
+  --moon-0: #eef0f8;
+  --moon-1: #b3b9cd;
+  --moon-2: #8088a0;
+  --moon-3: #565d73;
+
+  --line: rgb(205 214 255 / 0.09);
+  --line-strong: rgb(205 214 255 / 0.18);
+
+  /* The one accent. */
+  --accent: #c5cfff;
+  --accent-strong: #e1e6ff;
+  --accent-ink: #0c0f1c;
+  --accent-wash: rgb(170 186 255 / 0.1);
+  --focus: rgb(197 207 255 / 0.6);
+
+  /* Meanings: it went well, look here, it went wrong. */
+  --ok: #8fd6b9;
+  --ok-wash: rgb(143 214 185 / 0.1);
+  --warn: #e9c98b;
+  --warn-wash: rgb(233 201 139 / 0.1);
+  --bad: #f29aa7;
+  --bad-wash: rgb(242 154 167 / 0.1);
+
+  /* The main button is the moon itself: light on the night. */
+  --button: #eef0f8;
+  --button-ink: #0c0f1c;
+  --button-hover: #ffffff;
+
+  --shadow: 0 24px 80px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.35);
+  /* Moonlight that falls in from above the window, and a little of it from below. */
+  --glow:
+    radial-gradient(1100px 520px at 82% -12%, rgb(140 160 255 / 0.2), transparent 62%),
+    radial-gradient(700px 420px at 6% 112%, rgb(120 140 230 / 0.08), transparent 60%);
+  --scrim: rgb(4 5 10 / 0.62);
+
+  /* Type. The display face is for the few places where the application speaks for itself. */
+  --font-ui: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", "PingFang SC",
+    "Microsoft YaHei UI", "Noto Sans CJK SC", system-ui, sans-serif;
+  --font-display: "Sitka Display", "Sitka Heading", "Iowan Old Style", "Palatino Linotype",
+    "New York", ui-serif, Georgia, "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+  --font-mono: "JetBrains Mono Variable", "Cascadia Code", "Cascadia Mono", Consolas,
+    "Sarasa Mono SC", ui-monospace, monospace;
+  --display-weight: 400;
+
+  --text-caption: 12px;
+  --text-ui: 13px;
+  --text-read: 15px;
+  --text-title: 22px;
+  --text-display: 34px;
+  --leading-ui: 1.4;
+  --leading-read: 1.65;
+
+  /* Space, on a grid of four. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+
+  /* Corners: a control, a card, and what floats above the rest. */
+  --r1: 6px;
+  --r2: 10px;
+  --r3: 14px;
+
+  --quick: 120ms;
+  --calm: 180ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+
+  --titlebar: 40px;
+  --column: 760px;
+
+  /* The names that the opening and the music player were written with. */
+  --bg: var(--ink-0);
+  --sidebar: var(--ink-1);
+  --surface: var(--ink-2);
+  --raised: var(--ink-3);
+  --hover: var(--ink-3);
+  --text: var(--moon-0);
+  --muted: var(--moon-1);
+  --dim: var(--moon-2);
+  --accent-text: var(--accent-ink);
+  --accent-soft: var(--accent-wash);
+  --green: var(--ok);
+  --red: var(--bad);
+  --amber: var(--warn);
+}
+
+:root[data-theme='moonwhite'] {
+  color-scheme: light;
+
+  --ink-0: #f5f4f0;
+  --ink-1: #eeece6;
+  --ink-2: #ffffff;
+  --ink-3: #e7e4dc;
+  --ink-4: #dbd7cd;
+
+  --moon-0: #1b1c24;
+  --moon-1: #4c4e5b;
+  --moon-2: #686a78;
+  --moon-3: #a3a4ad;
+
+  --line: rgb(27 28 36 / 0.1);
+  --line-strong: rgb(27 28 36 / 0.2);
+
+  --accent: #3a46b5;
+  --accent-strong: #2a3594;
+  --accent-ink: #ffffff;
+  --accent-wash: rgb(58 70 181 / 0.08);
+  --focus: rgb(58 70 181 / 0.55);
+
+  --ok: #1d7a57;
+  --ok-wash: rgb(29 122 87 / 0.09);
+  --warn: #8a5a00;
+  --warn-wash: rgb(138 90 0 / 0.09);
+  --bad: #b5344a;
+  --bad-wash: rgb(181 52 74 / 0.08);
+
+  --button: #1b1c24;
+  --button-ink: #f5f4f0;
+  --button-hover: #000000;
+
+  --shadow: 0 24px 70px rgb(40 40 60 / 0.18), 0 2px 8px rgb(40 40 60 / 0.1);
+  --glow: radial-gradient(1100px 520px at 82% -12%, rgb(90 110 220 / 0.09), transparent 62%);
+  --scrim: rgb(40 40 52 / 0.32);
+}
+
+/*
+ * In Chinese the display face is a light sans. The serif that a computer has
+ * for Chinese without being given one is drawn for small sizes, and looks thin
+ * and dated when it is large.
+ */
+:root:lang(zh) {
+  --font-display: "Inter Variable", "PingFang SC", "Microsoft YaHei UI Light", "Microsoft YaHei UI",
+    "Noto Sans CJK SC", system-ui, sans-serif;
+  --display-weight: 300;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --quick: 0ms;
+    --calm: 0ms;
+  }
+}

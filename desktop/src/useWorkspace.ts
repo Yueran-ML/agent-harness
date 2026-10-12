@@ -22,6 +22,12 @@ export function useWorkspace() {
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Why the connection to the service ended, as the shell said it. Null while it holds.
+  const [closed, setClosed] = useState<string | null>(null);
+  // How many events the log of the task held when it was opened. What came before is history.
+  const [openedAt, setOpenedAt] = useState(0);
+  // The folder of the project, from the moment it is chosen.
+  const [folder, setFolder] = useState<string | null>(null);
   const [mode, setMode] = useState<'mock' | 'service'>('mock');
   const client = useRef<RpcClient | null>(null);
   const active = useRef<string | null>(null);
@@ -71,6 +77,7 @@ export function useWorkspace() {
       const opened = await rpc.request<{ session_id: string; events: number }>('session/open', id ? { session_id: id } : {});
       if (version !== generation.current) return;
       active.current = opened.session_id;
+      setOpenedAt(opened.events);
       setSessionId(opened.session_id);
       setStatus(statuses.current.get(opened.session_id) ?? null);
       setApproval(approvalBuffer.current.get(opened.session_id) ?? null);
@@ -96,6 +103,7 @@ export function useWorkspace() {
   const connect = useCallback(async (cwd?: string, resumeId?: string) => {
     if (connecting.current || (window.columbina && !cwd)) return;
     connecting.current = true;
+    if (cwd) setFolder(cwd);
     connectionCleanup.current();
     client.current?.close();
     client.current = null;
@@ -104,6 +112,7 @@ export function useWorkspace() {
     setLoading(true);
     setConnected(false);
     setError(null);
+    setClosed(null);
     setHello(null);
     setStatus(null);
     setSessionId(null);
@@ -172,7 +181,7 @@ export function useWorkspace() {
         setLoading(false);
         setApproval(null);
         setPreview(emptyPreview());
-        setError(reason || 'The service connection closed. Reconnect to continue.');
+        setClosed(reason || '');
       });
       const offShutdown = bridge?.onShutdown(() => {
         void rpc.request('shutdown').catch(() => {}).finally(() => bridge.stop());
@@ -239,7 +248,7 @@ export function useWorkspace() {
   }, [connect, fail]);
 
   const projection = useMemo(() => projectEvents(events), [events]);
-  return { hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending, cancelling, error, mode, projection, openSession, send, cancel, answer, command, chooseFolder, reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined), clearError: () => setError(null), fail };
+  return { hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending, cancelling, error, closed, openedAt, folder, mode, projection, openSession, send, cancel, answer, command, chooseFolder, reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined), clearError: () => setError(null), fail };
 }
 
 export type Workspace = ReturnType<typeof useWorkspace>;

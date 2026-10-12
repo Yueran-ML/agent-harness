@@ -1,0 +1,935 @@
+/*
+ * The window and what stands around the conversation: the bar of the window,
+ * the list of tasks, the bar of the task, the line of status, the panel beside
+ * the conversation, and the settings.
+ */
+.window {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--glow), var(--ink-0);
+}
+
+/* --- The bar of the window. The window is moved by it, so nothing in it but its controls takes a click. */
+.titlebar {
+  flex: none;
+  height: var(--titlebar);
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  padding: 0 var(--s4);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+/* Where the shell draws the three buttons of the window. */
+.window[data-native] .titlebar {
+  padding-right: 148px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  /* The name is a Latin word in every language, and keeps the face it has in English. */
+  font-family: "Sitka Display", "Sitka Heading", "Iowan Old Style", "Palatino Linotype", "New York", ui-serif, Georgia, serif;
+  font-size: 16px;
+  letter-spacing: 0.01em;
+  color: var(--moon-0);
+}
+
+/* A crescent: a lit disc with a bite out of it. */
+.brand-moon,
+.crescent::before {
+  display: block;
+  border-radius: 50%;
+  background: linear-gradient(140deg, var(--accent-strong), var(--accent));
+  -webkit-mask-image: radial-gradient(circle at 72% 34%, transparent 0 46%, #000 48%);
+  mask-image: radial-gradient(circle at 72% 34%, transparent 0 46%, #000 48%);
+}
+
+.brand-moon {
+  width: 14px;
+  height: 14px;
+}
+
+.titlebar-project {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+/* --- The three columns under the bar. */
+.shell {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr);
+  position: relative;
+}
+
+.shell[data-sidebar='hidden'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.shell[data-inspector] {
+  grid-template-columns: 264px minmax(0, 1fr) 372px;
+}
+
+.shell[data-sidebar='hidden'][data-inspector] {
+  grid-template-columns: minmax(0, 1fr) 372px;
+}
+
+/* A way past the list of tasks, for the keyboard. It is out of sight until the keyboard reaches it. */
+.skip {
+  position: fixed;
+  left: var(--s4);
+  top: var(--s2);
+  z-index: 20;
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r1);
+  background: var(--button);
+  color: var(--button-ink);
+  font-weight: 600;
+  text-decoration: none;
+  transform: translateY(-300%);
+}
+
+.skip:focus {
+  transform: none;
+}
+
+/* --- The list of tasks. */
+.sidebar {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3) var(--s3);
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink-1) 72%, transparent);
+}
+
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.new-task {
+  flex: 1;
+  justify-content: flex-start;
+  min-height: 34px;
+  background: var(--ink-2);
+  border-color: var(--line);
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 32px;
+  padding: 0 var(--s3);
+  border-radius: var(--r1);
+  color: var(--moon-2);
+  transition: background var(--quick) var(--ease);
+}
+
+.search:hover,
+.search:focus-within {
+  background: var(--ink-2);
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  outline: none;
+}
+
+.search input::placeholder {
+  color: var(--moon-2);
+}
+
+.search input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+.sidebar-title {
+  padding: var(--s3) var(--s3) var(--s1);
+}
+
+.tasks {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 calc(-1 * var(--s1));
+  padding: 0 var(--s1);
+}
+
+.task {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  min-height: 34px;
+  padding: 0 var(--s3);
+  border-radius: var(--r1);
+  color: var(--moon-1);
+  text-align: left;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+button.task:hover:not(:disabled) {
+  background: var(--ink-2);
+  color: var(--moon-0);
+}
+
+.task[aria-current='true'] {
+  background: var(--ink-3);
+  color: var(--moon-0);
+}
+
+.task-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-when {
+  flex: none;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.tasks-none {
+  padding: var(--s2) var(--s3);
+}
+
+.sidebar-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: var(--s2);
+  border-top: 1px solid var(--line);
+}
+
+.foot-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-height: 34px;
+  padding: 0 var(--s3);
+  border-radius: var(--r1);
+  color: var(--moon-1);
+  text-align: left;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.foot-row:hover {
+  background: var(--ink-2);
+  color: var(--moon-0);
+}
+
+.foot-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- The task: its bar, what is said about its connection, the conversation, the line of status. */
+.main {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  flex: none;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s4) 0 var(--s5);
+}
+
+.shell[data-sidebar='hidden'] .topbar {
+  padding-left: var(--s3);
+}
+
+/* The name of the task. What it says stands in the conversation too, so it is said quietly here. */
+.topbar-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-ui);
+  font-weight: 500;
+  color: var(--moon-1);
+}
+
+.topbar-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.btn[aria-pressed='true'] {
+  background: var(--ink-3);
+  color: var(--accent);
+}
+
+.count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-wash);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.banner {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s4);
+  width: min(100% - 2 * var(--s5), var(--column));
+  margin: var(--s2) auto 0;
+  padding: var(--s3) var(--s3) var(--s3) var(--s4);
+  border-radius: var(--r2);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-2);
+}
+
+.banner[data-tone='bad'] {
+  border-color: color-mix(in srgb, var(--bad) 38%, transparent);
+  background: var(--bad-wash);
+}
+
+.banner[data-tone='warn'] {
+  border-color: color-mix(in srgb, var(--warn) 38%, transparent);
+  background: var(--warn-wash);
+}
+
+.banner-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding-top: 5px;
+}
+
+.banner-words .caption {
+  overflow-wrap: anywhere;
+}
+
+/* The page of a task. With a conversation, the field stands at its foot. */
+.stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* With nothing said yet, the field stands in the middle, under a few words of welcome. */
+.stage[data-empty] {
+  background: radial-gradient(560px 380px at 50% 36%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 72%);
+  justify-content: center;
+  align-items: center;
+  gap: var(--s5);
+  padding: var(--s5) var(--s5) 9vh;
+  overflow-y: auto;
+}
+
+.stage[data-empty] > .dock {
+  width: min(100%, 680px);
+  padding: 0;
+}
+
+.stage > .working {
+  margin: auto;
+}
+
+.start-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+  text-align: center;
+  animation: rise 520ms var(--ease) both;
+}
+
+.start-head .display {
+  font-size: var(--text-display);
+  line-height: 1.15;
+}
+
+.start-lead {
+  max-width: 56ch;
+  color: var(--moon-2);
+  overflow-wrap: anywhere;
+}
+
+.start-lead.mono {
+  font-size: var(--text-caption);
+}
+
+.start-head .btn-large {
+  margin-top: var(--s3);
+}
+
+.btn-large {
+  min-height: 40px;
+  padding: 0 var(--s5);
+  border-radius: var(--r2);
+  font-size: 14px;
+}
+
+.crescent {
+  display: block;
+  margin-bottom: var(--s2);
+  filter: drop-shadow(0 0 22px color-mix(in srgb, var(--accent) 45%, transparent));
+}
+
+.crescent::before {
+  content: '';
+  width: 54px;
+  height: 54px;
+}
+
+.recent {
+  width: min(100%, 680px);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: rise 520ms 90ms var(--ease) both;
+}
+
+.recent .overline {
+  padding: 0 var(--s3) var(--s2);
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .start-head,
+  .recent {
+    animation: none;
+  }
+}
+
+/* --- The line of status. */
+.status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-height: 32px;
+  padding: 0 var(--s4) var(--s1) var(--s5);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.status-may,
+.status-context,
+.status-loose {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 6px;
+  margin: 0 -6px;
+  border-radius: var(--r1);
+  color: inherit;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.status-may {
+  min-width: 0;
+}
+
+.status-may span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-may:hover,
+.status-context:hover,
+.status-loose:hover {
+  background: var(--ink-2);
+  color: var(--moon-0);
+}
+
+.status-may[data-tone='warn'],
+.status-loose {
+  color: var(--warn);
+}
+
+.status-loose {
+  margin: 0;
+}
+
+.status-gap {
+  flex: 1;
+}
+
+.status-replay {
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--moon-1);
+}
+
+.status-stands {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--moon-3);
+}
+
+.status-stands[data-tone='rest'] .dot {
+  background: var(--ok);
+}
+
+.status-stands[data-tone='live'] {
+  color: var(--accent);
+}
+
+.status-stands[data-tone='live'] .dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
+
+.status-stands[data-tone='off'] .dot {
+  background: var(--bad);
+}
+
+.ring {
+  flex: none;
+}
+
+.ring circle {
+  fill: none;
+  stroke-width: 2;
+}
+
+.ring-track {
+  stroke: var(--ink-4);
+}
+
+.ring-fill {
+  stroke: var(--accent);
+  stroke-linecap: round;
+}
+
+.status-context[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.status-context[data-tone='warn'] .ring-fill {
+  stroke: var(--warn);
+}
+
+.status-context[data-tone='bad'] {
+  color: var(--bad);
+}
+
+.status-context[data-tone='bad'] .ring-fill {
+  stroke: var(--bad);
+}
+
+/* --- The panel beside the conversation. */
+.inspector {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink-1) 72%, transparent);
+}
+
+.inspector-head {
+  flex: none;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--s3) 0 var(--s4);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--s1);
+}
+
+.tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 var(--s3);
+  border-radius: var(--r1);
+  color: var(--moon-2);
+  font-weight: 500;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.tabs button:hover {
+  color: var(--moon-0);
+}
+
+.tabs button[aria-selected='true'] {
+  background: var(--ink-3);
+  color: var(--moon-0);
+}
+
+.inspector-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s2) var(--s4) var(--s5);
+}
+
+.inspector-none {
+  padding: var(--s4) 0;
+}
+
+.details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s5);
+  padding-top: var(--s2);
+}
+
+.details section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.details-main {
+  font-family: var(--font-mono);
+  color: var(--moon-0);
+  overflow-wrap: anywhere;
+}
+
+.meter {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--ink-4);
+  overflow: hidden;
+}
+
+.meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.meter span[data-tone='warn'] {
+  background: var(--warn);
+}
+
+.meter span[data-tone='bad'] {
+  background: var(--bad);
+}
+
+.figures {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s2);
+}
+
+.figures div {
+  padding: var(--s3);
+  border-radius: var(--r2);
+  background: var(--ink-2);
+}
+
+.figures dt {
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.figures dd {
+  margin-top: 2px;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--moon-0);
+}
+
+.tool-about {
+  padding: var(--s1) 0 var(--s2) 21px;
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.task-id {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--moon-1);
+}
+
+.task-id code {
+  overflow-wrap: anywhere;
+}
+
+/* In a narrow window the panel lies over the conversation. */
+@media (max-width: 1120px) {
+  .shell[data-inspector],
+  .shell[data-sidebar='hidden'][data-inspector] {
+    grid-template-columns: 264px minmax(0, 1fr);
+  }
+
+  .shell[data-sidebar='hidden'][data-inspector] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inspector {
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: min(372px, 100%);
+    z-index: 10;
+    background: var(--ink-1);
+    box-shadow: var(--shadow);
+  }
+}
+
+/* --- The settings. */
+.setting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4) 0 var(--s5);
+  border-top: 1px solid var(--line);
+  scroll-margin-top: var(--s2);
+}
+
+.setting:first-child {
+  border-top: 0;
+  padding-top: var(--s1);
+}
+
+.setting h3 {
+  font-size: var(--text-ui);
+  font-weight: 600;
+  color: var(--moon-0);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.setting-name {
+  flex: none;
+  width: 132px;
+  color: var(--moon-1);
+}
+
+.setting-row .field {
+  flex: 1;
+  width: auto;
+}
+
+
+.setting-now {
+  color: var(--moon-1);
+}
+
+.setting-path {
+  overflow-wrap: anywhere;
+}
+
+select.field {
+  appearance: none;
+  padding-right: var(--s6);
+  background-image: linear-gradient(45deg, transparent 50%, var(--moon-2) 50%),
+    linear-gradient(135deg, var(--moon-2) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 13px, calc(100% - 12px) 13px;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.segments {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--r2);
+  background: var(--ink-1);
+  border: 1px solid var(--line);
+}
+
+.segments button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  height: 30px;
+  padding: 0 var(--s3);
+  border-radius: 7px;
+  color: var(--moon-1);
+  font-weight: 500;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.segments button:hover {
+  color: var(--moon-0);
+}
+
+.segments button[aria-checked='true'] {
+  background: var(--ink-4);
+  color: var(--moon-0);
+}
+
+/* What a theme looks like, whichever one is in use. */
+.swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+}
+
+.swatch[data-swatch='moonveil'] {
+  background: linear-gradient(135deg, #0e111b 50%, #c5cfff 50%);
+}
+
+.swatch[data-swatch='moonwhite'] {
+  background: linear-gradient(135deg, #f5f4f0 50%, #3a46b5 50%);
+}
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r2);
+  border: 1px solid var(--line);
+  text-align: left;
+  transition: background var(--quick) var(--ease), border-color var(--quick) var(--ease);
+}
+
+.choice:hover:not(:disabled) {
+  background: var(--ink-3);
+}
+
+.choice[aria-checked='true'] {
+  border-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.choice[data-tone='warn'][aria-checked='true'] {
+  border-color: var(--warn);
+  background: var(--warn-wash);
+}
+
+.choice:disabled {
+  color: var(--moon-2);
+}
+
+.choice-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1.5px solid var(--moon-3);
+}
+
+.choice[aria-checked='true'] .choice-mark {
+  border-color: var(--accent);
+  background: radial-gradient(circle, var(--accent) 0 42%, transparent 48%);
+}
+
+.choice[data-tone='warn'][aria-checked='true'] .choice-mark {
+  border-color: var(--warn);
+  background: radial-gradient(circle, var(--warn) 0 42%, transparent 48%);
+}
+
+.choice-words {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.choice-words strong {
+  font-weight: 600;
+}
+
+.choice-words span {
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+}
+
+.check {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.check input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+
+.sheet-body > p {
+  color: var(--moon-1);
+  line-height: 1.55;
+}
+
+.sheet-body > p + p,
+.sheet-body > p + pre {
+  margin-top: var(--s3);
+}
+
+.sheet-foot {
+  align-items: center;
+}
+
+.sheet-foot .caption {
+  margin-right: auto;
+}
+

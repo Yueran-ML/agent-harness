@@ -1,0 +1,587 @@
+/*
+ * The conversation: turn after turn, each with what was said, what was done on
+ * the way, and what came of it.
+ */
+.talk-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.talk-scroll {
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
+}
+
+.talk {
+  width: min(100%, var(--column) + 2 * var(--s5));
+  margin: 0 auto;
+  padding: var(--s4) var(--s5) var(--s6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s6);
+}
+
+.latest {
+  position: absolute;
+  left: 50%;
+  bottom: var(--s3);
+  transform: translateX(-50%);
+  background: var(--ink-3);
+  border-color: var(--line-strong);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.3);
+}
+
+/* --- A turn. */
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+/* What a person said stands to the right, as the one thing here that the agent did not write. */
+.said {
+  align-self: flex-end;
+  max-width: min(86%, 620px);
+  padding: 10px var(--s4);
+  border-radius: var(--r3) var(--r3) 4px var(--r3);
+  background: var(--ink-3);
+  color: var(--moon-0);
+  font-size: var(--text-read);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* Something long that was pasted in does not push the conversation off the page. */
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.said-small {
+  font-size: var(--text-ui);
+  padding: var(--s2) var(--s3);
+}
+
+.steer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--s1);
+  padding: var(--s1) 0;
+}
+
+.steer .caption {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+/* --- What was done on the way. */
+.steps-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 var(--s2) 0 var(--s1);
+  margin-left: calc(-1 * var(--s1));
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.steps-toggle:hover {
+  background: var(--ink-2);
+  color: var(--moon-0);
+}
+
+.steps-toggle svg,
+.aside > summary svg,
+.tool-chevron {
+  transition: transform var(--quick) var(--ease);
+}
+
+.steps-toggle[aria-expanded='true'] svg,
+.aside[open] > summary svg,
+.tool[open] > summary .tool-chevron {
+  transform: rotate(90deg);
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* What the model says on the way stands back behind what it says at the end. */
+.step-text {
+  padding: var(--s1) 0;
+}
+
+.step-text .markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--moon-1);
+}
+
+/* One call of a tool, as a line. */
+.tool {
+  border-radius: var(--r1);
+}
+
+.tool > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 30px;
+  padding: 0 var(--s2);
+  margin: 0 calc(-1 * var(--s2));
+  border-radius: var(--r1);
+  list-style: none;
+  cursor: pointer;
+  color: var(--moon-1);
+  transition: background var(--quick) var(--ease);
+}
+
+.tool > summary::-webkit-details-marker,
+.aside > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool > summary:hover {
+  background: var(--ink-2);
+}
+
+.tool-icon {
+  flex: none;
+  color: var(--moon-2);
+}
+
+.tool-what {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+}
+
+.tool-verb {
+  flex: none;
+  color: var(--moon-1);
+}
+
+.tool-object {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--moon-0);
+}
+
+.tool-state {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.tool-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tool[data-tone='ok'] .tool-state > svg {
+  color: var(--ok);
+}
+
+.tool[data-tone='held'] .tool-said,
+.tool[data-tone='held'] .tool-state > svg {
+  color: var(--warn);
+}
+
+.tool[data-tone='bad'] .tool-said,
+.tool[data-tone='bad'] .tool-state > svg {
+  color: var(--bad);
+}
+
+.tool[data-tone='live'] .tool-said {
+  color: var(--accent);
+}
+
+.tool-chevron {
+  flex: none;
+  color: var(--moon-3);
+}
+
+.tool-more {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2) 0 var(--s3) 23px;
+}
+
+.tool-more .overline {
+  margin-top: var(--s1);
+}
+
+.tool-why {
+  color: var(--moon-1);
+}
+
+.tool-code {
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  overflow-wrap: anywhere;
+}
+
+/* A block of text that is shown as it is: a command, a file, what a tool gave back. */
+.block {
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--s3);
+  border-radius: var(--r2);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink-1) 80%, transparent);
+  color: var(--moon-1);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+
+.block-before {
+  border-color: color-mix(in srgb, var(--bad) 30%, transparent);
+  background: var(--bad-wash);
+}
+
+.block-after {
+  border-color: color-mix(in srgb, var(--ok) 30%, transparent);
+  background: var(--ok-wash);
+}
+
+/* Something that is of interest to few, and is kept folded. */
+.aside > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding-right: var(--s2);
+  border-radius: var(--r1);
+  list-style: none;
+  cursor: pointer;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  transition: color var(--quick) var(--ease);
+}
+
+.aside > summary:hover {
+  color: var(--moon-0);
+}
+
+.aside > .block,
+.aside > .thought,
+.aside > .tool-code,
+.aside > .consent-why {
+  margin: var(--s1) 0 var(--s2) 19px;
+}
+
+.thought {
+  padding-left: var(--s3);
+  border-left: 2px solid var(--line-strong);
+  color: var(--moon-2);
+  font-size: var(--text-ui);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 26px;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.note::before {
+  content: '';
+  flex: none;
+  width: 5px;
+  height: 5px;
+  margin: 0 5px 0 4px;
+  border-radius: 50%;
+  background: var(--moon-3);
+}
+
+.note[data-tone='warn'] {
+  color: var(--warn);
+}
+
+/* A note that counts down has the moon in the place of its dot. */
+.note:has(.moon)::before {
+  content: none;
+}
+
+.note .moon {
+  width: 10px;
+  height: 10px;
+  margin: 0 3px 0 1px;
+}
+
+.note[data-tone='warn']::before {
+  background: var(--warn);
+}
+
+/* What is waited for. */
+.working {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  color: var(--moon-1);
+}
+
+.working-time {
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.live {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+/* --- What came of the turn. */
+.answer {
+  position: relative;
+  padding-top: var(--s1);
+}
+
+.answer-tools {
+  display: flex;
+  margin: var(--s1) 0 0 -6px;
+  opacity: 0;
+  transition: opacity var(--quick) var(--ease);
+}
+
+.turn:hover .answer-tools,
+.answer-tools:focus-within {
+  opacity: 1;
+}
+
+.ending {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s4);
+}
+
+.ending-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ending[data-tone='calm'] {
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.ending[data-tone='bad'] {
+  padding: var(--s3) var(--s3) var(--s3) var(--s4);
+  border-radius: var(--r2);
+  border: 1px solid color-mix(in srgb, var(--bad) 38%, transparent);
+  background: var(--bad-wash);
+}
+
+.ending[data-tone='bad'] .ending-words {
+  padding-top: 5px;
+}
+
+.ending[data-tone='bad'] .ending-what {
+  font-weight: 500;
+  color: var(--moon-0);
+}
+
+.ending[data-tone='bad'] .ending-why {
+  color: var(--moon-1);
+}
+
+.command-said {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.command-said .caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- What the model wrote, as Markdown. */
+.markdown {
+  font-size: var(--text-read);
+  line-height: var(--leading-read);
+  color: var(--moon-0);
+  overflow-wrap: anywhere;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown .code-block,
+.markdown .table-wrap {
+  margin: 0 0 var(--s3);
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: var(--s5) 0 var(--s2);
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--moon-0);
+}
+
+.markdown h1 {
+  font-size: 20px;
+}
+
+.markdown h2 {
+  font-size: 17px;
+}
+
+.markdown h3,
+.markdown h4 {
+  font-size: var(--text-read);
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.4em;
+}
+
+.markdown li + li,
+.markdown li > ul,
+.markdown li > ol {
+  margin-top: var(--s1);
+}
+
+.markdown li::marker {
+  color: var(--moon-2);
+}
+
+.markdown strong {
+  font-weight: 600;
+}
+
+.markdown blockquote {
+  padding-left: var(--s4);
+  border-left: 2px solid var(--line-strong);
+  color: var(--moon-1);
+}
+
+.markdown hr {
+  margin: var(--s5) 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.markdown :not(pre) > code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--ink-3);
+  color: var(--accent-strong);
+}
+
+.code-block {
+  position: relative;
+}
+
+.code-block pre {
+  max-height: 420px;
+  overflow: auto;
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r2);
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink-1) 80%, transparent);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--moon-0);
+  tab-size: 4;
+}
+
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--ink-2);
+  opacity: 0;
+  transition: opacity var(--quick) var(--ease), background var(--quick) var(--ease);
+}
+
+.code-block:hover .code-copy,
+.code-copy:focus-visible {
+  opacity: 1;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  font-size: var(--text-ui);
+}
+
+.markdown th,
+.markdown td {
+  padding: 6px var(--s3);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown th {
+  font-weight: 600;
+  color: var(--moon-1);
+  border-bottom-color: var(--line-strong);
+}
+
+.link {
+  display: inline;
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  text-underline-offset: 3px;
+  text-align: left;
+}
+
+.link:hover {
+  color: var(--accent-strong);
+  text-decoration-color: currentColor;
+}

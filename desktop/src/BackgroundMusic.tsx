@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoaderCircle, Music2, Play, Trash2, Upload, Volume2, VolumeX } from 'lucide-react';
+import { useWords } from './app/locale';
 import './BackgroundMusic.css';
 
 type Track = { name: string; blob: Blob; source?: 'local' };
 type StoredSelection = Track | { disabled: true };
 type Playback = 'empty' | 'loading' | 'playing' | 'blocked' | 'failed';
+/** What went wrong with a file. The interface says each in its own words. */
+type Problem = 'cannotPlay' | 'cannotOpenKept' | 'wrongKind' | 'wrongSize' | 'noKept';
+/** What could not be kept from one start of the application to the next. */
+type Unkept = 'cannotRead' | 'thisWindowOnly' | 'notCleared' | 'choiceNotKept';
 const storageKey = 'columbina-music-muted';
 const acceptedFiles = '.mp3,.wav,.m4a,.ogg,.flac,audio/mpeg,audio/wav,audio/mp4,audio/ogg,audio/flac';
 
@@ -38,8 +43,8 @@ export function useBackgroundMusic() {
   const [busy, setBusy] = useState(true);
   const [muted, setMuted] = useState(() => { try { return localStorage.getItem(storageKey) === 'true'; } catch { return false; } });
   const [playback, setPlayback] = useState<Playback>('empty');
-  const [error, setError] = useState('');
-  const [storageWarning, setStorageWarning] = useState('');
+  const [problem, setProblem] = useState<Problem | null>(null);
+  const [unkept, setUnkept] = useState<Unkept | null>(null);
 
   const play = useCallback(async () => {
     const element = audio.current;
@@ -50,7 +55,7 @@ export function useBackgroundMusic() {
     } catch (failure) {
       if (element !== audio.current || (failure instanceof DOMException && failure.name === 'AbortError')) return;
       if (failure instanceof DOMException && failure.name === 'NotAllowedError') setPlayback('blocked');
-      else { setPlayback('failed'); setError('This audio file could not be played. Choose another MP3, WAV, M4A, OGG, or FLAC file.'); }
+      else { setPlayback('failed'); setProblem('cannotPlay'); }
     }
   }, []);
 
@@ -59,13 +64,13 @@ export function useBackgroundMusic() {
     const restore = async () => {
       let saved: StoredSelection | undefined;
       try { saved = await musicStore<StoredSelection | undefined>('readonly', store => store.get('current')); }
-      catch { if (active) setStorageWarning('Saved music preferences are unavailable. Any changes will apply to this window only.'); }
+      catch { if (active) setUnkept('cannotRead'); }
       if (!active || (saved && 'disabled' in saved)) return;
       if (saved && 'blob' in saved && saved.blob instanceof Blob && typeof saved.name === 'string') { setTrack(saved); return; }
       try {
         const local = await readLocalTrack();
         if (active && local) setTrack(local);
-      } catch { if (active) setError('The local soundtrack could not be opened. Choose another audio file.'); }
+      } catch { if (active) setProblem('cannotOpenKept'); }
     };
     void restore().finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
@@ -82,7 +87,7 @@ export function useBackgroundMusic() {
     element.preload = 'auto';
     element.src = url;
     setPlayback('loading');
-    const onError = () => { setPlayback('failed'); setError('This audio file could not be played. Choose another MP3, WAV, M4A, OGG, or FLAC file.'); };
+    const onError = () => { setPlayback('failed'); setProblem('cannotPlay'); };
     const onPause = () => { if (!element.ended && !element.error) setPlayback('blocked'); };
     element.addEventListener('error', onError);
     element.addEventListener('pause', onPause);
@@ -105,15 +110,15 @@ export function useBackgroundMusic() {
 
   const chooseFile = useCallback(() => input.current?.click(), []);
   const importFile = async (file: File) => {
-    if (!/\.(mp3|wav|m4a|ogg|flac)$/i.test(file.name)) { setError('Choose an MP3, WAV, M4A, OGG, or FLAC audio file.'); return; }
-    if (file.size === 0 || file.size > 100 * 1024 * 1024) { setError('Choose a non-empty audio file smaller than 100 MB.'); return; }
+    if (!/\.(mp3|wav|m4a|ogg|flac)$/i.test(file.name)) { setProblem('wrongKind'); return; }
+    if (file.size === 0 || file.size > 100 * 1024 * 1024) { setProblem('wrongSize'); return; }
     setBusy(true);
-    setError('');
+    setProblem(null);
     const next = { name: file.name.replace(/\.[^.]+$/, ''), blob: file };
     try {
       await musicStore('readwrite', store => store.put(next, 'current'));
-      setStorageWarning('');
-    } catch { setStorageWarning('This file will play for this window only. There is not enough local storage, or storage is unavailable.'); }
+      setUnkept(null);
+    } catch { setUnkept('thisWindowOnly'); }
     setTrack(next);
     setBusy(false);
   };
@@ -122,64 +127,101 @@ export function useBackgroundMusic() {
     try {
       await musicStore('readwrite', store => store.put({ disabled: true }, 'current'));
       setTrack(null);
-      setError('');
-      setStorageWarning('');
+      setProblem(null);
+      setUnkept(null);
     } catch {
       setTrack(null);
-      setError('');
-      setStorageWarning('Music was removed from this window, but the saved copy could not be cleared and may return after restarting.');
+      setProblem(null);
+      setUnkept('notCleared');
     }
     finally { setBusy(false); }
   };
   const restoreLocal = async () => {
     setBusy(true);
-    setError('');
+    setProblem(null);
     try {
       const local = await readLocalTrack();
-      if (!local) { setError('No local soundtrack is installed on this device. Choose a local audio file.'); return; }
-      try { await musicStore('readwrite', store => store.delete('current')); setStorageWarning(''); }
-      catch { setStorageWarning('The local soundtrack will play for this window. Your saved selection could not be changed.'); }
+      if (!local) { setProblem('noKept'); return; }
+      try { await musicStore('readwrite', store => store.delete('current')); setUnkept(null); }
+      catch { setUnkept('choiceNotKept'); }
       setTrack(local);
-    } catch { setError('The local soundtrack could not be opened. Choose another audio file.'); }
+    } catch { setProblem('cannotOpenKept'); }
     finally { setBusy(false); }
   };
 
-  const status = busy ? 'Loading music…' : !track ? 'No music selected' : playback === 'failed' ? 'Audio unavailable' : playback === 'blocked' ? 'Click Play to start music' : playback === 'loading' ? 'Loading music…' : muted ? 'Muted · loops continuously' : 'Playing · loops continuously';
-  const fileInput = <input ref={input} className="music-file-input" type="file" accept={acceptedFiles} aria-label="Choose background music file" tabIndex={-1}
+  /** Where the music stands, as one of the things the interface has words for. */
+  const stands = busy || (playback === 'loading' && track) ? 'loading' as const
+    : !track ? 'none' as const
+      : playback === 'failed' ? 'unavailable' as const
+        : playback === 'blocked' ? 'blocked' as const
+          : muted ? 'muted' as const : 'playing' as const;
+  const fileInput = <input ref={input} className="music-file-input" type="file" accept={acceptedFiles} aria-hidden="true" tabIndex={-1}
     onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFile(file); }} />;
-  return { hasTrack: !!track, name: track?.name, localTrack: track?.source === 'local', canRestoreLocal: !!window.columbina?.getLocalMusic, busy, muted, setMuted, playback, error, storageWarning, status, play, chooseFile, remove, restoreLocal, fileInput };
+  return { hasTrack: !!track, name: track?.name, localTrack: track?.source === 'local', canRestoreLocal: !!window.columbina?.getLocalMusic, busy, muted, setMuted, playback, problem, unkept, stands, play, chooseFile, remove, restoreLocal, fileInput };
 }
 
 export type BackgroundMusic = ReturnType<typeof useBackgroundMusic>;
 
+/**
+ * The music in the bar of the window: what plays, and a way to silence it.
+ * Without music there is nothing to show, and the settings are where some is chosen.
+ */
 export function MusicTitlebar({ music }: { music: BackgroundMusic }) {
-  const action = music.hasTrack && music.playback === 'blocked' ? 'Play background music' : music.hasTrack ? `Change background music: ${music.name}` : 'Choose background music';
+  const words = useWords();
+  const sound = music.muted ? words.label.unmute : words.label.mute;
+  const waits = music.playback === 'blocked';
   return <div className="titlebar-music" data-startup-control>
     {music.fileInput}
-    <button className="titlebar-music-track" disabled={music.busy} aria-label={action} title={`${action} · ${music.status}`}
-      onClick={() => music.playback === 'blocked' && music.hasTrack ? void music.play() : music.chooseFile()}>
-      {music.busy ? <LoaderCircle size={13} className="spin" /> : music.playback === 'blocked' ? <Play size={13} /> : <Music2 size={13} />}<span>{music.hasTrack ? music.name : 'Choose music'}</span>
-    </button>
-    <button className="titlebar-music-mute" aria-label={music.muted ? 'Turn sound on' : 'Mute sound'} aria-pressed={music.muted} title={music.muted ? 'Turn sound on' : 'Mute sound'} onClick={() => music.setMuted(!music.muted)}>
-      {music.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
-    </button>
+    {music.hasTrack && <>
+      <button
+        type="button"
+        className="titlebar-music-track"
+        disabled={music.busy}
+        title={`${music.name} · ${words.label.music.stands[music.stands]}`}
+        aria-label={waits ? words.label.music.play : words.label.music.change}
+        onClick={() => (waits ? void music.play() : music.chooseFile())}
+      >
+        {music.busy ? <LoaderCircle size={13} className="spin" /> : waits ? <Play size={13} /> : <Music2 size={13} />}
+        <span>{music.name}</span>
+      </button>
+      <button type="button" className="icon-btn" aria-label={sound} aria-pressed={music.muted} title={sound} onClick={() => music.setMuted(!music.muted)}>
+        {music.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+      </button>
+    </>}
   </div>;
 }
 
+/** The music in the settings: which file plays, and the ways to change that. */
 export function MusicSettings({ music }: { music: BackgroundMusic }) {
-  return <section className="settings-section music-settings">
-    <div className="settings-section-heading"><h3>Background music</h3><p>Plays on repeat through the opening and your workspace.</p></div>
-    <div className="music-track-card"><span className="music-track-icon"><Music2 size={19} /></span><div><strong>{music.name || 'Choose your soundtrack'}</strong><span role="status">{music.status}</span></div>
-      {music.hasTrack && <button className="icon-button" onClick={() => music.setMuted(!music.muted)} aria-label={music.muted ? 'Unmute background music' : 'Mute background music'} title={music.muted ? 'Unmute background music' : 'Mute background music'}>{music.muted ? <VolumeX size={17} /> : <Volume2 size={17} />}</button>}
+  const words = useWords();
+  const sound = music.muted ? words.label.unmute : words.label.mute;
+  return <div className="music-settings">
+    <div className="music-card">
+      <Music2 size={18} className="music-card-icon" aria-hidden="true" />
+      <div className="music-card-words">
+        <strong>{music.name ?? words.label.music.none}</strong>
+        <span className="caption" role="status">{music.hasTrack || music.busy ? words.label.music.stands[music.stands] : words.hint.music.about}</span>
+      </div>
+      {music.hasTrack && <button type="button" className="icon-btn" onClick={() => music.setMuted(!music.muted)} aria-label={sound} aria-pressed={music.muted} title={sound}>
+        {music.muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+      </button>}
     </div>
-    <div className="music-actions"><button className="secondary-button" onClick={music.chooseFile} disabled={music.busy}><Upload size={14} />{music.hasTrack ? 'Change music' : 'Choose local audio'}</button>
-      {music.hasTrack && music.playback === 'blocked' && <button className="secondary-button" onClick={() => void music.play()}><Play size={14} />Play</button>}
-      {music.canRestoreLocal && !music.localTrack && <button className="secondary-button" disabled={music.busy} onClick={() => void music.restoreLocal()}><Music2 size={14} />Use local soundtrack</button>}
-      {music.hasTrack && <button className="secondary-button" disabled={music.busy} onClick={() => void music.remove()}><Trash2 size={14} />Remove</button>}
+    <div className="music-actions">
+      <button type="button" className="btn" onClick={music.chooseFile} disabled={music.busy}>
+        <Upload size={14} aria-hidden="true" />{music.hasTrack ? words.label.music.change : words.label.music.choose}
+      </button>
+      {music.hasTrack && music.playback === 'blocked' && <button type="button" className="btn" onClick={() => void music.play()}>
+        <Play size={14} aria-hidden="true" />{words.label.music.play}
+      </button>}
+      {music.canRestoreLocal && !music.localTrack && <button type="button" className="btn" disabled={music.busy} onClick={() => void music.restoreLocal()}>
+        <Music2 size={14} aria-hidden="true" />{words.label.music.useKept}
+      </button>}
+      {music.hasTrack && <button type="button" className="btn btn-quiet" disabled={music.busy} onClick={() => void music.remove()}>
+        <Trash2 size={14} aria-hidden="true" />{words.label.music.remove}
+      </button>}
     </div>
-    <p className="field-hint">MP3, WAV, M4A, OGG, or FLAC · up to 100 MB. Saved on this device. Sound starts on; your mute preference is remembered.</p>
-    <p className="field-hint">{music.localTrack ? 'This soundtrack is stored on this device and is not included in the app package.' : 'No soundtrack is bundled. You can choose your own local copy of “Lullaby of the New Moon (I): Somnias a Luna” or another track.'}</p>
-    {music.error && <p className="music-error" role="alert">{music.error}</p>}
-    {music.storageWarning && <p className="music-warning" role="status">{music.storageWarning}</p>}
-  </section>;
+    <p className="caption">{words.hint.music.kinds}</p>
+    {music.problem && <p className="music-said" data-tone="bad" role="alert">{words.hint.music.problem[music.problem]}</p>}
+    {music.unkept && <p className="music-said" data-tone="warn" role="status">{words.hint.music.unkept[music.unkept]}</p>}
+  </div>;
 }

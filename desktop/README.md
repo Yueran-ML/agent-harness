@@ -7,8 +7,8 @@ the user does into requests. The two talk in the messages of
 [`docs/protocol`](../docs/protocol/README.md): JSON-RPC, one message to a line, over
 the standard input and output of the service process.
 
-**This is work in progress.** The shell and the protocol layer are in use. The
-interface is being redone, and what is described here may change.
+**This is work in progress.** The interface cannot take an API key yet: until it can,
+the key is given to `columbina setup` in a terminal, or stands in the environment.
 
 Columbina is an unofficial fan project. The illustrations, the video and the icon of
 this application are AI-generated, are kept outside Git and are not covered by the MIT
@@ -34,6 +34,32 @@ npm run desktop
 
 `npm run desktop` builds the interface and opens it in Electron. Without further
 settings it starts the same replay as a process of its own.
+
+## The interface
+
+A task is shown turn by turn: what was said, what the agent did on the way, and what
+came of it. Once a turn has its answer, the steps fold into one line that says how long
+it took. A turn that did not end as it should says what happened and why, and offers
+what can be done next.
+
+When the agent needs a yes, a card with the full command or path stands above the
+input field, and the conversation stays readable. What is sent while a turn runs is
+read at its next step. If the turn is stopped first, what was not read comes back into
+the input field.
+
+| Key | What it does |
+|---|---|
+| Enter | Sends what is written. Shift+Enter starts a new line |
+| `/` | Opens the list of commands. Up and Down choose, Enter or Tab takes one, Esc closes the list |
+| Esc, twice | Stops the turn that is under way |
+| Ctrl+Enter | Says yes, for this once, to what the agent asks |
+| Ctrl+N | Begins a new task |
+| Ctrl+B | Shows or hides the list of tasks |
+| Ctrl+K | Goes to the input field and opens the commands |
+| Ctrl+, | Opens the settings |
+
+The interface speaks English and Chinese and follows the language of the system
+unless another is chosen in the settings. It has a dark theme and a light one.
 
 ## With the real service
 
@@ -76,5 +102,6 @@ npm test
 npm run build
 ```
 
-`npm test` runs the unit tests: the state that is computed from events, the matching of
-requests and answers, and the replay process. They ask no model for anything.
+`npm test` runs the unit tests: the state that is computed from events, the grouping
+into turns, the words for every way a call or a turn can end, the matching of requests
+and answers, the shell, and the replay process. They ask no model for anything.

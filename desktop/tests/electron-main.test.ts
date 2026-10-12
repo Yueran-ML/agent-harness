@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
+import { themes } from '../src/themes';
+import { themeColour } from './stylesheet';
 
 const mainPath = fileURLToPath(new URL('../electron/main.cjs', import.meta.url));
 const source = readFileSync(mainPath, 'utf8');
@@ -29,7 +31,8 @@ async function shellHarness() {
       session: { webRequest: { onBeforeRequest: vi.fn(), onHeadersReceived: vi.fn() } },
       setWindowOpenHandler: vi.fn(),
     });
-    constructor() { super(); window = this; }
+    options: any;
+    constructor(options: unknown) { super(); this.options = options; window = this; }
     isDestroyed = () => false;
     setMenuBarVisibility = vi.fn();
     loadFile = vi.fn();
@@ -190,5 +193,44 @@ describe('Electron fixed local music reader', () => {
     await expect(shell.invoke('local-music')).rejects.toThrow('too large');
     expect(shell.file.readFile).not.toHaveBeenCalled();
     expect(shell.file.close).toHaveBeenCalledOnce();
+  });
+});
+
+describe('Electron window themes', () => {
+  // The bar of the window is drawn by the shell, in the furthest surface of the page and its text.
+  const bar = (theme: string) => ({
+    color: themeColour(theme, 'ink-0'), symbolColor: themeColour(theme, 'moon-0'), height: 40,
+  });
+
+  it('opens in the theme that the page begins with, so that nothing flashes before the page is drawn', async () => {
+    const shell = await shellHarness();
+    expect(shell.window.options.backgroundColor).toBe(themeColour(themes[0], 'ink-0'));
+    expect(shell.window.options.titleBarOverlay).toEqual(bar(themes[0]));
+  });
+
+  it('draws the bar of the window in the colours of each theme of the page', async () => {
+    const shell = await shellHarness();
+    for (const theme of themes) {
+      shell.invoke('set-theme', theme);
+      expect(shell.window.setTitleBarOverlay).toHaveBeenLastCalledWith(bar(theme));
+      expect(shell.window.setBackgroundColor).toHaveBeenLastCalledWith(bar(theme).color);
+    }
+    expect(shell.window.setTitleBarOverlay).toHaveBeenCalledTimes(themes.length);
+  });
+
+  it('refuses a theme that it does not know, and leaves the window as it is', async () => {
+    const shell = await shellHarness();
+    for (const theme of ['frostlight', 'silvermoon', '', 'MOONVEIL', '__proto__', 'constructor', 'toString', undefined, null, 7]) {
+      expect(() => shell.invoke('set-theme', theme)).toThrow('Unknown application theme.');
+    }
+    expect(shell.window.setTitleBarOverlay).not.toHaveBeenCalled();
+    expect(shell.window.setBackgroundColor).not.toHaveBeenCalled();
+  });
+
+  it('takes a theme only from its own window', async () => {
+    const shell = await shellHarness();
+    const unrelatedFrame = { sender: shell.event.sender, senderFrame: { url: shell.event.senderFrame.url } };
+    expect(() => shell.handlers.get('columbina:set-theme')!(unrelatedFrame, themes[0])).toThrow('IPC sender');
+    expect(shell.window.setTitleBarOverlay).not.toHaveBeenCalled();
   });
 });

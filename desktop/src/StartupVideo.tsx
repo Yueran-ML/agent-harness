@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, LoaderCircle, Moon, Play, RotateCcw, Volume2, VolumeX } from 'lucide-react';
+import { useWords } from './app/locale';
 import './StartupVideo.css';
 
 type Playback = 'loading' | 'ready' | 'playing' | 'revealing' | 'finished' | 'failed';
@@ -10,6 +11,8 @@ export function StartupVideo({ onComplete, hasBackgroundMusic, muted, onMutedCha
   muted: boolean;
   onMutedChange: (muted: boolean) => void;
 }) {
+  const words = useWords();
+  const sound = muted ? words.label.unmute : words.label.mute;
   const container = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const entryButton = useRef<HTMLButtonElement>(null);
@@ -94,10 +97,10 @@ export function StartupVideo({ onComplete, hasBackgroundMusic, muted, onMutedCha
     return () => window.removeEventListener('keydown', onKey, true);
   }, [complete, finish, play, playing, showEntry]);
 
-  return <div ref={container} className={`startup-video${showEntry ? ' startup-video-finished' : ''}`} role="dialog" aria-label="Columbina opening video" tabIndex={-1}>
+  return <div ref={container} className={`startup-video${showEntry ? ' startup-video-finished' : ''}`} role="dialog" aria-label={words.label.opening.name} tabIndex={-1}>
     <video ref={video} src="./columbina-intro-extended.mp4" poster="./moonlit-columbina.png"
       autoPlay={!reducedMotion} playsInline muted preload={reducedMotion ? 'metadata' : 'auto'}
-      disablePictureInPicture disableRemotePlayback aria-label="Columbina opening video"
+      disablePictureInPicture disableRemotePlayback aria-label={words.label.opening.name}
       onTimeUpdate={event => {
         const element = event.currentTarget;
         if (!awaitingEntry.current && !element.paused && element.duration - element.currentTime <= 3.4) {
@@ -108,28 +111,28 @@ export function StartupVideo({ onComplete, hasBackgroundMusic, muted, onMutedCha
       onError={() => { awaitingEntry.current = true; setPlayback('failed'); }} />
     <div className="startup-video-shade" aria-hidden="true" />
     {showEntry ? <div className="startup-video-entry">
-      {playback === 'failed' && <p className="startup-video-error" role="status">Video unavailable</p>}
+      {playback === 'failed' && <p className="startup-video-error" role="status">{words.hint.openingUnavailable}</p>}
       <div className="startup-entry-ornament" aria-hidden="true"><span /><Moon size={21} strokeWidth={1.2} /><span /></div>
       <button ref={entryButton} className="startup-video-enter" onClick={complete}>
         <span className="startup-entry-star" aria-hidden="true" /><span>Columbina</span><span className="startup-entry-star" aria-hidden="true" />
       </button>
       <div className="startup-entry-actions">
-        <span className="startup-entry-hint"><kbd>Enter</kbd> to begin</span>
-        {playback !== 'failed' && <button className="startup-video-replay" onClick={() => void play()}><RotateCcw size={12} />Replay intro</button>}
-        {hasBackgroundMusic && <button className="startup-video-entry-sound" aria-label={muted ? 'Turn sound on' : 'Mute sound'} onClick={() => onMutedChange(!muted)}>
+        <span className="startup-entry-hint">{words.label.opening.begin}</span>
+        {playback !== 'failed' && <button className="startup-video-replay" onClick={() => void play()}><RotateCcw size={12} />{words.label.opening.again}</button>}
+        {hasBackgroundMusic && <button className="startup-video-entry-sound" aria-label={sound} title={sound} onClick={() => onMutedChange(!muted)}>
           {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
         </button>}
       </div>
     </div> : !playing && <div className="startup-video-center">
-      {playback === 'loading' ? <LoaderCircle className="startup-video-loading" size={26} aria-label="Loading opening video" />
-        : <button className="startup-video-play" onClick={() => void play()}><Play size={20} fill="currentColor" />Play intro<kbd>Enter</kbd></button>}
+      {playback === 'loading' ? <LoaderCircle className="startup-video-loading" size={26} aria-label={words.label.opening.loading} />
+        : <button className="startup-video-play" onClick={() => void play()}><Play size={20} fill="currentColor" />{words.label.opening.play}<kbd>Enter</kbd></button>}
     </div>}
     {!showEntry && <div className="startup-video-controls">
-      {hasBackgroundMusic && <button className="startup-video-sound" aria-label={muted ? 'Turn sound on' : 'Mute sound'}
+      {hasBackgroundMusic && <button className="startup-video-sound" aria-label={sound}
         onClick={() => onMutedChange(!muted)}>
-        {muted ? <VolumeX size={18} /> : <Volume2 size={18} />}<span>{muted ? 'Sound off' : 'Sound on'}</span>
+        {muted ? <VolumeX size={18} /> : <Volume2 size={18} />}<span>{muted ? words.label.soundOff : words.label.soundOn}</span>
       </button>}
-      <button className="startup-video-skip" onClick={finish}>Skip intro <ArrowRight size={16} /><kbd>Esc</kbd></button>
+      <button className="startup-video-skip" onClick={finish}>{words.label.opening.skip} <ArrowRight size={16} /><kbd>Esc</kbd></button>
     </div>}
   </div>;
 }

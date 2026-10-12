@@ -438,6 +438,7 @@ export const en = {
     consentOther: (tool: string) => `Columbina wants to use ${tool}.`,
     consentWaiting: 'Columbina waits for your answer.',
     consentSent: 'Your answer is on its way.',
+    afterNo: 'It was not done. You can tell Columbina how to go about it instead.',
     /**
      * What a longer yes covers. The service process keeps it in mind, and that
      * process ends when the project is closed.

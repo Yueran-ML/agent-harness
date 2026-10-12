@@ -7,7 +7,7 @@ export interface ColumbinaBridge {
   onClose(listener: (reason: string) => void): () => void;
   onShutdown(listener: () => void): () => void;
   stop(): Promise<void>;
-  setTheme(theme: 'moonveil' | 'silvermoon' | 'frostlight'): Promise<void>;
+  setTheme(theme: 'moonveil' | 'moonwhite'): Promise<void>;
   openExternal(url: string): Promise<void>;
 }
 

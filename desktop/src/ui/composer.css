@@ -1,0 +1,258 @@
+/*
+ * What stands at the foot of a task: a question of the agent if there is one,
+ * what still waits to be read, and the field.
+ */
+.dock {
+  flex: none;
+  width: min(100%, var(--column) + 2 * var(--s5));
+  margin: 0 auto;
+  padding: 0 var(--s5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.composer-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+/* --- What was sent and has not been read yet. */
+.queue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+}
+
+.queue li {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 28px;
+  padding: 0 var(--s3);
+  border-radius: var(--r1);
+  border: 1px dashed var(--line-strong);
+  color: var(--moon-1);
+}
+
+.queue li svg {
+  flex: none;
+  color: var(--moon-2);
+}
+
+.queue-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- The field. */
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s3) var(--s3) var(--s2) var(--s4);
+  border-radius: var(--r3);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-2);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.16);
+  transition: border-color var(--quick) var(--ease), box-shadow var(--quick) var(--ease);
+}
+
+.composer:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-wash), 0 8px 30px rgb(0 0 0 / 0.16);
+}
+
+.composer[data-off] {
+  background: color-mix(in srgb, var(--ink-2) 60%, transparent);
+  border-color: var(--line);
+  box-shadow: none;
+}
+
+.composer textarea {
+  display: block;
+  width: 100%;
+  min-height: 26px;
+  padding: 2px 0;
+  border: 0;
+  outline: none;
+  resize: none;
+  background: none;
+  color: var(--moon-0);
+  font-size: var(--text-read);
+  line-height: 1.55;
+}
+
+.composer textarea::placeholder {
+  color: var(--moon-2);
+}
+
+.composer textarea:disabled::placeholder {
+  color: var(--moon-3);
+}
+
+.composer-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-left: -6px;
+}
+
+.composer-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stop {
+  min-height: 30px;
+  border-color: var(--line-strong);
+  color: var(--moon-0);
+}
+
+/* The one main button of the page: the moon itself. */
+.send {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--button);
+  color: var(--button-ink);
+  transition: background var(--quick) var(--ease), transform var(--quick) var(--ease);
+}
+
+.send:hover:not(:disabled) {
+  background: var(--button-hover);
+}
+
+.send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.send:disabled {
+  background: var(--ink-4);
+  color: var(--moon-3);
+}
+
+/* --- The list of commands, above the field. */
+.commands {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: calc(100% + var(--s2));
+  z-index: 5;
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--s2);
+  border-radius: var(--r3);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-2);
+  box-shadow: var(--shadow);
+}
+
+.commands-note {
+  padding: var(--s1) var(--s2) var(--s2);
+}
+
+.commands button {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  min-height: 32px;
+  padding: 6px var(--s2);
+  border-radius: var(--r1);
+  text-align: left;
+  color: var(--moon-1);
+}
+
+.commands button[aria-selected='true'] {
+  background: var(--ink-4);
+  color: var(--moon-0);
+}
+
+.commands code {
+  flex: none;
+  min-width: 104px;
+  color: var(--accent);
+}
+
+/* --- A question of the agent. */
+.consent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4);
+  border-radius: var(--r3);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: linear-gradient(var(--accent-wash), var(--accent-wash)), var(--ink-2);
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.2);
+  animation: rise 220ms var(--ease) both;
+}
+
+.consent-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--accent);
+}
+
+.consent-head h2 {
+  flex: 1;
+  font-size: var(--text-ui);
+  font-weight: 600;
+  color: var(--moon-0);
+}
+
+.consent-what {
+  color: var(--moon-1);
+}
+
+.consent-target {
+  max-height: 168px;
+  color: var(--moon-0);
+  font-size: 12.5px;
+}
+
+.consent-why {
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+  line-height: 1.5;
+}
+
+.consent-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.consent-gap {
+  flex: 1;
+}
+
+.consent-actions .btn-quiet {
+  margin-left: calc(-1 * var(--s3));
+}
+
+.consent-scope {
+  text-align: right;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .consent {
+    animation: none;
+  }
+}

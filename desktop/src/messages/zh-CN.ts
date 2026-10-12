@@ -363,6 +363,7 @@ export const zhCN: Messages = {
     consentOther: (tool: string) => `Columbina 想使用 ${tool}。`,
     consentWaiting: 'Columbina 在等你的回答。',
     consentSent: '你的回答已经发出。',
+    afterNo: '这一步没有执行。可以告诉 Columbina 换个做法。',
     scope: {
       thisCommand: '“以后不再问”只对这个任务里的这条命令有效，一字不差，到项目关闭为止。',
       anyCall: (tool: string) => `“以后不再问”对这个任务里 ${tool} 的每一次调用有效，到项目关闭为止。`,

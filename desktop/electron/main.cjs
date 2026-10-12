@@ -16,10 +16,10 @@ let closeTimer;
 const approvedDirectories = new Set();
 const indexPath = path.resolve(__dirname, '../dist/index.html');
 const indexUrl = pathToFileURL(indexPath).href;
+// The bar of the window in each theme: the furthest surface of `src/ui/tokens.css`, and its text.
 const titleBarThemes = {
-  moonveil: { color: '#101119', symbolColor: '#ecebf3', height: 40 },
-  silvermoon: { color: '#0d121e', symbolColor: '#e8edf7', height: 40 },
-  frostlight: { color: '#e9f3fc', symbolColor: '#203b55', height: 40 },
+  moonveil: { color: '#090b12', symbolColor: '#eef0f8', height: 40 },
+  moonwhite: { color: '#f5f4f0', symbolColor: '#1b1c24', height: 40 },
 };
 
 app.setName('Columbina');
@@ -203,9 +203,9 @@ app.whenReady().then(() => {
   if (!existsSync(indexPath)) throw new Error('Build the desktop client before starting Electron: npm run build');
   installHandlers();
   window = new BrowserWindow({
-    width: 1380, height: 920, minWidth: 860, minHeight: 640, backgroundColor: '#f4f9ff', title: 'Columbina',
+    width: 1380, height: 920, minWidth: 860, minHeight: 640, backgroundColor: titleBarThemes.moonveil.color, title: 'Columbina',
     icon: path.join(__dirname, 'icon.ico'),
-    titleBarStyle: 'hidden', titleBarOverlay: titleBarThemes.frostlight,
+    titleBarStyle: 'hidden', titleBarOverlay: titleBarThemes.moonveil,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, autoplayPolicy: 'no-user-gesture-required' },
   });
   window.setMenuBarVisibility(false);

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ApprovalRequest, Hello, RpcMessage, SessionEvent, SessionStatus, SessionSummary, StreamNotification } from './protocol';
 import { emptyPreview, projectEvents, reduceChunk } from './state';
 import { createElectronTransport, RpcClient } from './transport';
+import { listedOf, type Listed } from './key/form';
 import { createMockTransport } from './mock';
 import { isCommand } from './uiActions';
 
@@ -31,6 +32,9 @@ export function useWorkspace() {
   const [folder, setFolder] = useState<string | null>(null);
   // The folders that were chosen at earlier times, as the shell keeps them.
   const [recent, setRecent] = useState<{ path: string; name: string }[]>([]);
+  // The services of the model and where the key of each comes from, as the program of the
+  // service tells of them. Null where the application does not run that program, or before it answered.
+  const [services, setServices] = useState<Listed | null>(null);
   // The last lines that the service wrote for errors, asked for when its connection ends.
   const [lastWords, setLastWords] = useState<string[]>([]);
   const [mode, setMode] = useState<'mock' | 'service'>('mock');
@@ -112,6 +116,15 @@ export function useWorkspace() {
       // Without the list, a folder can still be chosen in the dialog.
     }
   }, []);
+
+  const refreshServices = useCallback(async () => {
+    try {
+      setServices(listedOf(await window.columbina?.services()));
+    } catch (problem) {
+      setServices(null);
+      fail(problem);
+    }
+  }, [fail]);
 
   const connect = useCallback(async (cwd?: string, resumeId?: string) => {
     if (connecting.current || (window.columbina && !cwd)) return;
@@ -207,12 +220,13 @@ export function useWorkspace() {
       setHello(greeting);
       setConnected(true);
       void refreshRecent();
+      void refreshServices();
       await openSession(resumeId);
     } catch (problem) {
       fail(problem);
       setLoading(false);
     } finally { connecting.current = false; }
-  }, [fail, openSession, publish, refreshRecent, refreshSessions]);
+  }, [fail, openSession, publish, refreshRecent, refreshServices, refreshSessions]);
 
   useEffect(() => {
     if (!window.columbina) void connect();
@@ -276,6 +290,24 @@ export function useWorkspace() {
     client.current.respond(requestId, { outcome, remember });
   }, [approval]);
 
+  /**
+   * Open the window in which a service is chosen and its key is given.
+   *
+   * Returns:
+   *   Whether something was stored there. The key itself never comes to this window.
+   */
+  const setUpService = useCallback(async (service: string | null, language: string): Promise<boolean> => {
+    if (!window.columbina) return false;
+    try {
+      const { stored } = await window.columbina.setUpService({ service, language });
+      if (stored) await refreshServices();
+      return stored;
+    } catch (problem) {
+      fail(problem);
+      return false;
+    }
+  }, [fail, refreshServices]);
+
   /** Let the user choose a folder in the dialog of the system. Null if none was chosen. */
   const pickFolder = useCallback(async (): Promise<string | null> => {
     if (!window.columbina) { setError('Folder selection is available in the desktop app. This preview uses the replay workspace.'); return null; }
@@ -314,8 +346,8 @@ export function useWorkspace() {
   const projection = useMemo(() => projectEvents(events), [events]);
   return {
     hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending,
-    cancelling, error, closed, lastWords, openedAt, folder, recent, mode, projection,
-    openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder,
+    cancelling, error, closed, lastWords, openedAt, folder, recent, services, mode, projection,
+    openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, setUpService,
     reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined),
     showLog: () => void window.columbina?.showLog().catch(fail),
     clearError: () => setError(null), fail,

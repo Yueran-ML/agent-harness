@@ -11,6 +11,8 @@ export default defineConfig({
     // that way: its policy is `font-src 'self'`.
     assetsInlineLimit: 0,
     rollupOptions: {
+      // Two pages: the application, and the window that takes a key.
+      input: { index: 'index.html', key: 'key.html' },
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name].js',

@@ -7,8 +7,8 @@ the user does into requests. The two talk in the messages of
 [`docs/protocol`](../docs/protocol/README.md): JSON-RPC, one message to a line, over
 the standard input and output of the service process.
 
-**This is work in progress.** The interface cannot take an API key yet: until it can,
-the key is given to `columbina setup` in a terminal, or stands in the environment.
+**This is work in progress.** It runs from source, and it is told by two environment
+variables which service process to start, see below.
 
 Columbina is an unofficial fan project. The illustrations, the video and the icon of
 this application are AI-generated, are kept outside Git and are not covered by the MIT
@@ -66,6 +66,20 @@ lines that it wrote, which most often say why.
 The interface speaks English and Chinese and follows the language of the system
 unless another is chosen in the settings. It has a dark theme and a light one.
 
+## The service of the model, and its key
+
+The settings list the services that are set up and say where the key of each comes
+from. A service is chosen and a key is given in a window of its own. That window shows
+nothing that a model wrote, and it is the only part of the application that ever holds
+a key. What is typed there goes to the shell, and the shell writes it to the standard
+input of `columbina setup --from-stdin`, which stores it: in the keyring of the system,
+or in a file where no keyring takes it, and the window says which. The key is on no
+command line, in no environment and in no message of the protocol, and the window that
+shows the conversation is told only that something was stored.
+
+This works where the application runs the service itself, and not in a replay. What
+was stored is used once the service is started again.
+
 ## With the real service
 
 Two environment variables of the shell that starts Electron choose the service process.
@@ -92,6 +106,8 @@ protocol, and the interface cannot read it. What the service process logs goes t
 - A service process is started only in a folder that the user chose in the folder
   dialog of the system, now or at an earlier time: the shell keeps the last eight. The
   interface cannot name another folder, another program or other arguments.
+- The window for the key has a bridge of its own, with three calls: read what is set
+  up, store, and close. The main window cannot make them.
 - The page loads only files of the application. Its content security policy allows no
   connection to the network, no frame and no script from elsewhere. Navigation and new
   windows are blocked. A link is opened in the browser of the system, after its full

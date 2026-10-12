@@ -961,3 +961,45 @@ select.field {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* The services of the model, in the settings. */
+.services-title {
+  margin-top: var(--s3);
+}
+
+.services {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+}
+
+.services li {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 36px;
+  padding: 0 var(--s4);
+}
+
+.services li + li {
+  border-top: 1px solid var(--line);
+}
+
+.service-name {
+  color: var(--moon-0);
+}
+
+.service-key {
+  margin-left: auto;
+}
+
+.service-key[data-key='none'],
+.service-key[data-key='stored-for-another-address'] {
+  color: var(--warn);
+}
+
+.setting-grow {
+  flex: 1;
+}

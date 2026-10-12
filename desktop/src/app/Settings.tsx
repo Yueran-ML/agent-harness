@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { KeyRound } from 'lucide-react';
 import { MusicSettings, type BackgroundMusic } from '../BackgroundMusic';
 import { themes, type ThemeId } from '../themes';
 import type { Workspace } from '../useWorkspace';
@@ -11,8 +12,8 @@ import { presetOf, presets } from './tell';
 export type SettingsPart = 'appearance' | 'model' | 'permissions';
 
 export function Settings({
-  workspace, part, theme, onTheme, language, onLanguage, playOpening, onPlayOpening, onPlayNow, tellMe, onTellMe,
-  music, onCommand, onClose,
+  workspace, part, theme, onTheme, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
+  tellMe, onTellMe, music, onCommand, onClose,
 }: {
   workspace: Workspace;
   part: SettingsPart;
@@ -20,6 +21,8 @@ export function Settings({
   onTheme: (theme: ThemeId) => void;
   language: LanguageChoice;
   onLanguage: (language: LanguageChoice) => void;
+  /** The language of the words that are shown, as a page names it. */
+  shownLanguage: string;
   playOpening: boolean;
   onPlayOpening: (play: boolean) => void;
   onPlayNow: () => void;
@@ -40,6 +43,26 @@ export function Settings({
 
   const [model, setModel] = useState(status?.model.model ?? '');
   useEffect(() => setModel(status?.model.model ?? ''), [status?.model.model]);
+  // Whether something was stored in the window for the key since these settings were opened.
+  const [stored, setStored] = useState(false);
+  const [settingUp, setSettingUp] = useState(false);
+  const setUp = async (service: string | null) => {
+    setSettingUp(true);
+    try {
+      if (await workspace.setUpService(service, shownLanguage)) setStored(true);
+    } finally {
+      setSettingUp(false);
+    }
+  };
+  const services = workspace.services;
+  // The service in use, and every service that the user has had to do with: one of their own,
+  // or one that a key is there for. The others are in the window that sets one up.
+  const known = services?.services.filter(service => service.name === services.use || service.own || service.key !== 'none') ?? [];
+  const keyFrom = (service: { key: string; key_env: string | null }) => (service.key_env === null ? words.label.key.from.notNeeded
+    : service.key === 'environment' ? words.label.key.from.environment
+      : service.key === 'stored' ? words.label.key.from.stored
+        : service.key === 'stored-for-another-address' ? words.label.key.from.storedElsewhere
+          : words.label.key.from.none);
 
   // The settings open at the part that was asked for.
   const start = useRef<HTMLElement>(null);
@@ -117,6 +140,33 @@ export function Settings({
         </button>
       </form>
       {status && <p className="caption">{status.model.provider}</p>}
+
+      <div className="overline services-title">{words.label.key.title}</div>
+      {known.length > 0 && <ul className="services" data-test="services">
+        {known.map(service => <li key={service.name}>
+          <span className="service-name">{service.title}</span>
+          {service.name === services?.use && <span className="count">{words.label.key.inUse}</span>}
+          <span className="caption service-key" data-key={service.key}>{keyFrom(service)}</span>
+        </li>)}
+      </ul>}
+      {services === null && <p className="caption">{words.hint.key.unavailable}</p>}
+      <div className="setting-row">
+        <button
+          type="button"
+          className="btn"
+          disabled={services === null || settingUp}
+          onClick={() => void setUp(services?.use ?? null)}
+          data-test="set-up-service"
+        >
+          <KeyRound size={14} aria-hidden="true" />{words.label.key.setUp}
+        </button>
+      </div>
+      {stored && <div className="setting-row" data-test="stored-note">
+        <p className="caption setting-grow">{words.hint.key.restart}</p>
+        <button type="button" className="btn" disabled={running || workspace.loading} onClick={() => void workspace.reconnect()}>
+          {words.label.restart}
+        </button>
+      </div>}
     </section>
 
     <section className="setting" ref={at('permissions')}>

@@ -40,6 +40,10 @@ const samples: Record<string, unknown[][]> = {
   'hint.contextOf': [['12.4K', '128K']],
   'hint.contextUnknown': [['950']],
   'hint.about': [['0.1.0', 1]],
+  // The name of a variable, which is written in capitals. A name with an underscore in it
+  // would be taken for a code of the service by the test below.
+  'hint.key.fromVariable': [['MYKEY']],
+  'hint.key.done': [['openai', 'gpt-test']],
 };
 
 type Said = { path: string; text: string };
@@ -118,9 +122,12 @@ describe('the two catalogues', () => {
         ...sandboxModes, 'full-access', 'allowed-once', 'max-tokens', 'tool-calls', 'next-turn', 'next-step',
         'in_progress', 'aborted', 'disposed',
       ];
-      // An event is named with a slash, as in `turn/end`.
+      // An event is named with a slash, as in `turn/end`. An address of the web has slashes
+      // of its own and names no event.
       const event = /[a-z]+\/[a-z]+/;
-      const found = said.filter(({ text }) => event.test(text) || values.some(value => text.includes(value)));
+      const address = /https?:\/\/[^\s，。]+/g;
+      const found = said.filter(({ text }) => event.test(text.replace(address, ''))
+        || values.some(value => text.includes(value)));
       expect(found).toEqual([]);
     });
 

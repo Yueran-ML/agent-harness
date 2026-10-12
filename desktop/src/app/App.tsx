@@ -479,6 +479,7 @@ export default function App() {
         onTheme={setTheme}
         language={language}
         onLanguage={setLanguage}
+        shownLanguage={shownLanguage(language)}
         playOpening={playOpening}
         onPlayOpening={setPlayOpening}
         tellMe={tellMe}

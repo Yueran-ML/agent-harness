@@ -290,6 +290,30 @@ export const en = {
     notices: 'Notices',
     tellMe: 'Tell me when Columbina waits for me or has finished',
 
+    /** The window in which a service is chosen and its key is given. */
+    key: {
+      title: 'Model service',
+      service: 'Service',
+      ownService: 'A service of your own',
+      name: 'Name',
+      address: 'Address',
+      model: 'Model',
+      contextWindow: 'Context window',
+      tokens: 'tokens',
+      apiKey: 'API key',
+      store: 'Store',
+      storing: 'Storing',
+      setUp: 'Set up a service or a key',
+      inUse: 'In use',
+      from: {
+        environment: 'Key from a variable',
+        stored: 'Key stored',
+        storedElsewhere: 'Key for another address',
+        none: 'No key',
+        notNeeded: 'No key needed',
+      },
+    },
+
     /** What the system shows of this application while its window is in the background. */
     notice: {
       consent: 'Columbina needs your consent',
@@ -479,6 +503,29 @@ export const en = {
     noChanges: 'No file was changed in this task.',
     about: (version: string, protocol: number) => `Columbina ${version}, protocol ${protocol}.`,
     openingUnavailable: 'The opening cannot be played.',
+
+    /** The window in which a service is chosen and its key is given. */
+    key: {
+      lead: 'Which service the model comes from, and the key for it.',
+      reading: 'Reading what is set up.',
+      unavailable: 'Services are set up here when the application runs the service itself, not a replay.',
+      ownName: 'A name of your own: small letters, digits, - and _.',
+      ownAddress: 'Where the service is, such as https://api.example.com/v1.',
+      modelName: 'The name of the model, as the service has it.',
+      windowSize: 'How many tokens the model takes. It may be left empty.',
+      notNeeded: 'This service asks for no key.',
+      fromVariable: (variable: string) =>
+        `The key of this service comes from the variable ${variable}, which goes before a stored key.`,
+      stored: 'A key is stored for this service. Leave the field empty to keep it.',
+      storedElsewhere: 'A key is stored for this service, for another address than it has now. It is not sent to this address.',
+      none: 'No key is there for this service yet.',
+      whereItGoes: 'The key goes from this window to Columbina, which keeps it in the keyring of the system. '
+        + 'The window that shows the conversation never has it.',
+      done: (service: string, model: string) => `Columbina talks to ${service} now, with the model ${model}.`,
+      inKeyring: 'The key is in the keyring of the system.',
+      inFile: 'No keyring took the key. It lies in a file in the folder of Columbina, as it is and not encrypted.',
+      restart: 'What was stored is used once Columbina is started again.',
+    },
 
     music: {
       about: 'It plays on repeat, through the opening and while you work.',

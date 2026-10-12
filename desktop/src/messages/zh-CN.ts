@@ -220,6 +220,29 @@ export const zhCN: Messages = {
     notices: '通知',
     tellMe: 'Columbina 等我或者做完时通知我',
 
+    key: {
+      title: '模型服务',
+      service: '服务',
+      ownService: '自己添加的服务',
+      name: '名字',
+      address: '地址',
+      model: '模型',
+      contextWindow: '上下文窗口',
+      tokens: '个 token',
+      apiKey: 'API 密钥',
+      store: '保存',
+      storing: '正在保存',
+      setUp: '设置服务或密钥',
+      inUse: '使用中',
+      from: {
+        environment: '密钥来自环境变量',
+        stored: '已保存密钥',
+        storedElsewhere: '密钥属于另一个地址',
+        none: '没有密钥',
+        notNeeded: '不需要密钥',
+      },
+    },
+
     notice: {
       consent: 'Columbina 需要你同意',
       finished: 'Columbina 做完了',
@@ -397,6 +420,26 @@ export const zhCN: Messages = {
     noChanges: '这个任务没有改动任何文件。',
     about: (version: string, protocol: number) => `Columbina ${version}，协议版本 ${protocol}。`,
     openingUnavailable: '开场无法播放。',
+
+    key: {
+      lead: '选择模型来自哪个服务，并填写它的密钥。',
+      reading: '正在读取已有的设置。',
+      unavailable: '应用运行真实的服务进程时才能在这里设置服务，回放时不能。',
+      ownName: '自己起一个名字：小写字母、数字、- 和 _。',
+      ownAddress: '服务所在的地址，例如 https://api.example.com/v1。',
+      modelName: '模型的名字，以服务那边的写法为准。',
+      windowSize: '模型能接收多少 token，可以留空。',
+      notNeeded: '这个服务不需要密钥。',
+      fromVariable: (variable: string) => `这个服务的密钥来自环境变量 ${variable}，它优先于保存的密钥。`,
+      stored: '这个服务已经保存了密钥。留空就继续用它。',
+      storedElsewhere: '这个服务保存过密钥，但那是给另一个地址的，不会发往现在的地址。',
+      none: '这个服务还没有密钥。',
+      whereItGoes: '密钥从这个窗口直接交给 Columbina，由它存进系统密钥环。显示对话的那个窗口始终拿不到它。',
+      done: (service: string, model: string) => `Columbina 现在使用 ${service}，模型是 ${model}。`,
+      inKeyring: '密钥已经存进系统密钥环。',
+      inFile: '没有密钥环接收这个密钥。它原样存在 Columbina 文件夹里的一个文件中，没有加密。',
+      restart: '重新启动 Columbina 之后，新保存的内容才会生效。',
+    },
 
     music: {
       about: '音乐会循环播放，开场时和工作时都在。',

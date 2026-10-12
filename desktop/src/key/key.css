@@ -1,0 +1,158 @@
+/* The window in which a service is chosen and its key is given. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  overflow: auto;
+  background: var(--glow), var(--ink-0);
+}
+
+.key-page {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s5) var(--s5) var(--s4);
+}
+
+.key-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  color: var(--accent);
+}
+
+.key-head h1 {
+  font-size: var(--text-title);
+  color: var(--moon-0);
+}
+
+.key-lead {
+  color: var(--moon-1);
+  margin-bottom: var(--s2);
+}
+
+.key-form {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.key-name {
+  flex: none;
+  width: 124px;
+  color: var(--moon-1);
+}
+
+.key-row .field {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.key-with-unit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.key-with-unit .field {
+  max-width: 180px;
+}
+
+.field[aria-invalid='true'] {
+  border-color: var(--bad);
+}
+
+/* What explains a field stands under it, where the field begins. */
+.key-under {
+  margin: -2px 0 var(--s2) calc(124px + var(--s3));
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+select.field {
+  appearance: none;
+  padding-right: var(--s6);
+  background-image: linear-gradient(45deg, transparent 50%, var(--moon-2) 50%),
+    linear-gradient(135deg, var(--moon-2) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 13px, calc(100% - 12px) 13px;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.key-said {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r2);
+  border: 1px solid var(--line-strong);
+  line-height: 1.5;
+}
+
+.key-said svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+.key-said[data-tone='bad'] {
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+  background: var(--bad-wash);
+}
+
+.key-said[data-tone='bad'] svg {
+  color: var(--bad);
+}
+
+.key-said[data-tone='warn'] {
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  background: var(--warn-wash);
+}
+
+.key-said[data-tone='warn'] svg {
+  color: var(--warn);
+}
+
+.key-said[data-tone='ok'] {
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  background: var(--ok-wash);
+}
+
+.key-said[data-tone='ok'] svg {
+  color: var(--ok);
+}
+
+.key-done {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.working {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--moon-1);
+}
+
+.key-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  margin-top: auto;
+  padding-top: var(--s4);
+}

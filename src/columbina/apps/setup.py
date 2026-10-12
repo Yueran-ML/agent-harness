@@ -38,15 +38,33 @@ and the size of its window go before what is written down here.
 
 ``columbina setup --forget NAME`` deletes what is stored for a service.
 
+For another program
+    A desktop application sets a service up without a terminal. It starts
+    this program for a moment and talks to it over its standard input and
+    output, in JSON. ``columbina setup --list`` says what is set up, see
+    :func:`listed`. ``columbina setup --from-stdin`` reads one document that
+    gives the answers to the questions all at once, see :func:`given`. They
+    are stored by the step that stores what a person answered, and what was
+    stored is said in a document again, see :func:`stored`. Neither of the
+    two asks anything.
+
+    The key comes in with that document and by no other way, and it goes
+    out by none. What is said of the services and of what was stored holds
+    no key and nothing that a key could be guessed from. What is said of a
+    document that is not right repeats no part of the document.
+
 What is shown is text for a person, and some of it was typed by a person or
 read from a file. Whoever shows the text makes it fit for a terminal first.
 """
 
+import contextlib
+import json
 import re
 import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlsplit
 
 import yaml
@@ -62,6 +80,7 @@ __all__ = [
     "CHOICE",
     "IN_THE_WAY",
     "KEYS",
+    "MAX_DOCUMENT_BYTES",
     "Answers",
     "Ask",
     "Chosen",
@@ -71,9 +90,12 @@ __all__ = [
     "asked",
     "chosen",
     "forget",
+    "given",
+    "listed",
     "run",
     "service_named",
     "store",
+    "stored",
 ]
 
 CHOICE = "provider.yml"
@@ -85,6 +107,9 @@ KEYS = "credentials.json"
 IN_THE_WAY = ("COLUMBINA_PROVIDER", "COLUMBINA_MODEL", "COLUMBINA_CONTEXT_WINDOW")
 """The environment variables that go before what is chosen here."""
 
+MAX_DOCUMENT_BYTES = 64 * 1024
+"""How long a document may be that says what is to be stored. A longer one is refused."""
+
 Ask = Callable[[str], str]
 """Asks the person a question and returns the answer. ``EOFError`` if none can be given."""
 
@@ -94,6 +119,11 @@ Show = Callable[[str], None]
 _NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _LOCAL = frozenset({"localhost", "127.0.0.1", "::1"})
 _ENDPOINT = "/chat/completions"
+_SAID_UNDER = ("service", "base_url", "model", "context_window", "api_key")
+"""The names under which a document says what is to be stored."""
+_NOT_ENCRYPTED = (
+    "This address is not encrypted. The key and the conversation cross the network as they are."
+)
 _AGAIN = "Run 'columbina setup' again, or delete the file"
 _NOT_READ: dict[plain_yaml.Kind, str] = {
     "syntax": "is not YAML",
@@ -305,6 +335,75 @@ def _listed(chosen: Chosen, keys: Mapping[str, str], env: Mapping[str, str]) -> 
     return "\n".join(lines)
 
 
+def _key_in_a_word(service: Service, keys: Mapping[str, str], env: Mapping[str, str]) -> str:
+    """Say in one word where the key of a service comes from, for a program."""
+    if _in_its_variable(service, env):
+        return "environment"
+    if _is_stored(service, keys):
+        return "stored"
+    return "stored-for-another-address" if service.name in keys else "none"
+
+
+def _told_of(
+    service: Service, keys: Mapping[str, str], env: Mapping[str, str]
+) -> dict[str, object]:
+    """Return what a program is told of one service, see :func:`listed`."""
+    return {
+        "name": service.name,
+        "title": service.title,
+        "base_url": service.base_url,
+        "own": preset(service.name) is None,
+        "model": service.model,
+        "context_window": service.context_window,
+        "key_env": service.key_env,
+        "key": _key_in_a_word(service, keys, env),
+    }
+
+
+def listed(home: Path, env: Mapping[str, str]) -> dict[str, object]:
+    """Say which services there are and which one is in use, for a program to read.
+
+    What is returned is written out as one document of JSON::
+
+        {"use": "openai",
+         "services": [{"name": "openai", "title": "OpenAI",
+                       "base_url": "https://api.openai.com/v1", "own": false,
+                       "model": "gpt-test", "context_window": 400000,
+                       "key_env": "OPENAI_API_KEY", "key": "stored"}]}
+
+    ``use`` names the service that is in use, and is ``null`` where none of
+    the services is. The services stand in the order of the list that a
+    person is shown: the ones that are known by name, and then the ones
+    that the user added, for which ``own`` is true. A service is chosen by
+    its ``name``, is called its ``title`` and is at its ``base_url``.
+    ``model`` and ``context_window`` are what is known of a service or was
+    said of it, and ``null`` where nothing is. ``key_env`` names the
+    variable that may hold the key of the service, and is ``null`` for a
+    service that asks for no key. ``key`` says where the key comes from:
+    ``environment`` for that variable, which goes first, ``stored``,
+    ``stored-for-another-address`` for a key that is stored and is not sent
+    to the address that the service has now, or ``none``.
+
+    No key is said, and nothing that a key could be guessed from. The
+    keyring of the system is not asked for anything.
+
+    Args:
+        home: The home of the program.
+        env: The environment.
+
+    Raises:
+        SetupError: What is stored cannot be read.
+    """
+    before = chosen(home)
+    keys = _keys(home)
+    services = _all(before)
+    names = {service.name for service in services}
+    return {
+        "use": before.use if before.use in names else None,
+        "services": [_told_of(service, keys, env) for service in services],
+    }
+
+
 def _address(typed: str) -> str | None:
     """Return the address that was typed, as it is stored, or ``None`` if it is none."""
     if not typed.isprintable() or " " in typed:
@@ -344,10 +443,7 @@ def _added(name: str, ask: Ask, show: Show) -> Service | None:
             )
             continue
         if not _encrypted(address):
-            show(
-                "This address is not encrypted. The key and the conversation cross the "
-                "network as they are."
-            )
+            show(_NOT_ENCRYPTED)
         return of_ones_own(name, address)
 
 
@@ -437,16 +533,16 @@ def _key(
 
 @dataclass(frozen=True, slots=True)
 class Answers:
-    """What a person answered, ready to be stored.
+    """What a person answered or a document said, ready to be stored.
 
     Attributes:
         service: The service that was chosen.
         model: The model that was named for it.
         chosen: What is to be written down as chosen.
-        key: The key that was typed, or ``None`` if none is to be stored. It
-            is left out where the answers are shown.
+        key: The key that was typed or given, or ``None`` if none is to be
+            stored. It is left out where the answers are shown.
         without_a_key: Whether the service wants a key, and none was typed
-            and none is there.
+            or given and none is there.
     """
 
     service: Service
@@ -454,6 +550,46 @@ class Answers:
     chosen: Chosen
     key: str | None = field(repr=False)
     without_a_key: bool
+
+
+def _answers(
+    before: Chosen,
+    keys: Mapping[str, str],
+    env: Mapping[str, str],
+    service: Service,
+    model: str,
+    window: int | None,
+    key: str | None,
+) -> Answers:
+    """Put together what is to be stored of a service, whoever said it and how.
+
+    Args:
+        before: What was chosen until now.
+        keys: Which services a key is stored for, and where each key is sent.
+        env: The environment.
+        service: The service that was chosen.
+        model: The model that was named for it.
+        window: How many tokens that model takes, where that is to be
+            written down.
+        key: The key to store, or ``None`` for none.
+    """
+    said = before.services.get(service.name)
+    if preset(service.name) is None:
+        address = service.base_url
+    else:
+        # The address of a service that is known is written down only where the user changed it.
+        address = None if said is None else said.base_url
+    services = before.services | {
+        service.name: Own(base_url=address, model=model, context_window=window)
+    }
+    there = _in_its_variable(service, env) or _is_stored(service, keys)
+    return Answers(
+        service=service,
+        model=model,
+        chosen=Chosen(use=service.name, services=services),
+        key=key,
+        without_a_key=service.key_required and key is None and not there,
+    )
 
 
 def asked(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Show) -> Answers:
@@ -483,25 +619,185 @@ def asked(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: S
     else:
         window = _window(ask, show)
     key = _key(service, keys, env, ask_unseen, show)
-    if preset(service.name) is None:
-        address = service.base_url
-    else:
-        # The address of a service that is known is written down only where the user changed it.
-        address = None if said is None else said.base_url
-    services = before.services | {
-        service.name: Own(base_url=address, model=model, context_window=window)
-    }
-    there = _in_its_variable(service, env) or _is_stored(service, keys)
-    return Answers(
-        service=service,
-        model=model,
-        chosen=Chosen(use=service.name, services=services),
-        key=key,
-        without_a_key=service.key_required and key is None and not there,
-    )
+    return _answers(before, keys, env, service, model, window, key)
 
 
-def store(home: Path, env: Mapping[str, str], answers: Answers, show: Show) -> None:
+def _said_in(document: bytes) -> dict[str, object]:
+    """Return what a document says, by the names that it says it under.
+
+    Raises:
+        SetupError: The document is too long, is no object of JSON, or says
+            something under a name that is not read.
+    """
+    if len(document) > MAX_DOCUMENT_BYTES:
+        raise SetupError(
+            f"the document is longer than {MAX_DOCUMENT_BYTES} bytes, which is more than is read"
+        )
+    read: object = None
+    # Whatever the reading fails with names a place in the document, repeats a sign of it or
+    # holds all of it, and a key may stand anywhere. So it is neither quoted nor held on to.
+    with contextlib.suppress(ValueError, RecursionError):
+        read = json.loads(document)
+    if not isinstance(read, dict):
+        raise SetupError("the document is not an object of JSON")
+    said = cast("dict[str, object]", read)
+    if not said.keys() <= set(_SAID_UNDER):
+        raise SetupError(
+            "the document says something under a name that is not read. The names that are "
+            f"read are: {', '.join(_SAID_UNDER)}"
+        )
+    return said
+
+
+def _text(said: Mapping[str, object], name: str) -> str | None:
+    """Return the text that a document gives under a name, without the blanks around it.
+
+    Returns:
+        The text, or ``None`` if the document gives nothing there, or
+        nothing but blanks.
+
+    Raises:
+        SetupError: What the document gives there is no text.
+    """
+    found = said.get(name)
+    if found is None:
+        return None
+    if not isinstance(found, str):
+        raise SetupError(f"what the document says under {name!r} is not text")
+    return found.strip() or None
+
+
+def _tokens(said: Mapping[str, object]) -> int | None:
+    """Return how many tokens a document says the model takes, or ``None`` if it does not say.
+
+    Raises:
+        SetupError: What the document gives there is no number of tokens.
+    """
+    found = said.get("context_window")
+    if found is None:
+        return None
+    # True and false are whole numbers to Python, and are no numbers of tokens.
+    if isinstance(found, bool) or not isinstance(found, int) or found <= 0:
+        raise SetupError(
+            "what the document says under 'context_window' is not a number of tokens, such as "
+            "128000"
+        )
+    return found
+
+
+def _meant(name: str, address: str | None, before: Chosen, show: Show) -> Service:
+    """Return the service that a document means by a name, at the address that it gives for it.
+
+    Args:
+        name: The name that the document gives.
+        address: The address that it gives, or ``None`` if it gives none.
+        before: What was chosen until now.
+        show: Shows a text. An address that is not encrypted is named as one.
+
+    Raises:
+        SetupError: There is no service of the name and no address to add
+            one by, an address is given for a service that is known by name,
+            or the name or the address cannot be one.
+    """
+    there = next((service for service in _all(before) if service.name == name), None)
+    if address is None:
+        if there is None:
+            raise SetupError(
+                "there is no service of the name that the document gives, and the document "
+                "gives no address to add one by"
+            )
+        return there
+    if preset(name) is not None:
+        raise SetupError(
+            "the document gives an address for a service that is known by name, and the "
+            "address of such a service is not changed this way"
+        )
+    if there is None and _NAME.fullmatch(name) is None:
+        raise SetupError(
+            "the document adds a service under a name that cannot be one. A name of your own "
+            "begins with a small letter and goes on with small letters, digits, '-' and '_'. "
+            "It has 32 characters at most"
+        )
+    place = _address(address)
+    if place is None:
+        raise SetupError(
+            "what the document says under 'base_url' is no address. An address begins with "
+            "http:// or https:// and names a machine, such as https://api.example.com/v1"
+        )
+    if not _encrypted(place):
+        show(_NOT_ENCRYPTED)
+    own = of_ones_own(name, place)
+    if there is None:
+        return own
+    # It is the service that is there, at another address. What is known of its model stays.
+    return replace(own, model=there.model, context_window=there.context_window)
+
+
+def given(home: Path, env: Mapping[str, str], document: bytes, show: Show) -> Answers:
+    """Read the service, the model and the key from a document. Nothing is stored here.
+
+    The document says at once what a person answers to the questions. It is
+    an object of JSON, in UTF-8::
+
+        {"service": "my-server", "base_url": "http://10.0.0.5:8000/v1",
+         "model": "tiny", "context_window": 32768, "api_key": "sk-..."}
+
+    ``service`` names the service: one that is known by name, or one of the
+    user's own. With ``base_url`` a service of the user's own is added under
+    that name, or the one that is there is given another address. A service
+    that is known by name takes no address. ``model`` names the model.
+    ``context_window`` says how many tokens that model takes. Without it,
+    what was said of the size for this model stays. ``api_key`` gives the
+    key. Without it no key is stored, and one that is stored stays.
+
+    The blanks around a text are no part of it, as with what is typed, and
+    a text that is empty counts as not given.
+
+    What is said of a document that is not right repeats no part of it. A
+    key may stand anywhere in such a document.
+
+    Args:
+        home: The home of the program.
+        env: The environment.
+        document: The document, as the bytes that came.
+        show: Shows a text. An address that is not encrypted is named as one.
+
+    Raises:
+        SetupError: The document is not right, or what is stored cannot be
+            read.
+    """
+    said = _said_in(document)
+    name, address = _text(said, "service"), _text(said, "base_url")
+    model, key = _text(said, "model"), _text(said, "api_key")
+    window = _tokens(said)
+    if name is None:
+        raise SetupError("the document names no service")
+    if model is None:
+        raise SetupError("the document names no model")
+    if not model.isprintable():
+        raise SetupError(
+            "the name of the model that the document gives has a character in it that cannot "
+            "be seen"
+        )
+    if key is not None and not sendable(key):
+        raise SetupError(
+            "what the document says under 'api_key' cannot be a key: there is a character in "
+            "it that no key has, such as a blank or a line break in the middle. Nothing of it "
+            "was kept"
+        )
+    before = chosen(home)
+    keys = _keys(home)
+    service = _meant(name, address, before, show)
+    earlier = before.services.get(name)
+    if window is None and earlier is not None and model == service.model:
+        # The document does not say the size, so what was said of it for this model stays.
+        window = earlier.context_window
+    return _answers(before, keys, env, service, model, window, key)
+
+
+def store(
+    home: Path, env: Mapping[str, str], answers: Answers, show: Show
+) -> credentials.Kept | None:
     """Store what a person answered, and say what was stored.
 
     The key is stored first. What was chosen can be said again without a
@@ -512,6 +808,9 @@ def store(home: Path, env: Mapping[str, str], answers: Answers, show: Show) -> N
         env: The environment.
         answers: What was answered.
         show: Shows a text.
+
+    Returns:
+        Where the key was kept, or ``None`` if the answers held none.
 
     Raises:
         SetupError: The answers cannot be stored. Where the key was stored
@@ -557,6 +856,42 @@ def store(home: Path, env: Mapping[str, str], answers: Answers, show: Show) -> N
             f"The variable {named} is set, and it sends the requests for "
             f"{service.name} to another address. A stored key is not sent there."
         )
+    return kept
+
+
+def stored(answers: Answers, kept: credentials.Kept | None) -> dict[str, object]:
+    """Say what was stored, for a program to read.
+
+    What is returned is written out as one document of JSON::
+
+        {"stored": {"name": "my-server",
+                    "base_url": "http://10.0.0.5:8000/v1",
+                    "model": "tiny", "context_window": 32768},
+         "key_in": "keyring"}
+
+    ``stored`` says of the service that is in use now what :func:`listed`
+    says of it under the same names. ``key_in`` says where the key went
+    that came with the answers: ``keyring`` for the keyring of the system,
+    ``file`` for the file of keys, where it lies as it is and not
+    encrypted, and ``null`` where no key came. The key itself is not said.
+
+    Args:
+        answers: What was stored.
+        kept: Where its key was kept, as :func:`store` returned it.
+    """
+    service = service_named(answers.service.name, answers.chosen)
+    key_in = None
+    if kept is not None:
+        key_in = "file" if kept.keyring is None else "keyring"
+    return {
+        "stored": {
+            "name": service.name,
+            "base_url": service.base_url,
+            "model": service.model,
+            "context_window": service.context_window,
+        },
+        "key_in": key_in,
+    }
 
 
 def run(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Show) -> None:

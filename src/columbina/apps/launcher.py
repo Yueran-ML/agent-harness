@@ -8,7 +8,10 @@ input and output. ``columbina sessions``
 lists, shows and copies the sessions that are stored, without a conversation.
 ``columbina hooks`` lists the hooks of a directory, and trusts those of its
 project or takes that trust back. ``columbina setup`` asks which service the
-model is to come from and for its key, and writes both down.
+model is to come from and for its key, and writes both down. For another
+program it does that without a question: ``columbina setup --list`` says what
+is set up, and ``columbina setup --from-stdin`` stores what a document on its
+standard input says, each with one document of JSON on its standard output.
 
 Either way the program is built from layers, which are lists of plugin
 entries: first the profile, then the patch of the user, then the patches named
@@ -47,6 +50,7 @@ import argparse
 import asyncio
 import contextlib
 import getpass
+import json
 import logging
 import os
 import sys
@@ -65,7 +69,7 @@ from columbina.apps import sessions as stored_sessions
 from columbina.apps import setup as chosen_service
 from columbina.apps.serve import wire as serve_wire
 from columbina.apps.serve.wire import WIRE, Wire
-from columbina.apps.terminal_text import harmless
+from columbina.apps.terminal_text import escaped, harmless
 from columbina.hooks import Config as HooksConfig
 from columbina.kernel import (
     CompositionError,
@@ -533,8 +537,79 @@ def _hooks(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     return 0
 
 
+def _answer(document: Mapping[str, object]) -> None:
+    """Write a document of JSON to the standard output, on a line of its own.
+
+    A program reads it, and a person may look at it at a terminal. So what a
+    terminal would act on is written by its number, which says the same to
+    whoever reads the JSON.
+    """
+    sys.stdout.write(escaped(json.dumps(document, ensure_ascii=False)) + "\n")
+
+
+def _from_another_program() -> bytes:
+    """Return what another program wrote to the standard input, as the bytes that came.
+
+    No more is read than a document may be long, and one byte. A document
+    without end is not waited for.
+
+    Raises:
+        SetupError: The standard input is a terminal, or there is none that
+            can be read.
+    """
+    try:
+        # Windows says of a standard input that leads nowhere that it is a terminal too.
+        if sys.stdin.isatty():
+            raise chosen_service.SetupError(
+                "'columbina setup --from-stdin' reads what another program writes to its "
+                "standard input, and this one is a terminal, or leads nowhere. A key that is "
+                "typed at a terminal is shown. 'columbina setup' asks for it without showing it"
+            )
+        # The bytes, and not the text that the system would make of them: a document is
+        # UTF-8 whatever the system takes its text for.
+        return sys.stdin.buffer.read(chosen_service.MAX_DOCUMENT_BYTES + 1)
+    except (AttributeError, OSError, ValueError):
+        # A process that was started without a standard input has none, or one that is closed.
+        raise chosen_service.SetupError(
+            "'columbina setup --from-stdin' reads a document from its standard input, and this "
+            "process has none that can be read"
+        ) from None
+
+
+def _setup_for_a_program(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Say what is set up, or store what a document says, for another program.
+
+    The standard output holds one document of JSON and nothing else: what
+    was asked for, or what is wrong, in a sentence. What a person would be
+    shown goes to the standard error.
+
+    Whoever interrupts the storing is answered nothing, since what was stored
+    by then may be the key, or the key and what was chosen.
+    """
+
+    def show(told: str) -> None:
+        # Written, and not printed: what is printed to a standard error that is not there
+        # goes to the standard output, which is for the answer alone. And a standard error
+        # that takes nothing does not keep the answer back. By then the key may be stored.
+        with contextlib.suppress(AttributeError, OSError, ValueError):
+            sys.stderr.write(harmless(told) + "\n")
+
+    try:
+        if args.list:
+            answer = chosen_service.listed(home, env)
+        else:
+            answers = chosen_service.given(home, env, _from_another_program(), show)
+            kept = chosen_service.store(home, env, answers, show)
+            answer = chosen_service.stored(answers, kept)
+    except chosen_service.SetupError as error:
+        _answer({"error": str(error)})
+        return 2
+    _answer(answer)
+    return 0
+
+
 def _setup(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
-    """Ask for the service of the model and its key and store them, or delete what is stored."""
+    """Ask for the service of the model and its key and store them, or do what an option says."""
 
     def show(told: str) -> None:
         # What is told names files, and repeats what a person typed or a file holds.
@@ -546,6 +621,8 @@ def _setup(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     def asked_unseen(question: str) -> str:
         return getpass.getpass(harmless(question))
 
+    if args.list or args.from_stdin:
+        return _setup_for_a_program(args, home, env)
     if args.forget is not None:
         chosen_service.forget(home, args.forget, show)
         return 0
@@ -723,10 +800,23 @@ def _parser() -> argparse.ArgumentParser:
         _SETUP,
         help="choose the service that the model comes from, and store the API key for it",
     )
-    setup.add_argument(
+    # No option takes a key. On the command line it would stay in the history of the shell.
+    instead = setup.add_mutually_exclusive_group()
+    instead.add_argument(
         "--forget",
         metavar="NAME",
         help="delete what is stored for a service, its key and what was said of it, and stop",
+    )
+    instead.add_argument(
+        "--list",
+        action="store_true",
+        help="say what is set up in one document of JSON, for another program, and stop",
+    )
+    instead.add_argument(
+        "--from-stdin",
+        action="store_true",
+        help="store what a document of JSON on the standard input says, for another program, "
+        "and answer in one document of JSON",
     )
     return parser
 

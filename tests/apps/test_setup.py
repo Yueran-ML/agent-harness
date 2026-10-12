@@ -1,7 +1,9 @@
 """What ``columbina setup`` does: the service of the model is chosen, and its key is stored."""
 
 import json
+import traceback
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -9,7 +11,7 @@ import yaml
 from columbina.apps import setup
 from columbina.apps.setup import Chosen, Own, SetupError, chosen, forget, service_named
 from columbina.llm import credentials
-from columbina.llm.credentials import CredentialsError, keep
+from columbina.llm.credentials import CredentialsError, Kept, keep
 from columbina.llm.services import PRESETS, Service
 from support.vault import Memory
 
@@ -1207,3 +1209,921 @@ def test_whoever_forgets_a_key_is_told_where_the_keyring_could_not_be_asked_for_
         "openai is no longer in use. The profile says again where the model comes from.",
     ]
     assert places(home) == {}
+
+
+# For another program: what it is told of the services
+
+
+def entry(
+    name: str,
+    title: str,
+    base_url: str,
+    *,
+    own: bool = False,
+    model: str | None = None,
+    context_window: int | None = None,
+    key_env: str | None = None,
+    key: str = "none",
+) -> dict[str, object]:
+    """What another program is told of one service."""
+    return {
+        "name": name,
+        "title": title,
+        "base_url": base_url,
+        "own": own,
+        "model": model,
+        "context_window": context_window,
+        "key_env": key_env,
+        "key": key,
+    }
+
+
+def added(name: str, base_url: str, **said: Any) -> dict[str, object]:
+    """What another program is told of a service that the user added."""
+    return entry(name, base_url, base_url, own=True, key_env="COLUMBINA_API_KEY", **said)
+
+
+KNOWN: dict[str, dict[str, object]] = {
+    "deepseek": entry(
+        "deepseek",
+        "DeepSeek",
+        "https://api.deepseek.com",
+        model="deepseek-flash",
+        context_window=1_048_576,
+        key_env="DEEPSEEK_API_KEY",
+    ),
+    "openai": entry("openai", "OpenAI", "https://api.openai.com/v1", key_env="OPENAI_API_KEY"),
+    "openrouter": entry(
+        "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", key_env="OPENROUTER_API_KEY"
+    ),
+    "moonshot": entry(
+        "moonshot", "Moonshot AI (Kimi)", "https://api.moonshot.cn/v1", key_env="MOONSHOT_API_KEY"
+    ),
+    "zhipu": entry(
+        "zhipu", "Zhipu AI (GLM)", "https://open.bigmodel.cn/api/paas/v4", key_env="ZAI_API_KEY"
+    ),
+    "siliconflow": entry(
+        "siliconflow", "SiliconFlow", "https://api.siliconflow.cn/v1", key_env="SILICONFLOW_API_KEY"
+    ),
+    "ollama": entry("ollama", "Ollama on this machine", "http://localhost:11434/v1"),
+    "lmstudio": entry("lmstudio", "LM Studio on this machine", "http://localhost:1234/v1"),
+}
+"""What another program is told of the services that are known by name, the first time."""
+
+MINE = (
+    "use: mine\nservices:\n  mine:\n    base_url: http://localhost:8000/v1\n    model: tiny\n"
+    "    context_window: 32768\n"
+)
+"""What was chosen where a service of one's own is in use."""
+
+
+def services(*changed: dict[str, object]) -> list[dict[str, object]]:
+    """The services as another program is told of them.
+
+    Each of ``changed`` stands in the place of the one of its name. One whose name is not
+    known comes after the ones that are.
+    """
+    told = KNOWN | {str(one["name"]): one for one in changed}
+    return list(told.values())
+
+
+def test_a_program_is_told_of_every_service_the_first_time_and_that_none_is_in_use(
+    home: Path,
+) -> None:
+    assert setup.listed(home, {}) == {"use": None, "services": services()}
+    assert not home.exists()
+
+
+def test_a_program_is_told_which_service_is_in_use_and_what_was_said_of_each(home: Path) -> None:
+    by_hand(
+        home,
+        "use: mine\nservices:\n"
+        "  zebra:\n    base_url: https://zebra.example.test/v1\n"
+        "  mine:\n    base_url: http://localhost:8000/v1\n    model: tiny\n"
+        "    context_window: 32768\n"
+        "  openai:\n    model: gpt-test\n    context_window: 400000\n"
+        "  deepseek:\n    model: deepseek-v4-pro\n"
+        "  moonshot:\n    base_url: https://api.moonshot.ai/v1\n"
+        "  half:\n    model: a model and no address\n",
+    )
+
+    assert setup.listed(home, {}) == {
+        "use": "mine",
+        "services": services(
+            # What is known of the size of the window is known of another model.
+            KNOWN["deepseek"] | {"model": "deepseek-v4-pro", "context_window": None},
+            KNOWN["openai"] | {"model": "gpt-test", "context_window": 400000},
+            KNOWN["moonshot"] | {"base_url": "https://api.moonshot.ai/v1"},
+            # The services of one's own come after the ones that are known, by their names.
+            added("mine", "http://localhost:8000/v1", model="tiny", context_window=32768),
+            added("zebra", "https://zebra.example.test/v1"),
+        ),
+    }
+
+
+def test_a_service_in_use_that_is_none_is_none_to_a_program_either(home: Path) -> None:
+    by_hand(home, "use: gone\n")
+
+    assert setup.listed(home, {}) == {"use": None, "services": services()}
+
+
+def test_a_program_is_told_where_the_key_of_each_service_comes_from(home: Path) -> None:
+    for name, place in (
+        ("deepseek", "https://api.deepseek.com"),
+        ("openai", "https://api.openai.com"),
+        ("moonshot", "https://api.moonshot.cn"),
+        ("ollama", "http://localhost:11434"),
+    ):
+        keep(home / "credentials.json", name, KEY, place)
+    by_hand(
+        home,
+        "services:\n  moonshot:\n    base_url: https://api.moonshot.ai/v1\n"
+        "  mine:\n    base_url: http://localhost:8000/v1\n",
+    )
+    env = {"OPENAI_API_KEY": f" {OTHER}\n", "ZAI_API_KEY": " \n", "COLUMBINA_API_KEY": OTHER}
+
+    assert setup.listed(home, env)["services"] == services(
+        KNOWN["deepseek"] | {"key": "stored"},
+        # The variable goes before the key that is stored.
+        KNOWN["openai"] | {"key": "environment"},
+        KNOWN["moonshot"]
+        | {"base_url": "https://api.moonshot.ai/v1", "key": "stored-for-another-address"},
+        # A variable that holds only blanks holds no key.
+        KNOWN["zhipu"],
+        KNOWN["ollama"] | {"key": "stored"},
+        added("mine", "http://localhost:8000/v1", key="environment"),
+    )
+
+
+def test_what_a_program_is_told_of_the_services_is_the_same_whatever_the_keys_are(
+    tmp_path: Path,
+) -> None:
+    def told(home: Path, stored: str, in_the_variable: str) -> str:
+        keep(home / "credentials.json", "deepseek", stored, "https://api.deepseek.com")
+        return json.dumps(setup.listed(home, {"OPENAI_API_KEY": in_the_variable}))
+
+    one = told(tmp_path / "one", KEY, OTHER)
+    another = told(
+        tmp_path / "another", "k", "sk-a-key-that-is-a-good-deal-longer-0123456789abcdef"
+    )
+
+    # No key, and nothing that a key could be guessed from: not its length and not a part of it.
+    assert KEY not in one
+    assert OTHER not in one
+    assert one == another
+    assert '"key": "stored"' in one
+    assert '"key": "environment"' in one
+
+
+def test_a_program_is_told_of_a_key_in_a_keyring_and_the_keyring_is_asked_nothing(
+    home: Path,
+) -> None:
+    vault = Memory().install()
+    keep(home / "credentials.json", "deepseek", KEY, "https://api.deepseek.com")
+    asked_to_keep_it = list(vault.asked)
+
+    told = setup.listed(home, {})
+
+    # A keyring that is locked asks its user to unlock it. Nobody is asked that for a list.
+    assert vault.asked == asked_to_keep_it
+    assert told["services"] == services(KNOWN["deepseek"] | {"key": "stored"})
+    assert KEY not in json.dumps(told)
+
+
+def test_what_is_stored_and_cannot_be_read_is_not_told_to_a_program(home: Path) -> None:
+    by_hand(home, "use: [")
+    with pytest.raises(SetupError) as no_choice:
+        setup.listed(home, {})
+    by_hand(home, "use: deepseek\n")
+    (home / "credentials.json").write_text(f"deepseek = {KEY}", encoding="utf-8")
+    # Its user's alone, so that what is wrong with it is what it holds.
+    (home / "credentials.json").chmod(0o600)
+    with pytest.raises(SetupError) as no_keys:
+        setup.listed(home, {})
+
+    assert str(no_choice.value) == (
+        f"{home / 'provider.yml'} is not YAML. Run 'columbina setup' again, or delete the file"
+    )
+    assert str(no_keys.value) == (
+        f"the file of stored keys, {home / 'credentials.json'}, is not what 'columbina setup' "
+        "writes, so it is not used. Delete it, and enter the keys again with 'columbina setup'"
+    )
+
+
+# For another program: the document that says what is to be stored
+
+
+NOT_AN_OBJECT = "the document is not an object of JSON"
+TOO_LONG = "the document is longer than 65536 bytes, which is more than is read"
+NOT_READ_HERE = (
+    "the document says something under a name that is not read. The names that are read are: "
+    "service, base_url, model, context_window, api_key"
+)
+NOT_TOKENS = (
+    "what the document says under 'context_window' is not a number of tokens, such as 128000"
+)
+NO_SERVICE = "the document names no service"
+NO_MODEL = "the document names no model"
+UNSEEN_IN_THE_MODEL = (
+    "the name of the model that the document gives has a character in it that cannot be seen"
+)
+NOT_A_KEY_IN_A_DOCUMENT = (
+    "what the document says under 'api_key' cannot be a key: there is a character in it that "
+    "no key has, such as a blank or a line break in the middle. Nothing of it was kept"
+)
+NO_SUCH_SERVICE = (
+    "there is no service of the name that the document gives, and the document gives no "
+    "address to add one by"
+)
+KNOWN_BY_NAME = (
+    "the document gives an address for a service that is known by name, and the address of "
+    "such a service is not changed this way"
+)
+NOT_A_NAME = (
+    "the document adds a service under a name that cannot be one. A name of your own begins "
+    "with a small letter and goes on with small letters, digits, '-' and '_'. It has 32 "
+    "characters at most"
+)
+NOT_AN_ADDRESS = (
+    "what the document says under 'base_url' is no address. An address begins with http:// or "
+    "https:// and names a machine, such as https://api.example.com/v1"
+)
+ESCAPE = chr(0x1B)
+
+
+def not_text(name: str) -> str:
+    return f"what the document says under '{name}' is not text"
+
+
+def document(**said: object) -> bytes:
+    """A document of JSON, as another program writes it."""
+    return json.dumps(said, ensure_ascii=False).encode()
+
+
+def unheard(told: str) -> None:
+    """Shows nothing to anybody."""
+
+
+THE_SAME = [
+    pytest.param(
+        "",
+        (),
+        {},
+        ("", ""),
+        KEY,
+        {"service": "deepseek", "model": "deepseek-flash", "api_key": KEY},
+        id="the first time",
+    ),
+    pytest.param(
+        "",
+        (),
+        {},
+        ("openai", "gpt-test", "400000"),
+        KEY,
+        {"service": "openai", "model": "gpt-test", "context_window": 400000, "api_key": KEY},
+        id="a service that is known, with the size of the window",
+    ),
+    pytest.param(
+        "",
+        (),
+        {},
+        ("openai", "gpt-test", ""),
+        "",
+        {"service": "openai", "model": "gpt-test"},
+        id="no window and no key",
+    ),
+    pytest.param(
+        "",
+        (),
+        {"OPENAI_API_KEY": OTHER},
+        ("openai", "gpt-test", ""),
+        "",
+        {"service": "openai", "model": "gpt-test"},
+        id="a key in the variable of the service",
+    ),
+    pytest.param(
+        "",
+        (("openai", "https://api.openai.com"),),
+        {},
+        ("openai", "gpt-test", ""),
+        "",
+        {"service": "openai", "model": "gpt-test"},
+        id="a key that is stored",
+    ),
+    pytest.param(
+        "services:\n  moonshot:\n    base_url: https://api.moonshot.ai/v1\n",
+        (("moonshot", "https://api.moonshot.cn"),),
+        {},
+        ("moonshot", "kimi-test", ""),
+        "",
+        {"service": "moonshot", "model": "kimi-test"},
+        id="an address that was given by hand, and a key that was stored for another",
+    ),
+    pytest.param(
+        "",
+        (),
+        {},
+        ("my-server", "http://10.0.0.5:8000/v1/chat/completions/", "tiny", "32768"),
+        KEY,
+        {
+            "service": "my-server",
+            "base_url": "http://10.0.0.5:8000/v1/chat/completions/",
+            "model": "tiny",
+            "context_window": 32768,
+            "api_key": KEY,
+        },
+        id="a service of one's own",
+    ),
+    pytest.param(
+        MINE,
+        (),
+        {},
+        ("mine", ""),
+        "",
+        {"service": "mine", "model": "tiny"},
+        id="a service of one's own that is there, by its name",
+    ),
+    pytest.param(
+        MINE,
+        (),
+        {},
+        ("mine", "large", ""),
+        "",
+        {"service": "mine", "model": "large"},
+        id="another model, of which no window is known",
+    ),
+    pytest.param(
+        "services:\n  deepseek:\n    context_window: 500000\n",
+        (),
+        {},
+        ("deepseek", ""),
+        "",
+        {"service": "deepseek", "model": "deepseek-flash"},
+        id="a window that was said before",
+    ),
+    pytest.param(
+        "",
+        (),
+        {},
+        ("ollama", "qwen3:14b", ""),
+        KEY,
+        {"service": "ollama", "model": "qwen3:14b", "api_key": KEY},
+        id="a service on this machine, with a key all the same",
+    ),
+]
+"""What is there, what a person answers to the questions, and the document that says the same."""
+
+
+@pytest.mark.parametrize(("before", "kept", "env", "typed", "typed_key", "said"), THE_SAME)
+def test_a_document_says_what_a_person_answers_to_the_questions(
+    home: Path,
+    before: str,
+    kept: tuple[tuple[str, str], ...],
+    env: dict[str, str],
+    typed: tuple[str, ...],
+    typed_key: str,
+    said: dict[str, object],
+) -> None:
+    if before:
+        by_hand(home, before)
+    for name, place in kept:
+        keep(home / "credentials.json", name, OTHER, place)
+    person = Person(*typed, keys=(typed_key,))
+
+    answered = setup.asked(home, env, person.ask, person.ask_unseen, person.show)
+    read = setup.given(home, env, document(**said), unheard)
+
+    assert person.through
+    # So it is stored the way the answers of a person are, by the same step.
+    assert read == answered
+
+
+def test_a_document_is_read_in_one_step_and_stored_in_another(home: Path) -> None:
+    shown: list[str] = []
+    sent = document(service="openai", model="gpt-test", context_window=400000, api_key=KEY)
+
+    answers = setup.given(home, {}, sent, shown.append)
+
+    assert not home.exists()
+    assert shown == []
+    assert (answers.service.name, answers.model, answers.key) == ("openai", "gpt-test", KEY)
+    assert answers.chosen == Chosen(
+        use="openai", services={"openai": Own(model="gpt-test", context_window=400000)}
+    )
+    # Whatever shows what was read shows no key.
+    assert KEY not in repr(answers)
+
+    setup.store(home, {}, answers, shown.append)
+
+    assert keys(home) == {"openai": KEY}
+    assert written(home) == {
+        "use": "openai",
+        "services": {"openai": {"model": "gpt-test", "context_window": 400000}},
+    }
+    assert shown == [
+        "",
+        "Stored. Columbina talks to openai now, with the model gpt-test.",
+        f"What was chosen is in {home / 'provider.yml'}.",
+        in_the_file(home),
+    ]
+
+
+def test_the_blanks_around_what_a_document_gives_are_no_part_of_it(home: Path) -> None:
+    untidy = document(
+        service=" my-server\n",
+        base_url="  https://models.example.test/v1/ ",
+        model="\ttiny ",
+        api_key=f"  {KEY}\r\n",
+    )
+    tidy = document(
+        service="my-server", base_url="https://models.example.test/v1", model="tiny", api_key=KEY
+    )
+
+    read = setup.given(home, {}, untidy, unheard)
+
+    assert read == setup.given(home, {}, tidy, unheard)
+    assert (read.service.name, read.service.base_url, read.model, read.key) == (
+        "my-server",
+        "https://models.example.test/v1",
+        "tiny",
+        KEY,
+    )
+
+
+@pytest.mark.parametrize(
+    "left_empty",
+    [
+        {"base_url": None, "context_window": None, "api_key": None},
+        {"base_url": "", "api_key": ""},
+        {"base_url": " ", "api_key": " \r\n"},
+    ],
+    ids=["given as nothing", "empty", "nothing but blanks"],
+)
+def test_what_a_document_leaves_empty_is_not_said(
+    home: Path, left_empty: dict[str, object]
+) -> None:
+    bare = setup.given(home, {}, document(service="openai", model="gpt-test"), unheard)
+
+    read = setup.given(
+        home, {}, document(service="openai", model="gpt-test", **left_empty), unheard
+    )
+
+    assert read == bare
+    assert read.key is None
+
+
+def test_the_size_of_a_window_that_a_document_gives_is_written_down_where_one_is_known_too(
+    home: Path,
+) -> None:
+    by_hand(home, MINE)
+    known_of_the_model = document(service="deepseek", model="deepseek-flash", context_window=500000)
+    said_before = document(service="mine", model="tiny", context_window=65536)
+
+    of_a_listed_service = setup.given(home, {}, known_of_the_model, unheard)
+    of_ones_own = setup.given(home, {}, said_before, unheard)
+
+    # A person is not asked for the size in either case, and could say no other.
+    assert of_a_listed_service.chosen.services["deepseek"] == Own(
+        model="deepseek-flash", context_window=500000
+    )
+    assert of_ones_own.chosen.services["mine"] == Own(
+        base_url="http://localhost:8000/v1", model="tiny", context_window=65536
+    )
+
+
+def test_a_document_gives_a_service_of_ones_own_another_address(home: Path) -> None:
+    by_hand(home, MINE)
+    sent = document(service="mine", base_url="https://models.example.test/v1", model="tiny")
+
+    read = setup.given(home, {}, sent, unheard)
+
+    assert (read.service.base_url, read.service.title) == (
+        "https://models.example.test/v1",
+        "https://models.example.test/v1",
+    )
+    # What was said of the size of the window was said of this model, and stays.
+    assert read.chosen.services == {
+        "mine": Own(base_url="https://models.example.test/v1", model="tiny", context_window=32768)
+    }
+
+
+def test_a_key_that_was_stored_for_the_address_before_is_none_for_the_new_address(
+    home: Path,
+) -> None:
+    by_hand(home, MINE)
+    keep(home / "credentials.json", "mine", KEY, "http://localhost:8000")
+    sent = document(service="mine", base_url="https://models.example.test/v1", model="tiny")
+
+    setup.store(home, {}, setup.given(home, {}, sent, unheard), unheard)
+
+    assert setup.listed(home, {}) == {
+        "use": "mine",
+        "services": services(
+            added(
+                "mine",
+                "https://models.example.test/v1",
+                model="tiny",
+                context_window=32768,
+                key="stored-for-another-address",
+            )
+        ),
+    }
+    assert places(home) == {"mine": "http://localhost:8000"}
+
+
+def test_a_service_of_ones_own_that_is_there_keeps_the_name_that_it_was_given_by_hand(
+    home: Path,
+) -> None:
+    by_hand(home, "services:\n  My_Server:\n    base_url: http://localhost:8000/v1\n")
+    sent = document(service="My_Server", base_url="http://localhost:9000/v1", model="tiny")
+
+    read = setup.given(home, {}, sent, unheard)
+
+    assert read.chosen == Chosen(
+        use="My_Server",
+        services={"My_Server": Own(base_url="http://localhost:9000/v1", model="tiny")},
+    )
+
+
+@pytest.mark.parametrize(
+    ("address", "warned"),
+    [
+        ("http://10.0.0.5:8000/v1", True),
+        ("https://models.example.test/v1", False),
+        ("http://localhost:8000/v1", False),
+    ],
+)
+def test_an_address_in_a_document_that_is_not_encrypted_is_named_as_one(
+    home: Path, address: str, warned: bool
+) -> None:
+    shown: list[str] = []
+
+    setup.given(home, {}, document(service="mine", base_url=address, model="tiny"), shown.append)
+
+    assert shown == ([NOT_ENCRYPTED] if warned else [])
+
+
+def test_a_document_is_read_up_to_a_length_and_no_further(home: Path) -> None:
+    sent = document(service="openai", model="gpt-test")
+    as_long_as_is_read = sent + b" " * (65536 - len(sent))
+
+    read = setup.given(home, {}, as_long_as_is_read, unheard)
+    with pytest.raises(SetupError) as refused:
+        setup.given(home, {}, as_long_as_is_read + b" ", unheard)
+
+    assert setup.MAX_DOCUMENT_BYTES == 65536
+    assert read.model == "gpt-test"
+    assert str(refused.value) == TOO_LONG
+
+
+WRONG = [
+    pytest.param(b"", NOT_AN_OBJECT, id="nothing"),
+    pytest.param(b"deepseek", NOT_AN_OBJECT, id="no JSON"),
+    pytest.param(b'{"service": "deepseek", "model": ', NOT_AN_OBJECT, id="JSON that is cut off"),
+    pytest.param(
+        b'{"service": "deep\xffseek", "model": "m"}', NOT_AN_OBJECT, id="no text in UTF-8"
+    ),
+    pytest.param(b"[" * 20000, NOT_AN_OBJECT, id="lists in lists, thousands deep"),
+    pytest.param(
+        b'{"service": "openai", "model": "m", "context_window": ' + b"1" * 5000 + b"}",
+        NOT_AN_OBJECT,
+        id="a number of thousands of digits",
+    ),
+    pytest.param(b'["deepseek", "deepseek-flash"]', NOT_AN_OBJECT, id="a list"),
+    pytest.param(b"null", NOT_AN_OBJECT, id="nothing, as JSON says it"),
+    pytest.param(b'"deepseek"', NOT_AN_OBJECT, id="a text"),
+    pytest.param(b" " * 65537, TOO_LONG, id="more than is read"),
+    pytest.param(
+        document(service="deepseek", model="m", key=KEY),
+        NOT_READ_HERE,
+        id="a name that is not read",
+    ),
+    pytest.param(document(service=5, model="m"), not_text("service"), id="a number for a service"),
+    pytest.param(
+        document(service="mine", base_url=["http://localhost:8000/v1"], model="m"),
+        not_text("base_url"),
+        id="a list for an address",
+    ),
+    pytest.param(
+        document(service="deepseek", model={"name": "m"}),
+        not_text("model"),
+        id="an object for a model",
+    ),
+    pytest.param(
+        document(service="deepseek", model="m", api_key=123456),
+        not_text("api_key"),
+        id="a number for a key",
+    ),
+    pytest.param(
+        document(service="openai", model="m", context_window="128000"),
+        NOT_TOKENS,
+        id="a text for a window",
+    ),
+    pytest.param(
+        document(service="openai", model="m", context_window=0),
+        NOT_TOKENS,
+        id="a window of no size",
+    ),
+    pytest.param(
+        document(service="openai", model="m", context_window=-5),
+        NOT_TOKENS,
+        id="a window of less than no size",
+    ),
+    pytest.param(
+        document(service="openai", model="m", context_window=1.5), NOT_TOKENS, id="half a token"
+    ),
+    pytest.param(
+        document(service="openai", model="m", context_window=128000.0),
+        NOT_TOKENS,
+        id="a number that is written with a point",
+    ),
+    pytest.param(
+        document(service="openai", model="m", context_window=True),
+        NOT_TOKENS,
+        id="a yes for a window",
+    ),
+    pytest.param(document(), NO_SERVICE, id="an object that says nothing"),
+    pytest.param(document(service=None, model="m"), NO_SERVICE, id="nothing for a service"),
+    pytest.param(document(service=" ", model="m"), NO_SERVICE, id="a blank for a service"),
+    pytest.param(document(service="deepseek"), NO_MODEL, id="no model"),
+    pytest.param(document(service="deepseek", model="\n"), NO_MODEL, id="a line break for a model"),
+    pytest.param(
+        document(service="zhipu", model=f"glm{ESCAPE}[2J"),
+        UNSEEN_IN_THE_MODEL,
+        id="a model with a character that a terminal acts on",
+    ),
+    pytest.param(
+        document(service="deepseek", model="m", api_key="sk-test 0123"),
+        NOT_A_KEY_IN_A_DOCUMENT,
+        id="a key with a blank in the middle",
+    ),
+    pytest.param(
+        document(service="deepseek", model="m", api_key=f"sk-test\n{KEY}"),
+        NOT_A_KEY_IN_A_DOCUMENT,
+        id="a key with a line break in the middle",
+    ),
+    pytest.param(
+        document(service="deepseek", model="m", api_key=chr(0x201C) + KEY + chr(0x201D)),
+        NOT_A_KEY_IN_A_DOCUMENT,
+        id="a key in the quotation marks of a word processor",
+    ),
+    pytest.param(
+        document(service="nowhere", model="m"), NO_SUCH_SERVICE, id="a service that is none"
+    ),
+    pytest.param(
+        document(service="Deepseek", model="m"), NO_SUCH_SERVICE, id="a service by another spelling"
+    ),
+    pytest.param(document(service="2", model="m"), NO_SUCH_SERVICE, id="a service by its number"),
+    pytest.param(
+        document(service="deepseek", base_url="https://mirror.example.test/v1", model="m"),
+        KNOWN_BY_NAME,
+        id="an address for a service that is known by name",
+    ),
+    pytest.param(
+        document(service="Not A Name", base_url="https://ok.test/v1", model="m"),
+        NOT_A_NAME,
+        id="a name with blanks and capitals",
+    ),
+    pytest.param(
+        document(service="9lives", base_url="https://ok.test/v1", model="m"),
+        NOT_A_NAME,
+        id="a name that begins with a digit",
+    ),
+    pytest.param(
+        document(service="x" * 33, base_url="https://ok.test/v1", model="m"),
+        NOT_A_NAME,
+        id="a name of 33 characters",
+    ),
+    pytest.param(
+        document(service="mine", base_url="models.example.test/v1", model="m"),
+        NOT_AN_ADDRESS,
+        id="an address without a scheme",
+    ),
+    pytest.param(
+        document(service="mine", base_url="ftp://models.example.test/v1", model="m"),
+        NOT_AN_ADDRESS,
+        id="an address of a scheme that is not of the web",
+    ),
+    pytest.param(
+        document(service="mine", base_url="https://models. example.test/v1", model="m"),
+        NOT_AN_ADDRESS,
+        id="an address with a blank inside",
+    ),
+    pytest.param(
+        document(
+            service="mine", base_url=f"https://someone:{KEY}@models.example.test/v1", model="m"
+        ),
+        NOT_AN_ADDRESS,
+        id="an address with a name and a password",
+    ),
+    pytest.param(
+        document(service="mine", base_url=f"https://models.example.test/v1?key={KEY}", model="m"),
+        NOT_AN_ADDRESS,
+        id="an address with a question",
+    ),
+]
+"""Documents that are not right, each with what is said of it."""
+
+
+@pytest.mark.parametrize(("sent", "problem"), WRONG)
+def test_a_document_that_is_not_right_is_refused_with_what_is_wrong_with_it(
+    home: Path, sent: bytes, problem: str
+) -> None:
+    shown: list[str] = []
+
+    with pytest.raises(SetupError) as refused:
+        setup.given(home, {}, sent, shown.append)
+
+    assert str(refused.value) == problem
+    assert shown == []
+    assert not home.exists()
+
+
+def test_a_name_of_32_characters_is_one_that_a_document_can_add_a_service_under(
+    home: Path,
+) -> None:
+    sent = document(service="x" * 32, base_url="https://ok.test/v1", model="m")
+
+    assert setup.given(home, {}, sent, unheard).service.name == "x" * 32
+
+
+def test_a_service_without_an_address_is_none_that_a_document_can_name(home: Path) -> None:
+    by_hand(home, "services:\n  half:\n    model: a model and no address\n")
+
+    with pytest.raises(SetupError) as refused:
+        setup.given(home, {}, document(service="half", model="m"), unheard)
+
+    assert str(refused.value) == NO_SUCH_SERVICE
+
+
+def test_a_document_is_not_gone_by_where_what_is_stored_cannot_be_read(home: Path) -> None:
+    by_hand(home, "use: [")
+    sent = document(service="openai", model="gpt-test", api_key=KEY)
+
+    with pytest.raises(SetupError) as refused:
+        setup.given(home, {}, sent, unheard)
+
+    assert str(refused.value) == (
+        f"{home / 'provider.yml'} is not YAML. Run 'columbina setup' again, or delete the file"
+    )
+    assert not (home / "credentials.json").exists()
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        b'{"service": "deepseek", "model": "m", "api_key": "' + KEY.encode(),
+        b'{"service": "deepseek", "model": "m", "api_key": "' + KEY.encode() + b'\\q"}',
+        b'{"service": "deepseek", "model": "m", "api_key": "' + KEY.encode() + b'\xff"}',
+        b'["' + KEY.encode() + b'"]',
+        document(service="deepseek", model="m", key=KEY),
+        document(service="deepseek", model="m", **{KEY: "deepseek"}),
+        document(service="deepseek", model="m", api_key=[KEY]),
+        document(service="deepseek", model="m", api_key=f"{KEY} {KEY}"),
+        document(service="deepseek", model=f"{KEY}{ESCAPE}"),
+        document(service=KEY, model="m"),
+        document(service=KEY.upper(), base_url="https://ok.test/v1", model="m"),
+        document(service="deepseek", base_url=f"https://{KEY}.example.test/v1", model="m"),
+        document(service="mine", base_url=f"https://someone:{KEY}@ok.test/v1", model="m"),
+        document(service="deepseek", model="m", context_window=KEY),
+    ],
+    ids=[
+        "cut off in the key",
+        "a sign after a backslash that JSON has none for",
+        "a byte that is no text",
+        "a list",
+        "the key under a name that is not read",
+        "the key as a name",
+        "the key in a list",
+        "two keys for one",
+        "the key for a model, with a character that cannot be seen",
+        "the key for a service",
+        "the key for the name of a service of one's own",
+        "the key in an address for a service that is known",
+        "the key for a password in an address",
+        "the key for the size of a window",
+    ],
+)
+def test_what_is_said_of_a_document_that_is_not_right_repeats_nothing_of_it(
+    home: Path, sent: bytes
+) -> None:
+    with pytest.raises(SetupError) as refused:
+        setup.given(home, {}, sent, unheard)
+
+    # Whatever a log would make of the refusal, with all that led to it.
+    said = "".join(traceback.format_exception(refused.value))
+    assert KEY not in said
+    assert KEY.upper() not in said
+    # What the reading failed with holds the document. It is not held on to.
+    assert refused.value.__cause__ is None
+    assert refused.value.__context__ is None
+    assert not home.exists()
+
+
+# For another program: what it is told was stored
+
+
+@pytest.mark.parametrize("in_a_keyring", [False, True], ids=["in the file", "in a keyring"])
+def test_whoever_stores_the_answers_is_told_where_their_key_was_kept(
+    home: Path, in_a_keyring: bool
+) -> None:
+    if in_a_keyring:
+        Memory().install()
+    answers = setup.given(
+        home, {}, document(service="openai", model="gpt-test", api_key=KEY), unheard
+    )
+
+    kept = setup.store(home, {}, answers, unheard)
+
+    assert kept == (
+        Kept(keyring=IN_A_KEYRING)
+        if in_a_keyring
+        else Kept(keyring=None, said="the keyring that is set up here keeps nothing")
+    )
+
+
+def test_whoever_stores_answers_without_a_key_is_told_of_no_key_that_was_kept(home: Path) -> None:
+    keep(home / "credentials.json", "openai", KEY, "https://api.openai.com")
+    answers = setup.given(home, {}, document(service="openai", model="gpt-test"), unheard)
+
+    assert setup.store(home, {}, answers, unheard) is None
+
+
+@pytest.mark.parametrize(
+    ("in_a_keyring", "where"),
+    [(False, "file"), (True, "keyring")],
+    ids=["in the file", "in a keyring"],
+)
+def test_a_program_is_told_what_was_stored_and_where_the_key_went(
+    home: Path, in_a_keyring: bool, where: str
+) -> None:
+    if in_a_keyring:
+        Memory().install()
+    sent = document(service="openai", model=" gpt-test ", context_window=400000, api_key=KEY)
+    answers = setup.given(home, {}, sent, unheard)
+
+    told = setup.stored(answers, setup.store(home, {}, answers, unheard))
+
+    assert told == {
+        "stored": {
+            "name": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-test",
+            "context_window": 400000,
+        },
+        "key_in": where,
+    }
+    assert KEY not in json.dumps(told)
+
+
+def test_a_program_is_told_that_no_key_went_anywhere_where_the_document_gave_none(
+    home: Path,
+) -> None:
+    keep(home / "credentials.json", "openai", KEY, "https://api.openai.com")
+    answers = setup.given(home, {}, document(service="openai", model="gpt-test"), unheard)
+
+    told = setup.stored(answers, setup.store(home, {}, answers, unheard))
+
+    assert told == {
+        "stored": {
+            "name": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-test",
+            "context_window": None,
+        },
+        "key_in": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        {"service": "deepseek", "model": "deepseek-flash"},
+        {"service": "deepseek", "model": "deepseek-v4-pro"},
+        {"service": "moonshot", "model": "kimi-test", "context_window": 128000},
+        {"service": "mine", "model": "tiny"},
+        {"service": "mine", "base_url": "http://10.0.0.5:8000/v1/chat/completions", "model": "big"},
+        {"service": "new", "base_url": "https://new.example.test/v1/", "model": "m"},
+    ],
+    ids=[
+        "a window that is known and was not said",
+        "another model of a service that is known",
+        "an address that was given by hand",
+        "a service of one's own, as it is",
+        "a service of one's own at another address",
+        "a service of one's own that is new",
+    ],
+)
+def test_what_a_program_is_told_was_stored_is_what_it_is_told_of_the_service_from_then_on(
+    home: Path, said: dict[str, object]
+) -> None:
+    by_hand(home, MINE + "  moonshot:\n    base_url: https://api.moonshot.ai/v1\n")
+    answers = setup.given(home, {}, document(**said), unheard)
+
+    told: Any = setup.stored(answers, setup.store(home, {}, answers, unheard))
+
+    listed: Any = setup.listed(home, {})
+    (now,) = (one for one in listed["services"] if one["name"] == said["service"])
+    assert listed["use"] == said["service"]
+    assert told["stored"] == {name: now[name] for name in told["stored"]}
+    assert list(told["stored"]) == ["name", "base_url", "model", "context_window"]

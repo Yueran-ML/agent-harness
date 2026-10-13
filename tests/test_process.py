@@ -1145,6 +1145,11 @@ async def test_what_the_caller_is_given_is_not_what_the_run_waits_on(
 
 if sys.platform == "win32":
     import ctypes
+    import functools
+    import itertools
+    from collections.abc import Callable, Iterator
+
+    from columbina.descent import descended
 
     class Failing:
         """A library of the system, of which one function fails."""
@@ -1168,6 +1173,7 @@ if sys.platform == "win32":
             ("_kernel32", "SetInformationJobObject", 0),
             ("_kernel32", "OpenProcess", 0),
             ("_kernel32", "AssignProcessToJobObject", 0),
+            ("_kernel32", "GetProcessTimes", 0),
             ("_ntdll", "NtResumeProcess", -1073741790),
         ],
     )
@@ -1210,6 +1216,388 @@ if sys.platform == "win32":
         assert "could not be stopped" in caplog.text
         # Giving the job up ends what is in it, so nothing is left even now.
         assert await gone(int(done.output.strip()))
+
+    # What a program started that is not in its job
+
+    KERNEL32: Any = vars(process)["_kernel32"]
+    """The library of the system as the module has it, whatever a test puts in its place."""
+
+    PYTHON_ITSELF: str = getattr(sys, "_base_executable", sys.executable)
+    """The interpreter, not the program of an environment that starts it as another process.
+
+    That program keeps the interpreter in a job of its own, and a process of one job cannot
+    be put into another beside it. With the interpreter itself, the process that a test
+    starts is the one that says who it is, and each makes the next with its own hands.
+    """
+
+    A_FAMILY = (
+        "import os, subprocess, sys, time\n"
+        "with open(sys.argv[1], 'w') as note:\n"
+        "    print(os.getpid(), file=note)\n"
+        "if len(sys.argv) > 2:\n"
+        "    itself = getattr(sys, '_base_executable', sys.executable)\n"
+        "    subprocess.Popen([itself, __file__, *sys.argv[2:]])\n"
+        "time.sleep(60)\n"
+    )
+    """Says which process it is, starts itself once more for each note that is left, and stays."""
+
+    class Family:
+        """Programs that were started the ordinary way, each by the one before it.
+
+        A program that is put into a job takes nothing along that it started before. So what
+        the first of these started is where a program is that the system started outside the
+        job of whoever asked for it: it descends from a process of the job, and the job does
+        not hold it.
+        """
+
+        def __init__(self, directory: Path, size: int) -> None:
+            directory.mkdir()
+            script = directory / "family.py"
+            script.write_text(A_FAMILY, encoding="utf-8")
+            self._notes = [directory / f"member-{index}" for index in range(size)]
+            self._open: dict[int, int] = {}
+            self._first = subprocess.Popen([PYTHON_ITSELF, str(script), *map(str, self._notes)])
+            self.members: list[int] = []
+
+        async def there(self) -> list[int]:
+            """Wait until every one of them runs, and return which processes they are."""
+            for note in self._notes:
+                member = await told(note)
+                # Kept open, so that its number names nobody else while the test goes on.
+                kept = KERNEL32.OpenProcess(0x1001, False, member)
+                assert kept, f"the process {member} cannot be opened"
+                self._open[member] = kept
+                self.members.append(member)
+            assert self.members[0] == self._first.pid
+            return self.members
+
+        async def lose(self, member: int) -> None:
+            """End one of them, and wait until the machine no longer lists it."""
+            KERNEL32.TerminateProcess(self._open[member], 1)
+            await unlisted(member)
+
+        def end(self) -> None:
+            """End whatever is left of them."""
+            for kept in self._open.values():
+                KERNEL32.TerminateProcess(kept, 1)
+                KERNEL32.CloseHandle(kept)
+            self._first.kill()
+            self._first.wait()
+
+    async def unlisted(*processes: int) -> None:
+        """Wait until the machine lists none of some processes any more."""
+        listed: Callable[[], dict[int, int]] = vars(process)["_parents"]
+        deadline = time.monotonic() + 20
+        while set(processes) & set(listed()):
+            assert time.monotonic() < deadline, "a process that was ended is still listed"
+            await asyncio.sleep(0.02)
+
+    @pytest.fixture
+    def families(tmp_path: Path) -> Iterator[Callable[[int], Family]]:
+        """Starts families, and ends at the end of the test what is left of them."""
+        started: list[Family] = []
+
+        def one(size: int) -> Family:
+            started.append(Family(tmp_path / f"family-{len(started)}", size))
+            return started[-1]
+
+        yield one
+        for family in started:
+            family.end()
+
+    @pytest.fixture
+    def jobs() -> Iterator[Callable[[int], Any]]:
+        """Puts running programs into jobs, and gives the jobs up at the end of the test."""
+        made: list[Any] = []
+
+        def one(pid: int) -> Any:
+            made.append(vars(process)["_Tree"](pid))
+            return made[-1]
+
+        yield one
+        for tree in made:
+            tree.close()
+
+    @pytest.fixture
+    def bystander() -> Iterator[int]:
+        """A program that runs beside a test and descends from nothing that the test holds."""
+        beside = subprocess.Popen(python(SLEEPER))
+        yield beside.pid
+        beside.kill()
+        beside.wait()
+
+    def joined(tree: Any, pid: int) -> None:
+        """Put one more process into the job of a program, as if the program had started it."""
+        reached = KERNEL32.OpenProcess(0x0101, False, pid)
+        assert reached, f"the process {pid} cannot be opened"
+        try:
+            assert KERNEL32.AssignProcessToJobObject(tree._job, reached)
+        finally:
+            KERNEL32.CloseHandle(reached)
+
+    class Instead:
+        """A library of the system, of which one function is another."""
+
+        def __init__(self, real: Any, function: str, other: Callable[..., Any]) -> None:
+            self._real = real
+            self._function = function
+            self._other = other
+
+        def __getattr__(self, name: str) -> Any:
+            return self._other if name == self._function else getattr(self._real, name)
+
+    def later(monkeypatch: pytest.MonkeyPatch, maker: int) -> None:
+        """Make the first look at the machine miss everything that descends from a process.
+
+        As if that process had started it a moment after the look.
+        """
+        look: Callable[[], dict[int, int]] = vars(process)["_parents"]
+        looked: list[int] = []
+        younger = itertools.count(1)
+
+        def missing() -> dict[int, int]:
+            seen = look()
+            looked.append(len(seen))
+            if len(looked) == 1:
+                for late in descended({maker: 0}, seen, lambda _: next(younger)):
+                    del seen[late]
+            return seen
+
+        monkeypatch.setattr(process, "_parents", missing)
+
+    async def test_what_a_program_started_outside_its_job_is_ended_with_it(
+        families: Callable[[int], Family], jobs: Callable[[int], Any], bystander: int
+    ) -> None:
+        family = families(3)
+        members = await family.there()
+
+        jobs(members[0]).stop()
+
+        for member in members:
+            assert await gone(member)
+        # What does not descend from the program is nothing of it.
+        assert alive(bystander)
+
+    async def test_a_program_that_has_ended_still_counts_as_the_maker_of_what_it_left(
+        families: Callable[[int], Family], jobs: Callable[[int], Any]
+    ) -> None:
+        # So it is when a command ends by itself and something that it started goes on.
+        family = families(3)
+        members = await family.there()
+        tree = jobs(members[0])
+        await family.lose(members[0])
+
+        tree.stop()
+
+        for member in members:
+            assert await gone(member)
+
+    @pytest.mark.parametrize("room", [64, 1])
+    async def test_what_any_process_of_the_job_started_outside_it_is_ended(
+        families: Callable[[int], Family],
+        jobs: Callable[[int], Any],
+        monkeypatch: pytest.MonkeyPatch,
+        room: int,
+    ) -> None:
+        # Nothing leads from the program to a process of its job whose maker has ended. Here
+        # such a process is one that is put into the job by hand. With room for one process,
+        # the system has to be asked a second time for who is in the job.
+        monkeypatch.setattr(process, "_ROOM", room)
+        own, other = families(1), families(2)
+        mine = await own.there()
+        members = await other.there()
+        tree = jobs(mine[0])
+        joined(tree, members[0])
+
+        tree.stop()
+
+        for member in members:
+            assert await gone(member)
+
+    async def test_what_left_the_job_is_looked_for_before_the_job_is_ended(
+        families: Callable[[int], Family],
+        jobs: Callable[[int], Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # One is found through the processes that made it, and ending the job ends those.
+        # Here the job is not said to be ended before the machine has stopped listing its
+        # processes, so whoever looks only then finds nothing that leads to the last one.
+        family = families(3)
+        members = await family.there()
+        tree = jobs(members[0])
+        joined(tree, members[1])
+        listed: Callable[[], dict[int, int]] = vars(process)["_parents"]
+
+        def ending(job: int, code: int) -> int:
+            ended = KERNEL32.TerminateJobObject(job, code)
+            deadline = time.monotonic() + 20
+            while {members[0], members[1]} & set(listed()) and time.monotonic() < deadline:
+                time.sleep(0.02)
+            return ended
+
+        monkeypatch.setattr(process, "_kernel32", Instead(KERNEL32, "TerminateJobObject", ending))
+
+        tree.stop()
+
+        assert await gone(members[2])
+
+    async def test_a_listed_number_that_names_no_process_of_the_job_is_not_taken(
+        families: Callable[[int], Family],
+        jobs: Callable[[int], Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A process that was listed may be gone when its number is opened, and the number
+        # may name another by then. Here the system says of everyone that it is not in the
+        # job, so only the program itself counts, which is kept open from the start.
+        own, other = families(2), families(2)
+        mine = await own.there()
+        members = await other.there()
+        tree = jobs(mine[0])
+        joined(tree, members[0])
+        monkeypatch.setattr(process, "_kernel32", Instead(KERNEL32, "IsProcessInJob", lambda *_: 1))
+
+        tree.stop()
+
+        for member in mine:
+            assert await gone(member)
+        assert alive(members[1])
+
+    async def test_a_job_that_does_not_say_who_is_in_it_still_has_its_program(
+        families: Callable[[int], Family],
+        jobs: Callable[[int], Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        own, other = families(2), families(2)
+        mine = await own.there()
+        members = await other.there()
+        tree = jobs(mine[0])
+        joined(tree, members[0])
+        failing = Failing(KERNEL32, "QueryInformationJobObject", 0)
+        monkeypatch.setattr(process, "_kernel32", failing)
+
+        tree.stop()
+
+        for member in mine:
+            assert await gone(member)
+        assert alive(members[1])
+
+    @pytest.mark.parametrize(
+        ("function", "result"),
+        [
+            ("OpenProcess", 0),
+            ("GetProcessTimes", 0),
+            ("CreateToolhelp32Snapshot", ctypes.c_void_p(-1).value),
+        ],
+    )
+    async def test_what_cannot_be_looked_at_is_left_alone(
+        families: Callable[[int], Family],
+        jobs: Callable[[int], Any],
+        monkeypatch: pytest.MonkeyPatch,
+        function: str,
+        result: int,
+    ) -> None:
+        family = families(2)
+        members = await family.there()
+        tree = jobs(members[0])
+        monkeypatch.setattr(process, "_kernel32", Failing(KERNEL32, function, result))
+
+        tree.stop()
+
+        # Nobody is ended on a guess, and stopping does not fail over it.
+        assert alive(members[1])
+
+    async def test_what_was_started_while_the_first_were_ended_is_found_by_another_look(
+        families: Callable[[int], Family],
+        jobs: Callable[[int], Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        family = families(3)
+        members = await family.there()
+        later(monkeypatch, members[1])
+
+        jobs(members[0]).stop()
+
+        for member in members:
+            assert await gone(member)
+
+    async def test_it_is_not_looked_without_end_for_what_keeps_being_started(
+        families: Callable[[int], Family],
+        jobs: Callable[[int], Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(process, "_SWEEPS", 1)
+        family = families(3)
+        members = await family.there()
+        later(monkeypatch, members[1])
+
+        jobs(members[0]).stop()
+
+        assert await gone(members[1])
+        assert alive(members[2])
+
+    class Counting:
+        """The library of the system, which writes down what it opens and what is closed."""
+
+        def __init__(self, real: Any, fails: str | None = None) -> None:
+            self._real = real
+            self._fails = fails
+            self.open: set[int] = set()
+
+        def __getattr__(self, name: str) -> Any:
+            function: Callable[..., Any] = getattr(self._real, name)
+            if name == self._fails:
+                return self._failed
+            if name in ("OpenProcess", "CreateToolhelp32Snapshot"):
+                return functools.partial(self._opened, function)
+            if name == "CloseHandle":
+                return functools.partial(self._closed, function)
+            return function
+
+        def _failed(self, *arguments: object) -> int:
+            return 0
+
+        def _opened(self, opens: Callable[..., int | None], *arguments: object) -> int | None:
+            handle = opens(*arguments)
+            if handle:
+                self.open.add(handle)
+            return handle
+
+        def _closed(self, closes: Callable[[int], int], handle: int) -> int:
+            self.open.discard(handle)
+            return closes(handle)
+
+    @pytest.mark.parametrize("fails", [None, "GetProcessTimes"])
+    async def test_nothing_that_was_opened_to_stop_a_program_stays_open(
+        families: Callable[[int], Family],
+        jobs: Callable[[int], Any],
+        monkeypatch: pytest.MonkeyPatch,
+        fails: str | None,
+    ) -> None:
+        # A process that is kept open is kept by the system although it has ended. The
+        # second time, no process says when it was made, so each is let go at once.
+        own, other = families(2), families(2)
+        mine = await own.there()
+        members = await other.there()
+        tree = jobs(mine[0])
+        joined(tree, members[0])
+        counting = Counting(KERNEL32, fails)
+        monkeypatch.setattr(process, "_kernel32", counting)
+
+        tree.stop()
+
+        assert counting.open == set()
+
+    def test_a_program_is_held_with_the_time_it_was_made(
+        jobs: Callable[[int], Any], bystander: int
+    ) -> None:
+        # The system counts time in tenths of a microsecond since the year 1601. A program
+        # that was started within this test was made within a minute of now.
+        now = time.time_ns() // 100 + 116_444_736_000_000_000
+        minute = 60 * 10_000_000
+
+        tree = jobs(bystander)
+
+        assert now - minute < tree._made < now + minute
 
 
 # What a program is not told

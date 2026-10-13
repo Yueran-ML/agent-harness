@@ -32,6 +32,7 @@ AGENT_PACKAGE = "src/columbina/agent/__init__.py"
 CANCELLATION = "src/columbina/cancellation.py"
 READ = "src/columbina/builtin_tools/read.py"
 PROCESS = "src/columbina/process.py"
+DESCENT = "src/columbina/descent.py"
 PIPELINE = "src/columbina/tools/pipeline.py"
 SEAM = "src/columbina/fs/__init__.py"
 PATHS = "src/columbina/fs/paths.py"
@@ -974,8 +975,8 @@ _PROCESS = (
         mutant(
             "the program is not put into its job",
             PROCESS,
-            "                        _kernel32.AssignProcessToJobObject(job, process),",
-            "                        True,",
+            "                    _kernel32.AssignProcessToJobObject(job, self._root),",
+            "                    True,",
         )
     ),
     on_windows(
@@ -1001,6 +1002,124 @@ _PROCESS = (
             "        # The program has not run a single instruction, and it does not get to.\n"
             "        transport.close()\n",
             "        # The program has not run a single instruction, and it does not get to.\n",
+        )
+    ),
+    # What a program started that is not in its job. None of these makes more be ended than
+    # the code does: a fault that takes a stranger for a descendant would end a program of the
+    # machine that has nothing to do with a test. Such faults are in the set "descent", whose
+    # tests start nothing.
+    on_windows(
+        mutant(
+            "what a program started outside its job is not ended",
+            PROCESS,
+            "            strays.end()\n",
+            "",
+        )
+    ),
+    on_windows(
+        mutant(
+            "what left the job is looked for when the job has been ended",
+            PROCESS,
+            '            strays = _Strays(cast("int", self._job), self._pid, self._made)\n'
+            "            if not _kernel32.TerminateJobObject(self._job, 1):\n"
+            "                code = ctypes.get_last_error()\n"
+            '                logger.error("a program could not be stopped: %s", ctypes.FormatError(code))\n',
+            "            if not _kernel32.TerminateJobObject(self._job, 1):\n"
+            "                code = ctypes.get_last_error()\n"
+            '                logger.error("a program could not be stopped: %s", ctypes.FormatError(code))\n'
+            '            strays = _Strays(cast("int", self._job), self._pid, self._made)\n',
+        )
+    ),
+    on_windows(
+        mutant(
+            "a program that has ended is no longer the maker of what it left",
+            PROCESS,
+            "            self._held = {program: made}\n",
+            "            self._held: dict[int, int] = {}\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "of the processes of a job only the program counts",
+            PROCESS,
+            "            for pid in _members(job):\n",
+            "            for pid in ():\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the system is asked once only for who is in a job",
+            PROCESS,
+            "            if ctypes.get_last_error() != _MORE_DATA:\n                return []\n",
+            "            if True:\n                return []\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a number of the list counts whatever process is opened under it",
+            PROCESS,
+            "                if inside.value:\n                    self._held[pid] = got[1]\n",
+            "                if True:\n                    self._held[pid] = got[1]\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "what left the job is found and not ended",
+            PROCESS,
+            "                        _kernel32.TerminateProcess(self._reached[pid], 1)\n",
+            "                        pass\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "what was started while the first were ended is not looked for",
+            PROCESS,
+            "                    self._held.update(self._left)\n"
+            "                    self._left = self._look()\n",
+            "                    self._held.update(self._left)\n"
+            "                    self._left = {}\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "it is looked without end for what keeps being started",
+            PROCESS,
+            "                for _ in range(_SWEEPS):\n",
+            "                while True:\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the processes that were opened to stop a program are not let go",
+            PROCESS,
+            "            finally:\n"
+            "                for process in self._opened:\n"
+            "                    _kernel32.CloseHandle(process)\n",
+            "            finally:\n                pass\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the look at the machine is not let go",
+            PROCESS,
+            "        finally:\n            _kernel32.CloseHandle(snapshot)\n",
+            "        finally:\n            pass\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a process that does not say when it was made stays open",
+            PROCESS,
+            "        if made is None:\n            _kernel32.CloseHandle(process)\n            return None\n",
+            "        if made is None:\n            return None\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a program is held although nobody knows when it was made",
+            PROCESS,
+            '                _check(made is not None, "ask when the program was made")\n',
+            "",
         )
     ),
     mutant(
@@ -1146,6 +1265,60 @@ _PROCESS = (
         PROCESS,
         "        self._writing = {1} if errors is None else {1, 2}\n",
         "        self._writing = {1}\n",
+    ),
+)
+
+_DESCENT = (
+    # Who descends from whom is worked out without a look at any process, and its tests start
+    # none. So here are the faults that would end a stranger where processes are real: they
+    # are never tried with the tests of the process module.
+    mutant(
+        "a process older than the one it names is taken for its child",
+        DESCENT,
+        "            if when is None or when <= known[parent]:\n",
+        "            if when is None:\n",
+    ),
+    mutant(
+        "a process as old as the one it names is taken for its child",
+        DESCENT,
+        "            if when is None or when <= known[parent]:\n",
+        "            if when is None or when < known[parent]:\n",
+    ),
+    mutant(
+        "a process whose time cannot be found out is taken",
+        DESCENT,
+        "            if when is None or when <= known[parent]:\n",
+        "            if when is not None and when <= known[parent]:\n",
+    ),
+    mutant(
+        "what a descendant made is not looked for",
+        DESCENT,
+        "            known[child] = found[child] = when\n            waiting.append(child)\n",
+        "            known[child] = found[child] = when\n",
+    ),
+    mutant(
+        "a held process is among what is found",
+        DESCENT,
+        "            if child in known:\n                continue\n",
+        "",
+    ),
+    mutant(
+        "every process of the machine is taken for a child of every other",
+        DESCENT,
+        "        for child in children.get(parent, ()):\n",
+        "        for child in parents:\n",
+    ),
+    mutant(
+        "a descendant is given the time of the one that made it",
+        DESCENT,
+        "            known[child] = found[child] = when\n",
+        "            known[child] = found[child] = known[parent]\n",
+    ),
+    mutant(
+        "the search starts from one of the held processes only",
+        DESCENT,
+        "    waiting = list(held)\n",
+        "    waiting = list(held)[:1]\n",
     ),
 )
 
@@ -20046,6 +20219,7 @@ SETS: dict[str, MutantSet] = {
         _READ,
     ),
     "process": MutantSet(("tests/test_process.py", "tests/test_process_overflow.py"), _PROCESS),
+    "descent": MutantSet(("tests/test_descent.py",), _DESCENT),
     "fs": MutantSet(("tests/fs", "tests/builtin_tools"), _FS),
     "sandbox": MutantSet(("tests/sandbox/test_sandbox.py",), _SANDBOX),
     "transcript": MutantSet(

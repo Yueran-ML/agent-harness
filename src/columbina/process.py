@@ -221,8 +221,27 @@ if sys.platform == "win32":  # pragma: windows only
     import ctypes
     from ctypes import wintypes
 
+    from columbina.descent import descended
+
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _ntdll = ctypes.WinDLL("ntdll")
+
+    class _Listed(ctypes.Structure):
+        _fields_ = (("assigned", wintypes.DWORD), ("listed", wintypes.DWORD))
+
+    class _Entry(ctypes.Structure):
+        _fields_ = (
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        )
 
     _kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
     _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -241,6 +260,26 @@ if sys.platform == "win32":  # pragma: windows only
     _kernel32.TerminateJobObject.restype = wintypes.BOOL
     _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     _kernel32.CloseHandle.restype = wintypes.BOOL
+    _kernel32.QueryInformationJobObject.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.LPDWORD,
+    )
+    _kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+    _kernel32.IsProcessInJob.argtypes = (wintypes.HANDLE, wintypes.HANDLE, wintypes.PBOOL)
+    _kernel32.IsProcessInJob.restype = wintypes.BOOL
+    _kernel32.GetProcessTimes.argtypes = (wintypes.HANDLE, *(wintypes.LPFILETIME,) * 4)
+    _kernel32.GetProcessTimes.restype = wintypes.BOOL
+    _kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _kernel32.TerminateProcess.restype = wintypes.BOOL
+    _kernel32.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    _kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    _kernel32.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_Entry))
+    _kernel32.Process32FirstW.restype = wintypes.BOOL
+    _kernel32.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(_Entry))
+    _kernel32.Process32NextW.restype = wintypes.BOOL
     # Not in the documentation of the system, but in every version of it since XP, and what
     # psutil resumes a process with. The documented way is to look for the first thread of
     # the process among all threads of the machine.
@@ -251,8 +290,19 @@ if sys.platform == "win32":  # pragma: windows only
     _PROCESS_TERMINATE = 0x0001
     _PROCESS_SET_QUOTA = 0x0100
     _PROCESS_SUSPEND_RESUME = 0x0800
+    _PROCESS_QUERY_LIMITED = 0x1000
     _EXTENDED_LIMIT_INFORMATION = 9
+    _PROCESS_ID_LIST = 3
     _KILL_ON_JOB_CLOSE = 0x2000
+    _ALL_PROCESSES = 0x00000002
+    _NO_HANDLE = wintypes.HANDLE(-1).value
+    _MORE_DATA = 234
+
+    _ROOM = 64
+    """For how many processes of a job there is room when the system is first asked."""
+
+    _SWEEPS = 3
+    """How often it is looked for what the processes of a job started outside it."""
 
     class _BasicLimits(ctypes.Structure):
         _fields_ = (
@@ -288,19 +338,147 @@ if sys.platform == "win32":  # pragma: windows only
     _SPAWN: dict[str, Any] = {"creationflags": _CREATE_SUSPENDED | subprocess.CREATE_NO_WINDOW}
     """The program does not run until it is in its job, and it gets no window."""
 
+    def _made(process: int) -> int | None:
+        """Tell when an open process was made, as the system counts time."""
+        made, other = wintypes.FILETIME(), wintypes.FILETIME()
+        rest = (ctypes.byref(other),) * 3
+        if not _kernel32.GetProcessTimes(process, ctypes.byref(made), *rest):
+            return None
+        return (made.dwHighDateTime << 32) | made.dwLowDateTime
+
+    def _opened(pid: int, access: int) -> tuple[int, int] | None:
+        """Open a process, and return it with the time it was made.
+
+        While it is open its number is given to no other process, so
+        whatever names that number meanwhile means this one or one before it.
+        """
+        process = cast("int | None", _kernel32.OpenProcess(access, False, pid))
+        if not process:
+            return None
+        made = _made(process)
+        if made is None:
+            _kernel32.CloseHandle(process)
+            return None
+        return process, made
+
+    def _members(job: int) -> list[int]:
+        """List the processes that a job holds now. None are listed if the system does not say."""
+        room = _ROOM
+        while True:
+            size = ctypes.sizeof(_Listed) + room * ctypes.sizeof(ctypes.c_size_t)
+            listed = ctypes.create_string_buffer(size)
+            said = _kernel32.QueryInformationJobObject(job, _PROCESS_ID_LIST, listed, size, None)
+            head = _Listed.from_buffer(listed)
+            if said:
+                numbers = ctypes.c_size_t * head.listed
+                return list(numbers.from_buffer(listed, ctypes.sizeof(_Listed)))
+            if ctypes.get_last_error() != _MORE_DATA:
+                return []
+            room = 2 * room + head.assigned
+
+    def _parents() -> dict[int, int]:
+        """Look at every process of the machine, and return each with the one that made it."""
+        snapshot = cast("int | None", _kernel32.CreateToolhelp32Snapshot(_ALL_PROCESSES, 0))
+        if not snapshot or snapshot == _NO_HANDLE:
+            return {}
+        try:
+            parents: dict[int, int] = {}
+            entry = _Entry()
+            entry.dwSize = ctypes.sizeof(_Entry)
+            more = _kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                parents[entry.th32ProcessID] = entry.th32ParentProcessID
+                more = _kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+            return parents
+        finally:
+            _kernel32.CloseHandle(snapshot)
+
+    class _Strays:
+        """What the processes of a job started that is not in the job.
+
+        A program that the system starts through an app execution alias, as
+        it does a Python that was installed from the Microsoft Store, is put
+        outside the job of whoever asked for it. It is found by who made
+        whom: it descends from a process of the job.
+
+        They are looked for at once, while the processes of the job still
+        run, because one is found through the ones that made it. Every
+        process that is looked at stays open until :meth:`end` is over, so
+        that its number names nobody else meanwhile.
+        """
+
+        __slots__ = ("_held", "_left", "_opened", "_reached")
+
+        def __init__(self, job: int, program: int, made: int) -> None:
+            self._opened: list[int] = []
+            self._reached: dict[int, int] = {}
+            # The program counts whether it still runs or not: whoever made this keeps
+            # it open. A number of the list counts only if the process that is opened
+            # under it is in the job, since the one that was listed may be gone already.
+            self._held = {program: made}
+            for pid in _members(job):
+                got = None if pid in self._held else _opened(pid, _PROCESS_QUERY_LIMITED)
+                if got is None:
+                    continue
+                self._opened.append(got[0])
+                inside = wintypes.BOOL()
+                _kernel32.IsProcessInJob(got[0], job, ctypes.byref(inside))
+                if inside.value:
+                    self._held[pid] = got[1]
+            self._left = self._look()
+
+        def _made(self, pid: int) -> int | None:
+            got = _opened(pid, _PROCESS_TERMINATE | _PROCESS_QUERY_LIMITED)
+            if got is None:
+                return None
+            self._opened.append(got[0])
+            self._reached[pid] = got[0]
+            return got[1]
+
+        def _look(self) -> dict[int, int]:
+            return descended(self._held, _parents(), self._made)
+
+        def end(self) -> None:
+            """End them, and let go of every process that was opened.
+
+            What is ended may have started something a moment before, so it
+            is looked again, a few times at most. One that has ended by
+            itself cannot be ended, which is no failure.
+            """
+            try:
+                for _ in range(_SWEEPS):
+                    if not self._left:
+                        break
+                    for pid in self._left:
+                        _kernel32.TerminateProcess(self._reached[pid], 1)
+                    self._held.update(self._left)
+                    self._left = self._look()
+            finally:
+                for process in self._opened:
+                    _kernel32.CloseHandle(process)
+
     class _Tree:
         """A program and all that it starts, held in a job object.
 
         The system ends what is in the job when the job is given up, so
-        nothing of a command outlives this process either.
+        nothing of it outlives this process either.
+
+        Not everything that a program starts is in its job, see
+        :class:`_Strays`. Stopping ends those too. It finds one through the
+        processes that made it, so one whose maker has ended before the
+        stop is not found, and none is ended when this process is ended
+        itself.
 
         Raises:
             OSError: The program could not be put into a job or let run.
         """
 
-        __slots__ = ("_job",)
+        __slots__ = ("_job", "_made", "_pid", "_root")
 
         def __init__(self, pid: int) -> None:
+            self._pid = pid
+            self._made = 0
+            self._root: int | None = None
             job = cast("int | None", _kernel32.CreateJobObjectW(None, None))
             _check(job, "create a job for the program")
             self._job = job
@@ -317,32 +495,42 @@ if sys.platform == "win32":  # pragma: windows only
                     "set up the job of the program",
                 )
                 access = _PROCESS_TERMINATE | _PROCESS_SET_QUOTA | _PROCESS_SUSPEND_RESUME
-                process = cast("int | None", _kernel32.OpenProcess(access, False, pid))
-                _check(process, "reach the program")
-                try:
-                    _check(
-                        _kernel32.AssignProcessToJobObject(job, process),
-                        "put the program into its job",
-                    )
-                    status = cast("int", _ntdll.NtResumeProcess(process))
-                    if status < 0:
-                        code = status & 0xFFFFFFFF
-                        raise OSError(f"could not let the program run: status {code:#010x}")
-                finally:
-                    _kernel32.CloseHandle(process)
+                # Kept open as long as the job, so that the number of the program goes on
+                # naming the program when it has ended.
+                root = _kernel32.OpenProcess(access | _PROCESS_QUERY_LIMITED, False, pid)
+                self._root = cast("int | None", root)
+                _check(self._root, "reach the program")
+                _check(
+                    _kernel32.AssignProcessToJobObject(job, self._root),
+                    "put the program into its job",
+                )
+                made = _made(cast("int", self._root))
+                _check(made is not None, "ask when the program was made")
+                self._made = cast("int", made)
+                status = cast("int", _ntdll.NtResumeProcess(self._root))
+                if status < 0:
+                    code = status & 0xFFFFFFFF
+                    raise OSError(f"could not let the program run: status {code:#010x}")
             except BaseException:
                 self.close()
                 raise
 
         def stop(self) -> None:
-            """End every process of the job. A failure is written down, not raised."""
+            """End every process of the job, and what they started that is not in it.
+
+            A failure to end the job is written down, not raised.
+            """
+            strays = _Strays(cast("int", self._job), self._pid, self._made)
             if not _kernel32.TerminateJobObject(self._job, 1):
                 code = ctypes.get_last_error()
                 logger.error("a program could not be stopped: %s", ctypes.FormatError(code))
+            strays.end()
 
         def close(self) -> None:
-            """Give the job up, which is done once."""
+            """Give the job and the program up, which is done once."""
             _kernel32.CloseHandle(self._job)
+            if self._root:
+                _kernel32.CloseHandle(self._root)
 
     def _end_unheld(transport: asyncio.SubprocessTransport) -> None:
         """End a program that is in no job yet. It was made suspended and has not run."""

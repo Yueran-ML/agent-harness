@@ -23,7 +23,8 @@ It keeps what it knows in the directory that the variable
     Every call of it, a file each, named so that they sort by time: the
     arguments, and for some what it saw at that moment.
 ``containers``
-    One file for each container that is there.
+    One file for each container that is there, and one for each command that
+    runs in one.
 """
 
 import contextlib
@@ -34,6 +35,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +46,8 @@ from support.processes import alive
 
 HOME = Path(os.environ["COLUMBINA_FAKE_DOCKER"])
 CONTAINERS = HOME / "containers"
+LOOKED = HOME / "looked"
+"""There when a stop has looked and found nothing, where a test has a command wait for that."""
 
 DESKTOP = (
     '{"version":"29.8.2","system":"Docker Desktop",'
@@ -86,6 +90,29 @@ def shown(path: Path, what: object) -> None:
     unfinished.replace(path)
 
 
+def cleared(path: Path) -> None:
+    """Take a file away, if it is there.
+
+    Several of these programs take the same file away at the same moment, and Windows
+    refuses one of them for as long as the other is at it.
+    """
+    for _ in range(200):
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            time.sleep(0.01)
+        else:
+            return
+    raise RuntimeError(f"{path.name} could not be taken away")
+
+
+def until(so: Callable[[], bool], seconds: float = 30.0) -> None:
+    """Wait until something is so. A wait that nothing ends is given up after a long time."""
+    deadline = time.monotonic() + seconds
+    while not so() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
 def note(**what: object) -> None:
     """Write down a call, in a file of its own: several of these run at the same time."""
     (HOME / "calls").mkdir(exist_ok=True)
@@ -126,12 +153,31 @@ def container(name: str) -> dict[str, Any] | None:
     return known if alive(known["pid"]) else None
 
 
+def command(name: str, pid: int) -> Path:
+    """Return where it is written down that a process is a command of a container.
+
+    Each command has a file of its own, which is named after its process. What is in it
+    says nothing. Several of these programs look and write at the same time: one starts a
+    command while another stops what runs. With one list for all of them, a stop that
+    clears the list would clear away a command that was written down after it had looked.
+    """
+    return CONTAINERS / f"{name}.{pid}.pid"
+
+
 def commands(name: str) -> list[int]:
-    """Return the processes of the commands that run in a container."""
-    try:
-        return [int(line) for line in (CONTAINERS / f"{name}.pids").read_text().split()]
-    except OSError:
-        return []
+    """Return the processes that are written down as the commands of a container."""
+    return sorted(int(known.name.split(".")[-2]) for known in CONTAINERS.glob(f"{name}.*.pid"))
+
+
+def forgotten(name: str) -> None:
+    """Take away all that is written down of a container that is gone.
+
+    A file that another of these programs is still writing is left to that program: it
+    has another name until it is written to its end.
+    """
+    for left in CONTAINERS.glob(f"{name}.*"):
+        if left.suffix != ".part":
+            cleared(left)
 
 
 def info(how: dict[str, Any]) -> int:
@@ -174,8 +220,7 @@ def run(argv: list[str], how: dict[str, Any]) -> int:
         time.sleep(0.05)
     for pid in commands(name):
         end(pid)
-    for left in CONTAINERS.glob(f"{name}.*"):
-        left.unlink(missing_ok=True)
+    forgotten(name)
     return 0
 
 
@@ -209,16 +254,23 @@ def execute(argv: list[str], how: dict[str, Any]) -> int:
     if how.get("exec") == "refused":
         return fail(1, "Error response from daemon: the container is paused")
     time.sleep(float(how.get("late", 0)))
+    if how.get("stop") == "waits-for-a-start":
+        # A test has the command start when a stop has looked and found nothing, not before.
+        until(LOOKED.exists)
     # The command runs where its directory really is.
     source = next(mount["source"] for mount in known["mounts"] if mount["target"] == workdir)
     # Ending the program that asked for a command does not end the command in a container.
     # Where the system lets a process leave the one that started it, it is the same here.
     apart: dict[str, Any] = {} if sys.platform == "win32" else {"start_new_session": True}
     child = subprocess.Popen(words, cwd=source, env={**os.environ, **given}, **apart)
-    with (CONTAINERS / f"{name}.pids").open("a") as pids:
-        pids.write(f"{child.pid}\n")
+    # Under its name the file is there when it is closed: a stop that finds it takes it away.
+    shown(command(name, child.pid), None)
     note(started=child.pid)
     code = child.wait()
+    # It has ended, and its number is free for another process from here on. Nobody is to
+    # end that one for a command. Where this program is ended first, the command is still
+    # written down, and a stop finds it.
+    cleared(command(name, child.pid))
     return STOPPED if code in (STOPPED, -signal.SIGTERM, -9) else code
 
 
@@ -255,8 +307,13 @@ def numbers(known: dict[str, Any], workdir: str, way: str, over: list[str]) -> N
 
 
 def stop(name: str, how: dict[str, Any]) -> int:
-    """Do what the stop of the provider does in a real container: end every command in it."""
-    running = [pid for pid in commands(name) if alive(pid)]
+    """Do what the stop of the provider does in a real container: end every command in it.
+
+    It ends what it saw when it looked. A command that starts after the look is left for
+    the next stop, as it is in a real container.
+    """
+    seen = commands(name)
+    running = [pid for pid in seen if alive(pid)]
     note(stop=name, running=len(running))
     if how.get("stop") == "fails":
         return fail(1, "Error response from daemon: the engine is out of sorts")
@@ -267,9 +324,16 @@ def stop(name: str, how: dict[str, Any]) -> int:
     if how.get("stop") == "left":
         print("left", flush=True)
         return 0
+    if how.get("stop") == "waits-for-a-start" and not seen and not LOOKED.exists():
+        # A test has a command start between the look of a stop and what the stop does
+        # then. The first stop that finds nothing says that it has looked, and goes on when
+        # a command is written down.
+        LOOKED.write_text("")
+        until(lambda: bool(commands(name)))
     for pid in running:
         end(pid)
-    (CONTAINERS / f"{name}.pids").unlink(missing_ok=True)
+    for pid in seen:
+        cleared(command(name, pid))
     print("none", flush=True)
     return int(how.get("stop_exit", 0))
 
@@ -297,8 +361,7 @@ def remove(argv: list[str], how: dict[str, Any]) -> int:
     if known is not None:
         for pid in (*commands(name), known["pid"]):
             end(pid)
-        for left in CONTAINERS.glob(f"{name}.*"):
-            left.unlink(missing_ok=True)
+        forgotten(name)
     return 0
 
 

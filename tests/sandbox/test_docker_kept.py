@@ -1340,15 +1340,29 @@ async def test_a_container_that_ended_without_a_word_may_be_there_where_nobody_c
     ]
 
 
+@pytest.mark.parametrize(
+    ("how", "said"),
+    [
+        ("breaks", "out of sorts"),
+        # What the program wrote says that no container was made. The engine lists one of
+        # that name all the same, and a look that worked counts for more than those words.
+        ("no-image", "is not on this machine"),
+    ],
+)
 async def test_a_container_that_is_seen_although_it_never_spoke_is_warned_of(
-    engine: Engine, session: Session, work: Path, caplog: pytest.LogCaptureFixture
+    engine: Engine,
+    session: Session,
+    work: Path,
+    caplog: pytest.LogCaptureFixture,
+    how: str,
+    said: str,
 ) -> None:
-    engine.told(run="breaks", ps="stuck")
+    engine.told(run=how, ps="stuck")
     provider = Docker(DockerConfig(program=engine.program))
 
     with (
         caplog.at_level(logging.WARNING, logger="columbina.sandbox.docker"),
-        pytest.raises(SandboxUnavailableError, match="out of sorts"),
+        pytest.raises(SandboxUnavailableError, match=said),
     ):
         await ran(provider, session, work, "pass")
 
@@ -2255,6 +2269,26 @@ async def test_a_command_that_the_engine_starts_late_is_stopped_all_the_same(
     assert stops[0] == 0
     assert 1 in stops
     # It did start, late, and was stopped as soon as it was there.
+    (command,) = engine.started()[before:]
+    assert await gone(command)
+    assert "rm" not in engine.verbs()
+
+
+async def test_a_command_that_starts_while_a_stop_is_under_way_is_stopped_by_the_next_one(
+    provider: Docker, engine: Engine, session: Session, work: Path
+) -> None:
+    # The stand-in brings about one order of things, and waits for each step of it: a stop
+    # looks and finds nothing, then the engine starts the command, and only then does that
+    # stop clear away what it saw and answer. What it clears must not be the command.
+    await ran(provider, session, work, "pass")
+    before = len(engine.started())
+    engine.told(stop="waits-for-a-start")
+
+    done = await ran(provider, session, work, "import time; time.sleep(60)", seconds=0.5)
+
+    assert (done.timed_out, done.notes) == (True, ())
+    # The stop that waited had found nothing, and the one after it found the command.
+    assert engine.stops()[1:3] == [0, 1]
     (command,) = engine.started()[before:]
     assert await gone(command)
     assert "rm" not in engine.verbs()

@@ -21,12 +21,16 @@ checks spoke about another file.
 import asyncio
 import codecs
 import threading
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 
 from pydantic import BaseModel, Field
 
 from columbina.fs import FS, Access, Fingerprint, Fs, Permit
 from columbina.kernel import Context
+from columbina.session import Session
+from columbina.spill import LIMIT
+from columbina.token_meter import estimate
 from columbina.tools import RESULT, TOOLS, Tool, ToolFailure, ToolOutcome, ToolRun
 
 __all__ = ["ReadArgs", "ReadResult", "apply", "inject", "name", "read_tool"]
@@ -232,6 +236,50 @@ def _note(part: _Part, offset: int) -> str | None:
     return f"[lines {first} to {last} of at least {part.lines}.{read_on} {looked_at}]"
 
 
+def _told(part: _Part, offset: int) -> str:
+    """Return what a model reads of a part: its lines, and what is said after them."""
+    note = _note(part, offset)
+    return "\n".join(part.shown if note is None else [*part.shown, note])
+
+
+def _fitting(part: _Part, offset: int, tokens: int) -> _Part:
+    """Return a part with no more of its lines than a result may hold.
+
+    A page is bounded by lines and by bytes, which says little of what it
+    costs a model that takes few tokens. So where the lines and what is said
+    after them come to more than so many tokens, as they are estimated, the
+    part ends earlier, with a whole line. What is said after it then tells
+    how to read on. One line stays however little room there is: a line is
+    cut to size by itself, and a page without a line would say nothing.
+    """
+
+    def fits(count: int) -> bool:
+        return estimate(_told(replace(part, shown=part.shown[:count]), offset)) <= tokens
+
+    if fits(len(part.shown)):
+        return part
+    low, high = 1, len(part.shown) - 1
+    while low < high:
+        middle = (low + high + 1) // 2
+        if fits(middle):
+            low = middle
+        else:
+            high = middle - 1
+    return replace(part, shown=part.shown[:low])
+
+
+def _page(
+    permit: Permit, offset: int, limit: int, stopped: threading.Event, room: int | None
+) -> _Part | None:
+    """Read lines of a file, and return no more of them than a result may hold.
+
+    Both are done in the thread that reads: working out how many lines fit
+    takes as long as the lines are many.
+    """
+    part = _load(permit, offset, limit, stopped)
+    return part if part is None or room is None else _fitting(part, offset, room)
+
+
 @dataclass(frozen=True, slots=True)
 class ReadResult:
     """What a read returns.
@@ -254,8 +302,17 @@ def _text(args: ReadArgs, result: ReadResult) -> str:
     return result.text
 
 
-def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
-    """Make the read tool, which reaches files through ``fs``."""
+def read_tool(
+    fs: Fs, room: Callable[[Session], int | None] | None = None
+) -> Tool[ReadArgs, ReadResult]:
+    """Make the read tool, which reaches files through ``fs``.
+
+    Args:
+        fs: The seam of the file system.
+        room: Says how many tokens a page may come to in a session, or
+            ``None`` where nothing says. Without it a page is bounded by
+            lines and bytes alone.
+    """
 
     def target(args: ReadArgs, run: ToolRun) -> str:
         return fs.locate(run.session, run.cwd, args.path).relative
@@ -272,8 +329,9 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
         if where.path.is_dir():
             raise ToolFailure(f"{args.path} is a directory, not a file.", code="NOT_A_FILE")
         stopped = threading.Event()
+        tokens = None if room is None else room(run.session)
         try:
-            part = await asyncio.to_thread(_load, permit, args.offset, args.limit, stopped)
+            part = await asyncio.to_thread(_page, permit, args.offset, args.limit, stopped, tokens)
         except FileNotFoundError:
             raise ToolFailure(f"There is no file {args.path}.", code="NOT_FOUND") from None
         except OSError as error:
@@ -285,9 +343,7 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
             raise ToolFailure(f"{args.path} does not look like a text file.", code="NOT_TEXT")
         if part.lines == 0:
             return ReadResult("(the file is empty)", permit, part.fingerprint, True)
-        note = _note(part, args.offset)
-        text = "\n".join(part.shown if note is None else [*part.shown, note])
-        return ReadResult(text, permit, part.fingerprint, bool(part.shown))
+        return ReadResult(_told(part, args.offset), permit, part.fingerprint, bool(part.shown))
 
     return Tool(
         name="read",
@@ -322,5 +378,10 @@ def apply(ctx: Context, config: object) -> None:
         ):
             fs.showing(result.permit, result.fingerprint)
 
-    ctx.use(TOOLS).add(ctx, read_tool(fs))
+    def room(session: Session) -> int | None:
+        # Whoever keeps results within a limit may be loaded after this tool, or not at all.
+        limit = ctx.get(LIMIT)
+        return None if limit is None else limit.tokens(session)
+
+    ctx.use(TOOLS).add(ctx, read_tool(fs, room))
     ctx.on(RESULT, remember)

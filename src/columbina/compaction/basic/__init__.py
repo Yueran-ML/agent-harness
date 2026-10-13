@@ -28,14 +28,23 @@ Making it shorter is done in this order.
    for a conversation, the whole of a result is saved there before it is
    cut, and what takes its place says where: the model can read again what
    it turns out to need.
-2. Otherwise the oldest part is summed up by the model, as it stands: with
+2. Otherwise the results that the model has not read yet are looked at: the
+   ones that its last reply asked for. Together they may fill a part of its
+   window. A model that takes little can ask for several at once that are
+   each within their limit and together most of what it takes. If cutting
+   the largest of them down, as far as it takes for all of them to fit
+   their part, is enough with the first, that is done, and nothing is
+   summed up to make room for results of which the model needs the
+   beginning and the end. How far they are cut is counted in tokens: see
+   :func:`.trim.capped`.
+3. Otherwise the oldest part is summed up by the model, as it stands: with
    the results whole, the summary is better, and the request is one whose
    beginning the service has seen before. See :mod:`.region` for what goes
    and :mod:`.summary` for how it is asked for. A part that comes to no more
    than the frame that a summary stands in is not summed up: no summary of
    it could be shorter, and asking for one costs a request.
-3. If that is still not enough, the results that are left are cut down. So
-   are they if no summary came of it.
+4. If that is still not enough, the results that were found in the first two
+   are cut down. So are they if no summary came of it.
 
 A failure never ends the turn that it happened in. The end of the attempt is
 written to the log with the reason, and the conversation goes on as it was,
@@ -86,7 +95,7 @@ from columbina.compaction import (
 )
 from columbina.compaction.basic.region import Region, choose
 from columbina.compaction.basic.summary import SummaryError, carried, summarise
-from columbina.compaction.basic.trim import Cut, cuts, located, whole
+from columbina.compaction.basic.trim import Cut, capped, cuts, level, located, unread, whole
 from columbina.compaction.basic.trim import apply as cut_down
 from columbina.fs import FS
 from columbina.kernel import Context, Next
@@ -141,6 +150,11 @@ class Config(BaseModel):
             before it is cut down.
         trim_head: How many characters of its beginning are kept.
         trim_tail: How many characters of its end are kept.
+        unread_ratio: The part of the window that the results of one reply
+            may fill together while the model has not read them. Where
+            cutting the largest of them down to that part spares a summary,
+            they are cut. Where a summary is written all the same, they stay
+            whole unless the summary is not enough either.
     """
 
     auto: bool = True
@@ -148,6 +162,7 @@ class Config(BaseModel):
     headroom_tokens: int = Field(default=65_536, gt=0)
     headroom_ratio: float = Field(default=0.25, gt=0, lt=1)
     retain_ratio: float = Field(default=0.16, gt=0, lt=1)
+    unread_ratio: float = Field(default=0.4, gt=0, le=1)
     trim_over: int = Field(default=8192, gt=0)
     trim_head: int = Field(default=4096, ge=0)
     trim_tail: int = Field(default=1024, ge=0)
@@ -440,6 +455,14 @@ class Basic:
             saved = sum(size(cut.whole.message) - size(cut.shorter.message) for cut in found)
             enough = plan.target is not None and plan.size - saved <= plan.target
             if not enough:
+                # What was read is not enough. The results that the model is about to read
+                # give way next, as far as they fill more of its window together than the
+                # results of one reply should. That may spare the summary.
+                ahead = self._ahead(session, model, said, size)
+                spared = sum(size(cut.whole.message) - size(cut.shorter.message) for cut in ahead)
+                found = [*found, *ahead]
+                enough = plan.target is not None and plan.size - saved - spared <= plan.target
+            if not enough:
                 limits = plan.limits
                 region = choose(
                     session,
@@ -477,6 +500,40 @@ class Basic:
             error = _describe(failed)
         counts = why == "pressure"
         return self._end(session, why, measured.tokens, trimmed, summarised, error, counts=counts)
+
+    def _ahead(
+        self,
+        session: Session,
+        model: CallConfig,
+        said: Refusal | None,
+        size: Callable[[Message], int],
+    ) -> list[Cut]:
+        """Return the cuts of results that the model has not read yet which make room.
+
+        The results of one reply may fill a part of the window together. A
+        model that takes little can ask for several at once that are each
+        within their limit and together most of what it takes. Summing up
+        what was said before would then make room for results of which the
+        model needs the beginning and the end. So the largest of them give
+        way, each as far as the rest and none further than is needed for
+        them to fit their part together.
+
+        How far is counted in tokens. The numbers by which read results are
+        cut are numbers of characters, and a result in a script that costs
+        much by the character is within its limit long before it is long by
+        those.
+
+        Where nothing says how much a model takes, there is no part to fit,
+        and none gives way.
+        """
+        window = (None if said is None else said.window) or model.context_window
+        if window is None:
+            return []
+        sizes = [size(result.message) for result in unread(session)]
+        room = math.floor(window * self._config.unread_ratio)
+        # Where all of them have room, the most that each may come to is what the largest
+        # comes to, and none is found that comes to more.
+        return capped(session, cap=level(sizes, room), size=lambda result: size(result.message))
 
     def _forget(self, agent: Agent, call_ids: Collection[str]) -> None:
         """Tell the seam of the files that the model no longer sees what some calls showed it.

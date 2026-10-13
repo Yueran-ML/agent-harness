@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 import columbina.fs
 import columbina.session
@@ -14,9 +14,9 @@ import columbina.spill.local
 import columbina.spill.policy
 import columbina.tools
 from columbina.kernel import Context, Next
-from columbina.llm import ToolCallBlock
-from columbina.session import SESSIONS, Session
-from columbina.spill import Saved
+from columbina.llm import CallConfig, TextBlock, ToolCallBlock, UserMessage
+from columbina.session import SESSIONS, RequestHeaderEvent, Session, UserMessageEvent
+from columbina.spill import LIMIT, Saved
 from columbina.spill.policy import Config, two_ends
 from columbina.token_meter import estimate
 from columbina.tools import (
@@ -91,6 +91,145 @@ async def bench(ctx: Context, tmp_path: Path, *, store: bool = True, **config: o
 
 def test_a_result_may_have_twelve_and_a_half_thousand_tokens() -> None:
     assert Config().max_tokens == 12_500
+
+
+def test_a_result_may_fill_a_quarter_of_the_window_of_its_model() -> None:
+    assert Config().window_ratio == 0.25
+
+
+def asked_by(session: Session, window: int | None) -> None:
+    """Have a model with such a window make the requests of a session from now on."""
+    config = CallConfig(provider="scripted", model="some-model", context_window=window)
+    session.append(RequestHeaderEvent(config=config, tools=()))
+
+
+@pytest.mark.parametrize(
+    ("window", "tokens"),
+    [
+        # Nothing says how much the model takes.
+        (None, 400),
+        # A quarter of what it takes is more than any result may be.
+        (1_000_000, 400),
+        (1601, 400),
+        (1600, 400),
+        # Rounded down.
+        (1599, 399),
+        (1100, 275),
+        (1024, 256),
+        # And never less than a result needs to say what it left out and where that is.
+        (1023, 256),
+        (800, 256),
+        (3, 256),
+    ],
+)
+async def test_how_large_a_result_may_be_follows_the_window_of_the_model_that_asked(
+    ctx: Context, tmp_path: Path, window: int | None, tokens: int
+) -> None:
+    at = await bench(ctx, tmp_path, max_tokens=400)
+    asked_by(at.session, window)
+
+    assert ctx.use(LIMIT).tokens(at.session) == tokens
+
+
+@pytest.mark.parametrize(("limit", "tokens"), [(100, 100), (256, 256), (257, 256)])
+async def test_the_least_that_a_result_may_be_is_no_more_than_the_config_allows(
+    ctx: Context, tmp_path: Path, limit: int, tokens: int
+) -> None:
+    # Whoever set a limit below it meant that limit.
+    at = await bench(ctx, tmp_path, max_tokens=limit)
+    asked_by(at.session, 200)
+
+    assert ctx.use(LIMIT).tokens(at.session) == tokens
+
+
+async def test_a_result_is_no_longer_for_having_been_cut_however_little_its_model_takes(
+    ctx: Context, tmp_path: Path
+) -> None:
+    # Nowhere to save the whole, and a model of which the config says that it takes next to
+    # nothing. What takes the place of a result says what was left out and that it is gone.
+    at = await bench(ctx, tmp_path, store=False)
+    asked_by(at.session, 4)
+    small, large = "abcdefgh", "".join(f"line {number}: {LINE}" for number in range(25))
+    assert estimate(small) < 256 < estimate(large) < 400
+    at.offer("little", small)
+    at.offer("more", large)
+
+    assert (await at.call("little")).text == small
+    shown = (await at.call("more")).text
+    assert estimate(shown) <= 256
+    assert shown.startswith("line 0: ")
+    assert shown.endswith("(The whole result was not kept: this program has no place to save it.)")
+
+
+async def test_a_session_in_which_no_model_was_asked_yet_has_the_limit_of_the_config(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, max_tokens=400)
+
+    assert ctx.use(LIMIT).tokens(at.session) == 400
+
+
+async def test_the_window_that_counts_is_that_of_the_model_that_was_asked_last(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, max_tokens=400)
+    limit = ctx.use(LIMIT)
+
+    asked_by(at.session, 800)
+    asked_by(at.session, 1200)
+    # What follows in the log says nothing of the model, and changes nothing.
+    at.session.append(UserMessageEvent(message=UserMessage(content=(TextBlock(text="Go."),))))
+    of_the_second = limit.tokens(at.session)
+    asked_by(at.session, None)
+
+    assert (of_the_second, limit.tokens(at.session)) == (300, 400)
+
+
+async def test_the_part_of_the_window_that_a_result_may_fill_is_a_matter_of_the_config(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, max_tokens=400, window_ratio=0.1)
+    asked_by(at.session, 3000)
+
+    assert ctx.use(LIMIT).tokens(at.session) == 300
+
+
+@pytest.mark.parametrize("ratio", [0, -0.5, 1.5])
+def test_a_part_of_the_window_is_more_than_nothing_and_no_more_than_all_of_it(
+    ratio: float,
+) -> None:
+    with pytest.raises(ValidationError):
+        Config(window_ratio=ratio)
+
+
+async def test_a_result_is_cut_to_what_the_window_of_its_model_allows(
+    ctx: Context, tmp_path: Path
+) -> None:
+    # Below the limit of the config, and more than a quarter of what this model takes.
+    at = await bench(ctx, tmp_path, max_tokens=4000)
+    asked_by(at.session, 1600)
+    text = "".join(f"line {number}: {LINE}" for number in range(100))
+    assert 400 < estimate(text) <= 4000
+    at.offer("say", text)
+
+    shown = (await at.call("say")).text
+
+    assert 360 < estimate(shown) <= 400
+    assert shown.startswith("line 0: ")
+    (file,) = at.saved()
+    assert file.read_text(encoding="utf-8") == text
+
+
+async def test_a_result_within_what_the_window_allows_goes_through_as_it_is(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await bench(ctx, tmp_path, max_tokens=4000)
+    text = "".join(f"line {number}: {LINE}" for number in range(100))
+    asked_by(at.session, 4 * estimate(text))
+    at.offer("say", text)
+
+    assert (await at.call("say")).text == text
+    assert at.saved() == []
 
 
 async def test_a_result_that_is_small_enough_goes_through_as_it_is(
@@ -254,6 +393,33 @@ async def test_the_read_tool_hands_out_its_result_in_pages(ctx: Context, tmp_pat
 
     assert ctx.use(TOOLS).registry["read"].paged
     assert not Tool(name="say", description="Says.", parameters=Nothing, execute=None).paged  # pyright: ignore[reportArgumentType]
+
+
+async def test_a_page_of_the_read_tool_is_as_large_as_a_result_may_be_for_its_model(
+    ctx: Context, tmp_path: Path
+) -> None:
+    from columbina.builtin_tools import read
+
+    # The tool is there before whoever says how large a result may be, as in the program.
+    await ctx.plugin(columbina.session)
+    await ctx.plugin(columbina.tools)
+    await ctx.plugin(columbina.fs)
+    await ctx.plugin(read)
+    await ctx.plugin(columbina.spill.policy, {"max_tokens": 4000})
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "long.txt").write_text("".join(f"line {n}: {LINE}" for n in range(400)), "utf-8")
+    session = ctx.use(SESSIONS).create(ctx, work, session_id="s-1")
+    asked_by(session, 1600)
+    block = ToolCallBlock(call_id="c-1", name="read", arguments='{"path": "long.txt"}')
+
+    outcome = await ctx.use(TOOLS).run(ctx, block, ToolRun("c-1", work, session))
+
+    # A quarter of what the model takes, and not the 2000 lines that a page may have.
+    assert outcome.error is None
+    assert 360 < estimate(outcome.text) <= 400
+    assert outcome.text.splitlines()[-1].startswith("[lines 1 to ")
+    assert outcome.text.splitlines()[-1].endswith(" to read on.]")
 
 
 @dataclass(frozen=True)

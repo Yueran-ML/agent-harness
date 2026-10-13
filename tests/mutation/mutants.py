@@ -543,6 +543,60 @@ _LOOP = (
 
 _READ = (
     mutant(
+        "a page is as large as its lines and bytes allow whatever a result may be",
+        READ,
+        "    return part if part is None or room is None else _fitting(part, offset, room)\n",
+        "    return part\n",
+    ),
+    mutant(
+        "the read tool asks nobody how large a page may be",
+        READ,
+        "        tokens = None if room is None else room(run.session)\n",
+        "        tokens = None\n",
+    ),
+    mutant(
+        "whoever says how large a result may be is not asked for a page",
+        READ,
+        "        return None if limit is None else limit.tokens(session)\n",
+        "        return None\n",
+    ),
+    mutant(
+        "a page that fits loses its last line",
+        READ,
+        "    if fits(len(part.shown)):\n        return part\n    low, high = 1, len(part.shown) - 1\n",
+        "    low, high = 1, len(part.shown) - 1\n",
+    ),
+    mutant(
+        "a page holds a line less than there is room for",
+        READ,
+        "    return replace(part, shown=part.shown[:low])\n",
+        "    return replace(part, shown=part.shown[: low - 1])\n",
+    ),
+    mutant(
+        "a page holds a line more than there is room for",
+        READ,
+        "    return replace(part, shown=part.shown[:low])\n",
+        "    return replace(part, shown=part.shown[: low + 1])\n",
+    ),
+    mutant(
+        "a page may be without a line where there is little room",
+        READ,
+        "    low, high = 1, len(part.shown) - 1\n",
+        "    low, high = 0, len(part.shown) - 1\n",
+    ),
+    mutant(
+        "what is said after the lines of a page is not counted",
+        READ,
+        "        return estimate(_told(replace(part, shown=part.shown[:count]), offset)) <= tokens\n",
+        '        return estimate("".join(part.shown[:count])) <= tokens\n',
+    ),
+    mutant(
+        "a page that comes to exactly what a result may be is too large",
+        READ,
+        "        return estimate(_told(replace(part, shown=part.shown[:count]), offset)) <= tokens\n",
+        "        return estimate(_told(replace(part, shown=part.shown[:count]), offset)) < tokens\n",
+    ),
+    mutant(
         "fast path one line too early",
         READ,
         "if self.lines + breaks < self._first or self.lines >= self._end:",
@@ -10189,6 +10243,100 @@ _SPILL = (
 
 _CAP = (
     mutant(
+        "a result may be as large as the config says whatever its model takes",
+        SPILL_POLICY,
+        "    return min(config.max_tokens, part)\n",
+        "    return config.max_tokens\n",
+    ),
+    mutant(
+        "a result may fill its part of the window also where the config allows less",
+        SPILL_POLICY,
+        "    return min(config.max_tokens, part)\n",
+        "    return part\n",
+    ),
+    mutant(
+        "a part of a window is rounded up",
+        SPILL_POLICY,
+        "    part = max(math.floor(window * config.window_ratio), _LEAST)\n",
+        "    part = max(math.ceil(window * config.window_ratio), _LEAST)\n",
+    ),
+    mutant(
+        "a model that takes next to nothing may have next to no result",
+        SPILL_POLICY,
+        "    part = max(math.floor(window * config.window_ratio), _LEAST)\n",
+        "    part = math.floor(window * config.window_ratio)\n",
+    ),
+    mutant(
+        "the least that a result may be raises the limit of the config",
+        SPILL_POLICY,
+        "    return min(config.max_tokens, part)\n",
+        "    return max(min(config.max_tokens, part), _LEAST)\n",
+    ),
+    mutant(
+        "the least that a result may be is half of what it is",
+        SPILL_POLICY,
+        "_LEAST = 256\n",
+        "_LEAST = 128\n",
+    ),
+    mutant(
+        "the least that a result may be is twice what it is",
+        SPILL_POLICY,
+        "_LEAST = 256\n",
+        "_LEAST = 512\n",
+    ),
+    mutant(
+        "where nothing says how much a model takes a result may be next to nothing",
+        SPILL_POLICY,
+        "    if window is None:\n        return config.max_tokens\n",
+        "    if window is None:\n        return 1\n",
+    ),
+    mutant(
+        "a model that says nothing of its window is given the window of the one before",
+        SPILL_POLICY,
+        "    return data.config.context_window if isinstance(data, RequestHeaderEvent) else state\n",
+        "    return (\n"
+        "        (data.config.context_window or state)\n"
+        "        if isinstance(data, RequestHeaderEvent)\n"
+        "        else state\n"
+        "    )\n",
+    ),
+    mutant(
+        "the window of a model is forgotten with the next event of its session",
+        SPILL_POLICY,
+        "    return data.config.context_window if isinstance(data, RequestHeaderEvent) else state\n",
+        "    return data.config.context_window if isinstance(data, RequestHeaderEvent) else None\n",
+    ),
+    mutant(
+        "a result is cut to the limit of the config whatever its model takes",
+        SPILL_POLICY,
+        "        tokens = limit.tokens(executed.invocation.run.session)\n",
+        "        tokens = config.max_tokens\n",
+    ),
+    mutant(
+        "nobody is told how large a result may be",
+        SPILL_POLICY,
+        "    ctx.provide(LIMIT, limit)\n",
+        "",
+    ),
+    mutant(
+        "the part of a window that a result may fill may be nothing",
+        SPILL_POLICY,
+        "    window_ratio: float = Field(default=0.25, gt=0, le=1)\n",
+        "    window_ratio: float = Field(default=0.25, ge=0, le=1)\n",
+    ),
+    mutant(
+        "a result may be given more than the whole window",
+        SPILL_POLICY,
+        "    window_ratio: float = Field(default=0.25, gt=0, le=1)\n",
+        "    window_ratio: float = Field(default=0.25, gt=0)\n",
+    ),
+    mutant(
+        "a result may fill half of the window",
+        SPILL_POLICY,
+        "    window_ratio: float = Field(default=0.25, gt=0, le=1)\n",
+        "    window_ratio: float = Field(default=0.5, gt=0, le=1)\n",
+    ),
+    mutant(
         "a result may be one token larger",
         SPILL_POLICY,
         "    max_tokens: int = Field(default=12_500, gt=0)\n",
@@ -10203,13 +10351,13 @@ _CAP = (
     mutant(
         "a result of exactly the limit is cut",
         SPILL_POLICY,
-        "        too_large = estimate(text) > config.max_tokens\n",
-        "        too_large = estimate(text) >= config.max_tokens\n",
+        "        too_large = estimate(text) > tokens\n",
+        "        too_large = estimate(text) >= tokens\n",
     ),
     mutant(
         "no result is too large",
         SPILL_POLICY,
-        "        too_large = estimate(text) > config.max_tokens\n",
+        "        too_large = estimate(text) > tokens\n",
         "        too_large = False\n",
     ),
     mutant(
@@ -10755,6 +10903,302 @@ _TODO = (
 )
 
 _COMPACTION = (
+    mutant(
+        "results that the model has not read yet never give way",
+        BASIC,
+        "                ahead = self._ahead(session, model, said, size)\n",
+        "                ahead = list[Cut]()\n",
+    ),
+    mutant(
+        "unread results that give way never spare a summary",
+        BASIC,
+        "                enough = plan.target is not None and plan.size - saved - spared <= plan.target\n",
+        "                enough = False\n",
+    ),
+    mutant(
+        "what unread results save by giving way counts for nothing",
+        BASIC,
+        "                spared = sum(size(cut.whole.message) - size(cut.shorter.message) for cut in ahead)\n",
+        "                spared = 0\n",
+    ),
+    mutant(
+        "unread results give way although cutting what was read is enough",
+        BASIC,
+        "            if not enough:\n                # What was read is not enough.",
+        "            if True:\n                # What was read is not enough.",
+    ),
+    mutant(
+        "unread results that are to give way are counted and not cut",
+        BASIC,
+        "                found = [*found, *ahead]\n",
+        "",
+    ),
+    mutant(
+        "a model of which nothing is known is taken to take next to nothing",
+        BASIC,
+        "        window = (None if said is None else said.window) or model.context_window\n",
+        "        window = (None if said is None else said.window) or model.context_window or 1\n",
+    ),
+    mutant(
+        "what a service said of its window does not tell the part of unread results",
+        BASIC,
+        "        window = (None if said is None else said.window) or model.context_window\n",
+        "        window = model.context_window\n",
+    ),
+    mutant(
+        "unread results may fill all of the window",
+        BASIC,
+        "        room = math.floor(window * self._config.unread_ratio)\n",
+        "        room = window\n",
+    ),
+    mutant(
+        "unread results give way as if they had no room at all",
+        BASIC,
+        "        room = math.floor(window * self._config.unread_ratio)\n",
+        "        room = 0\n",
+    ),
+    mutant(
+        "each unread result may fill by itself what all of them may fill together",
+        BASIC,
+        "        return capped(session, cap=level(sizes, room), size=lambda result: size(result.message))\n",
+        "        return capped(session, cap=room, size=lambda result: size(result.message))\n",
+    ),
+    mutant(
+        "a small unread result leaves nothing of its share to the others",
+        BASIC,
+        "        return capped(session, cap=level(sizes, room), size=lambda result: size(result.message))\n",
+        "        return capped(\n"
+        "            session, cap=room // max(len(sizes), 1), size=lambda result: size(result.message)\n"
+        "        )\n",
+    ),
+    mutant(
+        "results of one reply may fill half of the window",
+        BASIC,
+        "    unread_ratio: float = Field(default=0.4, gt=0, le=1)\n",
+        "    unread_ratio: float = Field(default=0.5, gt=0, le=1)\n",
+    ),
+    mutant(
+        "the part of the window that unread results may fill may be nothing",
+        BASIC,
+        "    unread_ratio: float = Field(default=0.4, gt=0, le=1)\n",
+        "    unread_ratio: float = Field(default=0.4, ge=0, le=1)\n",
+    ),
+    mutant(
+        "unread results may be given more than the whole window",
+        BASIC,
+        "    unread_ratio: float = Field(default=0.4, gt=0, le=1)\n",
+        "    unread_ratio: float = Field(default=0.4, gt=0)\n",
+    ),
+    mutant(
+        "the room of some results is shared out from the largest",
+        TRIM,
+        "    for one in sorted(sizes):\n",
+        "    for one in sorted(sizes, reverse=True):\n",
+    ),
+    mutant(
+        "the room of some results is shared out in the order in which they stand",
+        TRIM,
+        "    for one in sorted(sizes):\n",
+        "    for one in sizes:\n",
+    ),
+    mutant(
+        "what a small result leaves of its share is lost to the others",
+        TRIM,
+        "        left -= one\n        waiting -= 1\n",
+        "        waiting -= 1\n",
+    ),
+    mutant(
+        "a small result goes on having a share of what the others get",
+        TRIM,
+        "        left -= one\n        waiting -= 1\n",
+        "        left -= one\n",
+    ),
+    mutant(
+        "the share of a result is rounded up",
+        TRIM,
+        "            return left // waiting\n",
+        "            return -(-left // waiting)\n",
+    ),
+    mutant(
+        "where all results have room none may come to anything",
+        TRIM,
+        "    return max(sizes, default=0)\n",
+        "    return 0\n",
+    ),
+    mutant(
+        "where all results have room each may come to all of it",
+        TRIM,
+        "    return max(sizes, default=0)\n",
+        "    return room\n",
+    ),
+    mutant(
+        "the last line of every text is taken for one about where its whole is",
+        TRIM,
+        "    if not Saved.spoken_of_in(text):\n        return 0\n",
+        "",
+    ),
+    mutant(
+        "a line about where the whole is counts for no characters",
+        TRIM,
+        '    return len(text) - (text.rstrip().rfind("\\n") + 1)\n',
+        "    return 0\n",
+    ),
+    mutant(
+        "a line about where the whole is is taken with the end of the line before it",
+        TRIM,
+        '    return len(text) - (text.rstrip().rfind("\\n") + 1)\n',
+        '    return len(text) - text.rstrip().rfind("\\n")\n',
+    ),
+    mutant(
+        "a line about where the whole is is lost where blank lines follow it",
+        TRIM,
+        '    return len(text) - (text.rstrip().rfind("\\n") + 1)\n',
+        '    return len(text) - (text.rfind("\\n") + 1)\n',
+    ),
+    mutant(
+        "a result that gives way keeps as much of its end as of its beginning",
+        TRIM,
+        "    tail = max(kept // 5, _named(text))\n",
+        "    tail = max(kept // 2, _named(text))\n",
+    ),
+    mutant(
+        "a line about where the whole is is kept only as far as the end has room",
+        TRIM,
+        "    tail = max(kept // 5, _named(text))\n",
+        "    tail = kept // 5\n",
+    ),
+    mutant(
+        "the end of a result that gives way is kept on top of what may be kept",
+        TRIM,
+        "    head = max(kept - tail, 0)\n",
+        "    head = kept\n",
+    ),
+    mutant(
+        "a line about where the whole is leaves less than nothing for the beginning",
+        TRIM,
+        "    head = max(kept - tail, 0)\n",
+        "    head = kept - tail\n",
+    ),
+    mutant(
+        "a result gives way for half as many characters",
+        TRIM,
+        "_WORTH = 512\n",
+        "_WORTH = 256\n",
+    ),
+    mutant(
+        "a result gives way only for twice as many characters",
+        TRIM,
+        "_WORTH = 512\n",
+        "_WORTH = 1024\n",
+    ),
+    mutant(
+        "a cut that says where the whole is has to be worth it a second time",
+        TRIM,
+        "    return _two_ends(text, len(text) - (1 if where else _WORTH), head, tail, where)\n",
+        "    return _two_ends(text, len(text) - _WORTH, head, tail, where)\n",
+    ),
+    mutant(
+        "a cut that says where the whole is may be as long as the result was",
+        TRIM,
+        "    return _two_ends(text, len(text) - (1 if where else _WORTH), head, tail, where)\n",
+        "    return _two_ends(text, len(text) - (0 if where else _WORTH), head, tail, where)\n",
+    ),
+    mutant(
+        "a result that gives way without a line about the whole need only get shorter",
+        TRIM,
+        "    return _two_ends(text, len(text) - (1 if where else _WORTH), head, tail, where)\n",
+        "    return _two_ends(text, len(text) - 1, head, tail, where)\n",
+    ),
+    mutant(
+        "results that the model has read give way with those that it has not",
+        TRIM,
+        "    for event in _parted(session)[1]:\n",
+        "    for event in [*_parted(session)[0], *_parted(session)[1]]:\n",
+    ),
+    mutant(
+        "a result that was cut before gives way again",
+        TRIM,
+        "        if not isinstance(data, ToolResultEvent) or event.replaces or size(data) <= cap:\n",
+        "        if not isinstance(data, ToolResultEvent) or size(data) <= cap:\n",
+    ),
+    mutant(
+        "nothing of the two ends of a result that gives way is kept",
+        TRIM,
+        "        shorter = _kept(data, low)\n        if shorter != data:\n            found.append(Cut(event.seq, data, shorter, low))\n",
+        "        shorter = _kept(data, 0)\n        if shorter != data:\n            found.append(Cut(event.seq, data, shorter, 0))\n",
+    ),
+    mutant(
+        "no more than half of a result is kept however much has room",
+        TRIM,
+        "        low, high = 0, max((len(block.text) for block in data.message.content), default=0)\n",
+        "        low, high = 0, max((len(block.text) for block in data.message.content), default=0) // 2\n",
+    ),
+    mutant(
+        "the shortest block of a result says how much of every block may be kept",
+        TRIM,
+        "        low, high = 0, max((len(block.text) for block in data.message.content), default=0)\n",
+        "        low, high = 0, min((len(block.text) for block in data.message.content), default=0)\n",
+    ),
+    mutant(
+        "a result gives way a token further than its cap asks for",
+        TRIM,
+        "            if size(_kept(data, middle)) <= cap:\n",
+        "            if size(_kept(data, middle)) < cap:\n",
+    ),
+    mutant(
+        "how much a result that gave way kept is not written down",
+        TRIM,
+        "            found.append(Cut(event.seq, data, shorter, low))\n",
+        "            found.append(Cut(event.seq, data, shorter))\n",
+    ),
+    mutant(
+        "a result that cannot get shorter is told as one that gives way",
+        TRIM,
+        "        shorter = _kept(data, low)\n        if shorter != data:\n",
+        "        shorter = _kept(data, low)\n        if True:\n",
+    ),
+    mutant(
+        "where the whole of a result that gave way by a cap is is told by the numbers of the config",
+        TRIM,
+        "            if cut.kept is None:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "where the whole of a result that was cut by the numbers of the config is is told by a cap",
+        TRIM,
+        "            if cut.kept is None:\n",
+        "            if cut.kept is not None:\n",
+    ),
+    mutant(
+        "a cut that says where the whole is forgets how much it kept",
+        TRIM,
+        '    return Cut(cut.seq, cut.whole, cut.shorter.model_copy(update={"message": message}), cut.kept)\n',
+        '    return Cut(cut.seq, cut.whole, cut.shorter.model_copy(update={"message": message}))\n',
+    ),
+    mutant(
+        "every result counts as one that the model has not read",
+        TRIM,
+        "    return read, events[len(read) :]\n",
+        "    return read, events\n",
+    ),
+    mutant(
+        "the results that the model has read are told as those that it has not",
+        TRIM,
+        "    results = (event.data for event in _parted(session)[1])\n",
+        "    results = (event.data for event in _parted(session)[0])\n",
+    ),
+    mutant(
+        "the results that the model has not read are cut with those that it has",
+        TRIM,
+        "    for event in _parted(session)[0]:\n",
+        "    for event in [*_parted(session)[0], *_parted(session)[1]]:\n",
+    ),
+    mutant(
+        "a result that gave way no longer says whether its call failed",
+        TRIM,
+        '    return data.model_copy(update={"message": shorter})\n',
+        "    return ToolResultEvent(message=shorter)\n",
+    ),
     mutant(
         "a reader must know the event that begins a compaction",
         COMPACTION_SEAM,

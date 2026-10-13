@@ -33,15 +33,17 @@ made of it.
 
 import asyncio
 import logging
+import math
 
 from pydantic import BaseModel, Field
 
 from columbina.kernel import Context, Next
-from columbina.spill import SPILL, Saved
+from columbina.session import EventData, Projection, RequestHeaderEvent, Session, SessionEvent
+from columbina.spill import LIMIT, SPILL, Saved
 from columbina.token_meter import estimate
 from columbina.tools import POST_EXECUTE, Accept, Executed, Verdict
 
-__all__ = ["Config", "apply", "name", "two_ends"]
+__all__ = ["Config", "allowed", "apply", "name", "two_ends"]
 
 name = "spill-policy"
 
@@ -60,9 +62,62 @@ class Config(BaseModel):
     Attributes:
         max_tokens: How many tokens a result may come to, as they are
             estimated.
+        window_ratio: The part of the window of its model that a result may
+            fill, where that is less.
     """
 
     max_tokens: int = Field(default=12_500, gt=0)
+    window_ratio: float = Field(default=0.25, gt=0, le=1)
+
+
+def _asked_last(state: int | None, event: SessionEvent[EventData]) -> int | None:
+    data = event.data
+    return data.config.context_window if isinstance(data, RequestHeaderEvent) else state
+
+
+_WINDOW: Projection[int | None] = Projection("result-limit-window", None, _asked_last)
+"""How many tokens the model takes that a session asked last, if anything says so."""
+
+_LEAST = 256
+"""How many tokens a result may come to at the least, however little its model takes.
+
+What takes the place of a result that is cut says in a line what was left
+out and in another where the whole is. Those two come to some tens of
+tokens. A result that might hold little more than them would be longer cut
+than it was whole.
+"""
+
+
+def allowed(config: Config, window: int | None) -> int:
+    """Return how many tokens a result may come to for a model that takes so many.
+
+    The limit of the config was chosen for models that take a hundred
+    thousand tokens and more. A model that takes ten thousand would have its
+    conversation filled by one result, and what was said before would have
+    to go to make room for it. So a result may fill a part of the window and
+    no more. Where nothing says how much a model takes, the limit of the
+    config stands.
+
+    The part of a window does not go below a least, which is there for a
+    window that is written down wrongly: no model that this program can work
+    with takes so little. The limit of the config is never raised by it.
+    """
+    if window is None:
+        return config.max_tokens
+    part = max(math.floor(window * config.window_ratio), _LEAST)
+    return min(config.max_tokens, part)
+
+
+class _Limit:
+    """Says how large a result may be in a session, by the model that the session asks."""
+
+    __slots__ = ("_config",)
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+
+    def tokens(self, session: Session) -> int:
+        return allowed(self._config, _WINDOW.of(session))
 
 
 def _left_out(count: int) -> str:
@@ -122,7 +177,8 @@ def two_ends(text: str, tokens: int, last: str, *, counted: bool = True) -> str:
 
 
 def apply(ctx: Context, config: Config) -> None:
-    """Listen for results, and keep each within the limit."""
+    """Listen for results, and keep each within the limit. Say what the limit is."""
+    limit = _Limit(config)
 
     async def saved_somewhere(executed: Executed, text: str) -> str:
         """Save a text, and return the line that says where it is, or that it is gone."""
@@ -144,7 +200,8 @@ def apply(ctx: Context, config: Config) -> None:
             return verdict
         text = verdict.text
         complete: object = getattr(executed.value, "complete", None)
-        too_large = estimate(text) > config.max_tokens
+        tokens = limit.tokens(executed.invocation.run.session)
+        too_large = estimate(text) > tokens
         counted = True
         if isinstance(complete, Saved):
             last = complete.told()
@@ -159,6 +216,7 @@ def apply(ctx: Context, config: Config) -> None:
         if not too_large:
             between = "" if text.endswith("\n") else "\n"
             return Accept(text=f"{text}{between}{last}")
-        return Accept(text=two_ends(text, config.max_tokens, last, counted=counted))
+        return Accept(text=two_ends(text, tokens, last, counted=counted))
 
     ctx.on(POST_EXECUTE, within_the_limit, prepend=True)
+    ctx.provide(LIMIT, limit)

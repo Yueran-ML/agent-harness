@@ -169,14 +169,18 @@ keeps count. It estimates what the conversation comes to without asking the mode
 corrects the estimate by what the provider reports with each reply.
 
 - **A result that is too large is not shown whole.** What a tool gives back is cut down
-  to its beginning and its end when it comes to more than 12500 tokens. The whole of it
+  to its beginning and its end when it comes to more than 12500 tokens, or to more than
+  a quarter of what the model takes, if that is less. The whole of it
   is kept in a file under `~/.columbina/spill`, and the result says where, so the model
   can read the part that it needs. The output of a command is written to such a file as
-  it comes.
+  it comes. A page of a file that the model reads ends earlier by the same measure, and
+  says where to read on.
 - **A conversation that comes near the limit is made shorter.** Before a step begins,
   long results that the model has read are cut down to their two ends. What is cut out
   is saved to a file first, and the place of the cut says where, so the model can read
-  it again. If that is not
+  it again. If that is not enough, and the results that the model has not read yet fill
+  more than two fifths of what it takes, the largest of those are cut down as well. If
+  that is still not
   enough, the model writes a summary of the oldest part, and the summary takes the place
   of that part. The newest part stays as it is, and so does the last thing that the user
   said. Nothing is deleted: the log keeps every event, and only what the model is sent

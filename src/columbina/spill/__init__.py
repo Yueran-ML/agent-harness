@@ -19,7 +19,7 @@ from typing import Protocol
 from columbina.kernel import ServiceKey
 from columbina.session import Session
 
-__all__ = ["SPILL", "Saved", "SpillFile", "SpillStore"]
+__all__ = ["LIMIT", "SPILL", "ResultLimit", "Saved", "SpillFile", "SpillStore"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,5 +110,24 @@ class SpillStore(Protocol):
         ...
 
 
+class ResultLimit(Protocol):
+    """Whoever says how large the result of a tool may be.
+
+    A tool that hands out what it has in pages bounds a page by itself, and
+    asks here how much a page may be.
+    """
+
+    def tokens(self, session: Session) -> int:
+        """Return how many tokens a result may come to in a session, as they are estimated.
+
+        That follows the model that the session asks: of a model that takes
+        little, a result may fill no more than a part.
+        """
+        ...
+
+
 SPILL = ServiceKey[SpillStore]("spill")
 """The place that keeps what is too large for a conversation."""
+
+LIMIT = ServiceKey[ResultLimit]("result-limit")
+"""Whoever says how large the result of a tool may be."""

@@ -4,7 +4,17 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from columbina.compaction.basic.trim import Cut, apply, cuts, located, trim, whole
+from columbina.compaction.basic.trim import (
+    Cut,
+    apply,
+    capped,
+    cuts,
+    level,
+    located,
+    trim,
+    unread,
+    whole,
+)
 from columbina.kernel import Context
 from columbina.llm import (
     AssistantMessage,
@@ -25,8 +35,11 @@ from columbina.session import (
     TurnStartEvent,
     UserMessageEvent,
 )
+from columbina.token_meter import estimate_message
 
 KINDS = {kind.event_type: kind for kind in CORE_EVENTS}
+
+
 LIMITS = {"over": 8192, "head": 4096, "tail": 1024}
 
 
@@ -349,6 +362,287 @@ async def test_a_result_that_the_model_no_longer_sees_is_passed_over(ctx: Contex
     assert len(session) == count + 1
     assert session.events[-1].replaces == (stays,)
     assert apply(session, [Cut(seq=10**6, whole=found[0].whole, shorter=found[0].shorter)]) == 0
+
+
+def tokens(result: ToolResultEvent) -> int:
+    return estimate_message(result.message)
+
+
+def dense_of(size: int) -> str:
+    """A text of so many characters that costs a model several times what one in English does."""
+    lines = (f"第{number:06d}行这里写着一些字\n" for number in range(size // 15 + 1))
+    return "".join(lines)[:size]
+
+
+async def test_the_results_that_the_model_has_not_read_yet_are_those_after_its_last_reply(
+    ctx: Context,
+) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    first = answered(session, "call-1", text_of(10_000))
+    asked(session, "call-2", "call-3")
+    second = answered(session, "call-2", text_of(9000))
+    answered(session, "call-3", "short")
+
+    # The request that shows them to the model is still to come.
+    assert [result.message.call_id for result in unread(session)] == ["call-2", "call-3"]
+    assert [cut.seq for cut in capped(session, cap=100, size=tokens)] == [second]
+    # Those that it has read are found as before, and no others with them.
+    assert [cut.seq for cut in cuts(session, **LIMITS)] == [first]
+
+
+async def test_once_the_model_has_replied_to_them_no_result_is_unread(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    answered(session, "call-1", text_of(10_000))
+    asked(session, say="Done.")
+
+    assert unread(session) == []
+    assert capped(session, cap=0, size=tokens) == []
+
+
+@pytest.mark.parametrize(
+    ("sizes", "room", "most"),
+    [
+        # Each of four that are as large gets a quarter of the room.
+        ([4000, 4000, 4000, 4000], 6000, 1500),
+        # A small one stays as it is, and the others share what it leaves.
+        ([100, 4000, 4000], 6000, 2950),
+        ([4000, 100, 4000], 6000, 2950),
+        ([10, 20, 5000], 1000, 970),
+        # One that is just what its share would be stays whole too.
+        ([500, 900, 900], 1500, 500),
+        ([300, 900, 900], 1500, 600),
+        # One result by itself has all the room.
+        ([5000], 1200, 1200),
+        # Rounded down.
+        ([500, 500, 500], 1000, 333),
+        # No room is no room.
+        ([500, 700], 1, 0),
+        ([500, 700], 0, 0),
+        # All of them fit: none comes to more than the largest does.
+        ([100, 200], 300, 200),
+        ([], 10, 0),
+    ],
+)
+def test_the_most_that_each_result_may_come_to_shares_out_their_room(
+    sizes: list[int], room: int, most: int
+) -> None:
+    assert level(sizes, room) == most
+
+
+@settings(max_examples=200, deadline=None)
+@given(
+    sizes=st.lists(st.integers(min_value=0, max_value=5000), min_size=1, max_size=8),
+    room=st.integers(min_value=0, max_value=20_000),
+)
+def test_results_that_are_no_larger_than_the_most_fit_their_room_and_no_more_would_fit(
+    sizes: list[int], room: int
+) -> None:
+    most = level(sizes, room)
+
+    if sum(sizes) <= room:
+        assert most == max(sizes)
+        return
+    assert sum(min(size, most) for size in sizes) <= room
+    # With one token more for each, they would have no room.
+    assert sum(min(size, most + 1) for size in sizes) > room
+
+
+async def test_a_result_gives_way_by_what_it_costs_and_not_by_how_long_it_is(
+    ctx: Context,
+) -> None:
+    session = begun(ctx)
+    asked(session, "call-1", "call-2")
+    plain, dense = text_of(6000), dense_of(6000)
+    first = answered(session, "call-1", plain)
+    second = answered(session, "call-2", dense)
+    # Neither is long, as results are when they are cut by the number of their characters.
+    assert len(plain) < LIMITS["over"] > len(dense)
+
+    found = capped(session, cap=1000, size=tokens)
+
+    assert [cut.seq for cut in found] == [first, second]
+    for cut, whole_text in zip(found, (plain, dense), strict=True):
+        assert cut.whole.message.content[0].text == whole_text
+        # As much is kept as comes to the cap, and no less than has to go is left out.
+        assert 990 < tokens(cut.shorter) <= 1000
+        kept = cut.kept
+        assert kept is not None
+        head, tail = kept - kept // 5, kept // 5
+        (block,) = cut.shorter.message.content
+        between = "" if whole_text[:head].endswith("\n") else "\n"
+        gap = left_out(len(whole_text) - kept)
+        assert block.text == f"{whole_text[:head]}{between}{gap}\n{whole_text[-tail:]}"
+    # What costs more by the character keeps fewer characters.
+    assert (found[1].kept or 0) < (found[0].kept or 0)
+
+
+async def test_a_result_that_comes_to_no_more_than_the_cap_stays_as_it_is(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1", "call-2")
+    answered(session, "call-1", dense_of(3000))
+    larger = answered(session, "call-2", dense_of(6000))
+    (smaller, _) = unread(session)
+
+    assert [cut.seq for cut in capped(session, cap=tokens(smaller), size=tokens)] == [larger]
+    assert len(capped(session, cap=tokens(smaller) - 500, size=tokens)) == 2
+
+
+async def test_only_the_text_of_a_result_that_gives_way_changes(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    error = ToolError(code="TOOL_ERROR", reason="it broke")
+    answered(session, "call-1", dense_of(6000), error=error, meta={"took_ms": 12})
+
+    (cut,) = capped(session, cap=1000, size=tokens)
+
+    was, now = cut.whole, cut.shorter
+    assert now.message.call_id == "call-1"
+    assert now.message.is_error
+    assert (now.error, now.meta) == (error, {"took_ms": 12})
+    assert now == was.model_copy(update={"message": now.message})
+    assert len(now.message.content) == 1
+
+
+async def test_a_result_that_gives_way_may_come_to_just_what_the_cap_is(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    answered(session, "call-1", dense_of(6000))
+    (cut,) = capped(session, cap=1000, size=tokens)
+    exactly = tokens(cut.shorter)
+
+    (again,) = capped(session, cap=exactly, size=tokens)
+
+    assert tokens(again.shorter) == exactly
+
+
+async def test_no_result_gives_way_for_the_sake_of_a_few_characters(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    text = text_of(6000)
+    answered(session, "call-1", text)
+    (result,) = unread(session)
+    size = tokens(result)
+
+    def saved(cap: int) -> int:
+        """How many characters shorter the result is with such a cap: none if it stays whole."""
+        found = capped(session, cap=cap, size=tokens)
+        return len(text) - len(found[0].shorter.message.content[0].text) if found else 0
+
+    assert saved(size) == 0
+    # A cut that says where the whole is has two lines more than the result had. One that
+    # took fewer characters away than those come to would leave the model no less to read,
+    # and nowhere to put the line about the whole. So a result that gives way at all gives
+    # way by some hundreds of characters, also where one token is all that is too much.
+    least = saved(size - 1)
+    assert 512 <= least < 520
+    assert saved(size - 600) > 2 * least
+    # So the line about the whole has room in it, and one more to stand on. A line that is
+    # longer than what was taken away is left out: the result would be no shorter for it.
+    (cut,) = capped(session, cap=size - 1, size=tokens)
+    fits, too_long = "w" * (least - 2), "w" * (least - 1)
+    (told,) = located(cut, fits, **LIMITS).shorter.message.content
+    assert (fits in told.text, len(told.text)) == (True, len(text) - 1)
+    assert located(cut, too_long, **LIMITS) == cut
+
+
+async def test_a_result_that_was_cut_before_does_not_give_way_again(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1", "call-2")
+    answered(session, "call-1", dense_of(6000))
+    other = answered(session, "call-2", dense_of(6000))
+    (cut, _) = capped(session, cap=1000, size=tokens)
+    apply(session, [located(cut, WHERE, **LIMITS)])
+
+    # It stands in the conversation as two ends, with a line between them about where its
+    # whole is. Cut again, it would lose that line with its middle.
+    assert [again.seq for again in capped(session, cap=200, size=tokens)] == [other]
+    assert len(unread(session)) == 2
+
+
+async def test_a_result_that_says_where_its_whole_is_keeps_that_line_however_low_the_cap(
+    ctx: Context,
+) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    text = f"{dense_of(5000)}\n{WHERE}"
+    answered(session, "call-1", text)
+
+    (roomy,) = capped(session, cap=600, size=tokens)
+    (tight,) = capped(session, cap=0, size=tokens)
+
+    # It was too large when it was made, and its last line says where all of it is. That
+    # line is what the model finds the rest by, and it is kept whole.
+    (block,) = roomy.shorter.message.content
+    assert block.text.startswith(text[:100])
+    assert block.text.endswith(f"\n{WHERE}")
+    assert tight.kept == 0
+    assert tight.shorter.message.content[0].text == f"{left_out(len(text) - len(WHERE))}\n{WHERE}"
+    # A blank line after it is no reason to lose it.
+    asked(session, "call-2")
+    answered(session, "call-2", f"{text}\n\n")
+    (ended,) = capped(session, cap=0, size=tokens)
+    (block,) = ended.shorter.message.content
+    assert block.text == f"{left_out(len(text) - len(WHERE))}\n{WHERE}\n\n"
+
+
+async def test_with_no_room_at_all_a_result_is_the_line_about_what_is_left_out(
+    ctx: Context,
+) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    answered(session, "call-1", dense_of(5000))
+
+    (cut,) = capped(session, cap=0, size=tokens)
+
+    assert cut.kept == 0
+    assert cut.shorter.message.content[0].text == f"{left_out(5000)}\n"
+
+
+async def test_each_block_of_a_result_that_gives_way_keeps_as_much_as_the_others(
+    ctx: Context,
+) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    blocks = (
+        TextBlock(text=dense_of(3000)),
+        TextBlock(text="short"),
+        TextBlock(text=dense_of(5000)),
+    )
+    seq = session.append(ToolResultEvent(message=ToolMessage(call_id="call-1", content=blocks))).seq
+
+    (cut,) = capped(session, cap=1200, size=tokens)
+
+    assert cut.seq == seq
+    assert 1190 < tokens(cut.shorter) <= 1200
+    first, second, third = cut.shorter.message.content
+    kept = cut.kept
+    assert kept is not None
+    assert left_out(3000 - kept) in first.text
+    assert second.text == "short"
+    assert left_out(5000 - kept) in third.text
+
+
+async def test_a_result_that_gave_way_can_say_where_its_whole_is(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    text = dense_of(6000)
+    answered(session, "call-1", text)
+    (cut,) = capped(session, cap=1000, size=tokens)
+    kept = cut.kept
+    assert kept is not None
+
+    told = located(cut, WHERE, **LIMITS)
+
+    # The line stands after the one about what is left out. As much of the two ends is kept
+    # as before: the numbers of the config, by which read results are cut, do not count here.
+    head, tail = kept - kept // 5, kept // 5
+    (block,) = told.shorter.message.content
+    between = "" if text[:head].endswith("\n") else "\n"
+    assert block.text == (f"{text[:head]}{between}{left_out(6000 - kept)}\n{WHERE}\n{text[-tail:]}")
+    assert (told.seq, told.whole, told.kept) == (cut.seq, cut.whole, kept)
+    assert whole(cut) == text
 
 
 async def test_messages_that_are_no_results_are_never_cut(ctx: Context) -> None:

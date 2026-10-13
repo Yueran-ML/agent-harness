@@ -363,6 +363,263 @@ async def test_a_result_whose_whole_was_saved_before_is_not_saved_again(harness:
     assert first.count("The whole result") == 1
 
 
+def wants_each(*tokens: int) -> Reply:
+    """A reply of the model that asks for several lots of words at once."""
+    return Reply(calls=tuple(Call(name="big", arguments={"tokens": size}) for size in tokens))
+
+
+async def test_results_that_were_not_read_yet_give_way_before_anything_is_summed_up(
+    harness: Harness,
+) -> None:
+    shelf = Shelf()
+    seam = Forgetting()
+    harness.ctx.provide(SPILL, shelf)
+    harness.ctx.provide(FS, cast("Any", seam))
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(wants_each(7000, 2000, 7000), Reply(text="Done."), model=MODEL)
+
+    await turn(agent, "Go.")
+
+    # Three results of one reply come to sixteen thousand tokens. That is more than may be
+    # filled, and nothing that the model has read can be cut. Together they may fill two
+    # fifths of what the model takes, which is eight thousand. The small one stays as it
+    # is, and the two large ones share what it leaves: nothing is summed up, and no model
+    # is asked.
+    ((why, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (why, outcome.trimmed, outcome.summarised, outcome.error) == ("pressure", 2, 0, None)
+    assert outcome.before > 15_000 >= outcome.after
+    assert sums(harness) == []
+    assert len(harness.model.requests) == 2
+    first, second, third = results(harness.model.requests[1])
+    assert "characters of this result were left out" in first
+    assert second == words(2000)
+    assert "characters of this result were left out" in third
+    # Three thousand each, and the line about where the whole is on top of that.
+    assert 2950 < estimate(first) < 3050
+    assert 2950 < estimate(third) < 3050
+    # Each was saved whole before it was cut, and says where. A file that its call read
+    # counts as not read from now on.
+    assert [text for _, text in shelf.kept] == [words(7000), words(7000)]
+    assert shelf.told(1, words(7000)).told() in first
+    assert shelf.told(2, words(7000)).told() in third
+    ids = answered(agent)
+    assert seam.told == [{ids[0]}, {ids[2]}]
+
+
+async def test_results_that_fit_their_part_of_the_window_stay_whole_when_the_rest_is_summed_up(
+    harness: Harness,
+) -> None:
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(
+        Reply(text="One."),
+        wants_each(1000, 1000),
+        Reply(text="They said words."),
+        Reply(text="Two."),
+        model=MODEL,
+    )
+    await turn(agent, words(7000))
+
+    await turn(agent, words(7000))
+
+    # What was said takes the room here, and the two results come to a tenth of what the
+    # model takes. They are what it is about to read, so they stay as they are.
+    ((_, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (outcome.trimmed, outcome.error) == (0, None)
+    assert outcome.summarised > 0
+    assert len(sums(harness)) == 1
+    assert results(harness.model.requests[-1]) == [words(1000), words(1000)]
+
+
+async def test_the_part_of_the_window_that_unread_results_may_fill_is_a_matter_of_the_config(
+    harness: Harness,
+) -> None:
+    await loaded(harness, unread_ratio=0.7)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(wants_each(7000, 2000, 7000), Reply(text="Done."), model=MODEL)
+
+    await turn(agent, "Go.")
+
+    # Fourteen thousand now. The small one leaves twelve to the two large ones, so each
+    # keeps six thousand, where with two fifths of the window it kept three.
+    ((_, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (outcome.trimmed, outcome.summarised, outcome.error) == (2, 0, None)
+    first, second, third = results(harness.model.requests[1])
+    assert second == words(2000)
+    assert 5950 < estimate(first) < 6050
+    assert 5950 < estimate(third) < 6050
+
+
+async def test_unread_results_that_give_way_spare_what_was_said_before(harness: Harness) -> None:
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(
+        Reply(text="One."), wants_each(4000, 4000, 4000), Reply(text="Two."), model=MODEL
+    )
+    await turn(agent, words(3000))
+
+    await turn(agent, words(3000))
+
+    # Six thousand tokens were said, and the three results come to twelve. Summing up what
+    # was said would make room for results of which the model needs the two ends. Cut to a
+    # third of their part each, the three fit, and everything that was said stays.
+    ((_, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (outcome.trimmed, outcome.summarised, outcome.error) == (3, 0, None)
+    assert sums(harness) == []
+    last = harness.model.requests[-1]
+    said = [message for message in last.messages if isinstance(message, UserMessage)]
+    assert [message.content[0].text for message in said] == [words(3000), words(3000)]
+    # None gives way further than the others: each keeps what a third of eight thousand is.
+    assert all(2600 < estimate(text) < 2720 for text in results(last))
+
+
+async def test_what_the_small_results_of_a_reply_come_to_is_taken_from_the_room_of_the_large(
+    harness: Harness,
+) -> None:
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    asked = wants_each(7000, 7000, 500, 500, 500, 500)
+    agent = await harness.agent(asked, Reply(text="Done."), model=MODEL)
+
+    await turn(agent, "Go.")
+
+    # The four small ones come to two thousand, and stay as they are. That leaves six of
+    # the eight thousand to the two large ones, and not eight.
+    ((_, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (outcome.trimmed, outcome.summarised, outcome.error) == (2, 0, None)
+    shown = results(harness.model.requests[1])
+    assert shown[2:] == [words(500)] * 4
+    assert all(2950 < estimate(text) < 3050 for text in shown[:2])
+
+
+async def test_an_unread_result_that_is_too_short_to_be_worth_cutting_does_not_give_way(
+    harness: Harness,
+) -> None:
+    # However little room the unread results have: a cut says in a line what it left out
+    # and in another where the whole is, and a result of a few hundred characters would be
+    # no shorter for it.
+    await loaded(harness, unread_ratio=0.0001)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(wants_each(9000, 100, 8000), Reply(text="Done."), model=MODEL)
+
+    await turn(agent, "Go.")
+
+    ((_, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (outcome.trimmed, outcome.error) == (2, None)
+    first, second, third = results(harness.model.requests[1])
+    assert len(words(100)) < 512
+    assert second == words(100)
+    # With no room to speak of, nothing of a large one is kept but the lines about it.
+    assert first.startswith("[... ")
+    assert third.startswith("[... ")
+
+
+def dense(tokens: int) -> str:
+    """A text that comes to about so many tokens and is short for it: no blank is in it."""
+    text = "x" * round(tokens / 0.85)
+    assert abs(estimate(text) - tokens) <= 2
+    return text
+
+
+async def packed(args: Size, run: ToolRun) -> str:
+    return dense(args.tokens)
+
+
+SMALL = CallConfig(provider="scripted", model="script", context_window=16_384)
+"""A model that takes little: a result may come to 4096 tokens there."""
+
+
+async def test_results_that_are_short_and_cost_much_give_way_all_the_same(
+    harness: Harness,
+) -> None:
+    await loaded(harness)
+    harness.tools.add(
+        harness.ctx,
+        Tool(name="packed", description="Gives a packed text.", parameters=Size, execute=packed),
+    )
+    calls = tuple(Call(name="packed", arguments={"tokens": 4000}) for _ in range(4))
+    agent = await harness.agent(Reply(calls=calls), Reply(text="Done."), model=SMALL)
+
+    await turn(agent, "Go.")
+
+    # Each result is within what one result may come to for this model, and has fewer
+    # characters than a result must have to be cut when it was read. Together the four
+    # come to all that the model takes. Nothing was said that could be summed up, so if
+    # they did not give way the next request would be refused as too long.
+    assert len(dense(4000)) < Config().trim_over
+    ((why, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (why, outcome.trimmed, outcome.summarised, outcome.error) == ("pressure", 4, 0, None)
+    shown = results(harness.model.requests[1])
+    # Two fifths of what the model takes, a quarter of that each.
+    part = 16_384 * 2 // 5
+    assert all(part // 4 - 60 < estimate(text) <= part // 4 + 60 for text in shown)
+    assert sum(estimate_message(message) for message in harness.model.requests[1].messages) < 8000
+
+
+UNSAID = CallConfig(provider="scripted", model="script")
+"""A model of which nothing says how much it takes."""
+
+
+async def test_what_a_service_said_of_its_window_tells_the_part_that_unread_results_may_fill(
+    harness: Harness,
+) -> None:
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(
+        wants_each(7000, 2000, 7000),
+        Reply(failure=refused(20_000, 21_000, 16_100)),
+        Reply(text="Done."),
+        model=UNSAID,
+    )
+
+    await turn(agent, "Go.")
+
+    # Nothing watched, since the config says nothing of the model. The service refused the
+    # request and said that it takes twenty thousand: two fifths of that are eight.
+    ((why, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (why, outcome.trimmed, outcome.summarised, outcome.error) == ("overflow", 2, 0, None)
+    first, second, third = results(harness.model.requests[-1])
+    assert "characters of this result were left out" in first
+    assert second == words(2000)
+    assert "characters of this result were left out" in third
+    # The request was made again with less in it, and the model answered it.
+    assert len(harness.model.requests) == 3
+
+
+async def test_where_nothing_says_how_much_a_model_takes_no_unread_result_gives_way_for_its_part(
+    harness: Harness,
+) -> None:
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(wants_each(6000, 3000, 7000), Reply(failure=TOO_LONG), model=UNSAID)
+
+    await turn(agent, "Go.")
+
+    # The service refused and gave no numbers, so there is no window to take a part of.
+    # One exchange is all there is, and none of it can be summed up either.
+    ((why, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (why, outcome.trimmed, outcome.summarised) == ("overflow", 0, 0)
+    assert outcome.error == "nothing of this conversation can go"
+    assert results(harness.model.requests[-1]) == [words(6000), words(3000), words(7000)]
+
+
+def test_results_of_one_reply_may_fill_two_fifths_of_the_window() -> None:
+    assert Config().unread_ratio == 0.4
+    for bad in (0, -0.1, 1.5):
+        with pytest.raises(ValidationError):
+            Config(unread_ratio=bad)
+
+
 class Forgetting:
     """Stands in the place of the file seam, and writes down what it is told to forget."""
 

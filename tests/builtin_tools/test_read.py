@@ -21,6 +21,8 @@ from columbina.fs import FS, Access, Fingerprint, Fs, Permit, Refuse, locate
 from columbina.kernel import Context, Next
 from columbina.llm import ToolCallBlock
 from columbina.session import CORE_EVENTS, Session
+from columbina.spill import LIMIT
+from columbina.token_meter import estimate
 from columbina.tools import (
     POST_EXECUTE,
     TOOLS,
@@ -822,3 +824,137 @@ async def test_a_file_whose_content_reaches_the_model_among_other_words_was_show
 
     assert outcome.error is None
     assert after == state(work / "notes.txt")
+
+
+# A page is no larger than a result may be
+
+
+class Allows:
+    """Says how large a result may be: the same for every session, and it notes who asked."""
+
+    def __init__(self, tokens: int) -> None:
+        self._tokens = tokens
+        self.asked: list[str] = []
+
+    def tokens(self, session: Session) -> int:
+        self.asked.append(session.id)
+        return self._tokens
+
+
+def long_file(work: Path, count: int = 400) -> list[str]:
+    """Write a file of numbered lines, and return the lines as the tool shows them."""
+    lines = [f"line {number} of a long file" for number in range(1, count + 1)]
+    (work / "long.txt").write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+    return [f"{number:>6}\t{line}" for number, line in enumerate(lines, start=1)]
+
+
+def page(shown: list[str], first: int, last: int, of: int) -> str:
+    """What the tool returns for some lines of a file that has more after them."""
+    note = f"[lines {first} to {last} of {of}. Pass offset={last} to read on.]"
+    return "\n".join([*shown[first - 1 : last], note])
+
+
+async def test_a_page_is_no_larger_than_a_result_may_be(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    # A model that takes little would have its conversation filled by one page of a file.
+    shown = long_file(work)
+    ctx.provide(LIMIT, Allows(300))
+
+    outcome = await call(ctx, tools, work, arguments("long.txt"))
+
+    last = len(outcome.text.splitlines()) - 1
+    assert outcome.error is None
+    # It ends with a whole line, and says how to read on from there.
+    assert outcome.text == page(shown, 1, last, 400)
+    assert 0 < last < 400
+    # And it holds as many lines as there is room for: with one more it would be too large.
+    assert estimate(outcome.text) <= 300 < estimate(page(shown, 1, last + 1, 400))
+
+
+async def test_a_page_that_comes_to_exactly_what_a_result_may_be_is_given(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    shown = long_file(work)
+    exactly = page(shown, 1, 120, 400)
+    ctx.provide(LIMIT, Allows(estimate(exactly)))
+
+    outcome = await call(ctx, tools, work, arguments("long.txt"))
+
+    assert outcome.text == exactly
+
+
+async def test_the_page_after_a_short_one_goes_on_where_that_one_ended(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    shown = long_file(work)
+    ctx.provide(LIMIT, Allows(300))
+    first = await call(ctx, tools, work, arguments("long.txt"))
+    read = len(first.text.splitlines()) - 1
+
+    second = await call(ctx, tools, work, arguments("long.txt", offset=read))
+
+    last = read + len(second.text.splitlines()) - 1
+    assert second.text == page(shown, read + 1, last, 400)
+    assert estimate(second.text) <= 300 < estimate(page(shown, read + 1, last + 1, 400))
+
+
+async def test_the_last_page_of_a_file_says_nothing_after_its_lines(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    shown = long_file(work, 5)
+    ctx.provide(LIMIT, Allows(300))
+
+    outcome = await call(ctx, tools, work, arguments("long.txt"))
+
+    assert outcome.text == "\n".join(shown)
+
+
+async def test_a_page_has_one_line_however_little_room_there_is(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    # A line is cut to size by itself, and a page without a line would say nothing.
+    shown = long_file(work)
+    ctx.provide(LIMIT, Allows(1))
+
+    outcome = await call(ctx, tools, work, arguments("long.txt", offset=7))
+
+    assert outcome.text == page(shown, 8, 8, 400)
+
+
+async def test_a_page_with_room_for_all_that_was_asked_for_is_as_it_was(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    shown = long_file(work)
+    limit = Allows(1_000_000)
+    ctx.provide(LIMIT, limit)
+
+    outcome = await call(ctx, tools, work, arguments("long.txt", limit=50))
+
+    assert outcome.text == page(shown, 1, 50, 400)
+    # Asked once, for the session of the call.
+    assert limit.asked == ["s-1"]
+
+
+async def test_an_offset_that_skips_every_line_is_said_whatever_the_room(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    long_file(work, 5)
+    ctx.provide(LIMIT, Allows(1))
+
+    outcome = await call(ctx, tools, work, arguments("long.txt", offset=9))
+
+    assert outcome.text == "[the file has 5 lines, and the offset skips them all]"
+
+
+async def test_where_nobody_says_how_large_a_result_may_be_a_page_is_bounded_as_before(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "short.txt").write_text("x\n" * 2500, encoding="utf-8")
+    shown = [f"{number:>6}\tx" for number in range(1, 2501)]
+
+    outcome = await call(ctx, tools, work, arguments("short.txt"))
+
+    # By the number of its lines, which a model that takes little is not helped by.
+    assert outcome.text == page(shown, 1, 2000, 2500)
+    assert estimate(outcome.text) > 3000

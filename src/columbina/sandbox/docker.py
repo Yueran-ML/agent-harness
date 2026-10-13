@@ -164,6 +164,11 @@ _LEFT = (
     "What this command left running in the container could not be stopped, so the container "
     f"was removed. {_NEW_ONE}"
 )
+_STILL = (
+    "What this command left running in the container could not be stopped, and the container "
+    "could not be seen to be gone: it may go on running. Tell the user to remove it with: "
+    f"docker rm -f {{name}}. {_NEW_ONE}"
+)
 _RESHAPED = (
     "This command changed what .git or .columbina is at the top of the working directory. "
     f"{_NEW_ONE} There a command cannot write what is new of the two."
@@ -1174,6 +1179,10 @@ class _Kept:
         used: When a command last ran in it, on the clock that only goes on.
         keeper: The program whose input keeps it alive.
         gone: Whether it has been let go.
+        never: Whether it never came to be: what was to keep it ended
+            without a word.
+        leaving: The letting go of it, once that has begun. It gives whether
+            the container was seen to be gone.
     """
 
     session: Session
@@ -1190,6 +1199,8 @@ class _Kept:
     used: float
     keeper: asyncio.subprocess.Process | None = None
     gone: bool = False
+    never: bool = False
+    leaving: asyncio.Future[bool] | None = None
 
     def alive(self) -> bool:
         """Tell whether what keeps the container is still there."""
@@ -1223,6 +1234,7 @@ class Docker:
         self._tool: str | None = None
         self._choosing = asyncio.Lock()
         self._first: weakref.WeakKeyDictionary[Session, Path] = weakref.WeakKeyDictionary()
+        self._leaving: set[asyncio.Future[bool]] = set()
         self._looking: asyncio.Task[None] | None = None
         self._over = asyncio.Event()
 
@@ -1299,6 +1311,9 @@ class Docker:
                 for container in list(self._kept.values())
             )
         )
+        # And those that a command or the look was letting go already. Whoever closes may
+        # end the program next, and nothing is to be half removed then.
+        await asyncio.gather(*self._leaving, return_exceptions=True)
 
     async def _held(self, session: Session, mode: Mode, cwd: Path) -> _Kept:
         """Return the container of a session for a mode and a directory, and make it if need be.
@@ -1462,7 +1477,9 @@ class Docker:
                 "directory of temporary files is not shared with it"
             )
         if not said:
-            # It ended without a word, so Docker will have said why.
+            # It ended without a word, so Docker will have said why. A container that
+            # runs says a word first, so none came to be.
+            container.never = True
             with contextlib.suppress(TimeoutError):
                 wrote = await asyncio.wait_for(keeper.stderr.read(), _KEEPER_SECONDS)
                 said = wrote.decode("utf-8", errors="replace")
@@ -1651,8 +1668,10 @@ class Docker:
             await self._let_go(container, "it ended while a command ran")
             return (_ENDED,)
         if not (settled[0] if settled else await self._stopped(container)):
-            await self._let_go(container, "what a command left running in it could not be stopped")
-            return (_LEFT,)
+            why = "what a command left running in it could not be stopped"
+            if await self._let_go(container, why):
+                return (_LEFT,)
+            return (_STILL.format(name=container.name),)
         if container.shape is not None:
             now = await asyncio.to_thread(_seen, container.cwd)
             if now != container.shape:
@@ -1673,42 +1692,69 @@ class Docker:
                 have taken the command and not started it. So the stop is
                 repeated until the program has ended, and done once more
                 then. If the program does not end in time, nothing is known,
-                and the answer is no.
+                and the answer is no. It is no as well as soon as a round
+                does not come back: the engine may run that round later,
+                and it would stop whatever runs in the container then.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _STOP_SECONDS
         while until is not None and not until.done():
             if loop.time() >= deadline:
                 return False
-            await self._round(container, deadline)
+            if await self._round(container, deadline) is None:
+                return False
             await asyncio.wait({until}, timeout=_ROUND_SECONDS)
-        return await self._round(container, deadline)
+        return await self._round(container, deadline) is True
 
-    async def _round(self, container: _Kept, deadline: float) -> bool:
-        """Stop once what runs for commands in a container, and tell whether none of it is left."""
+    async def _round(self, container: _Kept, deadline: float) -> bool | None:
+        """Stop once what runs for commands in a container, and tell whether none of it is left.
+
+        Returns:
+            Whether none is left, as the round itself said. ``None`` if the
+            round gave no answer: it took too long and was given up, or it
+            failed, or it could not be asked for.
+        """
         seconds = max(deadline - asyncio.get_running_loop().time(), 1.0)
         asking = ended(container.program, container.name, container.user)
         try:
             answer = await self._docker(asking, seconds)
         except SandboxUnavailableError:
-            return False
-        return answer.exit_code == 0 and answer.output.strip() == "none"
+            return None
+        said = answer.output.strip()
+        # A round that was given up has no exit code either.
+        if answer.exit_code != 0 or said not in ("none", "left"):
+            return None
+        return said == "none"
 
-    async def _let_go(self, container: _Kept, why: str) -> None:
-        """Let a container go, and see that the engine has it no more.
+    async def _let_go(self, container: _Kept, why: str) -> bool:
+        """Let a container go, and tell whether the engine was seen to have it no more.
+
+        A container is let go once. Whoever asks for it while that is under
+        way waits for the same end, and gets the same answer. And whoever
+        waits may be cancelled: the container is let go all the same.
+        """
+        if container.leaving is None:
+            container.gone = True
+            if self._kept.get(container.session.id) is container:
+                del self._kept[container.session.id]
+            logger.debug("the container %s is let go: %s", container.name, why)
+            container.leaving = asyncio.ensure_future(self._removed(container))
+            self._leaving.add(container.leaving)
+            container.leaving.add_done_callback(self._leaving.discard)
+        return await asyncio.shield(container.leaving)
+
+    async def _removed(self, container: _Kept) -> bool:
+        """Have the engine remove a container, and tell whether it was seen to be gone.
 
         Closing the input of what keeps a container ends it. A command may
         have found a way to keep it from that, so the engine is told to
-        remove it as well, and is asked afterwards whether it is gone.
+        remove it as well, and is asked afterwards whether it is gone. Only
+        a look that worked says so. An engine that does not answer may run
+        the container yet, and then the user is told how to remove it.
         """
-        if container.gone:
-            return
-        container.gone = True
-        if self._kept.get(container.session.id) is container:
-            del self._kept[container.session.id]
-        logger.debug("the container %s is let go: %s", container.name, why)
         keeper = container.keeper
-        still = True
+        # With no look to say otherwise, what never came to be is not there.
+        gone = keeper is None or container.never
         try:
             if keeper is not None:
                 assert keeper.stdin is not None
@@ -1718,22 +1764,18 @@ class Docker:
                 asking = there(container.program, container.name)
                 answer = await self._docker(asking, _ASK_SECONDS)
                 if answer.exit_code == 0:
-                    still = bool(answer.output.strip())
-                else:
-                    # An engine that does not answer runs no container either.
-                    still = not _unreachable(f"{answer.output}\n{answer.error_output}")
-            else:
-                still = False
+                    gone = not answer.output.strip()
         except SandboxUnavailableError:
             pass
         finally:
             await asyncio.to_thread(shutil.rmtree, container.probe, ignore_errors=True)
-        if still:
+        if not gone:
             logger.warning(
                 "the container %s may still be there. Remove it with: docker rm -f %s",
                 container.name,
                 container.name,
             )
+        return gone
 
     async def _look(self) -> None:
         """Look through the containers every few seconds, and let go those that nobody needs."""

@@ -53,6 +53,11 @@ RESHAPED = (
     f"{NEW_ONE} There a command cannot write what is new of the two."
 )
 
+STILL = (
+    "What this command left running in the container could not be stopped, and the container "
+    "could not be seen to be gone: it may go on running. Tell the user to remove it with: "
+    "docker rm -f {name}."
+)
 STAYS = "import time; time.sleep(60)"
 """A command that goes on for a minute."""
 
@@ -921,18 +926,126 @@ async def test_a_container_that_is_gone_is_let_go_without_a_word(
     assert caplog.messages == []
 
 
-async def test_an_engine_that_no_longer_answers_runs_no_container_to_warn_of(
+async def test_an_engine_that_no_longer_answers_may_still_run_a_container(
     engine: Engine, session: Session, work: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    # An engine can be set up so that its containers go on when it is down. That it does
+    # not answer says nothing of them.
     provider = Docker(DockerConfig(program=engine.program))
     await ran(provider, session, work, "pass")
+    (name,) = engine.containers()
     engine.told(engine="down")
 
     with caplog.at_level(logging.WARNING, logger="columbina.sandbox.docker"):
         await provider.close()
 
+    assert caplog.messages == [
+        f"the container {name} may still be there. Remove it with: docker rm -f {name}"
+    ]
+
+
+async def test_a_container_that_never_came_to_be_is_not_warned_of(
+    engine: Engine, session: Session, work: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The engine refused it, and cannot be asked about it afterwards either.
+    engine.told(run="breaks", ps="fails")
+    provider = Docker(DockerConfig(program=engine.program))
+
+    with (
+        caplog.at_level(logging.WARNING, logger="columbina.sandbox.docker"),
+        pytest.raises(SandboxUnavailableError, match="out of sorts"),
+    ):
+        await ran(provider, session, work, "pass")
+
     assert caplog.messages == []
+
+
+async def test_a_container_that_is_seen_although_it_never_spoke_is_warned_of(
+    engine: Engine, session: Session, work: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    engine.told(run="breaks", ps="stuck")
+    provider = Docker(DockerConfig(program=engine.program))
+
+    with (
+        caplog.at_level(logging.WARNING, logger="columbina.sandbox.docker"),
+        pytest.raises(SandboxUnavailableError, match="out of sorts"),
+    ):
+        await ran(provider, session, work, "pass")
+
+    assert len(caplog.messages) == 1
+    assert "may still be there" in caplog.messages[0]
+
+
+async def test_what_could_not_be_stopped_in_a_container_that_cannot_be_seen_to_go_is_told(
+    provider: Docker, engine: Engine, session: Session, work: Path
+) -> None:
+    await ran(provider, session, work, "pass")
+    (name,) = engine.containers()
+    engine.told(stop="left", ps="fails")
+
+    done = await ran(provider, session, work, "print('said')")
+
+    # Something may go on running on this machine, and only the user can end it.
+    assert done.notes == (STILL.format(name=name) + NEW_ONE,)
+
+
+async def test_closing_waits_for_a_container_that_is_being_let_go(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    provider = Docker(DockerConfig(program=engine.program))
+    await ran(provider, session, work, "pass")
+    engine.told(stop="left", rm="slow")
+    running = asyncio.ensure_future(ran(provider, session, work, "print('said')"))
+    await until(lambda: "rm" in engine.verbs())
+
+    await provider.close()
+
+    # Whoever closes may end the program next. Nothing is to be half removed then.
+    assert engine.verbs()[-2:] == ["rm", "ps"]
     assert engine.containers() == {}
+    assert (await running).notes == (LEFT + NEW_ONE,)
+
+
+async def test_closing_again_waits_for_what_a_closing_that_was_cut_short_began(
+    engine: Engine, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    quick(monkeypatch, keeper=30.0)
+    engine.told(run="stays")
+    provider = Docker(DockerConfig(program=engine.program))
+    await ran(provider, session, work, "pass")
+    engine.told(run="stays", rm="slow")
+    closing = asyncio.ensure_future(provider.close())
+    await until(lambda: "rm" in engine.verbs())
+
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    await provider.close()
+
+    assert engine.containers() == {}
+    assert engine.verbs()[-2:] == ["rm", "ps"]
+
+
+async def test_a_container_that_is_being_let_go_under_a_command_is_said_to_have_ended(
+    engine: Engine, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # What keeps it is still there when the command comes back: the engine will not
+    # remove it, and it does not end by itself. Let go it is all the same.
+    quick(monkeypatch, keeper=3.0)
+    engine.told(run="stays")
+    provider = Docker(DockerConfig(program=engine.program))
+    await ran(provider, session, work, "pass")
+    before = len(engine.started())
+    engine.told(run="stays", rm="fails")
+    running = asyncio.ensure_future(ran(provider, session, work, "import time; time.sleep(1.5)"))
+    await begun(engine, before)
+
+    closing = asyncio.ensure_future(provider.close())
+    done = await asyncio.wait_for(running, timeout=30)
+    await closing
+
+    assert done.notes == (ENDED + NEW_ONE,)
+    assert engine.verbs().count("rm") == 1
 
 
 async def test_an_engine_that_cannot_say_whether_a_container_is_gone_leaves_it_in_doubt(
@@ -1547,6 +1660,19 @@ async def test_a_container_in_which_something_would_not_stop_is_removed(
     ]
 
 
+async def test_a_stop_that_failed_is_not_believed_whatever_it_said(
+    provider: Docker, engine: Engine, session: Session, work: Path
+) -> None:
+    # It said that nothing is left and then failed: what it did in between is not known.
+    await ran(provider, session, work, "pass")
+    engine.told(stop_exit=1)
+
+    done = await ran(provider, session, work, "print('said')")
+
+    assert done.notes == (LEFT + NEW_ONE,)
+    assert engine.containers() == {}
+
+
 async def test_a_stop_that_does_not_come_back_does_not_hold_the_command(
     provider: Docker,
     engine: Engine,
@@ -1563,6 +1689,69 @@ async def test_a_stop_that_does_not_come_back_does_not_hold_the_command(
 
     assert time.monotonic() - began < 20
     assert done.notes == (LEFT + NEW_ONE,)
+    assert engine.containers() == {}
+
+
+async def test_a_stop_that_was_given_up_costs_the_container_although_a_later_one_comes_back(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The engine may have taken the stop that nobody waited for any longer, and run it
+    # later: it would stop the next command. The command here ends by itself meanwhile, so
+    # a last stop is asked for, and that one comes back with nothing left.
+    quick(monkeypatch, stop=1.5)
+    await ran(provider, session, work, "pass")
+    engine.told(stop="hangs-once")
+
+    done = await ran(provider, session, work, "import time; time.sleep(1.0)", seconds=0.5)
+
+    assert done.notes == (LEFT + NEW_ONE,)
+    assert engine.containers() == {}
+
+
+async def test_a_stop_that_fails_while_a_command_is_stopped_is_not_asked_for_again(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick(monkeypatch, stop=3.0)
+    await ran(provider, session, work, "pass")
+    before = len(engine.started())
+    engine.told(stop="fails")
+
+    done = await ran(provider, session, work, STAYS, seconds=0.5)
+
+    assert (done.timed_out, done.notes) == (True, (LEFT + NEW_ONE,))
+    # Once for the command before, and once here: what the engine made of it is not known,
+    # so nothing more is asked of this container.
+    assert engine.verbs().count("stop") == 2
+    for command in engine.started()[before:]:
+        assert await gone(command)
+    assert engine.containers() == {}
+
+
+async def test_a_stop_that_cannot_be_asked_for_while_a_command_is_stopped_is_not_tried_again(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quick(monkeypatch, stop=12.0)
+    await ran(provider, session, work, "pass")
+    engine.fails.add("stop")
+    began = time.monotonic()
+
+    done = await ran(provider, session, work, STAYS, seconds=0.5)
+
+    # Not for as long as stopping may take: what cannot be asked for cannot be waited for.
+    assert time.monotonic() - began < 8
+    assert (done.timed_out, done.notes) == (True, (LEFT + NEW_ONE,))
     assert engine.containers() == {}
 
 

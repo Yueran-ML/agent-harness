@@ -2975,8 +2975,8 @@ _DOCKER_KEPT = (
     mutant(
         "what Docker said of a container that did not start is not read",
         DOCKER,
-        "        if not said:\n            # It ended without a word, so Docker will have said why.\n",
-        "        if False:\n            # It ended without a word, so Docker will have said why.\n",
+        "        if not said:\n            # It ended without a word, so Docker will have said why. A",
+        "        if False:\n            # It ended without a word, so Docker will have said why. A",
     ),
     mutant(
         "the directory is not looked at as the user of commands",
@@ -3207,40 +3207,91 @@ _DOCKER_KEPT = (
         "nothing is stopped once the program that asked for the command has ended",
         DOCKER,
         "            await asyncio.wait({until}, timeout=_ROUND_SECONDS)\n"
-        "        return await self._round(container, deadline)\n",
+        "        return await self._round(container, deadline) is True\n",
         "            await asyncio.wait({until}, timeout=_ROUND_SECONDS)\n        return True\n",
+    ),
+    mutant(
+        "a round of the stop that gave no answer is asked for again",
+        DOCKER,
+        "            if await self._round(container, deadline) is None:\n"
+        "                return False\n",
+        "            await self._round(container, deadline)\n",
+    ),
+    mutant(
+        "a stop that gave no answer at the end counts as nothing left",
+        DOCKER,
+        "        return await self._round(container, deadline) is True\n",
+        "        return await self._round(container, deadline) is not False\n",
     ),
     mutant(
         "whatever the stop says counts as nothing left",
         DOCKER,
-        '        return answer.exit_code == 0 and answer.output.strip() == "none"\n',
-        "        return answer.exit_code == 0\n",
+        '        return said == "none"\n',
+        "        return True\n",
     ),
     mutant(
-        "a stop that failed and said nothing counts as nothing left",
+        "a stop that failed is taken for one that left something",
         DOCKER,
-        '        return answer.exit_code == 0 and answer.output.strip() == "none"\n',
-        '        return answer.exit_code != 0 or answer.output.strip() == "none"\n',
+        '        if answer.exit_code != 0 or said not in ("none", "left"):\n            return None\n',
+        "",
+    ),
+    mutant(
+        "a stop that failed and said that nothing is left is believed",
+        DOCKER,
+        '        if answer.exit_code != 0 or said not in ("none", "left"):\n',
+        '        if said not in ("none", "left"):\n',
     ),
     mutant(
         "a stop that could not be asked for counts as done",
         DOCKER,
         "            answer = await self._docker(asking, seconds)\n"
-        "        except SandboxUnavailableError:\n            return False\n",
+        "        except SandboxUnavailableError:\n            return None\n",
         "            answer = await self._docker(asking, seconds)\n"
         "        except SandboxUnavailableError:\n            return True\n",
     ),
     mutant(
+        "a stop that could not be asked for is tried again",
+        DOCKER,
+        "            answer = await self._docker(asking, seconds)\n"
+        "        except SandboxUnavailableError:\n            return None\n",
+        "            answer = await self._docker(asking, seconds)\n"
+        "        except SandboxUnavailableError:\n            return False\n",
+    ),
+    mutant(
         "a container is let go as often as somebody asks",
         DOCKER,
-        "        if container.gone:\n            return\n",
+        "        if container.leaving is None:\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "the letting go of a container ends with whoever waited for it",
+        DOCKER,
+        "        return await asyncio.shield(container.leaving)\n",
+        "        return await container.leaving\n",
+    ),
+    mutant(
+        "closing does not wait for a container that is being let go",
+        DOCKER,
+        "        await asyncio.gather(*self._leaving, return_exceptions=True)\n",
         "",
+    ),
+    mutant(
+        "what could not be stopped is said to be removed although nobody saw it go",
+        DOCKER,
+        "            if await self._let_go(container, why):\n                return (_LEFT,)\n",
+        "            await self._let_go(container, why)\n            return (_LEFT,)\n",
+    ),
+    mutant(
+        "a container that was removed is said to be there still",
+        DOCKER,
+        "            if await self._let_go(container, why):\n",
+        "            if not await self._let_go(container, why):\n",
     ),
     mutant(
         "a container that was let go stays in the books",
         DOCKER,
-        "        if self._kept.get(container.session.id) is container:\n"
-        "            del self._kept[container.session.id]\n",
+        "            if self._kept.get(container.session.id) is container:\n"
+        "                del self._kept[container.session.id]\n",
         "",
     ),
     mutant(
@@ -3264,20 +3315,26 @@ _DOCKER_KEPT = (
     mutant(
         "a container that the engine still has is taken for gone",
         DOCKER,
-        "                    still = bool(answer.output.strip())\n",
-        "                    still = False\n",
+        "                    gone = not answer.output.strip()\n",
+        "                    gone = True\n",
     ),
     mutant(
         "an engine that could not say whether a container is gone is taken to have none",
         DOCKER,
-        '                    still = not _unreachable(f"{answer.output}\\n{answer.error_output}")\n',
-        "                    still = False\n",
+        "                if answer.exit_code == 0:\n                    gone = not answer.output.strip()\n",
+        "                gone = not answer.output.strip()\n",
     ),
     mutant(
-        "an engine that does not answer is taken to run a container still",
+        "a container that the engine lists is taken for gone because it never spoke",
         DOCKER,
-        '                    still = not _unreachable(f"{answer.output}\\n{answer.error_output}")\n',
-        "                    still = True\n",
+        "                    gone = not answer.output.strip()\n",
+        "                    gone = gone or not answer.output.strip()\n",
+    ),
+    mutant(
+        "a container that never came to be is warned of when the engine cannot be asked",
+        DOCKER,
+        "        gone = keeper is None or container.never\n",
+        "        gone = keeper is None\n",
     ),
     mutant(
         "the directory of a token is left behind",
@@ -3288,7 +3345,7 @@ _DOCKER_KEPT = (
     mutant(
         "a container that may still be there is not told to the user",
         DOCKER,
-        "        if still:\n            logger.warning(\n",
+        "        if not gone:\n            logger.warning(\n",
         "        if False:\n            logger.warning(\n",
     ),
     mutant(

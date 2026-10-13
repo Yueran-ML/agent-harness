@@ -686,7 +686,8 @@ def test_a_container_does_not_outlive_the_program_that_keeps_it(program: str, wo
             holder.stdout.close()
 
     deadline = time.monotonic() + 30
-    while asked(program, "ps", "--all", "--quiet", "--filter", f"id={name}")[1] != "":
+    # Only a look that worked and found nothing says that it is gone.
+    while asked(program, "ps", "--all", "--quiet", "--filter", f"id={name}") != (0, ""):
         assert time.monotonic() < deadline, "the container is still there"
         time.sleep(0.2)
 

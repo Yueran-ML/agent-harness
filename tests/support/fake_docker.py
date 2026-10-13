@@ -235,7 +235,9 @@ def stop(name: str, how: dict[str, Any]) -> int:
     note(stop=name, running=len(running))
     if how.get("stop") == "fails":
         return fail(1, "Error response from daemon: the engine is out of sorts")
-    if how.get("stop") == "hangs":
+    hung = HOME / "hung"
+    if how.get("stop") == "hangs" or (how.get("stop") == "hangs-once" and not hung.exists()):
+        hung.write_text("")
         time.sleep(60)
     if how.get("stop") == "left":
         print("left", flush=True)
@@ -244,7 +246,7 @@ def stop(name: str, how: dict[str, Any]) -> int:
         end(pid)
     (CONTAINERS / f"{name}.pids").unlink(missing_ok=True)
     print("none", flush=True)
-    return 0
+    return int(how.get("stop_exit", 0))
 
 
 def listed(argv: list[str], how: dict[str, Any]) -> int:
@@ -264,6 +266,8 @@ def remove(argv: list[str], how: dict[str, Any]) -> int:
         return fail(1, DOWN)
     if how.get("rm") == "fails":
         return fail(1, "Error response from daemon: the engine is out of sorts")
+    if how.get("rm") == "slow":
+        time.sleep(1.5)
     known = container(name)
     if known is not None:
         for pid in (*commands(name), known["pid"]):

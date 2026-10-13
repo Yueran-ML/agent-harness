@@ -233,6 +233,29 @@ if sys.platform == "linux":
 
         assert sorted(path.name for path in private.iterdir()) == ["secret.txt"]
 
+    async def test_a_link_put_in_the_place_of_what_is_protected_while_a_container_is_made_is_found(
+        provider: Docker, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private = work.parent / "private"
+        private.mkdir()
+        (private / "secret.txt").write_text("the secret\n")
+        (work / ".git").mkdir()
+        really_look: Any = vars(docker)["_layout"]
+
+        def then_swapped(mode: Mode, cwd: Path, target: str) -> Any:
+            looked = really_look(mode, cwd, target)
+            # What is mounted over a protected name is a source of its own. The engine
+            # follows a link in its place, and would mount what the link names, read-only,
+            # for commands to read: any directory of the machine.
+            (work / ".git").rename(work / "aside")
+            (work / ".git").symlink_to(private)
+            return looked
+
+        monkeypatch.setattr(docker, "_layout", then_swapped)
+
+        with pytest.raises(SandboxUnavailableError, match="was not given what lies under a"):
+            await sh(provider, session, work, "cat .git/secret.txt")
+
 
 async def test_a_command_gets_a_home_of_its_own_and_nothing_of_the_environment_of_this_program(
     make: Make, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
@@ -364,6 +387,27 @@ async def test_what_is_protected_cannot_be_written_removed_or_moved_aside(
     assert sorted(path.name for path in (work / ".git").iterdir()) == ["config", "hooks"]
     assert list((work / ".git" / "hooks").iterdir()) == []
     assert list((work / ".columbina").iterdir()) == []
+
+
+async def test_where_a_command_reaches_what_is_protected_under_another_name_it_is_held_in_part(
+    provider: Docker, session: Session, work: Path
+) -> None:
+    (work / ".git").mkdir()
+    (work / ".git" / "config").write_text("[core]\n")
+    # A disk that does not tell upper case from lower finds the directory under both.
+    respelled = (work / ".GIT").is_dir()
+
+    await sh(provider, session, work, "echo x > .GIT/planted")
+
+    planted = (work / ".git" / "planted").exists()
+    if respelled:
+        # What is mounted over the name lies over one spelling of it. With the engine
+        # that this was tried with, a command writes under the other. The provider cannot
+        # help that, and knows that it does not hold what is protected there.
+        assert provider.strength(session) == "partial"
+    else:
+        assert not planted
+    assert (work / ".git" / "config").read_text() == "[core]\n"
 
 
 async def test_a_protected_name_that_is_a_file_cannot_be_written_or_replaced(

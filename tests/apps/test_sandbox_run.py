@@ -148,14 +148,40 @@ def test_a_session_that_is_read_only_cannot_write_the_working_directory(held: He
 def test_what_belongs_to_the_repository_cannot_be_written(held: Held) -> None:
     (held.work / ".git").mkdir()
     (held.work / ".git" / "config").write_text("[core]\n", encoding="utf-8")
+    # A rule lets the command through. Without one it is asked about on a disk that finds
+    # the directory under another name as well, which the next test is about.
+    allowing = {"id": "permissions", "config": {"preset": "workspace-write", "allow": ["bash"]}}
 
     (result,) = held.run(
-        bash("echo x 2>/dev/null >> .git/config; echo $?; echo x 2>/dev/null > .git/hook; echo $?")
+        bash("echo x 2>/dev/null >> .git/config; echo $?; echo x 2>/dev/null > .git/hook; echo $?"),
+        extra=[allowing],
     )
 
     assert said(result) == ["1", "1"]
     assert (held.work / ".git" / "config").read_text(encoding="utf-8") == "[core]\n"
     assert [path.name for path in (held.work / ".git").iterdir()] == ["config"]
+
+
+def test_in_a_repository_a_command_is_held_as_well_as_the_disk_keeps_to_one_name_for_it(
+    held: Held,
+) -> None:
+    (held.work / ".git").mkdir()
+    # A disk that does not tell upper case from lower finds the directory under both.
+    respelled = (held.work / ".GIT").is_dir()
+
+    first, second = held.run(bash("echo ran >> ran.txt"), bash("echo ran >> ran.txt"))
+
+    if respelled:
+        # What is mounted over `.git` does not lie over its other name, so the commands are
+        # held in part. The first was let through for a full hold when there was no
+        # container yet, and is turned back. The second is asked about, and nobody is there.
+        assert first[1] == "SANDBOX_UNAVAILABLE"
+        assert "can be reached under another name" in first[0]
+        assert second[1] == NOBODY_TO_ASK
+        assert not (held.work / "ran.txt").exists()
+    else:
+        assert (said(first), said(second)) == ([], [])
+        assert (held.work / "ran.txt").read_text(encoding="utf-8") == "ran\nran\n"
 
 
 def test_a_file_that_a_command_made_is_read_by_the_path_that_the_container_has_it_at(

@@ -8,7 +8,7 @@ import stat
 import sys
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 from pydantic import ValidationError
@@ -798,6 +798,264 @@ def test_a_protected_name_that_leads_to_the_directory_itself_protects_all_of_it(
     ]
 
 
+def test_a_path_in_a_directory_is_known_by_the_way_down_to_it(work: Path, root: Path) -> None:
+    way: Any = vars(docker)["_way"]
+    (work / "meta" / "git").mkdir(parents=True)
+    (root / "elsewhere").mkdir()
+
+    assert way(work, work / "meta" / "git") == ("meta", "git")
+    assert way(work, work) == ()
+    assert way(work, root / "elsewhere") is None
+    assert way(work, root) is None
+    # What is not there lies where its name puts it.
+    assert way(work, work / "meta" / "gone" / "deep") == ("meta", "gone", "deep")
+
+
+def test_a_path_in_a_directory_is_known_under_another_name_of_the_directory(
+    work: Path, root: Path
+) -> None:
+    # A disk that does not tell upper case from lower has many spellings for one directory,
+    # and a directory may be reached under two names. Which directory it is tells.
+    way: Any = vars(docker)["_way"]
+    (work / "meta" / "git").mkdir(parents=True)
+    link_directory(root / "alias", work)
+
+    assert way(work, root / "alias" / "meta" / "git") == ("meta", "git")
+    assert way(work, root / "alias" / "meta" / "gone") == ("meta", "gone")
+    assert way(work, root / "alias") == ()
+
+
+def test_on_a_file_system_that_numbers_nothing_a_path_is_placed_by_how_it_is_spelled(
+    work: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    way: Any = vars(docker)["_way"]
+    (work / "meta").mkdir()
+    link_directory(root / "alias", work)
+
+    def unnumbered(place: Path) -> None:
+        return None
+
+    monkeypatch.setattr(docker, "_itself", unnumbered)
+
+    assert way(work, work / "meta") == ("meta",)
+    # Nothing that has no number is taken for the directory because that has none either.
+    assert way(work, root / "alias" / "meta") is None
+
+
+def test_a_name_in_a_directory_is_taken_as_the_disk_writes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    written: Any = vars(docker)["_written"]
+    cwd = Path("/work")
+    numbered = {"META": (1, 7), "meta": (1, 7), "src": (1, 8)}
+
+    def numbers(place: Path) -> tuple[int, int] | None:
+        return numbered.get(place.name)
+
+    monkeypatch.setattr(docker, "_named", numbers)
+
+    # Another spelling of what the disk lists under a name of its own.
+    assert written(cwd, "META", ["src", "meta"]) == "meta"
+    # What the disk does not list stays as it was written, also beside a name that the
+    # disk lists and has no number for.
+    assert written(cwd, "gone", ["unnumbered", "src", "meta"]) == "gone"
+    # And so does what came to be after the disk was listed.
+    numbered["late"] = (1, 9)
+    assert written(cwd, "late", ["src", "meta"]) == "late"
+
+
+def test_a_name_that_the_disk_lists_is_not_asked_about(monkeypatch: pytest.MonkeyPatch) -> None:
+    written: Any = vars(docker)["_written"]
+
+    def unasked(place: Path) -> NoReturn:
+        raise AssertionError(f"the disk was asked about {place}, which it lists")
+
+    monkeypatch.setattr(docker, "_named", unasked)
+
+    assert written(Path("/work"), "meta", ["src", "meta"]) == "meta"
+
+
+@pytest.mark.parametrize(
+    ("numbered", "name", "another"),
+    [
+        # A disk that does not tell upper case from lower finds one thing under both.
+        ({".git": (1, 7), ".GIT": (1, 7)}, ".git", True),
+        ({".Git": (1, 7), ".gIT": (1, 7)}, ".Git", True),
+        # Two things that differ in nothing but their case, on a disk that tells them apart.
+        ({".git": (1, 7), ".GIT": (1, 8)}, ".git", False),
+        ({".git": (1, 7)}, ".git", False),
+        # A name without a letter is spelled in one way only.
+        ({"2024": (1, 7)}, "2024", False),
+        # What the disk has no number for cannot be told from anything, so it is taken to
+        # have another name.
+        ({}, ".git", True),
+    ],
+)
+def test_a_name_that_the_disk_finds_under_another_spelling_is_known_for_one(
+    monkeypatch: pytest.MonkeyPatch,
+    numbered: dict[str, tuple[int, int]],
+    name: str,
+    another: bool,
+) -> None:
+    respelled: Any = vars(docker)["_respelled"]
+
+    def numbers(place: Path) -> tuple[int, int] | None:
+        # By the name as it is asked for: a path of Windows would take the two for one.
+        return numbered.get(place.name)
+
+    monkeypatch.setattr(docker, "_named", numbers)
+
+    assert respelled(Path("/work"), name) is another
+
+
+def test_whether_a_disk_tells_upper_case_from_lower_is_seen_on_the_disk(work: Path) -> None:
+    respelled: Any = vars(docker)["_respelled"]
+    (work / ".git").mkdir()
+
+    assert respelled(work, ".git") is (work / ".GIT").is_dir()
+
+
+if sys.platform == "win32":
+
+    class Kernel:
+        """What Windows answers when it is asked for the short form of a path."""
+
+        def __init__(self, short: str, *, room: int | None = None, written: int = 1) -> None:
+            self._short = short
+            self._room = len(short) + 1 if room is None else room
+            self._written = written
+            self.asked: list[str] = []
+
+        def GetShortPathNameW(self, long: str, short: Any, room: int) -> int:  # noqa: N802
+            self.asked.append(long)
+            if short is None:
+                return self._room
+            short.value = self._short
+            return self._written and len(self._short)
+
+    @pytest.mark.parametrize(
+        ("long", "short", "another"),
+        [
+            ("C:\\work\\.git", "C:\\work\\GIT~1", True),
+            ("C:\\work\\long-name-of-a-directory", "C:\\work\\LONG-N~1", True),
+            ("C:\\work\\meta", "C:\\work\\meta", False),
+            # The short form may be written in another case, and is the same name then.
+            ("C:\\work\\Meta", "C:\\WORK\\META", False),
+            # What lies above may have a short name. That is not a name of the thing.
+            ("C:\\Program Files\\meta", "C:\\PROGRA~1\\meta", False),
+        ],
+    )
+    def test_a_short_name_that_windows_keeps_beside_a_name_is_known(
+        monkeypatch: pytest.MonkeyPatch, long: str, short: str, another: bool
+    ) -> None:
+        shortened: Any = vars(docker)["_shortened"]
+        kernel = Kernel(short)
+        monkeypatch.setattr(docker, "_kernel32", kernel)
+
+        assert shortened(Path(long)) is another
+        assert kernel.asked == [long, long]
+
+    @pytest.mark.parametrize("failing", [{"room": 0}, {"written": 0}])
+    def test_what_windows_will_not_give_the_short_form_of_is_taken_to_have_one(
+        monkeypatch: pytest.MonkeyPatch, failing: dict[str, int]
+    ) -> None:
+        shortened: Any = vars(docker)["_shortened"]
+        monkeypatch.setattr(docker, "_kernel32", Kernel("C:\\work\\meta", **failing))
+
+        assert shortened(Path("C:\\work\\meta")) is True
+
+    def test_windows_is_asked_for_the_short_form_of_a_name(work: Path) -> None:
+        shortened: Any = vars(docker)["_shortened"]
+        (work / "a").mkdir()
+
+        # A name that every program could always read has no other.
+        assert shortened(work / "a") is False
+
+else:
+
+    def test_only_windows_keeps_a_short_name_beside_a_name(work: Path) -> None:
+        shortened: Any = vars(docker)["_shortened"]
+        (work / "long-name-of-a-directory").mkdir()
+
+        assert shortened(work / "long-name-of-a-directory") is False
+
+
+def led_under_another_name(monkeypatch: pytest.MonkeyPatch, link: Path, place: Path) -> None:
+    """Have a link resolve to a place that is spelled otherwise than the system would spell it.
+
+    That is what a disk does that does not tell upper case from lower: what a link says
+    keeps its spelling there. Not every system has such a disk for a test.
+    """
+    really: Any = os.path.realpath
+
+    def spelled_otherwise(path: Any, **more: Any) -> str:
+        return str(place) if Path(path) == link else really(path, **more)
+
+    monkeypatch.setattr(os.path, "realpath", spelled_otherwise)
+
+
+def test_a_protected_name_that_leads_into_the_directory_under_another_name_protects_that_place(
+    work: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (work / "meta" / "git").mkdir(parents=True)
+    link_directory(work / ".git", work / "meta" / "git")
+    link_directory(root / "alias", work)
+    led_under_another_name(monkeypatch, work / ".git", root / "alias" / "meta" / "git")
+
+    assert docker.shape(work) == ((".git", f"link to directory {root / 'alias' / 'meta' / 'git'}"),)
+    assert docker.mounts("workspace-write", work, "/workspace") == [
+        bind(work, "/workspace"),
+        bind(work / "meta", "/workspace/meta", "readonly"),
+    ]
+
+
+def test_a_protected_name_that_leads_to_the_directory_under_another_name_protects_all_of_it(
+    work: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link_directory(work / ".git", work)
+    link_directory(root / "alias", work)
+    led_under_another_name(monkeypatch, work / ".git", root / "alias")
+
+    assert docker.mounts("workspace-write", work, "/workspace") == [
+        bind(work, "/workspace", "readonly")
+    ]
+
+
+def test_what_is_mounted_for_a_protected_name_is_named_as_the_disk_writes_it(
+    work: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mount lies over one spelling of a name. The one that a command would use is the
+    # one that the disk lists.
+    (work / "meta" / "git").mkdir(parents=True)
+    link_directory(work / ".git", work / "meta" / "git")
+    led_under_another_name(monkeypatch, work / ".git", work / "META" / "git")
+    numbered: Any = vars(docker)["_named"]
+
+    def insensitive(place: Path) -> tuple[int, int] | None:
+        return numbered(place.with_name(place.name.lower()))
+
+    monkeypatch.setattr(docker, "_named", insensitive)
+
+    mounted = docker.mounts("workspace-write", work, "/workspace")
+
+    assert mounted[1:] == [bind(work / "meta", "/workspace/meta", "readonly")]
+
+
+def test_on_a_disk_that_does_not_tell_upper_case_from_lower_a_link_is_placed_all_the_same(
+    work: Path, root: Path
+) -> None:
+    shouted = root / work.name.upper()
+    if not shouted.is_dir():
+        pytest.skip("this disk tells upper case from lower")
+    (work / "meta" / "git").mkdir(parents=True)
+    link_directory(work / ".git", shouted / "META" / "git")
+
+    assert docker.mounts("workspace-write", work, "/workspace") == [
+        bind(work, "/workspace"),
+        bind(work / "meta", "/workspace/meta", "readonly"),
+    ]
+
+
 def test_two_protected_names_that_lead_to_one_place_are_one_mount(work: Path) -> None:
     (work / "kept").mkdir()
     link_directory(work / ".git", work / "kept")
@@ -919,44 +1177,79 @@ def test_a_model_is_told_of_the_network_that_a_container_has() -> None:
 
 # Which directory a container has
 
-ITSELF, TOKEN_AT, KNOWN = (2049, 1200), (39, 77), (39, 78)
-"""The numbers of a working directory, of the directory of a token, and of one in it."""
+ITSELF, TOKEN_AT, KNOWN, COVER = (2049, 1200), (39, 77), (39, 78), (2049, 1300)
+"""The numbers of a working directory, of the directory of a token, of one in it, and of
+what is mounted over a protected name."""
 
 
 @pytest.mark.parametrize(
     ("said", "same"),
     [
         # As the kernel of this machine has them.
-        (["2049:1200", "39:77", "39:78"], True),
-        # Through a share: every inode shifted alike, and devices of its own.
-        (["73:1202", "73:79", "73:80"], True),
-        (["2049:1201", "39:77", "39:78"], False),
+        (["2049:1200", "39:77", "39:78", "2049:1300"], [True, True]),
+        (["2049:1201", "39:77", "39:78", "2049:1300"], [False, True]),
         # The same number on another device is another directory.
-        (["2050:1200", "39:77", "39:78"], False),
-        (["73:1203", "73:79", "73:80"], False),
-        # The two that are known disagree: the numbers of this container are its own.
-        (["73:1202", "73:79", "73:85"], None),
-        (["2049:1200", "39:77", "39:83"], None),
-        (["2049:1200", "39:77"], None),
-        (["2049:1200", "39:77", "39:78", "1:1"], None),
-        (["writable", "39:77", "39:78"], None),
-        (["2049:1200", "39:77", "39:x"], None),
-        (["2049:1200", "39:77", "-39:78"], None),
+        (["2050:1200", "39:77", "39:78", "2049:1300"], [False, True]),
+        # Something else lies over the protected name.
+        (["2049:1200", "39:77", "39:78", "2049:1301"], [True, False]),
+        (["2049:1200", "39:77", "39:78", "2050:1300"], [True, False]),
+        (["2049:1201", "39:77", "39:78", "2050:1300"], [False, False]),
+        # A share with devices of its own that shifts every inode alike. What it makes of
+        # the directory of the token says nothing of the file system of the working
+        # directory, so nothing is known.
+        (["73:1202", "73:79", "73:80", "73:1302"], None),
+        (["2049:1202", "39:79", "39:80", "2049:1302"], None),
+        # One of the two that came with the token is not known by its number here.
+        (["2049:1200", "39:77", "39:83", "2049:1300"], None),
+        (["2049:1200", "39:76", "39:78", "2049:1300"], None),
+        (["2049:1200", "40:77", "39:78", "2049:1300"], None),
+        (["2049:1200", "39:77", "40:78", "2049:1300"], None),
+        # An answer is missing, or there is one too many, or one is no pair of numbers.
+        (["2049:1200", "39:77", "39:78"], None),
+        (["2049:1200", "39:77", "39:78", "2049:1300", "1:1"], None),
+        (["writable", "39:77", "39:78", "2049:1300"], None),
+        (["2049:1200", "39:77", "39:x", "2049:1300"], None),
+        (["2049:1200", "39:77", "-39:78", "2049:1300"], None),
+        (["2049:1200", "39:77", "39:78", "2049:1300 "], None),
+        # Also beside as many pairs as there should be: which of them is which is not known.
+        (["2049:1200", "39:77", "39:78", "2049:1300", "more"], None),
+        (["stat: not found", "2049:1200", "39:77", "39:78", "2049:1300"], None),
         ([], None),
     ],
 )
-def test_a_container_is_known_to_have_a_directory_by_the_numbers_of_it(
-    said: list[str], same: bool | None
+def test_a_container_is_known_to_have_what_was_mounted_by_the_numbers_of_it(
+    said: list[str], same: list[bool] | None
 ) -> None:
-    assert docker.given(said, ITSELF, TOKEN_AT, KNOWN) is same
+    assert docker.given(said, [ITSELF, COVER], TOKEN_AT, KNOWN) == same
+
+
+def test_a_directory_with_nothing_over_it_is_told_by_itself() -> None:
+    assert docker.given(["2049:1200", "39:77", "39:78"], [ITSELF], TOKEN_AT, KNOWN) == [True]
+    assert docker.given(["2049:1201", "39:77", "39:78"], [ITSELF], TOKEN_AT, KNOWN) == [False]
 
 
 def test_without_the_numbers_of_this_machine_nothing_is_compared() -> None:
-    said = ["2049:1200", "39:77", "39:78"]
+    said = ["2049:1200", "39:77", "39:78", "2049:1300"]
 
-    assert docker.given(said, None, TOKEN_AT, KNOWN) is None
-    assert docker.given(said, ITSELF, None, KNOWN) is None
-    assert docker.given(said, ITSELF, TOKEN_AT, None) is None
+    assert docker.given(said, [None, COVER], TOKEN_AT, KNOWN) is None
+    assert docker.given(said, [ITSELF, None], TOKEN_AT, KNOWN) is None
+    assert docker.given(said, [ITSELF, COVER], None, KNOWN) is None
+    assert docker.given(said, [ITSELF, COVER], TOKEN_AT, None) is None
+
+
+def test_what_lies_under_a_name_has_numbers_of_its_own_also_if_it_is_a_link(
+    work: Path, root: Path
+) -> None:
+    named: Any = vars(docker)["_named"]
+    itself: Any = vars(docker)["_itself"]
+    (root / "elsewhere").mkdir()
+    link_directory(work / "link", root / "elsewhere")
+
+    # A link that was put in the place of a directory is told from the directory by this.
+    assert itself(work / "link") == itself(root / "elsewhere")
+    assert named(work / "link") not in (None, named(root / "elsewhere"))
+    assert named(root / "elsewhere") == itself(root / "elsewhere")
+    assert named(work / "nothing") is None
 
 
 def reached(path: Path) -> tuple[int, int] | None:
@@ -1131,9 +1424,10 @@ def test_an_empty_directory_is_looked_through_in_no_time(work: Path) -> None:
 class Entry:
     """What a directory lists, as far as the look for sockets asks about it."""
 
-    def __init__(self, mode: int, *, link: bool = False) -> None:
+    def __init__(self, mode: int, *, link: bool = False, gone: bool = False) -> None:
         self._mode = mode
         self._link = link
+        self._gone = gone
 
     def is_file(self, *, follow_symlinks: bool = True) -> bool:
         return stat.S_ISREG(self._mode) and not self._link
@@ -1142,6 +1436,8 @@ class Entry:
         return self._link
 
     def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self._gone:
+            raise FileNotFoundError(2, "No such file or directory")
         return os.stat_result((self._mode, 0, 0, 0, 0, 0, 0, 0, 0, 0))
 
 
@@ -1191,6 +1487,38 @@ def test_a_part_that_the_system_will_not_list_is_not_known_to_be_free(
     assert docker.sockets(work, 1000, 60.0) == (
         "a part of the working directory could not be looked through for sockets"
     )
+
+
+@pytest.mark.parametrize("left", ["nothing", "a file"])
+def test_a_part_that_went_while_the_directory_was_looked_through_holds_no_socket(
+    work: Path, monkeypatch: pytest.MonkeyPatch, left: str
+) -> None:
+    # Whoever else works in the directory takes things away while it is looked through.
+    for name in ("a", "b", "c"):
+        (work / name).mkdir()
+    really_scan: Any = os.scandir
+    listed: list[str] = []
+
+    def taken_away(path: Path) -> Any:
+        listed.append(Path(path).name)
+        if len(listed) == 2:
+            # The first of the three that is looked into, whichever the disk lists last.
+            Path(path).rmdir()
+            if left == "a file":
+                Path(path).write_text("")
+        return really_scan(path)
+
+    monkeypatch.setattr(os, "scandir", taken_away)
+
+    assert docker.sockets(work, 1000, 60.0) is None
+    # The rest was looked through all the same.
+    assert sorted(listed) == ["a", "b", "c", "work"]
+
+
+def test_an_entry_that_went_while_the_directory_was_looked_through_is_no_socket() -> None:
+    is_socket: Any = vars(docker)["_is_socket"]
+
+    assert not is_socket(Entry(stat.S_IFSOCK | 0o600, gone=True))
 
 
 def test_what_a_link_leads_to_is_not_looked_through(work: Path, root: Path) -> None:
@@ -1396,8 +1724,19 @@ def test_the_directory_is_looked_at_as_the_user_of_commands() -> None:
         "sh",
         "-c",
         "test -r . && test -x . && { if test -w .; then echo writable; else echo readable; fi; "
-        "stat -c %d:%i . /run/columbina-probe /run/columbina-probe/known 2>/dev/null; true; }",
+        'stat -c %d:%i . /run/columbina-probe /run/columbina-probe/known "$@" 2>/dev/null; true; }',
+        "sh",
     ]
+
+
+def test_what_lies_over_a_name_is_asked_about_by_a_name_that_is_no_option() -> None:
+    # A name is whatever lies in a directory, and one may begin like an option of the
+    # program that is asked. Each goes as a word of its own, so a blank in it is no end.
+    asking = docker.usable(
+        "/bin/docker", "columbina-0a1b2c", "1001:121", "/w", [".git", "--help", "a b"]
+    )
+
+    assert asking[-4:] == ["sh", "./.git", "./--help", "./a b"]
 
 
 def test_a_container_is_asked_for_and_removed_by_its_whole_name() -> None:

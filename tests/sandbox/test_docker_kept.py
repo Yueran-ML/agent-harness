@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -62,8 +63,20 @@ STILL = (
     "could not be seen to be gone: it may go on running. Tell the user to remove it with: "
     "docker rm -f {name}."
 )
+UNSEEN = (
+    "This program lost the container while this command ran, so the command may have been cut "
+    "short. The container could not be seen to be gone: it may go on running. Tell the user "
+    "to remove it with: docker rm -f {name}."
+)
 STAYS = "import time; time.sleep(60)"
 """A command that goes on for a minute."""
+WAITS_FOR_A_WORD = (
+    "import os, sys, time\n"
+    "while not os.path.exists(sys.argv[1]):\n"
+    "    time.sleep(0.02)\n"
+    "print('heard')\n"
+)
+"""A command that goes on until a file is there."""
 
 
 class Engine:
@@ -170,6 +183,21 @@ async def unsettled(
         await asyncio.sleep(0.01)
 
 
+def one_name(
+    monkeypatch: pytest.MonkeyPatch, *, respelled: bool = False, shortened: bool = False
+) -> None:
+    """Have the disk know what lies in a directory under one name only, or say otherwise."""
+
+    def spelled(cwd: Path, name: str) -> bool:
+        return respelled
+
+    def short(place: Path) -> bool:
+        return shortened
+
+    monkeypatch.setattr(docker, "_respelled", spelled)
+    monkeypatch.setattr(docker, "_shortened", short)
+
+
 @pytest.fixture
 async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Engine]:
     home = tmp_path / "engine"
@@ -181,6 +209,9 @@ async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
     monkeypatch.setenv("COLUMBINA_FAKE_DOCKER", str(home))
     # Whoever runs these tests: as root on Linux nothing would be put into a container.
     monkeypatch.setattr(docker, "_me", lambda: (1000, 1000))
+    # And on whatever disk: one that knows a name under several spellings holds less, and
+    # the tests that are about that say so themselves.
+    one_name(monkeypatch)
     made = Engine(home, program)
     loop = asyncio.get_running_loop()
     really_start: Any = loop.subprocess_exec
@@ -347,6 +378,30 @@ async def test_every_session_has_a_container_of_its_own(
     # The engine is asked once what it is, and a container is made for each.
     assert engine.verbs() == [*FIRST, "run", "usable", "command", "stop"]
     assert len(engine.containers()) == 2
+
+
+async def test_two_sessions_of_one_name_in_two_directories_have_a_container_each(
+    ctx: Context, provider: Docker, engine: Engine, sessions: Sessions, tmp_path: Path
+) -> None:
+    # A session is named within its working directory, so two directories may each have a
+    # session of the same name. A program that serves several directories holds both.
+    here, there = (Path(os.path.realpath(tmp_path)) / name for name in ("here", "there"))
+    here.mkdir()
+    there.mkdir()
+    one = sessions.create(ctx, here, session_id="task")
+    two = sessions.create(ctx, there, session_id="task")
+    where = "import os; print(os.getcwd())"
+
+    first = await ran(provider, one, here, where)
+    second = await ran(provider, two, there, where)
+    again = await ran(provider, one, here, where)
+
+    assert Path(first.output.strip()).samefile(here)
+    assert Path(second.output.strip()).samefile(there)
+    assert Path(again.output.strip()).samefile(here)
+    # Neither took the container of the other away.
+    assert len(engine.containers()) == 2
+    assert engine.verbs().count("run") == 2
 
 
 async def test_a_container_is_given_the_directory_the_way_its_mode_says(
@@ -541,7 +596,7 @@ async def test_a_directory_with_the_same_number_on_another_device_is_another_dir
     assert engine.containers() == {}
 
 
-async def test_through_a_share_that_shifts_every_number_alike_a_directory_is_known(
+async def test_what_lies_over_a_protected_name_is_asked_about_like_the_directory(
     provider: Docker,
     engine: Engine,
     session: Session,
@@ -549,12 +604,105 @@ async def test_through_a_share_that_shifts_every_number_alike_a_directory_is_kno
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(docker, "_ASKS", True)
-    engine.told(numbers="shifted")
+    (work / ".git").mkdir()
+    (work / ".columbina").mkdir()
 
     done = await ran(provider, session, work, "print('held')", expected="full")
 
     assert done.output.strip() == "held"
     assert provider.strength(session) == "full"
+    # Each by a name that no program can take for an option, in the order of the mounts.
+    (asking,) = engine.of("usable")
+    assert asking[-3:] == ["sh", "./.columbina", "./.git"]
+
+
+async def test_a_container_that_was_given_something_else_over_a_protected_name_runs_no_command(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A link was put in the place of the directory between the look and the mount, and the
+    # engine mounted what the link names: any directory of the machine, for commands to read.
+    monkeypatch.setattr(docker, "_ASKS", True)
+    (work / ".git").mkdir()
+    engine.told(numbers="another-cover")
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "open('ran', 'w').close()")
+
+    assert str(refused.value) == (
+        "the container was not given what lies under a protected name in the working "
+        "directory of this session. Something put a link or another directory in its place "
+        "while the container was made. No command is run in it"
+    )
+    assert engine.verbs() == ["info", "run", "usable", "rm", "ps"]
+    assert engine.containers() == {}
+    assert not (work / "ran").exists()
+
+
+async def test_what_cannot_be_numbered_under_a_protected_name_leaves_a_hold_in_part(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def numbered(place: Path) -> tuple[int, int] | None:
+        return None
+
+    monkeypatch.setattr(docker, "_ASKS", True)
+    monkeypatch.setattr(docker, "_named", numbered)
+    (work / ".git").mkdir()
+
+    await ran(provider, session, work, "pass")
+
+    assert provider.strength(session) == "partial"
+
+
+async def test_what_is_protected_and_cannot_be_held_gets_no_container(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Gone since the look, or not to be opened. What is not held could be anything by the
+    # time it is mounted.
+    def fails(place: Path) -> NoReturn:
+        raise PermissionError(errno.EACCES, "it cannot be opened")
+
+    (work / ".git").mkdir()
+    monkeypatch.setattr(docker, "_pinned", fails)
+
+    with pytest.raises(SandboxUnavailableError, match="was changed while a container was being"):
+        await ran(provider, session, work, "pass")
+
+    assert engine.verbs() == ["info"]
+    # Nothing holds the directory after the attempt.
+    work.rename(work.parent / "aside")
+
+
+async def test_a_share_with_numbers_of_its_own_tells_nothing_of_the_directory(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every inode shifted alike, and devices of its own. That the two directories of the
+    # token fit such a shift says nothing of the file system of the working directory.
+    monkeypatch.setattr(docker, "_ASKS", True)
+    engine.told(numbers="shifted")
+
+    done = await ran(provider, session, work, "print('ran')")
+
+    assert done.output.strip() == "ran"
+    assert provider.strength(session) == "partial"
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "pass", expected="full")
+    assert "a container cannot be asked which directory it was given" in str(refused.value)
 
 
 @pytest.mark.parametrize("numbers", ["none", "unlike"])
@@ -580,14 +728,18 @@ async def test_a_container_that_cannot_be_asked_which_directory_it_was_given_hol
     assert "a container cannot be asked which directory it was given" in str(refused.value)
 
 
-async def test_what_was_found_in_the_directory_is_said_rather_than_what_cannot_be_asked(
+async def test_where_a_container_cannot_be_asked_nothing_more_is_looked_for(
     provider: Docker,
     engine: Engine,
     session: Session,
     work: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Its commands are asked about whatever lies in the directory, and a look costs time.
+    looked: list[Path] = []
+
     def doubt(cwd: Path) -> str | None:
+        looked.append(cwd)
         return "a door stands open"
 
     monkeypatch.setattr(docker, "_ASKS", True)
@@ -595,8 +747,26 @@ async def test_what_was_found_in_the_directory_is_said_rather_than_what_cannot_b
     engine.told(numbers="none")
     await ran(provider, session, work, "pass")
 
-    with pytest.raises(SandboxUnavailableError, match="now a door stands open"):
+    with pytest.raises(SandboxUnavailableError, match="a container cannot be asked"):
         await ran(provider, session, work, "pass", expected="full")
+    assert looked == []
+
+
+async def test_where_a_directory_is_held_in_its_place_its_container_is_not_asked_about_it(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Nothing was put in its place meanwhile, whatever a share makes of the numbers.
+    monkeypatch.setattr(docker, "_ASKS", False)
+    engine.told(numbers="another")
+
+    done = await ran(provider, session, work, "print('held')", expected="full")
+
+    assert done.output.strip() == "held"
+    assert provider.strength(session) == "full"
 
 
 async def test_whether_a_container_is_asked_is_a_matter_of_the_system(
@@ -661,6 +831,60 @@ async def test_a_working_directory_that_cannot_be_looked_through_gets_no_contain
 
 if WINDOWS:
 
+    async def test_while_a_container_is_made_what_is_protected_in_its_directory_stays_in_place(
+        provider: Docker, engine: Engine, session: Session, work: Path
+    ) -> None:
+        # What is mounted over a protected name is a source of its own. A link in its place
+        # at the moment of the mount would give commands another directory to read.
+        (work / ".git").mkdir()
+        (work / ".columbina").write_text("a file of that name\n", encoding="utf-8")
+        engine.held.add("run")
+        making = asyncio.ensure_future(ran(provider, session, work, "print('held')"))
+        await engine.holding.wait()
+
+        with pytest.raises(PermissionError):
+            (work / ".git").rename(work / "aside")
+        with pytest.raises(PermissionError):
+            (work / ".columbina").unlink()
+        engine.go_on.set()
+
+        assert (await making).output.strip() == "held"
+        # Held for that long, and no longer.
+        (work / ".git").rename(work / "aside")
+        (work / ".columbina").unlink()
+
+    async def test_what_is_protected_and_was_changed_under_the_look_gets_no_container(
+        provider: Docker,
+        engine: Engine,
+        session: Session,
+        work: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Between the look and the hold there is a moment. What is held is looked at once
+        # more, and has to be what the first look found.
+        (work / ".git").mkdir()
+        really_look = vars(docker)["_led"]
+        looks: list[Path] = []
+
+        def changed_after_the_first(cwd: Path) -> Any:
+            looks.append(cwd)
+            if len(looks) == 2:
+                (work / ".columbina").mkdir()
+            return really_look(cwd)
+
+        monkeypatch.setattr(docker, "_led", changed_after_the_first)
+
+        with pytest.raises(SandboxUnavailableError) as refused:
+            await ran(provider, session, work, "pass")
+
+        assert str(refused.value) == (
+            f"what is protected in the working directory {work} was changed while a container "
+            "was being made for it. No container is made"
+        )
+        assert engine.verbs() == ["info"]
+        # Nothing is left of the attempt, and nothing holds what was held.
+        (work / ".git").rename(work / "aside")
+
     async def test_while_a_container_is_made_nothing_can_be_put_in_the_place_of_its_directory(
         provider: Docker, engine: Engine, session: Session, work: Path
     ) -> None:
@@ -675,6 +899,27 @@ if WINDOWS:
         assert (await making).output.strip() == "held"
         # Held for that long, and no longer.
         work.rename(work.parent / "aside")
+
+    def test_what_is_held_under_a_name_is_what_lies_there_also_if_it_is_a_link(
+        work: Path,
+    ) -> None:
+        # A link that was put in the place of a directory a moment ago stays where it is,
+        # and the second look finds it. With what it names held in its place, the link
+        # could be taken away again before that look.
+        pinned: Any = vars(docker)["_pinned"]
+        released: Any = vars(docker)["_released"]
+        (work / "elsewhere").mkdir()
+        link_directory(work / ".git", work / "elsewhere")
+
+        hold = pinned(work / ".git")
+        try:
+            with pytest.raises(PermissionError):
+                unlink_directory(work / ".git")
+            # What the link names is not what is held.
+            (work / "elsewhere").rename(work / "aside")
+        finally:
+            released(hold)
+        unlink_directory(work / ".git")
 
     @pytest.mark.parametrize("how", [{"run": "no-image"}, {"usable": "nothing"}])
     async def test_a_directory_is_let_go_of_when_no_container_could_be_made(
@@ -804,6 +1049,25 @@ async def test_a_container_that_ends_under_a_command_is_told_with_the_result(
     assert done.notes == (ENDED + NEW_ONE,)
     assert (after.output.strip(), after.notes) == ("after", ())
     assert engine.verbs().count("run") == 2
+
+
+async def test_a_container_that_is_lost_under_a_command_and_not_seen_to_go_is_told(
+    engine: Engine, session: Session, work: Path, tmp_path: Path
+) -> None:
+    provider = Docker(DockerConfig(program=engine.program))
+    await ran(provider, session, work, "pass")
+    (name,) = engine.containers()
+    before, word = len(engine.started()), tmp_path / "word"
+    running = asyncio.ensure_future(ran(provider, session, work, WAITS_FOR_A_WORD, word))
+    await begun(engine, before)
+    engine.told(rm="fails", ps="stuck")
+
+    await provider.close()
+    word.touch()
+    done = await running
+
+    # The engine would not remove it and still lists it. That it ended is more than is known.
+    assert done.notes == (UNSEEN.format(name=name) + NEW_ONE,)
 
 
 # Letting containers go
@@ -1019,17 +1283,61 @@ async def test_an_engine_that_no_longer_answers_may_still_run_a_container(
 async def test_a_container_that_never_came_to_be_is_not_warned_of(
     engine: Engine, session: Session, work: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # The engine refused it, and cannot be asked about it afterwards either.
-    engine.told(run="breaks", ps="fails")
+    # The engine has no such image, and cannot be asked about the container afterwards either.
+    engine.told(run="no-image", ps="fails")
     provider = Docker(DockerConfig(program=engine.program))
 
     with (
         caplog.at_level(logging.WARNING, logger="columbina.sandbox.docker"),
-        pytest.raises(SandboxUnavailableError, match="out of sorts"),
+        pytest.raises(SandboxUnavailableError, match="is not on this machine"),
     ):
         await ran(provider, session, work, "pass")
 
     assert caplog.messages == []
+
+
+async def test_a_container_that_no_engine_was_there_to_make_is_not_warned_of(
+    engine: Engine, session: Session, work: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = Docker(DockerConfig(program=engine.program))
+    await ran(provider, session, work, "pass")
+    (made,) = engine.containers()
+    # The engine answered once, and is gone when the session needs another container.
+    engine.told(engine="down")
+
+    with (
+        caplog.at_level(logging.WARNING, logger="columbina.sandbox.docker"),
+        pytest.raises(SandboxUnavailableError, match="the Docker engine does not answer"),
+    ):
+        await ran(provider, session, work, "pass", mode="read-only")
+
+    # Of the one that was made nobody can say whether it is gone. The other never was.
+    assert caplog.messages == [
+        f"the container {made} may still be there. Remove it with: docker rm -f {made}"
+    ]
+    assert engine.verbs().count("run") == 2
+
+
+@pytest.mark.parametrize("how", ["lost", "breaks"])
+async def test_a_container_that_ended_without_a_word_may_be_there_where_nobody_can_look(
+    engine: Engine, session: Session, work: Path, caplog: pytest.LogCaptureFixture, how: str
+) -> None:
+    # A silence does not tell whether a container came to be: the engine may have made one
+    # and been lost before a word of it arrived.
+    engine.told(run=how, ps="fails")
+    provider = Docker(DockerConfig(program=engine.program))
+
+    with (
+        caplog.at_level(logging.WARNING, logger="columbina.sandbox.docker"),
+        pytest.raises(SandboxUnavailableError, match="Docker could not start a container"),
+    ):
+        await ran(provider, session, work, "pass")
+
+    (asked,) = engine.of("run")
+    name = asked[asked.index("--name") + 1]
+    assert caplog.messages == [
+        f"the container {name} may still be there. Remove it with: docker rm -f {name}"
+    ]
 
 
 async def test_a_container_that_is_seen_although_it_never_spoke_is_warned_of(
@@ -1076,6 +1384,54 @@ async def test_closing_waits_for_a_container_that_is_being_let_go(
     assert engine.verbs()[-2:] == ["rm", "ps"]
     assert engine.containers() == {}
     assert (await running).notes == (LEFT + NEW_ONE,)
+
+
+async def test_a_closing_that_is_cut_short_leaves_what_a_command_was_letting_go_to_its_end(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    provider = Docker(DockerConfig(program=engine.program))
+    await ran(provider, session, work, "pass")
+    engine.told(stop="left", rm="slow")
+    running = asyncio.ensure_future(ran(provider, session, work, "print('said')"))
+    await until(lambda: "rm" in engine.verbs())
+    closing = asyncio.ensure_future(provider.close())
+    # The container is off the books already. The closing waits for its removal alone.
+    await asyncio.sleep(0.2)
+    assert not closing.done()
+
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    # The command was not cancelled by anybody, and it hears how its container went.
+    assert (await running).notes == (LEFT + NEW_ONE,)
+    assert engine.containers() == {}
+    assert engine.verbs()[-2:] == ["rm", "ps"]
+    await provider.close()
+
+
+async def test_a_closing_that_is_cut_short_leaves_a_container_that_is_being_made_to_be_made(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    engine.held.add("run")
+    provider = Docker(DockerConfig(program=engine.program))
+    asked = asyncio.ensure_future(ran(provider, session, work, "print('never')"))
+    await engine.holding.wait()
+    closing = asyncio.ensure_future(provider.close())
+    await asyncio.sleep(0.2)
+
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    engine.go_on.set()
+
+    # The start was not cut short with the closing: a container that nobody knows of would
+    # be left. It is made, and the one who asked for it hears that the sandbox is closed.
+    with pytest.raises(SandboxUnavailableError, match="the sandbox is closed"):
+        await asked
+    await provider.close()
+    assert engine.containers() == {}
+    assert engine.verbs()[-2:] == ["rm", "ps"]
 
 
 async def test_closing_again_waits_for_what_a_closing_that_was_cut_short_began(
@@ -2203,6 +2559,222 @@ async def test_a_new_container_is_held_as_well_as_its_own_directory_allows(
     assert (first, provider.strength(session)) == ("partial", "full")
 
 
+RESPELLED = (
+    "it was let through without a question because commands were held fully, and now what "
+    "is protected in the working directory can be reached under another name as well, which "
+    "the disk takes for the same, and what is mounted over it does not lie over that one. "
+    "Call it again, and it is asked about"
+)
+
+
+@pytest.mark.parametrize("other", ["respelled", "shortened"])
+async def test_what_is_protected_on_a_disk_that_has_another_name_for_it_is_held_in_part(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    other: str,
+) -> None:
+    # A disk that does not tell upper case from lower, or that keeps a short name beside a
+    # long one. A command reaches what is protected under the other name, where nothing is
+    # mounted over it.
+    (work / ".git").mkdir()
+    one_name(monkeypatch, **{other: True})
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "open('ran', 'w').close()", expected="full")
+    asked = await ran(provider, session, work, "print('asked about and allowed')")
+
+    assert str(refused.value) == RESPELLED
+    assert provider.strength(session) == "partial"
+    assert not (work / "ran").exists()
+    assert asked.output.strip() == "asked about and allowed"
+    assert engine.verbs().count("run") == 1
+
+
+async def test_a_disk_is_asked_about_the_names_that_are_protected_and_about_what_is_mounted(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (work / "meta" / "git").mkdir(parents=True)
+    link_directory(work / ".git", work / "meta" / "git")
+    (work / ".columbina").mkdir()
+    spelled: list[tuple[Path, str]] = []
+    short: list[Path] = []
+
+    def respelled(cwd: Path, name: str) -> bool:
+        spelled.append((cwd, name))
+        return False
+
+    def shortened(place: Path) -> bool:
+        short.append(place)
+        return False
+
+    monkeypatch.setattr(docker, "_respelled", respelled)
+    monkeypatch.setattr(docker, "_shortened", shortened)
+
+    await ran(provider, session, work, "pass", expected="full")
+
+    # Whether the disk tells upper case from lower shows in the names at the top, which
+    # are always written with letters. A short name is one of the thing that is mounted.
+    assert spelled == [(work, ".columbina"), (work, ".git")]
+    assert short == [work / ".columbina", work / "meta"]
+    assert provider.strength(session) == "full"
+
+
+@pytest.mark.parametrize("mode", ["read-only", "danger-full-access"])
+async def test_where_nothing_is_mounted_over_a_name_another_name_for_it_opens_nothing(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: Mode,
+) -> None:
+    # All of the directory is read-only, or none of it is.
+    (work / ".git").mkdir()
+    one_name(monkeypatch, respelled=True, shortened=True)
+
+    done = await ran(provider, session, work, "print('held')", mode=mode, expected="full")
+
+    assert done.output.strip() == "held"
+    assert provider.strength(session) == "full"
+
+
+async def test_what_was_found_of_a_directory_is_remembered_when_its_container_is_let_go(
+    engine: Engine, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Or the session would be said to be held fully until the next container is there, and
+    # the first command for that one would be let through and then turned back.
+    found: list[str | None] = ["a socket lies in the working directory, at agent.sock", None]
+
+    def doubt(cwd: Path) -> str | None:
+        return found.pop(0)
+
+    monkeypatch.setattr(docker, "_doubt", doubt)
+    quick(monkeypatch, look=0.05)
+    provider = Docker(DockerConfig(program=engine.program, idle_seconds=0.3))
+
+    await ran(provider, session, work, "pass")
+    await until(lambda: engine.containers() == {})
+    without_one = provider.strength(session)
+    await ran(provider, session, work, "pass")
+    with_the_next = provider.strength(session)
+    await until(lambda: engine.containers() == {})
+
+    # The next one is held as well as it is itself, and that is remembered in its turn.
+    assert (without_one, with_the_next, provider.strength(session)) == ("partial", "full", "full")
+    assert engine.verbs().count("run") == 2
+    await provider.close()
+
+
+async def test_a_container_that_could_not_be_made_changes_nothing_of_what_is_remembered(
+    engine: Engine, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def doubt(cwd: Path) -> str | None:
+        return "a socket lies in the working directory, at agent.sock"
+
+    monkeypatch.setattr(docker, "_doubt", doubt)
+    quick(monkeypatch, look=0.05)
+    provider = Docker(DockerConfig(program=engine.program, idle_seconds=0.3))
+    await ran(provider, session, work, "pass")
+    await until(lambda: engine.containers() == {})
+    engine.told(run="no-image")
+
+    with pytest.raises(SandboxUnavailableError, match="is not on this machine"):
+        await ran(provider, session, work, "pass")
+
+    # Of that one nothing was found, since nothing was looked for.
+    assert provider.strength(session) == "partial"
+    await provider.close()
+
+
+async def test_what_stands_against_a_full_hold_is_looked_for_before_each_command(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Something of this machine may open a door after the container was made.
+    found = [None, None, "a socket lies in the working directory, at agent.sock"]
+    looked: list[Path] = []
+
+    def doubt(cwd: Path) -> str | None:
+        looked.append(cwd)
+        return found.pop(0)
+
+    monkeypatch.setattr(docker, "_doubt", doubt)
+
+    await ran(provider, session, work, "pass", expected="full")
+    await ran(provider, session, work, "pass", expected="full")
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "open('ran', 'w').close()", expected="full")
+
+    assert "now a socket lies in the working directory, at agent.sock" in str(refused.value)
+    assert looked == [work, work, work]
+    assert provider.strength(session) == "partial"
+    assert not (work / "ran").exists()
+    # The container stays: its commands are asked about from now on.
+    assert engine.verbs().count("run") == 1
+
+
+async def test_what_was_found_once_stands_for_as_long_as_the_container_is_kept(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    found: list[str | None] = ["the working directory is too large to be looked through", None]
+    looked: list[Path] = []
+
+    def doubt(cwd: Path) -> str | None:
+        looked.append(cwd)
+        return found.pop(0)
+
+    monkeypatch.setattr(docker, "_doubt", doubt)
+
+    await ran(provider, session, work, "pass")
+    await ran(provider, session, work, "pass")
+    await ran(provider, session, work, "pass")
+
+    # A look that found something is not repeated: it may be one that takes long.
+    assert looked == [work]
+    assert provider.strength(session) == "partial"
+    assert engine.verbs().count("run") == 1
+
+
+async def test_a_container_that_is_let_go_while_a_door_is_looked_for_runs_no_command(
+    engine: Engine, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    looking, go_on = threading.Event(), threading.Event()
+
+    def held_up(cwd: Path) -> str | None:
+        looking.set()
+        go_on.wait(20)
+        return None
+
+    monkeypatch.setattr(docker, "_doubt", held_up)
+    provider = Docker(DockerConfig(program=engine.program))
+    asked = asyncio.ensure_future(ran(provider, session, work, "open('ran', 'w').close()"))
+    await asyncio.to_thread(looking.wait, 20)
+    closing = asyncio.ensure_future(provider.close())
+    await until(lambda: "rm" in engine.verbs())
+
+    go_on.set()
+    with pytest.raises(SandboxUnavailableError, match="the sandbox is closed"):
+        await asked
+    await closing
+
+    assert not (work / "ran").exists()
+    assert "command" not in engine.verbs()
+
+
 async def test_a_command_that_was_let_through_for_a_full_hold_runs_where_the_hold_is_full(
     provider: Docker, engine: Engine, session: Session, work: Path
 ) -> None:
@@ -2241,6 +2813,75 @@ async def test_a_command_that_was_let_through_for_a_full_hold_is_not_run_in_a_le
     assert engine.verbs() == ["info", "run", "usable", "command", "stop"]
 
 
+async def test_a_command_let_through_for_a_full_hold_does_not_run_in_a_container_being_let_go(
+    engine: Engine, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # While the command looks at the directory of its container, the provider is closed and
+    # takes the container off its books. Whoever then asked the books how well the session
+    # is held would be told what holds before a container is made, and that may be: fully.
+    def doubt(cwd: Path) -> str | None:
+        return "a socket lies in the working directory"
+
+    monkeypatch.setattr(docker, "_doubt", doubt)
+    looked = vars(docker)["_looked"]
+    looking, go_on = threading.Event(), threading.Event()
+
+    def held_up(cwd: Path) -> Any:
+        looking.set()
+        go_on.wait(20)
+        return looked(cwd)
+
+    monkeypatch.setattr(docker, "_looked", held_up)
+    provider = Docker(DockerConfig(program=engine.program))
+    asked = asyncio.ensure_future(
+        ran(provider, session, work, "open('ran', 'w').close()", expected="full")
+    )
+    await asyncio.to_thread(looking.wait, 20)
+    closing = asyncio.ensure_future(provider.close())
+    await until(lambda: "rm" in engine.verbs())
+
+    go_on.set()
+    with pytest.raises(SandboxUnavailableError):
+        await asked
+    await closing
+
+    assert not (work / "ran").exists()
+    assert "command" not in engine.verbs()
+
+
+async def test_a_container_that_is_let_go_while_its_directory_is_looked_at_runs_no_command(
+    engine: Engine, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The command was asked about and allowed, so nothing is expected of how well it is
+    # held, and what stands against a full hold is known already: nothing more is looked
+    # for. Only the look at the directory lies between the command and a container that
+    # whoever closed the provider is removing.
+    monkeypatch.setattr(docker, "_ASKS", True)
+    engine.told(numbers="none")
+    looked = vars(docker)["_looked"]
+    looking, go_on = threading.Event(), threading.Event()
+
+    def held_up(cwd: Path) -> Any:
+        looking.set()
+        go_on.wait(20)
+        return looked(cwd)
+
+    monkeypatch.setattr(docker, "_looked", held_up)
+    provider = Docker(DockerConfig(program=engine.program))
+    asked = asyncio.ensure_future(ran(provider, session, work, "open('ran', 'w').close()"))
+    await asyncio.to_thread(looking.wait, 20)
+    closing = asyncio.ensure_future(provider.close())
+    await until(lambda: "rm" in engine.verbs())
+
+    go_on.set()
+    with pytest.raises(SandboxUnavailableError, match="the sandbox is closed"):
+        await asked
+    await closing
+
+    assert not (work / "ran").exists()
+    assert "command" not in engine.verbs()
+
+
 async def test_a_container_with_a_network_runs_nothing_that_was_let_through_for_a_full_hold(
     engine: Engine, session: Session, work: Path
 ) -> None:
@@ -2267,6 +2908,22 @@ if sys.platform != "win32":
 
         assert provider.strength(session) == "partial"
 
+    async def test_a_socket_that_appears_after_a_container_was_made_is_found_before_a_command(
+        provider: Docker, engine: Engine, session: Session, work: Path
+    ) -> None:
+        await ran(provider, session, work, "pass", expected="full")
+        (work / "run").mkdir()
+        listening = listening_at(work / "run" / "agent.sock")
+        try:
+            with pytest.raises(SandboxUnavailableError) as refused:
+                await ran(provider, session, work, "open('ran', 'w').close()", expected="full")
+        finally:
+            listening.close()
+
+        assert "now a socket lies in the working directory, at run/agent.sock" in str(refused.value)
+        assert provider.strength(session) == "partial"
+        assert not (work / "ran").exists()
+
 else:
 
     async def test_on_windows_no_socket_is_looked_for(
@@ -2275,6 +2932,60 @@ else:
         doubt: Any = vars(docker)["_doubt"]
 
         assert doubt(work) is None
+
+    def test_a_directory_of_another_machine_is_told_from_one_on_a_disk_of_this_one(
+        work: Path,
+    ) -> None:
+        kind: Any = vars(docker)["_kind"]
+        here: Any = vars(docker)["_OF_THIS_MACHINE"]
+
+        assert kind(work) in here
+        # A share of this very machine is a share. Whether these are there does not matter:
+        # what Windows cannot find it numbers as no disk at all.
+        assert kind(Path("//localhost/C$/Users")) not in here
+        assert kind(Path("//wsl.localhost/a-distribution/home/work")) not in here
+
+    @pytest.mark.parametrize(
+        ("kind", "held"),
+        [(0, False), (1, False), (2, True), (3, True), (4, False), (5, True), (6, True)],
+    )
+    def test_only_a_disk_of_this_machine_leaves_no_doubt(
+        work: Path, monkeypatch: pytest.MonkeyPatch, kind: int, held: bool
+    ) -> None:
+        def numbered(cwd: Path) -> int:
+            return kind
+
+        monkeypatch.setattr(docker, "_kind", numbered)
+        doubt: Any = vars(docker)["_doubt"]
+
+        assert (doubt(work) is None) == held
+
+    async def test_a_directory_that_is_not_on_a_disk_of_this_machine_is_held_in_part(
+        provider: Docker,
+        engine: Engine,
+        session: Session,
+        work: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # What keeps a directory in its place while a container is made is that this program
+        # holds it open, and a share need not heed that: one into a distribution of WSL
+        # does not.
+        def of_another_machine(cwd: Path) -> int:
+            return 4
+
+        monkeypatch.setattr(docker, "_kind", of_another_machine)
+
+        with pytest.raises(SandboxUnavailableError) as refused:
+            await ran(provider, session, work, "open('ran', 'w').close()", expected="full")
+
+        assert str(refused.value) == (
+            "it was let through without a question because commands were held fully, and now "
+            "the working directory is not on a disk of this machine, so this program cannot "
+            "keep another directory from being put in its place while a container is made. "
+            "Call it again, and it is asked about"
+        )
+        assert provider.strength(session) == "partial"
+        assert not (work / "ran").exists()
 
 
 # The provider as a part of the sandbox

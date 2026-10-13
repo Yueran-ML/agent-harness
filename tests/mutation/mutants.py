@@ -2617,14 +2617,14 @@ _DOCKER = (
     mutant(
         "a protected name in another case is not known",
         DOCKER,
-        "            if entry.name.casefold() not in PROTECTED:\n",
-        "            if entry.name not in PROTECTED:\n",
+        "        if name.casefold() not in PROTECTED:\n",
+        "        if name not in PROTECTED:\n",
     ),
     mutant(
         "a link is told as what it leads to",
         DOCKER,
-        '            kind = what if real == cwd / entry.name else f"link to {what} {real}"\n',
-        "            kind = what\n",
+        '        kind = what if real == cwd / name else f"link to {what} {real}"\n',
+        "        kind = what\n",
     ),
     mutant(
         "a link is told without what it leads to",
@@ -2667,8 +2667,8 @@ _DOCKER = (
     mutant(
         "only what a link names is read-only, and not the way there",
         DOCKER,
-        "                first = cwd / real.relative_to(cwd).parts[0]\n",
-        "                first = real\n",
+        "            first = cwd / _written(cwd, way[0], listed)\n",
+        "            first = real\n",
     ),
     mutant(
         "what a link leads to is mounted where the link is",
@@ -2679,8 +2679,8 @@ _DOCKER = (
     mutant(
         "a protected name that cannot be looked at is passed over",
         DOCKER,
-        '                whole = there == "unknown"\n',
-        "                whole = False\n",
+        '            whole = there == "unknown"\n',
+        "            whole = False\n",
     ),
     mutant(
         "a path with a line break in it is given to Docker",
@@ -2715,43 +2715,73 @@ _DOCKER = (
     mutant(
         "a container with a directory of another number is said to have the right one",
         DOCKER,
-        "    if inode - itself[1] != shift:\n        return False\n",
-        "",
+        "    return [has == here for has, here in zip([told[0], *told[3:]], mounted, strict=True)]\n",
+        "    return [True for _ in mounted]\n",
     ),
     mutant(
-        "a container with a directory on another device is said to have the right one",
+        "a directory is told by its inode alone, whatever device it is on",
         DOCKER,
-        "    return int(read[1][1]) != token_at[0] or device == itself[0]\n",
-        "    return True\n",
+        "    return [has == here for has, here in zip([told[0], *told[3:]], mounted, strict=True)]\n",
+        "    return [here is not None and has[1] == here[1] for has, here in zip([told[0], *told[3:]], mounted, strict=True)]\n",
     ),
     mutant(
-        "the device of a directory is compared where a share has devices of its own",
+        "what a share makes of the numbers is compared with those of this machine",
         DOCKER,
-        "    return int(read[1][1]) != token_at[0] or device == itself[0]\n",
-        "    return device == itself[0]\n",
+        "    if token_at is None or known is None or (told[1], told[2]) != (token_at, known):\n",
+        "    if token_at is None or known is None:\n",
     ),
     mutant(
-        "numbers that have nothing to do with those of this machine are compared with them",
+        "the directory of the token alone says that the numbers are those of this machine",
         DOCKER,
-        "    if int(read[2][2]) - known[1] != shift:\n        return None\n",
-        "",
+        "    if token_at is None or known is None or (told[1], told[2]) != (token_at, known):\n",
+        "    if token_at is None or known is None or told[1] != token_at:\n",
     ),
     mutant(
-        "a share that shifts the numbers is taken for one that has numbers of its own",
+        "the directory in that of the token alone says that the numbers are those of this machine",
         DOCKER,
-        "    shift = int(read[1][2]) - token_at[1]\n",
-        "    shift = 0\n",
+        "    if token_at is None or known is None or (told[1], told[2]) != (token_at, known):\n",
+        "    if token_at is None or known is None or told[2] != known:\n",
     ),
     mutant(
         "more numbers than were asked for are read as if they were the right ones",
         DOCKER,
-        "    if len(read) != 3 or itself is None or token_at is None or known is None:\n",
-        "    if len(read) < 3 or itself is None or token_at is None or known is None:\n",
+        "    if len(told) != len(said) or len(told) != len(mounted) + 2 or None in mounted:\n",
+        "    if len(told) != len(said) or len(told) < len(mounted) + 2 or None in mounted:\n",
+    ),
+    mutant(
+        "an answer that is no pair of numbers is passed over",
+        DOCKER,
+        "    if len(told) != len(said) or len(told) != len(mounted) + 2 or None in mounted:\n",
+        "    if len(told) != len(mounted) + 2 or None in mounted:\n",
+    ),
+    mutant(
+        "what this machine cannot number is compared all the same",
+        DOCKER,
+        "    if len(told) != len(said) or len(told) != len(mounted) + 2 or None in mounted:\n",
+        "    if len(told) != len(said) or len(told) != len(mounted) + 2:\n",
+    ),
+    mutant(
+        "what lies over a protected name is asked about by its bare name",
+        DOCKER,
+        '    return [*asking, "sh", *(f"./{cover}" for cover in covers)]\n',
+        '    return [*asking, "sh", *covers]\n',
+    ),
+    mutant(
+        "a container is not asked about what lies over protected names",
+        DOCKER,
+        '    return [*asking, "sh", *(f"./{cover}" for cover in covers)]\n',
+        '    return [*asking, "sh"]\n',
+    ),
+    mutant(
+        "the numbers of what a link names are taken for those of the link",
+        DOCKER,
+        "        return _numbers(place.lstat())\n",
+        "        return _numbers(place.stat())\n",
     ),
     mutant(
         "a container is not asked for the numbers of its directory",
         DOCKER,
-        '    f"stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"\n',
+        "    f'stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} \"$@\" 2>/dev/null; true; }}'\n",
         '    "true; }"\n',
     ),
     on_windows(
@@ -2826,7 +2856,7 @@ _DOCKER = (
         "a session with full access gets the protected names mounted over its directory",
         DOCKER,
         '    if mode == "danger-full-access":\n'
-        "        return False, [_mount(cwd, target, readonly=False)]\n",
+        "        return False, [_mount(cwd, target, readonly=False)], []\n",
         "",
     ),
     mutant(
@@ -2850,62 +2880,64 @@ _DOCKER = (
     mutant(
         "a protected name that leads to the working directory itself protects nothing",
         DOCKER,
-        "            cover, whole = None, real == cwd\n",
-        "            cover, whole = None, False\n",
+        "        cover, whole = None, way == ()\n",
+        "        cover, whole = None, False\n",
     ),
     mutant(
         "a link that leads out of the directory is given to the engine as a source",
         DOCKER,
-        "            if cwd in real.parents:\n"
-        "                first = cwd / real.relative_to(cwd).parts[0]\n",
-        "            if True:\n                first = cwd / entry.name\n",
+        "        if way:\n"
+        "            first = cwd / _written(cwd, way[0], listed)\n"
+        "            there = what if len(way) == 1 else _what(first)\n",
+        "        if True:\n            first = cwd / name\n            there = what\n",
     ),
     mutant(
         "what a link leads to outside the directory is mounted in it",
         DOCKER,
-        "            if cwd in real.parents:\n"
-        "                first = cwd / real.relative_to(cwd).parts[0]\n",
-        "            if True:\n                first = real\n",
+        "        if way:\n"
+        "            first = cwd / _written(cwd, way[0], listed)\n"
+        "            there = what if len(way) == 1 else _what(first)\n",
+        "        if True:\n            first = real\n            there = what\n",
     ),
     mutant(
         "a source that is not there is named to the engine",
         DOCKER,
-        '                if there in ("directory", "file"):\n                    cover = first\n',
-        "                cover = first\n",
+        '            if there in ("directory", "file"):\n                cover = first\n',
+        "            cover = first\n",
     ),
     mutant(
         "a protected file is not mounted",
         DOCKER,
-        '                if there in ("directory", "file"):\n',
-        '                if there == "directory":\n',
+        '            if there in ("directory", "file"):\n',
+        '            if there == "directory":\n',
     ),
     on_linux(
         mutant(
             "what is neither a file nor a directory is given to the engine as a source",
             DOCKER,
-            '                if there in ("directory", "file"):\n',
-            '                if there in ("directory", "file", "other"):\n',
+            '            if there in ("directory", "file"):\n',
+            '            if there in ("directory", "file", "other"):\n',
         )
     ),
     mutant(
         "what is protected is mounted so that it can be written",
         DOCKER,
-        "        *(_mount(source, inside, readonly=True) for inside, source in sorted(over.items())),\n",
-        "        *(_mount(source, inside, readonly=False) for inside, source in sorted(over.items())),\n",
+        "            *(_mount(source, inside, readonly=True) for inside, source in covers),\n",
+        "            *(_mount(source, inside, readonly=False) for inside, source in covers),\n",
     ),
     mutant(
         "a directory that is to be read-only as a whole can be written",
         DOCKER,
         "    if whole or any(one.whole for one in led):\n"
-        "        return True, [_mount(cwd, target, readonly=True)]\n",
+        "        return True, [_mount(cwd, target, readonly=True)], []\n",
         "    if whole or any(one.whole for one in led):\n"
-        "        return True, [_mount(cwd, target, readonly=False)]\n",
+        "        return True, [_mount(cwd, target, readonly=False)], []\n",
     ),
     mutant(
         "a directory that may be written is mounted read-only",
         DOCKER,
-        "    return False, [\n        _mount(cwd, target, readonly=False),\n",
-        "    return False, [\n        _mount(cwd, target, readonly=True),\n",
+        "        False,\n        [\n            _mount(cwd, target, readonly=False),\n",
+        "        False,\n        [\n            _mount(cwd, target, readonly=True),\n",
     ),
     mutant(
         "an image is fetched for a command",
@@ -3078,14 +3110,14 @@ _DOCKER = (
     mutant(
         "the directory is looked at as root",
         DOCKER,
-        '    return [program, "exec", "--user", user, "--workdir", target, name, "sh", "-c", _USABLE]\n',
-        '    return [program, "exec", "--workdir", target, name, "sh", "-c", _USABLE]\n',
+        '    asking = [program, "exec", "--user", user, "--workdir", target, name, "sh", "-c", _USABLE]\n',
+        '    asking = [program, "exec", "--workdir", target, name, "sh", "-c", _USABLE]\n',
     ),
     mutant(
         "another directory than the working directory is looked at",
         DOCKER,
-        '    return [program, "exec", "--user", user, "--workdir", target, name, "sh", "-c", _USABLE]\n',
-        '    return [program, "exec", "--user", user, name, "sh", "-c", _USABLE]\n',
+        '    asking = [program, "exec", "--user", user, "--workdir", target, name, "sh", "-c", _USABLE]\n',
+        '    asking = [program, "exec", "--user", user, name, "sh", "-c", _USABLE]\n',
     ),
     mutant(
         "a container is asked for by a part of its name",
@@ -3229,16 +3261,16 @@ _DOCKER = (
         mutant(
             "a socket in a working directory is not known for one",
             DOCKER,
-            "    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
-            "    return False\n",
+            "        return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
+            "        return False\n",
         )
     ),
     on_linux(
         mutant(
             "whatever is neither file nor directory counts as a socket",
             DOCKER,
-            "    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
-            "    return True\n",
+            "        return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
+            "        return True\n",
         )
     ),
     on_linux(
@@ -3246,8 +3278,8 @@ _DOCKER = (
             "what a link leads to is looked at as if it lay in the directory",
             DOCKER,
             "    if entry.is_file(follow_symlinks=False) or entry.is_symlink():\n        return False\n"
-            "    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
-            "    return stat.S_ISSOCK(entry.stat().st_mode)\n",
+            "    try:\n        return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
+            "    try:\n        return stat.S_ISSOCK(entry.stat().st_mode)\n",
         )
     ),
     on_linux(
@@ -3256,6 +3288,170 @@ _DOCKER = (
             DOCKER,
             "                    if entry.is_dir(follow_symlinks=False):\n",
             "                    if entry.is_dir():\n",
+        )
+    ),
+    mutant(
+        "whether a path lies in the directory is told by how it is spelled",
+        DOCKER,
+        "        if above == cwd or (home is not None and _itself(above) == home):\n",
+        "        if above == cwd:\n",
+    ),
+    mutant(
+        "what has no number is taken for a directory that has none either",
+        DOCKER,
+        "        if above == cwd or (home is not None and _itself(above) == home):\n",
+        "        if above == cwd or _itself(above) == home:\n",
+    ),
+    mutant(
+        "a path that is spelled as lying in the directory is not known to lie there",
+        DOCKER,
+        "        if above == cwd or (home is not None and _itself(above) == home):\n",
+        "        if home is not None and _itself(above) == home:\n",
+    ),
+    mutant(
+        "the way down to a path is counted from the top of the disk",
+        DOCKER,
+        "            return real.relative_to(above).parts\n",
+        "            return real.parts[1:]\n",
+    ),
+    mutant(
+        "a name is taken as something spelled it, whatever the disk lists",
+        DOCKER,
+        "            if _named(cwd / other) == here:\n                return other\n",
+        "            if False:\n                return other\n",
+    ),
+    mutant(
+        "a name that is not there is taken for one that the disk has no number for",
+        DOCKER,
+        "    if here is not None:\n        for other in listed:\n",
+        "    if True:\n        for other in listed:\n",
+    ),
+    mutant(
+        "the disk is asked about a name that it lists",
+        DOCKER,
+        "    if name in listed:\n        return name\n    here = _named(cwd / name)\n",
+        "    here = _named(cwd / name)\n",
+    ),
+    mutant(
+        "what is mounted for a protected name is named as a link spelled it",
+        DOCKER,
+        "            first = cwd / _written(cwd, way[0], listed)\n",
+        "            first = cwd / way[0]\n",
+    ),
+    mutant(
+        "the way to what a link names is not looked at",
+        DOCKER,
+        "            there = what if len(way) == 1 else _what(first)\n",
+        "            there = what\n",
+    ),
+    mutant(
+        "a part that went while the directory was looked through leaves a doubt",
+        DOCKER,
+        "        except (FileNotFoundError, NotADirectoryError):\n"
+        "            # Gone since it was listed: whoever else works here took it away. The look is\n"
+        "            # repeated before every command, and a directory that is in use loses parts\n"
+        "            # all the time.\n"
+        "            continue\n",
+        "",
+    ),
+    mutant(
+        "the look for sockets ends where a part of the directory went",
+        DOCKER,
+        "            # all the time.\n            continue\n",
+        "            # all the time.\n            break\n",
+    ),
+    mutant(
+        "a directory that became a file while it was looked through leaves a doubt",
+        DOCKER,
+        "        except (FileNotFoundError, NotADirectoryError):\n",
+        "        except FileNotFoundError:\n",
+    ),
+    mutant(
+        "an entry that went while it was looked at ends the look",
+        DOCKER,
+        "    try:\n"
+        "        return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n"
+        "    except FileNotFoundError:\n"
+        "        # Gone since it was listed, so nothing listens there.\n"
+        "        return False\n",
+        "    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
+    ),
+    mutant(
+        "an entry that went while it was looked at is taken for a socket",
+        DOCKER,
+        "        # Gone since it was listed, so nothing listens there.\n        return False\n",
+        "        # Gone since it was listed, so nothing listens there.\n        return True\n",
+    ),
+    mutant(
+        "a disk that numbers nothing is taken to know a thing under one name only",
+        DOCKER,
+        "    if here is None:\n        return True\n    other = name.swapcase()\n",
+        "    if here is None:\n        return False\n    other = name.swapcase()\n",
+    ),
+    mutant(
+        "a name without a letter is taken to be found under another spelling",
+        DOCKER,
+        "    return other != name and _named(cwd / other) == here\n",
+        "    return _named(cwd / other) == here\n",
+    ),
+    mutant(
+        "two things that differ only in their case are taken for one",
+        DOCKER,
+        "    return other != name and _named(cwd / other) == here\n",
+        "    return other != name and _named(cwd / other) is not None\n",
+    ),
+    mutant(
+        "no disk is taken to find a name under another spelling",
+        DOCKER,
+        "    return other != name and _named(cwd / other) == here\n",
+        "    return False\n",
+    ),
+    mutant(
+        "another spelling of a name is looked for under the name itself",
+        DOCKER,
+        "    other = name.swapcase()\n",
+        "    other = name\n",
+    ),
+    on_windows(
+        mutant(
+            "what Windows will not give the short form of is taken to have none",
+            DOCKER,
+            "        if not room or not _kernel32.GetShortPathNameW(str(place), short, room):\n"
+            "            return True\n",
+            "        if not room or not _kernel32.GetShortPathNameW(str(place), short, room):\n"
+            "            return False\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a short form that has no room is asked for all the same",
+            DOCKER,
+            "        if not room or not _kernel32.GetShortPathNameW(str(place), short, room):\n",
+            "        if not _kernel32.GetShortPathNameW(str(place), short, room):\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a short name is told from a name by its case",
+            DOCKER,
+            "        return Path(short.value).name.casefold() != place.name.casefold()\n",
+            "        return Path(short.value).name != place.name\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "nothing is taken to have a short name",
+            DOCKER,
+            "        return Path(short.value).name.casefold() != place.name.casefold()\n",
+            "        return False\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a short name of what lies above a thing is taken for one of the thing",
+            DOCKER,
+            "        return Path(short.value).name.casefold() != place.name.casefold()\n",
+            "        return short.value.casefold() != str(place).casefold()\n",
         )
     ),
     mutant(
@@ -3329,7 +3525,7 @@ _DOCKER_KEPT = (
     mutant(
         "the commands of a session run at the same time",
         DOCKER,
-        "        async with self._turns.setdefault(session.id, asyncio.Lock()):\n",
+        "        async with self._turns.setdefault(session, asyncio.Lock()):\n",
         "        async with asyncio.Lock():\n",
     ),
     mutant(
@@ -3362,8 +3558,8 @@ _DOCKER_KEPT = (
         DOCKER,
         "        if self._over.is_set():\n"
         '            raise SandboxUnavailableError("the sandbox is closed, so no command is run any more")\n'
-        "        starting = self._starting.get(session.id)\n",
-        "        starting = self._starting.get(session.id)\n",
+        "        starting = self._starting.get(session)\n",
+        "        starting = self._starting.get(session)\n",
     ),
     mutant(
         "a container is not made to its end when whoever asked for it leaves",
@@ -3416,20 +3612,80 @@ _DOCKER_KEPT = (
     mutant(
         "a container that was given another directory runs commands",
         DOCKER,
-        "        if same is False:\n",
-        "        if False:\n",
+        "        elif not same[0]:\n",
+        "        elif False:\n",
+    ),
+    mutant(
+        "a container that was given something else over a protected name runs commands",
+        DOCKER,
+        "        elif not all(same):\n",
+        "        elif False:\n",
+    ),
+    mutant(
+        "what lies over the protected names is not among what a container is asked about",
+        DOCKER,
+        "            container.program, container.name, container.user, container.target, layout.covers\n",
+        "            container.program, container.name, container.user, container.target\n",
+    ),
+    mutant(
+        "the numbers of what lies over the protected names are not compared",
+        DOCKER,
+        "        same = given(said[1:], (layout.itself, *layout.over), layout.token_at, layout.known)\n",
+        "        same = given(said[1:4], (layout.itself,), layout.token_at, layout.known)\n",
+    ),
+    mutant(
+        "what is protected and cannot be held gets a container all the same",
+        DOCKER,
+        "            except OSError:\n"
+        "                # Gone since the look, or it cannot be opened any more.\n"
+        "                changed = True\n",
+        "            except OSError:\n"
+        "                # Gone since the look, or it cannot be opened any more.\n"
+        "                changed = False\n",
+    ),
+    on_windows(
+        mutant(
+            "what is protected in a directory is not held while a container is made",
+            DOCKER,
+            "                    _held_too(holds, _pinned(cover))\n",
+            "                    pass\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "what is held is not looked at a second time",
+            DOCKER,
+            "                changed = bool(holds) and bool(covers) and _led(cwd) != led\n",
+            "                changed = False\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "what a link names is held in the place of the link",
+            DOCKER,
+            "            anything | itself,\n",
+            "            anything,\n",
+        )
     ),
     mutant(
         "a container that cannot say which directory it has holds commands fully",
         DOCKER,
-        "        if same is None:\n            container.doubt = container.doubt or _UNASKED\n",
-        "",
+        "        if same is None:\n            container.doubt = _UNASKED\n",
+        "        if same is None:\n            pass\n",
     ),
     mutant(
-        "what cannot be asked hides what was found in the directory",
+        "what stands against a full hold is looked for again after something was found",
         DOCKER,
-        "            container.doubt = container.doubt or _UNASKED\n",
-        "            container.doubt = _UNASKED\n",
+        "        if container.doubt is None:\n            # Looked for before every command",
+        "        if True:\n            # Looked for before every command",
+    ),
+    mutant(
+        "a container that was let go while a door was looked for serves its command",
+        DOCKER,
+        "            container.doubt = await asyncio.to_thread(_doubt, container.cwd)\n"
+        "            if container.gone:\n"
+        '                return "it has ended"\n',
+        "            container.doubt = await asyncio.to_thread(_doubt, container.cwd)\n",
     ),
     mutant(
         "no container is asked which directory it was given",
@@ -3475,15 +3731,16 @@ _DOCKER_KEPT = (
         mutant(
             "the directory is not held while a container is made",
             DOCKER,
-            "            hold = _anchored(cwd)\n",
-            "            hold = None\n",
+            "            _held_too(holds, _anchored(cwd))\n",
+            "            pass\n",
         )
     ),
     on_windows(
         mutant(
             "the directory stays held once its container is made",
             DOCKER,
-            "                _released(layout.hold)\n",
+            "                for hold in layout.holds:  # pragma: windows only\n"
+            "                    _released(hold)\n",
             "                pass\n",
         )
     ),
@@ -3491,7 +3748,10 @@ _DOCKER_KEPT = (
         mutant(
             "the directory stays held when the look at it fails",
             DOCKER,
-            "    except BaseException:\n        _released(hold)\n        raise\n",
+            "    except BaseException:\n"
+            "        for hold in holds:  # pragma: windows only\n"
+            "            _released(hold)\n"
+            "        raise\n",
             "    except BaseException:\n        raise\n",
         )
     ),
@@ -3530,7 +3790,7 @@ _DOCKER_KEPT = (
     mutant(
         "a container that could not be made is asked for for ever",
         DOCKER,
-        "        finally:\n            del self._starting[session.id]\n",
+        "        finally:\n            del self._starting[session]\n",
         "        finally:\n            pass\n",
     ),
     mutant(
@@ -3573,8 +3833,8 @@ _DOCKER_KEPT = (
     mutant(
         "what Docker said of a container that did not start is not read",
         DOCKER,
-        "        if not said:\n            # It ended without a word, so Docker will have said why. A",
-        "        if False:\n            # It ended without a word, so Docker will have said why. A",
+        "        if not said:\n            # It ended without a word, so Docker will have said why.\n",
+        "        if False:\n            # It ended without a word, so Docker will have said why.\n",
     ),
     mutant(
         "the directory is not looked at as the user of commands",
@@ -3746,24 +4006,24 @@ _DOCKER_KEPT = (
         "a container that ended under a command is taken for one in which something would not stop",
         DOCKER,
         "        if container.gone or not container.alive():\n"
-        '            await self._let_go(container, "it ended while a command ran")\n',
-        '        if False:\n            await self._let_go(container, "it ended while a command ran")\n',
+        '            if await self._let_go(container, "it ended while a command ran"):\n',
+        '        if False:\n            if await self._let_go(container, "it ended while a command ran"):\n',
     ),
     mutant(
         "a container that was let go under a command is taken for one in which something would not stop",
         DOCKER,
         "        if container.gone or not container.alive():\n"
-        '            await self._let_go(container, "it ended while a command ran")\n',
+        '            if await self._let_go(container, "it ended while a command ran"):\n',
         "        if not container.alive():\n"
-        '            await self._let_go(container, "it ended while a command ran")\n',
+        '            if await self._let_go(container, "it ended while a command ran"):\n',
     ),
     mutant(
         "a container that ended by itself under a command is taken for one in which something would not stop",
         DOCKER,
         "        if container.gone or not container.alive():\n"
-        '            await self._let_go(container, "it ended while a command ran")\n',
+        '            if await self._let_go(container, "it ended while a command ran"):\n',
         "        if container.gone:\n"
-        '            await self._let_go(container, "it ended while a command ran")\n',
+        '            if await self._let_go(container, "it ended while a command ran"):\n',
     ),
     mutant(
         "what a command left running is not stopped",
@@ -3870,7 +4130,9 @@ _DOCKER_KEPT = (
     mutant(
         "closing does not wait for a container that is being let go",
         DOCKER,
-        "        await asyncio.gather(*self._leaving, return_exceptions=True)\n",
+        "        await asyncio.gather(\n"
+        "            *(asyncio.shield(leaving) for leaving in self._leaving), return_exceptions=True\n"
+        "        )\n",
         "",
     ),
     mutant(
@@ -3888,8 +4150,8 @@ _DOCKER_KEPT = (
     mutant(
         "a container that was let go stays in the books",
         DOCKER,
-        "            if self._kept.get(container.session.id) is container:\n"
-        "                del self._kept[container.session.id]\n",
+        "            if self._kept.get(container.session) is container:\n"
+        "                del self._kept[container.session]\n",
         "",
     ),
     mutant(
@@ -3993,7 +4255,10 @@ _DOCKER_KEPT = (
     mutant(
         "closing does not wait for a container that is being made",
         DOCKER,
-        "        await asyncio.gather(*self._starting.values(), return_exceptions=True)\n",
+        "        await asyncio.gather(\n"
+        "            *(asyncio.shield(starting) for starting in self._starting.values()),\n"
+        "            return_exceptions=True,\n"
+        "        )\n",
         "",
     ),
     mutant(
@@ -4043,22 +4308,163 @@ _DOCKER_KEPT = (
     mutant(
         "what was found in one directory lowers how well every session is held",
         DOCKER,
-        "        container = self._kept.get(session.id)\n"
-        '        return "full" if container is None or container.doubt is None else "partial"\n',
+        "        return self._hold(container)\n",
         "        doubts = [kept.doubt for kept in self._kept.values()]\n"
         '        return "partial" if any(doubt is not None for doubt in doubts) else "full"\n',
     ),
     mutant(
-        "what was found in a directory is forgotten when its container is made",
+        "what was found in a directory is not kept with its container",
         DOCKER,
-        "                doubt=layout.doubt,\n",
-        "                doubt=None,\n",
+        "            container.doubt = await asyncio.to_thread(_doubt, container.cwd)\n",
+        "            await asyncio.to_thread(_doubt, container.cwd)\n",
     ),
     mutant(
         "a working directory is not looked through for what a mount leaves open",
         DOCKER,
-        "    doubt = _doubt(cwd)\n",
-        "    doubt = None\n",
+        "        if container.doubt is None:\n            # Looked for before every command",
+        "        if False:\n            # Looked for before every command",
+    ),
+    mutant(
+        "a silence alone is taken for a container that never came to be",
+        DOCKER,
+        "            container.never = _unmade(said)\n",
+        "            container.never = True\n",
+    ),
+    mutant(
+        "a docker program that reached no engine is taken to have made a container",
+        DOCKER,
+        '    return _unreachable(said) or "no such image" in said.casefold()\n',
+        '    return "no such image" in said.casefold()\n',
+    ),
+    mutant(
+        "an engine that has not the image is taken to have made a container",
+        DOCKER,
+        '    return _unreachable(said) or "no such image" in said.casefold()\n',
+        "    return _unreachable(said)\n",
+    ),
+    mutant(
+        "that an image is not there is read in the case that Docker wrote it in",
+        DOCKER,
+        '    return _unreachable(said) or "no such image" in said.casefold()\n',
+        '    return _unreachable(said) or "no such image" in said\n',
+    ),
+    on_windows(
+        mutant(
+            "a directory of another machine is held fully",
+            DOCKER,
+            "        return None if _kind(cwd) in _OF_THIS_MACHINE else _ELSEWHERE\n",
+            "        return None\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a share is taken for a disk of this machine",
+            DOCKER,
+            "    _OF_THIS_MACHINE = (2, 3, 5, 6)\n",
+            "    _OF_THIS_MACHINE = (2, 3, 4, 5, 6)\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a disk that Windows cannot find is taken for one of this machine",
+            DOCKER,
+            "    _OF_THIS_MACHINE = (2, 3, 5, 6)\n",
+            "    _OF_THIS_MACHINE = (1, 2, 3, 5, 6)\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a disk that Windows cannot tell is taken for one of this machine",
+            DOCKER,
+            "    _OF_THIS_MACHINE = (2, 3, 5, 6)\n",
+            "    _OF_THIS_MACHINE = (0, 2, 3, 5, 6)\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "a disk that can be taken out is not of this machine",
+            DOCKER,
+            "    _OF_THIS_MACHINE = (2, 3, 5, 6)\n",
+            "    _OF_THIS_MACHINE = (3, 5, 6)\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "every directory is taken to be on a fixed disk",
+            DOCKER,
+            "        return _kernel32.GetDriveTypeW(cwd.anchor)\n",
+            "        return 3\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "Windows is asked about a whole path and not about where it begins",
+            DOCKER,
+            "        return _kernel32.GetDriveTypeW(cwd.anchor)\n",
+            "        return _kernel32.GetDriveTypeW(str(cwd))\n",
+        )
+    ),
+    mutant(
+        "a disk that has another name for what is protected holds commands fully",
+        DOCKER,
+        "        doubt = _RESPELLED if other else None\n",
+        "        doubt = None\n",
+    ),
+    mutant(
+        "another spelling of what is protected is not looked for",
+        DOCKER,
+        "            any(_respelled(cwd, one.name) for one in led) or any(map(_shortened, covers))\n",
+        "            any(map(_shortened, covers))\n",
+    ),
+    mutant(
+        "a short name of what is mounted is not looked for",
+        DOCKER,
+        "            any(_respelled(cwd, one.name) for one in led) or any(map(_shortened, covers))\n",
+        "            any(_respelled(cwd, one.name) for one in led)\n",
+    ),
+    mutant(
+        "another name counts where nothing is mounted over a name",
+        DOCKER,
+        "        other = bool(covers) and (\n",
+        "        other = True and (\n",
+    ),
+    mutant(
+        "another spelling is looked for of what is mounted and not of what is protected",
+        DOCKER,
+        "any(_respelled(cwd, one.name) for one in led)",
+        "any(_respelled(cwd, cover.name) for cover in covers)",
+    ),
+    mutant(
+        "a short name is looked for of what is protected and not of what is mounted",
+        DOCKER,
+        "any(map(_shortened, covers))",
+        "any(_shortened(cwd / one.name) for one in led)",
+    ),
+    mutant(
+        "what was found of a directory is forgotten with its container",
+        DOCKER,
+        "                self._found[container.session] = container.doubt\n",
+        "",
+    ),
+    mutant(
+        "what was found once stands whatever the next container shows",
+        DOCKER,
+        "                self._found[container.session] = container.doubt\n",
+        "                self._found.setdefault(container.session, container.doubt)\n",
+    ),
+    mutant(
+        "a container that could not be made is remembered for what nobody looked for in it",
+        DOCKER,
+        "                del self._kept[container.session]\n"
+        "                self._found[container.session] = container.doubt\n",
+        "                del self._kept[container.session]\n"
+        "            self._found[container.session] = container.doubt\n",
+    ),
+    mutant(
+        "a session without a container is said to be held fully whatever was found",
+        DOCKER,
+        '        if container is None and self._found.get(session) is not None:\n            return "partial"\n',
+        "",
     ),
     mutant(
         "commands in a container are written for the shell of this machine",
@@ -4086,26 +4492,80 @@ _DOCKER_KEPT = (
         "a directory that is read-only as a whole is looked at as one that can be written",
         DOCKER,
         "    if whole or any(one.whole for one in led):\n"
-        "        return True, [_mount(cwd, target, readonly=True)]\n",
+        "        return True, [_mount(cwd, target, readonly=True)], []\n",
         "    if whole or any(one.whole for one in led):\n"
-        "        return False, [_mount(cwd, target, readonly=True)]\n",
+        "        return False, [_mount(cwd, target, readonly=True)], []\n",
     ),
     mutant(
         "a directory that can be written is looked at as one that is read-only",
         DOCKER,
-        "    return False, [\n        _mount(cwd, target, readonly=False),\n",
-        "    return True, [\n        _mount(cwd, target, readonly=False),\n",
+        "        False,\n        [\n            _mount(cwd, target, readonly=False),\n",
+        "        True,\n        [\n            _mount(cwd, target, readonly=False),\n",
+    ),
+    mutant(
+        "two sessions of one name share a container although their directories differ",
+        DOCKER,
+        "        starting = self._starting.get(session)\n"
+        "        if starting is None:\n"
+        "            container = self._kept.get(session)\n",
+        "        starting = self._starting.get(session)\n"
+        "        if starting is None:\n"
+        "            container = next(\n"
+        "                (one for kept, one in self._kept.items() if kept.id == session.id), None\n"
+        "            )\n",
+    ),
+    mutant(
+        "a container that was let go while its directory was looked at serves its command",
+        DOCKER,
+        "        if container.gone:\n"
+        "            # Let go while its directory was looked at, by whoever closed the provider.\n"
+        '            return "it has ended"\n',
+        "",
+    ),
+    mutant(
+        "a closing that is cut short cuts short the removals that it waited for",
+        DOCKER,
+        "            *(asyncio.shield(leaving) for leaving in self._leaving), return_exceptions=True\n",
+        "            *self._leaving, return_exceptions=True\n",
+    ),
+    mutant(
+        "a closing that is cut short cuts short the making of a container",
+        DOCKER,
+        "            *(asyncio.shield(starting) for starting in self._starting.values()),\n",
+        "            *self._starting.values(),\n",
+    ),
+    mutant(
+        "a container that was lost under a command is said to have ended although nobody saw it go",
+        DOCKER,
+        '            if await self._let_go(container, "it ended while a command ran"):\n'
+        "                return (_ENDED,)\n",
+        '            await self._let_go(container, "it ended while a command ran")\n'
+        "            return (_ENDED,)\n",
+    ),
+    mutant(
+        "a container that ended under a command and was seen to go is said to be there still",
+        DOCKER,
+        '            if await self._let_go(container, "it ended while a command ran"):\n'
+        "                return (_ENDED,)\n",
+        '            if not await self._let_go(container, "it ended while a command ran"):\n'
+        "                return (_ENDED,)\n",
+    ),
+    mutant(
+        "the user is not told which container to remove when one was lost under a command",
+        DOCKER,
+        "            return (_UNSEEN.format(name=container.name),)\n",
+        '            return (_UNSEEN.format(name="it"),)\n',
     ),
     mutant(
         "a container that holds in part runs what was let through for a full hold",
         DOCKER,
-        '            if expected == "full" and self.strength(session) != "full":\n',
+        '            if expected == "full" and self._hold(container) != "full":\n',
         "            if False:\n",
     ),
     mutant(
         "a container refuses whatever was let through for a full hold",
         DOCKER,
-        '            if expected == "full" and self.strength(session) != "full":\n',
+        '            if expected == "full" and self._hold(container) != "full":\n',
         '            if expected == "full":\n',
     ),
     mutant(
@@ -4210,15 +4670,16 @@ _DOCKER_REAL = (
     mutant(
         "with a real engine: what is protected is mounted so that it can be written",
         DOCKER,
-        "        *(_mount(source, inside, readonly=True) for inside, source in sorted(over.items())),\n",
-        "        *(_mount(source, inside, readonly=False) for inside, source in sorted(over.items())),\n",
+        "            *(_mount(source, inside, readonly=True) for inside, source in covers),\n",
+        "            *(_mount(source, inside, readonly=False) for inside, source in covers),\n",
     ),
     mutant(
         "with a real engine: a link that leads out of the directory is given to the engine as a source",
         DOCKER,
-        "            if cwd in real.parents:\n"
-        "                first = cwd / real.relative_to(cwd).parts[0]\n",
-        "            if True:\n                first = cwd / entry.name\n",
+        "        if way:\n"
+        "            first = cwd / _written(cwd, way[0], listed)\n"
+        "            there = what if len(way) == 1 else _what(first)\n",
+        "        if True:\n            first = cwd / name\n            there = what\n",
     ),
     mutant(
         "with a real engine: another directory under the name of the working directory keeps the container",
@@ -4230,23 +4691,31 @@ _DOCKER_REAL = (
         mutant(
             "with a real engine: a container that was given another directory runs commands",
             DOCKER,
-            "        if same is False:\n",
-            "        if False:\n",
+            "        elif not same[0]:\n",
+            "        elif False:\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "with a real engine: a container that was given something else over a protected name runs commands",
+            DOCKER,
+            "        elif not all(same):\n",
+            "        elif False:\n",
         )
     ),
     on_linux(
         mutant(
             "with a real engine: a container is asked for the numbers of another directory",
             DOCKER,
-            '    f"stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"\n',
-            '    f"stat -c %d:%i / {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"\n',
+            "    f'stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} \"$@\" 2>/dev/null; true; }}'\n",
+            "    f'stat -c %d:%i / {PROBE} {PROBE}/{_KNOWN} \"$@\" 2>/dev/null; true; }}'\n",
         )
     ),
     on_linux(
         mutant(
             "with a real engine: a container is not asked for the numbers of its directory",
             DOCKER,
-            '    f"stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"\n',
+            "    f'stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} \"$@\" 2>/dev/null; true; }}'\n",
             '    "true; }"\n',
         )
     ),
@@ -4259,8 +4728,8 @@ _DOCKER_REAL = (
     mutant(
         "with a real engine: only what a link names is read-only, and not the way there",
         DOCKER,
-        "                first = cwd / real.relative_to(cwd).parts[0]\n",
-        "                first = real\n",
+        "            first = cwd / _written(cwd, way[0], listed)\n",
+        "            first = real\n",
         (
             '    over = {f"{target}/{one.cover.name}": one.cover for one in led if one.cover is not None}\n',
             "    over = {\n"
@@ -20360,7 +20829,7 @@ _SANDBOX_RUN = (
     mutant(
         "through the command line: what is protected can be written in a container",
         DOCKER,
-        "        *(_mount(source, inside, readonly=True) for inside, source in sorted(over.items())),\n",
+        "            *(_mount(source, inside, readonly=True) for inside, source in covers),\n",
         "",
     ),
     mutant(

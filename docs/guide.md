@@ -511,7 +511,9 @@ of the system, and what it installs elsewhere outside the working directory is g
 the container.
 
 A command in such a container can do no more than the mode of the sandbox allows, so
-nobody is asked about it.
+nobody is asked about it. Where a container cannot hold a command that well, the command
+is asked about as on this machine. On Windows that is so for a working directory with a
+`.git` in it, and the list at the end of this section names the other cases.
 
 | `--permission` | A command in a container |
 |---|---|
@@ -568,8 +570,16 @@ not do, and where it is narrower than one might expect:
 - What a command writes into the working directory stays there. A command can change a
   script that the user runs later.
 - On a Linux machine a socket in the working directory can be reached from the
-  container. When one is found, the commands of the session are held in part and asked
-  about.
+  container. It is looked for before each command, and when one is found, the commands
+  of the session are held in part and asked about. A socket that appears while a command
+  runs is not seen.
+- A disk that does not tell upper case from lower finds `.git` under `.GIT` as well, and
+  a disk of Windows may keep a short name such as `GIT~1` beside it. What is mounted
+  read-only over the name does not lie over the other name, and a command writes there.
+  This was seen on Windows. So in `workspace-write` a session whose working directory
+  lies on such a disk and has a `.git` or a `.columbina` in it is held in part, and its
+  commands are asked about. Whoever allows a command there allows it to write the two as
+  well.
 - An engine that maps the users of a container to other users of the machine, as a
   rootless one does, is refused.
 - On Linux a command has the user and the first group of Columbina, and none of its
@@ -581,8 +591,12 @@ not do, and where it is narrower than one might expect:
   working directory read-only.
 - What is mounted below the working directory is not in the container. Below a protected
   name it is, read-only.
-- On Windows a working directory that lies in a WSL distribution is not held in place
-  while its container is made.
+- On Windows a working directory that is not on a disk of the machine, such as one in a
+  WSL distribution or on a share, cannot be held in place while its container is made.
+  Its commands are held in part and asked about.
+- Where the engine runs in a machine of its own and shows a container the files through
+  a share, as Docker Desktop does on Linux and macOS, a container cannot be asked which
+  directory it was given. Its commands are held in part and asked about.
 - All of this was tried on Windows with Docker Desktop, and on Linux against the same
   engine. On macOS it was not tried.
 

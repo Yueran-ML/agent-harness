@@ -153,6 +153,9 @@ def run(argv: list[str], how: dict[str, Any]) -> int:
         return fail(
             125, "docker: Error response from daemon: the engine is out of sorts\n\nSee help."
         )
+    if how.get("run") == "lost":
+        # The engine made a container, and the program lost the engine before a word came.
+        return fail(125, 'level=error msg="error waiting for container: unexpected EOF"')
     CONTAINERS.mkdir(exist_ok=True)
     known = {"pid": os.getpid(), "mounts": mounted, "image": image}
     shown(CONTAINERS / f"{name}.json", known)
@@ -201,7 +204,7 @@ def execute(argv: list[str], how: dict[str, Any]) -> int:
         )
         answer = how.get("usable", "readable" if readonly else "writable")
         print(answer, flush=True)
-        numbers(known, workdir, str(how.get("numbers", "same")))
+        numbers(known, workdir, str(how.get("numbers", "same")), words)
         return int(how.get("usable_exit", 0))
     if how.get("exec") == "refused":
         return fail(1, "Error response from daemon: the container is paused")
@@ -219,21 +222,23 @@ def execute(argv: list[str], how: dict[str, Any]) -> int:
     return STOPPED if code in (STOPPED, -signal.SIGTERM, -9) else code
 
 
-def numbers(known: dict[str, Any], workdir: str, way: str) -> None:
-    """Say by which numbers a container knows three directories, as its ``stat`` would.
+def numbers(known: dict[str, Any], workdir: str, way: str, over: list[str]) -> None:
+    """Say by which numbers a container knows what it was given, as its ``stat`` would.
 
-    They are the working directory, the directory of the token, and a directory in that
-    one. A test says in which way the numbers are to differ from those of this machine:
+    That is the working directory, the directory of the token, a directory in that one,
+    and then each thing that is mounted over a name in the working directory and was asked
+    about. A test says in which way the numbers are to differ from those of this machine:
     ``none`` for an image without the program, ``shifted`` for a share that adds to every
     inode and has devices of its own, ``unlike`` for numbers that have nothing to do with
     those of this machine, ``another`` and ``another-device`` for a working directory that
-    is not the one that was mounted.
+    is not the one that was mounted, ``another-cover`` for something else over a name.
     """
     if way == "none":
         return
     sources = {mount["target"]: mount["source"] for mount in known["mounts"]}
     probe = Path(sources[PROBE])
-    for at, source in enumerate((Path(sources[workdir]), probe, probe / "known")):
+    covers = [Path(sources[f"{workdir}/{name.removeprefix('./')}"]) for name in over]
+    for at, source in enumerate((Path(sources[workdir]), probe, probe / "known", *covers)):
         told = source.stat()
         device, inode = told.st_dev, told.st_ino
         if way == "shifted":
@@ -244,6 +249,8 @@ def numbers(known: dict[str, Any], workdir: str, way: str) -> None:
             device += 1
         if at == 2 and way == "unlike":
             inode += 5
+        if at > 2 and way == "another-cover":
+            inode += 1
         print(f"{device}:{inode}", flush=True)
 
 

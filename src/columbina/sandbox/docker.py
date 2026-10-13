@@ -171,6 +171,11 @@ _STILL = (
     "could not be seen to be gone: it may go on running. Tell the user to remove it with: "
     f"docker rm -f {{name}}. {_NEW_ONE}"
 )
+_UNSEEN = (
+    "This program lost the container while this command ran, so the command may have been cut "
+    "short. The container could not be seen to be gone: it may go on running. Tell the user "
+    f"to remove it with: docker rm -f {{name}}. {_NEW_ONE}"
+)
 _RESHAPED = (
     "This command changed what .git or .columbina is at the top of the working directory. "
     f"{_NEW_ONE} There a command cannot write what is new of the two."
@@ -190,6 +195,18 @@ _UNASKED = (
 )
 """Why commands are held in part only where a container cannot say what it was given."""
 
+_ELSEWHERE = (
+    "the working directory is not on a disk of this machine, so this program cannot keep "
+    "another directory from being put in its place while a container is made"
+)
+"""Why commands are held in part only where the working directory cannot be held."""
+
+_RESPELLED = (
+    "what is protected in the working directory can be reached under another name as well, "
+    "which the disk takes for the same, and what is mounted over it does not lie over that one"
+)
+"""Why commands are held in part only where a disk has more than one name for a thing."""
+
 _ASKS = sys.platform != "win32"
 """Whether a container is asked which directory it was given.
 
@@ -199,13 +216,50 @@ put in its place meanwhile, and what a share makes of the numbers does not matte
 
 if sys.platform == "win32":  # pragma: windows only
     import _winapi
+    import ctypes
+    from ctypes import wintypes
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.GetDriveTypeW.argtypes = (wintypes.LPCWSTR,)
+    _kernel32.GetDriveTypeW.restype = wintypes.UINT
+    _kernel32.GetShortPathNameW.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    _kernel32.GetShortPathNameW.restype = wintypes.DWORD
 
     _APART: dict[str, Any] = {"creationflags": subprocess.CREATE_NO_WINDOW}
     """What keeps a container has no window, and hears nothing of the keys of the user."""
 
+    _OF_THIS_MACHINE = (2, 3, 5, 6)
+    """How Windows numbers the kinds of disk that are of this machine.
+
+    They are a disk that can be taken out, a fixed one, one that reads discs, and one in
+    memory. A share is 4, whatever machine it leads to, and 0 and 1 are what Windows cannot
+    tell or cannot find.
+    """
+
     def _me() -> tuple[int, int]:
         """Return the numbers of the user and the group of this program, which Windows has not."""
         return 0, 0
+
+    def _kind(cwd: Path) -> int:
+        """Return what kind of disk a directory is on, as Windows numbers the kinds.
+
+        Windows is asked about the place where the path begins. A path with every link on
+        it resolved begins at a share if it leads to one.
+        """
+        return _kernel32.GetDriveTypeW(cwd.anchor)
+
+    def _shortened(place: Path) -> bool:
+        """Tell whether Windows keeps a second, short name for what lies at a path.
+
+        Some disks keep one for every name that an old program could not read, and what
+        is found under the long name is found under the short one. What Windows will not
+        give the short form of is taken to have one.
+        """
+        room = _kernel32.GetShortPathNameW(str(place), None, 0)
+        short = ctypes.create_unicode_buffer(room)
+        if not room or not _kernel32.GetShortPathNameW(str(place), short, room):
+            return True
+        return Path(short.value).name.casefold() != place.name.casefold()
 
     def _anchored(cwd: Path) -> int | None:
         """Hold a directory open so that nothing can be put in its place, and return the hold.
@@ -228,10 +282,29 @@ if sys.platform == "win32":  # pragma: windows only
             0,
         )
 
-    def _released(hold: int | None) -> None:
-        """Let go of what :func:`_anchored` holds."""
-        if hold is not None:
-            _winapi.CloseHandle(hold)
+    def _pinned(place: Path) -> int | None:
+        """Hold what lies under a name so that nothing can be put in its place.
+
+        What is held is the thing of that name itself, also if it is a link: a link that
+        was put there a moment ago stays, and whoever looks afterwards finds it.
+
+        Raises:
+            OSError: It cannot be opened.
+        """
+        read_and_write, anything, itself = 1 | 2, 0x02000000, 0x00200000
+        return _winapi.CreateFile(
+            str(place),
+            _winapi.GENERIC_READ,
+            read_and_write,
+            0,
+            _winapi.OPEN_EXISTING,
+            anything | itself,
+            0,
+        )
+
+    def _released(hold: int) -> None:
+        """Let go of what :func:`_anchored` or :func:`_pinned` holds."""
+        _winapi.CloseHandle(hold)
 
     def _reached(cwd: Path) -> tuple[int, int] | None:
         """Return the numbers of a directory, if no link lies on the way to it.
@@ -262,8 +335,16 @@ else:  # pragma: posix only
         """Hold a directory so that nothing can be put in its place: here nothing does that."""
         return None
 
-    def _released(hold: int | None) -> None:
-        """Let go of what :func:`_anchored` holds."""
+    def _pinned(place: Path) -> int | None:
+        """Hold what lies under a name in its place: here nothing does that."""
+        return None
+
+    def _shortened(place: Path) -> bool:
+        """Tell whether the system keeps a second, short name for a thing: here none does."""
+        return False
+
+    def _released(hold: int) -> None:
+        """Let go of what :func:`_anchored` or :func:`_pinned` holds: here there is nothing."""
 
     def _reached(cwd: Path) -> tuple[int, int] | None:
         """Return the numbers of a directory that is reached without following a link.
@@ -353,12 +434,13 @@ machine knows, and that tells how the numbers of the container go with those of 
 
 _USABLE = (
     "test -r . && test -x . && { if test -w .; then echo writable; else echo readable; fi; "
-    f"stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"
+    f'stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} "$@" 2>/dev/null; true; }}'
 )
 """Says what the user that runs it can do with the directory it is run in.
 
-After that it says by which numbers it knows that directory and the two directories that
-came with the token, if the image has the program for it.
+After that it says by which numbers it knows that directory, the two directories that came
+with the token, and whatever else it is asked about by name, if the image has the program
+for it.
 """
 
 _UNREACHABLE = (
@@ -486,6 +568,17 @@ def _itself(place: Path) -> tuple[int, int] | None:
     """Return the numbers of what a path leads to, or ``None`` if nothing is there."""
     try:
         return _numbers(place.stat())
+    except OSError:
+        return None
+
+
+def _named(place: Path) -> tuple[int, int] | None:
+    """Return the numbers of what lies under a name, or ``None`` if nothing is there.
+
+    A link is not followed: its numbers are its own, and not those of what it names.
+    """
+    try:
+        return _numbers(place.lstat())
     except OSError:
         return None
 
@@ -736,25 +829,91 @@ def _led(cwd: Path) -> list[_Protected]:
     would name whatever the command put there. What is mounted cannot be
     moved aside.
     """
-    names: list[_Protected] = []
     with os.scandir(cwd) as entries:
-        for entry in entries:
-            # The disk may not tell upper case from lower, so neither does this.
-            if entry.name.casefold() not in PROTECTED:
-                continue
-            real = Path(os.path.realpath(entry.path))
-            what = _what(real)
-            kind = what if real == cwd / entry.name else f"link to {what} {real}"
-            cover, whole = None, real == cwd
-            if cwd in real.parents:
-                first = cwd / real.relative_to(cwd).parts[0]
-                there = what if first == real else _what(first)
-                if there in ("directory", "file"):
-                    cover = first
-                # What cannot be looked at cannot be mounted over, and may lead anywhere.
-                whole = there == "unknown"
-            names.append(_Protected(entry.name, kind, cover, whole))
+        listed = [entry.name for entry in entries]
+    names: list[_Protected] = []
+    for name in listed:
+        # The disk may not tell upper case from lower, so neither does this.
+        if name.casefold() not in PROTECTED:
+            continue
+        real = Path(os.path.realpath(cwd / name))
+        what = _what(real)
+        kind = what if real == cwd / name else f"link to {what} {real}"
+        way = _way(cwd, real)
+        cover, whole = None, way == ()
+        if way:
+            first = cwd / _written(cwd, way[0], listed)
+            there = what if len(way) == 1 else _what(first)
+            if there in ("directory", "file"):
+                cover = first
+            # What cannot be looked at cannot be mounted over, and may lead anywhere.
+            whole = there == "unknown"
+        names.append(_Protected(name, kind, cover, whole))
     return sorted(names, key=lambda one: one.name)
+
+
+def _way(cwd: Path, real: Path) -> tuple[str, ...] | None:
+    """Return the names that lead from a directory down to a path in it.
+
+    Whether a path lies in a directory is told by which directory each part
+    of the path is, and not only by how the path is spelled. A disk that
+    does not tell upper case from lower has many spellings for one
+    directory, and what a link says keeps its own.
+
+    Args:
+        cwd: The directory, with every link on its path resolved.
+        real: The path, with every link on it resolved.
+
+    Returns:
+        The names, as the path spells them: none for the directory itself.
+        ``None`` if the path does not lie in the directory.
+    """
+    home = _itself(cwd)
+    for above in (real, *real.parents):
+        if above == cwd or (home is not None and _itself(above) == home):
+            return real.relative_to(above).parts
+    return None
+
+
+def _respelled(cwd: Path, name: str) -> bool:
+    """Tell whether a name in a directory is found under another spelling as well.
+
+    A disk that does not tell upper case from lower finds a thing under
+    every spelling of its name, and so does a container that has the files
+    through a share. What is mounted over a name lies over the one spelling
+    that was mounted: under any other, a command reaches what lies below.
+
+    What the disk has no number for cannot be told from anything, so it is
+    taken to have another name.
+    """
+    here = _named(cwd / name)
+    if here is None:
+        return True
+    other = name.swapcase()
+    return other != name and _named(cwd / other) == here
+
+
+def _written(cwd: Path, name: str, listed: Sequence[str]) -> str:
+    """Return a name in a directory as the disk writes it.
+
+    A disk that does not tell upper case from lower finds a thing under many
+    spellings and lists it under one. What is mounted over a name lies over
+    one spelling of it, and the one that a command would use is the one that
+    the disk lists.
+
+    Args:
+        cwd: The directory.
+        name: The name, as something spelled it.
+        listed: The names in the directory, as the disk lists them.
+    """
+    if name in listed:
+        return name
+    here = _named(cwd / name)
+    if here is not None:
+        for other in listed:
+            if _named(cwd / other) == here:
+                return other
+    return name
 
 
 def shape(cwd: Path) -> tuple[tuple[str, str], ...]:
@@ -834,7 +993,9 @@ def mounts(mode: Mode, cwd: Path, target: str) -> list[str]:
     return _laid(mode, cwd, target, _led(cwd))[1]
 
 
-def _laid(mode: Mode, cwd: Path, target: str, led: Sequence[_Protected]) -> tuple[bool, list[str]]:
+def _laid(
+    mode: Mode, cwd: Path, target: str, led: Sequence[_Protected]
+) -> tuple[bool, list[str], list[Path]]:
     """Return whether a container gets a directory read-only as a whole, and its mounts.
 
     Args:
@@ -842,20 +1003,30 @@ def _laid(mode: Mode, cwd: Path, target: str, led: Sequence[_Protected]) -> tupl
         cwd: The working directory, with every link on its path resolved.
         target: Where the container has it.
         led: The protected names at its top, from one look at it.
+
+    Returns:
+        Whether it is read-only as a whole, the mounts, and what is mounted
+        read-only over a name in the directory, in the order of the mounts
+        that follow the first. Each of those is a source of its own.
     """
     if mode == "danger-full-access":
-        return False, [_mount(cwd, target, readonly=False)]
+        return False, [_mount(cwd, target, readonly=False)], []
     # A session that was started inside a protected directory writes nothing there either.
     whole = mode == "read-only" or any(part.casefold() in PROTECTED for part in cwd.parts)
     # A protected name that leads to the directory itself protects all of it, and so does
     # one of which it cannot be told what it protects.
     if whole or any(one.whole for one in led):
-        return True, [_mount(cwd, target, readonly=True)]
+        return True, [_mount(cwd, target, readonly=True)], []
     over = {f"{target}/{one.cover.name}": one.cover for one in led if one.cover is not None}
-    return False, [
-        _mount(cwd, target, readonly=False),
-        *(_mount(source, inside, readonly=True) for inside, source in sorted(over.items())),
-    ]
+    covers = sorted(over.items())
+    return (
+        False,
+        [
+            _mount(cwd, target, readonly=False),
+            *(_mount(source, inside, readonly=True) for inside, source in covers),
+        ],
+        [source for _, source in covers],
+    )
 
 
 def _seen(cwd: Path) -> tuple[tuple[str, str], ...] | None:
@@ -884,46 +1055,46 @@ def _looked(
 
 def given(
     said: Sequence[str],
-    itself: tuple[int, int] | None,
+    mounted: Sequence[tuple[int, int] | None],
     token_at: tuple[int, int] | None,
     known: tuple[int, int] | None,
-) -> bool | None:
-    """Tell whether a container was given the directory that was looked at.
+) -> list[bool] | None:
+    """Tell whether a container was given what was looked at.
 
-    A container says by which numbers it knows three directories: its
-    working directory, the directory of its token, and a directory in that
-    one. This machine has numbers of its own for all three. Where the files
-    reach a container as the kernel of this machine has them, the numbers
-    are the same. A share may shift the inodes, by the same amount for every
-    directory, and has devices of its own. The two directories that came
-    with the token tell which of these it is, and then the working directory
-    has to fit.
+    A container says by which numbers it knows what was mounted for it: its
+    working directory, and what lies over the protected names in it. This
+    machine has numbers of its own for each. They are the same where the
+    files reach the container as the kernel of this machine has them, and
+    only there do they tell anything. Whether that is so is seen from two
+    directories that came with the token, whose numbers this machine knows
+    as well.
+
+    A share has devices of its own, and may renumber what it shows. What it
+    makes of the directories of the token says nothing of the file system
+    that the working directory is on, so through a share nothing is known.
 
     Args:
-        said: What the container says of the three, ``device:inode`` each.
-        itself: The numbers of the working directory on this machine.
+        said: What the container says, ``device:inode`` each: of its
+            working directory, of the directory of the token, of a
+            directory in that one, and then of what lies over each
+            protected name, in the order of ``mounted``.
+        mounted: The numbers on this machine of the working directory, and
+            then of what is mounted over each protected name.
         token_at: Those of the directory of the token.
         known: Those of the directory in it.
 
     Returns:
-        Whether the working directory of the container is the one that this
-        machine knows by ``itself``. ``None`` if the numbers of the
-        container have nothing to do with those of this machine, or one of
-        them is missing.
+        For each of ``mounted``, whether the container has that very thing.
+        ``None`` if the container does not know the files by the numbers of
+        this machine, or a number is missing on either side.
     """
     read = [re.fullmatch(r"(\d+):(\d+)", one) for one in said]
-    if len(read) != 3 or itself is None or token_at is None or known is None:
+    told = [(int(one[1]), int(one[2])) for one in read if one is not None]
+    if len(told) != len(said) or len(told) != len(mounted) + 2 or None in mounted:
         return None
-    if read[0] is None or read[1] is None or read[2] is None:
+    if token_at is None or known is None or (told[1], told[2]) != (token_at, known):
         return None
-    device, inode = int(read[0][1]), int(read[0][2])
-    shift = int(read[1][2]) - token_at[1]
-    if int(read[2][2]) - known[1] != shift:
-        return None
-    if inode - itself[1] != shift:
-        return False
-    # A device is compared where the container has the devices of this machine.
-    return int(read[1][1]) != token_at[0] or device == itself[0]
+    return [has == here for has, here in zip([told[0], *told[3:]], mounted, strict=True)]
 
 
 def sockets(cwd: Path, entries: int, seconds: float) -> str | None:
@@ -965,6 +1136,11 @@ def sockets(cwd: Path, entries: int, seconds: float) -> str | None:
                             f"a socket lies in the working directory, at {where}, and a "
                             "command can talk to whatever listens there"
                         )
+        except (FileNotFoundError, NotADirectoryError):
+            # Gone since it was listed: whoever else works here took it away. The look is
+            # repeated before every command, and a directory that is in use loses parts
+            # all the time.
+            continue
         except OSError:
             return "a part of the working directory could not be looked through for sockets"
     return None
@@ -974,18 +1150,26 @@ def _is_socket(entry: os.DirEntry[str]) -> bool:
     """Tell whether an entry of a directory is a socket. The system is asked of few entries."""
     if entry.is_file(follow_symlinks=False) or entry.is_symlink():
         return False
-    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)
+    try:
+        return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)
+    except FileNotFoundError:
+        # Gone since it was listed, so nothing listens there.
+        return False
 
 
 if sys.platform == "win32":  # pragma: windows only
 
     def _doubt(cwd: Path) -> str | None:
-        """Say what stands against a full hold of the commands in a directory: nothing.
+        """Say what stands against a full hold of the commands in a directory, if anything.
 
         On Windows the files reach a container through a share into another
-        kernel, and no socket goes that way.
+        kernel, and no socket goes that way. What keeps a directory in its
+        place while a container is made is that this program holds it open,
+        and that holds on a disk of this machine. A directory that this
+        machine has through a share is served by a program that need not
+        heed it: the one into a distribution of WSL does not.
         """
-        return None
+        return None if _kind(cwd) in _OF_THIS_MACHINE else _ELSEWHERE
 
 else:  # pragma: posix only
 
@@ -1003,26 +1187,34 @@ class _Layout:
         read_only: Whether it gets the directory read-only as a whole.
         shape: What the protected names at the top of the directory are, if
             the mounts depend on that.
-        doubt: Why commands in it are held in part only, if they are.
         probe: A directory of this machine that holds a token.
         token: The token.
         itself: The numbers of the directory, reached without a link.
         token_at: The numbers of the directory of the token.
         known: The numbers of a directory in that one.
-        hold: What keeps the directory from being moved aside, where a
-            program can do that. Whoever gets this lets go of it.
+        covers: The names in the directory that something is mounted over,
+            in the order of those mounts.
+        over: The numbers of what lies under each of them, a link not
+            followed.
+        holds: What keeps the directory, and what lies under those names,
+            from being moved aside, where a program can do that. Whoever
+            gets this lets go of each.
+        doubt: Why commands in the container are held in part only, as far
+            as that shows before there is a container.
     """
 
     mounted: list[str]
     read_only: bool
     shape: tuple[tuple[str, str], ...] | None
-    doubt: str | None
     probe: Path
     token: str
     itself: tuple[int, int] | None
     token_at: tuple[int, int] | None
     known: tuple[int, int] | None
-    hold: int | None
+    covers: tuple[str, ...]
+    over: tuple[tuple[int, int] | None, ...]
+    holds: tuple[int, ...]
+    doubt: str | None
 
 
 def _layout(mode: Mode, cwd: Path, target: str) -> _Layout:
@@ -1033,16 +1225,33 @@ def _layout(mode: Mode, cwd: Path, target: str) -> _Layout:
     a program can hold a directory against being moved aside, it is held
     from before the look, and what is returned says so.
 
+    What is mounted over a protected name is a source of its own, and a
+    link in its place at the moment of the mount would give a container
+    whatever the link names. Where a program can hold things, each is held
+    as well, and since it is known only after the look, the directory is
+    looked at once more with everything held: it has to be as it was.
+    Elsewhere the numbers of each are kept, for the container to be asked.
+
     Raises:
         SandboxUnavailableError: The directory is not there, or its name
-            leads through a link now, or it cannot be looked at.
+            leads through a link now, or it cannot be looked at, or what is
+            protected in it was changed under the look.
     """
-    hold: int | None = None
+    holds: list[int] = []
     try:
         try:
-            hold = _anchored(cwd)
+            _held_too(holds, _anchored(cwd))
             itself = _reached(cwd)
             led = _led(cwd)
+            read_only, mounted, covers = _laid(mode, cwd, target, led)
+            try:
+                for cover in covers:
+                    _held_too(holds, _pinned(cover))
+            except OSError:
+                # Gone since the look, or it cannot be opened any more.
+                changed = True
+            else:
+                changed = bool(holds) and bool(covers) and _led(cwd) != led
         except FileNotFoundError:
             # Docker Desktop would make a source that is not there, on this machine.
             raise SandboxUnavailableError(f"the working directory {cwd} is not there") from None
@@ -1056,9 +1265,18 @@ def _layout(mode: Mode, cwd: Path, target: str) -> _Layout:
             raise SandboxUnavailableError(
                 f"the working directory {cwd} could not be looked at: {error.strerror or error}"
             ) from error
-        read_only, mounted = _laid(mode, cwd, target, led)
+        if changed:
+            raise SandboxUnavailableError(
+                f"what is protected in the working directory {cwd} was changed while a "
+                "container was being made for it. No container is made"
+            )
         told = tuple((one.name, one.kind) for one in led) if mode == "workspace-write" else None
-        doubt = _doubt(cwd)
+        # Whether the disk tells upper case from lower shows in the protected names at the
+        # top, which are written with letters. A short name is one of the thing mounted.
+        other = bool(covers) and (
+            any(_respelled(cwd, one.name) for one in led) or any(map(_shortened, covers))
+        )
+        doubt = _RESPELLED if other else None
         probe = Path(tempfile.mkdtemp(prefix="columbina-probe-"))
         token = secrets.token_hex(16)
         (probe / "token").write_text(token, encoding="ascii")
@@ -1068,10 +1286,24 @@ def _layout(mode: Mode, cwd: Path, target: str) -> _Layout:
         (probe / "token").chmod(0o644)
         (probe / _KNOWN).chmod(0o755)
         at = _itself(probe), _itself(probe / _KNOWN)
-        return _Layout(mounted, read_only, told, doubt, probe, token, itself, *at, hold)
+        names = tuple(cover.name for cover in covers)
+        over = tuple(_named(cover) for cover in covers)
+        return _Layout(
+            mounted, read_only, told, probe, token, itself, *at, names, over, tuple(holds), doubt
+        )
     except BaseException:
-        _released(hold)
+        for hold in holds:  # pragma: windows only
+            _released(hold)
         raise
+
+
+def _held_too(holds: list[int], hold: int | None) -> None:
+    """Put a hold with the others, if the system gave one.
+
+    Whether it gives one does not change while a program runs: one system
+    holds what is opened, and the others have nothing of the kind.
+    """
+    holds.extend([] if hold is None else [hold])
 
 
 def kept(
@@ -1135,13 +1367,19 @@ def ended(program: str, name: str, user: str) -> list[str]:
     return [program, "exec", "--user", user, name, "sh", "-c", _STOP, "sh", number]
 
 
-def usable(program: str, name: str, user: str, target: str) -> list[str]:
+def usable(
+    program: str, name: str, user: str, target: str, covers: Sequence[str] = ()
+) -> list[str]:
     """Return the command that asks what a command can do with the working directory.
 
     It prints ``writable`` or ``readable``, and nothing if the user of the
-    commands cannot so much as read the directory.
+    commands cannot so much as read the directory. Then it prints the
+    numbers of the directory, of the two directories of the token, and of
+    what lies under each of the names ``covers`` in the directory.
     """
-    return [program, "exec", "--user", user, "--workdir", target, name, "sh", "-c", _USABLE]
+    asking = [program, "exec", "--user", user, "--workdir", target, name, "sh", "-c", _USABLE]
+    # A name is whatever lies in a directory. Written so, none is taken for an option.
+    return [*asking, "sh", *(f"./{cover}" for cover in covers)]
 
 
 def there(program: str, name: str) -> list[str]:
@@ -1158,6 +1396,20 @@ def _unreachable(said: str) -> bool:
     """Tell whether what the ``docker`` program wrote says that no engine answered it."""
     low = said.casefold()
     return any(words in low for words in _UNREACHABLE)
+
+
+def _unmade(said: str) -> bool:
+    """Tell whether what the ``docker`` program wrote says that it made no container.
+
+    It says so in two ways that are known here: no engine answered it, or the
+    engine has not the image. Whatever else it wrote, and how it ended, does
+    not tell: the program ends in the same way when the engine refuses to
+    make a container and when it loses an engine that runs one.
+
+    An engine that went away between two steps of the program may be left
+    with a container that was made and never started. Nothing runs in that.
+    """
+    return _unreachable(said) or "no such image" in said.casefold()
 
 
 def unavailable(image: str, said: str) -> str:
@@ -1242,12 +1494,13 @@ class _Kept:
             when it was made, if its mounts depend on that.
         itself: The numbers of the directory when it was made. A directory
             that lies under the same name later may be another one.
-        doubt: Why the commands in it are held in part only, if they are.
         used: When a command last ran in it, on the clock that only goes on.
+        doubt: Why the commands in it are held in part only, if they are.
+            What was found once stands for as long as it is kept.
         keeper: The program whose input keeps it alive.
         gone: Whether it has been let go.
         never: Whether it never came to be: what was to keep it ended
-            without a word.
+            without a word of the container, and said that it made none.
         leaving: The letting go of it, once that has begun. It gives whether
             the container was seen to be gone.
     """
@@ -1262,8 +1515,8 @@ class _Kept:
     probe: Path
     shape: tuple[tuple[str, str], ...] | None
     itself: tuple[int, int] | None
-    doubt: str | None
     used: float
+    doubt: str | None = None
     keeper: asyncio.subprocess.Process | None = None
     gone: bool = False
     never: bool = False
@@ -1294,13 +1547,17 @@ class Docker:
 
     def __init__(self, config: DockerConfig) -> None:
         self._config = config
-        self._kept: dict[str, _Kept] = {}
-        self._starting: dict[str, asyncio.Future[_Kept]] = {}
-        self._turns: dict[str, asyncio.Lock] = {}
+        # By the session itself, not by its name: a session is named within its working
+        # directory, and two directories may each have a session of the same name.
+        self._kept: dict[Session, _Kept] = {}
+        self._starting: dict[Session, asyncio.Future[_Kept]] = {}
+        self._turns: weakref.WeakKeyDictionary[Session, asyncio.Lock] = weakref.WeakKeyDictionary()
         self._engine: Engine | None = None
         self._tool: str | None = None
         self._choosing = asyncio.Lock()
         self._first: weakref.WeakKeyDictionary[Session, Path] = weakref.WeakKeyDictionary()
+        # What stood against a full hold in the last container that a session had.
+        self._found: weakref.WeakKeyDictionary[Session, str | None] = weakref.WeakKeyDictionary()
         self._leaving: set[asyncio.Future[bool]] = set()
         self._looking: asyncio.Task[None] | None = None
         self._over = asyncio.Event()
@@ -1311,11 +1568,20 @@ class Docker:
         Fully, unless a container has a network, which lets a command send
         away what it reads, or the container of the session was found to
         leave a door open. Before a session has a container nothing has been
-        found: what is said then is what the config promises.
+        found: what is said then is what the config promises. Between two
+        containers it is what the last one showed, which the next one is
+        likely to show as well. A session that was said to be held fully
+        until then would have its next command let through and turned back.
         """
+        container = self._kept.get(session)
+        if container is None and self._found.get(session) is not None:
+            return "partial"
+        return self._hold(container)
+
+    def _hold(self, container: _Kept | None) -> Strength:
+        """Say how well the commands of a container are held, or those of one yet to be made."""
         if self._config.network != "none":
             return "partial"
-        container = self._kept.get(session.id)
         return "full" if container is None or container.doubt is None else "partial"
 
     def facts(self, session: Session) -> dict[str, str]:
@@ -1356,7 +1622,7 @@ class Docker:
                 the session leads elsewhere than it did. The command was not
                 run.
         """
-        async with self._turns.setdefault(session.id, asyncio.Lock()):
+        async with self._turns.setdefault(session, asyncio.Lock()):
             real = Path(await asyncio.to_thread(os.path.realpath, cwd))
             first = self._first.setdefault(session, real)
             if first != real:
@@ -1368,9 +1634,12 @@ class Docker:
                     "the user that the session has to be started again"
                 )
             container = await self._held(session, mode, real)
-            if expected == "full" and self.strength(session) != "full":
-                # Let through for a full hold, which the container that is there now does
-                # not give. What stands against it was found when the container was made.
+            if expected == "full" and self._hold(container) != "full":
+                # Let through for a full hold, which this container does not give. What
+                # stands against it was found when the container was made, or in the look
+                # before this command. The books are not asked a second time: a container
+                # that is being let go is off them, and they would say what holds before
+                # a container is made.
                 raise held_less_well(container.doubt)
             return await self._ran(
                 container, argv, stdin, timeout_seconds, overflow, max_overflow_bytes
@@ -1382,8 +1651,13 @@ class Docker:
         if self._looking is not None:
             # Whatever became of the look, the containers are let go below.
             await asyncio.gather(self._looking, return_exceptions=True)
-        # A container that is being made is let go when it is there.
-        await asyncio.gather(*self._starting.values(), return_exceptions=True)
+        # A container that is being made is let go when it is there. Whoever closes may be
+        # cancelled: the making goes on all the same, or a container would be left that
+        # nobody knows of, with the directory that was held for it.
+        await asyncio.gather(
+            *(asyncio.shield(starting) for starting in self._starting.values()),
+            return_exceptions=True,
+        )
         await asyncio.gather(
             *(
                 self._let_go(container, "the program ends")
@@ -1392,7 +1666,9 @@ class Docker:
         )
         # And those that a command or the look was letting go already. Whoever closes may
         # end the program next, and nothing is to be half removed then.
-        await asyncio.gather(*self._leaving, return_exceptions=True)
+        await asyncio.gather(
+            *(asyncio.shield(leaving) for leaving in self._leaving), return_exceptions=True
+        )
 
     async def _held(self, session: Session, mode: Mode, cwd: Path) -> _Kept:
         """Return the container of a session for a mode and a directory, and make it if need be.
@@ -1422,13 +1698,13 @@ class Docker:
         """Return the container that a session has, or the one being made for it, or a new one."""
         if self._over.is_set():
             raise SandboxUnavailableError("the sandbox is closed, so no command is run any more")
-        starting = self._starting.get(session.id)
+        starting = self._starting.get(session)
         if starting is None:
-            container = self._kept.get(session.id)
+            container = self._kept.get(session)
             if container is not None:
                 return container
             starting = asyncio.ensure_future(self._started(session, mode, cwd))
-            self._starting[session.id] = starting
+            self._starting[session] = starting
         # Whoever waits may be cancelled. The container is made all the same, and is there
         # for the next command: a start that is cut short may leave a container that nobody
         # knows of.
@@ -1439,12 +1715,19 @@ class Docker:
         return container
 
     async def _outdated(self, container: _Kept, mode: Mode) -> str | None:
-        """Say why a container is not the one for a command, or return ``None`` if it is."""
+        """Say why a container is not the one for a command, or return ``None`` if it is.
+
+        Of a container that is the one, it is also looked what stands against
+        a full hold of the command, and that is kept with it.
+        """
         if container.gone or not container.alive():
             return "it has ended"
         if container.mode != mode:
             return "its session has another mode now"
         looked = await asyncio.to_thread(_looked, container.cwd)
+        if container.gone:
+            # Let go while its directory was looked at, by whoever closed the provider.
+            return "it has ended"
         if looked is None or looked[0] != container.itself:
             # Moved aside or removed, by whoever else works there. A container goes on
             # showing the directory that it was given, whatever lies under its name.
@@ -1453,6 +1736,13 @@ class Docker:
             # Something made or changed a protected name since: a command that was cut
             # short, or whoever else works in the directory.
             return "what is protected in its directory is not what it was"
+        if container.doubt is None:
+            # Looked for before every command, for as long as nothing is found: something
+            # of this machine may open a door after the container was made. What it opens
+            # while a command runs is not seen.
+            container.doubt = await asyncio.to_thread(_doubt, container.cwd)
+            if container.gone:
+                return "it has ended"
         return None
 
     async def _started(self, session: Session, mode: Mode, cwd: Path) -> _Kept:
@@ -1480,8 +1770,8 @@ class Docker:
                     probe=layout.probe,
                     shape=layout.shape,
                     itself=layout.itself,
-                    doubt=layout.doubt,
                     used=time.monotonic(),
+                    doubt=layout.doubt,
                 )
                 try:
                     await self._made(container, layout)
@@ -1491,13 +1781,14 @@ class Docker:
             finally:
                 # Held from before the look. From here on the container has the directory
                 # itself, whatever becomes of its name.
-                _released(layout.hold)
-            self._kept[session.id] = container
+                for hold in layout.holds:  # pragma: windows only
+                    _released(hold)
+            self._kept[session] = container
             if self._looking is None or self._looking.done():
                 self._looking = asyncio.ensure_future(self._look())
             return container
         finally:
-            del self._starting[session.id]
+            del self._starting[session]
 
     async def _made(self, container: _Kept, layout: _Layout) -> None:
         """Start a container and see that commands can run in it as they are meant to."""
@@ -1556,12 +1847,13 @@ class Docker:
                 "directory of temporary files is not shared with it"
             )
         if not said:
-            # It ended without a word, so Docker will have said why. A container that
-            # runs says a word first, so none came to be.
-            container.never = True
+            # It ended without a word, so Docker will have said why.
             with contextlib.suppress(TimeoutError):
                 wrote = await asyncio.wait_for(keeper.stderr.read(), _KEEPER_SECONDS)
                 said = wrote.decode("utf-8", errors="replace")
+            # The silence does not tell whether a container came to be: the engine may have
+            # made one and been lost before a word of it arrived.
+            container.never = _unmade(said)
         raise SandboxUnavailableError(unavailable(image, said))
 
     async def _usable(self, container: _Kept, layout: _Layout) -> None:
@@ -1578,7 +1870,9 @@ class Docker:
                 that was looked at.
         """
         read_only = layout.read_only
-        asking = usable(container.program, container.name, container.user, container.target)
+        asking = usable(
+            container.program, container.name, container.user, container.target, layout.covers
+        )
         answer = await self._docker(asking, _ASK_SECONDS)
         said = answer.output.split()
         can = said[0] if said else ""
@@ -1599,15 +1893,21 @@ class Docker:
             )
         if not _ASKS:
             return
-        same = given(said[1:], layout.itself, layout.token_at, layout.known)
-        if same is False:
+        same = given(said[1:], (layout.itself, *layout.over), layout.token_at, layout.known)
+        if same is None:
+            container.doubt = _UNASKED
+        elif not same[0]:
             raise SandboxUnavailableError(
                 "the container was given another directory than the working directory of this "
                 "session. Something put another directory or a link in its place while the "
                 "container was made. No command is run in it"
             )
-        if same is None:
-            container.doubt = container.doubt or _UNASKED
+        elif not all(same):
+            raise SandboxUnavailableError(
+                "the container was not given what lies under a protected name in the working "
+                "directory of this session. Something put a link or another directory in its "
+                "place while the container was made. No command is run in it"
+            )
 
     async def _chosen(self, cwd: Path) -> str:
         """Return the ``docker`` program for a container of a working directory.
@@ -1742,8 +2042,10 @@ class Docker:
         # Let go by whoever closed the provider, or ended by itself. The loop may hear of
         # the end of what kept it a moment after the command has come back.
         if container.gone or not container.alive():
-            await self._let_go(container, "it ended while a command ran")
-            return (_ENDED,)
+            if await self._let_go(container, "it ended while a command ran"):
+                return (_ENDED,)
+            # Let go, and not seen to be gone. That it ended is more than anybody knows.
+            return (_UNSEEN.format(name=container.name),)
         if not (settled[0] if settled else await self._stopped(container)):
             why = "what a command left running in it could not be stopped"
             if await self._let_go(container, why):
@@ -1812,8 +2114,9 @@ class Docker:
         """
         if container.leaving is None:
             container.gone = True
-            if self._kept.get(container.session.id) is container:
-                del self._kept[container.session.id]
+            if self._kept.get(container.session) is container:
+                del self._kept[container.session]
+                self._found[container.session] = container.doubt
             logger.debug("the container %s is let go: %s", container.name, why)
             container.leaving = asyncio.ensure_future(self._removed(container))
             self._leaving.add(container.leaving)
@@ -1862,12 +2165,12 @@ class Docker:
                 return
             now = time.monotonic()
             for container in list(self._kept.values()):
-                turn = self._turns.get(container.session.id)
+                turn = self._turns.get(container.session)
                 if turn is not None and turn.locked():
                     continue
                 if container.session.closed:
                     why = "its session is over"
-                    self._turns.pop(container.session.id, None)
+                    self._turns.pop(container.session, None)
                 elif not container.alive():
                     why = "it has ended"
                 elif now - container.used >= self._config.idle_seconds:

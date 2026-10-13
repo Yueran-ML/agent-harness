@@ -163,6 +163,24 @@ describe('durable event projection', () => {
     expect(projection.items[1]).toMatchObject({ type: 'notice', text: 'Model request failed: rate limited' });
   });
 
+  it('says where a reply was cut off and goes on, and shows no failed request for it', () => {
+    const projection = projectEvents([
+      event(0, 'assistant/message', { message: message('This sentence never', 'assistant'), usage: usage(10, 2, 0, 0), finish_reason: 'max-tokens' }),
+      event(1, 'user/message', { message: message('<context source="cut-off">Go on.</context>'), source: 'context/cut-off' }),
+      event(2, 'assistant/attempt', { message: { role: 'assistant', content: [] }, usage: usage(12, 3, 0, 0), failure: { message: 'the reply was cut off before it held anything', code: 'CUT_OFF' } }),
+      event(3, 'user/message', { message: message('<context source="cut-off">Go on.</context>'), source: 'context/cut-off' }),
+      event(4, 'assistant/message', { message: message(' ends.', 'assistant'), usage: usage(14, 2, 0, 0), finish_reason: 'stop' }),
+    ]);
+    expect(projection.items.map(item => item.type)).toEqual(['assistant', 'notice', 'notice', 'assistant']);
+    const notices = projection.items.filter(item => item.type === 'notice');
+    expect(notices.map(item => [item.text, item.tone, item.cause.kind])).toEqual([
+      ['The reply reached its length limit. The model continues.', 'info', 'cut-off'],
+      ['The reply reached its length limit. The model continues.', 'info', 'cut-off'],
+    ]);
+    // What the request cost counts although nothing of it is shown.
+    expect(projection.usage.input_tokens).toBe(36);
+  });
+
   it('applies splices independently to both queues and preserves steer source', () => {
     const entry = (text: string, source = 'user') => ({ message: message(text), source });
     const projection = projectEvents([

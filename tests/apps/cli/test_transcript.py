@@ -11,6 +11,7 @@ from rich.text import Text
 import columbina.approval
 import columbina.retry
 import columbina.session
+from columbina.agent import CUT_OFF
 from columbina.approval import ApprovalDecidedEvent
 from columbina.apps.cli.transcript import Symbols, Transcript, on_screen, recap
 from columbina.compaction import EVENTS as COMPACTION_EVENTS
@@ -896,6 +897,32 @@ async def test_a_session_that_is_taken_up_again_shows_its_last_turn_in_short(log
     ]
 
 
+async def test_an_answer_that_was_cut_off_and_taken_up_again_is_shown_as_one(
+    log: Session,
+) -> None:
+    for data in (
+        TurnStartEvent(turn=1),
+        said("Count."),
+        reply(TextBlock(text="one\ntwo\nthr"), finish="max-tokens"),
+        said("<context>Go on.</context>", source=CUT_OFF),
+        reply(TextBlock(text="ee\nfour")),
+        TurnEndEvent(turn=1, reason="completed"),
+    ):
+        log.append(data)
+
+    shown = plain(recap(log.events, PLAIN))
+
+    assert shown == [
+        "(this session is taken up again. Its last turn:)",
+        "> Count.",
+        "one",
+        "two",
+        "three",
+        "four",
+        "",
+    ]
+
+
 async def test_a_long_last_answer_is_shown_by_its_end(log: Session) -> None:
     answer = "\n".join(f"line {number}" for number in range(1, 31))
     for data in (TurnStartEvent(turn=1), said("Count."), reply(TextBlock(text=answer))):
@@ -1217,6 +1244,15 @@ def test_a_hook_that_keeps_a_turn_going_is_told_with_what_it_says(log: Session) 
     assert (head.plain, str(head.style)) == ("(a Stop hook keeps the turn going. It says:)", "dim")
     assert plain(lines) == ["    The tests fail.", "    Run them, and mend what fails."]
     assert [str(line.style) for line in lines] == ["", ""]
+
+
+def test_a_reply_that_is_taken_up_again_is_told_where_it_was_cut_off(log: Session) -> None:
+    transcript = Transcript(PLAIN)
+
+    (line,) = transcript.event(log.append(said("<context>Go on.</context>", source=CUT_OFF)))
+
+    assert line.plain == "(the reply was cut off at the limit of its length. The model goes on.)"
+    assert str(line.style) == "dim"
 
 
 @pytest.mark.usefixtures("hooks")

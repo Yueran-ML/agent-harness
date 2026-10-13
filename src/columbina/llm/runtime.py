@@ -117,6 +117,11 @@ class LlmCall:
         return self._assembler.message()
 
     @property
+    def unfinished(self) -> tuple[str, ...]:
+        """The names of the tool calls that were begun and are not in the message."""
+        return self._assembler.unfinished()
+
+    @property
     def usage(self) -> Usage:
         """The most recent token counts."""
         return self._assembler.usage
@@ -270,12 +275,14 @@ class LlmCall:
         if finish.reason == "error":
             return finish
         message = self._assembler.message()
+        if finish.reason == "max-tokens":
+            # Cut off, with or without anything in it. Asked again as it was, the
+            # model would be cut off at the same place, so this is no failure to retry.
+            return finish
         if not message.content:
             return _failed(
                 "EMPTY_RESPONSE", f"the reply ended ({finish.reason}) without any content"
             )
-        if finish.reason == "max-tokens":
-            return finish
         return Finish(reason="tool-calls" if message.tool_calls else "stop")
 
 

@@ -136,6 +136,43 @@ def test_a_reply_cut_off_by_the_token_limit_loses_its_tool_calls() -> None:
     assert assemble(chunks).message().content == (TextBlock(text="let me look"),)
 
 
+def test_the_calls_that_a_reply_was_writing_when_it_was_cut_off_are_named() -> None:
+    chunks: list[Chunk] = [
+        *text(0, "let me look"),
+        *tool_call(1, "call-1", "read", '{"path": "a.txt"}'),
+        BlockStart(index=2, kind="tool-call", call_id="call-2", name="write"),
+        ToolCallDelta(index=2, arguments='{"path": "b.txt", "content": "It was a da'),
+        Finish(reason="max-tokens"),
+    ]
+
+    # Not one of them is in the message, whether it had come to its end or not.
+    assert assemble(chunks).unfinished() == ("read", "write")
+
+
+def test_a_call_that_is_still_arriving_is_not_in_the_message_yet() -> None:
+    assembler = assemble(
+        [
+            *tool_call(0, "call-1", "glob", "{}"),
+            BlockStart(index=1, kind="tool-call", call_id="call-2", name="read"),
+            ToolCallDelta(index=1, arguments='{"path":'),
+        ]
+    )
+
+    assert assembler.unfinished() == ("read",)
+
+
+def test_a_reply_whose_calls_are_all_in_its_message_left_none_unfinished() -> None:
+    whole: list[Chunk] = [
+        *text(0, "let me look"),
+        *tool_call(1, "call-1", "read", "{}"),
+        Finish(reason="tool-calls"),
+    ]
+
+    assert assemble(whole).unfinished() == ()
+    # A reply that was cut off in the middle of what it said was writing no call.
+    assert assemble([*text(0, "let me lo"), Finish(reason="max-tokens")]).unfinished() == ()
+
+
 def test_an_unfinished_tool_call_is_dropped_and_unfinished_text_is_kept() -> None:
     assembler = assemble(
         [

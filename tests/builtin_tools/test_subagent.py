@@ -162,7 +162,11 @@ async def test_a_task_that_was_not_done_is_a_call_that_failed(harness: Harness) 
     await loaded(harness)
     parent = await harness.agent(
         hands_over(("Count the files.", None)),
+        # The subagent is taken up three times before its turn ends cut off.
         Reply(text="There are thr", finish="max-tokens"),
+        Reply(text="ee files", finish="max-tokens"),
+        Reply(text=", and I", finish="max-tokens"),
+        Reply(text=" was", finish="max-tokens"),
         Reply(text="It did not finish."),
     )
 
@@ -173,7 +177,7 @@ async def test_a_task_that_was_not_done_is_a_call_that_failed(harness: Harness) 
     assert text == (
         "The subagent did not finish its task: a reply of its model was cut off at the limit "
         "of its length.\nWhat it had written until then follows. It is not a finished answer."
-        "\n\nThere are thr"
+        "\n\nThere are three files, and I was"
     )
 
 

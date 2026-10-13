@@ -24,7 +24,7 @@ How its turn ended is read from its own log and from nothing else.
 
 import contextlib
 
-from columbina.agent import AGENTS, Agent, Agents, CancelCause
+from columbina.agent import AGENTS, Agent, Agents, CancelCause, replies
 from columbina.approval import APPROVAL
 from columbina.kernel import Context
 from columbina.sandbox import SANDBOX
@@ -54,21 +54,24 @@ def outcome_of(session: Session) -> Outcome:
     A turn that came to its end gives the last reply that is not empty. One
     that did not gives the last words that arrived at all, also those of a
     request that failed: they are what the subagent had written until then.
+    A reply that was cut off and taken up again is one reply with what went
+    on from it.
     """
     reason: TurnEndReason | None = None
     detail: str | None = None
-    replied = ""
     arrived = ""
     for event in session.events:
         data = event.data
         if isinstance(data, TurnEndEvent):
             reason, detail = data.reason, data.detail
-        elif isinstance(data, AssistantMessageEvent | AssistantAttemptEvent):
-            said = data.message.text
-            if said.strip():
-                arrived = said
-                if isinstance(data, AssistantMessageEvent):
-                    replied = said
+        elif isinstance(data, AssistantMessageEvent):
+            # Told below, with what it went on from.
+            arrived = "" if data.message.text.strip() else arrived
+        elif isinstance(data, AssistantAttemptEvent) and data.message.text.strip():
+            arrived = data.message.text
+    said = [text for text in replies(event.data for event in session.events) if text.strip()]
+    replied = said[-1] if said else ""
+    arrived = arrived or replied
     return Outcome(
         reason=reason,
         detail=detail,

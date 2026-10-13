@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, TypeVar, cast
@@ -11,6 +12,7 @@ from typing import Literal, TypeVar, cast
 from columbina import cancellation
 from columbina.agent import (
     CONTEXT_PREFIX,
+    CUT_OFF,
     INBOX,
     PRE_STEP,
     REQUEST,
@@ -41,6 +43,7 @@ from columbina.agent import (
 )
 from columbina.kernel import Context, Event, FiberState, Registry
 from columbina.llm import (
+    NOTHING_ARRIVED,
     CallConfig,
     Llm,
     LlmCall,
@@ -87,6 +90,34 @@ the turn to end.
 
 _NOT_RUN = "The turn was cancelled before this call ran."
 _CUT_SHORT = "The call was cancelled while it ran. It may have taken effect in part."
+
+_CUT_OFF = "Your reply was cut off: it reached the limit on the length of one reply."
+_PLAIN_NAME = re.compile("[A-Za-z0-9_.-]{1,64}")
+"""What the name of a tool may look like where it is repeated to a model."""
+
+
+def _cut_off(unfinished: tuple[str, ...]) -> str:
+    """Return what a model is told when its reply was cut off by the limit on its length.
+
+    Args:
+        unfinished: The names of the tool calls that the reply was writing.
+            None of them was carried out.
+    """
+    if not unfinished:
+        return f"{_CUT_OFF} Go on from where it stopped, and do not repeat what is already written."
+    # A name is whatever the model sent, and here it goes into a message. One that no tool
+    # could have is not repeated.
+    plain = dict.fromkeys(f"`{name}`" for name in unfinished if _PLAIN_NAME.fullmatch(name))
+    if len(plain) > 1:
+        calls = f"The calls of {', '.join(plain)} were not complete and were"
+        again = "Make them again so that each fits"
+    else:
+        calls = f"The call of {next(iter(plain), 'a tool')} was not complete and was"
+        again = "Make it again so that it fits"
+    return (
+        f"{_CUT_OFF} {calls} not carried out. {again} into one reply: what is long, such as "
+        "a file, is written in several steps."
+    )
 
 
 def _last_header(
@@ -187,12 +218,16 @@ class LoopAgent(Agent):
         tools: Tools,
         context: Registry[ContextSource],
         max_parallel_tool_calls: int,
+        continuations: int,
     ) -> None:
         super().__init__(ctx, spec, session)
         self._llm = llm
         self._tools = tools
         self._context = context
         self._max_parallel = max_parallel_tool_calls
+        self._continuations = continuations
+        # The tool calls that the last reply was writing when it was cut off.
+        self._unfinished: tuple[str, ...] = ()
         self._wake = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
@@ -401,7 +436,7 @@ class LoopAgent(Agent):
         """Run the steps of a turn and return why the turn ends."""
         session = self.session
         step = 0
-        cut_off = False
+        taken_up = 0
         while True:
             opening: Exception | None = None
             if step == 0:
@@ -438,11 +473,18 @@ class LoopAgent(Agent):
             if ended == "concluded":
                 # A tool asked for the turn to end. Input that waits stays for the next turn.
                 return "completed", None
-            cut_off = cut_off or ended == "max-tokens"
             if INBOX.of(session).next_step:
                 continue
-            # The turn would end here. A listener that steers the agent keeps it going.
-            reason: TurnEndReason = "max-tokens" if cut_off else "completed"
+            if ended == "max-tokens" and taken_up < self._continuations:
+                # The model is told what happened and goes on, a few times in a turn at
+                # most. What it does next is a step like any other.
+                taken_up += 1
+                note = _framed(CUT_OFF.removeprefix(_CONTEXT), _cut_off(self._unfinished))
+                session.append(UserMessageEvent(message=note, source=CUT_OFF))
+                continue
+            # The turn would end here, as its last reply did. A listener that steers the
+            # agent keeps it going.
+            reason: TurnEndReason = "max-tokens" if ended == "max-tokens" else "completed"
             stopping = TurnStopping(self, turn, reason)
             await self._heard(TURN_STOPPING, self.ctx.serial(TURN_STOPPING, stopping))
             if not INBOX.of(session).next_step:
@@ -596,6 +638,17 @@ class LoopAgent(Agent):
                 raise _RequestError(finish.failure)
         assert finish.reason != "error"
         message = call.message
+        if finish.reason == "max-tokens":
+            self._unfinished = call.unfinished
+            if not message.content:
+                # Nothing arrived that can be kept, and a message that says nothing is put
+                # before no model. What the request cost is written down all the same.
+                session.append(
+                    AssistantAttemptEvent(
+                        message=message, usage=call.usage, failure=NOTHING_ARRIVED
+                    )
+                )
+                return "max-tokens"
         session.append(
             AssistantMessageEvent(message=message, usage=call.usage, finish_reason=finish.reason)
         )

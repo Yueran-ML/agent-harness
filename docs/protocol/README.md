@@ -316,10 +316,10 @@
 
 各字段的取值范围：
 
-- `turn/end.reason`：`completed`、`aborted`、`blocked`、`error`、`max-tokens`、`interrupted`、`forked`。`detail` 是补充说明，例如 `aborted` 时是谁停的，`error` 时是错误信息。
+- `turn/end.reason`：`completed`、`aborted`、`blocked`、`error`、`max-tokens`、`interrupted`、`forked`。`detail` 是补充说明，例如 `aborted` 时是谁停的，`error` 时是错误信息。`max-tokens` 说的是回合的最后一次回复被输出上限截断。中途被截断、接着写完的回合是 `completed`。
 - `assistant/message.finish_reason`：`stop`、`tool-calls`、`max-tokens`，或者 `null`。`null` 表示回复被打断，`message` 里是已经到达的部分。
 - `usage`：`{input_tokens, output_tokens, cache_read_tokens, cache_write_tokens}`。四个数互不重叠，`input_tokens` 只算没有从缓存里读的输入。
-- `failure`：`{message, code, status, retry_after_ms, request_id}`。`code` 是稳定的代码，例如 `RATE_LIMIT`。
+- `failure`：`{message, code, status, retry_after_ms, request_id}`。`code` 是稳定的代码，例如 `RATE_LIMIT`。`CUT_OFF` 表示回复在第一个字之前就被输出上限截断，这不是出错，程序随后让模型接着写。
 - `tool/result.error`：`{code, reason}` 或 `null`。`meta` 是模型看不到的附带信息，目前没有工具写它。
 - `approval/decided.outcome`：`allowed-once`、`rejected`、`cancelled`、`unavailable`。后两个分别表示提问被撤回和没有人可以问。
 - `todo/write.items`：每项是 `{content, status}`，`status` 取 `pending`、`in_progress`、`completed`，同一时刻最多一项是 `in_progress`。`call_id` 是写下清单的那次调用。
@@ -358,6 +358,8 @@
 | `skill` | 人用 `/skill` 交给 Agent 的一个技能的正文 | 折叠起来，标题写技能的名字 |
 | `hook/<时刻>` | 用户的钩子放进对话的文字：给一条输入补充的内容，顶替一条被拦下的输入的说明，或者让模型继续的理由 | 折叠起来，注明来自钩子 |
 | 其他 | 插件代用户给的输入 | 折叠起来 |
+
+`context/` 开头的来源里有一个要另外对待：来源是 `context/cut-off` 的消息表示上一条助手消息被输出上限截断，程序让模型从断处接着写。它前后的两条助手消息是同一段话，界面在这里显示一行说明，并把两条消息连着显示。
 
 ### 7.5 顶替
 

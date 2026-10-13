@@ -26,6 +26,11 @@ no test can notice it, and ``mutate.py`` passes it over.
 from dataclasses import dataclass, replace
 
 LOOP = "src/columbina/agent_loop/loop.py"
+LOOP_PLUGIN = "src/columbina/agent_loop/__init__.py"
+REPLIES = "src/columbina/agent/replies.py"
+ASSEMBLER = "src/columbina/llm/assembler.py"
+LLM_RUNTIME = "src/columbina/llm/runtime.py"
+REPLAY_ADAPTER = "src/columbina/llm/adapters/replay.py"
 INBOX = "src/columbina/agent/inbox.py"
 AGENT_CONTEXT = "src/columbina/agent/context.py"
 AGENT_PACKAGE = "src/columbina/agent/__init__.py"
@@ -1319,6 +1324,176 @@ _DESCENT = (
         DESCENT,
         "    waiting = list(held)\n",
         "    waiting = list(held)[:1]\n",
+    ),
+)
+
+_CUT_OFF = (
+    mutant(
+        "a reply that was cut off ends its turn at once",
+        LOOP,
+        '            if ended == "max-tokens" and taken_up < self._continuations:\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "a reply that was cut off is taken up without end",
+        LOOP,
+        '            if ended == "max-tokens" and taken_up < self._continuations:\n',
+        '            if ended == "max-tokens":\n',
+    ),
+    mutant(
+        "taking a reply up is not counted",
+        LOOP,
+        "                taken_up += 1\n",
+        "",
+    ),
+    mutant(
+        "what the user says meanwhile does not take the place of going on",
+        LOOP,
+        "            if INBOX.of(session).next_step:\n"
+        "                continue\n"
+        '            if ended == "max-tokens" and taken_up < self._continuations:\n',
+        '            if ended == "max-tokens" and taken_up < self._continuations:\n',
+    ),
+    mutant(
+        "a turn that went on from a reply that was cut off is said to have been cut off",
+        LOOP,
+        '            reason: TurnEndReason = "max-tokens" if ended == "max-tokens" else "completed"\n',
+        '            reason: TurnEndReason = "max-tokens" if taken_up or ended == "max-tokens" else "completed"\n',
+    ),
+    mutant(
+        "a model is not told which calls its reply was writing",
+        LOOP,
+        "            self._unfinished = call.unfinished\n",
+        "            self._unfinished = ()\n",
+    ),
+    mutant(
+        "a name that no tool could have is repeated to a model",
+        LOOP,
+        " for name in unfinished if _PLAIN_NAME.fullmatch(name))\n",
+        " for name in unfinished)\n",
+    ),
+    mutant(
+        "a call is named as often as a reply was writing it",
+        LOOP,
+        "    plain = dict.fromkeys(",
+        "    plain = list(",
+    ),
+    mutant(
+        "a reply that held nothing is put before the model as a message",
+        LOOP,
+        "            if not message.content:\n                # Nothing arrived that can be kept",
+        "            if False:\n                # Nothing arrived that can be kept",
+    ),
+    mutant(
+        "the message that tells a model to go on is written as what the user said",
+        LOOP,
+        "                session.append(UserMessageEvent(message=note, source=CUT_OFF))\n",
+        '                session.append(UserMessageEvent(message=note, source="user"))\n',
+    ),
+    mutant(
+        "a model whose reply was writing calls is told to go on with its words",
+        LOOP,
+        "    if not unfinished:\n",
+        "    if True:\n",
+    ),
+    mutant(
+        "a reply is taken up as often as the loop likes, whatever the config says",
+        LOOP_PLUGIN,
+        "            config.continuations,\n",
+        "            3,\n",
+    ),
+    mutant(
+        "a reply that was cut off ends its turn unless the config says otherwise",
+        LOOP_PLUGIN,
+        "    continuations: int = Field(default=3, ge=0)\n",
+        "    continuations: int = Field(default=0, ge=0)\n",
+    ),
+    mutant(
+        "a reply may be taken up less than no times",
+        LOOP_PLUGIN,
+        "    continuations: int = Field(default=3, ge=0)\n",
+        "    continuations: int = Field(default=3)\n",
+    ),
+    mutant(
+        "a call that had come to its end is not among those of a reply that was cut off",
+        ASSEMBLER,
+        '            if block.kind == "tool-call" and (truncated or not block.ended)\n',
+        '            if block.kind == "tool-call" and not block.ended\n',
+    ),
+    mutant(
+        "every call of a reply is told as unfinished",
+        ASSEMBLER,
+        '            if block.kind == "tool-call" and (truncated or not block.ended)\n',
+        '            if block.kind == "tool-call"\n',
+    ),
+    mutant(
+        "what a reply said is told among the calls that it was writing",
+        ASSEMBLER,
+        '            if block.kind == "tool-call" and (truncated or not block.ended)\n',
+        "            if truncated or not block.ended\n",
+    ),
+    mutant(
+        "a reply that was cut off before it held anything is a failure to try again",
+        LLM_RUNTIME,
+        '        if finish.reason == "max-tokens":\n'
+        "            # Cut off, with or without anything in it. Asked again as it was, the\n"
+        "            # model would be cut off at the same place, so this is no failure to retry.\n"
+        "            return finish\n"
+        "        if not message.content:\n"
+        "            return _failed(\n"
+        '                "EMPTY_RESPONSE", f"the reply ended ({finish.reason}) without any content"\n'
+        "            )\n",
+        "        if not message.content:\n"
+        "            return _failed(\n"
+        '                "EMPTY_RESPONSE", f"the reply ended ({finish.reason}) without any content"\n'
+        "            )\n"
+        '        if finish.reason == "max-tokens":\n'
+        "            return finish\n",
+    ),
+    mutant(
+        "a reply that went on from another is told apart from it",
+        REPLIES,
+        "            if goes_on:\n"
+        "                said[-1] += data.message.text\n"
+        "            else:\n"
+        "                said.append(data.message.text)\n",
+        "            said.append(data.message.text)\n",
+    ),
+    mutant(
+        "a reply that ended by itself is gone on from",
+        REPLIES,
+        "                goes_on = cut_off\n",
+        "                goes_on = bool(said)\n",
+    ),
+    mutant(
+        "the reply after the next goes on from one that was cut off as well",
+        REPLIES,
+        '            cut_off = data.finish_reason == "max-tokens"\n            goes_on = False\n',
+        '            cut_off = data.finish_reason == "max-tokens"\n',
+    ),
+    mutant(
+        "what somebody said does not come between a reply and the one that goes on from it",
+        REPLIES,
+        "                goes_on = cut_off = False\n",
+        "                pass\n",
+    ),
+    mutant(
+        "what a model is told beside comes between a reply and the one that goes on from it",
+        REPLIES,
+        "            elif not data.source.startswith(CONTEXT_PREFIX):\n",
+        "            else:\n",
+    ),
+    mutant(
+        "a reply that was cut off before it held anything is played again as a failure",
+        REPLAY_ADAPTER,
+        "            if data.failure.code == NOTHING_ARRIVED.code:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a reply that was cut off is gone on from by whatever a model is told next",
+        REPLIES,
+        "            if data.source == CUT_OFF:\n                goes_on = cut_off\n            elif",
+        "            if data.source.startswith(CONTEXT_PREFIX):\n                goes_on = cut_off\n            elif",
     ),
 )
 
@@ -6365,6 +6540,20 @@ _BASE = (
 
 _TRANSCRIPT = (
     mutant(
+        "a session that is taken up again shows the last piece of an answer that was taken up",
+        CLI_TRANSCRIPT,
+        "    answers = [text for text in replies(event.data for event in last) if text.strip()]\n",
+        "    answers = [e.data.message.text for e in last if isinstance(e.data, AssistantMessageEvent) and e.data.message.text.strip()]\n",
+    ),
+    mutant(
+        "nothing is said where a reply was cut off and the model goes on",
+        CLI_TRANSCRIPT,
+        "            if data.source == CUT_OFF:\n"
+        "                # What follows is the same answer. The line says why it stopped in mid-air.\n"
+        "                return [_note(_GOES_ON)]\n",
+        "",
+    ),
+    mutant(
         "a carriage return before a line feed stays in the line",
         CLI_LINES,
         '        return [line.removesuffix("\\r") for line in complete]\n',
@@ -6750,8 +6939,8 @@ _TRANSCRIPT = (
     mutant(
         "a session that is taken up again shows an answer of nothing but spaces",
         CLI_TRANSCRIPT,
-        "        elif isinstance(data, AssistantMessageEvent) and data.message.text.strip():\n",
-        "        elif isinstance(data, AssistantMessageEvent):\n",
+        "    answers = [text for text in replies(event.data for event in last) if text.strip()]\n",
+        "    answers = list(replies(event.data for event in last))\n",
     ),
     mutant(
         "a session that is taken up again leaves no empty line",
@@ -8421,6 +8610,12 @@ _SLASH = (
 
 _TEXT = (
     mutant(
+        "a run without a screen prints the last piece of an answer that was taken up",
+        HEADLESS,
+        "        said = replies(events)\n",
+        "        said = [data.message.text for data in events if isinstance(data, AssistantMessageEvent)]\n",
+    ),
+    mutant(
         "a control character goes to the terminal",
         TERMINAL_TEXT,
         '_ACTED_ON = frozenset({"Cc", "Cs", "Zl", "Zp"})\n',
@@ -9684,6 +9879,12 @@ _CAP = (
 
 _STORED_SESSIONS = (
     mutant(
+        "a turn is told by the last piece of an answer that was taken up",
+        APPS_SESSIONS,
+        "    answers = [text for text in replies(event.data for event in events) if text.strip()]\n",
+        "    answers = [e.data.message.text for e in events if type(e.data).__name__ == 'AssistantMessageEvent' and e.data.message.text.strip()]\n",
+    ),
+    mutant(
         "what the user said on the way is left out of a turn that is told",
         APPS_SESSIONS,
         '_MARKS = {"user": ">", "steer": ">>"}',
@@ -9698,8 +9899,8 @@ _STORED_SESSIONS = (
     mutant(
         "a reply without words takes the place of the last answer",
         APPS_SESSIONS,
-        "        elif isinstance(data, AssistantMessageEvent) and data.message.text.strip():\n",
-        "        elif isinstance(data, AssistantMessageEvent):\n",
+        "    answers = [text for text in replies(event.data for event in events) if text.strip()]\n",
+        "    answers = list(replies(event.data for event in events))\n",
     ),
     mutant(
         "a turn that came to its end is said not to have",
@@ -13650,6 +13851,12 @@ _TRUST = (
 
 _SUBAGENTS = (
     mutant(
+        "a subagent hands back the last piece of an answer that was taken up",
+        SPAWN,
+        "    said = [text for text in replies(event.data for event in session.events) if text.strip()]\n",
+        "    said = [e.data.message.text for e in session.events if isinstance(e.data, AssistantMessageEvent) and e.data.message.text.strip()]\n",
+    ),
+    mutant(
         "a file of a kind may be of whatever length",
         SUBAGENT_TYPES,
         "    if len(content) > MAX_BYTES:\n",
@@ -14512,14 +14719,26 @@ _SUBAGENTS = (
     mutant(
         "a reply of blanks is what a subagent said last",
         SPAWN,
-        "            if said.strip():\n                arrived = said\n",
-        "            if True:\n                arrived = said\n",
+        "    said = [text for text in replies(event.data for event in session.events) if text.strip()]\n",
+        "    said = list(replies(event.data for event in session.events))\n",
+    ),
+    mutant(
+        "blanks that arrived of a request that failed are what a subagent had written",
+        SPAWN,
+        "        elif isinstance(data, AssistantAttemptEvent) and data.message.text.strip():\n",
+        "        elif isinstance(data, AssistantAttemptEvent):\n",
     ),
     mutant(
         "the words of a request that failed are taken for a reply",
         SPAWN,
-        "                if isinstance(data, AssistantMessageEvent):\n                    replied = said\n",
-        "                if True:\n                    replied = said\n",
+        '    replied = said[-1] if said else ""\n',
+        '    replied = arrived or (said[-1] if said else "")\n',
+    ),
+    mutant(
+        "the words of a request that failed outlive the reply that came after them",
+        SPAWN,
+        '            arrived = "" if data.message.text.strip() else arrived\n',
+        "            pass\n",
     ),
     mutant(
         "what a failed subagent had written is only what it had replied",
@@ -20208,6 +20427,17 @@ SETS: dict[str, MutantSet] = {
         ("tests/builtin_tools/test_write.py", "tests/builtin_tools/test_edit.py"), _FILES
     ),
     "loop": MutantSet(("tests/agent_loop", "tests/agent", "tests/test_cancellation.py"), _LOOP),
+    "cut-off": MutantSet(
+        (
+            "tests/agent_loop",
+            "tests/agent",
+            "tests/llm/test_assembler.py",
+            "tests/llm/test_runtime.py",
+            "tests/llm/test_replay.py",
+            "tests/compaction/test_summary.py",
+        ),
+        _CUT_OFF,
+    ),
     "tools": MutantSet(("tests/tools",), _TOOLS),
     "read": MutantSet(
         (

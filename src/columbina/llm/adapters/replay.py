@@ -16,6 +16,7 @@ from columbina.kernel import Context
 from columbina.llm.adapters.scripted import Scripted
 from columbina.llm.runtime import LLM
 from columbina.llm.types import (
+    NOTHING_ARRIVED,
     AssistantMessage,
     BlockEnd,
     BlockStart,
@@ -87,8 +88,10 @@ def replies_of(events: Sequence[SessionEvent[EventData]]) -> list[list[Chunk]]:
     """Return the replies that a session records, each as the chunks of one call.
 
     A call that failed is replayed as the same failure, after what had arrived
-    of it. An event that takes the place of earlier ones is passed over: it
-    rewrites what the model is shown, and the model was not asked for it.
+    of it. A reply that was cut off before it held anything is written down
+    like a call that failed, and is replayed as the cut-off reply that it was.
+    An event that takes the place of earlier ones is passed over: it rewrites
+    what the model is shown, and the model was not asked for it.
 
     Raises:
         ValueError: The session holds a reply that was interrupted. When it
@@ -100,7 +103,12 @@ def replies_of(events: Sequence[SessionEvent[EventData]]) -> list[list[Chunk]]:
         if event.replaces:
             continue
         if isinstance(data, AssistantAttemptEvent):
-            finish = Finish(reason="error", failure=data.failure)
+            if data.failure.code == NOTHING_ARRIVED.code:
+                # No failure of a call, but a reply that was cut off before it held
+                # anything. It is played as that, so that what follows it follows again.
+                finish = Finish(reason="max-tokens")
+            else:
+                finish = Finish(reason="error", failure=data.failure)
             replies.append(_chunks(data.message, data.usage, finish))
         elif isinstance(data, AssistantMessageEvent):
             if data.finish_reason is None:

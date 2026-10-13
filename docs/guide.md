@@ -183,6 +183,11 @@ corrects the estimate by what the provider reports with each reply.
   changes.
 - **A request that the model refuses as too long** is answered the same way, and the
   step is taken again.
+- **A reply that is cut off is taken up again.** A model also has a limit on the length
+  of one reply. When a reply reaches it, Columbina tells the model where it stopped and
+  has it go on, three times in a turn at most, and the terminal says so in a line. A
+  call of a tool that was being written at that moment is not carried out: the model is
+  told to make it again, and smaller.
 
 `/compact` does it at once, and Esc stops it like a turn. The terminal says when a
 conversation is made shorter and what came of it.

@@ -10,6 +10,7 @@ from columbina.llm.assembler import Assembler, MalformedStreamError
 from columbina.llm.render import render_request, render_requests
 from columbina.llm.runtime import LLM, Llm, LlmAdapter, LlmCall, LlmError
 from columbina.llm.types import (
+    NOTHING_ARRIVED,
     AssistantBlock,
     AssistantMessage,
     BlockEnd,
@@ -38,6 +39,7 @@ from columbina.llm.types import (
 
 __all__ = [
     "LLM",
+    "NOTHING_ARRIVED",
     "Assembler",
     "AssistantBlock",
     "AssistantMessage",

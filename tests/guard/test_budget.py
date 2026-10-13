@@ -84,6 +84,22 @@ async def test_one_step_is_a_limit_too(harness: Harness) -> None:
     assert len(harness.model.requests) == 1
 
 
+async def test_going_on_from_a_reply_that_was_cut_off_is_a_step_that_counts(
+    harness: Harness,
+) -> None:
+    await loaded(harness, max_steps=2)
+    cut = Reply(text="and on", finish="max-tokens")
+    agent = await harness.agent(cut, cut, cut)
+
+    await turn(agent)
+
+    # The loop would take a reply up three times. The budget has room for one.
+    assert ends(agent) == [
+        TurnEndEvent(turn=1, reason="blocked", detail="the turn has taken its 2 steps")
+    ]
+    assert len(harness.model.requests) == 2
+
+
 async def test_the_steps_that_the_spec_of_an_agent_names_count_before_those_of_the_config(
     harness: Harness,
 ) -> None:

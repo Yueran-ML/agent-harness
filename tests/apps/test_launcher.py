@@ -171,14 +171,30 @@ def test_a_failed_run_ends_its_json_with_the_reason(
 def test_a_reply_that_was_cut_off_is_printed_but_the_run_does_not_count_as_done(
     home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    cut = {"text": "This sentence never", "finish": "max-tokens"}
+    # It is taken up three times. What arrived is printed as the one text that it is.
+    pieces = ["This sentence", " never", " comes to", " its"]
+    cut = [{"text": piece, "finish": "max-tokens"} for piece in pieces]
 
-    code = main(["run", "Write.", "--profile", profile(tmp_path, cut), "--cwd", str(work)])
+    code = main(["run", "Write.", "--profile", profile(tmp_path, *cut), "--cwd", str(work)])
 
     captured = capsys.readouterr()
     assert code == 1
-    assert captured.out == "This sentence never\n"
+    assert captured.out == "This sentence never comes to its\n"
     assert captured.err == "columbina: the turn ended early: max-tokens\n"
+
+
+def test_a_reply_that_was_cut_off_and_went_on_is_printed_whole_and_the_run_is_done(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cut = {"text": "This sentence never", "finish": "max-tokens"}
+    rest = {"text": " ends, they say."}
+
+    code = main(["run", "Write.", "--profile", profile(tmp_path, cut, rest), "--cwd", str(work)])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out == "This sentence never ends, they say.\n"
+    assert captured.err == ""
 
 
 def test_a_session_can_be_continued_by_its_id(

@@ -266,7 +266,10 @@ async def test_a_turn_that_does_not_end_by_itself_does_not_ask_whether_it_may(
 
 
 async def test_a_turn_that_was_cut_off_says_so_when_it_is_about_to_end(harness: Harness) -> None:
-    agent = await harness.agent(Reply(text="This sentence never", finish="max-tokens"))
+    # A reply that was cut off is taken up three times before its turn ends for it. Nobody
+    # is asked about the end of a turn that goes on.
+    cut = Reply(text="This sentence never", finish="max-tokens")
+    agent = await harness.agent(cut, cut, cut, cut)
     stopping: list[TurnStopping] = []
 
     async def watch(event: TurnStopping) -> None:

@@ -42,6 +42,7 @@ from typing import cast
 from rich.console import Console
 from rich.text import Text
 
+from columbina.agent import CUT_OFF, replies
 from columbina.approval import ApprovalDecidedEvent
 from columbina.apps.cli.lines import Lines
 from columbina.apps.cli.terminal import Terminal
@@ -92,6 +93,8 @@ _SHORTER = "making the conversation shorter..."
 
 _KEPT_GOING = "hook/Stop"
 """Where the words come from that a hook gives a model for going on with a turn."""
+_GOES_ON = "(the reply was cut off at the limit of its length. The model goes on.)"
+"""What stands where a reply was cut off and the model was told to go on from it."""
 
 _WHY_SHORTER: dict[Why, str | None] = {
     "pressure": "(the conversation has come near what the model takes. Making it shorter.)",
@@ -329,6 +332,9 @@ class Transcript:
         if isinstance(data, UserMessageEvent):
             if data.source == _KEPT_GOING:
                 return _kept_going(data)
+            if data.source == CUT_OFF:
+                # What follows is the same answer. The line says why it stopped in mid-air.
+                return [_note(_GOES_ON)]
             if data.source != "steer":
                 return []
             return [fit(f"{self._symbols.steer} {line}") for line in _said(data).splitlines()]
@@ -474,15 +480,16 @@ def recap(events: Sequence[SessionEvent[EventData]], symbols: Symbols) -> list[T
     if not starts:
         return []
     shown = [_note("(this session is taken up again. Its last turn:)")]
-    answer: list[str] = []
     ended: list[Text] = []
     for event in events[starts[-1] :]:
         data = event.data
         if isinstance(data, UserMessageEvent) and data.source in ("user", "steer"):
             mark = ">" if data.source == "user" else symbols.steer
             shown.extend(_note(f"{mark} {line}") for line in _said(data).splitlines())
-        elif isinstance(data, AssistantMessageEvent) and data.message.text.strip():
-            answer = data.message.text.splitlines()
         elif isinstance(data, TurnEndEvent):
             ended = _end(data)
+    # A reply that was cut off and taken up again is one answer with what went on from it.
+    last = events[starts[-1] :]
+    answers = [text for text in replies(event.data for event in last) if text.strip()]
+    answer = answers[-1].splitlines() if answers else []
     return [*shown, *_ending(answer, _RECAP_LINES), *ended, Text()]

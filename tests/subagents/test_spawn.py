@@ -339,13 +339,27 @@ async def test_a_subagent_whose_reply_was_cut_off_is_a_failure_with_what_had_arr
 ) -> None:
     subagents = await loaded(harness)
     parent = await harness.agent()
-    harness.model.add(Reply(text="There are thr", finish="max-tokens"))
+    # It is taken up three times, and what arrived each time is one text.
+    for piece in ("There are thr", "ee files, and", " then", " some"):
+        harness.model.add(Reply(text=piece, finish="max-tokens"))
 
     with pytest.raises(SubagentFailed) as raised:
         await subagents.run(parent, task())
 
     assert raised.value.reason == "max-tokens"
-    assert raised.value.partial == "There are thr"
+    assert raised.value.partial == "There are three files, and then some"
+
+
+async def test_a_subagent_whose_reply_was_cut_off_and_went_on_hands_back_the_whole_of_it(
+    harness: Harness,
+) -> None:
+    subagents = await loaded(harness)
+    parent = await harness.agent()
+    harness.model.add(Reply(text="There are thr", finish="max-tokens"), Reply(text="ee files."))
+
+    handed_back = await subagents.run(parent, task())
+
+    assert handed_back == "There are three files."
 
 
 async def test_a_subagent_that_somebody_else_stopped_is_a_failure(harness: Harness) -> None:
@@ -511,6 +525,22 @@ def test_what_a_turn_that_failed_had_written_is_the_last_that_arrived(harness: H
     outcome = outcome_of(session)
 
     assert (outcome.reason, outcome.detail, outcome.text) == ("error", "it broke", "Half a")
+
+
+def test_what_arrived_of_a_request_that_failed_does_not_outlive_a_later_reply(
+    harness: Harness,
+) -> None:
+    failure = LlmFailure(message="it broke", code="SERVER")
+    session = harness.sessions.create(harness.ctx, harness.cwd, session_id="s-made")
+    session.append(TurnStartEvent(turn=1))
+    session.append(AssistantAttemptEvent(message=said("Half a"), usage=Usage(), failure=failure))
+    session.append(
+        AssistantMessageEvent(message=said("A whole reply."), usage=Usage(), finish_reason="stop")
+    )
+    session.append(TurnEndEvent(turn=1, reason="aborted", detail="user"))
+
+    # The request was made again and answered. What the turn had written last is that answer.
+    assert outcome_of(session).text == "A whole reply."
 
 
 async def test_a_subagent_that_stopped_for_good_is_a_failure_and_no_error(

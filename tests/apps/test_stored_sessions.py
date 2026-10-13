@@ -11,6 +11,7 @@ import yaml
 
 import columbina.agent
 import columbina.session
+from columbina.agent import CUT_OFF
 from columbina.apps.launcher import main
 from columbina.apps.sessions import shown
 from columbina.apps.terminal_text import STAND_IN
@@ -197,6 +198,24 @@ def test_a_turn_is_told_by_what_was_said_and_by_the_end_of_the_last_answer() -> 
         "... 2 lines before these",
         *[f"line {number}" for number in range(3, 15)],
     ]
+
+
+def test_an_answer_that_was_cut_off_and_taken_up_again_is_told_as_one() -> None:
+    cut = AssistantMessageEvent(
+        message=AssistantMessage(content=(TextBlock(text="one\ntwo\nthr"),)),
+        usage=Usage(),
+        finish_reason="max-tokens",
+    )
+    session = held(
+        TurnStartEvent(turn=1),
+        said("Count."),
+        cut,
+        said("Go on.", CUT_OFF),
+        answered("ee\nfour"),
+        TurnEndEvent(turn=1, reason="completed"),
+    )
+
+    assert shown(session).splitlines()[3:] == ["> Count.", "one", "two", "three", "four"]
 
 
 def test_one_line_too_many_of_an_answer_is_told_as_one_line() -> None:

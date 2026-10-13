@@ -121,6 +121,20 @@ class Assembler:
                 )
         return AssistantMessage(content=tuple(content))
 
+    def unfinished(self) -> tuple[str, ...]:
+        """Return the names of the tool calls that were begun and are not in the message.
+
+        A call is left out of the message while it is arriving, and every
+        call is left out of a reply that was cut off by the token limit. A
+        call whose name has not arrived is given as an empty name.
+        """
+        truncated = self.finish is not None and self.finish.reason == "max-tokens"
+        return tuple(
+            block.name or ""
+            for _, block in sorted(self._blocks.items())
+            if block.kind == "tool-call" and (truncated or not block.ended)
+        )
+
     def _start(self, chunk: BlockStart) -> None:
         if chunk.index in self._blocks:
             raise MalformedStreamError(f"block {chunk.index} was started twice")

@@ -353,7 +353,20 @@ async def test_a_stream_that_just_stops_is_a_failure(ctx: Context, llm: Llm) -> 
     assert seen == [*HELLO[:4], finish]
 
 
-@pytest.mark.parametrize("reason", ["stop", "tool-calls", "max-tokens"])
+async def test_a_reply_that_was_cut_off_before_it_held_anything_is_no_failure(
+    ctx: Context, llm: Llm
+) -> None:
+    # Asked again as it was, the model would be cut off at the same place. Whoever asked
+    # is told what happened and decides.
+    llm.adapters.add(ctx, "fake", Fake([Finish(reason="max-tokens")]))
+
+    seen, finish = await drain(llm)
+
+    assert finish == Finish(reason="max-tokens")
+    assert seen == [finish]
+
+
+@pytest.mark.parametrize("reason", ["stop", "tool-calls"])
 async def test_a_reply_without_content_is_a_failure(
     ctx: Context, llm: Llm, reason: FinishReason
 ) -> None:

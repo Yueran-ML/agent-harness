@@ -240,6 +240,19 @@ async def test_a_summary_that_was_cut_off_is_no_summary(desk: Desk, model: Scrip
     assert len(model.requests) == 1
 
 
+async def test_a_summary_that_was_cut_off_before_a_word_of_it_came_is_none_either(
+    desk: Desk, model: Scripted
+) -> None:
+    # Nothing is waited for and nothing is asked a second time: the limit would be the same.
+    model.add(Reply(calls=(Call(name="read"),), finish="max-tokens"), Reply(text="never"))
+
+    with pytest.raises(SummaryError, match="did not fit into the 64 tokens"):
+        await desk.summed()
+
+    assert len(model.requests) == 1
+    assert desk.waits == []
+
+
 async def test_a_summary_that_is_no_shorter_than_what_it_sums_up_is_no_summary(
     desk: Desk, model: Scripted
 ) -> None:

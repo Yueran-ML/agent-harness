@@ -78,7 +78,8 @@ export type NoticeCause =
   | { kind: 'retry'; attempt: number; code: string; delayMs: number }
   | { kind: 'turn-end'; reason: string; detail: string | null }
   | { kind: 'compaction-failed'; detail: string }
-  | { kind: 'compaction-interrupted' };
+  | { kind: 'compaction-interrupted' }
+  | { kind: 'cut-off' };
 
 export interface NoticeItem extends ItemBase {
   type: 'notice';
@@ -256,6 +257,10 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
         }
         if (source === 'compaction') {
           projection.items.push({ ...base, type: 'compaction', text });
+        } else if (source === 'context/cut-off') {
+          // The reply before this one reached the limit on its length, and the program had the
+          // model go on. What the model says next is the same answer.
+          notice('The reply reached its length limit. The model continues.', 'info', { kind: 'cut-off' });
         } else if (!source.startsWith('context/') && !isReplacement(event)) {
           projection.items.push({ ...base, type: 'user', source, text });
         }
@@ -275,6 +280,9 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
       }
       case 'assistant/attempt': {
         const failure = record(data.failure);
+        // No request failed: the reply was cut off before it held anything. The message that
+        // tells the model to go on follows, and that is where the interface says so.
+        if (string(failure.code) === 'CUT_OFF') break;
         const detail = string(failure.message) || string(failure.code);
         notice(detail ? `Model request failed: ${detail}` : 'Model request failed', 'warning', {
           kind: 'attempt',

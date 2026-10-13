@@ -17,7 +17,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, JsonValue
 
-from columbina.agent import AGENTS, Agent, Agents, AgentSpec
+from columbina.agent import AGENTS, Agent, Agents, AgentSpec, replies
 from columbina.apps import FRONTEND
 from columbina.apps.common import DEFAULT_PROMPT, open_agent
 from columbina.apps.terminal_text import escaped, harmless
@@ -155,9 +155,10 @@ class Headless:
             return 1
         events = [event.data for event in session.events[before:]]
         ends = [data for data in events if isinstance(data, TurnEndEvent)]
-        replies = [data for data in events if isinstance(data, AssistantMessageEvent)]
+        # A reply that was cut off and taken up again is one answer with what went on from it.
+        said = replies(events)
         end = ends[-1]
-        answer = replies[-1].message.text if replies else ""
+        answer = said[-1] if said else ""
         total = USAGE.of(session)
         await agent.close()
         if config.json_lines:

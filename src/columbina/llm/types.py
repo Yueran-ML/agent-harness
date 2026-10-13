@@ -129,6 +129,16 @@ class LlmFailure(Data):
     request_id: str | None = None
 
 
+NOTHING_ARRIVED = LlmFailure(
+    message="the reply was cut off before it held anything", code="CUT_OFF"
+)
+"""What is written down of a reply that the token limit cut off before it held anything.
+
+Such a reply is no failure of the call: it ends with ``max-tokens`` like any other that
+was cut off. But it leaves no message that could be kept, so whoever keeps a log writes it
+down as an attempt, with this in the place of a failure.
+"""
+
 FinishReason = Literal["stop", "tool-calls", "max-tokens", "error"]
 BlockKind = Literal["text", "reasoning", "tool-call"]
 

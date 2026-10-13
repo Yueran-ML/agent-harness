@@ -21,12 +21,12 @@ import time
 from pathlib import Path
 from typing import Literal
 
+from columbina.agent import replies
 from columbina.apps.common import how_it_ended
 from columbina.commands.sessions import listed
 from columbina.kernel import Context
 from columbina.session import (
     SESSIONS,
-    AssistantMessageEvent,
     EventData,
     SessionError,
     SessionEvent,
@@ -59,17 +59,17 @@ def _when(moment_ms: int) -> str:
 def _turn(events: list[SessionEvent[EventData]]) -> list[str]:
     """Tell one turn in short: what was said to the model, and the end of its last answer."""
     lines: list[str] = []
-    answer: list[str] = []
     ended: str | None = "(the turn did not come to its end)"
     for event in events:
         data = event.data
         if isinstance(data, UserMessageEvent) and data.source in _MARKS:
             said = "".join(block.text for block in data.message.content)
             lines.extend(f"{_MARKS[data.source]} {line}" for line in said.splitlines())
-        elif isinstance(data, AssistantMessageEvent) and data.message.text.strip():
-            answer = data.message.text.splitlines()
         elif isinstance(data, TurnEndEvent):
             ended = how_it_ended(data)
+    # A reply that was cut off and taken up again is one answer with what went on from it.
+    answers = [text for text in replies(event.data for event in events) if text.strip()]
+    answer = answers[-1].splitlines() if answers else []
     if len(answer) > _ANSWER_LINES:
         earlier = len(answer) - _ANSWER_LINES
         lines.append(f"... {earlier} {'line' if earlier == 1 else 'lines'} before these")

@@ -8,6 +8,7 @@ import pytest
 import columbina.session
 from columbina.kernel import Context
 from columbina.llm import (
+    NOTHING_ARRIVED,
     Assembler,
     AssistantMessage,
     CallConfig,
@@ -107,6 +108,25 @@ def test_each_reply_of_a_session_becomes_chunks_that_assemble_into_it_again() ->
             Finish(reason="stop"),
         ),
     ]
+
+
+def test_a_reply_that_was_cut_off_before_it_held_anything_is_replayed_as_cut_off() -> None:
+    # A log keeps it like a call that failed, since it left no message. Played as a failure,
+    # it would end a turn that had gone on.
+    nothing = AssistantAttemptEvent(
+        message=AssistantMessage(content=()),
+        usage=Usage(input_tokens=40, output_tokens=8),
+        failure=NOTHING_ARRIVED,
+    )
+
+    (chunks,) = replies_of(events(TurnStartEvent(turn=1), nothing))
+
+    assembler = Assembler()
+    for chunk in chunks:
+        assembler.push(chunk)
+    assert assembler.finish == Finish(reason="max-tokens")
+    assert assembler.message() == AssistantMessage(content=())
+    assert assembler.usage == Usage(input_tokens=40, output_tokens=8)
 
 
 def test_a_reply_that_was_interrupted_cannot_be_replayed() -> None:

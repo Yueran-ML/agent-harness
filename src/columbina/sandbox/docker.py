@@ -1167,8 +1167,10 @@ def unavailable(image: str, said: str) -> str:
         image: The image that the container was to have.
         said: What the ``docker`` program wrote.
     """
+    # The engine says "no such image" of an image that it does not have. The docker program
+    # writes other words when it goes to fetch one, and those are not taken for these.
     low = said.casefold()
-    if "no such image" in low or "unable to find image" in low:
+    if "no such image" in low:
         return (
             f"the image {image} is not on this machine, and no image is fetched for a command. "
             f"Fetch it with: docker pull {image}"

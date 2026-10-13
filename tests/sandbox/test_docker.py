@@ -1421,18 +1421,26 @@ def test_a_container_is_asked_for_and_removed_by_its_whole_name() -> None:
 # What went wrong, in words
 
 
-@pytest.mark.parametrize(
-    "wrote",
-    [
+def test_an_image_that_is_not_there_is_told_with_the_command_that_fetches_it() -> None:
+    wrote = (
         "docker: Error response from daemon: No such image: python:3.12\n\n"
-        "Run 'docker run --help' for more information",
-        "Unable to find image 'python:3.12' locally\ndocker: Error response from daemon: denied",
-    ],
-)
-def test_an_image_that_is_not_there_is_told_with_the_command_that_fetches_it(wrote: str) -> None:
+        "Run 'docker run --help' for more information"
+    )
+
     assert docker.unavailable("python:3.12", wrote) == (
         "the image python:3.12 is not on this machine, and no image is fetched for a command. "
         "Fetch it with: docker pull python:3.12"
+    )
+
+
+def test_a_docker_program_that_went_to_fetch_an_image_is_not_said_to_fetch_none() -> None:
+    # The program writes this when it does not find an image and goes to fetch it. It is
+    # told not to, so it never writes it here. If it does all the same, nobody is to read
+    # that no image is fetched for a command.
+    wrote = "Unable to find image 'python:3.12' locally\ndocker: Error response from daemon: denied"
+
+    assert docker.unavailable("python:3.12", wrote) == (
+        "Docker could not start a container: Unable to find image 'python:3.12' locally"
     )
 
 

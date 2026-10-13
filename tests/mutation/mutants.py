@@ -2640,20 +2640,20 @@ _DOCKER = (
     mutant(
         "an image that is not there is told as any other failure",
         DOCKER,
-        '    if "no such image" in low or "unable to find image" in low:\n',
+        '    if "no such image" in low:\n',
         "    if False:\n",
     ),
     mutant(
         "an image that the engine does not have is not known by its word for it",
         DOCKER,
-        '    if "no such image" in low or "unable to find image" in low:\n',
+        '    if "no such image" in low:\n',
         '    if "unable to find image" in low:\n',
     ),
     mutant(
-        "an image that the program did not find is not known by its word for it",
+        "a docker program that went to fetch an image is said to fetch none",
         DOCKER,
-        '    if "no such image" in low or "unable to find image" in low:\n',
         '    if "no such image" in low:\n',
+        '    if "no such image" in low or "unable to find image" in low:\n',
     ),
     mutant(
         "an engine that does not answer is told as any other failure",

@@ -20,8 +20,16 @@ and ``allow``. How a rule is written is told in :mod:`.rules`.
 2. An ``ask`` rule speaks about it: somebody is asked.
 3. An ``allow`` rule speaks about it: it goes ahead.
 4. No rule speaks about it. A call that runs a command is asked about,
-   unless the session has full access. Every other call goes ahead, and what
-   it may do to files is up to the seam of the file system.
+   unless the session has full access, or the sandbox holds the command
+   fully. Every other call goes ahead, and what it may do to files is up to
+   the seam of the file system.
+
+A command is held fully where the sandbox runs it in something that lets it
+do no more than the mode of the session allows, and send nothing away. A
+tool says of itself that the sandbox runs what it runs. How well the sandbox
+holds is known when the call is decided, and may be otherwise when the
+command is run. So such a call is let through with a note for the sandbox,
+which runs the command only if it is still held fully then.
 
 A command is taken apart first (see :mod:`.commands`). A ``deny`` or ``ask``
 rule counts if it speaks about the whole line or about any of its simple
@@ -72,7 +80,7 @@ from columbina.permissions.rules import (
     place_of,
 )
 from columbina.plain_yaml import PlainYamlError
-from columbina.sandbox import SANDBOX, Mode, Sandbox
+from columbina.sandbox import SANDBOX, Mode, Sandbox, Strength
 from columbina.session import SESSION_EVENT, SESSIONS, Committed, Session, TurnStartEvent
 from columbina.tools import TOOLS, Deny, Effect, Invocation, ToolFailure, Tools
 
@@ -160,11 +168,15 @@ class Decided:
         rule: The rule that settled it, or ``None`` if no rule spoke.
         why: The reason, in words for the model and for a person who is
             asked.
+        held: Whether the call goes ahead for no other reason than that the
+            sandbox holds its command fully. Whoever lets such a call
+            through has that looked at again when the command is run.
     """
 
     verdict: Verdict
     rule: Rule | None
     why: str
+    held: bool = False
 
 
 class Config(BaseModel):
@@ -250,6 +262,7 @@ def decide(
     mode: Mode,
     splitter: Splitter | None,
     granted: bool = False,
+    held: Strength = "none",
 ) -> Decided:
     """Say what is done with a call.
 
@@ -270,6 +283,9 @@ def decide(
             those that ask. It does not count for a command that cannot be
             taken apart. For a tool that runs something and names no
             command, such a yes is for every call of the tool.
+        held: How well the sandbox holds what the tool runs. It is ``none``
+            for a tool whose commands the sandbox does not run. A command
+            that is held fully needs no yes, unless a rule asks for one.
     """
     if effect != "run":
         for rule in rules.deny:
@@ -313,6 +329,8 @@ def decide(
             return Decided("allow", allowing[0], "Rules allow every command in the line.")
     if mode == "danger-full-access":
         return Decided("allow", None, "The session has full access.")
+    if held == "full":
+        return Decided("allow", None, _HELD, held=True)
     if target is None:
         # Nothing of a command here: a tool that does what somebody else's program likes,
         # such as a tool of a server. What is said of commands would lead astray.
@@ -328,6 +346,7 @@ def decide(
 
 
 _GRANTED = "It was allowed for the rest of this session."
+_HELD = "The sandbox holds the command fully, so nobody needs to be asked."
 
 
 def _said_by(verdict: Verdict, rule: Rule) -> str:
@@ -407,6 +426,9 @@ class Permissions:
     Attributes:
         splitters: What takes the commands of a tool apart, by the name of
             the tool. A tool that runs commands registers its own.
+        sandboxed: The tools whose commands the sandbox runs, by their
+            names. Such a tool registers itself. What a tool that is not
+            here runs is held by nothing, whatever the sandbox holds.
     """
 
     __slots__ = (
@@ -418,6 +440,7 @@ class Permissions:
         "_rules",
         "_sandbox",
         "_tools",
+        "sandboxed",
         "splitters",
     )
 
@@ -431,6 +454,7 @@ class Permissions:
         tools: Tools,
     ) -> None:
         self.splitters: Registry[Splitter] = Registry("splitter of commands")
+        self.sandboxed: Registry[bool] = Registry("tool that the sandbox runs")
         self._rules = rules
         self._preset: Preset = preset
         self._fs = fs
@@ -618,8 +642,13 @@ class Permissions:
             mode=self._sandbox.mode(session),
             splitter=self.splitters.get(tool.name),
             granted=(tool.name, invocation.target) in self._grants.get(session, ()),
+            held=self._sandbox.strength(session) if tool.name in self.sandboxed else "none",
         )
         if decided.verdict == "allow":
+            if decided.held:
+                # Let through for what the sandbox says now. It looks again when it runs
+                # the command, and does not run it if it holds less well by then.
+                self._sandbox.expect(session, run.call_id)
             return None
         if decided.verdict == "deny":
             return Deny(decided.why, "DENIED")

@@ -23,6 +23,7 @@ from columbina.sandbox import (
     SandboxModeEvent,
     SandboxUnavailableError,
     Strength,
+    held_less_well,
 )
 from columbina.session import SESSIONS, Session, Sessions
 from support.links import link_directory
@@ -357,9 +358,14 @@ class Jail:
     """A provider for these tests. It runs nothing: it keeps what it was asked for."""
 
     def __init__(self, strength: Strength, shell: str | None = None) -> None:
-        self.strength: Strength = strength
+        self.holds: Strength = strength
         self.shell = shell
         self.asked: list[dict[str, object]] = []
+        self.sessions: list[Session] = []
+
+    def strength(self, session: Session) -> Strength:
+        self.sessions.append(session)
+        return self.holds
 
     async def run(
         self,
@@ -372,6 +378,7 @@ class Jail:
         timeout_seconds: float,
         overflow: Callable[[], Writable] | None,
         max_overflow_bytes: int,
+        expected: Strength,
     ) -> Completed:
         self.asked.append(
             {
@@ -383,6 +390,7 @@ class Jail:
                 "seconds": timeout_seconds,
                 "overflow": overflow,
                 "kept": max_overflow_bytes,
+                "expected": expected,
             }
         )
         return Completed(
@@ -412,7 +420,7 @@ async def test_the_provider_that_holds_nothing_runs_a_command_as_it_is(
     where, said = done.output.split()
     assert (done.exit_code, done.timed_out, said) == (0, False, "HI")
     assert Path(where).samefile(work)
-    assert sandbox.strength() == "none"
+    assert sandbox.strength(session) == "none"
 
 
 async def test_the_provider_that_holds_nothing_stops_a_command_whose_time_is_up(
@@ -492,10 +500,13 @@ async def test_a_provider_that_another_plugin_brings_runs_the_command_in_the_mod
             "seconds": 7,
             "overflow": place,
             "kept": 99,
+            "expected": "none",
         }
     ]
     assert places == []
-    assert sandbox.strength() == "full"
+    # How well it holds is asked of the provider, for the session.
+    assert sandbox.strength(session) == "full"
+    assert jail.sessions == [session]
 
 
 async def test_the_provider_that_holds_nothing_runs_commands_with_the_shell_of_this_machine(
@@ -518,6 +529,60 @@ async def test_the_sandbox_tells_the_shell_of_the_place_where_its_provider_runs_
     assert sandbox.shell() == "bash"
 
 
+async def test_a_call_that_was_let_through_for_a_full_hold_is_run_as_one_that_expects_it(
+    ctx: Context, tmp_path: Path, work: Path
+) -> None:
+    jail = Jail("full")
+    sessions, _, sandbox = await program(ctx, tmp_path, provider="jail")
+    sandbox.providers.add(ctx, "jail", jail)
+    session, other = sessions.create(ctx, work), sessions.create(ctx, work)
+
+    async def runs(of: Session, call_id: str | None) -> None:
+        await sandbox.run(["true"], session=of, cwd=work, timeout_seconds=5, call_id=call_id)
+
+    sandbox.expect(session, "call-1")
+    await runs(other, "call-1")
+    await runs(session, "call-2")
+    await runs(session, None)
+    await runs(session, "call-1")
+    await runs(session, "call-1")
+
+    # For that call of that session, and for one run of it.
+    assert [asked["expected"] for asked in jail.asked] == ["none", "none", "none", "full", "none"]
+
+
+async def test_the_provider_that_holds_nothing_does_not_run_what_was_let_through_for_a_hold(
+    ctx: Context, tmp_path: Path, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ran: list[object] = []
+
+    async def running(argv: object, **options: object) -> object:
+        ran.append(argv)
+        raise AssertionError("no program is run in this test")
+
+    monkeypatch.setattr(process, "run", running)
+    sessions, _, sandbox = await program(ctx, tmp_path)
+    session = sessions.create(ctx, work)
+    sandbox.expect(session, "call-1")
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await sandbox.run(["true"], session=session, cwd=work, timeout_seconds=5, call_id="call-1")
+
+    assert str(refused.value) == (
+        "it was let through without a question because commands were held fully, and they "
+        "are held less well now. Call it again, and it is asked about"
+    )
+    assert ran == []
+
+
+def test_what_stands_against_a_full_hold_is_named_if_it_is_known() -> None:
+    assert str(held_less_well("a socket lies in the working directory, at agent.sock")) == (
+        "it was let through without a question because commands were held fully, and now a "
+        "socket lies in the working directory, at agent.sock. Call it again, and it is asked "
+        "about"
+    )
+
+
 async def test_a_command_is_not_run_unconfined_in_the_place_of_a_provider_that_is_not_there(
     ctx: Context, tmp_path: Path, work: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -535,7 +600,7 @@ async def test_a_command_is_not_run_unconfined_in_the_place_of_a_provider_that_i
         await sandbox.run(["python", "check.py"], session=session, cwd=work, timeout_seconds=5)
 
     assert ran == []
-    assert sandbox.strength() == "none"
+    assert sandbox.strength(session) == "none"
 
 
 async def test_a_provider_leaves_with_the_plugin_that_brought_it(
@@ -547,7 +612,7 @@ async def test_a_provider_leaves_with_the_plugin_that_brought_it(
     sessions, _, sandbox = await program(ctx, tmp_path, provider="jail")
     session = sessions.create(ctx, work)
     fiber = await ctx.plugin(Plugin("jail", apply, inject=(SANDBOX,)))
-    assert sandbox.strength() == "partial"
+    assert sandbox.strength(session) == "partial"
 
     await fiber.dispose()
 

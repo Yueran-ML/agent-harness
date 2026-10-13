@@ -81,7 +81,7 @@ def status(
     """
     parts = [model.model]
     if sandbox is not None:
-        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength()]}")
+        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength(session)]}")
     # An estimate is marked as one. What the service counted is not.
     sent, about = (_last_sent(session), "") if meter is None else (_held(session, meter), "~")
     if sent:

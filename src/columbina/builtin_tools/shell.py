@@ -356,6 +356,7 @@ def shell_tool(
                 timeout_seconds=seconds,
                 overflow=None if place is None else place.open,
                 max_overflow_bytes=MAX_SAVED_BYTES,
+                call_id=run.call_id,
             )
         except SandboxUnavailableError as error:
             raise ToolFailure(
@@ -421,7 +422,10 @@ def apply(ctx: Context, config: object) -> None:
     if shell is None:
         raise RuntimeError(f"{NAME} is not installed, so there is no tool that runs commands")
     ctx.use(TOOLS).add(ctx, shell_tool(sandbox, shell, lambda: ctx.get(SPILL), elsewhere))
-    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, way.splitter)
+    permissions = ctx.use(PERMISSIONS)
+    permissions.splitters.add(ctx, way.name, way.splitter)
+    # What this tool runs is held as well as the sandbox holds anything.
+    permissions.sandboxed.add(ctx, way.name, True)
 
     def facts(gathered: Facts) -> None:
         gathered.lines["commands are run by"] = way.fact

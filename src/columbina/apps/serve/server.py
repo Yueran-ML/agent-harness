@@ -747,7 +747,10 @@ class Server:
         mode, policy = (None, None) if permissions is None else permissions.in_force(session)
         held = None
         if sandbox is not None:
-            held = {"mode": mode or sandbox.mode(session), "strength": sandbox.strength()}
+            held = {
+                "mode": mode or sandbox.mode(session),
+                "strength": sandbox.strength(session),
+            }
         model = self._model
         return text(
             {

@@ -42,6 +42,7 @@ asks nothing of Docker before a command is to run in a container.
 """
 
 import os
+import weakref
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import ClassVar
@@ -59,6 +60,7 @@ from columbina.sandbox.base import (
     SandboxProvider,
     SandboxUnavailableError,
     Strength,
+    held_less_well,
 )
 from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, EventData, Projection, Session, SessionEvent
@@ -76,6 +78,7 @@ __all__ = [
     "SandboxUnavailableError",
     "Strength",
     "apply",
+    "held_less_well",
     "inject",
     "name",
 ]
@@ -96,8 +99,10 @@ class SandboxModeEvent(EventData):
 class _Unconfined:
     """The provider that holds nothing. A command runs on this machine, as it is."""
 
-    strength: Strength = "none"
     shell: str | None = None
+
+    def strength(self, session: Session) -> Strength:
+        return "none"
 
     async def run(
         self,
@@ -110,7 +115,11 @@ class _Unconfined:
         timeout_seconds: float,
         overflow: Callable[[], Writable] | None,
         max_overflow_bytes: int,
+        expected: Strength,
     ) -> Completed:
+        if expected != "none":
+            # Whatever held commands when this one was let through, it is not here.
+            raise held_less_well()
         return await process.run(
             argv,
             cwd=cwd,
@@ -192,12 +201,13 @@ class Sandbox:
         providers: The providers, by name.
     """
 
-    __slots__ = ("_default", "_provider", "providers")
+    __slots__ = ("_default", "_expected", "_provider", "providers")
 
     def __init__(self, default: Mode, provider: str) -> None:
         self.providers: Registry[SandboxProvider] = Registry("sandbox provider")
         self._default: Mode = default
         self._provider = provider
+        self._expected: weakref.WeakKeyDictionary[Session, set[str]] = weakref.WeakKeyDictionary()
 
     def recorded(self, session: Session) -> Mode | None:
         """Return the mode that the log of a session names, or ``None`` if it names none."""
@@ -212,10 +222,13 @@ class Sandbox:
         if _MODE.of(session) != mode:
             session.append(SandboxModeEvent(mode=mode))
 
-    def strength(self) -> Strength:
-        """Return how well commands are held: the strength of the provider, if it is there."""
+    def strength(self, session: Session) -> Strength:
+        """Return how well the commands of a session are held, as the provider says it.
+
+        A provider that is not there holds nothing.
+        """
         provider = self.providers.get(self._provider)
-        return "none" if provider is None else provider.strength
+        return "none" if provider is None else provider.strength(session)
 
     def shell(self) -> str | None:
         """Return the shell of the place where commands run, if that is not this machine.
@@ -225,6 +238,17 @@ class Sandbox:
         """
         provider = self.providers.get(self._provider)
         return None if provider is None else provider.shell
+
+    def expect(self, session: Session, call_id: str) -> None:
+        """Note that a call was let through only because its command is held fully.
+
+        What was known when the call was decided may not be so when its
+        command is run: the provider may have found a door open in the
+        working directory, or be another one. So the command is run only if
+        it is still held fully then. Whoever runs it says which call it is
+        for, with :meth:`run`.
+        """
+        self._expected.setdefault(session, set()).add(call_id)
 
     async def run(
         self,
@@ -236,18 +260,28 @@ class Sandbox:
         timeout_seconds: float,
         overflow: Callable[[], Writable] | None = None,
         max_overflow_bytes: int = 64 * 1024 * 1024,
+        call_id: str | None = None,
     ) -> Completed:
         """Run a command to its end, held in the mode of the session.
 
-        The arguments after the directory are those of
+        The arguments from ``stdin`` to ``max_overflow_bytes`` are those of
         :func:`columbina.process.run`.
+
+        ``call_id`` names the call that the command is run for, if it is run
+        for one. A call that was let through because its command is held
+        fully, see :meth:`expect`, is run only if that is still so.
 
         Raises:
             SandboxUnavailableError: The provider that the config names is not
-                there, or it could not hold the command. A command is not run
-                unconfined in its place.
+                there, or it could not hold the command, or not as well as
+                was expected of it. A command is not run unconfined in its
+                place.
             OSError: The command could not be started.
         """
+        expected: Strength = "none"
+        if call_id is not None and call_id in self._expected.get(session, ()):
+            self._expected[session].discard(call_id)
+            expected = "full"
         provider = self.providers.get(self._provider)
         if provider is None:
             raise SandboxUnavailableError(
@@ -262,6 +296,7 @@ class Sandbox:
             timeout_seconds=timeout_seconds,
             overflow=overflow,
             max_overflow_bytes=max_overflow_bytes,
+            expected=expected,
         )
 
     def grants(self, access: Access) -> bool:
@@ -307,7 +342,8 @@ def apply(ctx: Context, config: Config) -> None:
 
     def facts(gathered: Facts) -> None:
         gathered.lines["sandbox mode"] = _MODES[sandbox.mode(gathered.agent.session)]
-        gathered.lines["commands are held"] = _STRENGTHS[sandbox.strength()]
+        held = sandbox.strength(gathered.agent.session)
+        gathered.lines["commands are held"] = _STRENGTHS[held]
 
     ctx.on(RUNTIME_FACTS, facts)
     ctx.provide(SANDBOX, sandbox)

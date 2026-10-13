@@ -22,10 +22,12 @@ from columbina.kernel import Context
 from columbina.llm import ToolCallBlock
 from columbina.permissions import PERMISSIONS, PRESETS, PROJECT_FILE, Permissions
 from columbina.permissions.commands import split_bash
-from columbina.sandbox import SANDBOX, Sandbox
+from columbina.sandbox import SANDBOX, Sandbox, Strength
 from columbina.session import SESSIONS, Session, Sessions, TurnStartEvent
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolOutcome, ToolRun, Tools
 from support.links import link_directory
+from support.processes import python
+from support.sandboxes import Holding
 
 
 class CommandArgs(BaseModel):
@@ -81,14 +83,21 @@ class Bench:
         file.write_text(content, encoding="utf-8")
 
 
-async def bench(ctx: Context, tmp_path: Path, **config: Any) -> Bench:
-    """Load everything, with ``config`` as the config of the permissions."""
+async def bench(
+    ctx: Context, tmp_path: Path, holding: Holding | None = None, **config: Any
+) -> Bench:
+    """Load everything, with ``config`` as the config of the permissions.
+
+    With ``holding``, that is what runs the commands of the sandbox.
+    """
     work = tmp_path / "work"
     work.mkdir(exist_ok=True)
     await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
     await ctx.plugin(columbina.tools)
     await ctx.plugin(columbina.fs)
-    await ctx.plugin(columbina.sandbox)
+    await ctx.plugin(columbina.sandbox, None if holding is None else {"provider": "holding"})
+    if holding is not None:
+        ctx.use(SANDBOX).providers.add(ctx, "holding", holding)
     await ctx.plugin(columbina.approval)
     await ctx.plugin(columbina.permissions, config)
     for tool in (read, write, edit, glob, grep):
@@ -433,6 +442,94 @@ async def test_a_tool_without_anything_that_it_acts_on_is_allowed_as_a_whole(
     assert await at.code("note", text="another") is None
     assert at.asked == []
     assert at.permissions.granted(at.session) == (("note", None),)
+
+
+# A command that the sandbox holds
+
+
+async def held(ctx: Context, tmp_path: Path, strength: Strength, **config: Any) -> Bench:
+    """A bench whose tool ``shell`` says that the sandbox runs its commands."""
+    at = await bench(ctx, tmp_path, Holding(strength), **config)
+    at.permissions.sandboxed.add(ctx, "shell", True)
+    return at
+
+
+async def test_a_command_that_the_sandbox_holds_fully_runs_without_a_question(
+    ctx: Context, tmp_path: Path
+) -> None:
+    at = await held(ctx, tmp_path, "full")
+
+    assert await at.shell("make test") is None
+    assert (at.ran, at.asked) == (["make test"], [])
+
+
+@pytest.mark.parametrize("strength", ["none", "partial"])
+async def test_a_command_that_the_sandbox_holds_less_well_is_asked_about(
+    ctx: Context, tmp_path: Path, strength: Strength
+) -> None:
+    at = await held(ctx, tmp_path, strength)
+
+    assert await at.shell("make test") == "APPROVAL_UNAVAILABLE"
+    assert at.ran == []
+    assert [request.reason for request in at.asked] == [
+        "No rule allows this command, and nothing holds it here."
+    ]
+
+
+async def test_a_tool_whose_commands_the_sandbox_does_not_run_is_asked_about_all_the_same(
+    ctx: Context, tmp_path: Path
+) -> None:
+    # A tool of a server runs what it likes where it likes, whatever the sandbox holds.
+    at = await bench(ctx, tmp_path, Holding("full"))
+
+    assert await at.shell("make test") == "APPROVAL_UNAVAILABLE"
+    assert at.ran == []
+
+
+async def test_the_rules_count_for_a_command_that_is_held(ctx: Context, tmp_path: Path) -> None:
+    at = await held(ctx, tmp_path, "full", deny=["shell(rm *)"], ask=["shell(git push *)"])
+
+    assert await at.shell("rm -rf .") == "DENIED"
+    assert await at.shell("git push origin") == "APPROVAL_UNAVAILABLE"
+    assert at.ran == []
+    assert len(at.asked) == 1
+
+
+async def test_a_command_that_went_ahead_for_the_hold_is_run_only_if_the_hold_is_still_there(
+    ctx: Context, tmp_path: Path
+) -> None:
+    provider = Holding("full")
+    at = await bench(ctx, tmp_path, provider, allow=["shell(ls *)"])
+    at.permissions.sandboxed.add(ctx, "shell", True)
+
+    async def runs(call_id: str) -> None:
+        await at.sandbox.run(
+            python("pass"), session=at.session, cwd=at.work, timeout_seconds=30, call_id=call_id
+        )
+
+    assert await at.shell("make test") is None
+    assert await at.shell("ls -la") is None
+    # The first call went ahead for the hold, the second one for a rule.
+    await runs("call-1")
+    await runs("call-2")
+    # The note of a call is for one run.
+    await runs("call-1")
+
+    assert provider.expected == ["full", "none", "none"]
+
+
+async def test_a_note_for_one_session_is_no_note_for_another(ctx: Context, tmp_path: Path) -> None:
+    provider = Holding("full")
+    at = await bench(ctx, tmp_path, provider)
+    at.permissions.sandboxed.add(ctx, "shell", True)
+    other = at.sessions.create(ctx, at.work)
+    assert await at.shell("make test") is None
+
+    await at.sandbox.run(
+        python("pass"), session=other, cwd=at.work, timeout_seconds=30, call_id="call-1"
+    )
+
+    assert provider.expected == ["none"]
 
 
 def served(at: Bench, ctx: Context, name: str = "mcp__notes__add") -> list[str]:

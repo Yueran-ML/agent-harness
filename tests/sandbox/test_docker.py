@@ -3,9 +3,11 @@
 import contextlib
 import json
 import os
+import stat
 import sys
 from collections.abc import Generator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -484,6 +486,168 @@ def test_a_link_that_leads_to_nothing_is_still_told_as_a_link(work: Path) -> Non
     (work / "gone").rmdir()
 
     assert docker.shape(work) == ((".git", f"link to {work / 'gone'}"),)
+
+
+# Doors that a mount leaves open
+
+
+def test_a_directory_without_a_socket_leaves_nothing_against_a_full_hold(work: Path) -> None:
+    (work / "src" / "deep").mkdir(parents=True)
+    (work / "src" / "deep" / "a.py").write_text("")
+    (work / "notes.txt").write_text("")
+
+    assert docker.sockets(work, 1000, 60.0) is None
+    assert docker.sockets(work, 4, 60.0) is None
+
+
+def test_a_directory_with_more_entries_than_are_looked_at_is_not_known_to_be_free(
+    work: Path,
+) -> None:
+    (work / "src").mkdir()
+    for number in range(5):
+        (work / "src" / f"{number}.py").write_text("")
+
+    # Six entries: the directory and what is in it.
+    assert docker.sockets(work, 6, 60.0) is None
+    assert docker.sockets(work, 5, 60.0) == (
+        "the working directory is too large to be looked through for sockets"
+    )
+
+
+def test_a_look_that_takes_too_long_is_cut_short(work: Path) -> None:
+    (work / "notes.txt").write_text("")
+
+    assert docker.sockets(work, 1000, 0.0) == (
+        "the working directory is too large to be looked through for sockets"
+    )
+
+
+def test_an_empty_directory_is_looked_through_in_no_time(work: Path) -> None:
+    assert docker.sockets(work, 0, 0.0) is None
+
+
+class Entry:
+    """What a directory lists, as far as the look for sockets asks about it."""
+
+    def __init__(self, mode: int, *, link: bool = False) -> None:
+        self._mode = mode
+        self._link = link
+
+    def is_file(self, *, follow_symlinks: bool = True) -> bool:
+        return stat.S_ISREG(self._mode) and not self._link
+
+    def is_symlink(self) -> bool:
+        return self._link
+
+    def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+        return os.stat_result((self._mode, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+
+def test_a_socket_is_what_the_system_says_is_one() -> None:
+    # Not every system lets a test make one, so the answers of the system are made up here.
+    is_socket: Any = vars(docker)["_is_socket"]
+
+    assert is_socket(Entry(stat.S_IFSOCK | 0o600))
+    assert not is_socket(Entry(stat.S_IFIFO | 0o600))
+    assert not is_socket(Entry(stat.S_IFREG | 0o600))
+    # What a link leads to is not in the container, whatever it is.
+    assert not is_socket(Entry(stat.S_IFSOCK | 0o600, link=True))
+
+
+def test_a_socket_is_told_by_where_it_lies_in_the_directory(
+    work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (work / "run" / "deep").mkdir(parents=True)
+    (work / "run" / "deep" / "agent.sock").write_text("")
+    (work / "notes.txt").write_text("")
+
+    def by_its_name(entry: os.DirEntry[str]) -> bool:
+        return entry.name == "agent.sock"
+
+    monkeypatch.setattr(docker, "_is_socket", by_its_name)
+
+    assert docker.sockets(work, 1000, 60.0) == (
+        "a socket lies in the working directory, at run/deep/agent.sock, and a command can "
+        "talk to whatever listens there"
+    )
+
+
+def test_a_part_that_the_system_will_not_list_is_not_known_to_be_free(
+    work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (work / "locked").mkdir()
+    (work / "notes.txt").write_text("")
+    really_scan: Any = os.scandir
+
+    def refusing(path: Path) -> Any:
+        if Path(path).name == "locked":
+            raise PermissionError(13, "Permission denied")
+        return really_scan(path)
+
+    monkeypatch.setattr(os, "scandir", refusing)
+
+    assert docker.sockets(work, 1000, 60.0) == (
+        "a part of the working directory could not be looked through for sockets"
+    )
+
+
+def test_what_a_link_leads_to_is_not_looked_through(work: Path, root: Path) -> None:
+    # It is not in the container either.
+    (root / "elsewhere").mkdir()
+    for number in range(5):
+        (root / "elsewhere" / f"{number}.txt").write_text("")
+    link_file(work / "link", root / "elsewhere")
+
+    assert docker.sockets(work, 1, 60.0) is None
+
+
+if sys.platform != "win32":
+
+    def test_a_socket_is_found_wherever_it_lies(work: Path) -> None:
+        import socket
+
+        (work / "run" / "deep").mkdir(parents=True)
+        (work / "run" / "notes.txt").write_text("")
+        listening = socket.socket(socket.AF_UNIX)
+        listening.bind(str(work / "run" / "deep" / "agent.sock"))
+        try:
+            found = docker.sockets(work, 1000, 60.0)
+        finally:
+            listening.close()
+
+        assert found == (
+            "a socket lies in the working directory, at run/deep/agent.sock, and a command "
+            "can talk to whatever listens there"
+        )
+
+    def test_a_pipe_with_a_name_is_no_socket(work: Path) -> None:
+        os.mkfifo(work / "pipe")
+
+        assert docker.sockets(work, 1000, 60.0) is None
+
+    def test_a_socket_that_a_link_leads_to_is_not_in_the_container(work: Path, root: Path) -> None:
+        import socket
+
+        listening = socket.socket(socket.AF_UNIX)
+        listening.bind(str(root / "agent.sock"))
+        try:
+            (work / "agent.sock").symlink_to(root / "agent.sock")
+            found = docker.sockets(work, 1000, 60.0)
+        finally:
+            listening.close()
+
+        assert found is None
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root reads every directory")
+    def test_a_part_that_cannot_be_looked_into_is_not_known_to_be_free(work: Path) -> None:
+        (work / "locked").mkdir()
+        (work / "locked").chmod(0o000)
+        try:
+            found = docker.sockets(work, 1000, 60.0)
+        finally:
+            (work / "locked").chmod(0o755)
+
+        assert found == "a part of the working directory could not be looked through for sockets"
 
 
 # The commands

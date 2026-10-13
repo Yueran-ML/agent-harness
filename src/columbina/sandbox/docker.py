@@ -41,6 +41,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -54,7 +55,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from columbina import process
 from columbina.process import Completed, Writable
-from columbina.sandbox.base import PROTECTED, Mode, SandboxUnavailableError, Strength
+from columbina.sandbox.base import (
+    PROTECTED,
+    Mode,
+    SandboxUnavailableError,
+    Strength,
+    held_less_well,
+)
 from columbina.session import Session
 
 __all__ = [
@@ -73,6 +80,7 @@ __all__ = [
     "quoted",
     "removed",
     "shape",
+    "sockets",
     "supported",
     "there",
     "unavailable",
@@ -113,6 +121,14 @@ _KEEPER_SECONDS = 10.0
 
 _LOOK_SECONDS = 5.0
 """How often the containers are looked through for those that nobody needs."""
+
+_SOCKET_ENTRIES = 200_000
+"""How many entries of a working directory are looked at for sockets, at most."""
+
+_SOCKET_SECONDS = 3.0
+"""How long the look for sockets in a working directory may take."""
+
+_TOO_LARGE = "the working directory is too large to be looked through for sockets"
 
 _ATTEMPTS = 3
 """How many containers a command looks at before it gives up: the one that its session
@@ -495,6 +511,74 @@ def _seen(cwd: Path) -> tuple[tuple[str, str], ...] | None:
         return None
 
 
+def sockets(cwd: Path, entries: int, seconds: float) -> str | None:
+    """Look through a directory for sockets, and say what stands against a full hold.
+
+    A socket in the working directory is reached through a mount, read-only
+    or not, and with no network. It is a door to whatever listens there on
+    this machine, and that may be an agent that holds keys, or the engine of
+    Docker itself. Whether one is there is known only by looking. Links are
+    not followed: what they lead to is not in the container.
+
+    Args:
+        cwd: The directory.
+        entries: How many entries are looked at, at most.
+        seconds: How long the look may take.
+
+    Returns:
+        ``None`` if the whole directory was looked through and no socket is
+        in it. Otherwise the reason why a command there is held in part
+        only: a socket and where it lies, a part that could not be looked
+        into, or that there was more than could be looked through.
+    """
+    until = time.monotonic() + seconds
+    waiting = [cwd]
+    seen = 0
+    while waiting:
+        directory = waiting.pop()
+        try:
+            with os.scandir(directory) as listed:
+                for entry in listed:
+                    seen += 1
+                    if seen > entries or time.monotonic() >= until:
+                        return _TOO_LARGE
+                    if entry.is_dir(follow_symlinks=False):
+                        waiting.append(Path(entry.path))
+                    elif _is_socket(entry):
+                        where = Path(entry.path).relative_to(cwd).as_posix()
+                        return (
+                            f"a socket lies in the working directory, at {where}, and a "
+                            "command can talk to whatever listens there"
+                        )
+        except OSError:
+            return "a part of the working directory could not be looked through for sockets"
+    return None
+
+
+def _is_socket(entry: os.DirEntry[str]) -> bool:
+    """Tell whether an entry of a directory is a socket. The system is asked of few entries."""
+    if entry.is_file(follow_symlinks=False) or entry.is_symlink():
+        return False
+    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)
+
+
+if sys.platform == "win32":  # pragma: windows only
+
+    def _doubt(cwd: Path) -> str | None:
+        """Say what stands against a full hold of the commands in a directory: nothing.
+
+        On Windows the files reach a container through a share into another
+        kernel, and no socket goes that way.
+        """
+        return None
+
+else:  # pragma: posix only
+
+    def _doubt(cwd: Path) -> str | None:
+        """Say what stands against a full hold of the commands in a directory, if anything."""
+        return sockets(cwd, _SOCKET_ENTRIES, _SOCKET_SECONDS)
+
+
 @dataclass(frozen=True, slots=True)
 class _Layout:
     """What a container for a directory is given, worked out on the disk in one go.
@@ -504,6 +588,7 @@ class _Layout:
         read_only: Whether it gets the directory read-only as a whole.
         shape: What the protected names at the top of the directory are, if
             the mounts depend on that.
+        doubt: Why commands in it are held in part only, if they are.
         probe: A directory of this machine that holds a token.
         token: The token.
     """
@@ -511,6 +596,7 @@ class _Layout:
     mounted: list[str]
     read_only: bool
     shape: tuple[tuple[str, str], ...] | None
+    doubt: str | None
     probe: Path
     token: str
 
@@ -530,13 +616,14 @@ def _layout(mode: Mode, cwd: Path, target: str) -> _Layout:
     led = _led(cwd)
     read_only, mounted = _laid(mode, cwd, target, led)
     told = tuple((name, kind) for name, kind, _ in led) if mode == "workspace-write" else None
+    doubt = _doubt(cwd)
     probe = Path(tempfile.mkdtemp(prefix="columbina-probe-"))
     token = secrets.token_hex(16)
     (probe / "token").write_text(token, encoding="ascii")
     # What keeps a container is a root that may read no more than anyone may.
     probe.chmod(0o755)
     (probe / "token").chmod(0o644)
-    return _Layout(mounted, read_only, told, probe, token)
+    return _Layout(mounted, read_only, told, doubt, probe, token)
 
 
 def kept(
@@ -703,6 +790,7 @@ class _Kept:
         probe: The directory of this machine that holds its token.
         shape: What the protected names at the top of the directory were
             when it was made, if its mounts depend on that.
+        doubt: Why the commands in it are held in part only, if they are.
         used: When a command last ran in it, on the clock that only goes on.
         keeper: The program whose input keeps it alive.
         gone: Whether it has been let go.
@@ -717,6 +805,7 @@ class _Kept:
     name: str
     probe: Path
     shape: tuple[tuple[str, str], ...] | None
+    doubt: str | None
     used: float
     keeper: asyncio.subprocess.Process | None = None
     gone: bool = False
@@ -752,10 +841,18 @@ class Docker:
         self._looking: asyncio.Task[None] | None = None
         self._over = asyncio.Event()
 
-    @property
-    def strength(self) -> Strength:
-        """How well commands are held: fully, unless a container has a network."""
-        return "full" if self._config.network == "none" else "partial"
+    def strength(self, session: Session) -> Strength:
+        """Say how well the commands of a session are held.
+
+        Fully, unless a container has a network, which lets a command send
+        away what it reads, or the container of the session was found to
+        leave a door open. Before a session has a container nothing has been
+        found: what is said then is what the config promises.
+        """
+        if self._config.network != "none":
+            return "partial"
+        container = self._kept.get(session.id)
+        return "full" if container is None or container.doubt is None else "partial"
 
     async def run(
         self,
@@ -768,20 +865,26 @@ class Docker:
         timeout_seconds: float,
         overflow: Callable[[], Writable] | None,
         max_overflow_bytes: int,
+        expected: Strength,
     ) -> Completed:
         """Run a command in the container of its session, and say how it ended.
 
         The command is one of the place where the container runs: its
-        program is looked for there. The arguments after the directory are
-        those of :func:`columbina.process.run`.
+        program is looked for there. The arguments from ``stdin`` to
+        ``max_overflow_bytes`` are those of :func:`columbina.process.run`.
 
         Raises:
             SandboxUnavailableError: No container could be made, or the
-                command could not be handed to it. The command was not run.
+                command could not be handed to it, or the container does not
+                hold it as well as was expected. The command was not run.
         """
         async with self._turns.setdefault(session.id, asyncio.Lock()):
             real = Path(await asyncio.to_thread(os.path.realpath, cwd))
             container = await self._held(session, mode, real)
+            if expected == "full" and self.strength(session) != "full":
+                # Let through for a full hold, which the container that is there now does
+                # not give. What stands against it was found when the container was made.
+                raise held_less_well(container.doubt)
             return await self._ran(
                 container, argv, stdin, timeout_seconds, overflow, max_overflow_bytes
             )
@@ -880,6 +983,7 @@ class Docker:
                 name=f"columbina-{secrets.token_hex(6)}",
                 probe=layout.probe,
                 shape=layout.shape,
+                doubt=layout.doubt,
                 used=time.monotonic(),
             )
             try:

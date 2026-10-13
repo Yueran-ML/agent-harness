@@ -25,7 +25,7 @@ import columbina.sandbox
 import columbina.session
 from columbina.kernel import Context
 from columbina.process import Completed
-from columbina.sandbox import SANDBOX, Mode, SandboxUnavailableError, docker
+from columbina.sandbox import SANDBOX, Mode, SandboxUnavailableError, Strength, docker
 from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
 from support.processes import alive, end, gone, python
@@ -188,6 +188,7 @@ async def ran(
     mode: Mode = "workspace-write",
     stdin: bytes | None = None,
     seconds: float = 30.0,
+    expected: Strength = "none",
 ) -> Completed:
     """Run a small program of Python as a command of a session."""
     return await provider.run(
@@ -199,6 +200,7 @@ async def ran(
         timeout_seconds=seconds,
         overflow=None,
         max_overflow_bytes=1 << 20,
+        expected=expected,
     )
 
 
@@ -1318,6 +1320,7 @@ async def test_a_long_output_goes_where_the_caller_says(
         timeout_seconds=30,
         overflow=Place,
         max_overflow_bytes=1 << 20,
+        expected="none",
     )
 
     assert done.omitted_bytes > 0
@@ -1412,11 +1415,145 @@ def test_commands_in_a_container_are_written_for_bash() -> None:
 
 
 @pytest.mark.parametrize(("network", "strength"), [("none", "full"), ("bridge", "partial")])
-def test_a_container_with_a_network_holds_a_command_in_part_only(
-    network: Any, strength: str
+async def test_a_container_with_a_network_holds_a_command_in_part_only(
+    engine: Engine, session: Session, work: Path, network: Any, strength: str
 ) -> None:
     # It can send away what it reads.
-    assert Docker(DockerConfig(network=network)).strength == strength
+    provider = Docker(DockerConfig(program=engine.program, network=network))
+
+    before = provider.strength(session)
+    await ran(provider, session, work, "pass")
+
+    assert (before, provider.strength(session)) == (strength, strength)
+    await provider.close()
+
+
+async def test_what_was_found_in_the_directory_of_a_session_lowers_how_well_it_is_held(
+    ctx: Context,
+    provider: Docker,
+    engine: Engine,
+    sessions: Sessions,
+    work: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = Path(os.path.realpath(tmp_path)) / "other"
+    other.mkdir()
+    looked: list[Path] = []
+
+    def doubt(cwd: Path) -> str | None:
+        looked.append(cwd)
+        return "a socket lies in the working directory, at agent.sock" if cwd == work else None
+
+    monkeypatch.setattr(docker, "_doubt", doubt)
+    one, two = sessions.create(ctx, work), sessions.create(ctx, other)
+
+    before = provider.strength(one)
+    await ran(provider, one, work, "pass")
+    await ran(provider, two, other, "pass")
+
+    # Nothing is known of a directory before a container was made for it.
+    assert before == "full"
+    assert (provider.strength(one), provider.strength(two)) == ("partial", "full")
+    assert looked == [work, other]
+
+
+async def test_a_new_container_is_held_as_well_as_its_own_directory_allows(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    found = ["a socket lies in the working directory, at agent.sock", None]
+
+    def doubt(cwd: Path) -> str | None:
+        return found.pop(0)
+
+    monkeypatch.setattr(docker, "_doubt", doubt)
+
+    await ran(provider, session, work, "pass")
+    first = provider.strength(session)
+    await ran(provider, session, work, "pass", mode="read-only")
+
+    assert (first, provider.strength(session)) == ("partial", "full")
+
+
+async def test_a_command_that_was_let_through_for_a_full_hold_runs_where_the_hold_is_full(
+    provider: Docker, engine: Engine, session: Session, work: Path
+) -> None:
+    done = await ran(provider, session, work, "print('held')", expected="full")
+
+    assert done.output.strip() == "held"
+    assert engine.verbs() == FIRST
+
+
+async def test_a_command_that_was_let_through_for_a_full_hold_is_not_run_in_a_lesser_one(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Nothing was known of the directory when the call was decided. Now a container was
+    # made for it, and a door was found open.
+    def doubt(cwd: Path) -> str | None:
+        return "a socket lies in the working directory, at agent.sock"
+
+    monkeypatch.setattr(docker, "_doubt", doubt)
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "open('ran', 'w').close()", expected="full")
+    after = await ran(provider, session, work, "print('asked about and allowed')")
+
+    assert str(refused.value) == (
+        "it was let through without a question because commands were held fully, and now a "
+        "socket lies in the working directory, at agent.sock. Call it again, and it is asked "
+        "about"
+    )
+    assert not (work / "ran").exists()
+    # The container is there, and serves the command that comes with a yes.
+    assert after.output.strip() == "asked about and allowed"
+    assert engine.verbs() == ["info", "run", "usable", "command", "stop"]
+
+
+async def test_a_container_with_a_network_runs_nothing_that_was_let_through_for_a_full_hold(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    provider = Docker(DockerConfig(program=engine.program, network="bridge"))
+
+    with pytest.raises(SandboxUnavailableError, match="they are held less well now"):
+        await ran(provider, session, work, "open('ran', 'w').close()", expected="full")
+
+    assert not (work / "ran").exists()
+    await provider.close()
+
+
+if sys.platform != "win32":
+
+    async def test_a_socket_in_the_working_directory_leaves_its_commands_held_in_part(
+        provider: Docker, engine: Engine, session: Session, work: Path
+    ) -> None:
+        import socket
+
+        (work / "run").mkdir()
+        listening = socket.socket(socket.AF_UNIX)
+        listening.bind(str(work / "run" / "agent.sock"))
+        try:
+            await ran(provider, session, work, "pass")
+        finally:
+            listening.close()
+
+        assert provider.strength(session) == "partial"
+
+else:
+
+    async def test_on_windows_no_socket_is_looked_for(
+        provider: Docker, engine: Engine, session: Session, work: Path
+    ) -> None:
+        doubt: Any = vars(docker)["_doubt"]
+
+        assert doubt(work) is None
 
 
 # The provider as a part of the sandbox
@@ -1434,7 +1571,7 @@ async def test_the_sandbox_brings_the_provider_and_lets_its_containers_go_when_i
     done = await sandbox.run(python("print('held')"), session=session, cwd=work, timeout_seconds=30)
 
     assert done.output.strip() == "held"
-    assert (sandbox.shell(), sandbox.strength()) == ("bash", "full")
+    assert (sandbox.shell(), sandbox.strength(session)) == ("bash", "full")
     assert len(engine.containers()) == 1
 
     await loaded.dispose()
@@ -1454,7 +1591,7 @@ async def test_the_provider_asks_nothing_of_docker_until_a_command_is_to_run_in_
     await loaded.dispose()
 
     assert done.output.strip() == "here"
-    assert (sandbox.shell(), sandbox.strength()) == (None, "none")
+    assert (sandbox.shell(), sandbox.strength(session)) == (None, "none")
     assert engine.calls() == []
 
 

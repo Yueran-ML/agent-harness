@@ -9,10 +9,12 @@ from hypothesis import strategies as st
 from columbina.permissions import Decided, RuleSet, Splitter, decide, read_rules
 from columbina.permissions.commands import split_bash
 from columbina.permissions.rules import Place, Rule, covers_command, covers_file, parse_rule
-from columbina.sandbox import Mode
+from columbina.sandbox import Mode, Strength
 from columbina.tools import Effect
 
 MODES: tuple[Mode, ...] = ("read-only", "workspace-write", "danger-full-access")
+STRENGTHS: tuple[Strength, ...] = ("none", "partial", "full")
+HELD = "The sandbox holds the command fully, so nobody needs to be asked."
 EFFECTS: tuple[Effect, ...] = ("none", "read", "write", "run")
 
 
@@ -34,11 +36,16 @@ def file(
 
 
 def command(
-    held: RuleSet, text: str, mode: Mode = "workspace-write", *, understood: bool = True
+    held: RuleSet,
+    text: str,
+    mode: Mode = "workspace-write",
+    *,
+    understood: bool = True,
+    strength: Strength = "none",
 ) -> Decided:
     """What is done with a command that the tool ``shell`` is to run."""
     splitter = split_bash if understood else None
-    return decide(held, "shell", "run", text, None, mode=mode, splitter=splitter)
+    return decide(held, "shell", "run", text, None, mode=mode, splitter=splitter, held=strength)
 
 
 # Without a rule
@@ -325,6 +332,56 @@ def test_a_rule_against_a_part_of_a_command_counts_against_what_was_allowed() ->
     assert decided.verdict == "deny"
 
 
+# A command that the sandbox holds
+
+
+def test_a_command_that_the_sandbox_holds_fully_goes_ahead_without_a_rule() -> None:
+    assert command(rules(), "make test", strength="full") == Decided("allow", None, HELD, held=True)
+
+
+@pytest.mark.parametrize("strength", ["none", "partial"])
+def test_a_command_that_is_held_in_part_or_not_at_all_is_asked_about(strength: Strength) -> None:
+    decided = command(rules(), "make test", strength=strength)
+
+    assert (decided.verdict, decided.held) == ("ask", False)
+
+
+def test_a_rule_that_refuses_or_asks_counts_against_a_command_that_is_held() -> None:
+    refused = command(rules(deny="shell(rm *)"), "rm -rf .", strength="full")
+    asked = command(rules(ask="shell(git push *)"), "git push origin", strength="full")
+    in_a_line = command(rules(ask="shell(git push *)"), "make && git push origin", strength="full")
+
+    assert (refused.verdict, refused.held) == ("deny", False)
+    assert (asked.verdict, asked.held) == ("ask", False)
+    assert (in_a_line.verdict, in_a_line.held) == ("ask", False)
+
+
+def test_what_lets_a_command_go_ahead_anyway_is_said_before_the_hold_is() -> None:
+    # Only a call that goes ahead for the hold and for nothing else is looked at again
+    # when its command is run.
+    by_rule = command(rules(allow="shell(make *)"), "make test", strength="full")
+    with_access = command(rules(), "make test", "danger-full-access", strength="full")
+    granted = decide(
+        rules(), "shell", "run", "make test", None,
+        mode="workspace-write", splitter=split_bash, granted=True, held="full",
+    )  # fmt: skip
+
+    assert (by_rule.verdict, by_rule.held) == ("allow", False)
+    assert str(by_rule.rule) == "shell(make *)"
+    assert (with_access.why, with_access.held) == ("The session has full access.", False)
+    assert (granted.why, granted.held) == ("It was allowed for the rest of this session.", False)
+
+
+def test_a_command_that_cannot_be_taken_apart_goes_ahead_if_it_is_held_fully() -> None:
+    odd = "echo $(cat notes.txt)"
+
+    assert command(rules(allow="shell(echo *)"), odd).verdict == "ask"
+    assert command(rules(allow="shell(echo *)"), odd, strength="full") == Decided(
+        "allow", None, HELD, held=True
+    )
+    assert command(rules(), odd, understood=False, strength="full").held
+
+
 @pytest.mark.parametrize("splitter", [None, split_bash])
 def test_a_command_that_cannot_be_taken_apart_is_asked_about_every_time(
     splitter: Splitter | None,
@@ -416,9 +473,16 @@ ODD = SIMPLE.map(lambda simple: f"{simple} $(c)")
     st.one_of(JOINED, ODD),
     st.sampled_from(MODES),
     st.booleans(),
+    st.sampled_from(STRENGTHS),
 )
 def test_a_command_is_decided_as_the_definition_says(
-    deny: list[Rule], ask: list[Rule], allow: list[Rule], text: str, mode: Mode, granted: bool
+    deny: list[Rule],
+    ask: list[Rule],
+    allow: list[Rule],
+    text: str,
+    mode: Mode,
+    granted: bool,
+    strength: Strength,
 ) -> None:
     held = RuleSet(tuple(deny), tuple(ask), tuple(allow))
     apart = split_bash(text)
@@ -430,19 +494,24 @@ def test_a_command_is_decided_as_the_definition_says(
     whole_tool = any(rule.pattern is None and covers_command(rule, "shell", text) for rule in allow)
     every_part = apart is not None and all(speaks(allow, [part]) for part in apart)
     allowed = whole_tool or every_part or mode == "danger-full-access"
+    for_the_hold = False
     if speaks(deny, every):
         expected = "deny"
     elif granted and apart is not None:
         expected = "allow"
     elif speaks(ask, every):
         expected = "ask"
+    elif allowed:
+        expected = "allow"
     else:
-        expected = "allow" if allowed else "ask"
+        for_the_hold = strength == "full"
+        expected = "allow" if for_the_hold else "ask"
 
     decided = decide(
-        held, "shell", "run", text, None, mode=mode, splitter=split_bash, granted=granted
-    )
-    assert decided.verdict == expected
+        held, "shell", "run", text, None,
+        mode=mode, splitter=split_bash, granted=granted, held=strength,
+    )  # fmt: skip
+    assert (decided.verdict, decided.held) == (expected, for_the_hold)
 
 
 # Rules in a file

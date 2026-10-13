@@ -826,6 +826,7 @@ async def test_where_commands_run_elsewhere_the_tool_is_the_shell_of_that_place(
     assert there == ["bash"]
     assert bench.permissions.splitters.get("bash") is split_bash
     assert bench.permissions.splitters.get("powershell") is None
+    assert list(bench.permissions.sandboxed) == ["bash"]
 
 
 async def test_a_command_for_elsewhere_goes_to_a_fixed_line_on_its_input(
@@ -958,6 +959,65 @@ async def test_what_ran_a_command_has_to_say_of_the_run_follows_the_exit_code(
 
 async def test_a_run_of_which_nothing_is_to_be_said_ends_with_the_exit_code(bench: Bench) -> None:
     assert (await bench.said("echo hi")).endswith("[exit code 0]")
+
+
+# A command that the sandbox holds
+
+
+async def test_a_command_that_the_sandbox_holds_fully_is_run_without_a_question(
+    ctx: Context, tmp_path: Path
+) -> None:
+    provider = Holding("full")
+    bench = await loaded(ctx, tmp_path, sandbox={"provider": "holding"}, provider=provider, deny=[])
+
+    # Nobody is there to ask in this session, and no rule allows the tool.
+    assert await bench.said("echo hi") == "hi\n[exit code 0]"
+    assert bench.permissions.sandboxed.get(shell.NAME) is True
+    # The sandbox was told which call the command was run for.
+    assert provider.expected == ["full"]
+
+
+@pytest.mark.parametrize("strength", ["none", "partial"])
+async def test_a_command_that_the_sandbox_holds_less_well_is_asked_about(
+    ctx: Context, tmp_path: Path, strength: Any
+) -> None:
+    provider = Holding(strength)
+    bench = await loaded(ctx, tmp_path, sandbox={"provider": "holding"}, provider=provider, deny=[])
+
+    outcome = await bench.call("echo hi")
+
+    assert outcome.error is not None
+    assert outcome.error.code == "APPROVAL_UNAVAILABLE"
+    assert provider.asked == []
+
+
+async def test_a_hold_that_is_gone_when_the_command_is_to_run_stops_it_and_says_what_to_do(
+    ctx: Context, tmp_path: Path
+) -> None:
+    class Fickle(Holding):
+        """Holds fully when it is asked, and has found a door open when it is to run."""
+
+        def strength(self, session: Session) -> Any:
+            said, self.holds = self.holds, "partial"
+            return said
+
+    provider = Fickle("full")
+    bench = await loaded(ctx, tmp_path, sandbox={"provider": "holding"}, provider=provider, deny=[])
+
+    stopped = await bench.call("echo hi")
+    again = await bench.call("echo hi")
+
+    assert stopped.error is not None
+    assert stopped.error.code == "SANDBOX_UNAVAILABLE"
+    assert stopped.text == (
+        "The command was not run: it was let through without a question because commands "
+        "were held fully, and they are held less well now. Call it again, and it is asked "
+        "about."
+    )
+    # And so it is.
+    assert again.error is not None
+    assert again.error.code == "APPROVAL_UNAVAILABLE"
+    assert provider.asked == []
 
 
 # What the checks and the permissions are told

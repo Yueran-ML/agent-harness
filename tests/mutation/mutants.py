@@ -37,6 +37,7 @@ SEAM = "src/columbina/fs/__init__.py"
 PATHS = "src/columbina/fs/paths.py"
 BOUND = "src/columbina/fs/bound.py"
 SANDBOX = "src/columbina/sandbox/__init__.py"
+SANDBOX_BASE = "src/columbina/sandbox/base.py"
 DOCKER = "src/columbina/sandbox/docker.py"
 WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
@@ -1694,14 +1695,14 @@ _SANDBOX = (
     mutant(
         "a provider is not given the place for a long output",
         SANDBOX,
-        "            overflow=overflow,\n            max_overflow_bytes=max_overflow_bytes,\n        )\n\n    def grants(",
-        "            overflow=None,\n            max_overflow_bytes=max_overflow_bytes,\n        )\n\n    def grants(",
+        "            overflow=overflow,\n            max_overflow_bytes=max_overflow_bytes,\n            expected=expected,\n        )\n\n    def grants(",
+        "            overflow=None,\n            max_overflow_bytes=max_overflow_bytes,\n            expected=expected,\n        )\n\n    def grants(",
     ),
     mutant(
         "a provider is given the usual room for a long output",
         SANDBOX,
-        "            overflow=overflow,\n            max_overflow_bytes=max_overflow_bytes,\n        )\n\n    def grants(",
-        "            overflow=overflow,\n            max_overflow_bytes=64 * 1024 * 1024,\n        )\n\n    def grants(",
+        "            overflow=overflow,\n            max_overflow_bytes=max_overflow_bytes,\n            expected=expected,\n        )\n\n    def grants(",
+        "            overflow=overflow,\n            max_overflow_bytes=64 * 1024 * 1024,\n            expected=expected,\n        )\n\n    def grants(",
     ),
     mutant(
         "a command on this machine gets the environment of the program as it is",
@@ -1736,8 +1737,65 @@ _SANDBOX = (
     mutant(
         "the provider that holds nothing says that its commands run elsewhere",
         SANDBOX,
-        '    strength: Strength = "none"\n    shell: str | None = None\n',
-        '    strength: Strength = "none"\n    shell: str | None = "bash"\n',
+        "    shell: str | None = None\n\n    def strength(self, session: Session) -> Strength:\n",
+        '    shell: str | None = "bash"\n\n    def strength(self, session: Session) -> Strength:\n',
+    ),
+    mutant(
+        "the provider that holds nothing says that it holds commands",
+        SANDBOX,
+        '    def strength(self, session: Session) -> Strength:\n        return "none"\n',
+        '    def strength(self, session: Session) -> Strength:\n        return "full"\n',
+    ),
+    mutant(
+        "a provider that is not there is said to hold commands",
+        SANDBOX,
+        '        return "none" if provider is None else provider.strength(session)\n',
+        '        return "full" if provider is None else provider.strength(session)\n',
+    ),
+    mutant(
+        "a call that was let through for a full hold is run like any other",
+        SANDBOX,
+        '            expected = "full"\n',
+        '            expected = "none"\n',
+    ),
+    mutant(
+        "the note of a call is good for every run of it",
+        SANDBOX,
+        "            self._expected[session].discard(call_id)\n",
+        "",
+    ),
+    mutant(
+        "every call is run as one that was let through for a full hold",
+        SANDBOX,
+        "        if call_id is not None and call_id in self._expected.get(session, ()):\n",
+        "        if call_id is not None:\n            self._expected.setdefault(session, set())\n",
+    ),
+    mutant(
+        "the note of a call of one session counts for every session",
+        SANDBOX,
+        "        if call_id is not None and call_id in self._expected.get(session, ()):\n"
+        "            self._expected[session].discard(call_id)\n",
+        "        if call_id is not None and any(call_id in of for of in self._expected.values()):\n"
+        "            for of in self._expected.values():\n"
+        "                of.discard(call_id)\n",
+    ),
+    mutant(
+        "the provider that holds nothing runs what was let through for a full hold",
+        SANDBOX,
+        '        if expected != "none":\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "a provider is not told what hold was expected of it",
+        SANDBOX,
+        "            max_overflow_bytes=max_overflow_bytes,\n            expected=expected,\n        )\n\n    def grants(",
+        '            max_overflow_bytes=max_overflow_bytes,\n            expected="none",\n        )\n\n    def grants(',
+    ),
+    mutant(
+        "what stands against a full hold is left out of what a model reads",
+        SANDBOX_BASE,
+        '    now = "they are held less well now" if why is None else f"now {why}"\n',
+        '    now = "they are held less well now"\n',
     ),
     mutant(
         "a provider that is not there is no reason to stop",
@@ -2336,6 +2394,82 @@ _DOCKER = (
         '    network: Literal["none", "bridge"] = "none"\n',
         '    network: Literal["none", "bridge"] = "bridge"\n',
     ),
+    on_linux(
+        mutant(
+            "a socket in a working directory is not known for one",
+            DOCKER,
+            "    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
+            "    return False\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "whatever is neither file nor directory counts as a socket",
+            DOCKER,
+            "    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
+            "    return True\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "what a link leads to is looked at as if it lay in the directory",
+            DOCKER,
+            "    if entry.is_file(follow_symlinks=False) or entry.is_symlink():\n        return False\n"
+            "    return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)\n",
+            "    return stat.S_ISSOCK(entry.stat().st_mode)\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "a directory that a link leads to is looked through",
+            DOCKER,
+            "                    if entry.is_dir(follow_symlinks=False):\n",
+            "                    if entry.is_dir():\n",
+        )
+    ),
+    mutant(
+        "only the top of a working directory is looked through",
+        DOCKER,
+        "                    if entry.is_dir(follow_symlinks=False):\n"
+        "                        waiting.append(Path(entry.path))\n"
+        "                    elif _is_socket(entry):\n",
+        "                    if _is_socket(entry):\n",
+    ),
+    mutant(
+        "a working directory is looked through however large it is",
+        DOCKER,
+        "                    if seen > entries or time.monotonic() >= until:\n",
+        "                    if time.monotonic() >= until:\n",
+    ),
+    mutant(
+        "a working directory is looked through however long it takes",
+        DOCKER,
+        "                    if seen > entries or time.monotonic() >= until:\n",
+        "                    if seen > entries:\n",
+    ),
+    mutant(
+        "one entry fewer than may be looked at is looked at",
+        DOCKER,
+        "                    if seen > entries or time.monotonic() >= until:\n",
+        "                    if seen >= entries or time.monotonic() >= until:\n",
+    ),
+    on_linux(
+        mutant(
+            "a part of a directory that cannot be looked into is taken to hold no socket",
+            DOCKER,
+            "        except OSError:\n"
+            '            return "a part of the working directory could not be looked through for sockets"\n',
+            "        except OSError:\n            continue\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "a socket is told by its whole path on this machine",
+            DOCKER,
+            "                        where = Path(entry.path).relative_to(cwd).as_posix()\n",
+            "                        where = entry.path\n",
+        )
+    ),
 )
 
 _DOCKER_KEPT = (
@@ -2859,8 +2993,40 @@ _DOCKER_KEPT = (
     mutant(
         "a container with a network is said to hold a command fully",
         DOCKER,
-        '        return "full" if self._config.network == "none" else "partial"\n',
+        '        if self._config.network != "none":\n            return "partial"\n',
+        "",
+    ),
+    mutant(
+        "what was found in the directory of a session does not lower how well it is held",
+        DOCKER,
+        '        return "full" if container is None or container.doubt is None else "partial"\n',
         '        return "full"\n',
+    ),
+    mutant(
+        "a session that has no container yet is said to be held in part",
+        DOCKER,
+        '        return "full" if container is None or container.doubt is None else "partial"\n',
+        '        return "full" if container is not None and container.doubt is None else "partial"\n',
+    ),
+    mutant(
+        "what was found in one directory lowers how well every session is held",
+        DOCKER,
+        "        container = self._kept.get(session.id)\n"
+        '        return "full" if container is None or container.doubt is None else "partial"\n',
+        "        doubts = [kept.doubt for kept in self._kept.values()]\n"
+        '        return "partial" if any(doubt is not None for doubt in doubts) else "full"\n',
+    ),
+    mutant(
+        "what was found in a directory is forgotten when its container is made",
+        DOCKER,
+        "                doubt=layout.doubt,\n",
+        "                doubt=None,\n",
+    ),
+    mutant(
+        "a working directory is not looked through for what a mount leaves open",
+        DOCKER,
+        "    doubt = _doubt(cwd)\n",
+        "    doubt = None\n",
     ),
     mutant(
         "commands in a container are written for the shell of this machine",
@@ -2895,6 +3061,24 @@ _DOCKER_KEPT = (
         DOCKER,
         "    return False, [\n        _mount(cwd, target, readonly=False),\n",
         "    return True, [\n        _mount(cwd, target, readonly=False),\n",
+    ),
+    mutant(
+        "a container that holds in part runs what was let through for a full hold",
+        DOCKER,
+        '            if expected == "full" and self.strength(session) != "full":\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "a container refuses whatever was let through for a full hold",
+        DOCKER,
+        '            if expected == "full" and self.strength(session) != "full":\n',
+        '            if expected == "full":\n',
+    ),
+    mutant(
+        "what was found in a directory is not said when it stops a command",
+        DOCKER,
+        "                raise held_less_well(container.doubt)\n",
+        "                raise held_less_well()\n",
     ),
     mutant(
         "the sandbox does not bring the provider for containers",
@@ -3822,6 +4006,72 @@ _APPROVAL = (
 
 _PERMISSIONS = (
     mutant(
+        "a command that the sandbox holds fully is asked about all the same",
+        PERMISSIONS,
+        '    if held == "full":\n        return Decided("allow", None, _HELD, held=True)\n',
+        "",
+    ),
+    mutant(
+        "a command that the sandbox holds in part goes ahead without a question",
+        PERMISSIONS,
+        '    if held == "full":\n        return Decided("allow", None, _HELD, held=True)\n',
+        '    if held != "none":\n        return Decided("allow", None, _HELD, held=True)\n',
+    ),
+    mutant(
+        "a command that goes ahead for the hold is not marked as one that does",
+        PERMISSIONS,
+        '        return Decided("allow", None, _HELD, held=True)\n',
+        '        return Decided("allow", None, _HELD)\n',
+    ),
+    mutant(
+        "the hold counts before a rule that asks",
+        PERMISSIONS,
+        "    for rule in rules.ask:\n"
+        "        if any(covers_command(rule, tool, text) for text in spoken_of):\n",
+        '    if held == "full":\n        return Decided("allow", None, _HELD, held=True)\n'
+        "    for rule in rules.ask:\n"
+        "        if any(covers_command(rule, tool, text) for text in spoken_of):\n",
+    ),
+    mutant(
+        "the hold counts before a rule that refuses",
+        PERMISSIONS,
+        "    for rule in rules.deny:\n"
+        "        if any(covers_command(rule, tool, text) for text in spoken_of):\n",
+        '    if held == "full":\n        return Decided("allow", None, _HELD, held=True)\n'
+        "    for rule in rules.deny:\n"
+        "        if any(covers_command(rule, tool, text) for text in spoken_of):\n",
+    ),
+    mutant(
+        "a command that a rule allows is marked as going ahead for the hold",
+        PERMISSIONS,
+        '            return Decided("allow", rule, _said_by("allow", rule))\n    if apart is not None:\n',
+        '            return Decided("allow", rule, _said_by("allow", rule), held=True)\n    if apart is not None:\n',
+    ),
+    mutant(
+        "what the sandbox holds counts for every tool that runs something",
+        PERMISSIONS,
+        '            held=self._sandbox.strength(session) if tool.name in self.sandboxed else "none",\n',
+        "            held=self._sandbox.strength(session),\n",
+    ),
+    mutant(
+        "no tool is taken to run what the sandbox holds",
+        PERMISSIONS,
+        '            held=self._sandbox.strength(session) if tool.name in self.sandboxed else "none",\n',
+        '            held="none",\n',
+    ),
+    mutant(
+        "the sandbox is not told that a call went ahead for the hold",
+        PERMISSIONS,
+        "                self._sandbox.expect(session, run.call_id)\n",
+        "                pass\n",
+    ),
+    mutant(
+        "the sandbox is told of every call that goes ahead",
+        PERMISSIONS,
+        "            if decided.held:\n",
+        "            if True:\n",
+    ),
+    mutant(
         "a rule named after what tools do speaks about the tool of that name only",
         RULES,
         "    return wild(rule.tool, name) or (rule.tool == effect and effect in _CLASSES)",
@@ -4163,7 +4413,7 @@ _SHELL = (
     mutant(
         "the permissions are not told how the commands of the tool are taken apart",
         SHELL,
-        "    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, way.splitter)\n",
+        "    permissions.splitters.add(ctx, way.name, way.splitter)\n",
         "",
     ),
     on_windows(
@@ -4372,16 +4622,16 @@ _SHELL = (
         mutant(
             "the commands of the tool for another place are taken apart under another name",
             SHELL,
-            "    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, way.splitter)\n",
-            "    ctx.use(PERMISSIONS).splitters.add(ctx, NAME, way.splitter)\n",
+            "    permissions.splitters.add(ctx, way.name, way.splitter)\n",
+            "    permissions.splitters.add(ctx, NAME, way.splitter)\n",
         )
     ),
     on_windows(
         mutant(
             "the commands of the tool for another place are taken apart as those of this machine",
             SHELL,
-            "    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, way.splitter)\n",
-            "    ctx.use(PERMISSIONS).splitters.add(ctx, way.name, HERE.splitter)\n",
+            "    permissions.splitters.add(ctx, way.name, way.splitter)\n",
+            "    permissions.splitters.add(ctx, way.name, HERE.splitter)\n",
         )
     ),
     on_windows(
@@ -4390,6 +4640,26 @@ _SHELL = (
             SHELL,
             "        place = None if store is None else _Place(store, run, way.name)\n",
             "        place = None if store is None else _Place(store, run, NAME)\n",
+        )
+    ),
+    mutant(
+        "the sandbox is not told which call a command is run for",
+        SHELL,
+        "                call_id=run.call_id,\n",
+        "",
+    ),
+    mutant(
+        "the tool does not say that the sandbox runs its commands",
+        SHELL,
+        "    permissions.sandboxed.add(ctx, way.name, True)\n",
+        "",
+    ),
+    on_windows(
+        mutant(
+            "the tool for another place says that the sandbox runs the shell of this machine",
+            SHELL,
+            "    permissions.sandboxed.add(ctx, way.name, True)\n",
+            "    permissions.sandboxed.add(ctx, NAME, True)\n",
         )
     ),
     mutant(
@@ -4630,7 +4900,7 @@ _FACTS = (
     mutant(
         "how well commands are held is not told",
         SANDBOX,
-        '        gathered.lines["commands are held"] = _STRENGTHS[sandbox.strength()]\n',
+        '        gathered.lines["commands are held"] = _STRENGTHS[held]\n',
         "",
     ),
     mutant(
@@ -6305,7 +6575,7 @@ _CLI = (
     mutant(
         "the line below the prompt does not say how well commands are held",
         CLI_STATUS,
-        '        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength()]}")\n',
+        '        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength(session)]}")\n',
         '        parts.append(f"{mode or sandbox.mode(session)}")\n',
     ),
     mutant(
@@ -6601,8 +6871,8 @@ _CLI = (
     mutant(
         "the line below the prompt shows the mode of the sandbox though somebody knows better",
         CLI_STATUS,
-        '        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength()]}")\n',
-        '        parts.append(f"{sandbox.mode(session)}, {_HELD[sandbox.strength()]}")\n',
+        '        parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength(session)]}")\n',
+        '        parts.append(f"{sandbox.mode(session)}, {_HELD[sandbox.strength(session)]}")\n',
     ),
     mutant(
         "the line below the prompt does not ask the permissions what the session goes by",
@@ -18781,7 +19051,7 @@ SETS: dict[str, MutantSet] = {
     ),
     "process": MutantSet(("tests/test_process.py", "tests/test_process_overflow.py"), _PROCESS),
     "fs": MutantSet(("tests/fs", "tests/builtin_tools"), _FS),
-    "sandbox": MutantSet(("tests/sandbox",), _SANDBOX),
+    "sandbox": MutantSet(("tests/sandbox/test_sandbox.py",), _SANDBOX),
     "transcript": MutantSet(
         ("tests/apps/cli/test_lines.py", "tests/apps/cli/test_transcript.py"), _TRANSCRIPT
     ),

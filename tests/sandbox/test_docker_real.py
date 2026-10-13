@@ -164,6 +164,7 @@ async def sh(
         timeout_seconds=seconds,
         overflow=None,
         max_overflow_bytes=1 << 20,
+        expected="none",
     )
 
 
@@ -227,6 +228,24 @@ if sys.platform == "linux":
 
         made = (work / "mine.txt").stat()
         assert (made.st_uid, made.st_gid) == (os.getuid(), os.getgid())
+
+    async def test_a_socket_in_the_working_directory_leaves_its_commands_held_in_part(
+        provider: Docker, session: Session, work: Path
+    ) -> None:
+        # Where this machine and the container have one kernel, a command could talk to
+        # whatever listens there, with no network and through a read-only mount.
+        import socket
+
+        listening = socket.socket(socket.AF_UNIX)
+        listening.bind(str(work / "agent.sock"))
+        try:
+            before = provider.strength(session)
+            wrote = await said(provider, session, work, "test -S agent.sock && echo a socket")
+        finally:
+            listening.close()
+
+        assert wrote.strip() == "a socket"
+        assert (before, provider.strength(session)) == ("full", "partial")
 
 
 async def test_a_command_gets_a_home_of_its_own_and_nothing_of_the_environment_of_this_program(
@@ -550,7 +569,7 @@ async def main():
     done = await provider.run(
         argv, session=SimpleNamespace(id="held", closed=False), mode="read-only",
         cwd=Path(sys.argv[3]), stdin=given, timeout_seconds=60, overflow=None,
-        max_overflow_bytes=1 << 20,
+        max_overflow_bytes=1 << 20, expected="none",
     )
     print(done.output.strip(), flush=True)
     await asyncio.sleep(600)

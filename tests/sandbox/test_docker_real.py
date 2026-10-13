@@ -247,6 +247,38 @@ if sys.platform == "linux":
         assert wrote.strip() == "a socket"
         assert (before, provider.strength(session)) == ("full", "partial")
 
+    async def test_a_container_says_that_it_has_the_directory_that_was_looked_at(
+        provider: Docker, session: Session, work: Path
+    ) -> None:
+        # It is asked, and its numbers are those of this machine: nothing stands against a
+        # full hold. An engine that showed the files by numbers of its own would leave one.
+        await said(provider, session, work, "true")
+
+        assert provider.strength(session) == "full"
+
+    async def test_a_link_put_in_the_place_of_the_directory_while_a_container_is_made_is_found(
+        provider: Docker, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        private = work.parent / "private"
+        private.mkdir()
+        (private / "secret.txt").write_text("the secret\n")
+        really_look: Any = vars(docker)["_layout"]
+
+        def then_swapped(mode: Mode, cwd: Path, target: str) -> Any:
+            looked = really_look(mode, cwd, target)
+            # As a command of a session could do whose working directory lies above this
+            # one. The engine follows the link, and would give the container what it names.
+            work.rename(work.parent / "aside")
+            work.symlink_to(private)
+            return looked
+
+        monkeypatch.setattr(docker, "_layout", then_swapped)
+
+        with pytest.raises(SandboxUnavailableError, match="was given another directory"):
+            await sh(provider, session, work, "cat secret.txt; echo x > planted.txt")
+
+        assert sorted(path.name for path in private.iterdir()) == ["secret.txt"]
+
 
 async def test_a_command_gets_a_home_of_its_own_and_nothing_of_the_environment_of_this_program(
     make: Make, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
@@ -507,6 +539,35 @@ async def test_a_session_whose_mode_has_changed_gets_another_container(
     assert other.splitlines()[-1] == "1"
 
 
+async def test_a_directory_put_in_the_place_of_the_working_directory_is_what_commands_see(
+    provider: Docker, session: Session, work: Path
+) -> None:
+    first = await said(provider, session, work, "hostname; ls")
+    work.rename(work.parent / "moved")
+    work.mkdir()
+    (work / "new.txt").write_text("")
+
+    then = await said(provider, session, work, "hostname; ls")
+
+    # The container of the directory that was moved would go on showing that one.
+    assert first.splitlines()[1:] == ["notes.txt"]
+    assert then.splitlines()[1:] == ["new.txt"]
+    assert then.splitlines()[0] != first.splitlines()[0]
+
+
+if WINDOWS:
+
+    async def test_asked_through_a_share_a_container_is_not_said_to_have_another_directory(
+        provider: Docker, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # On Windows the directory is held and no container is asked. Asked all the same,
+        # a container must not be taken for one that was given another directory, whatever
+        # the share makes of the numbers.
+        monkeypatch.setattr(docker, "_ASKS", True)
+
+        assert (await said(provider, session, work, "cat notes.txt")).strip() == "hi"
+
+
 async def test_a_command_cannot_stop_what_keeps_its_container(says: Says) -> None:
     tries = (
         'for entry in /proc/[0-9]*; do pid=${entry#/proc/}; [ "$pid" = "$$" ] && continue; '
@@ -585,15 +646,17 @@ async def test_a_command_whose_caller_is_cancelled_is_stopped_in_its_container(
 HOLDS_A_CONTAINER = """
 import asyncio, sys
 from pathlib import Path
-from types import SimpleNamespace
 from columbina.builtin_tools import shell
 from columbina.sandbox.docker import Docker, DockerConfig
+
+class Held:
+    id, closed = "held", False
 
 async def main():
     provider = Docker(DockerConfig(program=sys.argv[1], image=sys.argv[2]))
     argv, given = shell.BASH_ELSEWHERE.invocation("bash", "hostname")
     done = await provider.run(
-        argv, session=SimpleNamespace(id="held", closed=False), mode="read-only",
+        argv, session=Held(), mode="read-only",
         cwd=Path(sys.argv[3]), stdin=given, timeout_seconds=60, overflow=None,
         max_overflow_bytes=1 << 20, expected="none",
     )

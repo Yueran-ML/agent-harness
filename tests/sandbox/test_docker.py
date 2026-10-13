@@ -1,6 +1,7 @@
 """The provider that runs commands in a container: what it works out before it asks the engine."""
 
 import contextlib
+import errno
 import json
 import os
 import stat
@@ -850,6 +851,94 @@ def test_a_directory_is_mounted_where_the_container_is_to_have_it(root: Path) ->
     ]
 
 
+# Which directory a container has
+
+ITSELF, TOKEN_AT, KNOWN = (2049, 1200), (39, 77), (39, 78)
+"""The numbers of a working directory, of the directory of a token, and of one in it."""
+
+
+@pytest.mark.parametrize(
+    ("said", "same"),
+    [
+        # As the kernel of this machine has them.
+        (["2049:1200", "39:77", "39:78"], True),
+        # Through a share: every inode shifted alike, and devices of its own.
+        (["73:1202", "73:79", "73:80"], True),
+        (["2049:1201", "39:77", "39:78"], False),
+        # The same number on another device is another directory.
+        (["2050:1200", "39:77", "39:78"], False),
+        (["73:1203", "73:79", "73:80"], False),
+        # The two that are known disagree: the numbers of this container are its own.
+        (["73:1202", "73:79", "73:85"], None),
+        (["2049:1200", "39:77", "39:83"], None),
+        (["2049:1200", "39:77"], None),
+        (["2049:1200", "39:77", "39:78", "1:1"], None),
+        (["writable", "39:77", "39:78"], None),
+        (["2049:1200", "39:77", "39:x"], None),
+        (["2049:1200", "39:77", "-39:78"], None),
+        ([], None),
+    ],
+)
+def test_a_container_is_known_to_have_a_directory_by_the_numbers_of_it(
+    said: list[str], same: bool | None
+) -> None:
+    assert docker.given(said, ITSELF, TOKEN_AT, KNOWN) is same
+
+
+def test_without_the_numbers_of_this_machine_nothing_is_compared() -> None:
+    said = ["2049:1200", "39:77", "39:78"]
+
+    assert docker.given(said, None, TOKEN_AT, KNOWN) is None
+    assert docker.given(said, ITSELF, None, KNOWN) is None
+    assert docker.given(said, ITSELF, TOKEN_AT, None) is None
+
+
+def reached(path: Path) -> tuple[int, int] | None:
+    by_no_link: Any = vars(docker)["_reached"]
+    return by_no_link(path)
+
+
+def not_reached(path: Path) -> OSError:
+    """Return what the system says of a path that is not reached as a directory."""
+    try:
+        reached(path)
+    except OSError as error:
+        return error
+    raise AssertionError(f"{path} was reached")
+
+
+def says_no_directory(error: OSError) -> bool:
+    # Linux says of a link that it is no directory, and others say that links were in the way.
+    return isinstance(error, NotADirectoryError) or error.errno in (errno.ELOOP, errno.EMLINK)
+
+
+def test_a_directory_is_reached_with_the_numbers_that_the_system_gives_it(work: Path) -> None:
+    told = work.stat()
+
+    assert reached(work) == (told.st_dev, told.st_ino)
+
+
+def test_what_is_not_there_is_not_reached(work: Path) -> None:
+    assert isinstance(not_reached(work / "gone"), FileNotFoundError)
+    assert isinstance(not_reached(work / "gone" / "deeper"), FileNotFoundError)
+
+
+def test_a_directory_behind_a_link_is_not_reached(root: Path) -> None:
+    # Whoever can write the directory above can make its name lead anywhere.
+    (root / "real" / "inner").mkdir(parents=True)
+    link_directory(root / "alias", root / "real")
+
+    assert says_no_directory(not_reached(root / "alias"))
+    assert says_no_directory(not_reached(root / "alias" / "inner"))
+    assert reached(root / "real" / "inner") is not None
+
+
+def test_a_file_is_not_reached_as_a_directory(work: Path) -> None:
+    (work / "notes.txt").write_text("")
+
+    assert says_no_directory(not_reached(work / "notes.txt"))
+
+
 # What a command may have changed
 
 
@@ -1246,7 +1335,8 @@ def test_the_directory_is_looked_at_as_the_user_of_commands() -> None:
         "columbina-0a1b2c",
         "sh",
         "-c",
-        "test -r . && test -x . && if test -w .; then echo writable; else echo readable; fi",
+        "test -r . && test -x . && { if test -w .; then echo writable; else echo readable; fi; "
+        "stat -c %d:%i . /run/columbina-probe /run/columbina-probe/known 2>/dev/null; true; }",
     ]
 
 

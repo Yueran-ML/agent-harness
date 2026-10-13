@@ -2137,6 +2137,80 @@ _DOCKER = (
         "    for written in (target,):\n",
     ),
     mutant(
+        "a container with a directory of another number is said to have the right one",
+        DOCKER,
+        "    if inode - itself[1] != shift:\n        return False\n",
+        "",
+    ),
+    mutant(
+        "a container with a directory on another device is said to have the right one",
+        DOCKER,
+        "    return int(read[1][1]) != token_at[0] or device == itself[0]\n",
+        "    return True\n",
+    ),
+    mutant(
+        "the device of a directory is compared where a share has devices of its own",
+        DOCKER,
+        "    return int(read[1][1]) != token_at[0] or device == itself[0]\n",
+        "    return device == itself[0]\n",
+    ),
+    mutant(
+        "numbers that have nothing to do with those of this machine are compared with them",
+        DOCKER,
+        "    if int(read[2][2]) - known[1] != shift:\n        return None\n",
+        "",
+    ),
+    mutant(
+        "a share that shifts the numbers is taken for one that has numbers of its own",
+        DOCKER,
+        "    shift = int(read[1][2]) - token_at[1]\n",
+        "    shift = 0\n",
+    ),
+    mutant(
+        "more numbers than were asked for are read as if they were the right ones",
+        DOCKER,
+        "    if len(read) != 3 or itself is None or token_at is None or known is None:\n",
+        "    if len(read) < 3 or itself is None or token_at is None or known is None:\n",
+    ),
+    mutant(
+        "a container is not asked for the numbers of its directory",
+        DOCKER,
+        '    f"stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"\n',
+        '    "true; }"\n',
+    ),
+    on_windows(
+        mutant(
+            "on Windows a directory behind a link is reached",
+            DOCKER,
+            "        if Path(os.path.realpath(cwd)) != cwd:\n",
+            "        if False:\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "on Windows a file is reached as a directory",
+            DOCKER,
+            "        if not stat.S_ISDIR(told.st_mode):\n",
+            "        if False:\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "on Linux a directory behind a link is reached",
+            DOCKER,
+            "                below = os.open(part, how | os.O_NOFOLLOW, dir_fd=at)\n",
+            "                below = os.open(part, how, dir_fd=at)\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "on Linux a file is reached as a directory",
+            DOCKER,
+            '        how = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY\n',
+            '        how = getattr(os, "O_PATH", os.O_RDONLY)\n',
+        )
+    ),
+    mutant(
         "a comma in a path ends a field of a mount",
         DOCKER,
         """    if any(character in field for character in ',"\\r\\n'):\n""",
@@ -2714,20 +2788,114 @@ _DOCKER_KEPT = (
     mutant(
         "a session whose mode has changed keeps its container",
         DOCKER,
-        "        if (container.mode, container.cwd) != (mode, cwd):\n",
-        "        if container.cwd != cwd:\n",
+        "        if container.mode != mode:\n",
+        "        if False:\n",
     ),
     mutant(
-        "a session that works in another directory keeps its container",
+        "a session goes wherever the name of its directory leads now",
         DOCKER,
-        "        if (container.mode, container.cwd) != (mode, cwd):\n",
-        "        if container.mode != mode:\n",
+        "            if first != real:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "another directory under the name of the working directory keeps the container",
+        DOCKER,
+        "        if looked is None or looked[0] != container.itself:\n",
+        "        if looked is None:\n",
+    ),
+    mutant(
+        "a working directory that is gone keeps its container",
+        DOCKER,
+        "    try:\n        itself = _reached(cwd)\n    except OSError:\n        return None\n",
+        "    try:\n        itself = _reached(cwd)\n    except OSError:\n        itself = None\n",
     ),
     mutant(
         "a protected name that came from elsewhere is not noticed before a command",
         DOCKER,
-        "        if container.shape is not None and container.shape != await asyncio.to_thread(_seen, cwd):\n",
+        "        if container.shape is not None and container.shape != looked[1]:\n",
         "        if False:\n",
+    ),
+    mutant(
+        "a container that was given another directory runs commands",
+        DOCKER,
+        "        if same is False:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a container that cannot say which directory it has holds commands fully",
+        DOCKER,
+        "        if same is None:\n            container.doubt = container.doubt or _UNASKED\n",
+        "",
+    ),
+    mutant(
+        "what cannot be asked hides what was found in the directory",
+        DOCKER,
+        "            container.doubt = container.doubt or _UNASKED\n",
+        "            container.doubt = _UNASKED\n",
+    ),
+    mutant(
+        "no container is asked which directory it was given",
+        DOCKER,
+        "        if not _ASKS:\n            return\n",
+        "        if True:\n            return\n",
+    ),
+    on_windows(
+        mutant(
+            "on Windows a container is asked although the directory is held",
+            DOCKER,
+            '_ASKS = sys.platform != "win32"\n',
+            "_ASKS = True\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "on Linux no container is asked which directory it was given",
+            DOCKER,
+            '_ASKS = sys.platform != "win32"\n',
+            "_ASKS = False\n",
+        )
+    ),
+    mutant(
+        "a working directory whose name leads through a link is mounted",
+        DOCKER,
+        "            itself = _reached(cwd)\n",
+        "            itself = _itself(cwd)\n",
+    ),
+    mutant(
+        "a directory that cannot be looked at is said to lie behind a link",
+        DOCKER,
+        "            if isinstance(error, NotADirectoryError) or error.errno in (errno.ELOOP, errno.EMLINK):\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "a directory behind a link is said to be one that cannot be looked at",
+        DOCKER,
+        "            if isinstance(error, NotADirectoryError) or error.errno in (errno.ELOOP, errno.EMLINK):\n",
+        "            if False:\n",
+    ),
+    on_windows(
+        mutant(
+            "the directory is not held while a container is made",
+            DOCKER,
+            "            hold = _anchored(cwd)\n",
+            "            hold = None\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the directory stays held once its container is made",
+            DOCKER,
+            "                _released(layout.hold)\n",
+            "                pass\n",
+        )
+    ),
+    on_windows(
+        mutant(
+            "the directory stays held when the look at it fails",
+            DOCKER,
+            "    except BaseException:\n        _released(hold)\n        raise\n",
+            "    except BaseException:\n        raise\n",
+        )
     ),
     mutant(
         "a directory that cannot be looked at stops a command in another way",
@@ -2736,10 +2904,11 @@ _DOCKER_KEPT = (
         "        return shape(cwd)\n    except KeyError:\n",
     ),
     mutant(
-        "a working directory that is not there is left to the engine",
+        "a working directory that is not there is said to be one that cannot be looked at",
         DOCKER,
-        "    if not cwd.is_dir():\n"
-        '        raise SandboxUnavailableError(f"the working directory {cwd} is not there")\n',
+        "        except FileNotFoundError:\n"
+        "            # Docker Desktop would make a source that is not there, on this machine.\n"
+        '            raise SandboxUnavailableError(f"the working directory {cwd} is not there") from None\n',
         "",
     ),
     mutant(
@@ -2812,7 +2981,7 @@ _DOCKER_KEPT = (
     mutant(
         "the directory is not looked at as the user of commands",
         DOCKER,
-        "        await self._usable(container, read_only=layout.read_only)\n",
+        "        await self._usable(container, layout)\n",
         "",
     ),
     mutant(
@@ -3395,6 +3564,36 @@ _DOCKER_REAL = (
         "            if cwd in real.parents:\n"
         "                first = cwd / real.relative_to(cwd).parts[0]\n",
         "            if True:\n                first = cwd / entry.name\n",
+    ),
+    mutant(
+        "with a real engine: another directory under the name of the working directory keeps the container",
+        DOCKER,
+        "        if looked is None or looked[0] != container.itself:\n",
+        "        if looked is None:\n",
+    ),
+    on_linux(
+        mutant(
+            "with a real engine: a container that was given another directory runs commands",
+            DOCKER,
+            "        if same is False:\n",
+            "        if False:\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "with a real engine: a container is asked for the numbers of another directory",
+            DOCKER,
+            '    f"stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"\n',
+            '    f"stat -c %d:%i / {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"\n',
+        )
+    ),
+    on_linux(
+        mutant(
+            "with a real engine: a container is not asked for the numbers of its directory",
+            DOCKER,
+            '    f"stat -c %d:%i . {PROBE} {PROBE}/{_KNOWN} 2>/dev/null; true; }}"\n',
+            '    "true; }"\n',
+        )
     ),
     mutant(
         "with a real engine: only what a link names is read-only, and not the way there",

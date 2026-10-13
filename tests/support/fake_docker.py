@@ -183,6 +183,7 @@ def execute(argv: list[str], how: dict[str, Any]) -> int:
         )
         answer = how.get("usable", "readable" if readonly else "writable")
         print(answer, flush=True)
+        numbers(known, workdir, str(how.get("numbers", "same")))
         return int(how.get("usable_exit", 0))
     if how.get("exec") == "refused":
         return fail(1, "Error response from daemon: the container is paused")
@@ -198,6 +199,34 @@ def execute(argv: list[str], how: dict[str, Any]) -> int:
     note(started=child.pid)
     code = child.wait()
     return STOPPED if code in (STOPPED, -signal.SIGTERM, -9) else code
+
+
+def numbers(known: dict[str, Any], workdir: str, way: str) -> None:
+    """Say by which numbers a container knows three directories, as its ``stat`` would.
+
+    They are the working directory, the directory of the token, and a directory in that
+    one. A test says in which way the numbers are to differ from those of this machine:
+    ``none`` for an image without the program, ``shifted`` for a share that adds to every
+    inode and has devices of its own, ``unlike`` for numbers that have nothing to do with
+    those of this machine, ``another`` and ``another-device`` for a working directory that
+    is not the one that was mounted.
+    """
+    if way == "none":
+        return
+    sources = {mount["target"]: mount["source"] for mount in known["mounts"]}
+    probe = Path(sources[PROBE])
+    for at, source in enumerate((Path(sources[workdir]), probe, probe / "known")):
+        told = source.stat()
+        device, inode = told.st_dev, told.st_ino
+        if way == "shifted":
+            device, inode = 73, inode + 2
+        if at == 0 and way == "another":
+            inode += 1
+        if at == 0 and way == "another-device":
+            device += 1
+        if at == 2 and way == "unlike":
+            inode += 5
+        print(f"{device}:{inode}", flush=True)
 
 
 def stop(name: str, how: dict[str, Any]) -> int:

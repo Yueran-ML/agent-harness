@@ -8,6 +8,7 @@ show is whether a command is held: that is tried with a real engine.
 
 import asyncio
 import csv
+import errno
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import pytest
 
@@ -28,7 +29,7 @@ from columbina.process import Completed
 from columbina.sandbox import SANDBOX, Mode, SandboxUnavailableError, Strength, docker
 from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
-from support.links import link_directory
+from support.links import link_directory, unlink_directory
 from support.processes import alive, end, gone, python
 
 pytestmark = pytest.mark.timeout(90)
@@ -310,18 +311,304 @@ async def test_a_session_whose_mode_has_changed_gets_another_container(
     assert mounted(engine.of("run")[1])[:-1] == docker.mounts(mode, work, target)
 
 
-async def test_a_session_that_works_in_another_directory_gets_another_container(
+async def test_a_session_whose_directory_leads_elsewhere_later_runs_no_command(
     provider: Docker, engine: Engine, session: Session, work: Path, tmp_path: Path
 ) -> None:
     other = Path(os.path.realpath(tmp_path)) / "other"
     other.mkdir()
     await ran(provider, session, work, "pass")
+    before = engine.verbs()
 
-    done = await ran(provider, session, other, "import os; print(os.getcwd())")
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, other, "open('ran', 'w').close()")
 
-    assert Path(done.output.strip()).samefile(other)
-    assert engine.verbs() == [*FIRST, "rm", "ps", "run", "usable", "command", "stop"]
+    assert str(refused.value) == (
+        f"the working directory of this session was {work} when its first command ran, and it "
+        f"leads to {other} now. No command is run there. Tell the user that the session has "
+        "to be started again"
+    )
+    assert engine.verbs() == before
+    assert not (other / "ran").exists()
+    # In the directory that it had, the session goes on.
+    assert (await ran(provider, session, work, "print('on')")).output.strip() == "on"
+
+
+async def test_a_name_that_is_made_to_lead_elsewhere_does_not_take_its_session_along(
+    provider: Docker, ctx: Context, sessions: Sessions, tmp_path: Path
+) -> None:
+    # The file tools hold a session to the place where its directory was at first. So do
+    # the commands.
+    root = Path(os.path.realpath(tmp_path))
+    (root / "mine").mkdir()
+    (root / "private").mkdir()
+    link_directory(root / "name", root / "mine")
+    session = sessions.create(ctx, root / "name")
+    await ran(provider, session, root / "name", "pass")
+    unlink_directory(root / "name")
+    link_directory(root / "name", root / "private")
+
+    with pytest.raises(SandboxUnavailableError, match="has to be started again"):
+        await ran(provider, session, root / "name", "open('ran', 'w').close()")
+
+    assert not (root / "private" / "ran").exists()
+
+
+@pytest.mark.parametrize("mode", ["workspace-write", "read-only"])
+async def test_a_directory_put_in_the_place_of_the_working_directory_gets_a_container_of_its_own(
+    provider: Docker, engine: Engine, session: Session, work: Path, mode: Mode
+) -> None:
+    await ran(provider, session, work, "pass", mode=mode)
+    work.rename(work.parent / "moved")
+    work.mkdir()
+    (work / "new.txt").write_text("")
+
+    done = await ran(
+        provider, session, work, "import os; print(sorted(os.listdir('.')))", mode=mode
+    )
+
+    # A real container would go on showing the directory that was moved.
+    assert done.output.strip() == "['new.txt']"
+    assert engine.verbs().count("run") == 2
     assert len(engine.containers()) == 1
+
+
+async def test_a_directory_that_went_away_costs_the_container_where_nothing_is_numbered(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No numbers to tell one directory from another, and in this mode no shape either.
+    # That the directory is gone is seen all the same.
+    there = [True]
+
+    def unnumbered(cwd: Path) -> None:
+        if not there[0]:
+            raise FileNotFoundError(errno.ENOENT, "it is gone")
+
+    monkeypatch.setattr(docker, "_reached", unnumbered)
+    await ran(provider, session, work, "pass", mode="read-only")
+    there[0] = False
+
+    with pytest.raises(SandboxUnavailableError, match="is not there"):
+        await ran(provider, session, work, "pass", mode="read-only")
+
+    assert engine.containers() == {}
+
+
+async def test_a_directory_that_could_not_be_looked_through_costs_the_container(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # It is there, and what is protected in it could not be listed for a moment: whether
+    # that is still what the container was made for is not known.
+    await ran(provider, session, work, "pass")
+    really_look = docker.shape
+    failed: list[Path] = []
+
+    def fails_once(cwd: Path) -> tuple[tuple[str, str], ...]:
+        if not failed:
+            failed.append(cwd)
+            raise PermissionError(errno.EACCES, "this user may not list the directory")
+        return really_look(cwd)
+
+    monkeypatch.setattr(docker, "shape", fails_once)
+
+    done = await ran(provider, session, work, "print('said')")
+
+    assert (done.output.strip(), done.notes) == ("said", ())
+    assert engine.verbs() == [*FIRST, "rm", "ps", "run", "usable", "command", "stop"]
+
+
+async def test_a_container_that_was_given_another_directory_runs_no_command(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Another directory or a link was put in the place between the look and the mount.
+    monkeypatch.setattr(docker, "_ASKS", True)
+    engine.told(numbers="another")
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "open('ran', 'w').close()")
+
+    assert str(refused.value) == (
+        "the container was given another directory than the working directory of this "
+        "session. Something put another directory or a link in its place while the container "
+        "was made. No command is run in it"
+    )
+    assert engine.verbs() == ["info", "run", "usable", "rm", "ps"]
+    assert engine.containers() == {}
+    assert not (work / "ran").exists()
+
+
+async def test_a_directory_with_the_same_number_on_another_device_is_another_directory(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(docker, "_ASKS", True)
+    engine.told(numbers="another-device")
+
+    with pytest.raises(SandboxUnavailableError, match="was given another directory"):
+        await ran(provider, session, work, "pass")
+
+    assert engine.containers() == {}
+
+
+async def test_through_a_share_that_shifts_every_number_alike_a_directory_is_known(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(docker, "_ASKS", True)
+    engine.told(numbers="shifted")
+
+    done = await ran(provider, session, work, "print('held')", expected="full")
+
+    assert done.output.strip() == "held"
+    assert provider.strength(session) == "full"
+
+
+@pytest.mark.parametrize("numbers", ["none", "unlike"])
+async def test_a_container_that_cannot_be_asked_which_directory_it_was_given_holds_in_part(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    numbers: str,
+) -> None:
+    # An image without the program that says the numbers, or an engine that shows the files
+    # by numbers of its own.
+    monkeypatch.setattr(docker, "_ASKS", True)
+    engine.told(numbers=numbers)
+
+    done = await ran(provider, session, work, "print('ran')")
+
+    assert done.output.strip() == "ran"
+    assert provider.strength(session) == "partial"
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "pass", expected="full")
+    assert "a container cannot be asked which directory it was given" in str(refused.value)
+
+
+async def test_what_was_found_in_the_directory_is_said_rather_than_what_cannot_be_asked(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def doubt(cwd: Path) -> str | None:
+        return "a door stands open"
+
+    monkeypatch.setattr(docker, "_ASKS", True)
+    monkeypatch.setattr(docker, "_doubt", doubt)
+    engine.told(numbers="none")
+    await ran(provider, session, work, "pass")
+
+    with pytest.raises(SandboxUnavailableError, match="now a door stands open"):
+        await ran(provider, session, work, "pass", expected="full")
+
+
+async def test_whether_a_container_is_asked_is_a_matter_of_the_system(
+    provider: Docker, engine: Engine, session: Session, work: Path
+) -> None:
+    engine.told(numbers="another")
+
+    if WINDOWS:
+        # This program holds the directory while a container is made, so nothing can be
+        # put in its place, and what a share makes of the numbers does not matter.
+        assert (await ran(provider, session, work, "print('held')")).output.strip() == "held"
+    else:
+        with pytest.raises(SandboxUnavailableError, match="was given another directory"):
+            await ran(provider, session, work, "pass")
+
+
+async def test_a_working_directory_that_is_reached_through_a_link_now_gets_no_container(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A directory a moment ago, when its name was resolved, and a link since.
+    def through_a_link(cwd: Path) -> NoReturn:
+        raise OSError(errno.ELOOP, "a link lies on the way")
+
+    monkeypatch.setattr(docker, "_reached", through_a_link)
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "pass")
+
+    assert str(refused.value) == (
+        f"the working directory {work} is no directory that can be reached without following "
+        "a link. Something may have been put in its place. No container is made"
+    )
+    assert engine.verbs() == ["info"]
+
+
+async def test_a_working_directory_that_cannot_be_looked_through_gets_no_container(
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fails(cwd: Path) -> NoReturn:
+        raise PermissionError(13, "this user may not list the directory")
+
+    monkeypatch.setattr(docker, "_led", fails)
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "pass")
+
+    assert str(refused.value) == (
+        f"the working directory {work} could not be looked at: this user may not list the directory"
+    )
+    assert engine.verbs() == ["info"]
+    # Nothing is left of the attempt, and nothing holds the directory.
+    work.rename(work.parent / "aside")
+
+
+if WINDOWS:
+
+    async def test_while_a_container_is_made_nothing_can_be_put_in_the_place_of_its_directory(
+        provider: Docker, engine: Engine, session: Session, work: Path
+    ) -> None:
+        engine.held.add("run")
+        making = asyncio.ensure_future(ran(provider, session, work, "print('held')"))
+        await engine.holding.wait()
+
+        with pytest.raises(PermissionError):
+            work.rename(work.parent / "aside")
+        engine.go_on.set()
+
+        assert (await making).output.strip() == "held"
+        # Held for that long, and no longer.
+        work.rename(work.parent / "aside")
+
+    @pytest.mark.parametrize("how", [{"run": "no-image"}, {"usable": "nothing"}])
+    async def test_a_directory_is_let_go_of_when_no_container_could_be_made(
+        provider: Docker, engine: Engine, session: Session, work: Path, how: dict[str, object]
+    ) -> None:
+        engine.told(**how)
+
+        with pytest.raises(SandboxUnavailableError):
+            await ran(provider, session, work, "pass")
+
+        work.rename(work.parent / "aside")
 
 
 async def test_a_directory_that_is_named_through_a_link_is_the_same_directory(

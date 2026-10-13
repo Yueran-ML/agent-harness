@@ -146,8 +146,18 @@ def mounted(argv: list[str]) -> list[str]:
     return [argv[at + 1] for at, word in enumerate(argv) if word == "--mount"]
 
 
+async def unseen(began: list[asyncio.SubprocessTransport], within: float = 10.0) -> list[int]:
+    """Wait until the event loop has seen each program end, and name those it has not seen."""
+    deadline = time.monotonic() + within
+    while True:
+        left = [one.get_pid() for one in began if one.get_returncode() is None]
+        if not left or time.monotonic() >= deadline:
+            return left
+        await asyncio.sleep(0.01)
+
+
 @pytest.fixture
-async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Engine:
+async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Engine]:
     home = tmp_path / "engine"
     home.mkdir()
     program = tmp_path / "bin" / ("docker.exe" if WINDOWS else "docker")
@@ -160,6 +170,7 @@ async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Engine:
     made = Engine(home, program)
     loop = asyncio.get_running_loop()
     really_start: Any = loop.subprocess_exec
+    began: list[asyncio.SubprocessTransport] = []
 
     async def start(factory: Any, name: str, *arguments: str, **options: Any) -> Any:
         if name != made.program and name not in made.also:
@@ -170,13 +181,20 @@ async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Engine:
         if what in made.fails:
             raise OSError(8, "Exec format error")
         started = await really_start(factory, sys.executable, str(FAKE), *arguments, **options)
+        began.append(started[0])
         if what in made.held:
             made.holding.set()
             await made.go_on.wait()
         return started
 
     monkeypatch.setattr(loop, "subprocess_exec", start)
-    return made
+    yield made
+    # A program whose caller left while it was started is ended once it is there, and nobody
+    # waits for that. The event loop has to see every program end before it is closed: Python
+    # warns of a process that was not seen to end, and here a warning is an error.
+    made.go_on.set()
+    left = await unseen(began)
+    assert not left, f"the event loop did not see these programs of the stand-in end: {left}"
 
 
 @pytest.fixture

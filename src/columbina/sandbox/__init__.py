@@ -33,6 +33,12 @@ whoever decides about commands goes by that.
 A provider may run commands in another place than this machine, and that
 place has a shell of its own. The provider names it, and the tool that takes
 commands from a model writes for that shell.
+
+The provider ``docker`` comes with the sandbox, and is described where it is
+written, in :mod:`columbina.sandbox.docker`. It runs the commands of a
+session in a container that has the working directory and nothing else of
+this machine. It is registered whether or not the config chooses it, and
+asks nothing of Docker before a command is to run in a container.
 """
 
 import os
@@ -40,7 +46,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from columbina import process, shells
 from columbina.agent import RUNTIME_FACTS, Facts
@@ -54,12 +60,15 @@ from columbina.sandbox.base import (
     SandboxUnavailableError,
     Strength,
 )
+from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, EventData, Projection, Session, SessionEvent
 
 __all__ = [
     "PROTECTED",
     "SANDBOX",
     "Config",
+    "Docker",
+    "DockerConfig",
     "Mode",
     "Sandbox",
     "SandboxModeEvent",
@@ -165,11 +174,15 @@ class Config(BaseModel):
 
     Attributes:
         mode: The mode of a session whose log names none.
-        provider: The name of the provider that runs commands.
+        provider: The name of the provider that runs commands: ``none``, for
+            this machine as it is, ``docker``, for a container, or one that
+            another plugin brings.
+        docker: The config of the provider ``docker``.
     """
 
     mode: Mode = "workspace-write"
     provider: str = "none"
+    docker: DockerConfig = Field(default_factory=DockerConfig)
 
 
 class Sandbox:
@@ -283,6 +296,11 @@ def apply(ctx: Context, config: Config) -> None:
     sandbox = Sandbox(config.mode, config.provider)
     ctx.use(SESSIONS).declare(ctx, SandboxModeEvent)
     sandbox.providers.add(ctx, "none", _Unconfined())
+    # The provider for containers comes with the sandbox, so that it is there when the tool
+    # for commands asks which shell it is to write for. It touches nothing until it is used.
+    container = Docker(config.docker)
+    sandbox.providers.add(ctx, "docker", container)
+    ctx.effect(lambda: container.close)
     seam = ctx.use(FS)
     seam.grants.add(ctx, "sandbox", sandbox.grants)
     seam.restrictions.add(ctx, "sandbox", sandbox.restricts)

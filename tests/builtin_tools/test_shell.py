@@ -783,7 +783,7 @@ def test_the_shell_is_the_one_of_this_machine_unless_commands_run_elsewhere() ->
 
 # Commands that run somewhere else
 
-READ_AND_RUN = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null'
+READ_AND_RUN = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null 2>&1'
 CHANGED = (
     "The command was not run: the place where the sandbox runs commands is another one "
     "than when this tool was made. Start the program again."
@@ -943,6 +943,21 @@ async def test_a_tool_for_elsewhere_does_not_write_for_the_shell_of_this_machine
     assert outcome.error.code == "SANDBOX_UNAVAILABLE"
     assert outcome.text == CHANGED
     assert here.asked == []
+
+
+async def test_what_ran_a_command_has_to_say_of_the_run_follows_the_exit_code(
+    ctx: Context, tmp_path: Path
+) -> None:
+    telling = Holding(notes=("The container was replaced.", "Nothing else is new."))
+    bench = await loaded(ctx, tmp_path, sandbox={"provider": "telling"}, provider=telling)
+
+    said = await bench.said("echo hi")
+
+    assert said == ("hi\n[exit code 0]\n(The container was replaced.)\n(Nothing else is new.)")
+
+
+async def test_a_run_of_which_nothing_is_to_be_said_ends_with_the_exit_code(bench: Bench) -> None:
+    assert (await bench.said("echo hi")).endswith("[exit code 0]")
 
 
 # What the checks and the permissions are told

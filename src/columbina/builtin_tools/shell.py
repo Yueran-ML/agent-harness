@@ -75,6 +75,11 @@ command goes on the input, as with PowerShell, and a fixed line reads it
 there and runs it with no input of its own. In the other place it is one
 argument of bash in the end, so it may be as long as an argument may be
 there and no longer.
+
+The fixed line also makes the command write its errors where it writes its
+output. From another place the two come back on two ways, and nothing says
+which of them arrives first: an error would show up lines after the output
+that it belongs to. Written to one place, they keep their order.
 """
 
 import logging
@@ -159,7 +164,7 @@ def _as_an_argument(shell: str, command: str) -> tuple[list[str], bytes | None]:
     return [shell, "--noprofile", "--norc", "-c", command], None
 
 
-_READ_AND_RUN_BASH = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null'
+_READ_AND_RUN_BASH = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null 2>&1'
 
 
 def _on_the_input(shell: str, command: str) -> tuple[list[str], bytes | None]:
@@ -379,6 +384,8 @@ def shell_tool(
             else:
                 complete = replace(saved, what="output")
                 lines.append(complete.told())
+        # What ran the command may have something to say of the run.
+        lines.extend(f"({note})" for note in done.notes)
         return ShellResult(output + "\n".join(lines), complete)
 
     return Tool(

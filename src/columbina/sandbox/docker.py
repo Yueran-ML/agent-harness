@@ -34,22 +34,34 @@ killing every process of that user, which the kernel does in one go and
 which needs no record of what was started.
 """
 
+import asyncio
+import contextlib
+import logging
 import os
 import re
+import secrets
+import shutil
+import subprocess
 import sys
-from collections.abc import Sequence
-from dataclasses import dataclass
+import tempfile
+import time
+from collections.abc import Callable, Coroutine, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from columbina.sandbox.base import PROTECTED, Mode, SandboxUnavailableError
+from columbina import process
+from columbina.process import Completed, Writable
+from columbina.sandbox.base import PROTECTED, Mode, SandboxUnavailableError, Strength
+from columbina.session import Session
 
 __all__ = [
     "DEFAULT_IMAGE",
     "HOME",
     "PROBE",
+    "Docker",
     "DockerConfig",
     "Engine",
     "asked",
@@ -77,7 +89,69 @@ PROBE = "/run/columbina-probe"
 HOME = "/tmp/columbina-home"
 """The home directory of a command, in its container. It is made for each command."""
 
+logger = logging.getLogger(__name__)
+
 _PROGRAM = "docker.exe" if sys.platform == "win32" else "docker"
+
+_WORKSPACE = "/workspace"
+"""Where a container has the working directory, on a machine whose paths it cannot have."""
+
+_ASK_SECONDS = 30.0
+"""How long the engine has for an answer."""
+
+_STOP_SECONDS = 10.0
+"""How long stopping what a command left may take, all rounds of it together."""
+
+_ROUND_SECONDS = 0.1
+"""How long the end of a program that asked for a command is waited for between two rounds."""
+
+_REMOVE_SECONDS = 30.0
+"""How long the engine has to remove a container."""
+
+_KEEPER_SECONDS = 10.0
+"""How long what kept a container is waited for once the container is let go."""
+
+_LOOK_SECONDS = 5.0
+"""How often the containers are looked through for those that nobody needs."""
+
+_ATTEMPTS = 3
+"""How many containers a command looks at before it gives up: the one that its session
+has, one that was being made for it, and a new one."""
+
+_NEW_ONE = (
+    "The next command gets a new container, without what was installed outside the working "
+    "directory."
+)
+_ENDED = (
+    f"The container ended while this command ran, so the command may have been cut short. "
+    f"{_NEW_ONE}"
+)
+_LEFT = (
+    "What this command left running in the container could not be stopped, so the container "
+    f"was removed. {_NEW_ONE}"
+)
+_RESHAPED = (
+    "This command changed what .git or .columbina is at the top of the working directory. "
+    f"{_NEW_ONE} There a command cannot write what is new of the two."
+)
+"""What a result says when a command cost its session the container."""
+
+if sys.platform == "win32":  # pragma: windows only
+    _APART: dict[str, Any] = {"creationflags": subprocess.CREATE_NO_WINDOW}
+    """What keeps a container has no window, and hears nothing of the keys of the user."""
+
+    def _me() -> tuple[int, int]:
+        """Return the numbers of the user and the group of this program, which Windows has not."""
+        return 0, 0
+
+else:  # pragma: posix only
+    _APART: dict[str, Any] = {"start_new_session": True}
+    """What keeps a container is in a session of its own, away from the keys of the user."""
+
+    def _me() -> tuple[int, int]:
+        """Return the numbers of the user and the group of this program."""
+        return os.getuid(), os.getgid()
+
 
 _OLDEST = 25
 """The first version of the engine that can leave out what is mounted below a directory."""
@@ -378,24 +452,91 @@ def mounts(mode: Mode, cwd: Path, target: str) -> list[str]:
         protected names at its top are or lead to, read-only, as far as it
         lies in the working directory.
     """
+    return _laid(mode, cwd, target, _led(cwd))[1]
+
+
+def _laid(
+    mode: Mode, cwd: Path, target: str, led: Sequence[tuple[str, str, Path]]
+) -> tuple[bool, list[str]]:
+    """Return whether a container gets a directory read-only as a whole, and its mounts.
+
+    Args:
+        mode: The mode of the session.
+        cwd: The working directory, with every link on its path resolved.
+        target: Where the container has it.
+        led: The protected names at its top, from one look at it.
+    """
     if mode == "danger-full-access":
-        return [_mount(cwd, target, readonly=False)]
+        return False, [_mount(cwd, target, readonly=False)]
     # A session that was started inside a protected directory writes nothing there either.
     whole = mode == "read-only" or any(part.casefold() in PROTECTED for part in cwd.parts)
     over: dict[str, Path] = {}
     if not whole:
-        for _, _, real in _led(cwd):
+        for _, _, real in led:
             if real == cwd:
                 # A protected name that leads to the directory itself protects all of it.
                 whole = True
             elif cwd in real.parents and (real.is_dir() or real.is_file()):
                 over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real
     if whole:
-        return [_mount(cwd, target, readonly=True)]
-    return [
+        return True, [_mount(cwd, target, readonly=True)]
+    return False, [
         _mount(cwd, target, readonly=False),
         *(_mount(real, inside, readonly=True) for inside, real in sorted(over.items())),
     ]
+
+
+def _seen(cwd: Path) -> tuple[tuple[str, str], ...] | None:
+    """Return the shape of a directory, or ``None`` if the directory cannot be looked at."""
+    try:
+        return shape(cwd)
+    except OSError:
+        # It is gone, or it may not be read. Either way it is not what a container was made for.
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _Layout:
+    """What a container for a directory is given, worked out on the disk in one go.
+
+    Attributes:
+        mounted: Its mounts.
+        read_only: Whether it gets the directory read-only as a whole.
+        shape: What the protected names at the top of the directory are, if
+            the mounts depend on that.
+        probe: A directory of this machine that holds a token.
+        token: The token.
+    """
+
+    mounted: list[str]
+    read_only: bool
+    shape: tuple[tuple[str, str], ...] | None
+    probe: Path
+    token: str
+
+
+def _layout(mode: Mode, cwd: Path, target: str) -> _Layout:
+    """Work out what a container for a directory is given, and make the directory of its token.
+
+    The directory is looked at once. The mounts and the shape that is kept
+    of them come from that one look, so that the two cannot disagree.
+
+    Raises:
+        SandboxUnavailableError: The directory is not there. Docker Desktop
+            would make a source that is not there, on this machine.
+    """
+    if not cwd.is_dir():
+        raise SandboxUnavailableError(f"the working directory {cwd} is not there")
+    led = _led(cwd)
+    read_only, mounted = _laid(mode, cwd, target, led)
+    told = tuple((name, kind) for name, kind, _ in led) if mode == "workspace-write" else None
+    probe = Path(tempfile.mkdtemp(prefix="columbina-probe-"))
+    token = secrets.token_hex(16)
+    (probe / "token").write_text(token, encoding="ascii")
+    # What keeps a container is a root that may read no more than anyone may.
+    probe.chmod(0o755)
+    (probe / "token").chmod(0o644)
+    return _Layout(mounted, read_only, told, probe, token)
 
 
 def kept(
@@ -478,6 +619,12 @@ def removed(program: str, name: str) -> list[str]:
     return [program, "rm", "--force", name]
 
 
+def _unreachable(said: str) -> bool:
+    """Tell whether what the ``docker`` program wrote says that no engine answered it."""
+    low = said.casefold()
+    return any(words in low for words in _UNREACHABLE)
+
+
 def unavailable(image: str, said: str) -> str:
     """Say why no container could be started, in words for whoever can put it right.
 
@@ -491,7 +638,7 @@ def unavailable(image: str, said: str) -> str:
             f"the image {image} is not on this machine, and no image is fetched for a command. "
             f"Fetch it with: docker pull {image}"
         )
-    if any(words in low for words in _UNREACHABLE):
+    if _unreachable(said):
         return (
             "the Docker engine does not answer. Start Docker Desktop, or the service of Docker, "
             "and run the command again"
@@ -499,3 +646,558 @@ def unavailable(image: str, said: str) -> str:
     lines = [line.strip() for line in said.splitlines() if line.strip()]
     told = lines[0][:300] if lines else "it did not say why"
     return f"Docker could not start a container: {told}"
+
+
+_T = TypeVar("_T")
+
+
+async def _to_the_end(doing: Coroutine[Any, Any, _T]) -> _T:
+    """Wait for something to its end, also when whoever waits is cancelled meanwhile.
+
+    What is waited for here leaves something behind if it is cut short: a
+    container that nobody keeps, or a command that nobody stops.
+
+    Raises:
+        asyncio.CancelledError: Whoever waited was cancelled. This is raised
+            when the thing is done, and what it gave or failed with is lost.
+    """
+    task = asyncio.ensure_future(doing)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        if not task.cancelled() and task.exception() is not None:
+            logger.error(
+                "what was done for a container failed after its caller had left",
+                exc_info=task.exception(),
+            )
+        raise asyncio.CancelledError
+    return task.result()
+
+
+async def _ended(keeper: asyncio.subprocess.Process) -> None:
+    """Wait for what kept a container to end, and end it if it does not."""
+    try:
+        await asyncio.wait_for(keeper.wait(), _KEEPER_SECONDS)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            keeper.kill()
+        await keeper.wait()
+
+
+@dataclass(slots=True, eq=False)
+class _Kept:
+    """A container that is kept for a session.
+
+    Attributes:
+        session: The session.
+        mode: The mode that the container was made for.
+        cwd: The working directory that it was made for, on this machine.
+        target: Where the container has that directory.
+        program: The ``docker`` program that made it.
+        user: The user that commands run as in it.
+        name: Its name.
+        probe: The directory of this machine that holds its token.
+        shape: What the protected names at the top of the directory were
+            when it was made, if its mounts depend on that.
+        used: When a command last ran in it, on the clock that only goes on.
+        keeper: The program whose input keeps it alive.
+        gone: Whether it has been let go.
+    """
+
+    session: Session
+    mode: Mode
+    cwd: Path
+    target: str
+    program: str
+    user: str
+    name: str
+    probe: Path
+    shape: tuple[tuple[str, str], ...] | None
+    used: float
+    keeper: asyncio.subprocess.Process | None = None
+    gone: bool = False
+
+    def alive(self) -> bool:
+        """Tell whether what keeps the container is still there."""
+        return self.keeper is not None and self.keeper.returncode is None
+
+
+class Docker:
+    """The provider: a command runs in a container that is kept for its session.
+
+    A container is made when the first command of a session comes, and the
+    commands of the session run in it one after another. After each of them
+    everything that it left running is stopped. A container is let go when
+    its session has another mode or directory, when the session is over,
+    when no command came for a while, and whenever it is in doubt what runs
+    in it. Its life hangs on a pipe that this program holds, so no container
+    outlives this program, however it ends.
+
+    Args:
+        config: The config of the provider.
+    """
+
+    shell: str | None = "bash"
+
+    def __init__(self, config: DockerConfig) -> None:
+        self._config = config
+        self._kept: dict[str, _Kept] = {}
+        self._starting: dict[str, asyncio.Future[_Kept]] = {}
+        self._turns: dict[str, asyncio.Lock] = {}
+        self._engine: Engine | None = None
+        self._looking: asyncio.Task[None] | None = None
+        self._over = asyncio.Event()
+
+    @property
+    def strength(self) -> Strength:
+        """How well commands are held: fully, unless a container has a network."""
+        return "full" if self._config.network == "none" else "partial"
+
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        session: Session,
+        mode: Mode,
+        cwd: Path,
+        stdin: bytes | None,
+        timeout_seconds: float,
+        overflow: Callable[[], Writable] | None,
+        max_overflow_bytes: int,
+    ) -> Completed:
+        """Run a command in the container of its session, and say how it ended.
+
+        The command is one of the place where the container runs: its
+        program is looked for there. The arguments after the directory are
+        those of :func:`columbina.process.run`.
+
+        Raises:
+            SandboxUnavailableError: No container could be made, or the
+                command could not be handed to it. The command was not run.
+        """
+        async with self._turns.setdefault(session.id, asyncio.Lock()):
+            real = Path(await asyncio.to_thread(os.path.realpath, cwd))
+            container = await self._held(session, mode, real)
+            return await self._ran(
+                container, argv, stdin, timeout_seconds, overflow, max_overflow_bytes
+            )
+
+    async def close(self) -> None:
+        """Let every container go. No command is run afterwards."""
+        self._over.set()
+        if self._looking is not None:
+            # Whatever became of the look, the containers are let go below.
+            await asyncio.gather(self._looking, return_exceptions=True)
+        # A container that is being made is let go when it is there.
+        await asyncio.gather(*self._starting.values(), return_exceptions=True)
+        await asyncio.gather(
+            *(
+                self._let_go(container, "the program ends")
+                for container in list(self._kept.values())
+            )
+        )
+
+    async def _held(self, session: Session, mode: Mode, cwd: Path) -> _Kept:
+        """Return the container of a session for a mode and a directory, and make it if need be.
+
+        The container that the session has may not be the one for this
+        command, and then it is let go and another is made. That is done a
+        few times and no more: something may end the containers of a session
+        as they are made, or go on changing its directory.
+
+        Raises:
+            SandboxUnavailableError: No container could be made, or those
+                that were there were of no use.
+        """
+        why = None
+        for _ in range(_ATTEMPTS):
+            container = await self._at_hand(session, mode, cwd)
+            why = await self._outdated(container, mode, cwd)
+            if why is None:
+                return container
+            await _to_the_end(self._let_go(container, why))
+        raise SandboxUnavailableError(
+            f"{_ATTEMPTS} containers in a row were of no use for this command. Of the last "
+            f"one: {why}"
+        )
+
+    async def _at_hand(self, session: Session, mode: Mode, cwd: Path) -> _Kept:
+        """Return the container that a session has, or the one being made for it, or a new one."""
+        if self._over.is_set():
+            raise SandboxUnavailableError("the sandbox is closed, so no command is run any more")
+        starting = self._starting.get(session.id)
+        if starting is None:
+            container = self._kept.get(session.id)
+            if container is not None:
+                return container
+            starting = asyncio.ensure_future(self._started(session, mode, cwd))
+            self._starting[session.id] = starting
+        # Whoever waits may be cancelled. The container is made all the same, and is there
+        # for the next command: a start that is cut short may leave a container that nobody
+        # knows of.
+        container = await asyncio.shield(starting)
+        if self._over.is_set():
+            # Closed while it was made, and let go by whoever closed.
+            raise SandboxUnavailableError("the sandbox is closed, so no command is run any more")
+        return container
+
+    async def _outdated(self, container: _Kept, mode: Mode, cwd: Path) -> str | None:
+        """Say why a container is not the one for a command, or return ``None`` if it is."""
+        if container.gone or not container.alive():
+            return "it has ended"
+        if (container.mode, container.cwd) != (mode, cwd):
+            return "its session has another mode or directory now"
+        if container.shape is not None and container.shape != await asyncio.to_thread(_seen, cwd):
+            # Something made or changed a protected name since: a command that was cut
+            # short, or whoever else works in the directory.
+            return "what is protected in its directory is not what it was"
+        return None
+
+    async def _started(self, session: Session, mode: Mode, cwd: Path) -> _Kept:
+        """Make a container for a session, and keep it.
+
+        Raises:
+            SandboxUnavailableError: No container that holds commands could
+                be made. Nothing is left of the attempt.
+        """
+        try:
+            program = await asyncio.to_thread(self._program, cwd)
+            user = user_of_commands(sys.platform, *_me())
+            await self._known(program)
+            target = _WORKSPACE if sys.platform == "win32" else cwd.as_posix()
+            layout = await asyncio.to_thread(_layout, mode, cwd, target)
+            container = _Kept(
+                session=session,
+                mode=mode,
+                cwd=cwd,
+                target=target,
+                program=program,
+                user=user,
+                name=f"columbina-{secrets.token_hex(6)}",
+                probe=layout.probe,
+                shape=layout.shape,
+                used=time.monotonic(),
+            )
+            try:
+                await self._made(container, layout)
+            except BaseException:
+                await _to_the_end(self._let_go(container, "it could not be made ready"))
+                raise
+            self._kept[session.id] = container
+            if self._looking is None or self._looking.done():
+                self._looking = asyncio.ensure_future(self._look())
+            return container
+        finally:
+            del self._starting[session.id]
+
+    async def _made(self, container: _Kept, layout: _Layout) -> None:
+        """Start a container and see that commands can run in it as they are meant to."""
+        start = kept(container.program, self._config, container.name, layout.mounted, layout.probe)
+        try:
+            container.keeper = await asyncio.create_subprocess_exec(
+                *start,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=tempfile.gettempdir(),
+                env=process.cleaned(os.environ),
+                **_APART,
+            )
+        except OSError as error:
+            raise SandboxUnavailableError(
+                f"the docker program {container.program} could not be started: {error}"
+            ) from error
+        await self._ready(container, layout.token)
+        await self._usable(container, read_only=layout.read_only)
+
+    async def _ready(self, container: _Kept, token: str) -> None:
+        """Wait for a container to say that commands can run in it.
+
+        Raises:
+            SandboxUnavailableError: It did not say so. The text says what it
+                said, or what Docker said.
+        """
+        keeper = container.keeper
+        assert keeper is not None
+        assert keeper.stdout is not None
+        assert keeper.stderr is not None
+        image, seconds = self._config.image, self._config.start_timeout_seconds
+        try:
+            line = await asyncio.wait_for(keeper.stdout.readline(), seconds)
+        except TimeoutError:
+            raise SandboxUnavailableError(
+                f"the container did not come up within {seconds:g} seconds"
+            ) from None
+        except ValueError:
+            # More than a line can be, and no end of it: whatever runs there, it is not
+            # what this program started.
+            line = b"it wrote a line without end where it was to say that it is ready"
+        said = line.decode("utf-8", errors="replace").strip()
+        if said == f"ready {token}":
+            return
+        if said == "missing":
+            raise SandboxUnavailableError(
+                f"the image {image} has no bash, and commands are run with bash. Name an image "
+                "that has it in the config of the sandbox"
+            )
+        if said.startswith("ready"):
+            raise SandboxUnavailableError(
+                "the Docker engine does not see the files of this machine, so it cannot give a "
+                "container the working directory. It may run on another machine, or the "
+                "directory of temporary files is not shared with it"
+            )
+        if not said:
+            # It ended without a word, so Docker will have said why.
+            with contextlib.suppress(TimeoutError):
+                wrote = await asyncio.wait_for(keeper.stderr.read(), _KEEPER_SECONDS)
+                said = wrote.decode("utf-8", errors="replace")
+        raise SandboxUnavailableError(unavailable(image, said))
+
+    async def _usable(self, container: _Kept, *, read_only: bool) -> None:
+        """See that a command can do with the working directory what its mode says, and no more.
+
+        This is asked of the container, as the user of the commands. How an
+        engine maps that user to one of this machine is not for this program
+        to guess.
+
+        Raises:
+            SandboxUnavailableError: A command could do less than it should,
+                or more.
+        """
+        asking = usable(container.program, container.name, container.user, container.target)
+        answer = await self._docker(asking, _ASK_SECONDS)
+        can = answer.output.strip()
+        if answer.exit_code != 0 or can not in ("writable", "readable"):
+            raise SandboxUnavailableError(
+                f"commands run in the container as the user {container.user}, who cannot read "
+                "the working directory there. The engine maps users in a way that this "
+                "sandbox does not work with"
+            )
+        if read_only and can == "writable":
+            raise SandboxUnavailableError(
+                "the working directory was to be read-only in the container, and a command "
+                "could write it there"
+            )
+        if not read_only and can == "readable" and os.access(container.cwd, os.W_OK):
+            raise SandboxUnavailableError(
+                f"commands run in the container as the user {container.user}, who cannot "
+                "write the working directory there, although this program can. The engine "
+                "maps users in a way that this sandbox does not work with"
+            )
+
+    def _program(self, cwd: Path) -> str:
+        """Return the ``docker`` program for a container of a working directory.
+
+        Raises:
+            SandboxUnavailableError: There is none that can be trusted.
+        """
+        named = self._config.program
+        if named is not None:
+            if not Path(named).is_file():
+                raise SandboxUnavailableError(
+                    f"the docker program that the config names, {named}, is not there"
+                )
+            return named
+        program = found(os.environ.get("PATH", ""), [Path.cwd(), cwd])
+        if program is None:
+            raise SandboxUnavailableError(
+                "no docker program was found on the search path. Install Docker, or name the "
+                "program in the config of the sandbox. A program that lies in the working "
+                "directory is not taken"
+            )
+        return program
+
+    async def _known(self, program: str) -> None:
+        """Ask the engine what it is, once, and see that commands can be held with it.
+
+        Raises:
+            SandboxUnavailableError: It does not answer, or it is an engine
+                that this provider does not work with.
+        """
+        if self._engine is not None:
+            return
+        answer = await self._docker(asked(program), _ASK_SECONDS)
+        if answer.exit_code != 0:
+            wrote = f"{answer.output}\n{answer.error_output}"
+            if _unreachable(wrote):
+                raise SandboxUnavailableError(unavailable(self._config.image, wrote))
+        self._engine = supported(answer.output if answer.exit_code == 0 else "")
+
+    async def _docker(self, argv: Sequence[str], seconds: float) -> Completed:
+        """Run the ``docker`` program for an answer, with what it says and its errors apart.
+
+        Raises:
+            SandboxUnavailableError: The program could not be started.
+        """
+        try:
+            return await process.run(
+                argv, cwd=Path(tempfile.gettempdir()), timeout_seconds=seconds, streams="apart"
+            )
+        except OSError as error:
+            raise SandboxUnavailableError(str(error)) from error
+
+    async def _ran(
+        self,
+        container: _Kept,
+        argv: Sequence[str],
+        stdin: bytes | None,
+        seconds: float,
+        overflow: Callable[[], Writable] | None,
+        max_overflow_bytes: int,
+    ) -> Completed:
+        """Run a command in a container, and stop what it left there."""
+        settled: list[bool] = []
+
+        async def stop_inside(exited: asyncio.Future[None]) -> None:
+            settled.append(await self._stopped(container, exited))
+
+        command = called(
+            container.program, self._config, container.name, container.user, container.target, argv
+        )
+        try:
+            done = await process.run(
+                command,
+                cwd=Path(tempfile.gettempdir()),
+                stdin=stdin,
+                timeout_seconds=seconds,
+                overflow=overflow,
+                max_overflow_bytes=max_overflow_bytes,
+                before_stop=stop_inside,
+            )
+        except OSError as error:
+            raise SandboxUnavailableError(str(error)) from error
+        except asyncio.CancelledError:
+            if settled != [True]:
+                # Whether the command ran in the container, runs there, or is yet to start
+                # there, is not known. Nothing is to go on running, so the container goes.
+                why = "a command was cancelled and could not be seen to end"
+                await _to_the_end(self._let_go(container, why))
+            raise
+        finally:
+            container.used = time.monotonic()
+        notes = await _to_the_end(self._after(container, settled))
+        return replace(done, notes=notes) if notes else done
+
+    async def _after(self, container: _Kept, settled: Sequence[bool]) -> tuple[str, ...]:
+        """Stop what a command left in a container, and return what is to be said of it.
+
+        Args:
+            container: The container.
+            settled: Whether the command was stopped from inside and seen to
+                end, if its time was up. Empty if it ended by itself.
+        """
+        # Let go by whoever closed the provider, or ended by itself. The loop may hear of
+        # the end of what kept it a moment after the command has come back.
+        if container.gone or not container.alive():
+            await self._let_go(container, "it ended while a command ran")
+            return (_ENDED,)
+        if not (settled[0] if settled else await self._stopped(container)):
+            await self._let_go(container, "what a command left running in it could not be stopped")
+            return (_LEFT,)
+        if container.shape is not None:
+            now = await asyncio.to_thread(_seen, container.cwd)
+            if now != container.shape:
+                await self._let_go(
+                    container, "a command changed what is protected in its directory"
+                )
+                return (_RESHAPED,)
+        return ()
+
+    async def _stopped(self, container: _Kept, until: asyncio.Future[None] | None = None) -> bool:
+        """Stop all that the commands of a container left running, and tell whether none is left.
+
+        Args:
+            container: The container.
+            until: Done when the program that asked for a command has ended,
+                if that program is still there. For as long as it is, the
+                command may run, and it may be yet to start: the engine may
+                have taken the command and not started it. So the stop is
+                repeated until the program has ended, and done once more
+                then. If the program does not end in time, nothing is known,
+                and the answer is no.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _STOP_SECONDS
+        while until is not None and not until.done():
+            if loop.time() >= deadline:
+                return False
+            await self._round(container, deadline)
+            await asyncio.wait({until}, timeout=_ROUND_SECONDS)
+        return await self._round(container, deadline)
+
+    async def _round(self, container: _Kept, deadline: float) -> bool:
+        """Stop once what runs for commands in a container, and tell whether none of it is left."""
+        seconds = max(deadline - asyncio.get_running_loop().time(), 1.0)
+        asking = ended(container.program, container.name, container.user)
+        try:
+            answer = await self._docker(asking, seconds)
+        except SandboxUnavailableError:
+            return False
+        return answer.exit_code == 0 and answer.output.strip() == "none"
+
+    async def _let_go(self, container: _Kept, why: str) -> None:
+        """Let a container go, and see that the engine has it no more.
+
+        Closing the input of what keeps a container ends it. A command may
+        have found a way to keep it from that, so the engine is told to
+        remove it as well, and is asked afterwards whether it is gone.
+        """
+        if container.gone:
+            return
+        container.gone = True
+        if self._kept.get(container.session.id) is container:
+            del self._kept[container.session.id]
+        logger.debug("the container %s is let go: %s", container.name, why)
+        keeper = container.keeper
+        still = True
+        try:
+            if keeper is not None:
+                assert keeper.stdin is not None
+                keeper.stdin.close()
+                await self._docker(removed(container.program, container.name), _REMOVE_SECONDS)
+                await _ended(keeper)
+                asking = there(container.program, container.name)
+                answer = await self._docker(asking, _ASK_SECONDS)
+                if answer.exit_code == 0:
+                    still = bool(answer.output.strip())
+                else:
+                    # An engine that does not answer runs no container either.
+                    still = not _unreachable(f"{answer.output}\n{answer.error_output}")
+            else:
+                still = False
+        except SandboxUnavailableError:
+            pass
+        finally:
+            await asyncio.to_thread(shutil.rmtree, container.probe, ignore_errors=True)
+        if still:
+            logger.warning(
+                "the container %s may still be there. Remove it with: docker rm -f %s",
+                container.name,
+                container.name,
+            )
+
+    async def _look(self) -> None:
+        """Look through the containers every few seconds, and let go those that nobody needs."""
+        while self._kept:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._over.wait(), _LOOK_SECONDS)
+                return
+            now = time.monotonic()
+            for container in list(self._kept.values()):
+                turn = self._turns.get(container.session.id)
+                if turn is not None and turn.locked():
+                    continue
+                if container.session.closed:
+                    why = "its session is over"
+                    self._turns.pop(container.session.id, None)
+                elif not container.alive():
+                    why = "it has ended"
+                elif now - container.used >= self._config.idle_seconds:
+                    why = "no command came for a while"
+                else:
+                    continue
+                await self._let_go(container, why)

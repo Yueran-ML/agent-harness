@@ -1940,7 +1940,8 @@ _DOCKER = (
     mutant(
         "a session with full access gets the protected names mounted over its directory",
         DOCKER,
-        '    if mode == "danger-full-access":\n        return [_mount(cwd, target, readonly=False)]\n',
+        '    if mode == "danger-full-access":\n'
+        "        return False, [_mount(cwd, target, readonly=False)]\n",
         "",
     ),
     mutant(
@@ -1970,8 +1971,8 @@ _DOCKER = (
     mutant(
         "a link that leads out of the directory is given to the engine as a source",
         DOCKER,
-        "        for _, _, real in _led(cwd):\n",
-        "        for name, _, real in _led(cwd):\n",
+        "        for _, _, real in led:\n",
+        "        for name, _, real in led:\n",
         (
             "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n"
             '                over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real\n',
@@ -2008,14 +2009,14 @@ _DOCKER = (
     mutant(
         "a directory that is to be read-only as a whole can be written",
         DOCKER,
-        "    if whole:\n        return [_mount(cwd, target, readonly=True)]\n",
-        "    if whole:\n        return [_mount(cwd, target, readonly=False)]\n",
+        "    if whole:\n        return True, [_mount(cwd, target, readonly=True)]\n",
+        "    if whole:\n        return True, [_mount(cwd, target, readonly=False)]\n",
     ),
     mutant(
         "a directory that may be written is mounted read-only",
         DOCKER,
-        "    return [\n        _mount(cwd, target, readonly=False),\n",
-        "    return [\n        _mount(cwd, target, readonly=True),\n",
+        "    return False, [\n        _mount(cwd, target, readonly=False),\n",
+        "    return False, [\n        _mount(cwd, target, readonly=True),\n",
     ),
     mutant(
         "an image is fetched for a command",
@@ -2236,7 +2237,7 @@ _DOCKER = (
     mutant(
         "an engine that does not answer is told as any other failure",
         DOCKER,
-        "    if any(words in low for words in _UNREACHABLE):\n",
+        "    if _unreachable(said):\n",
         "    if False:\n",
     ),
     mutant(
@@ -2264,10 +2265,16 @@ _DOCKER = (
         "",
     ),
     mutant(
-        "what Docker wrote is read with its capitals",
+        "what Docker wrote of an image is read with its capitals",
         DOCKER,
-        "    low = said.casefold()\n",
-        "    low = said\n",
+        '    low = said.casefold()\n    if "no such image" in low',
+        '    low = said\n    if "no such image" in low',
+    ),
+    mutant(
+        "what Docker wrote of an engine that does not answer is read with its capitals",
+        DOCKER,
+        "    low = said.casefold()\n    return any(words in low for words in _UNREACHABLE)\n",
+        "    low = said\n    return any(words in low for words in _UNREACHABLE)\n",
     ),
     mutant(
         "a failure is told in the last words of Docker",
@@ -2328,6 +2335,789 @@ _DOCKER = (
         DOCKER,
         '    network: Literal["none", "bridge"] = "none"\n',
         '    network: Literal["none", "bridge"] = "bridge"\n',
+    ),
+)
+
+_DOCKER_KEPT = (
+    mutant(
+        "the commands of a session run at the same time",
+        DOCKER,
+        "        async with self._turns.setdefault(session.id, asyncio.Lock()):\n",
+        "        async with asyncio.Lock():\n",
+    ),
+    mutant(
+        "a directory is known by the name that it was given",
+        DOCKER,
+        "            real = Path(await asyncio.to_thread(os.path.realpath, cwd))\n",
+        "            real = Path(cwd)\n",
+    ),
+    mutant(
+        "every command gets a container of its own",
+        DOCKER,
+        "            if container is not None:\n                return container\n"
+        "            starting = asyncio.ensure_future(",
+        "            starting = asyncio.ensure_future(",
+    ),
+    mutant(
+        "a command looks at one container more than it may",
+        DOCKER,
+        "_ATTEMPTS = 3\n",
+        "_ATTEMPTS = 4\n",
+    ),
+    mutant(
+        "a command gives up at the first container that is of no use",
+        DOCKER,
+        "_ATTEMPTS = 3\n",
+        "_ATTEMPTS = 1\n",
+    ),
+    mutant(
+        "a provider that is closed goes on running commands",
+        DOCKER,
+        "        if self._over.is_set():\n"
+        '            raise SandboxUnavailableError("the sandbox is closed, so no command is run any more")\n'
+        "        starting = self._starting.get(session.id)\n",
+        "        starting = self._starting.get(session.id)\n",
+    ),
+    mutant(
+        "a container is not made to its end when whoever asked for it leaves",
+        DOCKER,
+        "        container = await asyncio.shield(starting)\n",
+        "        container = await starting\n",
+    ),
+    mutant(
+        "a command that waited for its container runs although the provider was closed meanwhile",
+        DOCKER,
+        "        container = await asyncio.shield(starting)\n        if self._over.is_set():\n",
+        "        container = await asyncio.shield(starting)\n        if False:\n",
+    ),
+    mutant(
+        "a container that has ended is used for the next command",
+        DOCKER,
+        '        if container.gone or not container.alive():\n            return "it has ended"\n',
+        '        if False:\n            return "it has ended"\n',
+    ),
+    mutant(
+        "a session whose mode has changed keeps its container",
+        DOCKER,
+        "        if (container.mode, container.cwd) != (mode, cwd):\n",
+        "        if container.cwd != cwd:\n",
+    ),
+    mutant(
+        "a session that works in another directory keeps its container",
+        DOCKER,
+        "        if (container.mode, container.cwd) != (mode, cwd):\n",
+        "        if container.mode != mode:\n",
+    ),
+    mutant(
+        "a protected name that came from elsewhere is not noticed before a command",
+        DOCKER,
+        "        if container.shape is not None and container.shape != await asyncio.to_thread(_seen, cwd):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a directory that cannot be looked at stops a command in another way",
+        DOCKER,
+        "        return shape(cwd)\n    except OSError:\n",
+        "        return shape(cwd)\n    except KeyError:\n",
+    ),
+    mutant(
+        "a working directory that is not there is left to the engine",
+        DOCKER,
+        "    if not cwd.is_dir():\n"
+        '        raise SandboxUnavailableError(f"the working directory {cwd} is not there")\n',
+        "",
+    ),
+    mutant(
+        "the shape of a directory is kept in every mode",
+        DOCKER,
+        '    told = tuple((name, kind) for name, kind, _ in led) if mode == "workspace-write" else None\n',
+        "    told = tuple((name, kind) for name, kind, _ in led)\n",
+    ),
+    mutant(
+        "the shape of a directory is never kept",
+        DOCKER,
+        '    told = tuple((name, kind) for name, kind, _ in led) if mode == "workspace-write" else None\n',
+        "    told = None\n",
+    ),
+    mutant(
+        "a container that could not be made ready is left with the engine",
+        DOCKER,
+        '                await _to_the_end(self._let_go(container, "it could not be made ready"))\n',
+        "",
+    ),
+    mutant(
+        "a container that could not be made is asked for for ever",
+        DOCKER,
+        "        finally:\n            del self._starting[session.id]\n",
+        "        finally:\n            pass\n",
+    ),
+    mutant(
+        "nobody looks for containers that are not needed",
+        DOCKER,
+        "            if self._looking is None or self._looking.done():\n"
+        "                self._looking = asyncio.ensure_future(self._look())\n",
+        "",
+    ),
+    mutant(
+        "what keeps a container is given the secrets of this program",
+        DOCKER,
+        "                env=process.cleaned(os.environ),\n",
+        "",
+    ),
+    mutant(
+        "a container that shows another token is taken",
+        DOCKER,
+        '        if said == f"ready {token}":\n',
+        '        if said.startswith("ready"):\n',
+    ),
+    mutant(
+        "an image without bash is told as some failure of Docker",
+        DOCKER,
+        '        if said == "missing":\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "a container that does not come up is waited for without end",
+        DOCKER,
+        "            line = await asyncio.wait_for(keeper.stdout.readline(), seconds)\n",
+        "            line = await keeper.stdout.readline()\n",
+    ),
+    mutant(
+        "a container that writes a line without end fails a command in another way",
+        DOCKER,
+        "        except ValueError:\n            # More than a line can be, and no end of it",
+        "        except KeyError:\n            # More than a line can be, and no end of it",
+    ),
+    mutant(
+        "what Docker said of a container that did not start is not read",
+        DOCKER,
+        "        if not said:\n            # It ended without a word, so Docker will have said why.\n",
+        "        if False:\n            # It ended without a word, so Docker will have said why.\n",
+    ),
+    mutant(
+        "the directory is not looked at as the user of commands",
+        DOCKER,
+        "        await self._usable(container, read_only=layout.read_only)\n",
+        "",
+    ),
+    mutant(
+        "a user of commands that cannot read the directory is taken",
+        DOCKER,
+        '        if answer.exit_code != 0 or can not in ("writable", "readable"):\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "a look that failed and said something is believed",
+        DOCKER,
+        '        if answer.exit_code != 0 or can not in ("writable", "readable"):\n',
+        '        if can not in ("writable", "readable"):\n',
+    ),
+    mutant(
+        "a directory that was to be read-only and can be written is taken",
+        DOCKER,
+        '        if read_only and can == "writable":\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "a user of commands that cannot write the directory is taken",
+        DOCKER,
+        '        if not read_only and can == "readable" and os.access(container.cwd, os.W_OK):\n',
+        "        if False:\n",
+    ),
+    on_linux(
+        mutant(
+            "a directory that this program cannot write either is blamed on the engine",
+            DOCKER,
+            '        if not read_only and can == "readable" and os.access(container.cwd, os.W_OK):\n',
+            '        if not read_only and can == "readable":\n',
+        )
+    ),
+    mutant(
+        "a program of the config that is not there is tried all the same",
+        DOCKER,
+        "            if not Path(named).is_file():\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a program in the working directory of a session is run",
+        DOCKER,
+        '        program = found(os.environ.get("PATH", ""), [Path.cwd(), cwd])\n',
+        '        program = found(os.environ.get("PATH", ""), [Path.cwd()])\n',
+    ),
+    mutant(
+        "a program in the directory that this program was started in is run",
+        DOCKER,
+        '        program = found(os.environ.get("PATH", ""), [Path.cwd(), cwd])\n',
+        '        program = found(os.environ.get("PATH", ""), [cwd])\n',
+    ),
+    mutant(
+        "the engine is asked what it is before every container",
+        DOCKER,
+        "        if self._engine is not None:\n            return\n",
+        "",
+    ),
+    mutant(
+        "an engine that does not answer is told as one that would not say what it is",
+        DOCKER,
+        "            if _unreachable(wrote):\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "what an engine wrote as it failed is read as its answer",
+        DOCKER,
+        '        self._engine = supported(answer.output if answer.exit_code == 0 else "")\n',
+        "        self._engine = supported(answer.output)\n",
+    ),
+    mutant(
+        "an engine that was not known to hold commands is remembered as one that does",
+        DOCKER,
+        '        self._engine = supported(answer.output if answer.exit_code == 0 else "")\n',
+        '        self._engine = Engine("", "")\n'
+        '        supported(answer.output if answer.exit_code == 0 else "")\n',
+    ),
+    mutant(
+        "a command whose time is up is not stopped in its container",
+        DOCKER,
+        "                before_stop=stop_inside,\n",
+        "",
+    ),
+    mutant(
+        "a command in a container has a hundred times its time",
+        DOCKER,
+        "                stdin=stdin,\n                timeout_seconds=seconds,\n",
+        "                stdin=stdin,\n                timeout_seconds=seconds * 100,\n",
+    ),
+    mutant(
+        "a command in a container gets no input",
+        DOCKER,
+        "                stdin=stdin,\n                timeout_seconds=seconds,\n",
+        "                stdin=None,\n                timeout_seconds=seconds,\n",
+    ),
+    mutant(
+        "a long output of a command in a container goes nowhere",
+        DOCKER,
+        "                overflow=overflow,\n                max_overflow_bytes=max_overflow_bytes,\n"
+        "                before_stop=stop_inside,\n",
+        "                overflow=None,\n                max_overflow_bytes=max_overflow_bytes,\n"
+        "                before_stop=stop_inside,\n",
+    ),
+    mutant(
+        "a command that could not be handed to the engine fails as one that the system refused",
+        DOCKER,
+        "        except OSError as error:\n"
+        "            raise SandboxUnavailableError(str(error)) from error\n"
+        "        except asyncio.CancelledError:\n",
+        "        except asyncio.CancelledError:\n",
+    ),
+    mutant(
+        "a cancelled command that was seen to end costs the container",
+        DOCKER,
+        "            if settled != [True]:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "a cancelled command that could not be seen to end leaves its container",
+        DOCKER,
+        "            if settled != [True]:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a container does not get younger by a command",
+        DOCKER,
+        "        finally:\n            container.used = time.monotonic()\n",
+        "        finally:\n            pass\n",
+    ),
+    mutant(
+        "what is to be said of a run is not said",
+        DOCKER,
+        "        return replace(done, notes=notes) if notes else done\n",
+        "        return done\n",
+    ),
+    mutant(
+        "a container that ended under a command is taken for one in which something would not stop",
+        DOCKER,
+        "        if container.gone or not container.alive():\n"
+        '            await self._let_go(container, "it ended while a command ran")\n',
+        '        if False:\n            await self._let_go(container, "it ended while a command ran")\n',
+    ),
+    mutant(
+        "a container that was let go under a command is taken for one in which something would not stop",
+        DOCKER,
+        "        if container.gone or not container.alive():\n"
+        '            await self._let_go(container, "it ended while a command ran")\n',
+        "        if not container.alive():\n"
+        '            await self._let_go(container, "it ended while a command ran")\n',
+    ),
+    mutant(
+        "a container that ended by itself under a command is taken for one in which something would not stop",
+        DOCKER,
+        "        if container.gone or not container.alive():\n"
+        '            await self._let_go(container, "it ended while a command ran")\n',
+        "        if container.gone:\n"
+        '            await self._let_go(container, "it ended while a command ran")\n',
+    ),
+    mutant(
+        "what a command left running is not stopped",
+        DOCKER,
+        "        if not (settled[0] if settled else await self._stopped(container)):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a command that could not be stopped when its time was up keeps its container",
+        DOCKER,
+        "        if not (settled[0] if settled else await self._stopped(container)):\n",
+        "        if not await self._stopped(container) and not settled:\n",
+    ),
+    mutant(
+        "a command that changed what is protected keeps its container",
+        DOCKER,
+        "            if now != container.shape:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "the stop is done once although the program that asked for the command is still there",
+        DOCKER,
+        "        while until is not None and not until.done():\n",
+        "        while False:\n",
+    ),
+    mutant(
+        "the stop gives up before it has tried",
+        DOCKER,
+        "            if loop.time() >= deadline:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "the stop never gives up",
+        DOCKER,
+        "            if loop.time() >= deadline:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "nothing is stopped once the program that asked for the command has ended",
+        DOCKER,
+        "            await asyncio.wait({until}, timeout=_ROUND_SECONDS)\n"
+        "        return await self._round(container, deadline)\n",
+        "            await asyncio.wait({until}, timeout=_ROUND_SECONDS)\n        return True\n",
+    ),
+    mutant(
+        "whatever the stop says counts as nothing left",
+        DOCKER,
+        '        return answer.exit_code == 0 and answer.output.strip() == "none"\n',
+        "        return answer.exit_code == 0\n",
+    ),
+    mutant(
+        "a stop that failed and said nothing counts as nothing left",
+        DOCKER,
+        '        return answer.exit_code == 0 and answer.output.strip() == "none"\n',
+        '        return answer.exit_code != 0 or answer.output.strip() == "none"\n',
+    ),
+    mutant(
+        "a stop that could not be asked for counts as done",
+        DOCKER,
+        "            answer = await self._docker(asking, seconds)\n"
+        "        except SandboxUnavailableError:\n            return False\n",
+        "            answer = await self._docker(asking, seconds)\n"
+        "        except SandboxUnavailableError:\n            return True\n",
+    ),
+    mutant(
+        "a container is let go as often as somebody asks",
+        DOCKER,
+        "        if container.gone:\n            return\n",
+        "",
+    ),
+    mutant(
+        "a container that was let go stays in the books",
+        DOCKER,
+        "        if self._kept.get(container.session.id) is container:\n"
+        "            del self._kept[container.session.id]\n",
+        "",
+    ),
+    mutant(
+        "the input of what keeps a container is left open",
+        DOCKER,
+        "                keeper.stdin.close()\n",
+        "",
+    ),
+    mutant(
+        "the engine is not told to remove a container",
+        DOCKER,
+        "                await self._docker(removed(container.program, container.name), _REMOVE_SECONDS)\n",
+        "",
+    ),
+    mutant(
+        "what kept a container is not waited for",
+        DOCKER,
+        "                await _ended(keeper)\n",
+        "",
+    ),
+    mutant(
+        "a container that the engine still has is taken for gone",
+        DOCKER,
+        "                    still = bool(answer.output.strip())\n",
+        "                    still = False\n",
+    ),
+    mutant(
+        "an engine that could not say whether a container is gone is taken to have none",
+        DOCKER,
+        '                    still = not _unreachable(f"{answer.output}\\n{answer.error_output}")\n',
+        "                    still = False\n",
+    ),
+    mutant(
+        "an engine that does not answer is taken to run a container still",
+        DOCKER,
+        '                    still = not _unreachable(f"{answer.output}\\n{answer.error_output}")\n',
+        "                    still = True\n",
+    ),
+    mutant(
+        "the directory of a token is left behind",
+        DOCKER,
+        "            await asyncio.to_thread(shutil.rmtree, container.probe, ignore_errors=True)\n",
+        "            pass\n",
+    ),
+    mutant(
+        "a container that may still be there is not told to the user",
+        DOCKER,
+        "        if still:\n            logger.warning(\n",
+        "        if False:\n            logger.warning(\n",
+    ),
+    mutant(
+        "the container of a session that is over is kept",
+        DOCKER,
+        "                if container.session.closed:\n",
+        "                if False:\n",
+    ),
+    mutant(
+        "a container that ended by itself is not cleared away",
+        DOCKER,
+        '                elif not container.alive():\n                    why = "it has ended"\n',
+        '                elif False:\n                    why = "it has ended"\n',
+    ),
+    mutant(
+        "a container in which no command runs is kept for ever",
+        DOCKER,
+        "                elif now - container.used >= self._config.idle_seconds:\n",
+        "                elif False:\n",
+    ),
+    mutant(
+        "a container is let go under a command that runs in it",
+        DOCKER,
+        "                if turn is not None and turn.locked():\n                    continue\n",
+        "",
+    ),
+    mutant(
+        "closing leaves the containers where they are",
+        DOCKER,
+        "        await asyncio.gather(\n            *(\n"
+        '                self._let_go(container, "the program ends")\n',
+        "        await asyncio.sleep(0)\n        (\n            *(\n"
+        '                (container, "the program ends")\n',
+    ),
+    mutant(
+        "closing does not keep commands from being run",
+        DOCKER,
+        "        self._over.set()\n        if self._looking is not None:\n",
+        "        if self._looking is not None:\n",
+    ),
+    mutant(
+        "closing fails with whatever the look failed with",
+        DOCKER,
+        "            await asyncio.gather(self._looking, return_exceptions=True)\n",
+        "            await self._looking\n",
+    ),
+    mutant(
+        "closing does not wait for a container that is being made",
+        DOCKER,
+        "        await asyncio.gather(*self._starting.values(), return_exceptions=True)\n",
+        "",
+    ),
+    mutant(
+        "a cancellation cuts short what was to be done to its end",
+        DOCKER,
+        "        except asyncio.CancelledError:\n            cancelled = True\n    if cancelled:\n",
+        "        except asyncio.CancelledError:\n            raise\n    if cancelled:\n",
+    ),
+    mutant(
+        "a cancellation is lost while something is done to its end",
+        DOCKER,
+        "        raise asyncio.CancelledError\n    return task.result()\n",
+        "    return task.result()\n",
+    ),
+    mutant(
+        "a failure after the caller has left is not written down",
+        DOCKER,
+        "            logger.error(\n"
+        '                "what was done for a container failed after its caller had left",\n'
+        "                exc_info=task.exception(),\n            )\n",
+        "            pass\n",
+    ),
+    mutant(
+        "what kept a container is waited for without end",
+        DOCKER,
+        "        await asyncio.wait_for(keeper.wait(), _KEEPER_SECONDS)\n",
+        "        await keeper.wait()\n",
+    ),
+    mutant(
+        "a container with a network is said to hold a command fully",
+        DOCKER,
+        '        return "full" if self._config.network == "none" else "partial"\n',
+        '        return "full"\n',
+    ),
+    mutant(
+        "commands in a container are written for the shell of this machine",
+        DOCKER,
+        '    shell: str | None = "bash"\n',
+        "    shell: str | None = None\n",
+    ),
+    on_windows(
+        mutant(
+            "a container on Windows is to have the directory at its path on Windows",
+            DOCKER,
+            '            target = _WORKSPACE if sys.platform == "win32" else cwd.as_posix()\n',
+            "            target = cwd.as_posix()\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "a container on Linux has the directory at another path than this machine",
+            DOCKER,
+            '            target = _WORKSPACE if sys.platform == "win32" else cwd.as_posix()\n',
+            "            target = _WORKSPACE\n",
+        )
+    ),
+    mutant(
+        "a directory that is read-only as a whole is looked at as one that can be written",
+        DOCKER,
+        "    if whole:\n        return True, [_mount(cwd, target, readonly=True)]\n",
+        "    if whole:\n        return False, [_mount(cwd, target, readonly=True)]\n",
+    ),
+    mutant(
+        "a directory that can be written is looked at as one that is read-only",
+        DOCKER,
+        "    return False, [\n        _mount(cwd, target, readonly=False),\n",
+        "    return True, [\n        _mount(cwd, target, readonly=False),\n",
+    ),
+    mutant(
+        "the sandbox does not bring the provider for containers",
+        SANDBOX,
+        '    sandbox.providers.add(ctx, "docker", container)\n',
+        "",
+    ),
+    mutant(
+        "the containers outlive the sandbox",
+        SANDBOX,
+        "    ctx.effect(lambda: container.close)\n",
+        "",
+    ),
+    mutant(
+        "the provider for containers gets the config of nobody",
+        SANDBOX,
+        "    container = Docker(config.docker)\n",
+        "    container = Docker(DockerConfig())\n",
+    ),
+)
+
+_DOCKER_REAL = (
+    mutant(
+        "with a real engine: a container has a network",
+        DOCKER,
+        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", "bridge", "--cap-drop", "ALL"]\n',
+    ),
+    mutant(
+        "with a real engine: a container keeps the capabilities that Docker gives it",
+        DOCKER,
+        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", config.network]\n',
+    ),
+    mutant(
+        "with a real engine: a command can gain what a program with a set-user bit gives",
+        DOCKER,
+        '    argv += ["--security-opt", "no-new-privileges", "--pids-limit", str(config.pids_limit)]\n',
+        '    argv += ["--pids-limit", str(config.pids_limit)]\n',
+    ),
+    mutant(
+        "with a real engine: a container may have any number of processes",
+        DOCKER,
+        '    argv += ["--security-opt", "no-new-privileges", "--pids-limit", str(config.pids_limit)]\n',
+        '    argv += ["--security-opt", "no-new-privileges"]\n',
+    ),
+    mutant(
+        "with a real engine: the memory that the config allows is not passed on",
+        DOCKER,
+        "    if config.memory is not None:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "with a real engine: the processors that the config allows are not passed on",
+        DOCKER,
+        "    if config.cpus is not None:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "with a real engine: nothing in a container takes over what a command left without a parent",
+        DOCKER,
+        '"--pull", "never", "--init"]\n',
+        '"--pull", "never"]\n',
+    ),
+    mutant(
+        "with a real engine: an image is fetched for a command",
+        DOCKER,
+        '"--interactive", "--pull", "never", "--init"]\n',
+        '"--interactive", "--pull", "missing", "--init"]\n',
+    ),
+    mutant(
+        "with a real engine: a container is not given the token",
+        DOCKER,
+        "    for one in (*mounted, _mount(probe, PROBE, readonly=True)):\n",
+        "    for one in mounted:\n",
+    ),
+    mutant(
+        "with a real engine: a container without bash says that it is ready",
+        DOCKER,
+        '    "if command -v bash >/dev/null 2>&1; "\n',
+        '    "if true; "\n',
+    ),
+    mutant(
+        "with a real engine: a container ends as soon as it has said that it is ready",
+        DOCKER,
+        '    "else echo missing; fi; exec cat"\n',
+        '    "else echo missing; fi"\n',
+    ),
+    mutant(
+        "with a real engine: a mount is not read-only when it is to be",
+        DOCKER,
+        '    if readonly:\n        fields.append("readonly")\n',
+        "",
+    ),
+    mutant(
+        "with a real engine: what is protected is mounted so that it can be written",
+        DOCKER,
+        "        *(_mount(real, inside, readonly=True) for inside, real in sorted(over.items())),\n",
+        "        *(_mount(real, inside, readonly=False) for inside, real in sorted(over.items())),\n",
+    ),
+    mutant(
+        "with a real engine: a link that leads out of the directory is given to the engine as a source",
+        DOCKER,
+        "        for _, _, real in led:\n",
+        "        for name, _, real in led:\n",
+        (
+            "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n"
+            '                over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real\n',
+            "            elif real.is_dir() or real.is_file():\n"
+            '                over[f"{target}/{name}"] = cwd / name\n',
+        ),
+    ),
+    mutant(
+        "with a real engine: a comma in a path ends a field of a mount",
+        DOCKER,
+        """    if any(character in field for character in ',"\\r\\n'):\n""",
+        """    if any(character in field for character in '"\\r\\n'):\n""",
+    ),
+    mutant(
+        "with a real engine: a command is run as root",
+        DOCKER,
+        '    start = [program, "exec", "--interactive", "--user", user, "--workdir", target, *given, name]\n',
+        '    start = [program, "exec", "--interactive", "--workdir", target, *given, name]\n',
+    ),
+    mutant(
+        "with a real engine: a command gets no input",
+        DOCKER,
+        '    start = [program, "exec", "--interactive", "--user", user, ',
+        '    start = [program, "exec", "--user", user, ',
+    ),
+    mutant(
+        "with a real engine: a command is run in the root of the container",
+        DOCKER,
+        '"--user", user, "--workdir", target, *given, name]\n',
+        '"--user", user, *given, name]\n',
+    ),
+    mutant(
+        "with a real engine: a command has the home that the image gives its user",
+        DOCKER,
+        '    env = {"LANG": "C.UTF-8", "TERM": "dumb", **config.env, "HOME": HOME}\n',
+        '    env = {"LANG": "C.UTF-8", "TERM": "dumb", **config.env}\n',
+    ),
+    mutant(
+        "with a real engine: a command does not get the variables of the config",
+        DOCKER,
+        '    env = {"LANG": "C.UTF-8", "TERM": "dumb", **config.env, "HOME": HOME}\n',
+        '    env = {"LANG": "C.UTF-8", "TERM": "dumb", "HOME": HOME}\n',
+    ),
+    mutant(
+        "with a real engine: the home of a command is not made",
+        DOCKER,
+        """_CALL = 'mkdir -p "$HOME" && exec "$@"'\n""",
+        """_CALL = 'exec "$@"'\n""",
+    ),
+    mutant(
+        "with a real engine: what commands left is stopped as root, and the keeper with it",
+        DOCKER,
+        '    return [program, "exec", "--user", user, name, "sh", "-c", _STOP, "sh", number]\n',
+        '    return [program, "exec", name, "sh", "-c", _STOP, "sh", number]\n',
+    ),
+    mutant(
+        "with a real engine: what commands left is asked to end, and may refuse",
+        DOCKER,
+        "  kill -KILL -1 2>/dev/null\n",
+        "  kill -TERM -1 2>/dev/null\n",
+    ),
+    mutant(
+        "with a real engine: what commands left is looked for and not stopped",
+        DOCKER,
+        "  kill -KILL -1 2>/dev/null\n",
+        "",
+    ),
+    mutant(
+        "with a real engine: the stop says that nothing is left without a look",
+        DOCKER,
+        '        [ "$value" = "$uid" ] && left=yes\n',
+        "        :\n",
+        ("  kill -KILL -1 2>/dev/null\n", ""),
+    ),
+    mutant(
+        "with a real engine: the stop takes itself for something that a command left",
+        DOCKER,
+        '    [ "$entry" = "/proc/$$" ] && continue\n',
+        "",
+    ),
+    mutant(
+        "with a real engine: what a command writes to its error stream comes back on a way of its own",
+        SHELL,
+        """exec bash --noprofile --norc -c "$command" </dev/null 2>&1'""",
+        """exec bash --noprofile --norc -c "$command" </dev/null'""",
+    ),
+    mutant(
+        "with a real engine: a container is kept by the engine when it has ended",
+        DOCKER,
+        '    argv = [program, "run", "--rm", "--interactive", ',
+        '    argv = [program, "run", "--interactive", ',
+        (
+            "                await self._docker(removed(container.program, container.name), _REMOVE_SECONDS)\n",
+            "",
+        ),
+    ),
+    mutant(
+        "with a real engine: the commands of a session each get a container",
+        DOCKER,
+        "            if container is not None:\n                return container\n"
+        "            starting = asyncio.ensure_future(",
+        "            starting = asyncio.ensure_future(",
+    ),
+    mutant(
+        "with a real engine: a command whose time is up is not stopped in its container",
+        DOCKER,
+        "                before_stop=stop_inside,\n",
+        "",
+        (
+            "        if not (settled[0] if settled else await self._stopped(container)):\n",
+            "        if False:\n",
+        ),
+    ),
+    mutant(
+        "with a real engine: what a command left running is not stopped",
+        DOCKER,
+        "        if not (settled[0] if settled else await self._stopped(container)):\n",
+        "        if not (settled[0] if settled else True):\n",
     ),
 )
 
@@ -3489,14 +4279,20 @@ _SHELL = (
     mutant(
         "a command for another place gets the input that it came on",
         SHELL,
-        """exec bash --noprofile --norc -c "$command" </dev/null'""",
-        """exec bash --noprofile --norc -c "$command"'""",
+        """exec bash --noprofile --norc -c "$command" </dev/null 2>&1'""",
+        """exec bash --noprofile --norc -c "$command" 2>&1'""",
     ),
     mutant(
         "a command for another place is run by the shell that read it",
         SHELL,
-        """_READ_AND_RUN_BASH = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null'""",
-        """_READ_AND_RUN_BASH = 'command=$(cat) && eval "$command" </dev/null'""",
+        """= 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null 2>&1'\n""",
+        """= 'command=$(cat) && eval "$command" </dev/null 2>&1'\n""",
+    ),
+    mutant(
+        "what a command for another place writes to its error stream comes back on a way of its own",
+        SHELL,
+        """exec bash --noprofile --norc -c "$command" </dev/null 2>&1'""",
+        """exec bash --noprofile --norc -c "$command" </dev/null'""",
     ),
     mutant(
         "a command on the input is taken for text in the encoding of the system",
@@ -3595,6 +4391,12 @@ _SHELL = (
             "        place = None if store is None else _Place(store, run, way.name)\n",
             "        place = None if store is None else _Place(store, run, NAME)\n",
         )
+    ),
+    mutant(
+        "what ran a command has nothing to say in the result",
+        SHELL,
+        '        lines.extend(f"({note})" for note in done.notes)\n',
+        "",
     ),
     mutant(
         "a fault of a place is written down by the tool without its trace",
@@ -17947,6 +18749,9 @@ SETS: dict[str, MutantSet] = {
     ),
     "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),
     "docker": MutantSet(("tests/sandbox/test_docker.py",), _DOCKER),
+    "docker-kept": MutantSet(("tests/sandbox/test_docker_kept.py",), _DOCKER_KEPT),
+    # Tried only where a real engine answers: without one the tests pass over everything.
+    "docker-real": MutantSet(("tests/sandbox/test_docker_real.py",), _DOCKER_REAL),
     "permissions": MutantSet(("tests/permissions",), _PERMISSIONS),
     "search": MutantSet(
         (

@@ -551,6 +551,6 @@ async def test_a_provider_leaves_with_the_plugin_that_brought_it(
 
     await fiber.dispose()
 
-    assert list(sandbox.providers) == ["none"]
+    assert list(sandbox.providers) == ["none", "docker"]
     with pytest.raises(SandboxUnavailableError):
         await sandbox.run(["python", "check.py"], session=session, cwd=work, timeout_seconds=5)

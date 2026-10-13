@@ -97,6 +97,9 @@ class Completed:
         error_bytes: How many bytes it wrote to its error stream, if the
             streams were kept apart.
         error_omitted_bytes: How many of them are not in ``error_output``.
+        notes: What whoever ran the program has to say of the run besides,
+            for whoever reads its output. A run of this module has nothing
+            to say. Something that runs a program in another place may have.
     """
 
     exit_code: int | None
@@ -108,6 +111,7 @@ class Completed:
     error_output: str = ""
     error_bytes: int = 0
     error_omitted_bytes: int = 0
+    notes: tuple[str, ...] = ()
 
 
 class Writable(Protocol):

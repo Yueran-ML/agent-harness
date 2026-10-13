@@ -18340,6 +18340,12 @@ _MCP = (
 )
 
 _SERVE = (
+    mutant(
+        "the program that serves says that nothing holds the commands of a session",
+        SERVE_SERVER,
+        '                "strength": sandbox.strength(session),\n',
+        '                "strength": "none",\n',
+    ),
     # A line and the message that it holds
     mutant(
         "a line that is no UTF-8 is read as well as it can be",

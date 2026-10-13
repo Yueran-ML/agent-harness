@@ -18,7 +18,9 @@ from columbina.commands import COMMANDS, Command
 from columbina.compaction import EVENTS as COMPACTION_EVENTS
 from columbina.compaction import CompactionStartEvent
 from columbina.llm.adapters.scripted import Reply
+from columbina.sandbox import SANDBOX
 from columbina.session import Listed, SessionError, Sessions, UserMessageEvent
+from support.sandboxes import Holding
 from support.served import Served
 from support.terminal import until
 
@@ -869,3 +871,18 @@ async def test_only_the_sandbox_is_told_where_nothing_else_is_loaded(served: Ser
     (told,) = served.far.told("session.status")
 
     assert (told["sandbox"], told["approval"]) == ({"mode": "read-only", "strength": "none"}, None)
+
+
+async def test_how_well_the_commands_of_a_session_are_held_is_told_as_what_holds_them_says_it(
+    served: Served,
+) -> None:
+    # A desktop application shows it. Where commands run in a container it is no "none".
+    ctx = served.harness.ctx
+    await ctx.plugin(columbina.fs)
+    await ctx.plugin(columbina.sandbox, {"provider": "holding"})
+    ctx.use(SANDBOX).providers.add(ctx, "holding", Holding("partial"))
+    await served.opened()
+
+    (told,) = served.far.told("session.status")
+
+    assert told["sandbox"] == {"mode": "workspace-write", "strength": "partial"}

@@ -833,6 +833,54 @@ _PROCESS = (
         "",
     ),
     mutant(
+        "a caller that was cancelled does not wait for the program that was being started",
+        PROCESS,
+        "        if await _within(creating, _START_SECONDS) and _came(creating):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a caller that was cancelled waits a day for a start that takes its time",
+        PROCESS,
+        "        if await _within(creating, _START_SECONDS) and _came(creating):\n",
+        "        if await _within(creating, 86400.0) and _came(creating):\n",
+    ),
+    mutant(
+        "a start that made no program is waited for as if it had made one",
+        PROCESS,
+        "        if await _within(creating, _START_SECONDS) and _came(creating):\n",
+        "        if await _within(creating, _START_SECONDS):\n",
+    ),
+    mutant(
+        "a caller that was cancelled leaves before its program is seen to be gone",
+        PROCESS,
+        "        if await _within(creating, _START_SECONDS) and _came(creating):\n"
+        "            await _within(watch.closed, _CLOSE_SECONDS)\n",
+        "        if await _within(creating, _START_SECONDS) and _came(creating):\n"
+        "            pass\n",
+    ),
+    mutant(
+        "a start that failed is taken to have made a program",
+        PROCESS,
+        "    return not creating.cancelled() and creating.exception() is None\n",
+        "    return not creating.cancelled()\n",
+    ),
+    on_linux(
+        mutant(
+            "a program that nobody holds is ended before it is closed, so the loop is not told",
+            PROCESS,
+            "        transport.close()\n        _Tree(group).stop()\n",
+            "        _Tree(group).stop()\n        transport.close()\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "what a program that nobody holds has started is left running",
+            PROCESS,
+            "        transport.close()\n        _Tree(group).stop()\n",
+            "        transport.close()\n",
+        )
+    ),
+    mutant(
         "a program that ran out of time keeps its exit code",
         PROCESS,
         "        exit_code=None if timed_out else exit_code,",

@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import os
+import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -534,9 +536,174 @@ class SlowStart:
         monkeypatch.setattr(loop, "subprocess_exec", start)
 
 
+ENDS_AS_A_COMMAND_STARTS = """
+import asyncio, sys, tempfile
+from pathlib import Path
+from columbina import process
+
+
+async def main():
+    cwd = Path(tempfile.gettempdir())
+    running = asyncio.ensure_future(
+        process.run([sys.executable, "-c", "pass"], cwd=cwd, timeout_seconds=60)
+    )
+    for _ in range(int(sys.argv[1])):
+        await asyncio.sleep(0)
+    running.cancel()
+    try:
+        await running
+    except asyncio.CancelledError:
+        pass
+    print("main is over", flush=True)
+
+
+asyncio.run(main())
+print("the loop is closed", flush=True)
+"""
+"""A program that cancels the caller of a command so many turns of the loop after it began.
+
+Then it ends at once. The command is being started at that moment, for some of the numbers.
+"""
+
+
+async def test_a_caller_that_is_cancelled_as_its_program_is_started_leaves_when_that_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slow = SlowStart(monkeypatch)
+    running = asyncio.ensure_future(
+        process.run(
+            python(STARTS_ANOTHER_AND_STAYS, str(tmp_path / "started")),
+            cwd=tmp_path,
+            timeout_seconds=60,
+        )
+    )
+    await asyncio.wait_for(slow.made.wait(), timeout=20)
+
+    running.cancel()
+    await asyncio.sleep(0.3)
+    waits = not running.done()
+    slow.go_on.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, timeout=20)
+
+    # The program was made, ended, and seen to end before the cancellation went on. Nothing
+    # of it is left for an event loop that may be closed next.
+    assert waits
+    (made,) = slow.started
+    assert made.get_returncode() is not None
+    assert not alive(made.get_pid())
+
+
+if sys.platform != "win32":
+
+    async def test_a_program_that_is_ended_for_a_caller_who_was_cancelled_is_reaped_by_the_loop(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Whoever asks the system first whether a program has ended is the one who is told. If
+        # that is not the event loop, the loop makes up an exit code and complains.
+        really_end: Any = os.killpg
+
+        def end_at_once(group: int, sent: int) -> None:
+            # The system may have ended the program by the time this returns. Here it has.
+            really_end(group, sent)
+            deadline = time.monotonic() + 10
+            while alive(group) and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        monkeypatch.setattr(os, "killpg", end_at_once)
+        slow = SlowStart(monkeypatch)
+        running = asyncio.ensure_future(
+            process.run(
+                python(STARTS_ANOTHER_AND_STAYS, str(tmp_path / "started")),
+                cwd=tmp_path,
+                timeout_seconds=60,
+            )
+        )
+        await asyncio.wait_for(slow.made.wait(), timeout=20)
+        running.cancel()
+        await asyncio.sleep(0.1)
+
+        with caplog.at_level(logging.WARNING, logger="asyncio"):
+            slow.go_on.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(running, timeout=20)
+
+        assert slow.started[0].get_returncode() == -signal.SIGKILL
+        assert "already read" not in caplog.text
+
+
+async def test_a_caller_that_is_cancelled_again_does_not_wait_for_the_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(process, "_START_SECONDS", 40.0)
+    slow = SlowStart(monkeypatch)
+    running = asyncio.ensure_future(
+        process.run(
+            python(STARTS_ANOTHER_AND_STAYS, str(tmp_path / "started")),
+            cwd=tmp_path,
+            timeout_seconds=60,
+        )
+    )
+    await asyncio.wait_for(slow.made.wait(), timeout=20)
+    running.cancel()
+    await asyncio.sleep(0.3)
+    waits = not running.done()
+
+    running.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(running, timeout=5)
+    assert waits
+    # What the start makes is ended all the same, when it is there.
+    slow.go_on.set()
+    assert await gone(slow.started[0].get_pid())
+    await asyncio.sleep(0.5)
+
+
+async def test_a_start_that_fails_while_its_cancelled_caller_waits_holds_nobody_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    slow = SlowStart(monkeypatch, fails=True)
+    running = asyncio.ensure_future(process.run(python("pass"), cwd=tmp_path, timeout_seconds=60))
+    await asyncio.sleep(0.05)
+    running.cancel()
+    await asyncio.sleep(0.05)
+    began = time.monotonic()
+
+    with caplog.at_level(logging.ERROR):
+        slow.go_on.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(running, timeout=20)
+        await asyncio.sleep(0.05)
+
+    # No program came of it, so there is none to wait for. And the failure was taken note of.
+    assert time.monotonic() - began < 3
+    assert "never retrieved" not in caplog.text
+
+
+@pytest.mark.parametrize("turns", [1, 2, 3])
+def test_a_program_comes_to_its_end_although_a_command_was_being_started(turns: int) -> None:
+    # Python before 3.13 does not come back from closing an event loop in which a program is
+    # still being started. A caller that was cancelled waits for the start, so none is.
+    done = subprocess.run(
+        [sys.executable, "-c", ENDS_AS_A_COMMAND_STARTS, str(turns)],
+        capture_output=True,
+        text=True,
+        timeout=40,
+        check=False,
+    )
+
+    assert (done.returncode, done.stdout.split("\n")[:2]) == (
+        0,
+        ["main is over", "the loop is closed"],
+    ), done.stderr
+
+
 async def test_a_program_that_comes_into_being_after_its_caller_was_cancelled_is_ended(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The start takes longer than a caller that was cancelled waits for it.
+    monkeypatch.setattr(process, "_START_SECONDS", 0.1)
     slow = SlowStart(monkeypatch)
     note = tmp_path / "started"
     running = asyncio.ensure_future(
@@ -565,6 +732,7 @@ async def test_a_program_that_comes_into_being_after_its_caller_was_cancelled_is
 async def test_a_program_that_could_not_be_started_after_its_caller_was_cancelled_is_no_loose_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    monkeypatch.setattr(process, "_START_SECONDS", 0.1)
     slow = SlowStart(monkeypatch, fails=True)
     running = asyncio.ensure_future(process.run(python("pass"), cwd=tmp_path, timeout_seconds=60))
     await asyncio.sleep(0.05)

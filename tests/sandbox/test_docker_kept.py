@@ -221,10 +221,11 @@ async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
     yield made
     # Nothing may be under way when the event loop is closed, and a test that failed has not
     # come to close what it made. A provider that is left open goes on starting programs: its
-    # look lets a container go once the session is over. A program whose caller left while it
-    # was started is ended when it is there, and nobody waits for that. Python warns of a
-    # process that the loop did not see end, and here a warning is an error. And Python 3.12
-    # waits without end for a program that was being started when the loop was closed.
+    # look lets a container go once the session is over. A program whose start outlasted the
+    # patience of its cancelled caller is ended when it is there, and nobody waits for that.
+    # Python warns of a process that the loop did not see end, and here a warning is an
+    # error. And Python before 3.13 does not come back from closing a loop in which a
+    # program is still being started.
     made.go_on.set()
     try:
         stuck = [one for one in providers if not await closed(one, END_SECONDS)]
@@ -1968,9 +1969,15 @@ async def test_a_cancelled_command_that_could_not_be_stopped_costs_the_container
 
 
 async def test_a_command_that_was_cancelled_as_it_was_handed_over_costs_the_container(
-    provider: Docker, engine: Engine, session: Session, work: Path
+    provider: Docker,
+    engine: Engine,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Whether the engine took the command cannot be known, so nothing may go on in there.
+    # The handing over takes longer here than a caller that was cancelled waits for it.
+    monkeypatch.setattr("columbina.process._START_SECONDS", 0.2)
     await ran(provider, session, work, "pass")
     engine.held.add("command")
     running = asyncio.ensure_future(ran(provider, session, work, "print('never read')"))

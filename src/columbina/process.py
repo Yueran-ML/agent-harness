@@ -71,6 +71,9 @@ _DRAIN_SECONDS = 2.0
 _CLOSE_SECONDS = 5.0
 """How long a run waits for the loop to take note that its program is gone for good."""
 
+_START_SECONDS = 5.0
+"""How long a caller that was cancelled waits for a program that was being started for it."""
+
 _SECRET_WORDS = ("KEY", "PASSWORD", "SECRET", "TOKEN")
 _Utf8 = codecs.getincrementaldecoder("utf-8")
 
@@ -369,8 +372,13 @@ else:  # pragma: posix only
 
     def _end_unheld(transport: asyncio.SubprocessTransport) -> None:
         """End a program that nobody holds yet, with all that it has started meanwhile."""
-        _Tree(transport.get_pid()).stop()
+        group = transport.get_pid()
+        # Closing ends the program, and first it asks the system whether the program has
+        # ended. Of a program that has, whoever asks first is the one who is told, and that
+        # is to be the event loop. So the program is closed while it runs, and what else is
+        # in its group is ended after that.
         transport.close()
+        _Tree(group).stop()
 
 
 class _Output:
@@ -489,14 +497,18 @@ class _Watch(asyncio.SubprocessProtocol):
         self.closed.set_result(None)
 
 
+def _came(creating: "asyncio.Future[tuple[asyncio.SubprocessTransport, _Watch]]") -> bool:
+    """Tell whether a start that is over has made a program."""
+    return not creating.cancelled() and creating.exception() is None
+
+
 def _abandoned(creating: "asyncio.Future[tuple[asyncio.SubprocessTransport, _Watch]]") -> None:
-    """End a program that came into being after the one who asked for it had left."""
-    if creating.cancelled() or creating.exception() is not None:
-        return
-    _end_unheld(creating.result()[0])
+    """End a program that came into being after the one who asked for it was cancelled."""
+    if _came(creating):
+        _end_unheld(creating.result()[0])
 
 
-async def _within(awaited: asyncio.Future[None], seconds: float) -> bool:
+async def _within(awaited: "asyncio.Future[Any]", seconds: float) -> bool:
     """Wait for something for a limited time, and tell whether it came."""
     done, _ = await asyncio.wait([awaited], timeout=seconds)
     return bool(done)
@@ -561,7 +573,10 @@ async def run(
 
     When this returns or raises, everything that the program started has been
     stopped. A process that cannot be stopped does not keep the run from
-    ending: it is waited for a few seconds and then left.
+    ending: it is waited for a few seconds and then left. So is a program
+    that is still being started when its caller is cancelled: the caller
+    waits a few seconds for it to come into being and to be ended, and if it
+    takes longer, it is ended when it is there.
 
     Args:
         argv: The program and its arguments. No shell reads them.
@@ -643,8 +658,15 @@ async def _run(
     try:
         transport, _ = await asyncio.shield(creating)
     except asyncio.CancelledError:
-        # The start goes on without its caller. What it makes is ended when it is there.
+        # The start goes on, and what it makes is ended when it is there. That is a moment
+        # as a rule, and the caller waits for it: until the program is there, is ended, and
+        # the loop has taken note. Nothing is left under way then. It matters to whoever
+        # ends next: Python before 3.13 does not come back from closing an event loop in
+        # which a program is still being started. A start that takes its time is not waited
+        # for, and a caller that is cancelled once more leaves at once.
         creating.add_done_callback(_abandoned)
+        if await _within(creating, _START_SECONDS) and _came(creating):
+            await _within(watch.closed, _CLOSE_SECONDS)
         raise
     except (OSError, ValueError) as error:
         raise OSError(f"the program {argv[0]!r} could not be started: {error}") from error

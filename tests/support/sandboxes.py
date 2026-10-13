@@ -1,15 +1,35 @@
 """Providers of a sandbox for tests: they say how well they hold commands, and run them here."""
 
+import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
+from typing import Protocol
 
 from columbina import process
 from columbina.process import Completed, Writable
 from columbina.sandbox import Mode, Strength, held_less_well
 from columbina.session import Session
 
-__all__ = ["Holding"]
+__all__ = ["Holding", "closed"]
+
+
+class _Closes(Protocol):
+    async def close(self) -> None: ...
+
+
+async def closed(provider: _Closes, seconds: float = 20.0) -> bool:
+    """Close a provider when a test is over, and tell whether that was done in time.
+
+    A test that has failed may have left its provider in a state that never lets go, and
+    the limit that every test has stops counting once the test has failed. So the closing
+    has a limit of its own.
+    """
+    try:
+        await asyncio.wait_for(provider.close(), timeout=seconds)
+    except TimeoutError:
+        return False
+    return True
 
 
 class Holding:

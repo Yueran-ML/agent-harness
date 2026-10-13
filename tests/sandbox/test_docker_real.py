@@ -30,11 +30,14 @@ from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
 from support.engines import BARE, IMAGE, asked, containers, real
 from support.links import link_directory
+from support.sandboxes import closed
 from support.sockets import listening_at
 
 pytestmark = pytest.mark.timeout(180)
 
 WINDOWS = sys.platform == "win32"
+END_SECONDS = 60.0
+"""How long the end of a test may take to close a provider. A real engine takes its time."""
 LISTS_SLEEPERS = "grep -lx sleep /proc/[0-9]*/comm 2>/dev/null | wc -l"
 """Counts the processes of a container that are a ``sleep``, by the name of their program."""
 
@@ -60,8 +63,10 @@ async def make(program: str) -> AsyncIterator[Make]:
         return made[-1]
 
     yield one
-    for provider in made:
-        await provider.close()
+    # A test that failed may leave a provider that never lets go, and nothing limits the end
+    # of a test once it has failed.
+    stuck = [provider for provider in made if not await closed(provider, END_SECONDS)]
+    assert not stuck, "a provider could not be closed in the time that the end of a test has"
     assert containers(program) <= before
 
 

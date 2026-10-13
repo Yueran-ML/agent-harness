@@ -15,7 +15,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -31,11 +31,14 @@ from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
 from support.links import link_directory, unlink_directory
 from support.processes import alive, end, gone, python
+from support.sandboxes import closed
 from support.sockets import listening_at
 
 pytestmark = pytest.mark.timeout(90)
 
 WINDOWS = sys.platform == "win32"
+END_SECONDS = 20.0
+"""How long the end of a test may take to close a provider that the test made."""
 FAKE = Path(__file__).resolve().parents[1] / "support" / "fake_docker.py"
 FIRST = ["info", "run", "usable", "command", "stop"]
 """What the engine is asked for the first command of a session."""
@@ -146,13 +149,24 @@ def mounted(argv: list[str]) -> list[str]:
     return [argv[at + 1] for at, word in enumerate(argv) if word == "--mount"]
 
 
-async def unseen(began: list[asyncio.SubprocessTransport], within: float = 10.0) -> list[int]:
-    """Wait until the event loop has seen each program end, and name those it has not seen."""
+async def unsettled(
+    began: list[asyncio.SubprocessTransport], starting: Callable[[], int], within: float = 10.0
+) -> str | None:
+    """Wait until no program is being started and the event loop has seen each one end.
+
+    Returns:
+        What is still under way when the time is up, in words. ``None`` if nothing is.
+    """
     deadline = time.monotonic() + within
     while True:
-        left = [one.get_pid() for one in began if one.get_returncode() is None]
-        if not left or time.monotonic() >= deadline:
-            return left
+        running = [one.get_pid() for one in began if one.get_returncode() is None]
+        if not (running or starting()):
+            return None
+        if time.monotonic() >= deadline:
+            return (
+                f"the event loop did not see these programs of the stand-in end: {running}, "
+                f"and {starting()} programs were still being started"
+            )
         await asyncio.sleep(0.01)
 
 
@@ -171,38 +185,59 @@ async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterat
     loop = asyncio.get_running_loop()
     really_start: Any = loop.subprocess_exec
     began: list[asyncio.SubprocessTransport] = []
+    starting = 0
 
     async def start(factory: Any, name: str, *arguments: str, **options: Any) -> Any:
-        if name != made.program and name not in made.also:
+        nonlocal starting
+        stands_in = name == made.program or name in made.also
+        if not stands_in:
             # A test that goes wrong must not come to ask a real engine.
             assert Path(name).name not in ("docker", "docker.exe"), f"{name} is no stand-in"
-            return await really_start(factory, name, *arguments, **options)
-        what = verb(list(arguments))
+        what = verb(list(arguments)) if stands_in else None
         if what in made.fails:
             raise OSError(8, "Exec format error")
-        started = await really_start(factory, sys.executable, str(FAKE), *arguments, **options)
-        began.append(started[0])
+        run = (sys.executable, str(FAKE)) if stands_in else (name,)
+        starting += 1
+        try:
+            started = await really_start(factory, *run, *arguments, **options)
+        finally:
+            starting -= 1
+        if stands_in:
+            began.append(started[0])
         if what in made.held:
             made.holding.set()
             await made.go_on.wait()
         return started
 
     monkeypatch.setattr(loop, "subprocess_exec", start)
+    providers: list[Docker] = []
+    really_made: Any = Docker.__init__
+
+    def noted(self: Docker, config: DockerConfig) -> None:
+        really_made(self, config)
+        providers.append(self)
+
+    monkeypatch.setattr(Docker, "__init__", noted)
     yield made
-    # A program whose caller left while it was started is ended once it is there, and nobody
-    # waits for that. The event loop has to see every program end before it is closed: Python
-    # warns of a process that was not seen to end, and here a warning is an error.
+    # Nothing may be under way when the event loop is closed, and a test that failed has not
+    # come to close what it made. A provider that is left open goes on starting programs: its
+    # look lets a container go once the session is over. A program whose caller left while it
+    # was started is ended when it is there, and nobody waits for that. Python warns of a
+    # process that the loop did not see end, and here a warning is an error. And Python 3.12
+    # waits without end for a program that was being started when the loop was closed.
     made.go_on.set()
-    left = await unseen(began)
-    assert not left, f"the event loop did not see these programs of the stand-in end: {left}"
+    try:
+        stuck = [one for one in providers if not await closed(one, END_SECONDS)]
+    finally:
+        left = await unsettled(began, lambda: starting)
+    assert not stuck, "a provider could not be closed in the time that the end of a test has"
+    assert left is None, left
 
 
 @pytest.fixture
-async def provider(engine: Engine) -> AsyncIterator[Docker]:
-    made = Docker(DockerConfig(program=engine.program))
-    yield made
-    engine.go_on.set()
-    await made.close()
+def provider(engine: Engine) -> Docker:
+    """A provider with the stand-in for its docker program. The engine closes it at the end."""
+    return Docker(DockerConfig(program=engine.program))
 
 
 @pytest.fixture

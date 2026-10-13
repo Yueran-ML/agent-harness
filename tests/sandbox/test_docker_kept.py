@@ -31,6 +31,7 @@ from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
 from support.links import link_directory, unlink_directory
 from support.processes import alive, end, gone, python
+from support.sockets import listening_at
 
 pytestmark = pytest.mark.timeout(90)
 
@@ -108,7 +109,12 @@ class Engine:
         """The containers that are there: their names, and the process that each one is."""
         there: dict[str, int] = {}
         for known in sorted((self.home / "containers").glob("*.json")):
-            pid = json.loads(known.read_text(encoding="utf-8"))["pid"]
+            try:
+                pid = json.loads(known.read_text(encoding="utf-8"))["pid"]
+            except OSError:
+                # The container ends at this moment and takes its record away. It is gone
+                # between the listing and the reading, or Windows will not open it.
+                continue
             if alive(pid):
                 there[known.stem] = pid
         return there
@@ -157,6 +163,8 @@ async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Engine:
 
     async def start(factory: Any, name: str, *arguments: str, **options: Any) -> Any:
         if name != made.program and name not in made.also:
+            # A test that goes wrong must not come to ask a real engine.
+            assert Path(name).name not in ("docker", "docker.exe"), f"{name} is no stand-in"
             return await really_start(factory, name, *arguments, **options)
         what = verb(list(arguments))
         if what in made.fails:
@@ -1329,15 +1337,13 @@ async def test_a_program_of_the_config_that_a_link_in_the_working_directory_lead
 
 
 def search_with(*first: Path) -> str:
-    """A search path that begins with some directories and has no docker program of this machine.
+    """A search path that begins with some directories, before all that is there already.
 
-    The rest of what is there stays: the stand-in looks for programs of the system itself.
-    A test that goes wrong must not come to ask a real engine.
+    Nothing is taken out of it. The docker program of this machine may lie in a directory
+    that holds half the system, as it does on a machine of the CI. No test gets to run
+    that program: the ``engine`` of these tests sees to it.
     """
-    name = Path("docker.exe" if WINDOWS else "docker")
-    rest = [entry for entry in os.environ["PATH"].split(os.pathsep) if entry]
-    without = [entry for entry in rest if not (Path(entry.strip('"')) / name).exists()]
-    return os.pathsep.join([*(str(entry) for entry in first), *without])
+    return os.pathsep.join([*(str(entry) for entry in first), os.environ["PATH"]])
 
 
 def planted_in(directory: Path, engine: Engine) -> Path:
@@ -2192,11 +2198,8 @@ if sys.platform != "win32":
     async def test_a_socket_in_the_working_directory_leaves_its_commands_held_in_part(
         provider: Docker, engine: Engine, session: Session, work: Path
     ) -> None:
-        import socket
-
         (work / "run").mkdir()
-        listening = socket.socket(socket.AF_UNIX)
-        listening.bind(str(work / "run" / "agent.sock"))
+        listening = listening_at(work / "run" / "agent.sock")
         try:
             await ran(provider, session, work, "pass")
         finally:

@@ -16,6 +16,7 @@ from pydantic import ValidationError
 from columbina.sandbox import SandboxUnavailableError, docker
 from columbina.sandbox.docker import DockerConfig, Engine
 from support.links import link_directory, link_file, unlink_directory
+from support.sockets import listening_at
 
 WINDOWS = sys.platform == "win32"
 PROGRAM = "docker.exe" if WINDOWS else "docker"
@@ -1205,12 +1206,9 @@ def test_what_a_link_leads_to_is_not_looked_through(work: Path, root: Path) -> N
 if sys.platform != "win32":
 
     def test_a_socket_is_found_wherever_it_lies(work: Path) -> None:
-        import socket
-
         (work / "run" / "deep").mkdir(parents=True)
         (work / "run" / "notes.txt").write_text("")
-        listening = socket.socket(socket.AF_UNIX)
-        listening.bind(str(work / "run" / "deep" / "agent.sock"))
+        listening = listening_at(work / "run" / "deep" / "agent.sock")
         try:
             found = docker.sockets(work, 1000, 60.0)
         finally:
@@ -1227,10 +1225,7 @@ if sys.platform != "win32":
         assert docker.sockets(work, 1000, 60.0) is None
 
     def test_a_socket_that_a_link_leads_to_is_not_in_the_container(work: Path, root: Path) -> None:
-        import socket
-
-        listening = socket.socket(socket.AF_UNIX)
-        listening.bind(str(root / "agent.sock"))
+        listening = listening_at(root / "agent.sock")
         try:
             (work / "agent.sock").symlink_to(root / "agent.sock")
             found = docker.sockets(work, 1000, 60.0)

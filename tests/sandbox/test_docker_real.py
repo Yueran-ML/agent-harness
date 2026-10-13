@@ -30,6 +30,7 @@ from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
 from support.engines import BARE, IMAGE, asked, containers, real
 from support.links import link_directory
+from support.sockets import listening_at
 
 pytestmark = pytest.mark.timeout(180)
 
@@ -183,10 +184,7 @@ if sys.platform == "linux":
     ) -> None:
         # Where this machine and the container have one kernel, a command could talk to
         # whatever listens there, with no network and through a read-only mount.
-        import socket
-
-        listening = socket.socket(socket.AF_UNIX)
-        listening.bind(str(work / "agent.sock"))
+        listening = listening_at(work / "agent.sock")
         try:
             before = provider.strength(session)
             wrote = await said(provider, session, work, "test -S agent.sock && echo a socket")

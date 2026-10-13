@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 __all__ = ["alive", "end", "gone", "python"]
 
@@ -44,11 +45,17 @@ if sys.platform == "win32":
             _kernel32.CloseHandle(handle)
 
 else:
+    _PS = next((place for place in ("/bin/ps", "/usr/bin/ps") if Path(place).exists()), "ps")
+    """The program that lists processes, by its whole path where it has one of the usual two.
+
+    A test may leave little on the search path, and whoever asks here may be a program that
+    a test started with that search path.
+    """
 
     def alive(pid: int) -> bool:
         """Tell whether a process still runs. One that has ended and waits to be reaped does not."""
         state = subprocess.run(
-            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+            [_PS, "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
         )
         return state.returncode == 0 and not state.stdout.strip().startswith("Z")
 

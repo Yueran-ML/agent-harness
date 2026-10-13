@@ -63,10 +63,16 @@ NOTED: list[None] = []
 
 def told() -> dict[str, Any]:
     """Return how the test wants this to behave."""
-    try:
-        return json.loads((HOME / "told.json").read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
+    for _ in range(200):
+        try:
+            return json.loads((HOME / "told.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        except PermissionError:
+            # The test puts another file in its place at this moment, and Windows lets
+            # nobody open it meanwhile.
+            time.sleep(0.01)
+    raise RuntimeError("what the test told could not be read")
 
 
 def shown(path: Path, what: object) -> None:
@@ -114,7 +120,8 @@ def container(name: str) -> dict[str, Any] | None:
     """Return what is known of a container, or ``None`` if there is none of that name."""
     try:
         known = json.loads((CONTAINERS / f"{name}.json").read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    except OSError:
+        # It is not there, or it is being taken away, which Windows tells in another way.
         return None
     return known if alive(known["pid"]) else None
 
@@ -123,7 +130,7 @@ def commands(name: str) -> list[int]:
     """Return the processes of the commands that run in a container."""
     try:
         return [int(line) for line in (CONTAINERS / f"{name}.pids").read_text().split()]
-    except FileNotFoundError:
+    except OSError:
         return []
 
 

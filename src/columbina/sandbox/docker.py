@@ -8,7 +8,11 @@ left with it afterwards.
 Windows it looks in the directory that this program was started in before it
 looks anywhere else. That directory is often a repository. So the looking is
 done here, :func:`found`: only the entries of the search path that are whole
-paths count, and none that lies in a working directory.
+paths count, and none that lies in a working directory. The program is run
+by its name many times, and a name may be a link, so the whole way from the
+name to the file is walked, :func:`trusted`: a link or a directory on that
+way that lies in a working directory could be changed by a command in a
+container, which would then choose what this machine runs next.
 
 **The engine.** Not every engine that answers to ``docker`` holds a command
 the way this provider needs. What an engine says of itself is read by
@@ -83,6 +87,7 @@ __all__ = [
     "sockets",
     "supported",
     "there",
+    "trusted",
     "unavailable",
     "usable",
     "user_of_commands",
@@ -168,6 +173,17 @@ else:  # pragma: posix only
         """Return the numbers of the user and the group of this program."""
         return os.getuid(), os.getgid()
 
+
+_HOPS = 40
+"""How many links are followed on the way from the name of a program to its file."""
+
+_STEPS_BACK_FIRST = sys.platform == "win32"
+"""Whether the system takes the steps back out of a path before it looks at anything.
+
+Windows does: a path that goes into a link and one step back names the directory that the
+link lies in, whatever the link leads to. The other systems go where the link leads and take
+the directory above that.
+"""
 
 _OLDEST = 25
 """The first version of the engine that can leave out what is mounted below a directory."""
@@ -308,26 +324,116 @@ class Engine:
     system: str
 
 
+def _plain(target: str) -> str:
+    """Return what a link leads to as a plain path.
+
+    Windows tells of some links in the long form of a path, which begins
+    with a mark of its own. It names the same place.
+    """
+    if target.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + target[8:]
+    if target.startswith("\\\\?\\"):
+        return target[4:]
+    return target
+
+
+def _leads(here: Path) -> str | None:
+    """Return what a link says it leads to, or ``None`` for a name that is no link."""
+    try:
+        return _plain(str(here.readlink()))
+    except (OSError, ValueError):
+        # A file or a directory, or nothing. Windows also has names that are neither a
+        # plain file nor a link, such as a file that is fetched only when it is opened, and
+        # of those Python says so in a way of its own.
+        return None
+
+
+def _itself(place: Path) -> tuple[int, int] | None:
+    """Return the numbers by which the system tells a file or a directory from every other.
+
+    They are the same under every name that it goes by. ``None`` stands for
+    what is not there, and for a file system that numbers nothing.
+    """
+    try:
+        told = place.stat()
+    except OSError:
+        return None
+    return (told.st_dev, told.st_ino) if told.st_ino else None
+
+
+def trusted(program: Path, outside: Sequence[Path]) -> bool:
+    """Tell whether a program can be run by its name without going through a working directory.
+
+    The name is walked the way the system walks it, one part after the
+    other, and a link is followed to where it leads. At no step may the way
+    be in one of the directories ``outside``: what lies there, a link or a
+    directory or the file itself, can be changed by whoever can write there,
+    also after this look. Whether a program lies at the end of the way is
+    another question.
+
+    A directory is known by its name and by what it is. A system that takes
+    no notice of case may leave a name the way it was written, and then one
+    directory has more names than can be compared.
+
+    Args:
+        program: The whole path of the program, as it will be run.
+        outside: Directories that the way must not touch, each with every
+            link on its own path resolved.
+
+    Returns:
+        Whether the way stays outside all of them, to its end.
+    """
+    if _STEPS_BACK_FIRST:
+        program = Path(os.path.normpath(program))
+    apart = {_itself(place) for place in outside} - {None}
+    done = Path(program.anchor)
+    left = list(program.parts[1:])
+    hops = 0
+    while left:
+        part = left.pop(0)
+        if part == "..":
+            done = done.parent
+            continue
+        here = done / part
+        leads = _leads(here)
+        if leads is None:
+            # Its name is taken as the system spells it, which may be another way than it
+            # was written.
+            here = Path(os.path.realpath(here))
+            if any(here == place or place in here.parents for place in outside):
+                return False
+            if _itself(here) in apart:
+                return False
+            done = here
+            continue
+        hops += 1
+        if hops > _HOPS:
+            return False
+        # The link lies in a directory that is outside all of them. Where it leads is
+        # walked from the start, and counted from the directory of the link.
+        way = done / leads
+        done, left = Path(way.anchor), [*way.parts[1:], *left]
+    return True
+
+
 def found(search: str, outside: Sequence[Path] = ()) -> str | None:
     """Return the path of the ``docker`` program that a search path leads to, or ``None``.
 
     Args:
         search: The search path, as the environment has it.
-        outside: Directories that the program must not come from: the one
-            that this program was started in, and the working directory of
-            a session. What a link there leads to counts as being there.
+        outside: Directories that the program must not come from, and that
+            no link on the way to it may lie in: the directory that this
+            program was started in, and the working directory of a session.
     """
     apart = [Path(os.path.realpath(directory)) for directory in outside]
     for written in search.split(os.pathsep):
         entry = Path(written.strip('"'))
+        program = entry / _PROGRAM
         # An entry that is no whole path means a place below the current directory.
         if not entry.is_absolute():
             continue
-        real = Path(os.path.realpath(entry / _PROGRAM))
-        if any(real == directory or directory in real.parents for directory in apart):
-            continue
-        if real.is_file() and os.access(real, os.X_OK):
-            return str(entry / _PROGRAM)
+        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):
+            return str(program)
     return None
 
 
@@ -838,6 +944,8 @@ class Docker:
         self._starting: dict[str, asyncio.Future[_Kept]] = {}
         self._turns: dict[str, asyncio.Lock] = {}
         self._engine: Engine | None = None
+        self._tool: str | None = None
+        self._choosing = asyncio.Lock()
         self._looking: asyncio.Task[None] | None = None
         self._over = asyncio.Event()
 
@@ -968,7 +1076,7 @@ class Docker:
                 be made. Nothing is left of the attempt.
         """
         try:
-            program = await asyncio.to_thread(self._program, cwd)
+            program = await self._chosen(cwd)
             user = user_of_commands(sys.platform, *_me())
             await self._known(program)
             target = _WORKSPACE if sys.platform == "win32" else cwd.as_posix()
@@ -1093,25 +1201,54 @@ class Docker:
                 "maps users in a way that this sandbox does not work with"
             )
 
-    def _program(self, cwd: Path) -> str:
+    async def _chosen(self, cwd: Path) -> str:
         """Return the ``docker`` program for a container of a working directory.
 
+        The program is looked for once, and then it serves for as long as
+        this provider lives. A later look could find what a command has put
+        into the working directory of its session since, if the search path
+        leads there. So a directory that holds the program, or a link on the
+        way to it, gets no container: its commands could write what every
+        other container is asked with. One session is seen to at a time,
+        for two that start together would each take the program of the
+        other.
+
         Raises:
-            SandboxUnavailableError: There is none that can be trusted.
+            SandboxUnavailableError: There is no program that can be trusted
+                with this directory.
         """
+        async with self._choosing:
+            self._tool = await asyncio.to_thread(self._program, cwd)
+            return self._tool
+
+    def _program(self, cwd: Path) -> str:
+        """Return the ``docker`` program that can be trusted with a working directory.
+
+        Raises:
+            SandboxUnavailableError: There is none.
+        """
+        outside = [Path(os.path.realpath(place)) for place in (Path.cwd(), cwd)]
         named = self._config.program
-        if named is not None:
-            if not Path(named).is_file():
-                raise SandboxUnavailableError(
-                    f"the docker program that the config names, {named}, is not there"
-                )
-            return named
-        program = found(os.environ.get("PATH", ""), [Path.cwd(), cwd])
+        program = self._tool if named is None else named
         if program is None:
+            program = found(os.environ.get("PATH", ""), outside)
+            if program is None:
+                raise SandboxUnavailableError(
+                    "no docker program was found on the search path. Install Docker, or name "
+                    "the program in the config of the sandbox. A program that lies in the "
+                    "working directory is not taken"
+                )
+            return program
+        whose = "was found on the search path" if named is None else "the config names"
+        if not Path(program).is_file():
             raise SandboxUnavailableError(
-                "no docker program was found on the search path. Install Docker, or name the "
-                "program in the config of the sandbox. A program that lies in the working "
-                "directory is not taken"
+                f"the docker program that {whose}, {program}, is not there"
+            )
+        if not trusted(Path(program), outside):
+            raise SandboxUnavailableError(
+                f"the docker program that {whose}, {program}, lies in the working directory, or "
+                "a link on the way to it does. A command could put another program there, so "
+                "it is not run"
             )
         return program
 

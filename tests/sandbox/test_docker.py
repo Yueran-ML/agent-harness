@@ -132,6 +132,306 @@ def test_a_working_directory_that_is_named_through_a_link_is_the_same_directory(
     assert docker.found(search(root / "repository"), [root / "alias"]) is None
 
 
+def test_a_link_in_a_working_directory_is_not_followed_to_a_program_outside_it(
+    root: Path,
+) -> None:
+    # Whoever can write the directory can put another file where the link is, and the
+    # program is run by its name again and again.
+    program_in(root / "real")
+    (root / "repository" / "bin").mkdir(parents=True)
+    link_file(root / "repository" / "bin" / PROGRAM, root / "real" / PROGRAM)
+    path = search(root / "repository" / "bin")
+
+    assert docker.found(path, [root / "repository"]) is None
+    assert docker.found(path, [root / "elsewhere"]) == str(root / "repository" / "bin" / PROGRAM)
+
+
+def test_a_way_to_the_program_that_leads_through_a_working_directory_is_not_taken(
+    root: Path,
+) -> None:
+    program_in(root / "real")
+    (root / "repository").mkdir()
+    (root / "tools").mkdir()
+    link_file(root / "repository" / PROGRAM, root / "real" / PROGRAM)
+    link_file(root / "tools" / PROGRAM, root / "repository" / PROGRAM)
+
+    # The name and the file both lie outside. A link between them does not.
+    assert docker.found(search(root / "tools"), [root / "repository"]) is None
+    assert docker.found(search(root / "tools")) == str(root / "tools" / PROGRAM)
+
+
+def test_a_directory_in_a_working_directory_that_leads_out_of_it_is_not_searched(
+    root: Path,
+) -> None:
+    program_in(root / "real")
+    (root / "repository").mkdir()
+    link_directory(root / "repository" / "tools", root / "real")
+    path = search(root / "repository" / "tools")
+
+    assert docker.found(path, [root / "repository"]) is None
+    assert docker.found(path) == str(root / "repository" / "tools" / PROGRAM)
+
+
+def test_a_working_directory_is_known_under_every_name_that_leads_to_it(root: Path) -> None:
+    program_in(root / "real")
+    (root / "repository").mkdir()
+    link_directory(root / "repository" / "tools", root / "real")
+    link_directory(root / "alias", root / "repository")
+
+    # The entry names the working directory by another name, and a link in it leads out.
+    assert docker.found(search(root / "alias" / "tools"), [root / "repository"]) is None
+
+
+def test_a_way_that_lies_outside_every_working_directory_is_taken_as_it_is_written(
+    root: Path,
+) -> None:
+    program_in(root / "real")
+    (root / "repository").mkdir()
+    link_directory(root / "tools", root / "real")
+    by_a_detour = root / "tools" / ".." / "tools"
+
+    assert docker.found(search(root / "tools"), [root / "repository"]) == str(
+        root / "tools" / PROGRAM
+    )
+    assert docker.found(search(by_a_detour), [root / "repository"]) == str(by_a_detour / PROGRAM)
+
+
+def test_a_link_to_a_program_by_a_path_that_is_no_whole_path_is_followed(root: Path) -> None:
+    program_in(root / "real")
+    (root / "tools").mkdir()
+    link_file(root / "tools" / PROGRAM, Path("..") / "real" / PROGRAM)
+
+    assert docker.found(search(root / "tools")) == str(root / "tools" / PROGRAM)
+    assert docker.found(search(root / "tools"), [root / "real"]) is None
+
+
+def test_a_way_with_more_links_than_are_followed_leads_to_no_program(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    program_in(root / "real")
+    link_directory(root / "tools", root / "real")
+    assert docker.found(search(root / "tools")) == str(root / "tools" / PROGRAM)
+
+    monkeypatch.setattr(docker, "_HOPS", 0)
+
+    assert docker.found(search(root / "tools")) is None
+
+
+def test_links_that_lead_round_in_a_circle_lead_to_no_program(root: Path) -> None:
+    (root / "tools").mkdir()
+    link_file(root / "tools" / PROGRAM, root / "tools" / "other")
+    link_file(root / "tools" / "other", root / "tools" / PROGRAM)
+
+    assert docker.found(search(root / "tools")) is None
+
+
+def test_a_link_that_leads_to_nothing_is_no_program(root: Path) -> None:
+    (root / "tools").mkdir()
+    link_file(root / "tools" / PROGRAM, root / "gone" / PROGRAM)
+
+    assert docker.found(search(root / "tools")) is None
+
+
+def test_a_step_back_in_a_path_is_taken_the_way_the_system_takes_it(root: Path) -> None:
+    # Windows takes the steps back out of a path before it looks at anything. Other systems
+    # go to the directory above the one that a link led to. So the system is asked which
+    # of the two programs it would run.
+    program_in(root / "bin")
+    program_in(root / "far" / "bin")
+    (root / "far" / "place").mkdir()
+    link_directory(root / "link", root / "far" / "place")
+    entry = root / "link" / ".." / "bin"
+    (root / "bin" / "here").write_text("")
+    run, other = root / "bin", root / "far" / "bin"
+    if not (entry / "here").exists():
+        run, other = other, run
+
+    assert docker.found(search(entry), [run]) is None
+    assert docker.found(search(entry), [other]) == str(entry / PROGRAM)
+
+
+def links(monkeypatch: pytest.MonkeyPatch, made_up: dict[Path, str]) -> None:
+    """Have some names pass for links, each to what is said of it.
+
+    Not every system lets a test make a link to a file, or a link that says where it leads
+    from its own place.
+    """
+
+    def leads(here: Path) -> str | None:
+        return made_up.get(here)
+
+    monkeypatch.setattr(docker, "_leads", leads)
+
+
+@pytest.mark.parametrize(
+    ("first", "run", "other"), [(True, "bin", "far/bin"), (False, "far/bin", "bin")]
+)
+def test_the_walk_takes_a_step_back_in_either_of_the_two_ways(
+    root: Path, monkeypatch: pytest.MonkeyPatch, first: bool, run: str, other: str
+) -> None:
+    # Each system has one of the two, so the other is tried with a link that is made up.
+    monkeypatch.setattr(docker, "_STEPS_BACK_FIRST", first)
+    links(monkeypatch, {root / "link": str(root / "far" / "place")})
+    named = root / "link" / ".." / "bin" / PROGRAM
+
+    assert not docker.trusted(named, [root / run])
+    assert docker.trusted(named, [root / other])
+
+
+def test_what_a_link_says_is_counted_from_the_directory_that_the_link_lies_in(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    named = root / "tools" / PROGRAM
+    links(
+        monkeypatch,
+        {
+            named: str(root / "links" / "deep" / PROGRAM),
+            root / "links" / "deep" / PROGRAM: str(Path("..") / ".." / "real" / PROGRAM),
+        },
+    )
+
+    assert not docker.trusted(named, [root / "real"])
+    assert not docker.trusted(named, [root / "links"])
+    assert docker.trusted(named, [root / "elsewhere"])
+
+
+def test_a_step_back_in_what_a_link_says_leads_to_the_directory_above(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    named = root / "tools" / PROGRAM
+    links(monkeypatch, {named: str(Path("..") / "real" / PROGRAM)})
+
+    assert not docker.trusted(named, [root / "real"])
+    assert docker.trusted(named, [root / "tools" / "real"])
+
+
+@pytest.mark.timeout(20)
+def test_links_that_lead_round_in_a_circle_are_not_followed_for_ever(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    one, other = root / "one" / PROGRAM, root / "other" / PROGRAM
+    links(monkeypatch, {one: str(other), other: str(one)})
+
+    assert not docker.trusted(one, [])
+
+
+def test_a_name_of_which_the_system_says_in_its_own_way_that_it_is_no_link_is_none(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Windows has names that are neither plain files nor links: a file that is fetched when
+    # it is opened, a name that starts a packaged program. Python does not call that an
+    # error of the system.
+    program_in(root / "tools")
+
+    def no_link(self: Path) -> Path:
+        raise ValueError("not a symbolic link")
+
+    monkeypatch.setattr(Path, "readlink", no_link)
+
+    assert docker.found(search(root / "tools")) == str(root / "tools" / PROGRAM)
+    assert docker.found(search(root / "tools"), [root / "tools"]) is None
+
+
+def test_a_working_directory_is_known_by_what_it_is_and_not_only_by_its_name(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A system that takes no notice of case may leave a name the way it was written. Then
+    # one directory has more names than can be compared.
+    program_in(root / "Repository" / "bin")
+    shouting = Path(str(root / "Repository" / "bin").upper())
+    if not shouting.exists():
+        pytest.skip("this system tells names apart by their case")
+
+    with monkeypatch.context() as as_written:
+        as_written.setattr(os.path, "realpath", os.path.abspath)
+        within = docker.found(str(shouting), [root / "Repository"])
+        beside = docker.found(str(shouting), [root / "elsewhere"])
+
+    assert within is None
+    assert beside == str(shouting / PROGRAM)
+
+
+def test_a_directory_that_goes_by_another_name_is_known_by_its_numbers(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One directory with two names and no link between them: only a system that takes no
+    # notice of case and leaves names as they were written has that. So its answers are
+    # made up here.
+    program_in(root / "tools")
+    (root / "work").mkdir()
+    told = Path.stat
+
+    def renamed(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        asked = root / "work" if self == root / "tools" else self
+        return told(asked, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", renamed)
+
+    assert docker.found(search(root / "tools"), [root / "work"]) is None
+    assert docker.found(search(root / "tools"), [root / "far"]) == str(root / "tools" / PROGRAM)
+
+
+def test_on_a_file_system_that_numbers_nothing_a_directory_is_known_by_its_name(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    program_in(root / "tools")
+    program_in(root / "work" / "bin")
+    link_directory(root / "work" / "out", root / "tools")
+    link_directory(root / "alias", root / "work")
+    numbered = Path.stat
+
+    def unnumbered(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        told = numbered(self, follow_symlinks=follow_symlinks)
+        return os.stat_result((told.st_mode, 0, 0, *told[3:10]))
+
+    monkeypatch.setattr(Path, "stat", unnumbered)
+
+    # Not every directory is the same one for that.
+    assert docker.found(search(root / "tools"), [root / "work"]) == str(root / "tools" / PROGRAM)
+    assert docker.found(search(root / "work" / "bin"), [root / "work"]) is None
+    assert docker.found(search(root / "work" / "out"), [root / "work"]) is None
+    assert docker.found(search(root / "work" / "bin"), [root / "alias"]) is None
+
+
+def test_whether_a_way_is_trusted_does_not_hang_on_what_lies_at_its_end(root: Path) -> None:
+    # Whether there is a program at the end is another question, with an answer of its own.
+    (root / "tools").mkdir()
+
+    assert docker.trusted(root / "tools" / PROGRAM, [root / "work"])
+    assert not docker.trusted(root / "tools" / PROGRAM, [root / "tools"])
+
+
+@pytest.mark.parametrize(
+    ("read", "plain"),
+    [
+        ("\\\\?\\C:\\Program Files\\Docker", "C:\\Program Files\\Docker"),
+        ("\\\\?\\UNC\\server\\share\\tools", "\\\\server\\share\\tools"),
+        ("C:\\tools", "C:\\tools"),
+        ("/usr/bin/docker", "/usr/bin/docker"),
+        ("../real/docker", "../real/docker"),
+    ],
+)
+def test_what_a_link_of_windows_says_it_leads_to_is_read_as_a_plain_path(
+    read: str, plain: str
+) -> None:
+    to_plain: Any = vars(docker)["_plain"]
+
+    assert to_plain(read) == plain
+
+
+if sys.platform == "win32":
+
+    def test_on_windows_a_working_directory_is_the_same_however_its_name_is_written(
+        root: Path,
+    ) -> None:
+        program_in(root / "Repository" / "bin")
+        shouting = str(root / "Repository" / "bin").upper()
+
+        assert docker.found(shouting, [root / "repository"]) is None
+        assert docker.found(shouting, [Path(str(root / "Repository").upper())]) is None
+        assert docker.found(shouting) == str(Path(shouting) / PROGRAM)
+
+
 def test_a_directory_with_the_name_of_the_program_is_no_program(root: Path) -> None:
     (root / "tools" / PROGRAM).mkdir(parents=True)
 

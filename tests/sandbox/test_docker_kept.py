@@ -28,6 +28,7 @@ from columbina.process import Completed
 from columbina.sandbox import SANDBOX, Mode, SandboxUnavailableError, Strength, docker
 from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
+from support.links import link_directory
 from support.processes import alive, end, gone, python
 
 pytestmark = pytest.mark.timeout(90)
@@ -61,6 +62,7 @@ class Engine:
     def __init__(self, home: Path, program: Path) -> None:
         self.home = home
         self.program = str(program)
+        self.also: set[str] = set()
         self.fails: set[str] = set()
         self.held: set[str] = set()
         self.holding = asyncio.Event()
@@ -138,7 +140,7 @@ async def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Engine:
     really_start: Any = loop.subprocess_exec
 
     async def start(factory: Any, name: str, *arguments: str, **options: Any) -> Any:
-        if name != made.program:
+        if name != made.program and name not in made.also:
             return await really_start(factory, name, *arguments, **options)
         what = verb(list(arguments))
         if what in made.fails:
@@ -877,6 +879,173 @@ async def test_the_program_that_the_config_names_has_to_be_there(
 
     assert str(refused.value) == f"the docker program that the config names, {named}, is not there"
     assert engine.calls() == []
+
+
+async def test_a_program_of_the_config_that_lies_in_the_working_directory_is_not_run(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    # Named by the user, and still a file that a command in the container could replace.
+    (work / "bin").mkdir()
+    planted = work / "bin" / Path(engine.program).name
+    planted.write_bytes(b"")
+    planted.chmod(0o755)
+    provider = Docker(DockerConfig(program=str(planted)))
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, session, work, "pass")
+
+    assert str(refused.value) == (
+        f"the docker program that the config names, {planted}, lies in the working directory, "
+        "or a link on the way to it does. A command could put another program there, so it "
+        "is not run"
+    )
+    assert engine.calls() == []
+
+
+async def test_a_program_of_the_config_that_a_link_in_the_working_directory_leads_to_is_not_run(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    link_directory(work / "tools", Path(engine.program).parent)
+    named = work / "tools" / Path(engine.program).name
+    provider = Docker(DockerConfig(program=str(named)))
+
+    with pytest.raises(SandboxUnavailableError, match="lies in the working directory"):
+        await ran(provider, session, work, "pass")
+
+    assert engine.calls() == []
+
+
+def search_with(*first: Path) -> str:
+    """A search path that begins with some directories and has no docker program of this machine.
+
+    The rest of what is there stays: the stand-in looks for programs of the system itself.
+    A test that goes wrong must not come to ask a real engine.
+    """
+    name = Path("docker.exe" if WINDOWS else "docker")
+    rest = [entry for entry in os.environ["PATH"].split(os.pathsep) if entry]
+    without = [entry for entry in rest if not (Path(entry.strip('"')) / name).exists()]
+    return os.pathsep.join([*(str(entry) for entry in first), *without])
+
+
+def planted_in(directory: Path, engine: Engine) -> Path:
+    """Put a file with the name of the docker program into a directory."""
+    directory.mkdir(parents=True, exist_ok=True)
+    planted = directory / Path(engine.program).name
+    planted.write_bytes(b"")
+    planted.chmod(0o755)
+    return planted
+
+
+async def test_the_program_that_was_found_serves_every_session_that_comes_later(
+    engine: Engine,
+    ctx: Context,
+    sessions: Sessions,
+    session: Session,
+    work: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A command in a container can write the working directory of its session. If the
+    # search path leads there, what the command puts there must not become the program
+    # that the next session is run with.
+    here = Path(engine.program).parent
+    monkeypatch.setenv("PATH", search_with(work / "bin", here))
+    provider = Docker(DockerConfig())
+    await ran(provider, session, work, "pass")
+    planted_in(work / "bin", engine)
+    elsewhere = Path(os.path.realpath(tmp_path)) / "elsewhere"
+    elsewhere.mkdir()
+
+    done = await ran(provider, sessions.create(ctx, elsewhere), elsewhere, "print('held')")
+
+    assert done.output.strip() == "held"
+    assert len(engine.containers()) == 2
+    await provider.close()
+
+
+async def test_a_session_whose_directory_holds_the_program_that_was_found_gets_no_container(
+    engine: Engine,
+    ctx: Context,
+    sessions: Sessions,
+    session: Session,
+    work: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Its commands could write the program that the containers of every session are asked
+    # with. Looking for another one would leave those where they are.
+    here = Path(os.path.realpath(Path(engine.program).parent))
+    monkeypatch.setenv("PATH", search_with(Path(engine.program).parent))
+    provider = Docker(DockerConfig())
+    await ran(provider, session, work, "pass")
+    before = engine.verbs()
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, sessions.create(ctx, here), here, "pass")
+
+    assert str(refused.value) == (
+        f"the docker program that was found on the search path, {engine.program}, lies in the "
+        "working directory, or a link on the way to it does. A command could put another "
+        "program there, so it is not run"
+    )
+    assert engine.verbs() == before
+    assert (await ran(provider, session, work, "print('on')")).output.strip() == "on"
+    await provider.close()
+
+
+async def test_two_sessions_that_start_at_once_are_run_with_one_program(
+    engine: Engine,
+    ctx: Context,
+    sessions: Sessions,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Each directory holds a program, and each session would take the one of the other:
+    # then the commands of each could write what the other is run with.
+    root = Path(os.path.realpath(tmp_path))
+    one, other = root / "one", root / "other"
+    engine.also = {str(planted_in(one / "bin", engine)), str(planted_in(other / "bin", engine))}
+    monkeypatch.setenv("PATH", search_with(one / "bin", other / "bin"))
+    provider = Docker(DockerConfig())
+
+    outcomes = await asyncio.gather(
+        ran(provider, sessions.create(ctx, one), one, "print('held')"),
+        ran(provider, sessions.create(ctx, other), other, "print('held')"),
+        return_exceptions=True,
+    )
+
+    refused = [outcome for outcome in outcomes if isinstance(outcome, SandboxUnavailableError)]
+    held = [outcome for outcome in outcomes if isinstance(outcome, Completed)]
+    assert len(refused) == 1
+    assert len(held) == 1
+    assert "lies in the working directory" in str(refused[0])
+    assert held[0].output.strip() == "held"
+    assert engine.verbs().count("run") == 1
+    await provider.close()
+
+
+async def test_a_program_that_was_found_and_is_there_no_more_is_said_to_be_gone(
+    engine: Engine,
+    ctx: Context,
+    sessions: Sessions,
+    session: Session,
+    work: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", search_with(Path(engine.program).parent))
+    provider = Docker(DockerConfig())
+    await ran(provider, session, work, "pass")
+    Path(engine.program).unlink()
+    elsewhere = Path(os.path.realpath(tmp_path)) / "elsewhere"
+    elsewhere.mkdir()
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await ran(provider, sessions.create(ctx, elsewhere), elsewhere, "pass")
+
+    assert str(refused.value) == (
+        f"the docker program that was found on the search path, {engine.program}, is not there"
+    )
+    await provider.close()
 
 
 async def test_without_a_name_in_the_config_the_program_is_found_on_the_search_path(

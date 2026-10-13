@@ -81,12 +81,14 @@ do is decided before it runs. Everything that Columbina is made of is a plugin o
 asyncio kernel: the model adapter, the tool registry, the session log, and the agent loop
 itself.
 
-**Status:** early development, with six of ten stages done. `columbina` holds a
+**Status:** early development, with seven of ten stages done. `columbina` holds a
 conversation with an agent at the terminal, and `columbina run` gives it one task and
 prints the answer. The agent talks to a model over the OpenAI Chat Completions protocol,
 DeepSeek by default. A conversation that outgrows its model is made shorter by itself,
 and a session can be taken up again after the program was killed. Skills, hooks, subagents
-and the tools of MCP servers add to the agent without a change to the program.
+and the tools of MCP servers add to the agent without a change to the program. With
+Docker, the commands of the agent run in a container that has the working directory and no
+network.
 
 ## Download and set up
 

@@ -28,7 +28,8 @@ Columbina was written from scratch, with three existing harnesses as its referen
     <td valign="top">
       <b>Tools behind checks</b><br>
       Six tools read, search and change files and run commands. Rules, a mode of the
-      sandbox and a question at the prompt decide about a call before it runs.
+      sandbox and a question at the prompt decide about a call before it runs. The
+      commands can run in a container that has the working directory and no network.
     </td>
     <td valign="top">
       <b>Conversations that outgrow the model</b><br>
@@ -440,8 +441,9 @@ ask: a repository that somebody cloned does not approve its own commands.
 
 A rule about commands goes by the text of a command. One that allows counts only for
 commands of a plain shape, without variables, substitutions or redirections. Such rules
-are a convenience and not a boundary. Nothing confines a command yet, and whatever it
-does, it does as the user. A sandbox in a container is planned.
+are a convenience and not a boundary. On this machine nothing confines a command, and
+whatever it does, it does as the user. A container does confine it: see
+[Commands in a container](#commands-in-a-container).
 
 A file is changed only after the model has read it, and only while it is still as the
 model saw it.
@@ -467,6 +469,114 @@ instructions. A file of changes leaves sections out. Such a file is
 
 The sections are called `work`, `changes`, `care`, `tools`, `program` and `words`. What an
 agent is to know beside them belongs in the instruction files.
+
+### Commands in a container
+
+With `--sandbox docker`, or with `COLUMBINA_SANDBOX=docker` in the environment, the
+commands of the agent run in a Linux container and not on this machine. That takes Docker
+and an image that is on the machine already, because Columbina fetches none. The image is
+`python:3.12` unless a file of changes names another.
+
+```console
+$ uv run columbina run 'check.py fails. Find the mistake in calc.py and fix it, and make sure that `python check.py` prints ok.' --sandbox docker
+Fixed. `python check.py` now prints `ok`.
+
+**The mistake:** in `calc.py:6`, `mean` divided the sum by `len(values) - 1` instead of `len(values)` — the sample-standard-deviation divisor rather than the count. It gave `3.0` for `[1.0, 2.0, 3.0]`, and would have raised `ZeroDivisionError` for a single value.
+
+**Change:** `calc.py:6` now reads `return sum(values) / len(values)`.
+
+**Checked:** ran `python check.py` before the change (printed the failure for the first case) and after — it prints `ok` and exits 0.
+```
+
+This is a real run on Windows against `deepseek-flash`, in a copy of the directory of
+the run above, with the image `python:3.12-slim`. The tool that the model was offered is
+`bash`, on Windows as well, since that is the shell of the container. The model was told
+that its commands run in a Linux container without a network. It ran three commands
+there, the check before its change and after it among them. No rule allowed them and
+nobody was asked.
+
+Of this machine a container has the working directory and nothing else. On Linux and
+macOS the directory lies at its own path there. On Windows it lies at `/workspace`, and
+the file tools take a path that begins with `/workspace` for the same file. The container
+has no network. A command is not root in it: it can install nothing into the directories
+of the system, and what it installs elsewhere outside the working directory is gone with
+the container.
+
+A command in such a container can do no more than the mode of the sandbox allows, so
+nobody is asked about it.
+
+| `--permission` | A command in a container |
+|---|---|
+| `read-only` | It runs, and cannot write the working directory. |
+| `workspace-write` | It runs, and writes the working directory, except `.git` and `.columbina`. |
+| `full-access` | It runs, and writes all of the working directory. |
+
+A rule that refuses and a rule that asks count as before, and so does everything that
+is said above about files.
+
+A session has one container. It is made when the first command comes, which takes a few
+seconds, and the commands of the session run in it one after another. After each of them,
+whatever it left running is stopped. The container is removed when the session is over,
+when no command came for 30 minutes, and when the program ends, also when it ends by a
+crash. When a container had to be replaced under a session, the model is told, since what
+a command installed in the old one is gone.
+
+What a container is like is said in a file of changes, under the entry of the sandbox.
+The config of an entry is replaced as a whole, so a file that says something about the
+container names the provider as well.
+
+```yaml
+- id: sandbox
+  config:
+    provider: docker
+    docker:
+      image: python:3.12-slim
+      network: bridge
+```
+
+| Key | What it says | Without it |
+|---|---|---|
+| `image` | The image of the container. It has to have `bash`. | `python:3.12` |
+| `network` | `none`, or `bridge` for the network of Docker. | `none` |
+| `env` | Variables for the commands. | none |
+| `pids_limit` | How many processes a container may have. | 2048 |
+| `memory` | How much memory it may have, as Docker writes it: `512m`, `2g`. | no limit |
+| `cpus` | How many processors it may use. | no limit |
+| `start_timeout_seconds` | How long a container is waited for. | 60 |
+| `idle_seconds` | After how long without a command it is removed. | 1800 |
+| `program` | The whole path of the `docker` program. | It is looked for on the search path. |
+
+With a network a command could send away what it reads. Such a container holds its
+commands in part only, and they are asked about as on this machine.
+
+When no container can be made, the command is not run, here or anywhere. That is so when
+the engine does not answer, when the image is not on the machine or has no `bash`, and
+when the engine is one that this sandbox does not work with. The model is told which of
+these it was and what would help.
+
+A container is a boundary around the machine and not around the project. What it does
+not do, and where it is narrower than one might expect:
+
+- What a command writes into the working directory stays there. A command can change a
+  script that the user runs later.
+- On a Linux machine a socket in the working directory can be reached from the
+  container. When one is found, the commands of the session are held in part and asked
+  about.
+- An engine that maps the users of a container to other users of the machine, as a
+  rootless one does, is refused.
+- On Linux a command has the user and the first group of Columbina, and none of its
+  further groups. A working directory that is reached only through one of those is
+  refused.
+- A `.git` or `.columbina` that is a link protects what it leads to, and the first
+  directory on the way there is read-only as a whole. One that the machine cannot look
+  at, such as a link that a command made in a container on Windows, makes the whole
+  working directory read-only.
+- What is mounted below the working directory is not in the container. Below a protected
+  name it is, read-only.
+- On Windows a working directory that lies in a WSL distribution is not held in place
+  while its container is made.
+- All of this was tried on Windows with Docker Desktop, and on Linux against the same
+  engine. On macOS it was not tried.
 
 ## Extending the agent
 
@@ -669,6 +779,10 @@ shortening of a conversation, the list of things to do.
   nothing that loosens the default overrules one.
 - **Permissions** are a guard of the tool pipeline, which no other plugin can skip, and
   a restriction at the seam, which holds for every file that a search opens on its way.
+- **Commands** are run by a provider of the sandbox. One provider runs them on this
+  machine as they are. Another runs them in a container that is kept for their session,
+  and says how well it holds them: a command that is held fully is not asked about. The
+  tool for commands writes for the shell of the place where they run.
 - **What the model is told** beside the conversation has three parts: a system prompt
   put together from sections, the instruction files, and the facts about the run. The
   last two are messages at the beginning of a turn. The beginning of a conversation
@@ -742,9 +856,9 @@ What the checks come to at the moment:
 
 | Check | What it comes to |
 |---|---|
-| Tests | more than 5,500 |
-| Coverage | 100% of lines and of branches, in more than 10,000 statements |
-| Mutants | more than 1,600 small faults, written by hand, each to be noticed by a test |
+| Tests | more than 8,500 |
+| Coverage | 100% of lines and of branches, in more than 14,000 statements |
+| Mutants | more than 3,000 small faults, written by hand, each to be noticed by a test |
 | Static checks | `ruff`, and `pyright` in strict mode, for Windows and for Linux |
 | Platforms | CI runs the tests and the static checks on Windows, Linux and macOS, with Python 3.11 and 3.12 |
 
@@ -777,6 +891,10 @@ are these kinds:
   carries out what a real one is sent, so a test can read what stands on the screen:
   which line is where, what was written over, and what stays when a line was
   submitted.
+- **Engine tests** start real containers, and see what a command in one can reach and
+  what is left of it. They are passed over where no Docker engine answers or one of
+  their two small images is missing. With `COLUMBINA_REQUIRE_DOCKER=1` that is a failure,
+  for a machine that is meant to run them.
 
 Two more things are run by hand:
 
@@ -799,14 +917,14 @@ The work goes in ten stages, and each one ends with something that can be shown.
 | 🌕 | 4 | The terminal interface |
 | 🌕 | 5 | Long conversations: estimates, shortening, taking a session up again, copies |
 | 🌕 | 6 | Skills, hooks, subagents, MCP |
-| 🌑 | 7 | A sandbox in a container for the commands that the agent runs |
+| 🌕 | 7 | A sandbox in a container for the commands that the agent runs |
 | 🌑 | 8 | Benchmarks, and a table of what local models can do |
 | 🌑 | 9 | A package on PyPI, documentation, an engineering report |
 | 🌓 | 10 | A JSON-RPC service, and a desktop app on top of it |
 
 🌕 done  ·  🌓 under way  ·  🌑 to come
 
-The sixth stage is closed, and what it brought is told in
-[Extending the agent](#extending-the-agent). Of the tenth, the service is built: see
+The seventh stage is closed, and what it brought is told in
+[Commands in a container](#commands-in-a-container). Of the tenth, the service is built: see
 [Serving another program](#serving-another-program) and [`docs/protocol`](protocol). The
 desktop app on top of it is under way.

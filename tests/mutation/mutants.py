@@ -1214,6 +1214,48 @@ _TOOLS = (
 
 _FS = (
     mutant(
+        "a path under the name that the working directory has elsewhere is taken as it is written",
+        SEAM,
+        "        here = self.here(session, written)\n",
+        "        here = written\n",
+    ),
+    mutant(
+        "a path that only begins like the name of the working directory elsewhere is taken for it",
+        SEAM,
+        '            if name is not None and (written == name or written.startswith(f"{name}/")):\n',
+        "            if name is not None and written.startswith(name):\n",
+    ),
+    mutant(
+        "the name that the working directory has elsewhere is not the working directory itself",
+        SEAM,
+        '            if name is not None and (written == name or written.startswith(f"{name}/")):\n',
+        '            if name is not None and written.startswith(f"{name}/"):\n',
+    ),
+    mutant(
+        "only the name itself is known, and no path under it",
+        SEAM,
+        '            if name is not None and (written == name or written.startswith(f"{name}/")):\n',
+        "            if name is not None and written == name:\n",
+    ),
+    mutant(
+        "a path under that name stays a path from the root of the disk",
+        SEAM,
+        '                return written[len(name) :].lstrip("/") or "."\n',
+        '                return written[len(name) :] or "."\n',
+    ),
+    mutant(
+        "the name with nothing after it is no path at all",
+        SEAM,
+        '                return written[len(name) :].lstrip("/") or "."\n',
+        '                return written[len(name) :].lstrip("/")\n',
+    ),
+    mutant(
+        "what is told back of a path is not what the model wrote",
+        SEAM,
+        "        return where if here == written else replace(where, written=written)\n",
+        "        return where\n",
+    ),
+    mutant(
         "a session follows its working directory wherever it leads",
         SEAM,
         "        if first == where.root:",
@@ -1591,6 +1633,24 @@ _FS = (
 
 _SANDBOX = (
     mutant(
+        "the file tools do not know the name that the working directory has where commands run",
+        SANDBOX,
+        '    seam.names.add(ctx, "sandbox", sandbox.workdir)\n',
+        "",
+    ),
+    mutant(
+        "what a provider says of the place of its commands is not passed on",
+        SANDBOX,
+        "        return {} if provider is None else provider.facts(session)\n",
+        "        return {}\n",
+    ),
+    mutant(
+        "where a provider has the working directory is not passed on",
+        SANDBOX,
+        "        return None if provider is None else provider.workdir(session)\n",
+        "        return None\n",
+    ),
+    mutant(
         "a session that is read-only is written to",
         SANDBOX,
         '        if mode == "read-only":',
@@ -1806,6 +1866,24 @@ _SANDBOX = (
 )
 
 _DOCKER = (
+    mutant(
+        "a model on Windows is told that the container has the directory at the path of this machine",
+        DOCKER,
+        '    if platform == "win32":\n        where = (\n',
+        "    if False:\n        where = (\n",
+    ),
+    mutant(
+        "a model is told that a container with a network has none",
+        DOCKER,
+        '    network = "no network" if config.network == "none" else "the network of Docker"\n',
+        '    network = "no network"\n',
+    ),
+    mutant(
+        "a model is told of another image than the one of its container",
+        DOCKER,
+        '            f"a Linux container of the image {config.image}, as a user that is not root. Of "\n',
+        '            f"a Linux container of the image {DEFAULT_IMAGE}, as a user that is not root. Of "\n',
+    ),
     mutant(
         "an entry of the search path that is no whole path is looked into",
         DOCKER,
@@ -2729,6 +2807,28 @@ _DOCKER = (
 
 _DOCKER_KEPT = (
     mutant(
+        "the provider tells nothing of where its commands run",
+        DOCKER,
+        "        return told(self._config, sys.platform)\n",
+        "        return {}\n",
+    ),
+    on_windows(
+        mutant(
+            "on Windows the provider does not say where a container has the working directory",
+            DOCKER,
+            '        return _WORKSPACE if sys.platform == "win32" else None\n',
+            "        return None\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "on Linux the provider says that a container has the working directory elsewhere",
+            DOCKER,
+            '        return _WORKSPACE if sys.platform == "win32" else None\n',
+            "        return _WORKSPACE\n",
+        )
+    ),
+    mutant(
         "the commands of a session run at the same time",
         DOCKER,
         "        async with self._turns.setdefault(session.id, asyncio.Lock()):\n",
@@ -3472,7 +3572,7 @@ _DOCKER_KEPT = (
         mutant(
             "a container on Windows is to have the directory at its path on Windows",
             DOCKER,
-            '            target = _WORKSPACE if sys.platform == "win32" else cwd.as_posix()\n',
+            "            target = self.workdir(session) or cwd.as_posix()\n",
             "            target = cwd.as_posix()\n",
         )
     ),
@@ -3480,7 +3580,7 @@ _DOCKER_KEPT = (
         mutant(
             "a container on Linux has the directory at another path than this machine",
             DOCKER,
-            '            target = _WORKSPACE if sys.platform == "win32" else cwd.as_posix()\n',
+            "            target = self.workdir(session) or cwd.as_posix()\n",
             "            target = _WORKSPACE\n",
         )
     ),
@@ -5348,6 +5448,12 @@ _CONTEXT = (
 )
 
 _FACTS = (
+    mutant(
+        "what holds the commands does not tell the model where they run",
+        SANDBOX,
+        "        gathered.lines.update(sandbox.facts(gathered.agent.session))\n",
+        "",
+    ),
     mutant(
         "facts come in the order in which they were added",
         RUNTIME,
@@ -11364,6 +11470,12 @@ _SKILLS = (
 
 _HOOKS = (
     mutant(
+        "a hook is told a path of the place of commands as if it were one of this machine",
+        HOOKS_PLUGIN,
+        "                here = path if seam is None else seam.here(invocation.run.session, path)\n",
+        "                here = path\n",
+    ),
+    mutant(
         "a list that stands where an object should is written out",
         HOOK_FILES,
         '    if isinstance(value, list):\n        return "a list"\n',
@@ -12645,8 +12757,14 @@ _HOOKS = (
     mutant(
         "a path that names no file keeps the hooks from being told of a call",
         HOOKS_PLUGIN,
-        '            with contextlib.suppress(ToolFailure):\n                given["file_path"] = str(locate(invocation.run.cwd, path).path)\n',
-        '            given["file_path"] = str(locate(invocation.run.cwd, path).path)\n',
+        "            with contextlib.suppress(ToolFailure):\n"
+        "                seam = self._ctx.get(FS)\n"
+        "                # A model may name the file the way the place of its commands has it.\n"
+        "                here = path if seam is None else seam.here(invocation.run.session, path)\n"
+        '                given["file_path"] = str(locate(invocation.run.cwd, here).path)\n',
+        "            seam = self._ctx.get(FS)\n"
+        "            here = path if seam is None else seam.here(invocation.run.session, path)\n"
+        '            given["file_path"] = str(locate(invocation.run.cwd, here).path)\n',
     ),
     mutant(
         "the hooks are not asked about a call",

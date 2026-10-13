@@ -19,6 +19,8 @@ class Holding:
         holds: How well it says that it holds commands, whichever session asks.
         shell: The shell of the place where it says that its commands run, if
             that is not this machine.
+        told: What it says of the place where its commands run, each fact under a name.
+        at: Where that place has the working directory, if not under its own path.
         asked: What it was asked to run: the command, the mode and the directory of each.
         given: The input that each of them came with.
         expected: How well each of them was to be held.
@@ -26,17 +28,30 @@ class Holding:
     """
 
     def __init__(
-        self, strength: Strength = "full", shell: str | None = None, notes: tuple[str, ...] = ()
+        self,
+        strength: Strength = "full",
+        shell: str | None = None,
+        notes: tuple[str, ...] = (),
+        told: dict[str, str] | None = None,
+        at: str | None = None,
     ) -> None:
         self.holds: Strength = strength
         self.shell = shell
         self.notes = notes
+        self.told = told or {}
+        self.at = at
         self.asked: list[tuple[tuple[str, ...], Mode, Path]] = []
         self.given: list[bytes | None] = []
         self.expected: list[Strength] = []
 
     def strength(self, session: Session) -> Strength:
         return self.holds
+
+    def facts(self, session: Session) -> dict[str, str]:
+        return self.told
+
+    def workdir(self, session: Session) -> str | None:
+        return self.at
 
     def held(self, argv: Sequence[str], mode: Mode) -> Sequence[str]:
         """Return what is run in the place of a command. A test may put something else there."""

@@ -851,6 +851,40 @@ def test_a_directory_is_mounted_where_the_container_is_to_have_it(root: Path) ->
     ]
 
 
+# What a model is told
+
+
+def test_a_model_is_told_where_its_commands_run() -> None:
+    assert docker.told(DockerConfig(), "linux") == {
+        "commands run in": (
+            "a Linux container of the image python:3.12, as a user that is not root. Of this "
+            "machine the container has the working directory and nothing else, at the same "
+            "path as here. It has no network. What a command installs outside the working "
+            "directory is gone when the container is, and nothing can be installed into the "
+            "directories of the system."
+        )
+    }
+
+
+def test_on_windows_a_model_is_told_the_path_that_the_container_has_the_directory_at() -> None:
+    said = docker.told(DockerConfig(image="debian:bookworm-slim"), "win32")["commands run in"]
+
+    assert said.startswith(
+        "a Linux container of the image debian:bookworm-slim, as a user that is not root. "
+    )
+    assert (
+        "the working directory and nothing else, at /workspace. The file tools take a path "
+        "that begins with /workspace for the file of this machine. It has no network."
+    ) in said
+
+
+def test_a_model_is_told_of_the_network_that_a_container_has() -> None:
+    said = docker.told(DockerConfig(network="bridge"), "linux")["commands run in"]
+
+    assert "path as here. It has the network of Docker. What a command installs" in said
+    assert "no network" not in said
+
+
 # Which directory a container has
 
 ITSELF, TOKEN_AT, KNOWN = (2049, 1200), (39, 77), (39, 78)

@@ -167,6 +167,20 @@ async def test_how_well_commands_are_held_is_told_by_what_holds_them(
     assert f"commands are held: {told}" in facts(agent)[0]
 
 
+async def test_what_holds_the_commands_tells_the_model_where_they_run(harness: Harness) -> None:
+    ctx = harness.ctx
+    await ctx.plugin(columbina.fs)
+    await ctx.plugin(columbina.sandbox, {"provider": "holding"})
+    said = {"commands run in": "a box, away from this machine"}
+    ctx.use(SANDBOX).providers.add(ctx, "holding", Holding(told=said))
+    await ctx.plugin(runtime)
+    agent = await harness.agent(Reply(text="Hello!"))
+
+    await turn(agent, "Say hello.")
+
+    assert "commands run in: a box, away from this machine" in facts(agent)[0]
+
+
 async def test_where_commands_run_elsewhere_the_model_is_told_the_shell_of_that_place(
     harness: Harness,
 ) -> None:

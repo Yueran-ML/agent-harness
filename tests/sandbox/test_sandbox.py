@@ -28,6 +28,7 @@ from columbina.sandbox import (
 from columbina.session import SESSIONS, Session, Sessions
 from support.links import link_directory
 from support.names import short_name
+from support.sandboxes import Holding
 
 MODES: tuple[Mode, ...] = ("read-only", "workspace-write", "danger-full-access")
 KINDS: tuple[Kind, ...] = ("read", "write")
@@ -367,6 +368,12 @@ class Jail:
         self.sessions.append(session)
         return self.holds
 
+    def facts(self, session: Session) -> dict[str, str]:
+        return {}
+
+    def workdir(self, session: Session) -> str | None:
+        return None
+
     async def run(
         self,
         argv: Sequence[str],
@@ -527,6 +534,58 @@ async def test_the_sandbox_tells_the_shell_of_the_place_where_its_provider_runs_
     sandbox.providers.add(ctx, "jail", Jail("full", shell="bash"))
 
     assert sandbox.shell() == "bash"
+
+
+async def test_what_a_provider_says_of_the_place_of_its_commands_is_what_the_sandbox_says(
+    ctx: Context, tmp_path: Path, work: Path
+) -> None:
+    sessions, _, sandbox = await program(ctx, tmp_path, provider="holding")
+    session = sessions.create(ctx, work)
+    # A provider that is not there says nothing.
+    assert sandbox.facts(session) == {}
+    assert sandbox.workdir(session) is None
+
+    sandbox.providers.add(
+        ctx, "holding", Holding(told={"commands run in": "a box"}, at="/workspace")
+    )
+
+    assert sandbox.facts(session) == {"commands run in": "a box"}
+    assert sandbox.workdir(session) == "/workspace"
+
+
+async def test_the_provider_that_holds_nothing_runs_commands_here_and_says_nothing_more(
+    ctx: Context, tmp_path: Path, work: Path
+) -> None:
+    sessions, fs, sandbox = await program(ctx, tmp_path)
+    session = sessions.create(ctx, work)
+
+    assert sandbox.facts(session) == {}
+    assert sandbox.workdir(session) is None
+    assert fs.locate(session, work, "/workspace/a.txt") == locate(work, "/workspace/a.txt")
+
+
+async def test_the_file_tools_know_the_working_directory_by_the_name_it_has_where_commands_run(
+    ctx: Context, tmp_path: Path, work: Path
+) -> None:
+    # A model reads that name in what its commands write, and gives it to the file tools.
+    sessions, fs, sandbox = await program(ctx, tmp_path, provider="holding")
+    sandbox.providers.add(ctx, "holding", Holding(at="/workspace"))
+    session = sessions.create(ctx, work)
+
+    where = fs.locate(session, work, "/workspace/sub/../a.txt")
+    protected = fs.locate(session, work, "/workspace/.git/config")
+    outside = fs.locate(session, work, "/workspace/../outside.txt")
+
+    assert (where.path, where.relative) == (locate(work, "a.txt").path, "a.txt")
+    # The rules are those of the file of this machine, and none is lost.
+    codes = [
+        None if refusal is None else refusal.code
+        for refusal in (
+            fs.judge(Access(session, work, place, "write", "probe"))
+            for place in (where, protected, outside)
+        )
+    ]
+    assert codes == [None, "PROTECTED", "OUTSIDE_WORKING_DIRECTORY"]
 
 
 async def test_a_call_that_was_let_through_for_a_full_hold_is_run_as_one_that_expects_it(

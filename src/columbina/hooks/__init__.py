@@ -73,7 +73,7 @@ from columbina.agent import (
     TurnStopping,
 )
 from columbina.approval import APPROVAL, ApprovalRequest
-from columbina.fs import locate
+from columbina.fs import FS, locate
 from columbina.hooks.config import (
     TOOL_EVENTS,
     Group,
@@ -599,7 +599,10 @@ class _Bridge:
             # The hooks that are most common, such as a formatter, go by this. A path that
             # names no file is left for the tool to refuse.
             with contextlib.suppress(ToolFailure):
-                given["file_path"] = str(locate(invocation.run.cwd, path).path)
+                seam = self._ctx.get(FS)
+                # A model may name the file the way the place of its commands has it.
+                here = path if seam is None else seam.here(invocation.run.session, path)
+                given["file_path"] = str(locate(invocation.run.cwd, here).path)
         return {
             "tool_name": names_of(tool)[-1],
             "tool_input": given,

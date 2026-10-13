@@ -43,7 +43,7 @@ asks nothing of Docker before a command is to run in a container.
 
 import os
 import weakref
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import ClassVar
 
@@ -103,6 +103,12 @@ class _Unconfined:
 
     def strength(self, session: Session) -> Strength:
         return "none"
+
+    def facts(self, session: Session) -> Mapping[str, str]:
+        return {}
+
+    def workdir(self, session: Session) -> str | None:
+        return None
 
     async def run(
         self,
@@ -230,6 +236,19 @@ class Sandbox:
         provider = self.providers.get(self._provider)
         return "none" if provider is None else provider.strength(session)
 
+    def facts(self, session: Session) -> Mapping[str, str]:
+        """Return what the provider says of the place where the commands of a session run.
+
+        A provider that is not there says nothing.
+        """
+        provider = self.providers.get(self._provider)
+        return {} if provider is None else provider.facts(session)
+
+    def workdir(self, session: Session) -> str | None:
+        """Return where that place has the working directory, if not under its own path."""
+        provider = self.providers.get(self._provider)
+        return None if provider is None else provider.workdir(session)
+
     def shell(self) -> str | None:
         """Return the shell of the place where commands run, if that is not this machine.
 
@@ -339,11 +358,14 @@ def apply(ctx: Context, config: Config) -> None:
     seam = ctx.use(FS)
     seam.grants.add(ctx, "sandbox", sandbox.grants)
     seam.restrictions.add(ctx, "sandbox", sandbox.restricts)
+    # A model reads the paths of the place where its commands run, and hands them on.
+    seam.names.add(ctx, "sandbox", sandbox.workdir)
 
     def facts(gathered: Facts) -> None:
         gathered.lines["sandbox mode"] = _MODES[sandbox.mode(gathered.agent.session)]
         held = sandbox.strength(gathered.agent.session)
         gathered.lines["commands are held"] = _STRENGTHS[held]
+        gathered.lines.update(sandbox.facts(gathered.agent.session))
 
     ctx.on(RUNTIME_FACTS, facts)
     ctx.provide(SANDBOX, sandbox)

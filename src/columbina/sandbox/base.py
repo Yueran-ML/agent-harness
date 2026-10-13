@@ -5,7 +5,7 @@ needs these names, and the sandbox needs the provider, so they are kept
 where both can reach them.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -75,6 +75,23 @@ class SandboxProvider(Protocol):
 
         A provider may know more of a session once it has run a command for
         it, and then say less than it did before.
+        """
+        ...
+
+    def facts(self, session: Session) -> Mapping[str, str]:
+        """Return what a model is to know of the place where the commands of a session run.
+
+        Each fact comes under the name that it is told by, with the facts of
+        a run. A provider that runs commands on this machine has none.
+        """
+        ...
+
+    def workdir(self, session: Session) -> str | None:
+        """Return where that place has the working directory, if not under its own path.
+
+        A model reads the paths of that place in what its commands write.
+        The file tools take a path under this name for the file of this
+        machine.
         """
         ...
 

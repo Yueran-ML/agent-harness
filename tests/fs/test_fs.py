@@ -606,6 +606,94 @@ def test_a_path_that_is_not_used_here_is_refused_before_anything_is_remembered(
     assert fs.locate(session, door, "a.txt").inside
 
 
+# The name that the working directory has where commands run
+
+
+def named(fs: Fs, ctx: Context, name: str | None = "/workspace") -> None:
+    """Have the working directory go by a name of its own in the place where commands run."""
+
+    def there(session: Session) -> str | None:
+        return name
+
+    fs.names.add(ctx, "container", there)
+
+
+def test_a_path_under_the_name_that_the_working_directory_has_elsewhere_is_the_file_here(
+    fs: Fs, ctx: Context, session: Session, work: Path
+) -> None:
+    (work / "src").mkdir()
+    (work / "src" / "a.py").write_text("")
+    named(fs, ctx)
+
+    where = fs.locate(session, work, "/workspace/src/a.py")
+
+    here = locate(work, "src/a.py")
+    assert (where.path, where.inside, where.relative, where.root) == (
+        here.path,
+        True,
+        "src/a.py",
+        here.root,
+    )
+    # What the model wrote is what it is told back.
+    assert where.written == "/workspace/src/a.py"
+    assert fs.here(session, "/workspace/src/a.py") == "src/a.py"
+
+
+@pytest.mark.parametrize("written", ["/workspace", "/workspace/", "/workspace//"])
+def test_the_name_alone_is_the_working_directory(
+    fs: Fs, ctx: Context, session: Session, work: Path, written: str
+) -> None:
+    named(fs, ctx)
+
+    where = fs.locate(session, work, written)
+
+    assert (where.path, where.relative, where.written) == (locate(work, ".").path, ".", written)
+
+
+def test_a_path_that_leaves_the_working_directory_under_that_name_is_outside_all_the_same(
+    fs: Fs, ctx: Context, session: Session, work: Path
+) -> None:
+    named(fs, ctx)
+
+    where = fs.locate(session, work, "/workspace/../outside.txt")
+
+    assert not where.inside
+    assert where.path == locate(work, "../outside.txt").path
+
+
+@pytest.mark.parametrize("written", ["/workspaces/a.txt", "/workspace.txt", "workspace/a.txt"])
+def test_a_path_that_only_looks_like_the_name_is_taken_as_it_is_written(
+    fs: Fs, ctx: Context, session: Session, work: Path, written: str
+) -> None:
+    named(fs, ctx)
+
+    assert fs.locate(session, work, written) == locate(work, written)
+    assert fs.here(session, written) == written
+
+
+def test_where_the_working_directory_has_no_other_name_a_path_is_what_it_always_was(
+    fs: Fs, ctx: Context, session: Session, work: Path
+) -> None:
+    assert fs.locate(session, work, "/workspace/a.txt") == locate(work, "/workspace/a.txt")
+
+    named(fs, ctx, None)
+
+    assert fs.locate(session, work, "/workspace/a.txt") == locate(work, "/workspace/a.txt")
+
+
+def test_a_path_under_that_name_is_held_to_where_the_working_directory_was_at_first(
+    fs: Fs, ctx: Context, session: Session, door: Path
+) -> None:
+    named(fs, ctx)
+    fs.locate(session, door, "/workspace/a.txt")
+
+    turn(door)
+
+    with pytest.raises(ToolFailure) as refused:
+        fs.locate(session, door, "/workspace/a.txt")
+    assert refused.value.code == "WORKING_DIRECTORY_MOVED"
+
+
 def test_the_service_is_what_the_plugin_provides(fs: Fs) -> None:
     assert isinstance(fs, Fs)
     assert cast("object", fs.grants) is not cast("object", fs.restrictions)

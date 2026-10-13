@@ -52,7 +52,7 @@ import logging
 import threading
 import weakref
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import Any, BinaryIO, Literal, TypeVar, cast
@@ -360,13 +360,20 @@ class Fs:
             access, in the order they were added, until one refuses.
         grants: The grants, by name. They are asked about an access that the
             seam does not allow by itself.
+        names: What tells the name that the working directory of a session
+            has in a place where its commands run, or ``None`` if it has
+            its own path there. A path under such a name is read as the
+            path of the same file on this machine.
     """
 
-    __slots__ = ("_coming", "_lock", "_roots", "_shown", "grants", "restrictions")
+    __slots__ = ("_coming", "_lock", "_roots", "_shown", "grants", "names", "restrictions")
 
     def __init__(self) -> None:
         self.restrictions: Registry[Restriction] = Registry("restriction of file access")
         self.grants: Registry[Grant] = Registry("grant of file access")
+        self.names: Registry[Callable[[Session], str | None]] = Registry(
+            "name of the working directory elsewhere"
+        )
         self._roots: weakref.WeakKeyDictionary[Session, Path] = weakref.WeakKeyDictionary()
         self._shown: weakref.WeakKeyDictionary[Session, dict[str, Fingerprint]] = (
             weakref.WeakKeyDictionary()
@@ -389,11 +396,29 @@ class Fs:
                 or the working directory leads somewhere else than it did
                 (code ``WORKING_DIRECTORY_MOVED``).
         """
-        where = locate(cwd, written)
+        here = self.here(session, written)
+        where = locate(cwd, here)
         moved = self._moved(session, where)
         if moved is not None:
             raise ToolFailure(moved.reason, code=moved.code)
-        return where
+        # What is told back of a path is the path as the model wrote it.
+        return where if here == written else replace(where, written=written)
+
+    def here(self, session: Session, written: str) -> str:
+        """Return a path as it is written for this machine.
+
+        Where the commands of a session run in another place, that place may
+        have the working directory under a name of its own, and a model
+        reads paths with that name in what its commands write. Such a path
+        becomes the path of the same file from the working directory. Every
+        other path is returned as it is, and so is every path where no such
+        name is known.
+        """
+        for _, there in list(self.names.items()):
+            name = there(session)
+            if name is not None and (written == name or written.startswith(f"{name}/")):
+                return written[len(name) :].lstrip("/") or "."
+        return written
 
     def _moved(self, session: Session, where: Located) -> Refuse | None:
         """Refuse a place that was found from another working directory than the first."""

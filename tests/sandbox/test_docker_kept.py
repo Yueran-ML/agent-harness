@@ -2237,6 +2237,17 @@ async def test_the_sandbox_brings_the_provider_and_lets_its_containers_go_when_i
     assert engine.containers() == {}
 
 
+async def test_the_provider_tells_where_its_commands_run_and_asks_nothing_for_that(
+    provider: Docker, engine: Engine, session: Session
+) -> None:
+    config = DockerConfig(program=engine.program)
+
+    assert provider.facts(session) == docker.told(config, sys.platform)
+    # Only on a machine whose paths a container cannot have.
+    assert provider.workdir(session) == ("/workspace" if WINDOWS else None)
+    assert engine.calls() == []
+
+
 async def test_the_provider_asks_nothing_of_docker_until_a_command_is_to_run_in_a_container(
     ctx: Context, engine: Engine, sessions: Sessions, work: Path
 ) -> None:

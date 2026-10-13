@@ -100,6 +100,7 @@ __all__ = [
     "sockets",
     "supported",
     "there",
+    "told",
     "trusted",
     "unavailable",
     "usable",
@@ -562,6 +563,34 @@ def found(search: str, outside: Sequence[Path] = ()) -> str | None:
         if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):
             return str(program)
     return None
+
+
+def told(config: DockerConfig, platform: str) -> dict[str, str]:
+    """Return what a model is to know of the container that its commands run in.
+
+    Args:
+        config: The config of the provider.
+        platform: The platform of this machine, as ``sys.platform`` has it.
+
+    Returns:
+        The facts, each under the name that it is told by.
+    """
+    where = "the same path as here"
+    if platform == "win32":
+        where = (
+            f"{_WORKSPACE}. The file tools take a path that begins with {_WORKSPACE} for the "
+            "file of this machine"
+        )
+    network = "no network" if config.network == "none" else "the network of Docker"
+    return {
+        "commands run in": (
+            f"a Linux container of the image {config.image}, as a user that is not root. Of "
+            "this machine the container has the working directory and nothing else, at "
+            f"{where}. It has {network}. What a command installs outside the working "
+            "directory is gone when the container is, and nothing can be installed into the "
+            "directories of the system."
+        )
+    }
 
 
 def asked(program: str) -> list[str]:
@@ -1258,6 +1287,18 @@ class Docker:
         container = self._kept.get(session.id)
         return "full" if container is None or container.doubt is None else "partial"
 
+    def facts(self, session: Session) -> dict[str, str]:
+        """Return what a model is to know of the container that its commands run in."""
+        return told(self._config, sys.platform)
+
+    def workdir(self, session: Session) -> str | None:
+        """Return where a container has the working directory, if not under its own path.
+
+        On a machine whose paths a container cannot have, the directory is
+        mounted at a path of the container's own.
+        """
+        return _WORKSPACE if sys.platform == "win32" else None
+
     async def run(
         self,
         argv: Sequence[str],
@@ -1394,7 +1435,7 @@ class Docker:
             program = await self._chosen(cwd)
             user = user_of_commands(sys.platform, *_me())
             await self._known(program)
-            target = _WORKSPACE if sys.platform == "win32" else cwd.as_posix()
+            target = self.workdir(session) or cwd.as_posix()
             layout = await asyncio.to_thread(_layout, mode, cwd, target)
             try:
                 container = _Kept(

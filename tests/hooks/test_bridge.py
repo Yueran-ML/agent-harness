@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 import columbina.agent
 import columbina.agent_loop
 import columbina.approval
+import columbina.fs
 import columbina.hooks
 import columbina.llm
 import columbina.session
@@ -30,6 +31,7 @@ from columbina.agent import (
     StepInfo,
 )
 from columbina.approval import APPROVAL_ASK, ApprovalRequest, Outcome
+from columbina.fs import FS
 from columbina.hooks import HookInvokedEvent, HookResultEvent
 from columbina.hooks.config import Hook, trust
 from columbina.hooks.run import Result, read
@@ -360,6 +362,32 @@ async def test_a_hook_is_told_of_a_call_by_the_name_that_other_tools_give_its_to
     assert [(told["tool_name"], told["tool_response"]) for told in ran.told("PostToolUse")] == [
         ("Edit", "edited src/a.py"),
         ("note", "noted 月"),
+    ]
+
+
+async def test_a_hook_is_told_the_file_of_this_machine_for_a_path_of_the_place_of_commands(
+    harness: Harness, tmp_path: Path, ran: Ran
+) -> None:
+    # Where commands run in a container, a model may name a file the way the container
+    # has it. A formatter that a hook runs works on this machine.
+    def there(session: object) -> str:
+        return "/workspace"
+
+    await harness.ctx.plugin(columbina.fs)
+    harness.ctx.use(FS).names.add(harness.ctx, "container", there)
+    agent = await working(
+        harness,
+        tmp_path,
+        at("PreToolUse", "before"),
+        calls("edit", path="/workspace/src/a.py"),
+        Reply(text="Done."),
+    )
+
+    await turn(agent)
+
+    edited = str(Path(os.path.realpath(harness.cwd)) / "src" / "a.py")
+    assert [told["tool_input"] for told in ran.told("PreToolUse")] == [
+        {"path": "/workspace/src/a.py", "file_path": edited}
     ]
 
 

@@ -19666,7 +19666,70 @@ _EXTENSIONS = (
     ),
 )
 
+_SANDBOX_RUN = (
+    # The pieces have mutants of their own. These are the few that the whole program is to
+    # find, from the command line to a real container and back.
+    mutant(
+        "through the command line: a command that is held fully is asked about all the same",
+        PERMISSIONS,
+        '    if held == "full":\n        return Decided("allow", None, _HELD, held=True)\n',
+        "",
+    ),
+    mutant(
+        "through the command line: a command that is held is let through before a rule that asks",
+        PERMISSIONS,
+        "    for rule in rules.ask:\n"
+        "        if any(covers_command(rule, tool, text) for text in spoken_of):\n",
+        '    if held == "full":\n'
+        '        return Decided("allow", None, _HELD, held=True)\n'
+        "    for rule in rules.ask:\n"
+        "        if any(covers_command(rule, tool, text) for text in spoken_of):\n",
+    ),
+    mutant(
+        "through the command line: a container with a network holds its commands fully",
+        DOCKER,
+        '        if self._config.network != "none":\n            return "partial"\n',
+        "",
+    ),
+    mutant(
+        "through the command line: a container has a network whatever the config says",
+        DOCKER,
+        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", "bridge", "--cap-drop", "ALL"]\n',
+    ),
+    mutant(
+        "through the command line: what is protected can be written in a container",
+        DOCKER,
+        "        *(_mount(source, inside, readonly=True) for inside, source in sorted(over.items())),\n",
+        "",
+    ),
+    mutant(
+        "through the command line: a session that is read-only writes in its container",
+        DOCKER,
+        '    whole = mode == "read-only" or any(',
+        "    whole = any(",
+    ),
+    # Whether it is stopped while its program still waits or after that makes no difference
+    # that these tests could see. That nothing is stopped at all does: the container goes.
+    mutant(
+        "through the command line: nothing that a command left in a container is stopped",
+        DOCKER,
+        "  kill -KILL -1 2>/dev/null\n",
+        "  :\n",
+    ),
+    on_windows(
+        mutant(
+            "through the command line: the file tools do not know the path of the container",
+            SANDBOX,
+            '    seam.names.add(ctx, "sandbox", sandbox.workdir)\n',
+            "",
+        )
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
+    # Tried only where a real engine answers, like the set docker-real.
+    "sandbox-run": MutantSet(("tests/apps/test_sandbox_run.py",), _SANDBOX_RUN),
     "approval": MutantSet(("tests/approval",), _APPROVAL),
     "facts": MutantSet(("tests/context",), _FACTS),
     "base": MutantSet(("tests/apps", "tests/test_package.py"), _BASE),

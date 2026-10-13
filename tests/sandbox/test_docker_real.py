@@ -17,7 +17,7 @@ import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import pytest
 
@@ -28,71 +28,20 @@ from columbina.process import Completed
 from columbina.sandbox import Mode, SandboxUnavailableError, docker
 from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
+from support.engines import BARE, IMAGE, asked, containers, real
 from support.links import link_directory
 
 pytestmark = pytest.mark.timeout(180)
 
 WINDOWS = sys.platform == "win32"
-IMAGE = "debian:bookworm-slim"
-BARE = "busybox"
 LISTS_SLEEPERS = "grep -lx sleep /proc/[0-9]*/comm 2>/dev/null | wc -l"
 """Counts the processes of a container that are a ``sleep``, by the name of their program."""
-
-
-def docker_program() -> str | None:
-    """Find the docker program for these tests."""
-    named = os.environ.get("COLUMBINA_TEST_DOCKER")
-    if named:
-        return named
-    found = docker.found(os.environ.get("PATH", ""))
-    usual = Path(os.environ.get("PROGRAMFILES", ""), "Docker/Docker/resources/bin/docker.exe")
-    if found is None and WINDOWS and usual.is_file():
-        # A shell that was opened before Docker Desktop was installed does not have it yet.
-        return str(usual)
-    return found
-
-
-def asked(program: str, *arguments: str) -> tuple[int, str]:
-    """Ask the engine something, and return how that ended and what it said."""
-    try:
-        done = subprocess.run(
-            [program, *arguments], capture_output=True, text=True, timeout=120, check=False
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return 1, str(error)
-    return done.returncode, done.stdout.strip()
 
 
 @pytest.fixture(scope="session")
 def program() -> str:
     """The docker program, if a real engine with the images of these tests answers it."""
-
-    def without(why: str) -> NoReturn:
-        if os.environ.get("COLUMBINA_REQUIRE_DOCKER") == "1":
-            pytest.fail(f"COLUMBINA_REQUIRE_DOCKER is set, and {why}")
-        pytest.skip(why)
-
-    found = docker_program()
-    if found is None:
-        without("no docker program was found")
-    code, system = asked(found, "info", "--format", "{{.OSType}}")
-    if code != 0:
-        without("no Docker engine answers")
-    if system != "linux":
-        without("the Docker engine runs no Linux containers")
-    for image in (IMAGE, BARE):
-        if asked(found, "image", "inspect", "--format", "{{.Id}}", image)[0] != 0:
-            without(f"the image {image} is not on this machine")
-    return found
-
-
-def containers(program: str) -> set[str]:
-    """The names of the containers of this program that the engine has, running or not."""
-    code, said = asked(
-        program, "ps", "--all", "--filter", "label=columbina=1", "--format", "{{.Names}}"
-    )
-    assert code == 0, said
-    return set(said.split())
+    return real()
 
 
 Make = Callable[..., Docker]

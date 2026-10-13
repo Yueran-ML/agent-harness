@@ -1,6 +1,8 @@
 """The sandbox: the mode of a session, what it lets tools do to files, and who confines commands."""
 
 import itertools
+import logging
+import os
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -660,6 +662,69 @@ async def test_a_command_is_not_run_unconfined_in_the_place_of_a_provider_that_i
 
     assert ran == []
     assert sandbox.strength(session) == "none"
+
+
+NO_PROGRAM = (
+    "commands are to run in containers, and no docker program was found on the search path. "
+    "No command will run until there is one: install Docker, or name the program in the "
+    "config of the sandbox"
+)
+
+
+async def test_a_sandbox_that_is_to_use_containers_says_at_once_that_it_finds_no_program(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    with caplog.at_level(logging.WARNING, logger="columbina.sandbox"):
+        await program(ctx, tmp_path, provider="docker")
+
+    assert caplog.messages == [NO_PROGRAM]
+
+
+async def test_a_docker_program_that_the_config_names_and_that_is_not_there_is_told_at_once(
+    ctx: Context, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    named = str(tmp_path / "nowhere" / "docker")
+    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
+    await ctx.plugin(columbina.fs)
+
+    with caplog.at_level(logging.WARNING, logger="columbina.sandbox"):
+        await ctx.plugin(columbina.sandbox, {"provider": "docker", "docker": {"program": named}})
+
+    assert caplog.messages == [
+        f"commands are to run in containers with the docker program {named}, which is not "
+        "there. No command will run until it is"
+    ]
+
+
+async def test_a_docker_program_that_is_there_is_found_and_not_run_when_the_sandbox_loads(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    planted = tools / ("docker.exe" if sys.platform == "win32" else "docker")
+    # Nothing that could be run: whoever ran it would fail.
+    planted.write_bytes(b"")
+    planted.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools))
+
+    with caplog.at_level(logging.WARNING, logger="columbina.sandbox"):
+        await program(ctx, tmp_path, provider="docker")
+
+    assert caplog.messages == []
+
+
+async def test_no_docker_program_is_looked_for_while_commands_run_on_this_machine(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    with caplog.at_level(logging.WARNING, logger="columbina.sandbox"):
+        await program(ctx, tmp_path)
+
+    assert caplog.messages == []
+    assert os.environ["PATH"] == str(tmp_path / "empty")
 
 
 async def test_a_provider_leaves_with_the_plugin_that_brought_it(

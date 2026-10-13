@@ -1633,6 +1633,18 @@ _FS = (
 
 _SANDBOX = (
     mutant(
+        "a sandbox that is to use containers does not say that it finds no docker program",
+        SANDBOX,
+        "        if missing is not None:\n            logger.warning(missing)\n",
+        "",
+    ),
+    mutant(
+        "a docker program is looked for whatever runs the commands",
+        SANDBOX,
+        '    if config.provider == "docker":\n',
+        "    if True:\n",
+    ),
+    mutant(
         "the file tools do not know the name that the working directory has where commands run",
         SANDBOX,
         '    seam.names.add(ctx, "sandbox", sandbox.workdir)\n',
@@ -1866,6 +1878,24 @@ _SANDBOX = (
 )
 
 _DOCKER = (
+    mutant(
+        "a docker program on the search path is said to be missing",
+        DOCKER,
+        "        if found(search, outside) is not None:\n            return None\n",
+        "",
+    ),
+    mutant(
+        "a docker program in a working directory is not said to be missing",
+        DOCKER,
+        "        if found(search, outside) is not None:\n",
+        "        if found(search) is not None:\n",
+    ),
+    mutant(
+        "a docker program that the config names is taken to be there",
+        DOCKER,
+        "    if Path(named).is_file():\n        return None\n    return (\n",
+        "    if True:\n        return None\n    return (\n",
+    ),
     mutant(
         "a model on Windows is told that the container has the directory at the path of this machine",
         DOCKER,
@@ -5708,6 +5738,36 @@ _INSTRUCTIONS = (
 )
 
 _BASE = (
+    mutant(
+        "the command line does not say what runs the commands",
+        LAUNCHER,
+        "    _held(entries, args)\n",
+        "",
+    ),
+    mutant(
+        "a dollar sign in the name of what runs the commands is read as a variable",
+        LAUNCHER,
+        '            config["provider"] = args.sandbox.replace("$", "$$")\n',
+        '            config["provider"] = args.sandbox\n',
+    ),
+    mutant(
+        "a sandbox that is switched off is told what runs the commands",
+        LAUNCHER,
+        "        if entry.id == _SANDBOX and not entry.disabled:\n",
+        "        if entry.id == _SANDBOX:\n",
+    ),
+    mutant(
+        "the bundle has commands run on this machine whatever the environment says",
+        BASE_BUNDLE,
+        "          provider: ${COLUMBINA_SANDBOX:-none}\n",
+        "          provider: none\n",
+    ),
+    mutant(
+        "the bundle has commands run in a container unless something says otherwise",
+        BASE_BUNDLE,
+        "          provider: ${COLUMBINA_SANDBOX:-none}\n",
+        "          provider: ${COLUMBINA_SANDBOX:-docker}\n",
+    ),
     mutant(
         "the preset of the command line is not handed on",
         LAUNCHER,

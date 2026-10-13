@@ -567,6 +567,87 @@ WITHOUT_PERMISSIONS = [
 ]
 
 
+def test_the_bundle_leaves_it_to_the_environment_what_runs_the_commands(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    main(["run", "Do it.", "--cwd", str(work), "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert entries["sandbox"]["config"] == {"provider": "${COLUMBINA_SANDBOX:-none}"}
+
+
+@pytest.mark.parametrize("command", [["run", "Do it."], [], ["serve"]])
+def test_the_command_line_names_what_runs_the_commands(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str], command: list[str]
+) -> None:
+    code = main([*command, "--cwd", str(work), "--sandbox", "docker", "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert code == 0
+    assert entries["sandbox"]["config"] == {"provider": "docker"}
+
+
+def test_what_runs_the_commands_is_named_for_a_sandbox_that_has_a_config_of_its_own(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mine = {"id": "sandbox", "config": {"mode": "read-only", "docker": {"image": "busybox"}}}
+    chosen = profile(tmp_path, extra=[mine])
+
+    main(
+        [
+            "run",
+            "Do it.",
+            "--profile",
+            chosen,
+            "--cwd",
+            str(work),
+            "--sandbox",
+            "a$b",
+            "--dump-config",
+        ]
+    )
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    # A dollar sign in a name is a dollar sign, and no variable of the environment.
+    assert entries["sandbox"]["config"] == {
+        "mode": "read-only",
+        "docker": {"image": "busybox"},
+        "provider": "a$$b",
+    }
+
+
+WITHOUT_A_SANDBOX = [
+    {"id": name, "disabled": True} for name in ("sandbox", "permissions", "tool-shell")
+]
+
+
+@pytest.mark.parametrize("extends", ["headless", "minimal"])
+def test_what_runs_the_commands_cannot_be_named_for_a_program_without_a_sandbox(
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    extends: str,
+) -> None:
+    # In one profile the sandbox is switched off, the other never had it.
+    without = profile(
+        tmp_path,
+        {"text": "never"},
+        extends=extends,
+        extra=WITHOUT_A_SANDBOX if extends == "headless" else [],
+    )
+
+    code = main(["run", "Do it.", "--profile", without, "--cwd", str(work), "--sandbox", "docker"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "columbina: the profile has no entry 'sandbox', or it is disabled, so --sandbox has "
+        "nothing to change\n"
+    )
+
+
 @pytest.mark.parametrize("asked", [["--permission", "read-only"], ["--allow", "grep"]])
 @pytest.mark.parametrize("extends", ["headless", "minimal"])
 def test_a_preset_or_a_rule_needs_permissions_to_go_to(

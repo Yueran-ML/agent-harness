@@ -5,8 +5,11 @@ extends: minimal
 patch:
   - insert:
       # What a call may do, and who is asked about it.
+      # COLUMBINA_SANDBOX=docker runs the commands in a container.
       - id: sandbox
         plugin: columbina.sandbox
+        config:
+          provider: ${COLUMBINA_SANDBOX:-none}
       - id: approval
         plugin: columbina.approval
       - id: permissions

@@ -851,6 +851,37 @@ def test_a_directory_is_mounted_where_the_container_is_to_have_it(root: Path) ->
     ]
 
 
+# A program that is not there
+
+
+def test_a_program_that_is_on_the_search_path_leaves_nothing_to_say(root: Path) -> None:
+    program_in(root / "tools")
+
+    assert docker.absent(DockerConfig(), search(root / "tools"), [root / "work"]) is None
+
+
+def test_no_program_on_the_search_path_is_said_with_what_to_do_about_it(root: Path) -> None:
+    program_in(root / "work" / "bin")
+
+    for path in (search(root / "empty"), search(root / "work" / "bin")):
+        assert docker.absent(DockerConfig(), path, [root / "work"]) == (
+            "commands are to run in containers, and no docker program was found on the search "
+            "path. No command will run until there is one: install Docker, or name the program "
+            "in the config of the sandbox"
+        )
+
+
+def test_a_program_that_the_config_names_is_looked_for_where_it_is_named(root: Path) -> None:
+    named = program_in(root / "tools")
+    gone = root / "nowhere" / PROGRAM
+
+    assert docker.absent(DockerConfig(program=str(named)), "", []) is None
+    assert docker.absent(DockerConfig(program=str(gone)), search(root / "tools"), []) == (
+        f"commands are to run in containers with the docker program {gone}, which is not "
+        "there. No command will run until it is"
+    )
+
+
 # What a model is told
 
 

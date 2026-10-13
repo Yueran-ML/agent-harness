@@ -419,6 +419,82 @@ def test_the_model_is_told_where_it_runs_and_what_it_may_do(program: Program) ->
     ]
 
 
+HELD_FULLY = (
+    "commands are held: fully. A command can do no more than the mode of the sandbox allows."
+)
+NOT_HELD = (
+    "commands are held: not at all. A command can do whatever the user of this machine can do."
+)
+
+
+def test_the_command_line_names_a_container_as_the_place_of_the_commands(
+    program: Program,
+) -> None:
+    # No engine is asked for this: no command is run.
+    program.run(flags=("--sandbox", "docker"))
+
+    told = program.told("context/runtime")[0].split("\n")
+    assert HELD_FULLY in told
+    assert "commands are run by: the tool bash" in told
+    assert any(
+        line.startswith("commands run in: a Linux container of the image python:3.12, ")
+        for line in told
+    )
+    offered = program.offered()
+    assert "bash" in offered
+    assert "powershell" not in offered
+
+
+def test_the_environment_names_what_runs_the_commands(
+    program: Program, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMBINA_SANDBOX", "docker")
+
+    program.run()
+
+    assert HELD_FULLY in program.told("context/runtime")[0].split("\n")
+
+
+def test_the_command_line_counts_for_more_than_the_environment(
+    program: Program, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMBINA_SANDBOX", "docker")
+
+    program.run(flags=("--sandbox", "none"))
+
+    told = program.told("context/runtime")[0]
+    assert NOT_HELD in told.split("\n")
+    assert "commands run in" not in told
+
+
+def test_a_provider_that_nothing_brought_runs_no_command_and_says_so(program: Program) -> None:
+    ran = program.run(
+        call(shell.NAME, command=SIX_TIMES_SEVEN),
+        flags=("--sandbox", "nowhere", "--permission", "full-access"),
+    )
+
+    assert ran.results == [
+        (
+            "The command was not run: the sandbox provider 'nowhere' is not there, so no "
+            "command can be run.",
+            "SANDBOX_UNAVAILABLE",
+        )
+    ]
+
+
+def test_a_sandbox_that_finds_no_docker_program_says_so_when_the_program_starts(
+    program: Program, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Docker Desktop may come up later, so the engine is not asked at the start. A program
+    # that is not on the search path will not come, though.
+    monkeypatch.setenv("PATH", str(program.tmp_path / "empty"))
+
+    ran = program.run(flags=("--sandbox", "docker"))
+
+    assert ran.code == 0
+    assert "no docker program was found on the search path" in ran.errors
+
+
 def test_what_the_model_is_told_stands_before_the_task(program: Program) -> None:
     (program.work / "AGENTS.md").write_text("Run the checks before you answer.\n", encoding="utf-8")
 

@@ -41,6 +41,7 @@ this machine. It is registered whether or not the config chooses it, and
 asks nothing of Docker before a command is to run in a container.
 """
 
+import logging
 import os
 import weakref
 from collections.abc import Callable, Mapping, Sequence
@@ -62,7 +63,7 @@ from columbina.sandbox.base import (
     Strength,
     held_less_well,
 )
-from columbina.sandbox.docker import Docker, DockerConfig
+from columbina.sandbox.docker import Docker, DockerConfig, absent
 from columbina.session import SESSIONS, EventData, Projection, Session, SessionEvent
 
 __all__ = [
@@ -85,6 +86,8 @@ __all__ = [
 
 name = "sandbox"
 inject = (FS, SESSIONS)
+
+logger = logging.getLogger(__name__)
 
 
 class SandboxModeEvent(EventData):
@@ -355,6 +358,12 @@ def apply(ctx: Context, config: Config) -> None:
     container = Docker(config.docker)
     sandbox.providers.add(ctx, "docker", container)
     ctx.effect(lambda: container.close)
+    if config.provider == "docker":
+        # The engine is asked when the first command comes: it may come up later than this
+        # program. A program that is not there will not come, so that is said now.
+        missing = absent(config.docker, os.environ.get("PATH", ""), [Path.cwd()])
+        if missing is not None:
+            logger.warning(missing)
     seam = ctx.use(FS)
     seam.grants.add(ctx, "sandbox", sandbox.grants)
     seam.restrictions.add(ctx, "sandbox", sandbox.restricts)

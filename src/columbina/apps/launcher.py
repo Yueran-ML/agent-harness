@@ -90,6 +90,7 @@ __all__ = ["main"]
 
 _FRONTEND = "frontend"
 _PERMISSIONS = "permissions"
+_SANDBOX = "sandbox"
 _INTERRUPTED = 130
 _CHAT = "chat"
 _RUN = "run"
@@ -262,6 +263,22 @@ def _permit(entries: list[Entry], args: argparse.Namespace) -> None:
     )
 
 
+def _held(entries: list[Entry], args: argparse.Namespace) -> None:
+    """Hand what the command line says runs the commands to the entry of the sandbox."""
+    if args.sandbox is None:
+        return
+    for position, entry in enumerate(entries):
+        if entry.id == _SANDBOX and not entry.disabled:
+            config = _config_of(entry)
+            config["provider"] = args.sandbox.replace("$", "$$")
+            entries[position] = entry.model_copy(update={"config": config})
+            return
+    raise _UsageError(
+        f"the profile has no entry {_SANDBOX!r}, or it is disabled, so --sandbox has nothing "
+        "to change"
+    )
+
+
 def _flattened(
     args: argparse.Namespace,
     home: Path,
@@ -341,6 +358,7 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
 
     entries = _flattened(args, home, as_chosen)
     _permit(entries, args)
+    _held(entries, args)
     named = args.provider or env.get("COLUMBINA_PROVIDER")
     if named:
         service = chosen_service.service_named(named, stored)
@@ -700,6 +718,12 @@ def _shared(command: argparse.ArgumentParser, profile: str, *, session: bool = T
         metavar="RULE",
         help="a rule that lets calls go ahead, such as 'run(git status*)'; "
         "may be given several times",
+    )
+    command.add_argument(
+        "--sandbox",
+        metavar="NAME",
+        help="what runs the commands of the agent: none, for this machine as it is, or "
+        "docker, for a container",
     )
     command.add_argument(
         "--dump-config",

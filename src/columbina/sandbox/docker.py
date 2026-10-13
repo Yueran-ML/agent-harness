@@ -87,6 +87,7 @@ __all__ = [
     "Docker",
     "DockerConfig",
     "Engine",
+    "absent",
     "asked",
     "called",
     "ended",
@@ -563,6 +564,34 @@ def found(search: str, outside: Sequence[Path] = ()) -> str | None:
         if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):
             return str(program)
     return None
+
+
+def absent(config: DockerConfig, search: str, outside: Sequence[Path]) -> str | None:
+    """Say what is wrong if there is no ``docker`` program to run, or return ``None``.
+
+    Nothing is run for this, and no engine is asked: an engine may come up
+    later, and a program that is not there will not.
+
+    Args:
+        config: The config of the provider.
+        search: The search path, as the environment has it.
+        outside: Directories that the program must not come from.
+    """
+    named = config.program
+    if named is None:
+        if found(search, outside) is not None:
+            return None
+        return (
+            "commands are to run in containers, and no docker program was found on the search "
+            "path. No command will run until there is one: install Docker, or name the "
+            "program in the config of the sandbox"
+        )
+    if Path(named).is_file():
+        return None
+    return (
+        f"commands are to run in containers with the docker program {named}, which is not "
+        "there. No command will run until it is"
+    )
 
 
 def told(config: DockerConfig, platform: str) -> dict[str, str]:

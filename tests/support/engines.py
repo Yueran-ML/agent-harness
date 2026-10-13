@@ -17,7 +17,7 @@ import pytest
 
 from columbina.sandbox import docker
 
-__all__ = ["BARE", "IMAGE", "asked", "containers", "docker_program", "real"]
+__all__ = ["BARE", "IMAGE", "asked", "containers", "docker_program", "left_behind", "real"]
 
 IMAGE = "debian:bookworm-slim"
 """A small image with bash."""
@@ -82,3 +82,20 @@ def containers(program: str) -> set[str]:
     )
     assert code == 0, said
     return set(said.split())
+
+
+def left_behind(program: str, before: set[str], directory: Path) -> set[str]:
+    """Return the containers that are there and were not before, and remove those of a test.
+
+    A test that fails leaves nothing on the machine. Which of the containers are its own is
+    told by what they have mounted: something under the directory that the test alone has.
+    Another one may belong to a program that somebody is using, and is left where it is.
+    """
+    left = containers(program) - before
+    own = os.path.normcase(os.path.realpath(directory))
+    for name in left:
+        listing = "{{range .Mounts}}{{.Source}}{{println}}{{end}}"
+        code, mounted = asked(program, "inspect", "--format", listing, name)
+        if code == 0 and any(os.path.normcase(at).startswith(own) for at in mounted.splitlines()):
+            asked(program, "rm", "--force", name)
+    return left

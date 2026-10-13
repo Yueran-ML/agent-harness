@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from columbina.apps.launcher import main
-from support.engines import BARE, IMAGE, containers, real
+from support.engines import BARE, IMAGE, containers, left_behind, real
 from support.launch import lines, profile
 
 pytestmark = pytest.mark.timeout(300)
@@ -86,8 +86,9 @@ def held(
 ) -> Iterator[Held]:
     before = containers(engine)
     yield Held(work, tmp_path, capsys, engine)
-    # When the program has ended, none of its containers is left.
-    assert containers(engine) <= before
+    # When the program has ended, none of its containers is left. One that is left is removed
+    # before the test fails for it.
+    assert not left_behind(engine, before, tmp_path)
 
 
 def said(result: tuple[str, str | None]) -> list[str]:

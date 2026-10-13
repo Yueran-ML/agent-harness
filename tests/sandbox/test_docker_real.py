@@ -28,7 +28,7 @@ from columbina.process import Completed
 from columbina.sandbox import Mode, SandboxUnavailableError, docker
 from columbina.sandbox.docker import Docker, DockerConfig
 from columbina.session import SESSIONS, Session, Sessions
-from support.engines import BARE, IMAGE, asked, containers, real
+from support.engines import BARE, IMAGE, asked, containers, left_behind, real
 from support.links import link_directory
 from support.sandboxes import closed
 from support.sockets import listening_at
@@ -52,7 +52,7 @@ Make = Callable[..., Docker]
 
 
 @pytest.fixture
-async def make(program: str) -> AsyncIterator[Make]:
+async def make(program: str, tmp_path: Path) -> AsyncIterator[Make]:
     """Makes providers, and sees at the end that none of their containers is left."""
     before = containers(program)
     made: list[Docker] = []
@@ -66,8 +66,10 @@ async def make(program: str) -> AsyncIterator[Make]:
     # A test that failed may leave a provider that never lets go, and nothing limits the end
     # of a test once it has failed.
     stuck = [provider for provider in made if not await closed(provider, END_SECONDS)]
+    # One that is left is removed before the test fails for it.
+    left = left_behind(program, before, tmp_path)
     assert not stuck, "a provider could not be closed in the time that the end of a test has"
-    assert containers(program) <= before
+    assert not left
 
 
 @pytest.fixture
@@ -661,10 +663,15 @@ def test_a_container_does_not_outlive_the_program_that_keeps_it(program: str, wo
             holder.stdout.close()
 
     deadline = time.monotonic() + 30
-    # Only a look that worked and found nothing says that it is gone.
-    while asked(program, "ps", "--all", "--quiet", "--filter", f"id={name}") != (0, ""):
-        assert time.monotonic() < deadline, "the container is still there"
-        time.sleep(0.2)
+    try:
+        # Only a look that worked and found nothing says that it is gone.
+        while asked(program, "ps", "--all", "--quiet", "--filter", f"id={name}") != (0, ""):
+            assert time.monotonic() < deadline, "the container is still there"
+            time.sleep(0.2)
+    finally:
+        # A test that fails leaves nothing on the machine either. Nobody else has a
+        # container by this name, and of one that is gone the engine says so and no more.
+        asked(program, "rm", "--force", name)
 
 
 # No container

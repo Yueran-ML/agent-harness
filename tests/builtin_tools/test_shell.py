@@ -783,7 +783,9 @@ def test_the_shell_is_the_one_of_this_machine_unless_commands_run_elsewhere() ->
 
 # Commands that run somewhere else
 
-READ_AND_RUN = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null 2>&1'
+READ_AND_RUN = (
+    'command=$(cat && printf x) && exec bash --noprofile --norc -c "${command%x}" </dev/null 2>&1'
+)
 CHANGED = (
     "The command was not run: the place where the sandbox runs commands is another one "
     "than when this tool was made. Start the program again."
@@ -863,6 +865,35 @@ async def test_a_shell_that_the_tool_cannot_write_for_keeps_it_from_loading(
 ) -> None:
     with pytest.raises(RuntimeError, match="commands with 'fish'"):
         await elsewhere(ctx, tmp_path, Elsewhere("fish"))
+
+
+async def test_a_command_with_a_nul_in_it_is_refused_before_anything_runs(
+    ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No shell takes one, and each would fail in a way of its own: one says that an
+    # argument is no text, another leaves the character out without a word.
+    bench = await loaded(ctx, tmp_path)
+    runs = watched(monkeypatch)
+
+    refused = await bench.call("echo a\0b")
+
+    assert refused.error is not None
+    assert refused.error.code == "NUL_IN_COMMAND"
+    assert refused.text.startswith("The command has a NUL character in it")
+    assert runs == []
+
+
+async def test_a_command_for_elsewhere_with_a_nul_in_it_is_refused_as_well(
+    ctx: Context, tmp_path: Path
+) -> None:
+    provider = Elsewhere()
+    bench = await elsewhere(ctx, tmp_path, provider)
+
+    refused = await bench.call("echo a\0b")
+
+    assert refused.error is not None
+    assert refused.error.code == "NUL_IN_COMMAND"
+    assert provider.asked == []
 
 
 async def test_a_command_for_elsewhere_may_be_as_long_as_an_argument_may_be_there(

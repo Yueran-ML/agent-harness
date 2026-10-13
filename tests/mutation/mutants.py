@@ -3653,6 +3653,12 @@ _DOCKER_REAL = (
         )
     ),
     mutant(
+        "with a real engine: a command loses the line ends that it ends with",
+        SHELL,
+        """'command=$(cat && printf x) && exec bash --noprofile --norc -c "${command%x}" <""",
+        """'command=$(cat) && exec bash --noprofile --norc -c "$command" <""",
+    ),
+    mutant(
         "with a real engine: only what a link names is read-only, and not the way there",
         DOCKER,
         "                first = cwd / real.relative_to(cwd).parts[0]\n",
@@ -3742,8 +3748,8 @@ _DOCKER_REAL = (
     mutant(
         "with a real engine: what a command writes to its error stream comes back on a way of its own",
         SHELL,
-        """exec bash --noprofile --norc -c "$command" </dev/null 2>&1'""",
-        """exec bash --noprofile --norc -c "$command" </dev/null'""",
+        """exec bash --noprofile --norc -c "${command%x}" </dev/null 2>&1'""",
+        """exec bash --noprofile --norc -c "${command%x}" </dev/null'""",
     ),
     mutant(
         "with a real engine: a container is kept by the engine when it has ended",
@@ -5004,20 +5010,26 @@ _SHELL = (
     mutant(
         "a command for another place gets the input that it came on",
         SHELL,
-        """exec bash --noprofile --norc -c "$command" </dev/null 2>&1'""",
-        """exec bash --noprofile --norc -c "$command" 2>&1'""",
+        """exec bash --noprofile --norc -c "${command%x}" </dev/null 2>&1'\n""",
+        """exec bash --noprofile --norc -c "${command%x}" 2>&1'\n""",
     ),
     mutant(
         "a command for another place is run by the shell that read it",
         SHELL,
-        """= 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null 2>&1'\n""",
-        """= 'command=$(cat) && eval "$command" </dev/null 2>&1'\n""",
+        """exec bash --noprofile --norc -c "${command%x}" </dev/null 2>&1'\n""",
+        """eval "${command%x}" </dev/null 2>&1'\n""",
     ),
     mutant(
         "what a command for another place writes to its error stream comes back on a way of its own",
         SHELL,
-        """exec bash --noprofile --norc -c "$command" </dev/null 2>&1'""",
-        """exec bash --noprofile --norc -c "$command" </dev/null'""",
+        """exec bash --noprofile --norc -c "${command%x}" </dev/null 2>&1'\n""",
+        """exec bash --noprofile --norc -c "${command%x}" </dev/null'\n""",
+    ),
+    mutant(
+        "a command with a NUL in it is handed to the shell",
+        SHELL,
+        '        if "\\0" in args.command:\n',
+        "        if False:\n",
     ),
     mutant(
         "a command on the input is taken for text in the encoding of the system",

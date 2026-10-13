@@ -347,9 +347,13 @@ async def test_the_limits_of_the_config_are_the_limits_of_the_container(
         provider,
         session,
         work,
-        "cat /sys/fs/cgroup/pids.max /sys/fs/cgroup/memory.max /sys/fs/cgroup/cpu.max",
+        "cd /sys/fs/cgroup && if test -f cgroup.controllers; "
+        "then cat pids.max memory.max cpu.max; else echo another layout; fi",
     )
 
+    if wrote.strip() == "another layout":
+        # An older layout of the kernel keeps the same limits in other files.
+        pytest.skip("the limits of a container are kept in another layout here")
     assert wrote.splitlines() == ["64", "268435456", "150000 100000"]
 
 
@@ -366,6 +370,13 @@ async def test_a_long_command_with_every_kind_of_character_arrives_as_it_was_wri
 
 
 # What the mode of a session lets a command write
+
+
+async def test_a_command_keeps_the_line_ends_that_it_ends_with(says: Says) -> None:
+    # A line that ends in a backslash goes on in the next one. Without the end of the line
+    # the backslash would be a character of the command.
+    assert await says("echo one \\\n") == "one\n"
+    assert await says("printf '%s' done\n\n\n") == "done"
 
 
 async def test_a_session_that_is_read_only_cannot_write_its_directory(
@@ -624,16 +635,28 @@ async def test_a_command_that_forks_without_end_is_stopped(
 
     assert done.timed_out
     kept, running = after.split()
-    assert kept == name
     assert int(running) < 10
+    if kept == name:
+        assert done.notes == ()
+    else:
+        # The forks had used up the processes that the container may have, so nothing
+        # could be started in it to stop them. Then the container goes, and the result
+        # says so.
+        assert len(done.notes) == 1
+        assert done.notes[0].startswith("What this command left running in the container")
 
 
 async def test_a_command_whose_caller_is_cancelled_is_stopped_in_its_container(
     provider: Docker, session: Session, work: Path
 ) -> None:
     name = (await said(provider, session, work, "hostname")).strip()
-    running = asyncio.ensure_future(sh(provider, session, work, "setsid sleep 300 & sleep 300"))
-    await asyncio.sleep(1.5)
+    running = asyncio.ensure_future(
+        sh(provider, session, work, "setsid sleep 300 & echo $! > started; sleep 300")
+    )
+    deadline = time.monotonic() + 60
+    while not (work / "started").exists():
+        assert time.monotonic() < deadline, "the command did not start"
+        await asyncio.sleep(0.1)
 
     running.cancel()
 

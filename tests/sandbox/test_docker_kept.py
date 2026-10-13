@@ -76,7 +76,17 @@ class Engine:
 
     def told(self, **how: object) -> None:
         """Say how the engine is to behave from now on."""
-        (self.home / "told.json").write_text(json.dumps(how), encoding="utf-8")
+        unfinished = self.home / "told.part"
+        unfinished.write_text(json.dumps(how), encoding="utf-8")
+        for _ in range(200):
+            try:
+                unfinished.replace(self.home / "told.json")
+            except PermissionError:
+                # A stand-in reads it at this moment, and Windows then lets nobody replace it.
+                time.sleep(0.01)
+            else:
+                return
+        raise AssertionError("the stand-in could not be told how to behave")
 
     def _noted(self) -> list[dict[str, Any]]:
         noted = sorted((self.home / "calls").glob("*.json"))
@@ -1189,21 +1199,24 @@ async def test_a_program_that_cannot_be_started_when_a_container_is_let_go_is_no
         ),
         (
             {"usable": "readable"},
-            "who cannot write the working directory there, although this program can. The "
-            "engine maps users in a way that this sandbox does not work with",
+            "who cannot write the working directory there, although this program can. Either "
+            "the engine maps users in a way that this sandbox does not work with, or this "
+            "program has the directory through one of its further groups, which commands in "
+            "a container do not have",
             ["info", "run", "usable", "rm", "ps"],
         ),
         (
             {"usable": ""},
-            "who cannot read the working directory there. The engine maps users in a way that "
-            "this sandbox does not work with",
+            "who cannot read the working directory there. Either the engine maps users in a "
+            "way that this sandbox does not work with, or this program has the directory "
+            "through one of its further groups, which commands in a container do not have",
             ["info", "run", "usable", "rm", "ps"],
         ),
         (
             # The look failed, whatever it wrote before it did.
             {"usable": "writable", "usable_exit": 1},
-            "who cannot read the working directory there. The engine maps users in a way that "
-            "this sandbox does not work with",
+            "who cannot read the working directory there. Either the engine maps users in a "
+            "way that this sandbox does not work with",
             ["info", "run", "usable", "rm", "ps"],
         ),
     ],

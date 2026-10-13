@@ -175,6 +175,13 @@ _RESHAPED = (
 )
 """What a result says when a command cost its session the container."""
 
+_USERS = (
+    "Either the engine maps users in a way that this sandbox does not work with, or this "
+    "program has the directory through one of its further groups, which commands in a "
+    "container do not have"
+)
+"""What may be behind a user of commands who cannot do what this program can."""
+
 _UNASKED = (
     "this engine does not show a container the files of this machine by the numbers that the "
     "machine knows them by, so a container cannot be asked which directory it was given"
@@ -1506,8 +1513,7 @@ class Docker:
         if answer.exit_code != 0 or can not in ("writable", "readable"):
             raise SandboxUnavailableError(
                 f"commands run in the container as the user {container.user}, who cannot read "
-                "the working directory there. The engine maps users in a way that this "
-                "sandbox does not work with"
+                f"the working directory there. {_USERS}"
             )
         if read_only and can == "writable":
             raise SandboxUnavailableError(
@@ -1517,8 +1523,7 @@ class Docker:
         if not read_only and can == "readable" and os.access(container.cwd, os.W_OK):
             raise SandboxUnavailableError(
                 f"commands run in the container as the user {container.user}, who cannot "
-                "write the working directory there, although this program can. The engine "
-                "maps users in a way that this sandbox does not work with"
+                f"write the working directory there, although this program can. {_USERS}"
             )
         if not _ASKS:
             return

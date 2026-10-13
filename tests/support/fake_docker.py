@@ -69,13 +69,24 @@ def told() -> dict[str, Any]:
         return {}
 
 
+def shown(path: Path, what: object) -> None:
+    """Write a file so that whoever looks for it finds all of it or nothing.
+
+    A test looks while this writes. Under its own name the file appears only when it is
+    written to its end.
+    """
+    unfinished = path.with_name(f"{path.name}.{os.getpid()}.part")
+    unfinished.write_text(json.dumps(what), encoding="utf-8")
+    unfinished.replace(path)
+
+
 def note(**what: object) -> None:
     """Write down a call, in a file of its own: several of these run at the same time."""
     (HOME / "calls").mkdir(exist_ok=True)
     # The clock of Windows stands still for milliseconds, and a process may note twice in one.
     NOTED.append(None)
     name = f"{time.time_ns():020d}-{os.getpid()}-{len(NOTED)}.json"
-    (HOME / "calls" / name).write_text(json.dumps(what), encoding="utf-8")
+    shown(HOME / "calls" / name, what)
 
 
 def fail(code: int, words: str) -> int:
@@ -137,7 +148,7 @@ def run(argv: list[str], how: dict[str, Any]) -> int:
         )
     CONTAINERS.mkdir(exist_ok=True)
     known = {"pid": os.getpid(), "mounts": mounted, "image": image}
-    (CONTAINERS / f"{name}.json").write_text(json.dumps(known), encoding="utf-8")
+    shown(CONTAINERS / f"{name}.json", known)
     token = ""
     for mount in mounted:
         if mount["target"] == PROBE:

@@ -164,7 +164,15 @@ def _as_an_argument(shell: str, command: str) -> tuple[list[str], bytes | None]:
     return [shell, "--noprofile", "--norc", "-c", command], None
 
 
-_READ_AND_RUN_BASH = 'command=$(cat) && exec bash --noprofile --norc -c "$command" </dev/null 2>&1'
+_READ_AND_RUN_BASH = (
+    'command=$(cat && printf x) && exec bash --noprofile --norc -c "${command%x}" </dev/null 2>&1'
+)
+"""Reads a command from its input and becomes a bash that runs it.
+
+What is read ends in a mark that is taken off again. A shell drops the line ends at the
+end of what it reads this way, and a command may end in one that matters: a line that
+ends in a backslash goes on in the next.
+"""
 
 
 def _on_the_input(shell: str, command: str) -> tuple[list[str], bytes | None]:
@@ -330,6 +338,14 @@ def shell_tool(
     way = flavour(elsewhere)
 
     async def run_command(args: ShellArgs, run: ToolRun) -> ShellResult:
+        if "\0" in args.command:
+            # Each shell would fail in a way of its own: one program says that an argument
+            # is no text, another leaves the character out without a word.
+            raise ToolFailure(
+                "The command has a NUL character in it, and no shell takes a command with "
+                "one. Write that byte another way, with printf for one.",
+                code="NUL_IN_COMMAND",
+            )
         if len(args.command.encode("utf-8")) > way.max_command_bytes:
             raise ToolFailure(
                 f"The command is longer than {way.max_command_bytes} bytes, which is more "

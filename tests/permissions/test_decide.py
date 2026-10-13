@@ -360,6 +360,7 @@ def test_what_lets_a_command_go_ahead_anyway_is_said_before_the_hold_is() -> Non
     # Only a call that goes ahead for the hold and for nothing else is looked at again
     # when its command is run.
     by_rule = command(rules(allow="shell(make *)"), "make test", strength="full")
+    by_a_rule_for_the_tool = command(rules(allow="shell"), "make test", strength="full")
     with_access = command(rules(), "make test", "danger-full-access", strength="full")
     granted = decide(
         rules(), "shell", "run", "make test", None,
@@ -368,6 +369,8 @@ def test_what_lets_a_command_go_ahead_anyway_is_said_before_the_hold_is() -> Non
 
     assert (by_rule.verdict, by_rule.held) == ("allow", False)
     assert str(by_rule.rule) == "shell(make *)"
+    assert (by_a_rule_for_the_tool.verdict, by_a_rule_for_the_tool.held) == ("allow", False)
+    assert str(by_a_rule_for_the_tool.rule) == "shell"
     assert (with_access.why, with_access.held) == ("The session has full access.", False)
     assert (granted.why, granted.held) == ("It was allowed for the rest of this session.", False)
 

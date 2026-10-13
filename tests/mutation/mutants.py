@@ -2047,20 +2047,94 @@ _DOCKER = (
     mutant(
         "a link is told as what it leads to",
         DOCKER,
-        "            if real != cwd / entry.name:\n",
-        "            if False:\n",
+        '            kind = what if real == cwd / entry.name else f"link to {what} {real}"\n',
+        "            kind = what\n",
+    ),
+    mutant(
+        "a link is told without what it leads to",
+        DOCKER,
+        'else f"link to {what} {real}"\n',
+        'else f"link to {real}"\n',
     ),
     mutant(
         "a file is told as a directory",
         DOCKER,
-        'kind = "directory" if real.is_dir() else "file" if real.is_file() else "other"\n',
-        'kind = "directory" if real.exists() else "other"\n',
+        '    if stat.S_ISDIR(mode):\n        return "directory"\n',
+        '    if stat.S_ISDIR(mode) or stat.S_ISREG(mode):\n        return "directory"\n',
+    ),
+    on_linux(
+        mutant(
+            "what is neither a file nor a directory is told as a file",
+            DOCKER,
+            '    return "file" if stat.S_ISREG(mode) else "other"\n',
+            '    return "file"\n',
+        )
+    ),
+    mutant(
+        "what cannot be looked at is taken for nothing",
+        DOCKER,
+        '    except OSError:\n        return "unknown"\n',
+        '    except OSError:\n        return "nothing"\n',
+    ),
+    mutant(
+        "what is not there is taken for what cannot be looked at",
+        DOCKER,
+        '    except (FileNotFoundError, NotADirectoryError):\n        return "nothing"\n',
+        "",
     ),
     mutant(
         "the shape depends on the order in which the disk lists names",
         DOCKER,
-        "    return sorted(names)\n",
+        "    return sorted(names, key=lambda one: one.name)\n",
         "    return names\n",
+    ),
+    mutant(
+        "only what a link names is read-only, and not the way there",
+        DOCKER,
+        "                first = cwd / real.relative_to(cwd).parts[0]\n",
+        "                first = real\n",
+    ),
+    mutant(
+        "what a link leads to is mounted where the link is",
+        DOCKER,
+        '    over = {f"{target}/{one.cover.name}": one.cover for one in led if one.cover is not None}\n',
+        '    over = {f"{target}/{one.name}": one.cover for one in led if one.cover is not None}\n',
+    ),
+    mutant(
+        "a protected name that cannot be looked at is passed over",
+        DOCKER,
+        '                whole = there == "unknown"\n',
+        "                whole = False\n",
+    ),
+    mutant(
+        "a path with a line break in it is given to Docker",
+        DOCKER,
+        '        if "\\r" in written or "\\n" in written:\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "a path with the end of a line of an old system in it is given to Docker",
+        DOCKER,
+        '        if "\\r" in written or "\\n" in written:\n',
+        '        if "\\n" in written:\n',
+    ),
+    mutant(
+        "a path with the end of a line in it is given to Docker unless Windows wrote it",
+        DOCKER,
+        '        if "\\r" in written or "\\n" in written:\n',
+        '        if "\\r" in written:\n',
+    ),
+    mutant(
+        "where a mount goes is not looked at for line breaks",
+        DOCKER,
+        "    for written in (str(source), target):\n",
+        "    for written in (str(source),):\n",
+    ),
+    mutant(
+        "what is mounted is not looked at for line breaks",
+        DOCKER,
+        "    for written in (str(source), target):\n",
+        "    for written in (target,):\n",
     ),
     mutant(
         "a comma in a path ends a field of a mount",
@@ -2126,52 +2200,56 @@ _DOCKER = (
     mutant(
         "a protected name that leads to the working directory itself protects nothing",
         DOCKER,
-        "            if real == cwd:\n",
-        "            if False:\n",
+        "            cover, whole = None, real == cwd\n",
+        "            cover, whole = None, False\n",
     ),
     mutant(
         "a link that leads out of the directory is given to the engine as a source",
         DOCKER,
-        "        for _, _, real in led:\n",
-        "        for name, _, real in led:\n",
-        (
-            "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n"
-            '                over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real\n',
-            "            elif real.is_dir() or real.is_file():\n"
-            '                over[f"{target}/{name}"] = cwd / name\n',
-        ),
+        "            if cwd in real.parents:\n"
+        "                first = cwd / real.relative_to(cwd).parts[0]\n",
+        "            if True:\n                first = cwd / entry.name\n",
     ),
     mutant(
         "what a link leads to outside the directory is mounted in it",
         DOCKER,
-        "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n"
-        '                over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real\n',
-        "            elif real.is_dir() or real.is_file():\n"
-        '                over[f"{target}/{real.name}"] = real\n',
+        "            if cwd in real.parents:\n"
+        "                first = cwd / real.relative_to(cwd).parts[0]\n",
+        "            if True:\n                first = real\n",
     ),
     mutant(
         "a source that is not there is named to the engine",
         DOCKER,
-        "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n",
-        "            elif cwd in real.parents:\n",
+        '                if there in ("directory", "file"):\n                    cover = first\n',
+        "                cover = first\n",
     ),
     mutant(
         "a protected file is not mounted",
         DOCKER,
-        "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n",
-        "            elif cwd in real.parents and real.is_dir():\n",
+        '                if there in ("directory", "file"):\n',
+        '                if there == "directory":\n',
+    ),
+    on_linux(
+        mutant(
+            "what is neither a file nor a directory is given to the engine as a source",
+            DOCKER,
+            '                if there in ("directory", "file"):\n',
+            '                if there in ("directory", "file", "other"):\n',
+        )
     ),
     mutant(
         "what is protected is mounted so that it can be written",
         DOCKER,
-        "        *(_mount(real, inside, readonly=True) for inside, real in sorted(over.items())),\n",
-        "        *(_mount(real, inside, readonly=False) for inside, real in sorted(over.items())),\n",
+        "        *(_mount(source, inside, readonly=True) for inside, source in sorted(over.items())),\n",
+        "        *(_mount(source, inside, readonly=False) for inside, source in sorted(over.items())),\n",
     ),
     mutant(
         "a directory that is to be read-only as a whole can be written",
         DOCKER,
-        "    if whole:\n        return True, [_mount(cwd, target, readonly=True)]\n",
-        "    if whole:\n        return True, [_mount(cwd, target, readonly=False)]\n",
+        "    if whole or any(one.whole for one in led):\n"
+        "        return True, [_mount(cwd, target, readonly=True)]\n",
+        "    if whole or any(one.whole for one in led):\n"
+        "        return True, [_mount(cwd, target, readonly=False)]\n",
     ),
     mutant(
         "a directory that may be written is mounted read-only",
@@ -2667,13 +2745,13 @@ _DOCKER_KEPT = (
     mutant(
         "the shape of a directory is kept in every mode",
         DOCKER,
-        '    told = tuple((name, kind) for name, kind, _ in led) if mode == "workspace-write" else None\n',
-        "    told = tuple((name, kind) for name, kind, _ in led)\n",
+        '    told = tuple((one.name, one.kind) for one in led) if mode == "workspace-write" else None\n',
+        "    told = tuple((one.name, one.kind) for one in led)\n",
     ),
     mutant(
         "the shape of a directory is never kept",
         DOCKER,
-        '    told = tuple((name, kind) for name, kind, _ in led) if mode == "workspace-write" else None\n',
+        '    told = tuple((one.name, one.kind) for one in led) if mode == "workspace-write" else None\n',
         "    told = None\n",
     ),
     mutant(
@@ -3183,8 +3261,10 @@ _DOCKER_KEPT = (
     mutant(
         "a directory that is read-only as a whole is looked at as one that can be written",
         DOCKER,
-        "    if whole:\n        return True, [_mount(cwd, target, readonly=True)]\n",
-        "    if whole:\n        return False, [_mount(cwd, target, readonly=True)]\n",
+        "    if whole or any(one.whole for one in led):\n"
+        "        return True, [_mount(cwd, target, readonly=True)]\n",
+        "    if whole or any(one.whole for one in led):\n"
+        "        return False, [_mount(cwd, target, readonly=True)]\n",
     ),
     mutant(
         "a directory that can be written is looked at as one that is read-only",
@@ -3306,19 +3386,28 @@ _DOCKER_REAL = (
     mutant(
         "with a real engine: what is protected is mounted so that it can be written",
         DOCKER,
-        "        *(_mount(real, inside, readonly=True) for inside, real in sorted(over.items())),\n",
-        "        *(_mount(real, inside, readonly=False) for inside, real in sorted(over.items())),\n",
+        "        *(_mount(source, inside, readonly=True) for inside, source in sorted(over.items())),\n",
+        "        *(_mount(source, inside, readonly=False) for inside, source in sorted(over.items())),\n",
     ),
     mutant(
         "with a real engine: a link that leads out of the directory is given to the engine as a source",
         DOCKER,
-        "        for _, _, real in led:\n",
-        "        for name, _, real in led:\n",
+        "            if cwd in real.parents:\n"
+        "                first = cwd / real.relative_to(cwd).parts[0]\n",
+        "            if True:\n                first = cwd / entry.name\n",
+    ),
+    mutant(
+        "with a real engine: only what a link names is read-only, and not the way there",
+        DOCKER,
+        "                first = cwd / real.relative_to(cwd).parts[0]\n",
+        "                first = real\n",
         (
-            "            elif cwd in real.parents and (real.is_dir() or real.is_file()):\n"
-            '                over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real\n',
-            "            elif real.is_dir() or real.is_file():\n"
-            '                over[f"{target}/{name}"] = cwd / name\n',
+            '    over = {f"{target}/{one.cover.name}": one.cover for one in led if one.cover is not None}\n',
+            "    over = {\n"
+            '        f"{target}/{one.cover.relative_to(cwd).as_posix()}": one.cover\n'
+            "        for one in led\n"
+            "        if one.cover is not None\n"
+            "    }\n",
         ),
     ),
     mutant(

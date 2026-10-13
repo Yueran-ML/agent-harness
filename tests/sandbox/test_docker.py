@@ -459,6 +459,27 @@ if sys.platform != "win32":
         assert docker.shape(work) == ((".git", "other"),)
         assert docker.mounts("workspace-write", work, "/workspace") == [bind(work, "/workspace")]
 
+    def test_a_working_directory_with_a_line_break_in_its_name_gets_no_container(
+        root: Path,
+    ) -> None:
+        work = root / "a\r\nb"
+        work.mkdir()
+
+        with pytest.raises(SandboxUnavailableError, match="has a line break in it"):
+            docker.mounts("workspace-write", work, work.as_posix())
+
+    def test_a_way_to_what_is_protected_with_a_line_break_in_it_gets_no_container(
+        work: Path,
+    ) -> None:
+        # Mounted as it would be read, a harmless directory beside it would be read-only
+        # and what the link names would not.
+        (work / "me\r\nta" / "git").mkdir(parents=True)
+        (work / "me\nta").mkdir()
+        (work / ".git").symlink_to(work / "me\r\nta" / "git")
+
+        with pytest.raises(SandboxUnavailableError, match="has a line break in it"):
+            docker.mounts("workspace-write", work, "/workspace")
+
 
 # The engine
 
@@ -639,6 +660,119 @@ def test_a_protected_name_that_leads_elsewhere_in_the_directory_protects_that_pl
     ]
 
 
+def test_a_protected_name_that_leads_below_another_directory_protects_the_first_one_on_the_way(
+    work: Path,
+) -> None:
+    (work / "meta" / "git" / "hooks").mkdir(parents=True)
+    link_directory(work / ".git", work / "meta" / "git")
+
+    # With only what the link names read-only, a command could move `meta` aside and make
+    # another one. The link would name what the command put there.
+    assert docker.mounts("workspace-write", work, "/workspace") == [
+        bind(work, "/workspace"),
+        bind(work / "meta", "/workspace/meta", "readonly"),
+    ]
+
+
+def test_a_protected_name_that_leads_to_nothing_yet_protects_the_way_there(work: Path) -> None:
+    (work / "meta" / "git").mkdir(parents=True)
+    link_directory(work / ".git", work / "meta" / "git")
+    (work / "meta" / "git").rmdir()
+
+    # Or a command would make what the link names.
+    assert docker.mounts("workspace-write", work, "/workspace") == [
+        bind(work, "/workspace"),
+        bind(work / "meta", "/workspace/meta", "readonly"),
+    ]
+
+
+def unseen(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
+    """Have the system refuse to look at whatever goes by one of some names.
+
+    Windows does that with a link that a command made in a container. It answers with an
+    error that is none of those for a thing that is not there.
+    """
+    looked = Path.stat
+
+    def refuses(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if self.name in names:
+            raise OSError(22, "the system cannot look at this file")
+        return looked(self, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", refuses)
+
+
+def test_a_protected_name_that_cannot_be_looked_at_makes_the_whole_directory_read_only(
+    work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Whatever it is or leads to: it cannot be told, so it cannot be mounted over.
+    (work / ".git").mkdir()
+    unseen(monkeypatch, ".git")
+
+    assert docker.shape(work) == ((".git", "unknown"),)
+    assert docker.mounts("workspace-write", work, "/workspace") == [
+        bind(work, "/workspace", "readonly")
+    ]
+    assert docker.mounts("danger-full-access", work, "/workspace") == [bind(work, "/workspace")]
+
+
+def test_a_way_to_what_is_protected_that_cannot_be_looked_at_makes_the_whole_read_only(
+    work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (work / "meta" / "git").mkdir(parents=True)
+    link_directory(work / ".git", work / "meta" / "git")
+    unseen(monkeypatch, "meta")
+
+    assert docker.mounts("workspace-write", work, "/workspace") == [
+        bind(work, "/workspace", "readonly")
+    ]
+
+
+def test_what_cannot_be_looked_at_below_a_directory_that_is_protected_changes_nothing(
+    work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (work / "meta" / "git").mkdir(parents=True)
+    link_directory(work / ".git", work / "meta" / "git")
+    unseen(monkeypatch, "git")
+
+    assert docker.shape(work) == ((".git", f"link to unknown {work / 'meta' / 'git'}"),)
+    assert docker.mounts("workspace-write", work, "/workspace") == [
+        bind(work, "/workspace"),
+        bind(work / "meta", "/workspace/meta", "readonly"),
+    ]
+
+
+def test_a_protected_name_that_leads_out_of_the_directory_to_what_cannot_be_looked_at_is_nothing(
+    work: Path, root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (root / "elsewhere").mkdir()
+    link_directory(work / ".git", root / "elsewhere")
+    unseen(monkeypatch, "elsewhere")
+
+    assert docker.mounts("workspace-write", work, "/workspace") == [bind(work, "/workspace")]
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"])
+def test_a_path_with_a_line_break_in_it_is_not_given_to_docker(ending: str) -> None:
+    # Docker reads the fields of a mount the way a line of CSV is read, and that takes the
+    # two characters at the end of a line of Windows for one, also between quotes. So the
+    # mount would be of another path than the one that was written.
+    laid: Any = vars(docker)["_laid"]
+    broken = Path(f"/work/a{ending}b")
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        laid("workspace-write", broken, "/workspace", [])
+
+    assert str(refused.value) == (
+        f"the path {str(broken)!r} has a line break in it, and Docker does not read such a path "
+        "the way it is written. No container is made"
+    )
+    with pytest.raises(SandboxUnavailableError, match="has a line break in it"):
+        laid("workspace-write", Path("/work"), f"/work/a{ending}b", [])
+    with pytest.raises(SandboxUnavailableError, match="has a line break in it"):
+        docker.kept("docker", DockerConfig(), "name", [], broken)
+
+
 def test_a_protected_name_that_leads_out_of_the_directory_brings_nothing_in(
     work: Path, root: Path
 ) -> None:
@@ -738,7 +872,7 @@ def test_the_shape_says_what_each_protected_name_is(work: Path, root: Path) -> N
 
     assert docker.shape(work) == (
         (".columbina", "file"),
-        (".git", f"link to {root / 'elsewhere'}"),
+        (".git", f"link to directory {root / 'elsewhere'}"),
     )
 
 
@@ -758,7 +892,7 @@ def test_a_directory_put_in_the_place_of_a_link_changes_the_shape(work: Path) ->
     unlink_directory(work / ".git")
     (work / ".git").mkdir()
 
-    assert before == ((".git", f"link to {work / 'kept'}"),)
+    assert before == ((".git", f"link to directory {work / 'kept'}"),)
     assert docker.shape(work) == ((".git", "directory"),)
 
 
@@ -785,7 +919,20 @@ def test_a_link_that_leads_to_nothing_is_still_told_as_a_link(work: Path) -> Non
     link_directory(work / ".git", work / "gone")
     (work / "gone").rmdir()
 
-    assert docker.shape(work) == ((".git", f"link to {work / 'gone'}"),)
+    assert docker.shape(work) == ((".git", f"link to nothing {work / 'gone'}"),)
+
+
+def test_what_a_link_leads_to_coming_to_be_changes_the_shape(work: Path) -> None:
+    # The link is the same and names the same place, and yet a command made what it names.
+    (work / "gone").mkdir()
+    link_directory(work / ".git", work / "gone")
+    (work / "gone").rmdir()
+    before = docker.shape(work)
+
+    (work / "gone").mkdir()
+
+    assert docker.shape(work) == ((".git", f"link to directory {work / 'gone'}"),)
+    assert docker.shape(work) != before
 
 
 # Doors that a mount leaves open

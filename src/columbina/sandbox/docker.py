@@ -504,39 +504,92 @@ def user_of_commands(platform: str, uid: int, gid: int) -> str:
     return f"{uid}:{gid}"
 
 
-def _led(cwd: Path) -> list[tuple[str, str, Path]]:
-    """Return each protected name at the top of a directory, what it is, and where it leads."""
-    names: list[tuple[str, str, Path]] = []
+@dataclass(frozen=True, slots=True)
+class _Protected:
+    """A protected name at the top of a directory, from one look at the disk.
+
+    Attributes:
+        name: The name, as it is written there.
+        kind: What it is, in words that are compared and not shown.
+        cover: What is mounted read-only for it, if anything: the name
+            itself, or the first directory below the working directory on
+            the way to what a link names.
+        whole: Whether the directory has to be read-only as a whole for it.
+    """
+
+    name: str
+    kind: str
+    cover: Path | None
+    whole: bool
+
+
+def _what(path: Path) -> str:
+    """Say in a word what lies at a path.
+
+    ``unknown`` is what the system will not look at. Windows answers so for
+    a link that a command made in a container, with an error that is none
+    of those for a thing that is not there.
+    """
+    try:
+        mode = path.stat().st_mode
+    except (FileNotFoundError, NotADirectoryError):
+        return "nothing"
+    except OSError:
+        return "unknown"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    return "file" if stat.S_ISREG(mode) else "other"
+
+
+def _led(cwd: Path) -> list[_Protected]:
+    """Return the protected names at the top of a directory, and what each of them asks for.
+
+    A name that is a link protects what it leads to, as far as that lies in
+    the directory. What is mounted read-only for it is the first directory
+    on the way there. With only the end of the way read-only, a command
+    could move a directory above it aside and make another one, and the link
+    would name whatever the command put there. What is mounted cannot be
+    moved aside.
+    """
+    names: list[_Protected] = []
     with os.scandir(cwd) as entries:
         for entry in entries:
             # The disk may not tell upper case from lower, so neither does this.
             if entry.name.casefold() not in PROTECTED:
                 continue
             real = Path(os.path.realpath(entry.path))
-            if real != cwd / entry.name:
-                kind = f"link to {real}"
-            else:
-                kind = "directory" if real.is_dir() else "file" if real.is_file() else "other"
-            names.append((entry.name, kind, real))
-    return sorted(names)
+            what = _what(real)
+            kind = what if real == cwd / entry.name else f"link to {what} {real}"
+            cover, whole = None, real == cwd
+            if cwd in real.parents:
+                first = cwd / real.relative_to(cwd).parts[0]
+                there = what if first == real else _what(first)
+                if there in ("directory", "file"):
+                    cover = first
+                # What cannot be looked at cannot be mounted over, and may lead anywhere.
+                whole = there == "unknown"
+            names.append(_Protected(entry.name, kind, cover, whole))
+    return sorted(names, key=lambda one: one.name)
 
 
 def shape(cwd: Path) -> tuple[tuple[str, str], ...]:
     """Return what the protected names at the top of a directory are.
 
     A container is made for the shape that it finds. A command may give the
-    directory another one: it can make a ``.git`` where there was none, and
-    it can put a directory in the place of a link. Whoever keeps a container
-    compares the shape after a command with the one before it.
+    directory another one: it can make a ``.git`` where there was none, it
+    can put a directory in the place of a link, and it can make what a link
+    names and nothing was. Whoever keeps a container compares the shape
+    after a command with the one before it.
 
     Args:
         cwd: The directory, with every link on its path resolved.
 
     Returns:
         Each such name as it is written there, and what it is: a directory,
-        a file, a link and where it leads, or none of these.
+        a file, a link with what it leads to and where, something else, or
+        something that the system will not look at.
     """
-    return tuple((name, kind) for name, kind, _ in _led(cwd))
+    return tuple((one.name, one.kind) for one in _led(cwd))
 
 
 def quoted(field: str) -> str:
@@ -552,6 +605,20 @@ def quoted(field: str) -> str:
 
 
 def _mount(source: Path, target: str, *, readonly: bool) -> str:
+    """Return one mount, the way ``docker`` takes it.
+
+    Raises:
+        SandboxUnavailableError: A path has a line break in it. Docker reads
+            the fields the way a line of CSV is read, and that takes the two
+            characters at the end of a line of Windows for one, also between
+            quotes: the mount would be of another path than the one written.
+    """
+    for written in (str(source), target):
+        if "\r" in written or "\n" in written:
+            raise SandboxUnavailableError(
+                f"the path {written!r} has a line break in it, and Docker does not read such "
+                "a path the way it is written. No container is made"
+            )
     fields = ["type=bind", quoted(f"source={source}"), quoted(f"target={target}")]
     if readonly:
         fields.append("readonly")
@@ -571,15 +638,18 @@ def mounts(mode: Mode, cwd: Path, target: str) -> list[str]:
 
     Returns:
         The working directory first. In ``workspace-write`` mode, what the
-        protected names at its top are or lead to, read-only, as far as it
-        lies in the working directory.
+        protected names at its top are, read-only, and for a name that is a
+        link the first directory on the way to what it names, as far as
+        that lies in the working directory.
+
+    Raises:
+        SandboxUnavailableError: A path that would be mounted has a line
+            break in it.
     """
     return _laid(mode, cwd, target, _led(cwd))[1]
 
 
-def _laid(
-    mode: Mode, cwd: Path, target: str, led: Sequence[tuple[str, str, Path]]
-) -> tuple[bool, list[str]]:
+def _laid(mode: Mode, cwd: Path, target: str, led: Sequence[_Protected]) -> tuple[bool, list[str]]:
     """Return whether a container gets a directory read-only as a whole, and its mounts.
 
     Args:
@@ -592,19 +662,14 @@ def _laid(
         return False, [_mount(cwd, target, readonly=False)]
     # A session that was started inside a protected directory writes nothing there either.
     whole = mode == "read-only" or any(part.casefold() in PROTECTED for part in cwd.parts)
-    over: dict[str, Path] = {}
-    if not whole:
-        for _, _, real in led:
-            if real == cwd:
-                # A protected name that leads to the directory itself protects all of it.
-                whole = True
-            elif cwd in real.parents and (real.is_dir() or real.is_file()):
-                over[f"{target}/{real.relative_to(cwd).as_posix()}"] = real
-    if whole:
+    # A protected name that leads to the directory itself protects all of it, and so does
+    # one of which it cannot be told what it protects.
+    if whole or any(one.whole for one in led):
         return True, [_mount(cwd, target, readonly=True)]
+    over = {f"{target}/{one.cover.name}": one.cover for one in led if one.cover is not None}
     return False, [
         _mount(cwd, target, readonly=False),
-        *(_mount(real, inside, readonly=True) for inside, real in sorted(over.items())),
+        *(_mount(source, inside, readonly=True) for inside, source in sorted(over.items())),
     ]
 
 
@@ -721,7 +786,7 @@ def _layout(mode: Mode, cwd: Path, target: str) -> _Layout:
         raise SandboxUnavailableError(f"the working directory {cwd} is not there")
     led = _led(cwd)
     read_only, mounted = _laid(mode, cwd, target, led)
-    told = tuple((name, kind) for name, kind, _ in led) if mode == "workspace-write" else None
+    told = tuple((one.name, one.kind) for one in led) if mode == "workspace-write" else None
     doubt = _doubt(cwd)
     probe = Path(tempfile.mkdtemp(prefix="columbina-probe-"))
     token = secrets.token_hex(16)

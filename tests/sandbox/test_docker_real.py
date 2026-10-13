@@ -421,6 +421,32 @@ async def test_what_a_protected_name_leads_to_in_the_directory_cannot_be_written
     assert list((work / "kept").iterdir()) == []
 
 
+async def test_the_way_to_what_a_protected_name_leads_to_cannot_be_moved_aside(
+    says: Says, work: Path
+) -> None:
+    # With only the end of the way read-only, a command could move the directory above it
+    # aside and make another one, and the link would name what the command put there.
+    (work / "meta" / "git").mkdir(parents=True)
+    (work / "meta" / "git" / "config").write_text("[core]\n")
+    link_directory(work / ".git", work / "meta" / "git")
+
+    wrote = await says(
+        "mv meta old; echo $?; mkdir -p meta/git/hooks; echo $?; echo x > meta/git/config; "
+        "echo $?; echo fine > beside.txt && cat beside.txt"
+    )
+
+    assert [line for line in wrote.splitlines() if line.isdigit()] == ["1", "1", "1"]
+    assert wrote.splitlines()[-1] == "fine"
+    assert sorted(path.name for path in work.iterdir()) == [
+        ".git",
+        "beside.txt",
+        "meta",
+        "notes.txt",
+    ]
+    assert (work / "meta" / "git" / "config").read_text() == "[core]\n"
+    assert [path.name for path in (work / "meta" / "git").iterdir()] == ["config"]
+
+
 async def test_a_command_that_makes_a_protected_name_cannot_write_it_from_the_next_command_on(
     provider: Docker, session: Session, work: Path
 ) -> None:

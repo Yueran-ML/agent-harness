@@ -24,7 +24,12 @@ from support.loop import Harness
 # Tests that draw their cases at random find more over time, because every run draws others.
 # Whoever needs the same answer from every run asks for the same cases: the check of the
 # mutants does, since a fault that is found in one run and missed in the next says nothing.
-settings.register_profile("steady", derandomize=True)
+#
+# No case is held to a time of its own. How long one case takes says how fast the machine
+# is, and a machine of the CI has taken many times as long as the one that the tests were
+# written on. A test that does not end is ended by the limit that every test has.
+settings.register_profile("default", deadline=None)
+settings.register_profile("steady", derandomize=True, deadline=None)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 # How long the end of a test may take. Ending takes a moment at most.

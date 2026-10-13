@@ -62,7 +62,7 @@ async def test_after_so_many_attempts_the_failure_stands(harness: Harness) -> No
     assert len(attempts) == 3
     assert [(retry.attempt, retry.delay_ms) for retry in retries(agent.session)] == [(1, 1), (2, 2)]
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="SERVER: overloaded"
+        turn=1, reason="error", detail="SERVER: overloaded", code="SERVER"
     )
     assert harness.model.remaining == 1
 
@@ -79,7 +79,7 @@ async def test_a_failure_that_will_not_pass_is_not_tried_again(harness: Harness,
 
     assert retries(agent.session) == []
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail=f"{code}: no"
+        turn=1, reason="error", detail=f"{code}: no", code=code
     )
 
 
@@ -110,7 +110,7 @@ async def test_which_failures_are_tried_again_can_be_configured(harness: Harness
 
     assert [retry.code for retry in retries(agent.session)] == ["FLAKY"]
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="SERVER: overloaded"
+        turn=1, reason="error", detail="SERVER: overloaded", code="SERVER"
     )
 
 

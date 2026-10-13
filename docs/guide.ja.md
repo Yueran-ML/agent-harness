@@ -171,7 +171,7 @@ $ uv run columbina run "What is the codename of release 0.1? ..." --session-id d
 {"type": "tool_result", "id": "call_00_plQNpwHHD4aAtGs8H6551554", "text": "     1\tRelease notes\n     2\t=============\n     3\t\n     4\tThe codename of release 0.1 is \"Halyard\".\n     5\tIt ships the kernel and the agent loop.", "error": null}
 {"type": "status", "turn": 1, "step": 2}
 {"type": "text", "text": "Halyard"}
-{"type": "final", "reason": "completed", "detail": null, "text": "Halyard", "calls": 2, "usage": {"input_tokens": 689, "output_tokens": 49, "cache_read_tokens": 384, "cache_write_tokens": 0}}
+{"type": "final", "reason": "completed", "detail": null, "code": null, "text": "Halyard", "calls": 2, "usage": {"input_tokens": 689, "output_tokens": 49, "cache_read_tokens": 384, "cache_write_tokens": 0}}
 ```
 
 これらは `deepseek-flash` を使った実際の実行で出力された行で、作業ディレクトリは短く書き換えてあります。この実行が残したセッションは `tests/fixtures/recorded/deepseek-read` に保存されており、テストがサービスなしでそれを再生します。

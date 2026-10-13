@@ -100,7 +100,7 @@ async def test_a_turn_can_be_stopped_between_two_steps(harness: Harness) -> None
 
     async def one_step(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
         if info.step > 1:
-            return Reject(reason="one step is enough")
+            return Reject(reason="one step is enough", code="ONE_STEP")
         return await proceed(info)
 
     agent.ctx.on(PRE_STEP, one_step)
@@ -110,7 +110,11 @@ async def test_a_turn_can_be_stopped_between_two_steps(harness: Harness) -> None
 
     assert types(agent.session)[-3:] == ["tool/result", "step/end", "turn/end"]
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="blocked", detail="one step is enough"
+        # The code is whatever word the one that refused chose for its reason.
+        turn=1,
+        reason="blocked",
+        detail="one step is enough",
+        code="ONE_STEP",
     )
     assert len(harness.model.requests) == 1
 
@@ -195,7 +199,7 @@ async def test_a_listener_decides_when_to_stop_trying(harness: Harness) -> None:
     attempts = [e for e in agent.session.events if isinstance(e.data, AssistantAttemptEvent)]
     assert len(attempts) == 3
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="SERVER: overloaded"
+        turn=1, reason="error", detail="SERVER: overloaded", code="SERVER"
     )
     assert harness.model.remaining == 1
     assert GiveUp() == GiveUp()
@@ -327,7 +331,7 @@ async def test_a_listener_that_fails_ends_the_turn_with_an_error(
     await idle(agent)
 
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="RuntimeError: listener bug"
+        turn=1, reason="error", detail="RuntimeError: listener bug", code="EXCEPTION"
     )
     assert types(agent.session).count("step/start") == types(agent.session).count("step/end")
 
@@ -385,6 +389,7 @@ async def test_a_listener_that_raises_a_cancellation_of_its_own_ends_the_turn_wi
         reason="error",
         detail=f"CancelledFromInside: a listener of agent/{point} "
         "ended with a cancellation that nobody asked for",
+        code="EXCEPTION",
     )
     assert types(agent.session).count("step/start") == types(agent.session).count("step/end")
 
@@ -467,9 +472,52 @@ async def test_a_listener_that_gives_no_answer_before_a_step_keeps_the_step_from
     await idle(agent)
 
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="blocked", detail="a listener of agent/pre-step gave no decision"
+        turn=1,
+        reason="blocked",
+        detail="a listener of agent/pre-step gave no decision",
+        code="NO_DECISION",
     )
     assert harness.model.requests == []
+
+
+@pytest.mark.parametrize(
+    ("refusal", "told"),
+    [
+        (
+            Reject(reason="no more steps", code=42),  # type: ignore[arg-type]
+            "a listener of agent/pre-step refused a step with a code that is no text: 42",
+        ),
+        (
+            Reject(reason=["no", "more"]),  # type: ignore[arg-type]
+            "a listener of agent/pre-step refused a step with a reason that is no text: "
+            "['no', 'more']",
+        ),
+    ],
+)
+async def test_a_refusal_that_is_not_made_of_text_ends_the_turn_with_an_error(
+    harness: Harness, refusal: Reject, told: str
+) -> None:
+    agent = await harness.agent(Reply(text="Done."))
+    answers = [refusal]
+
+    async def careless(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        return answers.pop() if answers else await proceed(info)
+
+    agent.ctx.on(PRE_STEP, careless)
+    agent.followup("Do it.")
+    await idle(agent)
+
+    # What a listener answers goes into the log, and the log takes text. The mistake ends
+    # the turn as any mistake of a listener does, and the end of the turn is written down.
+    assert agent.session.events[-1].data == TurnEndEvent(
+        turn=1, reason="error", detail=f"TypeError: {told}", code="EXCEPTION"
+    )
+    assert harness.model.requests == []
+    # The agent is still there for the next turn.
+    agent.followup("Again.")
+    await idle(agent)
+    assert agent.session.events[-1].data == TurnEndEvent(turn=2, reason="completed")
+    assert agent.session.messages[-1] == assistant("Done.")
 
 
 async def test_a_listener_that_gives_no_answer_to_a_failure_lets_the_failure_stand(
@@ -487,6 +535,6 @@ async def test_a_listener_that_gives_no_answer_to_a_failure_lets_the_failure_sta
     await idle(agent)
 
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="SERVER: overloaded"
+        turn=1, reason="error", detail="SERVER: overloaded", code="SERVER"
     )
     assert len(harness.model.requests) == 1

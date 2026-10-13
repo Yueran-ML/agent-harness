@@ -366,11 +366,17 @@ export function classifyTool(item: ToolItem): ToolOutcome {
 // ---------------------------------------------------------------------------
 // A turn
 
+/** What a turn has a budget of. */
+type Limited = 'steps' | 'tokens' | 'time';
+
 export type TurnEnding =
   | { kind: 'completed' }
   | { kind: 'stopped'; by: 'you' | 'parent' | 'hook' | 'budget' | 'closing' | 'unknown' }
-  /** The turn reached what it may take at most. `limit` is steps, tokens or seconds. */
-  | { kind: 'limit'; of: 'steps' | 'tokens' | 'time'; limit: number }
+  /**
+   * The turn reached what it may take at most. `limit` is steps, tokens or
+   * seconds, or null where the log names the limit and does not say how much it was.
+   */
+  | { kind: 'limit'; of: Limited; limit: number | null }
   /** A hook of the user stopped what the user said. `said` is the reason that the hook gave. */
   | { kind: 'inputStopped'; said: string }
   | { kind: 'blocked' }
@@ -403,29 +409,65 @@ const STOPPED_BY: Record<string, 'you' | 'parent' | 'hook' | 'budget' | 'closing
   disposed: 'closing',
 };
 
+/** The limits of the budget of a turn, by the codes that it ends a turn with (`guard/budget.py`). */
+const LIMIT_CODES: Record<string, Limited> = {
+  STEP_BUDGET: 'steps',
+  TOKEN_BUDGET: 'tokens',
+  TIME_BUDGET: 'time',
+};
+
+/** The code of a turn that a hook of the user kept from beginning (`hooks/__init__.py`). */
+const STOPPED_BY_A_HOOK = 'HOOK';
+
+/** The code of a turn that ended with an error of the program, and not of a model (`agent/events.py`). */
+const EXCEPTION = 'EXCEPTION';
+
+// The sentences of the budget of a turn, word for word. Each says how much the limit was.
+const LIMIT_SENTENCES: [of: Limited, said: RegExp][] = [
+  ['steps', /^the turn has taken its (\d+) steps?$/],
+  ['tokens', /^the turn has used \d+ tokens, and it has (\d+)$/],
+  ['time', /^the turn has run for \d+ seconds, and it has ([\d.e+]+)$/],
+];
+
+// The words that the program puts before what a hook said.
+const HOOK_SENTENCE = /^a hook stopped the input: ([\s\S]*)$/;
+
+/** Read out of a sentence of the budget which limit it speaks of and how much that was. */
+function limitSaid(sentence: string): { of: Limited; limit: number } | null {
+  for (const [of, said] of LIMIT_SENTENCES) {
+    const limit = Number(said.exec(sentence)?.[1]);
+    if (Number.isFinite(limit)) return { of, limit };
+  }
+  return null;
+}
+
 /**
  * Say why a turn was not let go on.
  *
- * A turn ends as `blocked` when something refuses its next step, and the
- * detail is the sentence of whoever refused. There is no code. The sentences
- * of the budget of a turn (`guard/budget.py`) and of a hook that stops an
- * input (`hooks/__init__.py`) are known here word for word. Any other
- * sentence, and any of these once it is worded differently, is `blocked`
- * and no more.
+ * A turn ends as `blocked` when something refuses its next step. Whoever
+ * refused gives a code and a sentence. The code says who it was. Out of the
+ * sentence comes only what the code cannot say: how much a limit was, and
+ * what a hook gave as its reason. So a sentence that is worded anew one day
+ * costs a number, and not what is said of the end. A code that is not known
+ * here, of a plugin for instance, is `blocked` and no more, whatever its
+ * sentence looks like.
+ *
+ * A log that was written before ends had a code has only the sentence. There
+ * the sentences of the budget and of the hooks are known word for word, and
+ * any other sentence is `blocked` and no more.
  */
-function blockedBy(detail: string | null): TurnEnding {
+function blockedBy(detail: string | null, code: string | null): TurnEnding {
   const sentence = detail ?? '';
-  const limits: [of: 'steps' | 'tokens' | 'time', said: RegExp][] = [
-    ['steps', /^the turn has taken its (\d+) steps?$/],
-    ['tokens', /^the turn has used \d+ tokens, and it has (\d+)$/],
-    ['time', /^the turn has run for \d+ seconds, and it has ([\d.e+]+)$/],
-  ];
-  for (const [of, said] of limits) {
-    const limit = Number(said.exec(sentence)?.[1]);
-    if (Number.isFinite(limit)) return { kind: 'limit', of, limit };
+  const limit = limitSaid(sentence);
+  const hook = HOOK_SENTENCE.exec(sentence);
+  if (code === null) {
+    if (limit) return { kind: 'limit', ...limit };
+    if (hook) return { kind: 'inputStopped', said: hook[1] };
+    return { kind: 'blocked' };
   }
-  const hook = /^a hook stopped the input: ([\s\S]*)$/.exec(sentence);
-  if (hook) return { kind: 'inputStopped', said: hook[1] };
+  const of = lookup(LIMIT_CODES, code);
+  if (of) return { kind: 'limit', of, limit: limit?.of === of ? limit.limit : null };
+  if (code === STOPPED_BY_A_HOOK) return { kind: 'inputStopped', said: hook ? hook[1] : sentence };
   return { kind: 'blocked' };
 }
 
@@ -437,13 +479,20 @@ function blockedBy(detail: string | null): TurnEnding {
  *   failure: The request that failed last in the turn, if the caller has it.
  *     A turn that ends with an error names the code and the message of that
  *     request in its detail. The failure itself says more.
+ *   code: As `turn/end` has it: null where the end has none, and in a log
+ *     that was written before ends had a code.
  */
 export function classifyTurnEnd(
   reason: string,
   detail: string | null,
   failure: FailureGiven | null = null,
+  code: string | null = null,
 ): TurnOutcome {
   const tell = (ending: TurnEnding, next: ActionKey = 'none'): TurnOutcome => ({ ...ending, next, reason, detail });
+  const modelFailed = (of: string, message: string): TurnOutcome => {
+    const classified = classifyModelFailure(failure?.code === of ? failure : { code: of, message });
+    return tell({ kind: 'modelFailed', failure: classified }, classified.next);
+  };
 
   switch (reason) {
     case 'completed':
@@ -451,16 +500,21 @@ export function classifyTurnEnd(
     case 'aborted':
       return tell({ kind: 'stopped', by: lookup(STOPPED_BY, detail ?? '') ?? 'unknown' });
     case 'blocked':
-      return tell(blockedBy(detail));
+      return tell(blockedBy(detail, code));
     case 'error': {
-      // A request that failed for good ends the turn with "CODE: message". Anything
-      // else that fails ends it with the name of a Python exception, which is not
-      // written in capitals throughout (`agent_loop/loop.py`).
-      const request = /^([A-Z][A-Z0-9_]*): ([\s\S]*)$/.exec(detail ?? '');
-      if (!request) return tell({ kind: 'crashed' }, 'retry');
-      const [, code, message] = request;
-      const classified = classifyModelFailure(failure?.code === code ? failure : { code, message });
-      return tell({ kind: 'modelFailed', failure: classified }, classified.next);
+      const said = detail ?? '';
+      if (code === null) {
+        // Without a code the sentence has to tell the two apart. A request that failed
+        // for good ends the turn with "CODE: message". Anything else that fails ends it
+        // with the name of a Python exception, which is not written in capitals
+        // throughout (`agent_loop/loop.py`).
+        const request = /^([A-Z][A-Z0-9_]*): ([\s\S]*)$/.exec(said);
+        return request ? modelFailed(request[1], request[2]) : tell({ kind: 'crashed' }, 'retry');
+      }
+      if (code === EXCEPTION) return tell({ kind: 'crashed' }, 'retry');
+      // The code is that of the request. The message is the detail without the code before it.
+      const before = `${code}: `;
+      return modelFailed(code, said.startsWith(before) ? said.slice(before.length) : said);
     }
     case 'max-tokens':
       return tell({ kind: 'outputLimit' });
@@ -476,7 +530,7 @@ export function classifyTurnEnd(
 /** Say how a turn ended, or null while it runs or where the log does not hold its end. */
 export function turnOutcome(turn: Turn): TurnOutcome | null {
   if (turn.end === null) return null;
-  return classifyTurnEnd(turn.end.reason, turn.end.detail, lastFailure(turn));
+  return classifyTurnEnd(turn.end.reason, turn.end.detail, lastFailure(turn), turn.end.code);
 }
 
 // The request that failed last in a turn. A turn that ends with an error ends right after it.

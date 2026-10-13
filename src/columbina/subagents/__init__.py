@@ -156,6 +156,8 @@ class SubagentEndedEvent(EventData):
             ``unknown`` if nobody can say.
         detail: More about the reason, as its own log has it.
         steps: How many steps its turn took.
+        code: The code with which its turn ended, as its own log has it. A
+            turn that ended in a way that has no code has none here.
     """
 
     event_type: ClassVar[str] = "subagent/ended"
@@ -166,6 +168,7 @@ class SubagentEndedEvent(EventData):
     reason: str
     detail: str | None
     steps: int
+    code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +217,7 @@ class Outcome:
             nothing if it said nothing.
         steps: How many steps the turn took.
         usage: What the subagent cost.
+        code: The code of the end of the turn, for a program, if it has one.
     """
 
     reason: TurnEndReason | None
@@ -221,6 +225,7 @@ class Outcome:
     text: str
     steps: int
     usage: Usage
+    code: str | None = None
 
 
 class Child(Protocol):
@@ -551,6 +556,7 @@ def _record(parent: Agent, task: Task, session_id: str, outcome: Outcome | None)
             reason="unknown" if outcome is None or outcome.reason is None else outcome.reason,
             detail=None if outcome is None else outcome.detail,
             steps=0 if outcome is None else outcome.steps,
+            code=None if outcome is None else outcome.code,
         ),
     )
     if outcome is not None and outcome.usage != Usage():

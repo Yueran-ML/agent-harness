@@ -219,7 +219,7 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 | 事件 | 载荷要点 | 进入模型历史 |
 |---|---|---|
-| `turn/start`、`turn/end` | 回合号；`turn/end` 带 `reason` 和可选 `detail` | 否 |
+| `turn/start`、`turn/end` | 回合号；`turn/end` 带 `reason`、可选的 `detail` 和可选的 `code` | 否 |
 | `step/start`、`step/end` | 回合号、步号 | 否 |
 | `system/message` | 渲染后的系统提示，消息面的第 0 个节点 | 是 |
 | `user/message` | 人的输入、注入的上下文、压缩摘要，靠 `source` 区分 | 是 |
@@ -233,7 +233,9 @@ tests/   benchmarks/   docs/   examples/plugins/
 
 `turn/end.reason` 取值：`completed`、`aborted`、`blocked`、`error`、`max-tokens`、`interrupted`、`forked`。后两个只由崩溃修复和分叉合成。
 
-插件用自己的命名空间追加事件：`agent/inbox/spliced`、`approval/asked`、`approval/decided`、`sandbox/mode`、`approval/policy`、`compaction/start`、`compaction/summary`、`compaction/end`、`todo/write`、`llm/retry`、`hook/invoked`、`hook/result`、`subagent/start`、`subagent/end`。
+`detail` 是给人看的一句话，`code` 是给程序看的代码，界面和基准按代码分类，不去匹配那句话。只有两种原因带代码。`blocked` 时代码说明是谁不让回合继续：回合预算的三个上限是 `STEP_BUDGET`、`TOKEN_BUDGET`、`TIME_BUDGET`，钩子拦下输入是 `HOOK`，没有监听者作出决定是 `NO_DECISION`。拒绝一步的回答 `Reject` 自己带着代码，别的插件拒绝时给它自己的。`error` 时，请求最终失败的回合带着那次失败的代码，程序自己出错是 `EXCEPTION`。旧日志里没有这个字段，读出来是空。
+
+插件用自己的命名空间追加事件：`agent/inbox/spliced`、`approval/asked`、`approval/decided`、`sandbox/mode`、`approval/policy`、`compaction/start`、`compaction/summary`、`compaction/end`、`todo/write`、`llm/retry`、`hook/invoked`、`hook/result`、`subagent/started`、`subagent/ended`。
 
 ### 5.3 消息面
 
@@ -420,7 +422,7 @@ turn/end{reason}
 
 `agent/pre-step` 和 `agent/request-error` 的监听器必须给出明确的决定。前者只有 `Enter` 才进入下一步，后者只有 `Retry` 才重试，别的返回值一律按拒绝处理。
 
-循环本体不设步数上限。上限由回合预算插件 `columbina.guard.budget` 提供，它在 `base` 清单里。它监听 `agent/pre-step`，检查三项：这个回合已经走了几步，这个回合的请求一共用了多少 token（用量的四项相加），从这个回合第一步被问到起过了多少秒。对应的配置是 `max_steps`、`max_tokens`、`max_seconds`，缺省都是不限。哪一项到限就返回 `reject`，`turn/end` 写成 `blocked`，`detail` 里写明是哪一项和具体的数。回合不会在一步的中间被切断：正在进行的那一步连同它的调用会做完，不再开始的是下一步。
+循环本体不设步数上限。上限由回合预算插件 `columbina.guard.budget` 提供，它在 `base` 清单里。它监听 `agent/pre-step`，检查三项：这个回合已经走了几步，这个回合的请求一共用了多少 token（用量的四项相加），从这个回合第一步被问到起过了多少秒。对应的配置是 `max_steps`、`max_tokens`、`max_seconds`，缺省都是不限。哪一项到限就返回 `reject`，`turn/end` 写成 `blocked`，`detail` 里写明是哪一项和具体的数，`code` 是这一项的代码。回合不会在一步的中间被切断：正在进行的那一步连同它的调用会做完，不再开始的是下一步。
 
 Agent 的规格可以自带 `max_steps`，它优先于清单里的数。子代理就是这样拿到比主对话少的步数的，见 11.3。
 
@@ -755,7 +757,7 @@ Tool(
 - 结果是子代理最后一条非空回复。回合不是以 `completed` 结束，或者结束了却没有文字，都是一条工具错误，写明是怎么结束的。已经写出的文字附在错误里并注明不完整，不把部分输出当成功。
 - 类型用 Markdown 加 frontmatter 定义，放在 `<项目>/.columbina/agents/` 或 `<COLUMBINA_HOME>/agents/`，项目里的优先。可以写 `tools`、`max_steps`、`model`。类型只能把工具和步数收窄。项目里的类型不能选模型：模型花的是用户的钱，而项目是别人写的。
 - 上限：委派深度 1，同时运行 4 个，多出的排队。
-- 父会话里记 `subagent/started` 和 `subagent/ended` 两种事件。子代理的用量以一条 `request/aside` 记进父会话，状态行和合计里有它。
+- 父会话里记 `subagent/started` 和 `subagent/ended` 两种事件。后者带着子代理那个回合结束的原因、说明和代码，读父会话的日志就能给子代理的结束方式分类。子代理的用量以一条 `request/aside` 记进父会话，状态行和合计里有它。
 
 ### 11.4 MCP 客户端
 
@@ -808,7 +810,7 @@ Tool(
 
 ### 12.2 无界面
 
-最终回答写到标准输出。`--json` 输出逐行事件：`session`、`status`、`text`、`thinking`、`tool_call`、`tool_result`、`final`。`final` 带结束原因和用量。`--session-id` 续接已有会话，没有这个会话就用这个 id 新建。
+最终回答写到标准输出。`--json` 输出逐行事件：`session`、`status`、`text`、`thinking`、`tool_call`、`tool_result`、`final`。`final` 带结束原因、代码和用量。`--session-id` 续接已有会话，没有这个会话就用这个 id 新建。
 
 回答是模型写的。输出是终端时，回答里会被终端执行的字符先换掉。输出是文件或管道时回答保持原样。见 9.6 节。
 

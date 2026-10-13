@@ -24,6 +24,8 @@ from columbina.agent.agent import (
 )
 from columbina.agent.context import INTERRUPTION
 from columbina.agent.events import (
+    EXCEPTION,
+    NO_DECISION,
     PRE_STEP,
     REQUEST,
     REQUEST_ERROR,
@@ -64,7 +66,9 @@ __all__ = [
     "AGENTS",
     "CONTEXT_PREFIX",
     "CUT_OFF",
+    "EXCEPTION",
     "INBOX",
+    "NO_DECISION",
     "PRE_STEP",
     "REQUEST",
     "REQUEST_ERROR",

@@ -6,6 +6,8 @@ import type {
 export interface TurnEnd {
   reason: string;
   detail: string | null;
+  /** The code of the end, where the log has one. */
+  code: string | null;
   /** When the turn ended, in milliseconds since 1970. */
   time: number;
   /** The line that the earlier interface shows for this end, if it shows one. */
@@ -137,7 +139,7 @@ function arrange({ turn, items, end }: Gathering): void {
     const last = rest.at(-1);
     const notice = last?.type === 'notice' && last.seq === end.seq ? last : null;
     if (notice) rest = rest.slice(0, -1);
-    turn.end = { reason: end.reason, detail: end.detail, time: end.time, notice };
+    turn.end = { reason: end.reason, detail: end.detail, code: end.code, time: end.time, notice };
   }
 
   // The opening ends where something other than input begins.

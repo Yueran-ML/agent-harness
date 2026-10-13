@@ -6,7 +6,7 @@ import {
 import type { SessionEvent } from '../src/protocol';
 import { projectEvents, type NoticeItem, type ToolItem } from '../src/state';
 import { groupTurns, type Turn } from '../src/turns';
-import { modelFailureCodes, toolCodes, turnEndReasons } from './appendix';
+import { modelFailureCodes, toolCodes, turnBlockedCodes, turnEndReasons } from './appendix';
 import { eventsOf, logs } from './logs';
 
 // A log is written here as a list of events. Each stands where it is listed.
@@ -468,6 +468,84 @@ describe('how a turn ended', () => {
     expect(classifyTurnEnd('paused', 'until tomorrow')).toEqual({
       kind: 'unknown', next: 'none', reason: 'paused', detail: 'until tomorrow',
     });
+    // A code does not make a reason known.
+    expect(classifyTurnEnd('paused', 'until tomorrow', null, 'STEP_BUDGET').kind).toBe('unknown');
+  });
+
+  describe('by the code that the log has with it', () => {
+    it.each(turnBlockedCodes)('knows the code %s of a turn that was not let go on', (code) => {
+      const expected: Record<typeof turnBlockedCodes[number], Record<string, unknown>> = {
+        STEP_BUDGET: { kind: 'limit', of: 'steps', limit: null },
+        TOKEN_BUDGET: { kind: 'limit', of: 'tokens', limit: null },
+        TIME_BUDGET: { kind: 'limit', of: 'time', limit: null },
+        HOOK: { kind: 'inputStopped', said: '' },
+        NO_DECISION: { kind: 'blocked' },
+      };
+      // The sentence is not needed for it, and may be worded anew one day.
+      expect(classifyTurnEnd('blocked', null, null, code)).toEqual({
+        ...expected[code], next: 'none', reason: 'blocked', detail: null,
+      });
+    });
+
+    it('reads out of the sentence how much the limit was, and no more', () => {
+      expect(classifyTurnEnd('blocked', 'the turn has taken its 30 steps', null, 'STEP_BUDGET')).toMatchObject({
+        kind: 'limit', of: 'steps', limit: 30,
+      });
+      expect(classifyTurnEnd('blocked', 'the turn has run for 601 seconds, and it has 600', null, 'TIME_BUDGET'))
+        .toMatchObject({ kind: 'limit', of: 'time', limit: 600 });
+      expect(classifyTurnEnd('blocked', 'no step is left of the 30', null, 'STEP_BUDGET')).toMatchObject({
+        kind: 'limit', of: 'steps', limit: null,
+      });
+      // The number of one limit is not that of another.
+      expect(classifyTurnEnd('blocked', 'the turn has taken its 30 steps', null, 'TOKEN_BUDGET')).toMatchObject({
+        kind: 'limit', of: 'tokens', limit: null,
+      });
+    });
+
+    it('gives what a hook said, without the words that the program puts before it', () => {
+      expect(classifyTurnEnd('blocked', 'a hook stopped the input: no deploys\non a Friday', null, 'HOOK'))
+        .toMatchObject({ kind: 'inputStopped', said: 'no deploys\non a Friday' });
+      // Where those words are others one day, nothing is cut away.
+      expect(classifyTurnEnd('blocked', 'stopped by a hook, which said: no', null, 'HOOK')).toMatchObject({
+        kind: 'inputStopped', said: 'stopped by a hook, which said: no',
+      });
+    });
+
+    it('goes by the code and not by the sentence where the two say different things', () => {
+      // A plugin refuses in the words of the budget, and with a code of its own.
+      expect(classifyTurnEnd('blocked', 'the turn has taken its 30 steps', null, 'ONE_OF_MINE').kind).toBe('blocked');
+      expect(classifyTurnEnd('blocked', 'a hook stopped the input: no', null, 'NO_DECISION').kind).toBe('blocked');
+      // A code such as this one must not find what every object has.
+      expect(classifyTurnEnd('blocked', 'the turn has taken its 30 steps', null, 'toString').kind).toBe('blocked');
+    });
+
+    it('tells a fault of the program from a failure of the model', () => {
+      // The name of an error may be written in capitals throughout. Its code says what it was.
+      expect(classifyTurnEnd('error', 'EOF: the pipe is closed', null, 'EXCEPTION')).toMatchObject({
+        kind: 'crashed', next: 'retry',
+      });
+      expect(classifyTurnEnd('error', 'RATE_LIMIT: Too many requests.', null, 'RATE_LIMIT')).toMatchObject({
+        kind: 'modelFailed', next: 'retry', failure: { kind: 'rateLimit', code: 'RATE_LIMIT', detail: 'Too many requests.' },
+      });
+      // A message that is not written like an error of this program is one of the model all the same.
+      expect(classifyTurnEnd('error', 'the service is down', null, 'SERVER')).toMatchObject({
+        kind: 'modelFailed', failure: { kind: 'server', code: 'SERVER', detail: 'the service is down' },
+      });
+      expect(classifyTurnEnd('error', null, null, 'TIMEOUT')).toMatchObject({
+        kind: 'modelFailed', failure: { kind: 'timeout', detail: null },
+      });
+      expect(classifyTurnEnd('error', 'HTTP_418: teapot', null, 'HTTP_418')).toMatchObject({
+        failure: { kind: 'unknown', detail: 'teapot' },
+      });
+    });
+
+    it('goes by the failure itself where the caller has the one of that code', () => {
+      const failure = { code: 'AUTH', message: 'Incorrect API key provided.', status: 401 };
+      expect(classifyTurnEnd('error', 'AUTH: Incorrect API key provided.', failure, 'AUTH')).toMatchObject({
+        kind: 'modelFailed', failure: { kind: 'keyRefused' }, next: 'openModelSettings',
+      });
+      expect(classifyTurnEnd('error', 'SERVER: down', failure, 'SERVER')).toMatchObject({ failure: { kind: 'server' } });
+    });
   });
 });
 
@@ -490,6 +568,21 @@ describe('the outcome of a turn', () => {
     ));
     expect(turnOutcome(refused)).toMatchObject({ kind: 'modelFailed', failure: { kind: 'keyRefused' } });
     expect(turnOutcome(missing)).toMatchObject({ kind: 'modelFailed', failure: { kind: 'noKey' } });
+  });
+
+  it('goes by the code that the log has with the end of a turn', () => {
+    const [limited, crashed, old] = turnsOf(log(
+      ['turn/start', { turn: 1 }],
+      ['turn/end', { turn: 1, reason: 'blocked', detail: 'no step is left', code: 'STEP_BUDGET' }],
+      ['turn/start', { turn: 2 }],
+      ['turn/end', { turn: 2, reason: 'error', detail: 'EOF: the pipe is closed', code: 'EXCEPTION' }],
+      // A log from before an end had a code: the sentence is all there is.
+      ['turn/start', { turn: 3 }],
+      ['turn/end', { turn: 3, reason: 'blocked', detail: 'the turn has taken its 30 steps' }],
+    ));
+    expect(turnOutcome(limited)).toMatchObject({ kind: 'limit', of: 'steps', limit: null });
+    expect(turnOutcome(crashed)).toMatchObject({ kind: 'crashed' });
+    expect(turnOutcome(old)).toMatchObject({ kind: 'limit', of: 'steps', limit: 30 });
   });
 
   it('reads the turns of the sample', () => {

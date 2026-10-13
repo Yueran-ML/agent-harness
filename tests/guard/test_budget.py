@@ -54,7 +54,12 @@ async def test_a_turn_that_would_take_a_step_too_many_is_ended_before_it(
     await turn(agent)
 
     assert ends(agent) == [
-        TurnEndEvent(turn=1, reason="blocked", detail="the turn has taken its 2 steps")
+        TurnEndEvent(
+            turn=1,
+            reason="blocked",
+            detail="the turn has taken its 2 steps",
+            code="STEP_BUDGET",
+        )
     ]
     # The model was asked twice, and the calls of both replies were carried out.
     assert len(harness.model.requests) == 2
@@ -79,7 +84,12 @@ async def test_one_step_is_a_limit_too(harness: Harness) -> None:
     await turn(agent)
 
     assert ends(agent) == [
-        TurnEndEvent(turn=1, reason="blocked", detail="the turn has taken its 1 step")
+        TurnEndEvent(
+            turn=1,
+            reason="blocked",
+            detail="the turn has taken its 1 step",
+            code="STEP_BUDGET",
+        )
     ]
     assert len(harness.model.requests) == 1
 
@@ -95,7 +105,12 @@ async def test_going_on_from_a_reply_that_was_cut_off_is_a_step_that_counts(
 
     # The loop would take a reply up three times. The budget has room for one.
     assert ends(agent) == [
-        TurnEndEvent(turn=1, reason="blocked", detail="the turn has taken its 2 steps")
+        TurnEndEvent(
+            turn=1,
+            reason="blocked",
+            detail="the turn has taken its 2 steps",
+            code="STEP_BUDGET",
+        )
     ]
     assert len(harness.model.requests) == 2
 
@@ -149,7 +164,10 @@ async def test_a_turn_that_has_used_its_tokens_takes_no_further_step(harness: Ha
     # Six hundred after the first step, twelve hundred after the second: all four counts.
     assert ends(agent) == [
         TurnEndEvent(
-            turn=1, reason="blocked", detail="the turn has used 1200 tokens, and it has 1000"
+            turn=1,
+            reason="blocked",
+            detail="the turn has used 1200 tokens, and it has 1000",
+            code="TOKEN_BUDGET",
         )
     ]
     assert len(harness.model.requests) == 2
@@ -204,7 +222,10 @@ async def test_a_turn_that_has_run_for_its_time_takes_no_further_step(
     # eighty had passed.
     assert ends(agent) == [
         TurnEndEvent(
-            turn=1, reason="blocked", detail="the turn has run for 80 seconds, and it has 60"
+            turn=1,
+            reason="blocked",
+            detail="the turn has run for 80 seconds, and it has 60",
+            code="TIME_BUDGET",
         )
     ]
     assert len(harness.model.requests) == 2

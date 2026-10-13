@@ -109,8 +109,12 @@ export interface TurnRecord {
    * the one that was named last when the turn ended. Null where the log names none.
    */
   provider: string | null;
-  /** Null while the turn runs, and for a turn whose end the log does not hold. */
-  end: { seq: number; time: number; reason: string; detail: string | null } | null;
+  /**
+   * Null while the turn runs, and for a turn whose end the log does not hold.
+   * `code` says for a program what `detail` says in a sentence. An end has none
+   * where its reason needs none, and in a log that was written before ends had one.
+   */
+  end: { seq: number; time: number; reason: string; detail: string | null; code: string | null } | null;
 }
 
 /**
@@ -412,6 +416,7 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
             openTurn.end = {
               seq: event.seq, time: event.time, reason: string(data.reason),
               detail: typeof data.detail === 'string' ? data.detail : null,
+              code: typeof data.code === 'string' ? data.code : null,
             };
           }
           openTurn = null;
@@ -481,7 +486,7 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
     }
     const last = events[events.length - 1];
     if (openTurn && openTurn.number === projection.turn) {
-      openTurn.end = { seq: last.seq, time: last.time, reason: 'interrupted', detail: null };
+      openTurn.end = { seq: last.seq, time: last.time, reason: 'interrupted', detail: null, code: null };
     }
     projection.turn = null;
     projection.step = null;

@@ -614,7 +614,7 @@ async def test_a_turn_that_breaks_ends_with_an_error_and_the_agent_goes_on(
 
     assert types(agent.session)[-3:] == ["step/start", "step/end", "turn/end"]
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="RuntimeError: tools bug"
+        turn=1, reason="error", detail="RuntimeError: tools bug", code="EXCEPTION"
     )
     assert "turn 1 of the agent 's-1' failed" in caplog.text
 

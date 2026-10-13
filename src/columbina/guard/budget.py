@@ -34,9 +34,16 @@ from columbina.kernel import Context, Next
 from columbina.llm import Usage
 from columbina.session import USAGE, Session
 
-__all__ = ["Config", "apply", "name"]
+__all__ = ["STEP_BUDGET", "TIME_BUDGET", "TOKEN_BUDGET", "Config", "apply", "name"]
 
 name = "turn-budget"
+
+STEP_BUDGET = "STEP_BUDGET"
+"""The code of a turn that ended because it had taken its steps."""
+TOKEN_BUDGET = "TOKEN_BUDGET"
+"""The code of a turn that ended because it had used its tokens."""
+TIME_BUDGET = "TIME_BUDGET"
+"""The code of a turn that ended because it had run for its time."""
 
 _now = time.monotonic
 """The clock that the time of a turn is read from."""
@@ -100,11 +107,14 @@ class _Budget:
         over = self._over(info)
         if over is not None:
             # Nobody else is asked about a step that does not begin.
-            return Reject(over)
+            return Reject(*over)
         return await proceed(info)
 
-    def _over(self, info: StepInfo) -> str | None:
-        """Say which limit a step would go over, or ``None`` if it goes over none."""
+    def _over(self, info: StepInfo) -> tuple[str, str] | None:
+        """Say which limit a step would go over, or ``None`` if it goes over none.
+
+        It is said in words for a person and in a code for a program.
+        """
         config = self._config
         session = info.agent.session
         spent = _tokens(USAGE.of(session).usage)
@@ -113,13 +123,14 @@ class _Budget:
             begun = self._begun[session] = _Begun(info.turn, spent, _now())
         steps = info.agent.spec.max_steps or config.max_steps
         if steps is not None and info.step > steps:
-            return f"the turn has taken its {steps} step{'' if steps == 1 else 's'}"
+            return f"the turn has taken its {steps} step{'' if steps == 1 else 's'}", STEP_BUDGET
         used = spent - begun.tokens
         if config.max_tokens is not None and used >= config.max_tokens:
-            return f"the turn has used {used} tokens, and it has {config.max_tokens}"
+            return f"the turn has used {used} tokens, and it has {config.max_tokens}", TOKEN_BUDGET
         passed = _now() - begun.at
         if config.max_seconds is not None and passed >= config.max_seconds:
-            return f"the turn has run for {passed:.0f} seconds, and it has {config.max_seconds:g}"
+            told = f"the turn has run for {passed:.0f} seconds, and it has {config.max_seconds:g}"
+            return told, TIME_BUDGET
         return None
 
 

@@ -34,6 +34,8 @@ REPLAY_ADAPTER = "src/columbina/llm/adapters/replay.py"
 INBOX = "src/columbina/agent/inbox.py"
 AGENT_CONTEXT = "src/columbina/agent/context.py"
 AGENT_PACKAGE = "src/columbina/agent/__init__.py"
+AGENT_EVENTS = "src/columbina/agent/events.py"
+SESSION_EVENTS = "src/columbina/session/events.py"
 CANCELLATION = "src/columbina/cancellation.py"
 READ = "src/columbina/builtin_tools/read.py"
 PROCESS = "src/columbina/process.py"
@@ -185,6 +187,126 @@ def on_linux(fault: Mutant) -> Mutant:
 
 _LOOP = (
     mutant(
+        "the end of a turn is written down without its code",
+        LOOP,
+        "        session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail, code=code))\n",
+        "        session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail))\n",
+    ),
+    mutant(
+        "the detail of an end is written down as its code",
+        LOOP,
+        "        session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail, code=code))\n",
+        "        session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail, code=detail))\n",
+    ),
+    mutant(
+        "a turn that was stopped is given a code",
+        LOOP,
+        "        code: str | None = None\n        cancelled_by_others = False\n",
+        "        code: str | None = EXCEPTION\n        cancelled_by_others = False\n",
+    ),
+    mutant(
+        "a step that was refused loses the code of whoever refused it",
+        LOOP,
+        '                return "blocked", words, code\n',
+        '                return "blocked", words, None\n',
+    ),
+    mutant(
+        "a step that was refused is taken for one that nobody decided about",
+        LOOP,
+        '                return "blocked", words, code\n',
+        '                return "blocked", words, NO_DECISION\n',
+    ),
+    mutant(
+        "the words of a refusal are written down as its code",
+        LOOP,
+        '                return "blocked", words, code\n',
+        '                return "blocked", words, words\n',
+    ),
+    mutant(
+        "a refusal whose reason is no text is taken as it is",
+        LOOP,
+        "    if not isinstance(reason, str):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a refusal whose code is no text is taken as it is",
+        LOOP,
+        "    if code is not None and not isinstance(code, str):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a refusal without a code is taken for a mistake of its listener",
+        LOOP,
+        "    if code is not None and not isinstance(code, str):\n",
+        "    if not isinstance(code, str):\n",
+    ),
+    mutant(
+        "a refusal is taken as it is, and what is wrong with it shows at the end of the turn",
+        LOOP,
+        "                words, code = _refused(decision)\n",
+        "                words, code = decision.reason, decision.code\n",
+    ),
+    mutant(
+        "a step that nobody decided about ends the turn without a code",
+        LOOP,
+        '                return "blocked", "a listener of agent/pre-step gave no decision", NO_DECISION\n',
+        '                return "blocked", "a listener of agent/pre-step gave no decision", None\n',
+    ),
+    mutant(
+        "a request that failed for good ends the turn without its code",
+        LOOP,
+        '            reason, detail, code = "error", str(failed), failed.failure.code\n',
+        '            reason, detail, code = "error", str(failed), None\n',
+    ),
+    mutant(
+        "a request that failed for good is taken for an error of the program",
+        LOOP,
+        '            reason, detail, code = "error", str(failed), failed.failure.code\n',
+        '            reason, detail, code = "error", str(failed), EXCEPTION\n',
+    ),
+    mutant(
+        "a request that failed for good gives its message as the code",
+        LOOP,
+        '            reason, detail, code = "error", str(failed), failed.failure.code\n',
+        '            reason, detail, code = "error", str(failed), failed.failure.message\n',
+    ),
+    mutant(
+        "an error of the program ends the turn without a code",
+        LOOP,
+        '            reason, detail, code = "error", _describe(error), EXCEPTION\n',
+        '            reason, detail, code = "error", _describe(error), None\n',
+    ),
+    mutant(
+        "an error of the program is named after the error",
+        LOOP,
+        '            reason, detail, code = "error", _describe(error), EXCEPTION\n',
+        '            reason, detail, code = "error", _describe(error), type(error).__name__\n',
+    ),
+    mutant(
+        "the code of a step that nobody decided about is another word",
+        AGENT_EVENTS,
+        'NO_DECISION = "NO_DECISION"\n',
+        'NO_DECISION = "NO_ANSWER"\n',
+    ),
+    mutant(
+        "the code of an error of the program is the one that a request to a model has",
+        AGENT_EVENTS,
+        'EXCEPTION = "EXCEPTION"\n',
+        'EXCEPTION = "INTERNAL"\n',
+    ),
+    mutant(
+        "a refusal has a code where nobody gave one",
+        AGENT_EVENTS,
+        "    reason: str\n    code: str | None = None\n",
+        "    reason: str\n    code: str | None = NO_DECISION\n",
+    ),
+    mutant(
+        "the end of a turn has a code where nobody gave one",
+        SESSION_EVENTS,
+        "    detail: str | None = None\n    code: str | None = None\n",
+        '    detail: str | None = None\n    code: str | None = "EXCEPTION"\n',
+    ),
+    mutant(
         "tools cancelled: started calls get no result",
         LOOP,
         "                        outcomes[index] = pending.outcome or pending.fail(\n"
@@ -238,10 +360,12 @@ _LOOP = (
     mutant(
         "the turn end is not written after a cancellation",
         LOOP,
-        "        session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail))\n"
+        "        session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail, code=code))\n"
         "        await session.flush()\n",
         '        if reason != "aborted":\n'
-        "            session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail))\n"
+        "            session.append(\n"
+        "                TurnEndEvent(turn=turn, reason=reason, detail=detail, code=code)\n"
+        "            )\n"
         "        await session.flush()\n",
     ),
     mutant(
@@ -9133,6 +9257,24 @@ _SLASH = (
 
 _TEXT = (
     mutant(
+        "the last line of a run without a screen does not say the code of the end",
+        HEADLESS,
+        '                    "detail": end.detail,\n                    "code": end.code,\n',
+        '                    "detail": end.detail,\n',
+    ),
+    mutant(
+        "the last line of a run without a screen gives the detail as the code",
+        HEADLESS,
+        '                    "code": end.code,\n',
+        '                    "code": end.detail,\n',
+    ),
+    mutant(
+        "the last line of a run without a screen gives the reason as the code",
+        HEADLESS,
+        '                    "code": end.code,\n',
+        '                    "code": end.reason,\n',
+    ),
+    mutant(
         "a run without a screen prints the last piece of an answer that was taken up",
         HEADLESS,
         "        said = replies(events)\n",
@@ -12107,6 +12249,54 @@ _COMPACTION = (
 
 _BUDGET = (
     mutant(
+        "a turn that has taken its steps ends without a code",
+        BUDGET,
+        "            return Reject(*over)\n",
+        "            return Reject(over[0])\n",
+    ),
+    mutant(
+        "the code of the steps is another word",
+        BUDGET,
+        'STEP_BUDGET = "STEP_BUDGET"\n',
+        'STEP_BUDGET = "STEPS"\n',
+    ),
+    mutant(
+        "the code of the tokens is another word",
+        BUDGET,
+        'TOKEN_BUDGET = "TOKEN_BUDGET"\n',
+        'TOKEN_BUDGET = "TOKENS"\n',
+    ),
+    mutant(
+        "the code of the time is another word",
+        BUDGET,
+        'TIME_BUDGET = "TIME_BUDGET"\n',
+        'TIME_BUDGET = "TIME"\n',
+    ),
+    mutant(
+        "a turn that has taken its steps is said to have used its tokens",
+        BUDGET,
+        "{steps} step{'' if steps == 1 else 's'}\", STEP_BUDGET\n",
+        "{steps} step{'' if steps == 1 else 's'}\", TOKEN_BUDGET\n",
+    ),
+    mutant(
+        "a turn that has used its tokens is said to have run for its time",
+        BUDGET,
+        'and it has {config.max_tokens}", TOKEN_BUDGET\n',
+        'and it has {config.max_tokens}", TIME_BUDGET\n',
+    ),
+    mutant(
+        "a turn that has run for its time is said to have taken its steps",
+        BUDGET,
+        "            return told, TIME_BUDGET\n",
+        "            return told, STEP_BUDGET\n",
+    ),
+    mutant(
+        "the words of a limit are written down as its code",
+        BUDGET,
+        "            return told, TIME_BUDGET\n",
+        "            return told, told\n",
+    ),
+    mutant(
         "a turn takes a step more than it has",
         BUDGET,
         "        if steps is not None and info.step > steps:\n",
@@ -12175,8 +12365,8 @@ _BUDGET = (
     mutant(
         "a step that the budget refuses is asked about by those after it",
         BUDGET,
-        "            # Nobody else is asked about a step that does not begin.\n            return Reject(over)\n",
-        "            await proceed(info)\n            return Reject(over)\n",
+        "            # Nobody else is asked about a step that does not begin.\n            return Reject(*over)\n",
+        "            await proceed(info)\n            return Reject(*over)\n",
     ),
     mutant(
         "the budget is asked after those that were there before it",
@@ -13048,6 +13238,24 @@ _SKILLS = (
 )
 
 _HOOKS = (
+    mutant(
+        "a turn that a hook stopped ends without a code",
+        HOOKS_PLUGIN,
+        '            return Reject(f"a hook stopped the input: {stopped[0]}", STOPPED_BY_A_HOOK)\n',
+        '            return Reject(f"a hook stopped the input: {stopped[0]}")\n',
+    ),
+    mutant(
+        "what a hook said is written down as the code",
+        HOOKS_PLUGIN,
+        '            return Reject(f"a hook stopped the input: {stopped[0]}", STOPPED_BY_A_HOOK)\n',
+        '            return Reject(f"a hook stopped the input: {stopped[0]}", stopped[0])\n',
+    ),
+    mutant(
+        "the code of a hook that stopped an input is another word",
+        HOOKS_PLUGIN,
+        'STOPPED_BY_A_HOOK = "HOOK"\n',
+        'STOPPED_BY_A_HOOK = "HOOKS"\n',
+    ),
     mutant(
         "a hook is told a path of the place of commands as if it were one of this machine",
         HOOKS_PLUGIN,
@@ -14764,6 +14972,60 @@ _TRUST = (
 
 _SUBAGENTS = (
     mutant(
+        "the code of the end of a subagent is not read from its log",
+        SPAWN,
+        "            reason, detail, code = data.reason, data.detail, data.code\n",
+        "            reason, detail = data.reason, data.detail\n",
+    ),
+    mutant(
+        "an end without a code keeps the code of the end before it",
+        SPAWN,
+        "            reason, detail, code = data.reason, data.detail, data.code\n",
+        "            reason, detail, code = data.reason, data.detail, data.code or code\n",
+    ),
+    mutant(
+        "the detail of the end of a subagent is taken for its code",
+        SPAWN,
+        "            reason, detail, code = data.reason, data.detail, data.code\n",
+        "            reason, detail, code = data.reason, data.detail, data.detail\n",
+    ),
+    mutant(
+        "the outcome of a subagent is given without its code",
+        SPAWN,
+        "        usage=USAGE.of(session).usage,\n        code=code,\n",
+        "        usage=USAGE.of(session).usage,\n",
+    ),
+    mutant(
+        "the end of a subagent is written into the log of its parent without its code",
+        SUBAGENTS_SEAM,
+        "            code=None if outcome is None else outcome.code,\n",
+        "            code=None,\n",
+    ),
+    mutant(
+        "the reason of the end of a subagent is written down as its code",
+        SUBAGENTS_SEAM,
+        "            code=None if outcome is None else outcome.code,\n",
+        "            code=None if outcome is None else outcome.reason,\n",
+    ),
+    mutant(
+        "a subagent that nobody saw end is given a code",
+        SUBAGENTS_SEAM,
+        "            code=None if outcome is None else outcome.code,\n",
+        '            code="UNKNOWN" if outcome is None else outcome.code,\n',
+    ),
+    mutant(
+        "an outcome has a code where nobody gave one",
+        SUBAGENTS_SEAM,
+        "    usage: Usage\n    code: str | None = None\n",
+        '    usage: Usage\n    code: str | None = "EXCEPTION"\n',
+    ),
+    mutant(
+        "the end of a subagent has a code where the log has none",
+        SUBAGENTS_SEAM,
+        "    steps: int\n    code: str | None = None\n",
+        '    steps: int\n    code: str | None = "EXCEPTION"\n',
+    ),
+    mutant(
         "a subagent hands back the last piece of an answer that was taken up",
         SPAWN,
         "    said = [text for text in replies(event.data for event in session.events) if text.strip()]\n",
@@ -15668,8 +15930,8 @@ _SUBAGENTS = (
     mutant(
         "why the turn of a subagent ended is not read",
         SPAWN,
-        "            reason, detail = data.reason, data.detail\n",
-        "            reason = data.reason\n",
+        "            reason, detail, code = data.reason, data.detail, data.code\n",
+        "            reason, code = data.reason, data.code\n",
     ),
     mutant(
         "the steps of a subagent are not counted",

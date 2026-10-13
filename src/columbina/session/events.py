@@ -98,13 +98,20 @@ class TurnStartEvent(EventData):
 
 
 class TurnEndEvent(EventData):
-    """A turn is over. ``detail`` says more about the reason, such as who cancelled."""
+    """A turn is over.
+
+    ``detail`` says more about the reason in words for a person, such as who
+    cancelled. ``code`` says it for a program: which limit a turn that was
+    ``blocked`` came to, or what failed in one that ended with an ``error``.
+    A turn that ended in another way has none.
+    """
 
     event_type: ClassVar[str] = "turn/end"
 
     turn: int
     reason: TurnEndReason
     detail: str | None = None
+    code: str | None = None
 
 
 class StepStartEvent(EventData):

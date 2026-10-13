@@ -149,7 +149,10 @@ export const zhCN: Messages = {
       unknown: { what: '这个回合被停下了。' },
     },
     limit: {
-      steps: (limit: number) => ({ what: `这个回合用完了 ${limit} 步的上限。`, why: afterLimit }),
+      steps: (limit: number | null) => ({
+        what: limit === null ? '这个回合用完了步数的上限。' : `这个回合用完了 ${limit} 步的上限。`,
+        why: afterLimit,
+      }),
       tokens: { what: '这个回合用完了 token 的上限。', why: afterLimit },
       time: { what: '这个回合用完了时间上限。', why: afterLimit },
     },

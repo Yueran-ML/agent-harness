@@ -115,6 +115,7 @@ def test_the_run_can_be_followed_as_lines_of_json(
             "type": "final",
             "reason": "completed",
             "detail": None,
+            "code": None,
             "text": "The file says the answer is 42.",
             "calls": 2,
             "usage": {
@@ -165,6 +166,8 @@ def test_a_failed_run_ends_its_json_with_the_reason(
     assert final["type"] == "final"
     assert final["reason"] == "error"
     assert final["detail"] == "AUTH: the key is not valid"
+    # For a program: the code of the failure, as the service of the model gave it.
+    assert final["code"] == "AUTH"
     assert final["text"] == ""
 
 

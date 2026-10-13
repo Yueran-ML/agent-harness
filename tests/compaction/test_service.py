@@ -1333,7 +1333,10 @@ async def test_a_request_is_made_again_once_in_a_step(harness: Harness) -> None:
 
     assert len(attempts(agent)) == 1
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=3, reason="error", detail="CONTEXT_WINDOW_EXCEEDED: too long"
+        turn=3,
+        reason="error",
+        detail="CONTEXT_WINDOW_EXCEEDED: too long",
+        code="CONTEXT_WINDOW_EXCEEDED",
     )
     assert harness.model.remaining == 1
 
@@ -1351,7 +1354,10 @@ async def test_a_request_is_not_made_again_if_the_model_would_see_the_same(
     assert outcome is not None
     assert outcome.error == "nothing of this conversation can go"
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="CONTEXT_WINDOW_EXCEEDED: too long"
+        turn=1,
+        reason="error",
+        detail="CONTEXT_WINDOW_EXCEEDED: too long",
+        code="CONTEXT_WINDOW_EXCEEDED",
     )
     assert harness.model.remaining == 1
 
@@ -1370,7 +1376,7 @@ async def test_no_other_failure_of_a_request_makes_a_conversation_shorter(
 
     assert attempts(agent) == []
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=3, reason="error", detail="AUTH: no such key"
+        turn=3, reason="error", detail="AUTH: no such key", code="AUTH"
     )
 
 
@@ -1661,7 +1667,10 @@ async def test_without_being_told_to_it_does_nothing_by_itself(harness: Harness)
 
     assert attempts(agent) == []
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=3, reason="error", detail="CONTEXT_WINDOW_EXCEEDED: too long"
+        turn=3,
+        reason="error",
+        detail="CONTEXT_WINDOW_EXCEEDED: too long",
+        code="CONTEXT_WINDOW_EXCEEDED",
     )
 
 

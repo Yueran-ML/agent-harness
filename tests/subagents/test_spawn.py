@@ -190,6 +190,8 @@ async def test_a_subagent_that_takes_more_steps_than_it_has_is_a_failure(
         "the turn has taken its 2 steps",
         2,
     )
+    # A program that sorts ends reads the code, and not the words.
+    assert ended.code == budget.STEP_BUDGET
 
 
 # What it may do
@@ -520,11 +522,27 @@ def test_what_a_turn_that_failed_had_written_is_the_last_that_arrived(harness: H
     )
     session.append(AssistantAttemptEvent(message=said("Half a"), usage=Usage(), failure=failure))
     session.append(AssistantAttemptEvent(message=said(""), usage=Usage(), failure=failure))
-    session.append(TurnEndEvent(turn=1, reason="error", detail="it broke"))
+    session.append(TurnEndEvent(turn=1, reason="error", detail="it broke", code="SERVER"))
 
     outcome = outcome_of(session)
 
     assert (outcome.reason, outcome.detail, outcome.text) == ("error", "it broke", "Half a")
+    assert outcome.code == "SERVER"
+
+
+def test_the_code_of_an_end_is_that_of_the_last_end_in_the_log(harness: Harness) -> None:
+    session = harness.sessions.create(harness.ctx, harness.cwd, session_id="s-made")
+    session.append(TurnStartEvent(turn=1))
+    session.append(
+        TurnEndEvent(turn=1, reason="blocked", detail="no step is left", code="STEP_BUDGET")
+    )
+    session.append(TurnStartEvent(turn=2))
+    session.append(TurnEndEvent(turn=2, reason="completed"))
+
+    outcome = outcome_of(session)
+
+    # An end that has no code does not keep the code of the end before it.
+    assert (outcome.reason, outcome.detail, outcome.code) == ("completed", None, None)
 
 
 def test_what_arrived_of_a_request_that_failed_does_not_outlive_a_later_reply(

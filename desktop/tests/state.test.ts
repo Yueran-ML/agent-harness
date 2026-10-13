@@ -452,7 +452,7 @@ describe('a service that is gone before a turn ended', () => {
     expect(projection.turn).toBeNull();
     expect(projection.step).toBeNull();
     // The turn ended where the log ends, and nobody ended it.
-    expect(projection.turns[0].end).toEqual({ seq: 5, time: 500, reason: 'interrupted', detail: null });
+    expect(projection.turns[0].end).toEqual({ seq: 5, time: 500, reason: 'interrupted', detail: null, code: null });
     const calls = projection.items.filter(item => item.type === 'tool');
     // A call that had no result has none. The one that had its result keeps it.
     expect(calls.map(item => item.type === 'tool' && [item.callId, item.result, item.interrupted])).toEqual([

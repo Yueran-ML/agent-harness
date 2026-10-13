@@ -30,6 +30,13 @@ export const turnEndReasons = [
   'completed', 'aborted', 'blocked', 'error', 'max-tokens', 'interrupted', 'forked',
 ] as const;
 
+/**
+ * Who did not let a turn go on: `code` of a `turn/end` whose reason is `blocked`.
+ * These are the codes of the program itself, as `docs/protocol/README.md` lists them.
+ * A plugin may give a code of its own.
+ */
+export const turnBlockedCodes = ['STEP_BUDGET', 'TOKEN_BUDGET', 'TIME_BUDGET', 'HOOK', 'NO_DECISION'] as const;
+
 /** What a session may do, as `session.status` says it. */
 export const sandboxModes = ['read-only', 'workspace-write', 'danger-full-access'] as const;
 export const sandboxStrengths = ['none', 'partial', 'full'] as const;

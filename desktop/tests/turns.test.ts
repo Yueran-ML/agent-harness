@@ -25,8 +25,9 @@ const result = (id: string, words = 'ok'): Written =>
   ['tool/result', { message: { role: 'tool', call_id: id, content: text(words) }, error: null }];
 const step = (turn: number, number: number): Written => ['step/start', { turn, step: number }];
 const begin = (turn: number): Written => ['turn/start', { turn }];
-const end = (turn: number, reason = 'completed', detail: string | null = null): Written =>
-  ['turn/end', { turn, reason, detail }];
+// Without a code this is the end of a turn as a log has it that was written before ends had one.
+const end = (turn: number, reason = 'completed', detail: string | null = null, code?: unknown): Written =>
+  ['turn/end', code === undefined ? { turn, reason, detail } : { turn, reason, detail, code }];
 const summary = (words: string): Written =>
   ['user/message', { source: 'compaction', message: { role: 'user', content: text(words) } }];
 
@@ -102,12 +103,12 @@ describe('the record of a turn', () => {
     expect(projection.turns).toEqual([
       {
         number: 1, at: 0, seq: 0, startedAt: 1000, steps: 2, provider: null,
-        end: { seq: 9, time: 1900, reason: 'completed', detail: null },
+        end: { seq: 9, time: 1900, reason: 'completed', detail: null, code: null },
       },
       {
         // Three items of the first turn stand before it, and the summary between the two.
         number: 2, at: 4, seq: 11, startedAt: 2100, steps: 1, provider: null,
-        end: { seq: 14, time: 2400, reason: 'error', detail: 'SERVER: the service is down' },
+        end: { seq: 14, time: 2400, reason: 'error', detail: 'SERVER: the service is down', code: null },
       },
       { number: 3, at: 6, seq: 15, startedAt: 2500, steps: 0, provider: null, end: null },
     ]);
@@ -293,8 +294,20 @@ describe('a conversation by turn', () => {
 
   it('keeps the end of a turn that ended in a way it does not know', () => {
     const [turn] = turnsOf(begin(1), user('ask'), reply('words'), end(1, 'paused', 'later'));
-    expect(turn.end).toEqual({ reason: 'paused', detail: 'later', time: 1300, notice: null });
+    expect(turn.end).toEqual({ reason: 'paused', detail: 'later', code: null, time: 1300, notice: null });
     expect(turn.answer).toBeNull();
+  });
+
+  it('keeps the code of an end, and none where the log has none or has no text for it', () => {
+    const written = [
+      begin(1), end(1, 'blocked', 'no step is left', 'STEP_BUDGET'),
+      begin(2), end(2, 'completed', null, null),
+      begin(3), end(3, 'blocked', 'no step is left'),
+      begin(4), end(4, 'blocked', 'no step is left', 7),
+    ];
+    const codes = ['STEP_BUDGET', null, null, null];
+    expect(projectEvents(log(...written)).turns.map(record => record.end?.code)).toEqual(codes);
+    expect(turnsOf(...written).map(turn => turn.end?.code)).toEqual(codes);
   });
 
   it('opens a turn with all that it was given before anything else happened in it', () => {

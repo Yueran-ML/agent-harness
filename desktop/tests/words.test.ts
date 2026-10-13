@@ -33,7 +33,7 @@ const samples: Record<string, unknown[][]> = {
   'label.skillGiven': [['review'], [null]],
   'hint.moreSkills': [[1], [3], [12]],
   'turn.took': [[1, 1], [42, 3], [125, 12]],
-  'turn.limit.steps': [[1], [30]],
+  'turn.limit.steps': [[1], [30], [null]],
   'wait.retry': [[0, 3], [1, 1], [4, 2]],
   'wait.retried': [[0, 3], [1, 1], [4, 2]],
   'label.ago.minutes': [[1], [45]],
@@ -410,6 +410,16 @@ describe.each(catalogues)('what is said in %s', (_name, messages) => {
     expect(said.what).toContain('30');
   });
 
+  it('says that a turn reached its limit of steps where the log does not say how many they were', () => {
+    const counted = sayTurn(messages, classifyTurnEnd('blocked', 'the turn has taken its 30 steps', null, 'STEP_BUDGET'))!;
+    const uncounted = sayTurn(messages, classifyTurnEnd('blocked', 'no step is left', null, 'STEP_BUDGET'))!;
+    hasWords(uncounted);
+    // It makes up no number, and it says the same of what the user can do next.
+    expect(uncounted.what).not.toMatch(/\d|null|NaN/);
+    expect(uncounted.what).not.toBe(counted.what);
+    expect(uncounted.why).toBe(counted.why);
+  });
+
   it.each(sandboxModes.flatMap(mode => approvalPolicies.map(policy => [mode, policy])))(
     'says what a session may do in the mode %s with the policy %s', (mode, policy) => {
       const said = sayPermissions(messages, mode, policy);
@@ -490,6 +500,7 @@ describe('the words of the design', () => {
     expect(ja.tool.declined.what).toBe('あなたが却下');
     expect(ja.tool.exited(1).what).toBe('終了コード 1');
     expect(ja.turn.limit.steps(30).what).toBe('このターンは、上限の 30 ステップに達しました。');
+    expect(ja.turn.limit.steps(null).what).toBe('このターンは、ステップ数の上限に達しました。');
     expect(sayPermissions(ja, 'workspace-write', 'ask'))
       .toBe('このプロジェクトのファイルを変更できます。コマンドを実行する前に確認します。');
   });
@@ -515,5 +526,6 @@ describe('the words of the design', () => {
     expect(en.wait.retry(0, 3)).toBe('Trying again now (retry 3).');
     expect(en.tool.exited(1).what).toBe('Exit code 1');
     expect(en.turn.limit.steps(1).what).toBe('This turn reached its limit of 1 step.');
+    expect(en.turn.limit.steps(null).what).toBe('This turn reached its limit of steps.');
   });
 });

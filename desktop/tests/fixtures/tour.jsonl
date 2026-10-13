@@ -49,7 +49,7 @@
 {"type":"step/start","seq":47,"time":1791590413970,"data":{"turn":1,"step":5}}
 {"type":"assistant/message","seq":48,"time":1791590414150,"data":{"message":{"role":"assistant","content":[{"type":"text","text":"mean() divided by one too few. I fixed calc.py, and the check prints ok now."}]},"usage":{"input_tokens":48,"output_tokens":24,"cache_read_tokens":1088,"cache_write_tokens":0},"finish_reason":"stop"},"surface_op":"append"}
 {"type":"step/end","seq":49,"time":1791590414330,"data":{"turn":1,"step":5}}
-{"type":"turn/end","seq":50,"time":1791590414510,"data":{"turn":1,"reason":"completed","detail":null}}
+{"type":"turn/end","seq":50,"time":1791590414510,"data":{"turn":1,"reason":"completed","detail":null,"code":null}}
 {"type":"agent/inbox/spliced","seq":51,"time":1791590414690,"data":{"queue":"next-turn","removed":0,"added":[{"message":{"role":"user","content":[{"type":"text","text":"Commit the fix."}]},"source":"user"}]}}
 {"type":"turn/start","seq":52,"time":1791590414870,"data":{"turn":2}}
 {"type":"user/message","seq":53,"time":1791590415050,"data":{"message":{"role":"user","content":[{"type":"text","text":"<context source=\"project\">\nThe project is a small calculator. Its check is run with `python check.py`. The fix of mean() is in the working tree.\n</context>"}]},"source":"context/project"},"surface_op":{"op":"replace","start_seq":5,"end_seq":5},"source_event_seqs":[5]}
@@ -65,7 +65,7 @@
 {"type":"step/start","seq":63,"time":1791590421050,"data":{"turn":2,"step":2}}
 {"type":"assistant/message","seq":64,"time":1791590421230,"data":{"message":{"role":"assistant","content":[{"type":"text","text":"The commit was not allowed, so the fix is in the working tree and is not committed. If you want it committed, you"}]},"usage":{"input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0},"finish_reason":null},"surface_op":"append"}
 {"type":"step/end","seq":65,"time":1791590421410,"data":{"turn":2,"step":2}}
-{"type":"turn/end","seq":66,"time":1791590421590,"data":{"turn":2,"reason":"aborted","detail":"user"}}
+{"type":"turn/end","seq":66,"time":1791590421590,"data":{"turn":2,"reason":"aborted","detail":"user","code":null}}
 {"type":"session/end-seed","seq":67,"time":1791596121770,"data":{"inherited":false}}
 {"type":"agent/inbox/spliced","seq":68,"time":1791596121950,"data":{"queue":"next-turn","removed":0,"added":[{"message":{"role":"user","content":[{"type":"text","text":"How did calc.py come to be like this? Look at its history."}]},"source":"user"}]}}
 {"type":"turn/start","seq":69,"time":1791596122130,"data":{"turn":3}}
@@ -76,7 +76,7 @@
 {"type":"assistant/message","seq":74,"time":1791596123030,"data":{"message":{"role":"assistant","content":[{"type":"text","text":"While I go through the history, the uses of mean() can be looked up."},{"type":"tool-call","call_id":"call-9","name":"subagent","arguments":"{\"description\": \"find uses of mean\", \"prompt\": \"In the project in the working directory, find every place where the function mean() of calc.py is called. Give the files and the lines, and nothing else.\"}"}]},"usage":{"input_tokens":131,"output_tokens":64,"cache_read_tokens":1280,"cache_write_tokens":0},"finish_reason":"tool-calls"},"surface_op":"append"}
 {"type":"tool/call","seq":75,"time":1791596123210,"data":{"call_id":"call-9","name":"subagent","arguments":"{\"description\": \"find uses of mean\", \"prompt\": \"In the project in the working directory, find every place where the function mean() of calc.py is called. Give the files and the lines, and nothing else.\"}"}}
 {"type":"subagent/started","seq":76,"time":1791596124290,"data":{"call_id":"call-9","session_id":"20261010T013523-5eed5eed","kind":null,"description":"find uses of mean"},"ignorable":true}
-{"type":"subagent/ended","seq":77,"time":1791596126450,"data":{"call_id":"call-9","session_id":"20261010T013523-5eed5eed","reason":"completed","detail":null,"steps":1},"ignorable":true}
+{"type":"subagent/ended","seq":77,"time":1791596126450,"data":{"call_id":"call-9","session_id":"20261010T013523-5eed5eed","reason":"completed","detail":null,"steps":1,"code":null},"ignorable":true}
 {"type":"request/aside","seq":78,"time":1791596126630,"data":{"purpose":"subagent","usage":{"input_tokens":612,"output_tokens":17,"cache_read_tokens":0,"cache_write_tokens":0},"failure":null},"ignorable":true}
 {"type":"tool/result","seq":79,"time":1791596126810,"data":{"message":{"role":"tool","call_id":"call-9","content":[{"type":"text","text":"mean() is called in one place: check.py, line 14."}],"is_error":false},"error":null,"meta":null},"surface_op":"append"}
 {"type":"step/end","seq":80,"time":1791596126990,"data":{"turn":3,"step":1}}
@@ -100,7 +100,7 @@
 {"type":"step/start","seq":98,"time":1791596139060,"data":{"turn":3,"step":4}}
 {"type":"assistant/message","seq":99,"time":1791596139240,"data":{"message":{"role":"assistant","content":[{"type":"text","text":"The mistake came in with commit 0029d5f, which took the length once and took one off it."}]},"usage":{"input_tokens":1016,"output_tokens":29,"cache_read_tokens":1280,"cache_write_tokens":0},"finish_reason":"stop"},"surface_op":"append"}
 {"type":"step/end","seq":100,"time":1791596139420,"data":{"turn":3,"step":4}}
-{"type":"turn/end","seq":101,"time":1791596139600,"data":{"turn":3,"reason":"completed","detail":null}}
+{"type":"turn/end","seq":101,"time":1791596139600,"data":{"turn":3,"reason":"completed","detail":null,"code":null}}
 {"type":"compaction/start","seq":102,"time":1791596139780,"data":{"why":"manual","tokens":2314},"ignorable":true}
 {"type":"request/aside","seq":103,"time":1791596139960,"data":{"purpose":"summary","usage":{"input_tokens":88,"output_tokens":171,"cache_read_tokens":2240,"cache_write_tokens":0},"failure":null},"ignorable":true}
 {"type":"compaction/summary","seq":104,"time":1791596140140,"data":{"summary":"1. Progress and decisions: The user asked for the mistake in calc.py to be found and fixed. mean() divided by len(values) - 1, and it divides by len(values) now. `python check.py` prints ok. The user wanted the change kept as small as possible, so nothing else in the file was touched. The history of the file shows that the mistake came in with commit 0029d5f.\n2. Constraints and preferences: Keep changes small. Committing was not allowed: the user said no to `git commit -am \"Fix mean()\"`.\n3. Remaining steps: The fix is in the working tree and is not committed.\n4. Key data: calc.py, check.py, `python check.py`, commit 0029d5f.","replaces":[7,11,14,15,18,22,25,29,32,35,39,42,45,48,55,57,61,64,70],"region_tokens":742,"summary_tokens":169,"usage":{"input_tokens":88,"output_tokens":171,"cache_read_tokens":2240,"cache_write_tokens":0}},"ignorable":true}
@@ -114,7 +114,7 @@
 {"type":"step/start","seq":112,"time":1791596141580,"data":{"turn":4,"step":1}}
 {"type":"assistant/message","seq":113,"time":1791596141760,"data":{"message":{"role":"assistant","content":[{"type":"text","text":"Only the commit. The fix is in the working tree, and committing it was not allowed."}]},"usage":{"input_tokens":398,"output_tokens":23,"cache_read_tokens":256,"cache_write_tokens":0},"finish_reason":"stop"},"surface_op":"append"}
 {"type":"step/end","seq":114,"time":1791596141940,"data":{"turn":4,"step":1}}
-{"type":"turn/end","seq":115,"time":1791596142120,"data":{"turn":4,"reason":"completed","detail":null}}
+{"type":"turn/end","seq":115,"time":1791596142120,"data":{"turn":4,"reason":"completed","detail":null,"code":null}}
 {"type":"compaction/start","seq":116,"time":1791596142300,"data":{"why":"manual","tokens":1831},"ignorable":true}
 {"type":"request/aside","seq":117,"time":1791596142480,"data":{"purpose":"summary","usage":{"input_tokens":79,"output_tokens":68,"cache_read_tokens":640,"cache_write_tokens":0},"failure":null},"ignorable":true}
 {"type":"compaction/summary","seq":118,"time":1791596142660,"data":{"summary":"1. Progress and decisions: mean() in calc.py is fixed and `python check.py` prints ok. The mistake came in with commit 0029d5f.\n2. Constraints and preferences: Keep changes small. Committing was not allowed.\n3. Remaining steps: The fix is not committed.\n4. Key data: calc.py, commit 0029d5f.","replaces":[105,72,74,79],"region_tokens":259,"summary_tokens":105,"usage":{"input_tokens":79,"output_tokens":68,"cache_read_tokens":640,"cache_write_tokens":0}},"ignorable":true}

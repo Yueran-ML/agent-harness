@@ -1814,7 +1814,7 @@
     },
     "SubagentEndedEvent": {
       "additionalProperties": false,
-      "description": "A subagent has ended. This is written into the log of its parent.\n\nAttributes:\n    call_id: The id of the call that handed the task over.\n    session_id: The id of the session of the subagent.\n    reason: Why its turn ended, in the words of the end of a turn, or\n        ``unknown`` if nobody can say.\n    detail: More about the reason, as its own log has it.\n    steps: How many steps its turn took.",
+      "description": "A subagent has ended. This is written into the log of its parent.\n\nAttributes:\n    call_id: The id of the call that handed the task over.\n    session_id: The id of the session of the subagent.\n    reason: Why its turn ended, in the words of the end of a turn, or\n        ``unknown`` if nobody can say.\n    detail: More about the reason, as its own log has it.\n    steps: How many steps its turn took.\n    code: The code with which its turn ended, as its own log has it. A\n        turn that ended in a way that has no code has none here.",
       "properties": {
         "call_id": {
           "type": "string"
@@ -1837,6 +1837,17 @@
         },
         "steps": {
           "type": "integer"
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -1844,7 +1855,8 @@
         "session_id",
         "reason",
         "detail",
-        "steps"
+        "steps",
+        "code"
       ],
       "title": "SubagentEndedEvent",
       "type": "object"
@@ -2204,7 +2216,7 @@
     },
     "TurnEndEvent": {
       "additionalProperties": false,
-      "description": "A turn is over. ``detail`` says more about the reason, such as who cancelled.",
+      "description": "A turn is over.\n\n``detail`` says more about the reason in words for a person, such as who\ncancelled. ``code`` says it for a program: which limit a turn that was\n``blocked`` came to, or what failed in one that ended with an ``error``.\nA turn that ended in another way has none.",
       "properties": {
         "turn": {
           "type": "integer"
@@ -2231,12 +2243,24 @@
             }
           ],
           "default": null
+        },
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
         "turn",
         "reason",
-        "detail"
+        "detail",
+        "code"
       ],
       "title": "TurnEndEvent",
       "type": "object"

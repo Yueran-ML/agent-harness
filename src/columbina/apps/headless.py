@@ -167,6 +167,7 @@ class Headless:
                     "type": "final",
                     "reason": end.reason,
                     "detail": end.detail,
+                    "code": end.code,
                     "text": answer,
                     "calls": total.calls - spent.calls,
                     "usage": {

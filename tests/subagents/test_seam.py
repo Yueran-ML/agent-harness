@@ -22,6 +22,7 @@ from columbina.session import (
     Session,
     SessionStoreError,
     TurnEndReason,
+    decode_event,
 )
 from columbina.subagents import (
     SUBAGENTS,
@@ -226,6 +227,46 @@ async def test_a_subagent_that_did_not_finish_is_a_failure_that_says_how_it_ende
             steps=3,
         )
     ]
+
+
+async def test_the_code_of_how_a_subagent_ended_is_written_down_with_it(harness: Harness) -> None:
+    outcome = Outcome(
+        reason="blocked",
+        detail="the turn has taken its 50 steps",
+        text="",
+        steps=50,
+        usage=Usage(),
+        code="STEP_BUDGET",
+    )
+    subagents = await loaded(harness, Provider(outcome=outcome))
+    parent = await harness.agent()
+
+    with pytest.raises(SubagentFailed):
+        await subagents.run(parent, task())
+
+    # Whoever reads the log of the parent can sort the ends of its subagents without their logs.
+    assert of(parent.session, SubagentEndedEvent) == [
+        SubagentEndedEvent(
+            call_id="call-1",
+            session_id="child-1",
+            reason="blocked",
+            detail="the turn has taken its 50 steps",
+            steps=50,
+            code="STEP_BUDGET",
+        )
+    ]
+
+
+def test_an_end_of_a_subagent_that_was_written_before_ends_had_a_code_is_read() -> None:
+    old = (
+        '{"type":"subagent/ended","seq":3,"time":1000,"data":{"call_id":"call-1",'
+        '"session_id":"child-1","reason":"blocked","detail":"x","steps":3},"ignorable":true}'
+    )
+
+    read = decode_event(old, {SubagentEndedEvent.event_type: SubagentEndedEvent}).data
+
+    assert isinstance(read, SubagentEndedEvent)
+    assert (read.reason, read.detail, read.steps, read.code) == ("blocked", "x", 3, None)
 
 
 async def test_a_failure_of_a_subagent_that_wrote_nothing_has_nothing_after_it(

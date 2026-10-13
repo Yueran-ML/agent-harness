@@ -316,6 +316,9 @@ async def test_an_input_that_a_hook_stops_ends_the_turn_and_is_taken_from_the_mo
 
     assert ends(agent) == [("blocked", "a hook stopped the input: No secrets.")]
     assert harness.model.requests == []
+    # A program is told in a word what kept the turn from going on.
+    (end,) = (e.data for e in agent.session.events if isinstance(e.data, TurnEndEvent))
+    assert end.code == "HOOK"
 
     await turn(agent, "Say hello.")
 

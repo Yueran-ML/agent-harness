@@ -198,8 +198,11 @@ export const en = {
       unknown: { what: 'This turn was stopped.' },
     },
     limit: {
-      steps: (limit: number) => ({
-        what: `This turn reached its limit of ${limit} ${limit === 1 ? 'step' : 'steps'}.`,
+      // The limit is null where the log says which limit it was and not how much.
+      steps: (limit: number | null) => ({
+        what: limit === null
+          ? 'This turn reached its limit of steps.'
+          : `This turn reached its limit of ${limit} ${limit === 1 ? 'step' : 'steps'}.`,
         why: afterLimit,
       }),
       tokens: { what: 'This turn reached its limit of tokens.', why: afterLimit },

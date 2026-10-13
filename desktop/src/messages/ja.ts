@@ -189,8 +189,10 @@ export const ja: Messages = {
       unknown: { what: 'このターンは止められました。' },
     },
     limit: {
-      steps: (limit: number) => ({
-        what: `このターンは、上限の ${limit} ステップに達しました。`,
+      steps: (limit: number | null) => ({
+        what: limit === null
+          ? 'このターンは、ステップ数の上限に達しました。'
+          : `このターンは、上限の ${limit} ステップに達しました。`,
         why: afterLimit,
       }),
       tokens: { what: 'このターンは、トークン数の上限に達しました。', why: afterLimit },

@@ -13,7 +13,9 @@ from columbina import cancellation
 from columbina.agent import (
     CONTEXT_PREFIX,
     CUT_OFF,
+    EXCEPTION,
     INBOX,
+    NO_DECISION,
     PRE_STEP,
     REQUEST,
     REQUEST_ERROR,
@@ -161,6 +163,28 @@ def _framed(name: str, text: str) -> UserMessage:
 def _describe(error: BaseException) -> str:
     text = str(error)
     return f"{type(error).__name__}: {text}" if text else type(error).__name__
+
+
+def _refused(decision: Reject) -> tuple[str, str | None]:
+    """Return the words and the code of a refusal, once they are seen to be text.
+
+    A listener wrote them, and they go into the end of the turn, which takes
+    nothing but text. A listener that gives something else has made a
+    mistake, and a mistake of a listener ends its turn with an error. Left
+    for the end of the turn to find, it would come out where that end is
+    written, with nothing after it that could write one.
+    """
+    reason = cast("object", decision.reason)
+    code = cast("object", decision.code)
+    if not isinstance(reason, str):
+        raise TypeError(
+            f"a listener of agent/pre-step refused a step with a reason that is no text: {reason!r}"
+        )
+    if code is not None and not isinstance(code, str):
+        raise TypeError(
+            f"a listener of agent/pre-step refused a step with a code that is no text: {code!r}"
+        )
+    return reason, code
 
 
 async def _enter(info: StepInfo) -> StepDecision:
@@ -414,26 +438,28 @@ class LoopAgent(Agent):
         session.append(TurnStartEvent(turn=turn))
         reason: TurnEndReason
         detail: str | None
+        code: str | None = None
         cancelled_by_others = False
         try:
-            reason, detail = await self._steps(turn)
+            reason, detail, code = await self._steps(turn)
         except asyncio.CancelledError:
             reason, detail = "aborted", self._cause or "disposed"
             # A cancellation that this agent asked for ends here. Any other one goes on.
             others = cancellation.current_task().uncancel() if self._cause else 1
             cancelled_by_others = others > 0
         except _RequestError as failed:
-            reason, detail = "error", str(failed)
+            # The code of the failure, as the service of the model or its adapter gave it.
+            reason, detail, code = "error", str(failed), failed.failure.code
         except Exception as error:
             logger.exception("turn %d of the agent %r failed", turn, self.id)
-            reason, detail = "error", _describe(error)
-        session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail))
+            reason, detail, code = "error", _describe(error), EXCEPTION
+        session.append(TurnEndEvent(turn=turn, reason=reason, detail=detail, code=code))
         await session.flush()
         if cancelled_by_others:
             raise asyncio.CancelledError
 
-    async def _steps(self, turn: int) -> tuple[TurnEndReason, str | None]:
-        """Run the steps of a turn and return why the turn ends."""
+    async def _steps(self, turn: int) -> tuple[TurnEndReason, str | None, str | None]:
+        """Run the steps of a turn and return why the turn ends: in a word, in more, in a code."""
         session = self.session
         step = 0
         taken_up = 0
@@ -458,10 +484,11 @@ class LoopAgent(Agent):
                 ),
             )
             if isinstance(decision, Reject):
-                return "blocked", decision.reason
+                words, code = _refused(decision)
+                return "blocked", words, code
             if not isinstance(decision, Enter):
                 # No answer is no permission.
-                return "blocked", "a listener of agent/pre-step gave no decision"
+                return "blocked", "a listener of agent/pre-step gave no decision", NO_DECISION
             step += 1
             session.append(StepStartEvent(turn=turn, step=step))
             try:
@@ -472,7 +499,7 @@ class LoopAgent(Agent):
                 continue
             if ended == "concluded":
                 # A tool asked for the turn to end. Input that waits stays for the next turn.
-                return "completed", None
+                return "completed", None, None
             if INBOX.of(session).next_step:
                 continue
             if ended == "max-tokens" and taken_up < self._continuations:
@@ -488,7 +515,7 @@ class LoopAgent(Agent):
             stopping = TurnStopping(self, turn, reason)
             await self._heard(TURN_STOPPING, self.ctx.serial(TURN_STOPPING, stopping))
             if not INBOX.of(session).next_step:
-                return reason, None
+                return reason, None, None
 
     def _claim(self, *, first_step: bool) -> tuple[InboxItem, ...]:
         """Take from the inbox what a step begins with.

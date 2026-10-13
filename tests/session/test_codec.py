@@ -13,6 +13,7 @@ from columbina.session import (
     EventData,
     SessionEvent,
     SessionHeader,
+    TurnEndEvent,
     TurnStartEvent,
     UnknownEvent,
     UnreadableSessionError,
@@ -92,6 +93,22 @@ def test_a_line_may_be_given_as_bytes() -> None:
     event = SessionEvent(seq=3, time=1000, data=SAID, on_surface=True)
 
     assert decode_event(encode_event(event).encode(), KINDS) == event
+
+
+def test_the_end_of_a_turn_is_written_with_its_code_and_read_without_one() -> None:
+    blocked = TurnEndEvent(turn=2, reason="blocked", detail="no step is left", code="STEP_BUDGET")
+
+    assert encode_event(SessionEvent(seq=7, time=1000, data=blocked)) == (
+        '{"type":"turn/end","seq":7,"time":1000,'
+        '"data":{"turn":2,"reason":"blocked","detail":"no step is left","code":"STEP_BUDGET"}}'
+    )
+    # A line that was written before the end of a turn had a code.
+    old = (
+        '{"type":"turn/end","seq":7,"time":1000,"data":{"turn":2,"reason":"blocked","detail":"x"}}'
+    )
+    read = decode_event(old, KINDS).data
+    assert isinstance(read, TurnEndEvent)
+    assert (read.reason, read.detail, read.code) == ("blocked", "x", None)
 
 
 def test_an_unknown_event_that_may_be_skipped_is_kept_as_it_was_read() -> None:

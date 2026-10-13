@@ -59,11 +59,12 @@ def outcome_of(session: Session) -> Outcome:
     """
     reason: TurnEndReason | None = None
     detail: str | None = None
+    code: str | None = None
     arrived = ""
     for event in session.events:
         data = event.data
         if isinstance(data, TurnEndEvent):
-            reason, detail = data.reason, data.detail
+            reason, detail, code = data.reason, data.detail, data.code
         elif isinstance(data, AssistantMessageEvent):
             # Told below, with what it went on from.
             arrived = "" if data.message.text.strip() else arrived
@@ -78,6 +79,7 @@ def outcome_of(session: Session) -> Outcome:
         text=replied if reason == "completed" else arrived,
         steps=TURN.of(session).step,
         usage=USAGE.of(session).usage,
+        code=code,
     )
 
 

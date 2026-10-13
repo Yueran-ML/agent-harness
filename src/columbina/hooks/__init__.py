@@ -121,6 +121,7 @@ from columbina.tools import (
 
 __all__ = [
     "PROJECT_FILE",
+    "STOPPED_BY_A_HOOK",
     "Config",
     "HookInvokedEvent",
     "HookResultEvent",
@@ -133,6 +134,9 @@ name = "hooks"
 inject = (AGENTS, SESSIONS, TOOLS)
 
 logger = logging.getLogger(__name__)
+
+STOPPED_BY_A_HOOK = "HOOK"
+"""The code of a turn that ended because a hook stopped what a person said."""
 
 _FILE_TOOLS = ("read", "write", "edit")
 _SOURCE = "hook/"
@@ -495,7 +499,7 @@ class _Bridge:
             else:
                 self._passed[session].add(seq)
         if stopped:
-            return Reject(f"a hook stopped the input: {stopped[0]}")
+            return Reject(f"a hook stopped the input: {stopped[0]}", STOPPED_BY_A_HOOK)
         return await proceed(info)
 
     async def guard(self, ctx: Context, invocation: Invocation) -> Deny | None:

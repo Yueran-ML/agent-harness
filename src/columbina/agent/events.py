@@ -14,6 +14,16 @@ from columbina.kernel import EmitEvent, SerialEvent, WaterfallEvent
 from columbina.llm.types import CallConfig, Chunk, LlmFailure
 from columbina.session import TurnEndReason
 
+NO_DECISION = "NO_DECISION"
+"""The code of a turn that was blocked because a listener answered nothing about a step."""
+
+EXCEPTION = "EXCEPTION"
+"""The code of a turn that ended with an error of this program, and not of a model.
+
+A request that failed for good gives the code of its failure, as the service
+of the model or its adapter named it.
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class StepInfo:
@@ -37,9 +47,17 @@ class Enter:
 
 @dataclass(frozen=True, slots=True)
 class Reject:
-    """The answer that keeps a step from beginning, which ends the turn as ``blocked``."""
+    """The answer that keeps a step from beginning, which ends the turn as ``blocked``.
+
+    Attributes:
+        reason: Why, in words for a person.
+        code: Why, for a program: a word that whoever refuses chooses for
+            each of its reasons, such as ``STEP_BUDGET``. It goes into the
+            end of the turn as it is.
+    """
 
     reason: str
+    code: str | None = None
 
 
 StepDecision = Enter | Reject

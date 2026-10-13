@@ -490,7 +490,7 @@ async def test_a_source_that_fails_when_it_is_asked_again_ends_the_turn_there(
 
     assert len(harness.model.requests) == 1
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="RuntimeError: the shelf fell over"
+        turn=1, reason="error", detail="RuntimeError: the shelf fell over", code="EXCEPTION"
     )
 
 

@@ -287,7 +287,7 @@
 | 类型 | 载荷的字段 | 消息 | 含义 |
 |---|---|---|---|
 | `turn/start` | `turn` | | 一个回合开始 |
-| `turn/end` | `turn`、`reason`、`detail` | | 一个回合结束 |
+| `turn/end` | `turn`、`reason`、`detail`、`code` | | 一个回合结束 |
 | `step/start` | `turn`、`step` | | 一步开始：一次对模型的请求和它引出的工具调用 |
 | `step/end` | `turn`、`step` | | 一步结束 |
 | `system/message` | `message` | 是 | 系统提示词 |
@@ -308,7 +308,7 @@
 | `hook/invoked` | `event`、`command` | | 用户的一个钩子即将运行 |
 | `hook/result` | `event`、`command`、`status`、`exit_code`、`duration_ms`、`reason` | | 这个钩子运行完了 |
 | `subagent/started` | `call_id`、`session_id`、`kind`、`description` | | 一个子代理开始做交给它的任务 |
-| `subagent/ended` | `call_id`、`session_id`、`reason`、`detail`、`steps` | | 这个子代理结束了 |
+| `subagent/ended` | `call_id`、`session_id`、`reason`、`detail`、`steps`、`code` | | 这个子代理结束了 |
 | `compaction/start` | `why`、`tokens` | | 开始压缩对话 |
 | `compaction/summary` | `summary`、`replaces`、`region_tokens`、`summary_tokens`、`usage` | | 摘要写好了，带着它的消息紧随其后 |
 | `compaction/end` | `why`、`outcome` | | 压缩结束 |
@@ -317,6 +317,7 @@
 各字段的取值范围：
 
 - `turn/end.reason`：`completed`、`aborted`、`blocked`、`error`、`max-tokens`、`interrupted`、`forked`。`detail` 是补充说明，例如 `aborted` 时是谁停的，`error` 时是错误信息。`max-tokens` 说的是回合的最后一次回复被输出上限截断。中途被截断、接着写完的回合是 `completed`。
+- `turn/end.code`：给程序看的代码，`detail` 是给人看的那句话，分类时看代码，不要去匹配那句话。`reason` 为 `blocked` 时，代码说明是谁不让回合继续：回合预算的步数、token、时间三个上限分别是 `STEP_BUDGET`、`TOKEN_BUDGET`、`TIME_BUDGET`，钩子拦下用户的输入是 `HOOK`，没有监听者对下一步作出决定是 `NO_DECISION`。别的插件不让回合继续时，代码由它自己给，没有给就是 `null`。`reason` 为 `error` 时，请求最终失败的回合带着那次失败的 `failure.code`，例如 `RATE_LIMIT`；程序自己出错是 `EXCEPTION`。其余的 `reason` 下代码是 `null`。早先版本写下的日志里没有这个字段，按 `null` 对待。
 - `assistant/message.finish_reason`：`stop`、`tool-calls`、`max-tokens`，或者 `null`。`null` 表示回复被打断，`message` 里是已经到达的部分。
 - `usage`：`{input_tokens, output_tokens, cache_read_tokens, cache_write_tokens}`。四个数互不重叠，`input_tokens` 只算没有从缓存里读的输入。
 - `failure`：`{message, code, status, retry_after_ms, request_id}`。`code` 是稳定的代码，例如 `RATE_LIMIT`。`CUT_OFF` 表示回复在第一个字之前就被输出上限截断，这不是出错，程序随后让模型接着写。
@@ -327,7 +328,7 @@
 - `hook/result.status`：`completed`、`blocked`、`failed`、`timed-out`。`blocked` 表示钩子拦下了它被问到的那件事，`reason` 是它给的理由，其余情况下 `reason` 为空或者是它要求先问人的理由。`exit_code` 在命令没有运行到结束时为 `null`。`duration_ms` 是这次运行的用时。钩子运行失败或者超时都不拦截任何事。
 - `request/aside.purpose`：`summary` 是请模型写摘要的一次请求。`subagent` 是一个子代理用掉的 token 的合计，在它结束时记一条，没有用量时不记。
 - `subagent/*`：`call_id` 是交出任务的那次工具调用，与 `tool/call` 和 `tool/result` 的 `call_id` 相同。`session_id` 是子代理自己的会话。`kind` 是子代理的类型，调用没有指定时为 `null`。`description` 是模型为这件任务写的几个词。
-- `subagent/ended.reason`：取 `turn/end.reason` 的那些值。子会话里没有回合结束的记录时是 `unknown`。`detail` 与子会话里 `turn/end.detail` 相同，`steps` 是子代理走过的步数。只有 `completed` 的子代理交回了回答，其余情况下这次调用的 `tool/result` 带着错误，错误的文字里写明它是怎样结束的。
+- `subagent/ended.reason`：取 `turn/end.reason` 的那些值。子会话里没有回合结束的记录时是 `unknown`。`detail` 和 `code` 与子会话里 `turn/end` 的这两项相同，`steps` 是子代理走过的步数。只有 `completed` 的子代理交回了回答，其余情况下这次调用的 `tool/result` 带着错误，错误的文字里写明它是怎样结束的。
 - `compaction/*.why`：`pressure`（对话接近模型的上限）、`overflow`（模型因为太长拒绝了请求）、`manual`（用户要求）。
 - `compaction/end.outcome`：`{trimmed, summarised, before, after, error}`。`trimmed` 是被裁短的工具结果的条数，`summarised` 是被摘要顶替的消息的条数，`before` 和 `after` 是压缩前后对话的 token 估计数，`error` 不为 `null` 时说明没有做完的原因。
 

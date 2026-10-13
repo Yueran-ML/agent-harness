@@ -374,7 +374,7 @@ async def test_a_call_that_fails_ends_the_turn_with_an_error(harness: Harness) -
         message=assistant("I w"), usage=Usage(), failure=failure
     )
     assert agent.session.events[-1].data == TurnEndEvent(
-        turn=1, reason="error", detail="AUTH: the key is not valid"
+        turn=1, reason="error", detail="AUTH: the key is not valid", code="AUTH"
     )
     assert agent.session.messages == (SYSTEM, user("Say hello."))
 
@@ -396,6 +396,7 @@ async def test_a_model_that_is_not_there_ends_the_turn_with_an_error(harness: Ha
         turn=1,
         reason="error",
         detail="INVALID_REQUEST: no adapter is registered for the provider 'nowhere'",
+        code="INVALID_REQUEST",
     )
 
 

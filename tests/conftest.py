@@ -5,7 +5,6 @@ from pathlib import Path
 
 import keyring
 import pytest
-from hypothesis import settings
 from keyring.backends import null
 
 import columbina.agent
@@ -19,18 +18,11 @@ from columbina.llm import LLM
 from columbina.llm.adapters.scripted import Scripted
 from columbina.session import SESSIONS
 from columbina.tools import TOOLS
+from support import cases
 from support.loop import Harness
 
-# Tests that draw their cases at random find more over time, because every run draws others.
-# Whoever needs the same answer from every run asks for the same cases: the check of the
-# mutants does, since a fault that is found in one run and missed in the next says nothing.
-#
-# No case is held to a time of its own. How long one case takes says how fast the machine
-# is, and a machine of the CI has taken many times as long as the one that the tests were
-# written on. A test that does not end is ended by the limit that every test has.
-settings.register_profile("default", deadline=None)
-settings.register_profile("steady", derandomize=True, deadline=None)
-settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
+# What every test goes by that draws its cases.
+cases.register()
 
 # How long the end of a test may take. Ending takes a moment at most.
 _END_SECONDS = 20

@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from columbina.compaction.basic.trim import Cut, apply, cuts, trim
+from columbina.compaction.basic.trim import Cut, apply, cuts, located, trim, whole
 from columbina.kernel import Context
 from columbina.llm import (
     AssistantMessage,
@@ -274,6 +274,62 @@ async def test_what_would_be_cut_can_be_found_without_cutting_it(ctx: Context) -
     assert apply(session, found) == 1
     assert session.events[-1].data == cut.shorter
     assert session.events[-1].replaces == (first,)
+
+
+WHERE = "(The whole result has 10000 bytes and is in spill/s-1/result.txt. Read it with read.)"
+
+
+async def test_a_cut_can_say_where_the_whole_of_the_result_is(ctx: Context) -> None:
+    session = begun(ctx)
+    long = text_of(10_000)
+    asked(session, "call-1")
+    old = answered(session, "call-1", long)
+    asked(session, say="Done.")
+    (cut,) = cuts(session, **LIMITS)
+
+    told = located(cut, WHERE, **LIMITS)
+
+    # The line stands after the one that says what is left out, and the two ends are the same.
+    assert told.seq == old
+    assert told.whole == cut.whole
+    (block,) = told.shorter.message.content
+    assert block.text == f"{long[:4096]}{left_out(4880)}\n{WHERE}\n{long[-1024:]}"
+    assert whole(cut) == long
+
+
+async def test_a_cut_with_no_room_for_where_the_whole_is_stays_as_it_was(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    answered(session, "call-1", text_of(10_000))
+    asked(session, say="Done.")
+    (roomy,) = cuts(session, **LIMITS)
+    (short,) = roomy.shorter.message.content
+    tight = {**LIMITS, "over": len(short.text) + 10}
+    (cut,) = cuts(session, **tight)
+
+    # With the line, what takes the place of the result would be long enough to be cut again.
+    assert located(cut, WHERE, **tight) == cut
+
+
+async def test_where_the_whole_is_stands_in_every_block_that_was_cut(ctx: Context) -> None:
+    session = begun(ctx)
+    asked(session, "call-1")
+    blocks = (
+        TextBlock(text=text_of(9000)),
+        TextBlock(text="short"),
+        TextBlock(text=text_of(9500)),
+    )
+    session.append(ToolResultEvent(message=ToolMessage(call_id="call-1", content=blocks)))
+    asked(session, say="Done.")
+    (cut,) = cuts(session, **LIMITS)
+
+    first, second, third = located(cut, WHERE, **LIMITS).shorter.message.content
+
+    assert first.text.count(WHERE) == 1
+    assert second.text == "short"
+    assert third.text.count(WHERE) == 1
+    # What is saved is all of it, block after block.
+    assert whole(cut) == f"{text_of(9000)}\nshort\n{text_of(9500)}"
 
 
 async def test_a_result_that_the_model_no_longer_sees_is_passed_over(ctx: Context) -> None:

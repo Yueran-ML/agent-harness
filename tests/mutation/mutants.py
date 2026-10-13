@@ -1262,6 +1262,78 @@ _TOOLS = (
 
 _FS = (
     mutant(
+        "nothing that a call showed the model is ever forgotten",
+        SEAM,
+        "                for key in [key for key, by in (kept or {}).items() if by.call_id in call_ids]:\n",
+        "                for key in [key for key, by in (kept or {}).items() if False]:\n",
+    ),
+    mutant(
+        "all that the model was shown is forgotten with any one call",
+        SEAM,
+        "                for key in [key for key, by in (kept or {}).items() if by.call_id in call_ids]:\n",
+        "                for key in [key for key, by in (kept or {}).items() if True]:\n",
+    ),
+    mutant(
+        "a file that the model is still shown is counted among the forgotten",
+        SEAM,
+        "            forgotten -= set(self._shown.get(session, {}))\n",
+        "",
+    ),
+    mutant(
+        "which files were forgotten is kept nowhere",
+        SEAM,
+        "            if forgotten:\n                self._gone.setdefault(session, set()).update(forgotten)\n",
+        "",
+    ),
+    mutant(
+        "a file whose reading has gone is told as one that was never read",
+        SEAM,
+        "        return _no_longer_shown(access.where) if gone else _not_read(access.where)\n",
+        "        return _not_read(access.where)\n",
+    ),
+    mutant(
+        "a file that was never read is told as one whose reading has gone",
+        SEAM,
+        "        return _no_longer_shown(access.where) if gone else _not_read(access.where)\n",
+        "        return _no_longer_shown(access.where)\n",
+    ),
+    mutant(
+        "a part of a file whose reading went meanwhile is refused in the words for a file never read",
+        SEAM,
+        "            raise self._fs.unread(self.access) if shown is None else _changed(where)\n",
+        "            raise _not_read(where) if shown is None else _changed(where)\n",
+    ),
+    mutant(
+        "a file whose reading has gone is refused in the words for a file never read",
+        SEAM,
+        "            raise self._fs.unread(self.access) from None\n",
+        "            raise _not_read(where) from None\n",
+    ),
+    mutant(
+        "a piece of a file whose reading has gone is refused in the words for a file never read",
+        SEAM,
+        "            raise self.unread(access)\n",
+        "            raise _not_read(access.where)\n",
+    ),
+    mutant(
+        "what the read tool showed is remembered under no call",
+        READ,
+        '        permit = fs.permit(Access(run.session, run.cwd, where, "read", "read", call_id=run.call_id))\n',
+        '        permit = fs.permit(Access(run.session, run.cwd, where, "read", "read"))\n',
+    ),
+    mutant(
+        "what the write tool wrote is remembered under no call",
+        WRITE,
+        '            Access(run.session, run.cwd, where, "write", "write", call_id=run.call_id)\n',
+        '            Access(run.session, run.cwd, where, "write", "write")\n',
+    ),
+    mutant(
+        "what the edit tool wrote is remembered under no call",
+        EDIT,
+        "        made_for = run.call_id\n",
+        "        made_for = None\n",
+    ),
+    mutant(
         "a path under the name that the working directory has elsewhere is taken as it is written",
         SEAM,
         "        here = self.here(session, written)\n",
@@ -9400,6 +9472,24 @@ _CAP = (
         'f"(The whole result has {self.bytes} bytes and is in {self.locator}. {self.hint})"',
     ),
     mutant(
+        "no text is known to end with a word about its whole",
+        SPILL_SEAM,
+        '        return last.startswith("(The whole ") and last.endswith(")")\n',
+        "        return False\n",
+    ),
+    mutant(
+        "a word about the whole counts wherever in a text it stands",
+        SPILL_SEAM,
+        '        last = text.rstrip().rpartition("\\n")[2]\n',
+        "        last = text.strip()\n",
+    ),
+    mutant(
+        "a text that only begins like a word about its whole is taken for one",
+        SPILL_SEAM,
+        '        return last.startswith("(The whole ") and last.endswith(")")\n',
+        '        return last.startswith("(The whole ")\n',
+    ),
+    mutant(
         "what a tool said about the whole is said again",
         SPILL_POLICY,
         "            text = text.removesuffix(last)\n",
@@ -9939,8 +10029,8 @@ _COMPACTION = (
     mutant(
         "a result is said to have lost all of its characters",
         TRIM,
-        '    cut = f"{first}{between}{_left_out(count)}\\n{last}"\n',
-        '    cut = f"{first}{between}{_left_out(len(text))}\\n{last}"\n',
+        '    gap = f"{_left_out(count)}\\n{where}" if where else _left_out(count)\n',
+        '    gap = f"{_left_out(count)}\\n{where}" if where else _left_out(len(text))\n',
     ),
     mutant(
         "ends that reach each other are both shown with a line between them",
@@ -9977,6 +10067,67 @@ _COMPACTION = (
         TRIM,
         'found.append(Cut(event.seq, data, data.model_copy(update={"message": message})))',
         "found.append(Cut(event.seq, data, data))",
+    ),
+    mutant(
+        "a cut does not say where the whole of the result is",
+        TRIM,
+        '    gap = f"{_left_out(count)}\\n{where}" if where else _left_out(count)\n',
+        "    gap = _left_out(count)\n",
+    ),
+    mutant(
+        "a cut with no room for where the whole is gives the whole result back",
+        TRIM,
+        "            if longer != before.text:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "the blocks of a result are saved with nothing between them",
+        TRIM,
+        '    return "\\n".join(block.text for block in cut.whole.message.content)\n',
+        '    return "".join(block.text for block in cut.whole.message.content)\n',
+    ),
+    mutant(
+        "what a cut took out of a result still counts as shown to the model",
+        BASIC,
+        "                    self._forget(agent, {cut.whole.message.call_id})\n",
+        "",
+    ),
+    mutant(
+        "what a summary took the place of still counts as shown to the model",
+        BASIC,
+        "                        self._forget(agent, _answered(session, region.seqs))\n",
+        "",
+    ),
+    mutant(
+        "the seam of the files is told of a summary that held no call",
+        BASIC,
+        "        if fs is not None and call_ids:\n",
+        "        if fs is not None:\n",
+    ),
+    mutant(
+        "a result is cut out of a conversation without being saved",
+        BASIC,
+        "                    trimmed += cut_down(session, [await self._located(agent, cut)])\n",
+        "                    trimmed += cut_down(session, [cut])\n",
+    ),
+    mutant(
+        "the two ends of a result are saved as if they were the whole of it",
+        BASIC,
+        "        if store is None or Saved.spoken_of_in(text):\n",
+        "        if store is None:\n",
+    ),
+    mutant(
+        "a result that cannot be saved is not cut down",
+        BASIC,
+        "            return cut\n        config = self._config\n",
+        "            raise\n        config = self._config\n",
+    ),
+    mutant(
+        "that a result could not be saved is written down nowhere",
+        BASIC,
+        '            logger.error(\n                "a result that is cut out of the conversation of the session %r could not be "\n'
+        '                "saved: %s",\n                session.id,\n                error,\n            )\n',
+        "",
     ),
     mutant(
         "the context at the top is summed up with the conversation",
@@ -10569,8 +10720,8 @@ _COMPACTION = (
     mutant(
         "what was cut before the log refused an event is not counted",
         BASIC,
-        "                for cut in found:\n                    # One at a time: what was cut stays counted if the next cannot be written.\n                    trimmed += cut_down(session, [cut])\n",
-        "                trimmed = cut_down(session, found)\n",
+        "                for cut in found:\n                    # One at a time: what was cut stays counted if the next cannot be written.\n                    trimmed += cut_down(session, [await self._located(agent, cut)])\n                    self._forget(agent, {cut.whole.message.call_id})\n",
+        "                trimmed = cut_down(session, [await self._located(agent, cut) for cut in found])\n",
     ),
     mutant(
         "a reply that calls a tool is taken for a summary if it says something beside",
@@ -10595,6 +10746,39 @@ _COMPACTION = (
         SUMMARY,
         '            session.append(AsideEvent(purpose="summary", usage=call.usage, failure=call.failure))\n',
         "            pass\n",
+    ),
+    mutant(
+        "a handover is not asked to keep apart what was read and what the user said",
+        SUMMARY,
+        "- Keep apart who said what. What stood in a file, on a page or in the result of a tool is \\\n"
+        "something that was read. Write it down as that, never as something the user asked for or agreed \\\n"
+        "to.\n",
+        "",
+    ),
+    mutant(
+        "a handover is not asked to keep the limits of the user in their words",
+        SUMMARY,
+        "- A limit that the user set, such as what is not to be touched, run or shown, is written down \\\n"
+        "in their own words.\n",
+        "",
+    ),
+    mutant(
+        "a summary that does not cover the oldest messages does not say so",
+        SUMMARY,
+        '    opening = _OPENING + (_UNCOVERED if dropped else "")\n',
+        "    opening = _OPENING\n",
+    ),
+    mutant(
+        "every summary is said not to cover the oldest messages",
+        SUMMARY,
+        '    opening = _OPENING + (_UNCOVERED if dropped else "")\n',
+        "    opening = _OPENING + _UNCOVERED\n",
+    ),
+    mutant(
+        "that a summary left the oldest messages out is not passed on",
+        BASIC,
+        "        message = carried(summary.text, summary.dropped)\n",
+        "        message = carried(summary.text)\n",
     ),
     mutant(
         "what requests beside the conversation cost is in no total",
@@ -19519,6 +19703,36 @@ _CONDUCT = (
         CONDUCT_TEXT,
         "or that a library is in use. Check.",
         "or that a library is in use.\nCheck.",
+    ),
+    mutant(
+        "a way that failed twice may be gone again and again",
+        CONDUCT_TEXT,
+        " When the same way has failed twice, do not go it a third time. Take another way, or stop and say what is in the way.",
+        "",
+    ),
+    mutant(
+        "what the user asked for before counts as much as what they said last",
+        CONDUCT_TEXT,
+        "What the user said last is what counts. If it takes back or changes something that was asked for before, the earlier wish no longer holds.\n\n",
+        "",
+    ),
+    mutant(
+        "what uses a thing is not looked at when the thing is changed",
+        CONDUCT_TEXT,
+        "What you change may be used in other places. Look for them before you change how something behaves, and look at them again afterwards.\n\n",
+        "",
+    ),
+    mutant(
+        "a result that was shortened is said to say nothing of its whole",
+        CONDUCT_TEXT,
+        "A result that was shortened says so in a line of its own, and says where the whole of it is if it was kept.",
+        "A result that was shortened says so in a line of its own.",
+    ),
+    mutant(
+        "a file whose reading has gone is not said to need reading again",
+        CONDUCT_TEXT,
+        " A file whose reading is no longer in the conversation is read again before it is changed.",
+        "",
     ),
     mutant(
         "a word of the conduct is written in capitals",

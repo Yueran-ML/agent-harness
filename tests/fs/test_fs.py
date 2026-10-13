@@ -46,9 +46,16 @@ class Asking:
         self.work = work
 
     def __call__(
-        self, kind: Kind, written: str, *, tool: str = "probe", named: bool = True
+        self,
+        kind: Kind,
+        written: str,
+        *,
+        tool: str = "probe",
+        named: bool = True,
+        call_id: str | None = None,
     ) -> Access:
-        return Access(self.session, self.work, locate(self.work, written), kind, tool, named)
+        where = locate(self.work, written)
+        return Access(self.session, self.work, where, kind, tool, named, call_id)
 
 
 @pytest.fixture
@@ -439,6 +446,143 @@ if sys.platform == "win32":
         # However the path is written, it is found under the name that is on the disk.
         assert fs.seen(session, access("read", "A.TXT").where.path) == Fingerprint(6, 1000)
         assert fs.seen(session, access("read", "./sub/../a.TXT").where.path) == Fingerprint(6, 1000)
+
+
+# What the model no longer has before it
+
+
+def test_what_a_call_showed_can_be_forgotten(fs: Fs, access: Asking, session: Session) -> None:
+    first = fs.permit(access("read", "a.txt", call_id="call-1"))
+    second = fs.permit(access("read", "b.txt", call_id="call-2"))
+    fs.shown(first, Fingerprint(6, 1000))
+    fs.shown(second, Fingerprint(7, 2000))
+
+    assert fs.unshown(session, {"call-1", "call-9"}) == 1
+
+    # Whoever takes the result of a call out of what the model sees says so here. The model
+    # no longer knows what the file holds, so the file counts as one that it has not read.
+    assert fs.seen(session, first.access.where.path) is None
+    assert fs.seen(session, second.access.where.path) == Fingerprint(7, 2000)
+    assert fs.unshown(session, {"call-1"}) == 0
+
+
+def test_a_file_that_a_later_call_showed_again_stays_shown(
+    fs: Fs, access: Asking, session: Session
+) -> None:
+    fs.shown(fs.permit(access("read", "a.txt", call_id="call-1")), Fingerprint(6, 1000))
+    again = fs.permit(access("read", "a.txt", call_id="call-2"))
+    fs.shown(again, Fingerprint(6, 1000))
+
+    assert fs.unshown(session, {"call-1"}) == 0
+
+    assert fs.seen(session, again.access.where.path) == Fingerprint(6, 1000)
+
+
+def test_what_is_on_its_way_from_a_call_is_forgotten_with_it(
+    fs: Fs, access: Asking, session: Session
+) -> None:
+    permit = fs.permit(access("read", "a.txt", call_id="call-1"))
+    fs.showing(permit, Fingerprint(6, 1000))
+
+    assert fs.unshown(session, {"call-1"}) == 1
+    fs.delivered(session)
+
+    assert fs.seen(session, permit.access.where.path) is None
+
+
+def test_a_file_that_is_still_shown_is_not_counted_among_the_forgotten(
+    fs: Fs, access: Asking, session: Session
+) -> None:
+    fs.shown(fs.permit(access("read", "a.txt", call_id="call-1")), Fingerprint(6, 1000))
+    again = fs.permit(access("read", "a.txt", call_id="call-2"))
+    fs.showing(again, Fingerprint(6, 1000))
+
+    # What the second call read was on its way to the model. The first one's is before it.
+    assert fs.unshown(session, {"call-2"}) == 0
+
+    assert fs.seen(session, again.access.where.path) == Fingerprint(6, 1000)
+
+
+def test_a_part_of_a_file_that_was_forgotten_meanwhile_is_not_put_in_place(
+    fs: Fs, ctx: Context, access: Asking, session: Session, work: Path
+) -> None:
+    fs.grants.add(ctx, "all", allowing())
+    status = (work / "a.txt").stat()
+    seen = Fingerprint(status.st_size, status.st_mtime_ns)
+    fs.shown(fs.permit(access("read", "a.txt", call_id="call-1")), seen)
+    writing = fs.permit(access("write", "a.txt", call_id="call-2"))
+    # The tool has read the file and made the new content. Then the reading went.
+    fs.unshown(session, {"call-1"})
+
+    with pytest.raises(ToolFailure) as refused:
+        writing.replace(b"anew", made_from=seen)
+
+    assert refused.value.code == "NOT_READ"
+    assert "has since been taken out of the conversation" in str(refused.value)
+    assert (work / "a.txt").read_text() == "inside"
+
+
+def test_what_was_shown_by_nobody_in_particular_is_not_forgotten(
+    fs: Fs, access: Asking, session: Session
+) -> None:
+    permit = fs.permit(access("read", "a.txt"))
+    fs.shown(permit, Fingerprint(6, 1000))
+
+    assert fs.unshown(session, {"call-1"}) == 0
+
+    assert fs.seen(session, permit.access.where.path) == Fingerprint(6, 1000)
+
+
+def test_forgetting_in_one_session_leaves_the_other_alone(
+    fs: Fs, ctx: Context, access: Asking, session: Session, work: Path
+) -> None:
+    other = Session(ctx, "s-2", {kind.event_type: kind for kind in CORE_EVENTS})
+    theirs = fs.permit(Access(other, work, locate(work, "a.txt"), "read", "probe", True, "call-1"))
+    fs.shown(theirs, Fingerprint(6, 1000))
+
+    assert fs.unshown(session, {"call-1"}) == 0
+
+    assert fs.seen(other, theirs.access.where.path) == Fingerprint(6, 1000)
+
+
+def test_a_file_that_was_forgotten_has_to_be_read_again_before_it_is_written(
+    fs: Fs, ctx: Context, access: Asking, session: Session, work: Path
+) -> None:
+    fs.grants.add(ctx, "all", allowing())
+    status = (work / "a.txt").stat()
+    seen = Fingerprint(status.st_size, status.st_mtime_ns)
+    fs.shown(fs.permit(access("read", "a.txt", call_id="call-1")), seen)
+    fs.unshown(session, {"call-1"})
+    writing = fs.permit(access("write", "a.txt", call_id="call-2"))
+
+    with pytest.raises(ToolFailure) as refused:
+        writing.replace(b"anew")
+
+    # The words say why: the model did read the file, and may well remember that it did.
+    assert refused.value.code == "NOT_READ"
+    assert str(refused.value) == (
+        "a.txt was read, but what was read of it has since been taken out of the conversation "
+        "to make it shorter. Read it again before writing it."
+    )
+    assert (work / "a.txt").read_text() == "inside"
+    # Read again, it is written like any other.
+    fs.shown(fs.permit(access("read", "a.txt", call_id="call-3")), seen)
+    writing.replace(b"anew")
+    assert (work / "a.txt").read_text() == "anew"
+
+
+def test_a_piece_of_a_file_that_was_forgotten_is_not_changed_either(
+    fs: Fs, access: Asking, session: Session
+) -> None:
+    reading = fs.permit(access("read", "a.txt", call_id="call-1"))
+    fs.shown(reading, Fingerprint(6, 1000))
+    fs.unshown(session, {"call-1"})
+
+    with pytest.raises(ToolFailure) as refused:
+        fs.must_have_shown(reading, Fingerprint(6, 1000))
+
+    assert refused.value.code == "NOT_READ"
+    assert "has since been taken out of the conversation" in str(refused.value)
 
 
 # What is on its way to the model

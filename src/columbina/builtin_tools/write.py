@@ -49,7 +49,9 @@ def write_tool(fs: Fs) -> Tool[WriteArgs, str]:
                 "so nothing was written. Try again.",
                 code="MOVED",
             )
-        permit = fs.permit(Access(run.session, run.cwd, where, "write", "write"))
+        permit = fs.permit(
+            Access(run.session, run.cwd, where, "write", "write", call_id=run.call_id)
+        )
         # Arguments are read as JSON in UTF-8, so the content is text that can be stored.
         data = args.content.encode("utf-8")
         was_there = where.path.exists()

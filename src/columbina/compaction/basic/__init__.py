@@ -24,7 +24,10 @@ Making it shorter is done in this order.
 
 1. The long results of tools that the model has read are looked for. If
    cutting them down to their ends is enough, that is all that is done. It
-   costs no request.
+   costs no request. Where the program has a place for what is too large
+   for a conversation, the whole of a result is saved there before it is
+   cut, and what takes its place says where: the model can read again what
+   it turns out to need.
 2. Otherwise the oldest part is summed up by the model, as it stands: with
    the results whole, the summary is better, and the request is one whose
    beginning the service has seen before. See :mod:`.region` for what goes
@@ -51,7 +54,7 @@ import asyncio
 import logging
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from typing import Self
 from weakref import WeakKeyDictionary, WeakSet
@@ -83,8 +86,9 @@ from columbina.compaction import (
 )
 from columbina.compaction.basic.region import Region, choose
 from columbina.compaction.basic.summary import SummaryError, carried, summarise
+from columbina.compaction.basic.trim import Cut, cuts, located, whole
 from columbina.compaction.basic.trim import apply as cut_down
-from columbina.compaction.basic.trim import cuts
+from columbina.fs import FS
 from columbina.kernel import Context, Next
 from columbina.llm import LLM, CallConfig, Llm, Message, ToolSchema
 from columbina.session import (
@@ -95,8 +99,10 @@ from columbina.session import (
     RequestHeaderEvent,
     Session,
     SessionEvent,
+    ToolResultEvent,
     UserMessageEvent,
 )
+from columbina.spill import SPILL, Saved
 from columbina.token_meter import TOKEN_METER, Measure, TokenMeter, estimate_message
 
 __all__ = ["Basic", "Budget", "Config", "Refusal", "apply", "budget", "inject", "name", "refusal"]
@@ -253,6 +259,16 @@ async def _as_drafted(draft: RequestDraft) -> CallConfig:
 def _describe(error: BaseException) -> str:
     text = str(error)
     return f"{type(error).__name__}: {text}" if text else type(error).__name__
+
+
+def _answered(session: Session, seqs: Collection[int]) -> set[str]:
+    """Return the ids of the calls whose results are among some events of a session.
+
+    A call and its results are never parted, so the results tell which
+    calls a part of a conversation holds.
+    """
+    results = (session.events[seq].data for seq in seqs)
+    return {data.message.call_id for data in results if isinstance(data, ToolResultEvent)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,13 +458,15 @@ class Basic:
                     except SummaryError as failed:
                         error = str(failed)
                     else:
+                        self._forget(agent, _answered(session, region.seqs))
                         now = math.ceil(self._meter.measure(session).estimated * plan.scale)
                         enough = plan.target is None or now <= plan.target
             if not summarised or not enough:
                 # Cutting alone is enough, or there is no summary, or it was not enough.
                 for cut in found:
                     # One at a time: what was cut stays counted if the next cannot be written.
-                    trimmed += cut_down(session, [cut])
+                    trimmed += cut_down(session, [await self._located(agent, cut)])
+                    self._forget(agent, {cut.whole.message.call_id})
             if not (trimmed or summarised or error) and why != "manual":
                 error = "nothing of this conversation can go"
         except asyncio.CancelledError:
@@ -459,6 +477,50 @@ class Basic:
             error = _describe(failed)
         counts = why == "pressure"
         return self._end(session, why, measured.tokens, trimmed, summarised, error, counts=counts)
+
+    def _forget(self, agent: Agent, call_ids: Collection[str]) -> None:
+        """Tell the seam of the files that the model no longer sees what some calls showed it.
+
+        A file that one of them read counts as not read from then on, so the
+        model reads it again before it changes it: what it would write
+        otherwise is what it remembers of a text that is no longer before it.
+        """
+        fs = agent.ctx.get(FS)
+        if fs is not None and call_ids:
+            fs.unshown(agent.session, call_ids)
+
+    async def _located(self, agent: Agent, cut: Cut) -> Cut:
+        """Save the whole of a result that is about to be cut, and have the cut say where it is.
+
+        The cut comes back as it was where nothing can be saved, where the
+        saving fails, and where the result is no whole: one that was too
+        large when it was made stands in the conversation as its two ends,
+        with a last line about where its whole is. That line is kept by the
+        cut, and the two ends are not saved as if they were everything.
+
+        The line costs a few tokens that were not counted when it was worked
+        out whether cutting is enough. The room that is kept free is many
+        times that.
+        """
+        store = agent.ctx.get(SPILL)
+        text = whole(cut)
+        if store is None or Saved.spoken_of_in(text):
+            return cut
+        session = agent.session
+        try:
+            saved = await asyncio.to_thread(store.save_text, session, agent.cwd, "result.txt", text)
+        except OSError as error:
+            logger.error(
+                "a result that is cut out of the conversation of the session %r could not be "
+                "saved: %s",
+                session.id,
+                error,
+            )
+            return cut
+        config = self._config
+        return located(
+            cut, saved.told(), over=config.trim_over, head=config.trim_head, tail=config.trim_tail
+        )
 
     async def _sum_up(
         self,
@@ -489,7 +551,7 @@ class Basic:
             tools=tools,
             size=size,
         )
-        message = carried(summary.text)
+        message = carried(summary.text, summary.dropped)
         session.append(
             CompactionSummaryEvent(
                 summary=summary.text,

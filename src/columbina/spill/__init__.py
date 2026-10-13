@@ -45,6 +45,16 @@ class Saved:
             f"(The whole {self.what} has {self.bytes} bytes and is in {self.locator}. {self.hint})"
         )
 
+    @staticmethod
+    def spoken_of_in(text: str) -> bool:
+        """Tell whether a text ends with a line about the whole that it is a part of.
+
+        Such a line says where the whole is, or that it was not kept. Either
+        way the text is not the whole, and nobody should save it as that.
+        """
+        last = text.rstrip().rpartition("\n")[2]
+        return last.startswith("(The whole ") and last.endswith(")")
+
 
 class SpillFile(Protocol):
     """Something that is being saved as it comes.

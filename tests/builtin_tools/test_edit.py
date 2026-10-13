@@ -258,6 +258,23 @@ async def test_a_file_that_was_not_read_is_not_edited_whatever_the_old_text(desk
     assert file.read_bytes() == b"one\n"
 
 
+async def test_what_an_edit_wrote_is_remembered_under_its_own_call(desk: Desk) -> None:
+    file = await shown(desk, "a.txt", b"one two\n")
+    first = await desk.call("edit", path="a.txt", old="one", new="1")
+    assert first.error is None
+    # The edit showed the model the file as it is now, so the reading before it no longer
+    # counts for anything. With the edit gone from the conversation, the file is not known.
+    assert desk.fs.unshown(desk.session, {"call-1"}) == 0
+    assert desk.fs.unshown(desk.session, {"call-2"}) == 1
+
+    second = await desk.call("edit", path="a.txt", old="two", new="2")
+
+    assert second.error is not None
+    assert second.error.code == "NOT_READ"
+    assert "has since been taken out of the conversation" in second.error.reason
+    assert file.read_bytes() == b"1 two\n"
+
+
 async def test_a_file_that_changed_since_it_was_read_is_not_edited(desk: Desk) -> None:
     file = await shown(desk, "a.txt", b"one\n")
     file.write_bytes(b"one, and more\n")

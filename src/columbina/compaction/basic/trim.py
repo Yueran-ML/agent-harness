@@ -13,6 +13,12 @@ its last reply are such: the request that shows them to it is still to come.
 A result that was saved somewhere because it was too large says so in its
 last line. That line is at the end, and the end is kept.
 
+What is cut out of a result is gone from the conversation, and a model may
+need it again: the middle of a long output cannot always be made a second
+time. So whoever cuts a result may save the whole of it first, and have the
+line that says where it is put after the line that says what is left out.
+See :func:`whole` and :func:`located`.
+
 Finding what would be cut and cutting it are two moves. Whoever makes a
 conversation shorter looks first whether this alone would be enough. If it
 is not, the oldest part is summed up as it stands, and what is cut
@@ -25,7 +31,7 @@ from dataclasses import dataclass
 from columbina.llm import TextBlock
 from columbina.session import AssistantMessageEvent, Session, ToolResultEvent
 
-__all__ = ["Cut", "apply", "cuts", "trim"]
+__all__ = ["Cut", "apply", "cuts", "located", "trim", "whole"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +53,15 @@ def _left_out(count: int) -> str:
     return f"[... {count} characters of this result were left out to shorten the conversation ...]"
 
 
-def _two_ends(text: str, over: int, head: int, tail: int) -> str:
+def _two_ends(text: str, over: int, head: int, tail: int, where: str = "") -> str:
     """Return the two ends of a long text, with a line between them that says what is left out.
 
     The text has more than `over` characters. It is returned as it is if what would take its
     place would be long itself: that would be cut again the next time, and the line in it
     would count wrongly. So whatever takes the place of a text is shorter than the text.
+
+    A line that says where the whole is stands after the line about what is left out, if
+    one is given.
     """
     count = len(text) - head - tail
     if count <= 0:
@@ -61,7 +70,8 @@ def _two_ends(text: str, over: int, head: int, tail: int) -> str:
     first, last = text[:head], text[len(text) - tail :]
     # The line stands on its own, whether or not the beginning ends a line.
     between = "" if not first or first.endswith("\n") else "\n"
-    cut = f"{first}{between}{_left_out(count)}\n{last}"
+    gap = f"{_left_out(count)}\n{where}" if where else _left_out(count)
+    cut = f"{first}{between}{gap}\n{last}"
     return cut if len(cut) <= over else text
 
 
@@ -100,6 +110,38 @@ def cuts(session: Session, *, over: int, head: int, tail: int) -> list[Cut]:
         message = data.message.model_copy(update={"content": content})
         found.append(Cut(event.seq, data, data.model_copy(update={"message": message})))
     return found
+
+
+def whole(cut: Cut) -> str:
+    """Return all the text of a result as it was before it was cut, block after block."""
+    return "\n".join(block.text for block in cut.whole.message.content)
+
+
+def located(cut: Cut, where: str, *, over: int, head: int, tail: int) -> Cut:
+    """Return a cut whose shorter result also says where the whole one is.
+
+    The line stands after the one about what is left out, in every block
+    that is cut. A block that would be long itself with one line more keeps
+    the plain line: it would be cut again the next time.
+
+    Args:
+        cut: The cut, as :func:`cuts` found it.
+        where: The line that says where the whole is.
+        over: How many characters a block of text may have without being
+            cut. The three numbers are those that the cut was found with.
+        head: How many characters of its beginning are kept.
+        tail: How many characters of its end are kept.
+    """
+    content: list[TextBlock] = []
+    for before, after in zip(cut.whole.message.content, cut.shorter.message.content, strict=True):
+        told = after
+        if after != before:
+            longer = _two_ends(before.text, over, head, tail, where)
+            if longer != before.text:
+                told = TextBlock(text=longer)
+        content.append(told)
+    message = cut.shorter.message.model_copy(update={"content": tuple(content)})
+    return Cut(cut.seq, cut.whole, cut.shorter.model_copy(update={"message": message}))
 
 
 def apply(session: Session, found: Iterable[Cut]) -> int:

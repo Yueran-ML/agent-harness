@@ -51,11 +51,11 @@ import contextlib
 import logging
 import threading
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
-from typing import Any, BinaryIO, Literal, TypeVar, cast
+from typing import Any, BinaryIO, Literal, NamedTuple, TypeVar, cast
 
 from columbina.fs import bound
 from columbina.fs.paths import Located, locate
@@ -147,6 +147,9 @@ class Access:
         tool: The name of the tool that asks.
         named: Whether the call of the tool named this file. It is ``False``
             for a file that a tool comes upon while it searches.
+        call_id: The id of the call that the access is made for, if it is
+            made for one. What the call shows the model of the file is
+            remembered under it, see :meth:`Fs.unshown`.
     """
 
     session: Session
@@ -155,6 +158,7 @@ class Access:
     kind: Kind
     tool: str
     named: bool = True
+    call_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -303,7 +307,7 @@ class Permit:
         shown = self._fs.seen(self.access.session, where.path)
         if made_from is not None and shown != made_from:
             # Another call has written the file since this one read it.
-            raise _not_read(where) if shown is None else _changed(where)
+            raise self._fs.unread(self.access) if shown is None else _changed(where)
         try:
             status = bound.replace(
                 where.path,
@@ -320,7 +324,7 @@ class Permit:
         except bound.NotAFileError:
             raise ToolFailure(f"{where.written} is not a file.", code="NOT_A_FILE") from None
         except bound.NotShownError:
-            raise _not_read(where) from None
+            raise self._fs.unread(self.access) from None
         except bound.ChangedError:
             raise _changed(where) from None
         fingerprint = Fingerprint(status.st_size, status.st_mtime_ns)
@@ -331,6 +335,14 @@ class Permit:
 def _not_read(where: Located) -> ToolFailure:
     return ToolFailure(
         f"{where.written} exists and has not been read. Read it before writing it.",
+        code="NOT_READ",
+    )
+
+
+def _no_longer_shown(where: Located) -> ToolFailure:
+    return ToolFailure(
+        f"{where.written} was read, but what was read of it has since been taken out of the "
+        "conversation to make it shorter. Read it again before writing it.",
         code="NOT_READ",
     )
 
@@ -352,6 +364,13 @@ def _key(path: Path) -> str:
     return str(path)
 
 
+class _Showing(NamedTuple):
+    """A state in which a model was shown a file, and the call that showed it, if one did."""
+
+    fingerprint: Fingerprint
+    call_id: str | None
+
+
 class Fs:
     """Decides what tools may do to files, and remembers what the model was shown.
 
@@ -366,7 +385,16 @@ class Fs:
             path of the same file on this machine.
     """
 
-    __slots__ = ("_coming", "_lock", "_roots", "_shown", "grants", "names", "restrictions")
+    __slots__ = (
+        "_coming",
+        "_gone",
+        "_lock",
+        "_roots",
+        "_shown",
+        "grants",
+        "names",
+        "restrictions",
+    )
 
     def __init__(self) -> None:
         self.restrictions: Registry[Restriction] = Registry("restriction of file access")
@@ -375,13 +403,16 @@ class Fs:
             "name of the working directory elsewhere"
         )
         self._roots: weakref.WeakKeyDictionary[Session, Path] = weakref.WeakKeyDictionary()
-        self._shown: weakref.WeakKeyDictionary[Session, dict[str, Fingerprint]] = (
+        self._shown: weakref.WeakKeyDictionary[Session, dict[str, _Showing]] = (
             weakref.WeakKeyDictionary()
         )
         # What calls of the step that is under way have read, and the model has yet to see.
-        self._coming: weakref.WeakKeyDictionary[Session, dict[str, Fingerprint]] = (
+        self._coming: weakref.WeakKeyDictionary[Session, dict[str, _Showing]] = (
             weakref.WeakKeyDictionary()
         )
+        # The files that the model was shown and that were forgotten since. A file stays
+        # among them when it is shown again: nobody asks while it is.
+        self._gone: weakref.WeakKeyDictionary[Session, set[str]] = weakref.WeakKeyDictionary()
         # A file is replaced in a worker thread, which reads and writes what was shown.
         self._lock = threading.Lock()
 
@@ -502,7 +533,7 @@ class Fs:
         access = permit.access
         key = _key(access.where.path)
         with self._lock:
-            self._shown.setdefault(access.session, {})[key] = fingerprint
+            self._shown.setdefault(access.session, {})[key] = _Showing(fingerprint, access.call_id)
             # An older state that is on its way to the model is of no use any more.
             self._coming.get(access.session, {}).pop(key, None)
 
@@ -514,7 +545,9 @@ class Fs:
         """
         access = permit.access
         with self._lock:
-            self._coming.setdefault(access.session, {})[_key(access.where.path)] = fingerprint
+            self._coming.setdefault(access.session, {})[_key(access.where.path)] = _Showing(
+                fingerprint, access.call_id
+            )
 
     def delivered(self, session: Session) -> None:
         """Take note that the model has before it what the calls of a session have read so far.
@@ -527,10 +560,50 @@ class Fs:
             if coming:
                 self._shown.setdefault(session, {}).update(coming)
 
+    def unshown(self, session: Session, call_ids: Collection[str]) -> int:
+        """Forget what some calls showed the model of files, and return how many files that is.
+
+        Whoever takes a call or its result out of what the model sees says so
+        here: a result that is cut down, a part of a conversation that a
+        summary takes the place of. The model no longer has before it what
+        those files hold. They count as files that it has not read, so it
+        reads them again before it changes them.
+
+        A file that a later call has shown again stays shown. So does what
+        was shown for no call in particular.
+
+        Args:
+            session: The session of the calls.
+            call_ids: The ids of the calls.
+        """
+        with self._lock:
+            forgotten: set[str] = set()
+            for kept in (self._shown.get(session), self._coming.get(session)):
+                for key in [key for key, by in (kept or {}).items() if by.call_id in call_ids]:
+                    del cast("dict[str, _Showing]", kept)[key]
+                    forgotten.add(key)
+            # One that is still shown from another call is not gone.
+            forgotten -= set(self._shown.get(session, {}))
+            if forgotten:
+                self._gone.setdefault(session, set()).update(forgotten)
+            return len(forgotten)
+
+    def unread(self, access: Access) -> ToolFailure:
+        """Return the refusal for a file that the model does not have before it.
+
+        The words tell a file that was never read from one whose reading
+        has gone out of the conversation: a model remembers that it read
+        the second kind, and would not know what is asked of it.
+        """
+        with self._lock:
+            gone = _key(access.where.path) in self._gone.get(access.session, set())
+        return _no_longer_shown(access.where) if gone else _not_read(access.where)
+
     def seen(self, session: Session, path: Path) -> Fingerprint | None:
         """Return the state in which the model was last shown a file, if it was."""
         with self._lock:
-            return self._shown.get(session, {}).get(_key(path))
+            shown = self._shown.get(session, {}).get(_key(path))
+        return None if shown is None else shown.fingerprint
 
     def must_have_shown(self, permit: Permit, fingerprint: Fingerprint) -> None:
         """Make sure that the model was shown a file in the state that it is in.
@@ -551,7 +624,7 @@ class Fs:
         access = permit.access
         shown = self.seen(access.session, access.where.path)
         if shown is None:
-            raise _not_read(access.where)
+            raise self.unread(access)
         if shown != fingerprint:
             raise _changed(access.where)
 

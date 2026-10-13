@@ -130,8 +130,9 @@ def edit_tool(fs: Fs) -> Tool[EditArgs, str]:
                 "The old text and the new text are the same, so there is nothing to change.",
                 code="NO_CHANGE",
             )
-        reading = fs.permit(Access(run.session, run.cwd, where, "read", "edit"))
-        writing = fs.permit(Access(run.session, run.cwd, where, "write", "edit"))
+        made_for = run.call_id
+        reading = fs.permit(Access(run.session, run.cwd, where, "read", "edit", call_id=made_for))
+        writing = fs.permit(Access(run.session, run.cwd, where, "write", "edit", call_id=made_for))
         try:
             count = await carry_out(lambda given_up: _edit(fs, reading, writing, args, given_up))
         except FileNotFoundError:

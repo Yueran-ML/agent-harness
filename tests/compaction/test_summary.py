@@ -131,6 +131,19 @@ def test_the_model_is_asked_for_a_handover_in_four_parts() -> None:
         assert rule in INSTRUCTION
 
 
+def test_the_model_is_asked_to_keep_apart_what_was_read_and_what_the_user_said() -> None:
+    # A handover has one voice. What a file or a result said would stand in it beside what
+    # the user asked for, and whoever reads it could not tell the two apart any more.
+    for rule in (
+        "who said what",
+        "the result of a tool",
+        "never as something the user asked for or agreed to",
+        "A limit that the user set",
+        "in their own words",
+    ):
+        assert rule in INSTRUCTION
+
+
 async def test_what_the_model_wrote_is_taken_without_what_stands_around_it(
     desk: Desk, model: Scripted
 ) -> None:
@@ -451,6 +464,19 @@ def test_a_summary_is_carried_by_a_message_that_says_what_it_is() -> None:
     assert "summary of its earlier part" in opening
     assert "do not answer it" in opening
     assert "\n" not in opening
+
+
+def test_a_summary_that_does_not_cover_the_oldest_messages_says_so() -> None:
+    (whole,) = carried("They read a file.").content
+    (short,) = carried("They read a file.", dropped=2).content
+
+    opening, _, framed = short.text.partition("\n<summary>\n")
+    assert framed == "They read a file.\n</summary>"
+    assert opening.startswith(whole.text.partition("\n<summary>\n")[0])
+    assert "does not cover" in opening
+    assert "say that you no longer have it" in opening
+    assert "\n" not in opening
+    assert "does not cover" not in whole.text
 
 
 def test_nothing_in_a_summary_can_end_the_frame_around_it() -> None:

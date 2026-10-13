@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
-from typing import Any
+from collections.abc import Collection
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -32,6 +34,7 @@ from columbina.compaction import (
 )
 from columbina.compaction.basic import Basic, Budget, Config, Refusal, budget, refusal
 from columbina.compaction.basic.summary import INSTRUCTION, SummaryError, carried
+from columbina.fs import FS
 from columbina.kernel import Next
 from columbina.llm import (
     LLM,
@@ -54,6 +57,7 @@ from columbina.session import (
     UsageTotal,
     UserMessageEvent,
 )
+from columbina.spill import SPILL, Saved, SpillFile
 from columbina.token_meter import TOKEN_METER, Measure, estimate, estimate_message
 from columbina.tools import Tool, ToolRun
 from support.loop import SYSTEM, Harness, assistant, idle, types, user
@@ -263,6 +267,185 @@ async def test_old_results_are_cut_down_when_that_alone_is_enough(harness: Harne
     assert COMPACTIONS.of(agent.session).count == 1
 
 
+class Shelf:
+    """A place that keeps texts, for a test to look into."""
+
+    def __init__(self, *, fails: bool = False) -> None:
+        self.kept: list[tuple[str, str]] = []
+        self.fails = fails
+
+    def save_text(self, session: Session, cwd: Path, name: str, text: str) -> Saved:
+        if self.fails:
+            raise OSError(28, "No space left on device")
+        self.kept.append((name, text))
+        return self.told(len(self.kept), text)
+
+    def told(self, number: int, text: str) -> Saved:
+        return Saved(f"shelf/{number}.txt", len(text.encode()), "Read it with read.")
+
+    def open(self, session: Session, cwd: Path, name: str) -> SpillFile:
+        raise AssertionError("nothing comes in pieces here")
+
+
+def results(request: LlmRequest) -> list[str]:
+    """The text of each result of a tool in a request."""
+    return [
+        message.content[0].text for message in request.messages if isinstance(message, ToolMessage)
+    ]
+
+
+async def test_a_result_that_is_cut_down_is_saved_whole_and_says_where(harness: Harness) -> None:
+    shelf = Shelf()
+    harness.ctx.provide(SPILL, shelf)
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(wants(12_000), wants(12_000), Reply(text="Done."), model=MODEL)
+
+    await turn(agent, "Go.")
+
+    # What was cut out of the conversation can be read again: it was saved before it was cut,
+    # and the line after the one about what is left out says where.
+    first, second = results(harness.model.requests[2])
+    assert shelf.kept == [("result.txt", words(12_000))]
+    head, gap, where, tail = first.splitlines()
+    assert "characters of this result were left out" in gap
+    assert where == shelf.told(1, words(12_000)).told()
+    assert (head, tail) == (words(12_000)[:4096], words(12_000)[-1024:])
+    assert second == words(12_000)
+    ((_, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (outcome.trimmed, outcome.error) == (1, None)
+
+
+async def test_a_result_that_cannot_be_saved_is_cut_down_all_the_same(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    harness.ctx.provide(SPILL, Shelf(fails=True))
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(wants(12_000), wants(12_000), Reply(text="Done."), model=MODEL)
+
+    with caplog.at_level(logging.ERROR):
+        await turn(agent, "Go.")
+
+    # A conversation that no longer fits its model is the worse of the two losses.
+    first, _ = results(harness.model.requests[2])
+    assert "characters of this result were left out" in first
+    assert "The whole result" not in first
+    assert "No space left on device" in caplog.text
+    ((_, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (outcome.trimmed, outcome.error) == (1, None)
+
+
+async def test_a_result_whose_whole_was_saved_before_is_not_saved_again(harness: Harness) -> None:
+    shelf = Shelf()
+    harness.ctx.provide(SPILL, shelf)
+    await loaded(harness)
+    before = Saved("spill/earlier.txt", 400_000, "Read it with read.").told()
+
+    async def large(args: Size, run: ToolRun) -> str:
+        # What a tool gives when its whole result was too large: the two ends, and where.
+        return f"{words(args.tokens)}\n{before}"
+
+    harness.tools.add(
+        harness.ctx, Tool(name="big", description="Gives words.", parameters=Size, execute=large)
+    )
+    agent = await harness.agent(wants(12_000), wants(12_000), Reply(text="Done."), model=MODEL)
+
+    await turn(agent, "Go.")
+
+    # What stands in the conversation is not the whole, so it is not saved as the whole. The
+    # line that says where the whole is has stayed, at the end.
+    first, _ = results(harness.model.requests[2])
+    assert shelf.kept == []
+    assert first.endswith(before)
+    assert first.count("The whole result") == 1
+
+
+class Forgetting:
+    """Stands in the place of the file seam, and writes down what it is told to forget."""
+
+    def __init__(self) -> None:
+        self.told: list[set[str]] = []
+
+    def unshown(self, session: Session, call_ids: Collection[str]) -> int:
+        self.told.append(set(call_ids))
+        return len(call_ids)
+
+
+def answered(agent: Agent) -> list[str]:
+    """The ids of the calls whose results the model sees, in their order."""
+    return [
+        message.call_id for message in agent.session.messages if isinstance(message, ToolMessage)
+    ]
+
+
+async def test_what_a_cut_took_out_of_a_result_no_longer_counts_as_shown(harness: Harness) -> None:
+    seam = Forgetting()
+    harness.ctx.provide(FS, cast("Any", seam))
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(wants(12_000), wants(12_000), Reply(text="Done."), model=MODEL)
+
+    await turn(agent, "Go.")
+
+    # The first result was cut down. A file that its call read is one that the model no
+    # longer has before it, and the seam of the files is told so.
+    first, _ = answered(agent)
+    assert seam.told == [{first}]
+
+
+async def test_what_a_summary_took_the_place_of_no_longer_counts_as_shown(
+    harness: Harness,
+) -> None:
+    seam = Forgetting()
+    harness.ctx.provide(FS, cast("Any", seam))
+    await loaded(harness)
+    harness.tools.add(harness.ctx, BIG)
+    agent = await harness.agent(
+        wants(1500),
+        Reply(text="One."),
+        Reply(text="Two."),
+        Reply(text="They said words."),
+        Reply(text="Three."),
+        model=MODEL,
+    )
+    await turn(agent, "Go.")
+    (call_id,) = answered(agent)
+    await turn(agent, words(7000))
+
+    await turn(agent, words(7000))
+
+    ((_, outcome),) = attempts(agent)
+    assert outcome is not None
+    assert (outcome.trimmed, bool(outcome.summarised), outcome.error) == (0, True, None)
+    assert answered(agent) == []
+    assert seam.told == [{call_id}]
+
+
+async def test_a_summary_of_words_alone_has_nothing_to_tell_the_seam_of_the_files(
+    harness: Harness,
+) -> None:
+    seam = Forgetting()
+    harness.ctx.provide(FS, cast("Any", seam))
+    await loaded(harness)
+    agent = await harness.agent(
+        Reply(text="One."),
+        Reply(text="Two."),
+        Reply(text="They said words."),
+        Reply(text="Three."),
+        model=MODEL,
+    )
+    await turn(agent, words(6000))
+    await turn(agent, words(6000))
+
+    await turn(agent, words(6000))
+
+    assert sums(harness) != []
+    assert seam.told == []
+
+
 async def test_what_was_cut_before_the_log_refused_an_event_is_counted(
     harness: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -300,6 +483,33 @@ async def test_what_was_cut_before_the_log_refused_an_event_is_counted(
     assert outcome.changed
     assert outcome.before > outcome.after
     assert agent.session.messages[-1] == assistant("Done.")
+
+
+async def test_a_summary_of_the_newer_half_is_carried_with_a_word_about_the_older(
+    harness: Harness,
+) -> None:
+    await loaded(harness)
+    agent = await harness.agent(
+        Reply(text="One."),
+        Reply(text="Two."),
+        Reply(failure=TOO_LONG),
+        Reply(text="They said words."),
+        Reply(text="Three."),
+        model=MODEL,
+    )
+    await turn(agent, words(6000))
+    await turn(agent, words(6000))
+
+    await turn(agent, words(6000))
+
+    # The part was more than the model took, so the model saw its newer half only. What the
+    # next request begins with says that the older half is in no summary.
+    first, second = sums(harness)
+    assert len(second.messages) < len(first.messages)
+    summary = carried("They said words.", dropped=len(first.messages) - len(second.messages))
+    assert harness.model.requests[-1].messages == (SYSTEM, summary, user(words(6000)))
+    (block,) = summary.content
+    assert "does not cover" in block.text
 
 
 async def test_the_oldest_part_is_summed_up_when_cutting_is_not_enough(harness: Harness) -> None:

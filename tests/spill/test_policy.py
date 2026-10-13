@@ -33,6 +33,18 @@ from columbina.tools import (
 LINE = "The quick brown fox jumps over the lazy dog.\n"
 
 
+def test_a_text_tells_whether_it_ends_with_a_word_about_its_whole() -> None:
+    saved = Saved(locator="spill/s-1/result.txt", bytes=10, hint="Read it with read.")
+
+    assert Saved.spoken_of_in(f"the beginning\nthe end\n{saved.told()}")
+    assert Saved.spoken_of_in(f"the end\n{saved.told()}\n\n")
+    assert Saved.spoken_of_in("the end\n(The whole result was not kept: there is no place.)")
+    assert not Saved.spoken_of_in("the beginning\nthe end")
+    assert not Saved.spoken_of_in(f"{saved.told()}\nand more after it")
+    assert not Saved.spoken_of_in("the end\n(The whole of it was read, and then some more")
+    assert not Saved.spoken_of_in("")
+
+
 class Nothing(BaseModel):
     pass
 

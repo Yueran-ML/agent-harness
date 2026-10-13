@@ -174,7 +174,9 @@ corrects the estimate by what the provider reports with each reply.
   can read the part that it needs. The output of a command is written to such a file as
   it comes.
 - **A conversation that comes near the limit is made shorter.** Before a step begins,
-  long results that the model has read are cut down to their two ends. If that is not
+  long results that the model has read are cut down to their two ends. What is cut out
+  is saved to a file first, and the place of the cut says where, so the model can read
+  it again. If that is not
   enough, the model writes a summary of the oldest part, and the summary takes the place
   of that part. The newest part stays as it is, and so does the last thing that the user
   said. Nothing is deleted: the log keeps every event, and only what the model is sent
@@ -446,7 +448,8 @@ whatever it does, it does as the user. A container does confine it: see
 [Commands in a container](#commands-in-a-container).
 
 A file is changed only after the model has read it, and only while it is still as the
-model saw it.
+model saw it. If what it read has since been cut or summed up to make the conversation
+shorter, it reads the file again first.
 
 `AGENTS.md` and `CLAUDE.md` are given to the model when a turn begins: first
 `~/.columbina/AGENTS.md`, then the files from the root of the repository down to the working

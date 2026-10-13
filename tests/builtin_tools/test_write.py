@@ -87,6 +87,41 @@ async def test_a_file_that_was_not_read_is_not_replaced(desk: Desk) -> None:
     assert (desk.work / "notes.txt").read_bytes() == b"old\n"
 
 
+async def test_a_file_whose_reading_has_gone_out_of_the_conversation_is_read_again_first(
+    desk: Desk,
+) -> None:
+    (desk.work / "notes.txt").write_bytes(b"old\n")
+    await desk.have_read("notes.txt")
+    # Whoever makes a conversation shorter says that the result of the call is gone from it.
+    assert desk.fs.unshown(desk.session, {"call-1"}) == 1
+
+    outcome = await desk.call("write", path="notes.txt", content="new\n")
+
+    assert outcome.error == ToolError(
+        code="NOT_READ",
+        reason=(
+            "notes.txt was read, but what was read of it has since been taken out of the "
+            "conversation to make it shorter. Read it again before writing it."
+        ),
+    )
+    assert (desk.work / "notes.txt").read_bytes() == b"old\n"
+    await desk.have_read("notes.txt")
+    assert (await desk.call("write", path="notes.txt", content="new\n")).error is None
+
+
+async def test_what_the_tool_wrote_is_remembered_under_its_own_call(desk: Desk) -> None:
+    await desk.call("write", path="notes.txt", content="first\n")
+
+    # The model knew what the file holds because it wrote it. With that call gone from the
+    # conversation it knows no more.
+    assert desk.fs.unshown(desk.session, {"call-1"}) == 1
+
+    outcome = await desk.call("write", path="notes.txt", content="second\n")
+    assert outcome.error is not None
+    assert outcome.error.code == "NOT_READ"
+    assert (desk.work / "notes.txt").read_bytes() == b"first\n"
+
+
 async def test_a_file_that_changed_since_it_was_read_is_not_replaced(desk: Desk) -> None:
     (desk.work / "notes.txt").write_bytes(b"old\n")
     await desk.have_read("notes.txt")

@@ -13,10 +13,15 @@ import columbina.session
 import columbina.system_prompt
 import columbina.tools
 from columbina.builtin_tools import edit, glob, grep, read, write
+from columbina.compaction.basic.trim import cuts, located
+from columbina.fs import Access, Fingerprint, Fs, locate
 from columbina.kernel import Context
+from columbina.llm import AssistantMessage, TextBlock, ToolCallBlock, ToolMessage, Usage
+from columbina.session import CORE_EVENTS, AssistantMessageEvent, Session, ToolResultEvent
+from columbina.spill import Saved
 from columbina.system_prompt import SYSTEM_PROMPT, SystemPrompt, conduct
 from columbina.system_prompt.conduct import SECTIONS, Config, cut
-from columbina.tools import TOOLS
+from columbina.tools import TOOLS, ToolFailure
 from support.loop import context
 
 HEADINGS = [
@@ -253,6 +258,72 @@ async def test_the_tools_that_only_read_are_the_ones_that_run_side_by_side(
         "read": True,
         "write": False,
     }
+
+
+def test_a_way_that_failed_twice_is_not_gone_a_third_time() -> None:
+    work = SECTIONS["work"].text
+
+    assert "When the same way has failed twice, do not go it a third time." in work
+    assert "Take another way, or stop and say what is in the way." in work
+
+
+def test_what_the_user_said_last_is_what_counts() -> None:
+    work = SECTIONS["work"].text
+
+    assert "What the user said last is what counts." in work
+    assert "the earlier wish no longer holds." in work
+
+
+def test_what_uses_a_thing_is_looked_at_before_the_thing_is_changed() -> None:
+    changes = SECTIONS["changes"].text
+
+    assert "What you change may be used in other places." in changes
+    assert "look at them again afterwards." in changes
+
+
+def test_a_result_that_was_shortened_says_so_and_where_the_whole_of_it_is(ctx: Context) -> None:
+    assert (
+        "A result that was shortened says so in a line of its own, and says where the whole "
+        "of it is if it was kept."
+    ) in SECTIONS["program"].text
+
+    session = Session(ctx, "s-1", {kind.event_type: kind for kind in CORE_EVENTS})
+    long = "".join(f"line {number}\n" for number in range(2000))
+    call = ToolCallBlock(call_id="call-1", name="read", arguments="{}")
+    asks, done = AssistantMessage(content=(call,)), AssistantMessage(content=(TextBlock(text="."),))
+    result = ToolMessage(call_id="call-1", content=(TextBlock(text=long),))
+    session.append(AssistantMessageEvent(message=asks, usage=Usage(), finish_reason="tool-calls"))
+    session.append(ToolResultEvent(message=result))
+    session.append(AssistantMessageEvent(message=done, usage=Usage(), finish_reason="stop"))
+    limits = {"over": 8192, "head": 4096, "tail": 1024}
+    (cut,) = cuts(session, **limits)
+    where = Saved("spill/result.txt", len(long), "Read it with read.").told()
+
+    (block,) = located(cut, where, **limits).shorter.message.content
+
+    between = block.text[4096 : len(block.text) - 1024].strip("\n").split("\n")
+    assert len(between) == 2
+    assert "left out" in between[0]
+    assert between[1] == where
+
+
+def test_a_file_whose_reading_has_gone_is_read_again_before_it_is_changed(
+    ctx: Context, tmp_path: Path
+) -> None:
+    assert (
+        "A file whose reading is no longer in the conversation is read again before it is changed."
+    ) in SECTIONS["program"].text
+
+    fs = Fs()
+    session = Session(ctx, "s-1", {kind.event_type: kind for kind in CORE_EVENTS})
+    (tmp_path / "a.txt").write_text("one")
+    where = locate(tmp_path, "a.txt")
+    reading = fs.permit(Access(session, tmp_path, where, "read", "probe", True, "call-1"))
+    fs.shown(reading, Fingerprint(3, 1000))
+    fs.unshown(session, {"call-1"})
+
+    with pytest.raises(ToolFailure, match="Read it again before writing it"):
+        fs.must_have_shown(reading, Fingerprint(3, 1000))
 
 
 def test_what_the_text_says_of_a_refusal_names_no_way_around_it() -> None:

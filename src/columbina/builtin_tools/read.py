@@ -268,7 +268,7 @@ def read_tool(fs: Fs) -> Tool[ReadArgs, ReadResult]:
                 "so it was not read. Try again.",
                 code="MOVED",
             )
-        permit = fs.permit(Access(run.session, run.cwd, where, "read", "read"))
+        permit = fs.permit(Access(run.session, run.cwd, where, "read", "read", call_id=run.call_id))
         if where.path.is_dir():
             raise ToolFailure(f"{args.path} is a directory, not a file.", code="NOT_A_FILE")
         stopped = threading.Event()

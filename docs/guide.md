@@ -6,7 +6,7 @@ This is the longer account of Columbina: how it is used, how it is built, how it
 
 Columbina was written from scratch, with three existing harnesses as its reference: DeepSeek Harness for the kernel and the loop, and Codex and Claude Code where they do something better. What was taken from which is written down in [`docs/research`](research) and in the [design document](plans/2026-10-09-columbina-design.md).
 
-[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Extensions](#extending-the-agent) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Plugins](#writing-a-plugin) · [Development](#development) · [Roadmap](#where-it-stands)
+[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Extensions](#extending-the-agent) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Plugins](#writing-a-plugin) · [Benchmark](#the-benchmark) · [Development](#development) · [Roadmap](#where-it-stands)
 
 ## What is there
 
@@ -989,6 +989,30 @@ A tool says what it does and to what: the permissions decide about `effect` and 
 
 Two more examples are beside it. [`examples/clock.py`](../examples/clock.py) is the smallest plugin of a tool, in fewer than thirty lines. [`examples/no_push.py`](../examples/no_push.py) adds no tool but a guard, which is asked about every call and can only refuse one: it keeps the agent from pushing with git.
 
+## The benchmark
+
+`bench/` holds tasks that judge themselves, and the program that makes attempts at them. It is part of the repository and not of the package.
+
+| Category | Tasks | What is asked | How it is judged |
+|---|---|---|---|
+| code | 15 | A small Python project has a fault that a test shows. Fix it without changing the tests | Hidden tests, run in a container without a network |
+| files | 12 | Sort, rename, merge, change configs, split, make an index | Rules on the tree that is left: what is there and what is not, whole texts, values of JSON, lines in any order |
+| sql | 15 | A question about the database of a shop, reached only through three tools | The submitted query runs on the database and on a copy with other rows, and must return what a right query returns on both |
+| compute | 30 | A reckoning of three to six steps, with every number behind a tool | The answer, and whether every number was looked up |
+
+Every task has a reference solution, and `python -m bench check` sees for each task that its start fails and its reference passes. The tasks of SQL and of reckoning are made from fixed seeds by `python -m bench generate`.
+
+An attempt runs `columbina run` in a working directory of its own, with the commands of the model in a container. It has what its task gives it and nothing of the machine: a home of its own, none of the skills or agents of the user, and none of the variables that set Columbina. The directory of a run lies outside any repository, since every attempt would read the instructions, skills and hooks of one:
+
+```bash
+uv run python -m bench run --provider deepseek --model deepseek-flash --repeats 3 --out ../bench-runs/flash
+uv run python -m bench table acceptance ../bench-runs/flash/results.jsonl
+```
+
+`--variant` switches off one part of the program, to set it against the whole. `--ollama` starts an Ollama of the benchmark's own for local models, on a port of its own and with the window of the model as its length of context. A run that was broken off is taken up again by running it again, and `python -m bench judge` judges the attempts of a run again from what they left.
+
+With `deepseek-flash` all 216 attempts passed, three at each task, and `deepseek-v4-pro` passed 214 of them. The tables, with what each part of the program saves and costs, are in [`docs/bench`](bench/README.md).
+
 ## Development
 
 What the checks come to at the moment:
@@ -1060,13 +1084,16 @@ The work goes in ten stages, and each one ends with something that can be shown.
 | 🌕 | 5 | Long conversations: estimates, shortening, taking a session up again, copies |
 | 🌕 | 6 | Skills, hooks, subagents, MCP |
 | 🌕 | 7 | A sandbox in a container for the commands that the agent runs |
-| 🌑 | 8 | Benchmarks, and a table of what local models can do |
-| 🌑 | 9 | A package on PyPI, documentation, an engineering report |
+| 🌓 | 8 | Benchmarks, and a table of what local models can do |
+| 🌓 | 9 | A package on PyPI, documentation, an engineering report |
 | 🌓 | 10 | A JSON-RPC service, and a desktop app on top of it |
 
 🌕 done  ·  🌓 under way  ·  🌑 to come
 
 The seventh stage is closed, and what it brought is told in
-[Commands in a container](#commands-in-a-container). Of the tenth, the service is built: see
+[Commands in a container](#commands-in-a-container). Of the eighth, the benchmark is built
+and two of its three tables are made: see [The benchmark](#the-benchmark). The table of
+local models is to come. Of the ninth, the package is ready to be published from a tag, and
+[Writing a plugin](#writing-a-plugin) is new. Of the tenth, the service is built: see
 [Serving another program](#serving-another-program) and [`docs/protocol`](protocol). The
 desktop app on top of it is under way.

@@ -55,7 +55,8 @@ could be run.
 - A benchmark of 72 tasks that judge themselves: fixes of code, work on files, queries of a
   database and reckonings of several steps. Its tables set two models of DeepSeek against
   each other, each part of the program against the whole of it, and local models in several
-  quantizations against each other.
+  quantizations against each other. On it `deepseek-flash` passed all 216 attempts at the
+  tasks, three at each, and `deepseek-v4-pro` 214.
 - Line and branch coverage of 100 percent, more than 3,600 mutants that the tests have to
   notice, pyright in strict mode, and continuous integration on Windows, Linux and macOS
   with Python 3.11 and 3.12. On Linux the tests with a real Docker engine have to run.

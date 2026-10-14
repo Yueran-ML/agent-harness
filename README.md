@@ -81,7 +81,8 @@ do is decided before it runs. Everything that Columbina is made of is a plugin o
 asyncio kernel: the model adapter, the tool registry, the session log, and the agent loop
 itself.
 
-**Status:** early development, with seven of ten stages done. `columbina` holds a
+**Status:** early development. Seven of ten stages are done, and of the last three the
+benchmark, the package for PyPI and the service for other programs are built. `columbina` holds a
 conversation with an agent at the terminal, and `columbina run` gives it one task and
 prints the answer. The agent talks to a model over the OpenAI Chat Completions protocol,
 DeepSeek by default. A conversation that outgrows its model is made shorter by itself,
@@ -167,6 +168,10 @@ brings the command up to date.
 - [The guide](docs/guide.md) tells the rest: the terminal and its commands, long
   conversations, running one task, services and keys, permissions, skills, hooks, subagents
   and servers of tools, how Columbina is built, how it is tested, and where the work stands.
+- [The engineering report](docs/report.md) tells how Columbina is put together, which choices
+  shaped it, how it is tested and how well it works ([in Chinese](docs/report.zh-CN.md)).
+- [The tables of the benchmark](docs/bench/README.md) give its results with two models of
+  DeepSeek, part by part, and what they cost.
 - [The design document](docs/plans/2026-10-09-columbina-design.md) is in Chinese. The plans
   of the stages are beside it.
 - [`docs/research`](docs/research) holds what was learned from the harnesses that

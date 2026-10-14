@@ -50,6 +50,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A data directory for Columbina that is thrown away after the test."""
     directory = tmp_path / "home"
     monkeypatch.setenv("COLUMBINA_HOME", str(directory))
+    monkeypatch.setenv("COLUMBINA_AGENTS_HOME", str(tmp_path / "agents"))
     return directory
 
 

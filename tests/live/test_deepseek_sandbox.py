@@ -40,6 +40,7 @@ IMAGE = "python:3.12-slim"
 def repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A copy of the repository, and a data directory that is thrown away."""
     monkeypatch.setenv("COLUMBINA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("COLUMBINA_AGENTS_HOME", str(tmp_path / "agents"))
     return fresh(tmp_path / "repository", monkeypatch)
 
 

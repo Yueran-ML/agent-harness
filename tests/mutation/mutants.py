@@ -6855,6 +6855,30 @@ _INSTRUCTIONS = (
 
 _BASE = (
     mutant(
+        "the skills that tools share are not looked for",
+        BASE_BUNDLE,
+        "          user: ${COLUMBINA_AGENTS_HOME}/skills\n",
+        "",
+    ),
+    mutant(
+        "the skills that tools share are looked for in the home of the program",
+        BASE_BUNDLE,
+        "          user: ${COLUMBINA_AGENTS_HOME}/skills\n",
+        "          user: ${COLUMBINA_HOME}/skills\n",
+    ),
+    mutant(
+        "a place of shared skills that nobody names is not the one in the home of the user",
+        LAUNCHER,
+        '    env.setdefault("COLUMBINA_AGENTS_HOME", str(Path.home() / ".agents"))\n',
+        '    env.setdefault("COLUMBINA_AGENTS_HOME", str(Path.home() / ".columbina"))\n',
+    ),
+    mutant(
+        "a place of shared skills that nobody names stops the program",
+        LAUNCHER,
+        '    env.setdefault("COLUMBINA_AGENTS_HOME", str(Path.home() / ".agents"))\n',
+        "",
+    ),
+    mutant(
         "the command line does not say what runs the commands",
         LAUNCHER,
         "    _held(entries, args)\n",
@@ -7061,7 +7085,7 @@ _BASE = (
     mutant(
         "the skills of the user are not looked for",
         BASE_BUNDLE,
-        "        config:\n          home: ${COLUMBINA_HOME}/skills\n",
+        "        config:\n          home: ${COLUMBINA_HOME}/skills\n          user: ${COLUMBINA_AGENTS_HOME}/skills\n",
         "",
     ),
     mutant(

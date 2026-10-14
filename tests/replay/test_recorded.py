@@ -76,7 +76,11 @@ async def test_a_recorded_run_happens_again_event_by_event(
     profile = parse_layer(yaml.safe_dump(made["profile"]), source=f"{name}/recording.yml")
     # The replies come from the recording, which can only be read once the plugins are there.
     entries = flatten([profile, WITHOUT_A_MODEL], lookup=bundle)
-    composition = mount(ctx, entries, env={**os.environ, "COLUMBINA_HOME": str(tmp_path / "home")})
+    places = {
+        "COLUMBINA_HOME": str(tmp_path / "home"),
+        "COLUMBINA_AGENTS_HOME": str(tmp_path / "agents"),
+    }
+    composition = mount(ctx, entries, env={**os.environ, **places})
     await ctx.settled()
     assert composition.problems() == []
     recorded = read_session(RECORDED / name, ctx.use(SESSIONS).kinds).events

@@ -720,7 +720,7 @@ Tool(
 ### 11.1 技能
 
 - 一个技能是一个目录，路径是 `<根>/<名字>/SKILL.md`，只看一层。frontmatter 必填 `name` 和 `description`，`name` 必须与目录名相同。可选 `disable-model-invocation` 和 `user-invocable`。别的键忽略，但这两个键的近似拼写不忽略，带着它们的技能判为无效。
-- 根按先后是 `<项目>/.columbina/skills`、`<项目>/.agents/skills`、`<COLUMBINA_HOME>/skills`，再是配置里的 `user` 和 `extra`。同名的技能取先找到的那个，落选的和无效的都记下原因。随包的清单只配了 `<COLUMBINA_HOME>/skills`，`~/.agents/skills` 要在配置里写明才会去找。
+- 根按先后是 `<项目>/.columbina/skills`、`<项目>/.agents/skills`、`<COLUMBINA_HOME>/skills`，再是配置里的 `user` 和 `extra`。同名的技能取先找到的那个，落选的和无效的都记下原因。随包的清单把 `user` 配成 `<COLUMBINA_AGENTS_HOME>/skills`，这个变量缺省是 `~/.agents`，那里放着几个工具共用的技能，与参考实现的做法相同。
 - 项目里的根不跟随链接，用户自己的根跟随。仓库里的东西是别人写的，一个链接可以指到仓库之外。
 - 渐进披露三层。模型先在一条上下文消息里读到目录，每个技能一行，写名称和至多 500 个字符的简介，整条消息至多 12000 个字符。模型调用 `skill` 工具时才读正文。正文提到的文件由模型自己去读。
 - 每个回合开始时重新找一遍，目录的文字没变就不重写。某个根这一次读不出来时沿用上一次的结果。

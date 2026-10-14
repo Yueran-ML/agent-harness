@@ -423,7 +423,7 @@ Write the notes as a list, one line for each change, under the codename of the r
 The codenames are in codenames.txt.
 ```
 
-モデルには、スキルごとに一行だけが伝えられます。タスクに必要になったとき、モデルは `skill` ツールで本文を読み込みます。そのため、使われるまでのスキルのコストは一行です。スキルは、プロジェクトの `.columbina/skills` と `.agents/skills`、続いて `~/.columbina/skills` から探します。同じ名前のスキルが二つあれば、先に見つかったほうが有効です。ターンが始まるたびに探し直すので、対話の途中で書いたスキルも再起動なしで使えます。
+モデルには、スキルごとに一行だけが伝えられます。タスクに必要になったとき、モデルは `skill` ツールで本文を読み込みます。そのため、使われるまでのスキルのコストは一行です。スキルは、プロジェクトの `.columbina/skills` と `.agents/skills`、続いて `~/.columbina/skills`、最後に `~/.agents/skills` から探します。最後の場所には、いくつかのツールが共有するスキルが置かれます。環境変数 `COLUMBINA_AGENTS_HOME` で、この最後の場所を別の場所にできます。同じ名前のスキルが二つあれば、先に見つかったほうが有効です。ターンが始まるたびに探し直すので、対話の途中で書いたスキルも再起動なしで使えます。
 
 `/skills` はスキルを一覧表示します。使えないものも、その理由とともに表示します。`/skill NAME` は、モデルが選ぶのを待たずにスキルをモデルに渡します。先頭の行に `disable-model-invocation: true` と書かれたスキルは、この方法でしか読み込まれません。
 

@@ -32,6 +32,7 @@ QUESTION = (
 def work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A working directory with one file, and a data directory that is thrown away."""
     monkeypatch.setenv("COLUMBINA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("COLUMBINA_AGENTS_HOME", str(tmp_path / "agents"))
     directory = tmp_path / "work"
     directory.mkdir()
     (directory / "notes.txt").write_text(

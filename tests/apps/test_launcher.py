@@ -12,7 +12,7 @@ import yaml
 import columbina
 from columbina.apps.launcher import main
 from columbina.apps.serve import wire as wire_module
-from columbina.session import TurnEndEvent
+from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
 from support.launch import lines, profile, stored
 from support.wires import Far
@@ -65,6 +65,44 @@ def test_the_run_leaves_a_session_behind(
     assert types.count("tool/result") == 1
     assert left.events[-1].data == TurnEndEvent(turn=1, reason="completed")
     assert left.header.cwd == str(work)
+
+
+def test_skills_are_looked_for_where_other_tools_keep_theirs_in_the_home_of_the_user(
+    home: Path, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user = tmp_path / "user"
+    skill = user / ".agents" / "skills" / "release-notes"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: release-notes\ndescription: Write the notes of a release.\n---\nHow.\n",
+        encoding="utf-8",
+    )
+    # Nothing names the place, so it is the one in the home of the user.
+    monkeypatch.delenv("COLUMBINA_AGENTS_HOME")
+    monkeypatch.setenv("HOME", str(user))
+    monkeypatch.setenv("USERPROFILE", str(user))
+
+    main(
+        [
+            "run",
+            "Hello.",
+            "--profile",
+            profile(tmp_path, {"text": "Hello."}),
+            "--cwd",
+            str(work),
+            "--session-id",
+            "s-1",
+        ]
+    )
+
+    told = [
+        block.text
+        for event in stored(home, work).events
+        if isinstance(event.data, UserMessageEvent) and event.data.source == "context/skills"
+        for block in event.data.message.content
+    ]
+    assert len(told) == 1
+    assert "- release-notes: Write the notes of a release." in told[0]
 
 
 def test_the_run_can_be_followed_as_lines_of_json(
@@ -332,8 +370,12 @@ def test_the_composition_can_be_printed_instead_of_run(
         "config": {"preset": "workspace-write", "user_file": "${COLUMBINA_HOME}/permissions.yml"},
     }
     assert entries["context-instructions"]["config"] == {"user_file": "${COLUMBINA_HOME}/AGENTS.md"}
-    # What the user adds to the program lies in the home of the program too.
-    assert entries["skills"]["config"] == {"home": "${COLUMBINA_HOME}/skills"}
+    # What the user adds to the program lies in the home of the program too. Skills are also
+    # looked for where the user keeps those that other tools read.
+    assert entries["skills"]["config"] == {
+        "home": "${COLUMBINA_HOME}/skills",
+        "user": "${COLUMBINA_AGENTS_HOME}/skills",
+    }
     assert entries["hooks"]["config"] == {
         "user_file": "${COLUMBINA_HOME}/hooks.json",
         "trust_file": "${COLUMBINA_HOME}/trusted-hooks.json",

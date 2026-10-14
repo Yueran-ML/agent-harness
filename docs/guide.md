@@ -635,8 +635,10 @@ The codenames are in codenames.txt.
 
 The model is told of every skill in one line, and it loads the text of a skill with the tool
 `skill` when a task calls for it. So a skill costs one line until it is used. Skills are
-looked for in `.columbina/skills` and `.agents/skills` of the project, and then in
-`~/.columbina/skills`. Of two skills of one name, the one that is found first counts. They
+looked for in `.columbina/skills` and `.agents/skills` of the project, then in
+`~/.columbina/skills`, and then in `~/.agents/skills`, where several tools keep the skills
+that they share. The variable `COLUMBINA_AGENTS_HOME` puts that last place elsewhere. Of two
+skills of one name, the one that is found first counts. They
 are looked for anew when a turn begins, so a skill that is written during a conversation
 needs no restart.
 

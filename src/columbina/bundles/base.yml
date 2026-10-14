@@ -73,6 +73,7 @@ patch:
         plugin: columbina.skills
         config:
           home: ${COLUMBINA_HOME}/skills
+          user: ${COLUMBINA_AGENTS_HOME}/skills
       - id: hooks
         plugin: columbina.hooks
         config:

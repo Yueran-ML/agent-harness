@@ -423,7 +423,7 @@ Write the notes as a list, one line for each change, under the codename of the r
 The codenames are in codenames.txt.
 ```
 
-每个技能只用一行告诉模型，任务用得上时，模型用工具 `skill` 把正文读进来。所以一个技能在用到之前只占一行。技能先在项目的 `.columbina/skills` 和 `.agents/skills` 里找，然后在 `~/.columbina/skills` 里找。两个技能同名时，先找到的那个算数。每个回合开始时都重新找一遍，所以对话进行中写下的技能不用重启就能用。
+每个技能只用一行告诉模型，任务用得上时，模型用工具 `skill` 把正文读进来。所以一个技能在用到之前只占一行。技能先在项目的 `.columbina/skills` 和 `.agents/skills` 里找，然后在 `~/.columbina/skills` 里找，最后在 `~/.agents/skills` 里找，那里放着几个工具共用的技能。环境变量 `COLUMBINA_AGENTS_HOME` 可以把最后这个位置换到别处。两个技能同名时，先找到的那个算数。每个回合开始时都重新找一遍，所以对话进行中写下的技能不用重启就能用。
 
 `/skills` 列出技能，不能用的也列出来，并说明原因。`/skill NAME` 直接把一个技能交给模型，不等模型自己去选。开头几行里写了 `disable-model-invocation: true` 的技能只能这样加载。
 

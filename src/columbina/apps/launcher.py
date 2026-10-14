@@ -857,6 +857,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
     env = dict(os.environ)
     env.setdefault("COLUMBINA_HOME", str(Path.home() / ".columbina"))
+    # Where the user keeps what several tools read, skills for one.
+    env.setdefault("COLUMBINA_AGENTS_HOME", str(Path.home() / ".agents"))
     log = logging.getLogger("columbina")
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(_Fit("columbina: %(message)s"))

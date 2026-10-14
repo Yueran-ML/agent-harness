@@ -70,6 +70,7 @@ def note(tree: str) -> str:
 def work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """An empty working directory, a home that is thrown away, and a model that takes little."""
     monkeypatch.setenv("COLUMBINA_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("COLUMBINA_AGENTS_HOME", str(tmp_path / "agents"))
     monkeypatch.setenv("COLUMBINA_CONTEXT_WINDOW", "15000")
     directory = tmp_path / "work"
     directory.mkdir()

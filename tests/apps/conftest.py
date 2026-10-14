@@ -25,6 +25,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A data directory for Columbina that is thrown away after the test, and no API key."""
     directory = tmp_path / "home"
     monkeypatch.setenv("COLUMBINA_HOME", str(directory))
+    # The skills that the one who runs the tests shares between tools are none of a test's.
+    monkeypatch.setenv("COLUMBINA_AGENTS_HOME", str(tmp_path / "agents"))
     # Whatever the one who runs the tests has set to choose a service and a model of their own.
     keys = [service.key_env for service in PRESETS if service.key_env is not None]
     for variable in (*keys, KEY_OF_ONES_OWN, "DEEPSEEK_BASE_URL", *IN_THE_WAY):

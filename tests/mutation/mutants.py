@@ -49,6 +49,10 @@ SANDBOX_BASE = "src/columbina/sandbox/base.py"
 DOCKER = "src/columbina/sandbox/docker.py"
 PROGRAMS = "src/columbina/programs.py"
 VIDEO_MEDIA = "src/columbina/video/media.py"
+BENCH_TASK = "bench/task.py"
+BENCH_GRADE = "bench/grade.py"
+BENCH_CHECK = "bench/check.py"
+BENCH_DATABASE = "bench/database.py"
 WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
 WALK = "src/columbina/fs/walk.py"
@@ -2774,6 +2778,147 @@ _VIDEO_MEDIA = (
         VIDEO_MEDIA,
         "    return ffmpeg, beside, tuple(Path(os.path.realpath(place)) for place in outside)\n",
         "    return ffmpeg, beside, ()\n",
+    ),
+)
+
+_BENCH = (
+    mutant(
+        "a task may lie in a directory of another name",
+        BENCH_TASK,
+        "    if task.id != directory.name:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a task without a workspace is taken",
+        BENCH_TASK,
+        '    if not (directory / "workspace").is_dir():\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "a call that failed counts as the last one",
+        BENCH_GRADE,
+        "    return next((call for call in reversed(calls) if call.name == name and not call.failed), None)\n",
+        "    return next((call for call in reversed(calls) if call.name == name), None)\n",
+    ),
+    mutant(
+        "the first call counts and not the last",
+        BENCH_GRADE,
+        "    return next((call for call in reversed(calls) if call.name == name and not call.failed), None)\n",
+        "    return next((call for call in calls if call.name == name and not call.failed), None)\n",
+    ),
+    mutant(
+        "the hidden tests in a container have a network",
+        BENCH_GRADE,
+        '        "docker", "run", "--rm", "--network", "none",\n',
+        '        "docker", "run", "--rm",\n',
+    ),
+    mutant(
+        "the hidden tests in a container can be changed",
+        BENCH_GRADE,
+        '        "-v", f"{checks}:/checks:ro",\n',
+        '        "-v", f"{checks}:/checks",\n',
+    ),
+    mutant(
+        "hidden tests that fail pass the attempt",
+        BENCH_GRADE,
+        "    return Verdict(done.returncode == 0, said)\n",
+        "    return Verdict(True, said)\n",
+    ),
+    mutant(
+        "a task without hidden tests passes everything",
+        BENCH_GRADE,
+        '        return Verdict(False, "the task has no hidden tests")\n',
+        '        return Verdict(True, "the task has no hidden tests")\n',
+    ),
+    mutant(
+        "line ends count in a file of the working directory",
+        BENCH_GRADE,
+        '        return path.read_text(encoding="utf-8").replace("\\r\\n", "\\n")\n',
+        '        return path.read_bytes().decode("utf-8")\n',
+    ),
+    mutant(
+        "the lines of a file are compared as a set",
+        BENCH_GRADE,
+        '        if Counter((_read(workspace / name) or "").splitlines()) != Counter(lines):\n',
+        '        if set((_read(workspace / name) or "").splitlines()) != set(lines):\n',
+    ),
+    mutant(
+        "a value of JSON that is not there passes",
+        BENCH_GRADE,
+        "            return _MISSING\n",
+        "            return None\n",
+    ),
+    mutant(
+        "a query is run on the first database alone",
+        BENCH_GRADE,
+        "    for name in DATABASES:\n",
+        "    for name in DATABASES[:1]:\n",
+    ),
+    mutant(
+        "the order of the rows never counts",
+        BENCH_GRADE,
+        "    in_order = database.ordered(reference)\n",
+        "    in_order = False\n",
+    ),
+    mutant(
+        "a right answer passes without every number looked up",
+        BENCH_GRADE,
+        "    if missing:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a lookup that failed counts as one that was made",
+        BENCH_GRADE,
+        '        call.arguments.get("name") for call in calls if call.name == LOOKUP and not call.failed\n',
+        '        call.arguments.get("name") for call in calls if call.name == LOOKUP\n',
+    ),
+    mutant(
+        "a statement that writes is allowed",
+        BENCH_DATABASE,
+        "    return sqlite3.SQLITE_OK if action in _READING else sqlite3.SQLITE_DENY\n",
+        "    return sqlite3.SQLITE_OK\n",
+    ),
+    mutant(
+        "a query may run for ever",
+        BENCH_DATABASE,
+        "        connection.set_progress_handler(lambda: time.monotonic() > deadline, _CHECK_EVERY)\n",
+        "",
+    ),
+    mutant(
+        "more rows are kept than are asked for",
+        BENCH_DATABASE,
+        "    kept = rows if max_rows is None else rows[:max_rows]\n",
+        "    kept = rows\n",
+    ),
+    mutant(
+        "an order inside brackets orders what the query returns",
+        BENCH_DATABASE,
+        "        elif depth == 0:\n",
+        "        else:\n",
+    ),
+    mutant(
+        "numbers that are not whole are compared exactly",
+        BENCH_DATABASE,
+        "    return round(value, 6) if isinstance(value, float) else value\n",
+        "    return value\n",
+    ),
+    mutant(
+        "the start of a task is not judged",
+        BENCH_CHECK,
+        '    if judged(loaded, start, (), container=None).passed:\n        problems.append("its start passes already")\n',
+        "",
+    ),
+    mutant(
+        "the reference of a code task replaces its workspace",
+        BENCH_CHECK,
+        "        shutil.copytree(reference, target, dirs_exist_ok=True)\n",
+        "        shutil.rmtree(target)\n        shutil.copytree(reference, target)\n",
+    ),
+    mutant(
+        "the reference of a compute task looks nothing up",
+        BENCH_CHECK,
+        '        return (*looked, Call(grade.SUBMIT_ANSWER, {"value": answer["value"]}))\n',
+        '        return (Call(grade.SUBMIT_ANSWER, {"value": answer["value"]}),)\n',
     ),
 )
 
@@ -22260,6 +22405,7 @@ SETS: dict[str, MutantSet] = {
     "docker": MutantSet(("tests/sandbox/test_docker.py",), _DOCKER),
     "programs": MutantSet(("tests/test_programs.py",), _PROGRAMS),
     "video-media": MutantSet(("tests/video/test_media.py",), _VIDEO_MEDIA),
+    "bench": MutantSet(("tests/benchmarks",), _BENCH),
     "docker-kept": MutantSet(("tests/sandbox/test_docker_kept.py",), _DOCKER_KEPT),
     # Tried only where a real engine answers: without one the tests pass over everything.
     "docker-real": MutantSet(("tests/sandbox/test_docker_real.py",), _DOCKER_REAL),

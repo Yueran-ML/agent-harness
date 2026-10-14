@@ -46,7 +46,7 @@ class Task(BaseModel):
     id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     category: Category
     prompt: str = Field(min_length=1)
-    timeout_seconds: int = Field(default=600, gt=0)
+    timeout_seconds: float = Field(default=600, gt=0)
     max_steps: int = Field(default=40, gt=0)
 
 

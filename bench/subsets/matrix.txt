@@ -1,0 +1,31 @@
+# The tasks of the matrix of local models: five of each category, over the levels of difficulty.
+# A local model takes about a minute an attempt, so the whole benchmark on a dozen of them
+# would take a night.
+
+# code: two of one line, two in one function, one across two files
+code-lru-cache-eviction
+code-retry-last-attempt
+code-semver-precedence
+code-slugify-accents
+code-bill-split-cents
+
+# files: two easy, two medium, one harder
+files-extract-errors
+files-dedupe-lines
+files-merge-csv
+files-update-config
+files-line-count-index
+
+# sql
+sql-customers-per-city
+sql-orders-per-status
+sql-top-products
+sql-never-ordered-customers
+sql-revenue-per-category
+
+# compute: three steps, four, five, and six twice
+compute-01-factory
+compute-04-factory
+compute-07-factory
+compute-10-factory
+compute-12-logistics

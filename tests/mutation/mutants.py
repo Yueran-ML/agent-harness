@@ -57,6 +57,10 @@ BENCH_SQLITE = "bench/plugins/sqlite.py"
 BENCH_LOOKUP = "bench/plugins/lookup.py"
 BENCH_COMPUTE = "bench/generate/compute.py"
 BENCH_SQL = "bench/generate/sql.py"
+BENCH_RUN = "bench/run.py"
+BENCH_TABLE = "bench/table.py"
+BENCH_OLLAMA = "bench/ollama.py"
+BENCH_CLI = "bench/cli.py"
 WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
 WALK = "src/columbina/fs/walk.py"
@@ -3028,6 +3032,358 @@ _BENCH = (
         BENCH_SQL,
         "    shop, other = dump(seed), dump(changed)\n",
         "    shop, other = dump(seed), dump(seed)\n",
+    ),
+)
+
+_BENCH_RUN = (
+    mutant(
+        "a call that got no result went through",
+        BENCH_RUN,
+        '        calls.append(Call(str(line.get("name")), arguments, failed.get(line.get("id"), True)))\n',
+        '        calls.append(Call(str(line.get("name")), arguments, failed.get(line.get("id"), False)))\n',
+    ),
+    on_windows(
+        mutant(
+            "what a run said is kept with another CR before each of its line ends",
+            BENCH_RUN,
+            '    (place / "out.jsonl").write_text(done.output, encoding="utf-8", newline="")\n',
+            '    (place / "out.jsonl").write_text(done.output, encoding="utf-8")\n',
+        )
+    ),
+    mutant(
+        "the arguments of a call are not read",
+        BENCH_RUN,
+        '            read = json.loads(line.get("arguments") or "{}")\n',
+        "            read = {}\n",
+    ),
+    mutant(
+        "an attempt is not held to the steps of its task",
+        BENCH_RUN,
+        '        {"id": "turn-budget", "config": {"max_steps": loaded.task.max_steps}},\n',
+        "",
+    ),
+    mutant(
+        "commands run on this machine where a container was asked for",
+        BENCH_RUN,
+        '    if sandbox == "docker":\n',
+        '    if sandbox == "none":\n',
+    ),
+    mutant(
+        "a task of SQL is pointed at the changed database",
+        BENCH_RUN,
+        '            "config": {"database": str(built / database.DATABASES[0])},\n',
+        '            "config": {"database": str(built / database.DATABASES[1])},\n',
+    ),
+    mutant(
+        "the numbers of a task of reckoning are not copied",
+        BENCH_RUN,
+        '        shutil.copyfile(loaded.directory / "private" / "values.json", values)\n',
+        "",
+    ),
+    mutant(
+        "the variant switches nothing off",
+        BENCH_RUN,
+        "    return [*operations, *VARIANTS[attempt.variant]]\n",
+        "    return operations\n",
+    ),
+    mutant(
+        "a line that is cut short ends the reading",
+        BENCH_RUN,
+        "        except json.JSONDecodeError:\n            continue\n",
+        "        except json.JSONDecodeError:\n            break\n",
+    ),
+    mutant(
+        "a line of JSON that is no object is taken",
+        BENCH_RUN,
+        '        if isinstance(read, dict):\n            lines.append(cast("dict[str, Any]", read))\n',
+        "        lines.append(read)\n",
+    ),
+    mutant(
+        "a run is not given the changes to its profile",
+        BENCH_RUN,
+        '        "--profile", "headless", "--patch", str(place / "patch.yml"),\n',
+        '        "--profile", "headless",\n',
+    ),
+    mutant(
+        "what the environment says of Columbina reaches an attempt",
+        BENCH_RUN,
+        '        **{name: value for name, value in os.environ.items() if not name.startswith("COLUMBINA_")},\n',
+        "        **os.environ,\n",
+    ),
+    mutant(
+        "the skills and agents of the user reach an attempt",
+        BENCH_RUN,
+        '        "COLUMBINA_AGENTS_HOME": str(place / "agents"),\n',
+        "",
+    ),
+    mutant(
+        "the plugins of the benchmark are not found",
+        BENCH_RUN,
+        '        "PYTHONPATH": str(REPO),\n',
+        "",
+    ),
+    mutant(
+        "a window of the model that was given is not told",
+        BENCH_RUN,
+        '    if model.context_window is not None:\n        own["context_window"] = model.context_window\n',
+        "",
+    ),
+    mutant(
+        "a service of this machine is looked for at its known address",
+        BENCH_RUN,
+        '    if model.base_url is not None:\n        own["base_url"] = model.base_url\n',
+        "",
+    ),
+    mutant(
+        "an attempt is made over what the last one left",
+        BENCH_RUN,
+        "    shutil.rmtree(place, ignore_errors=True)\n",
+        "",
+    ),
+    mutant(
+        "the hidden tests run on this machine where a container was asked for",
+        BENCH_RUN,
+        '        loaded, place / "workspace", calls, container=container, private=place / "private"\n',
+        '        loaded, place / "workspace", calls, container=None, private=place / "private"\n',
+    ),
+    mutant(
+        "an attempt that took too long is not said to have",
+        BENCH_RUN,
+        '        "reason": final.get("reason", "timeout" if done.timed_out else "none"),\n',
+        '        "reason": final.get("reason", "none"),\n',
+    ),
+    mutant(
+        "a place keeps what the name of a directory cannot hold",
+        BENCH_RUN,
+        '        model = re.sub(r"[^A-Za-z0-9._-]+", "_", self.model.label)\n',
+        "        model = self.model.label\n",
+    ),
+    mutant(
+        "a run is made inside a repository",
+        BENCH_RUN,
+        '    outside_repositories(root)\n    results = root / "results.jsonl"\n',
+        '    results = root / "results.jsonl"\n',
+    ),
+    mutant(
+        "the repository of a work tree is not seen",
+        BENCH_RUN,
+        '        if os.path.lexists(above / ".git"):\n',
+        '        if (above / ".git").is_dir():\n',
+    ),
+    mutant(
+        "only the directory of the run is looked at for a repository",
+        BENCH_RUN,
+        "    for above in (here, *here.parents):\n",
+        "    for above in (here,):\n",
+    ),
+    mutant(
+        "the lines of results are not kept as they come",
+        BENCH_RUN,
+        "            await asyncio.to_thread(_appended, results, line)\n",
+        "",
+    ),
+    mutant(
+        "attempts that were done are made again",
+        BENCH_RUN,
+        "    left = [attempt for attempt in attempts if attempt.key not in done]\n",
+        "    left = list(attempts)\n",
+    ),
+    mutant(
+        "all the attempts are made at once",
+        BENCH_RUN,
+        "    gate = asyncio.Semaphore(jobs)\n",
+        "    gate = asyncio.Semaphore(len(attempts) or 1)\n",
+    ),
+    mutant(
+        "an attempt is not handed the image of the run",
+        BENCH_RUN,
+        "            line = await attempted(attempt, root, sandbox=sandbox, container=container, extra=extra)\n",
+        "            line = await attempted(attempt, root, sandbox=sandbox, extra=extra)\n",
+    ),
+    mutant(
+        "the interval of Wilson does not move toward the middle",
+        BENCH_TABLE,
+        "    middle = rate + Z * Z / (2 * total)\n",
+        "    middle = rate\n",
+    ),
+    mutant(
+        "a rate of nothing is said to be nothing",
+        BENCH_TABLE,
+        "        return (0.0, 1.0)\n",
+        "        return (0.0, 0.0)\n",
+    ),
+    mutant(
+        "the interval of a difference is taken the wrong way round",
+        BENCH_TABLE,
+        "    below = math.sqrt((rate_one - low_one) ** 2 + (high_other - rate_other) ** 2)\n",
+        "    below = math.sqrt((high_one - rate_one) ** 2 + (rate_other - low_other) ** 2)\n",
+    ),
+    mutant(
+        "an empty cell is not marked",
+        BENCH_TABLE,
+        '    if not total:\n        return "-"\n',
+        "",
+    ),
+    mutant(
+        "tokens are given as the mean",
+        BENCH_TABLE,
+        "    return round(statistics.median(counts)) if counts else 0\n",
+        "    return round(statistics.mean(counts)) if counts else 0\n",
+    ),
+    mutant(
+        "what was read from a cache is not counted as put in",
+        BENCH_TABLE,
+        '_PUT = ("input_tokens", "cache_read_tokens", "cache_write_tokens")\n',
+        '_PUT = ("input_tokens", "cache_write_tokens")\n',
+    ),
+    mutant(
+        "what was written to a cache is not counted as put in",
+        BENCH_TABLE,
+        '_PUT = ("input_tokens", "cache_read_tokens", "cache_write_tokens")\n',
+        '_PUT = ("input_tokens", "cache_read_tokens")\n',
+    ),
+    mutant(
+        "the share from the cache of a model that put nothing in is divided by nothing",
+        BENCH_TABLE,
+        '    return f"{read_from_cache / put:.0%}" if put else "-"\n',
+        '    return f"{read_from_cache / put:.0%}"\n',
+    ),
+    mutant(
+        "the acceptance table counts the variants",
+        BENCH_TABLE,
+        '    lines = _of(lines, variant="all")\n    rows = [\n        "| Model | "\n        + " | ".join(CATEGORIES)\n',
+        '    rows = [\n        "| Model | "\n        + " | ".join(CATEGORIES)\n',
+    ),
+    mutant(
+        "the difference of a variant is taken the other way",
+        BENCH_TABLE,
+        '                f"{mine_passed / len(mine) - passed / len(whole):+.0%} [{low:+.0%}, {high:+.0%}]"\n',
+        '                f"{passed / len(whole) - mine_passed / len(mine):+.0%} [{low:+.0%}, {high:+.0%}]"\n',
+    ),
+    mutant(
+        "the interval of a variant is of the whole less the variant",
+        BENCH_TABLE,
+        "            low, high = newcombe((mine_passed, len(mine)), (passed, len(whole)))\n",
+        "            low, high = newcombe((passed, len(whole)), (mine_passed, len(mine)))\n",
+    ),
+    mutant(
+        "the whole program is a variant of itself",
+        BENCH_TABLE,
+        '    for variant in sorted({line["variant"] for line in lines} - {"all"}):\n',
+        '    for variant in sorted({line["variant"] for line in lines}):\n',
+    ),
+    mutant(
+        "the table of variants mixes the models",
+        BENCH_TABLE,
+        '    lines = _of(lines, model=model)\n    whole = _of(lines, variant="all")\n',
+        '    whole = _of(lines, variant="all")\n',
+    ),
+    mutant(
+        "a model is usable only above half",
+        BENCH_TABLE,
+        "            + f\" | {_rate(mine)} | {'yes' if rate >= USABLE else 'no'} |\"\n",
+        "            + f\" | {_rate(mine)} | {'yes' if rate > USABLE else 'no'} |\"\n",
+    ),
+    mutant(
+        "the matrix counts the variants",
+        BENCH_TABLE,
+        '    lines = _of(lines, variant="all")\n    rows = [\n        "| Model | " + " | ".join(CATEGORIES) + " | All | Usable |",\n',
+        '    rows = [\n        "| Model | " + " | ".join(CATEGORIES) + " | All | Usable |",\n',
+    ),
+    mutant(
+        "a blank line of results is read",
+        BENCH_TABLE,
+        "        if line.strip()\n",
+        "",
+    ),
+    mutant(
+        "the server is not given the directory of models",
+        BENCH_OLLAMA,
+        '            "OLLAMA_MODELS": str(self.models),\n',
+        "",
+    ),
+    mutant(
+        "the server is told a name of this machine and not its address",
+        BENCH_OLLAMA,
+        '            "OLLAMA_HOST": f"127.0.0.1:{self.port}",\n',
+        '            "OLLAMA_HOST": f"localhost:{self.port}",\n',
+    ),
+    mutant(
+        "the server is not given its length of context",
+        BENCH_OLLAMA,
+        '            "OLLAMA_CONTEXT_LENGTH": str(self.context),\n',
+        "",
+    ),
+    mutant(
+        "a server that does not run is stopped",
+        BENCH_OLLAMA,
+        "        if process is None:\n            return\n",
+        "",
+    ),
+    mutant(
+        "a server that does not answer is left running",
+        BENCH_OLLAMA,
+        "        await self.__aexit__(None, None, None)\n        raise RuntimeError(\n",
+        "        raise RuntimeError(\n",
+    ),
+    on_linux(
+        mutant(
+            "the server is started in the group of this program",
+            BENCH_OLLAMA,
+            '            else {"start_new_session": True}  # pragma: posix only\n',
+            "            else {}  # pragma: posix only\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "a server that ended by itself is stopped again",
+            BENCH_OLLAMA,
+            "        if process.returncode is None:\n",
+            "        if True:\n",
+        )
+    ),
+    mutant(
+        "the attempts at an Ollama of its own are made several at a time",
+        BENCH_CLI,
+        "                jobs=1,\n",
+        "                jobs=arguments.jobs,\n",
+    ),
+    mutant(
+        "the attempts are not told the window of an Ollama of its own",
+        BENCH_CLI,
+        "            local = replace(model, base_url=server.base_url, context_window=context)\n",
+        "            local = replace(model, base_url=server.base_url)\n",
+    ),
+    mutant(
+        "an Ollama of its own is given another length of context",
+        BENCH_CLI,
+        "        context = arguments.context_window or 16384\n",
+        "        context = arguments.context_window or 8192\n",
+    ),
+    mutant(
+        "an empty patch is no list of changes",
+        BENCH_CLI,
+        '        extra = yaml.safe_load(arguments.patch.read_text(encoding="utf-8")) or []\n',
+        '        extra = yaml.safe_load(arguments.patch.read_text(encoding="utf-8"))\n',
+    ),
+    mutant(
+        "a run inside a repository is begun",
+        BENCH_CLI,
+        "    try:\n        outside_repositories(arguments.out)\n"
+        "    except RunError as error:\n        raise SystemExit(str(error)) from None\n",
+        "",
+    ),
+    mutant(
+        "the jobs that are asked for are not the jobs",
+        BENCH_CLI,
+        "                chosen, arguments.out, jobs=arguments.jobs, sandbox=arguments.sandbox, extra=extra\n",
+        "                chosen, arguments.out, jobs=4, sandbox=arguments.sandbox, extra=extra\n",
+    ),
+    mutant(
+        "the table of variants is of the first model whatever is asked",
+        BENCH_CLI,
+        '        made_table = table.variants(lines, arguments.model or lines[0]["model"])\n',
+        '        made_table = table.variants(lines, lines[0]["model"])\n',
     ),
 )
 
@@ -22515,6 +22871,15 @@ SETS: dict[str, MutantSet] = {
     "programs": MutantSet(("tests/test_programs.py",), _PROGRAMS),
     "video-media": MutantSet(("tests/video/test_media.py",), _VIDEO_MEDIA),
     "bench": MutantSet(("tests/benchmarks",), _BENCH),
+    "bench-run": MutantSet(
+        (
+            "tests/benchmarks/test_run.py",
+            "tests/benchmarks/test_table.py",
+            "tests/benchmarks/test_ollama.py",
+            "tests/benchmarks/test_cli.py",
+        ),
+        _BENCH_RUN,
+    ),
     "docker-kept": MutantSet(("tests/sandbox/test_docker_kept.py",), _DOCKER_KEPT),
     # Tried only where a real engine answers: without one the tests pass over everything.
     "docker-real": MutantSet(("tests/sandbox/test_docker_real.py",), _DOCKER_REAL),

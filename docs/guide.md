@@ -727,7 +727,9 @@ uv tool install ".[mcp]"
 Each server is an entry in a file of changes, such as `~/.columbina/config.yml`. A server is
 a program that Columbina starts and talks to over its standard input and output, or an
 address that it talks to over HTTP. A value may name an environment variable as `${NAME}`,
-which keeps a token out of the file.
+which keeps a token out of the file. The values of headers and what follows the question mark
+of an address are blotted out of what this program logs and of the failures that it tells of,
+so a token belongs in one of those, and not in the path of the address.
 
 ```yaml
 - insert:

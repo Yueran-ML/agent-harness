@@ -9,8 +9,9 @@ from typing import Any
 
 import pytest
 from mcp import Client, MCPError
+from mcp.client.subscriptions import SubscriptionLost
 from mcp.shared import jsonrpc_dispatcher
-from mcp.types import CONNECTION_CLOSED, ListToolsResult
+from mcp.types import CONNECTION_CLOSED, ListToolsResult, Tool
 
 from columbina.mcp.server import connection as connection_module
 from columbina.mcp.server.connection import (
@@ -472,6 +473,25 @@ async def test_an_older_server_that_dies_while_nothing_is_called_is_missed_at_th
     await until(lambda: transport.entered == 2 and connection.state == "connected")
 
 
+async def test_a_call_that_comes_once_a_connection_is_known_to_be_lost_waits_for_the_next_one(
+    make: Callable[..., Connection], served: Served
+) -> None:
+    transport = Cuttable(served)
+    connection = await begun(make("served", lambda: transport, mode="legacy", sleep=Naps()))
+    await transport.cut()
+    with pytest.raises(CallError) as refused:
+        await connection.call("add", TWO, 5)
+    assert str(refused.value) == LOST
+
+    # The keeper has been told, and has not come to leave the old client yet. Whoever calls
+    # now is not handed that client to fail with it a second time. The call waits for the
+    # next connection, like one that comes while the connection is being made again.
+    then = connection.state
+    again = connection.call("add", {"a": 2, "b": 3}, 5)
+    assert shown(await asyncio.wait_for(again, 5)) == "5"
+    assert (then, transport.entered, connection.state) == ("reconnecting", 2, "connected")
+
+
 async def test_while_a_connection_is_made_again_the_tools_stay_and_a_call_waits_for_it(
     make: Callable[..., Connection], served: Served
 ) -> None:
@@ -491,6 +511,89 @@ async def test_while_a_connection_is_made_again_the_tools_stay_and_a_call_waits_
     naps.end()
     assert shown(await asyncio.wait_for(calling, 5)) == "5"
     assert connection.state == "connected"
+
+
+def listed_as(connection: Connection, name: str) -> Tool:
+    """A tool of a server as the connection has it listed now."""
+    (tool,) = (tool for tool in connection.tools if tool.name == name)
+    return tool
+
+
+async def test_a_call_that_waited_is_not_made_where_its_tool_is_listed_otherwise_by_then(
+    make: Callable[..., Connection], served: Served
+) -> None:
+    served.with_a_reader()
+    transport = Cuttable(served)
+    naps = Naps(held=True)
+    connection = await begun(make("served", lambda: transport, sleep=naps))
+    reader = listed_as(connection, "peek")
+    assert reader.annotations is not None
+    assert reader.annotations.read_only_hint is True
+    await lose(connection, transport)
+    await asyncio.wait_for(naps.begun.wait(), 5)
+    # Whoever let this call through went by what the server said of the tool: it only reads.
+    calling = asyncio.ensure_future(connection.call("peek", {}, 5, listed=reader))
+    await asyncio.sleep(0.05)
+    assert not calling.done()
+
+    # The server comes back with a tool of that name of which it says no such thing.
+    served.with_a_reader_that_writes_now()
+    naps.end()
+
+    with pytest.raises(CallError) as refused:
+        await asyncio.wait_for(calling, 5)
+    assert str(refused.value) == (
+        "the MCP server served no longer lists the tool peek as it did when this call was "
+        "made, so the call was not made. Look at the tool as it is now, and call it again "
+        "if that is still wanted"
+    )
+    assert served.peeked == 0
+    # Asked for as it is listed now, it is called.
+    assert listed_as(connection, "peek") != reader
+    now = connection.call("peek", {}, 5, listed=listed_as(connection, "peek"))
+    assert shown(await asyncio.wait_for(now, 5)) == "wrote"
+    assert served.peeked == 1
+
+
+async def test_a_call_that_waited_is_made_where_its_tool_is_listed_as_before(
+    make: Callable[..., Connection], served: Served
+) -> None:
+    served.with_a_reader()
+    transport = Cuttable(served)
+    naps = Naps(held=True)
+    connection = await begun(make("served", lambda: transport, sleep=naps))
+    reader = listed_as(connection, "peek")
+    await lose(connection, transport)
+    await asyncio.wait_for(naps.begun.wait(), 5)
+    calling = asyncio.ensure_future(connection.call("peek", {}, 5, listed=reader))
+    await asyncio.sleep(0.05)
+
+    # Another tool is there when the server comes back. This one is as it was.
+    served.one_more()
+    naps.end()
+
+    assert shown(await asyncio.wait_for(calling, 5)) == "peeked"
+    assert "more1" in names(connection)
+    # The server listed it anew, and what it listed is the same tool.
+    assert listed_as(connection, "peek") is not reader
+    assert listed_as(connection, "peek") == reader
+
+
+async def test_a_call_is_not_made_for_a_tool_that_its_server_no_longer_lists(
+    make: Callable[..., Connection], served: Served
+) -> None:
+    served.with_a_reader()
+    connection = await begun(make("served", lambda: Cuttable(served)))
+    reader = listed_as(connection, "peek")
+
+    # No connection was lost: the server said that its tools changed, and they were listed anew.
+    served.server.remove_tool("peek")
+    await connection.call("grow", {}, 5)
+    await until(lambda: "peek" not in names(connection))
+
+    with pytest.raises(CallError, match="no longer lists the tool peek as it did"):
+        await connection.call("peek", {}, 5, listed=reader)
+    assert served.peeked == 0
 
 
 async def test_a_call_does_not_wait_for_a_connection_longer_than_one_may_take_to_be_made(
@@ -1195,34 +1298,270 @@ async def test_a_list_that_is_as_it_was_ends_what_was_wrong_with_the_one_before_
     assert told == [BASE]
 
 
-async def test_a_server_whose_word_of_its_tools_ends_in_good_order_is_asked_for_them_once_more(
-    make: Callable[..., Connection], served: Served, monkeypatch: pytest.MonkeyPatch
-) -> None:
+class Words:
+    """A server's word of its tools, as a test hands it out.
+
+    It stands in the place of what the SDK listens with. Every time a server is listened to,
+    the test says what it says then, and how its word ends.
+
+    Attributes:
+        entered: How often a server was listened to.
+        left: How often the listening was left.
+        refuses_from: The server refuses to be listened to from this time on, counted from 1.
+        silent_from: The server does not answer whoever would listen to it from this time on.
+    """
+
+    def __init__(self) -> None:
+        self.entered = 0
+        self.left = 0
+        self.refuses_from: int | None = None
+        self.silent_from: int | None = None
+        self._said: list[asyncio.Queue[object]] = []
+
+    def over(self, monkeypatch: pytest.MonkeyPatch) -> "Words":
+        """Have every client listen to this in the place of its server."""
+        words = self
+
+        @asynccontextmanager
+        async def listening(client: Client, **what: Any) -> AsyncGenerator[AsyncIterator[str]]:
+            words.entered += 1
+            if words.refuses_from is not None and words.entered >= words.refuses_from:
+                raise MCPError(-32601, "Method not found")
+            if words.silent_from is not None and words.entered >= words.silent_from:
+                await asyncio.sleep(3600)
+            heard: asyncio.Queue[object] = asyncio.Queue()
+            words._said.append(heard)
+
+            async def said() -> AsyncIterator[str]:
+                while True:
+                    word = await heard.get()
+                    if isinstance(word, BaseException):
+                        raise word
+                    if word is None:
+                        return
+                    yield "the tools changed"
+
+            try:
+                yield said()
+            finally:
+                words.left += 1
+
+        monkeypatch.setattr(Client, "listen", listening)
+        return self
+
+    def say(self) -> None:
+        """Have the server say that its tools changed."""
+        self._said[-1].put_nowait("the tools changed")
+
+    def end(self) -> None:
+        """Have the server end its word in good order."""
+        self._said[-1].put_nowait(None)
+
+    def lose(self) -> None:
+        """Have the word of the server break off."""
+        self._said[-1].put_nowait(SubscriptionLost("the stream ended"))
+
+
+def counted(monkeypatch: pytest.MonkeyPatch) -> list[None]:
+    """Count how often a server is asked for its tools."""
     whole = Client.list_tools
     asked: list[None] = []
 
-    async def counted(self: Client, **what: Any) -> ListToolsResult:
+    async def and_counted(self: Client, **what: Any) -> ListToolsResult:
         asked.append(None)
         return await whole(self)
 
-    @asynccontextmanager
-    async def once(self: Client, **what: Any) -> AsyncGenerator[AsyncIterator[str]]:
-        async def said() -> AsyncIterator[str]:
-            yield "the tools changed"
+    monkeypatch.setattr(Client, "list_tools", and_counted)
+    return asked
 
-        yield said()
 
-    monkeypatch.setattr(Client, "list_tools", counted)
-    monkeypatch.setattr(Client, "listen", once)
+@pytest.mark.parametrize("how", [Words.end, Words.lose], ids=["in good order", "broken off"])
+async def test_a_server_whose_word_of_its_tools_ends_is_listened_to_again(
+    make: Callable[..., Connection],
+    served: Served,
+    monkeypatch: pytest.MonkeyPatch,
+    how: Callable[[Words], None],
+) -> None:
+    words = Words().over(monkeypatch)
+    asked = counted(monkeypatch)
+    naps = Naps(held=True)
+    connection = await begun(make("served", lambda: served.server, sleep=naps))
+    assert (words.entered, len(asked)) == (1, 1)
 
-    connection = await begun(make("served", lambda: served.server))
+    how(words)
 
-    # When the connection is made, when the server says that the tools changed, and when
-    # it says no more.
+    # It is asked for its tools once more, which shows that the connection is there. Then
+    # comes a wait, as before a connection is made again.
+    await asyncio.wait_for(naps.begun.wait(), 5)
+    assert (len(asked), naps.asked, connection.state) == (2, [FIRST_WAIT], "connected")
+    assert (words.entered, words.left) == (1, 0)
+    # A tool changes while nobody listens.
+    served.one_more()
+    naps.end()
+
+    # The server is listened to again, and asked for its tools after that: it says nothing
+    # of what changed before it was listened to.
+    await until(lambda: names(connection) == [*BASE, "more1"])
+    assert (words.entered, words.left, len(asked)) == (2, 1, 3)
+    # What it says from now on is heard.
+    served.one_more()
+    words.say()
+    await until(lambda: names(connection) == [*BASE, "more1", "more2"])
+    assert connection.failure is None
+
+
+async def test_a_server_whose_word_ends_as_often_as_it_is_given_is_no_longer_listened_to(
+    make: Callable[..., Connection],
+    served: Served,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    words = Words().over(monkeypatch)
+    asked = counted(monkeypatch)
+    naps = Naps(held=True)
+    connection = await begun(make("served", lambda: served.server, sleep=naps))
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        for ended in range(1, ATTEMPTS + 1):
+            words.end()
+            await asyncio.wait_for(naps.begun.wait(), 5)
+            assert words.entered == ended
+            naps.end()
+            await until(lambda at=ended: words.entered == at + 1)
+        # The waits double up to the longest, as they do between attempts to connect.
+        assert naps.asked == [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0, 30.0, 30.0, 30.0]
+        assert caplog.messages == []
+        words.end()
+        await until(lambda: len(caplog.messages) == 1)
+        await asyncio.sleep(0.05)
+
+    # Eleven times in a row its word ended soon after it was given. It is not asked again.
+    assert caplog.messages == [
+        "the MCP server served ended its word of its tools 11 times in a row, each soon after "
+        "it was listened to. It is not listened to again on this connection, so a change of "
+        "its tools is not heard of before the connection is made again"
+    ]
+    assert (words.entered, len(naps.asked)) == (ATTEMPTS + 1, ATTEMPTS)
+    # The connection is none the worse for it.
+    assert connection.state == "connected"
+    assert shown(await connection.call("add", TWO, 5)) == "2"
+    # Once when it was made, once after every time the word ended, once after every time
+    # that the server was listened to again.
+    assert len(asked) == 1 + (ATTEMPTS + 1) + ATTEMPTS
+
+
+async def test_a_word_of_the_tools_that_lasted_does_not_count_among_those_that_ended_soon(
+    make: Callable[..., Connection], served: Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    words = Words().over(monkeypatch)
+    naps = Naps()
+    clock = Clock()
+    connection = await begun(make("served", lambda: served.server, sleep=naps, clock=clock))
+
+    async def ends(after: float) -> None:
+        entered = words.entered
+        clock.now += after
+        words.end()
+        await until(lambda: words.entered == entered + 1)
+
+    await ends(1.0)
+    await ends(1.0)
+    assert naps.asked == [0.5, 1.0]
+    # Half a minute, and the count begins anew.
+    await ends(STABLE_SECONDS)
+    assert naps.asked == [0.5, 1.0, 0.5]
+    await ends(STABLE_SECONDS - 0.1)
+    assert naps.asked == [0.5, 1.0, 0.5, 1.0]
+    assert connection.state == "connected"
+
+
+async def test_a_server_that_will_not_be_listened_to_again_is_none_the_worse_for_it(
+    make: Callable[..., Connection], served: Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    words = Words().over(monkeypatch)
+    words.refuses_from = 2
+    asked = counted(monkeypatch)
+    naps = Naps()
+    connection = await begun(make("served", lambda: served.server, sleep=naps))
+
+    words.lose()
+
+    await until(lambda: words.entered == 2)
     await until(lambda: len(asked) == 3)
     await asyncio.sleep(0.05)
-    assert len(asked) == 3
+    # It refused, and is not asked a third time. Its tools were asked for once more all the
+    # same: that shows whether the connection broke off with its word.
+    assert (words.entered, len(asked), naps.asked) == (2, 3, [FIRST_WAIT])
     assert connection.state == "connected"
+    assert shown(await connection.call("add", TWO, 5)) == "2"
+
+
+async def test_a_server_that_does_not_answer_when_listened_to_again_is_not_waited_for_for_good(
+    make: Callable[..., Connection],
+    served: Served,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    words = Words().over(monkeypatch)
+    words.silent_from = 2
+    asked = counted(monkeypatch)
+    connection = await begun(make("served", lambda: served.server, sleep=Naps()))
+    # Set once the connection is there: a machine that is busy may take longer to make one.
+    monkeypatch.setattr(connection, "_startup", 0.2)
+
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        words.lose()
+        await until(lambda: len(asked) == 3)
+        await asyncio.sleep(0.05)
+
+    # It had as long as an attempt to connect has. Then its tools were asked for, which
+    # showed that the connection is there, and nothing more is expected of its word.
+    assert "the MCP server served did not say within 0.2 seconds that it listens again" in (
+        caplog.messages
+    )
+    assert (words.entered, len(asked), connection.state) == (2, 3, "connected")
+    assert shown(await connection.call("add", TWO, 5)) == "2"
+
+
+async def test_a_connection_that_is_lost_while_its_server_is_to_be_listened_to_again_is_made_again(
+    make: Callable[..., Connection], served: Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    words = Words().over(monkeypatch)
+    transport = Cuttable(served)
+    naps = Naps(held=True)
+    connection = await begun(make("served", lambda: transport, mode="auto", sleep=naps))
+    words.lose()
+    await asyncio.wait_for(naps.begun.wait(), 5)
+    assert naps.asked == [FIRST_WAIT]
+
+    # The wait before the server is listened to again is under way when a call finds the
+    # connection closed. Nobody waits that wait out: the connection is left at once.
+    await transport.cut()
+    with pytest.raises(CallError):
+        await connection.call("add", TWO, 5)
+    await until(lambda: transport.left == 1)
+
+    assert words.entered == 1
+    # The wait that follows is the one before the connection is made again.
+    await asyncio.wait_for(naps.begun.wait(), 5)
+    naps.end()
+    await until(lambda: transport.entered == 2 and connection.state == "connected")
+    assert words.entered == 2
+
+
+async def test_a_connection_is_closed_at_once_while_its_server_is_to_be_listened_to_again(
+    make: Callable[..., Connection], served: Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    words = Words().over(monkeypatch)
+    transport = Cuttable(served)
+    naps = Naps(held=True)
+    connection = await begun(make("served", lambda: transport, sleep=naps))
+    words.end()
+    await asyncio.wait_for(naps.begun.wait(), 5)
+
+    await asyncio.wait_for(connection.close(), 5)
+
+    assert (connection.state, transport.left, words.entered, words.left) == ("closed", 1, 1, 1)
 
 
 async def test_a_server_that_does_not_say_when_its_tools_change_is_none_the_worse_for_it(
@@ -1386,5 +1725,65 @@ async def test_closing_does_not_wait_for_good_for_a_connection_that_does_not_let
     finally:
         # Whatever was found, the connection lets go now. One that never did would keep the
         # run of the tests from ending.
+        released.set()
+    await until(lambda: transport.left == 1)
+
+
+async def test_closing_sees_a_connection_left_that_lets_go_only_when_its_time_is_up(
+    served: Served, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class Slow(Cuttable):
+        async def __aexit__(self, *why: Any) -> None:
+            try:
+                # It would take an hour. Leaving has a limit, and the limit ends this.
+                await asyncio.sleep(3600)
+            finally:
+                await super().__aexit__(*why)
+
+    monkeypatch.setattr(connection_module, "LEAVE_SECONDS", 0.1)
+    transport = Slow(served)
+    connection = await begun(Connection("served", lambda: transport))
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        await asyncio.wait_for(connection.close(), 5)
+
+    # Whoever closes waits a moment longer than leaving may take, and so sees the limit kept:
+    # the connection is left when closing comes back, and nothing is said of one that clings.
+    assert (transport.left, connection.state) == (1, "closed")
+    assert caplog.messages == []
+
+
+async def test_closing_again_waits_again_for_a_connection_that_did_not_let_go(
+    served: Served, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    released = asyncio.Event()
+
+    class Clinging(Cuttable):
+        async def __aexit__(self, *why: Any) -> None:
+            while not released.is_set():
+                with suppress(asyncio.CancelledError):
+                    await released.wait()
+            await super().__aexit__(*why)
+
+    monkeypatch.setattr(connection_module, "LEAVE_SECONDS", 0.1)
+    transport = Clinging(served)
+    connection = await begun(Connection("served", lambda: transport))
+    said = "the MCP server served did not let go within 0.1 seconds"
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=LOGGER):
+            await asyncio.wait_for(connection.close(), 5)
+            # It is still held, and whoever closes it a second time is not told otherwise
+            # at once: the wait is made again.
+            await asyncio.wait_for(connection.close(), 5)
+            assert (caplog.messages, transport.left) == ([said, said], 0)
+            released.set()
+            await asyncio.wait_for(connection.close(), 5)
+        # This time it let go, and closing came back when it had.
+        assert (caplog.messages, transport.left) == ([said, said], 1)
+        # There is nothing left to wait for.
+        await asyncio.wait_for(connection.close(), 5)
+        assert (caplog.messages, connection.state) == ([said, said], "closed")
+    finally:
         released.set()
     await until(lambda: transport.left == 1)

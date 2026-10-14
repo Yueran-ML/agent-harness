@@ -27,12 +27,17 @@ def listed(name: str, description: str | None = None, **more: Any) -> Listed:
 def answering(text: str = "done", *, failed: bool = False) -> Any:
     """What calls a tool of a server in a test: it keeps the calls and answers one text."""
     calls: list[tuple[str, dict[str, Any], float]] = []
+    as_listed: list[Listed | None] = []
 
-    async def call(name: str, arguments: dict[str, Any], seconds: float) -> CallToolResult:
+    async def call(
+        name: str, arguments: dict[str, Any], seconds: float, *, listed: Listed | None
+    ) -> CallToolResult:
         calls.append((name, arguments, seconds))
+        as_listed.append(listed)
         return CallToolResult(content=[TextContent(type="text", text=text)], is_error=failed)
 
     call.calls = calls  # type: ignore[attr-defined]
+    call.as_listed = as_listed  # type: ignore[attr-defined]
     return call
 
 
@@ -110,6 +115,21 @@ async def test_a_call_goes_to_the_server_under_the_name_that_the_server_gave_the
     assert call.calls == [("find notes", {"text": "plan", "n": 3}, 60.0)]
 
 
+async def test_a_call_says_what_the_server_said_of_the_tool_when_it_was_offered() -> None:
+    call = answering()
+    reads = listed("look", annotations=ToolAnnotations(read_only_hint=True))
+    other = listed("find")
+    (look, find) = made(reads, other, call=call).tools
+
+    await find.execute(JsonArguments({}), NO_RUN)
+    await look.execute(JsonArguments({}), NO_RUN)
+
+    # A call is let through by what its tool was said to be. It is made for that tool
+    # and for no other that the server may list under the name by then.
+    assert call.as_listed == [other, reads]
+    assert call.as_listed[1] is reads
+
+
 async def test_a_result_that_says_that_the_tool_failed_is_a_failure_with_its_text() -> None:
     (tool,) = made(listed("find"), call=answering("no such notebook", failed=True)).tools
 
@@ -152,7 +172,9 @@ def test_the_name_of_a_tool_that_is_passed_over_is_told_in_a_few_characters() ->
 
 
 async def test_a_call_that_did_not_come_to_a_result_is_a_failure_with_the_reason() -> None:
-    async def lost(name: str, arguments: dict[str, Any], seconds: float) -> CallToolResult:
+    async def lost(
+        name: str, arguments: dict[str, Any], seconds: float, *, listed: Listed | None
+    ) -> CallToolResult:
         raise CallError("the connection to the MCP server notes was lost")
 
     (tool,) = made(listed("find"), call=lost).tools

@@ -223,6 +223,53 @@ async def test_what_an_address_and_its_headers_hold_is_kept_out_of_why_a_server_
     assert mcp.servers["notes"].failure == "refused https://host.example/mcp?[...] with [...]"
 
 
+async def test_what_an_address_and_its_headers_hold_is_kept_out_of_what_a_library_logs(
+    harness: Harness, served: Served, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def reached(url: str, headers: dict[str, str]) -> Any:
+        return served.server
+
+    monkeypatch.setattr(reach, "reached", reached)
+    mcp = await listing(harness)
+    library = logging.getLogger("httpx2")
+    written: list[str] = []
+
+    class Kept(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            written.append(self.format(record))
+
+    kept = Kept()
+    library.addHandler(kept)
+    try:
+        fiber = harness.ctx.plugin(
+            server_plugin,
+            {
+                "server": "notes",
+                "url": "https://host.example/mcp?key=s3cret-value",
+                "headers": {"Authorization": "Bearer abcdefgh"},
+            },
+        )
+        await fiber
+        await asyncio.wait_for(mcp.ready(), 5)
+
+        # The SDK and the library that speaks HTTP log by themselves, and repeat where a
+        # request went and what it carried. Their words are not written by this program,
+        # and what lets somebody in is out of them all the same.
+        library.warning("POST https://host.example/mcp?key=s3cret-value failed")
+        library.error("refused the header %r", "Bearer abcdefgh")
+        await fiber.dispose()
+        # The server is gone, and so is what there was to keep out for it.
+        library.warning("key=s3cret-value")
+    finally:
+        library.removeHandler(kept)
+
+    assert written == [
+        "POST https://host.example/mcp?[...] failed",
+        "refused the header '[...]'",
+        "key=s3cret-value",
+    ]
+
+
 async def test_a_server_from_before_2026_is_spoken_to_as_one_where_the_config_says_so(
     harness: Harness, served: Served, monkeypatch: pytest.MonkeyPatch
 ) -> None:

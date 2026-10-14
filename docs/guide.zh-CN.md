@@ -485,7 +485,7 @@ You review a change that somebody else made.
 uv tool install ".[mcp]"
 ```
 
-每个服务器是补丁文件里的一项，例如写在 `~/.columbina/config.yml` 里。服务器可以是一个由 Columbina 启动、通过标准输入和标准输出对话的程序，也可以是一个通过 HTTP 对话的地址。配置里的值可以用 `${NAME}` 引用环境变量，令牌就不必写进文件。
+每个服务器是补丁文件里的一项，例如写在 `~/.columbina/config.yml` 里。服务器可以是一个由 Columbina 启动、通过标准输入和标准输出对话的程序，也可以是一个通过 HTTP 对话的地址。配置里的值可以用 `${NAME}` 引用环境变量，令牌就不必写进文件。请求头的值和地址里问号之后的部分，会从本程序写的日志和它报告的失败原因里抹掉，所以令牌要放在这两处，不要放进地址的路径。
 
 ```yaml
 - insert:

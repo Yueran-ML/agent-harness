@@ -141,6 +141,7 @@ SERVE_RPC = "src/columbina/apps/serve/rpc.py"
 SERVE_WIRE = "src/columbina/apps/serve/wire.py"
 SERVE_SERVER = "src/columbina/apps/serve/server.py"
 SERVE_BUNDLE = "src/columbina/bundles/serve.yml"
+WITHHELD = "src/columbina/withheld.py"
 
 
 @dataclass(frozen=True, slots=True)
@@ -19149,7 +19150,7 @@ _MCP = (
     mutant(
         "closing waits for good for a connection that does not let go",
         MCP_CONNECTION,
-        "        await asyncio.wait([keeper], timeout=LEAVE_SECONDS)\n",
+        "        await asyncio.wait([keeper], timeout=LEAVE_SECONDS + _GRACE)\n",
         "        await asyncio.wait([keeper])\n",
     ),
     mutant(
@@ -19233,8 +19234,8 @@ _MCP = (
     mutant(
         "a client that is no longer the one that is there ends the one that is",
         MCP_CONNECTION,
-        "        if client is self._client:\n            self._lost.set()\n",
-        "        self._lost.set()\n",
+        "        if client is self._client:\n            self._client = None\n            self._lost.set()\n",
+        "        if True:\n            self._client = None\n            self._lost.set()\n",
     ),
     mutant(
         "every attempt is made by one task",
@@ -19443,8 +19444,8 @@ _MCP = (
     mutant(
         "nobody listens to a server while it is connected",
         MCP_CONNECTION,
-        "        watching = asyncio.ensure_future(self._watch(client, said))\n",
-        "        watching = asyncio.ensure_future(asyncio.sleep(0))\n",
+        "            if await self._until(self._watch(client, said), lost):\n",
+        "            if await self._until(asyncio.sleep(3600), lost):\n",
     ),
     mutant(
         "leaving a connection may take as long as it likes",
@@ -19773,7 +19774,7 @@ _MCP = (
     mutant(
         "what an address and headers hold is not kept out of why a server failed",
         MCP_SERVER,
-        "        kept_out=reach.kept_out(config.url, config.headers),\n",
+        "        kept_out=kept_out,\n",
         "        kept_out=(),\n",
     ),
     mutant(
@@ -19845,8 +19846,10 @@ _MCP = (
     mutant(
         "a tool of a server is called by the name that it has here",
         MCP_OFFER,
-        "                execute=_calling(raw, call, call_seconds),\n",
-        "                execute=_calling(tool_name(server, raw), call, call_seconds),\n",
+        "            result = await call(listed.name, dict(arguments.root), seconds, listed=listed)\n",
+        "            result = await call(\n"
+        '                f"mcp__{listed.name}", dict(arguments.root), seconds, listed=listed\n'
+        "            )\n",
     ),
     mutant(
         "a call of a tool of a server has the limit of any other tool",
@@ -20091,8 +20094,8 @@ _MCP = (
     mutant(
         "a server is asked for its tools before it is asked to say when they change",
         MCP_CONNECTION,
-        "                    said = await self._listening(stack, client)\n                    listed = await _listed(client)\n",
-        "                    listed = await _listed(client)\n                    said = await self._listening(stack, client)\n",
+        "                    said = await self._listening(heard, client)\n                    listed = await _listed(client)\n",
+        "                    listed = await _listed(client)\n                    said = await self._listening(heard, client)\n",
     ),
     mutant(
         "an older server is taken for one that does not say when its tools change",
@@ -20109,8 +20112,8 @@ _MCP = (
     mutant(
         "a server that does not say when its tools change is asked for them once more",
         MCP_CONNECTION,
-        "        if said is None:\n            return\n        try:\n            async for _ in said:\n",
-        "        try:\n            async for _ in said:\n",
+        "        while said is not None:\n            since = self._clock()\n",
+        "        while True:\n            since = self._clock()\n",
     ),
     mutant(
         "an older server is heard once when it says that its tools changed, and then no more",
@@ -21311,6 +21314,174 @@ _CONDUCT = (
 
 _MCP_REVIEWED = (
     mutant(
+        "what the address and the headers of a server hold is in what a library logs",
+        MCP_SERVER,
+        "    ctx.effect(lambda: withhold(kept_out))\n",
+        "",
+    ),
+    mutant(
+        "what a server was given stays out of the log when the server is gone",
+        MCP_SERVER,
+        "    ctx.effect(lambda: withhold(kept_out))\n",
+        "    withhold(kept_out)\n",
+    ),
+    mutant(
+        "a client that found its connection closed is handed out until the keeper has left it",
+        MCP_CONNECTION,
+        "            self._client = None\n            self._lost.set()\n",
+        "            self._lost.set()\n",
+    ),
+    mutant(
+        "a call is made although its tool is listed otherwise by now",
+        MCP_CONNECTION,
+        "        if listed is not None and listed not in self._tools:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a call that says nothing of how its tool was listed is not made",
+        MCP_CONNECTION,
+        "        if listed is not None and listed not in self._tools:\n",
+        "        if listed not in self._tools:\n",
+    ),
+    mutant(
+        "a tool is taken for the one that was listed because it has its name",
+        MCP_CONNECTION,
+        "        if listed is not None and listed not in self._tools:\n",
+        "        if listed is not None and listed.name not in {tool.name for tool in self._tools}:\n",
+    ),
+    mutant(
+        "a call of a tool of a server does not say how the tool was listed",
+        MCP_OFFER,
+        "            result = await call(listed.name, dict(arguments.root), seconds, listed=listed)\n",
+        "            result = await call(listed.name, dict(arguments.root), seconds, listed=None)\n",
+    ),
+    mutant(
+        "a server whose word of its tools ended is listened to again once and no more",
+        MCP_CONNECTION,
+        "        while said is not None:\n            since = self._clock()\n",
+        "        if said is not None:\n            since = self._clock()\n",
+    ),
+    mutant(
+        "a word of the tools that lasted counts among those that ended soon",
+        MCP_CONNECTION,
+        "            soon = 1 if self._clock() - since >= STABLE_SECONDS else soon + 1\n",
+        "            soon = soon + 1\n",
+    ),
+    mutant(
+        "the count of words that ended soon begins anew every time",
+        MCP_CONNECTION,
+        "            soon = 1 if self._clock() - since >= STABLE_SECONDS else soon + 1\n",
+        "            soon = 1\n",
+    ),
+    mutant(
+        "a word of the tools that lasted for just half a minute counts as one that ended soon",
+        MCP_CONNECTION,
+        "            soon = 1 if self._clock() - since >= STABLE_SECONDS else soon + 1\n",
+        "            soon = 1 if self._clock() - since > STABLE_SECONDS else soon + 1\n",
+    ),
+    mutant(
+        "a word of the tools that lasted for a little less than half a minute counts as one that lasted",
+        MCP_CONNECTION,
+        "            soon = 1 if self._clock() - since >= STABLE_SECONDS else soon + 1\n",
+        "            soon = 1 if self._clock() - since >= STABLE_SECONDS - 1 else soon + 1\n",
+    ),
+    mutant(
+        "a server is listened to again one time fewer before it is left alone",
+        MCP_CONNECTION,
+        "            if soon > ATTEMPTS:\n",
+        "            if soon >= ATTEMPTS:\n",
+    ),
+    mutant(
+        "a server whose word ends as often as it is given is listened to again without end",
+        MCP_CONNECTION,
+        "            if soon > ATTEMPTS:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "nobody is told that a server is no longer listened to",
+        MCP_CONNECTION,
+        '                logger.warning(\n                    "the MCP server %s ended its word of its tools %d times in a row, each soon "\n',
+        '                logger.debug(\n                    "the MCP server %s ended its word of its tools %d times in a row, each soon "\n',
+    ),
+    mutant(
+        "the waits before a server is listened to again are all as short as the first",
+        MCP_CONNECTION,
+        "            wait = min(FIRST_WAIT * 2 ** (soon - 1), LONGEST_WAIT)\n",
+        "            wait = FIRST_WAIT\n",
+    ),
+    mutant(
+        "the waits before a server is listened to again have no longest",
+        MCP_CONNECTION,
+        "            wait = min(FIRST_WAIT * 2 ** (soon - 1), LONGEST_WAIT)\n",
+        "            wait = FIRST_WAIT * 2 ** (soon - 1)\n",
+    ),
+    mutant(
+        "the wait before a server is listened to again is waited out although the connection is lost",
+        MCP_CONNECTION,
+        "            if await self._until(self._sleep(wait), lost):\n                return\n",
+        "            await self._sleep(wait)\n",
+    ),
+    mutant(
+        "what listened to a server before is not left when the server is listened to again",
+        MCP_CONNECTION,
+        "            # Left by the task that entered it, which is this one.\n            await heard.aclose()\n",
+        "            # Left by the task that entered it, which is this one.\n",
+    ),
+    mutant(
+        "a server that is listened to again is not asked for its tools",
+        MCP_CONNECTION,
+        "            # broke off with its word, and what changed while nobody listened.\n            await self._relist(client)\n",
+        "            # broke off with its word, and what changed while nobody listened.\n",
+    ),
+    mutant(
+        "a server that does not answer when it is listened to again is waited for for good",
+        MCP_CONNECTION,
+        "                async with asyncio.timeout(self._startup):\n                    said = await self._listening(heard, client)\n",
+        "                async with asyncio.timeout(None):\n                    said = await self._listening(heard, client)\n",
+    ),
+    mutant(
+        "what was being done when a connection was lost is waited out",
+        MCP_CONNECTION,
+        "        finally:\n            task.cancel()\n            await asyncio.wait([task])\n",
+        "        finally:\n            await asyncio.wait([task])\n",
+    ),
+    mutant(
+        "a connection counts as lost whenever something that was done for it is over",
+        MCP_CONNECTION,
+        "        return lost.done()\n",
+        "        return True\n",
+    ),
+    mutant(
+        "a connection that was lost while something was done for it is taken to be there",
+        MCP_CONNECTION,
+        "        return lost.done()\n",
+        "        return False\n",
+    ),
+    mutant(
+        "closing gives up at the moment at which leaving does",
+        MCP_CONNECTION,
+        "        await asyncio.wait([keeper], timeout=LEAVE_SECONDS + _GRACE)\n",
+        "        await asyncio.wait([keeper], timeout=LEAVE_SECONDS)\n",
+    ),
+    mutant(
+        "whoever closes a connection again that did not let go is not kept waiting again",
+        MCP_CONNECTION,
+        "        keeper = self._keeper\n        if keeper is None:\n            return\n        if not told:\n",
+        "        keeper, self._keeper = self._keeper, None\n        if keeper is None:\n            return\n        if not told:\n",
+    ),
+    mutant(
+        "closing a connection again breaks off what is letting go by then",
+        MCP_CONNECTION,
+        "        if not told:\n            keeper.cancel()\n",
+        "        keeper.cancel()\n",
+    ),
+    mutant(
+        "a connection that is closed is not told to let go",
+        MCP_CONNECTION,
+        "        if not told:\n            keeper.cancel()\n",
+        "        if told:\n            keeper.cancel()\n",
+    ),
+    mutant(
         "a connection that broke with an error is told twice",
         MCP_CONNECTION,
         "                if lasted is None:\n",
@@ -21562,7 +21733,121 @@ _SANDBOX_RUN = (
     ),
 )
 
+_WITHHELD = (
+    mutant(
+        "nothing is taken out of the message of a record",
+        WITHHELD,
+        "    clean = without(said)\n",
+        "    clean = said\n",
+    ),
+    mutant(
+        "a message that held a text that is withheld keeps what filled its places",
+        WITHHELD,
+        "        record.msg, record.args = clean, None\n",
+        "        record.msg = clean\n",
+    ),
+    mutant(
+        "a traceback is written with what it holds",
+        WITHHELD,
+        "        if without(traced) != traced:\n            record.exc_text = without(traced)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "a traceback is cleared of nothing where it is cleared",
+        WITHHELD,
+        "            record.exc_text = without(traced)\n",
+        "            record.exc_text = traced\n",
+    ),
+    mutant(
+        "the stack that a record carries is written with what it holds",
+        WITHHELD,
+        "    if record.stack_info:\n        record.stack_info = without(record.stack_info)\n",
+        "",
+    ),
+    mutant(
+        "a record that cannot be put together ends whoever logs it",
+        WITHHELD,
+        "    except Exception:\n",
+        "    except ZeroDivisionError:\n",
+    ),
+    mutant(
+        "the shortest text is taken out first",
+        WITHHELD,
+        "    _longest_first = tuple(sorted(_texts, key=len, reverse=True))\n",
+        "    _longest_first = tuple(sorted(_texts, key=len))\n",
+    ),
+    mutant(
+        "a text that two withhold is let go by the first of them",
+        WITHHELD,
+        "            if _texts[text] <= 0:\n                del _texts[text]\n",
+        "            del _texts[text]\n",
+    ),
+    mutant(
+        "a text stays withheld when everybody has let it go",
+        WITHHELD,
+        "        _texts.subtract(mine)\n",
+        "",
+    ),
+    mutant(
+        "letting go a second time lets go what somebody else withholds",
+        WITHHELD,
+        "        if over:\n            return\n",
+        "",
+    ),
+    mutant(
+        "records go on being made here when nothing is withheld any more",
+        WITHHELD,
+        "        if not _texts:\n            _displace()\n",
+        "",
+    ),
+    mutant(
+        "what somebody else built on the making of records is thrown out",
+        WITHHELD,
+        "    if logging.getLogRecordFactory() is made:\n        logging.setLogRecordFactory(before)\n",
+        "    logging.setLogRecordFactory(before)\n",
+    ),
+    mutant(
+        "whoever withholds something more puts the making of records in place once more",
+        WITHHELD,
+        "    if not _texts:\n        _place()\n",
+        "    _place()\n",
+    ),
+    mutant(
+        "a text of no length is withheld",
+        WITHHELD,
+        "    mine = [text for text in texts if text]\n",
+        "    mine = list(texts)\n",
+    ),
+    mutant(
+        "a text that was let go is still taken out",
+        WITHHELD,
+        "        _ordered()\n        if not _texts:\n            _displace()\n",
+        "        if not _texts:\n            _displace()\n",
+    ),
+    mutant(
+        "a text that is withheld is not taken out",
+        WITHHELD,
+        "    _texts.update(mine)\n    _ordered()\n",
+        "    _texts.update(mine)\n",
+    ),
+    mutant(
+        "what stands in the place of a text that is withheld is nothing",
+        WITHHELD,
+        '_BLOT = "[...]"\n',
+        '_BLOT = ""\n',
+    ),
+    mutant(
+        "the making of records is put back although it was never put in place",
+        WITHHELD,
+        "    if not mine:\n        return lambda: None\n",
+        "",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
+    "withheld": MutantSet(
+        ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
+    ),
     # Tried only where a real engine answers, like the set docker-real.
     "sandbox-run": MutantSet(("tests/apps/test_sandbox_run.py",), _SANDBOX_RUN),
     "approval": MutantSet(("tests/approval",), _APPROVAL),

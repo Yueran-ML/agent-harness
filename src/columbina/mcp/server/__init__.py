@@ -50,6 +50,7 @@ from columbina.kernel import Context
 from columbina.mcp import MCP
 from columbina.mcp.server.names import SERVER
 from columbina.tools import TOOLS
+from columbina.withheld import withhold
 
 __all__ = ["Config", "ServerError", "apply", "inject", "name"]
 
@@ -159,6 +160,12 @@ async def apply(ctx: Context, config: Config) -> None:
         assert config.url is not None
         return reach.reached(config.url, config.headers)
 
+    kept_out = reach.kept_out(config.url, config.headers)
+    # The connection keeps these out of what it says itself. The SDK and the library that
+    # speaks HTTP log by themselves, and repeat an address when a request to it fails. So
+    # they are out of every record of the log for as long as the server is used: from
+    # before it is connected until after it is left.
+    ctx.effect(lambda: withhold(kept_out))
     served = Served(
         ctx,
         config.server,
@@ -169,7 +176,7 @@ async def apply(ctx: Context, config: Config) -> None:
         call_seconds=config.call_timeout_seconds,
         instruction_bytes=config.max_instruction_bytes,
         mode=config.protocol,
-        kept_out=reach.kept_out(config.url, config.headers),
+        kept_out=kept_out,
     )
     mcp.servers.add(ctx, config.server, served)
     ctx.effect(lambda: served.close)

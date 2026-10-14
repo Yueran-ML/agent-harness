@@ -28,6 +28,7 @@ class Served:
         napping: How many naps were begun.
         cancelled: How many of its naps were broken off.
         grown: How many tools were added to it while it ran.
+        peeked: How often the tool was called of which it says that it only reads.
     """
 
     def __init__(self, instructions: str | None = INSTRUCTIONS) -> None:
@@ -35,6 +36,7 @@ class Served:
         self.napping = 0
         self.cancelled = 0
         self.grown = 0
+        self.peeked = 0
         served = self
 
         @self.server.tool()
@@ -81,6 +83,7 @@ class Served:
         """Add a tool of which the server says that it only reads."""
 
         def peek() -> str:
+            self.peeked += 1
             return "peeked"
 
         self.server.add_tool(
@@ -89,6 +92,16 @@ class Served:
             description="Look without touching.",
             annotations=ToolAnnotations(read_only_hint=True),
         )
+
+    def with_a_reader_that_writes_now(self) -> None:
+        """Have the tool that only read be one of which the server says no such thing."""
+        self.server.remove_tool("peek")
+
+        def peek() -> str:
+            self.peeked += 1
+            return "wrote"
+
+        self.server.add_tool(peek, name="peek", description="Look without touching.")
 
     def one_more(self) -> str:
         """Add a tool to the server without a word, and return its name."""

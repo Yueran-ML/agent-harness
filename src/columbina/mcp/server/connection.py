@@ -111,6 +111,13 @@ STABLE_SECONDS = 30.0
 LEAVE_SECONDS = 10.0
 """How long leaving a client may take. A server that is dead may not let go by itself."""
 
+_GRACE = 0.5
+"""How many seconds longer closing waits than leaving a client may take.
+
+The limit on leaving begins a moment after closing begins to wait. With the
+same number for both, closing would give up just before the client is left.
+"""
+
 _SAID = 300
 """How many characters of the reason for a failure are passed on."""
 
@@ -250,20 +257,37 @@ class Connection:
         await self._settled.wait()
 
     async def close(self) -> None:
-        """Leave the connection for good. Whoever waits for a call is answered."""
+        """Leave the connection for good. Whoever waits for a call is answered.
+
+        Leaving a client has a limit of its own. This waits a moment longer
+        than that, so that it sees the limit kept and comes back when the
+        client is left. A connection that does not let go even then is not
+        waited for for good: this says so and comes back. Whoever closes it
+        again waits for it again, and does not break off a second time what
+        may be letting go by then.
+        """
+        told = self._closing
         self._closing = True
         self._move()
-        keeper, self._keeper = self._keeper, None
+        keeper = self._keeper
         if keeper is None:
             return
-        keeper.cancel()
-        await asyncio.wait([keeper], timeout=LEAVE_SECONDS)
+        if not told:
+            keeper.cancel()
+        await asyncio.wait([keeper], timeout=LEAVE_SECONDS + _GRACE)
         if not keeper.done():
             logger.warning(
                 "the MCP server %s did not let go within %g seconds", self.server, LEAVE_SECONDS
             )
 
-    async def call(self, name: str, arguments: dict[str, Any], seconds: float) -> CallToolResult:
+    async def call(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        seconds: float,
+        *,
+        listed: Tool | None = None,
+    ) -> CallToolResult:
         """Call a tool of the server.
 
         A call that comes while the connection is made again waits for it.
@@ -275,6 +299,12 @@ class Connection:
             arguments: The arguments of the call.
             seconds: How long the call may take: to be written to the server
                 and to be answered by it.
+            listed: The tool as the server listed it when the call was
+                decided on, if whoever calls goes by that. A call may wait
+                for a connection, and the server that comes back may list a
+                tool of that name of which it says something else: that it
+                no longer only reads, for one. A call that was let through
+                for what the tool was is then not made.
 
         Returns:
             What the server answered. It may say that the tool failed.
@@ -286,7 +316,7 @@ class Connection:
         """
         try:
             return await cancellation.guard(
-                self._asked(name, arguments, seconds),
+                self._asked(name, arguments, seconds, listed),
                 what=f"the call of the MCP server {self.server}",
             )
         except CancelledFromInside:
@@ -295,9 +325,19 @@ class Connection:
                 "and not by whoever made it. It may have taken effect all the same"
             ) from None
 
-    async def _asked(self, name: str, arguments: dict[str, Any], seconds: float) -> CallToolResult:
+    async def _asked(
+        self, name: str, arguments: dict[str, Any], seconds: float, listed: Tool | None
+    ) -> CallToolResult:
         """Make a call over the connection, or say in the words of this program why not."""
         client = await self._connected()
+        if listed is not None and listed not in self._tools:
+            # Looked at once the client is there: the tools of a connection are in place
+            # before anybody who waited for it is woken.
+            raise CallError(
+                f"the MCP server {self.server} no longer lists the tool {name} as it did when "
+                "this call was made, so the call was not made. Look at the tool as it is now, "
+                "and call it again if that is still wanted"
+            )
         # The whole call has so long, and not only its answer. The SDK would count from when
         # the call is written, and a server that reads no more keeps it from being written.
         limit = asyncio.timeout(seconds)
@@ -352,8 +392,15 @@ class Connection:
         moved.set()
 
     def _gone(self, client: Client) -> None:
-        """Tell the keeper that a client found its connection closed."""
+        """Tell the keeper that a client found its connection closed.
+
+        The client is handed to nobody from here on. The keeper comes to
+        leave it a moment later, and whoever calls in that moment would get
+        it and fail with it, of a loss that is known already. Such a call
+        waits for the next connection instead.
+        """
         if client is self._client:
+            self._client = None
             self._lost.set()
 
     async def _keep(self) -> None:
@@ -404,13 +451,16 @@ class Connection:
             try:
                 async with limit:
                     client = await stack.enter_async_context(self._made())
+                    # What listens to the server is left before its client, and may be
+                    # left and entered anew while the client stays.
+                    heard = await stack.enter_async_context(AsyncExitStack())
                     # First the server listens, and then it lists. It says nothing again
                     # of what changed before it listened, so nothing may change in between.
-                    said = await self._listening(stack, client)
+                    said = await self._listening(heard, client)
                     listed = await _listed(client)
                 since = self._clock()
                 try:
-                    await self._held(client, listed, said)
+                    await self._held(client, heard, listed, said)
                 finally:
                     # It lasted until it was lost. Leaving it may take seconds more, and in
                     # those the server was of no use to anyone.
@@ -480,7 +530,11 @@ class Connection:
             yield
 
     async def _held(
-        self, client: Client, listed: Sequence[Tool], said: AsyncIterator[object] | None
+        self,
+        client: Client,
+        heard: AsyncExitStack,
+        listed: Sequence[Tool],
+        said: AsyncIterator[object] | None,
     ) -> None:
         """Offer what a connection gives until the connection is lost."""
         self._lost.clear()
@@ -490,12 +544,82 @@ class Connection:
         await self._offer(listed)
         self._move()
         self._settled.set()
-        watching = asyncio.ensure_future(self._watch(client, said))
+        lost = asyncio.ensure_future(self._lost.wait())
         try:
-            await self._lost.wait()
+            await self._listened(client, heard, said, lost)
+            await lost
         finally:
-            watching.cancel()
-            await asyncio.wait([watching])
+            lost.cancel()
+            await asyncio.wait([lost])
+
+    async def _listened(
+        self,
+        client: Client,
+        heard: AsyncExitStack,
+        said: AsyncIterator[object] | None,
+        lost: asyncio.Future[Any],
+    ) -> None:
+        """Have the tools listed anew whenever the server says so, and listen again when it stops.
+
+        A server ends its word of its tools in good order, or the word breaks
+        off while the connection stays. Either way nothing more is heard of a
+        change, and the SDK does not listen again by itself. So the server
+        is listened to anew, after a wait like the one before a connection
+        is made again, and asked for its tools after that. A server whose
+        word ends soon after it was given, time after time, is left alone
+        for the rest of the connection.
+
+        This comes back when the connection is lost, and when the server is
+        no longer listened to.
+        """
+        soon = 0
+        while said is not None:
+            since = self._clock()
+            if await self._until(self._watch(client, said), lost):
+                return
+            soon = 1 if self._clock() - since >= STABLE_SECONDS else soon + 1
+            if soon > ATTEMPTS:
+                logger.warning(
+                    "the MCP server %s ended its word of its tools %d times in a row, each soon "
+                    "after it was listened to. It is not listened to again on this connection, "
+                    "so a change of its tools is not heard of before the connection is made "
+                    "again",
+                    self.server,
+                    soon,
+                )
+                return
+            wait = min(FIRST_WAIT * 2 ** (soon - 1), LONGEST_WAIT)
+            if await self._until(self._sleep(wait), lost):
+                return
+            # Left by the task that entered it, which is this one.
+            await heard.aclose()
+            try:
+                async with asyncio.timeout(self._startup):
+                    said = await self._listening(heard, client)
+            except TimeoutError:
+                logger.debug(
+                    "the MCP server %s did not say within %g seconds that it listens again",
+                    self.server,
+                    self._startup,
+                )
+                said = None
+            # Asked also where the server refuses now: that shows whether the connection
+            # broke off with its word, and what changed while nobody listened.
+            await self._relist(client)
+
+    @staticmethod
+    async def _until(doing: Awaitable[None], lost: asyncio.Future[Any]) -> bool:
+        """Do something for as long as the connection lasts, and tell whether it was lost.
+
+        What is being done when the connection is lost is broken off.
+        """
+        task = asyncio.ensure_future(doing)
+        try:
+            await asyncio.wait({task, lost}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            task.cancel()
+            await asyncio.wait([task])
+        return lost.done()
 
     async def _leave(self, stack: AsyncExitStack) -> None:
         """Leave a client, whatever leaving it raises."""
@@ -534,10 +658,8 @@ class Connection:
         if isinstance(message, ToolListChangedNotification):
             self._changed.set()
 
-    async def _watch(self, client: Client, said: AsyncIterator[object] | None) -> None:
+    async def _watch(self, client: Client, said: AsyncIterator[object]) -> None:
         """List the tools anew whenever the server says that they changed."""
-        if said is None:
-            return
         try:
             async for _ in said:
                 await self._relist(client)

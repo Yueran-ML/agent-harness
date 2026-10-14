@@ -5,13 +5,19 @@ and how to start it, and the guide under docs/ says the rest. The English one of
 held to the repository, and the other two are held to the English one.
 """
 
+import json
+import os
 import posixpath
 import re
 import runpy
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).parent.parent
 READMES = ("README.md", "README.zh-CN.md", "README.ja.md")
@@ -130,10 +136,104 @@ def test_the_kernel_demo_prints_one_tick(capsys: pytest.CaptureFixture[str]) -> 
 
 
 @pytest.mark.parametrize("name", GUIDES)
-def test_the_guide_shows_the_kernel_demo_unchanged(name: str) -> None:
-    demo = (ROOT / "examples" / "kernel_demo.py").read_text(encoding="utf-8")
+@pytest.mark.parametrize("example", ["kernel_demo.py", "word_count.py"])
+def test_the_guide_shows_an_example_unchanged(example: str, name: str) -> None:
+    code = (ROOT / "examples" / example).read_text(encoding="utf-8")
 
-    assert demo in _text(name)
+    assert f"{FENCE}python\n{code}{FENCE}\n" in _text(name)
+
+
+def _ran(
+    work: Path, plugins: list[dict[str, Any]], calls: list[dict[str, Any]], *more: str
+) -> list[dict[str, Any]]:
+    """Run a task in which a model makes these calls, with these plugins of the examples.
+
+    Return the results of the calls, in their order.
+    """
+    replies = [*({"calls": [call]} for call in calls), {"text": "Done."}]
+    model = {"provider": "deepseek", "replies": replies}
+    patch = work.parent / "patch.yml"
+    patch.write_text(
+        yaml.safe_dump(
+            [
+                {"insert": plugins},
+                {"id": "model", "plugin": "columbina.llm.adapters.scripted", "config": model},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = {name: value for name, value in os.environ.items() if not name.startswith("COLUMBINA_")}
+    env.pop("DEEPSEEK_API_KEY", None)
+    env |= {
+        "COLUMBINA_HOME": str(work.parent / "home"),
+        "COLUMBINA_AGENTS_HOME": str(work.parent / "agents"),
+        "PYTHONPATH": str(ROOT / "examples"),
+        "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
+    }
+
+    done = subprocess.run(
+        [sys.executable, "-m", "columbina", "run", "--json", "--profile", "headless",
+         "--patch", str(patch), "--cwd", str(work), *more, "Do it."],
+        env=env, capture_output=True, text=True, encoding="utf-8", timeout=120, check=False,
+    )  # fmt: skip
+
+    assert done.returncode == 0, done.stderr
+    lines = [json.loads(line) for line in done.stdout.splitlines() if line.strip()]
+    return [line for line in lines if line["type"] == "tool_result"]
+
+
+def test_the_smallest_plugin_of_a_tool_tells_the_time_in_thirty_lines(tmp_path: Path) -> None:
+    (tmp_path / "work").mkdir()
+
+    (told,) = _ran(tmp_path / "work", [{"id": "clock", "plugin": "clock"}], [{"name": "now"}])
+
+    assert told["error"] is None
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00", told["text"])
+    assert len((ROOT / "examples" / "clock.py").read_text(encoding="utf-8").splitlines()) <= 30
+
+
+def test_the_plugin_example_counts_words_inside_the_working_directory_alone(
+    tmp_path: Path,
+) -> None:
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "notes.txt").write_text("one two three\nfour\n", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("not to be read\n", encoding="utf-8")
+    calls = [
+        {"name": "count_words", "arguments": {"path": "notes.txt"}},
+        {"name": "count_words", "arguments": {"path": "../outside.txt"}},
+    ]
+
+    counted, outside = _ran(work, [{"id": "word-count", "plugin": "word_count"}], calls)
+
+    assert counted["text"] == "notes.txt has 4 words."
+    assert counted["error"] is None
+    assert outside["error"] is not None
+    assert "not to be read" not in outside["text"]
+
+
+def test_the_guard_of_the_example_refuses_a_push_and_nothing_else(tmp_path: Path) -> None:
+    (tmp_path / "work").mkdir()
+    shell = "powershell" if sys.platform == "win32" else "bash"
+    calls = [
+        {"name": shell, "arguments": {"command": "git push origin main"}},
+        {"name": shell, "arguments": {"command": "echo not-pushed"}},
+    ]
+
+    pushed, echoed = _ran(
+        tmp_path / "work",
+        [{"id": "no-push", "plugin": "no_push"}],
+        calls,
+        "--permission",
+        "full-access",
+        "--sandbox",
+        "none",
+    )
+
+    assert pushed["error"] == "NO_PUSH"
+    assert "left to the user" in pushed["text"]
+    assert echoed["error"] is None
+    assert "not-pushed" in echoed["text"]
 
 
 @pytest.mark.parametrize("name", GUIDES)

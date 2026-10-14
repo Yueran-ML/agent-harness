@@ -6,7 +6,7 @@
 
 Columbina は、既存の三つのハーネスを参考にしながら、ゼロから書かれました。カーネルとループは DeepSeek Harness を参考にし、Codex と Claude Code のほうが優れている部分はその二つから取り入れています。どこから何を取り入れたかは、[`docs/research`](research) と[設計文書](plans/2026-10-09-columbina-design.md)に記録しています。
 
-[主な機能](#主な機能) · [ターミナル](#ターミナルでの対話) · [長い対話](#長い対話) · [タスクの実行](#タスクの実行) · [ほかのプログラム](#ほかのプログラムからの利用) · [サービスとキー](#サービスとキー) · [権限](#ファイルの変更とコマンドの実行) · [拡張](#エージェントの拡張) · [アーキテクチャ](#アーキテクチャ) · [カーネル](#カーネル) · [開発](#開発) · [ロードマップ](#進捗)
+[主な機能](#主な機能) · [ターミナル](#ターミナルでの対話) · [長い対話](#長い対話) · [タスクの実行](#タスクの実行) · [ほかのプログラム](#ほかのプログラムからの利用) · [サービスとキー](#サービスとキー) · [権限](#ファイルの変更とコマンドの実行) · [拡張](#エージェントの拡張) · [アーキテクチャ](#アーキテクチャ) · [カーネル](#カーネル) · [プラグイン](#プラグインの書き方) · [開発](#開発) · [ロードマップ](#進捗)
 
 ## 主な機能
 
@@ -586,15 +586,120 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+## プラグインの書き方
+
+Columbina に加えるものはプラグインで、Columbina を形作る部品と同じです。プラグインは関数 `apply` を持つモジュールです。モジュールではほかに、`name` でプラグインの名前を、`inject` で必要なサービスを、`Config` でエントリの設定を検証する pydantic のモデルを示せます。`inject` のサービスがすべてそろうと、カーネルがコンテキストと設定を渡して `apply` を呼びます。
+
+[`examples/word_count.py`](../examples/word_count.py) のプラグインは、ファイルの単語を数えるツールをエージェントに与えます。プログラムに読み込ませる方法は、モジュールの docstring にあります。プロファイルへの変更でモジュールの名前を指定し、Python にモジュールの場所を教えます。
+
+```python
+"""A plugin that gives the agent one tool: how many words a text file has.
+
+A change to the profile loads it into any program. In a file ``word_count.yml``::
+
+    - insert:
+        - id: word-count
+          plugin: word_count
+          config:
+            largest: 1000000
+
+and from the root of the repository, with Python told where the module is::
+
+    PYTHONPATH=examples uv run columbina run --patch word_count.yml "Count the words in README.md."
+
+The tool reaches the file through the seam of the file system, the way the tools that come
+with Columbina do. So the permissions decide whether a call may go ahead, a path that leads
+out of the working directory is asked about, and what is read is the file that the decision
+was about.
+"""
+
+import asyncio
+
+from pydantic import BaseModel, Field
+
+from columbina.fs import FS, Access
+from columbina.kernel import Context
+from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
+
+# What the profile calls the plugin, and the services it needs: it loads once both are there.
+name = "word-count"
+inject = (TOOLS, FS)
+
+
+class Config(BaseModel):
+    """The config of the plugin.
+
+    Attributes:
+        largest: How many bytes a file may have for its words to be counted.
+    """
+
+    largest: int = Field(default=1_000_000, gt=0)
+
+
+class CountArgs(BaseModel):
+    """The arguments of the tool, which the model sees as a JSON schema."""
+
+    path: str = Field(description="The file. A relative path starts at the working directory.")
+
+
+def apply(ctx: Context, config: Config) -> None:
+    """Register the tool."""
+    fs = ctx.use(FS)
+
+    def target(args: CountArgs, run: ToolRun) -> str:
+        # What the permissions decide about, before the call goes ahead.
+        return fs.locate(run.session, run.cwd, args.path).relative
+
+    async def count(args: CountArgs, run: ToolRun) -> str:
+        where = fs.locate(run.session, run.cwd, args.path)
+        if where.relative != run.target:
+            raise ToolFailure(f"{args.path} leads somewhere else now. Try again.", code="MOVED")
+        access = Access(run.session, run.cwd, where, "read", "count_words", call_id=run.call_id)
+        permit = fs.permit(access)
+
+        def words() -> int:
+            with permit.open() as opened:
+                data = opened.file.read(config.largest + 1)
+            if len(data) > config.largest:
+                raise ToolFailure(f"{args.path} is larger than {config.largest} bytes.")
+            return len(data.decode("utf-8", errors="replace").split())
+
+        try:
+            # Reading blocks, so it is done in a thread of its own.
+            found = await asyncio.to_thread(words)
+        except FileNotFoundError:
+            raise ToolFailure(f"There is no file {args.path}.", code="NOT_FOUND") from None
+        except OSError as error:
+            raise ToolFailure(f"{args.path} cannot be read: {error}") from error
+        return f"{args.path} has {found} words."
+
+    ctx.use(TOOLS).add(
+        ctx,
+        Tool(
+            name="count_words",
+            description="Count the words in a text file of the working directory.",
+            parameters=CountArgs,
+            execute=count,
+            concurrency_safe=True,
+            effect="read",
+            target=target,
+        ),
+    )
+```
+
+ツールは、何に対して何をするかを示します。呼び出しが進む前に、権限が `effect` と `target` について判定します。ファイルに触れるツールは、Columbina に付属するツールと同じく、ファイルシステムの継ぎ目 `FS` を通ります。`locate` がパスの指すファイルを示し、`permit` がアクセスを判定し、ファイルはその許可を通して開かれます。そのため、読まれるのは判定の対象になったファイルそのものです。作業ディレクトリの外へ出るパスは、ツールが何をするつもりでも、拒否されるか確認を求められます。
+
+ほかに二つの例があります。[`examples/clock.py`](../examples/clock.py) は、三十行に満たない最小のツールのプラグインです。[`examples/no_push.py`](../examples/no_push.py) はツールではなくガードを加えます。ガードはすべての呼び出しについて尋ねられ、拒否することしかできません。この例では、エージェントが git でプッシュするのを止めます。
+
 ## 開発
 
 現時点でのチェックの状況は次のとおりです。
 
 | チェック | 現在の状況 |
 |---|---|
-| テスト | 8,500 件超 |
-| カバレッジ | 行と分岐の両方で 100%、対象は 14,000 文超 |
-| ミュータント | 手書きの小さな欠陥 3,000 個超。どれもテストが検出しなければなりません |
+| テスト | 9,700 件超 |
+| カバレッジ | 行と分岐の両方で 100%、対象は 15,000 文超 |
+| ミュータント | 手書きの小さな欠陥 3,600 個超。どれもテストが検出しなければなりません |
 | 静的チェック | `ruff` と strict モードの `pyright`（Windows 向けと Linux 向け） |
 | 実行環境 | CI が Windows、Linux、macOS と Python 3.11、3.12 でテストと静的チェックを実行 |
 
@@ -616,7 +721,7 @@ coverage をモジュールとして実行するのは、`tests/support` の小�
 - **リプレイテスト**は、記録したすべての実行を、当時のプラグインと実際に動くツールで再生し、ログをイベントごとに比較します。
 - **リクエストスナップショット**は、モデルに送った内容をテキストとして保存します。保存先は `tests/agent_loop/snapshots`、`tests/apps/snapshots`、および各記録の隣です。意図した変更の後は、`COLUMBINA_UPDATE_SNAPSHOTS=1` を付けてテストを実行すると書き直せます。
 - **スクリーンテスト**は、エミュレートしたターミナル上でターミナルインターフェースを実行します。エミュレーターは本物のターミナルに送られる内容をそのまま実行するため、テストは画面の内容を読み取れます。どの行がどこにあるか、何が上書きされたか、行を送信した後に何が残るかを確認できます。
-- **エンジンテスト**は、本物のコンテナを起動し、その中のコマンドが何に届くか、終わったあとに何が残るかを確かめます。Docker エンジンが応答しないか、使う二つの小さなイメージのどちらかがない場合は飛ばされます。`COLUMBINA_REQUIRE_DOCKER=1` を設定すると、それは失敗になります。これらのテストを実行するはずのマシンのためのものです。CI は Linux でこれを設定し、テストの前に二つのイメージを取得します。
+- **エンジンテスト**は、本物のコンテナを起動し、その中のコマンドが何に届くか、終わったあとに何が残るかを確かめます。Docker エンジンが応答しないか、使うイメージがない場合は飛ばされます。`COLUMBINA_REQUIRE_DOCKER=1` を設定すると、それは失敗になります。これらのテストを実行するはずのマシンのためのものです。CI は Linux でこれを設定し、テストの前にイメージを取得します。サンドボックス用の二つの小さなイメージと、ベンチマークの隠しテストを実行するイメージです。
 
 このほかに、手動で実行するものが二つあります。
 

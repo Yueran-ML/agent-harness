@@ -6,7 +6,7 @@
 
 Columbina 从零写起，以三个现有的 harness 为参考。内核和循环参考 DeepSeek Harness，Codex 和 Claude Code 做得更好的地方则取自它们。哪一处取自哪里，记在 [`docs/research`](research) 和[设计文档](plans/2026-10-09-columbina-design.md)里。
 
-[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [别的程序](#供另一个程序使用) · [服务与密钥](#模型服务与密钥) · [权限](#改文件与执行命令) · [扩展](#扩展-agent) · [架构](#架构) · [内核](#内核) · [开发](#开发) · [路线图](#进展)
+[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [别的程序](#供另一个程序使用) · [服务与密钥](#模型服务与密钥) · [权限](#改文件与执行命令) · [扩展](#扩展-agent) · [架构](#架构) · [内核](#内核) · [插件](#编写插件) · [开发](#开发) · [路线图](#进展)
 
 ## 功能一览
 
@@ -586,15 +586,120 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+## 编写插件
+
+加进 Columbina 的东西都是插件，和构成它的部件一样。插件是一个带 `apply` 函数的模块。模块里还可以用 `name` 给插件起名，用 `inject` 列出它需要的服务，用 `Config` 给出一个 pydantic 模型，条目的配置按它校验。`inject` 里的服务一到齐，内核就把上下文和配置交给 `apply`，调用它。
+
+[`examples/word_count.py`](../examples/word_count.py) 里的插件给 agent 一个数文件词数的工具。怎样让程序加载它，写在模块的文档字符串里：清单的补丁写上模块名，再告诉 Python 到哪里找这个模块。
+
+```python
+"""A plugin that gives the agent one tool: how many words a text file has.
+
+A change to the profile loads it into any program. In a file ``word_count.yml``::
+
+    - insert:
+        - id: word-count
+          plugin: word_count
+          config:
+            largest: 1000000
+
+and from the root of the repository, with Python told where the module is::
+
+    PYTHONPATH=examples uv run columbina run --patch word_count.yml "Count the words in README.md."
+
+The tool reaches the file through the seam of the file system, the way the tools that come
+with Columbina do. So the permissions decide whether a call may go ahead, a path that leads
+out of the working directory is asked about, and what is read is the file that the decision
+was about.
+"""
+
+import asyncio
+
+from pydantic import BaseModel, Field
+
+from columbina.fs import FS, Access
+from columbina.kernel import Context
+from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
+
+# What the profile calls the plugin, and the services it needs: it loads once both are there.
+name = "word-count"
+inject = (TOOLS, FS)
+
+
+class Config(BaseModel):
+    """The config of the plugin.
+
+    Attributes:
+        largest: How many bytes a file may have for its words to be counted.
+    """
+
+    largest: int = Field(default=1_000_000, gt=0)
+
+
+class CountArgs(BaseModel):
+    """The arguments of the tool, which the model sees as a JSON schema."""
+
+    path: str = Field(description="The file. A relative path starts at the working directory.")
+
+
+def apply(ctx: Context, config: Config) -> None:
+    """Register the tool."""
+    fs = ctx.use(FS)
+
+    def target(args: CountArgs, run: ToolRun) -> str:
+        # What the permissions decide about, before the call goes ahead.
+        return fs.locate(run.session, run.cwd, args.path).relative
+
+    async def count(args: CountArgs, run: ToolRun) -> str:
+        where = fs.locate(run.session, run.cwd, args.path)
+        if where.relative != run.target:
+            raise ToolFailure(f"{args.path} leads somewhere else now. Try again.", code="MOVED")
+        access = Access(run.session, run.cwd, where, "read", "count_words", call_id=run.call_id)
+        permit = fs.permit(access)
+
+        def words() -> int:
+            with permit.open() as opened:
+                data = opened.file.read(config.largest + 1)
+            if len(data) > config.largest:
+                raise ToolFailure(f"{args.path} is larger than {config.largest} bytes.")
+            return len(data.decode("utf-8", errors="replace").split())
+
+        try:
+            # Reading blocks, so it is done in a thread of its own.
+            found = await asyncio.to_thread(words)
+        except FileNotFoundError:
+            raise ToolFailure(f"There is no file {args.path}.", code="NOT_FOUND") from None
+        except OSError as error:
+            raise ToolFailure(f"{args.path} cannot be read: {error}") from error
+        return f"{args.path} has {found} words."
+
+    ctx.use(TOOLS).add(
+        ctx,
+        Tool(
+            name="count_words",
+            description="Count the words in a text file of the working directory.",
+            parameters=CountArgs,
+            execute=count,
+            concurrency_safe=True,
+            effect="read",
+            target=target,
+        ),
+    )
+```
+
+工具要说明它做什么、对什么做：调用执行之前，权限按 `effect` 和 `target` 作出判定。碰文件的工具要经过文件系统的接缝 `FS`，Columbina 自带的工具都是这样。`locate` 说出一个路径指的是哪个文件，`permit` 对这次访问作出判定，文件经由许可打开，所以读到的正是判定时的那个文件。指向工作目录之外的路径会被拒绝或询问，不管工具打算拿它做什么。
+
+旁边还有两个例子。[`examples/clock.py`](../examples/clock.py) 是最小的工具插件，不到三十行。[`examples/no_push.py`](../examples/no_push.py) 不加工具，加的是一个守卫：每次调用都要问过它，它只能拒绝，这里用它不让 agent 用 git 推送。
+
 ## 开发
 
 各项检查目前的情况如下。
 
 | 检查 | 目前的情况 |
 |---|---|
-| 测试 | 超过 8,500 条 |
-| 覆盖率 | 行和分支均为 100%，语句超过 14,000 条 |
-| 变异体 | 超过 3,000 个手写的小错误，每一个都必须被某条测试发现 |
+| 测试 | 超过 9,700 条 |
+| 覆盖率 | 行和分支均为 100%，语句超过 15,000 条 |
+| 变异体 | 超过 3,600 个手写的小错误，每一个都必须被某条测试发现 |
 | 静态检查 | `ruff`，以及 strict 模式下的 `pyright`，分别针对 Windows 和 Linux |
 | 平台 | CI 在 Windows、Linux 和 macOS 上，用 Python 3.11 和 3.12 运行测试和静态检查 |
 
@@ -616,7 +721,7 @@ coverage 以模块的方式运行，因为它要从 `tests/support` 加载一个
 - **回放测试**把每一次录制下来的运行重新跑一遍，用它当时的插件和真正执行的工具，再逐个事件比对日志。
 - **请求快照**把发给模型的内容存成文本，放在 `tests/agent_loop/snapshots`、`tests/apps/snapshots` 以及每份录制的旁边。有意做了改动之后，带上 `COLUMBINA_UPDATE_SNAPSHOTS=1` 运行测试来重写快照。
 - **屏幕测试**在模拟的终端上运行终端界面。模拟终端会执行真实终端收到的那些指令，所以测试可以读出屏幕上的内容，包括哪一行在哪里、什么被覆盖了、一行提交之后留下了什么。
-- **引擎测试**启动真实的容器，检验容器里的命令够得到什么、结束后留下什么。没有 Docker 引擎应答，或者它们用的两个小镜像缺一个时，这些测试被跳过。设了 `COLUMBINA_REQUIRE_DOCKER=1` 时这算失败，用于本来就该运行它们的机器。CI 在 Linux 上设了这个变量，并在测试之前取好这两个镜像。
+- **引擎测试**启动真实的容器，检验容器里的命令够得到什么、结束后留下什么。没有 Docker 引擎应答，或者缺少它们要用的镜像时，这些测试被跳过。设了 `COLUMBINA_REQUIRE_DOCKER=1` 时这算失败，用于本来就该运行它们的机器。CI 在 Linux 上设了这个变量，并在测试之前取好这些镜像：沙箱用的两个小镜像，以及基准的隐藏测试运行时用的那个。
 
 另有两件事手工运行。
 

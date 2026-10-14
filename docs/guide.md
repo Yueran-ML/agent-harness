@@ -6,7 +6,7 @@ This is the longer account of Columbina: how it is used, how it is built, how it
 
 Columbina was written from scratch, with three existing harnesses as its reference: DeepSeek Harness for the kernel and the loop, and Codex and Claude Code where they do something better. What was taken from which is written down in [`docs/research`](research) and in the [design document](plans/2026-10-09-columbina-design.md).
 
-[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Extensions](#extending-the-agent) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Development](#development) · [Roadmap](#where-it-stands)
+[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Extensions](#extending-the-agent) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Plugins](#writing-a-plugin) · [Development](#development) · [Roadmap](#where-it-stands)
 
 ## What is there
 
@@ -884,15 +884,120 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+## Writing a plugin
+
+What is added to Columbina is a plugin, the same as what it is made of. A plugin is a module with a function `apply`. Beside it the module may give the plugin a name in `name`, the services it needs in `inject`, and in `Config` a model of pydantic that the config of its entry is checked against. The kernel calls `apply` with a context and the config once all the services in `inject` are there.
+
+The plugin in [`examples/word_count.py`](../examples/word_count.py) gives the agent a tool that counts the words of a file. Its docstring says how a program is made to load it: a change to the profile names the module, and Python is told where to find it.
+
+```python
+"""A plugin that gives the agent one tool: how many words a text file has.
+
+A change to the profile loads it into any program. In a file ``word_count.yml``::
+
+    - insert:
+        - id: word-count
+          plugin: word_count
+          config:
+            largest: 1000000
+
+and from the root of the repository, with Python told where the module is::
+
+    PYTHONPATH=examples uv run columbina run --patch word_count.yml "Count the words in README.md."
+
+The tool reaches the file through the seam of the file system, the way the tools that come
+with Columbina do. So the permissions decide whether a call may go ahead, a path that leads
+out of the working directory is asked about, and what is read is the file that the decision
+was about.
+"""
+
+import asyncio
+
+from pydantic import BaseModel, Field
+
+from columbina.fs import FS, Access
+from columbina.kernel import Context
+from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
+
+# What the profile calls the plugin, and the services it needs: it loads once both are there.
+name = "word-count"
+inject = (TOOLS, FS)
+
+
+class Config(BaseModel):
+    """The config of the plugin.
+
+    Attributes:
+        largest: How many bytes a file may have for its words to be counted.
+    """
+
+    largest: int = Field(default=1_000_000, gt=0)
+
+
+class CountArgs(BaseModel):
+    """The arguments of the tool, which the model sees as a JSON schema."""
+
+    path: str = Field(description="The file. A relative path starts at the working directory.")
+
+
+def apply(ctx: Context, config: Config) -> None:
+    """Register the tool."""
+    fs = ctx.use(FS)
+
+    def target(args: CountArgs, run: ToolRun) -> str:
+        # What the permissions decide about, before the call goes ahead.
+        return fs.locate(run.session, run.cwd, args.path).relative
+
+    async def count(args: CountArgs, run: ToolRun) -> str:
+        where = fs.locate(run.session, run.cwd, args.path)
+        if where.relative != run.target:
+            raise ToolFailure(f"{args.path} leads somewhere else now. Try again.", code="MOVED")
+        access = Access(run.session, run.cwd, where, "read", "count_words", call_id=run.call_id)
+        permit = fs.permit(access)
+
+        def words() -> int:
+            with permit.open() as opened:
+                data = opened.file.read(config.largest + 1)
+            if len(data) > config.largest:
+                raise ToolFailure(f"{args.path} is larger than {config.largest} bytes.")
+            return len(data.decode("utf-8", errors="replace").split())
+
+        try:
+            # Reading blocks, so it is done in a thread of its own.
+            found = await asyncio.to_thread(words)
+        except FileNotFoundError:
+            raise ToolFailure(f"There is no file {args.path}.", code="NOT_FOUND") from None
+        except OSError as error:
+            raise ToolFailure(f"{args.path} cannot be read: {error}") from error
+        return f"{args.path} has {found} words."
+
+    ctx.use(TOOLS).add(
+        ctx,
+        Tool(
+            name="count_words",
+            description="Count the words in a text file of the working directory.",
+            parameters=CountArgs,
+            execute=count,
+            concurrency_safe=True,
+            effect="read",
+            target=target,
+        ),
+    )
+```
+
+A tool says what it does and to what: the permissions decide about `effect` and `target` before a call goes ahead. A tool that touches a file goes through the seam of the file system, `FS`, as the tools that come with Columbina do. `locate` says which file a path means, `permit` decides about the access, and the file is opened through the permit, so that what is read is the file that the decision was about. A path that leads out of the working directory is refused or asked about, whatever the tool means to do with it.
+
+Two more examples are beside it. [`examples/clock.py`](../examples/clock.py) is the smallest plugin of a tool, in fewer than thirty lines. [`examples/no_push.py`](../examples/no_push.py) adds no tool but a guard, which is asked about every call and can only refuse one: it keeps the agent from pushing with git.
+
 ## Development
 
 What the checks come to at the moment:
 
 | Check | What it comes to |
 |---|---|
-| Tests | more than 8,500 |
-| Coverage | 100% of lines and of branches, in more than 14,000 statements |
-| Mutants | more than 3,000 small faults, written by hand, each to be noticed by a test |
+| Tests | more than 9,700 |
+| Coverage | 100% of lines and of branches, in more than 15,000 statements |
+| Mutants | more than 3,600 small faults, written by hand, each to be noticed by a test |
 | Static checks | `ruff`, and `pyright` in strict mode, for Windows and for Linux |
 | Platforms | CI runs the tests and the static checks on Windows, Linux and macOS, with Python 3.11 and 3.12 |
 
@@ -927,10 +1032,11 @@ are these kinds:
   which line is where, what was written over, and what stays when a line was
   submitted.
 - **Engine tests** start real containers, and see what a command in one can reach and
-  what is left of it. They are passed over where no Docker engine answers or one of
-  their two small images is missing. With `COLUMBINA_REQUIRE_DOCKER=1` that is a failure,
-  for a machine that is meant to run them. The CI sets it on Linux, and takes the two
-  images before the tests.
+  what is left of it. They are passed over where no Docker engine answers or an image
+  that they need is missing. With `COLUMBINA_REQUIRE_DOCKER=1` that is a failure, for a
+  machine that is meant to run them. The CI sets it on Linux, and takes the images before
+  the tests: two small ones for the sandbox, and the one that the hidden tests of the
+  benchmark run in.
 
 Two more things are run by hand:
 

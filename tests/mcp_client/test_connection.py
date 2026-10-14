@@ -79,12 +79,19 @@ class Naps:
 
 
 class Clock:
-    """A time that passes when a test says so."""
+    """A time that passes when a test says so.
+
+    Attributes:
+        now: The time.
+        reads: How often the time was asked for.
+    """
 
     def __init__(self) -> None:
         self.now = 1000.0
+        self.reads = 0
 
     def __call__(self) -> float:
+        self.reads += 1
         return self.now
 
 
@@ -1499,10 +1506,13 @@ async def test_a_word_of_the_tools_that_lasted_does_not_count_among_those_that_e
     connection = await begun(make("served", lambda: served.server, sleep=naps, clock=clock))
 
     async def ends(after: float) -> None:
-        entered = words.entered
+        read = clock.reads
         clock.now += after
         words.end()
-        await until(lambda: words.entered == entered + 1)
+        # The time is asked for when the word ends, and once more when the server is
+        # listened to again and the list that follows is in: from there the next word counts.
+        # Moved on before that, the clock would count for the next word and not this one.
+        await until(lambda: clock.reads == read + 2)
 
     await ends(1.0)
     await ends(1.0)

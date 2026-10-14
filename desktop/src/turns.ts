@@ -177,6 +177,31 @@ export function foldsAway(turn: Turn): boolean {
   return turn.answer !== null && (turn.steps.length > 0 || lastThought(turn) !== '');
 }
 
+/**
+ * Part the steps of a turn into what stands and the reply that the model is going on from.
+ *
+ * A reply that reached the limit on its length is gone on from: what the model writes next
+ * is the same text. While that is being written, the two are shown as one, so the part that
+ * is in the log is taken out of the steps here, with the lines after it that say that the
+ * model is to go on. Where something else came after it, such as a request that failed, it
+ * stays among the steps as it is.
+ *
+ * Args:
+ *   turn: The turn.
+ *   goesOn: The id of the reply that is gone on from, as the projection has it, or null.
+ */
+export function goingOn(
+  turn: Turn, goesOn: string | null,
+): { steps: ConversationItem[]; before: AssistantItem | null } {
+  const at = goesOn === null ? -1 : turn.steps.findIndex(item => item.id === goesOn);
+  const before = turn.steps[at];
+  const after = turn.steps.slice(at + 1);
+  if (before?.type !== 'assistant' || !after.every(item => item.type === 'notice' && item.cause.kind === 'cut-off')) {
+    return { steps: turn.steps, before: null };
+  }
+  return { steps: turn.steps.slice(0, at), before };
+}
+
 /** Something that was said beside the log, such as what a command answered. */
 export interface Beside<Said> {
   kind: 'beside';

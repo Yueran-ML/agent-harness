@@ -163,22 +163,109 @@ describe('durable event projection', () => {
     expect(projection.items[1]).toMatchObject({ type: 'notice', text: 'Model request failed: rate limited' });
   });
 
-  it('says where a reply was cut off and goes on, and shows no failed request for it', () => {
-    const projection = projectEvents([
-      event(0, 'assistant/message', { message: message('This sentence never', 'assistant'), usage: usage(10, 2, 0, 0), finish_reason: 'max-tokens' }),
-      event(1, 'user/message', { message: message('<context source="cut-off">Go on.</context>'), source: 'context/cut-off' }),
-      event(2, 'assistant/attempt', { message: { role: 'assistant', content: [] }, usage: usage(12, 3, 0, 0), failure: { message: 'the reply was cut off before it held anything', code: 'CUT_OFF' } }),
-      event(3, 'user/message', { message: message('<context source="cut-off">Go on.</context>'), source: 'context/cut-off' }),
-      event(4, 'assistant/message', { message: message(' ends.', 'assistant'), usage: usage(14, 2, 0, 0), finish_reason: 'stop' }),
-    ]);
-    expect(projection.items.map(item => item.type)).toEqual(['assistant', 'notice', 'notice', 'assistant']);
-    const notices = projection.items.filter(item => item.type === 'notice');
-    expect(notices.map(item => [item.text, item.tone, item.cause.kind])).toEqual([
-      ['The reply reached its length limit. The model continues.', 'info', 'cut-off'],
-      ['The reply reached its length limit. The model continues.', 'info', 'cut-off'],
-    ]);
-    // What the request cost counts although nothing of it is shown.
-    expect(projection.usage.input_tokens).toBe(36);
+  describe('a reply that was cut off at its length limit', () => {
+    const said = (seq: number, text: string, finish: string | null, thought = ''): SessionEvent => event(seq, 'assistant/message', {
+      message: {
+        role: 'assistant',
+        content: [...(thought ? [{ type: 'reasoning', text: thought }] : []), ...(text ? [{ type: 'text', text }] : [])],
+      },
+      usage: usage(10, 2, 0, 0),
+      finish_reason: finish,
+    });
+    const goOn = (seq: number): SessionEvent =>
+      event(seq, 'user/message', { message: message('<context source="cut-off">Go on.</context>'), source: 'context/cut-off' });
+    const told = (seq: number, text: string, source: string): SessionEvent =>
+      event(seq, 'user/message', { message: message(text), source });
+    const shown = (events: SessionEvent[]) =>
+      projectEvents(events).items.map(item => item.type === 'assistant' ? item.text : item.type === 'user' ? `(${item.source})` : `[${item.type}]`);
+
+    it('is one answer with what the model wrote when it went on, and shows no failed request for it', () => {
+      const projection = projectEvents([
+        said(0, 'This sentence never', 'max-tokens'),
+        goOn(1),
+        event(2, 'assistant/attempt', { message: { role: 'assistant', content: [] }, usage: usage(12, 3, 0, 0), failure: { message: 'the reply was cut off before it held anything', code: 'CUT_OFF' } }),
+        goOn(3),
+        said(4, ' ends.', 'stop'),
+      ]);
+      // The model wrote on where it had stopped, so the two are one text: a list or a block
+      // of code that the limit fell into is whole only when they are put together.
+      expect(projection.items).toEqual([
+        { id: 'event-0', seq: 0, time: 0, turn: null, type: 'assistant', text: 'This sentence never ends.', reasoning: '', interrupted: false },
+      ]);
+      // What the request cost counts although nothing of it is shown.
+      expect(projection.usage.input_tokens).toBe(32);
+    });
+
+    it('says that the model is to go on for as long as it has not', () => {
+      const projection = projectEvents([said(0, 'This sentence never', 'max-tokens'), goOn(1)]);
+      expect(projection.items.map(item => item.type)).toEqual(['assistant', 'notice']);
+      // Nobody broke it off: it ended at the limit, and more is to come.
+      expect(projection.items[0]).toMatchObject({ text: 'This sentence never', interrupted: false });
+      expect(projection.items[1]).toMatchObject({
+        text: 'The reply reached its length limit. The model continues.', tone: 'info', cause: { kind: 'cut-off' },
+      });
+    });
+
+    it('is taken up as often as the limit falls into it', () => {
+      expect(shown([
+        said(0, 'one ', 'max-tokens'), goOn(1), said(2, 'two ', 'max-tokens'), goOn(3), said(4, 'three', 'stop'),
+        // The reply after one that ended by itself is another reply.
+        said(5, 'and a second answer', 'stop'),
+      ])).toEqual(['one two three', 'and a second answer']);
+    });
+
+    it('keeps what the model thought each time, in the order in which it thought it', () => {
+      const [item] = projectEvents([
+        said(0, 'one ', 'max-tokens', 'first thought'), goOn(1), said(2, 'two', 'stop', 'second thought'),
+      ]).items;
+      expect(item).toMatchObject({ text: 'one two', reasoning: 'first thought\n\nsecond thought' });
+      const [plain] = projectEvents([said(0, 'one ', 'max-tokens'), goOn(1), said(2, 'two', 'stop', 'a thought')]).items;
+      expect(plain).toMatchObject({ text: 'one two', reasoning: 'a thought' });
+    });
+
+    it('is not taken up by a reply that answers something that was said in between', () => {
+      expect(shown([said(0, 'one ', 'max-tokens'), goOn(1), told(2, 'Stop that.', 'steer'), said(3, 'two', 'stop')]))
+        .toEqual(['one ', '[notice]', '(steer)', 'two']);
+      // What the program tells the model on the way is nothing that anybody said.
+      expect(shown([said(0, 'one ', 'max-tokens'), goOn(1), told(2, '<context source="todo">1 open</context>', 'context/todo'), said(3, 'two', 'stop')]))
+        .toEqual(['one two']);
+    });
+
+    it('is not taken up where the model was not told to go on', () => {
+      // The turn ended with it: it had been taken up as often as a turn allows.
+      expect(shown([said(0, 'one ', 'max-tokens'), told(1, 'Go on then.', 'user'), said(2, 'two', 'stop')]))
+        .toEqual(['one ', '(user)', 'two']);
+      expect(shown([said(0, 'one ', 'max-tokens'), said(1, 'two', 'stop')])).toEqual(['one ', 'two']);
+      // A reply that ended by itself is not gone on from, whatever is said after it.
+      expect(shown([said(0, 'one', 'stop'), goOn(1), said(2, 'two', 'stop')])).toEqual(['one', '[notice]', 'two']);
+    });
+
+    it('that held nothing yet begins with what the model wrote next', () => {
+      const projection = projectEvents([said(0, '', 'max-tokens'), goOn(1), said(2, 'All of it.', 'stop')]);
+      expect(projection.items).toEqual([
+        { id: 'event-2', seq: 2, time: 200, turn: null, type: 'assistant', text: 'All of it.', reasoning: '', interrupted: false },
+      ]);
+    });
+
+    it('stays as it is where the model went on and wrote nothing', () => {
+      expect(shown([said(0, 'All of it.', 'max-tokens'), goOn(1), said(2, '', 'stop')])).toEqual(['All of it.']);
+    });
+
+    it('is shown as broken off where what the model wrote next was broken off', () => {
+      const [item] = projectEvents([said(0, 'one ', 'max-tokens'), goOn(1), said(2, 'tw', null)]).items;
+      expect(item).toMatchObject({ text: 'one tw', interrupted: true });
+    });
+
+    it('stands where its last part came, after what else happened on the way', () => {
+      const failed = event(2, 'assistant/attempt', {
+        message: { role: 'assistant', content: [] }, usage: usage(), failure: { message: 'rate limited', code: 'RATE_LIMIT' },
+      });
+      // A request failed and was made again before the model went on. The answer is the last
+      // thing that happened, and it is known by the event that began it.
+      const projection = projectEvents([said(0, 'one ', 'max-tokens'), goOn(1), failed, said(3, 'two', 'stop')]);
+      expect(projection.items.map(item => [item.type, item.seq])).toEqual([['notice', 2], ['assistant', 0]]);
+      expect(projection.items[1]).toMatchObject({ id: 'event-0', time: 0, text: 'one two' });
+    });
   });
 
   it('applies splices independently to both queues and preserves steer source', () => {

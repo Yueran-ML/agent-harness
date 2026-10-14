@@ -2,8 +2,8 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { ArrowDown, ChevronRight, CornerDownRight, SquareTerminal } from 'lucide-react';
 import type { Listed } from '../key/form';
 import { classifyModelFailure, turnOutcome, type ActionKey, type TurnOutcome } from '../outcomes';
-import type { ConversationItem, StreamPreview, UserItem } from '../state';
-import { foldsAway, groupTurns, lastThought, placed, type Turn } from '../turns';
+import type { AssistantItem, ConversationItem, StreamPreview, UserItem } from '../state';
+import { foldsAway, goingOn, groupTurns, lastThought, placed, type Turn } from '../turns';
 import type { Workspace } from '../useWorkspace';
 import { sayModelFailure, sayTurn } from '../words';
 import { CopyButton, Markdown } from './Markdown';
@@ -139,18 +139,38 @@ function Waiting({ children }: { children: string }) {
   </p>;
 }
 
-/** What the model is writing at this moment. It is gone when the reply is in the log. */
-function Live({ preview, onLink }: { preview: StreamPreview; onLink: (url: string) => void }) {
+/**
+ * What the model is writing at this moment. It is gone when the reply is in the log.
+ *
+ * Where the model goes on from a reply that reached the limit on its length, that reply is
+ * shown here with what is being written, as the one text that the two are: a block of code
+ * that the limit fell into is one block only when they are put together. It is shown also
+ * before anything of the next part has come.
+ */
+function Live({ preview, before, onLink }: {
+  /** What is being written, or null while nothing is. */
+  preview: StreamPreview | null;
+  /** The reply that is gone on from, or null. */
+  before: AssistantItem | null;
+  onLink: (url: string) => void;
+}) {
   const words = useWords();
-  const busy = preview.tools.length > 0 ? words.label.preparing
-    : preview.text ? words.label.writing : words.label.thinking;
+  const text = (before?.text ?? '') + (preview?.text ?? '');
+  const busy = preview === null ? null
+    : preview.tools.length > 0 ? words.label.preparing
+      : preview.text ? words.label.writing : words.label.thinking;
   return <div className="live" data-test="live">
-    {preview.reasoning && !preview.text && <details className="aside">
+    {before?.reasoning && <details className="aside">
+      <summary><ChevronRight size={13} aria-hidden="true" />{words.label.thought}</summary>
+      <p className="thought">{before.reasoning}</p>
+    </details>}
+    {preview?.reasoning && !preview.text && <details className="aside">
       <summary><ChevronRight size={13} aria-hidden="true" />{words.label.thought}</summary>
       <p className="thought">{preview.reasoning}</p>
     </details>}
-    {preview.text && <Markdown text={preview.text} onLink={onLink} />}
-    <Waiting>{busy}</Waiting>
+    {text && <Markdown text={text} onLink={onLink} />}
+    {/* While nothing is being written, the turn says below what it waits for. */}
+    {busy !== null && <Waiting>{busy}</Waiting>}
   </div>;
 }
 
@@ -193,9 +213,11 @@ function Ending({ turn, outcome, onAction }: {
   </div>;
 }
 
-function TurnView({ turn, preview, waiting, onLink, onAction }: {
+function TurnView({ turn, preview, goesOn, waiting, onLink, onAction }: {
   turn: Turn;
   preview: StreamPreview | null;
+  /** The reply that the model is going on from, by its id, or null. It is of one turn at most. */
+  goesOn: string | null;
   /** What the turn waits for while nothing of it is being written, or null. */
   waiting: string | null;
   onLink: (url: string) => void;
@@ -215,7 +237,9 @@ function TurnView({ turn, preview, waiting, onLink, onAction }: {
   const lastStep = turn.steps.at(-1);
   const toldAtEnd = outcome?.kind === 'modelFailed' && lastStep?.type === 'notice' && lastStep.cause.kind === 'attempt'
     ? lastStep : null;
-  const steps = toldAtEnd ? turn.steps.slice(0, -1) : turn.steps;
+  // A reply that the model is going on from is shown with what is being written, below.
+  const { steps: standing, before } = goingOn(turn, goesOn);
+  const steps = toldAtEnd ? standing.slice(0, -1) : standing;
 
   return <section className="turn" data-test="turn" data-running={turn.running || undefined}>
     {turn.opening.map(item => <Said key={item.id} item={item} />)}
@@ -241,7 +265,7 @@ function TurnView({ turn, preview, waiting, onLink, onAction }: {
       </div>}
     </div>}
 
-    {preview && <Live preview={preview} onLink={onLink} />}
+    {(preview || before) && <Live preview={preview} before={before} onLink={onLink} />}
     {waiting !== null && <Waiting>{waiting}</Waiting>}
 
     {turn.answer && <div className="answer" data-test="answer">
@@ -340,6 +364,7 @@ export function Conversation({ workspace, onLink, onAction }: {
               key={`turn-${entry.number}`}
               turn={entry}
               preview={entry === liveTurn && writing ? preview : null}
+              goesOn={projection.goesOn}
               waiting={entry === liveTurn ? waiting : null}
               onLink={onLink}
               // Only about the end of the last turn can something be done, and only at rest.

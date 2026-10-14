@@ -3,9 +3,11 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Conversation } from '../src/app/Conversation';
 import { Markdown } from '../src/app/Markdown';
+import { emptyPreview } from '../src/state';
 import type { Workspace } from '../src/useWorkspace';
 import {
   begin, call, end, failed, header, likeABrowser, log, reply, result, service, statusOf, user, workspaceWith,
+  type Written,
 } from './mounted';
 
 beforeEach(likeABrowser);
@@ -304,5 +306,71 @@ describe('what a model wrote, once it stands on the page', () => {
     } finally {
       Reflect.deleteProperty(navigator, 'clipboard');
     }
+  });
+});
+
+describe('a reply that reached its length limit, while the model goes on from it', () => {
+  const cut = (words: string, thought = ''): Written => ['assistant/message', {
+    message: { role: 'assistant', content: [...(thought ? [{ type: 'reasoning', text: thought }] : []), { type: 'text', text: words }] },
+    finish_reason: 'max-tokens',
+  }];
+  const goOn = user('<context source="cut-off">Go on.</context>', 'context/cut-off');
+  const atWork = statusOf({ status: 'running' });
+  const fence = '```';
+  const first = `Here it is.\n\n${fence}python\ndef mean(values):\n`;
+  const second = `    return sum(values) / len(values)\n${fence}\n\nThat is all.`;
+  const begun = log(begin(1), user('Write it.'), cut(first), goOn);
+  const talk = () => document.querySelector('[data-test="talk"]')!.textContent ?? '';
+
+  it('is one text with what is being written, so that a block of code stays one block', () => {
+    drawn(workspaceWith({ events: begun, status: atWork, preview: { ...emptyPreview(), text: second } }));
+    const [live] = marked('live');
+    // The limit fell into a block of code. Shown as two texts, the first would end in a
+    // block that never closes, and the second would begin with code that looks like prose.
+    const blocks = live.querySelectorAll('pre');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].textContent).toBe('def mean(values):\n    return sum(values) / len(values)\n');
+    expect(live.textContent).toContain('Here it is.');
+    expect(live.textContent).toContain('That is all.');
+    // What is in the log already is shown once, and not among the steps as well.
+    expect(talk().split('def mean').length - 1).toBe(1);
+    expect(document.querySelectorAll('.step-text')).toHaveLength(0);
+  });
+
+  it('is shown before anything of the next part has come, with one line that says what is waited for', () => {
+    drawn(workspaceWith({ events: begun, status: atWork }));
+    const [live] = marked('live');
+    expect(live.textContent).toContain('Here it is.');
+    expect(live.querySelectorAll('pre')).toHaveLength(1);
+    expect(marked('working').map(line => line.textContent)).toEqual(['Thinking']);
+  });
+
+  it('keeps what the model thought before it, and shows what it thinks now until it writes', () => {
+    const events = log(begin(1), user('Write it.'), cut('Half an', 'what to write first'), goOn);
+    drawn(workspaceWith({ events, status: atWork, preview: { ...emptyPreview(), reasoning: 'how to go on' } }));
+    const [live] = marked('live');
+    expect([...live.querySelectorAll('.thought')].map(thought => thought.textContent)).toEqual(['what to write first', 'how to go on']);
+    expect(live.querySelector('.markdown')?.textContent).toBe('Half an');
+  });
+
+  it('stands among the steps as it is where something else came after it', () => {
+    // A request failed while the model went on, and is about to be made again.
+    const events = log(begin(1), user('Write it.'), cut('Half an'), goOn, failed('SERVER', 'down', 503));
+    drawn(workspaceWith({ events, status: atWork }));
+    expect(marked('live')).toHaveLength(0);
+    expect([...document.querySelectorAll('.step-text')].map(step => step.textContent)).toEqual(['Half an']);
+  });
+
+  it('is an answer of one piece once the next part is in the log', () => {
+    const reply = (words: string): Written => ['assistant/message', {
+      message: { role: 'assistant', content: [{ type: 'text', text: words }] }, finish_reason: 'stop',
+    }];
+    drawn(workspaceWith({ events: log(begin(1), user('Write it.'), cut(first), goOn, reply(second), end(1)) }));
+    expect(marked('live')).toHaveLength(0);
+    const [answer] = marked('answer');
+    expect(answer.querySelectorAll('pre')).toHaveLength(1);
+    expect(answer.querySelector('pre')?.textContent).toBe('def mean(values):\n    return sum(values) / len(values)\n');
+    // Nothing of it is left on the way to it: there is nothing to unfold.
+    expect(marked('steps-toggle')).toHaveLength(0);
   });
 });

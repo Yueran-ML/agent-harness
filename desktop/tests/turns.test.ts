@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionEvent } from '../src/protocol';
 import { emptyProjection, projectEvents, type ConversationItem } from '../src/state';
-import { foldsAway, groupTurns, itemsOf, lastThought, placed, promptOf, saidOnTheWay, type Entry, type Turn } from '../src/turns';
+import {
+  foldsAway, goingOn, groupTurns, itemsOf, lastThought, placed, promptOf, saidOnTheWay, type Entry, type Turn,
+} from '../src/turns';
 import { eventsOf, logs } from './logs';
 
 // A log is written here as a list of events. Each stands where it is listed,
@@ -296,6 +298,78 @@ describe('a conversation by turn', () => {
     const [turn] = turnsOf(begin(1), user('ask'), reply('words'), end(1, 'paused', 'later'));
     expect(turn.end).toEqual({ reason: 'paused', detail: 'later', code: null, time: 1300, notice: null });
     expect(turn.answer).toBeNull();
+  });
+
+  it('takes a reply that was cut off and what the model went on to write for one answer', () => {
+    const [turn] = turnsOf(
+      begin(1), user('ask'),
+      reply('The first half', 'max-tokens'),
+      user('<context source="cut-off">Go on.</context>', 'context/cut-off'),
+      reply(' and the second.'),
+      end(1),
+    );
+    // The answer is all of it. With the first half among the steps, a reader would begin
+    // in the middle of a sentence.
+    expect(turn.answer?.text).toBe('The first half and the second.');
+    expect(turn.steps).toEqual([]);
+  });
+
+  describe('while the model goes on from a reply that reached its length limit', () => {
+    const goOn = user('<context source="cut-off">Go on.</context>', 'context/cut-off');
+    const failed: Written = ['assistant/attempt', {
+      message: { role: 'assistant', content: [] }, failure: { code: 'SERVER', message: 'down', status: 503 },
+    }];
+    const parted = (...written: Written[]) => {
+      const projection = projectEvents(log(...written));
+      const [turn] = turns(groupTurns(projection));
+      return { turn, projection, ...goingOn(turn, projection.goesOn) };
+    };
+
+    it('takes that reply out of the steps, with the line that says that the model is to go on', () => {
+      const { turn, projection, steps, before } = parted(
+        begin(1), user('ask'), call('a'), result('a'), reply('Half an', 'max-tokens'), goOn,
+      );
+      expect(projection.goesOn).toBe(before?.id);
+      expect(before).toMatchObject({ type: 'assistant', text: 'Half an' });
+      // What came before it stays where it stands.
+      expect(steps.map(sketch)).toEqual(['read']);
+      expect(turn.steps.map(sketch)).toEqual(['read', 'text', 'notice']);
+    });
+
+    it('leaves the steps as they are where nothing is gone on from', () => {
+      const { turn, projection, steps, before } = parted(begin(1), user('ask'), reply('Half an', 'max-tokens'));
+      expect([projection.goesOn, before]).toEqual([null, null]);
+      expect(steps).toBe(turn.steps);
+    });
+
+    it('leaves the reply among the steps where something else came after it', () => {
+      const { turn, projection, steps, before } = parted(begin(1), user('ask'), reply('Half an', 'max-tokens'), goOn, failed);
+      // The projection still says that the model is to go on. It is the view that has no place for it.
+      expect(projection.goesOn).toBe('event-2');
+      expect(before).toBeNull();
+      expect(steps).toBe(turn.steps);
+    });
+
+    it('is not told of once what the model wrote next is in the log, or once the turn is over', () => {
+      expect(parted(begin(1), user('ask'), reply('Half an', 'max-tokens'), goOn, reply('swer.')).projection.goesOn).toBeNull();
+      // The user stopped the turn while the model was to go on.
+      expect(projectEvents(log(begin(1), user('ask'), reply('Half an', 'max-tokens'), goOn, end(1, 'aborted', 'user'))).goesOn)
+        .toBeNull();
+    });
+
+    it('takes nothing out for an id that is of no reply of the turn', () => {
+      const [turn] = turnsOf(begin(1), user('ask'), call('a'), result('a'), reply('Half an', 'max-tokens'), goOn);
+      const tool = turn.steps[0];
+      expect(goingOn(turn, tool.id)).toEqual({ steps: turn.steps, before: null });
+      expect(goingOn(turn, 'event-999')).toEqual({ steps: turn.steps, before: null });
+      // And nothing where no id is given, whatever the steps end with.
+      expect(goingOn(turn, null)).toEqual({ steps: turn.steps, before: null });
+      // The model was told twice to go on. The first of the two lines is no reply.
+      const [twice] = turnsOf(begin(1), user('ask'), reply('Half an', 'max-tokens'), goOn, goOn);
+      expect(twice.steps.map(sketch)).toEqual(['text', 'notice', 'notice']);
+      expect(goingOn(twice, twice.steps[1].id)).toEqual({ steps: twice.steps, before: null });
+      expect(goingOn(twice, twice.steps[0].id).before).toBe(twice.steps[0]);
+    });
   });
 
   it('keeps the code of an end, and none where the log has none or has no text for it', () => {

@@ -140,6 +140,12 @@ export interface Projection {
   compacting: boolean;
   turn: number | null;
   step: number | null;
+  /**
+   * The reply that reached the limit on its length and that the model was told to go on from,
+   * by the id of its item, or null. What the model writes next is the same text. Once that is
+   * in the log, the two are one item, and this is null again.
+   */
+  goesOn: string | null;
 }
 
 export const emptyUsage = (): Usage => ({
@@ -157,6 +163,7 @@ export const emptyProjection = (): Projection => ({
   compacting: false,
   turn: null,
   step: null,
+  goesOn: null,
 });
 
 const record = (value: unknown): JsonRecord =>
@@ -221,6 +228,10 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
   // What the turn that is under way wrote down as input, by the event that holds it. A hook may
   // still keep it from the model: it puts a note in its place.
   const written = new Map<number, DroppedInput>();
+  // The reply that the log held last, if it reached the limit on its length: what the model
+  // wrote of it, if anything, and the lines that say that the model is to go on. Once such
+  // a line is there, the reply that comes next goes on from this one.
+  let cutOff: { said: AssistantItem | null; notes: NoticeItem[] } | null = null;
   const settle = () => {
     projection.dropped.push(...taken);
     taken = [];
@@ -264,22 +275,45 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
         } else if (source === 'context/cut-off') {
           // The reply before this one reached the limit on its length, and the program had the
           // model go on. What the model says next is the same answer.
-          notice('The reply reached its length limit. The model continues.', 'info', { kind: 'cut-off' });
+          const note: NoticeItem = {
+            ...base, type: 'notice', text: 'The reply reached its length limit. The model continues.',
+            tone: 'info', cause: { kind: 'cut-off' },
+          };
+          projection.items.push(note);
+          cutOff?.notes.push(note);
         } else if (!source.startsWith('context/') && !isReplacement(event)) {
           projection.items.push({ ...base, type: 'user', source, text });
         }
+        // Whatever somebody said stands between: the reply that comes next answers that. What
+        // the program tells the model on the way is nothing that anybody said.
+        if (!source.startsWith('context/')) cutOff = null;
         break;
       }
       case 'assistant/message': {
         const message = messageOf(data.message);
         const text = messageText(message);
         const reasoning = messageText(message, 'reasoning');
-        if (text || reasoning) {
-          projection.items.push({
-            ...base, type: 'assistant', text, reasoning,
-            interrupted: data.finish_reason === null,
-          });
+        // A reply goes on from one that was cut off once the model was told to go on. The model
+        // wrote on where it had stopped, so the two are one text, and are shown as one answer:
+        // it stands where its last part came, and is known by the event that began it.
+        const before = cutOff && cutOff.notes.length > 0 ? cutOff : null;
+        const began: AssistantItem | null = before?.said ?? null;
+        if (before) {
+          const gone: ConversationItem[] = [...before.notes, ...(began ? [began] : [])];
+          projection.items = projection.items.filter(item => !gone.includes(item));
         }
+        let said: AssistantItem | null = null;
+        if (began || text || reasoning) {
+          const whole: AssistantItem = {
+            ...(began ?? base), type: 'assistant',
+            text: (began?.text ?? '') + text,
+            reasoning: [began?.reasoning, reasoning].filter(Boolean).join('\n\n'),
+            interrupted: data.finish_reason === null,
+          };
+          projection.items.push(whole);
+          said = whole;
+        }
+        cutOff = data.finish_reason === 'max-tokens' ? { said, notes: [] } : null;
         break;
       }
       case 'assistant/attempt': {
@@ -495,6 +529,8 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
   }
   // While a turn is under way, it may still write down what it took.
   if (projection.turn === null) settle();
+  // Nothing is gone on from once the turn is over, whatever the log ended with.
+  if (projection.turn !== null && cutOff && cutOff.notes.length > 0) projection.goesOn = cutOff.said?.id ?? null;
   return projection;
 }
 

@@ -63,24 +63,22 @@
 
 Columbina 让一个 Agent 接上语言模型，在你指定的目录里工作。Agent 读文件、搜索、改文件、执行命令，每次调用能做什么在执行之前判定。Columbina 的各个组成部分都是一个小型 asyncio 内核上的插件，包括模型适配器、工具注册表、会话日志，以及 Agent 循环本身。
 
-**状态**：处于早期开发阶段。十个阶段已完成七个；后三个阶段里，基准、PyPI 发行包和供其他程序使用的服务已经做好。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 通过 OpenAI Chat Completions 协议与模型通信，默认接 DeepSeek。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。技能、钩子、子代理和 MCP 服务器的工具可以在不改程序的情况下扩展 Agent。有 Docker 时，Agent 的命令可以在容器里执行，容器里只有工作目录，没有网络。
+**状态**：处于早期开发阶段。十个阶段已完成八个，Columbina 已经发布到 PyPI。另外两个阶段里，基准和供其他程序使用的服务已经做好。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 通过 OpenAI Chat Completions 协议与模型通信，默认接 DeepSeek。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。技能、钩子、子代理和 MCP 服务器的工具可以在不改程序的情况下扩展 Agent。有 Docker 时，Agent 的命令可以在容器里执行，容器里只有工作目录，没有网络。
 
 ## 下载与部署
 
-Columbina 需要 Python 3.11 或更新的版本，以及 [uv](https://docs.astral.sh/uv/)。它还没有发布到 PyPI，所以要用 git 把本仓库克隆下来。
+Columbina 需要 Python 3.11 或更新的版本，从 [PyPI](https://pypi.org/project/columbina/) 安装：
 
 ```bash
-git clone https://github.com/Yueran-ML/agent-harness.git
-cd agent-harness
-uv sync
+pip install columbina
 ```
 
-`uv sync` 在克隆下来的目录里建一个虚拟环境，并把 Columbina 需要的依赖装进去。
+用 [uv](https://docs.astral.sh/uv/) 的话，`uv tool install columbina` 把命令和别的项目分开安装，以后用 `uv tool upgrade columbina` 更新到最新。Model Context Protocol 服务器的工具还需要几个额外的包，`pip install "columbina[mcp]"` 会一并装上。
 
-模型来自某个服务，而服务需要 API 密钥。这两样 Columbina 都会问，在克隆下来的目录里执行：
+模型来自某个服务，而服务需要 API 密钥。这两样 Columbina 都会问：
 
 ```bash
-uv run columbina setup
+columbina setup
 ```
 
 它会问模型来自哪个服务、用哪个模型，以及密钥是什么。DeepSeek、OpenAI、OpenRouter、Moonshot、智谱和硅基流动可以直接按名字选，本机上的 Ollama 和 LM Studio 也一样。其他支持 OpenAI Chat Completions 协议的服务可以按地址添加。输入密钥时屏幕上不显示。密钥保存在系统密钥环里，例如 Windows 的凭据管理器或 macOS 的钥匙串；系统没有密钥环时，保存在 `~/.columbina` 里的一个文件中。[指南](docs/guide.zh-CN.md#模型服务与密钥)说明了它是怎样保管的。
@@ -99,25 +97,29 @@ export DEEPSEEK_API_KEY="your-key"
 
 这样设置的变量只在这个窗口里有效，窗口关掉就没有了。密钥在发请求时才读取。它从不写进清单（profile）或保存下来的会话，每条报错信息在显示或保存之前也会先剔除密钥。
 
-在克隆下来的目录里执行下面的命令，就开始在终端里对话：
+执行下面的命令就开始在终端里对话，Agent 在执行命令的那个目录里工作：
 
 ```bash
-uv run columbina
+columbina
 ```
 
 也可以在命令行上直接给出一个任务，程序会打印回答：
 
 ```bash
-uv run columbina run "What does this project do? Answer in three sentences."
+columbina run "What does this project do? Answer in three sentences."
 ```
 
-这样启动时，Agent 就在克隆下来的目录里工作，`--cwd DIR` 可以指定别的目录。想在任何目录里都能用这个命令，可以在克隆下来的目录里安装一次：
+`--cwd DIR` 可以让 Agent 在别的目录里工作。
+
+要开发 Columbina 本身，就把仓库克隆下来，让 uv 为克隆的目录建好环境：
 
 ```bash
-uv tool install .
+git clone https://github.com/Yueran-ML/agent-harness.git
+cd agent-harness
+uv sync
 ```
 
-之后在任何目录里执行 `columbina`，都会在那个目录里开始对话。如果 shell 找不到这个命令，`uv tool update-shell` 会把 uv 存放命令的目录加进 PATH。以后执行过 `git pull`，再用 `uv tool install . --reinstall` 把命令更新到最新。
+在克隆的目录里，`uv run columbina` 运行的就是那里的程序，怎样检查改动见[指南](docs/guide.zh-CN.md#开发)。
 
 ## 文档
 

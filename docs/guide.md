@@ -1085,7 +1085,7 @@ The work goes in ten stages, and each one ends with something that can be shown.
 | 🌕 | 6 | Skills, hooks, subagents, MCP |
 | 🌕 | 7 | A sandbox in a container for the commands that the agent runs |
 | 🌓 | 8 | Benchmarks, and a table of what local models can do |
-| 🌓 | 9 | A package on PyPI, documentation, an engineering report |
+| 🌕 | 9 | A package on PyPI, documentation, an engineering report |
 | 🌓 | 10 | A JSON-RPC service, and a desktop app on top of it |
 
 🌕 done  ·  🌓 under way  ·  🌑 to come
@@ -1093,7 +1093,7 @@ The work goes in ten stages, and each one ends with something that can be shown.
 The seventh stage is closed, and what it brought is told in
 [Commands in a container](#commands-in-a-container). Of the eighth, the benchmark is built
 and two of its three tables are made: see [The benchmark](#the-benchmark). The table of
-local models is to come. Of the ninth, the package is ready to be published from a tag, and
+local models is to come. The ninth is closed: Columbina is on PyPI, and
 [Writing a plugin](#writing-a-plugin) is new. Of the tenth, the service is built: see
 [Serving another program](#serving-another-program) and [`docs/protocol`](protocol). The
 desktop app on top of it is under way.

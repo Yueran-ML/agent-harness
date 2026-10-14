@@ -63,24 +63,22 @@
 
 Columbina は、エージェントを言語モデルにつなぎ、指定したディレクトリの中で作業させます。エージェントはファイルの読み取り、検索、変更とコマンドの実行を行い、それぞれの呼び出しに何が許されるかは実行の前に判定されます。Columbina を構成するものはすべて、小さな asyncio カーネルのプラグインです。モデルアダプター、ツールレジストリ、セッションログ、そしてエージェントループ自体もそうです。
 
-**ステータス**：開発の初期です。全十段階のうち七つが完了し、残る三つのうち、ベンチマーク、PyPI パッケージ、ほかのプログラム向けのサービスはでき上がっています。`columbina` はターミナルでエージェントと対話し、`columbina run` はタスクを一つ渡して回答を出力します。エージェントは OpenAI Chat Completions プロトコルでモデルと通信し、既定では DeepSeek を使います。モデルの上限を超えた対話は自動的に圧縮され、プログラムが強制終了された後でもセッションを再開できます。スキル、フック、サブエージェント、MCP サーバーのツールで、プログラムに手を加えずにエージェントを拡張できます。Docker があれば、エージェントのコマンドは、作業ディレクトリだけがありネットワークのないコンテナの中で実行できます。
+**ステータス**：開発の初期です。全十段階のうち八つが完了し、Columbina は PyPI で公開されています。残る二つのうち、ベンチマークと、ほかのプログラム向けのサービスはでき上がっています。`columbina` はターミナルでエージェントと対話し、`columbina run` はタスクを一つ渡して回答を出力します。エージェントは OpenAI Chat Completions プロトコルでモデルと通信し、既定では DeepSeek を使います。モデルの上限を超えた対話は自動的に圧縮され、プログラムが強制終了された後でもセッションを再開できます。スキル、フック、サブエージェント、MCP サーバーのツールで、プログラムに手を加えずにエージェントを拡張できます。Docker があれば、エージェントのコマンドは、作業ディレクトリだけがありネットワークのないコンテナの中で実行できます。
 
 ## ダウンロードとセットアップ
 
-Columbina には Python 3.11 以降と [uv](https://docs.astral.sh/uv/) が必要です。まだ PyPI には公開していないため、git でこのリポジトリをクローンして入手します。
+Columbina には Python 3.11 以降が必要で、[PyPI](https://pypi.org/project/columbina/) からインストールします。
 
 ```bash
-git clone https://github.com/Yueran-ML/agent-harness.git
-cd agent-harness
-uv sync
+pip install columbina
 ```
 
-`uv sync` は、クローンの中に仮想環境を作り、Columbina に必要なものをそこにインストールします。
+[uv](https://docs.astral.sh/uv/) を使う場合は、`uv tool install columbina` でほかのプロジェクトとは別にコマンドをインストールし、後で `uv tool upgrade columbina` で最新にします。Model Context Protocol サーバーのツールにはいくつか追加のパッケージが必要で、`pip install "columbina[mcp]"` で一緒に入ります。
 
-モデルはサービスから提供され、サービスには API キーが必要です。Columbina はその両方を尋ねます。クローンの中で次のコマンドを実行します。
+モデルはサービスから提供され、サービスには API キーが必要です。Columbina はその両方を尋ねます。
 
 ```bash
-uv run columbina setup
+columbina setup
 ```
 
 どのサービスを使うか、どのモデルを使うか、そしてキーを尋ねます。DeepSeek、OpenAI、OpenRouter、Moonshot、Zhipu、SiliconFlow は名前で選べます。同じマシンで動く Ollama と LM Studio も同様です。OpenAI Chat Completions プロトコルに対応するほかのサービスは、アドレスを指定して追加できます。キーは入力しても画面に表示されません。キーはシステムのキーリングに保存されます。Windows の資格情報マネージャーや macOS のキーチェーンがこれに当たります。システムにキーリングがない場合は、`~/.columbina` の中のファイルに保存されます。保管の方法は[ガイド](docs/guide.ja.md#サービスとキー)で説明しています。
@@ -99,25 +97,29 @@ export DEEPSEEK_API_KEY="your-key"
 
 このように設定した変数は、そのウィンドウを閉じるまで有効です。キーはリクエストを送るときに読み取られます。プロファイルや保存されたセッションに書き込まれることはなく、エラーメッセージからも、表示や保存の前に必ず取り除かれます。
 
-クローンの中で次のコマンドを実行すると、ターミナルでの対話が始まります。
+次のコマンドを実行すると、ターミナルでの対話が始まります。エージェントは、コマンドを実行したディレクトリで作業します。
 
 ```bash
-uv run columbina
+columbina
 ```
 
 コマンドラインでタスクを渡すこともでき、その場合は回答が出力されます。
 
 ```bash
-uv run columbina run "What does this project do? Answer in three sentences."
+columbina run "What does this project do? Answer in three sentences."
 ```
 
-このように起動すると、エージェントはクローン自体の中で作業します。`--cwd DIR` で別のディレクトリを指定できます。どのディレクトリでもコマンドを使えるようにするには、クローンの中で一度インストールします。
+`--cwd DIR` で、エージェントが作業する別のディレクトリを指定できます。
+
+Columbina 自体を開発するには、リポジトリをクローンし、uv にクローンの環境を作らせます。
 
 ```bash
-uv tool install .
+git clone https://github.com/Yueran-ML/agent-harness.git
+cd agent-harness
+uv sync
 ```
 
-以後は、どのディレクトリで `columbina` を実行しても、そのディレクトリで対話が始まります。シェルがコマンドを見つけられない場合は、`uv tool update-shell` を実行すると、uv がコマンドをインストールするディレクトリが PATH に追加されます。後で `git pull` をしたときは、`uv tool install . --reinstall` でコマンドを最新にします。
+クローンの中では、`uv run columbina` がそこにあるとおりのプログラムを実行します。変更の確かめ方は[ガイド](docs/guide.ja.md#開発)にあります。
 
 ## ドキュメント
 

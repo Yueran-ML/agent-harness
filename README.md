@@ -81,8 +81,8 @@ do is decided before it runs. Everything that Columbina is made of is a plugin o
 asyncio kernel: the model adapter, the tool registry, the session log, and the agent loop
 itself.
 
-**Status:** early development. Seven of ten stages are done, and of the last three the
-benchmark, the package for PyPI and the service for other programs are built. `columbina` holds a
+**Status:** early development. Eight of ten stages are done, and Columbina is on PyPI. Of
+the other two, the benchmark and the service for other programs are built. `columbina` holds a
 conversation with an agent at the terminal, and `columbina run` gives it one task and
 prints the answer. The agent talks to a model over the OpenAI Chat Completions protocol,
 DeepSeek by default. A conversation that outgrows its model is made shorter by itself,
@@ -93,23 +93,22 @@ network.
 
 ## Download and set up
 
-Columbina needs Python 3.11 or newer and [uv](https://docs.astral.sh/uv/). It is not on PyPI
-yet, so it is fetched with git, as a clone of this repository.
+Columbina needs Python 3.11 or newer, and is installed from
+[PyPI](https://pypi.org/project/columbina/):
 
 ```bash
-git clone https://github.com/Yueran-ML/agent-harness.git
-cd agent-harness
-uv sync
+pip install columbina
 ```
 
-`uv sync` makes a virtual environment inside the clone and installs into it what Columbina
-needs.
+With [uv](https://docs.astral.sh/uv/), `uv tool install columbina` installs the command apart
+from other projects, and `uv tool upgrade columbina` brings it up to date later. The tools of
+servers that speak the Model Context Protocol need a few more packages, which
+`pip install "columbina[mcp]"` brings along.
 
-A model comes from a service, and a service wants an API key. Columbina asks for both, in
-the clone:
+A model comes from a service, and a service wants an API key. Columbina asks for both:
 
 ```bash
-uv run columbina setup
+columbina setup
 ```
 
 It asks which service the model is to come from, which model to use, and for the key.
@@ -138,30 +137,32 @@ Set like this, the variable lasts until that window is closed. A key is read whe
 is made. It is never part of a profile or of a stored session, and it is cut out of every
 error message before the message is shown or stored.
 
-A conversation at the terminal begins with this command, given in the clone:
+A conversation at the terminal begins with this command, and the agent works in the
+directory that it is given in:
 
 ```bash
-uv run columbina
+columbina
 ```
 
 A task can also be given on the command line, and the answer is printed:
 
 ```bash
-uv run columbina run "What does this project do? Answer in three sentences."
+columbina run "What does this project do? Answer in three sentences."
 ```
 
-Started like this, the agent works in the clone itself, and `--cwd DIR` names another
-directory for it to work in. To have the command in every directory, install it once from
-the clone:
+`--cwd DIR` names another directory for the agent to work in.
+
+To work on Columbina itself, clone the repository and let uv make the environment of the
+clone:
 
 ```bash
-uv tool install .
+git clone https://github.com/Yueran-ML/agent-harness.git
+cd agent-harness
+uv sync
 ```
 
-After that, `columbina` starts a conversation in whatever directory it is called from. If
-the shell does not find the command, `uv tool update-shell` puts the directory that uv
-installs commands into on the path. After a later `git pull`, `uv tool install . --reinstall`
-brings the command up to date.
+In the clone, `uv run columbina` runs the program as it stands there, and the
+[guide](docs/guide.md#development) says how it is checked.
 
 ## Documentation
 

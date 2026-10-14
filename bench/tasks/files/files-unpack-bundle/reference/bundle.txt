@@ -1,0 +1,35 @@
+Bundle of the demo project, made on 2024-05-02.
+It holds 6 files.
+===== FILE: README.md =====
+# Demo
+
+A tiny project for trying out the bundle tool.
+In a bundle, each file starts after a line like `===== FILE: <path> =====`.
+
+See docs/setup.md for how to install it.
+===== FILE: docs/setup.md =====
+# Setup
+
+1. Copy `config/settings.ini` to `config/local.ini`.
+2. Run `python3 src/app.py`.
+===== FILE: config/settings.ini =====
+[app]
+name = demo
+debug = false
+===== FILE: src/app.py =====
+import configparser
+
+
+def main():
+    config = configparser.ConfigParser()
+    config.read("config/settings.ini")
+    print("Hello from", config["app"]["name"])
+
+
+if __name__ == "__main__":
+    main()
+===== FILE: data/empty.txt =====
+===== FILE: data/users.csv =====
+id,name
+1,ada
+2,linus

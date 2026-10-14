@@ -14,7 +14,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from bench import grade
+from bench import database, grade
 from bench.grade import Call, Verdict
 from bench.task import Loaded, tasks
 
@@ -25,7 +25,12 @@ TASKS = Path(__file__).parent / "tasks"
 
 
 def judged(
-    loaded: Loaded, workspace: Path, calls: tuple[Call, ...], *, container: str | None
+    loaded: Loaded,
+    workspace: Path,
+    calls: tuple[Call, ...],
+    *,
+    container: str | None,
+    private: Path,
 ) -> Verdict:
     """Judge what an attempt left, by the category of its task.
 
@@ -35,6 +40,8 @@ def judged(
         calls: The calls of tools that the attempt made.
         container: The image that the hidden tests of a code task run in, or
             ``None`` to run them with this Python.
+        private: The directory of the attempt that holds what its tools
+            read. The databases of a task of SQL were made there.
     """
     category = loaded.task.category
     if category == "code":
@@ -42,7 +49,7 @@ def judged(
     if category == "files":
         return grade.files(loaded, workspace)
     if category == "sql":
-        return grade.sql(loaded, calls)
+        return grade.sql(loaded, calls, private)
     return grade.compute(loaded, calls)
 
 
@@ -81,14 +88,18 @@ def check(loaded: Loaded, scratch: Path) -> list[str]:
     """
     place = scratch / loaded.task.id
     shutil.rmtree(place, ignore_errors=True)
+    private = place / "private"
+    private.mkdir(parents=True)
+    if loaded.task.category == "sql":
+        database.built(loaded, private)
     problems: list[str] = []
     start = place / "start"
     shutil.copytree(loaded.workspace, start)
-    if judged(loaded, start, (), container=None).passed:
+    if judged(loaded, start, (), container=None, private=private).passed:
         problems.append("its start passes already")
     right = place / "reference"
     _reference_tree(loaded, right)
-    verdict = judged(loaded, right, reference_calls(loaded), container=None)
+    verdict = judged(loaded, right, reference_calls(loaded), container=None, private=private)
     if not verdict.passed:
         problems.append(f"its reference does not pass: {verdict.said}")
     return problems

@@ -1,0 +1,11 @@
+id: files-unpack-bundle
+category: files
+prompt: |
+  `bundle.txt` packs several text files into one. A line of the exact form
+  `===== FILE: <path> =====` starts a file, whose content is all the lines after
+  it, up to the next such line or the end of the bundle, each ending with a
+  newline. Unpack it: write each file to `unpacked/<path>`, creating folders as
+  needed. The lines before the first such line belong to no file. Keep
+  `bundle.txt` as it is.
+timeout_seconds: 600
+max_steps: 30

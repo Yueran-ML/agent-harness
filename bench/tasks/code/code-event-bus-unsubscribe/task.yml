@@ -1,0 +1,12 @@
+id: code-event-bus-unsubscribe
+category: code
+prompt: |
+  In events.py, when a handler unsubscribes while an event is being published (as a handler
+  registered with once() does), the handler right after it is skipped: with a once() handler
+  followed by an ordinary one, the first publish() calls only the once() handler.
+  Every handler that is subscribed when publish() starts should be called, in order, and
+  subscribing or unsubscribing during a publish() should only take effect from the next publish().
+  tests/test_events.py has a failing test that shows this. Please fix the code without changing
+  the tests.
+timeout_seconds: 600
+max_steps: 30

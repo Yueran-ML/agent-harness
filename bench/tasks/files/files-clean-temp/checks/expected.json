@@ -1,0 +1,36 @@
+{
+  "exists": [
+    "project/data/records.csv",
+    "project/data/sample.tmpl",
+    "project/docs/guide.md",
+    "project/docs/template.tmp.md",
+    "project/docs/tmp-notes.txt",
+    "project/notes.md",
+    "project/src/main.py",
+    "project/src/utils/helpers.py",
+    "project/src/utils/old~notes.txt",
+    "scratch.tmp"
+  ],
+  "absent": [
+    "project/build.tmp",
+    "project/data/records.csv.tmp",
+    "project/docs/guide.md~",
+    "project/notes.md~",
+    "project/src/.session.tmp",
+    "project/src/cache.tmp",
+    "project/src/main.py~",
+    "project/src/utils/helpers.py.tmp"
+  ],
+  "equal": {
+    "project/data/records.csv": "id,name\n1,alpha\n2,beta\n",
+    "project/data/sample.tmpl": "name={{name}}\n",
+    "project/docs/guide.md": "# Guide\n\nRun `python src/main.py`.\n",
+    "project/docs/template.tmp.md": "# Template for temporary pages\n\nCopy this file when you start a new page.\n",
+    "project/docs/tmp-notes.txt": "Notes about temporary files. This file is not one of them.\n",
+    "project/notes.md": "# Notes\n\n- Ship the importer before the end of the month.\n",
+    "project/src/main.py": "from utils.helpers import greet\n\nprint(greet(\"world\"))\n",
+    "project/src/utils/helpers.py": "def greet(name):\n    return f\"Hello, {name}!\"\n",
+    "project/src/utils/old~notes.txt": "Notes about the old helpers, kept on purpose.\n",
+    "scratch.tmp": "numbers to check later: 4411, 9032\n"
+  }
+}

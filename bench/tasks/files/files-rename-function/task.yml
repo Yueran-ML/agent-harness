@@ -1,0 +1,10 @@
+id: files-rename-function
+category: files
+prompt: |
+  The function `fetch_data` has been renamed to `load_records`. In every `.py` file
+  of this project, replace each occurrence of the whole word `fetch_data` with
+  `load_records`, in comments and strings too. Names that only contain it, such as
+  `fetch_data_cached`, stay as they are. Leave everything under `vendor/` and all
+  files that are not `.py` files unchanged.
+timeout_seconds: 600
+max_steps: 30

@@ -53,6 +53,10 @@ BENCH_TASK = "bench/task.py"
 BENCH_GRADE = "bench/grade.py"
 BENCH_CHECK = "bench/check.py"
 BENCH_DATABASE = "bench/database.py"
+BENCH_SQLITE = "bench/plugins/sqlite.py"
+BENCH_LOOKUP = "bench/plugins/lookup.py"
+BENCH_COMPUTE = "bench/generate/compute.py"
+BENCH_SQL = "bench/generate/sql.py"
 WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
 WALK = "src/columbina/fs/walk.py"
@@ -2833,14 +2837,14 @@ _BENCH = (
     mutant(
         "line ends count in a file of the working directory",
         BENCH_GRADE,
-        '        return path.read_text(encoding="utf-8").replace("\\r\\n", "\\n")\n',
-        '        return path.read_bytes().decode("utf-8")\n',
+        '        return (root / name).read_text(encoding="utf-8").replace("\\r\\n", "\\n")\n',
+        '        return (root / name).read_bytes().decode("utf-8")\n',
     ),
     mutant(
         "the lines of a file are compared as a set",
         BENCH_GRADE,
-        '        if Counter((_read(workspace / name) or "").splitlines()) != Counter(lines):\n',
-        '        if set((_read(workspace / name) or "").splitlines()) != set(lines):\n',
+        '        if Counter((_read(workspace, name) or "").splitlines()) != Counter(lines):\n',
+        '        if set((_read(workspace, name) or "").splitlines()) != set(lines):\n',
     ),
     mutant(
         "a value of JSON that is not there passes",
@@ -2851,8 +2855,8 @@ _BENCH = (
     mutant(
         "a query is run on the first database alone",
         BENCH_GRADE,
-        "    for name in DATABASES:\n",
-        "    for name in DATABASES[:1]:\n",
+        "    for name in database.DATABASES:\n",
+        "    for name in database.DATABASES[:1]:\n",
     ),
     mutant(
         "the order of the rows never counts",
@@ -2869,8 +2873,8 @@ _BENCH = (
     mutant(
         "a lookup that failed counts as one that was made",
         BENCH_GRADE,
-        '        call.arguments.get("name") for call in calls if call.name == LOOKUP and not call.failed\n',
-        '        call.arguments.get("name") for call in calls if call.name == LOOKUP\n',
+        "        if call.name == LOOKUP and not call.failed\n",
+        "        if call.name == LOOKUP\n",
     ),
     mutant(
         "a statement that writes is allowed",
@@ -2905,7 +2909,7 @@ _BENCH = (
     mutant(
         "the start of a task is not judged",
         BENCH_CHECK,
-        '    if judged(loaded, start, (), container=None).passed:\n        problems.append("its start passes already")\n',
+        '    if judged(loaded, start, (), container=None, private=private).passed:\n        problems.append("its start passes already")\n',
         "",
     ),
     mutant(
@@ -2919,6 +2923,111 @@ _BENCH = (
         BENCH_CHECK,
         '        return (*looked, Call(grade.SUBMIT_ANSWER, {"value": answer["value"]}))\n',
         '        return (Call(grade.SUBMIT_ANSWER, {"value": answer["value"]}),)\n',
+    ),
+    mutant(
+        "a name is found whatever its case where the disk does not tell",
+        BENCH_GRADE,
+        "            if part not in {entry.name for entry in place.iterdir()}:\n",
+        "            if not (place / part).exists():\n",
+    ),
+    # A disk that tells upper case from lower finds no file under another case either.
+    on_windows(
+        mutant(
+            "a file is read whatever the case of its name",
+            BENCH_GRADE,
+            "    if not _there(root, name):\n        return None\n",
+            "",
+        )
+    ),
+    mutant(
+        "a name looked up with its brackets does not count",
+        BENCH_GRADE,
+        '        named(call.arguments.get("name"))\n',
+        '        call.arguments.get("name")\n',
+    ),
+    mutant(
+        "only the database that the model asks is made",
+        BENCH_DATABASE,
+        "    for statements, name in zip(STATEMENTS, DATABASES, strict=True):\n",
+        "    for statements, name in zip(STATEMENTS[:1], DATABASES[:1], strict=True):\n",
+    ),
+    mutant(
+        "a database is made over the one that was there",
+        BENCH_DATABASE,
+        "        file.unlink(missing_ok=True)\n",
+        "",
+    ),
+    mutant(
+        "a model is shown every row of a query",
+        BENCH_SQLITE,
+        "        return shown(await read(args.sql, config.max_rows))\n",
+        "        return shown(await read(args.sql, None))\n",
+    ),
+    mutant(
+        "a query is submitted without being run",
+        BENCH_SQLITE,
+        "        count = len((await read(args.sql, None)).rows)\n",
+        "        count = 0\n",
+    ),
+    mutant(
+        "rows that are more than are shown are not said to be",
+        BENCH_SQLITE,
+        "    if rows.more:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a missing value is shown as Python writes it",
+        BENCH_SQLITE,
+        '"NULL" if value is None else str(value)',
+        "str(value)",
+    ),
+    mutant(
+        "a name in brackets is not found",
+        BENCH_LOOKUP,
+        "        key = named(args.name)\n",
+        "        key = args.name\n",
+    ),
+    mutant(
+        "a share that is not whole is taken",
+        BENCH_COMPUTE,
+        '            if value * numbers["pct"] % 100:\n                return None\n',
+        "",
+    ),
+    mutant(
+        "a split that is not even is taken",
+        BENCH_COMPUTE,
+        '            if value % numbers["g"]:\n                return None\n',
+        "",
+    ),
+    mutant(
+        "the steps after the days are said to happen each day",
+        BENCH_COMPUTE,
+        "        elif days is not None and at < days:\n",
+        "        elif days is not None:\n",
+    ),
+    mutant(
+        "the problems do not go round the places",
+        BENCH_COMPUTE,
+        "        domain, length = cells[len(problems) % len(cells)]\n",
+        "        domain, length = cells[0]\n",
+    ),
+    mutant(
+        "a number is written in a problem",
+        BENCH_COMPUTE,
+        '    named = {key: f"[{name}]" for key, name in NAMES.items()}\n',
+        '    named = {key: f"[{name}] (7)" for key, name in NAMES.items()}\n',
+    ),
+    mutant(
+        "a question that does not tell the shops apart is written",
+        BENCH_SQL,
+        "        if not first or not second or first == second:\n",
+        "        if not first or not second:\n",
+    ),
+    mutant(
+        "the changed shop is the same shop",
+        BENCH_SQL,
+        "    shop, other = dump(seed), dump(changed)\n",
+        "    shop, other = dump(seed), dump(seed)\n",
     ),
 )
 

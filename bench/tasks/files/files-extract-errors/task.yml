@@ -1,0 +1,9 @@
+id: files-extract-errors
+category: files
+prompt: |
+  Collect the errors of `logs/app.log` in a new file, `logs/errors.log`: copy into
+  it every line of `app.log` that was logged at level `ERROR`, unchanged and in the
+  order in which they appear, and end the file with a newline. Do not change
+  `app.log` or any other file.
+timeout_seconds: 600
+max_steps: 30

@@ -1,0 +1,10 @@
+ideas.md 7
+journal/2024-01.md 13
+journal/2024-02.md 6
+projects/archive/shed.md 4
+projects/bike repair.md 5
+projects/garden.md 9
+projects/kitchen.md 7
+reading-list.md 9
+scratch.md 0
+total 60

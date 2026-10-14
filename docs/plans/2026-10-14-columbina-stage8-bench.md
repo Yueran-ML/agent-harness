@@ -26,7 +26,7 @@
 | 事情 | 缺省 | 另一种做法 |
 |---|---|---|
 | 命令在哪里执行 | 容器沙箱（`--sandbox docker`），没有网络 | 本机加 `--permission full-access`。快，但本地小模型可能在本机上乱删东西 |
-| DeepSeek 的两个模型 | `deepseek-flash` 跑全部的表，`deepseek-pro` 只跑验收基准 | 两个都跑全部。部件表的花费翻倍 |
+| DeepSeek 的两个模型 | `deepseek-flash` 跑全部的表，`deepseek-v4-pro` 只跑验收基准 | 两个都跑全部。部件表的花费翻倍 |
 | 花费 | 先用 3 个任务试跑，量出每次尝试的 token，按单价估出全部的花费写进记录；估计在人民币 100 元以内就照计划跑 | 每一轮都先停下来等作者确认 |
 | 本地模型的上下文 | 16K，Ollama 的 `OLLAMA_CONTEXT_LENGTH` | 32K。8B 的 Q8 档放不进 12 GB 显存 |
 
@@ -72,7 +72,7 @@
 
 ### 模型
 
-**12. DeepSeek。** `deepseek-flash` 跑三张表，`deepseek-pro` 跑验收基准。思考模式照服务的缺省，每次请求的完整配置随会话日志留下（设计文档第 16 节的未决事项）。
+**12. DeepSeek。** `deepseek-flash` 跑三张表，`deepseek-v4-pro` 跑验收基准（服务列出的两个模型就是这两个）。思考模式照服务的缺省，每次请求的完整配置随会话日志留下（设计文档第 16 节的未决事项）。
 
 **13. 本地模型用单独的 Ollama 实例。** `OLLAMA_MODELS=D:\ollama-models`，`OLLAMA_HOST=127.0.0.1:11435`，`OLLAMA_CONTEXT_LENGTH=16384`，由跑分器启动和关闭，不碰作者平时用的那个实例和它的设置。Columbina 经一个只在基准的 `COLUMBINA_HOME` 里登记的服务连它。矩阵的行：Qwen2.5-7B 的 Q3_K_M、Q4_K_M、Q8_0，Qwen2.5-3B 的 Q2_K 到 Q8_0 和 FP16，Llama-3.1-8B 的 Q3_K_L、Q4_K_M、Q8_0，Llama-3.2-3B 的同一组档位。这些模型那个目录里都已经有了，不用再下载。先用 Qwen2.5-7B 试跑，把任务的难度调到能分出高下（设计文档第 16 节）。
 

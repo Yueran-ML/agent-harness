@@ -1,0 +1,11 @@
+{
+  "value": 156,
+  "lookups": [
+    "hourly_rate",
+    "hours_per_day",
+    "damaged",
+    "rush_order",
+    "reject_percent",
+    "price"
+  ]
+}

@@ -1,0 +1,11 @@
+id: code-token-bucket-refill
+category: code
+prompt: |
+  The token bucket in ratelimit.py gives tokens back later than it should. With
+  TokenBucket(capacity=1, interval=2.0), an event at t=100 is allowed, and at t=101
+  wait_time() says to wait 1.0 second, but an event at exactly t=102 is still refused;
+  it only goes through a moment later. A token should be back exactly `interval`
+  seconds later, as the class docstring says. A failing test in tests/ shows this.
+  Please fix the code; do not change the tests.
+timeout_seconds: 600
+max_steps: 30

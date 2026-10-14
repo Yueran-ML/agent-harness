@@ -1,0 +1,10 @@
+id: code-wrap-exact-width
+category: code
+prompt: |
+  wrap() in wrapping.py breaks lines too early when a word ends exactly at the width
+  limit. wrap("pay at the counter", 10) returns ["pay at", "the", "counter"], although
+  "pay at the" is exactly 10 characters long and fits; it should return
+  ["pay at the", "counter"]. A line may be as long as the width, but no longer.
+  Failing tests in tests/ show this. Please fix the code; do not change the tests.
+timeout_seconds: 600
+max_steps: 30

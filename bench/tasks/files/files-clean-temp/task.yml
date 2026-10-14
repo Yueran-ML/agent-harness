@@ -1,0 +1,8 @@
+id: files-clean-temp
+category: files
+prompt: |
+  Clean up `project/`: delete every file whose name ends in `.tmp` or in `~`, both
+  in `project/` itself and in all of its subfolders, however deep. Do not delete,
+  move or change anything else.
+timeout_seconds: 600
+max_steps: 30

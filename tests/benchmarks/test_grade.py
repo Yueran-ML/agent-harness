@@ -3,13 +3,12 @@
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from bench import grade
+from bench import database, grade
 from bench.check import check
 from bench.grade import Call, Verdict, code, code_argv, compute, files, last, sql
 from bench.task import load
@@ -197,6 +196,7 @@ def test_a_tree_that_holds_what_it_should_passes(tmp_path: Path) -> None:
     ("rules", "content", "said"),
     [
         ({"exists": ["a.txt"]}, {}, "a.txt is not there"),
+        ({"exists": ["a.txt/b.txt"]}, {"a.txt": "x"}, "a.txt/b.txt is not there"),
         ({"absent": ["a.txt"]}, {"a.txt": ""}, "a.txt is still there"),
         ({"equal": {"a.txt": "x\n"}}, {"a.txt": "y\n"}, "a.txt does not hold what it should"),
         ({"equal": {"a.txt": "x\n"}}, {}, "a.txt does not hold what it should"),
@@ -221,16 +221,57 @@ def test_a_tree_that_does_not_hold_what_it_should_fails_and_says_why(
     assert said in verdict.said
 
 
+def test_a_file_that_is_no_text_of_utf8_holds_nothing_that_is_compared(tmp_path: Path) -> None:
+    rules = expected(equal={"a.txt": "x"}, lines={"a.txt": ["x"]})
+    loaded = load(task(tmp_path, "files", {"checks/expected.json": rules}))
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    (workspace / "a.txt").write_bytes(b"\xff\xfe x")
+
+    assert files(loaded, workspace) == Verdict(
+        False, "a.txt does not hold what it should\na.txt does not hold the lines it should"
+    )
+
+
+def test_a_name_counts_only_as_it_is_written_on_every_system(tmp_path: Path) -> None:
+    # A disk that does not tell upper case from lower would find inbox/csv in inbox/CSV.
+    rules = expected(exists=["inbox/csv/a.csv"], absent=["inbox/CSV/a.csv", "old.txt"])
+    loaded = load(task(tmp_path, "files", {"checks/expected.json": rules}))
+
+    wrong = tree(tmp_path / "wrong", {"inbox/CSV/a.csv": "x", "OLD.txt": "y"})
+    right = tree(tmp_path / "right", {"inbox/csv/a.csv": "x", "OLD.txt": "y"})
+
+    assert files(loaded, wrong) == Verdict(
+        False, "inbox/csv/a.csv is not there\ninbox/CSV/a.csv is still there"
+    )
+    assert files(loaded, right) == Verdict(True, "")
+
+
+def test_a_file_is_read_only_by_the_name_as_it_is_written(tmp_path: Path) -> None:
+    rules = expected(equal={"Notes.txt": "x\n"}, json={"Config.json": {"a": 1}})
+    loaded = load(task(tmp_path, "files", {"checks/expected.json": rules}))
+    workspace = tree(tmp_path / "work", {"notes.txt": "x\n", "config.json": '{"a": 1}'})
+
+    assert files(loaded, workspace) == Verdict(
+        False, "Notes.txt does not hold what it should\nConfig.json is no JSON"
+    )
+
+
 # SQL
 
 
+def statements(rows: list[tuple[str, int]]) -> str:
+    """The statements that make a database of sales with these rows."""
+    made = ["CREATE TABLE sales (city TEXT, amount INTEGER);"]
+    made.extend(f"INSERT INTO sales VALUES ('{city}', {amount});" for city, amount in rows)
+    return "\n".join(made) + "\n"
+
+
 def databases(directory: Path, rows: list[tuple[str, int]], changed: list[tuple[str, int]]) -> None:
-    for name, held in (("database.sqlite", rows), ("changed.sqlite", changed)):
-        (directory / "private").mkdir(exist_ok=True)
-        with sqlite3.connect(directory / "private" / name) as made:
-            made.execute("CREATE TABLE sales (city TEXT, amount INTEGER)")
-            made.executemany("INSERT INTO sales VALUES (?, ?)", held)
-        made.close()
+    """Write the statements of the two databases of a task of SQL."""
+    (directory / "private").mkdir(exist_ok=True)
+    (directory / "private" / "database.sql").write_text(statements(rows), encoding="utf-8")
+    (directory / "private" / "changed.sql").write_text(statements(changed), encoding="utf-8")
 
 
 @pytest.fixture
@@ -251,22 +292,38 @@ def sql_task(tmp_path: Path) -> Path:
     return directory
 
 
-def submitted(query: str) -> tuple[Call, ...]:
-    return (Call("submit_sql", {"sql": query}),)
+def judging(directory: Path, query: str | None = None, *, calls: tuple[Call, ...] = ()) -> Verdict:
+    """Build the databases of a task of SQL beside it, and judge a query on them."""
+    loaded = load(directory)
+    built = database.built(loaded, directory.parent / "built")
+    asked = calls if query is None else (Call("submit_sql", {"sql": query}),)
+    return sql(loaded, asked, built)
+
+
+def test_the_databases_of_a_task_are_made_from_their_statements(sql_task: Path) -> None:
+    built = database.built(load(sql_task), sql_task.parent / "built")
+
+    assert sorted(path.name for path in built.iterdir()) == ["changed.sqlite", "database.sqlite"]
+    assert database.read(built / "changed.sqlite", "SELECT COUNT(*) FROM sales").rows == ((3,),)
+
+
+def test_making_the_databases_again_starts_them_afresh(sql_task: Path) -> None:
+    database.built(load(sql_task), sql_task.parent / "built")
+    built = database.built(load(sql_task), sql_task.parent / "built")
+
+    assert database.read(built / "database.sqlite", "SELECT COUNT(*) FROM sales").rows == ((3,),)
 
 
 def test_a_query_that_is_right_on_both_databases_passes(sql_task: Path) -> None:
     query = "select city, sum(amount) as total from sales group by city order by total desc"
 
-    assert sql(load(sql_task), submitted(query)) == Verdict(True, "")
+    assert judging(sql_task, query) == Verdict(True, "")
 
 
 def test_a_query_that_holds_the_answer_and_not_the_way_to_it_fails(sql_task: Path) -> None:
     query = "SELECT 'Brisbane', 9 UNION ALL SELECT 'Perth', 3"
 
-    verdict = sql(load(sql_task), submitted(query))
-
-    assert verdict == Verdict(
+    assert judging(sql_task, query) == Verdict(
         False,
         "on changed.sqlite the query returns 2 rows, and not the 3 that it should in that order",
     )
@@ -275,21 +332,20 @@ def test_a_query_that_holds_the_answer_and_not_the_way_to_it_fails(sql_task: Pat
 def test_rows_in_another_order_fail_where_the_order_was_asked_for(sql_task: Path) -> None:
     query = "SELECT city, SUM(amount) FROM sales GROUP BY city ORDER BY city"
 
-    assert not sql(load(sql_task), submitted(query)).passed
+    assert not judging(sql_task, query).passed
 
 
 def test_rows_in_any_order_pass_where_no_order_was_asked_for(tmp_path: Path) -> None:
     directory = task(tmp_path, "sql", {"reference/answer.sql": "SELECT city FROM sales"})
     databases(directory, [("A", 1), ("B", 2)], [("C", 1), ("D", 2)])
 
-    query = "SELECT city FROM sales ORDER BY city DESC"
-    assert sql(load(directory), submitted(query)).passed
+    assert judging(directory, "SELECT city FROM sales ORDER BY city DESC").passed
 
 
 def test_a_query_that_fails_says_where_and_why(sql_task: Path) -> None:
-    verdict = sql(load(sql_task), submitted("SELECT * FROM orders"))
-
-    assert verdict == Verdict(False, "the query fails on database.sqlite: no such table: orders")
+    assert judging(sql_task, "SELECT * FROM orders") == Verdict(
+        False, "the query fails on database.sqlite: no such table: orders"
+    )
 
 
 @pytest.mark.parametrize(
@@ -300,7 +356,7 @@ def test_a_query_that_fails_says_where_and_why(sql_task: Path) -> None:
 def test_without_a_query_that_went_through_nothing_passes(
     sql_task: Path, calls: tuple[Call, ...]
 ) -> None:
-    assert sql(load(sql_task), calls) == Verdict(False, "no query was submitted")
+    assert judging(sql_task, calls=calls) == Verdict(False, "no query was submitted")
 
 
 def test_the_reference_of_a_sql_task_is_its_query_submitted(sql_task: Path, tmp_path: Path) -> None:
@@ -348,6 +404,12 @@ def test_a_right_answer_without_every_number_looked_up_fails(compute_task: Path)
     assert compute(load(compute_task), calls) == Verdict(
         False, "the answer is right, and days was not looked up"
     )
+
+
+def test_a_name_looked_up_with_its_brackets_counts(compute_task: Path) -> None:
+    calls = (*looked("[rate]", " hours ", "[ days ]"), answered(1260))
+
+    assert compute(load(compute_task), calls) == Verdict(True, "")
 
 
 def test_the_last_answer_counts(compute_task: Path) -> None:

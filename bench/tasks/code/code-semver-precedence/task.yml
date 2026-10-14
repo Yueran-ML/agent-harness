@@ -1,0 +1,11 @@
+id: code-semver-precedence
+category: code
+prompt: |
+  versions.py orders pre-release versions wrongly. compare("2.0.0-rc.1", "2.0.0")
+  returns 1, as if the release candidate were newer than the release itself, and
+  sort_versions() puts "1.0.0-beta.11" before "1.0.0-beta.2". Versions should be
+  ordered by the semver.org precedence rules that the docstring of precedence_key()
+  describes. Failing tests in tests/ show this. Please fix the code; do not change
+  the tests.
+timeout_seconds: 600
+max_steps: 30

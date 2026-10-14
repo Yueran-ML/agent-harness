@@ -1,0 +1,9 @@
+id: files-dedupe-lines
+category: files
+prompt: |
+  Some lines of the address lists `lists/*.txt` are repeated. Remove the repeats
+  from each of these files: keep only the first occurrence of each line, keep the
+  lines in their original order, and keep the file ending with a newline. Each
+  file is cleaned on its own, and the other files in `lists/` stay as they are.
+timeout_seconds: 600
+max_steps: 30

@@ -1,0 +1,12 @@
+id: code-markdown-table-widths
+category: code
+prompt: |
+  render_table() in mdtable.py should pad each column so that the Markdown table lines up in plain
+  text, but when a header is longer than the values under it, or a value contains a "|" (written as
+  "\|"), that column sticks out and the lines of the table come out with different lengths.
+  Each column should be as wide as the longest text in it as it is written in the table, header
+  included, counted with len() (so a CJK character counts as 1), and never narrower than 3.
+  tests/test_mdtable.py has a failing test that shows the problem. Please fix the code without
+  changing the tests.
+timeout_seconds: 600
+max_steps: 30

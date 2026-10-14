@@ -1,0 +1,11 @@
+id: code-slugify-accents
+category: code
+prompt: |
+  slugify() in slugs.py gets accented titles and punctuation wrong: slugify("Crème Brûlée")
+  returns "cr-me-br-l-e" instead of "creme-brulee", and slugify("Hello, World!") returns
+  "hello--world" instead of "hello-world". Accented letters should keep their base letter
+  (é → e, ñ → n, Å → a), and every run of characters that are not ASCII letters or digits should
+  become a single separator, with none at the start or the end. tests/test_slugs.py has a failing
+  test that shows this. Please fix the code without changing the tests.
+timeout_seconds: 600
+max_steps: 30

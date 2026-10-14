@@ -1,0 +1,8 @@
+id: compute-30-logistics
+category: compute
+prompt: |
+  On one day, the delivery hub handles [hourly_rate] packages per hour for [hours_per_day] hours. Quality checks then reject [reject_percent] percent of the packages remaining at that point. An extra rush order then adds [rush_order] more packages. The packages remaining at that point are then split evenly into [shipments] equal shipments, and only one shipment is kept. Each remaining package brings in [price] dollars when sold. How many dollars does this bring in total?
+
+  The numbers in brackets are not given here. Look each of them up with the tool lookup, by the name in the brackets. Work the answer out, and submit it, a whole number, with the tool submit_answer.
+timeout_seconds: 300
+max_steps: 25

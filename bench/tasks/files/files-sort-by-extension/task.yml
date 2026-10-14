@@ -1,0 +1,10 @@
+id: files-sort-by-extension
+category: files
+prompt: |
+  Tidy up `inbox/`: move each file in it into a subfolder of `inbox/` named after
+  the file's extension, in lowercase and without the dot. For example,
+  `inbox/plan.TXT` would go to `inbox/txt/plan.TXT`. Keep the file names and
+  contents as they are. Files without an extension stay where they are, and
+  nothing outside `inbox/` changes.
+timeout_seconds: 600
+max_steps: 30

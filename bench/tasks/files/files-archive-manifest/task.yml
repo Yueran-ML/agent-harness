@@ -1,0 +1,10 @@
+id: files-archive-manifest
+category: files
+prompt: |
+  Archive the files listed in `to-archive.txt`: move each of them into `archive/`,
+  keeping its path, so that `reports/2023-q1.md` ends up as
+  `archive/reports/2023-q1.md`. Some of the listed files do not exist; write their
+  paths, one per line, into `archive/missing.txt`. Files that are not listed stay
+  where they are, and the content of every file stays the same.
+timeout_seconds: 600
+max_steps: 30

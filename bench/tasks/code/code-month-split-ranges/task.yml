@@ -1,0 +1,12 @@
+id: code-month-split-ranges
+category: code
+prompt: |
+  split_by_month() in periods.py goes wrong at month boundaries. A period from
+  2024-12-30 to 2025-01-02 fails with "ValueError: month must be in 1..12", and so do
+  next_month_start() and month_end() in months.py for any day in December. When a
+  period ends on the first day of a month, that day is left out: 2024-01-30 to
+  2024-02-01 gives only the January piece, and a one-day period gives no piece at all.
+  Both ends of a period are included, as the docstring says. Failing tests in tests/
+  show this. Please fix the code; do not change the tests.
+timeout_seconds: 600
+max_steps: 30

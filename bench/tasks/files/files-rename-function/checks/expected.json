@@ -1,0 +1,13 @@
+{
+  "equal": {
+    "README.md": "# Records\n\nA small viewer for the record store. `app.data.fetch_data()` reads every record.\n",
+    "app/__init__.py": "\"\"\"A small viewer for the record store.\"\"\"\n",
+    "app/cli.py": "import argparse\n\nfrom app.data import load_records, fetch_data_cached\n\n\ndef main(argv=None):\n    parser = argparse.ArgumentParser(description=\"Show the records in the store.\")\n    parser.add_argument(\"--cached\", action=\"store_true\")\n    args = parser.parse_args(argv)\n    loader = fetch_data_cached if args.cached else load_records\n    for record in loader():\n        print(record[\"id\"], record[\"name\"])\n",
+    "app/data.py": "\"\"\"Access to the record store.\"\"\"\n\nimport json\nfrom pathlib import Path\n\nSTORE = Path(\"records.json\")\n\n\ndef load_records(path=STORE):\n    \"\"\"Return every record in the store.\"\"\"\n    with open(path, encoding=\"utf-8\") as handle:\n        return json.load(handle)\n\n\ndef fetch_data_cached(path=STORE, _cache={}):\n    \"\"\"Return the records, reading each store only once.\"\"\"\n    if path not in _cache:\n        _cache[path] = load_records(path)\n    return _cache[path]\n\n\ndef prefetch_data(paths):\n    \"\"\"Fill the cache for several stores.\"\"\"\n    for path in paths:\n        fetch_data_cached(path)\n",
+    "app/report.py": "from app import data\n\n\ndef summary():\n    # load_records returns a list of dicts\n    records = data.load_records()\n    return {\"count\": len(records), \"source\": \"load_records\"}\n",
+    "docs/usage.md": "# Usage\n\n    python -m app.cli [--cached]\n\nWithout `--cached`, every run calls `fetch_data`, which reads the whole store.\n",
+    "tests/test_data.py": "import json\nimport tempfile\nimport unittest\nfrom pathlib import Path\n\nfrom app.data import load_records\n\n\nclass FetchDataTest(unittest.TestCase):\n    def test_fetch_data_reads_every_record(self):\n        with tempfile.TemporaryDirectory() as tmp:\n            store = Path(tmp) / \"records.json\"\n            store.write_text(json.dumps([{\"id\": 1, \"name\": \"a\"}]))\n            self.assertEqual(load_records(store), [{\"id\": 1, \"name\": \"a\"}])\n",
+    "vendor/legacy_client/__init__.py": "from .client import fetch_data\n\n__all__ = [\"fetch_data\"]\n",
+    "vendor/legacy_client/client.py": "\"\"\"A copy of the old client library. It is replaced on every upgrade: do not edit it.\"\"\"\n\n\ndef fetch_data(url):\n    raise NotImplementedError(\"the legacy client cannot read \" + url)\n"
+  }
+}

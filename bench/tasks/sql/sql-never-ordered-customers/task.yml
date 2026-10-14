@@ -1,0 +1,10 @@
+id: sql-never-ordered-customers
+category: sql
+prompt: |
+  Answer this question about the database of a shop:
+
+  Which customers have never placed an order? Return their names.
+
+  The database is reached only with the tools list_tables, run_query and submit_sql. When you have a query whose rows answer the question, submit it with submit_sql: the rows of the last query that is submitted are the answer.
+timeout_seconds: 300
+max_steps: 25

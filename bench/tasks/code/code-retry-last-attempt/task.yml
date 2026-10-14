@@ -1,0 +1,11 @@
+id: code-retry-last-attempt
+category: code
+prompt: |
+  The @retry decorator in retrying.py gives up one attempt too early and then hides the error.
+  With @retry(attempts=3), a function that keeps raising ConnectionError is called only twice,
+  and the call then returns None instead of raising. The function should be called up to
+  `attempts` times in all, with the waits between attempts that the docstring describes, and if
+  the last attempt fails as well, its exception should propagate. tests/test_retrying.py has a
+  failing test that shows this. Please fix the code without changing the tests.
+timeout_seconds: 600
+max_steps: 30

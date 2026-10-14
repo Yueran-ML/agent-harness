@@ -1,0 +1,6 @@
+{
+  "equal": {
+    "CHANGELOG.md": "# Changelog\n\nAll notable changes to this project are listed here, newest first.\n\n## [Unreleased]\n### Added\n- Export of reports to CSV.\n\n## [2.1.0] - 2024-03-02\n### Added\n- Dark mode for the dashboard.\n- Keyboard shortcuts for the search box.\n### Fixed\n- Totals were rounded twice on the summary page.\n\n## [2.0.1] - 2024-02-10\n### Fixed\n- Login failed for user names that contain a plus sign.\n\n## [2.0.0] - 2024-01-15\n### Changed\n- The API returns dates in ISO 8601 format.\n- The settings moved to `config/app.toml`:\n\n```toml\n# where the reports are written\noutput_dir = \"reports\"\n```\n\n### Removed\n- The old XML export.\n\n## [1.9.0] - 2023-12-01\n### Added\n- First public release.\n",
+    "README.md": "# Report tool\n\nTurns the sales data into weekly reports.\n\n## install\nRun `pip install .` in this folder.\n\n## Usage:\nRun `report --week 12`. The changes of each version are in CHANGELOG.md.\n"
+  }
+}

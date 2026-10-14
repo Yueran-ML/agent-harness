@@ -1,0 +1,11 @@
+id: files-update-config
+category: files
+prompt: |
+  Update the settings in `config/`. In `app.json`, set `server.port` to 8443,
+  `server.tls.enabled` to true, `server.tls.cert` to "/etc/ssl/inventory.pem" and
+  `database.pool.max` to 25. In `worker.ini`, set `retries = 5` in the section
+  `[queue]`, and `enabled = true` and `port = 9200` in the section `[metrics]`.
+  Change nothing else: every other value stays as it is, and `worker.ini` keeps
+  its comments and layout.
+timeout_seconds: 600
+max_steps: 30

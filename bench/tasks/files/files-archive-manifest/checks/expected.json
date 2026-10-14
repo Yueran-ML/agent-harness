@@ -1,0 +1,43 @@
+{
+  "exists": [
+    "archive",
+    "archive/reports",
+    "archive/reports/drafts",
+    "archive/reports/2023-q1.md",
+    "archive/reports/2023-q2.md",
+    "archive/reports/2023-q3.md",
+    "archive/reports/board meeting 2023-06.md",
+    "archive/reports/drafts/2023-q3-draft.md",
+    "notes/ideas.md",
+    "reports/2023-q4.md",
+    "reports/2024-q1.md",
+    "reports/drafts/2024-q2-draft.md",
+    "to-archive.txt",
+    "archive/missing.txt"
+  ],
+  "absent": [
+    "reports/2023-q1.md",
+    "reports/2023-q2.md",
+    "reports/2023-q3.md",
+    "reports/board meeting 2023-06.md",
+    "reports/drafts/2023-q3-draft.md"
+  ],
+  "equal": {
+    "archive/reports/2023-q1.md": "# Report 2023 Q1\n\nSales grew by 4%.\n",
+    "archive/reports/2023-q2.md": "# Report 2023 Q2\n\nSales grew by 6%.\n",
+    "archive/reports/2023-q3.md": "# Report 2023 Q3\n\nSales fell by 1%.\n",
+    "archive/reports/board meeting 2023-06.md": "# Board meeting, June 2023\n\nThe board approved the new warehouse.\n",
+    "archive/reports/drafts/2023-q3-draft.md": "# Report 2023 Q3 (draft)\n\nThe numbers are still to be checked.\n",
+    "notes/ideas.md": "# Ideas\n\n- A dashboard for the weekly numbers.\n",
+    "reports/2023-q4.md": "# Report 2023 Q4\n\nSales grew by 9%.\n",
+    "reports/2024-q1.md": "# Report 2024 Q1\n\nSales grew by 3%.\n",
+    "reports/drafts/2024-q2-draft.md": "# Report 2024 Q2 (draft)\n\nThe first numbers look good.\n",
+    "to-archive.txt": "# Files to move to the archive, one path per line.\n# Lines that start with # are comments.\n\nreports/2023-q1.md\nreports/2023-q2.md\nreports/board meeting 2023-06.md\nreports/2022-q4.md\n\nreports/drafts/2023-q3-draft.md\nnotes/retro-2023.md\nreports/2023-q3.md\n"
+  },
+  "lines": {
+    "archive/missing.txt": [
+      "reports/2022-q4.md",
+      "notes/retro-2023.md"
+    ]
+  }
+}

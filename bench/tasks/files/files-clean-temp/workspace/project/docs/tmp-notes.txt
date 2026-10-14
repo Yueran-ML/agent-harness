@@ -1,0 +1,1 @@
+Notes about temporary files. This file is not one of them.

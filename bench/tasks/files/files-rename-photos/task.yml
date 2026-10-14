@@ -1,0 +1,10 @@
+id: files-rename-photos
+category: files
+prompt: |
+  In `photos/` and its subfolders, rename every file named
+  `IMG_<YYYYMMDD>_<n>.jpg.txt`, where `<YYYYMMDD>` is a date and `<n>` is a number,
+  to `<YYYY>-<MM>-<DD>_<n>.txt`, keeping it in its folder. For example,
+  `photos/IMG_20240105_1.jpg.txt` becomes `photos/2024-01-05_1.txt`. Files whose
+  names do not follow this pattern keep their names, and no file's content changes.
+timeout_seconds: 600
+max_steps: 30

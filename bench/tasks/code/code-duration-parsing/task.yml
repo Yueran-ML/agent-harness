@@ -1,0 +1,11 @@
+id: code-duration-parsing
+category: code
+prompt: |
+  parse_duration() in durations.py accepts text that is not a duration and quietly
+  returns a wrong number instead of raising ValueError. parse_duration("1.5h") returns
+  18000 (five hours), and parse_duration("1h30") returns 3600, as if the "30" were not
+  there. Valid durations such as "1h30m" or "2d 4h" must still be read as they are now;
+  anything else should raise ValueError, as the docstring says. Failing tests in tests/
+  show this. Please fix the code; do not change the tests.
+timeout_seconds: 600
+max_steps: 30

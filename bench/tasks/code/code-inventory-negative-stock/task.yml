@@ -1,0 +1,12 @@
+id: code-inventory-negative-stock
+category: code
+prompt: |
+  Inventory.remove() lets the stock go negative: with 3 of "MUG-01" in stock, remove("MUG-01", 5)
+  succeeds and quantity("MUG-01") is then -2. Asking for more than there is should raise
+  InsufficientStockError, an InventoryError like the other errors in warehouse/errors.py, whose
+  .sku, .requested and .available say what was asked for and how many there are, and the stock
+  should be left as it was. In the same way, fulfil() should take nothing at all when an order
+  cannot be filled in full. tests/test_inventory.py has failing tests that show this. Please fix
+  the code without changing the tests.
+timeout_seconds: 600
+max_steps: 30

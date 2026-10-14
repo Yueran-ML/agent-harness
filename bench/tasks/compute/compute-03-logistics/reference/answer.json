@@ -1,0 +1,9 @@
+{
+  "value": 264,
+  "lookups": [
+    "hourly_rate",
+    "hours_per_day",
+    "reject_percent",
+    "days"
+  ]
+}

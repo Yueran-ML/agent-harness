@@ -1,0 +1,8 @@
+id: compute-05-commerce
+category: compute
+prompt: |
+  On one day, the outlet handles [hourly_rate] boxes per hour for [hours_per_day] hours. Then [damaged] boxes are damaged in handling and written off. An extra rush order then adds [rush_order] more boxes. Quality checks then reject [reject_percent] percent of the boxes remaining at that point. Each remaining box brings in [price] dollars when sold. How many dollars does this bring in total?
+
+  The numbers in brackets are not given here. Look each of them up with the tool lookup, by the name in the brackets. Work the answer out, and submit it, a whole number, with the tool submit_answer.
+timeout_seconds: 300
+max_steps: 25

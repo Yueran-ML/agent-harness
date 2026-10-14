@@ -1,0 +1,9 @@
+{
+  "hourly_rate": 12,
+  "hours_per_day": 7,
+  "days": 3,
+  "rush_order": 36,
+  "damaged": 40,
+  "shipments": 2,
+  "price": 6
+}

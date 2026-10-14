@@ -1,0 +1,11 @@
+id: files-line-count-index
+category: files
+prompt: |
+  Create `notes/INDEX.txt`, an index of the Markdown notes: one line for each `.md`
+  file anywhere under `notes/`, of the form `<path> <lines>`, where `<path>` is the
+  file's path relative to `notes/` (for example `journal/2024-01.md`) and `<lines>`
+  is its number of lines. Sort these lines by path. After them, add one last line
+  `total <n>`, where `<n>` is the sum of all the line counts. Every line of the
+  index, the last one included, ends with a newline.
+timeout_seconds: 600
+max_steps: 30

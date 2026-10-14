@@ -1,0 +1,10 @@
+id: sql-priciest-per-category
+category: sql
+prompt: |
+  Answer this question about the database of a shop:
+
+  What is the most expensive product of each category? Return the category, the product name and its price; where products of one category share the highest price, return each.
+
+  The database is reached only with the tools list_tables, run_query and submit_sql. When you have a query whose rows answer the question, submit it with submit_sql: the rows of the last query that is submitted are the answer.
+timeout_seconds: 300
+max_steps: 25

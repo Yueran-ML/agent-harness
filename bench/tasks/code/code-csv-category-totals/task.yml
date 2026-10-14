@@ -1,0 +1,11 @@
+id: code-csv-category-totals
+category: code
+prompt: |
+  totals_by_category() in report.py gets real exports wrong. When the columns are not
+  in the order category,amount (for example "Date,Amount,Category"), it adds up the
+  wrong columns or fails, and a blank line anywhere in the file, even before the
+  header, makes it crash. The header and blank lines should be handled as the
+  docstring says. Failing tests in tests/ show this. Please fix the code; do not
+  change the tests.
+timeout_seconds: 600
+max_steps: 30

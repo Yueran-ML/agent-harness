@@ -1,0 +1,7 @@
+{
+  "equal": {
+    "lists/README.md": "# Address lists\n\nEach list has one address per line.\n\n- newsletter.txt: people who get the monthly letter.\n\n- beta-testers.txt: people who try new versions first.\n\nAsk Mia before adding someone.\n",
+    "lists/beta-testers.txt": "ken@example.org\nradia@example.com\njohn@example.net\nada@example.com\n",
+    "lists/newsletter.txt": "ada@example.com\ngrace@example.org\nlinus@example.net\nmargaret@example.com\nken@example.org\ndennis@example.net\nbarbara@example.com\nfrances@example.org\n"
+  }
+}

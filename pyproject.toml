@@ -65,7 +65,8 @@ exclude = ["/docs/assets"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests", "tests/kernel/fixtures", "."]
-extend-exclude = ["docs"]
+# The tasks of the benchmark hold code as a model finds it, faults and all.
+extend-exclude = ["docs", "bench/tasks"]
 
 [tool.ruff.lint]
 select = [
@@ -104,6 +105,7 @@ convention = "google"
 
 [tool.pyright]
 include = ["src", "tests", "examples", "bench"]
+exclude = ["bench/tasks"]
 pythonVersion = "3.11"
 typeCheckingMode = "strict"
 reportUnnecessaryTypeIgnoreComment = true
@@ -126,7 +128,8 @@ filterwarnings = ["error"]
 [tool.coverage.run]
 branch = true
 source_pkgs = ["columbina", "bench"]
-omit = ["*/columbina/__main__.py"]  # two lines, run by a test in a process of its own
+# A few lines each, run by a test in a process of its own.
+omit = ["*/columbina/__main__.py", "*/bench/__main__.py"]
 # Counts code that only one platform can run on that platform. It is found from the root
 # of the repository, so coverage is run as `python -m coverage`.
 plugins = ["tests.support.coverage_platform"]

@@ -1,0 +1,8 @@
+{
+  "hourly_rate": 9,
+  "hours_per_day": 8,
+  "damaged": 12,
+  "days": 3,
+  "reject_percent": 50,
+  "price": 7
+}

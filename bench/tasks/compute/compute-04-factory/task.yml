@@ -1,0 +1,8 @@
+id: compute-04-factory
+category: compute
+prompt: |
+  On one day, the workshop handles [hourly_rate] parts per hour for [hours_per_day] hours. An extra rush order then adds [rush_order] more parts. The parts remaining at that point are then split evenly into [shipments] equal shipments, and only one shipment is kept. Quality checks then reject [reject_percent] percent of the parts remaining at that point. Each remaining part brings in [price] dollars when sold. How many dollars does this bring in total?
+
+  The numbers in brackets are not given here. Look each of them up with the tool lookup, by the name in the brackets. Work the answer out, and submit it, a whole number, with the tool submit_answer.
+timeout_seconds: 300
+max_steps: 25

@@ -1,0 +1,13 @@
+id: code-config-env-override
+category: code
+prompt: |
+  Environment variables should override the settings file, but load_config() mostly ignores them.
+  With SHOP_PORT=9000 and SHOP_HOST=0.0.0.0 set it still returns the port and host from the file,
+  and SHOP_DEBUG=false turns debug on: the setting comes back as the string "false".
+  Each SHOP_<NAME> variable should override the setting <name> with a value of the same type as
+  that setting's default: SHOP_PORT=9000 gives the int 9000, SHOP_TIMEOUT=2.5 the float 2.5, and a
+  boolean accepts true/false, yes/no, on/off or 1/0 in any case. Text that is not a valid value of
+  that type should raise ValueError. tests/test_config.py has a failing test that shows the problem.
+  Please fix the code without changing the tests.
+timeout_seconds: 600
+max_steps: 30

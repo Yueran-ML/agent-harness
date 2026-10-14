@@ -1,0 +1,10 @@
+id: code-lru-cache-eviction
+category: code
+prompt: |
+  The LRU cache in lru.py throws away the wrong entry when it is full. After
+  cache = LRUCache(2); cache.put("a", 1); cache.put("b", 2); cache.get("a"); cache.put("c", 3)
+  the value just stored under "c" is gone, while "b", the entry used least recently, is kept.
+  A full cache should drop the entry that was used least recently, as the class docstring says.
+  A failing test in tests/ shows this. Please fix the code; do not change the tests.
+timeout_seconds: 600
+max_steps: 30

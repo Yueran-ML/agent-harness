@@ -1,0 +1,9 @@
+{
+  "hourly_rate": 7,
+  "hours_per_day": 4,
+  "rush_order": 47,
+  "shipments": 3,
+  "reject_percent": 20,
+  "days": 6,
+  "price": 3
+}

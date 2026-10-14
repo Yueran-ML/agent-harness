@@ -1,0 +1,1 @@
+SELECT p.category, ROUND(SUM(i.quantity * p.price), 2) AS revenue FROM order_items i JOIN orders o ON o.id = i.order_id JOIN products p ON p.id = i.product_id WHERE o.status = 'delivered' AND o.ordered >= '2025-04-01' AND o.ordered < '2025-07-01' GROUP BY p.category ORDER BY revenue DESC

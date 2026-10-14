@@ -1,0 +1,11 @@
+id: code-bill-split-cents
+category: code
+prompt: |
+  The shares that split_bill() in bill.py returns do not add up to the bill.
+  split_bill("100.00", 3) returns [3333, 3333, 3333], one cent short of 10000, and
+  even split_bill("0.29", 1) returns [28] instead of [29]. The shares should add up
+  to the bill exactly, with the cents that are left over going to the first people,
+  as the docstrings say. Failing tests in tests/ show this. Please fix the code; do
+  not change the tests.
+timeout_seconds: 600
+max_steps: 30

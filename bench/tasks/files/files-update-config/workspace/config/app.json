@@ -1,0 +1,28 @@
+{
+  "name": "inventory-service",
+  "version": "2.3.0",
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "tls": {
+      "enabled": false,
+      "cert": null
+    }
+  },
+  "healthcheck": {
+    "port": 8080,
+    "path": "/health"
+  },
+  "database": {
+    "url": "postgres://db.local:5432/inventory",
+    "pool": {
+      "min": 2,
+      "max": 10
+    }
+  },
+  "cache": {
+    "enabled": false,
+    "ttl_seconds": 300
+  },
+  "features": ["search", "export"]
+}

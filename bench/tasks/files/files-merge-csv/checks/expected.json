@@ -1,0 +1,14 @@
+{
+  "exists": [
+    "report",
+    "report/q1.csv"
+  ],
+  "equal": {
+    "report/q1.csv": "date,region,amount\n2024-01-03,north,1250.00\n2024-01-09,south,830.50\n2024-01-17,east,410.25\n2024-01-28,north,975.00\n2024-02-02,west,1500.00\n2024-02-14,south,620.75\n2024-02-21,east,300.00\n2024-03-05,north,1110.00\n2024-03-12,west,845.20\n2024-03-19,south,505.00\n2024-03-30,east,1290.40\n",
+    "sales/2023-12.csv": "date,region,amount\n2023-12-04,north,980.00\n2023-12-18,west,1430.10\n",
+    "sales/2024-01.csv": "date,region,amount\n2024-01-03,north,1250.00\n2024-01-09,south,830.50\n2024-01-17,east,410.25\n2024-01-28,north,975.00\n",
+    "sales/2024-02.csv": "date,region,amount\n2024-02-02,west,1500.00\n2024-02-14,south,620.75\n2024-02-21,east,300.00\n",
+    "sales/2024-03.csv": "region,date,amount\nnorth,2024-03-05,1110.00\nwest,2024-03-12,845.20\nsouth,2024-03-19,505.00\neast,2024-03-30,1290.40\n",
+    "sales/README.md": "# Sales\n\nOne file per month. Amounts are in euros.\n"
+  }
+}

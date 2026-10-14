@@ -1,0 +1,11 @@
+id: files-normalise-changelog
+category: files
+prompt: |
+  Normalise the headings of `CHANGELOG.md`. The heading of each release must read
+  `## [<version>] - <YYYY-MM-DD>`, with the bare version number (no `v` or
+  `Version` in front), and the heading of the unreleased changes must read
+  `## [Unreleased]`. Each heading of a group of changes must be exactly one of
+  `### Added`, `### Changed`, `### Fixed` or `### Removed`. Change nothing else:
+  the title and all other lines stay exactly as they are.
+timeout_seconds: 600
+max_steps: 30

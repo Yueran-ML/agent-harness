@@ -1,0 +1,11 @@
+# Files to move to the archive, one path per line.
+# Lines that start with # are comments.
+
+reports/2023-q1.md
+reports/2023-q2.md
+reports/board meeting 2023-06.md
+reports/2022-q4.md
+
+reports/drafts/2023-q3-draft.md
+notes/retro-2023.md
+reports/2023-q3.md

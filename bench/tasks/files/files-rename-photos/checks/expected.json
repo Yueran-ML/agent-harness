@@ -1,0 +1,39 @@
+{
+  "exists": [
+    "photos/2023-12-31_3.txt",
+    "photos/2023/2023-07-04_1.txt",
+    "photos/2023/2023-07-04_2.txt",
+    "photos/2023/album.md",
+    "photos/2024-01-05_1.txt",
+    "photos/2024-01-05_2.txt",
+    "photos/2024-02-14_10.txt",
+    "photos/2024-03-02_4.txt",
+    "photos/IMG_20240105_1.png.txt",
+    "photos/IMG_20240302_cover.jpg.txt",
+    "photos/VID_20240214_1.mp4.txt",
+    "photos/captions.md"
+  ],
+  "absent": [
+    "photos/2023/IMG_20230704_1.jpg.txt",
+    "photos/2023/IMG_20230704_2.jpg.txt",
+    "photos/IMG_20231231_3.jpg.txt",
+    "photos/IMG_20240105_1.jpg.txt",
+    "photos/IMG_20240105_2.jpg.txt",
+    "photos/IMG_20240214_10.jpg.txt",
+    "photos/IMG_20240302_4.jpg.txt"
+  ],
+  "equal": {
+    "photos/2023-12-31_3.txt": "Fireworks from the bridge.\n",
+    "photos/2023/2023-07-04_1.txt": "Picnic by the lake.\n",
+    "photos/2023/2023-07-04_2.txt": "Swans on the lake at dusk.\n",
+    "photos/2023/album.md": "# 2023\n\nPictures from the summer holidays.\n",
+    "photos/2024-01-05_1.txt": "Sunrise over the harbour.\n",
+    "photos/2024-01-05_2.txt": "Fishing boats leaving at dawn.\n",
+    "photos/2024-02-14_10.txt": "Dinner at the corner bistro.\n",
+    "photos/2024-03-02_4.txt": "Snow on the old city wall.\n",
+    "photos/IMG_20240105_1.png.txt": "Screenshot of the tide table.\n",
+    "photos/IMG_20240302_cover.jpg.txt": "Cover picture for the album.\n",
+    "photos/VID_20240214_1.mp4.txt": "Short clip of the street band.\n",
+    "photos/captions.md": "# Captions\n\nEach text file stands in for a picture until the real ones are uploaded.\n"
+  }
+}

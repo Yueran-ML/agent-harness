@@ -1,0 +1,12 @@
+id: code-word-count-contractions
+category: code
+prompt: |
+  word_counts() in wordfreq.py splits contractions apart: word_counts("Don't stop, don’t!") gives
+  {"don": 1, "t": 1, "stop": 1, "don’t": 1} instead of {"don't": 2, "stop": 1}.
+  Words should be counted regardless of case, and reported in lower case, by this rule: a word is
+  a run of letters or digits, and an apostrophe (' or ’) with a letter or digit right on both sides
+  belongs to the word, with ’ counted as '. Anything else, such as other punctuation, quotes,
+  dashes or an apostrophe at the start or end of a word, separates words.
+  tests/test_wordfreq.py has a failing test that shows this. Please fix the code without changing the tests.
+timeout_seconds: 600
+max_steps: 30

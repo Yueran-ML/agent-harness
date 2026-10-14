@@ -1,0 +1,8 @@
+{
+  "exists": [
+    "notes/INDEX.txt"
+  ],
+  "equal": {
+    "notes/INDEX.txt": "ideas.md 7\njournal/2024-01.md 13\njournal/2024-02.md 6\nprojects/archive/shed.md 4\nprojects/bike repair.md 5\nprojects/garden.md 9\nprojects/kitchen.md 7\nreading-list.md 9\nscratch.md 0\ntotal 60\n"
+  }
+}

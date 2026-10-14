@@ -1,0 +1,1 @@
+SELECT p.name, SUM(i.quantity) AS units FROM order_items i JOIN orders o ON o.id = i.order_id JOIN products p ON p.id = i.product_id WHERE o.status <> 'cancelled' GROUP BY p.id ORDER BY units DESC, p.name LIMIT 5

@@ -1,0 +1,25 @@
+{
+  "exists": [
+    "unpacked",
+    "unpacked/config",
+    "unpacked/data",
+    "unpacked/docs",
+    "unpacked/src",
+    "unpacked/README.md",
+    "unpacked/config/settings.ini",
+    "unpacked/data/empty.txt",
+    "unpacked/data/users.csv",
+    "unpacked/docs/setup.md",
+    "unpacked/src/app.py"
+  ],
+  "equal": {
+    "README.md": "# Hand-over\n\n`bundle.txt` holds the demo project, packed with the bundle tool.\n",
+    "bundle.txt": "Bundle of the demo project, made on 2024-05-02.\nIt holds 6 files.\n===== FILE: README.md =====\n# Demo\n\nA tiny project for trying out the bundle tool.\nIn a bundle, each file starts after a line like `===== FILE: <path> =====`.\n\nSee docs/setup.md for how to install it.\n===== FILE: docs/setup.md =====\n# Setup\n\n1. Copy `config/settings.ini` to `config/local.ini`.\n2. Run `python3 src/app.py`.\n===== FILE: config/settings.ini =====\n[app]\nname = demo\ndebug = false\n===== FILE: src/app.py =====\nimport configparser\n\n\ndef main():\n    config = configparser.ConfigParser()\n    config.read(\"config/settings.ini\")\n    print(\"Hello from\", config[\"app\"][\"name\"])\n\n\nif __name__ == \"__main__\":\n    main()\n===== FILE: data/empty.txt =====\n===== FILE: data/users.csv =====\nid,name\n1,ada\n2,linus\n",
+    "unpacked/README.md": "# Demo\n\nA tiny project for trying out the bundle tool.\nIn a bundle, each file starts after a line like `===== FILE: <path> =====`.\n\nSee docs/setup.md for how to install it.\n",
+    "unpacked/config/settings.ini": "[app]\nname = demo\ndebug = false\n",
+    "unpacked/data/empty.txt": "",
+    "unpacked/data/users.csv": "id,name\n1,ada\n2,linus\n",
+    "unpacked/docs/setup.md": "# Setup\n\n1. Copy `config/settings.ini` to `config/local.ini`.\n2. Run `python3 src/app.py`.\n",
+    "unpacked/src/app.py": "import configparser\n\n\ndef main():\n    config = configparser.ConfigParser()\n    config.read(\"config/settings.ini\")\n    print(\"Hello from\", config[\"app\"][\"name\"])\n\n\nif __name__ == \"__main__\":\n    main()\n"
+  }
+}

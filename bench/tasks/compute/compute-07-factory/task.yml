@@ -1,0 +1,8 @@
+id: compute-07-factory
+category: compute
+prompt: |
+  Each day, the workshop handles [hourly_rate] parts per hour for [hours_per_day] hours. This daily routine repeats for [days] days in a row, and all subsequent operations apply to the combined total. Then [damaged] parts are damaged in handling and written off. An extra rush order then adds [rush_order] more parts. Quality checks then reject [reject_percent] percent of the parts remaining at that point. Each remaining part brings in [price] dollars when sold. How many dollars does this bring in total?
+
+  The numbers in brackets are not given here. Look each of them up with the tool lookup, by the name in the brackets. Work the answer out, and submit it, a whole number, with the tool submit_answer.
+timeout_seconds: 300
+max_steps: 25

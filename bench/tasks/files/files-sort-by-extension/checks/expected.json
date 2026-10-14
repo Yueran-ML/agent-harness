@@ -1,0 +1,34 @@
+{
+  "exists": [
+    "inbox/csv",
+    "inbox/json",
+    "inbox/md",
+    "inbox/txt",
+    "inbox/csv/Contacts.CSV",
+    "inbox/csv/budget-2024.csv",
+    "inbox/json/settings.json",
+    "inbox/md/meeting-notes.md",
+    "inbox/md/report.final.md",
+    "inbox/txt/todo.txt",
+    "inbox/LICENSE",
+    "README.md"
+  ],
+  "absent": [
+    "inbox/Contacts.CSV",
+    "inbox/budget-2024.csv",
+    "inbox/meeting-notes.md",
+    "inbox/report.final.md",
+    "inbox/settings.json",
+    "inbox/todo.txt"
+  ],
+  "equal": {
+    "README.md": "# Desk\n\n`inbox/` collects whatever was saved during the week.\n",
+    "inbox/LICENSE": "Copyright (c) 2024 the Desk contributors.\nThese notes may be copied and shared freely.\n",
+    "inbox/csv/Contacts.CSV": "name,email\nAda Lovelace,ada@example.com\nGrace Hopper,grace@example.com\n",
+    "inbox/csv/budget-2024.csv": "month,planned,spent\njanuary,1200,1135\nfebruary,1200,1260\nmarch,1300,1190\n",
+    "inbox/json/settings.json": "{\n  \"theme\": \"dark\",\n  \"autosave\": true\n}\n",
+    "inbox/md/meeting-notes.md": "# Meeting, 4 March\n\n- The launch moves to April.\n- Mia sends the revised budget by Friday.\n",
+    "inbox/md/report.final.md": "# Quarterly report\n\nRevenue grew by 8% compared with the previous quarter.\n",
+    "inbox/txt/todo.txt": "buy printer paper\nrenew the domain\ncall the plumber\n"
+  }
+}

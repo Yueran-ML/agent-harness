@@ -1,0 +1,1 @@
+SELECT c.city, ROUND(AVG(t.value), 2) FROM (SELECT o.id, o.customer_id, SUM(i.quantity * p.price) AS value FROM orders o JOIN order_items i ON i.order_id = o.id JOIN products p ON p.id = i.product_id WHERE o.status = 'delivered' GROUP BY o.id) t JOIN customers c ON c.id = t.customer_id GROUP BY c.city ORDER BY c.city

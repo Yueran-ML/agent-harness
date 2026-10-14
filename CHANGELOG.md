@@ -4,7 +4,7 @@ All notable changes are written down here. The version follows
 [Semantic Versioning](https://semver.org/), and while it is below 1.0 a minor version may
 change what was there before.
 
-## 0.1.0 (not yet released)
+## 0.1.0 (2026-10-15)
 
 The first release. It is the work of ten stages, and each of them ended with something that
 could be run.

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "columbina"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "A plugin-based agent harness for Python."
 # The description on PyPI: its links lead to the repository, and it has none of the pictures.
 readme = "docs/pypi.md"

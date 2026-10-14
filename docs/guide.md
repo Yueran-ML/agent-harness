@@ -906,7 +906,8 @@ uv run python -m coverage report
 ```
 
 Coverage is run as a module because it loads a small plugin from `tests/support`, which
-counts the code of one platform only where that platform runs it.
+counts the code of one platform only where that platform runs it. When a run of the CI
+fails, its summary and its annotations name the tests that failed.
 
 The tests need no key and reach no service outside the machine. Beside unit tests there
 are these kinds:
@@ -928,7 +929,8 @@ are these kinds:
 - **Engine tests** start real containers, and see what a command in one can reach and
   what is left of it. They are passed over where no Docker engine answers or one of
   their two small images is missing. With `COLUMBINA_REQUIRE_DOCKER=1` that is a failure,
-  for a machine that is meant to run them.
+  for a machine that is meant to run them. The CI sets it on Linux, and takes the two
+  images before the tests.
 
 Two more things are run by hand:
 

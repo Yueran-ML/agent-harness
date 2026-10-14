@@ -42,8 +42,26 @@ jobs:
       - name: Type check
         run: uv run pyright
 
+      - name: Images for the tests of the container sandbox
+        if: runner.os == 'Linux'
+        run: docker pull -q debian:bookworm-slim && docker pull -q busybox
+
       - name: Test
-        run: uv run python -m coverage run -m pytest
+        run: uv run python -m coverage run -m pytest --junitxml=junit.xml
+        env:
+          # On Linux the tests with a real Docker engine have to run. A runner without an
+          # engine or without the images fails; it does not pass them over.
+          COLUMBINA_REQUIRE_DOCKER: ${{ runner.os == 'Linux' && '1' || '' }}
 
       - name: Coverage
         run: uv run python -m coverage report
+
+      # The log of a run can be read only when one is signed in. Its summary and its
+      # annotations can be seen by anyone, and the annotations read through the API.
+      # The script needs nothing but Python, so it runs even where the install failed.
+      - name: What failed
+        if: failure()
+        shell: bash
+        run: |
+          uv run --no-project python tests/support/failed.py junit.xml >> "$GITHUB_STEP_SUMMARY"
+          uv run --no-project python tests/support/failed.py --annotations junit.xml

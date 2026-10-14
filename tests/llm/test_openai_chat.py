@@ -139,6 +139,20 @@ def key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TEST_KEY", KEY)
 
 
+@pytest.fixture
+async def unhurried(ctx: Context) -> Llm:
+    """The model service for a request that waits for something before its reply begins.
+
+    The other tests give a reply fifty milliseconds to begin. That is plenty for a reply
+    that is written down in the test. A stored key is read in a thread before the request
+    is made, from a keyring for some, and a socket takes a while to connect and to carry
+    its first bytes. Where the machine is busy either takes longer than that, as a machine
+    of the CI showed, and the test would fail for it.
+    """
+    await ctx.plugin(columbina.llm, {"idle_timeout_seconds": 30})
+    return ctx.use(LLM)
+
+
 def connect(ctx: Context, llm: Llm, service: Service, config: Config = CONFIG) -> OpenAIChat:
     adapter = OpenAIChat(config, transport=httpx.MockTransport(service))
     llm.adapters.add(ctx, config.provider, adapter)
@@ -1110,13 +1124,13 @@ async def test_a_variable_that_holds_only_blanks_holds_no_key(
     ],
 )
 async def test_a_key_that_cannot_be_sent_is_refused_and_is_not_shown(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, found: str
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, found: str
 ) -> None:
     monkeypatch.setenv("TEST_KEY", found)
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service)
+    connect(ctx, unhurried, service)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     # The words are the same for every such key, so nothing of the key is in them.
     assert call.failure == LlmFailure(
@@ -1155,55 +1169,57 @@ def sent_as_key(service: Service) -> list[str | None]:
 
 
 async def test_a_stored_key_is_sent_where_the_variable_holds_none(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, with_stored(tmp_path, another="sk-of-another", deepseek=STORED))
+    connect(
+        ctx, unhurried, service, with_stored(tmp_path, another="sk-of-another", deepseek=STORED)
+    )
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure is None
     assert sent_as_key(service) == [f"Bearer {STORED}"]
 
 
 async def test_the_variable_goes_before_the_stored_key(
-    ctx: Context, llm: Llm, tmp_path: Path
+    ctx: Context, unhurried: Llm, tmp_path: Path
 ) -> None:
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, with_stored(tmp_path, deepseek=STORED))
+    connect(ctx, unhurried, service, with_stored(tmp_path, deepseek=STORED))
 
-    await ask(llm)
+    await ask(unhurried)
 
     assert sent_as_key(service) == [f"Bearer {KEY}"]
 
 
 async def test_where_the_variable_holds_a_key_the_file_is_not_looked_into(
-    ctx: Context, llm: Llm, tmp_path: Path
+    ctx: Context, unhurried: Llm, tmp_path: Path
 ) -> None:
     config = with_stored(tmp_path)
     assert config.api_key_file is not None
     config.api_key_file.write_text("not what a file of keys holds", encoding="utf-8")
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure is None
     assert sent_as_key(service) == [f"Bearer {KEY}"]
 
 
 async def test_a_key_that_lies_in_a_keyring_is_sent_as_one_from_the_file_is(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     vault = Memory().install()
     config = with_stored(tmp_path, another="sk-of-another", deepseek=STORED)
     assert config.api_key_file is not None
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure is None
     assert sent_as_key(service) == [f"Bearer {STORED}"]
@@ -1212,16 +1228,16 @@ async def test_a_key_that_lies_in_a_keyring_is_sent_as_one_from_the_file_is(
 
 
 async def test_a_key_that_its_keyring_does_not_give_is_a_failure_that_says_what_to_do(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     vault = Memory().install()
     config = with_stored(tmp_path, deepseek=STORED)
     vault.locked = True
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure == LlmFailure(
         message="the key of deepseek is kept in the keyring of this system, and the keyring "
@@ -1233,15 +1249,15 @@ async def test_a_key_that_its_keyring_does_not_give_is_a_failure_that_says_what_
 
 
 async def test_where_the_variable_holds_a_key_no_keyring_is_asked(
-    ctx: Context, llm: Llm, tmp_path: Path
+    ctx: Context, unhurried: Llm, tmp_path: Path
 ) -> None:
     Memory().install()
     config = with_stored(tmp_path, deepseek=STORED)
     vault = Locked().install()
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure is None
     assert sent_as_key(service) == [f"Bearer {KEY}"]
@@ -1249,29 +1265,29 @@ async def test_where_the_variable_holds_a_key_no_keyring_is_asked(
 
 
 async def test_a_stored_key_needs_no_variable_to_be_named(
-    ctx: Context, llm: Llm, tmp_path: Path
+    ctx: Context, unhurried: Llm, tmp_path: Path
 ) -> None:
     config = with_stored(tmp_path, deepseek=STORED).model_copy(update={"api_key_env": None})
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    await ask(llm)
+    await ask(unhurried)
 
     assert sent_as_key(service) == [f"Bearer {STORED}"]
 
 
 async def test_a_key_that_is_stored_while_the_program_runs_is_found_at_the_next_request(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     config = with_stored(tmp_path)
     assert config.api_key_file is not None
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    first = await ask(llm)
+    first = await ask(unhurried)
     keep(config.api_key_file, "deepseek", STORED, PLACE)
-    second = await ask(llm)
+    second = await ask(unhurried)
 
     assert first.failure == LlmFailure(
         message="there is no API key for deepseek: the environment variable TEST_KEY is not "
@@ -1283,13 +1299,13 @@ async def test_a_key_that_is_stored_while_the_program_runs_is_found_at_the_next_
 
 
 async def test_where_only_a_file_is_named_the_words_about_a_missing_key_name_no_variable(
-    ctx: Context, llm: Llm, tmp_path: Path
+    ctx: Context, unhurried: Llm, tmp_path: Path
 ) -> None:
     config = with_stored(tmp_path, other=STORED).model_copy(update={"api_key_env": None})
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure == LlmFailure(
         message="no API key is stored for deepseek. Enter one with 'columbina setup'",
@@ -1299,19 +1315,19 @@ async def test_where_only_a_file_is_named_the_words_about_a_missing_key_name_no_
 
 
 async def test_a_service_that_asks_for_no_key_is_sent_one_only_if_one_is_found(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     config = with_stored(tmp_path).model_copy(update={"api_key_required": False})
     assert config.api_key_file is not None
     service = Service(streamed(TEXT_REPLY), streamed(TEXT_REPLY), streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    without = await ask(llm)
+    without = await ask(unhurried)
     keep(config.api_key_file, "deepseek", STORED, PLACE)
-    await ask(llm)
+    await ask(unhurried)
     monkeypatch.setenv("TEST_KEY", KEY)
-    await ask(llm)
+    await ask(unhurried)
 
     assert without.failure is None
     assert sent_as_key(service) == [None, f"Bearer {STORED}", f"Bearer {KEY}"]
@@ -1331,7 +1347,7 @@ async def test_where_no_key_is_looked_for_none_is_sent(ctx: Context, llm: Llm) -
 
 
 async def test_what_is_around_a_stored_key_is_not_sent(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     config = with_stored(tmp_path)
@@ -1339,25 +1355,25 @@ async def test_what_is_around_a_stored_key_is_not_sent(
     # Written by hand, and not by the command that stores a key.
     by_hand(config.api_key_file, f" {STORED}\n")
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    await ask(llm)
+    await ask(unhurried)
 
     assert sent_as_key(service) == [f"Bearer {STORED}"]
 
 
 @pytest.mark.parametrize("stored", ["sk-stored 9876543210", ""], ids=["a blank", "nothing"])
 async def test_a_stored_key_that_cannot_be_sent_is_not_sent(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stored: str
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stored: str
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     config = with_stored(tmp_path)
     assert config.api_key_file is not None
     by_hand(config.api_key_file, stored)
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     cannot_be_sent = (
         "the API key that is stored for deepseek cannot be sent: there is a character in it "
@@ -1373,7 +1389,7 @@ async def test_a_stored_key_that_cannot_be_sent_is_not_sent(
 
 
 async def test_a_file_of_keys_that_cannot_be_used_is_a_failure_that_says_why(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     config = with_stored(tmp_path)
@@ -1381,9 +1397,9 @@ async def test_a_file_of_keys_that_cannot_be_used_is_a_failure_that_says_why(
     config.api_key_file.write_text(f"deepseek = {STORED}", encoding="utf-8")
     config.api_key_file.chmod(0o600)
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure == LlmFailure(
         message=f"the file of stored keys, {config.api_key_file}, is not what 'columbina "
@@ -1395,13 +1411,13 @@ async def test_a_file_of_keys_that_cannot_be_used_is_a_failure_that_says_why(
 
 
 async def test_a_stored_key_never_shows_up_in_a_failure(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     echo = refused(401, {"message": f"Incorrect API key provided: {STORED}"})
-    connect(ctx, llm, Service(echo), with_stored(tmp_path, deepseek=STORED))
+    connect(ctx, unhurried, Service(echo), with_stored(tmp_path, deepseek=STORED))
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure is not None
     assert call.failure.message == "Incorrect API key provided: [key]"
@@ -1418,16 +1434,16 @@ async def test_a_stored_key_never_shows_up_in_a_failure(
     ids=["another machine", "without encryption", "another port", "a name that begins alike"],
 )
 async def test_a_stored_key_is_not_sent_where_it_was_not_stored_for(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, address: str
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, address: str
 ) -> None:
     # The address of an adapter may come from a variable of the environment. A key that
     # was typed in for one place does not follow the name of its service to another one.
     monkeypatch.delenv("TEST_KEY")
     config = with_stored(tmp_path, deepseek=STORED).model_copy(update={"base_url": address})
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure is not None
     assert call.failure.code == "AUTH"
@@ -1441,32 +1457,32 @@ async def test_a_stored_key_is_not_sent_where_it_was_not_stored_for(
 
 
 async def test_a_stored_key_is_sent_wherever_the_same_place_is_written_otherwise(
-    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ctx: Context, unhurried: Llm, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.delenv("TEST_KEY")
     config = with_stored(tmp_path, deepseek=STORED).model_copy(
         update={"base_url": "HTTPS://API.Example.Test:443/v2/"}
     )
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure is None
     assert sent_as_key(service) == [f"Bearer {STORED}"]
 
 
 async def test_a_key_of_the_variable_is_sent_wherever_the_address_leads(
-    ctx: Context, llm: Llm, tmp_path: Path
+    ctx: Context, unhurried: Llm, tmp_path: Path
 ) -> None:
     # The variable and the address come from the same hands. Only a stored key has a place.
     config = with_stored(tmp_path, deepseek=STORED).model_copy(
         update={"base_url": "http://other-host.example.test/v1"}
     )
     service = Service(streamed(TEXT_REPLY))
-    connect(ctx, llm, service, config)
+    connect(ctx, unhurried, service, config)
 
-    call = await ask(llm)
+    call = await ask(unhurried)
 
     assert call.failure is None
     assert sent_as_key(service) == [f"Bearer {KEY}"]
@@ -1690,18 +1706,6 @@ async def test_cancelling_the_reader_closes_the_response(ctx: Context, llm: Llm)
 
 
 # The plugin, over a real socket
-
-
-@pytest.fixture
-async def unhurried(ctx: Context) -> Llm:
-    """The model service for a request that goes over a real socket.
-
-    The other tests give a reply fifty milliseconds to begin. That is plenty for a reply
-    that is written down in the test. A socket takes longer than that to connect and to
-    carry its first bytes where the machine is busy, and the test would fail for it.
-    """
-    await ctx.plugin(columbina.llm, {"idle_timeout_seconds": 30})
-    return ctx.use(LLM)
 
 
 async def serve(reply: bytes, received: list[bytes]) -> asyncio.Server:

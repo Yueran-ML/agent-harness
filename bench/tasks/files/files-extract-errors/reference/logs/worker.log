@@ -1,0 +1,4 @@
+2024-03-11 08:00:05 INFO  Worker pool started with 4 workers
+2024-03-11 08:31:10 ERROR Mail job 771 failed, will retry
+2024-03-11 09:12:07 ERROR Worker 3 crashed
+2024-03-11 09:12:08 INFO  Worker 3 restarted

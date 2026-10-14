@@ -1,0 +1,21 @@
+2024-03-11 08:00:01 INFO  Service starting, version 3.4.1
+2024-03-11 08:00:02 DEBUG Reading configuration from /etc/shop/app.conf
+2024-03-11 08:00:02 INFO  Listening on port 8080
+2024-03-11 08:05:17 INFO  GET /products 200 (34 ms)
+2024-03-11 08:05:19 ERROR Database query failed: relation "discounts" does not exist
+2024-03-11 08:05:19 INFO  GET /products/42 500 (12 ms)
+2024-03-11 08:10:44 WARN  Slow query on table orders (2.4 s)
+2024-03-11 08:12:03 DEBUG Cache hit ratio 0.87
+2024-03-11 08:15:30 ERROR Payment gateway timeout after 30 s for order 1093
+2024-03-11 08:15:31 WARN  Retrying after ERROR from payment gateway (attempt 2 of 3)
+2024-03-11 08:15:40 INFO  Payment for order 1093 accepted
+2024-03-11 08:20:00 INFO  Health check: 2 ERROR responses in the last hour
+2024-03-11 08:31:12 ERROR Could not send mail to customer 5521: connection refused
+2024-03-11 08:31:12 DEBUG Mail queue length 14
+2024-03-11 08:45:09 INFO  GET /cart 200 (21 ms)
+2024-03-11 09:02:55 ERROR Disk usage at 95% on /var/lib/shop
+2024-03-11 09:03:00 INFO  Scheduled cleanup started
+2024-03-11 09:03:41 INFO  Scheduled cleanup removed 312 files
+2024-03-11 09:10:18 WARN  Certificate expires in 14 days
+2024-03-11 09:12:07 ERROR Unhandled exception in worker 3: KeyError: 'sku'
+2024-03-11 09:12:08 INFO  Worker 3 restarted

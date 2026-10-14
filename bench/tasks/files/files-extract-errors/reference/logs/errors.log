@@ -1,0 +1,5 @@
+2024-03-11 08:05:19 ERROR Database query failed: relation "discounts" does not exist
+2024-03-11 08:15:30 ERROR Payment gateway timeout after 30 s for order 1093
+2024-03-11 08:31:12 ERROR Could not send mail to customer 5521: connection refused
+2024-03-11 09:02:55 ERROR Disk usage at 95% on /var/lib/shop
+2024-03-11 09:12:07 ERROR Unhandled exception in worker 3: KeyError: 'sku'

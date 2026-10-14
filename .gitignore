@@ -23,6 +23,8 @@ coverage.xml
 .env.*
 !.env.example
 *.log
+# The tasks of the benchmark have logs to work on.
+!bench/tasks/**/*.log
 
 # 编辑器与系统
 .idea/

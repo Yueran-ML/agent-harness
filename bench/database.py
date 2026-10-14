@@ -139,15 +139,25 @@ def built(loaded: Loaded, target: Path) -> Path:
     return target
 
 
+_DECIMAL = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
+"""Text that writes a number, such as a query that formats an amount gives."""
+
+
 def _plain(value: object) -> object:
+    """Return a value as it is compared: a number as a number to six places, however written."""
+    if isinstance(value, str) and _DECIMAL.fullmatch(value):
+        value = float(value)
     return round(value, 6) if isinstance(value, float) else value
 
 
 def same(want: Rows, got: Rows, *, in_order: bool) -> bool:
     """Tell whether two queries returned the same rows: in the same order where order counts.
 
-    The names of the columns count for nothing. Numbers that are not whole
-    are compared to six places.
+    The names of the columns count for nothing. A number is compared to six
+    places, and as the same number whether it is whole or not and whether
+    the query gave it as a number or wrote it as text: a question that asks
+    for an amount rounded to two places is answered by ``printf('%.2f', x)``
+    as much as by ``ROUND(x, 2)``.
     """
     wanted = [tuple(_plain(value) for value in row) for row in want.rows]
     gotten = [tuple(_plain(value) for value in row) for row in got.rows]

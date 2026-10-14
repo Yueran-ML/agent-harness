@@ -314,15 +314,37 @@ def test_a_query_that_holds_the_answer_and_not_the_way_to_it_fails(sql_task: Pat
     query = "SELECT 'Brisbane', 9 UNION ALL SELECT 'Perth', 3"
 
     assert judging(sql_task, query) == Verdict(
-        False,
-        "on changed.sqlite the query returns 2 rows, and not the 3 that it should in that order",
+        False, "on changed.sqlite the query returns 2 rows, and it should return 3"
     )
 
 
 def test_rows_in_another_order_fail_where_the_order_was_asked_for(sql_task: Path) -> None:
     query = "SELECT city, SUM(amount) FROM sales GROUP BY city ORDER BY city"
 
-    assert not judging(sql_task, query).passed
+    assert judging(sql_task, query) == Verdict(
+        False,
+        "on changed.sqlite the query returns the rows that it should, in another order than it "
+        "should",
+    )
+
+
+def test_as_many_rows_as_there_should_be_are_not_enough(sql_task: Path) -> None:
+    query = "SELECT city, SUM(amount) + 1 FROM sales GROUP BY city ORDER BY SUM(amount) DESC"
+
+    assert judging(sql_task, query) == Verdict(
+        False,
+        "on database.sqlite the query returns 2 rows as it should, and they are not the rows it "
+        "should",
+    )
+
+
+def test_one_row_is_called_one(tmp_path: Path) -> None:
+    directory = task(tmp_path, "sql", {"reference/answer.sql": "SELECT city FROM sales"})
+    databases(directory, [("A", 1), ("B", 2)], [("C", 1), ("D", 2)])
+
+    assert judging(directory, "SELECT city FROM sales LIMIT 1") == Verdict(
+        False, "on database.sqlite the query returns 1 row, and it should return 2"
+    )
 
 
 def test_rows_in_any_order_pass_where_no_order_was_asked_for(tmp_path: Path) -> None:

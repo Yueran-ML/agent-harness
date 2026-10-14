@@ -16,7 +16,7 @@ import yaml
 from bench import cli, table
 from bench.check import TASKS
 from bench.cli import MATRIX, USAGE, attempts_of, main, run_parser
-from bench.ollama import Ollama
+from bench.ollama import MODELS, Ollama
 from bench.run import Attempt, Model
 from support.ollama import FAKE, asked, free_port
 
@@ -148,23 +148,23 @@ def test_a_run_with_an_ollama_of_its_own_points_its_attempts_at_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     port = free_port()
-    started: list[int] = []
+    started: list[tuple[Path, int]] = []
 
-    def ollama(*, context: int) -> Ollama:
-        started.append(context)
-        return Ollama(tmp_path / "models", port=port, context=context, command=FAKE)
+    def ollama(models: Path, *, context: int) -> Ollama:
+        started.append((models, context))
+        return Ollama(models, port=port, context=context, command=FAKE)
 
     monkeypatch.setattr(cli, "Ollama", ollama)
     run = tmp_path / "run"
 
     code = main(
         ["run", "--provider", "ollama", "--model", "qwen", "--ollama", "--context-window", "8192",
-         "--task", "sql-orders-per-status", "--sandbox", "none", "--patch", str(scripted(tmp_path)),
-         "--out", str(run)]
+         "--ollama-models", str(tmp_path / "models"), "--task", "sql-orders-per-status",
+         "--sandbox", "none", "--patch", str(scripted(tmp_path)), "--out", str(run)]
     )  # fmt: skip
 
     assert code == 0
-    assert started == [8192]
+    assert started == [(tmp_path / "models", 8192)]
     (line,) = table.read([run / "results.jsonl"])
     assert line["model"] == "ollama/qwen"
     chosen = yaml.safe_load((Path(line["record"]) / "home" / "provider.yml").read_text("utf-8"))
@@ -177,9 +177,7 @@ def test_the_attempts_take_turns_at_an_ollama_of_its_own_while_it_answers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     port = free_port()
-    monkeypatch.setattr(
-        cli, "Ollama", functools.partial(Ollama, tmp_path / "models", port=port, command=FAKE)
-    )
+    monkeypatch.setattr(cli, "Ollama", functools.partial(Ollama, port=port, command=FAKE))
     handed: dict[str, Any] = {}
 
     async def made(attempts: list[Attempt], root: Path, **choices: object) -> list[object]:
@@ -196,6 +194,7 @@ def test_the_attempts_take_turns_at_an_ollama_of_its_own_while_it_answers(
     assert code == 0
     assert handed["jobs"] == 1
     assert handed["told"]["context"] == "16384"
+    assert handed["told"]["models"] == str(MODELS)
     local = Model("ollama", "qwen", f"http://127.0.0.1:{port}/v1", 16384)
     assert [attempt.model for attempt in handed["attempts"]] == [local]
 
@@ -258,6 +257,42 @@ def test_a_run_inside_a_repository_starts_nothing(
         )  # fmt: skip
 
     assert not (tmp_path / "run").exists()
+
+
+def test_the_attempts_of_a_run_are_judged_again_from_what_they_left(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run = tmp_path / "run"
+    main(
+        ["run", "--provider", "deepseek", "--model", "deepseek-flash",
+         "--task", "sql-orders-per-status", "--sandbox", "none", "--patch", str(scripted(tmp_path)),
+         "--out", str(run)]
+    )  # fmt: skip
+    results = run / "results.jsonl"
+    (line,) = table.read([results])
+    results.write_text(json.dumps({**line, "passed": False, "said": "x"}) + "\n", "utf-8")
+    capsys.readouterr()
+
+    assert main(["judge", str(run)]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        "sql-orders-per-status all #1: now passed",
+        "1 attempts judged again, 1 with another verdict",
+    ]
+    assert table.read([results]) == [line]
+    record = Path(line["record"])
+    assert json.loads((record / "result.json").read_text(encoding="utf-8")) == line
+    (record / "out.jsonl").write_text("", encoding="utf-8")
+
+    assert main(["judge", str(run)]) == 0
+
+    assert capsys.readouterr().out.startswith(
+        "sql-orders-per-status all #1: now failed: no query was submitted\n"
+    )
+    kept = json.loads((record / "result.json").read_text(encoding="utf-8"))
+    assert (kept["passed"], kept["said"]) == (False, "no query was submitted")
+    assert main(["judge", str(run)]) == 0
+    assert capsys.readouterr().out == "1 attempts judged again, 0 with another verdict\n"
 
 
 def test_a_table_is_written_to_a_file_where_one_is_named(

@@ -6,10 +6,12 @@ python -m bench run --provider P --model M --out DIR [...]
                                         make attempts at the tasks, see run --help
 python -m bench table KIND RESULTS... [--model M] [--out FILE]
                                         a table of results: acceptance, variants or matrix
+python -m bench judge RUN               judge the attempts of a run again from what they left
 """
 
 import argparse
 import asyncio
+import json
 import sys
 from collections.abc import Callable
 from dataclasses import replace
@@ -20,8 +22,16 @@ import yaml
 
 from bench import check, generate, table
 from bench.check import TASKS
-from bench.ollama import Ollama
-from bench.run import VARIANTS, Attempt, Model, RunError, made, outside_repositories
+from bench.ollama import MODELS, Ollama
+from bench.run import (
+    VARIANTS,
+    Attempt,
+    Model,
+    RunError,
+    judged_again,
+    made,
+    outside_repositories,
+)
 from bench.task import tasks
 
 __all__ = ["COMMANDS", "MATRIX", "USAGE", "attempts_of", "main", "run_parser"]
@@ -29,7 +39,7 @@ __all__ = ["COMMANDS", "MATRIX", "USAGE", "attempts_of", "main", "run_parser"]
 MATRIX = Path(__file__).resolve().parent / "subsets" / "matrix.txt"
 """The tasks of the matrix of local models."""
 
-USAGE = "usage: python -m bench {check,generate,run,table} ..."
+USAGE = "usage: python -m bench {check,generate,judge,run,table} ..."
 
 
 def run_parser() -> argparse.ArgumentParser:
@@ -47,10 +57,16 @@ def run_parser() -> argparse.ArgumentParser:
         "--ollama",
         action="store_true",
         help=(
-            "start an Ollama of its own for the run, with the models of D:/ollama-models and "
+            "start an Ollama of its own for the run, with the models of --ollama-models and "
             "the context window as its context length, 16384 by default; it takes the place "
             "of --base-url"
         ),
+    )
+    parser.add_argument(
+        "--ollama-models",
+        type=Path,
+        default=MODELS,
+        help=f"where the Ollama of the run finds its models; {MODELS.as_posix()} by default",
     )
     parser.add_argument(
         "--variant",
@@ -135,7 +151,7 @@ def run(argv: list[str]) -> int:
             )
             return
         context = arguments.context_window or 16384
-        async with Ollama(context=context) as server:
+        async with Ollama(arguments.ollama_models, context=context) as server:
             # What the server was given is the window of the model.
             local = replace(model, base_url=server.base_url, context_window=context)
             # One model answers at a time on this machine, so the attempts take turns.
@@ -173,9 +189,31 @@ def table_command(argv: list[str]) -> int:
     return 0
 
 
+def judge_command(argv: list[str]) -> int:
+    """Judge the attempts of a run again, write their lines anew, and say what changed. Return 0."""
+    parser = argparse.ArgumentParser(
+        prog="python -m bench judge",
+        description="Judge the attempts of a run again from what they left, as the judge is now.",
+    )
+    parser.add_argument("run", type=Path, help="the directory of the run")
+    arguments = parser.parse_args(argv)
+    results = arguments.run / "results.jsonl"
+    before = table.read([results])
+    after = [judged_again(line) for line in before]
+    results.write_text("".join(json.dumps(line) + "\n" for line in after), encoding="utf-8")
+    for old, new in zip(before, after, strict=True):
+        if old["passed"] != new["passed"]:
+            verdict = "passed" if new["passed"] else f"failed: {new['said']}"
+            print(f"{new['task']} {new['variant']} #{new['repeat']}: now {verdict}")
+    changed = sum(old["passed"] != new["passed"] for old, new in zip(before, after, strict=True))
+    print(f"{len(after)} attempts judged again, {changed} with another verdict")
+    return 0
+
+
 COMMANDS: dict[str, Callable[[list[str]], int]] = {
     "check": check.main,
     "generate": generate.main,
+    "judge": judge_command,
     "run": run,
     "table": table_command,
 }

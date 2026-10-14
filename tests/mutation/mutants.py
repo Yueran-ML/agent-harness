@@ -3034,6 +3034,36 @@ _BENCH = (
         """        "Each day, the {unit} remaining at that point are split evenly into {g} equal "\n""",
     ),
     mutant(
+        "a number that a query wrote as text is compared as text",
+        BENCH_DATABASE,
+        "    if isinstance(value, str) and _DECIMAL.fullmatch(value):\n        value = float(value)\n",
+        "",
+    ),
+    mutant(
+        "text that begins like a number is taken for one",
+        BENCH_DATABASE,
+        "    if isinstance(value, str) and _DECIMAL.fullmatch(value):\n",
+        "    if isinstance(value, str) and _DECIMAL.match(value):\n",
+    ),
+    mutant(
+        "a wrong number of rows is told as wrong rows",
+        BENCH_GRADE,
+        "    if len(got.rows) != len(want.rows):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "rows in another order are told as wrong rows",
+        BENCH_GRADE,
+        "    if in_order and database.same(want, got, in_order=False):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "one row is called rows",
+        BENCH_GRADE,
+        '    return "1 row" if count == 1 else f"{count} rows"\n',
+        '    return f"{count} rows"\n',
+    ),
+    mutant(
         "a question that does not tell the shops apart is written",
         BENCH_SQL,
         "        if not first or not second or first == second:\n",
@@ -3155,8 +3185,14 @@ _BENCH_RUN = (
     mutant(
         "the hidden tests run on this machine where a container was asked for",
         BENCH_RUN,
-        '        loaded, place / "workspace", calls, container=container, private=place / "private"\n',
-        '        loaded, place / "workspace", calls, container=None, private=place / "private"\n',
+        '    calls = calls_of(said)\n    verdict = judged(\n        loaded, place / "workspace", calls, container=container, private=place / "private"\n',
+        '    calls = calls_of(said)\n    verdict = judged(\n        loaded, place / "workspace", calls, container=None, private=place / "private"\n',
+    ),
+    mutant(
+        "the hidden tests of an attempt judged again run on this machine",
+        BENCH_RUN,
+        '    calls = calls_of(said_of((place / "out.jsonl").read_text(encoding="utf-8")))\n    verdict = judged(\n        loaded, place / "workspace", calls, container=container, private=place / "private"\n',
+        '    calls = calls_of(said_of((place / "out.jsonl").read_text(encoding="utf-8")))\n    verdict = judged(\n        loaded, place / "workspace", calls, container=None, private=place / "private"\n',
     ),
     mutant(
         "an attempt that took too long is not said to have",
@@ -3353,6 +3389,36 @@ _BENCH_RUN = (
             "        if process.returncode is None:\n",
             "        if True:\n",
         )
+    ),
+    mutant(
+        "an attempt judged again keeps its old verdict",
+        BENCH_RUN,
+        '    again = {**line, "passed": verdict.passed, "said": verdict.said}\n',
+        "    again = dict(line)\n",
+    ),
+    mutant(
+        "the record of an attempt judged again is left as it was",
+        BENCH_RUN,
+        '    (place / "result.json").write_text(json.dumps(again, indent=1) + "\\n", encoding="utf-8")\n    return again\n',
+        "    return again\n",
+    ),
+    mutant(
+        "the lines judged again are not written",
+        BENCH_CLI,
+        '    results.write_text("".join(json.dumps(line) + "\\n" for line in after), encoding="utf-8")\n',
+        "",
+    ),
+    mutant(
+        "a verdict that did not change is told as changed",
+        BENCH_CLI,
+        '        if old["passed"] != new["passed"]:\n',
+        "        if True:\n",
+    ),
+    mutant(
+        "an Ollama of its own looks for its models where it always does",
+        BENCH_CLI,
+        "        async with Ollama(arguments.ollama_models, context=context) as server:\n",
+        "        async with Ollama(context=context) as server:\n",
     ),
     mutant(
         "the attempts at an Ollama of its own are made several at a time",

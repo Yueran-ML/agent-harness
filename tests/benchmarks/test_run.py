@@ -19,6 +19,7 @@ from bench.run import (
     attempted,
     calls_of,
     done_already,
+    judged_again,
     made,
     patch_of,
     said_of,
@@ -325,6 +326,11 @@ async def test_the_hidden_tests_are_run_where_the_attempt_says(
 
     assert where == ["image"]
     assert result["said"] == "not looked at"
+
+    again = judged_again(result)
+
+    assert where == ["image", "python:3.12-slim"]
+    assert again == {**result, "passed": False, "said": "not looked at"}
 
 
 async def test_an_attempt_that_takes_too_long_is_stopped_and_fails(tmp_path: Path) -> None:

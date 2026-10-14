@@ -116,3 +116,19 @@ def test_numbers_that_are_not_whole_are_compared_to_six_places() -> None:
     assert same(Rows(("a",), ((0.1 + 0.2,),)), Rows(("a",), ((0.3,),)), in_order=True)
     assert not same(Rows(("a",), ((0.3001,),)), Rows(("a",), ((0.3,),)), in_order=True)
     assert not same(Rows(("a",), ((1,), (1,))), Rows(("a",), ((1,),)), in_order=False)
+
+
+def test_a_number_is_the_same_however_a_query_gave_it() -> None:
+    rounded = Rows(("revenue",), (("garden", 1234.5), ("books", 98.0)))
+    written = Rows(("revenue",), (("garden", "1234.50"), ("books", "98")))
+
+    assert same(rounded, written, in_order=True)
+    assert same(Rows(("a",), ((2,), (1.5,))), Rows(("a",), ((1.5,), (2.0,))), in_order=False)
+    assert not same(
+        rounded, Rows(("revenue",), (("garden", "1234.51"), ("books", "98"))), in_order=True
+    )
+
+
+@pytest.mark.parametrize("text", ["1e3", "1,000", " 1000", "1000.", "+1000", "abc"])
+def test_text_that_writes_no_plain_number_stays_text(text: str) -> None:
+    assert not same(Rows(("a",), ((1000,),)), Rows(("a",), ((text,),)), in_order=True)

@@ -228,12 +228,21 @@ def sql(loaded: Loaded, calls: tuple[Call, ...], databases: Path) -> Verdict:
         except database.QueryError as error:
             return Verdict(False, f"the query fails on {name}: {error}")
         if not database.same(want, got, in_order=in_order):
-            return Verdict(
-                False,
-                f"on {name} the query returns {len(got.rows)} rows, and not the "
-                f"{len(want.rows)} that it should{' in that order' if in_order else ''}",
-            )
+            return Verdict(False, f"on {name} the query {_wrong(want, got, in_order=in_order)}")
     return Verdict(True, "")
+
+
+def _rows(count: int) -> str:
+    return "1 row" if count == 1 else f"{count} rows"
+
+
+def _wrong(want: database.Rows, got: database.Rows, *, in_order: bool) -> str:
+    """Say how the rows that a query returned are not those it should have returned."""
+    if len(got.rows) != len(want.rows):
+        return f"returns {_rows(len(got.rows))}, and it should return {len(want.rows)}"
+    if in_order and database.same(want, got, in_order=False):
+        return "returns the rows that it should, in another order than it should"
+    return f"returns {_rows(len(got.rows))} as it should, and they are not the rows it should"
 
 
 def compute(loaded: Loaded, calls: tuple[Call, ...]) -> Verdict:

@@ -43,9 +43,9 @@ from typing import Any, cast
 import yaml
 
 from bench import database
-from bench.check import judged
+from bench.check import TASKS, judged
 from bench.grade import Call
-from bench.task import Loaded
+from bench.task import Loaded, load
 from columbina import process
 
 __all__ = [
@@ -57,6 +57,7 @@ __all__ = [
     "attempted",
     "calls_of",
     "done_already",
+    "judged_again",
     "made",
     "outside_repositories",
     "patch_of",
@@ -330,6 +331,24 @@ def _finished(
     }
     (place / "result.json").write_text(json.dumps(result, indent=1) + "\n", encoding="utf-8")
     return result
+
+
+def judged_again(line: dict[str, Any], *, container: str | None = IMAGE) -> dict[str, Any]:
+    """Judge an attempt again from what it left, and return its line. This blocks.
+
+    The calls come from what the run said, and the workspace and the databases are those
+    that the attempt left. So a judge that was set right is applied without asking a model
+    anything. The line keeps all but its verdict, and ``result.json`` is written anew.
+    """
+    place = Path(line["record"])
+    loaded = load(TASKS / line["category"] / line["task"])
+    calls = calls_of(said_of((place / "out.jsonl").read_text(encoding="utf-8")))
+    verdict = judged(
+        loaded, place / "workspace", calls, container=container, private=place / "private"
+    )
+    again = {**line, "passed": verdict.passed, "said": verdict.said}
+    (place / "result.json").write_text(json.dumps(again, indent=1) + "\n", encoding="utf-8")
+    return again
 
 
 def _appended(results: Path, line: dict[str, Any]) -> None:

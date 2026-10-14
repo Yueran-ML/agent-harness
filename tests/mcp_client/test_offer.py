@@ -28,16 +28,19 @@ def answering(text: str = "done", *, failed: bool = False) -> Any:
     """What calls a tool of a server in a test: it keeps the calls and answers one text."""
     calls: list[tuple[str, dict[str, Any], float]] = []
     as_listed: list[Listed | None] = []
+    reading: list[bool] = []
 
     async def call(
-        name: str, arguments: dict[str, Any], seconds: float, *, listed: Listed | None
+        name: str, arguments: dict[str, Any], seconds: float, *, listed: Listed | None, reads: bool
     ) -> CallToolResult:
         calls.append((name, arguments, seconds))
         as_listed.append(listed)
+        reading.append(reads)
         return CallToolResult(content=[TextContent(type="text", text=text)], is_error=failed)
 
     call.calls = calls  # type: ignore[attr-defined]
     call.as_listed = as_listed  # type: ignore[attr-defined]
+    call.reading = reading  # type: ignore[attr-defined]
     return call
 
 
@@ -128,6 +131,9 @@ async def test_a_call_says_what_the_server_said_of_the_tool_when_it_was_offered(
     # and for no other that the server may list under the name by then.
     assert call.as_listed == [other, reads]
     assert call.as_listed[1] is reads
+    # Only a call of a tool that reads may be made once more where the server turned it
+    # away: by the protocol nothing was done, and it would do no harm all the same.
+    assert call.reading == [False, True]
 
 
 async def test_a_result_that_says_that_the_tool_failed_is_a_failure_with_its_text() -> None:
@@ -173,7 +179,7 @@ def test_the_name_of_a_tool_that_is_passed_over_is_told_in_a_few_characters() ->
 
 async def test_a_call_that_did_not_come_to_a_result_is_a_failure_with_the_reason() -> None:
     async def lost(
-        name: str, arguments: dict[str, Any], seconds: float, *, listed: Listed | None
+        name: str, arguments: dict[str, Any], seconds: float, *, listed: Listed | None, reads: bool
     ) -> CallToolResult:
         raise CallError("the connection to the MCP server notes was lost")
 

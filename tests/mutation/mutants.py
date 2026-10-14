@@ -19174,8 +19174,12 @@ _MCP = (
     mutant(
         "a call has the seconds of the SDK only, which begin when it is written",
         MCP_CONNECTION,
-        "        limit = asyncio.timeout(seconds)\n        try:\n            async with limit:\n                return await client.call_tool(name, arguments)\n",
-        "        limit = asyncio.timeout(None)\n        try:\n            async with limit:\n                return await client.call_tool(name, arguments, read_timeout_seconds=seconds)\n",
+        "        limit = asyncio.timeout(seconds)\n",
+        "        limit = asyncio.timeout(None)\n",
+        (
+            "                return await client.call_tool(name, arguments)\n",
+            "                return await client.call_tool(name, arguments, read_timeout_seconds=seconds)\n",
+        ),
     ),
     mutant(
         "a call that took too long is said to have been answered with what cannot be used",
@@ -19234,8 +19238,8 @@ _MCP = (
     mutant(
         "a client that is no longer the one that is there ends the one that is",
         MCP_CONNECTION,
-        "        if client is self._client:\n            self._client = None\n            self._lost.set()\n",
-        "        if True:\n            self._client = None\n            self._lost.set()\n",
+        "        if client is self._client:\n            self._client = None\n            self._lost_for = why\n",
+        "        if True:\n            self._client = None\n            self._lost_for = why\n",
     ),
     mutant(
         "every attempt is made by one task",
@@ -19246,20 +19250,20 @@ _MCP = (
     mutant(
         "the count of failures never begins anew",
         MCP_CONNECTION,
-        "            if lasted is not None and lasted >= STABLE_SECONDS:\n                failures = 0\n",
-        "",
+        "                # as the first. Reconnecting for it happens only when a call is turned away.\n                failures = 0\n",
+        "                # as the first. Reconnecting for it happens only when a call is turned away.\n",
     ),
     mutant(
         "a connection that lasted exactly as long as is asked does not count as one that lasted",
         MCP_CONNECTION,
-        "            if lasted is not None and lasted >= STABLE_SECONDS:\n",
-        "            if lasted is not None and lasted > STABLE_SECONDS:\n",
+        "            if lasted is not None and (lasted >= STABLE_SECONDS or self._failure == _ENDED):\n",
+        "            if lasted is not None and (lasted > STABLE_SECONDS or self._failure == _ENDED):\n",
     ),
     mutant(
         "a connection that lasted a little less than is asked counts as one that lasted",
         MCP_CONNECTION,
-        "            if lasted is not None and lasted >= STABLE_SECONDS:\n",
-        "            if lasted is not None and lasted >= STABLE_SECONDS - 1:\n",
+        "            if lasted is not None and (lasted >= STABLE_SECONDS or self._failure == _ENDED):\n",
+        "            if lasted is not None and (lasted >= STABLE_SECONDS - 1 or self._failure == _ENDED):\n",
     ),
     mutant(
         "the keeper gives up one failure sooner",
@@ -19324,7 +19328,7 @@ _MCP = (
     mutant(
         "a connection that was lost is said to have failed with nothing",
         MCP_CONNECTION,
-        "                self._failure = _LOST\n",
+        "                self._failure = self._lost_for\n",
         "",
     ),
     mutant(
@@ -19846,10 +19850,8 @@ _MCP = (
     mutant(
         "a tool of a server is called by the name that it has here",
         MCP_OFFER,
-        "            result = await call(listed.name, dict(arguments.root), seconds, listed=listed)\n",
-        "            result = await call(\n"
-        '                f"mcp__{listed.name}", dict(arguments.root), seconds, listed=listed\n'
-        "            )\n",
+        "                listed.name, dict(arguments.root), seconds, listed=listed, reads=reads\n",
+        '                f"mcp__{listed.name}", dict(arguments.root), seconds, listed=listed, reads=reads\n',
     ),
     mutant(
         "a call of a tool of a server has the limit of any other tool",
@@ -19944,8 +19946,8 @@ _MCP = (
     mutant(
         "the headers of a server at an address are not sent",
         MCP_REACH,
-        "httpx2.AsyncClient(headers=dict(headers), timeout=limits)",
-        "httpx2.AsyncClient(headers={}, timeout=limits)",
+        "httpx2.AsyncClient(headers=dict(headers), timeout=limits, event_hooks=looking)",
+        "httpx2.AsyncClient(headers={}, timeout=limits, event_hooks=looking)",
     ),
     mutant(
         "a server at an address has half a minute for everything",
@@ -21314,6 +21316,218 @@ _CONDUCT = (
 
 _MCP_REVIEWED = (
     mutant(
+        "an error that a server answers a call with counts as a session that it ended",
+        MCP_CONNECTION,
+        "            if call.turned_away:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "a call that a server turned away for want of its session is answered with the error",
+        MCP_CONNECTION,
+        "            if call.turned_away:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a server that says so with the code of a closed connection is taken for one that closed",
+        MCP_CONNECTION,
+        "            if call.turned_away:\n",
+        "            if call.turned_away and error.code != CONNECTION_CLOSED:\n",
+    ),
+    mutant(
+        "a call of a tool that only reads is not made again",
+        MCP_CONNECTION,
+        "            if not reads:\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "a call that may change something is made again by itself",
+        MCP_CONNECTION,
+        "            if not reads:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a call that is turned away a second time is made a third time",
+        MCP_CONNECTION,
+        "        try:\n            return await self._once(name, arguments, seconds, listed)\n        except _TurnedAway as away:\n            raise CallError(\n",
+        "        try:\n            return await self._once(name, arguments, seconds, listed)\n        except _TurnedAway:\n            pass\n        try:\n            return await self._once(name, arguments, seconds, listed)\n        except _TurnedAway as away:\n            raise CallError(\n",
+    ),
+    mutant(
+        "what a server said when it turned a call away is not told",
+        MCP_CONNECTION,
+        "                raise _TurnedAway(self._why(error)) from None\n",
+        '                raise _TurnedAway("") from None\n',
+    ),
+    mutant(
+        "the keeper is not told why a server that ended its session is not connected",
+        MCP_CONNECTION,
+        "                self._gone(client, _ENDED)\n",
+        "                self._gone(client)\n",
+    ),
+    mutant(
+        "nobody tells the keeper of a session that a server ended",
+        MCP_CONNECTION,
+        "                self._gone(client, _ENDED)\n                raise _TurnedAway(self._why(error)) from None\n",
+        "                raise _TurnedAway(self._why(error)) from None\n",
+    ),
+    mutant(
+        "why a client is of no use any more is not kept for the keeper",
+        MCP_CONNECTION,
+        "            self._lost_for = why\n",
+        "",
+    ),
+    mutant(
+        "a call that a way to a server says was turned away is not told so",
+        MCP_CONNECTION,
+        "        call.turned_away = True\n",
+        "        call.turned_away = False\n",
+    ),
+    mutant(
+        "what a way to a server says while nobody calls ends whoever says it",
+        MCP_CONNECTION,
+        "    if call is not None:\n        call.turned_away = True\n",
+        "    if True:\n        call.turned_away = True\n",
+    ),
+    mutant(
+        "what one call heard is taken for what every call heard",
+        MCP_CONNECTION,
+        "        call = _Call()\n",
+        "        call = _EVERY\n",
+        (
+            '_calling: ContextVar[_Call | None] = ContextVar("columbina.mcp.calling", default=None)\n',
+            '_EVERY = _Call()\n_calling: ContextVar[_Call | None] = ContextVar("columbina.mcp.calling", default=None)\n',
+        ),
+    ),
+    mutant(
+        "the keeper leaves the client at once where a session ended",
+        MCP_CONNECTION,
+        "                if self._lost_for == _ENDED:\n                    await self._heard_out()\n",
+        "",
+    ),
+    mutant(
+        "the keeper waits for the calls under way without end",
+        MCP_CONNECTION,
+        "        with suppress(TimeoutError):\n            async with asyncio.timeout(HEAR_SECONDS):\n                await self._quiet.wait()\n",
+        "        await self._quiet.wait()\n",
+    ),
+    mutant(
+        "a call under way is not counted",
+        MCP_CONNECTION,
+        "        self._under_way += 1\n        self._quiet.clear()\n",
+        "",
+    ),
+    mutant(
+        "a session that a server ended counts as a failure of the connection",
+        MCP_CONNECTION,
+        "            if lasted is not None and (lasted >= STABLE_SECONDS or self._failure == _ENDED):\n",
+        "            if lasted is not None and lasted >= STABLE_SECONDS:\n",
+    ),
+    mutant(
+        "a server at an address is not looked at for how it answers",
+        MCP_REACH,
+        "httpx2.AsyncClient(headers=dict(headers), timeout=limits, event_hooks=looking)",
+        "httpx2.AsyncClient(headers=dict(headers), timeout=limits)",
+    ),
+    mutant(
+        "whatever a server answers to a call counts as knowing nothing of the session",
+        MCP_REACH,
+        "        response.status_code == _UNKNOWN\n        and MCP_SESSION_ID in request.headers\n",
+        "        MCP_SESSION_ID in request.headers\n",
+    ),
+    mutant(
+        "a call that names no session is taken for one whose session is gone",
+        MCP_REACH,
+        "        and MCP_SESSION_ID in request.headers\n",
+        "",
+    ),
+    mutant(
+        "whatever a server turns away for want of a session counts as a call",
+        MCP_REACH,
+        "        and await _asks(request) == _CALL\n",
+        "",
+    ),
+    mutant(
+        "a call that a server sent on to another path is not seen for one",
+        MCP_REACH,
+        "        said = json.loads(await request.aread())\n",
+        "        said = json.loads(request.content)\n",
+    ),
+    mutant(
+        "what is no request of the protocol ends whoever looks at its answer",
+        MCP_REACH,
+        "    except (ValueError, httpx2.StreamError):\n",
+        "    except httpx2.StreamError:\n",
+    ),
+    mutant(
+        "a request that went to the server piece by piece ends whoever looks at its answer",
+        MCP_REACH,
+        "    except (ValueError, httpx2.StreamError):\n",
+        "    except ValueError:\n",
+    ),
+    mutant(
+        "requests in a row end whoever looks at their answer",
+        MCP_REACH,
+        " if isinstance(said, dict) else None\n",
+        "\n",
+    ),
+    mutant(
+        "another status is taken for the one of a session that is not known",
+        MCP_REACH,
+        "_UNKNOWN = 404\n",
+        "_UNKNOWN = 400\n",
+    ),
+    mutant(
+        "a list of the tools that is turned away counts as a call that was",
+        MCP_REACH,
+        '_CALL = "tools/call"\n',
+        '_CALL = "tools/list"\n',
+    ),
+    mutant(
+        "that a session which was gone could not be ended is logged",
+        MCP_REACH,
+        "        return record.msg != _GONE_ALREADY\n",
+        "        return True\n",
+    ),
+    mutant(
+        "nothing that the SDK says is logged while a server at an address is entered",
+        MCP_REACH,
+        "        return record.msg != _GONE_ALREADY\n",
+        "        return False\n",
+    ),
+    mutant(
+        "the SDK is not heard as it speaks once no server at an address is entered",
+        MCP_REACH,
+        "        sdk.removeFilter(unsaid)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "leaving one server at an address has the SDK heard although another is entered",
+        MCP_REACH,
+        "    unsaid = _Unsaid()\n",
+        "    unsaid = _ONE_UNSAID\n",
+        (
+            "@asynccontextmanager\nasync def _reached(",
+            "_ONE_UNSAID = _Unsaid()\n\n\n@asynccontextmanager\nasync def _reached(",
+        ),
+    ),
+    mutant(
+        "a call of a tool that only reads is not said to be one",
+        MCP_OFFER,
+        "                execute=_calling(tool, call, call_seconds, reads),\n",
+        "                execute=_calling(tool, call, call_seconds, False),\n",
+    ),
+    mutant(
+        "every call is said to be of a tool that only reads",
+        MCP_OFFER,
+        "                execute=_calling(tool, call, call_seconds, reads),\n",
+        "                execute=_calling(tool, call, call_seconds, True),\n",
+    ),
+    mutant(
+        "a call does not pass on whether its tool only reads",
+        MCP_OFFER,
+        "                listed.name, dict(arguments.root), seconds, listed=listed, reads=reads\n",
+        "                listed.name, dict(arguments.root), seconds, listed=listed, reads=False\n",
+    ),
+    mutant(
         "what the address and the headers of a server hold is in what a library logs",
         MCP_SERVER,
         "    ctx.effect(lambda: withhold(kept_out))\n",
@@ -21328,8 +21542,8 @@ _MCP_REVIEWED = (
     mutant(
         "a client that found its connection closed is handed out until the keeper has left it",
         MCP_CONNECTION,
-        "            self._client = None\n            self._lost.set()\n",
-        "            self._lost.set()\n",
+        "            self._client = None\n            self._lost_for = why\n            self._lost.set()\n",
+        "            self._lost_for = why\n            self._lost.set()\n",
     ),
     mutant(
         "a call is made although its tool is listed otherwise by now",
@@ -21352,8 +21566,8 @@ _MCP_REVIEWED = (
     mutant(
         "a call of a tool of a server does not say how the tool was listed",
         MCP_OFFER,
-        "            result = await call(listed.name, dict(arguments.root), seconds, listed=listed)\n",
-        "            result = await call(listed.name, dict(arguments.root), seconds, listed=None)\n",
+        "                listed.name, dict(arguments.root), seconds, listed=listed, reads=reads\n",
+        "                listed.name, dict(arguments.root), seconds, listed=None, reads=reads\n",
     ),
     mutant(
         "a server whose word of its tools ended is listened to again once and no more",

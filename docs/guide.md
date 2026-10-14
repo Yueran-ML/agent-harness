@@ -758,7 +758,11 @@ are meant is added to the system prompt, marked as the words of the server.
 A server that cannot be reached is logged and left out, and the rest goes on. A server whose
 connection is lost is connected again, after waits that grow up to 30 seconds, and it is
 given up once 10 attempts in a row have failed. A call that was under way when the
-connection was lost fails, and it is not made a second time. `/mcp` shows how every server is doing. What a
+connection was lost fails, and it is not made a second time. A server over HTTP may end its
+session, after a while without calls or because it was started again. Columbina sees that
+when the server turns a call away, and connects anew. A call of a tool that only reads is
+then made once more by itself, and any other call fails with a line that says to make it
+again. `/mcp` shows how every server is doing. What a
 server writes to its standard error goes to `~/.columbina/logs`. A program that is started
 gets a few variables such as `PATH` and those that its entry names under `env`. Nothing else
 of the environment reaches it, and so no key of yours does.

@@ -45,13 +45,21 @@ class Call(Protocol):
     """Calls a tool of the server by the name that the server gave it, with a limit in seconds."""
 
     def __call__(
-        self, name: str, arguments: dict[str, Any], seconds: float, *, listed: Listed | None
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        seconds: float,
+        *,
+        listed: Listed | None,
+        reads: bool,
     ) -> Awaitable[CallToolResult]:
         """Make the call.
 
         ``listed`` is the tool as the server listed it when it was offered
         here. Whether a call is let through goes by that, so a call is made
-        only for as long as the server lists the tool that way.
+        only for as long as the server lists the tool that way. ``reads``
+        says whether the server says that the tool only reads: such a call
+        may be made once more where the server turned it away.
         """
         ...
 
@@ -69,7 +77,9 @@ class Offer:
     passed_over: tuple[str, ...]
 
 
-def _calling(listed: Listed, call: Call, seconds: float) -> Callable[..., Awaitable[str]]:
+def _calling(
+    listed: Listed, call: Call, seconds: float, reads: bool
+) -> Callable[..., Awaitable[str]]:
     """Return what a tool does when it is called: it calls the tool of the server.
 
     The call says what the server said of the tool when it was offered here.
@@ -79,7 +89,9 @@ def _calling(listed: Listed, call: Call, seconds: float) -> Callable[..., Awaita
 
     async def execute(arguments: JsonArguments, run: ToolRun) -> str:
         try:
-            result = await call(listed.name, dict(arguments.root), seconds, listed=listed)
+            result = await call(
+                listed.name, dict(arguments.root), seconds, listed=listed, reads=reads
+            )
         except CallError as error:
             raise ToolFailure(str(error)) from None
         text = shown(result)
@@ -130,7 +142,7 @@ def offer(
                 name=tool_name(server, raw),
                 description=described(tool.description),
                 parameters=JsonArguments,
-                execute=_calling(tool, call, call_seconds),
+                execute=_calling(tool, call, call_seconds, reads),
                 timeout_seconds=limit_seconds,
                 concurrency_safe=reads,
                 effect="read" if reads else "run",

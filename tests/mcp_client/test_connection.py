@@ -1,17 +1,19 @@
 """A connection to a server that is kept: made, lost, made again, and given up."""
 
 import asyncio
+import itertools
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+import re
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, suppress
 from functools import partial
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from mcp import Client, MCPError
 from mcp.client.subscriptions import SubscriptionLost
 from mcp.shared import jsonrpc_dispatcher
-from mcp.types import CONNECTION_CLOSED, ListToolsResult, Tool
+from mcp.types import CONNECTION_CLOSED, CallToolResult, ListToolsResult, Tool
 
 from columbina.mcp.server import connection as connection_module
 from columbina.mcp.server.connection import (
@@ -23,8 +25,8 @@ from columbina.mcp.server.connection import (
     Connection,
 )
 from columbina.mcp.server.content import shown
-from columbina.mcp.server.reach import kept_out
-from support.mcp_servers import INSTRUCTIONS, Cuttable, Hanging, Served
+from columbina.mcp.server.reach import kept_out, reached
+from support.mcp_servers import INSTRUCTIONS, Cuttable, Hanging, Online, Served
 from support.terminal import until
 
 BASE = ["add", "nap", "grow", "grow_as_before", "stir"]
@@ -1787,3 +1789,342 @@ async def test_closing_again_waits_again_for_a_connection_that_did_not_let_go(
     finally:
         released.set()
     await until(lambda: transport.left == 1)
+
+
+# A server at an address, and a session that it ended
+
+ENDED = (
+    "the connection to the MCP server served was lost: the server no longer knew the session. "
+    "It is being made again"
+)
+
+
+SESSIONS = re.compile("[0-9a-f]{32}")
+"""What a session of the server of the SDK is called."""
+
+
+@pytest.fixture
+def online(served: Served, monkeypatch: pytest.MonkeyPatch) -> Iterator[Online]:
+    """The server at an address of this machine, with a tool that tells its session."""
+    # What is next door is reached directly, whatever proxy this machine names.
+    for name in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    served.with_its_session_told()
+    with Online(served) as online:
+        yield online
+
+
+@pytest.fixture
+def reaching(online: Online, make: Callable[..., Connection]) -> Callable[..., Connection]:
+    """Makes connections to the server at its address.
+
+    The server is asked for before the maker of connections, so the connections are closed
+    while the server still answers.
+    """
+
+    def one(path: str = "", **options: Any) -> Connection:
+        # As to a server from before 2026, which gives every connection a session.
+        options.setdefault("mode", "legacy")
+        return make("served", lambda: reached(online.url + path, {}), **options)
+
+    return one
+
+
+def adding(a: int) -> Callable[[dict[str, Any]], bool]:
+    """Picks out the calls of the tool that adds whose first number is this one."""
+
+    def picked(asked: dict[str, Any]) -> bool:
+        params: dict[str, Any] = asked.get("params") or {}
+        arguments: dict[str, Any] = params.get("arguments") or {}
+        return params.get("name") == "add" and arguments.get("a") == a
+
+    return picked
+
+
+async def ended(connection: Connection, online: Online) -> str:
+    """End the session of a connection on the server, and return what it was called."""
+    session = shown(await connection.call("session", {}, 5))
+    await asyncio.to_thread(online.end, session)
+    return session
+
+
+async def test_a_server_at_an_address_is_connected_to_and_called(
+    reaching: Callable[..., Connection],
+) -> None:
+    connection = await begun(reaching())
+
+    assert (connection.state, names(connection)) == ("connected", [*BASE, "session"])
+    assert shown(await connection.call("add", TWO, 5)) == "2"
+    # It gave the connection a session, as servers did before 2026.
+    told = await connection.call("session", {}, 5)
+    assert (told.is_error, SESSIONS.fullmatch(shown(told)) is not None) == (False, True)
+
+
+async def test_a_call_of_a_tool_that_only_reads_is_made_again_over_a_new_session(
+    reaching: Callable[..., Connection], online: Online, caplog: pytest.LogCaptureFixture
+) -> None:
+    naps = Naps()
+    connection = await begun(reaching(sleep=naps))
+    first = await ended(connection, online)
+
+    with caplog.at_level(logging.WARNING):
+        result = await connection.call("add", TWO, 5, reads=True)
+
+    # By the protocol the server took nothing of the call, and a tool that only reads may be
+    # called twice in any case.
+    assert shown(result) == "2"
+    assert (connection.state, connection.failure) == ("connected", None)
+    assert shown(await connection.call("session", {}, 5)) not in ("", first)
+    # Leaving the old connection, the SDK could not end a session that was gone. Nothing
+    # of that is said: it is no failure, and nobody could do anything about it.
+    assert (caplog.messages, naps.asked) == ([ENDED], [FIRST_WAIT])
+
+
+async def test_a_call_that_may_change_something_is_not_made_again_by_itself(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    naps = Naps()
+    connection = await begun(reaching(sleep=naps))
+    await ended(connection, online)
+
+    with pytest.raises(CallError) as failed:
+        await connection.call("add", TWO, 5)
+
+    # A server that is worse than the protocol may have done something all the same, so
+    # whoever made the call decides whether to make it again.
+    assert str(failed.value) == (
+        "the MCP server served turned the call away as one that names a session it knows "
+        "nothing of, and said: Session not found. The connection is being made again. Call "
+        "the tool again if that is still wanted"
+    )
+    await until(lambda: connection.state == "connected")
+    assert shown(await connection.call("add", TWO, 5)) == "2"
+    assert naps.asked == [FIRST_WAIT]
+
+
+async def test_a_call_that_a_server_sends_on_and_then_turns_away_is_made_over_a_new_session(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    naps = Naps()
+    # The server answers at its path without a slash at the end, and sends whatever comes
+    # to the path with one on to there. Every request of this connection goes that way.
+    connection = await begun(reaching("/", sleep=naps))
+    first = await ended(connection, online)
+
+    # What was sent on is a request of its own, made from the first one. It is a call all
+    # the same, and it was turned away for want of its session.
+    assert shown(await connection.call("add", TWO, 5, reads=True)) == "2"
+    assert (connection.state, naps.asked) == ("connected", [FIRST_WAIT])
+    assert shown(await connection.call("session", {}, 5)) not in ("", first)
+
+
+async def test_a_call_that_finds_no_session_over_the_new_connection_either_is_not_made_again(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    naps = Naps()
+    connection = await begun(reaching(sleep=naps))
+    # Every call from now on is answered as one that names a session nobody knows.
+    online.turn_away("tools/call")
+
+    with pytest.raises(CallError) as failed:
+        await connection.call("add", TWO, 5, reads=True)
+
+    assert str(failed.value) == (
+        "the MCP server served turned the call away as one that names a session it knows "
+        "nothing of, also over a connection that was made anew for it, and said: Session not "
+        "found. The call was not made"
+    )
+    # Over the connection that was there and over the next one, and over no third.
+    assert online.turned_away == 2
+    # The keeper was told both times, and makes the connection once more. A server that
+    # ends sessions is alive all the same, so the waits do not grow, and it is not given up.
+    await until(lambda: connection.state == "connected" and len(naps.asked) == 2)
+    assert (naps.asked, online.turned_away) == ([FIRST_WAIT, FIRST_WAIT], 2)
+
+
+async def test_a_server_that_says_so_with_the_code_of_a_closed_connection_is_understood(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    connection = await begun(reaching(sleep=Naps()))
+    # The code is the one that the SDK gives a connection that is closed. What the status
+    # says is the more.
+    online.turn_away("tools/call", code=-32000)
+
+    with pytest.raises(CallError) as failed:
+        await connection.call("add", TWO, 5)
+
+    assert str(failed.value).startswith(
+        "the MCP server served turned the call away as one that names a session it knows "
+        "nothing of, and said: Session not found."
+    )
+
+
+async def test_calls_under_way_when_a_session_is_found_gone_hear_their_own_answer(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    naps = Naps()
+    connection = await begun(reaching(sleep=naps))
+    await ended(connection, online)
+    # The server is busy with one of the two, and answers it a moment after the other.
+    online.slow(0.3, adding(2))
+
+    results = await asyncio.gather(
+        connection.call("add", TWO, 5, reads=True),
+        connection.call("add", {"a": 2, "b": 3}, 5, reads=True),
+    )
+
+    # The keeper waited until the second had heard that its session was gone as well, and
+    # did not break it off: both were made again over one new connection.
+    assert [shown(result) for result in results] == ["2", "5"]
+    assert naps.asked == [FIRST_WAIT]
+
+
+async def test_a_call_that_stays_under_way_is_waited_for_a_moment_and_no_longer(
+    reaching: Callable[..., Connection], online: Online, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(connection_module, "HEAR_SECONDS", 0.2)
+    connection = await begun(reaching(sleep=Naps(), startup_seconds=2))
+    await ended(connection, online)
+    # The server holds the second call, as it holds a call that it took before the session
+    # ended and is still at.
+    online.slow(3600, adding(2))
+    held = asyncio.ensure_future(connection.call("add", {"a": 2, "b": 3}, 30, reads=True))
+    await until(lambda: online.waiting == 1)
+
+    result = await connection.call("add", TWO, 5, reads=True)
+
+    assert shown(result) == "2"
+    with pytest.raises(CallError) as failed:
+        await asyncio.wait_for(held, 5)
+    assert str(failed.value) == LOST
+
+
+async def test_what_one_call_heard_is_not_taken_for_what_another_heard(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    connection = await begun(reaching(sleep=Naps()))
+    await ended(connection, online)
+    # The server is busy with the second call, and answers it with an error of its own a
+    # moment after it turned the first away.
+    online.slow(0.3, adding(2))
+    online.turn_away("tools/call", status=500, said="The server is busy", only=adding(2))
+
+    first, second = await asyncio.gather(
+        connection.call("add", TWO, 5, reads=True),
+        connection.call("add", {"a": 2, "b": 3}, 5, reads=True),
+        return_exceptions=True,
+    )
+
+    assert shown(cast("CallToolResult", first)) == "2"
+    assert str(second) == (
+        "the MCP server served answered the call with an error: The server is busy"
+    )
+    # The second was made once: it was not taken for one that was turned away.
+    assert online.turned_away == 1
+
+
+async def test_a_call_made_again_that_the_server_answers_with_an_error_says_that_error(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    naps = Naps()
+    connection = await begun(reaching(sleep=naps))
+    await ended(connection, online)
+    # The first call reaches the server, which knows nothing of its session. The one after
+    # it, over the new connection, is answered with an error of the server's own.
+    seen = itertools.count()
+    online.turn_away(
+        "tools/call", status=500, said="The server is busy", only=lambda asked: next(seen) > 0
+    )
+
+    with pytest.raises(CallError) as failed:
+        await connection.call("add", TWO, 5, reads=True)
+
+    assert str(failed.value) == (
+        "the MCP server served answered the call with an error: The server is busy"
+    )
+    assert (online.turned_away, naps.asked) == (1, [FIRST_WAIT])
+
+
+async def test_a_call_made_again_is_not_made_where_the_server_lists_its_tool_otherwise_by_then(
+    served: Served, reaching: Callable[..., Connection], online: Online
+) -> None:
+    served.with_a_reader()
+    connection = await begun(reaching(sleep=Naps()))
+    (peek,) = [tool for tool in connection.tools if tool.name == "peek"]
+    await ended(connection, online)
+    # The server comes back with the tool, and no longer says that it only reads.
+    served.with_a_reader_that_writes_now()
+
+    with pytest.raises(CallError) as failed:
+        await connection.call("peek", {}, 5, listed=peek, reads=True)
+
+    assert str(failed.value) == (
+        "the MCP server served no longer lists the tool peek as it did when this call was "
+        "made, so the call was not made. Look at the tool as it is now, and call it again if "
+        "that is still wanted"
+    )
+    assert served.peeked == 0
+
+
+async def test_a_call_that_waits_to_be_made_again_is_answered_when_the_connection_is_closed(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    naps = Naps(held=True)
+    connection = await begun(reaching(sleep=naps))
+    await ended(connection, online)
+
+    calling = asyncio.ensure_future(connection.call("add", TWO, 5, reads=True))
+    # The keeper waits before it connects again, and the call waits for it.
+    await asyncio.wait_for(naps.begun.wait(), 5)
+    await connection.close()
+
+    with pytest.raises(CallError) as failed:
+        await asyncio.wait_for(calling, 5)
+    assert str(failed.value) == CLOSED
+
+
+async def test_an_error_that_a_server_answers_a_call_with_ends_no_session(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    naps = Naps()
+    connection = await begun(reaching(sleep=naps))
+    first = shown(await connection.call("session", {}, 5))
+    online.turn_away("tools/call", status=500, said="The server is busy")
+
+    with pytest.raises(CallError) as failed:
+        await connection.call("add", TWO, 5)
+
+    assert str(failed.value) == (
+        "the MCP server served answered the call with an error: The server is busy"
+    )
+    online.turn_away(None)
+    # The call was not made a second time, and the connection is the one that it was.
+    assert (online.turned_away, naps.asked, connection.state) == (1, [], "connected")
+    assert shown(await connection.call("session", {}, 5)) == first
+
+
+async def test_a_call_that_is_turned_away_where_there_is_no_session_is_an_error_like_any_other(
+    reaching: Callable[..., Connection], online: Online
+) -> None:
+    naps = Naps()
+    # A server of 2026 gives no session, so there is none that it could have ended.
+    connection = await begun(reaching(mode="auto", sleep=naps))
+    assert shown(await connection.call("session", {}, 5)) == ""
+    online.turn_away("tools/call")
+
+    with pytest.raises(CallError) as failed:
+        await connection.call("add", TWO, 5)
+
+    assert str(failed.value) == (
+        "the MCP server served answered the call with an error: Session not found"
+    )
+    assert (online.turned_away, naps.asked, connection.state) == (1, [], "connected")
+
+
+def test_a_call_that_is_turned_away_while_nobody_calls_is_nobodys() -> None:
+    # A way to a server says this where it sees how the server answers. Outside of a call
+    # there is nobody to tell, and nothing comes of it.
+    connection_module.turned_away()

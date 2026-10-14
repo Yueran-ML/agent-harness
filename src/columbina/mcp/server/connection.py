@@ -24,6 +24,24 @@ A connection that is lost
     comes then waits for the connection, as long as a connection may take to
     be made.
 
+A session that the server ended
+    A server that is talked to over HTTP in the way of before 2026 gives a
+    connection a session, and ends it when it likes: after a while without a
+    call, or because it was started again. From then on it answers whatever
+    names that session with a status that says so, and the SDK hands that on
+    as an error like any other. The connection would stay as it is, and
+    every call would fail. So the way to the server looks at the status, and
+    says so where a call was answered like this, see :func:`turned_away`.
+
+    The keeper is told, and lets the other calls that are under way hear
+    their own answers for a moment before it leaves the client. By the
+    protocol the server took nothing of a call that it turned away like
+    this. A server may be worse than the protocol, so only a call of a tool
+    that only reads is made again by itself, over the next connection and
+    once. Any other call is answered with an error that says so, and
+    whoever made it decides. A session that the server ended is no failure
+    of the server, and it does not count towards giving the server up.
+
 Tools that change
     A server may say that its tools changed. A server that speaks the
     protocol of 2026 says so to a client that listens, and an older one sends
@@ -44,7 +62,8 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from mcp import Client, MCPError
@@ -70,6 +89,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ATTEMPTS",
     "FIRST_WAIT",
+    "HEAR_SECONDS",
     "LEAVE_SECONDS",
     "LONGEST_WAIT",
     "STABLE_SECONDS",
@@ -77,6 +97,7 @@ __all__ = [
     "Connection",
     "State",
     "Target",
+    "turned_away",
 ]
 
 logger = logging.getLogger(__name__)
@@ -111,6 +132,14 @@ STABLE_SECONDS = 30.0
 LEAVE_SECONDS = 10.0
 """How long leaving a client may take. A server that is dead may not let go by itself."""
 
+HEAR_SECONDS = 2.0
+"""How long the calls that are under way have to hear their answers, where a session ended.
+
+The keeper waits so long at most before it leaves the client. A call that was sent after the
+server ended the session is turned away within a moment, and one that the server took before
+is cut off when the time is up.
+"""
+
 _GRACE = 0.5
 """How many seconds longer closing waits than leaving a client may take.
 
@@ -124,6 +153,9 @@ _SAID = 300
 _LOST = "the connection was lost"
 """Why a server is not connected where its connection ended without an error."""
 
+_ENDED = "the server no longer knew the session"
+"""Why a server is not connected where it turned a call away for want of its session."""
+
 
 class CallError(Exception):
     """A call did not come to a result. The text says why, to whoever made the call.
@@ -131,6 +163,53 @@ class CallError(Exception):
     A result in which the server says that the tool failed is a result, and
     is no error of this kind.
     """
+
+
+class _TurnedAway(Exception):  # noqa: N818 - named after what happened
+    """A server turned a call away as one that names a session it knows nothing of.
+
+    Attributes:
+        said: What the server said, in one line.
+    """
+
+    def __init__(self, said: str) -> None:
+        super().__init__(said)
+        self.said = said
+
+
+class _Call:
+    """What is known of a call that is being made, beside what it comes back with.
+
+    Attributes:
+        turned_away: Whether the server answered that it knows nothing of
+            the session, and so took nothing of the call.
+    """
+
+    __slots__ = ("turned_away",)
+
+    def __init__(self) -> None:
+        self.turned_away = False
+
+
+_calling: ContextVar[_Call | None] = ContextVar("columbina.mcp.calling", default=None)
+"""The call that is being made in this context, if one is."""
+
+
+def turned_away() -> None:
+    """Say that the server turned away the call that is being made here.
+
+    For a way to a server, which calls this where it sees that the server
+    answered a call as one that names a session it knows nothing of. The SDK
+    writes a request to the server in a copy of the context of whoever made
+    it. The copy holds the same object as the context of the caller, and
+    what is noted on that object is seen there: so what is said here
+    reaches the call that was turned away and no other. Setting the
+    variable anew would reach nobody. Where no call is being made, nothing
+    comes of it.
+    """
+    call = _calling.get()
+    if call is not None:
+        call.turned_away = True
 
 
 async def _listed(client: Client) -> list[Tool]:
@@ -208,6 +287,12 @@ class Connection:
         self._ever = False
         self._gave_up = False
         self._closing = False
+        # Why the client that was there last is none any more, as whoever found it so said.
+        self._lost_for = _LOST
+        # How many calls are under way, and an event that is set while none is.
+        self._under_way = 0
+        self._quiet = asyncio.Event()
+        self._quiet.set()
         # Set once the first attempt came to an end, one way or the other.
         self._settled = asyncio.Event()
         # Set, and a new one put in its place, whenever a caller that waits has something
@@ -287,24 +372,30 @@ class Connection:
         seconds: float,
         *,
         listed: Tool | None = None,
+        reads: bool = False,
     ) -> CallToolResult:
         """Call a tool of the server.
 
         A call that comes while the connection is made again waits for it.
         A call that finds the connection closed tells the keeper, and is not
-        made again.
+        made again. A call that the server turns away because it knows
+        nothing of the session tells the keeper too, and is made once more
+        over the next connection where its tool only reads.
 
         Args:
             name: The name of the tool, as the server gave it.
             arguments: The arguments of the call.
             seconds: How long the call may take: to be written to the server
-                and to be answered by it.
+                and to be answered by it. A call that is made once more has
+                as long again.
             listed: The tool as the server listed it when the call was
                 decided on, if whoever calls goes by that. A call may wait
                 for a connection, and the server that comes back may list a
                 tool of that name of which it says something else: that it
                 no longer only reads, for one. A call that was let through
                 for what the tool was is then not made.
+            reads: Whether the server says that the tool only reads. Such a
+                call does no harm if it is made twice.
 
         Returns:
             What the server answered. It may say that the tool failed.
@@ -316,7 +407,7 @@ class Connection:
         """
         try:
             return await cancellation.guard(
-                self._asked(name, arguments, seconds, listed),
+                self._asked(name, arguments, seconds, listed, reads),
                 what=f"the call of the MCP server {self.server}",
             )
         except CancelledFromInside:
@@ -326,9 +417,45 @@ class Connection:
             ) from None
 
     async def _asked(
-        self, name: str, arguments: dict[str, Any], seconds: float, listed: Tool | None
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        seconds: float,
+        listed: Tool | None,
+        reads: bool,
     ) -> CallToolResult:
         """Make a call over the connection, or say in the words of this program why not."""
+        try:
+            return await self._once(name, arguments, seconds, listed)
+        except _TurnedAway as away:
+            if not reads:
+                # By the protocol the server took nothing of the call. A server may be worse
+                # than the protocol, and a call that changes something would then change it
+                # twice: so whoever made the call decides whether to make it again.
+                raise CallError(
+                    f"the MCP server {self.server} turned the call away as one that names a "
+                    f"session it knows nothing of, and said: {away.said}. The connection is "
+                    "being made again. Call the tool again if that is still wanted"
+                ) from None
+        # The keeper makes the connection again, and over that the call is made, this once.
+        try:
+            return await self._once(name, arguments, seconds, listed)
+        except _TurnedAway as away:
+            raise CallError(
+                f"the MCP server {self.server} turned the call away as one that names a "
+                "session it knows nothing of, also over a connection that was made anew for "
+                f"it, and said: {away.said}. The call was not made"
+            ) from None
+
+    async def _once(
+        self, name: str, arguments: dict[str, Any], seconds: float, listed: Tool | None
+    ) -> CallToolResult:
+        """Make a call over the connection that is there, or wait for the one that comes.
+
+        Raises:
+            _TurnedAway: The server turned the call away as one that names a
+                session it knows nothing of. The keeper was told.
+        """
         client = await self._connected()
         if listed is not None and listed not in self._tools:
             # Looked at once the client is there: the tools of a connection are in place
@@ -341,10 +468,22 @@ class Connection:
         # The whole call has so long, and not only its answer. The SDK would count from when
         # the call is written, and a server that reads no more keeps it from being written.
         limit = asyncio.timeout(seconds)
+        # What the way to the server finds out of this call is said here, see `turned_away`.
+        call = _Call()
+        calling = _calling.set(call)
+        self._under_way += 1
+        self._quiet.clear()
         try:
             async with limit:
                 return await client.call_tool(name, arguments)
         except MCPError as error:
+            if call.turned_away:
+                # Looked at before anything else. Once one call was turned away, the keeper
+                # leaves the client, and a call whose answer came by then may be handed the
+                # word that the connection is closed in its place. A server may also say so
+                # with the code of a connection that is closed.
+                self._gone(client, _ENDED)
+                raise _TurnedAway(self._why(error)) from None
             if error.code == CONNECTION_CLOSED:
                 self._gone(client)
                 raise CallError(
@@ -365,6 +504,11 @@ class Connection:
             raise CallError(
                 f"what the MCP server {self.server} answered cannot be used: {self._why(error)}"
             ) from None
+        finally:
+            _calling.reset(calling)
+            self._under_way -= 1
+            if not self._under_way:
+                self._quiet.set()
 
     async def _connected(self) -> Client:
         """Return the client to call, and wait for it while the connection is being made."""
@@ -391,16 +535,18 @@ class Connection:
         moved, self._moved = self._moved, asyncio.Event()
         moved.set()
 
-    def _gone(self, client: Client) -> None:
-        """Tell the keeper that a client found its connection closed.
+    def _gone(self, client: Client, why: str = _LOST) -> None:
+        """Tell the keeper that a client is of no use any more, and why.
 
-        The client is handed to nobody from here on. The keeper comes to
-        leave it a moment later, and whoever calls in that moment would get
-        it and fail with it, of a loss that is known already. Such a call
-        waits for the next connection instead.
+        It found its connection closed, or its server knew nothing of the
+        session. The client is handed to nobody from here on. The keeper
+        comes to leave it a moment later, and whoever calls in that moment
+        would get it and fail with it, of a loss that is known already. Such
+        a call waits for the next connection instead.
         """
         if client is self._client:
             self._client = None
+            self._lost_for = why
             self._lost.set()
 
     async def _keep(self) -> None:
@@ -412,7 +558,9 @@ class Connection:
             lasted = await asyncio.ensure_future(self._attempt())
             if self._closing:
                 return
-            if lasted is not None and lasted >= STABLE_SECONDS:
+            if lasted is not None and (lasted >= STABLE_SECONDS or self._failure == _ENDED):
+                # A server that ended a session is alive, and the next connection is as good
+                # as the first. Reconnecting for it happens only when a call is turned away.
                 failures = 0
             failures += 1
             if failures > ATTEMPTS:
@@ -465,7 +613,9 @@ class Connection:
                     # It lasted until it was lost. Leaving it may take seconds more, and in
                     # those the server was of no use to anyone.
                     lasted = self._clock() - since
-                self._failure = _LOST
+                self._failure = self._lost_for
+                if self._lost_for == _ENDED:
+                    await self._heard_out()
             finally:
                 # Whoever calls from now on waits for the next connection.
                 self._client = None
@@ -485,6 +635,18 @@ class Connection:
                     )
         self._settled.set()
         return lasted
+
+    async def _heard_out(self) -> None:
+        """Let the calls that are under way hear their answers, for a moment at most.
+
+        The server ended the session, and a call that was sent since is turned
+        away as well. Its answer is on its way, and it says that the call can
+        be made again. Leaving the client now would break the call off, and it
+        would fail as one of which nobody knows how far it got.
+        """
+        with suppress(TimeoutError):
+            async with asyncio.timeout(HEAR_SECONDS):
+                await self._quiet.wait()
 
     def _made(self) -> Client:
         """Make a client for one attempt."""

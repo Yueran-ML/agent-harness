@@ -765,3 +765,152 @@ async def test_a_server_at_an_address_is_talked_to_with_its_headers_and_within_l
     ((url, client),) = asked
     assert (url, type(client)) == ("https://host.example/mcp", Http)
     assert left == ["the stream", "the client"]
+
+
+# A call that a server at an address turns away, because it knows nothing of the session
+
+CALL = b'{"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "add"}}'
+
+
+def standing_in(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Have a server at an address reached without HTTP, and return how its clients are made."""
+    made: list[dict[str, Any]] = []
+
+    class Http:
+        def __init__(self, **options: Any) -> None:
+            made.append(options)
+
+        async def __aenter__(self) -> "Http":
+            return self
+
+        async def __aexit__(self, *why: object) -> None:
+            pass
+
+    @asynccontextmanager
+    async def over_http(url: str, *, http_client: Any) -> AsyncGenerator[tuple[str, str]]:
+        yield ("what it says", "what it is told")
+
+    monkeypatch.setattr(httpx2, "AsyncClient", Http)
+    monkeypatch.setattr(reach, "streamable_http_client", over_http)
+    return made
+
+
+async def looking(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Return what a server at an address has look at every answer that it gets."""
+    made = standing_in(monkeypatch)
+    way: Any = reach.reached("https://host.example/mcp", {})
+    async with way:
+        pass
+    (options,) = made
+    told: list[str] = []
+    monkeypatch.setattr(reach, "turned_away", lambda: told.append("turned away"))
+    (looks,) = options["event_hooks"]["response"]
+    return looks, told
+
+
+def answer(status: int, *, session: str | None = "abc", asks: Any = CALL) -> httpx2.Response:
+    """What a server answers to a request, with the request that it answers."""
+    headers = {} if session is None else {"mcp-session-id": session}
+    request = httpx2.Request("POST", "https://host.example/mcp", headers=headers, content=asks)
+    return httpx2.Response(status, request=request)
+
+
+async def in_pieces() -> AsyncGenerator[bytes]:
+    """What a request holds that is sent piece by piece."""
+    yield CALL
+
+
+async def test_a_call_that_a_server_turns_away_for_want_of_its_session_is_told_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    looks, told = await looking(monkeypatch)
+
+    await looks(answer(404))
+
+    assert told == ["turned away"]
+
+
+async def test_a_call_that_was_sent_on_before_it_was_turned_away_is_told_so_as_well(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    looks, told = await looking(monkeypatch)
+    # A server sends a request on to another path, and the request that goes there is made
+    # from the first one: with what that one held, which is not kept with it a second time.
+    sent_on = httpx2.Request(
+        "POST",
+        "https://host.example/mcp/",
+        headers={"mcp-session-id": "abc"},
+        stream=httpx2.ByteStream(CALL),
+    )
+    with pytest.raises(httpx2.RequestNotRead):
+        _ = sent_on.content
+
+    await looks(httpx2.Response(404, request=sent_on))
+
+    assert told == ["turned away"]
+
+
+async def test_a_request_that_went_to_the_server_piece_by_piece_turns_no_call_away(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    looks, told = await looking(monkeypatch)
+    answered = answer(404, asks=in_pieces())
+    # The pieces went to the server, and are not there to be read a second time.
+    async for _ in cast("AsyncGenerator[bytes]", answered.request.stream):
+        pass
+
+    # Nothing is known of what it asked for, and whoever looks at its answer goes on.
+    await looks(answered)
+
+    assert told == []
+
+
+@pytest.mark.parametrize(
+    "answered",
+    [
+        pytest.param(lambda: answer(200), id="an answer that turns nothing away"),
+        pytest.param(lambda: answer(400), id="another refusal"),
+        pytest.param(lambda: answer(500), id="a failure of the server"),
+        pytest.param(lambda: answer(404, session=None), id="a request that names no session"),
+        pytest.param(
+            lambda: answer(404, asks=b'{"jsonrpc": "2.0", "id": 8, "method": "tools/list"}'),
+            id="a request that is no call",
+        ),
+        pytest.param(lambda: answer(404, asks=b"no request"), id="what is no request at all"),
+        pytest.param(
+            lambda: answer(404, asks=b'[{"method": "tools/call"}]'), id="requests in a row"
+        ),
+    ],
+)
+async def test_what_else_a_server_answers_turns_no_call_away(
+    monkeypatch: pytest.MonkeyPatch, answered: Any
+) -> None:
+    looks, told = await looking(monkeypatch)
+
+    await looks(answered())
+
+    assert told == []
+
+
+async def test_that_a_session_which_was_gone_could_not_be_ended_is_not_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    standing_in(monkeypatch)
+    sdk = logging.getLogger("mcp.client.streamable_http")
+    gone = "Session termination failed: 404"
+    other = "Session termination failed: 500"
+    way: Any = reach.reached("https://host.example/mcp", {})
+    again: Any = reach.reached("https://host.example/mcp", {})
+
+    with caplog.at_level(logging.WARNING):
+        async with way:
+            async with again:
+                # What the SDK says where it leaves a session that the server had ended.
+                sdk.warning(gone)
+                sdk.warning(other)
+            # A server at an address that is still entered keeps it out as well.
+            sdk.warning(gone)
+        # Nothing is entered any more, and the SDK is heard as it speaks.
+        sdk.warning(gone)
+
+    assert caplog.messages == [other, gone]

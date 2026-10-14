@@ -48,6 +48,7 @@ SANDBOX = "src/columbina/sandbox/__init__.py"
 SANDBOX_BASE = "src/columbina/sandbox/base.py"
 DOCKER = "src/columbina/sandbox/docker.py"
 PROGRAMS = "src/columbina/programs.py"
+VIDEO_MEDIA = "src/columbina/video/media.py"
 WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
 WALK = "src/columbina/fs/walk.py"
@@ -2688,6 +2689,93 @@ _PROGRAMS = (
     ),
 )
 
+
+_VIDEO_MEDIA = (
+    mutant(
+        "ffmpeg is taken from a working directory",
+        VIDEO_MEDIA,
+        '    ffmpeg = programs.found("ffmpeg", search, outside)\n',
+        '    ffmpeg = programs.found("ffmpeg", search, ())\n',
+    ),
+    mutant(
+        "ffprobe is taken from anywhere on the search path",
+        VIDEO_MEDIA,
+        '    beside = programs.found("ffprobe", str(Path(ffmpeg).parent), outside)\n',
+        '    beside = programs.found("ffprobe", search, outside)\n',
+    ),
+    mutant(
+        "ffprobe beside ffmpeg is taken whatever the way to it leads through",
+        VIDEO_MEDIA,
+        '    beside = programs.found("ffprobe", str(Path(ffmpeg).parent), outside)\n',
+        '    beside = programs.found("ffprobe", str(Path(ffmpeg).parent), ())\n',
+    ),
+    mutant(
+        "ffmpeg that failed is taken at its word",
+        VIDEO_MEDIA,
+        "    both = versions(told.output) if told.exit_code == 0 else None\n",
+        "    both = versions(told.output)\n",
+    ),
+    mutant(
+        "an ffmpeg older than 6.0 is taken",
+        VIDEO_MEDIA,
+        "    if avformat < _OLDEST_FORMAT:\n",
+        "    if avformat < _OLDEST_FORMAT - 1:\n",
+    ),
+    mutant(
+        "the oldest ffmpeg that will do is refused",
+        VIDEO_MEDIA,
+        "    if avformat < _OLDEST_FORMAT:\n",
+        "    if avformat <= _OLDEST_FORMAT:\n",
+    ),
+    mutant(
+        "the version of libavfilter is read where libavformat is",
+        VIDEO_MEDIA,
+        '        for library in ("libavformat", "libavfilter")\n',
+        '        for library in ("libavformat", "libavformat")\n',
+    ),
+    mutant(
+        "one library is enough for a version",
+        VIDEO_MEDIA,
+        "    if found[0] is None or found[1] is None:\n",
+        "    if found[0] is None and found[1] is None:\n",
+    ),
+    mutant(
+        "ffmpeg is asked what it is somewhere else",
+        VIDEO_MEDIA,
+        '            [ffmpeg, "-hide_banner", "-version"], cwd=cwd, timeout_seconds=_ASKING_SECONDS\n',
+        '            [ffmpeg, "-hide_banner", "-version"], cwd=Path.cwd(), timeout_seconds=_ASKING_SECONDS\n',
+    ),
+    mutant(
+        "ffmpeg that cannot be started is not said to be so",
+        VIDEO_MEDIA,
+        "    except OSError as error:\n        raise MediaUnavailableError(\n",
+        "    except ValueError as error:\n        raise MediaUnavailableError(\n",
+    ),
+    mutant(
+        "the way to the programs is not walked again",
+        VIDEO_MEDIA,
+        "        if not Path(program).is_file() or not programs.trusted(Path(program), tools.outside):\n",
+        "        if not Path(program).is_file():\n",
+    ),
+    mutant(
+        "a program that is gone is run",
+        VIDEO_MEDIA,
+        "        if not Path(program).is_file() or not programs.trusted(Path(program), tools.outside):\n",
+        "        if not programs.trusted(Path(program), tools.outside):\n",
+    ),
+    mutant(
+        "only the way to ffmpeg is walked again",
+        VIDEO_MEDIA,
+        "    for program in (tools.ffmpeg, tools.ffprobe):\n",
+        "    for program in (tools.ffmpeg,):\n",
+    ),
+    mutant(
+        "the programs forget where their way must not lead",
+        VIDEO_MEDIA,
+        "    return ffmpeg, beside, tuple(Path(os.path.realpath(place)) for place in outside)\n",
+        "    return ffmpeg, beside, ()\n",
+    ),
+)
 
 _DOCKER = (
     mutant(
@@ -22171,6 +22259,7 @@ SETS: dict[str, MutantSet] = {
     "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),
     "docker": MutantSet(("tests/sandbox/test_docker.py",), _DOCKER),
     "programs": MutantSet(("tests/test_programs.py",), _PROGRAMS),
+    "video-media": MutantSet(("tests/video/test_media.py",), _VIDEO_MEDIA),
     "docker-kept": MutantSet(("tests/sandbox/test_docker_kept.py",), _DOCKER_KEPT),
     # Tried only where a real engine answers: without one the tests pass over everything.
     "docker-real": MutantSet(("tests/sandbox/test_docker_real.py",), _DOCKER_REAL),

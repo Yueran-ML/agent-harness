@@ -156,6 +156,10 @@ def test_three_dashes_inside_a_value_do_not_end_the_first_lines() -> None:
         ("---\nname: deploy\n---\n", "the key 'description' is missing"),
         ("---\nname: deploy\ndescription: '   '\n---\n", "the key 'description' says nothing"),
         (
+            "---\nname: deploy\ndescription: '\u00a0\u3000'\n---\n",
+            "the key 'description' says nothing",
+        ),
+        (
             "---\nname: deploy\ndescription: yes\n---\n",
             "the key 'description' gives True, which is no text. Put it in quotes",
         ),
@@ -377,11 +381,13 @@ def test_a_file_that_is_no_text_is_no_skill_file() -> None:
 
 
 NAMES = st.from_regex(r"[a-z0-9]{1,8}(-[a-z0-9]{1,8}){0,3}", fullmatch=True)
+# A word may hold spaces of other kinds, but not only them: a description of nothing but
+# spaces says nothing, and is refused for it.
 WORDS = st.text(
     alphabet=st.characters(codec="utf-8", categories=("L", "N", "Zs"), exclude_characters=" "),
     min_size=1,
     max_size=40,
-)
+).filter(lambda word: not word.isspace())
 
 
 @given(name=NAMES, words=st.lists(WORDS, min_size=1, max_size=6))

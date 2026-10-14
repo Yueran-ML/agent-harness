@@ -78,6 +78,24 @@ def test_steps_before_the_days_happen_each_day_and_the_ones_after_once() -> None
     )
 
 
+def test_a_share_and_a_split_of_each_day_are_of_the_units_of_that_day() -> None:
+    steps: list[compute.Step] = [
+        ("start", {"r": 10, "h": 6}),
+        ("pct_loss", {"pct": 50}),
+        ("div_group", {"g": 3}),
+        ("mul_days", {"d": 4}),
+    ]
+
+    assert compute.text(steps, "factory", "the plant") == (
+        "Each day, the plant handles [hourly_rate] parts per hour for [hours_per_day] hours. "
+        "Each day, quality checks reject [reject_percent] percent of the day's parts remaining "
+        "at that point. Each day, the day's parts remaining at that point are split evenly into "
+        "[shipments] equal shipments, and only one shipment is kept. This daily routine repeats "
+        "for [days] days in a row. How many parts are left in total at the end?"
+    )
+    assert compute.run(steps) == [60, 30, 10, 40]
+
+
 def test_without_days_everything_happens_once_and_a_price_asks_for_dollars() -> None:
     steps: list[compute.Step] = [
         ("start", {"r": 10, "h": 5}),

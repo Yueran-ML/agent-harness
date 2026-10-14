@@ -2,8 +2,6 @@
 
 import json
 import os
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,6 +10,7 @@ from bench import database, grade
 from bench.check import check
 from bench.grade import Call, Verdict, code, code_argv, compute, files, last, sql
 from bench.task import load
+from support.engines import real
 
 IMAGE = "python:3.12-slim"
 
@@ -140,21 +139,12 @@ def test_in_a_container_the_hidden_tests_are_read_only_and_there_is_no_network(
     ]
 
 
-def _image_is_here() -> bool:
-    docker = shutil.which("docker")
-    if docker is None:
-        return False
-    done = subprocess.run(
-        [docker, "image", "inspect", IMAGE], capture_output=True, timeout=60, check=False
-    )
-    return done.returncode == 0
-
-
-@pytest.mark.skipif(
-    os.environ.get("COLUMBINA_BENCH_CONTAINER") != "1" and not _image_is_here(),
-    reason=f"no Docker engine with {IMAGE} answers",
-)
-def test_hidden_tests_run_in_a_container_where_one_is_named(tmp_path: Path) -> None:
+def test_hidden_tests_run_in_a_container_where_one_is_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The judge calls docker by its name, so the one that was found goes first on the path.
+    program = real((IMAGE,))
+    monkeypatch.setenv("PATH", f"{Path(program).parent}{os.pathsep}{os.environ.get('PATH', '')}")
     loaded = load(task(tmp_path, "code", {"checks/test_hidden.py": HIDDEN}))
     workspace = tree(tmp_path / "work", {"calc.py": "def add(a, b):\n    return a + b\n"})
 

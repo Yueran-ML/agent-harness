@@ -1,7 +1,7 @@
 id: compute-03-logistics
 category: compute
 prompt: |
-  Each day, the delivery hub handles [hourly_rate] packages per hour for [hours_per_day] hours. Each day, quality checks reject [reject_percent] percent of the packages remaining at that point. This daily routine repeats for [days] days in a row. How many packages are left in total at the end?
+  Each day, the delivery hub handles [hourly_rate] packages per hour for [hours_per_day] hours. Each day, quality checks reject [reject_percent] percent of the day's packages remaining at that point. This daily routine repeats for [days] days in a row. How many packages are left in total at the end?
 
   The numbers in brackets are not given here. Look each of them up with the tool lookup, by the name in the brackets. Work the answer out, and submit it, a whole number, with the tool submit_answer.
 timeout_seconds: 300

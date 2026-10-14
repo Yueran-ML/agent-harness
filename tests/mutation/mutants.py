@@ -3022,6 +3022,18 @@ _BENCH = (
         '    named = {key: f"[{name}] (7)" for key, name in NAMES.items()}\n',
     ),
     mutant(
+        "a share of each day may be of what is left from the days before",
+        BENCH_COMPUTE,
+        """        "Each day, quality checks reject {pct} percent of the day's {unit} remaining at that point."\n""",
+        """        "Each day, quality checks reject {pct} percent of the {unit} remaining at that point."\n""",
+    ),
+    mutant(
+        "a split of each day may be of what is left from the days before",
+        BENCH_COMPUTE,
+        """        "Each day, the day's {unit} remaining at that point are split evenly into {g} equal "\n""",
+        """        "Each day, the {unit} remaining at that point are split evenly into {g} equal "\n""",
+    ),
+    mutant(
         "a question that does not tell the shops apart is written",
         BENCH_SQL,
         "        if not first or not second or first == second:\n",

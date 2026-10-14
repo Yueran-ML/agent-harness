@@ -1,7 +1,7 @@
 id: compute-09-logistics
 category: compute
 prompt: |
-  Each day, the warehouse handles [hourly_rate] packages per hour for [hours_per_day] hours. Each day, the packages remaining at that point are split evenly into [shipments] equal shipments, and only one shipment is kept. This daily routine repeats for [days] days in a row, and all subsequent operations apply to the combined total. An extra rush order then adds [rush_order] more packages. Quality checks then reject [reject_percent] percent of the packages remaining at that point. How many packages are left in total at the end?
+  Each day, the warehouse handles [hourly_rate] packages per hour for [hours_per_day] hours. Each day, the day's packages remaining at that point are split evenly into [shipments] equal shipments, and only one shipment is kept. This daily routine repeats for [days] days in a row, and all subsequent operations apply to the combined total. An extra rush order then adds [rush_order] more packages. Quality checks then reject [reject_percent] percent of the packages remaining at that point. How many packages are left in total at the end?
 
   The numbers in brackets are not given here. Look each of them up with the tool lookup, by the name in the brackets. Work the answer out, and submit it, a whole number, with the tool submit_answer.
 timeout_seconds: 300

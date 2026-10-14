@@ -50,14 +50,17 @@ NAMES = {
 
 START_DAILY = "Each day, {actor} handles {r} {unit} per hour for {h} hours."
 START_ONCE = "On one day, {actor} handles {r} {unit} per hour for {h} hours."
+# A share and a split of each day are of the units of that day alone. Of the units that are
+# left from the days before, the answer would come out another way, and a model was seen to
+# read it so where the text said no more than "remaining at that point".
 DAILY = {
     "add_batch": "Each day, an extra rush order adds {b} more {unit}.",
     "sub_loss": "Each day, {s} {unit} are damaged in handling and written off.",
     "pct_loss": (
-        "Each day, quality checks reject {pct} percent of the {unit} remaining at that point."
+        "Each day, quality checks reject {pct} percent of the day's {unit} remaining at that point."
     ),
     "div_group": (
-        "Each day, the {unit} remaining at that point are split evenly into {g} equal "
+        "Each day, the day's {unit} remaining at that point are split evenly into {g} equal "
         "shipments, and only one shipment is kept."
     ),
 }

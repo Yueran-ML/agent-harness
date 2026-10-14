@@ -42,9 +42,12 @@ jobs:
       - name: Type check
         run: uv run pyright
 
-      - name: Images for the tests of the container sandbox
+      - name: Images for the tests of the container sandbox and of the benchmark
         if: runner.os == 'Linux'
-        run: docker pull -q debian:bookworm-slim && docker pull -q busybox
+        run: |
+          docker pull -q debian:bookworm-slim
+          docker pull -q busybox
+          docker pull -q python:3.12-slim
 
       - name: Test
         run: uv run python -m coverage run -m pytest --junitxml=junit.xml

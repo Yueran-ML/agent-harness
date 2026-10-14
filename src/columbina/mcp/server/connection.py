@@ -553,11 +553,14 @@ class Connection:
         """Connect, and connect again after every loss, until there were too many in a row."""
         failures = 0
         while True:
+            before = await cancellation.settled_requests()
             # Every attempt has a task of its own. A client that had to be broken off while
             # it was left may leave that task in no state to enter another one.
             lasted = await asyncio.ensure_future(self._attempt())
-            if self._closing:
-                return
+            # An attempt keeps to itself how it ended, a cancellation too. Where the keeper
+            # was broken off with it, by whoever closes the connection or ends the program,
+            # the keeper ends here.
+            await cancellation.kept_back(before)
             if lasted is not None and (lasted >= STABLE_SECONDS or self._failure == _ENDED):
                 # A server that ended a session is alive, and the next connection is as good
                 # as the first. Reconnecting for it happens only when a call is turned away.

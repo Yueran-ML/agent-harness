@@ -730,6 +730,44 @@ async def test_a_connection_that_does_not_let_go_is_not_waited_for_for_good(
     assert shown(await connection.call("add", TWO, 5)) == "2"
 
 
+async def test_a_call_that_comes_while_a_connection_that_broke_by_itself_is_left_waits(
+    make: Callable[..., Connection], served: Served
+) -> None:
+    class Held(Cuttable):
+        """A way to a server that, once it broke, lets go only when the test says so."""
+
+        def __init__(self, served: Served) -> None:
+            super().__init__(served)
+            self.holding = asyncio.Event()
+            self.let_go = asyncio.Event()
+
+        async def __aexit__(self, *why: Any) -> None:
+            if not self.let_go.is_set():
+                self.holding.set()
+            # Leaving is broken off where the way broke: it holds on all the same.
+            while not self.let_go.is_set():
+                with suppress(asyncio.CancelledError):
+                    await self.let_go.wait()
+            await super().__aexit__(*why)
+
+    transport = Held(served)
+    # A server of the older protocol, which nobody listens to: what breaks is found by the
+    # keeper only, and by no call and no list.
+    connection = await begun(make("served", lambda: transport, mode="legacy", sleep=Naps()))
+    transport.fail()
+    await asyncio.wait_for(transport.holding.wait(), 5)
+
+    # Whoever calls while it is left waits for the next connection, and is not handed the
+    # one that broke, where the call would get no answer.
+    calling = asyncio.ensure_future(connection.call("add", TWO, 1))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    transport.let_go.set()
+
+    assert shown(await asyncio.wait_for(calling, 5)) == "2"
+    assert transport.entered == 2
+
+
 # The waits, and giving up
 
 
@@ -1770,6 +1808,8 @@ async def test_closing_again_waits_again_for_a_connection_that_did_not_let_go(
     monkeypatch.setattr(connection_module, "LEAVE_SECONDS", 0.1)
     transport = Clinging(served)
     connection = await begun(Connection("served", lambda: transport))
+    keeper = connection._keeper  # pyright: ignore[reportPrivateUsage]
+    assert isinstance(keeper, asyncio.Task)
     said = "the MCP server served did not let go within 0.1 seconds"
 
     try:
@@ -1779,6 +1819,9 @@ async def test_closing_again_waits_again_for_a_connection_that_did_not_let_go(
             # at once: the wait is made again.
             await asyncio.wait_for(connection.close(), 5)
             assert (caplog.messages, transport.left) == ([said, said], 0)
+            # And what may be letting go by then is not broken off once more: the keeper
+            # was broken off by the first closing, and by no other.
+            assert keeper.cancelling() == 1
             released.set()
             await asyncio.wait_for(connection.close(), 5)
         # This time it let go, and closing came back when it had.
@@ -1789,6 +1832,46 @@ async def test_closing_again_waits_again_for_a_connection_that_did_not_let_go(
     finally:
         released.set()
     await until(lambda: transport.left == 1)
+
+
+async def test_a_keeper_that_is_broken_off_from_outside_ends_with_its_attempt(
+    served: Served,
+) -> None:
+    transport = Cuttable(served)
+    naps = Naps()
+    connection = await begun(Connection("served", lambda: transport, sleep=naps))
+    keeper = connection._keeper  # pyright: ignore[reportPrivateUsage]
+    assert keeper is not None
+    try:
+        # The program ends, or whatever holds the keeper is broken off, and nobody closed
+        # the connection. The attempt that is under way keeps every way it ends to itself,
+        # and the keeper does not go on to the next one all the same.
+        keeper.cancel()
+        await asyncio.wait([keeper], timeout=2)
+
+        assert (keeper.cancelled(), transport.entered, naps.asked) == (True, 1, [])
+    finally:
+        await connection.close()
+
+
+async def test_a_connection_that_was_closed_before_it_was_started_is_never_started(
+    make: Callable[..., Connection], served: Served
+) -> None:
+    ways: list[Cuttable] = []
+
+    def way() -> Cuttable:
+        ways.append(Cuttable(served))
+        return ways[-1]
+
+    connection = make("served", way)
+    await connection.close()
+
+    connection.start()
+    # A keeper that was started asks for its way to the server within a few turns.
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    assert (ways, connection.state) == ([], "closed")
 
 
 # A server at an address, and a session that it ended

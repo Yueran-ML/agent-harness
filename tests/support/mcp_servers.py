@@ -158,6 +158,7 @@ class Cuttable:
         self._open: AbstractAsyncContextManager[Any] | None = None
         self._serving: anyio.CancelScope | None = None
         self._to_client: Any = None
+        self._failing = False
         self.entered = 0
         self.left = 0
         self.leaving: BaseException | None = None
@@ -173,6 +174,9 @@ class Cuttable:
                 with anyio.CancelScope() as scope:
                     self._serving = scope
                     await low.run(their_read, their_write, low.create_initialization_options())
+                if self._failing:
+                    self._failing = False
+                    raise RuntimeError("the way to the server broke")
 
             self._to_client = their_write
             async with anyio.create_task_group() as group:
@@ -206,6 +210,16 @@ class Cuttable:
         assert self._serving is not None
         self._serving.cancel()
         await self._to_client.aclose()
+
+    def fail(self) -> None:
+        """End the server with an error, as a way to a server breaks by itself.
+
+        The error comes out where the connection is held, and breaks off whoever holds
+        it. Nobody who calls hears of it.
+        """
+        assert self._serving is not None
+        self._failing = True
+        self._serving.cancel()
 
 
 class Hanging:

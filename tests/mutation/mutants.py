@@ -21364,6 +21364,12 @@ _CONDUCT = (
 
 _MCP_REVIEWED = (
     mutant(
+        "a keeper that is broken off goes on to the next attempt",
+        MCP_CONNECTION,
+        "            await cancellation.kept_back(before)\n",
+        "",
+    ),
+    mutant(
         "an error that a server answers a call with counts as a session that it ended",
         MCP_CONNECTION,
         "            if call.turned_away:\n",

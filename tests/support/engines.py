@@ -15,7 +15,7 @@ from typing import NoReturn
 
 import pytest
 
-from columbina.sandbox import docker
+from columbina import programs
 
 __all__ = ["BARE", "IMAGE", "asked", "containers", "docker_program", "left_behind", "real"]
 
@@ -31,7 +31,7 @@ def docker_program() -> str | None:
     named = os.environ.get("COLUMBINA_TEST_DOCKER")
     if named:
         return named
-    found = docker.found(os.environ.get("PATH", ""))
+    found = programs.found("docker", os.environ.get("PATH", ""))
     usual = Path(os.environ.get("PROGRAMFILES", ""), "Docker/Docker/resources/bin/docker.exe")
     if found is None and sys.platform == "win32" and usual.is_file():
         # A shell that was opened before Docker Desktop was installed does not have it yet.

@@ -47,6 +47,7 @@ BOUND = "src/columbina/fs/bound.py"
 SANDBOX = "src/columbina/sandbox/__init__.py"
 SANDBOX_BASE = "src/columbina/sandbox/base.py"
 DOCKER = "src/columbina/sandbox/docker.py"
+PROGRAMS = "src/columbina/programs.py"
 WRITE = "src/columbina/builtin_tools/write.py"
 EDIT = "src/columbina/builtin_tools/edit.py"
 WALK = "src/columbina/fs/walk.py"
@@ -2524,17 +2525,181 @@ _SANDBOX = (
     ),
 )
 
+_PROGRAMS = (
+    mutant(
+        "an entry of the search path that is no whole path is looked into",
+        PROGRAMS,
+        "        if not entry.is_absolute():\n            continue\n",
+        "",
+    ),
+    mutant(
+        "a program whose way leads through a working directory is taken",
+        PROGRAMS,
+        "        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):\n",
+        "        if program.is_file() and os.access(program, os.X_OK):\n",
+    ),
+    mutant(
+        "a working directory is known by its numbers alone",
+        PROGRAMS,
+        "            if any(here == place or place in here.parents for place in outside):\n"
+        "                return False\n",
+        "",
+    ),
+    mutant(
+        "by its name a working directory is known only from what lies below it",
+        PROGRAMS,
+        "            if any(here == place or place in here.parents for place in outside):\n",
+        "            if any(place in here.parents for place in outside):\n",
+    ),
+    mutant(
+        "a working directory is known by its name alone",
+        PROGRAMS,
+        "            if _itself(here) in apart:\n                return False\n",
+        "",
+    ),
+    mutant(
+        "what is not there is the same as a working directory that is not there",
+        PROGRAMS,
+        "    apart = {_itself(place) for place in outside} - {None}\n",
+        "    apart = {_itself(place) for place in outside}\n",
+    ),
+    mutant(
+        "a step back in a path is taken after the links on every system",
+        PROGRAMS,
+        "    if _STEPS_BACK_FIRST:\n        program = Path(os.path.normpath(program))\n",
+        "",
+    ),
+    mutant(
+        "a step back in a path is taken before the links on every system",
+        PROGRAMS,
+        "    if _STEPS_BACK_FIRST:\n",
+        "    if True:\n",
+    ),
+    on_windows(
+        mutant(
+            "Windows is taken for a system that takes a step back after the links",
+            PROGRAMS,
+            '_STEPS_BACK_FIRST = sys.platform == "win32"\n',
+            "_STEPS_BACK_FIRST = False\n",
+        )
+    ),
+    on_linux(
+        mutant(
+            "Linux is taken for a system that takes a step back before the links",
+            PROGRAMS,
+            '_STEPS_BACK_FIRST = sys.platform == "win32"\n',
+            "_STEPS_BACK_FIRST = True\n",
+        )
+    ),
+    mutant(
+        "what Python calls no link in a way of its own ends the look",
+        PROGRAMS,
+        "    except (OSError, ValueError):\n        # A file or a directory, or nothing.",
+        "    except OSError:\n        # A file or a directory, or nothing.",
+    ),
+    mutant(
+        "a working directory is known only by the name it was given",
+        PROGRAMS,
+        "    apart = [Path(os.path.realpath(directory)) for directory in outside]\n",
+        "    apart = [Path(directory) for directory in outside]\n",
+    ),
+    mutant(
+        "a way to the program is known by its name and by its end, and not by what lies between",
+        PROGRAMS,
+        "    done = Path(program.anchor)\n    left = list(program.parts[1:])\n",
+        "    done = Path(os.path.realpath(program.parent))\n"
+        "    if any(done == place or place in done.parents for place in outside):\n"
+        "        return False\n"
+        "    done = Path(os.path.realpath(program))\n"
+        "    left = []\n"
+        "    if any(done == place or place in done.parents for place in outside):\n"
+        "        return False\n",
+    ),
+    mutant(
+        "a way to the program is known by where it ends alone",
+        PROGRAMS,
+        "    done = Path(program.anchor)\n    left = list(program.parts[1:])\n",
+        "    done = Path(os.path.realpath(program))\n"
+        "    left = []\n"
+        "    if any(done == place or place in done.parents for place in outside):\n"
+        "        return False\n",
+    ),
+    mutant(
+        "where a link leads is taken from the place of the program, not from that of the link",
+        PROGRAMS,
+        "        way = done / leads\n",
+        "        way = program.parent / leads\n",
+    ),
+    mutant(
+        "a step back in a path stays where it is",
+        PROGRAMS,
+        '        if part == "..":\n            done = done.parent\n            continue\n',
+        '        if part == "..":\n            continue\n',
+    ),
+    mutant(
+        "links are followed without end",
+        PROGRAMS,
+        "        if hops > _HOPS:\n            return False\n",
+        "",
+    ),
+    mutant(
+        "a directory passes for the program",
+        PROGRAMS,
+        "        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):\n",
+        "        if program.exists() and os.access(program, os.X_OK) and trusted(program, apart):\n",
+    ),
+    on_linux(
+        mutant(
+            "a file that cannot be run passes for the program",
+            PROGRAMS,
+            "        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):\n",
+            "        if program.is_file() and trusted(program, apart):\n",
+        )
+    ),
+    mutant(
+        "quotes around an entry of the search path hide it",
+        PROGRAMS,
+        """        entry = Path(written.strip('"'))\n""",
+        "        entry = Path(written)\n",
+    ),
+    mutant(
+        "the program is said to be where the search path does not have it",
+        PROGRAMS,
+        "            return str(program)\n",
+        "            return str(Path(os.path.realpath(program)))\n",
+    ),
+    mutant(
+        "the long form in which Windows tells of a link is taken for another place",
+        PROGRAMS,
+        '    if target.startswith("\\\\\\\\?\\\\"):\n        return target[4:]\n',
+        "",
+    ),
+    mutant(
+        "the long form in which Windows tells of a link on another machine is taken for a local one",
+        PROGRAMS,
+        '    if target.startswith("\\\\\\\\?\\\\UNC\\\\"):\n        return "\\\\\\\\" + target[8:]\n',
+        "",
+    ),
+    mutant(
+        "a file system that numbers nothing makes every directory the same one",
+        PROGRAMS,
+        "    return (told.st_dev, told.st_ino) if told.st_ino else None\n",
+        "    return (told.st_dev, told.st_ino)\n",
+    ),
+)
+
+
 _DOCKER = (
     mutant(
         "a docker program on the search path is said to be missing",
         DOCKER,
-        "        if found(search, outside) is not None:\n            return None\n",
+        "        if programs.found(_NAME, search, outside) is not None:\n            return None\n",
         "",
     ),
     mutant(
         "a docker program in a working directory is not said to be missing",
         DOCKER,
-        "        if found(search, outside) is not None:\n",
+        "        if programs.found(_NAME, search, outside) is not None:\n",
         "        if found(search) is not None:\n",
     ),
     mutant(
@@ -2562,164 +2727,10 @@ _DOCKER = (
         '            f"a Linux container of the image {DEFAULT_IMAGE}, as a user that is not root. Of "\n',
     ),
     mutant(
-        "an entry of the search path that is no whole path is looked into",
-        DOCKER,
-        "        if not entry.is_absolute():\n            continue\n",
-        "",
-    ),
-    mutant(
-        "a program whose way leads through a working directory is taken",
-        DOCKER,
-        "        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):\n",
-        "        if program.is_file() and os.access(program, os.X_OK):\n",
-    ),
-    mutant(
-        "a working directory is known by its numbers alone",
-        DOCKER,
-        "            if any(here == place or place in here.parents for place in outside):\n"
-        "                return False\n",
-        "",
-    ),
-    mutant(
-        "by its name a working directory is known only from what lies below it",
-        DOCKER,
-        "            if any(here == place or place in here.parents for place in outside):\n",
-        "            if any(place in here.parents for place in outside):\n",
-    ),
-    mutant(
-        "a working directory is known by its name alone",
-        DOCKER,
-        "            if _itself(here) in apart:\n                return False\n",
-        "",
-    ),
-    mutant(
         "a file system that numbers nothing makes every directory the same one",
         DOCKER,
         "    return (told.st_dev, told.st_ino) if told.st_ino else None\n",
         "    return (told.st_dev, told.st_ino)\n",
-    ),
-    mutant(
-        "what is not there is the same as a working directory that is not there",
-        DOCKER,
-        "    apart = {_itself(place) for place in outside} - {None}\n",
-        "    apart = {_itself(place) for place in outside}\n",
-    ),
-    mutant(
-        "a step back in a path is taken after the links on every system",
-        DOCKER,
-        "    if _STEPS_BACK_FIRST:\n        program = Path(os.path.normpath(program))\n",
-        "",
-    ),
-    mutant(
-        "a step back in a path is taken before the links on every system",
-        DOCKER,
-        "    if _STEPS_BACK_FIRST:\n",
-        "    if True:\n",
-    ),
-    on_windows(
-        mutant(
-            "Windows is taken for a system that takes a step back after the links",
-            DOCKER,
-            '_STEPS_BACK_FIRST = sys.platform == "win32"\n',
-            "_STEPS_BACK_FIRST = False\n",
-        )
-    ),
-    on_linux(
-        mutant(
-            "Linux is taken for a system that takes a step back before the links",
-            DOCKER,
-            '_STEPS_BACK_FIRST = sys.platform == "win32"\n',
-            "_STEPS_BACK_FIRST = True\n",
-        )
-    ),
-    mutant(
-        "what Python calls no link in a way of its own ends the look",
-        DOCKER,
-        "    except (OSError, ValueError):\n        # A file or a directory, or nothing.",
-        "    except OSError:\n        # A file or a directory, or nothing.",
-    ),
-    mutant(
-        "a working directory is known only by the name it was given",
-        DOCKER,
-        "    apart = [Path(os.path.realpath(directory)) for directory in outside]\n",
-        "    apart = [Path(directory) for directory in outside]\n",
-    ),
-    mutant(
-        "a way to the program is known by its name and by its end, and not by what lies between",
-        DOCKER,
-        "    done = Path(program.anchor)\n    left = list(program.parts[1:])\n",
-        "    done = Path(os.path.realpath(program.parent))\n"
-        "    if any(done == place or place in done.parents for place in outside):\n"
-        "        return False\n"
-        "    done = Path(os.path.realpath(program))\n"
-        "    left = []\n"
-        "    if any(done == place or place in done.parents for place in outside):\n"
-        "        return False\n",
-    ),
-    mutant(
-        "a way to the program is known by where it ends alone",
-        DOCKER,
-        "    done = Path(program.anchor)\n    left = list(program.parts[1:])\n",
-        "    done = Path(os.path.realpath(program))\n"
-        "    left = []\n"
-        "    if any(done == place or place in done.parents for place in outside):\n"
-        "        return False\n",
-    ),
-    mutant(
-        "where a link leads is taken from the place of the program, not from that of the link",
-        DOCKER,
-        "        way = done / leads\n",
-        "        way = program.parent / leads\n",
-    ),
-    mutant(
-        "a step back in a path stays where it is",
-        DOCKER,
-        '        if part == "..":\n            done = done.parent\n            continue\n',
-        '        if part == "..":\n            continue\n',
-    ),
-    mutant(
-        "links are followed without end",
-        DOCKER,
-        "        if hops > _HOPS:\n            return False\n",
-        "",
-    ),
-    mutant(
-        "a directory passes for the program",
-        DOCKER,
-        "        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):\n",
-        "        if program.exists() and os.access(program, os.X_OK) and trusted(program, apart):\n",
-    ),
-    on_linux(
-        mutant(
-            "a file that cannot be run passes for the program",
-            DOCKER,
-            "        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):\n",
-            "        if program.is_file() and trusted(program, apart):\n",
-        )
-    ),
-    mutant(
-        "quotes around an entry of the search path hide it",
-        DOCKER,
-        """        entry = Path(written.strip('"'))\n""",
-        "        entry = Path(written)\n",
-    ),
-    mutant(
-        "the program is said to be where the search path does not have it",
-        DOCKER,
-        "            return str(program)\n",
-        "            return str(Path(os.path.realpath(program)))\n",
-    ),
-    mutant(
-        "the long form in which Windows tells of a link is taken for another place",
-        DOCKER,
-        '    if target.startswith("\\\\\\\\?\\\\"):\n        return target[4:]\n',
-        "",
-    ),
-    mutant(
-        "the long form in which Windows tells of a link on another machine is taken for a local one",
-        DOCKER,
-        '    if target.startswith("\\\\\\\\?\\\\UNC\\\\"):\n        return "\\\\\\\\" + target[8:]\n',
-        "",
     ),
     mutant(
         "an engine of another system passes",
@@ -4074,7 +4085,7 @@ _DOCKER_KEPT = (
     mutant(
         "a program that is named or kept is run wherever it lies",
         DOCKER,
-        "        if not trusted(Path(program), outside):\n",
+        "        if not programs.trusted(Path(program), outside):\n",
         "        if False:\n",
     ),
     mutant(
@@ -22159,6 +22170,7 @@ SETS: dict[str, MutantSet] = {
     ),
     "shell": MutantSet(("tests/builtin_tools/test_shell.py",), _SHELL),
     "docker": MutantSet(("tests/sandbox/test_docker.py",), _DOCKER),
+    "programs": MutantSet(("tests/test_programs.py",), _PROGRAMS),
     "docker-kept": MutantSet(("tests/sandbox/test_docker_kept.py",), _DOCKER_KEPT),
     # Tried only where a real engine answers: without one the tests pass over everything.
     "docker-real": MutantSet(("tests/sandbox/test_docker_real.py",), _DOCKER_REAL),

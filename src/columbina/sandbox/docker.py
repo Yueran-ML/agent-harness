@@ -4,15 +4,11 @@ Only the ``docker`` program is used, the way a person would use it. There is
 nothing here that the engine has to be told about beforehand, and nothing is
 left with it afterwards.
 
-**The program.** The system would find ``docker`` by its name, and on
-Windows it looks in the directory that this program was started in before it
-looks anywhere else. That directory is often a repository. So the looking is
-done here, :func:`found`: only the entries of the search path that are whole
-paths count, and none that lies in a working directory. The program is run
-by its name many times, and a name may be a link, so the whole way from the
-name to the file is walked, :func:`trusted`: a link or a directory on that
-way that lies in a working directory could be changed by a command in a
-container, which would then choose what this machine runs next.
+**The program.** ``docker`` is looked for the way :mod:`columbina.programs`
+looks for a program: not in the directory that this program was started in,
+which is often a repository, and on no way that leads through a working
+directory. A command in a container can write there, and would then choose
+what this machine runs next.
 
 **The engine.** Not every engine that answers to ``docker`` holds a command
 the way this provider needs. What an engine says of itself is read by
@@ -69,7 +65,7 @@ from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from columbina import process
+from columbina import process, programs
 from columbina.process import Completed, Writable
 from columbina.sandbox.base import (
     PROTECTED,
@@ -91,7 +87,6 @@ __all__ = [
     "asked",
     "called",
     "ended",
-    "found",
     "given",
     "kept",
     "mounts",
@@ -102,7 +97,6 @@ __all__ = [
     "supported",
     "there",
     "told",
-    "trusted",
     "unavailable",
     "usable",
     "user_of_commands",
@@ -119,7 +113,7 @@ HOME = "/tmp/columbina-home"
 
 logger = logging.getLogger(__name__)
 
-_PROGRAM = "docker.exe" if sys.platform == "win32" else "docker"
+_NAME = "docker"
 
 _WORKSPACE = "/workspace"
 """Where a container has the working directory, on a machine whose paths it cannot have."""
@@ -368,17 +362,6 @@ else:  # pragma: posix only
             os.close(at)
 
 
-_HOPS = 40
-"""How many links are followed on the way from the name of a program to its file."""
-
-_STEPS_BACK_FIRST = sys.platform == "win32"
-"""Whether the system takes the steps back out of a path before it looks at anything.
-
-Windows does: a path that goes into a link and one step back names the directory that the
-link lies in, whatever the link leads to. The other systems go where the link leads and take
-the directory above that.
-"""
-
 _OLDEST = 25
 """The first version of the engine that can leave out what is mounted below a directory."""
 
@@ -530,30 +513,6 @@ class Engine:
     system: str
 
 
-def _plain(target: str) -> str:
-    """Return what a link leads to as a plain path.
-
-    Windows tells of some links in the long form of a path, which begins
-    with a mark of its own. It names the same place.
-    """
-    if target.startswith("\\\\?\\UNC\\"):
-        return "\\\\" + target[8:]
-    if target.startswith("\\\\?\\"):
-        return target[4:]
-    return target
-
-
-def _leads(here: Path) -> str | None:
-    """Return what a link says it leads to, or ``None`` for a name that is no link."""
-    try:
-        return _plain(str(here.readlink()))
-    except (OSError, ValueError):
-        # A file or a directory, or nothing. Windows also has names that are neither a
-        # plain file nor a link, such as a file that is fetched only when it is opened, and
-        # of those Python says so in a way of its own.
-        return None
-
-
 def _numbers(told: os.stat_result) -> tuple[int, int] | None:
     """Return the numbers by which the system tells a file or a directory from every other.
 
@@ -583,82 +542,6 @@ def _named(place: Path) -> tuple[int, int] | None:
         return None
 
 
-def trusted(program: Path, outside: Sequence[Path]) -> bool:
-    """Tell whether a program can be run by its name without going through a working directory.
-
-    The name is walked the way the system walks it, one part after the
-    other, and a link is followed to where it leads. At no step may the way
-    be in one of the directories ``outside``: what lies there, a link or a
-    directory or the file itself, can be changed by whoever can write there,
-    also after this look. Whether a program lies at the end of the way is
-    another question.
-
-    A directory is known by its name and by what it is. A system that takes
-    no notice of case may leave a name the way it was written, and then one
-    directory has more names than can be compared.
-
-    Args:
-        program: The whole path of the program, as it will be run.
-        outside: Directories that the way must not touch, each with every
-            link on its own path resolved.
-
-    Returns:
-        Whether the way stays outside all of them, to its end.
-    """
-    if _STEPS_BACK_FIRST:
-        program = Path(os.path.normpath(program))
-    apart = {_itself(place) for place in outside} - {None}
-    done = Path(program.anchor)
-    left = list(program.parts[1:])
-    hops = 0
-    while left:
-        part = left.pop(0)
-        if part == "..":
-            done = done.parent
-            continue
-        here = done / part
-        leads = _leads(here)
-        if leads is None:
-            # Its name is taken as the system spells it, which may be another way than it
-            # was written.
-            here = Path(os.path.realpath(here))
-            if any(here == place or place in here.parents for place in outside):
-                return False
-            if _itself(here) in apart:
-                return False
-            done = here
-            continue
-        hops += 1
-        if hops > _HOPS:
-            return False
-        # The link lies in a directory that is outside all of them. Where it leads is
-        # walked from the start, and counted from the directory of the link.
-        way = done / leads
-        done, left = Path(way.anchor), [*way.parts[1:], *left]
-    return True
-
-
-def found(search: str, outside: Sequence[Path] = ()) -> str | None:
-    """Return the path of the ``docker`` program that a search path leads to, or ``None``.
-
-    Args:
-        search: The search path, as the environment has it.
-        outside: Directories that the program must not come from, and that
-            no link on the way to it may lie in: the directory that this
-            program was started in, and the working directory of a session.
-    """
-    apart = [Path(os.path.realpath(directory)) for directory in outside]
-    for written in search.split(os.pathsep):
-        entry = Path(written.strip('"'))
-        program = entry / _PROGRAM
-        # An entry that is no whole path means a place below the current directory.
-        if not entry.is_absolute():
-            continue
-        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):
-            return str(program)
-    return None
-
-
 def absent(config: DockerConfig, search: str, outside: Sequence[Path]) -> str | None:
     """Say what is wrong if there is no ``docker`` program to run, or return ``None``.
 
@@ -672,7 +555,7 @@ def absent(config: DockerConfig, search: str, outside: Sequence[Path]) -> str | 
     """
     named = config.program
     if named is None:
-        if found(search, outside) is not None:
+        if programs.found(_NAME, search, outside) is not None:
             return None
         return (
             "commands are to run in containers, and no docker program was found on the search "
@@ -1939,7 +1822,7 @@ class Docker:
         named = self._config.program
         program = self._tool if named is None else named
         if program is None:
-            program = found(os.environ.get("PATH", ""), outside)
+            program = programs.found(_NAME, os.environ.get("PATH", ""), outside)
             if program is None:
                 raise SandboxUnavailableError(
                     "no docker program was found on the search path. Install Docker, or name "
@@ -1952,7 +1835,7 @@ class Docker:
             raise SandboxUnavailableError(
                 f"the docker program that {whose}, {program}, is not there"
             )
-        if not trusted(Path(program), outside):
+        if not programs.trusted(Path(program), outside):
             raise SandboxUnavailableError(
                 f"the docker program that {whose}, {program}, lies in the working directory, or "
                 "a link on the way to it does. A command could put another program there, so "

@@ -6,19 +6,25 @@ build-backend = "hatchling.build"
 name = "columbina"
 version = "0.1.0.dev0"
 description = "A plugin-based agent harness for Python."
-readme = "README.md"
+# The description on PyPI: its links lead to the repository, and it has none of the pictures.
+readme = "docs/pypi.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Yueran Ma" }]
-keywords = ["agent", "harness", "llm", "tool-calling"]
+keywords = ["agent", "harness", "llm", "tool-calling", "coding-agent", "mcp", "asyncio"]
 classifiers = [
-  "Development Status :: 2 - Pre-Alpha",
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Framework :: AsyncIO",
   "Intended Audience :: Developers",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Software Development",
   "Typing :: Typed",
 ]
 dependencies = [
@@ -34,7 +40,11 @@ dependencies = [
 columbina = "columbina.apps.launcher:main"
 
 [project.urls]
+Homepage = "https://github.com/Yueran-ML/agent-harness"
+Documentation = "https://github.com/Yueran-ML/agent-harness/blob/main/docs/guide.md"
 Repository = "https://github.com/Yueran-ML/agent-harness"
+Issues = "https://github.com/Yueran-ML/agent-harness/issues"
+Changelog = "https://github.com/Yueran-ML/agent-harness/blob/main/CHANGELOG.md"
 
 # The SDK of the Model Context Protocol brings some thirty packages with it. Whoever uses
 # no MCP server does not need them: `pip install columbina[mcp]` installs them.
@@ -58,8 +68,9 @@ dev = [
 packages = ["src/columbina"]
 
 # The pictures of the README are no part of the software, and its license does not cover them.
+# The desktop application is built apart, with packages of Node of its own.
 [tool.hatch.build.targets.sdist]
-exclude = ["/docs/assets"]
+exclude = ["/docs/assets", "/desktop"]
 
 [tool.ruff]
 line-length = 100

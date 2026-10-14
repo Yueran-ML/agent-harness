@@ -1,0 +1,79 @@
+name: Release
+
+# A tag like v0.1.0 builds the package, tries it, and publishes it on PyPI. No token is kept
+# anywhere: PyPI trusts this workflow of this repository. That is set up once on pypi.org, in
+# the publishing settings of the project: owner Yueran-ML, repository agent-harness, workflow
+# release.yml, environment pypi.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and try
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: The tag is the version of the package
+        run: |
+          version="$(uv version --short)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "the tag ${GITHUB_REF_NAME} is not the version ${version} of pyproject.toml"
+            exit 1
+          fi
+
+      - name: Build
+        run: uv build
+
+      - name: The description and the metadata
+        run: uvx twine check --strict dist/*
+
+      # In a clean environment of each Python, with a home of its own and a scripted model.
+      - name: The wheel installs and runs
+        env:
+          PYTHON_KEYRING_BACKEND: keyring.backends.null.Keyring
+        run: |
+          cat > "$RUNNER_TEMP/patch.yml" <<'EOF'
+          - id: model
+            plugin: columbina.llm.adapters.scripted
+            config:
+              provider: deepseek
+              replies:
+                - text: The wheel works.
+          EOF
+          for version in 3.11 3.12; do
+            env="$RUNNER_TEMP/py$version"
+            uv venv --python "$version" "$env"
+            uv pip install --python "$env" dist/*.whl
+            export COLUMBINA_HOME="$RUNNER_TEMP/home$version"
+            "$env/bin/columbina" --version
+            answer="$("$env/bin/columbina" run --patch "$RUNNER_TEMP/patch.yml" \
+              --cwd "$RUNNER_TEMP" "Say whether the wheel works.")"
+            test "$answer" = "The wheel works."
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish on PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

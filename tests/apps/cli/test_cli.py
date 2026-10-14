@@ -972,6 +972,38 @@ async def test_what_the_program_logs_is_shown_above_the_prompt_while_it_is_open(
     assert not any(type(handler).__name__ == "_Shown" for handler in handlers)
 
 
+async def test_what_a_library_warns_of_while_the_prompt_is_open_is_shown_above_it(
+    harness: Harness,
+) -> None:
+    # A library logs by itself, and nothing of this program sets up its log. Python would
+    # write what it warns of to the terminal by itself, through the prompt.
+    library = logging.getLogger("somelibrary.part")
+    library.setLevel(logging.INFO)
+    try:
+        with desk() as at:
+            running = asyncio.ensure_future((await frontend(harness, at)).run())
+            await at.sees("/help lists the commands.")
+
+            library.info("what it does now")
+            library.warning("the line went away")
+            logging.getLogger("columbina.somewhere").warning("said once")
+            # A library whose name begins like the name of this program is another.
+            logging.getLogger("columbinas").warning("not ours")
+            await at.sees(
+                "somelibrary: the line went away\ncolumbina: said once\ncolumbinas: not ours\n"
+            )
+            at.type(CTRL_D)
+            await left(running)
+            handlers = list(logging.getLogger().handlers)
+    finally:
+        library.setLevel(logging.NOTSET)
+
+    # What it does is no warning, and a line of this program is shown once.
+    assert at.seen().count("what it does now") == 0
+    assert at.seen().count("said once") == 1
+    assert not any(type(handler).__name__ == "_Shown" for handler in handlers)
+
+
 async def test_the_log_is_taken_over_for_the_conversation_and_handed_back_after_it(
     harness: Harness,
 ) -> None:

@@ -8308,6 +8308,54 @@ _TERMINAL = (
 
 _CLI = (
     mutant(
+        "what a library warns of while the prompt is open is not shown above it",
+        CLI_FRONTEND,
+        "        root.addHandler(heard)\n",
+        "",
+    ),
+    mutant(
+        "what a library says below a warning is shown above the prompt",
+        CLI_FRONTEND,
+        "        heard.setLevel(logging.WARNING)\n",
+        "",
+    ),
+    mutant(
+        "a line of this program is shown twice while the prompt is open",
+        CLI_FRONTEND,
+        "        heard.addFilter(_not_ours)\n",
+        "",
+    ),
+    mutant(
+        "the root of the log goes on showing lines above a prompt that is gone",
+        CLI_FRONTEND,
+        "            root.removeHandler(heard)\n",
+        "",
+    ),
+    mutant(
+        "a line above the prompt says the whole name of the log it came from",
+        CLI_FRONTEND,
+        '        whose = record.name.partition(".")[0]\n',
+        "        whose = record.name\n",
+    ),
+    mutant(
+        "every record is taken for one of this program",
+        CLI_FRONTEND,
+        '    return record.name != "columbina" and not record.name.startswith("columbina.")\n',
+        "    return False\n",
+    ),
+    mutant(
+        "every record is taken for one of somebody else",
+        CLI_FRONTEND,
+        '    return record.name != "columbina" and not record.name.startswith("columbina.")\n',
+        "    return True\n",
+    ),
+    mutant(
+        "a library whose name begins like the name of this program is taken for this program",
+        CLI_FRONTEND,
+        '    return record.name != "columbina" and not record.name.startswith("columbina.")\n',
+        '    return not record.name.startswith("columbina")\n',
+    ),
+    mutant(
         "the line below the prompt shows the tokens of the first request and not of the last",
         CLI_STATUS,
         "    for event in reversed(session.events):\n",

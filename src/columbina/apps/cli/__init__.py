@@ -108,7 +108,11 @@ class Config(BaseModel):
 
 
 class _Shown(logging.Handler):
-    """Shows what the program logs above the prompt, where it does not tear the typing apart."""
+    """Shows what is logged above the prompt, where it does not tear the typing apart.
+
+    A line begins with whose it is: ``columbina``, or the name of the library
+    that logged it.
+    """
 
     def __init__(self, prompt: Prompt) -> None:
         super().__init__()
@@ -116,7 +120,13 @@ class _Shown(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         style = _BAD if record.levelno >= logging.ERROR else _NOTE
-        self._prompt.show([fit(f"columbina: {record.getMessage()}", style)])
+        whose = record.name.partition(".")[0]
+        self._prompt.show([fit(f"{whose}: {record.getMessage()}", style)])
+
+
+def _not_ours(record: logging.LogRecord) -> bool:
+    """Tell whether a record was logged by somebody else than this program."""
+    return record.name != "columbina" and not record.name.startswith("columbina.")
 
 
 class Cli:
@@ -184,9 +194,18 @@ class Cli:
         for other in others:
             log.removeHandler(other)
         log.addHandler(shown)
+        # A library logs by itself, and its warnings reach the root of the log, where
+        # nothing of this program writes them. With no handler there at all, Python writes
+        # them to the terminal itself. What this program logs is shown above already.
+        heard = _Shown(prompt)
+        heard.setLevel(logging.WARNING)
+        heard.addFilter(_not_ours)
+        root = logging.getLogger()
+        root.addHandler(heard)
         try:
             code = await self._converse(prompt)
         finally:
+            root.removeHandler(heard)
             log.removeHandler(shown)
             for other in others:
                 log.addHandler(other)

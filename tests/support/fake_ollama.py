@@ -1,8 +1,8 @@
 """A stand-in for ``ollama serve``: it answers on the port that ``OLLAMA_HOST`` names.
 
-``/api/version`` answers with the address, the directory of models and the
-length of context that the environment gave it, so a test can see what the
-server was started with.
+``/api/version`` answers with the address, the directory of models, the
+length of context and the limits on requests and models that the environment
+gave it, so a test can see what the server was started with.
 """
 
 import http.server
@@ -23,6 +23,8 @@ class Answer(http.server.BaseHTTPRequestHandler):
                 "host": os.environ.get("OLLAMA_HOST"),
                 "models": os.environ.get("OLLAMA_MODELS"),
                 "context": os.environ.get("OLLAMA_CONTEXT_LENGTH"),
+                "parallel": os.environ.get("OLLAMA_NUM_PARALLEL"),
+                "loaded": os.environ.get("OLLAMA_MAX_LOADED_MODELS"),
             }
         ).encode()
         self.send_response(200)

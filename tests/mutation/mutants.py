@@ -3369,6 +3369,18 @@ _BENCH_RUN = (
         "",
     ),
     mutant(
+        "the server may hold room for several requests at a time",
+        BENCH_OLLAMA,
+        '            "OLLAMA_NUM_PARALLEL": "1",\n',
+        "",
+    ),
+    mutant(
+        "the server may hold several models at a time",
+        BENCH_OLLAMA,
+        '            "OLLAMA_MAX_LOADED_MODELS": "1",\n',
+        "",
+    ),
+    mutant(
         "a server that does not answer is left running",
         BENCH_OLLAMA,
         "        await self.__aexit__(None, None, None)\n        raise RuntimeError(\n",

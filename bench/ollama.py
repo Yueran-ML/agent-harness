@@ -3,7 +3,8 @@
 The models are kept in ``D:/ollama-models``, beside an Ollama that serves
 other work and whose settings are not to be changed. So the benchmark starts
 another server: the same program, the models of that directory, a port of
-its own, and the length of context that the attempts need. It is stopped,
+its own, the length of context that the attempts need, and room for one
+request to one model at a time. It is stopped,
 with all that it started, when the attempts are done. The Ollama that was
 there before is not touched: it is another process, on another port.
 """
@@ -64,6 +65,12 @@ class Ollama:
             "OLLAMA_MODELS": str(self.models),
             "OLLAMA_HOST": f"127.0.0.1:{self.port}",
             "OLLAMA_CONTEXT_LENGTH": str(self.context),
+            # The attempts come one at a time. Left to itself the server may hold room for
+            # several requests to a model, each with the whole context, and room for several
+            # models; what the card cannot hold then goes to the memory and the processor of
+            # the machine, which a run of the benchmark once brought to a standstill.
+            "OLLAMA_NUM_PARALLEL": "1",
+            "OLLAMA_MAX_LOADED_MODELS": "1",
         }
         options: dict[str, Any] = (
             {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}  # pragma: windows only

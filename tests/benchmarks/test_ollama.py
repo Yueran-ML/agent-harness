@@ -22,6 +22,8 @@ async def test_the_server_is_started_with_its_models_its_port_and_its_context(
             "host": f"127.0.0.1:{port}",
             "models": str(tmp_path),
             "context": "8192",
+            "parallel": "1",
+            "loaded": "1",
         }
         assert server.base_url == f"http://127.0.0.1:{port}/v1"
 

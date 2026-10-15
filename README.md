@@ -89,8 +89,8 @@ itself.
   <sub>A run of DeepSeek, played again at the terminal: the replies are those of a recorded run, and the tools ran for real. <a href="docs/assets/README.md#the-demo">How it was made</a></sub>
 </p>
 
-**Status:** early development. Eight of ten stages are done, and Columbina is on PyPI. Of
-the other two, the benchmark and the service for other programs are built. `columbina` holds a
+**Status:** early development. Nine of ten stages are done, and Columbina is on PyPI. Of
+the last, the service for other programs is built, and the desktop app on top of it is under way. `columbina` holds a
 conversation with an agent at the terminal, and `columbina run` gives it one task and
 prints the answer. The agent talks to a model over the OpenAI Chat Completions protocol,
 DeepSeek by default. A conversation that outgrows its model is made shorter by itself,

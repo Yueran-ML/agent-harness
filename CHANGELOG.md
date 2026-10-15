@@ -15,6 +15,10 @@ change what was there before.
   `duration_ms` in its `meta`. `/tools`, `columbina sessions show` and the last line of
   `columbina run --json` say for each tool how many calls it had, how many of them failed,
   and how long it ran.
+- The table of local models: twelve models of Qwen2.5 and Llama, of 3 to 8 billion
+  parameters and from 2 to 16 bits, on twenty of the tasks. None passes half of its
+  attempts, and `docs/bench` says where they fail. The Ollama of a run of the benchmark
+  holds one request to one model, and `--ollama-port` lets two runs go side by side.
 
 ## 0.1.0 (2026-10-15)
 

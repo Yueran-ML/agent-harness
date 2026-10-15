@@ -56,9 +56,10 @@ written to the log first, and every request is derived from the log. Three thing
 
 The price is that state is never simply changed. The list of things to do, the inbox of
 messages that arrive while a turn runs, the count of tokens, the calls of each tool and how
-long the tool ran: each is a projection, folded from the events. A new kind of state needs a new event and a fold, and the fold must give
-the same answer when the log is read again from the start. The tests fold a session that was
-taken up again from its first event, and build what the model is sent from the events alone.
+long the tool ran: each is a projection, folded from the events. A new kind of state needs a
+new event and a fold, and the fold must give the same answer when the log is read again from
+the start. The tests fold a session that was taken up again from its first event, and build
+what the model is sent from the events alone.
 
 ## 3. The loop and the pipeline of a call
 
@@ -212,6 +213,17 @@ small had nothing to do, and cost nothing. All four stay on by default. The rule
 guard against what these tasks do not hold, an act that cannot be undone or an instruction
 hidden in a file, and tasks of that kind are the next to be added.
 
+**Local models.** Twelve models of Qwen2.5 and Llama, of 3 to 8 billion parameters and
+in quantizations from 2 to 16 bits, made one attempt at each of twenty of the tasks, on
+a laptop with 12 GB of graphics memory. None passed half of its attempts: the best,
+Qwen2.5 7B in eight bits, passed 6, and no model passed a task of code or of files. The
+records say why. Llama wrote calls that the server of Ollama could not read, which ended
+34 of its 120 attempts; 29 attempts found what was asked and wrote it out instead of
+handing it in; and the checks of the program refused 51 edits of files that had not
+been read and 102 calls whose arguments did not fit. One attempt at each task leaves
+the rates loose: an earlier run of two of the models passed 4 and 2 of five tasks of
+SQL where this one passed 0 and 1, with the same prompt.
+
 ### 7.4 Cost and speed
 
 The three runs, 1,512 attempts, cost 1.67 US dollars at the off-peak prices of DeepSeek. A
@@ -225,11 +237,11 @@ taken up again in 0.18 s with 21 MB of memory at the peak, and its tokens are ad
 
 ## 8. What is next
 
-- **The table of local models.** Qwen2.5 and Llama in their quantizations, on twenty of the
-  tasks, with the window of 16,384 tokens at which the parts that keep a conversation small
-  come into play. Its runs need the graphics card of the machine to themselves.
+- **Calls that repeat.** The small models made one call again and again, and one reply
+  held the same read 97 times. A check that tells a model that it made a call before,
+  and what came of it, would cost a model that does not repeat itself nothing.
+- **Larger models of the same families**, served by a provider, so that the table of
+  local models can say whether the size or the training stands in the way.
 - **Tasks for the rules of conduct**: an act that cannot be undone, an instruction hidden in
   a file that the agent reads.
 - **The desktop app**, and a study of how usable it is.
-- **PyPI.** The workflow that builds, tries and publishes the package is ready, and a tag
-  starts it.

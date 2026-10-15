@@ -1061,7 +1061,7 @@ uv run python -m bench table acceptance ../bench-runs/flash/results.jsonl
 
 `--variant` switches off one part of the program, to set it against the whole. `--ollama` starts an Ollama of the benchmark's own for local models, on a port of its own and with the window of the model as its length of context. A run that was broken off is taken up again by running it again, and `python -m bench judge` judges the attempts of a run again from what they left.
 
-With `deepseek-flash` all 216 attempts passed, three at each task, and `deepseek-v4-pro` passed 214 of them. The tables, with what each part of the program saves and costs, are in [`docs/bench`](bench/README.md).
+With `deepseek-flash` all 216 attempts passed, three at each task, and `deepseek-v4-pro` passed 214 of them. Twelve local models, Qwen2.5 and Llama of 3 to 8 billion parameters in quantizations from 2 to 16 bits, made one attempt at each of twenty of the tasks, and none passed half of its attempts; the best passed 6. The tables, with what each part of the program saves and costs and where the local models fail, are in [`docs/bench`](bench/README.md).
 
 ## Development
 
@@ -1134,16 +1134,15 @@ The work goes in ten stages, and each one ends with something that can be shown.
 | 🌕 | 5 | Long conversations: estimates, shortening, taking a session up again, copies |
 | 🌕 | 6 | Skills, hooks, subagents, MCP |
 | 🌕 | 7 | A sandbox in a container for the commands that the agent runs |
-| 🌓 | 8 | Benchmarks, and a table of what local models can do |
+| 🌕 | 8 | Benchmarks, and a table of what local models can do |
 | 🌕 | 9 | A package on PyPI, documentation, an engineering report |
 | 🌓 | 10 | A JSON-RPC service, and a desktop app on top of it |
 
 🌕 done  ·  🌓 under way  ·  🌑 to come
 
 The seventh stage is closed, and what it brought is told in
-[Commands in a container](#commands-in-a-container). Of the eighth, the benchmark is built
-and two of its three tables are made: see [The benchmark](#the-benchmark). The table of
-local models is to come. The ninth is closed: Columbina is on PyPI, and
+[Commands in a container](#commands-in-a-container). The eighth is closed too: the
+benchmark and its three tables are told in [The benchmark](#the-benchmark). The ninth is closed: Columbina is on PyPI, and
 [Writing a plugin](#writing-a-plugin) is new. Of the tenth, the service is built: see
 [Serving another program](#serving-another-program) and [`docs/protocol`](protocol). The
 desktop app on top of it is under way.

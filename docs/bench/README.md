@@ -66,10 +66,72 @@ out and said it, and did not submit it.
 
 ## Local models
 
-Twenty of the tasks, five of each category, once with each model, served by an Ollama of
-the benchmark's own with a context of 16,384 tokens; a model is marked usable where it
-passes half of its attempts or more. The runs of this table are still to come: they need the
-graphics card of the machine to themselves.
+Twenty of the tasks, five of each category, once with each model, at a window of 16,384
+tokens; a model is marked usable where it passes half of its attempts or more. Each model was
+served by an Ollama of the benchmark's own that holds one request to one model, on a laptop
+with a GeForce RTX 4080 of 12 GB. Where the card had room, two of these ran beside each
+other, each with its own Ollama; that changes how long a run takes, and nothing else. The
+twelve runs took two hours and twenty minutes, from 2.5 to 49.5 minutes a model. The names
+are those under which the models lie on that machine, and their ends say the quantization:
+`q2k` is Q2_K, `q3km` Q3_K_M, `q3kl` Q3_K_L, `q4km` Q4_K_M, `q8` Q8_0, and `fp16` the weights
+in 16 bits.
+
+| Model | code | files | sql | compute | All | Usable |
+|---|---|---|---|---|---|---|
+| ollama/llama3.1-8b-q3kl | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 3/5 = 60% [23%, 88%] | 0/5 = 0% [0%, 43%] | 3/20 = 15% [5%, 36%] | no |
+| ollama/llama3.1-8b-q4km | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 1/5 = 20% [4%, 62%] | 0/5 = 0% [0%, 43%] | 1/20 = 5% [1%, 24%] | no |
+| ollama/llama3.1-8b-q8 | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 3/5 = 60% [23%, 88%] | 0/5 = 0% [0%, 43%] | 3/20 = 15% [5%, 36%] | no |
+| ollama/llama3.2-3b-mz-q2k | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 1/5 = 20% [4%, 62%] | 0/5 = 0% [0%, 43%] | 1/20 = 5% [1%, 24%] | no |
+| ollama/llama3.2-3b-q4km | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 2/5 = 40% [12%, 77%] | 0/5 = 0% [0%, 43%] | 2/20 = 10% [3%, 30%] | no |
+| ollama/llama3.2:3b-instruct-fp16 | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 1/5 = 20% [4%, 62%] | 0/5 = 0% [0%, 43%] | 1/20 = 5% [1%, 24%] | no |
+| ollama/qwen2.5-3b-q2k | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 1/5 = 20% [4%, 62%] | 0/5 = 0% [0%, 43%] | 1/20 = 5% [1%, 24%] | no |
+| ollama/qwen2.5-3b-q4km | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 3/5 = 60% [23%, 88%] | 0/5 = 0% [0%, 43%] | 3/20 = 15% [5%, 36%] | no |
+| ollama/qwen2.5-7b-q3km | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 1/5 = 20% [4%, 62%] | 4/5 = 80% [38%, 96%] | 5/20 = 25% [11%, 47%] | no |
+| ollama/qwen2.5-7b-q4km | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 1/5 = 20% [4%, 62%] | 1/20 = 5% [1%, 24%] | no |
+| ollama/qwen2.5-7b-q8 | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 3/5 = 60% [23%, 88%] | 3/5 = 60% [23%, 88%] | 6/20 = 30% [15%, 52%] | no |
+| ollama/qwen2.5:3b-instruct-fp16 | 0/5 = 0% [0%, 43%] | 0/5 = 0% [0%, 43%] | 1/5 = 20% [4%, 62%] | 0/5 = 0% [0%, 43%] | 1/20 = 5% [1%, 24%] | no |
+
+None of the twelve is usable. The best is Qwen2.5 7B in eight bits, with 6 of 20, where
+`deepseek-flash` passes all twenty of the same tasks. No model passes a task of code or of
+files: what passes are questions about the database and reckonings. These are small
+instruction models of 2024, of 3 to 8 billion parameters, and the models that are trained
+for long work with tools came after them. So the table says what such models can do with
+the program on one machine, and where they fail. More bits do not show in it: within a
+family, the quantizations lie inside one another's intervals.
+
+Each model made one attempt at each task, with the sampling that its model file sets, so a
+second run comes out otherwise. A run of the first two models a day earlier, broken off when
+the machine froze, passed 4 and 2 of the same five tasks of SQL, where this one passed 0 and
+1. The two runs sent the same prompt and the same tools, and their records part where the
+model answers otherwise. The intervals of the table are wide for that reason.
+
+What became of the 240 attempts, from their records:
+
+| What happened | Attempts |
+|---|---|
+| Passed | 28 |
+| The task was done wrong: code that the hidden tests fail, files that hold the wrong thing, a wrong number or wrong rows | 114 |
+| Nothing was handed in: the model found what was asked and wrote it out, without the tool that submits it | 29 |
+| The service could not take the reply: it refused the call that the model wrote, or the stream broke off | 34 |
+| No tool was called at all | 17 |
+| Out of steps | 12 |
+| Out of time | 6 |
+
+Three things stand out in the records.
+
+- **Calls that the server cannot read.** Llama wrote calls with a line break inside a string
+  of JSON, which the server of Ollama refused (`llama-server returned invalid tool call
+  arguments for "edit": invalid character '\n' in string literal`), or its stream broke off
+  before a reply was whole. The retries met the same, and the turn ended with an error. That
+  ended 34 of the 120 attempts of Llama, and none of Qwen.
+- **An answer found, and not handed in.** The tasks of SQL ask for the query to be handed in
+  with `submit_sql`, and those of reckoning for the answer with `submit_answer`. In 29
+  attempts the model found what was asked and wrote it out in its answer instead.
+- **Calls made blindly, and again and again.** The checks of the program refused 51 edits of
+  files that the model had not read, 102 calls whose arguments did not fit the tool, and 32
+  calls of skills and kinds of subagent that are not there; each refusal went back to the
+  model as the result of its call. 33 of the attempts made one call three times or more, and
+  one reply held the same `read` 97 times.
 
 ## Cost
 

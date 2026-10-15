@@ -110,7 +110,13 @@ jobs:
           The pictures, the opening film and the icon are AI-generated fan art and are not covered by
           the MIT license of the code. See [ASSETS.md](https://github.com/Yueran-ML/agent-harness/blob/main/desktop/ASSETS.md).
           EOF
-          gh release create "$GITHUB_REF_NAME" packages/*.zip \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Columbina desktop ${GITHUB_REF_NAME#desktop-v}" \
-            --notes-file notes.md
+          # A release of the tag may have been drafted on the site already, with the tag. It is given the
+          # packages, and keeps what it says.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" packages/*.zip --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" packages/*.zip \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Columbina desktop ${GITHUB_REF_NAME#desktop-v}" \
+              --notes-file notes.md
+          fi

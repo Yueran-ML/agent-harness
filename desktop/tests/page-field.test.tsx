@@ -82,6 +82,10 @@ describe('a question of the agent', () => {
     expect(wanted('fetch', 'https://example.org')).toEqual(['Columbina wants to use fetch.', 'https://example.org']);
     // A call that is about no one thing is shown as the service sums it up.
     expect(wanted('fetch', null)).toEqual(['Columbina wants to use fetch.', 'Run a command.']);
+    // What is to be done on GitHub is said as such, with all of what is to be done below it.
+    const comment = 'octocat/hello#12: comment\n\nLooks good.';
+    expect(wanted('github_comment', comment)).toEqual(['Columbina wants to write a comment on GitHub.', comment]);
+    expect(wanted('github_push', 'push fix-parser to octocat/hello')[0]).toBe('Columbina wants to push a branch to GitHub.');
   });
 
   it('offers no longer yes where the service offers none, and no reason where it gave none', () => {

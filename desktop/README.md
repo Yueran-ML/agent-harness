@@ -71,6 +71,14 @@ of a turn that has ended. The settings switch that off. The first page offers th
 projects that were opened before. If the service process ends, the page shows the last
 lines that it wrote, which most often say why.
 
+Before any project is open, the first page goes through the steps that come before the
+work: a model service with its key, GitHub if the user likes, and the project. The
+keyboard begins at the first step that is still to be done. Once all that is offered is
+done or left for later, the steps fold into one line under the button that opens a
+project, such as `DeepSeek · deepseek-flash · @octocat`, and a click on it opens them
+again. They come back where a key was deleted meanwhile. The page asks again what is set
+up whenever the window comes back to the front.
+
 The interface speaks English, Chinese and Japanese and follows the language of the
 system unless another is chosen in the settings. It has a dark theme and a light one,
 and three sizes of type.
@@ -105,8 +113,34 @@ is stored can be deleted there, once the window has asked whether it should be.
 This works where the application runs the service itself, and not in a replay. The
 service looks for the key with every request, so a key is used as soon as it is stored,
 and a turn that failed for want of it can be tried again with the button under it.
-Another service, address or model is used once the service is started again, and the
-settings say so until it is.
+Another service, address or model is read when the service starts. Where nothing is under
+way when the window for the key is closed, the service is started again at once, at the
+task that is open. A turn is not cut off for it: the settings offer the new start for when
+the turn has ended.
+
+## GitHub
+
+The first page and the settings sign in to GitHub with the device flow of the GitHub App of
+Columbina. The page shows the code large, copies it, and opens the page of GitHub on which
+it is entered, with its full address written beside the button. A clock says how long the
+code holds, and a code that has run out offers a new one. The sign-in can be stopped at any
+time. Each kind of failure says what to look at: the network and the proxy, a code that ran
+out, a sign-in that was turned down on GitHub, a pause that GitHub asks for, or a build of
+Columbina that has no app to sign in with.
+
+Once somebody is signed in, the settings show the picture, the name and the login, and the
+repositories that Columbina may reach in that name. Repositories are chosen on GitHub: a
+user who has chosen none is led there, and the list is asked for again when the window
+comes back to the front. A sign-out is asked first, and then says where on GitHub the right
+that was given to the app is taken back.
+
+The shell runs `columbina login github --json` for a sign-in, `columbina login --status
+--json` to say who is signed in and `columbina logout github --json` for a sign-out. No
+token comes to the page: the program keeps the tokens, and tells the page only who signed
+in and with which picture, as an address of data that the content security policy allows.
+In the conversation a call on GitHub says what it does there, such as `Push fix-parser`, and
+a question asks with a sentence of its own whether Columbina may push, open a pull request or
+comment, above the whole of what it would send.
 
 ## On Windows and on macOS
 
@@ -118,10 +152,12 @@ under the bar. The menu of the application there has what copies and pastes, clo
 window and leaves the application, and nothing that would load the page again.
 
 An application that is opened from the Finder is given a short `PATH`, without Homebrew or
-`/usr/local/bin`. So a package asks the login shell of the user for its `PATH` once, as a
-terminal starts it, and the service and the commands of the agent find what the user has
-installed. A shell that says nothing within five seconds leaves the `PATH` as it is, with
-those two places added.
+`/usr/local/bin`, and no proxy. So a package asks the login shell of the user once, as a
+terminal starts it, for its `PATH` and for `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` and
+`NO_PROXY`, in either case. The service and the commands of the agent then find what the
+user has installed and reach what the user reaches through the proxy. A proxy that the
+application was given goes first. A shell that says nothing within five seconds leaves the
+`PATH` as it is, with those two places added.
 
 ## The service
 
@@ -162,6 +198,11 @@ protocol, and the interface cannot read it. What the service process logs goes t
   store, check a service, delete a key, open the page on which a key is made, and close.
   The main window cannot make them. A key is deleted only for a service that the window
   was told of, and a page is opened only where a service links to it over https.
+- One sign-in to GitHub runs at a time. One that is begun takes the place of one that runs,
+  whose page no longer waits for it. The page hears only the documents of JSON that the
+  program writes, each line at most 2 MB, and that it has ended. A sign-in is stopped by
+  closing its input, and ended with what it started where it has not ended three seconds
+  later; it is stopped when the page is gone and when the window is closed.
 - The page loads only files of the application. Its content security policy allows no
   connection to the network, no frame and no script from elsewhere. Navigation and new
   windows are blocked. A link is opened in the browser of the system, after its full

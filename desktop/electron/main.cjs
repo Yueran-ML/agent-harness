@@ -38,11 +38,19 @@ const SETUP_MS = 45_000;
 // How much of what it writes is read, in characters. Its answer is one line.
 const SETUP_OUTPUT_MOST = 512 * 1024;
 const NO_SETUP = 'No service program is set up for this application, so its services cannot be set up from here.';
-// How long the login shell of the user may take on macOS to say what its PATH is, and how much of what it writes is read.
+// How much of what `columbina login --status` writes is read: its line may hold the picture of the user.
+const ACCOUNT_OUTPUT_MOST = 2 * 1024 * 1024;
+// How long the program that signs in to GitHub is given to end after its input was closed.
+const SIGN_IN_STOP_MS = 3_000;
+// How long the login shell of the user may take on macOS to say what it has, and how much of what it writes is read.
 const LOGIN_SHELL_MS = 5_000;
 const LOGIN_SHELL_OUTPUT_MOST = 64 * 1024;
 // What the PATH of an application opened from the Finder leaves out on macOS: the programs of Homebrew, and /usr/local.
 const MAC_PROGRAMS = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin'];
+// The variables of the proxy, each in the two cases that programs read it in. The login shell is
+// asked for them with the PATH: a user who sets a proxy for a terminal sets it there.
+const SHELL_PROXIES = [['HTTPS_PROXY', 'https_proxy'], ['HTTP_PROXY', 'http_proxy'], ['ALL_PROXY', 'all_proxy'], ['NO_PROXY', 'no_proxy']];
+const SHELL_VARIABLES = ['PATH', ...SHELL_PROXIES.flat()];
 
 /**
  * How the bar of the window is drawn. The page draws the bar itself and leaves room for the
@@ -73,13 +81,15 @@ let keyListed = { names: [], pages: [] };
 // What the service of the moment wrote last for errors. It is told of when the service has ended.
 let lastWords = { lines: [], rest: '' };
 // What is kept from one start to the next. Read when the application is ready.
-let preferences = { theme: 'moonveil', recent: [] };
+let preferences = { theme: 'moonveil', recent: [], githubSkipped: false };
 let flashing = false;
 // The notification that shows, held so that it is not cleared away while it does.
 let shown = null;
-// On macOS, the PATH that the login shell of the user said, and the asking for it while it lasts.
-let loginPath = null;
-let askingLoginPath = null;
+// On macOS, what the login shell of the user said of its variables, and the asking for it while it lasts.
+let loginShell = null;
+let askingLoginShell = null;
+// The program that signs in to GitHub while it waits for the user. There is one at most.
+let signingIn = null;
 
 app.setName('Columbina');
 if (process.platform === 'win32') app.setAppUserModelId('dev.columbina.desktop');
@@ -131,7 +141,8 @@ function readPreferences() {
     recent.push(folder);
     if (recent.length === RECENT_MOST) break;
   }
-  return { theme, recent };
+  // Whether the user said on the first page that GitHub can wait.
+  return { theme, recent, githubSkipped: given.githubSkipped === true };
 }
 /** Write down what is kept. It is written beside its place and moved there, so that a start never finds half of it. */
 function keepPreferences() {
@@ -222,17 +233,20 @@ async function stopService() {
   try { await stopping; } finally { stopping = null; }
 }
 /**
- * Ask the login shell of the user what its PATH is, the way a terminal starts it, and answer null
- * where it says nothing in time.
+ * Ask the login shell of the user, the way a terminal starts it, what its PATH is and which proxy
+ * it sets. The answer holds what it said of each variable, which is empty for one that it does not
+ * set, and is null where it says nothing in time.
  *
  * An application that is opened from the Finder or the Dock on macOS is given only
- * `/usr/bin:/bin:/usr/sbin:/sbin`, and the commands that an agent runs would not find what the user
- * has installed, such as Homebrew, Node or Docker. The answer is marked at both ends, so that what
- * the files of the shell print by themselves is left out.
+ * `/usr/bin:/bin:/usr/sbin:/sbin` and no proxy. The commands that an agent runs would not find
+ * what the user has installed, such as Homebrew, Node or Docker, nor reach what the user reaches
+ * through the proxy. Each variable is marked at both ends by its own name, so that what the files
+ * of the shell print by themselves is left out.
  */
-function askLoginPath() {
+function askLoginShell() {
   const program = process.env.SHELL && path.isAbsolute(process.env.SHELL) ? process.env.SHELL : '/bin/zsh';
-  const mark = '_COLUMBINA_PATH_';
+  const markOf = (name) => `_COLUMBINA_${name}_`;
+  const script = SHELL_VARIABLES.map((name) => `printf '${markOf(name)}%s${markOf(name)}' "$${name}"`).join('; ');
   return new Promise((resolve) => {
     let child = null;
     let written = '';
@@ -242,7 +256,7 @@ function askLoginPath() {
     }, LOGIN_SHELL_MS);
     const answer = (found) => { clearTimeout(timer); resolve(found); };
     try {
-      child = spawn(program, ['-ilc', `printf '${mark}%s${mark}' "$PATH"`], {
+      child = spawn(program, ['-ilc', script], {
         // Oh My Zsh would ask first whether it may update itself.
         env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' }, stdio: ['ignore', 'pipe', 'ignore'],
       });
@@ -253,14 +267,18 @@ function askLoginPath() {
     child.stdout.on('data', (chunk) => { if (written.length < LOGIN_SHELL_OUTPUT_MOST) written += chunk; });
     child.on('error', () => answer(null));
     child.on('close', () => {
-      const parts = written.split(mark);
-      answer(parts.length >= 3 && parts[1].trim() ? parts[1].trim() : null);
+      const said = {};
+      for (const name of SHELL_VARIABLES) {
+        const parts = written.split(markOf(name));
+        if (parts.length >= 3) said[name] = parts[1].trim();
+      }
+      answer(said);
     });
   });
 }
 /** The PATH of the commands of the service on macOS: the one of the login shell, or the usual places added to the one there is. */
 function macPath() {
-  if (loginPath !== null) return loginPath;
+  if (loginShell?.PATH) return loginShell.PATH;
   const places = (process.env.PATH ?? '').split(':').filter(Boolean);
   return [...places, ...MAC_PROGRAMS.filter((place) => !places.includes(place))].join(':');
 }
@@ -274,13 +292,21 @@ function bundledPython() {
   return process.platform === 'win32' ? path.join(root, 'python.exe') : path.join(root, 'bin', 'python3');
 }
 /**
- * The environment of the service of a package: that of the application, with the PATH of the user
- * on macOS. Nothing in it is meant for the Python of the package, since the commands of the agent
- * inherit it: that Python keeps to itself through the flags that it is started with.
+ * The environment of the service of a package: that of the application, with the PATH and the
+ * proxy of the user on macOS. Nothing in it is meant for the Python of the package, since the
+ * commands of the agent inherit it: that Python keeps to itself through the flags that it is
+ * started with.
  */
 function bundledEnvironment() {
   const env = { ...process.env };
-  if (process.platform === 'darwin') env.PATH = macPath();
+  if (process.platform === 'darwin') {
+    env.PATH = macPath();
+    // A proxy that the application was given goes first, in whichever case it is written.
+    for (const names of SHELL_PROXIES) {
+      if (names.some((name) => env[name])) continue;
+      for (const name of names) if (loginShell?.[name]) env[name] = loginShell[name];
+    }
+  }
   return env;
 }
 /**
@@ -319,10 +345,11 @@ function programCommand(words) {
  * the document that it answers with.
  *
  * What it is given goes to its standard input and nowhere else: not to its command line, not
- * into its environment, not into a file. That is how a key reaches it.
+ * into its environment, not into a file. That is how a key reaches it. Of what it writes, so
+ * many characters are read at most.
  */
-async function runProgram(words, input = '') {
-  if (askingLoginPath) await askingLoginPath;
+async function runProgram(words, input = '', most = SETUP_OUTPUT_MOST) {
+  if (askingLoginShell) await askingLoginShell;
   const command = programCommand(words);
   if (!command) throw new Error(NO_SETUP);
   return new Promise((resolve, reject) => {
@@ -346,7 +373,7 @@ async function runProgram(words, input = '') {
     child.stdout.on('data', (chunk) => {
       if (over) return;
       written += decoder.write(chunk);
-      if (written.length > SETUP_OUTPUT_MOST) {
+      if (written.length > most) {
         over = true;
         written = '';
       }
@@ -420,7 +447,7 @@ function installHandlers() {
       if (exiting) throw new Error('The application is closing.');
       const cwd = approvedDirectory(options);
       await stopService();
-      if (askingLoginPath) await askingLoginPath;
+      if (askingLoginShell) await askingLoginShell;
       if (exiting) throw new Error('The application is closing.');
       const config = serviceCommand();
       mkdirSync(path.dirname(logPath()), { recursive: true });
@@ -625,6 +652,80 @@ function installHandlers() {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Only http and https links can be opened.');
     await shell.openExternal(url.href);
   });
+  ipcMain.handle('columbina:github-status', async (event) => {
+    checkSender(event);
+    if (!programCommand([])) return null;
+    // Who is signed in, the picture as an address of data, and what Columbina may reach. No token.
+    const answer = await runProgram(['login', '--status', '--json'], '', ACCOUNT_OUTPUT_MOST);
+    return { ...answer, skipped: preferences.githubSkipped };
+  });
+  ipcMain.handle('columbina:github-sign-in', async (event) => {
+    checkSender(event);
+    if (askingLoginShell) await askingLoginShell;
+    const command = programCommand(['login', 'github', '--json']);
+    if (!command) throw new Error(NO_SETUP);
+    // One sign-in at a time, and the page hears the one that runs. One that is begun takes the
+    // place of one that runs: nobody waits for that one any more, as after the page was loaded again.
+    stopSigningIn();
+    const child = spawn(command.executable, command.args, {
+      cwd: app.getPath('home'), env: command.env, windowsHide: true,
+      detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    signingIn = child;
+    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    lines.on('line', (line) => {
+      // Each line is a document of JSON: the code first, how the sign-in ended last. No line holds a token.
+      if (signingIn !== child || line.length > ACCOUNT_OUTPUT_MOST) return;
+      let said = null;
+      try { said = JSON.parse(line); } catch { return; }
+      if (said !== null && typeof said === 'object' && !Array.isArray(said)) tell('columbina:github', said);
+    });
+    // What a person would be shown. It is taken so that the program is not held up, and kept nowhere.
+    child.stderr.on('data', () => {});
+    child.stdin.on('error', () => {});
+    child.on('close', () => {
+      lines.close();
+      if (signingIn !== child) return;
+      signingIn = null;
+      tell('columbina:github', { ended: true });
+    });
+    let started = false;
+    await new Promise((resolve, reject) => {
+      child.once('spawn', () => { started = true; resolve(); });
+      child.on('error', (error) => {
+        // A program that started ends by itself, and its end is told of. One that did not never will.
+        if (started) return;
+        if (signingIn === child) signingIn = null;
+        reject(new Error(`The sign-in could not be started: ${error.message}`));
+      });
+    });
+  });
+  ipcMain.handle('columbina:github-cancel', (event) => {
+    checkSender(event);
+    stopSigningIn();
+  });
+  ipcMain.handle('columbina:github-sign-out', async (event) => {
+    checkSender(event);
+    return runProgram(['logout', 'github', '--json']);
+  });
+  ipcMain.handle('columbina:skip-github', (event, skipped) => {
+    checkSender(event);
+    preferences.githubSkipped = skipped === true;
+    keepPreferences();
+  });
+}
+/**
+ * Stop the sign-in to GitHub, if one runs. What it writes from now on, and its end, are told of
+ * to nobody. Its input is closed, which the program takes for a stop, and the program and what
+ * it started are ended where it has not ended a few seconds later.
+ */
+function stopSigningIn() {
+  const child = signingIn;
+  if (!child) return;
+  signingIn = null;
+  child.stdin.end();
+  const timer = setTimeout(() => killTree(child), SIGN_IN_STOP_MS);
+  child.once('close', () => clearTimeout(timer));
 }
 function finishWindowClose() {
   clearTimeout(closeTimer);
@@ -650,8 +751,8 @@ app.whenReady().then(() => {
     // the window or leave go through it. These are all the menu that the application has there.
     Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]));
     if (app.isPackaged) {
-      // A package is opened from the Finder, with a short PATH. The login shell is asked while the window opens.
-      askingLoginPath = askLoginPath().then((found) => { loginPath = found; askingLoginPath = null; });
+      // A package is opened from the Finder, with a short PATH and no proxy. The login shell is asked while the window opens.
+      askingLoginShell = askLoginShell().then((found) => { loginShell = found; askingLoginShell = null; });
     } else {
       // A package has its icon in itself. In development the Dock would show that of Electron.
       app.dock?.setIcon(path.resolve(__dirname, '../dist/columbina-icon.png'));
@@ -692,8 +793,8 @@ app.whenReady().then(() => {
   }));
   closeToTheWorld(window);
   window.on('close', (event) => { if ((service || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
-  window.webContents.on('render-process-gone', () => { void enqueueService(stopService); });
+  window.webContents.on('render-process-gone', () => { stopSigningIn(); void enqueueService(stopService); });
   void window.loadFile(indexPath);
 });
 app.on('before-quit', (event) => { if ((service || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
-app.on('window-all-closed', () => { exiting = true; void enqueueService(stopService).finally(() => app.quit()); });
+app.on('window-all-closed', () => { exiting = true; stopSigningIn(); void enqueueService(stopService).finally(() => app.quit()); });

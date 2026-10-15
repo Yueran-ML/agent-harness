@@ -10,6 +10,7 @@ import type { Turn } from '../turns';
 import {
   canSubmitInput, permissionNeedsConfirmation, permissionPresetFromCommand, type PermissionPreset,
 } from '../uiActions';
+import { useGitHub } from '../useGitHub';
 import { useWorkspace, type Workspace } from '../useWorkspace';
 import { ApprovalCard } from './ApprovalCard';
 import { Composer } from './Composer';
@@ -77,6 +78,7 @@ interface PendingPermission {
 
 export default function App() {
   const workspace = useWorkspace();
+  const github = useGitHub();
   const music = useBackgroundMusic();
   const { projection, status } = workspace;
 
@@ -105,7 +107,7 @@ export default function App() {
   const [commandsAsked, setCommandsAsked] = useState(0);
 
   const field = useRef<HTMLTextAreaElement>(null);
-  const openButton = useRef<HTMLButtonElement>(null);
+  const firstButton = useRef<HTMLButtonElement>(null);
   const restartButton = useRef<HTMLButtonElement>(null);
 
   const running = status?.status === 'running';
@@ -251,6 +253,12 @@ export default function App() {
   const openProject = () => leave(() => void leaveProject(workspace.pickFolder(shownLanguage(language))));
   const openRecent = (kept: string) => leave(() => void leaveProject(workspace.pickRecent(kept)));
 
+  // A page that the application itself leads to, such as one of GitHub. It is opened without a question.
+  const openPage = (url: string) => {
+    if (window.columbina) void window.columbina.openExternal(url).catch(workspace.fail);
+    else window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
   // --- What a button under the end of a turn does. One press does it once.
   const acting = useRef(false);
   const act = async (give: () => Promise<boolean>) => {
@@ -323,7 +331,7 @@ export default function App() {
   useEffect(() => {
     if (showOpening || document.querySelector('dialog[open]')) return;
     if (document.activeElement !== document.body && document.activeElement !== document.documentElement) return;
-    if (!workspace.hasProject) openButton.current?.focus();
+    if (!workspace.hasProject) firstButton.current?.focus();
     else if (!unavailable) field.current?.focus();
     // The field cannot be used and has let go of the keyboard. What is done next is a new start.
     else if (workspace.closed !== null || stopped) restartButton.current?.focus();
@@ -484,10 +492,13 @@ export default function App() {
                 : bare
                   ? <StartHead
                       workspace={workspace}
+                      github={github}
                       onOpenProject={openProject}
                       onOpenRecent={openRecent}
                       onPermissions={() => setSettings('permissions')}
-                      openButton={openButton}
+                      onSetUp={service => void workspace.setUpService(service, shownLanguage(language))}
+                      onOpenPage={openPage}
+                      firstButton={firstButton}
                     />
                   : <Conversation workspace={workspace} onLink={setLink} onAction={onAction} />}
             <div className="dock" hidden={!workspace.hasProject || starting || gone}>
@@ -558,6 +569,8 @@ export default function App() {
         onTellMe={setTellMe}
         onPlayNow={() => { setSettings(null); setShowOpening(true); }}
         music={music}
+        github={github}
+        onOpen={openPage}
         // What is changed here shows here: the answer of the command is not written into the conversation.
         onCommand={line => void send(line, true)}
         onClose={() => setSettings(null)}

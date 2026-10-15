@@ -25,4 +25,10 @@ contextBridge.exposeInMainWorld('columbina', {
   services: () => ipcRenderer.invoke('columbina:services'),
   setUpService: (asked) => ipcRenderer.invoke('columbina:set-up-service', { service: asked?.service, language: asked?.language }),
   openExternal: (url) => ipcRenderer.invoke('columbina:open-external', url),
+  githubStatus: () => ipcRenderer.invoke('columbina:github-status'),
+  githubSignIn: () => ipcRenderer.invoke('columbina:github-sign-in'),
+  githubCancel: () => ipcRenderer.invoke('columbina:github-cancel'),
+  githubSignOut: () => ipcRenderer.invoke('columbina:github-sign-out'),
+  skipGitHub: (skipped) => ipcRenderer.invoke('columbina:skip-github', skipped === true),
+  onGitHub: (callback) => subscribe('columbina:github', callback),
 });

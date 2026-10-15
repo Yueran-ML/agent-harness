@@ -59,6 +59,11 @@ const samples: Record<string, unknown[][]> = {
   'hint.key.forgetAsk': [['OpenAI']],
   'hint.key.forgotten': [['OpenAI']],
   'hint.key.noneToForget': [['OpenAI']],
+  'label.github.left': [['14:59'], ['0:07']],
+  'hint.start.noKey': [['DeepSeek'], ['my-own']],
+  'hint.github.signedIn': [['octocat']],
+  'hint.github.moreRepositories': [[1], [3], [12]],
+  'hint.github.signOutAsk': [['octocat']],
 };
 
 type Said = { path: string; text: string };

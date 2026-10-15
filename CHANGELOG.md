@@ -59,7 +59,17 @@ change what was there before.
   its bar and the bar gives their room back in full screen, shortcuts are written with ⌘,
   sheets come down from under the bar, and the menu copies, pastes, closes and leaves. A
   package asks the login shell of the user for its `PATH`, so that the commands of the agent
-  find what is installed with Homebrew.
+  find what is installed with Homebrew, and for the variables of its proxy, which go where
+  the application was given none.
+- The first page of the desktop application goes through the steps before the work: a model
+  service with its key, GitHub if the user likes, and the project. Once they are done or
+  left for later they fold into one line, and they come back where a key was deleted. The
+  first page and the settings sign in to GitHub: the code is shown large with a clock, and
+  the settings show who is signed in, the repositories that Columbina may reach, and a
+  sign-out that is asked first. A call on GitHub says in the conversation what it does
+  there, and a question about one says what Columbina wants to do on GitHub.
+- Where another service, address or model is stored and nothing is under way, the desktop
+  application starts its service again at once, at the task that is open.
 
 ## 0.1.0 (2026-10-15)
 

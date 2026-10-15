@@ -4,9 +4,7 @@ import type { PendingApproval } from '../useWorkspace';
 import { isYes, keyOf, settled, SETTLE_MS } from './keys';
 import { useWords } from './locale';
 import { modifier } from './system';
-import { commandTools, scopeOf } from './tell';
-
-const writers = new Set(['write', 'edit']);
+import { consentOf, scopeOf } from './tell';
 
 /**
  * A question of the agent: may it do this.
@@ -53,8 +51,7 @@ export function ApprovalCard({ approval, cancelling, onAnswer, onStop }: {
   });
 
   const scope = scopeOf(words, approval);
-  const sentence = commandTools.has(approval.tool) ? words.hint.consentRun
-    : writers.has(approval.tool) ? words.hint.consentWrite : words.hint.consentOther(approval.tool);
+  const sentence = consentOf(words, approval.tool);
   const text = approval.target ?? approval.summary;
 
   return <section className="consent" data-test="consent" aria-labelledby="consent-title">

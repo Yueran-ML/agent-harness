@@ -14,10 +14,13 @@ import { sizeStorageKey } from '../src/size';
 import { projectEvents } from '../src/state';
 import { themeStorageKey } from '../src/themes';
 import type { PendingApproval, Workspace } from '../src/useWorkspace';
-import { begin, end, failed, header, likeABrowser, log, reply, service, statusOf, user, workspaceWith } from './mounted';
+import {
+  begin, end, failed, gitHubWith, header, likeABrowser, log, reply, service, statusOf, user, workspaceWith,
+} from './mounted';
 
-const held = vi.hoisted(() => ({ workspace: null as unknown }));
+const held = vi.hoisted(() => ({ workspace: null as unknown, github: null as unknown }));
 vi.mock('../src/useWorkspace', () => ({ useWorkspace: () => held.workspace }));
+vi.mock('../src/useGitHub', async original => ({ ...await original<object>(), useGitHub: () => held.github }));
 vi.mock('../src/BackgroundMusic', () => ({
   useBackgroundMusic: () => ({ hasTrack: false, muted: false, setMuted: () => {} }),
   MusicTitlebar: () => null,
@@ -34,6 +37,7 @@ vi.mock('../src/StartupVideo', async () => {
 
 beforeEach(() => {
   likeABrowser();
+  held.github = gitHubWith();
   localStorage.clear();
   // A start that has had its opening: the page is there at once.
   localStorage.setItem(openingStorageKey, 'seen');

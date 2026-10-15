@@ -311,6 +311,35 @@ export const ja: Messages = {
       },
     },
 
+    github: {
+      signIn: 'GitHub でサインイン',
+      enterCode: 'このコードを GitHub で入力',
+      copyCode: 'コードをコピー',
+      openGitHub: 'GitHub を開く',
+      left: (clock: string) => `残り ${clock}`,
+      newCode: '新しいコードを取得',
+      tryAgain: 'もう一度試す',
+      checkAgain: 'もう一度確認',
+      repositories: 'Columbina がアクセスできるリポジトリ',
+      chooseRepositories: 'リポジトリを選ぶ',
+      manageRepositories: 'リポジトリを管理',
+      signOut: 'サインアウト',
+      stay: 'サインインしたままにする',
+      revoke: 'GitHub で権限を取り消す',
+    },
+
+    start: {
+      title: 'はじめに',
+      model: 'モデルサービス',
+      optional: '任意',
+      project: 'プロジェクト',
+      connect: '接続',
+      change: '変更',
+      skip: 'スキップ',
+      hide: 'はじめにを閉じる',
+      show: 'はじめにを開く',
+    },
+
     notice: {
       consent: 'Columbina が承認を求めています',
       finished: 'Columbina の作業が終わりました',
@@ -388,6 +417,13 @@ export const ja: Messages = {
       todo: 'やることを記録',
       skill: 'スキルを使用',
       subagent: '委任',
+      githubRepos: 'GitHub のリポジトリを一覧',
+      githubRead: 'GitHub で読み取り',
+      githubChecks: 'チェックを確認',
+      githubClone: 'クローン',
+      githubPush: 'プッシュ',
+      githubPullRequest: 'プルリクエストを作成',
+      githubComment: 'コメント',
       other: (tool: string) => `${tool} を呼び出し`,
     },
     subagentKind: 'サブエージェントの種類',
@@ -435,6 +471,7 @@ export const ja: Messages = {
     typeSizes: { small: '小', standard: '標準', large: '大' },
     model: 'モデル',
     permissions: '権限',
+    account: 'GitHub アカウント',
     presets: {
       readOnly: '読み取り専用',
       workspaceWrite: 'プロジェクトのファイルを変更',
@@ -479,6 +516,12 @@ export const ja: Messages = {
     consentRun: 'Columbina がこのコマンドを実行しようとしています。',
     consentWrite: 'Columbina がこのファイルを変更しようとしています。',
     consentOther: (tool: string) => `Columbina が ${tool} を使おうとしています。`,
+    consentGitHub: {
+      clone: 'Columbina が GitHub からリポジトリをクローンしようとしています。',
+      push: 'Columbina が GitHub にブランチをプッシュしようとしています。',
+      pullRequest: 'Columbina が GitHub でプルリクエストを作成しようとしています。',
+      comment: 'Columbina が GitHub にコメントを書こうとしています。',
+    },
     consentWaiting: 'Columbina はあなたの回答を待っています。',
     consentSent: '回答を送りました。',
     afterNo: '実行されませんでした。別のやり方を Columbina に伝えられます。',
@@ -548,6 +591,48 @@ export const ja: Messages = {
       forgetAsk: (service: string) => `${service} に保存したキーを削除しますか？ほかの設定はそのまま残ります。`,
       forgotten: (service: string) => `${service} のキーを削除しました。`,
       noneToForget: (service: string) => `${service} にはキーが保存されていませんでした。`,
+    },
+
+    start: {
+      lead: 'あと少しの手順で、Columbina が作業を始められます。',
+      noKey: (service: string) => `${service} のキーがまだ設定されていません。`,
+      github: 'サインインすると、Columbina があなたのリポジトリ、issue、プルリクエストを扱えるようになります。'
+        + 'あとで設定からサインインすることもできます。',
+    },
+
+    github: {
+      lead: 'サインインすると、Columbina はあなたの名前でリポジトリ、issue、プルリクエスト、チェックを読み、'
+        + 'クローン、プッシュ、プルリクエストの作成、コメントができるようになります。'
+        + 'プッシュ、プルリクエスト、コメントの前には毎回確認します。フルアクセスか規則で許可されている場合は確認しません。',
+      checking: 'GitHub にサインインしている人を確認しています。',
+      asking: 'GitHub にコードを求めています。',
+      waiting: 'ブラウザーで確認されるまで、Columbina は待っています。',
+      expired: 'コードの有効期限が切れました。',
+      signedIn: (login: string) => `@${login} として GitHub にサインインしました。`,
+      noRepositories: 'Columbina がアクセスできるのは、あなたが GitHub で選んだリポジトリだけです。まだ一つも選ばれていません。',
+      moreRepositories: (count: number) => `ほかに ${count} 件あります。`,
+      offline: 'Columbina がアクセスできるリポジトリを GitHub に問い合わせられませんでした。',
+      ended: 'GitHub のサインインの有効期限が切れました。もう一度サインインしてください。',
+      unavailable: 'GitHub へのサインインは、アプリがサービスを自分で動かしているときにできます。再生中はできません。',
+      unreadable: 'このコンピューターに保存された GitHub のサインイン情報を読み取れません。',
+      statusFailed: 'Columbina は GitHub にサインインしている人を確認できませんでした。',
+      signOutAsk: (login: string) =>
+        `このコンピューターで GitHub からサインアウトしますか？その後、Columbina は @${login} の名前で操作できなくなります。`,
+      signedOut: 'このコンピューターでサインアウトしました。アプリに与えた権限は、GitHub で取り消すまで有効です。',
+      signOutFailed: 'サインアウトできませんでした。',
+      failed: {
+        unreachable: 'GitHub に接続できません。このコンピューターがネットワークにつながっているか、プロキシを使っていればそれが動いているかを確かめてください。',
+        timeout: 'GitHub が時間内に応答しませんでした。少し待ってから、もう一度試してください。',
+        busy: 'GitHub が混み合っています。少し待ってから、もう一度試してください。',
+        expired: '確認される前にコードの有効期限が切れました。新しいコードを取得してください。',
+        denied: 'GitHub でサインインが拒否されました。',
+        rateLimited: 'GitHub から、次のリクエストまで待つよう求められています。待つ時間は詳細に書かれています。',
+        unregistered: 'この Columbina では、まだ GitHub にサインインできません。',
+        store: 'サインインの情報をこのコンピューターに保存できませんでした。',
+        ended: 'サインインが完了する前に止まりました。',
+        notStarted: 'サインインを始められませんでした。',
+        unknown: 'サインインできませんでした。',
+      },
     },
 
     music: {

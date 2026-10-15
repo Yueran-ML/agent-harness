@@ -37,6 +37,24 @@ export interface ColumbinaBridge {
    */
   setUpService(asked: { service: string | null; language: string }): Promise<{ changed: boolean }>;
   openExternal(url: string): Promise<void>;
+  /**
+   * What `columbina login --status --json` says: who is signed in to GitHub, with the picture
+   * as an address of data, and what Columbina may reach; with `skipped`, whether the user said
+   * on the first page that GitHub can wait. Null where the application does not run the service.
+   */
+  githubStatus(): Promise<unknown>;
+  /**
+   * Begin a sign-in to GitHub, in the place of one that runs. What it says comes as documents to
+   * `onGitHub`: the code and the page to enter it on, then how it ended, then `{ ended: true }`.
+   */
+  githubSignIn(): Promise<void>;
+  /** Stop the sign-in that runs, if one does. Nothing more is told of it. */
+  githubCancel(): Promise<void>;
+  /** What `columbina logout github --json` says: whether anybody was signed in, and where the right is taken back. */
+  githubSignOut(): Promise<unknown>;
+  /** Say whether GitHub is to wait, so that the first page offers it no more, or again. */
+  skipGitHub(skipped: boolean): Promise<void>;
+  onGitHub(listener: (said: Record<string, unknown>) => void): () => void;
 }
 
 declare global {

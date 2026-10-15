@@ -1,8 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
-  agoOf, anotherServiceChosen, argumentsOf, callSeconds, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE, joined, keyAtHand,
-  objectOf, presetOf,
+  agoOf, anotherServiceChosen, argumentsOf, callSeconds, consentOf, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE,
+  joined, keyAtHand, objectOf, presetOf,
   presets, retryText, scopeOf, servicesToTell, serviceTitle, skillLine, skillNamed, SKILLS_SHOWN, skillsOf, skillsToShow, standingOf,
   stepped,
   STILL_STARTING_MS, subagentKind, tail, taskTitle, TIME_WORTH_SAYING_MS, toolKind, verbOf, waitingWords,
@@ -613,6 +613,9 @@ describe('a call of a tool', () => {
     ['read', 'read'], ['write', 'write'], ['edit', 'edit'], ['glob', 'list'], ['grep', 'search'],
     ['bash', 'run'], ['powershell', 'run'], ['todo_write', 'todo'], ['skill', 'skill'],
     ['subagent', 'subagent'], ['mcp__files__fetch', 'other'], ['Read', 'other'], ['', 'other'],
+    ['github_repos', 'githubRepos'], ['github_read', 'githubRead'], ['github_checks', 'githubChecks'],
+    ['github_clone', 'githubClone'], ['github_push', 'githubPush'], ['github_open_pull_request', 'githubPullRequest'],
+    ['github_comment', 'githubComment'], ['github_merge', 'other'],
   ] as const)('of %s is of the kind %s', (name, kind) => {
     expect(toolKind(name)).toBe(kind);
   });
@@ -622,6 +625,44 @@ describe('a call of a tool', () => {
     expect(verbOf(en, 'powershell')).toBe('Run');
     expect(verbOf(zhCN, 'edit')).toBe('修改');
     expect(verbOf(en, 'mcp__files__fetch')).toBe('Call mcp__files__fetch');
+  });
+
+  it('says what a tool of GitHub does, and not its name', () => {
+    expect(verbOf(en, 'github_repos')).toBe('List the repositories on GitHub');
+    expect(verbOf(en, 'github_read')).toBe('Read on GitHub');
+    expect(verbOf(en, 'github_checks')).toBe('See the checks of');
+    expect(verbOf(en, 'github_clone')).toBe('Clone');
+    expect(verbOf(en, 'github_push')).toBe('Push');
+    expect(verbOf(en, 'github_open_pull_request')).toBe('Open a pull request');
+    expect(verbOf(en, 'github_comment')).toBe('Comment on');
+    expect(verbOf(zhCN, 'github_open_pull_request')).toBe('开 PR');
+  });
+
+  it('acts on GitHub on what the tool names there', () => {
+    const ref = { ref: 'octocat/hello#12', path: 'x', page: 2 };
+    expect(objectOf(ref, 'github_read')).toBe('octocat/hello#12');
+    expect(objectOf(ref, 'github_checks')).toBe('octocat/hello#12');
+    expect(objectOf({ ref: 'octocat/hello#12', body: 'Looks good.' }, 'github_comment')).toBe('octocat/hello#12');
+    expect(objectOf({ repo: 'octocat/hello', path: 'hello' }, 'github_clone')).toBe('octocat/hello');
+    // A push names its branch, and the folder of the repository where it names no branch.
+    expect(objectOf({ path: 'hello', branch: 'fix-parser' }, 'github_push')).toBe('fix-parser');
+    expect(objectOf({ path: 'hello' }, 'github_push')).toBe('hello');
+    expect(objectOf({ repo: 'octocat/hello', head: 'fix-parser', title: 'Fix the parser', body: '' }, 'github_open_pull_request'))
+      .toBe('Fix the parser');
+    expect(objectOf({}, 'github_repos')).toBe('');
+    // A tool of another name goes by the arguments that say what on, whatever it is called.
+    expect(objectOf({ ref: 'octocat/hello#12', path: 'x' }, 'toString')).toBe('x');
+  });
+
+  it('says in a sentence what it wants to do, on the card that asks whether it may', () => {
+    expect(consentOf(en, 'bash')).toBe('Columbina wants to run this command.');
+    expect(consentOf(en, 'edit')).toBe('Columbina wants to change this file.');
+    expect(consentOf(en, 'github_clone')).toBe('Columbina wants to clone a repository from GitHub.');
+    expect(consentOf(en, 'github_push')).toBe('Columbina wants to push a branch to GitHub.');
+    expect(consentOf(en, 'github_open_pull_request')).toBe('Columbina wants to open a pull request on GitHub.');
+    expect(consentOf(en, 'github_comment')).toBe('Columbina wants to write a comment on GitHub.');
+    expect(consentOf(en, 'github_read')).toBe('Columbina wants to use github_read.');
+    expect(consentOf(zhCN, 'github_comment')).toBe('Columbina 想在 GitHub 上发一条评论。');
   });
 
   it('acts on the first of the arguments that say what on', () => {

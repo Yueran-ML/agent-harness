@@ -335,6 +335,38 @@ export const en = {
       },
     },
 
+    /** Signing in to GitHub, and who is signed in. */
+    github: {
+      signIn: 'Sign in with GitHub',
+      enterCode: 'Enter this code on GitHub',
+      copyCode: 'Copy the code',
+      openGitHub: 'Open GitHub',
+      /** How long the code holds yet, as a clock shows it. */
+      left: (clock: string) => `${clock} left`,
+      newCode: 'Ask for a new code',
+      tryAgain: 'Try again',
+      checkAgain: 'Check again',
+      repositories: 'Repositories that Columbina may reach',
+      chooseRepositories: 'Choose repositories',
+      manageRepositories: 'Manage repositories',
+      signOut: 'Sign out',
+      stay: 'Stay signed in',
+      revoke: 'Take back the right on GitHub',
+    },
+
+    /** The first steps on the first page. */
+    start: {
+      title: 'Getting started',
+      model: 'Model service',
+      optional: 'Optional',
+      project: 'Project',
+      connect: 'Connect',
+      change: 'Change',
+      skip: 'Skip',
+      hide: 'Hide the first steps',
+      show: 'Show the first steps',
+    },
+
     /** What the system shows of this application while its window is in the background. */
     notice: {
       consent: 'Columbina needs your consent',
@@ -418,6 +450,13 @@ export const en = {
       todo: 'Keep a list',
       skill: 'Use a skill',
       subagent: 'Hand over',
+      githubRepos: 'List the repositories on GitHub',
+      githubRead: 'Read on GitHub',
+      githubChecks: 'See the checks of',
+      githubClone: 'Clone',
+      githubPush: 'Push',
+      githubPullRequest: 'Open a pull request',
+      githubComment: 'Comment on',
       other: (tool: string) => `Call ${tool}`,
     },
     /** What the name beside a task that was handed over is. */
@@ -468,6 +507,7 @@ export const en = {
     typeSizes: { small: 'Small', standard: 'Standard', large: 'Large' },
     model: 'Model',
     permissions: 'Permissions',
+    account: 'GitHub account',
     presets: {
       readOnly: 'Read only',
       workspaceWrite: 'Change files of the project',
@@ -513,6 +553,13 @@ export const en = {
     consentRun: 'Columbina wants to run this command.',
     consentWrite: 'Columbina wants to change this file.',
     consentOther: (tool: string) => `Columbina wants to use ${tool}.`,
+    /** What Columbina wants to do on GitHub, in its name of the user. */
+    consentGitHub: {
+      clone: 'Columbina wants to clone a repository from GitHub.',
+      push: 'Columbina wants to push a branch to GitHub.',
+      pullRequest: 'Columbina wants to open a pull request on GitHub.',
+      comment: 'Columbina wants to write a comment on GitHub.',
+    },
     consentWaiting: 'Columbina waits for your answer.',
     consentSent: 'Your answer is on its way.',
     afterNo: 'It was not done. You can tell Columbina how to go about it instead.',
@@ -591,6 +638,50 @@ export const en = {
       forgetAsk: (service: string) => `Delete the key that is stored for ${service}? What else is set up for it stays.`,
       forgotten: (service: string) => `The key of ${service} was deleted.`,
       noneToForget: (service: string) => `No key was stored for ${service}.`,
+    },
+
+    /** The first steps on the first page. */
+    start: {
+      lead: 'A few steps, and Columbina is ready to work.',
+      noKey: (service: string) => `No key is set up for ${service} yet.`,
+      github: 'Once you are signed in, Columbina can work on your repositories, issues and pull requests. '
+        + 'You can also sign in later in the settings.',
+    },
+
+    /** Signing in to GitHub, and who is signed in. */
+    github: {
+      lead: 'Once you are signed in, Columbina can read repositories, issues, pull requests and checks in your name, '
+        + 'clone and push, open pull requests and comment. It asks you before each push, pull request and comment, '
+        + 'unless full access or a rule allows it.',
+      checking: 'Asking who is signed in to GitHub.',
+      asking: 'Asking GitHub for a code.',
+      waiting: 'Columbina waits until you have confirmed it in the browser.',
+      expired: 'The code has run out.',
+      signedIn: (login: string) => `Signed in to GitHub as @${login}.`,
+      noRepositories: 'Columbina reaches only the repositories that you choose for it on GitHub, and none is chosen yet.',
+      moreRepositories: (count: number) => (count === 1 ? 'And 1 more.' : `And ${count} more.`),
+      offline: 'GitHub could not be asked which repositories Columbina may reach.',
+      ended: 'The sign-in to GitHub has run out. Sign in again.',
+      unavailable: 'Signing in to GitHub works where the application runs the service itself, and not in a replay.',
+      unreadable: 'What this computer keeps of the sign-in to GitHub cannot be read.',
+      statusFailed: 'Columbina could not find out who is signed in to GitHub.',
+      signOutAsk: (login: string) =>
+        `Sign out of GitHub on this computer? Columbina can then no longer act in the name of @${login}.`,
+      signedOut: 'Signed out on this computer. The app keeps the right that you gave it until you take it back on GitHub.',
+      signOutFailed: 'The sign-out did not go through.',
+      failed: {
+        unreachable: 'GitHub could not be reached. See whether this computer is online, and that the proxy is on if you use one.',
+        timeout: 'GitHub did not answer in time. Try again in a moment.',
+        busy: 'GitHub is busy. Try again in a moment.',
+        expired: 'The code ran out before it was confirmed. Ask for a new one.',
+        denied: 'The sign-in was turned down on GitHub.',
+        rateLimited: 'GitHub asks Columbina to wait before it asks again. The details say for how long.',
+        unregistered: 'This build of Columbina cannot sign in to GitHub yet.',
+        store: 'The sign-in could not be kept on this computer.',
+        ended: 'The sign-in stopped before it was done.',
+        notStarted: 'The sign-in could not be started.',
+        unknown: 'The sign-in did not go through.',
+      },
     },
 
     music: {

@@ -44,6 +44,11 @@ export function useWorkspace() {
   // The services of the model and where the key of each comes from, as the program of the
   // service tells of them. Null where the application does not run that program, or before it answered.
   const [services, setServices] = useState<Listed | null>(null);
+  // Whether the program is being asked for the services. It is asked as soon as the page is
+  // there, also before any project is open: the first page tells whether a service is set up.
+  const [checkingServices, setCheckingServices] = useState(false);
+  // The asks for the services, by number. Only the answer to the last one counts.
+  const servicesAsked = useRef(0);
   // The skills of the task that is open, as the service process lists them.
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   // The last lines that the service wrote for errors, asked for when its connection ends.
@@ -165,17 +170,22 @@ export function useWorkspace() {
   }, []);
 
   const refreshServices = useCallback(async (): Promise<Listed | null> => {
+    const number = ++servicesAsked.current;
+    setCheckingServices(true);
     try {
       const listed = listedOf(await window.columbina?.services());
-      setServices(listed);
+      if (number === servicesAsked.current) setServices(listed);
       return listed;
     } catch (problem) {
-      setServices(null);
-      fail(problem);
+      if (number === servicesAsked.current) {
+        setServices(null);
+        fail(problem);
+      }
       return null;
+    } finally {
+      if (number === servicesAsked.current) setCheckingServices(false);
     }
   }, [fail]);
-
   const connect = useCallback(async (cwd?: string, resumeId?: string) => {
     if (connecting.current || (window.columbina && !cwd)) return;
     connecting.current = true;
@@ -335,9 +345,11 @@ export function useWorkspace() {
 
   useEffect(() => {
     if (!window.columbina) void connect();
+    // The first page tells of the projects of earlier days, and of whether a service is set up.
     void refreshRecent();
+    if (window.columbina) void refreshServices();
     return () => { ++generation.current; connectionCleanup.current(); client.current?.close(); };
-  }, [connect, refreshRecent]);
+  }, [connect, refreshRecent, refreshServices]);
 
   /**
    * Have a command carried out.
@@ -471,8 +483,9 @@ export function useWorkspace() {
   const projection = useMemo(() => projectEvents(events, closed !== null), [events, closed]);
   return {
     hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending,
-    cancelling, error, closed, lastWords, openedAt, folder, recent, services, skills, mode, projection, reading,
-    openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, setUpService, cancelStart,
+    cancelling, error, closed, lastWords, openedAt, folder, recent, services, checkingServices, skills, mode, projection,
+    reading, openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, setUpService,
+    refreshServices, cancelStart,
     reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined),
     showLog: () => void window.columbina?.showLog().catch(fail),
     clearError: () => setError(null), fail,

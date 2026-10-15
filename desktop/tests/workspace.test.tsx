@@ -1072,24 +1072,68 @@ describe('a service process that ends', () => {
 });
 
 describe('the services and the folders of the shell', () => {
+  it('reads the services as soon as the page is there, before any project is open, and says while it reads them', async () => {
+    const service = new Service();
+    service.listed = { use: null, services: [listedService('deepseek', 'DeepSeek')] };
+    const answer = held<unknown>();
+    service.bridge.services.mockReturnValueOnce(answer.promise);
+    const { now } = mounted(service);
+    expect(now().checkingServices).toBe(true);
+    expect(now().services).toBeNull();
+    await act(async () => { answer.release(service.listed); });
+    expect(now().checkingServices).toBe(false);
+    expect(now().services).toEqual(service.listed);
+    expect(now().hasProject).toBe(false);
+    expect(service.bridge.services).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks nothing of a shell that is not there, and is not asking then', () => {
+    vi.stubGlobal('columbina', undefined);
+    const { result } = renderHook(() => useWorkspace());
+    expect(result.current.checkingServices).toBe(false);
+  });
+
+  it('holds the answer to the last ask for the services, whichever answer comes first', async () => {
+    const service = new Service();
+    const first = held<unknown>();
+    const second = held<unknown>();
+    service.bridge.services.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const { now } = mounted(service);
+    let asked: Promise<unknown> = Promise.resolve();
+    act(() => { asked = now().refreshServices(); });
+    const later = { use: 'openai', services: [listedService('openai', 'OpenAI', { key: 'stored' })] };
+    await act(async () => { second.release(later); await asked; });
+    expect([now().services, now().checkingServices]).toEqual([later, false]);
+    // What the first ask answers, or how it fails, comes too late to count.
+    await act(async () => { first.release({ use: null, services: [listedService('deepseek', 'DeepSeek')] }); });
+    expect(now().services).toEqual(later);
+    const third = held<unknown>();
+    service.bridge.services.mockReturnValueOnce(third.promise).mockResolvedValueOnce(later);
+    act(() => { void now().refreshServices(); });
+    await act(async () => { await now().refreshServices(); });
+    await act(async () => { third.refuse(new Error('too late')); });
+    expect([now().services, now().checkingServices, now().error]).toEqual([later, false, null]);
+  });
+
   it('reads the services again after one was set up, and says so to whoever asked', async () => {
     const service = new Service();
     service.listed = { use: null, services: [listedService('deepseek', 'DeepSeek')] };
     const { now } = await started(service);
-    expect(service.bridge.services).toHaveBeenCalledTimes(1);
+    // Once when the page was there, and once when the service was started.
+    expect(service.bridge.services).toHaveBeenCalledTimes(2);
     let stored: unknown = 'not asked';
     await act(async () => { stored = await now().setUpService('deepseek', 'ja'); });
     expect(service.bridge.setUpService.mock.calls).toEqual([[{ service: 'deepseek', language: 'ja' }]]);
     // Nothing was stored in the window of the key.
     expect(stored).toBeNull();
-    expect(service.bridge.services).toHaveBeenCalledTimes(1);
+    expect(service.bridge.services).toHaveBeenCalledTimes(2);
 
     service.bridge.setUpService.mockResolvedValueOnce({ changed: true });
     service.listed = { use: 'deepseek', services: [listedService('deepseek', 'DeepSeek', { key: 'stored' })] };
     await act(async () => { stored = await now().setUpService(null, 'en'); });
     expect(stored).toEqual({ listed: service.listed });
     expect(now().services).toEqual(service.listed);
-    expect(service.bridge.services).toHaveBeenCalledTimes(2);
+    expect(service.bridge.services).toHaveBeenCalledTimes(3);
   });
 
   it('says what went wrong where the window of the key could not be opened', async () => {

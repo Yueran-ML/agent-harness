@@ -315,7 +315,9 @@ export function argumentsOf(item: ToolItem): Record<string, unknown> | null {
 export const commandTools = new Set(['bash', 'powershell']);
 
 /** The kind of thing a tool does. The interface has a word and a picture for each. */
-export type ToolKind = 'read' | 'write' | 'edit' | 'list' | 'search' | 'run' | 'todo' | 'skill' | 'subagent' | 'other';
+export type ToolKind = 'read' | 'write' | 'edit' | 'list' | 'search' | 'run' | 'todo' | 'skill' | 'subagent'
+  | 'githubRepos' | 'githubRead' | 'githubChecks' | 'githubClone' | 'githubPush' | 'githubPullRequest' | 'githubComment'
+  | 'other';
 
 export function toolKind(name: string): ToolKind {
   switch (name) {
@@ -327,7 +329,30 @@ export function toolKind(name: string): ToolKind {
     case 'todo_write': return 'todo';
     case 'skill': return 'skill';
     case 'subagent': return 'subagent';
+    case 'github_repos': return 'githubRepos';
+    case 'github_read': return 'githubRead';
+    case 'github_checks': return 'githubChecks';
+    case 'github_clone': return 'githubClone';
+    case 'github_push': return 'githubPush';
+    case 'github_open_pull_request': return 'githubPullRequest';
+    case 'github_comment': return 'githubComment';
     default: return commandTools.has(name) ? 'run' : 'other';
+  }
+}
+
+/** The tools that write a file. */
+const writers = new Set(['write', 'edit']);
+
+/** What Columbina wants to do, in a sentence, on the card that asks whether it may. */
+export function consentOf(words: Messages, tool: string): string {
+  if (commandTools.has(tool)) return words.hint.consentRun;
+  if (writers.has(tool)) return words.hint.consentWrite;
+  switch (toolKind(tool)) {
+    case 'githubClone': return words.hint.consentGitHub.clone;
+    case 'githubPush': return words.hint.consentGitHub.push;
+    case 'githubPullRequest': return words.hint.consentGitHub.pullRequest;
+    case 'githubComment': return words.hint.consentGitHub.comment;
+    default: return words.hint.consentOther(tool);
   }
 }
 
@@ -365,12 +390,24 @@ export function verbOf(words: Messages, name: string): string {
   return kind === 'other' ? words.label.verb.other(name) : words.label.verb[kind];
 }
 
+// What a call of a tool of GitHub acts on: the issue or pull request, the repository, the branch
+// that is pushed, or the title of the pull request that is opened.
+const objectsOnGitHub: Record<string, string[]> = {
+  github_read: ['ref'],
+  github_checks: ['ref'],
+  github_clone: ['repo'],
+  github_push: ['branch', 'path'],
+  github_open_pull_request: ['title'],
+  github_comment: ['ref'],
+};
+
 /**
  * What a call acts on: the first of these arguments that it has, as the
- * protocol document says a terminal does it.
+ * protocol document says a terminal does it. A tool of GitHub names what it acts on there.
  */
-export function objectOf(args: Record<string, unknown> | null): string {
-  for (const key of ['command', 'path', 'pattern', 'description', 'name']) {
+export function objectOf(args: Record<string, unknown> | null, tool = ''): string {
+  const keys = Object.hasOwn(objectsOnGitHub, tool) ? objectsOnGitHub[tool] : ['command', 'path', 'pattern', 'description', 'name'];
+  for (const key of keys) {
     const value = args?.[key];
     if (typeof value === 'string' && value.trim()) return value;
   }

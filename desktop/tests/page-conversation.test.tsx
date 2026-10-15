@@ -239,6 +239,26 @@ describe('the line of a call', () => {
     expect(plain.querySelector('[data-test="tool-kind"]')).toBeNull();
   });
 
+  it('says what a call on GitHub does there, and to what', () => {
+    drawn(workspaceWith({
+      events: log(
+        begin(1), user('ship it'),
+        call('a', 'github_read', { ref: 'octocat/hello#12' }),
+        call('b', 'github_push', { path: 'hello', branch: 'fix-parser' }),
+        call('c', 'github_open_pull_request', { repo: 'octocat/hello', head: 'fix-parser', title: 'Fix the parser' }),
+        call('d', 'github_repos', {}),
+      ),
+      status: atWork,
+    }));
+    expect(marked('tool').map(row => [row.querySelector('.tool-verb')?.textContent, row.querySelector('.tool-object')?.textContent ?? null]))
+      .toEqual([
+        ['Read on GitHub', 'octocat/hello#12'],
+        ['Push', 'fix-parser'],
+        ['Open a pull request', 'Fix the parser'],
+        ['List the repositories on GitHub', null],
+      ]);
+  });
+
   it('shows the last lines of what came back, and all of them when that is asked for', () => {
     const lines = Array.from({ length: 300 }, (_line, index) => `line ${index}`).join('\n');
     drawn(workspaceWith({ events: log(begin(1), user('count'), call('a', 'bash', { command: 'count' }), result('a', lines), reply('Counted.'), end(1)) }));

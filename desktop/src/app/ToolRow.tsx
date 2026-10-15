@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  Check, ChevronRight, CircleSlash, FilePen, FileText, FolderSearch, Hand, ListChecks, Search,
-  Sparkles, SquareTerminal, TriangleAlert, Users, Wrench, type LucideIcon,
+  BadgeCheck, Check, ChevronRight, CircleSlash, FilePen, FileText, FolderDown, FolderGit2, FolderSearch, GitPullRequest,
+  Hand, ListChecks, MessageSquare, Search, Sparkles, SquareTerminal, TriangleAlert, Upload, Users, Wrench, type LucideIcon,
 } from 'lucide-react';
 import { classifyTool, type ToolOutcome } from '../outcomes';
 import type { ToolItem } from '../state';
@@ -22,6 +22,13 @@ const icons: Record<ToolKind, LucideIcon> = {
   todo: ListChecks,
   skill: Sparkles,
   subagent: Users,
+  githubRepos: FolderGit2,
+  githubRead: FileText,
+  githubChecks: BadgeCheck,
+  githubClone: FolderDown,
+  githubPush: Upload,
+  githubPullRequest: GitPullRequest,
+  githubComment: MessageSquare,
   other: Wrench,
 };
 
@@ -79,7 +86,7 @@ export function ToolRow({ item }: { item: ToolItem }) {
   const words = useWords();
   const args = argumentsOf(item);
   const Icon = icons[toolKind(item.name)];
-  const object = objectOf(args);
+  const object = objectOf(args, item.name);
   const outcome = classifyTool(item);
   const saying = sayTool(words, outcome);
   const tone = toneOf(outcome);

@@ -8,6 +8,7 @@
 import { vi } from 'vitest';
 import type { SessionEvent, SessionStatus } from '../src/protocol';
 import { emptyPreview, projectEvents } from '../src/state';
+import type { GitHub } from '../src/useGitHub';
 import type { Workspace } from '../src/useWorkspace';
 
 /** Give the DOM of the tests what the parts of the page ask a browser for, each as little as they need. */
@@ -97,6 +98,7 @@ export function workspaceWith(given: Partial<Workspace> = {}): Workspace {
     folder: 'F:\\work',
     recent: [],
     services: null,
+    checkingServices: false,
     skills: [],
     mode: 'service' as const,
     projection: projectEvents(events, closed !== null),
@@ -111,6 +113,7 @@ export function workspaceWith(given: Partial<Workspace> = {}): Workspace {
     pickRecent: vi.fn(async () => null),
     openFolder: vi.fn(async () => {}),
     setUpService: vi.fn(async () => null),
+    refreshServices: vi.fn(async () => null),
     cancelStart: vi.fn(),
     reconnect: vi.fn(async () => {}),
     showLog: vi.fn(),
@@ -134,3 +137,27 @@ export const service = (
   key: given.key ?? 'none',
   key_page: given.key_page ?? null,
 });
+
+/** Where the repositories that the GitHub App of the tests may reach are chosen. */
+export const INSTALL_URL = 'https://github.com/apps/columbina/installations/new';
+
+/**
+ * What the page knows of GitHub, as it holds it: nobody is signed in, and no sign-in runs,
+ * unless a test says otherwise.
+ */
+export function gitHubWith(given: Partial<GitHub> = {}): GitHub {
+  return {
+    account: { kind: 'nobody', installUrl: INSTALL_URL, ended: null },
+    skipped: false,
+    checking: false,
+    signIn: { kind: 'idle' },
+    signedOut: null,
+    signOutFailed: null,
+    refresh: vi.fn(async () => {}),
+    begin: vi.fn(async () => {}),
+    cancel: vi.fn(),
+    signOut: vi.fn(async () => true),
+    skip: vi.fn(async () => {}),
+    ...given,
+  };
+}

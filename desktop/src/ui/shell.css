@@ -1113,3 +1113,315 @@ select.field {
 .working-more {
   color: var(--moon-2);
 }
+
+/* --- Signing in to GitHub, and who is signed in. */
+
+/* Something that is said of what was done or asked, with what can be done about it. */
+.callout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r2);
+  border: 1px solid var(--line-strong);
+  line-height: 1.5;
+}
+
+.callout > svg {
+  flex: none;
+  margin-top: 3px;
+}
+
+.callout[data-tone='bad'] {
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+  background: var(--bad-wash);
+}
+
+.callout[data-tone='bad'] > svg {
+  color: var(--bad);
+}
+
+.callout[data-tone='warn'] {
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+  background: var(--warn-wash);
+}
+
+.callout[data-tone='warn'] > svg {
+  color: var(--warn);
+}
+
+.callout[data-tone='ok'] {
+  border-color: color-mix(in srgb, var(--ok) 40%, transparent);
+  background: var(--ok-wash);
+}
+
+.callout[data-tone='ok'] > svg {
+  color: var(--ok);
+}
+
+.callout-words {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s2);
+}
+
+.callout-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.github-lead {
+  line-height: 1.5;
+}
+
+.github-note {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s1);
+}
+
+.caption[data-tone='warn'] {
+  color: var(--warn);
+}
+
+/* The code that is entered on GitHub. It is the one thing here that is read letter by letter,
+   and a click marks all of it. */
+.github-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s4) var(--s5);
+  border-radius: var(--r2);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-1);
+}
+
+.github-code-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s4);
+}
+
+.github-code {
+  font-size: calc(28px * var(--type));
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
+  color: var(--accent-strong);
+  user-select: all;
+}
+
+/* A code that has run out is no longer to be entered. */
+.github-card[data-expired] .github-code {
+  color: var(--moon-3);
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  user-select: none;
+}
+
+.github-open {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s3);
+  min-width: 0;
+}
+
+/* Where the button leads, written out, so that it can be typed into a browser by hand. */
+.github-url {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.github-wait {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.github-card .github-wait {
+  padding-top: var(--s3);
+  border-top: 1px solid var(--line);
+}
+
+/* The words give way to the moon before them and the clock after them, and break into lines of their own. */
+.github-wait-words {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  color: var(--moon-1);
+}
+
+.github-wait-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The clock keeps its width while it counts down. */
+.github-left {
+  flex: none;
+  font-size: var(--text-caption);
+  font-variant-numeric: tabular-nums;
+  color: var(--moon-2);
+}
+
+.github-person {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.avatar {
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  object-fit: cover;
+}
+
+.avatar-letter {
+  display: inline-grid;
+  place-items: center;
+  background: var(--accent-wash);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.github-names {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.github-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--moon-0);
+  font-weight: 600;
+}
+
+.github-login {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--moon-2);
+  font-size: var(--text-caption);
+}
+
+.github-repositories .service-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+}
+
+.github-flow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+/* --- The first steps, on the page before any project is open. */
+.steps {
+  width: min(100vw - 2 * var(--s5), 560px);
+  margin-top: var(--s2);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
+  background: color-mix(in srgb, var(--ink-1) 72%, transparent);
+  list-style: none;
+  text-align: left;
+  animation: rise 520ms 60ms var(--ease) both;
+}
+
+/* A mark, what the step is and where it stands, and what can be done about it. */
+.step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  column-gap: var(--s3);
+  padding: var(--s4);
+}
+
+.step + .step {
+  border-top: 1px solid var(--line);
+}
+
+.step-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.step[data-done] .step-mark {
+  border-color: transparent;
+  background: var(--ok-wash);
+  color: var(--ok);
+}
+
+.step-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-top: 3px;
+}
+
+.step-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  font-size: var(--text-ui);
+  font-weight: 600;
+  color: var(--moon-0);
+}
+
+.step-optional {
+  font-size: var(--text-caption);
+  font-weight: 400;
+  color: var(--moon-2);
+}
+
+/* The code of a sign-in takes the width of the step, and the button stands under the words. */
+.step .github-card {
+  margin-top: var(--s1);
+}
+
+.first-steps-line > svg {
+  color: var(--ok);
+}
+
+.first-steps-hide {
+  margin-top: calc(-1 * var(--s1));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .steps {
+    animation: none;
+  }
+}
+
+/* Who signed in, in the step of GitHub: the picture, small, beside the login. */
+.step-person {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}

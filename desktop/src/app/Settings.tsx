@@ -5,18 +5,20 @@ import { called, changedBeyondKey } from '../key/form';
 import type { Hello } from '../protocol';
 import { sizes, type SizeId } from '../size';
 import { themes, type ThemeId } from '../themes';
+import type { GitHub } from '../useGitHub';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
+import { GitHubAccount } from './GitHubSignIn';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
 import { anotherServiceChosen, presetOf, presets, servicesToTell, serviceTitle } from './tell';
 
 /** The part of the settings that a way into them leads to. */
-export type SettingsPart = 'appearance' | 'model' | 'permissions';
+export type SettingsPart = 'appearance' | 'model' | 'account' | 'permissions';
 
 export function Settings({
   workspace, part, theme, onTheme, size, onSize, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
-  tellMe, onTellMe, music, onCommand, onClose,
+  tellMe, onTellMe, music, github, onOpen, onCommand, onClose,
 }: {
   workspace: Workspace;
   part: SettingsPart;
@@ -34,6 +36,9 @@ export function Settings({
   tellMe: boolean;
   onTellMe: (tell: boolean) => void;
   music: BackgroundMusic;
+  github: GitHub;
+  /** Open a page of the web in the browser of the system. */
+  onOpen: (url: string) => void;
   /** Give a command to the service. A change that widens what the task may do is confirmed first. */
   onCommand: (line: string) => void;
   onClose: () => void;
@@ -58,12 +63,23 @@ export function Settings({
   const stored = (storedUnder !== undefined && storedUnder === hello)
     || anotherServiceChosen(services, status?.model.provider);
   const [settingUp, setSettingUp] = useState(false);
+  // What the page knows when the window of the key is closed, which is later than when it was opened.
+  const latest = useRef(workspace);
+  latest.current = workspace;
   const setUp = async (service: string | null) => {
     setSettingUp(true);
     try {
       const before = services;
       const after = await workspace.setUpService(service, shownLanguage);
-      if (after !== null && changedBeyondKey(before, after.listed, inUse)) setStoredUnder(hello);
+      if (after === null || !changedBeyondKey(before, after.listed, inUse)) return;
+      // The service process reads what was stored when it starts. Without a project none runs,
+      // and the next one reads it.
+      const now = latest.current;
+      if (!now.hasProject) return;
+      // Where nothing is under way, it is started again at once, at the task that is open. A
+      // turn is not cut off: the note offers the new start for when it has ended.
+      if (now.status?.status === 'running' || now.loading || now.sending || now.approval !== null) setStoredUnder(hello);
+      else void now.reconnect();
     } finally {
       setSettingUp(false);
     }
@@ -191,6 +207,11 @@ export function Settings({
           {words.label.restart}
         </button>
       </div>}
+    </section>
+
+    <section className="setting" ref={at('account')} data-test="account">
+      <h3>{words.label.account}</h3>
+      <GitHubAccount github={github} onOpen={onOpen} />
     </section>
 
     <section className="setting" ref={at('permissions')}>

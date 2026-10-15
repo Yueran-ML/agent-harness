@@ -106,6 +106,9 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const children: any[] = [];
   // The runs of `columbina setup`: what each was started with and given, and what it answers.
   const setups: { args: string[]; cwd: string; input: string | null; child: any }[] = [];
+  // The runs of `columbina login github`, which write their lines through a reader of lines.
+  const signIns: any[] = [];
+  const lineReaders: any[] = [];
   const setup = {
     answer: ((): SetupRun => ({ out: '{"use": null, "services": []}\n', code: 0 })) as (args: string[], input: string) => SetupRun | null,
   };
@@ -124,7 +127,18 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       }
       return child;
     }
-    if (args.includes('setup')) {
+    if (args.includes('login') && !args.includes('--status')) {
+      // A sign-in to GitHub: it writes lines while it waits, and ends when the test says so.
+      const child = Object.assign(new EventEmitter(), {
+        pid: 700 + signIns.length, exitCode: null as number | null, signalCode: null, args, options,
+        stdout: new EventEmitter(), stderr: new EventEmitter(),
+        stdin: Object.assign(new EventEmitter(), { end: vi.fn() }),
+      });
+      signIns.push(child);
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    }
+    if (args.includes('setup') || args.includes('--status') || args.includes('logout')) {
       const child = Object.assign(new EventEmitter(), {
         pid: 500 + setups.length, exitCode: null as number | null, signalCode: null,
         stdout: new EventEmitter(), stderr: new EventEmitter(),
@@ -190,7 +204,13 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => handlers.set(name, callback), on: vi.fn() },
     },
     'node:child_process': { spawn },
-    'node:readline': { createInterface: () => Object.assign(new EventEmitter(), { close: vi.fn() }) },
+    'node:readline': {
+      createInterface: (options: { input: unknown }) => {
+        const reader = Object.assign(new EventEmitter(), { close: vi.fn(), input: options.input });
+        lineReaders.push(reader);
+        return reader;
+      },
+    },
     'node:fs': {
       existsSync: (file: string) => !absent.has(path.resolve(file)), mkdirSync: vi.fn(), realpathSync,
       statSync: (value: string) => {
@@ -237,7 +257,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   return {
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, file, sent,
     dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world,
-    setups, setup, keyWindow, asKeyWindow, menu, logins,
+    setups, setup, keyWindow, asKeyWindow, menu, logins, signIns, lineReaders,
     live: () => live, peakLive: () => peakLive,
   };
 }
@@ -526,7 +546,10 @@ describe('the service of a package', () => {
     expect(shell.logins).toHaveLength(1);
     const [program, asked, options] = shell.spawn.mock.calls[0];
     expect(program).toBe('/bin/bash');
-    expect(asked).toEqual(['-ilc', `printf '_COLUMBINA_PATH_%s_COLUMBINA_PATH_' "$PATH"`]);
+    const said = (name: string) => `printf '_COLUMBINA_${name}_%s_COLUMBINA_${name}_' "$${name}"`;
+    expect(asked).toEqual(['-ilc', [
+      'PATH', 'HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy',
+    ].map(said).join('; ')]);
     expect(options.env).toEqual({ ...env, DISABLE_AUTO_UPDATE: 'true' });
     expect(options.stdio).toEqual(['ignore', 'pipe', 'ignore']);
     const cwd = await shell.select('/selected-project');
@@ -538,6 +561,51 @@ describe('the service of a package', () => {
     await shell.invoke('services');
     expect(shell.spawn.mock.calls[2][2].env.PATH).toBe('/opt/homebrew/bin:/usr/bin:/bin');
     expect(shell.logins).toHaveLength(1);
+  });
+
+  it('on macOS takes the proxy that the login shell sets, as a terminal has it', async () => {
+    const written = 'Last login: Thu Oct 15 on ttys000\n_COLUMBINA_PATH_/opt/homebrew/bin:/usr/bin_COLUMBINA_PATH_'
+      + '_COLUMBINA_HTTPS_PROXY__COLUMBINA_HTTPS_PROXY_'
+      + '_COLUMBINA_https_proxy_http://127.0.0.1:7890_COLUMBINA_https_proxy_'
+      + '_COLUMBINA_ALL_PROXY_socks5://127.0.0.1:7891_COLUMBINA_ALL_PROXY_'
+      + '_COLUMBINA_NO_PROXY_ localhost,127.0.0.1 _COLUMBINA_NO_PROXY_'
+      + '_COLUMBINA_no_proxy_   _COLUMBINA_no_proxy_';
+    const env = { PATH: finder };
+    const shell = await shellHarness(undefined, env, { platform: 'darwin', packaged: true, loginShell: written });
+    const cwd = await shell.select('/selected-project');
+    await shell.invoke('start', { cwd });
+    // What is empty, or no more than blanks, is as good as not said.
+    expect(shell.spawn.mock.calls.at(-1)![2].env).toEqual({
+      PATH: '/opt/homebrew/bin:/usr/bin',
+      https_proxy: 'http://127.0.0.1:7890',
+      ALL_PROXY: 'socks5://127.0.0.1:7891',
+      NO_PROXY: 'localhost,127.0.0.1',
+    });
+    await shell.invoke('services');
+    expect(shell.spawn.mock.calls.at(-1)![2].env.https_proxy).toBe('http://127.0.0.1:7890');
+  });
+
+  it('on macOS keeps a proxy that the application was given, in whichever case it is written', async () => {
+    const written = '_COLUMBINA_PATH_/usr/bin_COLUMBINA_PATH_'
+      + '_COLUMBINA_HTTPS_PROXY_http://shell:1_COLUMBINA_HTTPS_PROXY__COLUMBINA_https_proxy_http://shell:2_COLUMBINA_https_proxy_'
+      + '_COLUMBINA_http_proxy_http://shell:3_COLUMBINA_http_proxy_';
+    const env = { PATH: finder, https_proxy: 'http://given:1', HTTP_PROXY: '' };
+    const shell = await shellHarness(undefined, env, { platform: 'darwin', packaged: true, loginShell: written });
+    const cwd = await shell.select('/selected-project');
+    await shell.invoke('start', { cwd });
+    // A variable that the application has empty is none: the shell fills it.
+    expect(shell.spawn.mock.calls.at(-1)![2].env).toEqual({
+      PATH: '/usr/bin', https_proxy: 'http://given:1', HTTP_PROXY: '', http_proxy: 'http://shell:3',
+    });
+  });
+
+  it('on macOS takes a proxy from the login shell also where it says no PATH', async () => {
+    const shell = await shellHarness(undefined, { PATH: finder }, {
+      platform: 'darwin', packaged: true, loginShell: '_COLUMBINA_https_proxy_http://127.0.0.1:7890_COLUMBINA_https_proxy_',
+    });
+    const cwd = await shell.select('/selected-project');
+    await shell.invoke('start', { cwd });
+    expect(shell.spawn.mock.calls.at(-1)![2].env).toEqual({ PATH: added, https_proxy: 'http://127.0.0.1:7890' });
   });
 
   it('on macOS asks zsh where no shell of the user is named by its path', async () => {
@@ -575,16 +643,21 @@ describe('the service of a package', () => {
       const cwd = await shell.select('/selected-project');
       const started = shell.invoke('start', { cwd });
       const listed = shell.invoke('services');
+      const signing = shell.invoke('github-sign-in');
       await vi.advanceTimersByTimeAsync(4_900);
       // Only the login shell has been started.
       expect(shell.spawn).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(200);
       await expect(started).resolves.toEqual({ mode: 'service', cwd });
       await expect(listed).resolves.toEqual({ use: null, services: [] });
+      await expect(signing).resolves.toBeUndefined();
       expect(shell.logins[0].kill).toHaveBeenCalledOnce();
-      const [served, setUp] = ['serve', 'setup'].map(word => shell.spawn.mock.calls.find(([, args]) => args.includes(word))!);
+      const [served, setUp, signedIn] = ['serve', 'setup', 'github'].map(word => shell.spawn.mock.calls.find(([, args]) => args.includes(word))!);
       expect(served[2].env.PATH).toBe(added);
       expect(setUp[2].env.PATH).toBe(added);
+      expect(signedIn[2].env.PATH).toBe(added);
+      // Away from Windows, the sign-in and what it starts are a group of their own, ended as one.
+      expect(signedIn[2].detached).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -836,7 +909,7 @@ describe('what the shell keeps from one start to the next', () => {
   it('keeps the theme when it is set, and nothing of a theme that it refuses', async () => {
     const shell = await shellHarness();
     shell.invoke('set-theme', 'moonwhite');
-    expect(shell.preferences()).toEqual({ theme: 'moonwhite', recent: [] });
+    expect(shell.preferences()).toEqual({ theme: 'moonwhite', recent: [], githubSkipped: false });
     expect(() => shell.invoke('set-theme', 'frostlight')).toThrow('Unknown application theme.');
     expect(shell.preferences().theme).toBe('moonwhite');
   });
@@ -1342,5 +1415,215 @@ describe('the window for the key', () => {
       await expect((async () => shell.asKeyWindow('open-page', address))()).rejects.toThrow('none that a service links to');
     }
     expect(shell.system.openExternal).toHaveBeenCalledOnce();
+  });
+});
+
+describe('signing in to GitHub', () => {
+  const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
+  const status = {
+    signed_in: { login: 'octocat', name: 'The Octocat', avatar: null },
+    install_url: 'https://github.com/apps/columbina/installations/new',
+    repositories: ['octocat/hello'],
+  };
+  const toldOfGitHub = (shell: Awaited<ReturnType<typeof shellHarness>>) => shell.sent
+    .filter(([channel]) => channel === 'columbina:github').map(([, value]) => value);
+  const readerOf = (shell: Awaited<ReturnType<typeof shellHarness>>, child: any) =>
+    shell.lineReaders.find((reader: any) => reader.input === child.stdout);
+
+  it('asks who is signed in, with room for a picture, and says whether GitHub was to wait', async () => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => ({ out: `${JSON.stringify(status)}\n`, code: 0 });
+    await expect(shell.invoke('github-status')).resolves.toEqual({ ...status, skipped: false });
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'login', '--status', '--json']);
+    // A picture as an address of data is longer than the answer of setup may be.
+    const picture = `data:image/png;base64,${'A'.repeat(1_400_000)}`;
+    const pictured = { ...status, signed_in: { ...status.signed_in, avatar: picture } };
+    shell.setup.answer = () => ({ out: `${JSON.stringify(pictured)}\n`, code: 0 });
+    await expect(shell.invoke('github-status')).resolves.toEqual({ ...pictured, skipped: false });
+  });
+
+  it('has nothing to say of GitHub in a replay', async () => {
+    const shell = await shellHarness();
+    await expect(shell.invoke('github-status')).resolves.toBeNull();
+    expect(shell.setups).toEqual([]);
+    await expect((async () => shell.invoke('github-sign-in'))()).rejects.toThrow('No service program');
+    await expect((async () => shell.invoke('github-sign-out'))()).rejects.toThrow('No service program');
+    expect(shell.signIns).toEqual([]);
+  });
+
+  it('keeps whether GitHub is to wait, from one start to the next', async () => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => ({ out: '{"signed_in": null, "install_url": "https://github.com/apps/x/installations/new"}\n', code: 0 });
+    await shell.invoke('skip-github', true);
+    expect(shell.preferences().githubSkipped).toBe(true);
+    await expect(shell.invoke('github-status')).resolves.toMatchObject({ skipped: true });
+    // Only a yes is a yes.
+    await shell.invoke('skip-github', 'yes');
+    expect(shell.preferences().githubSkipped).toBe(false);
+
+    const again = await shellHarness(JSON.stringify({ theme: 'moonveil', recent: [], githubSkipped: true }), real);
+    again.setup.answer = shell.setup.answer;
+    await expect(again.invoke('github-status')).resolves.toMatchObject({ skipped: true });
+    const odd = await shellHarness(JSON.stringify({ githubSkipped: 'true' }), real);
+    odd.setup.answer = shell.setup.answer;
+    await expect(odd.invoke('github-status')).resolves.toMatchObject({ skipped: false });
+  });
+
+  it('tells the page each document that a sign-in writes as it comes, and then that it ended', async () => {
+    const shell = await shellHarness(undefined, real);
+    await expect(shell.invoke('github-sign-in')).resolves.toBeUndefined();
+    const [child] = shell.signIns;
+    expect(child.args).toEqual(['-m', 'columbina', 'login', 'github', '--json']);
+    expect(child.options.cwd).toBe(path.resolve('/columbina-test/home'));
+    // On Windows a tree of processes is ended by its first one. Elsewhere it is a group of its own.
+    expect(child.options).toMatchObject({ detached: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const reader = readerOf(shell, child);
+    reader.emit('line', '{"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}');
+    // What is no document of JSON is told of to nobody.
+    for (const odd of ['not JSON', '[1, 2]', 'null', '7', `{"long": "${'x'.repeat(2 * 1024 * 1024)}"}`]) reader.emit('line', odd);
+    reader.emit('line', '{"signed_in": {"login": "octocat", "name": null, "avatar": null}}');
+    child.emit('close', 0, null);
+    expect(toldOfGitHub(shell)).toEqual([
+      { code: 'WDJB-MJHT', url: 'https://github.com/login/device', expires_in: 899 },
+      { signed_in: { login: 'octocat', name: null, avatar: null } },
+      { ended: true },
+    ]);
+    expect(reader.close).toHaveBeenCalledOnce();
+  });
+
+  it('runs one sign-in at a time: one that is begun takes the place of the one that runs', async () => {
+    const shell = await shellHarness(undefined, real);
+    await shell.invoke('github-sign-in');
+    await shell.invoke('github-sign-in');
+    expect(shell.signIns).toHaveLength(2);
+    const [first, second] = shell.signIns;
+    expect(first.stdin.end).toHaveBeenCalledOnce();
+    expect(second.stdin.end).not.toHaveBeenCalled();
+    // What the first one writes from then on, and its end, are told of to nobody.
+    readerOf(shell, first).emit('line', '{"error": "stopped", "code": "STOPPED"}');
+    first.emit('close', 130, null);
+    readerOf(shell, second).emit('line', '{"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}');
+    second.emit('close', 0, null);
+    expect(toldOfGitHub(shell)).toEqual([
+      { code: 'WDJB-MJHT', url: 'https://github.com/login/device', expires_in: 899 },
+      { ended: true },
+    ]);
+    // Another begins once that one has ended.
+    await shell.invoke('github-sign-in');
+    expect(shell.signIns).toHaveLength(3);
+    expect(second.stdin.end).not.toHaveBeenCalled();
+  });
+
+  it('stops a sign-in by closing its input, and ends it where it has not ended a few seconds later', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await shellHarness(undefined, real);
+      await shell.invoke('github-sign-in');
+      const [child] = shell.signIns;
+      await shell.invoke('github-cancel');
+      expect(child.stdin.end).toHaveBeenCalledOnce();
+      // It is heard no more: the page that stopped it knows.
+      readerOf(shell, child).emit('line', '{"error": "stopped", "code": "STOPPED"}');
+      await vi.advanceTimersByTimeAsync(2_900);
+      expect(shell.spawn.mock.calls.some(call => call[0] === 'taskkill.exe')).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(shell.spawn.mock.calls.at(-1)!.slice(0, 2)).toEqual(['taskkill.exe', ['/pid', String(child.pid), '/T', '/F']]);
+      child.emit('close', null, 'SIGKILL');
+      expect(toldOfGitHub(shell)).toEqual([]);
+      // A stop where none runs stops nothing.
+      await shell.invoke('github-cancel');
+      expect(child.stdin.end).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends a sign-in that it put in the place of another, where that one has not ended a few seconds later', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await shellHarness(undefined, real);
+      await shell.invoke('github-sign-in');
+      await shell.invoke('github-sign-in');
+      const [first, second] = shell.signIns;
+      await vi.advanceTimersByTimeAsync(3_100);
+      const killed = shell.spawn.mock.calls.filter(call => call[0] === 'taskkill.exe').map(call => call[1][1]);
+      expect(killed).toEqual([String(first.pid)]);
+      expect(second.stdin.end).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ends nothing where the sign-in ended once its input was closed, and stops none where none runs', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await shellHarness(undefined, real);
+      await shell.invoke('github-cancel');
+      await shell.invoke('github-sign-in');
+      const [child] = shell.signIns;
+      await shell.invoke('github-cancel');
+      child.emit('close', 0, null);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(shell.spawn.mock.calls.some(call => call[0] === 'taskkill.exe')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops a sign-in when the page is gone, and when the windows are closed', async () => {
+    const shell = await shellHarness(undefined, real);
+    await shell.invoke('github-sign-in');
+    shell.window.webContents.emit('render-process-gone');
+    expect(shell.signIns[0].stdin.end).toHaveBeenCalledOnce();
+    shell.signIns[0].emit('close', 0, null);
+    await shell.invoke('github-sign-in');
+    shell.app.emit('window-all-closed');
+    expect(shell.signIns[1].stdin.end).toHaveBeenCalledOnce();
+  });
+
+  it('says why a sign-in could not be started, and lets another begin', async () => {
+    const shell = await shellHarness(undefined, real);
+    const failed = Object.assign(new EventEmitter(), {
+      pid: 0, exitCode: null as number | null, signalCode: null,
+      stdout: new EventEmitter(), stderr: new EventEmitter(), stdin: Object.assign(new EventEmitter(), { end: vi.fn() }),
+    });
+    shell.spawn.mockImplementationOnce(() => {
+      queueMicrotask(() => failed.emit('error', new Error('spawn ENOENT')));
+      return failed;
+    });
+    await expect((async () => shell.invoke('github-sign-in'))()).rejects.toThrow('The sign-in could not be started: spawn ENOENT');
+    // It is no sign-in that runs: its end is told of to nobody, and there is nothing of it to stop.
+    failed.emit('close', -2, null);
+    await shell.invoke('github-cancel');
+    expect(toldOfGitHub(shell)).toEqual([]);
+    expect(failed.stdin.end).not.toHaveBeenCalled();
+    await expect(shell.invoke('github-sign-in')).resolves.toBeUndefined();
+    // An error of a program that started, such as one of a stop, leaves it to end by itself.
+    const [child] = shell.signIns;
+    child.emit('error', new Error('kill EPERM'));
+    child.emit('error', new Error('kill EPERM'));
+    readerOf(shell, child).emit('line', '{"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}');
+    child.emit('close', 0, null);
+    expect(toldOfGitHub(shell)).toEqual([
+      { code: 'WDJB-MJHT', url: 'https://github.com/login/device', expires_in: 899 },
+      { ended: true },
+    ]);
+  });
+
+  it('signs out with the program, and answers what it says', async () => {
+    const shell = await shellHarness(undefined, real);
+    const said = { signed_out: true, revoke: 'https://github.com/settings/apps/authorizations' };
+    shell.setup.answer = () => ({ out: `${JSON.stringify(said)}\n`, code: 0 });
+    await expect(shell.invoke('github-sign-out')).resolves.toEqual(said);
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'logout', 'github', '--json']);
+  });
+
+  it('answers none of this to anything but the page of the application', async () => {
+    const shell = await shellHarness(undefined, real);
+    for (const name of ['github-status', 'github-sign-in', 'github-cancel', 'github-sign-out', 'skip-github']) {
+      await expect((async () => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, true))()).rejects.toThrow('IPC sender');
+    }
+    expect(shell.signIns).toEqual([]);
+    expect(shell.setups).toEqual([]);
   });
 });

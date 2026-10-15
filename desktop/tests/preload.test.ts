@@ -72,7 +72,7 @@ describe('the bridge of the main window', () => {
     expect(taken).toEqual(['columbina:send']);
     // And it listens to everything that the shell tells of.
     expect([...heard].sort()).toEqual([...told].sort());
-    expect(told.length).toBe(4);
+    expect(told.length).toBe(5);
   });
 
   it('hands on what a call names, and nothing else that came with it', () => {

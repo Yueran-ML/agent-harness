@@ -12,7 +12,9 @@ import { StatusLine } from '../src/app/StatusLine';
 import type { Listed } from '../src/key/form';
 import { projectEvents } from '../src/state';
 import type { Workspace } from '../src/useWorkspace';
-import { begin, call, end, likeABrowser, log, reply, result, service, statusOf, user, workspaceWith } from './mounted';
+import {
+  begin, call, end, gitHubWith, likeABrowser, log, reply, result, service, statusOf, user, workspaceWith,
+} from './mounted';
 
 beforeEach(likeABrowser);
 afterEach(() => {
@@ -323,21 +325,21 @@ describe('the page of a new task', () => {
   const skill = (name: string, user_invocable = true) => ({
     name, description: `What ${name} is for.`, user_invocable, model_invocable: true,
   });
-  const head = (workspace: Workspace) => {
-    const calls = { onOpenProject: vi.fn(), onOpenRecent: vi.fn(), onPermissions: vi.fn() };
-    const openButton = { current: null as HTMLButtonElement | null };
-    render(<StartHead workspace={workspace} {...calls} openButton={openButton} />);
-    return { calls, openButton };
+  const head = (workspace: Workspace, github = gitHubWith()) => {
+    const calls = { onOpenProject: vi.fn(), onOpenRecent: vi.fn(), onPermissions: vi.fn(), onSetUp: vi.fn(), onOpenPage: vi.fn() };
+    const firstButton = { current: null as HTMLButtonElement | null };
+    const drawn = render(<StartHead workspace={workspace} github={github} {...calls} firstButton={firstButton} />);
+    return { calls, firstButton, github, drawn };
   };
 
   it('is the way to a project before one is open', () => {
     const recent = [{ name: 'work', path: 'F:\\work' }, { name: 'notes', path: 'D:\\notes' }];
-    const { calls, openButton } = head(workspaceWith({ hasProject: false, hello: null, status: null, sessionId: null, recent }));
+    const { calls, firstButton } = head(workspaceWith({ hasProject: false, hello: null, status: null, sessionId: null, recent }));
     expect(one('start').querySelector('h2')?.textContent).toBe('Open a project to begin');
     // The button is handed to the page, which gives it the keyboard.
-    expect(openButton.current).toBe(one('open-project-start'));
+    expect(firstButton.current).toBe(one('open-project-start'));
     fireEvent.click(one('open-project-start'));
-    expect(counted(calls)).toEqual({ onOpenProject: 1, onOpenRecent: 0, onPermissions: 0 });
+    expect(counted(calls)).toEqual({ onOpenProject: 1, onOpenRecent: 0, onPermissions: 0, onSetUp: 0, onOpenPage: 0 });
     const rows = [...one('recent-projects').querySelectorAll('button')];
     expect(rows.map(row => [row.querySelector('.task-name')?.textContent, row.querySelector('.task-when')?.textContent, row.title]))
       .toEqual([['work', 'F:\\work', 'F:\\work'], ['notes', 'D:\\notes', 'D:\\notes']]);
@@ -360,7 +362,7 @@ describe('the page of a new task', () => {
     expect(one('start-may').textContent).toBe('Can change the files of this project, and asks before it runs a command.');
     expect(one('start-may').dataset.tone).toBeUndefined();
     fireEvent.click(one('start-may'));
-    expect(counted(calls)).toEqual({ onOpenProject: 0, onOpenRecent: 0, onPermissions: 1 });
+    expect(counted(calls)).toEqual({ onOpenProject: 0, onOpenRecent: 0, onPermissions: 1, onSetUp: 0, onOpenPage: 0 });
   });
 
   it('says it as a warning under full access, and says nothing before the service has said it', () => {
@@ -488,12 +490,12 @@ describe('the settings', () => {
   };
   const calls = {
     onTheme: vi.fn(), onSize: vi.fn(), onLanguage: vi.fn(), onPlayOpening: vi.fn(), onPlayNow: vi.fn(), onTellMe: vi.fn(),
-    onCommand: vi.fn(), onClose: vi.fn(),
+    onCommand: vi.fn(), onClose: vi.fn(), onOpen: vi.fn(),
   };
   // The words of this window are English here, whatever language the window for the key is asked for in.
   const sheet = (workspace: Workspace, part: SettingsPart = 'model') => <Settings
     workspace={workspace} part={part} theme="moonveil" size="standard" language="system" shownLanguage="ja"
-    playOpening={false} tellMe music={music} {...calls}
+    playOpening={false} tellMe music={music} github={gitHubWith()} {...calls}
   />;
   const services = () => [...one('services').querySelectorAll('li')].map(row =>
     [...row.children].map(part => part.textContent).join(' | '));
@@ -513,6 +515,7 @@ describe('the settings', () => {
     };
     expect(opened('appearance')).toEqual(['Appearance']);
     expect(opened('model')).toEqual(['Model']);
+    expect(opened('account')).toEqual(['GitHub account']);
     expect(opened('permissions')).toEqual(['Permissions']);
   });
 
@@ -710,18 +713,56 @@ describe('the settings', () => {
     rerender(sheet({ ...before, services: after }));
     expect(services()[0]).toBe('DeepSeek | In use | Key stored');
     expect(marked('stored-note')).toEqual([]);
+    // The process looks for the key with every request: it is not started again for one.
+    expect(before.reconnect).not.toHaveBeenCalled();
   });
 
-  it('ask for a new start after another model was stored, until the process is started again', async () => {
+  it('start the process again at once after another model was stored, where nothing is under way', async () => {
     const before = workspaceWith({ services: listed('deepseek') });
     const after = listed('deepseek', { key: 'stored', model: 'deepseek-other' });
     before.setUpService = vi.fn(async () => ({ listed: after }));
     const { rerender } = render(sheet(before));
     await act(async () => { fireEvent.click(one('set-up-service')); });
+    expect(before.reconnect).toHaveBeenCalledTimes(1);
     rerender(sheet({ ...before, services: after }));
+    expect(marked('stored-note')).toEqual([]);
+  });
+
+  it('ask for a new start after another model was stored while a turn was under way, until the process is started again', async () => {
+    const before = workspaceWith({ services: listed('deepseek') });
+    const after = listed('deepseek', { key: 'stored', model: 'deepseek-other' });
+    let closeIt = (_stored: { listed: Listed | null }) => {};
+    before.setUpService = vi.fn(() => new Promise<{ listed: Listed | null }>(resolve => { closeIt = resolve; }));
+    const { rerender } = render(sheet(before));
+    await act(async () => { fireEvent.click(one('set-up-service')); });
+    // A turn began while the window of the key was open. What counts is what holds when it is closed.
+    const atWorkNow = { ...before, status: atWork };
+    rerender(sheet(atWorkNow));
+    await act(async () => { closeIt({ listed: after }); });
+    rerender(sheet({ ...atWorkNow, services: after }));
+    expect(before.reconnect).not.toHaveBeenCalled();
     expect(one('stored-note').textContent).toContain('started again');
     // A process that was started later greets anew, and knows what was stored.
     rerender(sheet({ ...before, services: after, hello: { ...before.hello! } }));
+    expect(marked('stored-note')).toEqual([]);
+  });
+
+  it('leave a new start for later where something is under way or about to be, and start nothing without a project', async () => {
+    const after = listed('deepseek', { key: 'stored', model: 'deepseek-other' });
+    for (const given of [{ loading: true }, { sending: true }, { approval: {} as Workspace['approval'] }]) {
+      cleanup();
+      const busy = workspaceWith({ services: listed('deepseek'), ...given });
+      busy.setUpService = vi.fn(async () => ({ listed: after }));
+      render(sheet(busy));
+      await act(async () => { fireEvent.click(one('set-up-service')); });
+      expect(busy.reconnect).not.toHaveBeenCalled();
+    }
+    cleanup();
+    const none = workspaceWith({ services: listed('deepseek'), hasProject: false, hello: null, status: null, sessionId: null });
+    none.setUpService = vi.fn(async () => ({ listed: after }));
+    render(sheet(none));
+    await act(async () => { fireEvent.click(one('set-up-service')); });
+    expect(none.reconnect).not.toHaveBeenCalled();
     expect(marked('stored-note')).toEqual([]);
   });
 

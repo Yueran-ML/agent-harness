@@ -245,7 +245,8 @@ class ToolResultEvent(EventData):
     Attributes:
         message: The result as the model sees it.
         error: Set when the call did not succeed.
-        meta: Facts about the call that the model does not see.
+        meta: Facts about the call that the model does not see. Where the
+            tool ran, ``duration_ms`` says for how many milliseconds.
     """
 
     event_type: ClassVar[str] = "tool/result"

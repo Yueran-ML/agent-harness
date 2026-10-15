@@ -17,10 +17,18 @@ from columbina.commands import COMMANDS, Commands
 from columbina.commands import permissions as permissions_command
 from columbina.commands import sessions as sessions_command
 from columbina.commands import tools as tools_command
+from columbina.llm import TextBlock, ToolMessage
 from columbina.llm.adapters.scripted import Reply
 from columbina.permissions import PERMISSIONS
 from columbina.sandbox import SANDBOX
-from columbina.session import TurnStartEvent, UserMessageEvent
+from columbina.session import (
+    ToolCallEvent,
+    ToolError,
+    ToolResultEvent,
+    ToolUse,
+    TurnStartEvent,
+    UserMessageEvent,
+)
 from columbina.session.store import SESSION_FILE
 from columbina.tools import Tool, ToolRun
 from support.loop import Harness, idle, user
@@ -76,6 +84,57 @@ async def test_a_program_without_tools_says_so(harness: Harness) -> None:
     agent = await harness.agent()
 
     assert await known.run(agent, "/tools") == "There are no tools."
+
+
+def ended(call_id: str, took: int | None, *, failed: bool = False) -> ToolResultEvent:
+    """The result of a call: how long its tool ran, if it ran, and whether it failed."""
+    return ToolResultEvent(
+        message=ToolMessage(call_id=call_id, content=(TextBlock(text="done"),), is_error=failed),
+        error=ToolError(code="TOOL_ERROR", reason="done") if failed else None,
+        meta=None if took is None else {"duration_ms": took},
+    )
+
+
+async def test_the_calls_of_the_session_are_counted_under_the_tools(harness: Harness) -> None:
+    harness.tools.add(
+        harness.ctx,
+        Tool(name="bash", description="Run.", parameters=Nothing, execute=nothing, effect="run"),
+    )
+    known = await commands(harness, tools_command)
+    agent = await harness.agent()
+    for call_id, name, took, failed in (
+        ("c-1", "bash", 1500, True),
+        ("c-2", "bash", 260, False),
+        ("c-3", "read", 12, False),
+    ):
+        agent.session.append(ToolCallEvent(call_id=call_id, name=name, arguments="{}"))
+        agent.session.append(ended(call_id, took, failed=failed))
+
+    assert await known.run(agent, "/tools") == (
+        "bash  (runs commands)  Run.\n"
+        "\n"
+        "Calls in this session:\n"
+        "tool  calls   failed   time\n"
+        "bash      2  1 (50%)  1.8 s\n"
+        "read      1        0  0.0 s"
+    )
+
+
+def test_a_long_time_is_said_in_whole_seconds() -> None:
+    table = tools_command.used(
+        {
+            "bash": ToolUse(calls=3, duration_ms=123_456),
+            "grep": ToolUse(calls=1, duration_ms=99_949),
+            "read": ToolUse(calls=7, failed=7),
+        }
+    )
+
+    assert table == [
+        "tool  calls    failed    time",
+        "bash      3         0   123 s",
+        "grep      1         0  99.9 s",
+        "read      7  7 (100%)   0.0 s",
+    ]
 
 
 # The permissions

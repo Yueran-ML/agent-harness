@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import itertools
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ from columbina.apps.launcher import main
 from columbina.apps.serve import wire as wire_module
 from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
+from columbina.tools import pipeline
 from support.launch import lines, profile, stored
 from support.wires import Far
 
@@ -106,8 +108,16 @@ def test_skills_are_looked_for_where_other_tools_keep_theirs_in_the_home_of_the_
 
 
 def test_the_run_can_be_followed_as_lines_of_json(
-    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    home: Path,
+    work: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The clock that the runs of tools are timed with goes on by 7 milliseconds at each look.
+    looks = itertools.count()
+    monkeypatch.setattr(pipeline, "_now", lambda: next(looks) * 0.007)
+
     code = main(
         [
             "run",
@@ -162,8 +172,23 @@ def test_the_run_can_be_followed_as_lines_of_json(
                 "cache_read_tokens": 0,
                 "cache_write_tokens": 0,
             },
+            "tools": {"read": {"calls": 1, "failed": 0, "duration_ms": 7}},
         },
     ]
+
+
+def test_the_end_of_a_run_counts_the_calls_of_that_run_alone(
+    home: Path, work: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    finals: list[dict[str, Any]] = []
+    for task in ("What does notes.txt say?", "And now?"):
+        # Every run begins the script anew, so each has a script of its own.
+        chosen = profile(tmp_path, *READ_THEN_ANSWER)
+        argv = ["run", task, "--profile", chosen, "--cwd", str(work), "--session-id", "s-1"]
+        assert main([*argv, "--json"]) == 0
+        finals.append(lines(capsys.readouterr().out)[-1])
+
+    assert [final["tools"]["read"]["calls"] for final in finals] == [1, 1]
 
 
 def test_reasoning_is_reported_as_thinking(

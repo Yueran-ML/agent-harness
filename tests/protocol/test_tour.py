@@ -28,8 +28,9 @@ written last.
 import asyncio
 import json
 import shutil
-from collections import deque
+from collections import defaultdict, deque
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -65,7 +66,7 @@ from columbina.session import (
 )
 from columbina.session.store import SESSION_FILE
 from columbina.todo import TOOL as TODO_TOOL
-from columbina.tools import Tool, ToolRun
+from columbina.tools import Tool, ToolRun, pipeline
 from support.loop import Harness, idle
 from support.protocol import DOCS, event_kinds
 from support.scenario import REPOSITORY
@@ -234,21 +235,29 @@ async def toured(
     # It is not run here. What stands in for it takes a third of a second of the clock.
     hooks = harness.cwd.parent / "hooks.json"
     hooks.write_text(json.dumps(HOOKS))
+    # A run of a tool is timed by what it takes itself. Calls that run beside each other go
+    # by the one clock of the session, and each would count what the others took.
+    took_by: defaultdict[asyncio.Task[Any] | None, int] = defaultdict(int)
+
+    def taking(milliseconds: int) -> None:
+        clock.now += milliseconds
+        took_by[asyncio.current_task()] += milliseconds
 
     async def formatted(hook: Hook, event: str, told: bytes, **where: object) -> Result:
-        clock.now += 310
+        taking(310)
         return Result(exit_code=0)
 
     monkeypatch.setattr(shells, "find", lambda: "bash")
     monkeypatch.setattr(columbina.hooks, "run", formatted)
     monkeypatch.setattr(columbina.hooks, "_now", lambda: clock.now / 1000)
+    monkeypatch.setattr(pipeline, "_now", lambda: took_by[asyncio.current_task()] / 1000)
     await ctx.plugin(columbina.hooks, {"user_file": hooks})
     for name in ("calc.py", "check.py"):
         shutil.copy(REPOSITORY / name, harness.cwd / name)
 
     async def ran(args: Command, run: ToolRun) -> str:
         said, took = SAID[args.command]
-        clock.now += took
+        taking(took)
         return said
 
     def command_of(args: Command, run: ToolRun) -> str:

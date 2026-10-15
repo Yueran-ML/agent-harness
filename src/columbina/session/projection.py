@@ -1,8 +1,10 @@
 """Projections: state that is derived from the events of a session."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Generic, TypeVar
 from weakref import WeakKeyDictionary
+
+from pydantic import Field
 
 from columbina.data import Data
 from columbina.llm.types import Usage
@@ -14,6 +16,8 @@ from columbina.session.events import (
     SessionEvent,
     StepEndEvent,
     StepStartEvent,
+    ToolCallEvent,
+    ToolResultEvent,
     TurnEndEvent,
     TurnStartEvent,
 )
@@ -126,3 +130,66 @@ def _fold_usage(state: UsageTotal, event: SessionEvent[EventData]) -> UsageTotal
 
 USAGE = Projection("usage", UsageTotal(), _fold_usage)
 """The token counts of a session, added up."""
+
+
+class ToolUse(Data):
+    """How the calls of one tool went.
+
+    Attributes:
+        calls: How many of its calls have a result.
+        failed: How many of those did not succeed.
+        duration_ms: How long the tool ran in all, in milliseconds. A call
+            that did not run adds nothing.
+    """
+
+    calls: int = 0
+    failed: int = 0
+    duration_ms: int = 0
+
+
+class ToolsUsed(Data):
+    """How the calls of the tools of a session went.
+
+    Attributes:
+        tools: What became of the calls of each tool, by its name, in the
+            order of the first result of each.
+        waiting: The tool of each call that has no result yet, by the id of
+            the call.
+    """
+
+    tools: dict[str, ToolUse] = Field(default_factory=dict[str, ToolUse])
+    waiting: dict[str, str] = Field(default_factory=dict[str, str])
+
+
+def _fold_tools(state: ToolsUsed, event: SessionEvent[EventData]) -> ToolsUsed:
+    data = event.data
+    if isinstance(data, ToolCallEvent):
+        return ToolsUsed(tools=state.tools, waiting={**state.waiting, data.call_id: data.name})
+    if not isinstance(data, ToolResultEvent):
+        return state
+    call_id = data.message.call_id
+    name = state.waiting.get(call_id)
+    if name is None:
+        # A result that takes the place of another one, made shorter, is no call of its own.
+        return state
+    before = state.tools.get(name, ToolUse())
+    took = (data.meta or {}).get("duration_ms")
+    after = ToolUse(
+        calls=before.calls + 1,
+        failed=before.failed + (data.error is not None),
+        duration_ms=before.duration_ms + (took if isinstance(took, int) else 0),
+    )
+    still = {key: tool for key, tool in state.waiting.items() if key != call_id}
+    return ToolsUsed(tools={**state.tools, name: after}, waiting=still)
+
+
+TOOLS_USED = Projection("tools used", ToolsUsed(), _fold_tools)
+"""How the calls of each tool of a session went: how many, how many failed, how long."""
+
+
+def tools_used(events: Iterable[SessionEvent[EventData]]) -> ToolsUsed:
+    """Return how the calls of each tool went in some events of a log, such as a stored one."""
+    state = ToolsUsed()
+    for event in events:
+        state = _fold_tools(state, event)
+    return state

@@ -16,7 +16,14 @@ from columbina.apps.launcher import main
 from columbina.apps.sessions import shown
 from columbina.apps.terminal_text import STAND_IN
 from columbina.kernel import Context
-from columbina.llm import AssistantMessage, TextBlock, ToolCallBlock, Usage, UserMessage
+from columbina.llm import (
+    AssistantMessage,
+    TextBlock,
+    ToolCallBlock,
+    ToolMessage,
+    Usage,
+    UserMessage,
+)
 from columbina.session import (
     SESSIONS,
     AssistantMessageEvent,
@@ -25,6 +32,9 @@ from columbina.session import (
     SessionEvent,
     SessionHeader,
     StoredSession,
+    ToolCallEvent,
+    ToolError,
+    ToolResultEvent,
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
@@ -174,6 +184,39 @@ def test_a_session_that_an_agent_left_is_told_turn_by_turn(
         "> And twice that?\n"
         "That is 84.\n"
     )
+
+
+def ran(call_id: str, took: int, *, failed: bool = False) -> ToolResultEvent:
+    """The result of a call whose tool ran for so many milliseconds."""
+    return ToolResultEvent(
+        message=ToolMessage(call_id=call_id, content=(TextBlock(text="done"),), is_error=failed),
+        error=ToolError(code="TOOL_ERROR", reason="done") if failed else None,
+        meta={"duration_ms": took},
+    )
+
+
+def test_a_session_ends_with_how_the_calls_of_its_tools_went() -> None:
+    session = held(
+        TurnStartEvent(turn=1),
+        said("Where is the parser?"),
+        answered("I will look.", "call-1", "call-2"),
+        ToolCallEvent(call_id="call-1", name="read", arguments="{}"),
+        ToolCallEvent(call_id="call-2", name="grep", arguments="{}"),
+        ran("call-1", 4),
+        ran("call-2", 1260, failed=True),
+        answered("It is in parse.py."),
+        TurnEndEvent(turn=1, reason="completed"),
+    )
+
+    assert shown(session).splitlines()[2:] == [
+        "turn 1",
+        "> Where is the parser?",
+        "It is in parse.py.",
+        "",
+        "tool  calls    failed   time",
+        "read      1         0  0.0 s",
+        "grep      1  1 (100%)  1.3 s",
+    ]
 
 
 def test_a_turn_is_told_by_what_was_said_and_by_the_end_of_the_last_answer() -> None:

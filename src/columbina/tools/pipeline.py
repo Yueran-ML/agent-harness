@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from columbina import cancellation
 from columbina.kernel import Context, EmitEvent, Registry, ServiceKey, WaterfallEvent
@@ -18,6 +19,9 @@ from columbina.text import whole
 from columbina.tools.tool import Tool, ToolFailure, ToolRun
 
 logger = logging.getLogger("columbina.tools")
+
+_now = time.monotonic
+"""The clock that the run of a tool is timed with."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +118,8 @@ class ToolOutcome:
         error: Set when the call did not succeed.
         value: What the tool returned, if it ran and its result got through.
         concludes_turn: Whether the tool asked for the turn to end.
+        duration_ms: How long the tool ran, in milliseconds, or ``None`` if
+            it did not run.
     """
 
     call: ToolCallBlock
@@ -121,15 +127,23 @@ class ToolOutcome:
     error: ToolError | None = None
     value: object = None
     concludes_turn: bool = False
+    duration_ms: int | None = None
 
     def to_event(self) -> ToolResultEvent:
-        """Return the event that records the outcome in a session log."""
+        """Return the event that records the outcome in a session log.
+
+        How long the tool ran is written down beside the result, where the
+        model does not see it.
+        """
         message = ToolMessage(
             call_id=self.call.call_id,
             content=(TextBlock(text=self.text),),
             is_error=self.error is not None,
         )
-        return ToolResultEvent(message=message, error=self.error)
+        meta: dict[str, JsonValue] | None = None
+        if self.duration_ms is not None:
+            meta = {"duration_ms": self.duration_ms}
+        return ToolResultEvent(message=message, error=self.error, meta=meta)
 
 
 PRE_EXECUTE: WaterfallEvent[Invocation, Decision] = WaterfallEvent("tools/pre-execute")
@@ -170,6 +184,11 @@ class _NotRunError(Exception):
 
 async def _accept(executed: Executed) -> Verdict:
     return Accept(text=executed.text)
+
+
+def _since(began: float) -> int:
+    """Return how many milliseconds have gone by since a moment of the clock of the runs."""
+    return round((_now() - began) * 1000)
 
 
 def _gone_text(tool: Tool[Any, Any]) -> str:
@@ -379,12 +398,14 @@ class PendingCall:
                 raise _NotRunError("UNKNOWN_TOOL", _gone_text(tool))
             return await tool.execute(invocation.args, invocation.run)
 
+        began = _now()
         timer = asyncio.timeout(self._timeout)
         try:
             async with timer:
                 value = await cancellation.guard(
                     self._ctx.waterfall(EXECUTE, invocation, run_the_checked_call)
                 )
+            took = _since(began)
             try:
                 text = str(value) if tool.render is None else tool.render(invocation.args, value)
             except asyncio.CancelledError as error:
@@ -397,7 +418,7 @@ class PendingCall:
             logger.error("a call of the tool %r was stopped: %s", tool.name, stopped.reason)
             return self._fail(stopped.code, stopped.reason)
         except Exception as error:
-            return self._failed(tool.name, error, timed_out=timer.expired())
+            return self._failed(tool.name, error, timed_out=timer.expired(), took=_since(began))
         executed = Executed(invocation, value, text or "(no output)")
         try:
             verdict = cast(
@@ -411,6 +432,7 @@ class PendingCall:
             return self._fail(
                 "CHECK_FAILED",
                 "The result of the call could not be checked and is withheld: " + _describe(error),
+                took,
             )
         if isinstance(verdict, Accept):
             return self._settle(
@@ -419,38 +441,41 @@ class PendingCall:
                     text=whole(verdict.text) or "(no output)",
                     value=value,
                     concludes_turn=invocation.run.concludes_turn,
+                    duration_ms=took,
                 )
             )
         if isinstance(verdict, Block):
             return self._fail(
-                "RESULT_BLOCKED", f"The result of the call is withheld: {verdict.reason}"
+                "RESULT_BLOCKED", f"The result of the call is withheld: {verdict.reason}", took
             )
         logger.error("a check of a result of the tool %r gave no verdict", self.call.name)
         return self._fail(
             "CHECK_FAILED",
             "The result of the call could not be checked and is withheld: a check gave no verdict",
+            took,
         )
 
-    def _failed(self, name: str, error: Exception, *, timed_out: bool) -> ToolOutcome:
+    def _failed(self, name: str, error: Exception, *, timed_out: bool, took: int) -> ToolOutcome:
         """Turn what running the tool raised into an error result."""
         if timed_out:
             return self._fail(
                 "TOOL_TIMEOUT",
                 f"The tool {name} did not finish within {self._timeout:g} seconds and was stopped.",
+                took,
             )
         if isinstance(error, ToolFailure):
-            return self._fail(error.code, str(error))
+            return self._fail(error.code, str(error), took)
         if isinstance(error, cancellation.CancelledFromInside):
-            return self._fail("TOOL_ERROR", f"The tool {name} was cancelled from inside.")
+            return self._fail("TOOL_ERROR", f"The tool {name} was cancelled from inside.", took)
         logger.error("the tool %r failed", name, exc_info=error)
-        return self._fail("TOOL_ERROR", f"The tool {name} failed: {_describe(error)}")
+        return self._fail("TOOL_ERROR", f"The tool {name} failed: {_describe(error)}", took)
 
-    def _fail(self, code: str, text: str) -> ToolOutcome:
+    def _fail(self, code: str, text: str, took: int | None = None) -> ToolOutcome:
+        """End the call with an error result, with how long the tool ran if it did."""
         # The words of a failure may repeat what the call named or what a listener said.
         text = whole(text)
-        return self._settle(
-            ToolOutcome(call=self.call, text=text, error=ToolError(code=code, reason=text))
-        )
+        error = ToolError(code=code, reason=text)
+        return self._settle(ToolOutcome(call=self.call, text=text, error=error, duration_ms=took))
 
     def _settle(self, outcome: ToolOutcome) -> ToolOutcome:
         """Give the call its outcome and announce it. The first outcome stays."""

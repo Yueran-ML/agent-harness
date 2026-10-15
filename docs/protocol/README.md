@@ -267,7 +267,7 @@
 事件的形状与会话文件里的一行相同。
 
 ```json
-{"type": "tool/result", "seq": 25, "time": 1791534431210, "data": {"message": {"role": "tool", "call_id": "call_00_abc", "content": [{"type": "text", "text": "ok\n[exit code 0]"}], "is_error": false}, "error": null, "meta": null}, "surface_op": "append"}
+{"type": "tool/result", "seq": 25, "time": 1791534431210, "data": {"message": {"role": "tool", "call_id": "call_00_abc", "content": [{"type": "text", "text": "ok\n[exit code 0]"}], "is_error": false}, "error": null, "meta": {"duration_ms": 180}}, "surface_op": "append"}
 ```
 
 | 字段 | 含义 |
@@ -297,7 +297,7 @@
 | `request/header` | `config`、`tools` | | 之后的请求使用的模型配置和工具声明 |
 | `request/aside` | `purpose`、`usage`、`failure` | | 对话之外的请求，例如请模型写摘要，或者一个子代理用掉的全部请求。只用于记账 |
 | `tool/call` | `call_id`、`name`、`arguments` | | 一次工具调用即将执行 |
-| `tool/result` | `message`、`error`、`meta` | 是 | 一次工具调用的结果 |
+| `tool/result` | `message`、`error`、`meta` | 是 | 一次工具调用的结果。工具运行过时，`meta` 里的 `duration_ms` 是它运行的毫秒数；没有运行的调用（被拒绝、参数不对、工具不存在）`meta` 为 `null` |
 | `agent/inbox/spliced` | `queue`、`removed`、`added` | | 等待中的输入有了变化，见第 9 节 |
 | `llm/retry` | `turn`、`step`、`attempt`、`code`、`delay_ms` | | 一次请求失败，等 `delay_ms` 之后重试 |
 | `approval/policy` | `policy` | | 审批策略被设定 |

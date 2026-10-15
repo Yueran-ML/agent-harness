@@ -55,8 +55,8 @@ written to the log first, and every request is derived from the log. Three thing
   themselves stay. Whatever shows a session can show all of it.
 
 The price is that state is never simply changed. The list of things to do, the inbox of
-messages that arrive while a turn runs, the count of tokens: each is a projection, folded
-from the events. A new kind of state needs a new event and a fold, and the fold must give
+messages that arrive while a turn runs, the count of tokens, the calls of each tool and how
+long the tool ran: each is a projection, folded from the events. A new kind of state needs a new event and a fold, and the fold must give
 the same answer when the log is read again from the start. The tests fold a session that was
 taken up again from its first event, and build what the model is sent from the events alone.
 

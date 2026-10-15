@@ -15,7 +15,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -51,9 +51,23 @@ def how_it_was_made(name: str) -> dict[str, Any]:
     return yaml.safe_load((RECORDED / name / "recording.yml").read_text(encoding="utf-8"))
 
 
+def timeless(data: dict[str, Any]) -> dict[str, Any]:
+    """Return what an event holds without how long a tool ran, which differs from run to run."""
+    meta: object = data.get("meta")
+    if not isinstance(meta, dict) or "duration_ms" not in meta:
+        return data
+    told = cast("dict[str, Any]", meta)
+    rest = {key: value for key, value in told.items() if key != "duration_ms"}
+    return {**data, "meta": rest or None}
+
+
 def essence(events: list[SessionEvent[EventData]], work: Path | None = None) -> list[Essence]:
-    """What each event is, apart from the moment and the place it was written at."""
-    plain = [(e, e.data.model_dump(mode="json")) for e in events]
+    """What each event is, apart from the moment and the place it was written at.
+
+    How long a tool ran is a moment too: the recordings were made before it was written
+    down, and it is another number every time.
+    """
+    plain = [(e, timeless(e.data.model_dump(mode="json"))) for e in events]
     return [
         (e.seq, e.type, data if work is None else neutral(data, work), e.on_surface, e.replaces)
         for e, data in plain

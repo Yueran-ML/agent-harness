@@ -35,6 +35,7 @@ from columbina.tools import (
     ToolRun,
     Tools,
     Verdict,
+    pipeline,
 )
 
 
@@ -107,23 +108,40 @@ def journal() -> Journal:
     return Journal()
 
 
+class Clock:
+    """The clock that the runs of tools are timed with. It goes on only where a test moves it."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> Clock:
+    made = Clock()
+    monkeypatch.setattr(pipeline, "_now", made)
+    return made
+
+
 # A call that works
 
 
 async def test_a_call_runs_the_tool_and_returns_what_the_model_reads(
-    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal, clock: Clock
 ) -> None:
     tools.add(ctx, tool("echo", journal.echo))
     asked = call("echo", '{"text": "hello"}')
 
     outcome = await tools.run(ctx, asked, run)
 
-    assert outcome == ToolOutcome(call=asked, text="hello", value="hello")
+    assert outcome == ToolOutcome(call=asked, text="hello", value="hello", duration_ms=0)
     assert journal.ran == ["hello"]
 
 
 async def test_an_outcome_becomes_the_result_event_of_the_log(
-    ctx: Context, tools: Tools, run: ToolRun, journal: Journal
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal, clock: Clock
 ) -> None:
     tools.add(ctx, tool("echo", journal.echo), tool("fail", journal.fail))
 
@@ -131,14 +149,128 @@ async def test_an_outcome_becomes_the_result_event_of_the_log(
     bad = await tools.run(ctx, call("fail", '{"text": "a.txt"}', call_id="call-2"), run)
 
     assert good.to_event() == ToolResultEvent(
-        message=ToolMessage(call_id="call-1", content=(TextBlock(text="hello"),))
+        message=ToolMessage(call_id="call-1", content=(TextBlock(text="hello"),)),
+        meta={"duration_ms": 0},
     )
     assert bad.to_event() == ToolResultEvent(
         message=ToolMessage(
             call_id="call-2", content=(TextBlock(text="There is no file a.txt."),), is_error=True
         ),
         error=ToolError(code="NOT_FOUND", reason="There is no file a.txt."),
+        meta={"duration_ms": 0},
     )
+
+
+# How long a tool ran
+
+
+async def test_how_long_a_tool_ran_is_written_down_beside_its_result(
+    ctx: Context, tools: Tools, run: ToolRun, clock: Clock
+) -> None:
+    async def slow(args: EchoArgs, run: ToolRun) -> str:
+        clock.now += 1.5
+        return args.text
+
+    tools.add(ctx, tool("slow", slow))
+
+    outcome = await tools.run(ctx, call("slow", '{"text": "hello"}'), run)
+
+    assert outcome.duration_ms == 1500
+    assert outcome.to_event().meta == {"duration_ms": 1500}
+
+
+@pytest.mark.parametrize(
+    ("how", "code"),
+    [
+        ("fails", "NOT_FOUND"),
+        ("crashes", "TOOL_ERROR"),
+        ("cancels itself", "TOOL_ERROR"),
+        ("runs out of time", "TOOL_TIMEOUT"),
+        ("cannot be rendered", "TOOL_ERROR"),
+        ("is withheld", "RESULT_BLOCKED"),
+        ("cannot be checked", "CHECK_FAILED"),
+        ("gets no verdict", "CHECK_FAILED"),
+    ],
+)
+async def test_a_tool_that_ran_says_how_long_whatever_became_of_its_result(
+    ctx: Context, tools: Tools, run: ToolRun, clock: Clock, how: str, code: str
+) -> None:
+    async def slow(args: EchoArgs, run: ToolRun) -> str:
+        clock.now += 1.5
+        if how == "fails":
+            raise ToolFailure("There is nothing.", code="NOT_FOUND")
+        if how == "crashes":
+            raise RuntimeError("boom")
+        if how == "cancels itself":
+            raise asyncio.CancelledError
+        if how == "runs out of time":
+            await asyncio.Event().wait()
+        return args.text
+
+    def render(args: EchoArgs, value: object) -> str:
+        raise KeyError("missing")
+
+    async def check(executed: Executed, proceed: Next[Executed, Verdict]) -> Verdict:
+        if how == "is withheld":
+            return Block(reason="it holds a password")
+        if how == "cannot be checked":
+            raise RuntimeError("filter bug")
+        return cast("Verdict", None)
+
+    options: dict[str, Any] = {}
+    if how == "cannot be rendered":
+        options["render"] = render
+    if how == "runs out of time":
+        options["timeout_seconds"] = 0.05
+    tools.add(ctx, tool("slow", slow, **options))
+    if how in ("is withheld", "cannot be checked", "gets no verdict"):
+        ctx.on(POST_EXECUTE, check)
+
+    outcome = await asyncio.wait_for(tools.run(ctx, call("slow"), run), timeout=5)
+
+    assert outcome.error is not None
+    assert outcome.error.code == code
+    assert outcome.duration_ms == 1500
+    assert outcome.to_event().meta == {"duration_ms": 1500}
+
+
+async def test_a_call_that_did_not_run_says_no_time(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal, clock: Clock
+) -> None:
+    async def refuse(invocation: Invocation, proceed: Next[Invocation, Decision]) -> Decision:
+        if invocation.call.call_id == "refused":
+            return Deny(reason="not now")
+        return await proceed(invocation)
+
+    async def swapping(invocation: Invocation, proceed: Next[Invocation, object]) -> object:
+        if invocation.call.call_id != "swapped":
+            return await proceed(invocation)
+        return await proceed(dataclasses.replace(invocation, args=EchoArgs(text="another")))
+
+    tools.add(ctx, tool("echo", journal.echo))
+    ctx.on(PRE_EXECUTE, refuse)
+    ctx.on(EXECUTE, swapping)
+    ended = tools.begin(ctx, call("echo", call_id="ended"), run)
+
+    outcomes = [
+        await tools.run(ctx, call("ehco"), run),
+        await tools.run(ctx, call("echo", '{"text": 5}'), run),
+        await tools.run(ctx, call("echo", call_id="refused"), run),
+        await tools.run(ctx, call("echo", call_id="swapped"), run),
+        ended.fail("ABORTED_BEFORE_DISPATCH", "The turn was cancelled before this call ran."),
+    ]
+
+    codes = [outcome.error.code if outcome.error else None for outcome in outcomes]
+    assert codes == [
+        "UNKNOWN_TOOL",
+        "INVALID_ARGS",
+        "DENIED",
+        "CHECK_FAILED",
+        "ABORTED_BEFORE_DISPATCH",
+    ]
+    assert [outcome.duration_ms for outcome in outcomes] == [None] * 5
+    assert [outcome.to_event().meta for outcome in outcomes] == [None] * 5
+    assert journal.ran == []
 
 
 async def test_a_tool_can_say_how_its_value_reads(

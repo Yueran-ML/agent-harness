@@ -820,7 +820,7 @@ Tool(
 
 ### 12.2 无界面
 
-最终回答写到标准输出。`--json` 输出逐行事件：`session`、`status`、`text`、`thinking`、`tool_call`、`tool_result`、`final`。`final` 带结束原因、代码和用量。`--session-id` 续接已有会话，没有这个会话就用这个 id 新建。
+最终回答写到标准输出。`--json` 输出逐行事件：`session`、`status`、`text`、`thinking`、`tool_call`、`tool_result`、`final`。`final` 带结束原因、代码和用量，以及本次运行里各工具的调用次数、失败次数和运行的毫秒数（`tools`，2026-10-15 加入）。`--session-id` 续接已有会话，没有这个会话就用这个 id 新建。
 
 回答是模型写的。输出是终端时，回答里会被终端执行的字符先换掉。输出是文件或管道时回答保持原样。见 9.6 节。
 

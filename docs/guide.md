@@ -132,7 +132,7 @@ it.
 | Command | What it does |
 |---|---|
 | `/help` | Lists the commands. |
-| `/tools` | Lists the tools of the agent, each with what a call of it does. |
+| `/tools` | Lists the tools of the agent, each with what a call of it does, and then how their calls went in this session: how many there were, how many failed, and how long the tools ran. |
 | `/permissions` | Shows what the session may do: the mode of the sandbox, the policy of approval, the rules, and what was allowed for the rest of the session. `/permissions PRESET` changes the first two. |
 | `/sessions` | Lists the sessions that are stored for the working directory. |
 | `/compact` | Sums up the older part of the conversation to make room, now and not when it has to be. |
@@ -213,7 +213,7 @@ conversation, and without a model:
 | Command | What it does |
 |---|---|
 | `columbina sessions list` | Lists the sessions that are stored for the working directory. |
-| `columbina sessions show ID` | Tells a session turn by turn: what the user said, and the end of what the model answered. |
+| `columbina sessions show ID` | Tells a session turn by turn: what the user said, and the end of what the model answered. It ends with how the calls of each tool went. |
 | `columbina sessions fork ID` | Copies a session up to its last whole turn and prints the id of the copy. |
 
 ## Running a task
@@ -240,6 +240,12 @@ $ uv run columbina run "What is the codename of release 0.1? ..." --session-id d
 These are the lines of a real run against `deepseek-flash`, with the working directory
 shortened. The session that the run left behind is kept in
 `tests/fixtures/recorded/deepseek-read`, and a test plays it again without the service.
+
+The run was recorded before the last line said how the tools went. It now ends with `tools`
+as well: for each tool, how many calls it had, how many of them failed, and for how many
+milliseconds it ran in all, such as `"tools": {"read": {"calls": 1, "failed": 0,
+"duration_ms": 2}}`. The time is that of the tool itself: a question to the user before a
+call is not in it.
 
 Both commands take these options, except where one of them is named.
 

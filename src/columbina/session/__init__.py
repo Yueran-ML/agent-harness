@@ -46,7 +46,17 @@ from columbina.session.events import (
     UserMessageEvent,
 )
 from columbina.session.log import SESSION_EVENT, Committed, Session, SessionStore, now_ms
-from columbina.session.projection import TURN, USAGE, Projection, TurnState, UsageTotal
+from columbina.session.projection import (
+    TOOLS_USED,
+    TURN,
+    USAGE,
+    Projection,
+    ToolsUsed,
+    ToolUse,
+    TurnState,
+    UsageTotal,
+    tools_used,
+)
 from columbina.session.repair import CloseReason, closing_events
 from columbina.session.service import SESSIONS, Sessions
 from columbina.session.store import Listed, SessionFile, StoredSession, read_session
@@ -57,6 +67,7 @@ __all__ = [
     "FORMAT_VERSION",
     "SESSIONS",
     "SESSION_EVENT",
+    "TOOLS_USED",
     "TURN",
     "USAGE",
     "AsideEvent",
@@ -89,6 +100,8 @@ __all__ = [
     "ToolCallEvent",
     "ToolError",
     "ToolResultEvent",
+    "ToolUse",
+    "ToolsUsed",
     "TurnEndEvent",
     "TurnEndReason",
     "TurnStartEvent",
@@ -106,6 +119,7 @@ __all__ = [
     "name",
     "now_ms",
     "read_session",
+    "tools_used",
 ]
 
 name = "session"

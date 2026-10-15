@@ -5,13 +5,15 @@ import weakref
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 
 import columbina.session
 from columbina.kernel import Context
-from columbina.llm import AssistantMessage, LlmFailure, TextBlock, Usage
+from columbina.llm import AssistantMessage, LlmFailure, TextBlock, ToolMessage, Usage
 from columbina.session import (
     CORE_EVENTS,
     SESSIONS,
+    TOOLS_USED,
     TURN,
     USAGE,
     AsideEvent,
@@ -24,10 +26,16 @@ from columbina.session import (
     SessionEvent,
     StepEndEvent,
     StepStartEvent,
+    ToolCallEvent,
+    ToolError,
+    ToolResultEvent,
+    ToolsUsed,
+    ToolUse,
     TurnEndEvent,
     TurnStartEvent,
     TurnState,
     UsageTotal,
+    tools_used,
 )
 
 KINDS = {kind.event_type: kind for kind in CORE_EVENTS}
@@ -239,6 +247,85 @@ async def test_requests_beside_the_conversation_cost_what_any_request_costs(ctx:
     assert AsideEvent.ignorable
     assert AsideEvent.event_type == "request/aside"
     assert AsideEvent in CORE_EVENTS
+
+
+def called(call_id: str, name: str) -> ToolCallEvent:
+    return ToolCallEvent(call_id=call_id, name=name, arguments="{}")
+
+
+def answered(
+    call_id: str, meta: dict[str, JsonValue] | None = None, *, failed: bool = False
+) -> ToolResultEvent:
+    return ToolResultEvent(
+        message=ToolMessage(call_id=call_id, content=(TextBlock(text="done"),), is_error=failed),
+        error=ToolError(code="TOOL_ERROR", reason="done") if failed else None,
+        meta=meta,
+    )
+
+
+async def test_the_calls_of_each_tool_add_up_with_their_failures_and_their_time(
+    ctx: Context,
+) -> None:
+    session = Session(ctx, "s-1", KINDS)
+    assert TOOLS_USED.of(session) == ToolsUsed()
+
+    session.append(called("c-1", "bash"))
+    session.append(called("c-2", "read"))
+    session.append(answered("c-2", {"duration_ms": 12}))
+    session.append(answered("c-1", {"duration_ms": 1500}, failed=True))
+    session.append(called("c-3", "bash"))
+    session.append(answered("c-3", {"duration_ms": 250}))
+    session.append(called("c-4", "bash"))
+
+    used = TOOLS_USED.of(session)
+    assert used.tools == {
+        "read": ToolUse(calls=1, duration_ms=12),
+        "bash": ToolUse(calls=2, failed=1, duration_ms=1750),
+    }
+    # In the order of the first result of each tool.
+    assert list(used.tools) == ["read", "bash"]
+    assert used.waiting == {"c-4": "bash"}
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [None, {}, {"duration_ms": "fast"}, {"duration_ms": 2.5}],
+    ids=["none", "no time", "no number", "no whole number"],
+)
+async def test_a_call_whose_tool_did_not_run_counts_without_time(
+    ctx: Context, meta: dict[str, JsonValue] | None
+) -> None:
+    session = Session(ctx, "s-1", KINDS)
+    session.append(called("c-1", "bash"))
+    session.append(answered("c-1", meta, failed=True))
+
+    assert TOOLS_USED.of(session).tools == {"bash": ToolUse(calls=1, failed=1)}
+
+
+async def test_a_result_that_takes_the_place_of_another_is_no_call_of_its_own(
+    ctx: Context,
+) -> None:
+    session = Session(ctx, "s-1", KINDS)
+    session.append(called("c-1", "bash"))
+    first = session.append(answered("c-1", {"duration_ms": 300}))
+    session.append(answered("c-1", {"duration_ms": 300}), replaces=[first.seq])
+
+    assert TOOLS_USED.of(session) == ToolsUsed(tools={"bash": ToolUse(calls=1, duration_ms=300)})
+
+
+def test_the_calls_in_the_events_of_a_stored_log_add_up_the_same_way() -> None:
+    told = [
+        called("c-1", "grep"),
+        answered("c-1", {"duration_ms": 40}),
+        called("c-2", "grep"),
+        TurnEndEvent(turn=1, reason="completed"),
+    ]
+    events = [SessionEvent(seq=seq, time=0, data=data) for seq, data in enumerate(told)]
+
+    assert tools_used(events) == ToolsUsed(
+        tools={"grep": ToolUse(calls=1, duration_ms=40)}, waiting={"c-2": "grep"}
+    )
+    assert tools_used([]) == ToolsUsed()
 
 
 def test_usages_can_be_added() -> None:

@@ -24,6 +24,7 @@ from typing import Literal
 from columbina.agent import replies
 from columbina.apps.common import how_it_ended
 from columbina.commands.sessions import listed
+from columbina.commands.tools import used
 from columbina.kernel import Context
 from columbina.session import (
     SESSIONS,
@@ -35,6 +36,7 @@ from columbina.session import (
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
+    tools_used,
 )
 
 __all__ = ["FORK", "LIST", "SHOW", "What", "copied", "run", "shown"]
@@ -96,6 +98,9 @@ def shown(stored: StoredSession) -> str:
     stops = [*starts[1:], len(stored.events)]
     for number, (start, stop) in enumerate(zip(starts, stops, strict=False), start=1):
         lines.extend(("", f"turn {number}", *_turn(stored.events[start:stop])))
+    calls = tools_used(stored.events).tools
+    if calls:
+        lines.extend(("", *used(calls)))
     return "\n".join(lines)
 
 

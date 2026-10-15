@@ -112,7 +112,7 @@ Here I am.
 | 命令 | 作用 |
 |---|---|
 | `/help` | 列出命令。 |
-| `/tools` | 列出 Agent 的工具，并说明调用每个工具会做什么。 |
+| `/tools` | 列出 Agent 的工具，并说明调用每个工具会做什么；之后说明本会话里各工具的调用情况：调用了几次、失败了几次、工具一共运行了多久。 |
 | `/permissions` | 显示这个会话能做什么，包括沙箱模式、审批策略、规则，以及已经放行到会话结束的调用。`/permissions PRESET` 修改前两项。 |
 | `/sessions` | 列出这个工作目录下保存的会话。 |
 | `/compact` | 立刻把对话较早的部分写成摘要来腾出空间，不等到非做不可的时候。 |
@@ -150,7 +150,7 @@ Here I am.
 | 命令 | 作用 |
 |---|---|
 | `columbina sessions list` | 列出这个工作目录下保存的会话。 |
-| `columbina sessions show ID` | 逐回合显示一个会话，包括用户说了什么和模型回答的末尾。 |
+| `columbina sessions show ID` | 逐回合显示一个会话，包括用户说了什么和模型回答的末尾，最后列出各工具的调用情况。 |
 | `columbina sessions fork ID` | 把一个会话复制到它最后一个完整的回合为止，并打印副本的 id。 |
 
 ## 执行一个任务
@@ -175,6 +175,8 @@ $ uv run columbina run "What is the codename of release 0.1? ..." --session-id d
 ```
 
 这些是用 `deepseek-flash` 做的一次真实运行输出的行，其中的工作目录缩短过。这次运行留下的会话保存在 `tests/fixtures/recorded/deepseek-read`，有一条测试不连服务就把它回放一遍。
+
+这次运行录下时，最后一行还没有说明工具的情况。现在它还会带上 `tools`：对每个工具，说明调用了几次、其中失败了几次、一共运行了多少毫秒，例如 `"tools": {"read": {"calls": 1, "failed": 0, "duration_ms": 2}}`。这里的时间只算工具本身运行的时间，调用前向用户提问等待的时间不算在内。
 
 下面的选项两个命令都接受，说明里指明只用于其中一个的除外。
 

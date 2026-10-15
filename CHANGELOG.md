@@ -11,6 +11,10 @@ change what was there before.
   key that a session would send, the shell, and for commands in containers the Docker
   engine and its image. It starts nothing that a session would leave behind, and ends with
   1 where something is in the way.
+- How long a tool ran is written down beside its result in the session log, as
+  `duration_ms` in its `meta`. `/tools`, `columbina sessions show` and the last line of
+  `columbina run --json` say for each tool how many calls it had, how many of them failed,
+  and how long it ran.
 
 ## 0.1.0 (2026-10-15)
 

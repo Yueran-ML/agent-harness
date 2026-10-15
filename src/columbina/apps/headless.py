@@ -36,6 +36,7 @@ from columbina.session import (
     ToolCallEvent,
     ToolResultEvent,
     TurnEndEvent,
+    tools_used,
 )
 
 __all__ = ["DEFAULT_PROMPT", "Config", "Headless", "apply", "inject", "name"]
@@ -160,6 +161,7 @@ class Headless:
         end = ends[-1]
         answer = said[-1] if said else ""
         total = USAGE.of(session)
+        calls = tools_used(session.events[before:]).tools
         await agent.close()
         if config.json_lines:
             _emit(
@@ -178,6 +180,7 @@ class Headless:
                         "cache_write_tokens": total.usage.cache_write_tokens
                         - spent.usage.cache_write_tokens,
                     },
+                    "tools": {tool: use.model_dump() for tool, use in calls.items()},
                 }
             )
         else:

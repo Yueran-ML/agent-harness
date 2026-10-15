@@ -165,7 +165,7 @@ def test_the_program_that_is_shipped_has_its_commands(
         "/skill        Hand a skill to the agent: /skill NAME [TASK].\n"
         "/skills       List the skills, and what cannot be used as one.\n"
         "/todos        Show the list of things to do that the agent keeps.\n"
-        "/tools        List the tools of the agent.\n"
+        "/tools        List the tools of the agent, and how their calls went.\n"
     ) in printed()
 
 

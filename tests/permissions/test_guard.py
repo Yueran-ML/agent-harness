@@ -2,7 +2,7 @@
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -931,11 +931,13 @@ async def test_the_rules_of_a_project_are_read_once_for_a_session(
     assert await at.shell("rm x") == "DENIED"
     later = at.sessions.create(ctx, work)
     at.sandbox.set_mode(later, "danger-full-access")
-    assert await at.tools.run(
+    ran = await at.tools.run(
         ctx,
         ToolCallBlock(call_id="c", name="shell", arguments='{"command": "rm x"}'),
         ToolRun("c", work, later),
-    ) == ToolOutcome(
+    )
+    # How long it took is no matter here.
+    assert replace(ran, duration_ms=None) == ToolOutcome(
         call=ToolCallBlock(call_id="c", name="shell", arguments='{"command": "rm x"}'),
         text="ran",
         value="ran",

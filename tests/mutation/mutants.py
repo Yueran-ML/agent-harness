@@ -1800,6 +1800,84 @@ _TOOLS = (
         "what the call named or what a listener said.\n        text = whole(text)\n",
         "what the call named or what a listener said.\n",
     ),
+    mutant(
+        "a run of a tool is not timed",
+        PIPELINE,
+        "            took = _since(began)\n",
+        "            took = 0\n",
+    ),
+    mutant(
+        "the time of a run is taken in seconds",
+        PIPELINE,
+        "    return round((_now() - began) * 1000)\n",
+        "    return round(_now() - began)\n",
+    ),
+    mutant(
+        "how long a tool ran is not written down beside its result",
+        PIPELINE,
+        '            meta = {"duration_ms": self.duration_ms}\n',
+        "            pass\n",
+    ),
+    mutant(
+        "a call that did not run is written down as one that ran for no time",
+        PIPELINE,
+        "        if self.duration_ms is not None:\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "a tool that ran and succeeded is not timed",
+        PIPELINE,
+        "                    duration_ms=took,\n",
+        "",
+    ),
+    mutant(
+        "a tool that raised is not timed",
+        PIPELINE,
+        "timed_out=timer.expired(), took=_since(began))\n",
+        "timed_out=timer.expired(), took=0)\n",
+    ),
+    mutant(
+        "a tool that ran out of time is not timed",
+        PIPELINE,
+        'seconds and was stopped.",\n                took,\n',
+        'seconds and was stopped.",\n',
+    ),
+    mutant(
+        "a tool that reported a failure is not timed",
+        PIPELINE,
+        "            return self._fail(error.code, str(error), took)\n",
+        "            return self._fail(error.code, str(error))\n",
+    ),
+    mutant(
+        "a tool that cancelled itself is not timed",
+        PIPELINE,
+        'was cancelled from inside.", took)\n',
+        'was cancelled from inside.")\n',
+    ),
+    mutant(
+        "a tool that crashed is not timed",
+        PIPELINE,
+        'failed: {_describe(error)}", took)\n',
+        'failed: {_describe(error)}")\n',
+    ),
+    mutant(
+        "a tool whose result was withheld is not timed",
+        PIPELINE,
+        'withheld: {verdict.reason}", took\n',
+        'withheld: {verdict.reason}"\n',
+    ),
+    mutant(
+        "a tool whose result could not be checked is not timed",
+        PIPELINE,
+        'is withheld: " + _describe(error),\n                took,\n',
+        'is withheld: " + _describe(error),\n',
+    ),
+    mutant(
+        "a tool whose result got no verdict is not timed",
+        PIPELINE,
+        'a check gave no verdict",\n            took,\n',
+        'a check gave no verdict",\n',
+    ),
 )
 
 _FS = (
@@ -23262,6 +23340,117 @@ _DOCTOR = (
     ),
 )
 
+_TOOL_USE = (
+    mutant(
+        "a call is not looked out for",
+        PROJECTION,
+        "        return ToolsUsed(tools=state.tools, waiting={**state.waiting, data.call_id: data.name})\n",
+        "        return state\n",
+    ),
+    mutant(
+        "an event that is no result is folded as one",
+        PROJECTION,
+        "    if not isinstance(data, ToolResultEvent):\n        return state\n",
+        "",
+    ),
+    mutant(
+        "a result that takes the place of another counts as a call of its own",
+        PROJECTION,
+        "    still = {key: tool for key, tool in state.waiting.items() if key != call_id}\n",
+        "    still = state.waiting\n",
+    ),
+    mutant(
+        "the calls of a tool start over at each call",
+        PROJECTION,
+        "    before = state.tools.get(name, ToolUse())\n",
+        "    before = ToolUse()\n",
+    ),
+    mutant(
+        "a failure is not counted",
+        PROJECTION,
+        "        failed=before.failed + (data.error is not None),\n",
+        "        failed=before.failed,\n",
+    ),
+    mutant(
+        "how long a tool ran is not added up",
+        PROJECTION,
+        "        duration_ms=before.duration_ms + (took if isinstance(took, int) else 0),\n",
+        "        duration_ms=before.duration_ms,\n",
+    ),
+    mutant(
+        "a time that is no whole number is added up",
+        PROJECTION,
+        "(took if isinstance(took, int) else 0),\n",
+        "(took if took is not None else 0),\n",
+    ),
+    mutant(
+        "the events of a stored log are not folded",
+        PROJECTION,
+        "        state = _fold_tools(state, event)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "how many failed is said without the share of the calls that it is",
+        COMMAND_TOOLS,
+        '        failed = f"{use.failed} ({round(100 * use.failed / use.calls)}%)" if use.failed else "0"\n',
+        "        failed = str(use.failed)\n",
+    ),
+    mutant(
+        "a time is said in milliseconds",
+        COMMAND_TOOLS,
+        "    seconds = milliseconds / 1000\n",
+        "    seconds = milliseconds\n",
+    ),
+    mutant(
+        "a long time is said to the tenth of a second",
+        COMMAND_TOOLS,
+        '    return f"{seconds:.1f} s" if seconds < 100 else f"{seconds:.0f} s"\n',
+        '    return f"{seconds:.1f} s"\n',
+    ),
+    mutant(
+        "a short time is said in whole seconds",
+        COMMAND_TOOLS,
+        '    return f"{seconds:.1f} s" if seconds < 100 else f"{seconds:.0f} s"\n',
+        '    return f"{seconds:.0f} s"\n',
+    ),
+    mutant(
+        "the columns are as narrow as nothing",
+        COMMAND_TOOLS,
+        "    widths = [max(len(row[column]) for row in rows) for column in range(4)]\n",
+        "    widths = [0, 0, 0, 0]\n",
+    ),
+    mutant(
+        "the command that lists the tools says nothing of their calls",
+        COMMAND_TOOLS,
+        "        calls = TOOLS_USED.of(agent.session).tools\n",
+        "        calls = {}\n",
+    ),
+    mutant(
+        "a stored session says nothing of the calls of its tools",
+        APPS_SESSIONS,
+        "    calls = tools_used(stored.events).tools\n",
+        "    calls = {}\n",
+    ),
+    mutant(
+        "a stored session without calls ends with a table of none",
+        APPS_SESSIONS,
+        '    if calls:\n        lines.extend(("", *used(calls)))\n',
+        '    if True:\n        lines.extend(("", *used(calls)))\n',
+    ),
+    mutant(
+        "the end of a run says nothing of the calls of its tools",
+        HEADLESS,
+        '                    "tools": {tool: use.model_dump() for tool, use in calls.items()},\n',
+        '                    "tools": {},\n',
+    ),
+    mutant(
+        "the end of a run counts the calls of the runs before it",
+        HEADLESS,
+        "        calls = tools_used(session.events[before:]).tools\n",
+        "        calls = tools_used(session.events).tools\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -23362,6 +23551,15 @@ SETS: dict[str, MutantSet] = {
         _CLI,
     ),
     "commands": MutantSet(("tests/commands",), _SLASH),
+    "tool-use": MutantSet(
+        (
+            "tests/session/test_projection.py",
+            "tests/commands/test_builtin.py",
+            "tests/apps/test_stored_sessions.py",
+            "tests/apps/test_launcher.py",
+        ),
+        _TOOL_USE,
+    ),
     "text": MutantSet(
         (
             "tests/apps/test_terminal_text.py",

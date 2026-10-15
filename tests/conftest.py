@@ -1,5 +1,6 @@
 import asyncio
 import os
+import signal
 import webbrowser
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -45,6 +46,18 @@ def no_browser_of_the_system(monkeypatch: pytest.MonkeyPatch) -> None:
         return False
 
     monkeypatch.setattr(webbrowser, "open", opened)
+
+
+@pytest.fixture(autouse=True)
+def the_default_handler_of_an_interrupt() -> Iterator[None]:
+    """Give the interrupt its default handler back after every test.
+
+    A loop that a test leaves with a handler of its own for SIGINT, as one that showed a prompt
+    of prompt_toolkit does on Python 3.12 away from Windows, would keep the next
+    ``asyncio.run`` from taking the interrupt over, and Ctrl+C would end no wait there.
+    """
+    yield
+    signal.signal(signal.SIGINT, signal.default_int_handler)
 
 
 @pytest.fixture(autouse=True)

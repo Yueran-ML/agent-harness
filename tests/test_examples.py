@@ -1,8 +1,8 @@
-"""The examples run, and the documents show them as they are and point at what is there.
+"""The examples run, and the documents point at what is there.
 
-There are two documents, each in three languages. The README says how to get the program
-and how to start it, and the guide under docs/ says the rest. The English one of each is
-held to the repository, and the other two are held to the English one.
+The README, in three languages, says how to get the program and how to start it. The
+English one is held to the repository, and the other two are held to the English one. The
+links of the other documents of the repository are held to what is there as well.
 """
 
 import json
@@ -12,7 +12,6 @@ import re
 import runpy
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -21,10 +20,15 @@ import yaml
 
 ROOT = Path(__file__).parent.parent
 READMES = ("README.md", "README.zh-CN.md", "README.ja.md")
-GUIDES = ("docs/guide.md", "docs/guide.zh-CN.md", "docs/guide.ja.md")
-DOCUMENTS = READMES + GUIDES
-# The English document, and a translation that is held to it.
-TRANSLATIONS = [(family[0], other) for family in (READMES, GUIDES) for other in family[1:]]
+DOCUMENTS = (
+    *READMES,
+    "docs/report.md",
+    "docs/report.zh-CN.md",
+    "docs/bench/README.md",
+    "desktop/README.md",
+)
+# The English README, and a translation that is held to it.
+TRANSLATIONS = [(READMES[0], other) for other in READMES[1:]]
 # The pictures of the README are left out of the source distribution.
 PICTURES = "docs/assets/"
 ADDRESS = ("http://", "https://")
@@ -58,11 +62,6 @@ def _targets(prose: str) -> list[str]:
     return re.findall(r"\]\(([^)\s]+)\)", prose) + re.findall(r'(?:href|src)="([^"]+)"', prose)
 
 
-def _family(name: str) -> tuple[str, ...]:
-    """Return a document in all its languages."""
-    return READMES if name in READMES else GUIDES
-
-
 def _reached(name: str, target: str) -> str:
     """Return the file of the repository that a link in a document leads to."""
     path = target.partition("#")[0]
@@ -76,16 +75,16 @@ def _files(name: str) -> list[str]:
 
 
 def _elsewhere(name: str) -> list[str]:
-    """Return what a document points at, beside its own headings and its other languages.
+    """Return what a README points at, beside its own headings and its other languages.
 
     A document in another language is named as the English one, so that what the three
-    languages of a document point at can be compared.
+    languages of the README point at can be compared.
     """
     found: list[str] = []
     for target in _targets(_prose(name)):
         if target.startswith(ADDRESS):
             found.append(target)
-        elif not target.startswith("#") and _reached(name, target) not in _family(name):
+        elif not target.startswith("#") and _reached(name, target) not in READMES:
             found.append(re.sub(r"\.(zh-CN|ja)\.md$", ".md", _reached(name, target)))
     return found
 
@@ -133,14 +132,6 @@ def test_the_kernel_demo_prints_one_tick(capsys: pytest.CaptureFixture[str]) -> 
     runpy.run_path(str(ROOT / "examples" / "kernel_demo.py"), run_name="__main__")
 
     assert capsys.readouterr().out == "tick 101\n"
-
-
-@pytest.mark.parametrize("name", GUIDES)
-@pytest.mark.parametrize("example", ["kernel_demo.py", "word_count.py"])
-def test_the_guide_shows_an_example_unchanged(example: str, name: str) -> None:
-    code = (ROOT / "examples" / example).read_text(encoding="utf-8")
-
-    assert f"{FENCE}python\n{code}{FENCE}\n" in _text(name)
 
 
 def _ran(
@@ -236,20 +227,6 @@ def test_the_guard_of_the_example_refuses_a_push_and_nothing_else(tmp_path: Path
     assert "not-pushed" in echoed["text"]
 
 
-@pytest.mark.parametrize("name", GUIDES)
-def test_the_guide_shows_the_screen_of_a_conversation_as_a_test_left_it(name: str) -> None:
-    snapshot = ROOT / "tests" / "apps" / "cli" / "snapshots" / "the_screen_of_a_session.txt"
-    screen = snapshot.read_text(encoding="utf-8")
-
-    assert f"{FENCE}text\n{screen}{FENCE}\n" in _text(name)
-
-
-def test_the_readme_clones_the_repository_that_the_project_names() -> None:
-    project = tomllib.loads(_text("pyproject.toml"))["project"]
-
-    assert f"git clone {project['urls']['Repository']}.git\n" in _text("README.md")
-
-
 @pytest.mark.parametrize("name", DOCUMENTS)
 def test_the_files_that_a_document_points_at_are_there(name: str) -> None:
     files = _files(name)
@@ -269,39 +246,32 @@ def test_a_file_is_only_there_under_the_name_it_has_on_disk() -> None:
 
 
 def test_a_link_is_followed_from_the_place_of_its_document() -> None:
-    assert _reached("README.md", "docs/guide.md#development") == "docs/guide.md"
-    assert _reached("docs/guide.ja.md", "../README.ja.md") == "README.ja.md"
-    assert _reached("docs/guide.md", "plans/x.md") == "docs/plans/x.md"
-    assert _reached("docs/guide.md", "../../outside") == "../outside"
+    assert _reached("README.md", "docs/report.md#7-the-benchmark") == "docs/report.md"
+    assert _reached("docs/bench/README.md", "../report.md") == "docs/report.md"
+    assert _reached("docs/report.md", "bench/README.md") == "docs/bench/README.md"
+    assert _reached("docs/report.md", "../../outside") == "../outside"
 
 
-@pytest.mark.parametrize("name", DOCUMENTS)
-def test_a_link_to_a_heading_leads_to_one(name: str) -> None:
+def test_a_link_to_a_heading_leads_to_one() -> None:
     astray: list[str] = []
     followed = 0
-    for target in _targets(_prose(name)):
-        path, sign, heading = target.partition("#")
-        if sign and not target.startswith(ADDRESS):
-            followed += 1
-            if heading not in _headings(_reached(name, target) if path else name):
-                astray.append(target)
+    for name in DOCUMENTS:
+        for target in _targets(_prose(name)):
+            path, sign, heading = target.partition("#")
+            if sign and not target.startswith(ADDRESS):
+                followed += 1
+                if heading not in _headings(_reached(name, target) if path else name):
+                    astray.append(f"{name}: {target}")
 
     assert followed
     assert astray == []
 
 
-@pytest.mark.parametrize("name", DOCUMENTS)
-def test_a_document_leads_to_its_other_two_languages(name: str) -> None:
-    family = _family(name)
+@pytest.mark.parametrize("name", READMES)
+def test_a_readme_leads_to_its_other_two_languages(name: str) -> None:
+    others = sorted(set(READMES) - {name})
 
-    assert sorted(file for file in _files(name) if file in family) == sorted(set(family) - {name})
-
-
-@pytest.mark.parametrize(("readme", "guide"), list(zip(READMES, GUIDES, strict=True)))
-def test_a_readme_and_the_guide_in_its_language_lead_to_each_other(readme: str, guide: str) -> None:
-    # More than once is fine. Another language is not.
-    assert {file for file in _files(readme) if file in GUIDES} == {guide}
-    assert {file for file in _files(guide) if file in READMES} == {readme}
+    assert sorted(file for file in _files(name) if file in READMES) == others
 
 
 @pytest.mark.parametrize(("english", "name"), TRANSLATIONS)

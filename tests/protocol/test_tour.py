@@ -1,4 +1,4 @@
-"""A session in which everything happens once, kept as a sample for whoever builds a frontend.
+"""A session in which everything happens once, kept as a sample that interfaces are tried on.
 
 The session is not written by hand. An agent is driven through it. A scripted
 model stands in for the service, and a tool that only pretends to run
@@ -68,11 +68,12 @@ from columbina.session.store import SESSION_FILE
 from columbina.todo import TOOL as TODO_TOOL
 from columbina.tools import Tool, ToolRun, pipeline
 from support.loop import Harness, idle
-from support.protocol import DOCS, event_kinds
+from support.protocol import event_kinds
 from support.scenario import REPOSITORY
 from support.snapshot import stored
 
-SAMPLE = DOCS / "samples" / "tour.jsonl"
+SAMPLE = Path(__file__).parents[1] / "fixtures" / "tour.jsonl"
+"""The sample. The tests of the desktop application replay a copy of it."""
 MODEL = CallConfig(provider="deepseek", model="deepseek-flash", context_window=3200)
 """A model that takes so little that a few turns are too much for it."""
 

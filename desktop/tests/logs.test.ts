@@ -6,7 +6,7 @@ import { logs, type LogName } from './logs';
 const originals: Record<LogName, string> = {
   'deepseek-read': 'tests/fixtures/recorded/deepseek-read/session.v1.jsonl',
   'deepseek-fix': 'tests/fixtures/recorded/deepseek-fix/session.v1.jsonl',
-  tour: 'docs/protocol/samples/tour.jsonl',
+  tour: 'tests/fixtures/tour.jsonl',
 };
 const repository = new URL('../../', import.meta.url);
 

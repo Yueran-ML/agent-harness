@@ -3,8 +3,7 @@
 Another program holds the conversation here, an interface in a window. It
 sends requests, a line each, and is sent answers. What happens in the
 session is sent to it as it happens: every event of the log, every chunk of a
-reply that is being written, and where the agent stands. The messages are
-those of ``docs/protocol``.
+reply that is being written, and where the agent stands.
 
 A request is done in the order in which it came. A line is read, and what it
 asks for is done before the next one is read, so something that is said to a

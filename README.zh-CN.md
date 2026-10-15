@@ -104,7 +104,7 @@ pip install columbina
 columbina setup
 ```
 
-它会问模型来自哪个服务、用哪个模型，以及密钥是什么。DeepSeek、OpenAI、OpenRouter、Moonshot、智谱和硅基流动可以直接按名字选，本机上的 Ollama 和 LM Studio 也一样。其他支持 OpenAI Chat Completions 协议的服务可以按地址添加。输入密钥时屏幕上不显示。密钥保存在系统密钥环里，例如 Windows 的凭据管理器或 macOS 的钥匙串；系统没有密钥环时，保存在 `~/.columbina` 里的一个文件中。[指南](docs/guide.zh-CN.md#模型服务与密钥)说明了它是怎样保管的。
+它会问模型来自哪个服务、用哪个模型，以及密钥是什么。DeepSeek、OpenAI、OpenRouter、Moonshot、智谱和硅基流动可以直接按名字选，本机上的 Ollama 和 LM Studio 也一样。其他支持 OpenAI Chat Completions 协议的服务可以按地址添加。输入密钥时屏幕上不显示。密钥保存在系统密钥环里，例如 Windows 的凭据管理器或 macOS 的钥匙串；系统没有密钥环时，保存在 `~/.columbina` 里的一个文件中。
 
 密钥也可以放在环境变量里，环境变量优先于保存下来的密钥。什么都没选的时候，Columbina 接 DeepSeek，读取 `DEEPSEEK_API_KEY`。在 Windows 的 PowerShell 里这样写：
 
@@ -142,26 +142,10 @@ columbina run "What does this project do? Answer in three sentences."
 columbina login github
 ```
 
-它在 GitHub 上能做什么、登录信息怎样保管，见[指南](docs/guide.zh-CN.md#github)。
-
-要开发 Columbina 本身，就把仓库克隆下来，让 uv 为克隆的目录建好环境：
-
-```bash
-git clone https://github.com/Yueran-ML/agent-harness.git
-cd agent-harness
-uv sync
-```
-
-在克隆的目录里，`uv run columbina` 运行的就是那里的程序，怎样检查改动见[指南](docs/guide.zh-CN.md#开发)。
-
 ## 文档
 
-- [指南](docs/guide.zh-CN.md)讲其余的内容，包括终端及其命令、长对话、执行单个任务、模型服务与密钥、GitHub、权限、技能、钩子、子代理与工具服务器、Columbina 的架构、测试方式和进展。
 - [工程报告](docs/report.zh-CN.md)讲 Columbina 怎样组成、哪些选择决定了它的样子、怎样测试以及做得怎样（[英文版](docs/report.md)）。
 - [基准的表](docs/bench/README.md)给出 DeepSeek 两个模型上的结果、各部件的对比和花费。
-- [设计文档](docs/plans/2026-10-09-columbina-design.md)是中文的，各阶段的计划也在同一个目录里。
-- [`docs/research`](docs/research) 记录了从 Columbina 参考的几个 harness 里学到的东西。
-- [`docs/protocol`](docs/protocol) 描述桌面应用将要与程序交换的消息。
 
 ## 许可证
 

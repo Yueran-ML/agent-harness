@@ -146,8 +146,7 @@ DeepSeek, OpenAI, OpenRouter, Moonshot, Zhipu and SiliconFlow are known by name,
 Ollama and LM Studio on the same machine. Any other service that speaks the OpenAI Chat
 Completions protocol is added by its address. The key is typed without being shown. It is
 stored in the keyring of the system, such as the Credential Manager of Windows or the
-Keychain of macOS, and in a file in `~/.columbina` where the system has none. The
-[guide](docs/guide.md#services-and-keys) says how it is kept.
+Keychain of macOS, and in a file in `~/.columbina` where the system has none.
 
 A key can be given in an environment variable instead, and the variable goes before a
 stored key. Where nothing was chosen, Columbina talks to DeepSeek and reads
@@ -194,36 +193,12 @@ request and comments, and it asks you before every push, pull request and commen
 columbina login github
 ```
 
-The [guide](docs/guide.md#github) says what it may do there and how the sign-in is kept.
-
-To work on Columbina itself, clone the repository and let uv make the environment of the
-clone:
-
-```bash
-git clone https://github.com/Yueran-ML/agent-harness.git
-cd agent-harness
-uv sync
-```
-
-In the clone, `uv run columbina` runs the program as it stands there, and the
-[guide](docs/guide.md#development) says how it is checked.
-
 ## Documentation
 
-- [The guide](docs/guide.md) tells the rest: the terminal and its commands, long
-  conversations, running one task, services and keys, GitHub, permissions, skills, hooks,
-  subagents and servers of tools, how Columbina is built, how it is tested, and where the work
-  stands.
 - [The engineering report](docs/report.md) tells how Columbina is put together, which choices
   shaped it, how it is tested and how well it works ([in Chinese](docs/report.zh-CN.md)).
 - [The tables of the benchmark](docs/bench/README.md) give its results with two models of
   DeepSeek, part by part, and what they cost.
-- [The design document](docs/plans/2026-10-09-columbina-design.md) is in Chinese. The plans
-  of the stages are beside it.
-- [`docs/research`](docs/research) holds what was learned from the harnesses that
-  Columbina takes after.
-- [`docs/protocol`](docs/protocol) describes the messages that the desktop app will
-  exchange with the program.
 
 ## License
 

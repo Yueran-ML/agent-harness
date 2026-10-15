@@ -3,8 +3,8 @@ import type { SessionEvent } from '../src/protocol';
 
 /**
  * The session logs that the tests replay. Two are real runs against DeepSeek.
- * The third is the sample of the protocol, in which every kind of event occurs.
- * They are copies: `tests/fixtures/recorded` and `docs/protocol/samples` at the
+ * The third is the sample session, in which every kind of event occurs.
+ * They are copies: `tests/fixtures/recorded` and `tests/fixtures/tour.jsonl` at the
  * root of the repository hold the originals.
  */
 export const logs = ['deepseek-read', 'deepseek-fix', 'tour'] as const;

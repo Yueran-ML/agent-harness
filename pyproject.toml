@@ -41,7 +41,7 @@ columbina = "columbina.apps.launcher:main"
 
 [project.urls]
 Homepage = "https://github.com/Yueran-ML/agent-harness"
-Documentation = "https://github.com/Yueran-ML/agent-harness/blob/main/docs/guide.md"
+Documentation = "https://github.com/Yueran-ML/agent-harness#readme"
 Repository = "https://github.com/Yueran-ML/agent-harness"
 Issues = "https://github.com/Yueran-ML/agent-harness/issues"
 Changelog = "https://github.com/Yueran-ML/agent-harness/blob/main/CHANGELOG.md"

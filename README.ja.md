@@ -104,7 +104,7 @@ pip install columbina
 columbina setup
 ```
 
-どのサービスを使うか、どのモデルを使うか、そしてキーを尋ねます。DeepSeek、OpenAI、OpenRouter、Moonshot、Zhipu、SiliconFlow は名前で選べます。同じマシンで動く Ollama と LM Studio も同様です。OpenAI Chat Completions プロトコルに対応するほかのサービスは、アドレスを指定して追加できます。キーは入力しても画面に表示されません。キーはシステムのキーリングに保存されます。Windows の資格情報マネージャーや macOS のキーチェーンがこれに当たります。システムにキーリングがない場合は、`~/.columbina` の中のファイルに保存されます。保管の方法は[ガイド](docs/guide.ja.md#サービスとキー)で説明しています。
+どのサービスを使うか、どのモデルを使うか、そしてキーを尋ねます。DeepSeek、OpenAI、OpenRouter、Moonshot、Zhipu、SiliconFlow は名前で選べます。同じマシンで動く Ollama と LM Studio も同様です。OpenAI Chat Completions プロトコルに対応するほかのサービスは、アドレスを指定して追加できます。キーは入力しても画面に表示されません。キーはシステムのキーリングに保存されます。Windows の資格情報マネージャーや macOS のキーチェーンがこれに当たります。システムにキーリングがない場合は、`~/.columbina` の中のファイルに保存されます。
 
 キーは環境変数で渡すこともでき、環境変数は保存したキーより優先されます。何も選んでいない場合、Columbina は DeepSeek に接続し、`DEEPSEEK_API_KEY` を読みます。Windows の PowerShell では次のようにします。
 
@@ -142,26 +142,10 @@ GitHub にサインインすると、エージェントはあなたが GitHub �
 columbina login github
 ```
 
-GitHub でできることとサインインの保管方法は[ガイド](docs/guide.ja.md#github)にあります。
-
-Columbina 自体を開発するには、リポジトリをクローンし、uv にクローンの環境を作らせます。
-
-```bash
-git clone https://github.com/Yueran-ML/agent-harness.git
-cd agent-harness
-uv sync
-```
-
-クローンの中では、`uv run columbina` がそこにあるとおりのプログラムを実行します。変更の確かめ方は[ガイド](docs/guide.ja.md#開発)にあります。
-
 ## ドキュメント
 
-- [ガイド](docs/guide.ja.md)では、そのほかのことを説明しています。ターミナルとそのコマンド、長い対話、単一タスクの実行、サービスとキー、GitHub、権限、スキル、フック、サブエージェント、ツールサーバー、Columbina のアーキテクチャ、テストの方法、進捗です。
 - [エンジニアリングレポート](docs/report.md)では、Columbina の組み立て、形を決めた選択、テストの方法、性能を説明しています（[中国語版](docs/report.zh-CN.md)）。
 - [ベンチマークの表](docs/bench/README.md)には、DeepSeek の二つのモデルでの結果、部分ごとの比較、費用があります。
-- [設計文書](docs/plans/2026-10-09-columbina-design.md)は中国語で書かれています。各段階の計画も同じディレクトリにあります。
-- [`docs/research`](docs/research) には、Columbina が手本にしたハーネスから学んだことをまとめています。
-- [`docs/protocol`](docs/protocol) には、デスクトップアプリがプログラムとやり取りするメッセージを記述しています。
 
 ## ライセンス
 

@@ -5,14 +5,12 @@ model is another one: what it says is written down in the profile.
 """
 
 import json
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from columbina.approval import ApprovalAskedEvent, ApprovalDecidedEvent, ApprovalPolicyEvent
 from columbina.apps.headless import DEFAULT_PROMPT
@@ -551,14 +549,11 @@ def test_a_plugin_adds_to_the_system_prompt(
     assert systems == [f"{DEFAULT_PROMPT}\n\nKeep every answer short.\n\n{conduct}"]
 
 
-def test_the_patch_that_the_guide_shows_leaves_those_sections_of_the_conduct_out(
-    program: Program,
-) -> None:
-    guide = (Path(__file__).parents[2] / "docs" / "guide.md").read_text(encoding="utf-8")
-    shown = re.search(r"^```yaml\n(- id: system-prompt-conduct\n.*?)^```$", guide, re.DOTALL | re.M)
-    assert shown is not None
+def test_a_patch_leaves_those_sections_of_the_conduct_out(program: Program) -> None:
     patch = program.tmp_path / "patch.yml"
-    patch.write_text(shown[1], encoding="utf-8")
+    patch.write_text(
+        "- id: system-prompt-conduct\n  config:\n    leave_out: [tools, words]\n", encoding="utf-8"
+    )
 
     ran = program.run(flags=("--patch", str(patch)))
 
@@ -568,10 +563,6 @@ def test_the_patch_that_the_guide_shows_leaves_those_sections_of_the_conduct_out
         if isinstance(event.data, SystemMessageEvent)
     ]
     assert (ran.code, ran.errors) == (0, "")
-    # The patch is the whole example: nothing else in it changes another entry.
-    assert yaml.safe_load(shown[1]) == [
-        {"id": "system-prompt-conduct", "config": {"leave_out": ["tools", "words"]}}
-    ]
     kept = [section.text for name, section in SECTIONS.items() if name not in ("tools", "words")]
     assert len(kept) == len(SECTIONS) - 2
     assert systems == ["\n\n".join([DEFAULT_PROMPT, *kept])]

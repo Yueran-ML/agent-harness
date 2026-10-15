@@ -32,7 +32,7 @@ export const turnEndReasons = [
 
 /**
  * Who did not let a turn go on: `code` of a `turn/end` whose reason is `blocked`.
- * These are the codes of the program itself, as `docs/protocol/README.md` lists them.
+ * These are the codes of the program itself.
  * A plugin may give a code of its own.
  */
 export const turnBlockedCodes = ['STEP_BUDGET', 'TOKEN_BUDGET', 'TIME_BUDGET', 'HOOK', 'NO_DECISION'] as const;

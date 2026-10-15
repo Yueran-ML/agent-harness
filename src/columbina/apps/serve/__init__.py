@@ -4,8 +4,8 @@ This module is a plugin. It provides the frontend that ``columbina serve``
 runs.
 
 A desktop application, or whatever else wants to show a conversation, starts
-this program and talks to it over its standard input and output, in the
-messages of ``docs/protocol``. The program holds the whole state of the
+this program and talks to it over its standard input and output, in messages
+of JSON-RPC 2.0, one to a line. The program holds the whole state of the
 conversation: it asks the model, runs the tools and writes the log. The other
 side shows what it is told and sends what a person does.
 

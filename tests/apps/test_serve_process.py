@@ -21,7 +21,6 @@ import pytest
 
 from columbina.builtin_tools import shell
 from support.launch import profile
-from support.protocol import DOCS
 
 SIX_TIMES_SEVEN = "python -c 'print(6 * 7)'"
 
@@ -269,31 +268,44 @@ def test_what_a_plugin_prints_does_not_stand_among_the_messages(
     ]
 
 
-# The document
+# The order of the messages
 
 
-def turn_in_the_document() -> list[str]:
-    """What section 12 of the document says is sent in the first turn of a session."""
-    text = (DOCS / "README.md").read_text(encoding="utf-8")
-    section = text[text.index("\n## 12. ") :]
-    block = section[section.index("```\n") + 4 :]
-    block = block[: block.index("```")]
-    said: list[str] = []
-    for line in block.splitlines():
-        if "session/prompt" in line:
-            continue
-        if "→" in line:
-            # The answer of the interface to the question.
-            said.append("the yes")
-            continue
-        what = line.split("←", 1)[1].split("(", 1)[0].split()
-        if what[0] == "session.event":
-            said.extend(f"session.event {kind.rstrip(',')}" for kind in what[1:])
-        elif what[0] == "session.status":
-            said.append(f"session.status {what[1]}")
-        else:
-            said.append(what[0])
-    return said
+FIRST_TURN = [
+    "session.event agent/inbox/spliced",
+    "session.status running",
+    "session.event turn/start",
+    "session.event sandbox/mode",
+    "session.event approval/policy",
+    "session.event system/message",
+    "session.event user/message",
+    "session.event user/message",
+    "session.event agent/inbox/spliced",
+    "session.event user/message",
+    "session.event step/start",
+    "session.event request/header",
+    "session.stream",
+    "session.event assistant/message",
+    "session.event tool/call",
+    "session.event approval/asked",
+    "approval/ask",
+    # The answer of the interface to the question.
+    "the yes",
+    "session.event approval/decided",
+    "session.event tool/result",
+    "session.event step/end",
+    "session.event step/start",
+    "session.stream",
+    "session.event assistant/message",
+    "session.event step/end",
+    "session.event turn/end",
+    "session.status idle",
+]
+"""What is sent in the first turn of a session, with every run of chunks as one.
+
+An interface goes by this order. It is that of a real run, the recorded ``deepseek-fix``,
+in which a command is asked about.
+"""
 
 
 def in_short(kinds: list[str]) -> list[str]:
@@ -307,7 +319,7 @@ def in_short(kinds: list[str]) -> list[str]:
 
 
 @pytest.mark.timeout(180)
-def test_the_first_turn_of_a_session_is_told_the_way_the_document_says(
+def test_the_first_turn_of_a_session_is_told_in_the_order_that_an_interface_goes_by(
     started: Callable[..., Program], work: Path
 ) -> None:
     (work / "AGENTS.md").write_text("Answer in one sentence.\n", encoding="utf-8")
@@ -331,7 +343,7 @@ def test_the_first_turn_of_a_session_is_told_the_way_the_document_says(
 
     kinds = program.kinds()
     told = [*kinds[before:at_the_question], "the yes", *kinds[at_the_question:]]
-    # The answer to the request itself is the one thing that the document leaves out.
+    # The answer to the request itself is left out of the order.
     answer = next(
         place
         for place, one in enumerate(program.heard)
@@ -339,4 +351,4 @@ def test_the_first_turn_of_a_session_is_told_the_way_the_document_says(
     )
     assert kinds[answer] == "answer"
     told.remove("answer")
-    assert in_short(told) == in_short(turn_in_the_document())
+    assert in_short(told) == FIRST_TURN

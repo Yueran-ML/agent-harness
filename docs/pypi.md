@@ -39,9 +39,6 @@ columbina run "What does this project do? Answer in three sentences."
 ## More
 
 The [repository](https://github.com/Yueran-ML/agent-harness) has the source, the
-[guide](https://github.com/Yueran-ML/agent-harness/blob/main/docs/guide.md) (also in
-[简体中文](https://github.com/Yueran-ML/agent-harness/blob/main/docs/guide.zh-CN.md) and
-[日本語](https://github.com/Yueran-ML/agent-harness/blob/main/docs/guide.ja.md)), the
 [engineering report](https://github.com/Yueran-ML/agent-harness/blob/main/docs/report.md), and
 the [tables of the benchmark](https://github.com/Yueran-ML/agent-harness/blob/main/docs/bench/README.md)
 that it is measured with.

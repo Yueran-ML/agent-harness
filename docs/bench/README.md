@@ -3,7 +3,7 @@
 These tables were made by `python -m bench table` from the lines of results of the runs of
 2026-10-14, with the tasks and the program of commit `149822e`, and judged by the judge of
 commit `55e2c18`. How the benchmark works is told in the
-[guide](../guide.md#the-benchmark).
+[engineering report](../report.md#7-the-benchmark).
 
 A rate of success is given as passed over attempted, the percentage, and its interval of
 Wilson at 95 percent in brackets. Tokens are the median of one attempt: all that it put in,

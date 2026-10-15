@@ -3,9 +3,8 @@
 The desktop application is a window for a conversation with Columbina. An Electron
 shell opens the window, lets the user choose a project folder and starts the service
 process `columbina serve` in it. A React interface shows the session and turns what
-the user does into requests. The two talk in the messages of
-[`docs/protocol`](../docs/protocol/README.md): JSON-RPC, one message to a line, over
-the standard input and output of the service process.
+the user does into requests. The two talk in JSON-RPC, one message to a line, over the
+standard input and output of the service process.
 
 A package for Windows on x64 and one for macOS on Apple silicon are downloaded from the
 releases of the repository, as the [README](../README.md#the-desktop-application) says.

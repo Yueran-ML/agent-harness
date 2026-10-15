@@ -1,7 +1,7 @@
 """JSON-RPC 2.0, a line at a time: what a line that came means, and the lines that go out.
 
 The service process and the interface that drives it send each other messages
-of JSON-RPC 2.0, one to a line, see ``docs/protocol``. Nothing here knows what
+of JSON-RPC 2.0, one to a line. Nothing here knows what
 the messages are about. A line that came is turned into one of three things:
 a request, which wants an answer, a notification, which wants none, or the
 answer to something that this side asked. A line that is none of them is

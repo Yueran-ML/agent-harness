@@ -3429,8 +3429,14 @@ _BENCH_RUN = (
     mutant(
         "an Ollama of its own looks for its models where it always does",
         BENCH_CLI,
-        "        async with Ollama(arguments.ollama_models, context=context) as server:\n",
-        "        async with Ollama(context=context) as server:\n",
+        "            arguments.ollama_models, port=arguments.ollama_port, context=context\n",
+        "            port=arguments.ollama_port, context=context\n",
+    ),
+    mutant(
+        "an Ollama of its own listens where it always does",
+        BENCH_CLI,
+        "            arguments.ollama_models, port=arguments.ollama_port, context=context\n",
+        "            arguments.ollama_models, context=context\n",
     ),
     mutant(
         "the attempts at an Ollama of its own are made several at a time",

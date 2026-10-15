@@ -69,6 +69,13 @@ def run_parser() -> argparse.ArgumentParser:
         help=f"where the Ollama of the run finds its models; {MODELS.as_posix()} by default",
     )
     parser.add_argument(
+        "--ollama-port",
+        type=int,
+        default=11435,
+        help="the port of the Ollama of the run, so that runs of two models can go side by side; "
+        "11435 by default",
+    )
+    parser.add_argument(
         "--variant",
         action="append",
         choices=sorted(VARIANTS),
@@ -151,7 +158,9 @@ def run(argv: list[str]) -> int:
             )
             return
         context = arguments.context_window or 16384
-        async with Ollama(arguments.ollama_models, context=context) as server:
+        async with Ollama(
+            arguments.ollama_models, port=arguments.ollama_port, context=context
+        ) as server:
             # What the server was given is the window of the model.
             local = replace(model, base_url=server.base_url, context_window=context)
             # One model answers at a time on this machine, so the attempts take turns.

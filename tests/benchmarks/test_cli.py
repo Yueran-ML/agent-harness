@@ -148,10 +148,10 @@ def test_a_run_with_an_ollama_of_its_own_points_its_attempts_at_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     port = free_port()
-    started: list[tuple[Path, int]] = []
+    started: list[tuple[Path, int, int]] = []
 
-    def ollama(models: Path, *, context: int) -> Ollama:
-        started.append((models, context))
+    def ollama(models: Path, *, port: int, context: int) -> Ollama:
+        started.append((models, port, context))
         return Ollama(models, port=port, context=context, command=FAKE)
 
     monkeypatch.setattr(cli, "Ollama", ollama)
@@ -159,12 +159,13 @@ def test_a_run_with_an_ollama_of_its_own_points_its_attempts_at_it(
 
     code = main(
         ["run", "--provider", "ollama", "--model", "qwen", "--ollama", "--context-window", "8192",
-         "--ollama-models", str(tmp_path / "models"), "--task", "sql-orders-per-status",
-         "--sandbox", "none", "--patch", str(scripted(tmp_path)), "--out", str(run)]
+         "--ollama-models", str(tmp_path / "models"), "--ollama-port", str(port),
+         "--task", "sql-orders-per-status", "--sandbox", "none", "--patch", str(scripted(tmp_path)),
+         "--out", str(run)]
     )  # fmt: skip
 
     assert code == 0
-    assert started == [(tmp_path / "models", 8192)]
+    assert started == [(tmp_path / "models", port, 8192)]
     (line,) = table.read([run / "results.jsonl"])
     assert line["model"] == "ollama/qwen"
     chosen = yaml.safe_load((Path(line["record"]) / "home" / "provider.yml").read_text("utf-8"))
@@ -177,7 +178,7 @@ def test_the_attempts_take_turns_at_an_ollama_of_its_own_while_it_answers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     port = free_port()
-    monkeypatch.setattr(cli, "Ollama", functools.partial(Ollama, port=port, command=FAKE))
+    monkeypatch.setattr(cli, "Ollama", functools.partial(Ollama, command=FAKE))
     handed: dict[str, Any] = {}
 
     async def made(attempts: list[Attempt], root: Path, **choices: object) -> list[object]:
@@ -188,7 +189,7 @@ def test_the_attempts_take_turns_at_an_ollama_of_its_own_while_it_answers(
 
     code = main(
         ["run", "--provider", "ollama", "--model", "qwen", "--ollama", "--jobs", "4",
-         "--task", "sql-top-products", "--out", str(tmp_path / "run")]
+         "--ollama-port", str(port), "--task", "sql-top-products", "--out", str(tmp_path / "run")]
     )  # fmt: skip
 
     assert code == 0

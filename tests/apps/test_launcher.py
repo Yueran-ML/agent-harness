@@ -359,6 +359,7 @@ def test_the_composition_can_be_printed_instead_of_run(
         "tool-glob",
         "tool-grep",
         "tool-shell",
+        "github",
         "system-prompt",
         "system-prompt-conduct",
         "context-instructions",
@@ -671,6 +672,21 @@ def test_the_command_line_names_what_runs_the_commands(
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
     assert entries["sandbox"]["config"] == {"provider": "docker"}
+
+
+@pytest.mark.parametrize("command", [["run", "Do it."], [], ["serve"]])
+def test_every_program_brings_the_tools_of_github(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str], command: list[str]
+) -> None:
+    code = main([*command, "--cwd", str(work), "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert code == 0
+    assert entries["github"] == {
+        "id": "github",
+        "plugin": "columbina.github.tools",
+        "config": {"home": "${COLUMBINA_HOME}"},
+    }
 
 
 def test_what_runs_the_commands_is_named_for_a_sandbox_that_has_a_config_of_its_own(

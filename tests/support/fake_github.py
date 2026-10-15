@@ -112,7 +112,10 @@ class FakeGitHub:
             token = asked.headers.get("authorization", "").removeprefix("Bearer ")
             if not self.holding(token):
                 return 401, {"message": "Bad credentials"}, {}
-            return self._api(asked.method, path, asked.body)
+            query = {
+                name: values[-1] for name, values in parse_qs(urlsplit(asked.path).query).items()
+            }
+            return self._api(asked.method, path, asked.body, query)
 
     def _device(self) -> dict[str, Any]:
         return {
@@ -147,7 +150,9 @@ class FakeGitHub:
             "scope": "",
         }
 
-    def _api(self, method: str, path: str, body: Any) -> tuple[int, Any, dict[str, str]]:
+    def _api(
+        self, method: str, path: str, body: Any, query: dict[str, str]
+    ) -> tuple[int, Any, dict[str, str]]:
         parts = path.strip("/").split("/")
         if parts == ["user"]:
             return 200, self.user, {}
@@ -197,7 +202,10 @@ class FakeGitHub:
                 }
                 self.comments.setdefault(key, []).append(made)
                 return 201, made, {}
-            return 200, self.comments.get(key, []), {}
+            listed = self.comments.get(key, [])
+            size = int(query.get("per_page", "30"))
+            start = (int(query.get("page", "1")) - 1) * size
+            return 200, listed[start : start + size], {}
         if rest[0] == "pulls" and len(rest) == 1 and method == "POST":
             number = 100 + len(self.pulls_made)
             made = {

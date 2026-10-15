@@ -27,7 +27,7 @@ from columbina.github.session import access_token
 from columbina.llm.credentials import origin_of, spellings
 from columbina.net import proxy_for
 
-__all__ = ["GitHub"]
+__all__ = ["GitHub", "field"]
 
 _VERSION = "2022-11-28"
 """The version of the REST API that the requests are written for."""
@@ -139,7 +139,7 @@ class GitHub:
         while url is not None and len(found) < most:
             response = await self._asked("GET", url, params=params)
             page: object = _read(response)
-            items = _field(page, key) if key is not None else page
+            items = field(page, key) if key is not None else page
             if not isinstance(items, list):
                 raise GitHubError(
                     f"GitHub answered {path} with something that is no list", code="UNKNOWN"
@@ -245,7 +245,7 @@ def _cleaned(text: str, token: str) -> str:
     return text
 
 
-def _field(said: object, name: str) -> object:
+def field(said: object, name: str) -> object:
     """Return what an object of JSON holds under a name, or ``None``."""
     return cast("dict[str, object]", said).get(name) if isinstance(said, dict) else None
 
@@ -257,7 +257,7 @@ def _refusal(response: httpx.Response, token: str, here: App, now: float) -> Git
         said: object = response.json()
     except ValueError:
         said = None
-    message = _field(said, "message")
+    message = field(said, "message")
     told = _cleaned(message, token) if isinstance(message, str) and message else f"HTTP {status}"
     limited = response.headers.get("x-ratelimit-remaining") == "0"
     if status == HTTPStatus.TOO_MANY_REQUESTS or (status == HTTPStatus.FORBIDDEN and limited):
@@ -273,7 +273,7 @@ def _refusal(response: httpx.Response, token: str, here: App, now: float) -> Git
             code="NOT_FOUND",
         )
     if status == HTTPStatus.UNPROCESSABLE_ENTITY:
-        errors = _field(said, "errors")
+        errors = field(said, "errors")
         more = f" {_cleaned(str(errors), token)}" if errors else ""
         return GitHubError(f"GitHub does not take it: {told}.{more}", code="INVALID")
     if status >= HTTPStatus.INTERNAL_SERVER_ERROR:

@@ -508,6 +508,50 @@ says so. Another build names its own with `COLUMBINA_GITHUB_CLIENT_ID` and
 `COLUMBINA_GITHUB_SLUG`. `COLUMBINA_GITHUB_WEB` and `COLUMBINA_GITHUB_API` point it at
 another GitHub, such as one of GitHub Enterprise Server.
 
+### What the agent does on GitHub
+
+Seven tools act on GitHub in the name of whoever signed in, and only in the repositories
+that were chosen for the app.
+
+| Tool | What it does | Asked about |
+|---|---|---|
+| `github_repos` | Lists the repositories that Columbina may reach, whether they are private, and their default branches. | Never. |
+| `github_read` | Reads an issue or a pull request: its text, its comments 30 to a page, and for a pull request its branches and the files that it changes. | Never. |
+| `github_checks` | Says how the checks went for a pull request, a branch or a commit. | Never. |
+| `github_clone` | Clones a repository into the working directory. | As writing a file there is. |
+| `github_push` | Pushes a branch to the repository that the remote `origin` leads to. | Every time. |
+| `github_open_pull_request` | Opens a pull request for a branch that was pushed. | Every time. |
+| `github_comment` | Writes a comment on an issue or a pull request. | Every time. |
+
+The question about a call that writes to GitHub shows all of what it does: the branch and
+its commits for a push, the whole title and text of a pull request, the whole comment. A
+yes counts for that call alone. In the mode that writes nothing none of the four that write
+runs. In the mode of full access, and where a rule names the tool, as `--allow
+github_comment` does, they run without a question.
+
+The following holds besides.
+
+- A push never goes to the default branch of a repository, never forces, and pushes a
+  branch and no tag. Where GitHub has commits on the branch that the repository does not
+  have, nothing is pushed, and the agent is told to fetch them first. Just before the push,
+  what it would do is worked out again, and nothing is pushed if it changed after the
+  question.
+- git gets the token of the sign-in for one run, as a header of its requests to GitHub,
+  through variables of its environment. The token is on no command line and in no file of
+  the repository. git asks nobody for a password, and the helpers of the user for passwords
+  stay out of it.
+- git is looked for on the search path, outside the working directory. Without git, cloning
+  and pushing say so.
+- Every text that comes from GitHub, such as an issue, a comment or the description of a
+  repository, is put before the model with a word that somebody wrote it on GitHub, and that
+  it is material to read and not instructions. A text longer than 20,000 characters is cut,
+  with a word on where the rest is.
+- The commands that the agent runs get no token. The agent acts on GitHub with these tools
+  alone.
+- Where somebody is signed in, the model is told so with the facts of the run.
+- No tool merges a pull request, closes or reopens an issue, or changes the settings of a
+  repository.
+
 ## Seeing whether a session could start
 
 `columbina doctor` looks at what a session needs and says what is in the way. It makes the

@@ -328,6 +328,32 @@ $ uv run columbina login github
 
 Columbina 登录所用的 GitHub App 写在它的代码里，没有应用的版本会说明这一点。其他版本可以用 `COLUMBINA_GITHUB_CLIENT_ID` 和 `COLUMBINA_GITHUB_SLUG` 指定自己的应用。`COLUMBINA_GITHUB_WEB` 和 `COLUMBINA_GITHUB_API` 让它连接另一个 GitHub，例如 GitHub Enterprise Server。
 
+### Agent 在 GitHub 上能做什么
+
+七个工具以登录者的身份在 GitHub 上操作，而且只作用于为应用选定的仓库。
+
+| 工具 | 做什么 | 问不问 |
+|---|---|---|
+| `github_repos` | 列出 Columbina 能访问的仓库、是否私有，以及各自的默认分支。 | 从不问。 |
+| `github_read` | 读一个 issue 或 PR：正文、评论（每页 30 条）；PR 还包括分支和改动了哪些文件。 | 从不问。 |
+| `github_checks` | 说明一个 PR、分支或提交的检查结果。 | 从不问。 |
+| `github_clone` | 把仓库克隆到工作目录里。 | 和在那里写文件一样。 |
+| `github_push` | 把一个分支推送到远端 `origin` 指向的仓库。 | 每次都问。 |
+| `github_open_pull_request` | 为推送过的分支开一个 PR。 | 每次都问。 |
+| `github_comment` | 在 issue 或 PR 下发表评论。 | 每次都问。 |
+
+询问写 GitHub 的调用时，会把它要做的事完整列出来：推送时是分支和它的提交，开 PR 时是完整的标题和正文，评论时是评论全文。一次同意只对这一次调用有效。在只读模式下，四个写的工具一个都不运行。在完全放开的模式下，或者有规则点名这个工具（例如 `--allow github_comment`）时，它们不经询问直接运行。
+
+另外还有以下几点。
+
+- 推送从不推到仓库的默认分支，从不强推，只推分支、不推标签。GitHub 上这个分支有本地仓库没有的提交时，什么都不推，并告诉 agent 先把它们拉下来。推送前会重新算一遍要推的内容，如果和询问时不一样，就什么都不推。
+- git 只在这一次运行里拿到登录的令牌：令牌经环境变量，作为发往 GitHub 的请求头交给它，不出现在任何命令行上，也不写进仓库的任何文件。git 不向任何人要密码，用户自己的密码助手也不参与。
+- git 在搜索路径上、工作目录之外查找。没有 git 时，克隆和推送会说明这一点。
+- 来自 GitHub 的每段文字，例如 issue、评论或仓库简介，交给模型时都会先说明这是有人在 GitHub 上写的，是供阅读的资料，不是给它的指令。超过 20,000 个字符的文字会被截断，并说明其余部分在哪里。
+- Agent 运行的命令拿不到令牌。Agent 只通过这些工具在 GitHub 上操作。
+- 有人登录时，运行时的事实里会告诉模型这一点。
+- 没有工具能合并 PR、关闭或重新打开 issue，或者修改仓库的设置。
+
 ## 检查能否开始会话
 
 `columbina doctor` 检查会话需要的各项条件，并指出哪一项会挡住会话。它像 `columbina chat` 一样，用同一份清单（profile）、同样的补丁和环境组装程序，也接受同样的 `--profile`、`--patch`、`--provider`、`--model`、`--cwd` 和 `--sandbox`。

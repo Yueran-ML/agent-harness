@@ -12,4 +12,7 @@ What there is:
 - :mod:`columbina.github.client` asks the REST API of GitHub with it.
 - :mod:`columbina.github.signing` says who signed in, keeps the sign-in with the picture of
   the user, and lists what Columbina may reach.
+- :mod:`columbina.github.tools` is the plugin of the tools with which the agent reads there
+  and, after it asked, writes there.
+- :mod:`columbina.github.git` runs git for those tools, with the token for one run.
 """

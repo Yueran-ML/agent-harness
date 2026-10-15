@@ -42,6 +42,14 @@ change what was there before.
   renew them at once take turns. `columbina login --status` says who is signed in, and
   `columbina logout github` deletes the sign-in. With `--json` each answers in lines of JSON
   for another program, which stops a sign-in by closing its standard input.
+- The agent acts on GitHub in the name of whoever signed in, in the repositories that were
+  chosen for the app. `github_repos`, `github_read` and `github_checks` read repositories,
+  issues, pull requests and their checks without a question. `github_clone` clones into the
+  working directory, checked as writing a file there is. `github_push`,
+  `github_open_pull_request` and `github_comment` show in full what they would do, and are
+  asked about every time. A push never goes to the default branch and is never forced. git
+  gets the token for one run, as a header of its requests to GitHub, and what comes from
+  GitHub is put before the model as material and not as instructions.
 - The window fits each system. On macOS the buttons of the window stand at the left end of
   its bar and the bar gives their room back in full screen, shortcuts are written with ⌘,
   sheets come down from under the bar, and the menu copies, pastes, closes and leaves. A

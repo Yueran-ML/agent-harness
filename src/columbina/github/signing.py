@@ -20,10 +20,10 @@ import httpx
 from columbina import files
 from columbina.github import store
 from columbina.github.app import GitHubError
-from columbina.github.client import GitHub
+from columbina.github.client import GitHub, field
 from columbina.github.store import Tokens
 
-__all__ = ["Who", "avatar", "keep", "reach", "revoke_url", "who"]
+__all__ = ["Who", "avatar", "keep", "reach", "repositories", "revoke_url", "who"]
 
 _PICTURE_BYTES = 1024 * 1024
 """How many bytes the picture of a user may have."""
@@ -57,11 +57,11 @@ def _who(user: object) -> tuple[Who, str | None]:
     Raises:
         GitHubError: GitHub did not say who it is.
     """
-    login = _field(user, "login")
+    login = field(user, "login")
     if not isinstance(login, str) or not login:
         raise GitHubError("GitHub did not say who signed in", code="UNKNOWN")
-    name = _field(user, "name")
-    picture = _field(user, "avatar_url")
+    name = field(user, "name")
+    picture = field(user, "avatar_url")
     return (
         Who(login, name if isinstance(name, str) and name else None),
         picture if isinstance(picture, str) and picture else None,
@@ -96,33 +96,39 @@ async def who(github: GitHub) -> Who:
     return found
 
 
-async def reach(github: GitHub) -> list[str]:
-    """Return the repositories that the user chose for the app, as ``owner/name``.
+async def repositories(github: GitHub) -> list[dict[str, object]]:
+    """Return the repositories that the user chose for the app, as GitHub describes them.
+
+    Each one has its name as ``owner/name`` under ``full_name``.
 
     Raises:
         GitHubError: GitHub did not answer, or answered what is no list of them.
     """
-    found: list[str] = []
+    found: list[dict[str, object]] = []
     for installation in await github.pages("/user/installations", key="installations"):
-        number = _field(installation, "id")
+        number = field(installation, "id")
         if not isinstance(number, int) or isinstance(number, bool):
             raise GitHubError(
                 "GitHub answered with an installation without its number", code="UNKNOWN"
             )
         path = f"/user/installations/{number}/repositories"
         for repository in await github.pages(path, key="repositories"):
-            name = _field(repository, "full_name")
+            name = field(repository, "full_name")
             if not isinstance(name, str) or not name:
                 raise GitHubError(
                     "GitHub answered with a repository without its name", code="UNKNOWN"
                 )
-            found.append(name)
+            found.append(cast("dict[str, object]", repository))
     return found
 
 
-def _field(item: object, name: str) -> object:
-    """Return what an object of JSON holds under a name, or ``None``."""
-    return cast("dict[str, object]", item).get(name) if isinstance(item, dict) else None
+async def reach(github: GitHub) -> list[str]:
+    """Return the repositories that the user chose for the app, as ``owner/name``.
+
+    Raises:
+        GitHubError: GitHub did not answer, or answered what is no list of them.
+    """
+    return [str(repository["full_name"]) for repository in await repositories(github)]
 
 
 async def _fetch_picture(http: httpx.AsyncClient, home: Path, address: str) -> bool:

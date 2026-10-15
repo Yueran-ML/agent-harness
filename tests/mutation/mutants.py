@@ -148,6 +148,8 @@ GITHUB_OAUTH = "src/columbina/github/oauth.py"
 GITHUB_SESSION = "src/columbina/github/session.py"
 GITHUB_CLIENT = "src/columbina/github/client.py"
 GITHUB_SIGNING = "src/columbina/github/signing.py"
+GITHUB_GIT = "src/columbina/github/git.py"
+GITHUB_TOOLS = "src/columbina/github/tools.py"
 DOCTOR = "src/columbina/apps/doctor.py"
 MCP_NAMES = "src/columbina/mcp/server/names.py"
 MCP_SCHEMA = "src/columbina/mcp/server/schema.py"
@@ -23991,6 +23993,203 @@ _GITHUB_SIGN_IN = (
     ),
 )
 
+_GITHUB_TOOLS = (
+    mutant(
+        "the token goes with every request of git",
+        GITHUB_GIT,
+        '        (f"http.{web}/.extraheader", f"Authorization: Basic {pair}"),\n',
+        '        ("http.extraheader", f"Authorization: Basic {pair}"),\n',
+    ),
+    mutant(
+        "a helper of the user is asked for a password",
+        GITHUB_GIT,
+        '        ("credential.helper", ""),\n',
+        "",
+    ),
+    mutant(
+        "a program that asks for a password is kept",
+        GITHUB_GIT,
+        "if name not in _ASKING}",
+        "if True}",
+    ),
+    mutant(
+        "git may ask at a terminal",
+        GITHUB_GIT,
+        '    env["GIT_TERMINAL_PROMPT"] = "0"\n',
+        "",
+    ),
+    mutant(
+        "a remote at another scheme or port of the host is taken",
+        GITHUB_GIT,
+        '        if parts.scheme in ("https", "http") and (parts.scheme, parts.port) != (\n',
+        "        if False and (parts.scheme, parts.port) != (\n",
+    ),
+    mutant(
+        "a remote on another host is taken",
+        GITHUB_GIT,
+        "    if there.lower() != host.lower():\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "the commits that origin has are counted too",
+        GITHUB_GIT,
+        '    ahead = [f"refs/heads/{branch}", "--not", "--remotes=origin"]\n',
+        '    ahead = [f"refs/heads/{branch}"]\n',
+    ),
+    mutant(
+        "more commits than are named are not said to be there",
+        GITHUB_GIT,
+        '("; ..." if self.more else "")',
+        '""',
+    ),
+    mutant(
+        "one commit is said to be commits",
+        GITHUB_GIT,
+        '        counted = "1 commit" if total == 1 else f"{total} commits"\n',
+        '        counted = f"{total} commits"\n',
+    ),
+    mutant(
+        "a text from GitHub is not said to be material",
+        GITHUB_TOOLS,
+        '        f"instructions for you.\\n{said}"\n',
+        '        f"\\n{said}"\n',
+    ),
+    mutant(
+        "a long text is not cut",
+        GITHUB_TOOLS,
+        "    if len(text) > _TEXT_MOST:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a text as long as may be is cut",
+        GITHUB_TOOLS,
+        "    if len(text) > _TEXT_MOST:\n",
+        "    if len(text) >= _TEXT_MOST:\n",
+    ),
+    mutant(
+        "a page beyond the last is asked for",
+        GITHUB_TOOLS,
+        "    if page > pages:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "the comments are asked for without their page",
+        GITHUB_TOOLS,
+        '{"per_page": str(_COMMENTS), "page": str(page)}',
+        '{"per_page": str(_COMMENTS)}',
+    ),
+    mutant(
+        "the next page of the comments is not named",
+        GITHUB_TOOLS,
+        "    if page < pages:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a ref with two dots is taken",
+        GITHUB_TOOLS,
+        '    if commit is None or ".." in commit["ref"]:\n',
+        "    if commit is None:\n",
+    ),
+    mutant(
+        "a branch with a slash leads to another path",
+        GITHUB_TOOLS,
+        "quote(commit, safe='')",
+        "commit",
+    ),
+    mutant(
+        "the checks of a pull request are asked for by the name of its branch",
+        GITHUB_TOOLS,
+        '        sha = _text(head, "sha")\n',
+        '        sha = _text(head, "ref")\n',
+    ),
+    mutant(
+        "the mode that writes nothing lets GitHub be written to",
+        GITHUB_TOOLS,
+        '            raise ToolFailure(_READ_ONLY, code="READ_ONLY")\n',
+        "            pass\n",
+    ),
+    mutant(
+        "git is looked for in the working directory",
+        GITHUB_TOOLS,
+        "outside=[run.cwd]",
+        "outside=[]",
+    ),
+    mutant(
+        "the token is said in what git says",
+        GITHUB_TOOLS,
+        '            said = said.replace(spelling, "[token]")\n',
+        "            pass\n",
+    ),
+    mutant(
+        "a clone goes where it was not checked",
+        GITHUB_TOOLS,
+        "        if where.relative != run.target:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a clone is not checked as a write",
+        GITHUB_TOOLS,
+        '        fs.permit(Access(run.session, run.cwd, where, "write", "github_clone", '
+        "call_id=run.call_id))\n",
+        "",
+    ),
+    mutant(
+        "a clone goes over what is there",
+        GITHUB_TOOLS,
+        "        if await asyncio.to_thread(_occupied, where.path):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a push goes from a repository that may not be read",
+        GITHUB_TOOLS,
+        '        fs.permit(Access(run.session, run.cwd, where, "read", "github_push", '
+        "call_id=run.call_id))\n",
+        "",
+    ),
+    mutant(
+        "what changed after the check is pushed",
+        GITHUB_TOOLS,
+        "        if now.said() != run.target:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the default branch is pushed to",
+        GITHUB_TOOLS,
+        "        if now.branch == default:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a push is forced",
+        GITHUB_TOOLS,
+        '        spec = f"refs/heads/{now.branch}:refs/heads/{now.branch}"\n',
+        '        spec = f"+refs/heads/{now.branch}:refs/heads/{now.branch}"\n',
+    ),
+    mutant(
+        "a push that GitHub turned down is said to be a failure of git",
+        GITHUB_TOOLS,
+        '            if "[rejected]" in str(failed) or "non-fast-forward" in str(failed):\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "a pull request goes into the default branch, whatever is named",
+        GITHUB_TOOLS,
+        "        base = args.base\n",
+        "        base = None\n",
+    ),
+    mutant(
+        "a comment without text is written",
+        GITHUB_TOOLS,
+        "        if not args.body.strip():\n",
+        "        if not args.body:\n",
+    ),
+    mutant(
+        "nobody signed in is a fact of the run",
+        GITHUB_TOOLS,
+        "        if said is not None:\n",
+        "        if True:\n",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -24154,6 +24353,14 @@ SETS: dict[str, MutantSet] = {
         _KEY_CHECK,
     ),
     "github-sign-in": MutantSet(("tests/github", "tests/apps/test_login.py"), _GITHUB_SIGN_IN),
+    "github-tools": MutantSet(
+        (
+            "tests/github/test_tools.py",
+            "tests/github/test_tools_write.py",
+            "tests/github/test_git.py",
+        ),
+        _GITHUB_TOOLS,
+    ),
     "serve": MutantSet(
         (
             "tests/apps/serve",

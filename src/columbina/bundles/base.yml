@@ -28,6 +28,11 @@ patch:
         plugin: columbina.builtin_tools.grep
       - id: tool-shell
         plugin: columbina.builtin_tools.shell
+      # The tools of GitHub, in the name of whoever signed in with `columbina login github`.
+      - id: github
+        plugin: columbina.github.tools
+        config:
+          home: ${COLUMBINA_HOME}
       # What the model is told when a conversation and a turn begin.
       - id: system-prompt
         plugin: columbina.system_prompt

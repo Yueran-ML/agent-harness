@@ -294,6 +294,40 @@ $ uv run columbina setup --list
 
 没有变量指定代理（即 `HTTPS_PROXY`、`HTTP_PROXY` 或 `ALL_PROXY`）时，Columbina 发往服务的请求跟随系统代理：Windows 的 Internet 设置，或 macOS 的网络设置，并遵守其中设为直连的地址。Clash 这类工具设置的就是这些。SOCKS 代理不会这样被采用。Agent 执行的命令的环境保持原样。
 
+## GitHub
+
+Columbina 没有自己的账号体系。登录 GitHub 之后，它能以用户的名义访问用户为它的 GitHub App 选定的仓库。
+
+```console
+$ uv run columbina login github
+```
+
+这条命令向 GitHub 申请一个验证码并显示出来。机器有桌面环境时，它在浏览器里打开 `https://github.com/login/device`，没有时就只给出这个网址。谁在已经登录 GitHub 的浏览器里打开这个页面并输入验证码，Columbina 就以谁的身份登录。验证码 15 分钟内有效，按 Ctrl+C 停止等待。之后命令会说明登录的是谁，以及 Columbina 能访问哪些仓库。这些仓库在 GitHub 上命令给出的应用页面里选择，随时可以更改。
+
+`columbina login --status` 说明当前登录的是谁，并向 GitHub 询问 Columbina 能访问哪些仓库。`columbina logout github` 删除本机上的登录。应用得到的授权仍留在 GitHub 上，要到 `https://github.com/settings/apps/authorizations` 撤销，这条命令也会给出这个网址。
+
+关于登录有以下几点。
+
+- 中间没有 Columbina 的服务器。程序只和 GitHub 通信，所用的登录方式（GitHub App 的设备码流程）也不需要应用的密钥。
+- 一次登录有两个令牌。访问 API 的令牌有效期为八小时，到期前几分钟用另一个令牌续期，后者有效期为六个月。每次续期都换来一对新令牌，旧的随之作废。所以续期的一方先拿到 `github.lock`，同一时刻也要续期的另一个 Columbina 则直接采用新的一对。
+- 两个令牌和服务的密钥一样存放在系统密钥环里，记在 `github-credentials.json` 名下，与模型的密钥分开。`github.json` 记录用的是哪个应用、登录的是谁、令牌到什么时候有效，里面没有令牌。`github-avatar.png` 是用户的头像。
+- 访问 API 的令牌只发往 GitHub 的 API，续期令牌只发往 GitHub 本身。任何回答、消息和日志里都没有这两个令牌。
+- 续期令牌失效时（到期了，或者在 GitHub 上撤销了授权），这次登录就结束了。本机保存的相关内容会被删除，用户需要重新登录。
+- 没有变量指定代理时，访问 GitHub 和访问模型服务一样跟随系统代理。
+
+没有终端的程序加上 `--json`。`columbina login github --json` 一拿到验证码就写一行 JSON，登录结束时再写一行。标准输入关闭时，它停止等待。
+
+```json
+{"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}
+{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina/installations/new", "repositories": ["octocat/hello-world"]}
+```
+
+这两行只示意回答的格式，里面的值是编的。`avatar` 是以 data 地址表示的头像，或者为 `null`。没能向 GitHub 查询仓库时，用 `offline` 代替 `repositories` 说明原因。出错时回答 `{"error": "...", "code": "..."}`，退出码为 2。`code` 为 `EXPIRED` 表示验证码过期，`DENIED` 表示在 GitHub 上拒绝了登录，`NOT_REGISTERED` 表示这个版本没有应用，`UNREACHABLE`、`TIMEOUT`、`BUSY` 或 `RATE_LIMITED` 表示无法访问 GitHub，`STORE` 表示令牌读不出来，`UNKNOWN` 表示其他情况。被中止的登录以 `STOPPED` 回答，退出码为 130。
+
+`columbina login --status --json` 回答一行同样格式的 JSON。没有人登录时 `signed_in` 为 `null`，登录已过期时由 `ended` 说明。`columbina logout github --json` 回答 `{"signed_out": true, "revoke": "..."}`，没有人登录时 `signed_out` 为 `false`。
+
+Columbina 登录所用的 GitHub App 写在它的代码里，没有应用的版本会说明这一点。其他版本可以用 `COLUMBINA_GITHUB_CLIENT_ID` 和 `COLUMBINA_GITHUB_SLUG` 指定自己的应用。`COLUMBINA_GITHUB_WEB` 和 `COLUMBINA_GITHUB_API` 让它连接另一个 GitHub，例如 GitHub Enterprise Server。
+
 ## 检查能否开始会话
 
 `columbina doctor` 检查会话需要的各项条件，并指出哪一项会挡住会话。它像 `columbina chat` 一样，用同一份清单（profile）、同样的补丁和环境组装程序，也接受同样的 `--profile`、`--patch`、`--provider`、`--model`、`--cwd` 和 `--sandbox`。

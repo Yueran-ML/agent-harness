@@ -34,6 +34,14 @@ change what was there before.
 - Where no variable of the environment names a proxy, the requests of Columbina to a service
   go through the proxy of the system: the Internet settings of Windows or the network
   settings of macOS. The commands that the agent runs keep their environment as it is.
+- `columbina login github` signs in to GitHub with the device flow of a GitHub App, without a
+  server of Columbina: it shows a code, opens `github.com/login/device` where there is a
+  desktop, and waits until the code is entered there. Then it says who signed in and which
+  repositories Columbina may reach. The tokens are kept in the keyring of the system apart
+  from the keys of models, and are renewed before they run out; two programs that would
+  renew them at once take turns. `columbina login --status` says who is signed in, and
+  `columbina logout github` deletes the sign-in. With `--json` each answers in lines of JSON
+  for another program, which stops a sign-in by closing its standard input.
 - The window fits each system. On macOS the buttons of the window stand at the left end of
   its bar and the bar gives their room back in full screen, shortcuts are written with ⌘,
   sheets come down from under the bar, and the menu copies, pastes, closes and leaves. A

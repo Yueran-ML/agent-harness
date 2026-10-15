@@ -438,6 +438,76 @@ of Windows or the network settings of macOS, with the addresses that those let g
 A tool such as Clash sets them. A SOCKS proxy is not taken this way. The commands that the
 agent runs keep their environment as it is.
 
+## GitHub
+
+Columbina keeps no accounts of its own. Signing in to GitHub lets it reach the repositories
+that the user chooses for its GitHub App, in the name of the user.
+
+```console
+$ uv run columbina login github
+```
+
+The command asks GitHub for a code and shows it. Where the machine has a desktop, it opens
+`https://github.com/login/device` in the browser, and elsewhere it names the page. Whoever
+enters the code there, in a browser in which they are signed in to GitHub, signs Columbina
+in. The code holds for 15 minutes, and Ctrl+C stops the waiting. Then the command says who
+signed in and which repositories Columbina may reach. Those are chosen on GitHub, on the
+page of the app that the command names, and can be changed there at any time.
+
+`columbina login --status` says who is signed in, and asks GitHub which repositories
+Columbina may reach. `columbina logout github` deletes the sign-in on this machine. The
+right that the app was given stays on GitHub until it is taken back at
+`https://github.com/settings/apps/authorizations`, which the command names too.
+
+The following holds for a sign-in.
+
+- No server of Columbina is in between. The program talks to GitHub alone, and the way of
+  signing in, the device flow of a GitHub App, needs no secret of the app.
+- A sign-in holds two tokens. The one for the API holds for eight hours, and a few minutes
+  before its end it is renewed with the other one, which holds for six months. A renewal
+  gives a new pair and makes the last one useless. So whoever renews takes `github.lock`
+  first, and another Columbina that was about to renew takes the new pair instead.
+- Both tokens are kept as the keys of services are, in the keyring of the system, filed
+  under `github-credentials.json` and apart from the keys of models. `github.json` says
+  with which app and who signed in, and until when the tokens hold. It holds no token.
+  `github-avatar.png` is the picture of the user.
+- The token for the API is sent to the API of GitHub and nowhere else, and the one that
+  renews it to GitHub itself. No answer, message or log holds either of them.
+- Where the token that renews is no longer good, because it ran out or the right was taken
+  back on GitHub, the sign-in is over. What is kept of it is deleted, and the user signs in
+  again.
+- Where no variable names a proxy, GitHub is asked through the proxy of the system, as a
+  service of models is.
+
+A program without a terminal adds `--json`. `columbina login github --json` writes a line
+of JSON as soon as it has the code, and another one when the sign-in has ended. It stops
+waiting when its standard input is closed.
+
+```json
+{"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}
+{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina/installations/new", "repositories": ["octocat/hello-world"]}
+```
+
+The lines show the form of the answers, and the values are made up. `avatar` is the
+picture as an address of data, or `null`. Where GitHub could not be asked for the
+repositories, `offline` says why in the place of `repositories`. What went wrong is
+answered with `{"error": "...", "code": "..."}` and the exit code 2. The code is `EXPIRED`
+for a code that ran out, `DENIED` for a sign-in that was turned down on GitHub,
+`NOT_REGISTERED` for a build without an app, `UNREACHABLE`, `TIMEOUT`, `BUSY` or
+`RATE_LIMITED` for a GitHub that could not be asked, `STORE` for tokens that cannot be
+read, and `UNKNOWN` for anything else. A sign-in that was stopped is answered with the code
+`STOPPED` and the exit code 130.
+
+`columbina login --status --json` answers with one line of the same kind. `signed_in` is
+`null` where nobody is signed in, and `ended` says so where the sign-in ran out.
+`columbina logout github --json` answers with `{"signed_out": true, "revoke": "..."}`, and
+`signed_out` is `false` where nobody was signed in.
+
+The GitHub App that Columbina signs in with is named in its code, and a build without one
+says so. Another build names its own with `COLUMBINA_GITHUB_CLIENT_ID` and
+`COLUMBINA_GITHUB_SLUG`. `COLUMBINA_GITHUB_WEB` and `COLUMBINA_GITHUB_API` point it at
+another GitHub, such as one of GitHub Enterprise Server.
+
 ## Seeing whether a session could start
 
 `columbina doctor` looks at what a session needs and says what is in the way. It makes the

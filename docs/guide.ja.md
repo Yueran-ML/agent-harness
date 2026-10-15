@@ -294,6 +294,40 @@ $ uv run columbina setup --list
 
 プロキシを指定する変数（`HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY`）がない場合、Columbina がサービスに送るリクエストはシステムのプロキシを通ります。Windows のインターネット設定、または macOS のネットワーク設定に従い、そこで直接つなぐとされたアドレスには直接つなぎます。Clash のようなツールが設定するのはこれです。SOCKS プロキシはこの方法では使われません。エージェントが実行するコマンドの環境はそのままです。
 
+## GitHub
+
+Columbina は独自のアカウントを持ちません。GitHub にサインインすると、ユーザーが Columbina の GitHub App に選んだリポジトリに、そのユーザーの名前でアクセスできるようになります。
+
+```console
+$ uv run columbina login github
+```
+
+このコマンドは GitHub にコードを求め、それを表示します。マシンにデスクトップがあればブラウザーで `https://github.com/login/device` を開き、なければそのページを示します。GitHub にサインインしているブラウザーでこのページを開いてコードを入力した人の名前で、Columbina がサインインします。コードの有効期間は 15 分で、Ctrl+C で待機を止められます。続いてコマンドは、サインインしたのが誰か、Columbina がどのリポジトリにアクセスできるかを示します。リポジトリは GitHub 上の、コマンドが示すアプリのページで選び、いつでも変更できます。
+
+`columbina login --status` は、サインインしているのが誰かを示し、Columbina がアクセスできるリポジトリを GitHub に問い合わせます。`columbina logout github` はこのマシン上のサインインを削除します。アプリに与えた権限は、`https://github.com/settings/apps/authorizations` で取り消すまで GitHub 上に残ります。このアドレスもコマンドが示します。
+
+サインインについては次のとおりです。
+
+- 間に Columbina のサーバーはありません。プログラムは GitHub とだけ通信し、サインインの方式（GitHub App のデバイスフロー）にアプリのシークレットは要りません。
+- サインインには二つのトークンがあります。API 用のトークンは八時間有効で、期限の数分前にもう一つのトークンで更新されます。こちらは六か月有効です。更新のたびに新しい組が発行され、前の組は使えなくなります。そのため更新する側は先に `github.lock` を取り、同時に更新しようとしていた別の Columbina は新しい組をそのまま使います。
+- 二つのトークンは、サービスのキーと同じくシステムのキーリングに、`github-credentials.json` の名前でモデルのキーとは別に保存されます。`github.json` には、どのアプリで誰がサインインしたか、トークンがいつまで有効かを記録し、トークンは含みません。`github-avatar.png` はユーザーのアイコンです。
+- API 用のトークンは GitHub の API にだけ、更新用のトークンは GitHub 自体にだけ送られます。どちらも、応答、メッセージ、ログには含まれません。
+- 更新用のトークンが使えなくなったとき（期限切れ、または GitHub 上で権限が取り消されたとき）、サインインは終わります。保存していた内容は削除され、ユーザーはサインインし直します。
+- 変数でプロキシが指定されていなければ、GitHub へのアクセスはモデルのサービスと同じくシステムのプロキシを通ります。
+
+ターミナルのないプログラムは `--json` を付けます。`columbina login github --json` は、コードを受け取るとすぐに JSON を一行書き、サインインが終わるともう一行書きます。標準入力が閉じられると待機をやめます。
+
+```json
+{"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}
+{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina/installations/new", "repositories": ["octocat/hello-world"]}
+```
+
+この二行は応答の形を示すもので、値は架空のものです。`avatar` は data アドレスで表したアイコンか `null` です。リポジトリを GitHub に問い合わせられなかったときは、`repositories` の代わりに `offline` が理由を示します。失敗したときの応答は `{"error": "...", "code": "..."}` で、終了コードは 2 です。`code` は、コードの期限切れなら `EXPIRED`、GitHub でサインインが拒否されたなら `DENIED`、アプリのないビルドなら `NOT_REGISTERED`、GitHub に問い合わせられなかったなら `UNREACHABLE`、`TIMEOUT`、`BUSY` または `RATE_LIMITED`、トークンを読めなかったなら `STORE`、それ以外なら `UNKNOWN` です。中止されたサインインには `STOPPED` で応答し、終了コードは 130 です。
+
+`columbina login --status --json` は同じ形の JSON を一行返します。誰もサインインしていなければ `signed_in` は `null` で、サインインの期限が切れていれば `ended` がそう示します。`columbina logout github --json` は `{"signed_out": true, "revoke": "..."}` を返し、誰もサインインしていなかったときは `signed_out` が `false` になります。
+
+Columbina がサインインに使う GitHub App はコードに書かれており、アプリのないビルドはそのことを示します。別のビルドは `COLUMBINA_GITHUB_CLIENT_ID` と `COLUMBINA_GITHUB_SLUG` で自分のアプリを指定します。`COLUMBINA_GITHUB_WEB` と `COLUMBINA_GITHUB_API` を使うと、GitHub Enterprise Server など別の GitHub に接続します。
+
 ## セッションを始められるかの確認
 
 `columbina doctor` は、セッションに必要なものを調べ、セッションの妨げになっているものを示します。`columbina chat` と同じプロファイル、パッチ、環境からプログラムを組み立て、同じ `--profile`、`--patch`、`--provider`、`--model`、`--cwd`、`--sandbox` を受け付けます。

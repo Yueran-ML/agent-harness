@@ -1,5 +1,6 @@
 import asyncio
 import os
+import webbrowser
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
@@ -31,6 +32,19 @@ _END_SECONDS = 20
 # stores there would lie among the passwords of whoever runs the tests. This is for the
 # programs that a test starts. The fixture below is for the tests themselves.
 os.environ["PYTHON_KEYRING_BACKEND"] = "keyring.backends.null.Keyring"
+
+
+@pytest.fixture(autouse=True)
+def no_browser_of_the_system(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Open no page in a browser of this machine: a test that signs in would open GitHub there.
+
+    A test that looks at what was opened puts a stand-in of its own in.
+    """
+
+    def opened(url: str, new: int = 0, autoraise: bool = True) -> bool:
+        return False
+
+    monkeypatch.setattr(webbrowser, "open", opened)
 
 
 @pytest.fixture(autouse=True)

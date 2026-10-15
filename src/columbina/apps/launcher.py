@@ -12,8 +12,12 @@ model is to come from and for its key, and writes both down. For another
 program it does that without a question: ``columbina setup --list`` says what
 is set up, and ``columbina setup --from-stdin`` stores what a document on its
 standard input says, each with one document of JSON on its standard output.
-``columbina doctor`` sees whether a session could start, and says what is in
-the way: the service and its key, the shell, or the sandbox.
+``columbina login github`` signs in to GitHub with a code that the user enters
+there, ``columbina login --status`` says who is signed in, and
+``columbina logout github`` deletes the sign-in, each with lines of JSON for
+another program where ``--json`` asks for them. ``columbina doctor`` sees
+whether a session could start, and says what is in the way: the service and
+its key, the shell, or the sandbox.
 
 Either way the program is built from layers, which are lists of plugin
 entries: first the profile, then the patch of the user, then the patches named
@@ -57,6 +61,9 @@ import logging
 import os
 import shutil
 import sys
+import threading
+import time
+import webbrowser
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from importlib import resources
 from pathlib import Path
@@ -74,6 +81,10 @@ from columbina.apps import setup as chosen_service
 from columbina.apps.serve import wire as serve_wire
 from columbina.apps.serve.wire import WIRE, Wire
 from columbina.apps.terminal_text import escaped, harmless
+from columbina.github import oauth, signing, store
+from columbina.github.app import GitHubError, web_of
+from columbina.github.client import GitHub
+from columbina.github.store import Tokens
 from columbina.hooks import Config as HooksConfig
 from columbina.kernel import (
     CompositionError,
@@ -108,6 +119,12 @@ _RUNS_THE_HOOKS = "columbina.hooks"
 _NOT_A_COMMAND = ("-h", "--help", "--version")
 """What may stand first on the command line without meaning the conversation."""
 _SETUP = "setup"
+_LOGIN = "login"
+_LOGOUT = "logout"
+_GITHUB = "github"
+_SHOWN_REPOSITORIES = 20
+"""How many repositories a person is shown, before how many more there are."""
+_STOPPED = "the sign-in was stopped"
 _DOCTOR = "doctor"
 _MODEL = "model"
 _SPEAKS_OPENAI = "columbina.llm.adapters.openai_chat"
@@ -710,6 +727,316 @@ def _doctor(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int
     return 1 if any(finding.state == "fail" for finding in findings) else 0
 
 
+def _opened(url: str, env: Mapping[str, str], platform: str = sys.platform) -> bool:
+    """Open a page in a browser of the desktop, where there is a desktop. Whether it opened.
+
+    A terminal without a desktop is given no browser: one of the terminal would take it
+    over while the program waits.
+    """
+    if platform not in ("win32", "darwin") and not (
+        env.get("DISPLAY") or env.get("WAYLAND_DISPLAY")
+    ):
+        return False
+    try:
+        return webbrowser.open(url)
+    except (webbrowser.Error, OSError):
+        return False
+
+
+def _sentence(said: str) -> str:
+    """Return what was said as a sentence of its own: with a capital and a full stop."""
+    said = said[:1].upper() + said[1:]
+    return said if said.endswith(".") else f"{said}."
+
+
+def _when_the_input_closes() -> asyncio.Event:
+    """Return an event that is set when the standard input comes to its end.
+
+    Another program stops a sign-in by closing the standard input of the command. Where
+    there is no standard input to watch, the event is never set.
+    """
+    loop = asyncio.get_running_loop()
+    closed = asyncio.Event()
+    try:
+        descriptor = sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return closed
+
+    def watch() -> None:
+        # The descriptor, and not sys.stdin: a thread that is still in a read of a stream of
+        # Python when the program ends holds its lock, and Python cannot end cleanly.
+        with contextlib.suppress(OSError):
+            while os.read(descriptor, 4096):
+                pass
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(closed.set)
+
+    threading.Thread(target=watch, name="columbina-input", daemon=True).start()
+    return closed
+
+
+class _Stopped(Exception):  # noqa: N818 - how the waiting is told to stop, and no error
+    """The program that waits for the sign-in closed the standard input."""
+
+
+async def _waited(github: GitHub, code: oauth.Code, stop: asyncio.Event) -> Tokens | None:
+    """Wait until the user entered the code, and return the tokens, or ``None`` if stopped.
+
+    The stop is seen between two asks for the tokens, and never in the middle of one.
+    """
+
+    async def pause(seconds: float) -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop.wait(), seconds)
+        if stop.is_set():
+            raise _Stopped
+
+    try:
+        return await oauth.wait_for_the_user(github.http, github.app, code, sleep=pause)
+    except _Stopped:
+        return None
+
+
+async def _person(found: signing.Who, home: Path) -> dict[str, object]:
+    """Return who signed in, for another program: the names and the picture."""
+    picture = await asyncio.to_thread(signing.avatar, home)
+    return {"login": found.login, "name": found.name, "avatar": picture}
+
+
+def _say_who(found: signing.Who) -> str:
+    named = f" ({found.name})" if found.name else ""
+    return f"Signed in to GitHub as @{found.login}{named}."
+
+
+def _say_the_reach(found: signing.Who, reached: list[str], install_url: str) -> None:
+    """Say who signed in, and which repositories Columbina may reach in that name."""
+    print(harmless(_say_who(found)))
+    if not reached:
+        print(
+            harmless(
+                "Columbina may reach no repository of yours yet. Choose them on GitHub: "
+                f"{install_url}"
+            )
+        )
+        return
+    print("Columbina may reach these repositories:")
+    for name in reached[:_SHOWN_REPOSITORIES]:
+        print(harmless(f"  {name}"))
+    if len(reached) > _SHOWN_REPOSITORIES:
+        print(f"  and {len(reached) - _SHOWN_REPOSITORIES} more")
+    print(harmless(f"Choose others on GitHub: {install_url}"))
+
+
+def _login(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Sign in to GitHub, or say who is signed in."""
+    if args.status:
+        return _status(args, home, env)
+    if args.service is None:
+        raise _UsageError(
+            "say where to sign in, as in 'columbina login github', or ask who is signed in "
+            "with 'columbina login --status'"
+        )
+    if not args.json:
+        return _login_at_a_terminal(home, env)
+    try:
+        return asyncio.run(_login_for_a_program(home, env))
+    except KeyboardInterrupt:
+        _answer({"error": _STOPPED, "code": "STOPPED"})
+        return _INTERRUPTED
+
+
+async def _login_for_a_program(home: Path, env: Mapping[str, str]) -> int:
+    """Sign in to GitHub, and say how it goes in lines of JSON.
+
+    The first line holds the code and the page to enter it on, and the last one how the
+    sign-in ended. Closing the standard input stops the waiting for the user.
+    """
+    github = GitHub(home, env)
+    try:
+        app = github.app
+        code = await oauth.ask_for_a_code(github.http, app)
+        expires_in = max(0, round(code.expires_at - time.time()))
+        _answer({"code": code.user_code, "url": code.verification_uri, "expires_in": expires_in})
+        # The program that reads it shows the code while this one waits.
+        sys.stdout.flush()
+        tokens = await _waited(github, code, _when_the_input_closes())
+        if tokens is None:
+            _answer({"error": _STOPPED, "code": "STOPPED"})
+            return _INTERRUPTED
+        found = await signing.keep(github, home, tokens)
+        answer: dict[str, object] = {
+            "signed_in": await _person(found, home),
+            "install_url": app.install_url,
+        }
+        try:
+            answer["repositories"] = await signing.reach(github)
+        except GitHubError as error:
+            answer["offline"] = str(error)
+        _answer(answer)
+        return 0
+    except GitHubError as error:
+        _answer({"error": str(error), "code": error.code})
+        return 2
+    finally:
+        await github.aclose()
+
+
+def _login_at_a_terminal(home: Path, env: Mapping[str, str]) -> int:
+    """Sign in to GitHub, and say how it goes to a person."""
+    kept: list[signing.Who] = []
+
+    async def signed_in() -> int:
+        github = GitHub(home, env)
+        try:
+            app = github.app
+            before = await asyncio.to_thread(store.signed, home, app)
+            code = await oauth.ask_for_a_code(github.http, app)
+            minutes = max(1, round((code.expires_at - time.time()) / 60))
+            if before is not None:
+                print(
+                    harmless(
+                        f"You are signed in to GitHub as @{before.login}. A new sign-in "
+                        "takes its place."
+                    )
+                )
+            # The code first: the browser may come to the front over the terminal.
+            print(harmless(f"Enter this code on GitHub to sign in:\n\n    {code.user_code}\n"))
+            page = f"The page to enter it on is {code.verification_uri}"
+            opened = _opened(code.verification_uri, env)
+            print(harmless(f"{page}, and it was opened in your browser." if opened else f"{page}."))
+            print(f"The code holds for {minutes} minutes. Ctrl+C stops the waiting.")
+            tokens = await oauth.wait_for_the_user(github.http, app, code)
+            found = await signing.keep(github, home, tokens)
+            kept.append(found)
+            try:
+                reached = await signing.reach(github)
+            except GitHubError as error:
+                print(harmless(_say_who(found)))
+                _tell(f"GitHub could not be asked which repositories Columbina may reach: {error}")
+                return 0
+            _say_the_reach(found, reached, app.install_url)
+            return 0
+        finally:
+            await github.aclose()
+
+    try:
+        return asyncio.run(signed_in())
+    except GitHubError as error:
+        _tell(str(error))
+        return 2
+    except KeyboardInterrupt:
+        # The line of the wait is still open.
+        print()
+        if kept:
+            _tell(f"signed in to GitHub as @{kept[0].login}. The repositories were not listed")
+        else:
+            _tell(_STOPPED)
+        return _INTERRUPTED
+
+
+async def _looked_up(home: Path, env: Mapping[str, str]) -> dict[str, object]:
+    """Say who is signed in, and which repositories the app may reach, for another program.
+
+    Raises:
+        GitHubError: What is kept cannot be read, or a variable names a
+            GitHub that cannot be one.
+    """
+    github = GitHub(home, env)
+    try:
+        try:
+            app = github.app
+        except GitHubError as error:
+            if error.code != "NOT_REGISTERED":
+                raise
+            return {"signed_in": None, "registered": False, "why": str(error)}
+        answer: dict[str, object] = {"signed_in": None, "install_url": app.install_url}
+        said = await asyncio.to_thread(store.signed, home, app)
+        if said is None:
+            return answer
+        found = signing.Who(said.login, said.name)
+        try:
+            found = await signing.who(github)
+            answer["repositories"] = await signing.reach(github)
+        except GitHubError as error:
+            if error.code == "STORE":
+                raise
+            if error.code == "SIGNED_OUT":
+                answer["ended"] = str(error)
+                return answer
+            answer["offline"] = str(error)
+        answer["signed_in"] = await _person(found, home)
+        return answer
+    finally:
+        await github.aclose()
+
+
+def _status(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Say who is signed in to GitHub, and what Columbina may reach in that name."""
+    try:
+        answer = asyncio.run(_looked_up(home, env))
+    except GitHubError as error:
+        if args.json:
+            _answer({"error": str(error), "code": error.code})
+        else:
+            _tell(str(error))
+        return 2
+    if args.json:
+        _answer(answer)
+        return 0
+    signed = answer["signed_in"]
+    if answer.get("registered") is False:
+        print(harmless(_sentence(str(answer["why"]))))
+    elif "ended" in answer:
+        ended = _sentence(str(answer["ended"])).removesuffix(".")
+        print(harmless(f"{ended} with 'columbina login github'."))
+    elif not isinstance(signed, dict):
+        print("Nobody is signed in to GitHub. Sign in with 'columbina login github'.")
+    else:
+        person = cast("dict[str, Any]", signed)
+        found = signing.Who(person["login"], person["name"])
+        if "offline" in answer:
+            print(
+                harmless(
+                    f"{_say_who(found)} GitHub could not be asked which repositories "
+                    f"Columbina may reach: {answer['offline']}"
+                )
+            )
+        else:
+            repositories = cast("list[str]", answer["repositories"])
+            _say_the_reach(found, repositories, str(answer["install_url"]))
+    return 0
+
+
+def _logout(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Delete the sign-in to GitHub that this machine keeps."""
+    try:
+        there = store.forget(home)
+    except GitHubError as error:
+        if args.json:
+            _answer({"error": str(error), "code": error.code})
+        else:
+            _tell(str(error))
+        return 2
+    try:
+        web = web_of(env)
+    except GitHubError:
+        # The sign-in is gone all the same, and its right was given on GitHub itself.
+        web = "https://github.com"
+    revoke = signing.revoke_url(web)
+    if args.json:
+        _answer({"signed_out": there, "revoke": revoke})
+    elif there:
+        print(
+            harmless(
+                "Signed out of GitHub on this machine. The app keeps the right that you gave it "
+                f"until you take it back on GitHub: {revoke}"
+            )
+        )
+    else:
+        print("Nobody was signed in to GitHub.")
+    return 0
+
+
 def _from_the_profile(command: argparse.ArgumentParser, profile: str) -> None:
     """Add the arguments that say which program is meant and where it works."""
     command.add_argument(
@@ -910,6 +1237,34 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="with --forget: say what was deleted in one document of JSON, for another program",
     )
+    login = commands.add_parser(
+        _LOGIN,
+        help="sign in to GitHub, so that the agent may work in the repositories that you "
+        "choose for it",
+    )
+    login.add_argument(
+        "service", nargs="?", choices=[_GITHUB], metavar="SERVICE", help="where: github"
+    )
+    login.add_argument(
+        "--status",
+        action="store_true",
+        help="say who is signed in, and which repositories Columbina may reach, and stop",
+    )
+    login.add_argument(
+        "--json",
+        action="store_true",
+        help="say it in lines of JSON, for another program. Closing the standard input stops "
+        "the waiting for the user",
+    )
+    logout = commands.add_parser(
+        _LOGOUT, help="delete the sign-in to GitHub that this machine keeps"
+    )
+    logout.add_argument("service", choices=[_GITHUB], metavar="SERVICE", help="where: github")
+    logout.add_argument(
+        "--json",
+        action="store_true",
+        help="say what was deleted in one document of JSON, for another program",
+    )
     doctor = commands.add_parser(
         _DOCTOR,
         help="see whether a session could start: the service and its key, the shell, and "
@@ -949,6 +1304,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _hooks(args, home, env)
         if args.command == _SETUP:
             return _setup(args, home, env)
+        if args.command == _LOGIN:
+            return _login(args, home, env)
+        if args.command == _LOGOUT:
+            return _logout(args, home, env)
         if args.command == _DOCTOR:
             return _doctor(args, home, env)
         entries = _entries(args, home, env)

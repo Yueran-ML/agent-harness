@@ -142,6 +142,12 @@ SERVICES = "src/columbina/llm/services.py"
 SCRIPTED = "src/columbina/llm/adapters/scripted.py"
 SETUP_APP = "src/columbina/apps/setup.py"
 NET = "src/columbina/net.py"
+GITHUB_APP = "src/columbina/github/app.py"
+GITHUB_STORE = "src/columbina/github/store.py"
+GITHUB_OAUTH = "src/columbina/github/oauth.py"
+GITHUB_SESSION = "src/columbina/github/session.py"
+GITHUB_CLIENT = "src/columbina/github/client.py"
+GITHUB_SIGNING = "src/columbina/github/signing.py"
 DOCTOR = "src/columbina/apps/doctor.py"
 MCP_NAMES = "src/columbina/mcp/server/names.py"
 MCP_SCHEMA = "src/columbina/mcp/server/schema.py"
@@ -15963,6 +15969,7 @@ _TRUST = (
     mutant(
         "what was shown may still be on its way when the file is trusted",
         LAUNCHER,
+        "        # Whoever goes on after this may go by it that the text has left the program.\n"
         "        sys.stdout.flush()\n",
         "",
     ),
@@ -19736,19 +19743,25 @@ _SERVICES = (
     mutant(
         "a process without a standard input ends with a trace",
         LAUNCHER,
+        "        return sys.stdin.buffer.read(chosen_service.MAX_DOCUMENT_BYTES + 1)\n"
         "    except (AttributeError, OSError, ValueError):\n",
+        "        return sys.stdin.buffer.read(chosen_service.MAX_DOCUMENT_BYTES + 1)\n"
         "    except (OSError, ValueError):\n",
     ),
     mutant(
         "a standard input that fails ends the program with a trace",
         LAUNCHER,
+        "        return sys.stdin.buffer.read(chosen_service.MAX_DOCUMENT_BYTES + 1)\n"
         "    except (AttributeError, OSError, ValueError):\n",
+        "        return sys.stdin.buffer.read(chosen_service.MAX_DOCUMENT_BYTES + 1)\n"
         "    except (AttributeError, ValueError):\n",
     ),
     mutant(
         "a standard input that is closed ends the program with a trace",
         LAUNCHER,
+        "        return sys.stdin.buffer.read(chosen_service.MAX_DOCUMENT_BYTES + 1)\n"
         "    except (AttributeError, OSError, ValueError):\n",
+        "        return sys.stdin.buffer.read(chosen_service.MAX_DOCUMENT_BYTES + 1)\n"
         "    except (AttributeError, OSError):\n",
     ),
     mutant(
@@ -23641,6 +23654,343 @@ _KEY_CHECK = (
     ),
 )
 
+_GITHUB_SIGN_IN = (
+    mutant(
+        "an address of another machine is taken without encryption",
+        GITHUB_APP,
+        '    if parts.scheme == "http" and parts.hostname in _HERE:\n',
+        '    if parts.scheme == "http":\n',
+    ),
+    mutant(
+        "an app without the name of its page is taken",
+        GITHUB_APP,
+        "    if not client_id or not slug:\n",
+        "    if not client_id:\n",
+    ),
+    mutant(
+        "the sign-in with another app is taken",
+        GITHUB_STORE,
+        "    return said if said.client_id == app.client_id else None\n",
+        "    return said\n",
+    ),
+    mutant(
+        "the token that renews is kept for the API",
+        GITHUB_STORE,
+        "        credentials.keep(path, _RENEWING, tokens.renewal, origin_of(app.web))\n",
+        "        credentials.keep(path, _RENEWING, tokens.renewal, origin_of(app.api))\n",
+    ),
+    mutant(
+        "tokens that were deleted are said to have been nothing",
+        GITHUB_STORE,
+        "            there = bool(credentials.forget(path, token)) or there\n",
+        "            bool(credentials.forget(path, token))\n",
+    ),
+    mutant(
+        "a lock that is held too long is waited for without end",
+        GITHUB_STORE,
+        "        if clock() >= deadline:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "no token that renews is asked for",
+        GITHUB_OAUTH,
+        '    form = {"client_id": app.client_id, "scope": "offline_access"}\n',
+        '    form = {"client_id": app.client_id}\n',
+    ),
+    mutant(
+        "a page to enter the code on is taken at any address",
+        GITHUB_OAUTH,
+        '    if urlsplit(page).scheme != "https":\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "an error of the server is read as an answer",
+        GITHUB_OAUTH,
+        "    if response.status_code >= 500:\n",
+        "    if response.status_code > 500:\n",
+    ),
+    mutant(
+        "a code is waited on in the second that it ends",
+        GITHUB_OAUTH,
+        "        if now() >= code.expires_at:\n",
+        "        if now() > code.expires_at:\n",
+    ),
+    mutant(
+        "GitHub that asks for a pause is asked as often as before",
+        GITHUB_OAUTH,
+        "                interval += _SLOWER\n",
+        "                interval += 0\n",
+    ),
+    mutant(
+        "the wait that GitHub names is not taken",
+        GITHUB_OAUTH,
+        "                interval = float(given)\n",
+        "                pass\n",
+    ),
+    mutant(
+        "an empty token that renews is taken",
+        GITHUB_OAUTH,
+        "    if not isinstance(renewal, str) or not renewal:\n",
+        "    if not isinstance(renewal, str):\n",
+    ),
+    mutant(
+        "a renewing token that GitHub turns down is an error of no kind",
+        GITHUB_OAUTH,
+        '    if said.get("error") == "bad_refresh_token":\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "a truth is taken for a number of seconds",
+        GITHUB_OAUTH,
+        "    if isinstance(found, bool) or not isinstance(found, int | float) or not "
+        "math.isfinite(found):\n",
+        "    if not isinstance(found, int | float) or not math.isfinite(found):\n",
+    ),
+    mutant(
+        "a token that ends in five minutes goes out",
+        GITHUB_SESSION,
+        "    if held.access != turned_down and held.access_expires_at - now() > EARLY:\n",
+        "    if held.access != turned_down and held.access_expires_at - now() >= EARLY:\n",
+    ),
+    mutant(
+        "a token that GitHub turned down goes out again",
+        GITHUB_SESSION,
+        "    if held.access != turned_down and held.access_expires_at - now() > EARLY:\n",
+        "    if held.access_expires_at - now() > EARLY:\n",
+    ),
+    mutant(
+        "the tokens are not read again under the lock",
+        GITHUB_SESSION,
+        "        again = await asyncio.to_thread(store.tokens, home, app)\n",
+        "        again = held\n",
+    ),
+    mutant(
+        "a token that renews is used in the second that it ends",
+        GITHUB_SESSION,
+        "        if again.renewal_expires_at <= now():\n",
+        "        if again.renewal_expires_at < now():\n",
+    ),
+    mutant(
+        "a sign-in that GitHub ended is kept",
+        GITHUB_SESSION,
+        '            if error.code == "SIGNED_OUT":\n'
+        "                await asyncio.to_thread(store.forget, home)\n",
+        '            if error.code == "SIGNED_OUT":\n                pass\n',
+    ),
+    mutant(
+        "a renewal that failed on the way ends the sign-in",
+        GITHUB_SESSION,
+        '            if error.code == "SIGNED_OUT":\n',
+        "            if True:\n",
+    ),
+    mutant(
+        "the renewed tokens are not kept",
+        GITHUB_SESSION,
+        "        await asyncio.to_thread(store.keep, home, app, fresh, said.login, said.name)\n",
+        "",
+    ),
+    mutant(
+        "a request that leads away from the API goes with the token",
+        GITHUB_CLIENT,
+        "        if origin_of(url) != origin_of(here.api):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a token that GitHub turned down is not renewed",
+        GITHUB_CLIENT,
+        "            if response.status_code == HTTPStatus.UNAUTHORIZED:\n"
+        "                token = await access_token(\n",
+        "            if False:\n                token = await access_token(\n",
+    ),
+    mutant(
+        "a token that GitHub turned down twice is an error of no kind",
+        GITHUB_CLIENT,
+        "        if response.status_code == HTTPStatus.UNAUTHORIZED:\n            raise GitHubError(\n",
+        "        if False:\n            raise GitHubError(\n",
+    ),
+    mutant(
+        "a limit of the rate is taken for a refusal",
+        GITHUB_CLIENT,
+        '    limited = response.headers.get("x-ratelimit-remaining") == "0"\n',
+        "    limited = False\n",
+    ),
+    mutant(
+        "a minute is said as one minute",
+        GITHUB_CLIENT,
+        "    if seconds <= _MINUTE:\n",
+        "    if seconds < _MINUTE:\n",
+    ),
+    mutant(
+        "the minutes until GitHub takes requests again are rounded down",
+        GITHUB_CLIENT,
+        "math.ceil(seconds / _MINUTE)",
+        "round(seconds / _MINUTE)",
+    ),
+    mutant(
+        "a token is said in an error",
+        GITHUB_CLIENT,
+        '        text = text.replace(spelling, "[token]")\n',
+        "        pass\n",
+    ),
+    mutant(
+        "pages are asked for as long as GitHub gives them",
+        GITHUB_CLIENT,
+        "        while url is not None and len(found) < most:\n",
+        "        while url is not None:\n",
+    ),
+    mutant(
+        "more items are given than were asked for",
+        GITHUB_CLIENT,
+        "        return found[:most]\n",
+        "        return found\n",
+    ),
+    mutant(
+        "a few items are asked for in pages of a hundred",
+        GITHUB_CLIENT,
+        '{"per_page": str(min(_PAGE, most))}',
+        '{"per_page": str(_PAGE)}',
+    ),
+    mutant(
+        "the picture of whoever signed in before stays",
+        GITHUB_SIGNING,
+        "    await asyncio.to_thread((home / store.AVATAR).unlink, missing_ok=True)\n",
+        "",
+    ),
+    mutant(
+        "a picture as large as may be is not kept",
+        GITHUB_SIGNING,
+        "                if len(content) > _PICTURE_BYTES:\n",
+        "                if len(content) >= _PICTURE_BYTES:\n",
+    ),
+    mutant(
+        "what is no picture is kept as one",
+        GITHUB_SIGNING,
+        "    if _kind(bytes(content)) is None:\n        return False\n",
+        "",
+    ),
+    mutant(
+        "the picture is asked for at its full size",
+        GITHUB_SIGNING,
+        '        small = httpx.URL(address).copy_set_param("s", _PICTURE_SIZE)\n',
+        "        small = httpx.URL(address)\n",
+    ),
+    mutant(
+        "a truth is taken for the number of an installation",
+        GITHUB_SIGNING,
+        "        if not isinstance(number, int) or isinstance(number, bool):\n",
+        "        if not isinstance(number, int):\n",
+    ),
+    mutant(
+        "a picture that is too large is given",
+        GITHUB_SIGNING,
+        "    if kind is None or len(content) > _PICTURE_BYTES:\n",
+        "    if kind is None:\n",
+    ),
+    mutant(
+        "a terminal without a desktop is given a browser",
+        LAUNCHER,
+        '    if platform not in ("win32", "darwin") and not (\n',
+        "    if False and not (\n",
+    ),
+    mutant(
+        "what a program writes to the standard input stops the sign-in",
+        LAUNCHER,
+        "            while os.read(descriptor, 4096):\n                pass\n",
+        "            os.read(descriptor, 4096)\n",
+    ),
+    mutant(
+        "the end of the standard input does not stop the sign-in",
+        LAUNCHER,
+        "            loop.call_soon_threadsafe(closed.set)\n",
+        "            pass\n",
+    ),
+    mutant(
+        "the stop is not seen between two asks for the tokens",
+        LAUNCHER,
+        "        if stop.is_set():\n            raise _Stopped\n",
+        "        if False:\n            raise _Stopped\n",
+    ),
+    mutant(
+        "the code stays in a buffer while the program waits",
+        LAUNCHER,
+        "        # The program that reads it shows the code while this one waits.\n"
+        "        sys.stdout.flush()\n",
+        "",
+    ),
+    mutant(
+        "the picture is not given to a program",
+        LAUNCHER,
+        "    picture = await asyncio.to_thread(signing.avatar, home)\n",
+        "    picture = None\n",
+    ),
+    mutant(
+        "every repository is named",
+        LAUNCHER,
+        "    for name in reached[:_SHOWN_REPOSITORIES]:\n",
+        "    for name in reached:\n",
+    ),
+    mutant(
+        "no more repositories are counted as more",
+        LAUNCHER,
+        "    if len(reached) > _SHOWN_REPOSITORIES:\n",
+        "    if len(reached) >= _SHOWN_REPOSITORIES:\n",
+    ),
+    mutant(
+        "repositories that cannot be listed end the sign-in of a program",
+        LAUNCHER,
+        '            answer["repositories"] = await signing.reach(github)\n'
+        "        except GitHubError as error:\n"
+        '            answer["offline"] = str(error)\n'
+        "        _answer(answer)\n",
+        '            answer["repositories"] = await signing.reach(github)\n'
+        "        except KeyError as error:\n"
+        '            answer["offline"] = str(error)\n'
+        "        _answer(answer)\n",
+    ),
+    mutant(
+        "the minutes that a code holds are rounded down",
+        LAUNCHER,
+        "            minutes = max(1, round((code.expires_at - time.time()) / 60))\n",
+        "            minutes = max(1, int((code.expires_at - time.time()) / 60))\n",
+    ),
+    mutant(
+        "an interrupt after the sign-in says that nothing was kept",
+        LAUNCHER,
+        "            kept.append(found)\n",
+        "",
+    ),
+    mutant(
+        "a GitHub that cannot be one is said to have no app",
+        LAUNCHER,
+        '            if error.code != "NOT_REGISTERED":\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "who is signed in is not asked of GitHub",
+        LAUNCHER,
+        "            found = await signing.who(github)\n",
+        "",
+    ),
+    mutant(
+        "tokens that cannot be read are said to be out of reach",
+        LAUNCHER,
+        '            if error.code == "STORE":\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "a sign-in that ran out is said to be out of reach",
+        LAUNCHER,
+        '                answer["ended"] = str(error)\n                return answer\n',
+        "                pass\n",
+    ),
+    mutant(
+        "the right is taken back on github.com, wherever GitHub is",
+        LAUNCHER,
+        "        web = web_of(env)\n",
+        '        web = "https://github.com"\n',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -23803,6 +24153,7 @@ SETS: dict[str, MutantSet] = {
         ),
         _KEY_CHECK,
     ),
+    "github-sign-in": MutantSet(("tests/github", "tests/apps/test_login.py"), _GITHUB_SIGN_IN),
     "serve": MutantSet(
         (
             "tests/apps/serve",

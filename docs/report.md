@@ -230,8 +230,6 @@ taken up again in 0.18 s with 21 MB of memory at the peak, and its tokens are ad
   come into play. Its runs need the graphics card of the machine to themselves.
 - **Tasks for the rules of conduct**: an act that cannot be undone, an instruction hidden in
   a file that the agent reads.
-- **`columbina doctor`**, which checks a machine as the design asks: the key, whether the
-  model answers, the shell, the container.
 - **The desktop app**, and a study of how usable it is.
 - **PyPI.** The workflow that builds, tries and publishes the package is ready, and a tag
   starts it.

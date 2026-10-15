@@ -141,6 +141,7 @@ OPENAI_CHAT = "src/columbina/llm/adapters/openai_chat.py"
 SERVICES = "src/columbina/llm/services.py"
 SCRIPTED = "src/columbina/llm/adapters/scripted.py"
 SETUP_APP = "src/columbina/apps/setup.py"
+DOCTOR = "src/columbina/apps/doctor.py"
 MCP_NAMES = "src/columbina/mcp/server/names.py"
 MCP_SCHEMA = "src/columbina/mcp/server/schema.py"
 MCP_CONTENT = "src/columbina/mcp/server/content.py"
@@ -4184,14 +4185,14 @@ _DOCKER = (
     mutant(
         "a failure is told in the last words of Docker",
         DOCKER,
-        '    told = lines[0][:300] if lines else "it did not say why"\n',
-        '    told = lines[-1][:300] if lines else "it did not say why"\n',
+        '    return lines[0][:300] if lines else "it did not say why"\n',
+        '    return lines[-1][:300] if lines else "it did not say why"\n',
     ),
     mutant(
         "a failure is told at whatever length",
         DOCKER,
-        '    told = lines[0][:300] if lines else "it did not say why"\n',
-        '    told = lines[0] if lines else "it did not say why"\n',
+        '    return lines[0][:300] if lines else "it did not say why"\n',
+        '    return lines[0] if lines else "it did not say why"\n',
     ),
     mutant(
         "a program that is named by a part of a path is taken",
@@ -4906,7 +4907,7 @@ _DOCKER_KEPT = (
     mutant(
         "the engine is asked what it is before every container",
         DOCKER,
-        "        if self._engine is not None:\n            return\n",
+        "        if self._engine is not None:\n            return self._engine\n",
         "",
     ),
     mutant(
@@ -5575,6 +5576,52 @@ _DOCKER_KEPT = (
         SANDBOX,
         "    container = Docker(config.docker)\n",
         "    container = Docker(DockerConfig())\n",
+    ),
+    mutant(
+        "a provider is taken for ready without asking its engine",
+        DOCKER,
+        "        engine = await self._known(program)\n",
+        '        engine = Engine("", "")\n',
+    ),
+    mutant(
+        "a provider is taken for ready without looking for its image",
+        DOCKER,
+        '            [program, "image", "inspect", "--format", "{{.Id}}", image], _ASK_SECONDS\n'
+        "        )\n"
+        "        if answer.exit_code != 0:\n",
+        '            [program, "image", "inspect", "--format", "{{.Id}}", image], _ASK_SECONDS\n'
+        "        )\n"
+        "        if False:\n",
+    ),
+    mutant(
+        "a provider looks for the image that is used by default, whatever its config says",
+        DOCKER,
+        '"{{.Id}}", image], _ASK_SECONDS\n',
+        '"{{.Id}}", DEFAULT_IMAGE], _ASK_SECONDS\n',
+    ),
+    mutant(
+        "an image that is not there is said to be in doubt",
+        DOCKER,
+        '            if "no such image" in wrote.casefold() or _unreachable(wrote):\n',
+        "            if _unreachable(wrote):\n",
+    ),
+    mutant(
+        "an engine that went away is said to be in doubt about the image",
+        DOCKER,
+        '            if "no such image" in wrote.casefold() or _unreachable(wrote):\n',
+        '            if "no such image" in wrote.casefold():\n',
+    ),
+    mutant(
+        "what the engine said of the image is not passed on",
+        DOCKER,
+        'has the image {image}: {_first(wrote)}"\n',
+        'has the image {image}: it did not say why"\n',
+    ),
+    mutant(
+        "an engine that said nothing is said to have said nothing in no words",
+        DOCKER,
+        '    return lines[0][:300] if lines else "it did not say why"\n',
+        '    return lines[0][:300] if lines else ""\n',
     ),
 )
 
@@ -18165,6 +18212,77 @@ _KEYS = (
         "        recorded = None if entry is None else entry.keyring\n",
         "        recorded = None\n",
     ),
+    mutant(
+        "the list of models is asked for without the key",
+        OPENAI_CHAT,
+        '        headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}\n'
+        "        timeout = httpx.Timeout(self._config.connect_timeout_seconds, read=_LIST_SECONDS)\n",
+        "        headers: dict[str, str] = {}\n"
+        "        timeout = httpx.Timeout(self._config.connect_timeout_seconds, read=_LIST_SECONDS)\n",
+    ),
+    mutant(
+        "the list of models may take as long as it likes",
+        OPENAI_CHAT,
+        "read=_LIST_SECONDS)\n",
+        "read=None)\n",
+    ),
+    mutant(
+        "the list of models may take a minute to connect",
+        OPENAI_CHAT,
+        "        timeout = httpx.Timeout(self._config.connect_timeout_seconds, read=_LIST_SECONDS)\n",
+        "        timeout = httpx.Timeout(60.0, read=_LIST_SECONDS)\n",
+    ),
+    mutant(
+        "a refusal of the list of models is read as a list",
+        OPENAI_CHAT,
+        "            if response.status_code != 200:\n"
+        "                raise LlmError(_refusal(response))\n"
+        "            return _listed(response.content)\n",
+        "            return _listed(response.content)\n",
+    ),
+    mutant(
+        "the list of models is taken for empty",
+        OPENAI_CHAT,
+        "    return [model.id for model in listing.data]\n",
+        "    return []\n",
+    ),
+    mutant(
+        "the key is left in a failure of the list of models",
+        OPENAI_CHAT,
+        "            return _listed(response.content)\n"
+        "        except (httpx.RequestError, LlmError) as error:\n"
+        "            failure = _failure(error, secret)\n",
+        "            return _listed(response.content)\n"
+        "        except (httpx.RequestError, LlmError) as error:\n"
+        "            failure = _failure(error, None)\n",
+    ),
+    mutant(
+        "a failure of the list of models holds on to the error that held the key",
+        OPENAI_CHAT,
+        "            failure = _failure(error, secret)\n"
+        "        # Raised out here, as a failure of a reply is.\n"
+        "        raise LlmError(failure)\n",
+        "            raise LlmError(_failure(error, secret))\n        raise AssertionError\n",
+    ),
+    mutant(
+        "a list of models that cannot be read is taken for empty",
+        OPENAI_CHAT,
+        '        problem = error.errors()[0]["msg"]\n'
+        "        raise LlmError(\n"
+        "            LlmFailure(\n"
+        '                message=f"the service sent a list of models',
+        '        problem = error.errors()[0]["msg"]\n'
+        "        return []\n"
+        "        raise LlmError(\n"
+        "            LlmFailure(\n"
+        '                message=f"the service sent a list of models',
+    ),
+    mutant(
+        "what is wrong with a list of models is not said",
+        OPENAI_CHAT,
+        'a list of models that cannot be read: {problem}",\n',
+        'a list of models that cannot be read",\n',
+    ),
 )
 
 _SERVICES = (
@@ -19143,8 +19261,9 @@ _SERVICES = (
     mutant(
         "what is wrong with what was chosen is told with a traceback",
         LAUNCHER,
-        "    except (_UsageError, CompositionError, chosen_service.SetupError) as error:\n",
-        "    except (_UsageError, CompositionError) as error:\n",
+        "    except (_UsageError, CompositionError, chosen_service.SetupError) as error:\n"
+        "        _tell(str(error))\n",
+        "    except (_UsageError, CompositionError) as error:\n        _tell(str(error))\n",
     ),
     mutant(
         "forgetting a service asks the questions of setup",
@@ -22941,6 +23060,208 @@ _WITHHELD = (
     ),
 )
 
+_DOCTOR = (
+    mutant(
+        "the model of the frontend is read without the environment",
+        DOCTOR,
+        "        call = CallConfig.model_validate(interpolate(said, env))\n",
+        "        call = CallConfig.model_validate(said)\n",
+    ),
+    mutant(
+        "where a problem with a config lies is not said",
+        DOCTOR,
+        """    return f"{place}: {first['msg']}" if place else first["msg"]\n""",
+        """    return first["msg"]\n""",
+    ),
+    mutant(
+        "a problem with a config that lies nowhere is said to lie in an empty place",
+        DOCTOR,
+        """    return f"{place}: {first['msg']}" if place else first["msg"]\n""",
+        """    return f"{place}: {first['msg']}"\n""",
+    ),
+    mutant(
+        "an entry without a config does not get the one that its plugin has by default",
+        DOCTOR,
+        "        return kind.model_validate({} if filled is None else filled)\n",
+        "        return kind.model_validate(filled)\n",
+    ),
+    mutant(
+        "an adapter that is disabled is asked",
+        DOCTOR,
+        "            if entry.plugin == _SPEAKS_OPENAI and not entry.disabled\n",
+        "            if entry.plugin == _SPEAKS_OPENAI\n",
+    ),
+    mutant(
+        "the adapter of another provider is asked",
+        DOCTOR,
+        "    config = next((one for one in adapters if one.provider == call.provider), None)\n",
+        "    config = next(iter(adapters), None)\n",
+    ),
+    mutant(
+        "the service is not asked for its models",
+        DOCTOR,
+        "        ids = await adapter.models()\n",
+        "        ids: list[str] = []\n",
+    ),
+    mutant(
+        "a service without a list of models is in the way",
+        DOCTOR,
+        "        if failure.status == 404:\n",
+        "        if failure.status == 405:\n",
+    ),
+    mutant(
+        "a service that does not list the model is taken to list it",
+        DOCTOR,
+        '    if model in ids or f"{model}:latest" in ids:\n',
+        "    if True:\n",
+    ),
+    mutant(
+        "a model that is listed with the tag that is meant by default is not found",
+        DOCTOR,
+        '    if model in ids or f"{model}:latest" in ids:\n',
+        "    if model in ids:\n",
+    ),
+    mutant(
+        "the key of the variable is not named",
+        DOCTOR,
+        '    if variable is not None and trimmed(env.get(variable, "")):\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "a variable that holds only blanks is taken for one that holds the key",
+        DOCTOR,
+        '    if variable is not None and trimmed(env.get(variable, "")):\n',
+        '    if variable is not None and env.get(variable, ""):\n',
+    ),
+    mutant(
+        "a stored key that was sent is not named",
+        DOCTOR,
+        "    if config.provider in places:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a key that is stored for another service is taken for the one that was sent",
+        DOCTOR,
+        "    if config.provider in places:\n",
+        "    if places:\n",
+    ),
+    mutant(
+        "a file of keys that changed meanwhile is taken for one without a key",
+        DOCTOR,
+        '        return "to a stored key"\n',
+        '        return "without a key"\n',
+    ),
+    mutant(
+        "a shell that is not there is taken for one that is",
+        DOCTOR,
+        "    if found is None:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a sandbox that is disabled is looked at",
+        DOCTOR,
+        "if entry.plugin == _SANDBOX and not entry.disabled), None\n",
+        "if entry.plugin == _SANDBOX), None\n",
+    ),
+    mutant(
+        "a sandbox on this machine is taken for one of another plugin",
+        DOCTOR,
+        '    if config.provider == "none":\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "containers are taken for a sandbox of another plugin",
+        DOCTOR,
+        '    if config.provider != "docker":\n',
+        '    if config.provider != "dockers":\n',
+    ),
+    mutant(
+        "a sandbox of another plugin is taken for containers",
+        DOCTOR,
+        '    if config.provider != "docker":\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "an address that is longer than a line is broken in two",
+        DOCTOR,
+        "            break_long_words=False,\n",
+        "            break_long_words=True,\n",
+    ),
+    mutant(
+        "a line takes up the last column of the terminal",
+        DOCTOR,
+        "            width=max(width - 1, len(indent) + 20),\n",
+        "            width=max(width, len(indent) + 20),\n",
+    ),
+    mutant(
+        "a narrow terminal gets lines of next to nothing",
+        DOCTOR,
+        "            width=max(width - 1, len(indent) + 20),\n",
+        "            width=width - 1,\n",
+    ),
+    mutant(
+        "what is worth a look is counted as in the way",
+        DOCTOR,
+        '    failed = sum(finding.state == "fail" for finding in findings)\n',
+        '    failed = sum(finding.state != "ok" for finding in findings)\n',
+    ),
+    mutant(
+        "one thing is spoken of as several",
+        DOCTOR,
+        '    return "1 thing is" if count == 1 else f"{count} things are"\n',
+        '    return f"{count} things are"\n',
+    ),
+    mutant(
+        "the doctor says that all is well whatever it found",
+        LAUNCHER,
+        '    return 1 if any(finding.state == "fail" for finding in findings) else 0\n',
+        "    return 0\n",
+    ),
+    mutant(
+        "what is worth a look is in the way of a session",
+        LAUNCHER,
+        '    return 1 if any(finding.state == "fail" for finding in findings) else 0\n',
+        '    return 1 if any(finding.state != "ok" for finding in findings) else 0\n',
+    ),
+    mutant(
+        "a service that is not known stops the doctor",
+        LAUNCHER,
+        "    except (_UsageError, CompositionError, chosen_service.SetupError) as error:\n"
+        "        # Nothing else",
+        "    except (_UsageError, CompositionError) as error:\n        # Nothing else",
+    ),
+    mutant(
+        "the shell is not looked at where the profile cannot be made",
+        LAUNCHER,
+        '        findings = [health.Finding("fail", "profile", str(error)), health.shell()]\n',
+        '        findings = [health.Finding("fail", "profile", str(error))]\n',
+    ),
+    mutant(
+        "the patch of the user is not named",
+        LAUNCHER,
+        "        patches = [*([str(mine)] if mine.is_file() else []), *args.patch]\n",
+        "        patches = [*args.patch]\n",
+    ),
+    mutant(
+        "the patches are not named",
+        LAUNCHER,
+        """        said = f"{args.profile}, with {', '.join(patches)}" if patches else args.profile\n""",
+        "        said = args.profile\n",
+    ),
+    mutant(
+        "a profile without patches is said to have some",
+        LAUNCHER,
+        """        said = f"{args.profile}, with {', '.join(patches)}" if patches else args.profile\n""",
+        """        said = f"{args.profile}, with {', '.join(patches)}"\n""",
+    ),
+    mutant(
+        "the doctor takes the options of a session",
+        LAUNCHER,
+        '    _where(doctor, "cli")\n',
+        '    _shared(doctor, "cli")\n',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -23080,6 +23401,7 @@ SETS: dict[str, MutantSet] = {
         _SERVICES,
     ),
     "keys": MutantSet(("tests/llm/test_credentials.py", "tests/llm/test_openai_chat.py"), _KEYS),
+    "doctor": MutantSet(("tests/apps/test_doctor.py",), _DOCTOR),
     "serve": MutantSet(
         (
             "tests/apps/serve",

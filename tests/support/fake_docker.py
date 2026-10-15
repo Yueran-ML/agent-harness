@@ -2,7 +2,7 @@
 
 It is run as a program, with the arguments that ``docker`` would get, and
 answers the few commands that the provider of the sandbox uses: ``info``,
-``run``, ``exec``, ``ps`` and ``rm``. A container is a process of this
+``image inspect``, ``run``, ``exec``, ``ps`` and ``rm``. A container is a process of this
 program that reads its input to the end, as the real one does. A command in a
 container is run on this machine, in the directory that was mounted where
 the command is to run.
@@ -185,6 +185,21 @@ def info(how: dict[str, Any]) -> int:
         return fail(1, DOWN)
     print(how.get("info", DESKTOP), flush=True)
     return int(how.get("info_exit", 0))
+
+
+def image(argv: list[str], how: dict[str, Any]) -> int:
+    """Answer ``image inspect --format FORMAT IMAGE``: the id of the image, if it is there."""
+    name = argv[-1]
+    if how.get("engine") == "down" or how.get("image") == "down":
+        return fail(1, DOWN)
+    if how.get("image") == "missing":
+        return fail(1, f"Error response from daemon: No such image: {name}")
+    if how.get("image") == "breaks":
+        return fail(1, "Error response from daemon: the engine is out of sorts")
+    if how.get("image") == "silent":
+        return 1
+    print("sha256:" + "0" * 64, flush=True)
+    return 0
 
 
 def run(argv: list[str], how: dict[str, Any]) -> int:
@@ -372,6 +387,8 @@ def main(argv: list[str]) -> int:
     verb, rest = argv[0], argv[1:]
     if verb == "info":
         return info(how)
+    if verb == "image":
+        return image(rest, how)
     if verb == "run":
         return run(rest, how)
     if verb == "exec":

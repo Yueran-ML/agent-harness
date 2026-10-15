@@ -1315,9 +1315,13 @@ def unavailable(image: str, said: str) -> str:
             "the Docker engine does not answer. Start Docker Desktop, or the service of Docker, "
             "and run the command again"
         )
+    return f"Docker could not start a container: {_first(said)}"
+
+
+def _first(said: str) -> str:
+    """Return the first line that the ``docker`` program wrote, cut short, or say there is none."""
     lines = [line.strip() for line in said.splitlines() if line.strip()]
-    told = lines[0][:300] if lines else "it did not say why"
-    return f"Docker could not start a container: {told}"
+    return lines[0][:300] if lines else "it did not say why"
 
 
 _T = TypeVar("_T")
@@ -1527,6 +1531,36 @@ class Docker:
             return await self._ran(
                 container, argv, stdin, timeout_seconds, overflow, max_overflow_bytes
             )
+
+    async def ready(self, cwd: Path) -> Engine:
+        """See whether a command of a working directory could run, without making a container.
+
+        The ``docker`` program is chosen and the engine is asked what it is,
+        as for the first command of a session. Then the engine is asked
+        whether it has the image. Nothing is fetched.
+
+        Returns:
+            What the engine says of itself.
+
+        Raises:
+            SandboxUnavailableError: A command would fail for want of one of
+                these. The text says which, in the words that the command
+                would fail with.
+        """
+        program = await self._chosen(cwd)
+        engine = await self._known(program)
+        image = self._config.image
+        answer = await self._docker(
+            [program, "image", "inspect", "--format", "{{.Id}}", image], _ASK_SECONDS
+        )
+        if answer.exit_code != 0:
+            wrote = f"{answer.output}\n{answer.error_output}"
+            if "no such image" in wrote.casefold() or _unreachable(wrote):
+                raise SandboxUnavailableError(unavailable(image, wrote))
+            raise SandboxUnavailableError(
+                f"the Docker engine could not say whether it has the image {image}: {_first(wrote)}"
+            )
+        return engine
 
     async def close(self) -> None:
         """Let every container go. No command is run afterwards."""
@@ -1843,21 +1877,25 @@ class Docker:
             )
         return program
 
-    async def _known(self, program: str) -> None:
+    async def _known(self, program: str) -> Engine:
         """Ask the engine what it is, once, and see that commands can be held with it.
+
+        Returns:
+            What the engine said of itself.
 
         Raises:
             SandboxUnavailableError: It does not answer, or it is an engine
                 that this provider does not work with.
         """
         if self._engine is not None:
-            return
+            return self._engine
         answer = await self._docker(asked(program), _ASK_SECONDS)
         if answer.exit_code != 0:
             wrote = f"{answer.output}\n{answer.error_output}"
             if _unreachable(wrote):
                 raise SandboxUnavailableError(unavailable(self._config.image, wrote))
         self._engine = supported(answer.output if answer.exit_code == 0 else "")
+        return self._engine
 
     async def _docker(self, argv: Sequence[str], seconds: float) -> Completed:
         """Run the ``docker`` program for an answer, with what it says and its errors apart.

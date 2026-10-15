@@ -6,7 +6,7 @@
 
 Columbina 从零写起，以三个现有的 harness 为参考。内核和循环参考 DeepSeek Harness，Codex 和 Claude Code 做得更好的地方则取自它们。哪一处取自哪里，记在 [`docs/research`](research) 和[设计文档](plans/2026-10-09-columbina-design.md)里。
 
-[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [别的程序](#供另一个程序使用) · [服务与密钥](#模型服务与密钥) · [权限](#改文件与执行命令) · [扩展](#扩展-agent) · [架构](#架构) · [内核](#内核) · [插件](#编写插件) · [基准](#基准) · [开发](#开发) · [路线图](#进展)
+[功能一览](#功能一览) · [终端](#在终端里对话) · [长对话](#长对话) · [单个任务](#执行一个任务) · [别的程序](#供另一个程序使用) · [服务与密钥](#模型服务与密钥) · [检查](#检查能否开始会话) · [权限](#改文件与执行命令) · [扩展](#扩展-agent) · [架构](#架构) · [内核](#内核) · [插件](#编写插件) · [基准](#基准) · [开发](#开发) · [路线图](#进展)
 
 ## 功能一览
 
@@ -287,6 +287,39 @@ $ uv run columbina setup --list
 - 密钥从不出现在清单（profile）、`--dump-config` 的输出或保存下来的会话里，每条报错信息在显示或保存之前也会先剔除密钥。
 - Agent 执行的命令在自己的环境里找不到它。名字里带有 `KEY`、`TOKEN`、`SECRET` 或 `PASSWORD` 的变量不会进入命令的环境，保存下来的密钥则不在任何环境里。
 - 密钥两端的空白和换行不会发出去。密钥里如果含有密钥中不可能出现的字符，例如夹在中间的空格，程序在发请求之前就会拒绝这个密钥。
+
+## 检查能否开始会话
+
+`columbina doctor` 检查会话需要的各项条件，并指出哪一项会挡住会话。它像 `columbina chat` 一样，用同一份清单（profile）、同样的补丁和环境组装程序，也接受同样的 `--profile`、`--patch`、`--provider`、`--model`、`--cwd` 和 `--sandbox`。
+
+```console
+$ uv run columbina doctor --sandbox docker
+columbina 0.1.0, Python 3.11.9, win32
+
+  ok    profile  cli
+  ok    model    deepseek-flash of deepseek, at https://api.deepseek.com
+  fail  service  there is no API key for deepseek: the environment variable DEEPSEEK_API_KEY is not
+                 set, and no key is stored. Enter one with 'columbina setup', or set the variable
+  ok    shell    C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+  fail  sandbox  docker: the image python:3.12 is not on this machine, and no image is fetched for
+                 a command. Fetch it with: docker pull python:3.12
+
+2 things are in the way of a session.
+```
+
+这是一次真实运行的输出，当时这台机器还没有设置密钥，Docker 里只有别的镜像。每一行对应会话需要的一项条件。
+
+| 行 | 检查什么 |
+|---|---|
+| `profile` | 把清单和它的补丁组装成插件条目。这一步失败时，除此之外只再检查 shell。 |
+| `model` | 前端要用的模型，以及对接这个服务的适配器的地址。 |
+| `service` | 带上会话会发送的那个密钥，向服务索取模型列表。这一行会说明发出的是哪个密钥：环境变量里的、保存下来的，或者没有密钥。 |
+| `shell` | 在本机执行命令和钩子的 shell。 |
+| `sandbox` | 命令在哪里执行。对 `docker`，会查找 docker 程序，询问引擎是什么版本，并查看镜像是否已在本机。 |
+
+`ok` 表示符合会话的需要，`warn` 表示会话可以开始，但值得看一看，`fail` 表示会挡住会话。服务有应答、但列表里没有这个模型，或者根本没有模型列表时，算作值得一看，因为会话照样会请求这个模型。对任何人都公开模型列表的服务，不论密钥对不对都会应答，所以对这样的服务，这一行只能说明服务在线。有问题挡住会话时退出码为 1，否则为 0。
+
+索取模型列表是唯一离开本机的请求。它不请模型回复，不保存会话，不拉取镜像，也不创建容器。显示的内容里没有密钥：拒绝请求时的报错文字经过适配器，适配器会把密钥剔除。
 
 ## 改文件与执行命令
 

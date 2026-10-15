@@ -1680,6 +1680,125 @@ async def test_a_body_that_cannot_be_decoded_is_a_transport_failure(ctx: Context
     assert call.failure.message.startswith("DecodingError")
 
 
+# The list of models
+
+
+def listing(*ids: str) -> httpx.Response:
+    return httpx.Response(
+        200, json={"object": "list", "data": [{"id": id, "object": "model"} for id in ids]}
+    )
+
+
+async def listed(adapter: OpenAIChat) -> LlmFailure:
+    """Ask for the list of models where that fails, and return the failure."""
+    with pytest.raises(LlmError) as raised:
+        await adapter.models()
+    assert raised.value.__cause__ is None
+    assert raised.value.__context__ is None
+    return raised.value.failure
+
+
+async def test_the_list_of_models_is_asked_for_with_the_key(ctx: Context, llm: Llm) -> None:
+    service = Service(listing("deepseek-test", "deepseek-other"))
+    adapter = connect(ctx, llm, service)
+
+    ids = await adapter.models()
+
+    assert ids == ["deepseek-test", "deepseek-other"]
+    request = service.requests[0]
+    assert request.method == "GET"
+    assert str(request.url) == "https://api.example.test/models"
+    assert request.headers["authorization"] == f"Bearer {KEY}"
+
+
+async def test_the_list_may_take_half_a_minute_to_arrive(ctx: Context, llm: Llm) -> None:
+    service = Service(listing())
+    adapter = connect(ctx, llm, service)
+
+    assert await adapter.models() == []
+
+    timeout = service.requests[0].extensions["timeout"]
+    assert timeout["read"] == 30.0
+    assert timeout["connect"] == CONFIG.connect_timeout_seconds
+
+
+async def test_without_the_key_the_list_is_not_asked_for(
+    ctx: Context, llm: Llm, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("TEST_KEY")
+    service = Service()
+    adapter = connect(ctx, llm, service)
+
+    with pytest.raises(LlmError) as raised:
+        await adapter.models()
+
+    assert raised.value.failure == LlmFailure(
+        message="the environment variable TEST_KEY is not set", code="AUTH"
+    )
+    assert service.requests == []
+
+
+async def test_a_refusal_of_the_list_says_why_without_the_key(ctx: Context, llm: Llm) -> None:
+    echo = refused(401, {"message": f"Incorrect API key provided: {KEY}"})
+    adapter = connect(ctx, llm, Service(echo))
+
+    failure = await listed(adapter)
+
+    assert failure == LlmFailure(
+        message="Incorrect API key provided: [key]", code="AUTH", status=401
+    )
+
+
+async def test_a_service_without_a_list_of_models_refuses_with_its_status(
+    ctx: Context, llm: Llm
+) -> None:
+    adapter = connect(ctx, llm, Service(refused(404, "404 page not found")))
+
+    failure = await listed(adapter)
+
+    assert failure == LlmFailure(message="404 page not found", code="INVALID_REQUEST", status=404)
+
+
+@pytest.mark.parametrize(
+    ("answer", "problem"),
+    [
+        (httpx.Response(200, text="<html>Welcome</html>"), "Invalid JSON"),
+        (httpx.Response(200, json={"models": ["deepseek-test"]}), "Field required"),
+        (httpx.Response(200, json={"data": [{"name": "deepseek-test"}]}), "Field required"),
+    ],
+)
+async def test_a_list_that_cannot_be_read_is_a_malformed_reply(
+    ctx: Context, llm: Llm, answer: httpx.Response, problem: str
+) -> None:
+    adapter = connect(ctx, llm, Service(answer))
+
+    failure = await listed(adapter)
+
+    assert failure.code == "MALFORMED_RESPONSE"
+    assert failure.message.startswith(
+        f"the service sent a list of models that cannot be read: {problem}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "failure"),
+    [
+        (
+            httpx.ConnectError(f"cannot send Bearer {KEY}"),
+            LlmFailure(message="ConnectError: cannot send Bearer [key]", code="TRANSPORT"),
+        ),
+        (httpx.ReadTimeout(""), LlmFailure(message="ReadTimeout", code="TIMEOUT")),
+    ],
+    ids=["unreached", "too-slow"],
+)
+async def test_a_list_that_does_not_come_is_a_failure_without_the_key(
+    ctx: Context, llm: Llm, error: Exception, failure: LlmFailure
+) -> None:
+    adapter = connect(ctx, llm, Service(error))
+
+    assert await listed(adapter) == failure
+
+
 # Stopping
 
 

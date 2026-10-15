@@ -31,6 +31,7 @@ Columbina needs Python 3.11 or newer.
 
 ```bash
 columbina setup                 # choose a service and a model, and store the key
+columbina doctor                # see whether a session could start, and what is in the way
 columbina                       # a conversation at the terminal
 columbina run "What does this project do? Answer in three sentences."
 ```

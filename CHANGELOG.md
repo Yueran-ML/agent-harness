@@ -4,6 +4,14 @@ All notable changes are written down here. The version follows
 [Semantic Versioning](https://semver.org/), and while it is below 1.0 a minor version may
 change what was there before.
 
+## Unreleased
+
+- `columbina doctor` sees whether a session could start, and says what is in the way: the
+  profile, the model and its service, which is asked for the list of its models with the
+  key that a session would send, the shell, and for commands in containers the Docker
+  engine and its image. It starts nothing that a session would leave behind, and ends with
+  1 where something is in the way.
+
 ## 0.1.0 (2026-10-15)
 
 The first release. It is the work of ten stages, and each of them ended with something that

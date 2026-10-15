@@ -22,6 +22,10 @@ of HTML writes it. A service that shows a part of the key, with the rest
 blotted out, is shown as it wrote that. The error that was caught is not
 passed on with the failure.
 
+Besides replies, a service is asked for the list of its models, with the key
+and in the same care for it. That is how ``columbina doctor`` sees that a
+service answers.
+
 Blanks and line breaks around the key are not sent. A key with anything in it
 that a header cannot carry is refused before a request is made. The library
 that sends the request would refuse it too, and would say so with the key in
@@ -101,6 +105,8 @@ _STATUS_CODES = {
     429: "RATE_LIMIT",
 }
 _EFFORT = {"low": "low", "high": "high", "max": "high"}
+_LIST_SECONDS = 30.0
+"""How long the list of the models of a service may take to arrive."""
 _MESSAGE_CHARACTERS = 500
 """How much of the text of a failure is kept."""
 _ID_CHARACTERS = 200
@@ -197,6 +203,14 @@ class _Event(BaseModel):
 
 class _ErrorBody(BaseModel):
     error: _Error
+
+
+class _Listed(BaseModel):
+    id: str
+
+
+class _Listing(BaseModel):
+    data: list[_Listed]
 
 
 def _joined(content: tuple[TextBlock, ...]) -> str:
@@ -526,6 +540,25 @@ def _refusal(response: httpx.Response) -> LlmFailure:
     )
 
 
+def _listed(content: bytes) -> list[str]:
+    """Return the ids of the models in a list that a service sent.
+
+    Raises:
+        LlmError: What it sent is no list of models.
+    """
+    try:
+        listing = _Listing.model_validate_json(content)
+    except ValidationError as error:
+        problem = error.errors()[0]["msg"]
+        raise LlmError(
+            LlmFailure(
+                message=f"the service sent a list of models that cannot be read: {problem}",
+                code="MALFORMED_RESPONSE",
+            )
+        ) from None
+    return [model.id for model in listing.data]
+
+
 def _failure(error: httpx.RequestError | LlmError, secret: str | None) -> LlmFailure:
     """Return the failure that an error stands for, fit to be shown and to be stored.
 
@@ -624,6 +657,30 @@ class OpenAIChat:
             # Raised out here, so that the error that was caught is not held on to. Its text
             # may hold the key, and so may that of its cause.
             raise LlmError(failure)
+
+    async def models(self) -> list[str]:
+        """Return the ids of the models that the service lists.
+
+        The list is asked for with the key, as a reply is. So an answer says
+        that the service is there, and that it takes the key if it is one
+        that shows its list to nobody else.
+
+        Raises:
+            LlmError: The key is missing, the service could not be reached or
+                refused, or what it answered is no list of models.
+        """
+        secret = await self._secret()
+        headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}
+        timeout = httpx.Timeout(self._config.connect_timeout_seconds, read=_LIST_SECONDS)
+        try:
+            response = await self._client.get("models", headers=headers, timeout=timeout)
+            if response.status_code != 200:
+                raise LlmError(_refusal(response))
+            return _listed(response.content)
+        except (httpx.RequestError, LlmError) as error:
+            failure = _failure(error, secret)
+        # Raised out here, as a failure of a reply is.
+        raise LlmError(failure)
 
     async def _secret(self) -> str | None:
         """Return the key to send, or ``None`` for a service that is sent none.

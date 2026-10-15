@@ -12,6 +12,8 @@ model is to come from and for its key, and writes both down. For another
 program it does that without a question: ``columbina setup --list`` says what
 is set up, and ``columbina setup --from-stdin`` stores what a document on its
 standard input says, each with one document of JSON on its standard output.
+``columbina doctor`` sees whether a session could start, and says what is in
+the way: the service and its key, the shell, or the sandbox.
 
 Either way the program is built from layers, which are lists of plugin
 entries: first the profile, then the patch of the user, then the patches named
@@ -53,6 +55,7 @@ import getpass
 import json
 import logging
 import os
+import shutil
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from importlib import resources
@@ -64,6 +67,7 @@ from pydantic import ValidationError
 
 import columbina
 from columbina.apps import FRONTEND
+from columbina.apps import doctor as health
 from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
 from columbina.apps import setup as chosen_service
@@ -104,6 +108,7 @@ _RUNS_THE_HOOKS = "columbina.hooks"
 _NOT_A_COMMAND = ("-h", "--help", "--version")
 """What may stand first on the command line without meaning the conversation."""
 _SETUP = "setup"
+_DOCTOR = "doctor"
 _MODEL = "model"
 _SPEAKS_OPENAI = "columbina.llm.adapters.openai_chat"
 """The plugin that talks to every service that has a name."""
@@ -663,6 +668,30 @@ def _setup(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     return 0
 
 
+def _doctor(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """See whether a session of the command line could start, and say what is in the way.
+
+    Returns:
+        1 if something is in the way of a session, and 0 otherwise.
+    """
+    try:
+        entries = _entries(args, home, env)
+    except (_UsageError, CompositionError, chosen_service.SetupError) as error:
+        # Nothing else of a session can be looked at then, but for the shell of this machine.
+        findings = [health.Finding("fail", "profile", str(error)), health.shell()]
+    else:
+        mine = home / "config.yml"
+        patches = [*([str(mine)] if mine.is_file() else []), *args.patch]
+        said = f"{args.profile}, with {', '.join(patches)}" if patches else args.profile
+        cwd = Path() if args.cwd is None else Path(args.cwd)
+        looked = asyncio.run(health.looked(entries, env, cwd.resolve()))
+        findings = [health.Finding("ok", "profile", said), *looked]
+    width = shutil.get_terminal_size().columns
+    # What was found repeats what files and services wrote.
+    print(harmless(health.shown(findings, width)))
+    return 1 if any(finding.state == "fail" for finding in findings) else 0
+
+
 def _from_the_profile(command: argparse.ArgumentParser, profile: str) -> None:
     """Add the arguments that say which program is meant and where it works."""
     command.add_argument(
@@ -680,13 +709,12 @@ def _from_the_profile(command: argparse.ArgumentParser, profile: str) -> None:
     )
 
 
-def _shared(command: argparse.ArgumentParser, profile: str, *, session: bool = True) -> None:
-    """Add the arguments that every command takes that has an agent work.
+def _where(command: argparse.ArgumentParser, profile: str) -> None:
+    """Add the arguments that say which program is meant, which model it asks, and where it works.
 
     Args:
         command: The command.
         profile: The profile that it loads unless another one is named.
-        session: Whether the command line can name the session.
     """
     _from_the_profile(command, profile)
     command.add_argument("--model", metavar="ID", help="the model to use")
@@ -702,6 +730,23 @@ def _shared(command: argparse.ArgumentParser, profile: str, *, session: bool = T
         metavar="DIR",
         help="the working directory of the agent; the current directory if nothing names one",
     )
+    command.add_argument(
+        "--sandbox",
+        metavar="NAME",
+        help="what runs the commands of the agent: none, for this machine as it is, or "
+        "docker, for a container",
+    )
+
+
+def _shared(command: argparse.ArgumentParser, profile: str, *, session: bool = True) -> None:
+    """Add the arguments that every command takes that has an agent work.
+
+    Args:
+        command: The command.
+        profile: The profile that it loads unless another one is named.
+        session: Whether the command line can name the session.
+    """
+    _where(command, profile)
     if session:
         command.add_argument(
             "--session-id", metavar="ID", help="the session to start or to continue"
@@ -718,12 +763,6 @@ def _shared(command: argparse.ArgumentParser, profile: str, *, session: bool = T
         metavar="RULE",
         help="a rule that lets calls go ahead, such as 'run(git status*)'; "
         "may be given several times",
-    )
-    command.add_argument(
-        "--sandbox",
-        metavar="NAME",
-        help="what runs the commands of the agent: none, for this machine as it is, or "
-        "docker, for a container",
     )
     command.add_argument(
         "--dump-config",
@@ -842,6 +881,14 @@ def _parser() -> argparse.ArgumentParser:
         help="store what a document of JSON on the standard input says, for another program, "
         "and answer in one document of JSON",
     )
+    doctor = commands.add_parser(
+        _DOCTOR,
+        help="see whether a session could start: the service and its key, the shell, and "
+        "the sandbox",
+    )
+    _where(doctor, "cli")
+    # What a session asks of the command line besides, and the doctor does not.
+    doctor.set_defaults(session_id=None, permission=None, allow=[], resume=False)
     return parser
 
 
@@ -873,6 +920,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _hooks(args, home, env)
         if args.command == _SETUP:
             return _setup(args, home, env)
+        if args.command == _DOCTOR:
+            return _doctor(args, home, env)
         entries = _entries(args, home, env)
         if args.dump_config:
             dumped = _dump(entries)

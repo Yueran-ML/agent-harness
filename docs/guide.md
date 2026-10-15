@@ -6,7 +6,7 @@ This is the longer account of Columbina: how it is used, how it is built, how it
 
 Columbina was written from scratch, with three existing harnesses as its reference: DeepSeek Harness for the kernel and the loop, and Codex and Claude Code where they do something better. What was taken from which is written down in [`docs/research`](research) and in the [design document](plans/2026-10-09-columbina-design.md).
 
-[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Permissions](#changing-files-and-running-commands) · [Extensions](#extending-the-agent) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Plugins](#writing-a-plugin) · [Benchmark](#the-benchmark) · [Development](#development) · [Roadmap](#where-it-stands)
+[What is there](#what-is-there) · [The terminal](#a-conversation-at-the-terminal) · [Long conversations](#a-long-conversation) · [One task](#running-a-task) · [Another program](#serving-another-program) · [Services and keys](#services-and-keys) · [Doctor](#seeing-whether-a-session-could-start) · [Permissions](#changing-files-and-running-commands) · [Extensions](#extending-the-agent) · [Architecture](#how-it-is-built) · [The kernel](#the-kernel) · [Plugins](#writing-a-plugin) · [Benchmark](#the-benchmark) · [Development](#development) · [Roadmap](#where-it-stands)
 
 ## What is there
 
@@ -413,6 +413,50 @@ among the stored keys. The following holds for a key.
   command, and a stored key is in no environment at all.
 - Blanks and line breaks around it are not sent. A key with a character in it that no key
   has, such as a blank in the middle, is refused before a request is made.
+
+## Seeing whether a session could start
+
+`columbina doctor` looks at what a session needs and says what is in the way. It makes the
+program as `columbina chat` makes it, from the same profile, patches and environment, and it
+takes the same `--profile`, `--patch`, `--provider`, `--model`, `--cwd` and `--sandbox`.
+
+```console
+$ uv run columbina doctor --sandbox docker
+columbina 0.1.0, Python 3.11.9, win32
+
+  ok    profile  cli
+  ok    model    deepseek-flash of deepseek, at https://api.deepseek.com
+  fail  service  there is no API key for deepseek: the environment variable DEEPSEEK_API_KEY is not
+                 set, and no key is stored. Enter one with 'columbina setup', or set the variable
+  ok    shell    C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe
+  fail  sandbox  docker: the image python:3.12 is not on this machine, and no image is fetched for
+                 a command. Fetch it with: docker pull python:3.12
+
+2 things are in the way of a session.
+```
+
+This is a real run on a machine where no key was set up yet and Docker had other images.
+Each line is about one thing that a session needs.
+
+| Line | What is looked at |
+|---|---|
+| `profile` | The profile with its patches, made into plugin entries. Where that fails, only the shell is looked at besides. |
+| `model` | The model that the frontend asks for, and the address of the adapter that serves its service. |
+| `service` | The service is asked for the list of its models, with the key that a session would send. The line names that key: the one in the variable, the stored one, or none. |
+| `shell` | The shell that runs the commands and the hooks on this machine. |
+| `sandbox` | Where the commands run. For `docker` the program is looked for, the engine is asked what it is, and the image is looked for. |
+
+`ok` is as a session needs it, `warn` lets a session start and is worth a look, and `fail`
+is in the way of a session. A service that answers and does not list the model, or has no
+list of models at all, is worth a look, since a session asks for the model all the same. A
+service that shows its list to anybody answers whatever the key is, so for such a service
+the line says only that the service is there. The exit code is 1 where something is in the
+way, and 0 otherwise.
+
+The request for the list of models is the only one that leaves the machine. The model is
+asked for no reply, no session is stored, no image is fetched and no container is made.
+What is shown holds no key: the text of a refusal comes through the adapter, which cuts the
+key out of it.
 
 ## Changing files and running commands
 

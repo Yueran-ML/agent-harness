@@ -816,6 +816,8 @@ Tool(
 
 程序由几层叠出来，依次是清单、`<COLUMBINA_HOME>/config.yml`、各个 `--patch`、命令行自己的参数。名为 `frontend` 的条目提供要运行的前端。命令行只改它点名的设置。没给 `--cwd`、`--json`、`--session-id` 时，前面各层的值保持不变。工作目录只有在哪一层都没指定时才取当前目录。
 
+`columbina doctor`（2026-10-15）检查一个会话能否开始。它按会话的办法组装程序，接受 `--profile`、`--patch`、`--provider`、`--model`、`--cwd` 和 `--sandbox`，然后逐项给出结论：清单能否组装成插件条目；前端要用的模型和对接它的适配器的地址；带着会话会发送的密钥向服务索取模型列表，这是唯一离开本机的请求；本机执行命令和钩子的 shell；沙箱为 `docker` 时，依次查找 docker 程序、询问引擎、查看镜像，不拉取镜像，也不创建容器。每项结论是 `ok`、`warn` 或 `fail`，有 `fail` 时退出码为 1。上面列的 ripgrep 不在其中：grep 工具是纯 Python 写的，不依赖它。
+
 ### 12.2 无界面
 
 最终回答写到标准输出。`--json` 输出逐行事件：`session`、`status`、`text`、`thinking`、`tool_call`、`tool_result`、`final`。`final` 带结束原因、代码和用量。`--session-id` 续接已有会话，没有这个会话就用这个 id 新建。

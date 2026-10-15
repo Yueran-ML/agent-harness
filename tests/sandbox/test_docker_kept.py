@@ -2003,6 +2003,96 @@ async def test_after_a_failure_the_next_command_tries_again(
     assert engine.verbs() == ["info", *FIRST]
 
 
+# Whether a command could run
+
+
+async def test_a_provider_that_could_run_a_command_says_what_its_engine_is(
+    engine: Engine, work: Path
+) -> None:
+    provider = Docker(DockerConfig(program=engine.program, image="debian:bookworm-slim"))
+
+    told = await provider.ready(work)
+
+    assert told == docker.Engine("29.8.2", "Docker Desktop")
+    assert engine.calls() == [
+        docker.asked(engine.program)[1:],
+        ["image", "inspect", "--format", "{{.Id}}", "debian:bookworm-slim"],
+    ]
+    assert engine.containers() == {}
+
+
+@pytest.mark.parametrize(
+    ("how", "why", "asked"),
+    [
+        (
+            {"engine": "down"},
+            "the Docker engine does not answer. Start Docker Desktop, or the service of Docker, "
+            "and run the command again",
+            ["info"],
+        ),
+        (
+            {"info": '{"version":"24.0.7","system":"x","security":null,"os":"linux"}'},
+            "the Docker engine is version 24.0.7, and version 25 or newer is needed",
+            ["info"],
+        ),
+        (
+            {"image": "missing"},
+            "the image python:3.12 is not on this machine, and no image is fetched for a "
+            "command. Fetch it with: docker pull python:3.12",
+            ["info", "image"],
+        ),
+        (
+            # The engine went away after it said what it is.
+            {"image": "down"},
+            "the Docker engine does not answer. Start Docker Desktop, or the service of Docker, "
+            "and run the command again",
+            ["info", "image"],
+        ),
+        (
+            {"image": "breaks"},
+            "the Docker engine could not say whether it has the image python:3.12: Error "
+            "response from daemon: the engine is out of sorts",
+            ["info", "image"],
+        ),
+        (
+            {"image": "silent"},
+            "the Docker engine could not say whether it has the image python:3.12: it did not "
+            "say why",
+            ["info", "image"],
+        ),
+    ],
+)
+async def test_what_would_keep_a_command_from_running_is_said_in_its_words(
+    provider: Docker,
+    engine: Engine,
+    work: Path,
+    how: dict[str, Any],
+    why: str,
+    asked: list[str],
+) -> None:
+    engine.told(**how)
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await provider.ready(work)
+
+    assert str(refused.value) == why
+    assert engine.verbs() == asked
+    assert engine.containers() == {}
+
+
+async def test_a_provider_without_a_program_could_run_no_command(
+    engine: Engine, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PATH", "")
+    lost = Docker(DockerConfig())
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await lost.ready(work)
+
+    assert str(refused.value).startswith("no docker program was found on the search path")
+    assert engine.calls() == []
+
+
 # Running a command
 
 

@@ -137,6 +137,10 @@ Set like this, the variable lasts until that window is closed. A key is read whe
 is made. It is never part of a profile or of a stored session, and it is cut out of every
 error message before the message is shown or stored.
 
+`columbina doctor` sees whether all of this is in place. It asks the service for its models
+with the key, looks for the shell and the sandbox, and says in a line each what would be in
+the way of a session.
+
 A conversation at the terminal begins with this command, and the agent works in the
 directory that it is given in:
 

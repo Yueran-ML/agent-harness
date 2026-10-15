@@ -747,3 +747,28 @@ async def test_an_image_that_is_not_on_this_machine_is_not_fetched(
         "the image columbina/no-such-image:1 is not on this machine, and no image is fetched "
         "for a command. Fetch it with: docker pull columbina/no-such-image:1"
     )
+
+
+async def test_an_engine_with_the_image_could_run_a_command(
+    program: str, provider: Docker, work: Path
+) -> None:
+    before = containers(program)
+
+    told = await provider.ready(work)
+
+    assert told.version == asked(program, "version", "--format", "{{.Server.Version}}")[1]
+    assert containers(program) == before
+
+
+async def test_an_image_that_is_not_on_this_machine_would_keep_a_command_from_running(
+    make: Make, work: Path
+) -> None:
+    provider = make(image="columbina/no-such-image:1")
+
+    with pytest.raises(SandboxUnavailableError) as refused:
+        await provider.ready(work)
+
+    assert str(refused.value) == (
+        "the image columbina/no-such-image:1 is not on this machine, and no image is fetched "
+        "for a command. Fetch it with: docker pull columbina/no-such-image:1"
+    )

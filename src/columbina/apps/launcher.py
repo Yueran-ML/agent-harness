@@ -570,11 +570,14 @@ def _answer(document: Mapping[str, object]) -> None:
     sys.stdout.write(escaped(json.dumps(document, ensure_ascii=False)) + "\n")
 
 
-def _from_another_program() -> bytes:
+def _from_another_program(option: str) -> bytes:
     """Return what another program wrote to the standard input, as the bytes that came.
 
     No more is read than a document may be long, and one byte. A document
     without end is not waited for.
+
+    Args:
+        option: The option of ``columbina setup`` that reads the document.
 
     Raises:
         SetupError: The standard input is a terminal, or there is none that
@@ -584,7 +587,7 @@ def _from_another_program() -> bytes:
         # Windows says of a standard input that leads nowhere that it is a terminal too.
         if sys.stdin.isatty():
             raise chosen_service.SetupError(
-                "'columbina setup --from-stdin' reads what another program writes to its "
+                f"'columbina setup {option}' reads what another program writes to its "
                 "standard input, and this one is a terminal, or leads nowhere. A key that is "
                 "typed at a terminal is shown. 'columbina setup' asks for it without showing it"
             )
@@ -594,7 +597,7 @@ def _from_another_program() -> bytes:
     except (AttributeError, OSError, ValueError):
         # A process that was started without a standard input has none, or one that is closed.
         raise chosen_service.SetupError(
-            "'columbina setup --from-stdin' reads a document from its standard input, and this "
+            f"'columbina setup {option}' reads a document from its standard input, and this "
             "process has none that can be read"
         ) from None
 
@@ -620,15 +623,25 @@ def _setup_for_a_program(args: argparse.Namespace, home: Path, env: Mapping[str,
     try:
         if args.list:
             answer = chosen_service.listed(home, env)
+        elif args.check:
+            document = _from_another_program("--check")
+            answer = asyncio.run(chosen_service.checked(home, env, document, show))
+        elif args.forget is not None:
+            forgot = chosen_service.forget(home, args.forget, show)
+            what = {"name": args.forget, "key": forgot.key, "chosen": forgot.chosen}
+            answer: dict[str, object] = {"forgotten": what}
+            if forgot.unasked is not None:
+                answer["unasked"] = forgot.unasked
         else:
-            answers = chosen_service.given(home, env, _from_another_program(), show)
+            answers = chosen_service.given(home, env, _from_another_program("--from-stdin"), show)
             kept = chosen_service.store(home, env, answers, show)
             answer = chosen_service.stored(answers, kept)
     except chosen_service.SetupError as error:
         _answer({"error": str(error)})
         return 2
     _answer(answer)
-    return 0
+    # A service that listed no models is answered as an error is.
+    return 2 if "error" in answer else 0
 
 
 def _setup(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
@@ -644,7 +657,12 @@ def _setup(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     def asked_unseen(question: str) -> str:
         return getpass.getpass(harmless(question))
 
-    if args.list or args.from_stdin:
+    if args.json and args.forget is None:
+        raise _UsageError(
+            "--json goes with --forget. What setup does for another program besides is "
+            "answered in JSON as it is"
+        )
+    if args.list or args.from_stdin or args.check or args.json:
         return _setup_for_a_program(args, home, env)
     if args.forget is not None:
         chosen_service.forget(home, args.forget, show)
@@ -880,6 +898,17 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="store what a document of JSON on the standard input says, for another program, "
         "and answer in one document of JSON",
+    )
+    instead.add_argument(
+        "--check",
+        action="store_true",
+        help="ask the service that a document of JSON on the standard input names for its "
+        "models, with the key that it gives, store nothing, and answer in one document of JSON",
+    )
+    setup.add_argument(
+        "--json",
+        action="store_true",
+        help="with --forget: say what was deleted in one document of JSON, for another program",
     )
     doctor = commands.add_parser(
         _DOCTOR,

@@ -882,6 +882,7 @@ def test_what_was_said_of_a_listed_service_stands_in_the_place_of_what_is_known(
         return service_named("deepseek", Chosen(services={"deepseek": Own.model_validate(said)}))
 
     assert with_said() == deepseek
+    # A mirror is no place of the service, and its keys are not made on the page of the service.
     assert with_said(base_url="https://mirror.example.test/v1") == Service(
         name="deepseek",
         title="DeepSeek",
@@ -892,6 +893,7 @@ def test_what_was_said_of_a_listed_service_stands_in_the_place_of_what_is_known(
         context_window=1_048_576,
         base_url_env="DEEPSEEK_BASE_URL",
     )
+    assert with_said(model="deepseek-v4-pro").key_page == deepseek.key_page
     # What is known of the size of the window is known of the one model.
     assert with_said(model="deepseek-flash").context_window == 1_048_576
     assert with_said(model="deepseek-v4-pro").model == "deepseek-v4-pro"
@@ -1224,6 +1226,7 @@ def entry(
     context_window: int | None = None,
     key_env: str | None = None,
     key: str = "none",
+    key_page: str | None = None,
 ) -> dict[str, object]:
     """What another program is told of one service."""
     return {
@@ -1235,6 +1238,7 @@ def entry(
         "context_window": context_window,
         "key_env": key_env,
         "key": key,
+        "key_page": key_page,
     }
 
 
@@ -1242,6 +1246,9 @@ def added(name: str, base_url: str, **said: Any) -> dict[str, object]:
     """What another program is told of a service that the user added."""
     return entry(name, base_url, base_url, own=True, key_env="COLUMBINA_API_KEY", **said)
 
+
+PAGES = {service.name: service.key_page for service in PRESETS}
+"""The page on which each service that is known by name gives out its keys."""
 
 KNOWN: dict[str, dict[str, object]] = {
     "deepseek": entry(
@@ -1251,19 +1258,42 @@ KNOWN: dict[str, dict[str, object]] = {
         model="deepseek-flash",
         context_window=1_048_576,
         key_env="DEEPSEEK_API_KEY",
+        key_page=PAGES["deepseek"],
     ),
-    "openai": entry("openai", "OpenAI", "https://api.openai.com/v1", key_env="OPENAI_API_KEY"),
+    "openai": entry(
+        "openai",
+        "OpenAI",
+        "https://api.openai.com/v1",
+        key_env="OPENAI_API_KEY",
+        key_page=PAGES["openai"],
+    ),
     "openrouter": entry(
-        "openrouter", "OpenRouter", "https://openrouter.ai/api/v1", key_env="OPENROUTER_API_KEY"
+        "openrouter",
+        "OpenRouter",
+        "https://openrouter.ai/api/v1",
+        key_env="OPENROUTER_API_KEY",
+        key_page=PAGES["openrouter"],
     ),
     "moonshot": entry(
-        "moonshot", "Moonshot AI (Kimi)", "https://api.moonshot.cn/v1", key_env="MOONSHOT_API_KEY"
+        "moonshot",
+        "Moonshot AI (Kimi)",
+        "https://api.moonshot.cn/v1",
+        key_env="MOONSHOT_API_KEY",
+        key_page=PAGES["moonshot"],
     ),
     "zhipu": entry(
-        "zhipu", "Zhipu AI (GLM)", "https://open.bigmodel.cn/api/paas/v4", key_env="ZAI_API_KEY"
+        "zhipu",
+        "Zhipu AI (GLM)",
+        "https://open.bigmodel.cn/api/paas/v4",
+        key_env="ZAI_API_KEY",
+        key_page=PAGES["zhipu"],
     ),
     "siliconflow": entry(
-        "siliconflow", "SiliconFlow", "https://api.siliconflow.cn/v1", key_env="SILICONFLOW_API_KEY"
+        "siliconflow",
+        "SiliconFlow",
+        "https://api.siliconflow.cn/v1",
+        key_env="SILICONFLOW_API_KEY",
+        key_page=PAGES["siliconflow"],
     ),
     "ollama": entry("ollama", "Ollama on this machine", "http://localhost:11434/v1"),
     "lmstudio": entry("lmstudio", "LM Studio on this machine", "http://localhost:1234/v1"),
@@ -1313,7 +1343,7 @@ def test_a_program_is_told_which_service_is_in_use_and_what_was_said_of_each(hom
             # What is known of the size of the window is known of another model.
             KNOWN["deepseek"] | {"model": "deepseek-v4-pro", "context_window": None},
             KNOWN["openai"] | {"model": "gpt-test", "context_window": 400000},
-            KNOWN["moonshot"] | {"base_url": "https://api.moonshot.ai/v1"},
+            KNOWN["moonshot"] | {"base_url": "https://api.moonshot.ai/v1", "key_page": None},
             # The services of one's own come after the ones that are known, by their names.
             added("mine", "http://localhost:8000/v1", model="tiny", context_window=32768),
             added("zebra", "https://zebra.example.test/v1"),
@@ -1346,8 +1376,13 @@ def test_a_program_is_told_where_the_key_of_each_service_comes_from(home: Path) 
         KNOWN["deepseek"] | {"key": "stored"},
         # The variable goes before the key that is stored.
         KNOWN["openai"] | {"key": "environment"},
+        # At another address its keys are made elsewhere, and where is not known.
         KNOWN["moonshot"]
-        | {"base_url": "https://api.moonshot.ai/v1", "key": "stored-for-another-address"},
+        | {
+            "base_url": "https://api.moonshot.ai/v1",
+            "key": "stored-for-another-address",
+            "key_page": None,
+        },
         # A variable that holds only blanks holds no key.
         KNOWN["zhipu"],
         KNOWN["ollama"] | {"key": "stored"},

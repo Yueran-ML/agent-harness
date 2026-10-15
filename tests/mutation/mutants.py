@@ -141,6 +141,7 @@ OPENAI_CHAT = "src/columbina/llm/adapters/openai_chat.py"
 SERVICES = "src/columbina/llm/services.py"
 SCRIPTED = "src/columbina/llm/adapters/scripted.py"
 SETUP_APP = "src/columbina/apps/setup.py"
+NET = "src/columbina/net.py"
 DOCTOR = "src/columbina/apps/doctor.py"
 MCP_NAMES = "src/columbina/mcp/server/names.py"
 MCP_SCHEMA = "src/columbina/mcp/server/schema.py"
@@ -18609,8 +18610,8 @@ _SERVICES = (
     mutant(
         "the address that was given a listed service does not count",
         SETUP_APP,
-        "        base_url=said.base_url or known.base_url,\n",
-        "        base_url=known.base_url,\n",
+        "    base_url = said.base_url or known.base_url\n",
+        "    base_url = known.base_url\n",
     ),
     mutant(
         "the model that was named for a listed service does not count",
@@ -19624,8 +19625,9 @@ _SERVICES = (
     mutant(
         "a document that names no service is gone on with",
         SETUP_APP,
-        '    if name is None:\n        raise SetupError("the document names no service")\n',
-        "",
+        '    if name is None:\n        raise SetupError("the document names no service")\n'
+        "    if model is None:\n",
+        "    if model is None:\n",
     ),
     mutant(
         "a document that names no model is gone on with",
@@ -19642,8 +19644,10 @@ _SERVICES = (
     mutant(
         "what cannot be a key is taken from a document",
         SETUP_APP,
-        "    if key is not None and not sendable(key):\n",
-        "    if False:\n",
+        "    if key is not None and not sendable(key):\n"
+        "        raise SetupError(_NOT_A_KEY)\n"
+        "    before = chosen(home)\n",
+        "    before = chosen(home)\n",
     ),
     mutant(
         "the window that a document gives is lost where one was said before",
@@ -19804,8 +19808,8 @@ _SERVICES = (
     mutant(
         "what was asked for is not answered",
         LAUNCHER,
-        "    _answer(answer)\n    return 0\n",
-        "    return 0\n",
+        "    _answer(answer)\n    # A service that listed no models is answered as an error is.\n",
+        "    # A service that listed no models is answered as an error is.\n",
     ),
     mutant(
         "whoever asks what is set up has a document read",
@@ -19816,14 +19820,14 @@ _SERVICES = (
     mutant(
         "a document is asked for at a terminal like the questions",
         LAUNCHER,
-        "    if args.list or args.from_stdin:\n",
-        "    if args.list:\n",
+        "    if args.list or args.from_stdin or args.check or args.json:\n",
+        "    if args.list or args.check or args.json:\n",
     ),
     mutant(
         "what is set up is asked for at a terminal like the questions",
         LAUNCHER,
-        "    if args.list or args.from_stdin:\n",
-        "    if args.from_stdin:\n",
+        "    if args.list or args.from_stdin or args.check or args.json:\n",
+        "    if args.from_stdin or args.check or args.json:\n",
     ),
     mutant(
         "the three things that setup does instead can be asked for together",
@@ -23451,6 +23455,192 @@ _TOOL_USE = (
     ),
 )
 
+_KEY_CHECK = (
+    mutant(
+        "a proxy of the environment is taken for one of the system",
+        NET,
+        "    if any(name.lower() in _VARIABLES and value for name, value in env.items()):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a variable of the environment that is empty names a proxy",
+        NET,
+        "    if any(name.lower() in _VARIABLES and value for name, value in env.items()):\n",
+        "    if any(name.lower() in _VARIABLES for name, value in env.items()):\n",
+    ),
+    mutant(
+        "the address of this machine in IPv6 goes through the proxy",
+        NET,
+        '_HERE = ("localhost", "127.0.0.1", "::1")\n',
+        '_HERE = ("localhost", "127.0.0.1")\n',
+    ),
+    mutant(
+        "settings that cannot be read end the request",
+        NET,
+        "    except OSError:\n",
+        "    except ValueError:\n",
+    ),
+    mutant(
+        "a proxy for every scheme is not taken",
+        NET,
+        '    proxy = said.get(parts.scheme) or said.get("all")\n',
+        "    proxy = said.get(parts.scheme)\n",
+    ),
+    mutant(
+        "a host that the system lets go straight goes through the proxy",
+        NET,
+        "    if not proxy or bypassed(host):\n",
+        "    if not proxy:\n",
+    ),
+    mutant(
+        "a proxy without a scheme is taken for one of https",
+        NET,
+        '    proxy = proxy if "://" in proxy else f"http://{proxy}"\n',
+        '    proxy = proxy if "://" in proxy else f"https://{proxy}"\n',
+    ),
+    mutant(
+        "a SOCKS proxy is handed to httpx",
+        NET,
+        "    return proxy if urlsplit(proxy).scheme in _SPOKEN else None\n",
+        "    return proxy\n",
+    ),
+    mutant(
+        "the HTTP client of the adapter goes through no proxy",
+        OPENAI_CHAT,
+        "            proxy=None if transport is not None else proxy_for(config.base_url, os.environ),\n",
+        "            proxy=None,\n",
+    ),
+    mutant(
+        "a transport of a test goes through the proxy of the system",
+        OPENAI_CHAT,
+        "            proxy=None if transport is not None else proxy_for(config.base_url, os.environ),\n",
+        "            proxy=proxy_for(config.base_url, os.environ),\n",
+    ),
+    mutant(
+        "the blanks around a key that is given are sent",
+        OPENAI_CHAT,
+        '        self._given = trimmed(secret or "") or None\n',
+        "        self._given = secret\n",
+    ),
+    mutant(
+        "a key that is given is not sent",
+        OPENAI_CHAT,
+        "        if self._given is not None:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a key without the right is taken for a wrong key",
+        SETUP_APP,
+        '    if failure.code == "QUOTA" or failure.status == 403:\n',
+        '    if failure.code == "QUOTA":\n',
+    ),
+    mutant(
+        "an account without the money is taken for a wrong key",
+        SETUP_APP,
+        '    if failure.code == "QUOTA" or failure.status == 403:\n',
+        "    if failure.status == 403:\n",
+    ),
+    mutant(
+        "a wrong address is taken for something unknown",
+        SETUP_APP,
+        "    if failure.status == 404:\n",
+        "    if failure.status == 400:\n",
+    ),
+    mutant(
+        "a failing service is taken for something unknown",
+        SETUP_APP,
+        '    if failure.code in ("RATE_LIMIT", "SERVER"):\n',
+        '    if failure.code in ("RATE_LIMIT",):\n',
+    ),
+    mutant(
+        "the key of the document is not the one that is checked",
+        SETUP_APP,
+        "    adapter = OpenAIChat(config, secret=key)\n",
+        "    adapter = OpenAIChat(config)\n",
+    ),
+    mutant(
+        "a service that cannot be reached says nothing of a proxy",
+        SETUP_APP,
+        """            "error": f"{said_why.rstrip('.')}. {_UNREACHABLE}" if kind == "network" else said_why,\n""",
+        """            "error": said_why,\n""",
+    ),
+    mutant(
+        "a key that cannot be one is sent to the service to be refused",
+        SETUP_APP,
+        "    if key is not None and not sendable(key):\n"
+        "        raise SetupError(_NOT_A_KEY)\n"
+        "    service = _meant(name, address, chosen(home), show)\n",
+        "    service = _meant(name, address, chosen(home), show)\n",
+    ),
+    mutant(
+        "a check of a document that names no service asks a service of no name",
+        SETUP_APP,
+        '        raise SetupError("the document names no service")\n'
+        "    if key is not None and not sendable(key):\n",
+        "        pass\n    if key is not None and not sendable(key):\n",
+    ),
+    mutant(
+        "what is deleted for another program is said to a person",
+        LAUNCHER,
+        "    if args.list or args.from_stdin or args.check or args.json:\n",
+        "    if args.list or args.from_stdin or args.check:\n",
+    ),
+    mutant(
+        "json is taken without forget",
+        LAUNCHER,
+        "    if args.json and args.forget is None:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a key that was deleted is said to be one that was not",
+        SETUP_APP,
+        "    return Forgot(key=forgotten.was_there, chosen=was_set_up, unasked=forgotten.unasked)\n",
+        "    return Forgot(key=False, chosen=was_set_up, unasked=forgotten.unasked)\n",
+    ),
+    mutant(
+        "what was said that was deleted is said to be what was not",
+        SETUP_APP,
+        "    return Forgot(key=forgotten.was_there, chosen=was_set_up, unasked=forgotten.unasked)\n",
+        "    return Forgot(key=forgotten.was_there, chosen=False, unasked=forgotten.unasked)\n",
+    ),
+    mutant(
+        "another program is not told where the keyring could not be asked",
+        LAUNCHER,
+        "            if forgot.unasked is not None:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a mirror of a listed service takes its page of keys along",
+        SETUP_APP,
+        "        key_page=known.key_page if base_url == known.base_url else None,\n",
+        "        key_page=known.key_page,\n",
+    ),
+    mutant(
+        "another program is not told where a key is made",
+        SETUP_APP,
+        '        "key_page": service.key_page,\n',
+        '        "key_page": None,\n',
+    ),
+    mutant(
+        "a check that failed ends as one that did not",
+        LAUNCHER,
+        '    return 2 if "error" in answer else 0\n',
+        "    return 0\n",
+    ),
+    mutant(
+        "a check is not answered for another program",
+        LAUNCHER,
+        "    if args.list or args.from_stdin or args.check or args.json:\n",
+        "    if args.list or args.from_stdin or args.json:\n",
+    ),
+    mutant(
+        "what a check reads is called by the option that stores",
+        LAUNCHER,
+        '            document = _from_another_program("--check")\n',
+        '            document = _from_another_program("--from-stdin")\n',
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -23600,6 +23790,19 @@ SETS: dict[str, MutantSet] = {
     ),
     "keys": MutantSet(("tests/llm/test_credentials.py", "tests/llm/test_openai_chat.py"), _KEYS),
     "doctor": MutantSet(("tests/apps/test_doctor.py",), _DOCTOR),
+    # The file at the top of the tests comes last: pytest loses the fixtures of a directory
+    # that is named after it.
+    "key-check": MutantSet(
+        (
+            "tests/apps/test_setup_check.py",
+            "tests/apps/test_setup.py",
+            "tests/apps/test_services_at_the_command_line.py",
+            "tests/llm/test_openai_chat.py",
+            "tests/llm/test_services.py",
+            "tests/test_net.py",
+        ),
+        _KEY_CHECK,
+    ),
     "serve": MutantSet(
         (
             "tests/apps/serve",

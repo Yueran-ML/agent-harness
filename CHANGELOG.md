@@ -25,6 +25,15 @@ change what was there before.
   else needs to be installed. A tag such as `desktop-v0.1.0` has the workflow `desktop.yml`
   make both packages, try them and publish them. The opening film, its poster and the icon
   are kept in the repository for it, and are still outside the MIT license.
+- A key is checked before it is stored. `columbina setup --check` asks the service for the
+  list of its models with the key that it is given, stores nothing, and says what kind of
+  failure it was where there is none: the network, the key, a key without the right or an
+  account without money, the address, a busy service. `columbina setup --forget NAME --json`
+  says what it deleted, and `columbina setup --list` names the page of each service on which
+  a key is made.
+- Where no variable of the environment names a proxy, the requests of Columbina to a service
+  go through the proxy of the system: the Internet settings of Windows or the network
+  settings of macOS. The commands that the agent runs keep their environment as it is.
 - The window fits each system. On macOS the buttons of the window stand at the left end of
   its bar and the bar gives their room back in full screen, shortcuts are written with ⌘,
   sheets come down from under the bar, and the menu copies, pastes, closes and leaves. A

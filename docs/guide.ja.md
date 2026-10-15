@@ -240,16 +240,16 @@ $ uv run columbina serve
 $ uv run columbina setup
 ```
 
-`columbina setup` は、ターミナルでサービス、モデル、モデルが受け取れるトークン数（分かっていない場合のみ）、キーを順に尋ねます。Enter を押すと、角括弧の中の値がそのまま使われます。答えは `~/.columbina` の二つのファイルに書き込まれます。`provider.yml` には、設定したサービスと使用中のサービスが記録され、キーは含まれません。`credentials.json` には、キーを保存したサービスと、それぞれのキーの送信先アドレスが記録されます。キーそのものはシステムのキーリングに保存され、どこに保存したかは `columbina setup` が表示します。`columbina setup --forget NAME` は、あるサービスについて保存した内容を削除します。
+`columbina setup` は、ターミナルでサービス、モデル、モデルが受け取れるトークン数（分かっていない場合のみ）、キーを順に尋ねます。Enter を押すと、角括弧の中の値がそのまま使われます。答えは `~/.columbina` の二つのファイルに書き込まれます。`provider.yml` には、設定したサービスと使用中のサービスが記録され、キーは含まれません。`credentials.json` には、キーを保存したサービスと、それぞれのキーの送信先アドレスが記録されます。キーそのものはシステムのキーリングに保存され、どこに保存したかは `columbina setup` が表示します。`columbina setup --forget NAME` は、あるサービスについて保存した内容を削除します。`--json` を付けると、何を削除したかをほかのプログラム向けに JSON 一行で示します。
 
-デスクトップアプリケーションのようにターミナルを持たないプログラムは、このコマンドの別の二つの形を使います。どちらも質問をせず、標準出力に JSON を一行だけ書きます。
+デスクトップアプリケーションのようにターミナルを持たないプログラムは、このコマンドの別の形を使います。どれも質問をせず、標準出力に JSON を一行だけ書きます。
 
 ```console
 $ uv run columbina setup --list
-{"use": "openai", "services": [{"name": "deepseek", "title": "DeepSeek", "base_url": "https://api.deepseek.com", "own": false, "model": "deepseek-flash", "context_window": 1048576, "key_env": "DEEPSEEK_API_KEY", "key": "none"}, {"name": "openai", "title": "OpenAI", "base_url": "https://api.openai.com/v1", "own": false, "model": "gpt-test", "context_window": 400000, "key_env": "OPENAI_API_KEY", "key": "stored"}]}
+{"use": "openai", "services": [{"name": "deepseek", "title": "DeepSeek", "base_url": "https://api.deepseek.com", "own": false, "model": "deepseek-flash", "context_window": 1048576, "key_env": "DEEPSEEK_API_KEY", "key": "none", "key_page": "https://platform.deepseek.com/api_keys"}, {"name": "openai", "title": "OpenAI", "base_url": "https://api.openai.com/v1", "own": false, "model": "gpt-test", "context_window": 400000, "key_env": "OPENAI_API_KEY", "key": "stored", "key_page": "https://platform.openai.com/api-keys"}]}
 ```
 
-この行は実際の実行結果で、八つのサービスのうち二つだけを残してあります。`use` は使用中のサービスです。`own` が真のサービスは、ユーザーが追加したものです。`model` と `context_window` は、そのサービスについて分かっている値、またはユーザーが指定した値です。`key` はキーの出どころを示します。`environment` はそのサービスの環境変数、`stored` は保存済み、`stored-for-another-address` は保存されているものの現在のアドレスには送られないキー、`none` はキーなしです。この行にキーは含まれず、システムのキーリングへの問い合わせも行われません。
+この行は実際の実行結果で、八つのサービスのうち二つだけを残してあります。`use` は使用中のサービスです。`own` が真のサービスは、ユーザーが追加したものです。`model` と `context_window` は、そのサービスについて分かっている値、またはユーザーが指定した値です。`key` はキーの出どころを示します。`environment` はそのサービスの環境変数、`stored` は保存済み、`stored-for-another-address` は保存されているものの現在のアドレスには送られないキー、`none` はキーなしです。`key_page` は、そのサービスでキーを作るページで、サービス自身の文書が示すものです。キーの要らないサービスと、ミラーのように別のアドレスを指定したサービスでは `null` になります。この行にキーは含まれず、システムのキーリングへの問い合わせも行われません。
 
 `columbina setup --from-stdin` は、標準入力が閉じられるまで読み、JSON オブジェクトを一つ受け取ります。その内容は、質問への答えと同じ経路で保存されます。
 
@@ -266,6 +266,8 @@ $ uv run columbina setup --list
 ```
 
 これは、キーリングがキーを受け取らなかったマシンでの実際の応答です。`stored` は書き込まれた内容で、`key_in` はキーが `keyring` と `file` のどちらに入ったかを示します。キーが渡されなかった場合は `null` です。誤りがあると `{"error": "..."}` が返り、終了コードは 2 になります。このときは何も保存されません。キーはこのオブジェクトでのみ渡され、応答にもメッセージにも現れません。標準入力がターミナルの場合は読み取りません。ターミナルで入力したキーは画面に表示されてしまうためです。人に見せるための文言は標準エラーに書かれます。
+
+`columbina setup --check` も同じオブジェクトを読みます。モデルは要らず、何も保存しません。オブジェクトのキーで、キーがなければセッションが送るはずのキーで、サービスにモデルの一覧を一度求めます。応答は、サービスが示すモデルを並べた `{"models": [...]}`、または `{"error": "...", "kind": "..."}` で、後者の終了コードは 2 です。`kind` は `network`、`timeout`、`key`、`forbidden`（権限のないキー、または残高のないアカウント）、`address`、`busy`、`unknown` のいずれかです。デスクトップアプリケーションは、この方法でキーを保存する前に確かめます。
 
 サービスとモデルは、一回の実行だけ、または一つのシェルだけに対して指定することもできます。複数の場所で指定されている場合は、次の表で上にあるものが使われます。
 
@@ -289,6 +291,8 @@ $ uv run columbina setup --list
 - キーがプロファイル、`--dump-config` の出力、保存されたセッションに含まれることはありません。エラーメッセージからも、表示や保存の前に必ず取り除かれます。
 - エージェントが実行するコマンドの環境に、キーは含まれません。名前に `KEY`、`TOKEN`、`SECRET`、`PASSWORD` のいずれかを含む変数はコマンドの環境から除かれ、保存したキーはどの環境にも入りません。
 - キーの前後の空白と改行は送られません。途中の空白のように、キーにはありえない文字を含むキーは、リクエストを送る前に拒否されます。
+
+プロキシを指定する変数（`HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY`）がない場合、Columbina がサービスに送るリクエストはシステムのプロキシを通ります。Windows のインターネット設定、または macOS のネットワーク設定に従い、そこで直接つなぐとされたアドレスには直接つなぎます。Clash のようなツールが設定するのはこれです。SOCKS プロキシはこの方法では使われません。エージェントが実行するコマンドの環境はそのままです。
 
 ## セッションを始められるかの確認
 

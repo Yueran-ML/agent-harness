@@ -240,16 +240,16 @@ $ uv run columbina serve
 $ uv run columbina setup
 ```
 
-`columbina setup` 在终端里依次询问服务、模型、模型能接收多少 token（不知道时才问）和密钥。直接按回车就采用方括号里给出的值。回答写进 `~/.columbina` 里的两个文件。`provider.yml` 记录设置过的服务和正在使用的那一个，里面没有密钥。`credentials.json` 列出哪些服务存了密钥，以及每个密钥发往哪个地址。密钥本身存进系统密钥环，`columbina setup` 会说明它存到了哪里。`columbina setup --forget NAME` 删除为某个服务保存的内容。
+`columbina setup` 在终端里依次询问服务、模型、模型能接收多少 token（不知道时才问）和密钥。直接按回车就采用方括号里给出的值。回答写进 `~/.columbina` 里的两个文件。`provider.yml` 记录设置过的服务和正在使用的那一个，里面没有密钥。`credentials.json` 列出哪些服务存了密钥，以及每个密钥发往哪个地址。密钥本身存进系统密钥环，`columbina setup` 会说明它存到了哪里。`columbina setup --forget NAME` 删除为某个服务保存的内容。加上 `--json` 时，它用一行 JSON 说明删掉了什么，供别的程序读。
 
-没有终端的程序，例如桌面应用，使用这条命令的另外两种形式。两者都不提问，各自向标准输出写一行 JSON。
+没有终端的程序，例如桌面应用，使用这条命令的其他几种形式。它们都不提问，各自向标准输出写一行 JSON。
 
 ```console
 $ uv run columbina setup --list
-{"use": "openai", "services": [{"name": "deepseek", "title": "DeepSeek", "base_url": "https://api.deepseek.com", "own": false, "model": "deepseek-flash", "context_window": 1048576, "key_env": "DEEPSEEK_API_KEY", "key": "none"}, {"name": "openai", "title": "OpenAI", "base_url": "https://api.openai.com/v1", "own": false, "model": "gpt-test", "context_window": 400000, "key_env": "OPENAI_API_KEY", "key": "stored"}]}
+{"use": "openai", "services": [{"name": "deepseek", "title": "DeepSeek", "base_url": "https://api.deepseek.com", "own": false, "model": "deepseek-flash", "context_window": 1048576, "key_env": "DEEPSEEK_API_KEY", "key": "none", "key_page": "https://platform.deepseek.com/api_keys"}, {"name": "openai", "title": "OpenAI", "base_url": "https://api.openai.com/v1", "own": false, "model": "gpt-test", "context_window": 400000, "key_env": "OPENAI_API_KEY", "key": "stored", "key_page": "https://platform.openai.com/api-keys"}]}
 ```
 
-这一行取自一次真实运行，八个服务只保留了两个。`use` 是正在使用的服务。`own` 为真表示这个服务是用户自己添加的。`model` 和 `context_window` 是这个服务已知的或者用户说过的值。`key` 说明密钥从哪里来：`environment` 表示来自它的环境变量，`stored` 表示已经保存，`stored-for-another-address` 表示保存过密钥，但不会发往这个服务现在的地址，`none` 表示没有。这一行里没有任何密钥，系统密钥环也不会被查询。
+这一行取自一次真实运行，八个服务只保留了两个。`use` 是正在使用的服务。`own` 为真表示这个服务是用户自己添加的。`model` 和 `context_window` 是这个服务已知的或者用户说过的值。`key` 说明密钥从哪里来：`environment` 表示来自它的环境变量，`stored` 表示已经保存，`stored-for-another-address` 表示保存过密钥，但不会发往这个服务现在的地址，`none` 表示没有。`key_page` 是这个服务申请密钥的页面，取自它自己的文档。不需要密钥的服务，以及被改指到别的地址（例如镜像）的服务，这一项为 `null`。这一行里没有任何密钥，系统密钥环也不会被查询。
 
 `columbina setup --from-stdin` 从标准输入读一个 JSON 对象，读到输入关闭为止，然后按保存提问答案的同一条路径保存。
 
@@ -266,6 +266,8 @@ $ uv run columbina setup --list
 ```
 
 这是一次真实运行的回答，那台机器上没有密钥环接收密钥。`stored` 是写下的内容，`key_in` 说明密钥进了 `keyring` 还是 `file`，没有给密钥时为 `null`。出错时回答 `{"error": "..."}`，退出码为 2，这时什么都没有保存。密钥只随这个对象进来，没有别的途径，也不会出现在任何回答和任何消息里。标准输入是终端时不读取，因为在终端里键入的密钥会显示出来。原本给人看的话写到标准错误。
+
+`columbina setup --check` 也读这样一个对象，不需要模型，而且什么都不保存。它向服务要一次模型列表：用对象里给的密钥；没给时，用会话会发送的那个密钥。回答是 `{"models": [...]}`，列出服务提供的模型；或者是 `{"error": "...", "kind": "..."}`，退出码为 2。`kind` 是 `network`、`timeout`、`key`、`forbidden`（密钥没有权限，或者账户余额不足）、`address`、`busy` 或 `unknown`。桌面应用就是这样在保存密钥之前先验证它。
 
 服务和模型也可以只为一次运行或一个 shell 指定。几处都指定了的时候，以下表中位置靠上的为准。
 
@@ -289,6 +291,8 @@ $ uv run columbina setup --list
 - 密钥从不出现在清单（profile）、`--dump-config` 的输出或保存下来的会话里，每条报错信息在显示或保存之前也会先剔除密钥。
 - Agent 执行的命令在自己的环境里找不到它。名字里带有 `KEY`、`TOKEN`、`SECRET` 或 `PASSWORD` 的变量不会进入命令的环境，保存下来的密钥则不在任何环境里。
 - 密钥两端的空白和换行不会发出去。密钥里如果含有密钥中不可能出现的字符，例如夹在中间的空格，程序在发请求之前就会拒绝这个密钥。
+
+没有变量指定代理（即 `HTTPS_PROXY`、`HTTP_PROXY` 或 `ALL_PROXY`）时，Columbina 发往服务的请求跟随系统代理：Windows 的 Internet 设置，或 macOS 的网络设置，并遵守其中设为直连的地址。Clash 这类工具设置的就是这些。SOCKS 代理不会这样被采用。Agent 执行的命令的环境保持原样。
 
 ## 检查能否开始会话
 

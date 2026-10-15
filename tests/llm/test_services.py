@@ -72,6 +72,20 @@ def test_where_each_service_is_and_which_variable_holds_its_key() -> None:
     }
 
 
+def test_where_each_service_gives_out_its_keys() -> None:
+    # As the documents of each service link to the page, on 2026-10-15.
+    assert {service.name: service.key_page for service in PRESETS} == {
+        "deepseek": "https://platform.deepseek.com/api_keys",
+        "openai": "https://platform.openai.com/api-keys",
+        "openrouter": "https://openrouter.ai/keys",
+        "moonshot": "https://platform.kimi.com/console/api-keys",
+        "zhipu": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
+        "siliconflow": "https://cloud.siliconflow.cn/account/ak",
+        "ollama": None,
+        "lmstudio": None,
+    }
+
+
 def test_what_is_called_what() -> None:
     assert [service.title for service in PRESETS] == [
         "DeepSeek",
@@ -132,6 +146,9 @@ def test_what_is_written_of_a_service_makes_sense(service: Service) -> None:
         assert service.key_env is None
     # The size of a window is the size of the window of one model.
     assert service.context_window is None or service.model is not None
+    # A key is made on a page of the service, which is reached as anything else is.
+    assert (service.key_page is not None) == service.key_required
+    assert service.key_page is None or urlsplit(service.key_page).scheme == "https"
     # And the adapter takes the config that is made of it.
     Config.model_validate(interpolate(adapter_config(service, KEYS, ENV), ENV))
 

@@ -27,6 +27,7 @@ from columbina.kernel import interpolate
 from columbina.llm import CallConfig, credentials
 from columbina.llm.adapters.openai_chat import Config
 from columbina.llm.credentials import keep, stored
+from support.documents import one_document, said, written_by_a_program
 from support.launch import profile
 from support.vault import Memory, Refusing
 
@@ -697,6 +698,64 @@ def test_what_is_stored_for_a_service_is_deleted_from_the_command_line(
     )
     assert (again, refused.out) == (2, "")
     assert refused.err == "columbina: nothing is stored for 'openai'\n"
+
+
+def test_what_is_deleted_for_another_program_is_said_in_a_document(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    chosen(home, OPENAI_CHOSEN)
+    keep(home / "credentials.json", "openai", KEY, "https://api.openai.com")
+
+    first = main(["setup", "--forget", "openai", "--json"])
+    told = capsys.readouterr()
+    again = main(["setup", "--forget", "openai", "--json"])
+    refused = capsys.readouterr()
+
+    assert first == 0
+    assert one_document(told.out) == {"forgotten": {"name": "openai", "key": True, "chosen": True}}
+    # What a person would be shown goes where no program looks for its answer.
+    assert told.err.startswith("The key of openai is deleted.\n")
+    assert again == 2
+    assert one_document(refused.out) == {"error": "nothing is stored for 'openai'"}
+
+
+def test_a_key_alone_or_what_was_said_alone_is_said_to_be_deleted(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    keep(home / "credentials.json", "openai", KEY, "https://api.openai.com")
+    main(["setup", "--forget", "openai", "--json"])
+    key_alone = one_document(capsys.readouterr().out)
+    chosen(home, OPENAI_CHOSEN)
+    main(["setup", "--forget", "openai", "--json"])
+    said_alone = one_document(capsys.readouterr().out)
+
+    assert key_alone == {"forgotten": {"name": "openai", "key": True, "chosen": False}}
+    assert said_alone == {"forgotten": {"name": "openai", "key": False, "chosen": True}}
+
+
+def test_another_program_is_told_where_the_keyring_could_not_be_asked(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = Memory().install()
+    vault.locked = True
+    keep(home / "credentials.json", "openai", KEY, "https://api.openai.com")
+
+    code = main(["setup", "--forget", "openai", "--json"])
+
+    assert code == 0
+    assert one_document(capsys.readouterr().out) == {
+        "forgotten": {"name": "openai", "key": True, "chosen": False},
+        "unasked": "Failed to unlock the collection",
+    }
+
+
+def test_json_goes_with_forget_alone(home: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    code = main(["setup", "--json"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err.startswith("columbina: --json goes with --forget.")
     assert stored(home / "credentials.json") == {}
 
 
@@ -707,31 +766,6 @@ NOT_AN_OBJECT = "the document is not an object of JSON"
 NO_KEYRING_TOOK_IT = (
     "No keyring of this system took the key: the keyring that is set up here keeps nothing. "
 )
-
-
-def said(**document: object) -> bytes:
-    """A document of JSON, as another program writes it."""
-    return json.dumps(document, ensure_ascii=False).encode()
-
-
-def written_by_a_program(monkeypatch: pytest.MonkeyPatch, document: bytes) -> io.BytesIO:
-    """Have the standard input be a pipe into which another program wrote a document.
-
-    Read as text it would be ASCII, so a test sees that it is read as the bytes that came.
-
-    Returns:
-        The pipe, which says how far it was read.
-    """
-    pipe = io.BytesIO(document)
-    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(pipe, encoding="ascii"))
-    return pipe
-
-
-def one_document(out: str) -> Any:
-    """Read what the command wrote to its standard output: one document of JSON, on one line."""
-    assert out.endswith("\n")
-    assert out.count("\n") == 1
-    return json.loads(out)
 
 
 def test_setup_tells_another_program_what_is_set_up_in_one_document_of_json(
@@ -759,6 +793,7 @@ def test_setup_tells_another_program_what_is_set_up_in_one_document_of_json(
             "context_window": 1048576,
             "key_env": "DEEPSEEK_API_KEY",
             "key": "environment",
+            "key_page": "https://platform.deepseek.com/api_keys",
         },
         {
             "name": "openai",
@@ -769,6 +804,7 @@ def test_setup_tells_another_program_what_is_set_up_in_one_document_of_json(
             "context_window": 400000,
             "key_env": "OPENAI_API_KEY",
             "key": "stored",
+            "key_page": "https://platform.openai.com/api-keys",
         },
     ]
     assert KEY not in captured.out
@@ -1165,7 +1201,8 @@ def test_no_option_of_setup_takes_a_key(capsys: pytest.CaptureFixture[str]) -> N
     # A key on the command line would stay in the history of the shell, and every program
     # could read it from the list of processes.
     assert told.startswith(
-        "usage: columbina setup [-h] [--forget NAME | --list | --from-stdin] options: "
+        "usage: columbina setup [-h] [--forget NAME | --list | --from-stdin | --check] [--json] "
+        "options: "
     )
 
 
@@ -1249,6 +1286,7 @@ def test_what_another_program_had_stored_is_what_it_is_told_is_set_up(
         "context_window": None,
         "key_env": "COLUMBINA_API_KEY",
         "key": "stored",
+        "key_page": None,
     }
     assert was_stored == {name: told["services"][-1][name] for name in was_stored}
 

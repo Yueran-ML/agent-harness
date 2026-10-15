@@ -24,7 +24,11 @@ passed on with the failure.
 
 Besides replies, a service is asked for the list of its models, with the key
 and in the same care for it. That is how ``columbina doctor`` sees that a
-service answers.
+service answers, and how ``columbina setup --check`` sees that it takes a key
+that was typed and is not stored: such a key is handed to the adapter itself.
+
+Where no variable of the environment names a proxy, the requests go through
+the proxy of the system, see :mod:`columbina.net`.
 
 Blanks and line breaks around the key are not sent. A key with anything in it
 that a header cannot carry is refused before a request is made. The library
@@ -82,6 +86,7 @@ from columbina.llm.types import (
     UsageChunk,
     UserMessage,
 )
+from columbina.net import proxy_for
 
 __all__ = ["Config", "OpenAIChat", "apply", "build_body", "inject", "name"]
 
@@ -605,20 +610,30 @@ class OpenAIChat:
 
     Args:
         config: Where the service is and how to talk to it.
-        transport: The transport of the HTTP client, for tests.
+        transport: The transport of the HTTP client, for tests. A request that
+            goes to it goes through no proxy.
+        secret: A key to send instead of the one that would be looked for: one
+            that is checked before it is stored. It is held by this object and
+            nowhere else.
     """
 
-    __slots__ = ("_client", "_config")
+    __slots__ = ("_client", "_config", "_given")
 
     def __init__(
-        self, config: Config, *, transport: httpx.AsyncBaseTransport | None = None
+        self,
+        config: Config,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+        secret: str | None = None,
     ) -> None:
         self._config = config
+        self._given = trimmed(secret or "") or None
         self._client = httpx.AsyncClient(
             base_url=config.base_url,
             headers=config.headers,
             timeout=httpx.Timeout(config.connect_timeout_seconds, read=None),
             transport=transport,
+            proxy=None if transport is not None else proxy_for(config.base_url, os.environ),
         )
 
     async def aclose(self) -> None:
@@ -691,9 +706,12 @@ class OpenAIChat:
         """
         config = self._config
         variable, file = config.api_key_env, config.api_key_file
-        secret = "" if variable is None else trimmed(os.environ.get(variable, ""))
-        where = f"in the environment variable {variable}"
-        again = "Set it again"
+        if self._given is not None:
+            secret, where, again = self._given, "that was given", "Give it again"
+        else:
+            secret = "" if variable is None else trimmed(os.environ.get(variable, ""))
+            where = f"in the environment variable {variable}"
+            again = "Set it again"
         if not secret and file is not None:
             try:
                 # A stored key is for the place that it was typed in for, and for no other.

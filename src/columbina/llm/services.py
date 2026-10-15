@@ -52,6 +52,8 @@ class Service:
             that is not known.
         base_url_env: An environment variable that may name another address
             for the service, or ``None``.
+        key_page: The page of the service on which a key is made, as its own
+            documents link to it, or ``None`` for a service that asks for none.
     """
 
     name: str
@@ -64,6 +66,7 @@ class Service:
     model: str | None = None
     context_window: int | None = None
     base_url_env: str | None = None
+    key_page: str | None = None
 
 
 PRESETS: tuple[Service, ...] = (
@@ -76,6 +79,7 @@ PRESETS: tuple[Service, ...] = (
         model="deepseek-flash",
         context_window=1_048_576,
         base_url_env="DEEPSEEK_BASE_URL",
+        key_page="https://platform.deepseek.com/api_keys",
     ),
     Service(
         name="openai",
@@ -85,30 +89,36 @@ PRESETS: tuple[Service, ...] = (
         reasoning_style="openai",
         # The models that reason refuse the older name, and the others take both.
         max_tokens_field="max_completion_tokens",
+        key_page="https://platform.openai.com/api-keys",
     ),
     Service(
         name="openrouter",
         title="OpenRouter",
         base_url="https://openrouter.ai/api/v1",
         key_env="OPENROUTER_API_KEY",
+        key_page="https://openrouter.ai/keys",
     ),
     Service(
         name="moonshot",
         title="Moonshot AI (Kimi)",
         base_url="https://api.moonshot.cn/v1",
         key_env="MOONSHOT_API_KEY",
+        # The console of Moonshot moved to the domain of Kimi. Its address for requests stays.
+        key_page="https://platform.kimi.com/console/api-keys",
     ),
     Service(
         name="zhipu",
         title="Zhipu AI (GLM)",
         base_url="https://open.bigmodel.cn/api/paas/v4",
         key_env="ZAI_API_KEY",
+        key_page="https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
     ),
     Service(
         name="siliconflow",
         title="SiliconFlow",
         base_url="https://api.siliconflow.cn/v1",
         key_env="SILICONFLOW_API_KEY",
+        key_page="https://cloud.siliconflow.cn/account/ak",
     ),
     Service(
         name="ollama",

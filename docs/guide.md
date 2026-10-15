@@ -334,14 +334,16 @@ brackets. The answers go into two files in `~/.columbina`. `provider.yml` holds 
 that were set up and the one that is in use, and it holds no key. `credentials.json` lists
 the services that a key is stored for, with the address that each key is sent to. The key
 goes into the keyring of the system, and `columbina setup` says where it went.
-`columbina setup --forget NAME` deletes what is stored for a service.
+`columbina setup --forget NAME` deletes what is stored for a service. With `--json` it says
+in one line of JSON what it deleted, for another program.
 
-A program without a terminal, such as the desktop application, uses two other forms of the
-command. Neither asks a question, and each writes one line of JSON to its standard output.
+A program without a terminal, such as the desktop application, uses other forms of the
+command. None of them asks a question, and each writes one line of JSON to its standard
+output.
 
 ```console
 $ uv run columbina setup --list
-{"use": "openai", "services": [{"name": "deepseek", "title": "DeepSeek", "base_url": "https://api.deepseek.com", "own": false, "model": "deepseek-flash", "context_window": 1048576, "key_env": "DEEPSEEK_API_KEY", "key": "none"}, {"name": "openai", "title": "OpenAI", "base_url": "https://api.openai.com/v1", "own": false, "model": "gpt-test", "context_window": 400000, "key_env": "OPENAI_API_KEY", "key": "stored"}]}
+{"use": "openai", "services": [{"name": "deepseek", "title": "DeepSeek", "base_url": "https://api.deepseek.com", "own": false, "model": "deepseek-flash", "context_window": 1048576, "key_env": "DEEPSEEK_API_KEY", "key": "none", "key_page": "https://platform.deepseek.com/api_keys"}, {"name": "openai", "title": "OpenAI", "base_url": "https://api.openai.com/v1", "own": false, "model": "gpt-test", "context_window": 400000, "key_env": "OPENAI_API_KEY", "key": "stored", "key_page": "https://platform.openai.com/api-keys"}]}
 ```
 
 The line is from a real run and is shortened to two of its eight services. `use` names the
@@ -349,8 +351,10 @@ service that is in use. `own` is true for a service that the user added. `model`
 `context_window` are what is known of a service or was said of it. `key` says where the key
 of a service comes from: `environment` for its variable, `stored`,
 `stored-for-another-address` for a key that is stored and is not sent to the address that
-the service has now, or `none`. No key is in the line, and the keyring is not asked for
-anything.
+the service has now, or `none`. `key_page` is the page of the service on which a key is
+made, as its documents link to it. It is `null` for a service that asks for none, and for
+one that was given another address, such as a mirror. No key is in the line, and the keyring
+is not asked for anything.
 
 `columbina setup --from-stdin` reads one object of JSON from its standard input, until the
 input is closed, and stores it as the answers to the questions are stored.
@@ -374,6 +378,14 @@ and the exit code 2, and nothing is stored then. The key comes in with that docu
 no other way, and it is in no answer and in no message. A document is not read from a
 terminal, where the key would be shown as it is typed. What a person would be shown goes to
 the standard error.
+
+`columbina setup --check` reads such an object too, without a model, and stores nothing. It
+asks the service for the list of its models, with the key of the object, or without one with
+the key that a session would send. It answers with `{"models": [...]}`, the models that the
+service lists, or with `{"error": "...", "kind": "..."}` and the exit code 2. The kind is
+`network`, `timeout`, `key`, `forbidden` for a key without the right or an account without
+money, `address`, `busy` or `unknown`. The desktop application checks a key this way before
+it stores it.
 
 A service and a model can also be named for one run or for one shell. Where several places
 name one, the place that stands higher in this table counts.
@@ -419,6 +431,12 @@ among the stored keys. The following holds for a key.
   command, and a stored key is in no environment at all.
 - Blanks and line breaks around it are not sent. A key with a character in it that no key
   has, such as a blank in the middle, is refused before a request is made.
+
+Where no variable names a proxy, that is `HTTPS_PROXY`, `HTTP_PROXY` or `ALL_PROXY`, the
+requests of Columbina to a service go through the proxy of the system: the Internet settings
+of Windows or the network settings of macOS, with the addresses that those let go straight.
+A tool such as Clash sets them. A SOCKS proxy is not taken this way. The commands that the
+agent runs keep their environment as it is.
 
 ## Seeing whether a session could start
 

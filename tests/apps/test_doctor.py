@@ -5,12 +5,8 @@ import json
 import platform
 import re
 import socket
-import socketserver
 import sys
-import threading
 from collections.abc import Iterator
-from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +21,7 @@ from columbina.apps.launcher import main
 from columbina.builtin_tools.shell import NAME as SHELL
 from columbina.kernel import Entry
 from columbina.llm.credentials import CredentialsError, keep, origin_of
+from support.model_service import Service, listing, serving
 
 KEY = "sk-doctor-0123456789"
 MODEL = "deepseek-flash"
@@ -38,54 +35,6 @@ NONE = (
 """What is said of a sandbox that runs the commands on this machine."""
 
 
-def listing(*ids: str) -> dict[str, Any]:
-    return {"object": "list", "data": [{"id": id, "object": "model"} for id in ids]}
-
-
-class _Models(BaseHTTPRequestHandler):
-    """Stands in for a service: answers each request as the test said, and keeps it."""
-
-    said: dict[str, Any]
-    asked: list[tuple[str, str | None]]
-
-    def do_GET(self) -> None:
-        self.asked.append((self.path, self.headers["Authorization"]))
-        body = self.said["body"]
-        content = body if isinstance(body, bytes) else json.dumps(body).encode()
-        self.send_response(self.said["status"])
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
-
-    def log_message(self, format: str, *args: object) -> None:
-        """Say nothing of a request on the screen of the test."""
-
-
-class _OnThisMachine(socketserver.ThreadingTCPServer):
-    """The server of the stand-in. It asks nobody for the name of the machine that it runs on."""
-
-    daemon_threads = True
-
-
-@dataclass
-class Service:
-    """A service on this machine: where it is, and what it was asked.
-
-    Attributes:
-        address: Its address, as a config of the adapter has it.
-        asked: The path and the header of the key of each request.
-        said: What it answers: a status and a body.
-    """
-
-    address: str
-    asked: list[tuple[str, str | None]]
-    said: dict[str, Any]
-
-    def answers(self, status: int, body: object) -> None:
-        self.said.update(status=status, body=body)
-
-
 @pytest.fixture(autouse=True)
 def wide(monkeypatch: pytest.MonkeyPatch) -> None:
     """A terminal wide enough that no finding goes on in a second line."""
@@ -95,19 +44,9 @@ def wide(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def service(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Service]:
     """The service that the profiles of Columbina talk to, on this machine."""
-    asked: list[tuple[str, str | None]] = []
-    said: dict[str, Any] = {"status": 200, "body": listing(MODEL)}
-    handler = type("Handler", (_Models,), {"asked": asked, "said": said})
-    with _OnThisMachine(("127.0.0.1", 0), handler) as server:
-        thread = threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True)
-        thread.start()
-        address = f"http://127.0.0.1:{server.server_address[1]}/v1"
-        monkeypatch.setenv("DEEPSEEK_BASE_URL", address)
-        try:
-            yield Service(address, asked, said)
-        finally:
-            server.shutdown()
-            thread.join(timeout=5)
+    with serving(MODEL) as service:
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", service.address)
+        yield service
 
 
 def asked(capsys: pytest.CaptureFixture[str], *arguments: str) -> tuple[int, list[str]]:

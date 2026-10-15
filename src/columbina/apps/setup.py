@@ -36,7 +36,8 @@ The environment goes first. A key in the variable of a service is used before
 the one that is stored, and the variables that name the service, the model
 and the size of its window go before what is written down here.
 
-``columbina setup --forget NAME`` deletes what is stored for a service.
+``columbina setup --forget NAME`` deletes what is stored for a service. With
+``--json`` it says what it deleted in a document, for another program.
 
 For another program
     A desktop application sets a service up without a terminal. It starts
@@ -46,7 +47,10 @@ For another program
     gives the answers to the questions all at once, see :func:`given`. They
     are stored by the step that stores what a person answered, and what was
     stored is said in a document again, see :func:`stored`. Neither of the
-    two asks anything.
+    two asks anything. ``columbina setup --check`` reads such a document too,
+    and asks the service for the list of its models with the key that it
+    gives, so that a key is seen to work before it is stored. It stores
+    nothing, see :func:`checked`.
 
     The key comes in with that document and by no other way, and it goes
     out by none. What is said of the services and of what was stored holds
@@ -71,9 +75,12 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from columbina import plain_yaml
-from columbina.llm import credentials
+from columbina.llm import LlmError, credentials
+from columbina.llm.adapters.openai_chat import Config as AdapterConfig
+from columbina.llm.adapters.openai_chat import OpenAIChat
 from columbina.llm.credentials import CredentialsError, origin_of, sendable, trimmed
-from columbina.llm.services import PRESETS, Service, of_ones_own, preset
+from columbina.llm.services import PRESETS, Service, adapter_config, of_ones_own, preset
+from columbina.llm.types import LlmFailure
 from columbina.plain_yaml import PlainYamlError
 
 __all__ = [
@@ -121,6 +128,11 @@ _LOCAL = frozenset({"localhost", "127.0.0.1", "::1"})
 _ENDPOINT = "/chat/completions"
 _SAID_UNDER = ("service", "base_url", "model", "context_window", "api_key")
 """The names under which a document says what is to be stored."""
+_NOT_A_KEY = (
+    "what the document says under 'api_key' cannot be a key: there is a character in it that "
+    "no key has, such as a blank or a line break in the middle. Nothing of it was kept"
+)
+_UNREACHABLE = "If the service is reached through a proxy, see that the proxy is on"
 _NOT_ENCRYPTED = (
     "This address is not encrypted. The key and the conversation cross the network as they are."
 )
@@ -251,11 +263,14 @@ def service_named(name: str, chosen: Chosen) -> Service:
         return known
     # What is known of the window is known of one model.
     same = said.model is None or said.model == known.model
+    base_url = said.base_url or known.base_url
     return replace(
         known,
-        base_url=said.base_url or known.base_url,
+        base_url=base_url,
         model=said.model or known.model,
         context_window=said.context_window or (known.context_window if same else None),
+        # At another address, such as a mirror, a key is not made on the page of the service.
+        key_page=known.key_page if base_url == known.base_url else None,
     )
 
 
@@ -357,6 +372,7 @@ def _told_of(
         "context_window": service.context_window,
         "key_env": service.key_env,
         "key": _key_in_a_word(service, keys, env),
+        "key_page": service.key_page,
     }
 
 
@@ -369,7 +385,8 @@ def listed(home: Path, env: Mapping[str, str]) -> dict[str, object]:
          "services": [{"name": "openai", "title": "OpenAI",
                        "base_url": "https://api.openai.com/v1", "own": false,
                        "model": "gpt-test", "context_window": 400000,
-                       "key_env": "OPENAI_API_KEY", "key": "stored"}]}
+                       "key_env": "OPENAI_API_KEY", "key": "stored",
+                       "key_page": "https://platform.openai.com/api-keys"}]}
 
     ``use`` names the service that is in use, and is ``null`` where none of
     the services is. The services stand in the order of the list that a
@@ -382,7 +399,9 @@ def listed(home: Path, env: Mapping[str, str]) -> dict[str, object]:
     service that asks for no key. ``key`` says where the key comes from:
     ``environment`` for that variable, which goes first, ``stored``,
     ``stored-for-another-address`` for a key that is stored and is not sent
-    to the address that the service has now, or ``none``.
+    to the address that the service has now, or ``none``. ``key_page`` is
+    the page of the service on which a key is made, and ``null`` where none
+    is known, as for a service of the user's own.
 
     No key is said, and nothing that a key could be guessed from. The
     keyring of the system is not asked for anything.
@@ -780,11 +799,7 @@ def given(home: Path, env: Mapping[str, str], document: bytes, show: Show) -> An
             "be seen"
         )
     if key is not None and not sendable(key):
-        raise SetupError(
-            "what the document says under 'api_key' cannot be a key: there is a character in "
-            "it that no key has, such as a blank or a line break in the middle. Nothing of it "
-            "was kept"
-        )
+        raise SetupError(_NOT_A_KEY)
     before = chosen(home)
     keys = _keys(home)
     service = _meant(name, address, before, show)
@@ -793,6 +808,78 @@ def given(home: Path, env: Mapping[str, str], document: bytes, show: Show) -> An
         # The document does not say the size, so what was said of it for this model stays.
         window = earlier.context_window
     return _answers(before, keys, env, service, model, window, key)
+
+
+def _why(failure: LlmFailure) -> str:
+    """Say in a word why a service listed no models, for a program to choose its words by."""
+    if failure.code == "TRANSPORT":
+        return "network"
+    if failure.code == "TIMEOUT":
+        return "timeout"
+    if failure.code == "QUOTA" or failure.status == 403:
+        return "forbidden"
+    if failure.code == "AUTH":
+        return "key"
+    if failure.status == 404:
+        return "address"
+    if failure.code in ("RATE_LIMIT", "SERVER"):
+        return "busy"
+    return "unknown"
+
+
+async def checked(
+    home: Path, env: Mapping[str, str], document: bytes, show: Show
+) -> dict[str, object]:
+    """Ask a service for the list of its models, with the key that a document gives.
+
+    Nothing is stored. The document is one that :func:`given` reads, and it
+    needs no model::
+
+        {"service": "deepseek", "api_key": "sk-..."}
+
+    Without ``api_key`` the key is looked for as a session looks for it: in
+    the variable of the service, and then among the stored keys. A service
+    of the user's own may be given by its ``base_url``, as in :func:`given`,
+    and is not added.
+
+    Args:
+        home: The home of the program.
+        env: The environment.
+        document: The document, as the bytes that came.
+        show: Shows a text. An address that is not encrypted is named as one.
+
+    Returns:
+        ``{"models": [...]}``, the ids that the service lists in its order, or
+        ``{"error": "...", "kind": "..."}`` where it listed none. The kind is
+        ``network``, ``timeout``, ``key``, ``forbidden`` (a key without the
+        right, or an account without the money), ``address``, ``busy`` or
+        ``unknown``. Neither holds the key.
+
+    Raises:
+        SetupError: The document is not right, or what is stored cannot be
+            read.
+    """
+    said = _said_in(document)
+    name, address, key = _text(said, "service"), _text(said, "base_url"), _text(said, "api_key")
+    if name is None:
+        raise SetupError("the document names no service")
+    if key is not None and not sendable(key):
+        raise SetupError(_NOT_A_KEY)
+    service = _meant(name, address, chosen(home), show)
+    config = AdapterConfig.model_validate(adapter_config(service, str(home / KEYS), env))
+    adapter = OpenAIChat(config, secret=key)
+    try:
+        models = await adapter.models()
+    except LlmError as error:
+        kind = _why(error.failure)
+        said_why = error.failure.message
+        return {
+            "error": f"{said_why.rstrip('.')}. {_UNREACHABLE}" if kind == "network" else said_why,
+            "kind": kind,
+        }
+    finally:
+        await adapter.aclose()
+    return {"models": models}
 
 
 def store(
@@ -905,13 +992,34 @@ def run(home: Path, env: Mapping[str, str], ask: Ask, ask_unseen: Ask, show: Sho
     store(home, env, asked(home, env, ask, ask_unseen, show), show)
 
 
-def forget(home: Path, name: str, show: Show) -> None:
+@dataclass(frozen=True, slots=True)
+class Forgot:
+    """What was deleted of a service, see :func:`forget`.
+
+    Attributes:
+        key: Whether a key of the service was deleted.
+        chosen: Whether what was said of the service was deleted, or it was
+            no longer to be in use.
+        unasked: Why the keyring of the system could not be asked whether it
+            holds an earlier key of the service, or ``None`` if it was asked
+            or there is none.
+    """
+
+    key: bool
+    chosen: bool
+    unasked: str | None = None
+
+
+def forget(home: Path, name: str, show: Show) -> Forgot:
     """Delete what is stored for a service: its key, and what was said of it.
 
     Args:
         home: The home of the program.
         name: The name of the service.
         show: Shows a text.
+
+    Returns:
+        What was deleted.
 
     Raises:
         SetupError: Nothing is stored for the service, or what is stored
@@ -941,3 +1049,4 @@ def forget(home: Path, name: str, show: Show) -> None:
         show(f"What was said of {name} is deleted.")
     if before.use == name:
         show(f"{name} is no longer in use. The profile says again where the model comes from.")
+    return Forgot(key=forgotten.was_there, chosen=was_set_up, unasked=forgotten.unasked)

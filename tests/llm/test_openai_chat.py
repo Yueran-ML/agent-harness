@@ -47,6 +47,7 @@ from columbina.llm.credentials import keep
 from support.vault import Locked, Memory
 
 KEY = "sk-test-0123456789"
+GIVEN = "sk-given-0123456789"
 STORED = "sk-stored-9876543210"
 CONFIG = Config(provider="deepseek", base_url="https://api.example.test", api_key_env="TEST_KEY")
 MODEL = CallConfig(provider="deepseek", model="deepseek-test")
@@ -193,6 +194,74 @@ async def test_a_request_is_a_streamed_chat_completion(ctx: Context, llm: Llm) -
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+
+
+def clients_made(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Note what every HTTP client of the adapter is made with."""
+    made: list[dict[str, Any]] = []
+    real = httpx.AsyncClient
+
+    def client(**given: Any) -> httpx.AsyncClient:
+        made.append(given)
+        return real(**given)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    return made
+
+
+async def test_the_requests_go_through_the_proxy_of_the_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[str] = []
+
+    def proxy_for(url: str, env: object) -> str:
+        asked.append(url)
+        return "http://127.0.0.1:7890"
+
+    monkeypatch.setattr(openai_chat, "proxy_for", proxy_for)
+    made = clients_made(monkeypatch)
+
+    adapter = OpenAIChat(CONFIG)
+    await adapter.aclose()
+
+    assert asked == [CONFIG.base_url]
+    assert [given["proxy"] for given in made] == ["http://127.0.0.1:7890"]
+
+
+async def test_a_transport_of_a_test_goes_through_no_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    def proxy_for(url: str, env: object) -> str:
+        raise AssertionError("the system is not asked for a proxy")
+
+    monkeypatch.setattr(openai_chat, "proxy_for", proxy_for)
+    made = clients_made(monkeypatch)
+
+    adapter = OpenAIChat(CONFIG, transport=httpx.MockTransport(Service(streamed(TEXT_REPLY))))
+    await adapter.aclose()
+
+    assert [given["proxy"] for given in made] == [None]
+
+
+async def test_a_key_that_is_given_is_sent_without_the_blanks_around_it() -> None:
+    service = Service(listing("deepseek-flash"))
+    adapter = OpenAIChat(CONFIG, transport=httpx.MockTransport(service), secret=f"  {GIVEN}\n")
+    try:
+        await adapter.models()
+    finally:
+        await adapter.aclose()
+
+    assert service.requests[0].headers["authorization"] == f"Bearer {GIVEN}"
+
+
+@pytest.mark.parametrize("given", ["", " \n"])
+async def test_a_key_that_is_given_empty_is_looked_for_as_ever(given: str) -> None:
+    service = Service(listing("deepseek-flash"))
+    adapter = OpenAIChat(CONFIG, transport=httpx.MockTransport(service), secret=given)
+    try:
+        await adapter.models()
+    finally:
+        await adapter.aclose()
+
+    assert service.requests[0].headers["authorization"] == f"Bearer {KEY}"
 
 
 async def test_the_base_url_may_have_a_path(ctx: Context, llm: Llm) -> None:

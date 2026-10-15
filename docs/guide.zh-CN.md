@@ -319,14 +319,14 @@ $ uv run columbina login github
 
 ```json
 {"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}
-{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina/installations/new", "repositories": ["octocat/hello-world"]}
+{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina-agent/installations/new", "repositories": ["octocat/hello-world"]}
 ```
 
 这两行只示意回答的格式，里面的值是编的。`avatar` 是以 data 地址表示的头像，或者为 `null`。没能向 GitHub 查询仓库时，用 `offline` 代替 `repositories` 说明原因。出错时回答 `{"error": "...", "code": "..."}`，退出码为 2。`code` 为 `EXPIRED` 表示验证码过期，`DENIED` 表示在 GitHub 上拒绝了登录，`NOT_REGISTERED` 表示这个版本没有应用，`UNREACHABLE`、`TIMEOUT`、`BUSY` 或 `RATE_LIMITED` 表示无法访问 GitHub，`STORE` 表示令牌读不出来，`UNKNOWN` 表示其他情况。被中止的登录以 `STOPPED` 回答，退出码为 130。
 
 `columbina login --status --json` 回答一行同样格式的 JSON。没有人登录时 `signed_in` 为 `null`，登录已过期时由 `ended` 说明。`columbina logout github --json` 回答 `{"signed_out": true, "revoke": "..."}`，没有人登录时 `signed_out` 为 `false`。
 
-Columbina 登录所用的 GitHub App 写在它的代码里，没有应用的版本会说明这一点。其他版本可以用 `COLUMBINA_GITHUB_CLIENT_ID` 和 `COLUMBINA_GITHUB_SLUG` 指定自己的应用。`COLUMBINA_GITHUB_WEB` 和 `COLUMBINA_GITHUB_API` 让它连接另一个 GitHub，例如 GitHub Enterprise Server。
+Columbina 用它自己的 GitHub App [Columbina-Agent](https://github.com/apps/columbina-agent) 登录，应用的 Client ID 写在代码里。Client ID 不是秘密，登录也不需要应用的任何密钥。应用能访问哪些仓库在它的页面上选择，只选几个比全选更安全。其他版本可以用 `COLUMBINA_GITHUB_CLIENT_ID` 和 `COLUMBINA_GITHUB_SLUG` 指定自己的应用，没有应用的版本会说明这一点。`COLUMBINA_GITHUB_WEB` 和 `COLUMBINA_GITHUB_API` 让它连接另一个 GitHub，例如 GitHub Enterprise Server。
 
 ### Agent 在 GitHub 上能做什么
 

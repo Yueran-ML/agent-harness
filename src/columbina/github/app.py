@@ -13,10 +13,10 @@ from urllib.parse import urlsplit
 
 __all__ = ["CLIENT_ID", "SLUG", "App", "GitHubError", "app", "web_of"]
 
-CLIENT_ID = ""
-"""The client ID of the GitHub App of Columbina. It is empty until the app is registered."""
+CLIENT_ID = "Iv23li4xSpAf5B18565X"
+"""The client ID of the GitHub App of Columbina, Columbina-Agent. It is no secret."""
 
-SLUG = ""
+SLUG = "columbina-agent"
 """The name of the app in its address on GitHub: ``https://github.com/apps/<slug>``."""
 
 _WEB = "https://github.com"

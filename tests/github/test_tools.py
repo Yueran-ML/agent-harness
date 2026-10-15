@@ -93,11 +93,8 @@ async def test_the_tools_that_read_are_there_and_ask_nobody(desk: Desk) -> None:
 
 
 async def test_a_build_without_an_app_brings_no_tool(
-    ctx: Context, tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch
+    unregistered: None, ctx: Context, tmp_path: Path, home: Path
 ) -> None:
-    for variable in ("COLUMBINA_GITHUB_CLIENT_ID", "COLUMBINA_GITHUB_SLUG"):
-        monkeypatch.delenv(variable, raising=False)
-
     desk = await desk_with_github(ctx, tmp_path, home)
 
     assert [name for name in READERS if desk.tools.registry.get(name) is not None] == []

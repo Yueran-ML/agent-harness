@@ -135,6 +135,7 @@ def asked_for_a_summary(request: LlmRequest) -> bool:
 
 
 def test_a_conversation_that_outgrows_its_model_is_summed_up_and_goes_on(
+    unregistered: None,
     home: Path,
     woods: Path,
     tmp_path: Path,

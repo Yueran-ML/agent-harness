@@ -118,8 +118,8 @@ the [releases](https://github.com/Yueran-ML/agent-harness/releases) of this repo
 xattr -dr com.apple.quarantine /Applications/Columbina.app
 ```
 
-A project folder is chosen in the window, and the settings take the service of the model and
-its key. [desktop/README.md](desktop/README.md) says what the window does.
+The first page leads to a service of models and its key, to GitHub if you like, and to a
+project folder. [desktop/README.md](desktop/README.md) says what the window does.
 
 ### The command line
 
@@ -186,6 +186,16 @@ columbina run "What does this project do? Answer in three sentences."
 
 `--cwd DIR` names another directory for the agent to work in.
 
+Signed in to GitHub, the agent also works on the repositories that you choose for it there.
+It reads issues, pull requests and their checks, clones, pushes a branch, opens a pull
+request and comments, and it asks you before every push, pull request and comment.
+
+```bash
+columbina login github
+```
+
+The [guide](docs/guide.md#github) says what it may do there and how the sign-in is kept.
+
 To work on Columbina itself, clone the repository and let uv make the environment of the
 clone:
 
@@ -201,8 +211,9 @@ In the clone, `uv run columbina` runs the program as it stands there, and the
 ## Documentation
 
 - [The guide](docs/guide.md) tells the rest: the terminal and its commands, long
-  conversations, running one task, services and keys, permissions, skills, hooks, subagents
-  and servers of tools, how Columbina is built, how it is tested, and where the work stands.
+  conversations, running one task, services and keys, GitHub, permissions, skills, hooks,
+  subagents and servers of tools, how Columbina is built, how it is tested, and where the work
+  stands.
 - [The engineering report](docs/report.md) tells how Columbina is put together, which choices
   shaped it, how it is tested and how well it works ([in Chinese](docs/report.zh-CN.md)).
 - [The tables of the benchmark](docs/bench/README.md) give its results with two models of

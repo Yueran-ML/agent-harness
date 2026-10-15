@@ -85,7 +85,11 @@ def printed() -> str:
 
 @pytest.mark.timeout(120)
 def test_a_repository_is_mended_in_a_conversation(
-    home: Path, repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unregistered: None,
+    home: Path,
+    repository: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     models: list[scripted.Scripted] = []
 

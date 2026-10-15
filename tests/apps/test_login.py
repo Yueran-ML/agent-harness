@@ -285,7 +285,7 @@ def test_a_sign_in_that_github_does_not_give_ends_with_2(
 
 
 def test_a_build_without_an_app_says_that_it_cannot_sign_in(
-    home: Path, capsys: pytest.CaptureFixture[str]
+    unregistered: None, home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["login", "github"]) == 2
 
@@ -534,7 +534,7 @@ def test_a_sign_in_that_github_turns_down_is_said_for_a_program(
 
 
 def test_a_build_without_an_app_says_so_to_a_program(
-    home: Path, capsys: pytest.CaptureFixture[str]
+    unregistered: None, home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["login", "github", "--json"]) == 2
 
@@ -716,7 +716,7 @@ def test_a_sign_in_that_ran_out_is_said_to_be_over_at_a_terminal(
 
 
 def test_a_build_without_an_app_says_so_when_asked_who_is_signed_in(
-    home: Path, capsys: pytest.CaptureFixture[str]
+    unregistered: None, home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert main(["login", "--status", "--json"]) == 0
     [said] = lines(capsys.readouterr().out)

@@ -485,7 +485,7 @@ waiting when its standard input is closed.
 
 ```json
 {"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}
-{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina/installations/new", "repositories": ["octocat/hello-world"]}
+{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina-agent/installations/new", "repositories": ["octocat/hello-world"]}
 ```
 
 The lines show the form of the answers, and the values are made up. `avatar` is the
@@ -503,10 +503,13 @@ read, and `UNKNOWN` for anything else. A sign-in that was stopped is answered wi
 `columbina logout github --json` answers with `{"signed_out": true, "revoke": "..."}`, and
 `signed_out` is `false` where nobody was signed in.
 
-The GitHub App that Columbina signs in with is named in its code, and a build without one
-says so. Another build names its own with `COLUMBINA_GITHUB_CLIENT_ID` and
-`COLUMBINA_GITHUB_SLUG`. `COLUMBINA_GITHUB_WEB` and `COLUMBINA_GITHUB_API` point it at
-another GitHub, such as one of GitHub Enterprise Server.
+Columbina signs in with its GitHub App,
+[Columbina-Agent](https://github.com/apps/columbina-agent), whose client ID is written in
+the code. It is no secret, and the app has no secret that a sign-in needs. The repositories
+that the app may reach are chosen on its page, and a few that are chosen are safer than all
+of them. Another build names its own app with `COLUMBINA_GITHUB_CLIENT_ID` and
+`COLUMBINA_GITHUB_SLUG`, and a build without one says so. `COLUMBINA_GITHUB_WEB` and
+`COLUMBINA_GITHUB_API` point it at another GitHub, such as one of GitHub Enterprise Server.
 
 ### What the agent does on GitHub
 

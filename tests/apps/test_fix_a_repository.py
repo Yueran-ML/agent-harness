@@ -142,6 +142,7 @@ def test_a_rule_for_one_command_allows_no_other(
 
 
 def test_what_the_model_is_sent_in_such_a_run(
+    unregistered: None,
     home: Path,
     repository: Path,
     tmp_path: Path,

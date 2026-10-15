@@ -86,7 +86,7 @@ Columbina は、エージェントを言語モデルにつなぎ、指定した�
 xattr -dr com.apple.quarantine /Applications/Columbina.app
 ```
 
-ウィンドウでプロジェクトのフォルダを選び、設定でモデルのサービスとキーを指定します。ウィンドウでできることは [desktop/README.md](desktop/README.md) で説明しています。
+最初のページが、モデルのサービスとキー、必要なら GitHub へのサインイン、プロジェクトのフォルダの順に案内します。ウィンドウでできることは [desktop/README.md](desktop/README.md) で説明しています。
 
 ### コマンドライン
 
@@ -136,6 +136,14 @@ columbina run "What does this project do? Answer in three sentences."
 
 `--cwd DIR` で、エージェントが作業する別のディレクトリを指定できます。
 
+GitHub にサインインすると、エージェントはあなたが GitHub で選んだリポジトリでも作業できます。issue、プルリクエストとそのチェックを読み、クローン、ブランチのプッシュ、プルリクエストの作成、コメントを行います。プッシュ、プルリクエスト、コメントの前には毎回あなたに確認します。
+
+```bash
+columbina login github
+```
+
+GitHub でできることとサインインの保管方法は[ガイド](docs/guide.ja.md#github)にあります。
+
 Columbina 自体を開発するには、リポジトリをクローンし、uv にクローンの環境を作らせます。
 
 ```bash
@@ -148,7 +156,7 @@ uv sync
 
 ## ドキュメント
 
-- [ガイド](docs/guide.ja.md)では、そのほかのことを説明しています。ターミナルとそのコマンド、長い対話、単一タスクの実行、サービスとキー、権限、スキル、フック、サブエージェント、ツールサーバー、Columbina のアーキテクチャ、テストの方法、進捗です。
+- [ガイド](docs/guide.ja.md)では、そのほかのことを説明しています。ターミナルとそのコマンド、長い対話、単一タスクの実行、サービスとキー、GitHub、権限、スキル、フック、サブエージェント、ツールサーバー、Columbina のアーキテクチャ、テストの方法、進捗です。
 - [エンジニアリングレポート](docs/report.md)では、Columbina の組み立て、形を決めた選択、テストの方法、性能を説明しています（[中国語版](docs/report.zh-CN.md)）。
 - [ベンチマークの表](docs/bench/README.md)には、DeepSeek の二つのモデルでの結果、部分ごとの比較、費用があります。
 - [設計文書](docs/plans/2026-10-09-columbina-design.md)は中国語で書かれています。各段階の計画も同じディレクトリにあります。

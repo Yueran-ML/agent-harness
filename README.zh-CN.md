@@ -86,7 +86,7 @@ Columbina 让一个 Agent 接上语言模型，在你指定的目录里工作。
 xattr -dr com.apple.quarantine /Applications/Columbina.app
 ```
 
-在窗口里选一个项目文件夹，在设置里选模型服务、填密钥。窗口能做什么，见 [desktop/README.md](desktop/README.md)。
+首页会带你连上模型服务、填好密钥，愿意的话登录 GitHub，再选一个项目文件夹。窗口能做什么，见 [desktop/README.md](desktop/README.md)。
 
 ### 命令行
 
@@ -136,6 +136,14 @@ columbina run "What does this project do? Answer in three sentences."
 
 `--cwd DIR` 可以让 Agent 在别的目录里工作。
 
+登录 GitHub 之后，Agent 还能处理你在 GitHub 上选给它的仓库：读 issue、PR 和它们的检查结果，克隆仓库、推送分支、开 PR、发评论。每次推送、开 PR 和发评论之前，它都会先问你。
+
+```bash
+columbina login github
+```
+
+它在 GitHub 上能做什么、登录信息怎样保管，见[指南](docs/guide.zh-CN.md#github)。
+
 要开发 Columbina 本身，就把仓库克隆下来，让 uv 为克隆的目录建好环境：
 
 ```bash
@@ -148,7 +156,7 @@ uv sync
 
 ## 文档
 
-- [指南](docs/guide.zh-CN.md)讲其余的内容，包括终端及其命令、长对话、执行单个任务、模型服务与密钥、权限、技能、钩子、子代理与工具服务器、Columbina 的架构、测试方式和进展。
+- [指南](docs/guide.zh-CN.md)讲其余的内容，包括终端及其命令、长对话、执行单个任务、模型服务与密钥、GitHub、权限、技能、钩子、子代理与工具服务器、Columbina 的架构、测试方式和进展。
 - [工程报告](docs/report.zh-CN.md)讲 Columbina 怎样组成、哪些选择决定了它的样子、怎样测试以及做得怎样（[英文版](docs/report.md)）。
 - [基准的表](docs/bench/README.md)给出 DeepSeek 两个模型上的结果、各部件的对比和花费。
 - [设计文档](docs/plans/2026-10-09-columbina-design.md)是中文的，各阶段的计划也在同一个目录里。

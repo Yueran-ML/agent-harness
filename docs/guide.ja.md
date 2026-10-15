@@ -319,14 +319,14 @@ $ uv run columbina login github
 
 ```json
 {"code": "WDJB-MJHT", "url": "https://github.com/login/device", "expires_in": 899}
-{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina/installations/new", "repositories": ["octocat/hello-world"]}
+{"signed_in": {"login": "octocat", "name": "The Octocat", "avatar": "data:image/png;base64,iVBORw0KGgo..."}, "install_url": "https://github.com/apps/columbina-agent/installations/new", "repositories": ["octocat/hello-world"]}
 ```
 
 この二行は応答の形を示すもので、値は架空のものです。`avatar` は data アドレスで表したアイコンか `null` です。リポジトリを GitHub に問い合わせられなかったときは、`repositories` の代わりに `offline` が理由を示します。失敗したときの応答は `{"error": "...", "code": "..."}` で、終了コードは 2 です。`code` は、コードの期限切れなら `EXPIRED`、GitHub でサインインが拒否されたなら `DENIED`、アプリのないビルドなら `NOT_REGISTERED`、GitHub に問い合わせられなかったなら `UNREACHABLE`、`TIMEOUT`、`BUSY` または `RATE_LIMITED`、トークンを読めなかったなら `STORE`、それ以外なら `UNKNOWN` です。中止されたサインインには `STOPPED` で応答し、終了コードは 130 です。
 
 `columbina login --status --json` は同じ形の JSON を一行返します。誰もサインインしていなければ `signed_in` は `null` で、サインインの期限が切れていれば `ended` がそう示します。`columbina logout github --json` は `{"signed_out": true, "revoke": "..."}` を返し、誰もサインインしていなかったときは `signed_out` が `false` になります。
 
-Columbina がサインインに使う GitHub App はコードに書かれており、アプリのないビルドはそのことを示します。別のビルドは `COLUMBINA_GITHUB_CLIENT_ID` と `COLUMBINA_GITHUB_SLUG` で自分のアプリを指定します。`COLUMBINA_GITHUB_WEB` と `COLUMBINA_GITHUB_API` を使うと、GitHub Enterprise Server など別の GitHub に接続します。
+Columbina は自分の GitHub App である [Columbina-Agent](https://github.com/apps/columbina-agent) でサインインし、その Client ID はコードに書かれています。Client ID は秘密ではなく、サインインにアプリの秘密は要りません。アプリがアクセスできるリポジトリはアプリのページで選びます。すべてを選ぶより、いくつかに絞るほうが安全です。別のビルドは `COLUMBINA_GITHUB_CLIENT_ID` と `COLUMBINA_GITHUB_SLUG` で自分のアプリを指定し、アプリのないビルドはそのことを示します。`COLUMBINA_GITHUB_WEB` と `COLUMBINA_GITHUB_API` を使うと、GitHub Enterprise Server など別の GitHub に接続します。
 
 ### エージェントが GitHub でできること
 

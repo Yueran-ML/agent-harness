@@ -80,7 +80,7 @@ def test_there_are_recordings() -> None:
 
 @pytest.mark.parametrize("name", RECORDINGS)
 async def test_a_recorded_run_happens_again_event_by_event(
-    name: str, ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    unregistered: None, name: str, ctx: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     made = how_it_was_made(name)
     if made.get("platform", sys.platform) != sys.platform:

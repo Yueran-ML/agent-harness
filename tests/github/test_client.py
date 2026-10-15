@@ -317,7 +317,9 @@ async def test_github_that_does_not_answer_in_time_is_said_to_be_so(home: Path) 
     assert refused.value.code == "TIMEOUT"
 
 
-async def test_a_program_without_an_app_says_so_where_github_is_asked(home: Path) -> None:
+async def test_a_program_without_an_app_says_so_where_github_is_asked(
+    unregistered: None, home: Path
+) -> None:
     made = GitHub(home, {})
     try:
         with pytest.raises(GitHubError) as refused:

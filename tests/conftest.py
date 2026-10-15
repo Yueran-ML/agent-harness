@@ -15,6 +15,7 @@ import columbina.llm
 import columbina.session
 import columbina.tools
 from columbina.agent import AGENTS
+from columbina.github import app as registered
 from columbina.kernel import Context
 from columbina.llm import LLM
 from columbina.llm.adapters.scripted import Scripted
@@ -58,6 +59,19 @@ def the_default_handler_of_an_interrupt() -> Iterator[None]:
     """
     yield
     signal.signal(signal.SIGINT, signal.default_int_handler)
+
+
+@pytest.fixture
+def unregistered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A build of Columbina for which no GitHub App is registered, whatever this one has.
+
+    A test of what the model is sent takes it where GitHub is not what it is about: the tools
+    of GitHub would be among what is sent, and a recorded run was recorded without them.
+    """
+    for variable in ("COLUMBINA_GITHUB_CLIENT_ID", "COLUMBINA_GITHUB_SLUG"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setattr(registered, "CLIENT_ID", "")
+    monkeypatch.setattr(registered, "SLUG", "")
 
 
 @pytest.fixture(autouse=True)

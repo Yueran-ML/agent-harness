@@ -12,7 +12,10 @@ from columbina.apps.serve.wire import WIRE
 from support.loop import MODEL, Harness
 from support.wires import Far
 
-__all__ = ["Served", "loaded"]
+__all__ = ["WINDOW", "Served", "loaded"]
+
+WINDOW = 32_000
+"""How many tokens the model of a process that knows its window takes."""
 
 
 @dataclass

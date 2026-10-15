@@ -332,6 +332,47 @@ async def test_another_model_can_be_named_and_the_next_request_goes_to_it(
     assert asked == [MODEL.model, "other-model"]
 
 
+async def test_a_model_that_is_named_has_the_window_of_the_first_model_only_where_it_is_that_one(
+    harness: Harness,
+) -> None:
+    harness.model.add(
+        *(Reply(text=said, usage=Usage(input_tokens=500)) for said in ("One.", "Two.", "Three."))
+    )
+    with desk() as at:
+        cli = await frontend(harness, at, model={**MODEL.model_dump(), "context_window": 1000})
+        assert isinstance(cli, columbina.apps.cli.Cli)
+        running = asyncio.ensure_future(cli.run())
+        shown: list[list[str]] = []
+
+        at.enter("First.")
+        await at.sees("One.\n")
+        shown.append(cli.status_line().split(" | ")[:2])
+        at.enter("/model other-model")
+        await at.sees("The model is other-model from the next request on.\n")
+        shown.append(cli.status_line().split(" | ")[:2])
+        at.enter("Second.")
+        await at.sees("Two.\n")
+        at.enter(f"/model {MODEL.model}")
+        await at.sees(f"The model is {MODEL.model} from the next request on.\n")
+        shown.append(cli.status_line().split(" | ")[:2])
+        at.enter("Third.")
+        await at.sees("Three.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    # Of the window, what is known is known of the model that the run started with. The
+    # share of it that is used is said of that model only.
+    assert shown == [
+        [MODEL.model, "500 tokens (50%)"],
+        ["other-model", "500 tokens"],
+        [MODEL.model, "500 tokens (50%)"],
+    ]
+    asked = [
+        (request.config.model, request.config.context_window) for request in harness.model.requests
+    ]
+    assert asked == [(MODEL.model, 1000), ("other-model", None), (MODEL.model, 1000)]
+
+
 async def test_a_new_session_can_be_begun_without_leaving(harness: Harness) -> None:
     harness.model.add(Reply(text="One."), Reply(text="Two."))
     with desk() as at:

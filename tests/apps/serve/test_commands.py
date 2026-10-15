@@ -21,7 +21,7 @@ from columbina.llm.adapters.scripted import Reply
 from columbina.sandbox import SANDBOX
 from columbina.session import Listed, SessionError, Sessions, UserMessageEvent
 from support.sandboxes import Holding
-from support.served import Served
+from support.served import WINDOW, Served
 from support.terminal import until
 
 NOT_AT_REST = (
@@ -760,19 +760,63 @@ async def test_the_model_can_be_named_anew_and_the_next_request_goes_to_it(serve
 
 
 async def test_the_model_that_was_named_stays_for_the_session_that_is_opened_next(
-    served: Served,
+    served_with_a_window: Served,
 ) -> None:
+    served = served_with_a_window
     await served.opened("first")
     await served.far.result("session/command", {"line": "/model swift-2"})
 
     await served.far.result("session/open", {"session_id": "second"})
     await served.far.until(lambda: served.far.told("session.status")[-1]["session_id"] == "second")
 
+    # The window that the process started with is that of the model it started with.
     assert served.far.told("session.status")[-1]["model"] == {
         "provider": "scripted",
         "model": "swift-2",
         "context_window": None,
     }
+    assert served.harness.agents.live["second"].spec.model.context_window is None
+
+
+async def test_a_model_that_is_named_has_the_window_of_the_first_model_only_where_it_is_that_one(
+    served_with_a_window: Served,
+) -> None:
+    served = served_with_a_window
+    await served.opened()
+    served.harness.model.add(Reply(text="One."), Reply(text="Two."))
+
+    await served.far.result("session/command", {"line": "/model swift-2"})
+    told = len(served.far.told("session.status"))
+    # Named again, it changes nothing.
+    await served.far.result("session/command", {"line": "/model swift-2"})
+    again = len(served.far.told("session.status"))
+    await served.far.result("session/prompt", {"text": "Say one."})
+    await rested(served)
+    await served.far.result("session/command", {"line": "/model script"})
+    await served.far.result("session/prompt", {"text": "Say two."})
+    await rested(served)
+
+    assert again == told
+    windows = [
+        (said["model"]["model"], said["model"]["context_window"])
+        for said in served.far.told("session.status")
+    ]
+    assert windows == [
+        ("script", WINDOW),
+        ("swift-2", None),
+        ("swift-2", None),
+        ("swift-2", None),
+        ("script", WINDOW),
+        ("script", WINDOW),
+        ("script", WINDOW),
+    ]
+    # The session was opened with the first model. Its requests go with what is known of the
+    # window of the model that was named, which is what a conversation is made shorter by.
+    asked = [
+        (request.config.model, request.config.context_window)
+        for request in served.harness.model.requests
+    ]
+    assert asked == [("swift-2", None), ("script", WINDOW)]
 
 
 async def test_a_model_that_is_named_while_no_session_is_open_is_told_with_the_next_one(

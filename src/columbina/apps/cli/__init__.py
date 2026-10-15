@@ -51,7 +51,7 @@ from columbina.apps.cli.prompt import Prompt
 from columbina.apps.cli.status import status
 from columbina.apps.cli.terminal import TERMINAL, real
 from columbina.apps.cli.transcript import Symbols, Transcript, fit, recap
-from columbina.apps.common import DEFAULT_PROMPT, open_agent
+from columbina.apps.common import DEFAULT_PROMPT, model_named, open_agent
 from columbina.apps.terminal_text import harmless
 from columbina.commands import COMMANDS, SWITCH, Command, Commands, Opener, is_command
 from columbina.kernel import Context, Next
@@ -243,7 +243,7 @@ class Cli:
     async def model(self, agent: Agent, rest: str) -> str:
         """Carry out the command that shows the model, or names another one."""
         if rest:
-            self._model = self._model.model_copy(update={"model": rest})
+            self._model = model_named(self._config.model, rest)
             return f"The model is {rest} from the next request on."
         return f"The model is {self._model.model}. Another one is named with /model ID."
 
@@ -450,9 +450,12 @@ class Cli:
     async def _with_the_model(
         self, draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]
     ) -> CallConfig:
-        """Make a request with the model that the user named last."""
+        """Make a request with the model that was named last, and what is known of its window."""
         config = await proceed(draft)
-        return config.model_copy(update={"model": self._model.model})
+        named = self._model
+        return config.model_copy(
+            update={"model": named.model, "context_window": named.context_window}
+        )
 
     def _event(self, committed: Committed) -> None:
         prompt, agent = self._prompt, self._agent

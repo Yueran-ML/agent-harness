@@ -1,15 +1,17 @@
 """What the frontends share.
 
-The words an agent begins with, how its session is found, and how a person is
-told that a turn did not end well.
+The words an agent begins with, how its session is found, what is known of a
+model that is named during a run, and how a person is told that a turn did not
+end well.
 """
 
 from columbina.agent import Agent, Agents, AgentSpec
 from columbina.kernel import Context
+from columbina.llm import CallConfig
 from columbina.session import Sessions, TurnEndEvent
 from columbina.session.store import SESSION_FILE
 
-__all__ = ["DEFAULT_PROMPT", "how_it_ended", "open_agent"]
+__all__ = ["DEFAULT_PROMPT", "how_it_ended", "model_named", "open_agent"]
 
 DEFAULT_PROMPT = (
     "You are Columbina, an agent that works in a directory on the user's machine. "
@@ -40,6 +42,22 @@ async def open_agent(
         if stored.exists():
             return await agents.resume(ctx, spec, session_id)
     return await agents.create(ctx, spec, session_id=session_id)
+
+
+def model_named(started: CallConfig, model: str) -> CallConfig:
+    """Return the model of a run once a model is named during it, with what is known of its window.
+
+    What is known of the size of a window is known of one model, as it is where a run starts
+    and where a subagent names a model of its own. The window that the run started with is
+    that of the model that it started with, and naming that model again gives the window
+    back. Of any other model nothing is known.
+
+    Args:
+        started: The model that the run started with.
+        model: The model that is named.
+    """
+    window = started.context_window if model == started.model else None
+    return started.model_copy(update={"model": model, "context_window": window})
 
 
 def how_it_ended(end: TurnEndEvent) -> str | None:

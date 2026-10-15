@@ -9475,14 +9475,30 @@ _CLI = (
     mutant(
         "the model that was named last is not the one that is asked",
         CLI_FRONTEND,
-        '        return config.model_copy(update={"model": self._model.model})\n',
+        "        return config.model_copy(\n"
+        '            update={"model": named.model, "context_window": named.context_window}\n'
+        "        )\n",
         "        return config\n",
+    ),
+    mutant(
+        "a request goes with the window of the model that the session was opened with",
+        CLI_FRONTEND,
+        "        return config.model_copy(\n"
+        '            update={"model": named.model, "context_window": named.context_window}\n'
+        "        )\n",
+        '        return config.model_copy(update={"model": named.model})\n',
     ),
     mutant(
         "naming another model changes nothing",
         CLI_FRONTEND,
-        '            self._model = self._model.model_copy(update={"model": rest})\n',
+        "            self._model = model_named(self._config.model, rest)\n",
         "            pass\n",
+    ),
+    mutant(
+        "a model that is named keeps the window of the one before",
+        CLI_FRONTEND,
+        "            self._model = model_named(self._config.model, rest)\n",
+        '            self._model = self._model.model_copy(update={"model": rest})\n',
     ),
     mutant(
         "the command that ends the conversation does not end it",
@@ -21770,14 +21786,42 @@ _SERVE = (
     mutant(
         "a model that was named is told to nobody",
         SERVE_SERVER,
-        '            self._model = self._model.model_copy(update={"model": rest})\n            self._look()\n',
+        "            self._model = model_named(self._config.model, rest)\n            self._look()\n",
+        "            self._model = model_named(self._config.model, rest)\n",
+    ),
+    mutant(
+        "a model that is named keeps the window of the one before",
+        SERVE_SERVER,
+        "            self._model = model_named(self._config.model, rest)\n",
         '            self._model = self._model.model_copy(update={"model": rest})\n',
     ),
     mutant(
         "the model that was named is not the one that is asked",
         SERVE_SERVER,
-        '        return config.model_copy(update={"model": self._model.model})\n',
+        "        return config.model_copy(\n"
+        '            update={"model": named.model, "context_window": named.context_window}\n'
+        "        )\n",
         "        return config\n",
+    ),
+    mutant(
+        "a request goes with the window of the model that the session was opened with",
+        SERVE_SERVER,
+        "        return config.model_copy(\n"
+        '            update={"model": named.model, "context_window": named.context_window}\n'
+        "        )\n",
+        '        return config.model_copy(update={"model": named.model})\n',
+    ),
+    mutant(
+        "every model that is named has the window of the model that the run started with",
+        APPS_COMMON,
+        "    window = started.context_window if model == started.model else None\n",
+        "    window = started.context_window\n",
+    ),
+    mutant(
+        "the model that the run started with has no window once it is named again",
+        APPS_COMMON,
+        "    window = started.context_window if model == started.model else None\n",
+        "    window = None\n",
     ),
     # Where the agent stands
     mutant(

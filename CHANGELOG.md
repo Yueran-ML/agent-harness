@@ -71,6 +71,11 @@ change what was there before.
   there, and a question about one says what Columbina wants to do on GitHub.
 - Where another service, address or model is stored and nothing is under way, the desktop
   application starts its service again at once, at the task that is open.
+- A model that is named with `/model` during a run no longer takes the context window of the
+  model that the run started with. Nothing is known of the window of another model, as where
+  a run starts with it, and naming the first model again gives its window back. The share of
+  the window that the terminal and the desktop application show, and when a conversation is
+  made shorter, follow the model that was named.
 
 ## 0.1.0 (2026-10-15)
 

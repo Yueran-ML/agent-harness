@@ -53,6 +53,12 @@ const samples: Record<string, unknown[][]> = {
   // would be taken for a code of the service by the test below.
   'hint.key.fromVariable': [['MYKEY']],
   'hint.key.done': [['openai', 'gpt-test']],
+  'hint.key.reached': [['DeepSeek', 1], ['Ollama', 12]],
+  'hint.key.noModels': [['LM Studio']],
+  'hint.key.notListed': [['deepseek-old']],
+  'hint.key.forgetAsk': [['OpenAI']],
+  'hint.key.forgotten': [['OpenAI']],
+  'hint.key.noneToForget': [['OpenAI']],
 };
 
 type Said = { path: string; text: string };

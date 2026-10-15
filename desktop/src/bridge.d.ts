@@ -33,9 +33,9 @@ export interface ColumbinaBridge {
   services(): Promise<unknown>;
   /**
    * Open the window in which a service is chosen and its key is given, and wait until it is
-   * closed. This window is told whether something was stored, and nothing of what.
+   * closed. This window is told whether something was stored or deleted there, and nothing of what.
    */
-  setUpService(asked: { service: string | null; language: string }): Promise<{ stored: boolean }>;
+  setUpService(asked: { service: string | null; language: string }): Promise<{ changed: boolean }>;
   openExternal(url: string): Promise<void>;
 }
 

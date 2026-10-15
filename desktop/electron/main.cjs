@@ -63,11 +63,13 @@ const WORDS = {
 /** The language that a page names, if the shell speaks it, and English if not. */
 const spoken = (language) => (typeof language === 'string' && Object.hasOwn(WORDS, language) ? language : 'en');
 // The window for the key while it is open, what it was opened for, whether something was
-// stored from it, and the promise that says so when it has closed.
+// stored or deleted from it, and the promise that says so when it has closed.
 let keyWindow = null;
 let keyAsked = { service: null, language: 'en' };
-let keyStored = false;
+let keyChanged = false;
 let keyClosed = null;
+// The services that the window for the key was told of last, and the pages on which their keys are made.
+let keyListed = { names: [], pages: [] };
 // What the service of the moment wrote last for errors. It is told of when the service has ended.
 let lastWords = { lines: [], rest: '' };
 // What is kept from one start to the next. Read when the application is ready.
@@ -302,25 +304,26 @@ function serviceCommand() {
   return { executable, args, mode: 'service', env: { ...process.env } };
 }
 /**
- * The command that sets a service up, made from the command of the service process.
- * Null where there is none to make it from: in a replay, or where the command does not serve.
+ * Another command of the program, such as `setup --list`, made from the command of the service
+ * process. Null where there is none to make it from: in a replay, or where the command does not serve.
  */
-function setupCommand(more) {
+function programCommand(words) {
   const config = serviceCommand();
   const serves = config.args.indexOf('serve');
   if (config.mode !== 'service' || serves < 0) return null;
   // What follows `serve` was meant for serving, such as a profile.
-  return { executable: config.executable, args: [...config.args.slice(0, serves), 'setup', ...more], env: config.env };
+  return { executable: config.executable, args: [...config.args.slice(0, serves), ...words], env: config.env };
 }
 /**
- * Run `columbina setup` in a form that asks nothing, and return the document that it answers with.
+ * Run a command of the program in a form that asks nothing, such as `setup --list`, and return
+ * the document that it answers with.
  *
  * What it is given goes to its standard input and nowhere else: not to its command line, not
  * into its environment, not into a file. That is how a key reaches it.
  */
-async function runSetup(more, input = '') {
+async function runProgram(words, input = '') {
   if (askingLoginPath) await askingLoginPath;
-  const command = setupCommand(more);
+  const command = programCommand(words);
   if (!command) throw new Error(NO_SETUP);
   return new Promise((resolve, reject) => {
     const child = spawn(command.executable, command.args, {
@@ -369,6 +372,15 @@ async function runSetup(more, input = '') {
     // Its input is closed after what it is given, so that it waits for nothing more.
     child.stdin.end(input);
   });
+}
+/** The names of the services in what `setup --list` answered, and the pages on which their keys are made. */
+function namesAndPages(list) {
+  const services = Array.isArray(list?.services) ? list.services : [];
+  const text = (value) => (typeof value === 'string' && value ? [value] : []);
+  return {
+    names: services.flatMap((service) => text(service?.name)),
+    pages: services.flatMap((service) => text(service?.key_page)),
+  };
 }
 function installHandlers() {
   ipcMain.handle('columbina:select-folder', async (event, asked) => {
@@ -519,15 +531,15 @@ function installHandlers() {
   });
   ipcMain.handle('columbina:services', async (event) => {
     checkSender(event);
-    if (!setupCommand([])) return null;
+    if (!programCommand([])) return null;
     // The document says which services there are and where their keys come from. It holds no key.
-    const document = await runSetup(['--list']);
+    const document = await runProgram(['setup', '--list']);
     if (typeof document.error === 'string') throw new Error(document.error);
     return document;
   });
   ipcMain.handle('columbina:set-up-service', async (event, asked) => {
     checkSender(event);
-    if (!setupCommand([])) throw new Error(NO_SETUP);
+    if (!programCommand([])) throw new Error(NO_SETUP);
     if (keyWindow) {
       keyWindow.focus();
       return keyClosed;
@@ -536,7 +548,8 @@ function installHandlers() {
       service: typeof asked?.service === 'string' && asked.service ? asked.service : null,
       language: spoken(asked?.language),
     };
-    keyStored = false;
+    keyChanged = false;
+    keyListed = { names: [], pages: [] };
     // A window of its own, so that the key is never in the window that shows what a model wrote.
     const opened = new BrowserWindow({
       parent: window, modal: true, width: 540, height: 680, resizable: false, minimizable: false, maximizable: false,
@@ -552,7 +565,7 @@ function installHandlers() {
       opened.once('closed', () => {
         if (keyWindow === opened) keyWindow = null;
         // The main window is told that something was stored, and nothing of what.
-        resolve({ stored: keyStored });
+        resolve({ changed: keyChanged });
       });
     });
     void opened.loadFile(keyPath);
@@ -560,7 +573,34 @@ function installHandlers() {
   });
   ipcMain.handle('columbina-key:context', async (event) => {
     checkKeySender(event);
-    return { ...keyAsked, theme: preferences.theme, list: await runSetup(['--list']) };
+    const list = await runProgram(['setup', '--list']);
+    keyListed = namesAndPages(list);
+    return { ...keyAsked, theme: preferences.theme, list };
+  });
+  ipcMain.handle('columbina-key:check', async (event, given) => {
+    checkKeySender(event);
+    // What the program reads to check a service, each of its kind. A model and a size are not checked.
+    const document = {};
+    for (const name of ['service', 'base_url', 'api_key']) {
+      if (typeof given?.[name] === 'string') document[name] = given[name];
+    }
+    return runProgram(['setup', '--check'], JSON.stringify(document));
+  });
+  ipcMain.handle('columbina-key:forget', async (event, name) => {
+    checkKeySender(event);
+    // Only a service that the window was told of: the name goes on a command line.
+    if (typeof name !== 'string' || !keyListed.names.includes(name)) throw new Error('That service is not among those that are set up.');
+    const answer = await runProgram(['setup', '--forget', name, '--json']);
+    if (answer.forgotten) keyChanged = true;
+    return answer;
+  });
+  ipcMain.handle('columbina-key:open-page', async (event, address) => {
+    checkKeySender(event);
+    // Only a page that a service links to, as the program names it, and over https.
+    if (typeof address !== 'string' || !keyListed.pages.includes(address)) throw new Error('That page is none that a service links to.');
+    const url = new URL(address);
+    if (url.protocol !== 'https:') throw new Error('Only pages over https are opened.');
+    await shell.openExternal(url.href);
   });
   ipcMain.handle('columbina-key:store', async (event, given) => {
     checkKeySender(event);
@@ -570,8 +610,8 @@ function installHandlers() {
       if (typeof given?.[name] === 'string') document[name] = given[name];
     }
     if (Number.isInteger(given?.context_window)) document.context_window = given.context_window;
-    const answer = await runSetup(['--from-stdin'], JSON.stringify(document));
-    if (answer.stored) keyStored = true;
+    const answer = await runProgram(['setup', '--from-stdin'], JSON.stringify(document));
+    if (answer.stored) keyChanged = true;
     return answer;
   });
   ipcMain.handle('columbina-key:close', (event) => {

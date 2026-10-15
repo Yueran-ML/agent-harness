@@ -66,10 +66,13 @@ describe('the window for the key', () => {
     expect(page).not.toMatch(/<script(?![^>]*\bsrc=)/);
   });
 
-  it('has a bridge that offers three things and nothing of the main window', () => {
+  it('has a bridge that offers six things and nothing of the main window', () => {
     const preload = read('electron/key-preload.cjs');
     expect([...preload.matchAll(/ipcRenderer\.(?:invoke|send|on)\('([^']+)'/g)].map(found => found[1]).sort())
-      .toEqual(['columbina-key:close', 'columbina-key:context', 'columbina-key:store']);
+      .toEqual([
+        'columbina-key:check', 'columbina-key:close', 'columbina-key:context', 'columbina-key:forget',
+        'columbina-key:open-page', 'columbina-key:store',
+      ]);
     expect(preload).toContain("exposeInMainWorld('columbinaKey'");
   });
 
@@ -89,9 +92,9 @@ describe('the main window and the key', () => {
     expect(read('electron/preload.cjs')).not.toContain('columbina-key:');
   });
 
-  it('is handed the services without a key, and only whether something was stored', () => {
+  it('is handed the services without a key, and only whether something was stored or deleted', () => {
     const bridge = read('src/bridge.d.ts');
-    expect(bridge).toContain('setUpService(asked: { service: string | null; language: string }): Promise<{ stored: boolean }>;');
+    expect(bridge).toContain('setUpService(asked: { service: string | null; language: string }): Promise<{ changed: boolean }>;');
     for (const file of ['src/useWorkspace.ts', 'src/app/Settings.tsx', 'src/app/App.tsx']) {
       expect(read(file), file).not.toMatch(/api_key|apiKey/);
     }

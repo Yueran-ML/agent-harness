@@ -1190,7 +1190,7 @@ describe('the window for the key', () => {
   it('takes the key from that window and from no other', async () => {
     const { shell } = await opened();
     const before = shell.setups.length;
-    for (const method of ['context', 'store', 'close']) {
+    for (const method of ['context', 'store', 'check', 'forget', 'open-page', 'close']) {
       // The main window shows what a model wrote. It has no way to this.
       await expect((async () => shell.handlers.get(`columbina-key:${method}`)!(shell.event, { api_key: KEY }))()).rejects.toThrow('IPC sender');
       await expect((async () => shell.handlers.get(`columbina-key:${method}`)!(shell.unrelated, { api_key: KEY }))()).rejects.toThrow('IPC sender');
@@ -1219,20 +1219,20 @@ describe('the window for the key', () => {
     const { shell, closed } = await opened();
     await shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash', api_key: KEY });
     await shell.asKeyWindow('close');
-    await expect(closed).resolves.toEqual({ stored: true });
+    await expect(closed).resolves.toEqual({ changed: true });
     expect(JSON.stringify(shell.sent)).not.toContain(KEY);
   });
 
   it('says that nothing was stored where nothing was, or where the program refused', async () => {
     const first = await opened();
     first.shell.keyWindow().close();
-    await expect(first.closed).resolves.toEqual({ stored: false });
+    await expect(first.closed).resolves.toEqual({ changed: false });
 
     const second = await opened();
     second.shell.setup.answer = () => ({ out: '{"error": "what the document says under \'api_key\' cannot be a key"}\n', code: 2 });
     await second.shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash', api_key: 'a b' });
     second.shell.keyWindow().close();
-    await expect(second.closed).resolves.toEqual({ stored: false });
+    await expect(second.closed).resolves.toEqual({ changed: false });
   });
 
   it('is one window, however often it is asked for, and everyone who asked is told how it ended', async () => {
@@ -1243,19 +1243,104 @@ describe('the window for the key', () => {
     expect(shell.keyWindow().focus).toHaveBeenCalledOnce();
     await shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash' });
     shell.keyWindow().close();
-    await expect(closed).resolves.toEqual({ stored: true });
-    await expect(again).resolves.toEqual({ stored: true });
+    await expect(closed).resolves.toEqual({ changed: true });
+    await expect(again).resolves.toEqual({ changed: true });
   });
 
   it('can be opened again after it was closed, and begins anew', async () => {
     const { shell, closed } = await opened();
     await shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash' });
     shell.keyWindow().close();
-    await expect(closed).resolves.toEqual({ stored: true });
+    await expect(closed).resolves.toEqual({ changed: true });
     const second = shell.invoke('set-up-service', {}) as Promise<unknown>;
     await Promise.resolve();
     expect(shell.windows).toHaveLength(3);
     shell.windows[2].close();
-    await expect(second).resolves.toEqual({ stored: false });
+    await expect(second).resolves.toEqual({ changed: false });
+  });
+
+  // What `setup --list` says of two services: one with a page for its key, one whose page is no https page.
+  const linked = {
+    use: 'deepseek',
+    services: [
+      { name: 'deepseek', title: 'DeepSeek', key: 'stored', key_page: 'https://platform.deepseek.com/api_keys' },
+      { name: 'odd', title: 'Odd', key: 'none', key_page: 'http://odd.example/keys' },
+      { name: 'ollama', title: 'Ollama', key: 'none', key_page: null },
+    ],
+  };
+  const told = async () => {
+    const { shell, closed } = await opened();
+    shell.setup.answer = (args) => (args.includes('--list') ? { out: `${JSON.stringify(linked)}\n`, code: 0 } : null);
+    await shell.asKeyWindow('context');
+    return { shell, closed };
+  };
+
+  it('checks a service with the key on the standard input of the program, and hands on only what a check reads', async () => {
+    const { shell } = await opened();
+    shell.setup.answer = () => ({ out: '{"models": ["deepseek-flash", "deepseek-pro"]}\n', code: 0 });
+    const given = { service: 'deepseek', base_url: 'https://api.deepseek.com', api_key: KEY, model: 'm', context_window: 5, extra: 'x' };
+    await expect(shell.asKeyWindow('check', given)).resolves.toEqual({ models: ['deepseek-flash', 'deepseek-pro'] });
+    const run = shell.setups.at(-1)!;
+    expect(run.args).toEqual(['-m', 'columbina', 'setup', '--check']);
+    expect(JSON.parse(run.input!)).toEqual({ service: 'deepseek', base_url: 'https://api.deepseek.com', api_key: KEY });
+    expect(JSON.stringify(shell.spawn.mock.calls.map(call => [call[0], call[1], call[2].env]))).not.toContain(KEY);
+    for (const odd of [undefined, null, 'x', { service: 7, api_key: { key: KEY } }]) {
+      await shell.asKeyWindow('check', odd);
+      expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({});
+    }
+  });
+
+  it('gives back what kind of failure a check was, for the window to say', async () => {
+    const { shell } = await opened();
+    shell.setup.answer = () => ({ out: '{"error": "the service does not take the key", "kind": "key"}\n', code: 2 });
+    await expect(shell.asKeyWindow('check', { service: 'deepseek', api_key: KEY }))
+      .resolves.toEqual({ error: 'the service does not take the key', kind: 'key' });
+  });
+
+  it('deletes what is stored for a service that it was told of, and tells the main window that something changed', async () => {
+    const { shell, closed } = await told();
+    const forgotten = { forgotten: { name: 'deepseek', key: true, chosen: false } };
+    shell.setup.answer = () => ({ out: `${JSON.stringify(forgotten)}\n`, code: 0 });
+    await expect(shell.asKeyWindow('forget', 'deepseek')).resolves.toEqual(forgotten);
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'setup', '--forget', 'deepseek', '--json']);
+    shell.keyWindow().close();
+    await expect(closed).resolves.toEqual({ changed: true });
+  });
+
+  it('deletes nothing for a service that it was not told of, or before it was told of any', async () => {
+    const first = await opened();
+    await expect((async () => first.shell.asKeyWindow('forget', 'deepseek'))()).rejects.toThrow('not among');
+    const { shell, closed } = await told();
+    const before = shell.setups.length;
+    for (const name of ['nowhere', '--list', '', 7, null, ['deepseek']]) {
+      await expect((async () => shell.asKeyWindow('forget', name))()).rejects.toThrow('not among');
+    }
+    expect(shell.setups).toHaveLength(before);
+    shell.keyWindow().close();
+    await expect(closed).resolves.toEqual({ changed: false });
+    // A window that is opened anew has been told of nothing yet.
+    void shell.invoke('set-up-service', {});
+    await Promise.resolve();
+    const again = { sender: shell.windows[2].webContents, senderFrame: shell.windows[2].webContents.mainFrame };
+    await expect((async () => shell.handlers.get('columbina-key:forget')!(again, 'deepseek'))()).rejects.toThrow('not among');
+  });
+
+  it('changes nothing where the program refuses to delete', async () => {
+    const { shell, closed } = await told();
+    shell.setup.answer = () => ({ out: '{"error": "the keyring did not answer"}\n', code: 2 });
+    await expect(shell.asKeyWindow('forget', 'deepseek')).resolves.toEqual({ error: 'the keyring did not answer' });
+    shell.keyWindow().close();
+    await expect(closed).resolves.toEqual({ changed: false });
+  });
+
+  it('opens the page on which a key is made where a service links to it over https, and no other page', async () => {
+    const { shell } = await told();
+    await shell.asKeyWindow('open-page', 'https://platform.deepseek.com/api_keys');
+    expect(shell.system.openExternal).toHaveBeenCalledExactlyOnceWith('https://platform.deepseek.com/api_keys');
+    await expect((async () => shell.asKeyWindow('open-page', 'http://odd.example/keys'))()).rejects.toThrow('https');
+    for (const address of ['https://evil.example/', 'file:///C:/Windows/System32/calc.exe', null, 7]) {
+      await expect((async () => shell.asKeyWindow('open-page', address))()).rejects.toThrow('none that a service links to');
+    }
+    expect(shell.system.openExternal).toHaveBeenCalledOnce();
   });
 });

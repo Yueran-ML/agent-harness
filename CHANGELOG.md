@@ -42,6 +42,11 @@ change what was there before.
   renew them at once take turns. `columbina login --status` says who is signed in, and
   `columbina logout github` deletes the sign-in. With `--json` each answers in lines of JSON
   for another program, which stops a sign-in by closing its standard input.
+- The window for the key in the desktop application checks a service before anything is
+  stored, offers the models that it lists, and says what to look at where the check fails.
+  A service on this computer is checked as soon as it is chosen. The window marks a model
+  that looks like a key and a key with a blank inside it, links to the page on which a key
+  is made, and deletes a stored key once it has asked whether to.
 - The agent acts on GitHub in the name of whoever signed in, in the repositories that were
   chosen for the app. `github_repos`, `github_read` and `github_checks` read repositories,
   issues, pull requests and their checks without a question. `github_clone` clones into the

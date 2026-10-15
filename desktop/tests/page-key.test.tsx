@@ -49,6 +49,9 @@ async function opened(given: { service?: string | null; language?: string; theme
   const shell = {
     context: vi.fn(async () => ({ service: 'deepseek' as string | null, language: 'en', theme: 'moonveil', list: listed() as unknown, ...given })),
     store: vi.fn(async (_document: Record<string, string | number>): Promise<unknown> => ({ stored: { name: 'deepseek', model: 'deepseek-flash' }, key_in: 'keyring' })),
+    check: vi.fn(async (_document: Record<string, string>): Promise<unknown> => ({ models: ['deepseek-flash', 'deepseek-pro'] })),
+    forget: vi.fn(async (name: string): Promise<unknown> => ({ forgotten: { name, key: true, chosen: false } })),
+    openPage: vi.fn(async (_address: string) => {}),
     close: vi.fn(async () => {}),
   };
   vi.stubGlobal('columbinaKey', shell);
@@ -385,5 +388,186 @@ describe('the window for the key', () => {
     // A theme that this window does not know is not put on.
     await opened({ theme: 'something-else' });
     expect(document.documentElement.dataset.theme).toBeUndefined();
+  });
+});
+
+describe('checking a service, and deleting its key', () => {
+  const linked = () => {
+    const list = listed();
+    list.services[0] = { ...list.services[0], key_page: 'https://platform.deepseek.com/api_keys' };
+    return list;
+  };
+  const check = async () => { await act(async () => { fireEvent.click(one('key-check')); }); await settled(); };
+
+  it('offers the page on which a key is made, and names where it leads', async () => {
+    const shell = await opened({ list: linked() });
+    expect(one('key-get').textContent).toBe('Get a key');
+    // The machine stands beside it, and the whole address is shown where it is pointed at.
+    const where = one('key-get').nextElementSibling as HTMLElement;
+    expect([where.textContent, where.title]).toEqual(['platform.deepseek.com', 'https://platform.deepseek.com/api_keys']);
+    fireEvent.click(one('key-get'));
+    expect(shell.openPage).toHaveBeenCalledExactlyOnceWith('https://platform.deepseek.com/api_keys');
+    // A service that names no such page offers none.
+    choose('OpenAI');
+    expect(marked('key-get')).toEqual([]);
+  });
+
+  it('asks the service for its models with the key that is typed, and offers them for the model', async () => {
+    const shell = await opened();
+    write('key-key', `  ${KEY}\n`);
+    await check();
+    expect(shell.check).toHaveBeenCalledExactlyOnceWith({ service: 'deepseek', api_key: KEY });
+    expect(one('key-checked').textContent).toBe('DeepSeek answered, and lists 2 models.');
+    expect(field('key-model').getAttribute('list')).toBe('key-models');
+    expect([...one('key-models').querySelectorAll('option')].map(option => option.value)).toEqual(['deepseek-flash', 'deepseek-pro']);
+    // The model that is written is one of them.
+    expect(marked('key-not-listed')).toEqual([]);
+    // What it found stays while the model is written, and is of no use once the key is another.
+    write('key-model', 'deepseek-old');
+    expect(one('key-not-listed').textContent).toBe('deepseek-old is not among the models that the service lists.');
+    write('key-key', 'sk-another-one');
+    expect(marked('key-checked')).toEqual([]);
+    expect(field('key-model').getAttribute('list')).toBeNull();
+    expect(marked('key-not-listed')).toEqual([]);
+  });
+
+  it('says that a service listed no model, and checks one without a typed key with the key that a session sends', async () => {
+    const shell = await opened();
+    shell.check.mockResolvedValueOnce({ models: [] });
+    await check();
+    expect(shell.check).toHaveBeenCalledExactlyOnceWith({ service: 'deepseek' });
+    expect(one('key-checked').textContent).toBe('DeepSeek answered, and lists no model.');
+    expect(marked('key-models')).toEqual([]);
+  });
+
+  it('says for each kind of failure what to look at', async () => {
+    const shell = await opened();
+    const kinds: [string, string][] = [
+      ['key', 'The service does not take this key.'],
+      ['forbidden', 'The service takes the key and does not allow this'],
+      ['network', 'The service could not be reached.'],
+      ['timeout', 'The service did not answer in time.'],
+      ['address', 'Nothing that serves models answers at this address.'],
+      ['busy', 'The service is busy.'],
+    ];
+    for (const [kind, said] of kinds) {
+      shell.check.mockResolvedValueOnce({ error: 'what the program said', kind });
+      await check();
+      expect(one('key-checked').textContent, kind).toContain(said);
+      expect(one('key-checked').dataset.tone).toBe('bad');
+    }
+    // A failure of no known kind says what the program said.
+    shell.check.mockResolvedValueOnce({ error: 'the service answered 418', kind: 'strange' });
+    await check();
+    expect(one('key-checked').textContent).toBe('The check did not succeed. The service answered 418.');
+    shell.check.mockRejectedValueOnce(new Error('The setup program did not end in time.'));
+    await check();
+    expect(one('key-checked').textContent).toBe('The check did not succeed. The setup program did not end in time.');
+  });
+
+  it('asks a service on this computer as soon as it is chosen, and says how to start one that does not run', async () => {
+    const list = listed();
+    list.services.push({ ...service('ollama', 'Ollama', { key_env: null }), model: 'qwen2.5:7b', context_window: null });
+    const shell = await opened({ list });
+    expect(shell.check).not.toHaveBeenCalled();
+    shell.check.mockResolvedValueOnce({ error: 'the service could not be reached', kind: 'network' });
+    choose('Ollama');
+    await settled();
+    expect(shell.check).toHaveBeenCalledExactlyOnceWith({ service: 'ollama' });
+    expect(one('key-checked').textContent).toBe(
+      'Ollama does not answer on this computer. Start it, for instance with ollama serve, and check again.',
+    );
+    shell.check.mockResolvedValueOnce({ error: 'the service could not be reached', kind: 'network' });
+    choose('lab');
+    await settled();
+    expect(one('key-checked').textContent).toBe('The service does not answer on this computer. Start it, and check again.');
+    // A service far away that cannot be reached is not one to start here.
+    choose('DeepSeek');
+    shell.check.mockResolvedValueOnce({ error: 'the service could not be reached', kind: 'network' });
+    await check();
+    expect(one('key-checked').textContent).toContain('The service could not be reached.');
+  });
+
+  it('says nothing of a check that another service overtook', async () => {
+    const shell = await opened();
+    const late = held<unknown>();
+    shell.check.mockReturnValueOnce(late.promise);
+    await act(async () => { fireEvent.click(one('key-check')); });
+    expect(one('key-checking').textContent).toBe('Checking');
+    expect((one('key-check') as HTMLButtonElement).disabled).toBe(true);
+    choose('OpenAI');
+    expect(marked('key-checking')).toEqual([]);
+    await act(async () => { late.release({ models: ['deepseek-flash'] }); });
+    await settled();
+    expect(marked('key-checked')).toEqual([]);
+  });
+
+  it('marks a model that looks like a key, and a key with a blank inside it, which is neither checked nor stored', async () => {
+    await opened();
+    write('key-model', 'sk-proj-0123456789');
+    expect(one('key-like-a-key').textContent).toBe('This looks like a key, and not like the name of a model.');
+    write('key-model', 'deepseek-flash');
+    expect(marked('key-like-a-key')).toEqual([]);
+    write('key-key', 'sk-one two');
+    expect(one('key-blank').textContent).toBe('A key has no blank in it. See whether what was pasted brought more along.');
+    expect((one('key-check') as HTMLButtonElement).disabled).toBe(true);
+    expect((one('key-store') as HTMLButtonElement).disabled).toBe(true);
+    write('key-key', '  sk-one-two  ');
+    expect(marked('key-blank')).toEqual([]);
+    expect((one('key-check') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('deletes a stored key once it was asked whether to, and says so', async () => {
+    const shell = await opened({ service: 'openai' });
+    expect(marked('key-forget')).toHaveLength(1);
+    fireEvent.click(one('key-forget'));
+    expect(one('key-forget-ask').textContent).toContain(
+      'Delete the key that is stored for OpenAI? What else is set up for it stays.',
+    );
+    // Keeping it asks nothing of the shell.
+    fireEvent.click(one('key-forget-keep'));
+    expect(marked('key-forget-ask')).toEqual([]);
+    expect(shell.forget).not.toHaveBeenCalled();
+
+    const after = listed();
+    after.services[1] = { ...after.services[1], key: 'none' };
+    shell.context.mockResolvedValueOnce({ service: 'openai', language: 'en', theme: 'moonveil', list: after });
+    fireEvent.click(one('key-forget'));
+    await act(async () => { fireEvent.click(one('key-forget-sure')); });
+    await settled();
+    expect(shell.forget).toHaveBeenCalledExactlyOnceWith('openai');
+    expect(one('key-forgot').textContent).toBe('The key of OpenAI was deleted.');
+    // The list says anew where the key comes from: there is none to delete any more.
+    expect(one('key-note').textContent).toBe('No key is there for this service yet.');
+    expect(marked('key-forget')).toEqual([]);
+  });
+
+  it('says so where no key was there to delete, or the program refused', async () => {
+    const shell = await opened({ service: 'openai' });
+    shell.forget.mockResolvedValueOnce({ forgotten: { name: 'openai', key: false, chosen: true } });
+    fireEvent.click(one('key-forget'));
+    await act(async () => { fireEvent.click(one('key-forget-sure')); });
+    await settled();
+    expect(one('key-forgot').textContent).toBe('No key was stored for OpenAI.');
+
+    shell.forget.mockResolvedValueOnce({ error: 'the keyring did not answer' });
+    fireEvent.click(one('key-forget'));
+    await act(async () => { fireEvent.click(one('key-forget-sure')); });
+    await settled();
+    expect(one('key-forgot').textContent).toBe('The keyring did not answer.');
+    expect(one('key-forgot').dataset.tone).toBe('bad');
+
+    shell.forget.mockRejectedValueOnce(new Error('That service is not among those that are set up.'));
+    fireEvent.click(one('key-forget'));
+    await act(async () => { fireEvent.click(one('key-forget-sure')); });
+    await settled();
+    expect(one('key-forgot').textContent).toBe('That service is not among those that are set up.');
+  });
+
+  it('offers no deletion for a service without a stored key', async () => {
+    await opened();
+    expect(marked('key-forget')).toEqual([]);
+    choose('lab');
+    expect(marked('key-forget')).toEqual([]);
   });
 });

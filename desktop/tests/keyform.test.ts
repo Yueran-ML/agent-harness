@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  called, changedBeyondKey, chosen, complete, documentOf, formFor, listedOf, nameFits, onlyTheKey, sentenceOf, serviceCalled,
+  blankInside, called, changedBeyondKey, checkable, checkedOf, checkOf, chosen, complete, documentOf, forgottenOf, formFor, keyKept,
+  hostOf, listedOf, looksLikeAKey, nameFits, onlyTheKey, sentenceOf, serviceCalled,
   serviceOf, storedOf, takesKey, tokensOf,
   type Form, type Listed,
 } from '../src/key/form';
@@ -10,10 +11,10 @@ import {
 const told = {
   use: 'openai',
   services: [
-    { name: 'deepseek', title: 'DeepSeek', base_url: 'https://api.deepseek.com', own: false, model: 'deepseek-flash', context_window: 1048576, key_env: 'DEEPSEEK_API_KEY', key: 'none' },
-    { name: 'openai', title: 'OpenAI', base_url: 'https://api.openai.com/v1', own: false, model: 'gpt-test', context_window: 400000, key_env: 'OPENAI_API_KEY', key: 'stored' },
-    { name: 'ollama', title: 'Ollama on the same machine', base_url: 'http://localhost:11434/v1', own: false, model: null, context_window: null, key_env: null, key: 'none' },
-    { name: 'my-server', title: 'http://10.0.0.5:8000/v1', base_url: 'http://10.0.0.5:8000/v1', own: true, model: 'tiny', context_window: 32768, key_env: 'COLUMBINA_API_KEY', key: 'stored-for-another-address' },
+    { name: 'deepseek', title: 'DeepSeek', base_url: 'https://api.deepseek.com', own: false, model: 'deepseek-flash', context_window: 1048576, key_env: 'DEEPSEEK_API_KEY', key: 'none', key_page: 'https://platform.deepseek.com/api_keys' },
+    { name: 'openai', title: 'OpenAI', base_url: 'https://api.openai.com/v1', own: false, model: 'gpt-test', context_window: 400000, key_env: 'OPENAI_API_KEY', key: 'stored', key_page: 'https://platform.openai.com/api-keys' },
+    { name: 'ollama', title: 'Ollama on the same machine', base_url: 'http://localhost:11434/v1', own: false, model: null, context_window: null, key_env: null, key: 'none', key_page: null },
+    { name: 'my-server', title: 'http://10.0.0.5:8000/v1', base_url: 'http://10.0.0.5:8000/v1', own: true, model: 'tiny', context_window: 32768, key_env: 'COLUMBINA_API_KEY', key: 'stored-for-another-address', key_page: null },
   ],
 };
 const listed = listedOf(told) as Listed;
@@ -36,7 +37,10 @@ describe('what the shell says is set up', () => {
     const read = listedOf({ use: 7, services: [null, 'openai', 3, {}, { name: '' }, { name: 7 }, { name: 'mine' }] });
     expect(read).toEqual({
       use: null,
-      services: [{ name: 'mine', title: 'mine', base_url: '', own: false, model: null, context_window: null, key_env: null, key: 'none' }],
+      services: [{
+        name: 'mine', title: 'mine', base_url: '', own: false, model: null, context_window: null, key_env: null, key: 'none',
+        key_page: null,
+      }],
     });
   });
 
@@ -47,6 +51,7 @@ describe('what the shell says is set up', () => {
     expect(read?.services.map(service => service.context_window)).toEqual([null, null, null, null]);
     expect(read?.services[0]).toEqual({
       name: 'mine', title: 'mine', base_url: '', own: false, model: null, context_window: null, key_env: null, key: 'none',
+      key_page: null,
     });
   });
 });
@@ -362,5 +367,102 @@ describe('what the program answered', () => {
     for (const answer of [null, undefined, 'stored', 7, [], {}, { stored: null }, { stored: 'yes' }, { stored: { name: 'openai' } }, { stored: { name: 7, model: 'x' } }, { error: 7 }]) {
       expect(storedOf(answer)).toEqual({ kind: 'refused', said: '' });
     }
+  });
+});
+
+describe('the page on which a key is made', () => {
+  it('is taken where it is a page over https, and is none otherwise', () => {
+    const page = (key_page: unknown) => listedOf({ services: [{ name: 'x', key_page }] })!.services[0].key_page;
+    expect(page('https://platform.deepseek.com/api_keys')).toBe('https://platform.deepseek.com/api_keys');
+    for (const odd of ['http://example.com/keys', 'javascript:alert(1)', 'file:///C:/x', '', null, 7, undefined]) {
+      expect(page(odd)).toBeNull();
+    }
+  });
+});
+
+describe('a key that is kept', () => {
+  it('is one that is stored, for this address or another', () => {
+    const kept = listed.services.map(keyKept);
+    expect(kept).toEqual([false, true, false, true]);
+  });
+});
+
+describe('what is typed for a key', () => {
+  it('has a blank inside it, which no key has, or only blanks around it, which are not sent', () => {
+    expect(blankInside('sk-one two')).toBe(true);
+    expect(blankInside('sk-one\ttwo')).toBe(true);
+    expect(blankInside('sk-one\ntwo')).toBe(true);
+    expect(blankInside('  sk-one-two\n')).toBe(false);
+    expect(blankInside('')).toBe(false);
+  });
+});
+
+describe('what is written for a model', () => {
+  it('looks like a key where it begins as keys do or is a long run without signs', () => {
+    for (const key of ['sk-abc', 'SK-abc', '  sk-proj-0123  ', 'a'.repeat(40), 'A1_'.repeat(14)]) {
+      expect(looksLikeAKey(key), key).toBe(true);
+    }
+    for (const model of ['deepseek-flash', 'gpt-4.1-mini', 'qwen2.5:7b', 'meta-llama/Llama-3.1-8B', 'a'.repeat(39), 'skate', '']) {
+      expect(looksLikeAKey(model), model).toBe(false);
+    }
+  });
+});
+
+describe('a form that can be checked', () => {
+  it('names a listed service, or one that is added with its address, and no key with a blank inside', () => {
+    expect(checkable(form())).toBe(true);
+    expect(checkable(form({ key: '  sk-one  ' }))).toBe(true);
+    expect(checkable(form({ key: 'sk-one two' }))).toBe(false);
+    expect(checkable(form({ service: '' }))).toBe(false);
+    expect(checkable(form({ adding: true, service: '', address: 'http://10.0.0.9/v1' }))).toBe(true);
+    expect(checkable(form({ adding: true, service: '', address: '  ' }))).toBe(false);
+  });
+
+  it('is sent with its service, the address of one that is added, and a key that is typed', () => {
+    expect(checkOf(form(), listed)).toEqual({ service: 'openai' });
+    expect(checkOf(form({ key: '  sk-new  ' }), listed)).toEqual({ service: 'openai', api_key: 'sk-new' });
+    expect(checkOf(form({ adding: true, service: '', name: ' lab ', address: ' http://10.0.0.9/v1 ', key: 'k' }), listed))
+      .toEqual({ service: 'lab', base_url: 'http://10.0.0.9/v1', api_key: 'k' });
+    // A service that is added has no name yet while it is checked first.
+    expect(checkOf(form({ adding: true, service: '', name: '', address: 'http://10.0.0.9/v1' }), listed))
+      .toEqual({ service: 'own', base_url: 'http://10.0.0.9/v1' });
+    // A service that asks for no key is asked without one.
+    expect(checkOf(form({ service: 'ollama', key: 'typed' }), listed)).toEqual({ service: 'ollama' });
+  });
+});
+
+describe('what a check answered', () => {
+  it('is the models of the service, each once and in the order given', () => {
+    expect(checkedOf({ models: ['b', 'a', 'b', '', 7, null] })).toEqual({ kind: 'models', models: ['b', 'a'] });
+    expect(checkedOf({ models: [] })).toEqual({ kind: 'models', models: [] });
+  });
+
+  it('is the kind of failure and what the program said', () => {
+    for (const failure of ['network', 'timeout', 'key', 'forbidden', 'address', 'busy', 'unknown']) {
+      expect(checkedOf({ error: 'it failed', kind: failure })).toEqual({ kind: 'failed', failure, said: 'it failed' });
+    }
+    expect(checkedOf({ error: 'it failed', kind: 'strange' })).toEqual({ kind: 'failed', failure: 'unknown', said: 'it failed' });
+    for (const odd of [null, undefined, 'x', 7, [], {}, { models: 'a' }, { error: 7 }]) {
+      expect(checkedOf(odd)).toEqual({ kind: 'failed', failure: 'unknown', said: '' });
+    }
+  });
+});
+
+describe('what a deletion answered', () => {
+  it('is whether a key was there, or what the program says is wrong', () => {
+    expect(forgottenOf({ forgotten: { name: 'openai', key: true, chosen: false } })).toEqual({ kind: 'forgotten', key: true });
+    expect(forgottenOf({ forgotten: { name: 'openai', key: false, chosen: true } })).toEqual({ kind: 'forgotten', key: false });
+    expect(forgottenOf({ error: 'the keyring did not answer' })).toEqual({ kind: 'refused', said: 'the keyring did not answer' });
+    for (const odd of [null, undefined, 'x', 7, {}, { forgotten: null }, { forgotten: 'openai' }]) {
+      expect(forgottenOf(odd)).toEqual({ kind: 'refused', said: '' });
+    }
+  });
+});
+
+describe('the machine of a page', () => {
+  it('is what a page names after its scheme, with a port where it has one', () => {
+    expect(hostOf('https://platform.deepseek.com/api_keys')).toBe('platform.deepseek.com');
+    expect(hostOf('https://example.com:8443/keys?x=1')).toBe('example.com:8443');
+    expect(hostOf('not an address')).toBe('not an address');
   });
 });

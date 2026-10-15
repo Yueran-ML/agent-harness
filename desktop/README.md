@@ -91,6 +91,17 @@ no value by the page, so the key is in no markup of the window either. The windo
 shows the conversation is told only that something was stored. A service of the user's
 own gets a name there, which the window holds to what the program takes for one.
 
+Before anything is stored, the window can check a service: it hands the service, its
+address and the key that is typed to `columbina setup --check`, which asks the service for
+its models and stores nothing. The window then offers those models for the field of the
+model, and says so where the model that is written is none of them. A check that fails
+says what to look at: the network and the proxy, the key, an account without money, the
+address, or a busy service. A service on this computer, such as Ollama, is checked as soon
+as it is chosen, and the window says how to start one that does not answer. The window
+marks a model that looks like a key and a key with a blank inside it, and links to the
+page of the service on which a key is made, naming the machine that it lies on. A key that
+is stored can be deleted there, once the window has asked whether it should be.
+
 This works where the application runs the service itself, and not in a replay. The
 service looks for the key with every request, so a key is used as soon as it is stored,
 and a turn that failed for want of it can be tried again with the button under it.
@@ -147,8 +158,10 @@ protocol, and the interface cannot read it. What the service process logs goes t
 - A service process is started only in a folder that the user chose in the folder
   dialog of the system, now or at an earlier time: the shell keeps the last eight. The
   interface cannot name another folder, another program or other arguments.
-- The window for the key has a bridge of its own, with three calls: read what is set
-  up, store, and close. The main window cannot make them.
+- The window for the key has a bridge of its own, with six calls: read what is set up,
+  store, check a service, delete a key, open the page on which a key is made, and close.
+  The main window cannot make them. A key is deleted only for a service that the window
+  was told of, and a page is opened only where a service links to it over https.
 - The page loads only files of the application. Its content security policy allows no
   connection to the network, no frame and no script from elsewhere. Navigation and new
   windows are blocked. A link is opened in the browser of the system, after its full

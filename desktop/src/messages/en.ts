@@ -318,6 +318,12 @@ export const en = {
       apiKey: 'API key',
       store: 'Store',
       storing: 'Storing',
+      check: 'Check',
+      checking: 'Checking',
+      getKey: 'Get a key',
+      forget: 'Delete the stored key',
+      forgetConfirm: 'Delete it',
+      keep: 'Keep it',
       setUp: 'Set up a service or a key',
       inUse: 'In use',
       from: {
@@ -561,6 +567,30 @@ export const en = {
       restart: 'What was stored is used once Columbina is started again.',
       /** After a key alone was stored for the service that is chosen. */
       atOnce: 'Columbina looks for the key with every request, so it needs no new start.',
+      reached: (service: string, count: number) => (count === 1
+        ? `${service} answered, and lists 1 model.`
+        : `${service} answered, and lists ${count} models.`),
+      noModels: (service: string) => `${service} answered, and lists no model.`,
+      notListed: (model: string) => `${model} is not among the models that the service lists.`,
+      likeAKey: 'This looks like a key, and not like the name of a model.',
+      blankInKey: 'A key has no blank in it. See whether what was pasted brought more along.',
+      failed: {
+        network: 'The service could not be reached. See whether this computer is online, and that the proxy is on if there is one.',
+        timeout: 'The service did not answer in time. Try again in a moment.',
+        key: 'The service does not take this key. See whether it was copied whole.',
+        forbidden: 'The service takes the key and does not allow this: the account may have no money left, or the key no right to the models.',
+        address: 'Nothing that serves models answers at this address. See whether it was written right.',
+        busy: 'The service is busy. Try again in a moment.',
+        unknown: 'The check did not succeed.',
+      },
+      notRunning: {
+        ollama: 'Ollama does not answer on this computer. Start it, for instance with ollama serve, and check again.',
+        lmstudio: 'LM Studio does not answer on this computer. Start its local server, and check again.',
+        other: 'The service does not answer on this computer. Start it, and check again.',
+      },
+      forgetAsk: (service: string) => `Delete the key that is stored for ${service}? What else is set up for it stays.`,
+      forgotten: (service: string) => `The key of ${service} was deleted.`,
+      noneToForget: (service: string) => `No key was stored for ${service}.`,
     },
 
     music: {

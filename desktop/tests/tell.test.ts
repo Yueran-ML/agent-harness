@@ -110,7 +110,7 @@ describe('how full the context is', () => {
 
 describe('the name of the service that a model comes from', () => {
   const service = (name: string, title: string, own = false) => ({
-    name, title, base_url: 'https://api.example.com/v1', own, model: null, context_window: null, key_env: null,
+    name, title, base_url: 'https://api.example.com/v1', own, model: null, context_window: null, key_env: null, key_page: null,
     key: 'none' as const,
   });
   // As `columbina setup --list` tells of them: of a service of the user's own, the title is its address.
@@ -161,6 +161,7 @@ describe('a choice of service that the service process has not taken up', () => 
 describe('a key that is at hand for the next request', () => {
   const service = (name: string, key: string, key_env: string | null = 'A_KEY', own = false) => ({
     name, title: name, base_url: 'https://api.example.com/v1', own, model: null, context_window: null, key_env, key,
+    key_page: null,
   });
   const listed = {
     use: 'deepseek',
@@ -209,7 +210,7 @@ describe('a key that is at hand for the next request', () => {
 describe('the services that the settings tell of', () => {
   const service = (name: string, key = 'none', own = false) => ({
     name, title: name.toUpperCase(), base_url: 'https://api.example.com/v1', own, model: null, context_window: null,
-    key_env: 'A_KEY', key,
+    key_env: 'A_KEY', key, key_page: null,
   });
   const all = [
     service('deepseek'), service('openai', 'stored'), service('moonshot', 'environment'),

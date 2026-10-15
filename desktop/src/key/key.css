@@ -88,6 +88,46 @@ body {
   color: var(--bad);
 }
 
+/* What is typed in the field above is likely not what is meant. */
+.key-under[data-tone='warn'] {
+  color: var(--warn);
+}
+
+/* The page of the service on which a key is made: the button, and where it leads. It belongs to
+   the address of the service above it, so it stands as close to that as a line of its own does. */
+.key-link {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  margin-top: calc(-1 * var(--s3));
+}
+
+.key-link .btn {
+  flex: none;
+  margin-left: calc(-1 * var(--s3));
+  gap: 6px;
+}
+
+.key-link .caption {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A question inside what is said, with its answers below it. */
+.key-ask {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.key-ask-actions {
+  display: flex;
+  gap: var(--s2);
+}
+
 select.field {
   appearance: none;
   padding-right: var(--s6);

@@ -82,7 +82,7 @@ class Service {
     recentProjects: vi.fn(async () => this.recent),
     services: vi.fn(async () => this.listed),
     serviceTail: vi.fn(async () => this.tail),
-    setUpService: vi.fn(async (_asked: { service: string | null; language: string }) => ({ stored: false })),
+    setUpService: vi.fn(async (_asked: { service: string | null; language: string }) => ({ changed: false })),
     selectFolder: vi.fn(async (_asked: { language: string }): Promise<string | null> => null),
     openRecent: vi.fn(async (folder: string) => folder),
     showLog: vi.fn(async () => {}),
@@ -1084,7 +1084,7 @@ describe('the services and the folders of the shell', () => {
     expect(stored).toBeNull();
     expect(service.bridge.services).toHaveBeenCalledTimes(1);
 
-    service.bridge.setUpService.mockResolvedValueOnce({ stored: true });
+    service.bridge.setUpService.mockResolvedValueOnce({ changed: true });
     service.listed = { use: 'deepseek', services: [listedService('deepseek', 'DeepSeek', { key: 'stored' })] };
     await act(async () => { stored = await now().setUpService(null, 'en'); });
     expect(stored).toEqual({ listed: service.listed });
@@ -1107,7 +1107,7 @@ describe('the services and the folders of the shell', () => {
     const { now } = await started(service);
     expect(now().services).toEqual(service.listed);
     // A service was stored, and the list cannot be read after it.
-    service.bridge.setUpService.mockResolvedValueOnce({ stored: true });
+    service.bridge.setUpService.mockResolvedValueOnce({ changed: true });
     service.bridge.services.mockRejectedValueOnce(new Error('The program of the service did not answer.'));
     let stored: unknown = 'not asked';
     await act(async () => { stored = await now().setUpService(null, 'en'); });

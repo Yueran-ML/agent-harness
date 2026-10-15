@@ -13,6 +13,8 @@ export interface ListedService {
   context_window: number | null;
   key_env: string | null;
   key: string;
+  /** The page of the service on which a key is made, or null where none is known. */
+  key_page: string | null;
 }
 
 /** What `columbina setup --list` answers. */
@@ -73,6 +75,7 @@ export function listedOf(given: unknown): Listed | null {
       context_window: typeof window === 'number' && Number.isInteger(window) && window > 0 ? window : null,
       key_env: text(said.key_env) || null,
       key: text(said.key) || 'none',
+      key_page: /^https:\/\//.test(text(said.key_page)) ? text(said.key_page) : null,
     });
   }
   return { use: typeof use === 'string' ? use : null, services: read };
@@ -233,4 +236,91 @@ export function storedOf(answer: unknown): Stored {
     return { kind: 'stored', name: stored.name, model: stored.model, keyIn };
   }
   return { kind: 'refused', said: typeof given.error === 'string' ? given.error : '' };
+}
+
+/** Whether a key is stored for a service, for this address or another: then it can be deleted. */
+export function keyKept(service: ListedService): boolean {
+  return service.key === 'stored' || service.key === 'stored-for-another-address';
+}
+
+/**
+ * Whether a key that was typed or pasted has a blank inside it. No key has one, and a key that
+ * is copied from a page often brings a line of the page along. The blanks around a key are
+ * not sent, so they are no fault.
+ */
+export function blankInside(key: string): boolean {
+  return /\s/.test(key.trim());
+}
+
+/**
+ * Whether what was written for a model looks like a key: it begins as many keys do, or it is a
+ * long run of letters and digits with none of the signs that the names of models have.
+ */
+export function looksLikeAKey(model: string): boolean {
+  const written = model.trim();
+  return /^sk-/i.test(written) || /^[A-Za-z0-9_]{40,}$/.test(written);
+}
+
+/**
+ * Whether the service of a form can be asked for its models: one that is listed, or one that is
+ * added and has an address. Its key is the one that is typed, or the one that a session would
+ * send. A key with a blank inside it is asked with by nobody.
+ */
+export function checkable(form: Form): boolean {
+  if (blankInside(form.key)) return false;
+  return form.adding ? form.address.trim() !== '' : form.service !== '';
+}
+
+/**
+ * What is sent to `columbina setup --check` for a form: the service, its address where it is
+ * added, and the key where one was typed and the service takes one.
+ */
+export function checkOf(form: Form, listed: Listed): Record<string, string> {
+  const document: Record<string, string> = { service: form.adding ? form.name.trim() || 'own' : form.service };
+  if (form.adding) document.base_url = form.address.trim();
+  if (form.key.trim() !== '' && takesKey(form, listed)) document.api_key = form.key.trim();
+  return document;
+}
+
+/** The kinds of failure that a check tells, as `columbina setup --check` names them. */
+export const failures = ['network', 'timeout', 'key', 'forbidden', 'address', 'busy', 'unknown'] as const;
+export type Failure = typeof failures[number];
+
+/** What a check found: the models of the service, or what kind of failure it was. */
+export type Checked =
+  | { kind: 'models'; models: string[] }
+  | { kind: 'failed'; failure: Failure; said: string };
+
+export function checkedOf(answer: unknown): Checked {
+  const given = (answer !== null && typeof answer === 'object' ? answer : {}) as {
+    models?: unknown; error?: unknown; kind?: unknown;
+  };
+  if (Array.isArray(given.models)) {
+    const models = given.models.filter((model): model is string => typeof model === 'string' && model !== '');
+    return { kind: 'models', models: [...new Set(models)] };
+  }
+  const failure = failures.find(each => each === given.kind) ?? 'unknown';
+  return { kind: 'failed', failure, said: typeof given.error === 'string' ? given.error : '' };
+}
+
+/** What a deletion did: whether a key was there, or what the program says is wrong. */
+export type Forgotten =
+  | { kind: 'forgotten'; key: boolean }
+  | { kind: 'refused'; said: string };
+
+export function forgottenOf(answer: unknown): Forgotten {
+  const given = (answer !== null && typeof answer === 'object' ? answer : {}) as { forgotten?: unknown; error?: unknown };
+  const forgotten = given.forgotten !== null && typeof given.forgotten === 'object'
+    ? given.forgotten as { key?: unknown } : null;
+  if (forgotten !== null) return { kind: 'forgotten', key: forgotten.key === true };
+  return { kind: 'refused', said: typeof given.error === 'string' ? given.error : '' };
+}
+
+/** The machine that a page lies on, as it is shown beside the way to the page: `platform.deepseek.com`. */
+export function hostOf(page: string): string {
+  try {
+    return new URL(page).host;
+  } catch {
+    return page;
+  }
 }

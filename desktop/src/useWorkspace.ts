@@ -412,21 +412,15 @@ export function useWorkspace() {
   }, [approval]);
 
   /**
-   * Open the window in which a service is chosen and its key is given.
-   *
-   * Returns:
-   *   Whether something was stored there. The key itself never comes to this window.
-   */
-  /**
    * Open the window in which a service is chosen and its key is given, and wait until it is
    * closed. The answer is the services as they are set up afterwards, or null where nothing
-   * was stored.
+   * was stored or deleted there. The key itself never comes to this window.
    */
   const setUpService = useCallback(async (service: string | null, language: string): Promise<{ listed: Listed | null } | null> => {
     if (!window.columbina) return null;
     try {
-      const { stored } = await window.columbina.setUpService({ service, language });
-      return stored ? { listed: await refreshServices() } : null;
+      const { changed } = await window.columbina.setUpService({ service, language });
+      return changed ? { listed: await refreshServices() } : null;
     } catch (problem) {
       fail(problem);
       return null;

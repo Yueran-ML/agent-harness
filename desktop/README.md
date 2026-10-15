@@ -7,18 +7,19 @@ the user does into requests. The two talk in the messages of
 [`docs/protocol`](../docs/protocol/README.md): JSON-RPC, one message to a line, over
 the standard input and output of the service process.
 
-**This is work in progress.** It runs from source, and it is told by two environment
-variables which service process to start, see below.
+A package for Windows on x64 and one for macOS on Apple silicon are downloaded from the
+releases of the repository, as the [README](../README.md#the-desktop-application) says.
+Each brings a Python of its own with Columbina in it, and nothing else needs to be
+installed. The application also runs from source.
 
 Columbina is an unofficial fan project. The illustrations, the video and the icon of
-this application are AI-generated, are kept outside Git and are not covered by the MIT
-license of the code. See [ASSETS.md](ASSETS.md).
+this application are AI-generated, are kept in [`assets/`](assets) and are not covered
+by the MIT license of the code. See [ASSETS.md](ASSETS.md).
 
 ## Run from source
 
-Node.js 22.12 or newer is needed. The build copies three artwork files from a
-directory outside the repository, and stops with a message if they are missing.
-[ASSETS.md](ASSETS.md) says which files and where to name the directory.
+Node.js 22.12 or newer is needed. The build copies the three artwork files from
+`assets/`, and [ASSETS.md](ASSETS.md) says how other ones are used instead.
 
 ```console
 npm install
@@ -62,6 +63,9 @@ A click on a skill writes the command that hands it to the agent into the input 
 | Ctrl+K | Goes to the input field. On an empty field it opens the list of commands |
 | Ctrl+, | Opens the settings |
 
+On macOS ⌘ is held where the table says Ctrl, and the window writes its shortcuts with ⌘.
+Ctrl does the same there.
+
 While the window is in the background, the system tells of a question that waits and
 of a turn that has ended. The settings switch that off. The first page offers the
 projects that were opened before. If the service process ends, the page shows the last
@@ -93,9 +97,33 @@ and a turn that failed for want of it can be tried again with the button under i
 Another service, address or model is used once the service is started again, and the
 settings say so until it is.
 
-## With the real service
+## On Windows and on macOS
 
-Two environment variables of the shell that starts Electron choose the service process.
+The page draws the bar of the window, and leaves room for the buttons of the system. On
+Windows they lie over its right end, in the colours of the theme. On macOS they stand at its
+left end, in the middle of its height, and the bar gives their room back in full screen. A
+sheet of macOS, such as the dialog for a folder or the window for the key, comes down from
+under the bar. The menu of the application there has what copies and pastes, closes the
+window and leaves the application, and nothing that would load the page again.
+
+An application that is opened from the Finder is given a short `PATH`, without Homebrew or
+`/usr/local/bin`. So a package asks the login shell of the user for its `PATH` once, as a
+terminal starts it, and the service and the commands of the agent find what the user has
+installed. A shell that says nothing within five seconds leaves the `PATH` as it is, with
+those two places added.
+
+## The service
+
+A package starts the Python that it brings, in `resources/python`:
+`python -I -B -m columbina serve`. `-I` reads no `PYTHON` variable and no site of the user,
+and puts no folder of the project before the packages of the package. `-B` writes nothing
+into the package, whose modules are all compiled ahead. The environment of the service is
+that of the application, and the commands of the agent inherit it. A package never replays a
+recorded session: where its Python is missing, it says so.
+
+From source, without further settings, the shell replays a recorded session. Two
+environment variables of the shell that starts Electron choose another service process, in
+a package as well.
 
 | Variable | Value |
 |---|---|
@@ -128,6 +156,29 @@ protocol, and the interface cannot read it. What the service process logs goes t
 - When the window is closed, the interface is given a moment to send `shutdown`. The
   shell then closes the standard input of the service process, waits for it to end, and
   ends it and what it started if it has not ended after a few seconds.
+
+## Packages
+
+```console
+npm run package
+npm run package:try
+```
+
+`npm run package` builds the interface, puts the Python of the package together and makes
+the application around them, with the icon of the system, and a zip of it in `release/`. It
+runs on Windows on x64 and on macOS on Apple silicon, and makes the package of the system
+that it runs on. The Python is a CPython of python-build-standalone at a fixed version,
+fetched by uv. Columbina is built from the checkout, and what it needs is installed at the
+versions and with the hashes of `uv.lock`. What a service never uses is taken out, and every
+module is compiled ahead. On macOS the application is signed without a certificate, which
+Apple silicon needs, and zipped with its links as they are.
+
+`npm run package:try` tries the package as someone who downloads it has it: the pages and the
+artwork are in it, and its Python runs a task with a scripted model, greets and leaves as the
+window has it do, and writes nothing into the package.
+
+The workflow `desktop.yml` does both on GitHub, for both systems. A tag such as
+`desktop-v0.1.0`, the version of `package.json`, publishes the two zips as a release.
 
 ## Checks
 

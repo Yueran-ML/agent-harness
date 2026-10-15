@@ -5,12 +5,14 @@ It was generated with the built-in `image_gen` tool, with `transparent_backgroun
 No character illustration was used as a source or reference. The outside corners
 are transparent.
 
-The source artwork lives in the external asset directory described in `../ASSETS.md`.
-Build preparation copies it to the ignored `desktop/public/columbina-icon.png`.
-This AI-generated artwork and the derived icon are outside the source code's MIT license.
+The source artwork lives in `desktop/assets/columbina-icon.png`, as described in
+`../ASSETS.md`. Build preparation copies it to the ignored `desktop/public/columbina-icon.png`.
+This AI-generated artwork and the derived icons are outside the source code's MIT license.
 `desktop/electron/create-icon.ps1` fits the entire image into each square, preserves
 its alpha, and writes the six PNG-backed Windows icon sizes: 16, 32, 48, 64, 128,
-and 256 pixels. It does not crop the dove or rounded tile.
+and 256 pixels. It does not crop the dove or rounded tile. On macOS,
+`desktop/electron/create-icon.sh` resizes the square artwork with `sips` into the ten
+images of an icon set, from 16 to 1024 pixels, and `iconutil` writes `icon.icns` from them.
 
 ## Generation prompt
 

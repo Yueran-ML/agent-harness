@@ -103,7 +103,7 @@ describe('what the packed application holds of the shell', () => {
     const shell = read('electron/main.cjs');
     const named = [...shell.matchAll(/path\.join\(__dirname, '([^']+)'\)/g)].map(found => found[1]);
     expect(new Set(named)).toEqual(new Set(['icon.ico', 'preload.cjs', 'key-preload.cjs', 'mock-service.mjs']));
-    const packer = read('electron/package-win.mjs');
+    const packer = read('electron/package.mjs');
     for (const file of ['main.cjs', ...named]) expect(packer, file).toContain(`'/electron/${file}'`);
   });
 

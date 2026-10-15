@@ -4,7 +4,10 @@ dist/
 release/
 test-results/
 *.log
-# The build copies the artwork of assets/ into public/ and makes the icon of Windows from it.
+# The build copies the artwork of assets/ into public/ and makes the icons of the systems from it,
+# and a package puts its Python together in build/.
 public/
 electron/icon.ico
+electron/icon.icns
 assets.local.json
+build/

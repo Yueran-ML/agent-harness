@@ -19,6 +19,17 @@ change what was there before.
   parameters and from 2 to 16 bits, on twenty of the tasks. None passes half of its
   attempts, and `docs/bench` says where they fail. The Ollama of a run of the benchmark
   holds one request to one model, and `--ollama-port` lets two runs go side by side.
+- The desktop application can be downloaded from the releases of the repository, as a zip
+  for Windows on x64 and one for macOS on Apple silicon. Each brings a Python of its own
+  with Columbina in it, at the versions of `uv.lock`, and starts that service, so nothing
+  else needs to be installed. A tag such as `desktop-v0.1.0` has the workflow `desktop.yml`
+  make both packages, try them and publish them. The opening film, its poster and the icon
+  are kept in the repository for it, and are still outside the MIT license.
+- The window fits each system. On macOS the buttons of the window stand at the left end of
+  its bar and the bar gives their room back in full screen, shortcuts are written with ⌘,
+  sheets come down from under the bar, and the menu copies, pastes, closes and leaves. A
+  package asks the login shell of the user for its `PATH`, so that the commands of the agent
+  find what is installed with Homebrew.
 
 ## 0.1.0 (2026-10-15)
 

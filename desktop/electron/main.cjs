@@ -38,6 +38,11 @@ const SETUP_MS = 45_000;
 // How much of what it writes is read, in characters. Its answer is one line.
 const SETUP_OUTPUT_MOST = 512 * 1024;
 const NO_SETUP = 'No service program is set up for this application, so its services cannot be set up from here.';
+// How long the login shell of the user may take on macOS to say what its PATH is, and how much of what it writes is read.
+const LOGIN_SHELL_MS = 5_000;
+const LOGIN_SHELL_OUTPUT_MOST = 64 * 1024;
+// What the PATH of an application opened from the Finder leaves out on macOS: the programs of Homebrew, and /usr/local.
+const MAC_PROGRAMS = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/local/sbin'];
 
 /**
  * How the bar of the window is drawn. The page draws the bar itself and leaves room for the
@@ -70,6 +75,9 @@ let preferences = { theme: 'moonveil', recent: [] };
 let flashing = false;
 // The notification that shows, held so that it is not cleared away while it does.
 let shown = null;
+// On macOS, the PATH that the login shell of the user said, and the asking for it while it lasts.
+let loginPath = null;
+let askingLoginPath = null;
 
 app.setName('Columbina');
 if (process.platform === 'win32') app.setAppUserModelId('dev.columbina.desktop');
@@ -211,9 +219,83 @@ async function stopService() {
   });
   try { await stopping; } finally { stopping = null; }
 }
+/**
+ * Ask the login shell of the user what its PATH is, the way a terminal starts it, and answer null
+ * where it says nothing in time.
+ *
+ * An application that is opened from the Finder or the Dock on macOS is given only
+ * `/usr/bin:/bin:/usr/sbin:/sbin`, and the commands that an agent runs would not find what the user
+ * has installed, such as Homebrew, Node or Docker. The answer is marked at both ends, so that what
+ * the files of the shell print by themselves is left out.
+ */
+function askLoginPath() {
+  const program = process.env.SHELL && path.isAbsolute(process.env.SHELL) ? process.env.SHELL : '/bin/zsh';
+  const mark = '_COLUMBINA_PATH_';
+  return new Promise((resolve) => {
+    let child = null;
+    let written = '';
+    const timer = setTimeout(() => {
+      try { child?.kill(); } catch { /* It has ended. */ }
+      resolve(null);
+    }, LOGIN_SHELL_MS);
+    const answer = (found) => { clearTimeout(timer); resolve(found); };
+    try {
+      child = spawn(program, ['-ilc', `printf '${mark}%s${mark}' "$PATH"`], {
+        // Oh My Zsh would ask first whether it may update itself.
+        env: { ...process.env, DISABLE_AUTO_UPDATE: 'true' }, stdio: ['ignore', 'pipe', 'ignore'],
+      });
+    } catch {
+      answer(null);
+      return;
+    }
+    child.stdout.on('data', (chunk) => { if (written.length < LOGIN_SHELL_OUTPUT_MOST) written += chunk; });
+    child.on('error', () => answer(null));
+    child.on('close', () => {
+      const parts = written.split(mark);
+      answer(parts.length >= 3 && parts[1].trim() ? parts[1].trim() : null);
+    });
+  });
+}
+/** The PATH of the commands of the service on macOS: the one of the login shell, or the usual places added to the one there is. */
+function macPath() {
+  if (loginPath !== null) return loginPath;
+  const places = (process.env.PATH ?? '').split(':').filter(Boolean);
+  return [...places, ...MAC_PROGRAMS.filter((place) => !places.includes(place))].join(':');
+}
+/**
+ * The Python that a package brings, with Columbina in it, or null in development.
+ * It lies in `resources/python`, the way the packaging puts it there.
+ */
+function bundledPython() {
+  if (!app.isPackaged) return null;
+  const root = path.join(process.resourcesPath, 'python');
+  return process.platform === 'win32' ? path.join(root, 'python.exe') : path.join(root, 'bin', 'python3');
+}
+/**
+ * The environment of the service of a package: that of the application, with the PATH of the user
+ * on macOS. Nothing in it is meant for the Python of the package, since the commands of the agent
+ * inherit it: that Python keeps to itself through the flags that it is started with.
+ */
+function bundledEnvironment() {
+  const env = { ...process.env };
+  if (process.platform === 'darwin') env.PATH = macPath();
+  return env;
+}
+/**
+ * The program of the service: the one that COLUMBINA_SERVICE_EXECUTABLE names, else the Python
+ * of the package, else, in development only, the replay. A package never replays: what it shows
+ * is a real service, or that there is none.
+ */
 function serviceCommand() {
   const executable = process.env.COLUMBINA_SERVICE_EXECUTABLE;
-  if (!executable) return { executable: process.execPath, args: [path.join(__dirname, 'mock-service.mjs')], mode: 'mock', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
+  if (!executable) {
+    const python = bundledPython();
+    if (python === null) return { executable: process.execPath, args: [path.join(__dirname, 'mock-service.mjs')], mode: 'mock', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } };
+    if (!existsSync(python)) throw new Error('This package has no service of its own. Download it again from the releases of Columbina.');
+    // -I reads no PYTHON variable and no site of the user, and puts no folder of the project before
+    // the packages of the package. -B writes nothing into the package, whose files are all compiled.
+    return { executable: python, args: ['-I', '-B', '-m', 'columbina', 'serve'], mode: 'service', env: bundledEnvironment() };
+  }
   if (!path.isAbsolute(executable)) throw new Error('COLUMBINA_SERVICE_EXECUTABLE must be an absolute executable path.');
   const args = process.env.COLUMBINA_SERVICE_ARGS ? JSON.parse(process.env.COLUMBINA_SERVICE_ARGS) : ['-m', 'columbina', 'serve'];
   if (!Array.isArray(args) || args.some((value) => typeof value !== 'string')) throw new Error('COLUMBINA_SERVICE_ARGS must be a JSON array of strings.');
@@ -236,9 +318,10 @@ function setupCommand(more) {
  * What it is given goes to its standard input and nowhere else: not to its command line, not
  * into its environment, not into a file. That is how a key reaches it.
  */
-function runSetup(more, input = '') {
+async function runSetup(more, input = '') {
+  if (askingLoginPath) await askingLoginPath;
   const command = setupCommand(more);
-  if (!command) return Promise.reject(new Error(NO_SETUP));
+  if (!command) throw new Error(NO_SETUP);
   return new Promise((resolve, reject) => {
     const child = spawn(command.executable, command.args, {
       cwd: app.getPath('home'), env: command.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
@@ -325,6 +408,7 @@ function installHandlers() {
       if (exiting) throw new Error('The application is closing.');
       const cwd = approvedDirectory(options);
       await stopService();
+      if (askingLoginPath) await askingLoginPath;
       if (exiting) throw new Error('The application is closing.');
       const config = serviceCommand();
       mkdirSync(path.dirname(logPath()), { recursive: true });
@@ -525,8 +609,13 @@ app.whenReady().then(() => {
     // On macOS the menu stands at the top of the screen, and the keys that copy and paste, close
     // the window or leave go through it. These are all the menu that the application has there.
     Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]));
-    // A package has its icon in itself. In development the Dock would show that of Electron.
-    if (!app.isPackaged) app.dock?.setIcon(path.resolve(__dirname, '../dist/columbina-icon.png'));
+    if (app.isPackaged) {
+      // A package is opened from the Finder, with a short PATH. The login shell is asked while the window opens.
+      askingLoginPath = askLoginPath().then((found) => { loginPath = found; askingLoginPath = null; });
+    } else {
+      // A package has its icon in itself. In development the Dock would show that of Electron.
+      app.dock?.setIcon(path.resolve(__dirname, '../dist/columbina-icon.png'));
+    }
   }
   window = new BrowserWindow({
     width: 1380, height: 920, minWidth: 860, minHeight: 640, backgroundColor: theme.color, title: 'Columbina',

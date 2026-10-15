@@ -75,6 +75,21 @@ Columbina は、エージェントを言語モデルにつなぎ、指定した�
 
 ## ダウンロードとセットアップ
 
+### デスクトップアプリ
+
+デスクトップアプリでは、ウィンドウの中で Columbina と対話します。Python とサービスを内蔵しているので、ほかに何もインストールする必要はありません。このリポジトリの [Releases](https://github.com/Yueran-ML/agent-harness/releases) からダウンロードします。
+
+- Windows 10 または 11（x64）：`Columbina-…-windows-x64.zip` を展開し、`Columbina.exe` を開きます。アプリには署名がないため、SmartScreen が一度だけ確認を求めます。「詳細情報」を選び、「実行」を押してください。
+- macOS 12 以降（Apple シリコン）：`Columbina-…-macos-arm64.zip` を展開し、`Columbina.app` を「アプリケーション」フォルダに移します。Apple の証明書で署名されていないため、ターミナルで次のコマンドを一度実行すると、macOS で開けるようになります。
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Columbina.app
+```
+
+ウィンドウでプロジェクトのフォルダを選び、設定でモデルのサービスとキーを指定します。ウィンドウでできることは [desktop/README.md](desktop/README.md) で説明しています。
+
+### コマンドライン
+
 Columbina には Python 3.11 以降が必要で、[PyPI](https://pypi.org/project/columbina/) からインストールします。
 
 ```bash

@@ -1,0 +1,116 @@
+name: Desktop
+
+# A tag like desktop-v0.1.0 packages the desktop application for Windows on x64 and for macOS on
+# Apple silicon, each on its own system and with a Python of its own, tries both packages, and
+# publishes them as a release of that tag. Started by hand, it packages and tries them and keeps
+# the packages with the run for a week, without a release. The package on PyPI is not touched.
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+          - name: macOS on Apple silicon
+            os: macos-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+
+      # The version that the Python of the package was put together with on the machine of the author.
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.11.7"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: The tag is the version of the application
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "desktop-v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "the tag ${GITHUB_REF_NAME} is not the version ${version} of desktop/package.json"
+            exit 1
+          fi
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      # The page, the Python with Columbina built from this commit, the icon of the system, the
+      # application around them, and a zip of it.
+      - name: Package
+        run: npm run package
+
+      - name: Try the package
+        run: npm run package:try
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ runner.os == 'Windows' && 'windows-x64' || 'macos-arm64' }}
+          path: desktop/release/*.zip
+          if-no-files-found: error
+          retention-days: 7
+          # A zip is compressed already.
+          compression-level: 0
+
+  release:
+    name: Publish the release
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          The desktop application of Columbina, with the service and a Python of its own in it.
+          Nothing else needs to be installed.
+
+          - **Windows 10 or 11 on x64**: `Columbina-…-windows-x64.zip`. Unpack it and open
+            `Columbina.exe`. The application is not signed, so SmartScreen asks once: choose
+            *More info*, then *Run anyway*.
+          - **macOS 12 or later on Apple silicon**: `Columbina-…-macos-arm64.zip`. Unpack it, move
+            `Columbina.app` into *Applications*, and let it open once in a terminal, since it is
+            not signed with a certificate of Apple:
+            `xattr -dr com.apple.quarantine /Applications/Columbina.app`
+
+          The first start asks for the service of a model and its key. How to set up, and what
+          the application can do: [README](https://github.com/Yueran-ML/agent-harness#the-desktop-application).
+
+          The pictures, the opening film and the icon are AI-generated fan art and are not covered by
+          the MIT license of the code. See [ASSETS.md](https://github.com/Yueran-ML/agent-harness/blob/main/desktop/ASSETS.md).
+          EOF
+          gh release create "$GITHUB_REF_NAME" packages/*.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Columbina desktop ${GITHUB_REF_NAME#desktop-v}" \
+            --notes-file notes.md

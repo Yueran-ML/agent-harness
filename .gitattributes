@@ -7,3 +7,5 @@
 *.jpg binary
 *.pdf binary
 *.mp4 binary
+*.ico binary
+*.icns binary

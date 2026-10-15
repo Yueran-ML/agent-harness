@@ -101,6 +101,28 @@ network.
 
 ## Download and set up
 
+### The desktop application
+
+The desktop application holds a conversation with Columbina in a window. It brings a Python
+and the service of its own, so nothing else needs to be installed, and it is downloaded from
+the [releases](https://github.com/Yueran-ML/agent-harness/releases) of this repository:
+
+- On Windows 10 or 11 on x64, unpack `Columbina-…-windows-x64.zip` and open `Columbina.exe`.
+  The application is not signed, so SmartScreen asks once: choose *More info*, then
+  *Run anyway*.
+- On macOS 12 or later on Apple silicon, unpack `Columbina-…-macos-arm64.zip` and move
+  `Columbina.app` into *Applications*. It is not signed with a certificate of Apple, and
+  macOS opens it once this command has been run in a terminal:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Columbina.app
+```
+
+A project folder is chosen in the window, and the settings take the service of the model and
+its key. [desktop/README.md](desktop/README.md) says what the window does.
+
+### The command line
+
 Columbina needs Python 3.11 or newer, and is installed from
 [PyPI](https://pypi.org/project/columbina/):
 

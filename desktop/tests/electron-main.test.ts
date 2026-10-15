@@ -29,14 +29,23 @@ interface SetupRun {
 interface System {
   platform?: 'win32' | 'darwin' | 'linux';
   packaged?: boolean;
+  /** What the login shell of the user writes when it is asked for its PATH. Null is a shell that never ends. */
+  loginShell?: string | null;
 }
+
+/** What a login shell writes by itself, before it says its PATH. */
+const SAID_PATH = 'Last login: Thu Oct 15 on ttys000\n_COLUMBINA_PATH_/opt/homebrew/bin:/usr/bin:/bin_COLUMBINA_PATH_';
+
+/** Where a package keeps what it brings beside the application, such as its Python. */
+const resources = path.resolve('/columbina-test/resources');
 
 /**
  * The shell, with everything around it made up.
  *
  * Args:
  *   kept: What the file of preferences holds when the shell starts, as text. Without it there is no such file.
- *   env: The environment of the shell. Without the variable that names the service, the shell replays.
+ *   env: The environment of the shell. Without the variable that names the service, the shell replays
+ *     in development and runs the Python of the package in a package.
  *   system: The system, Windows unless it is named, and whether the shell is a package, which it is not
  *     unless that is said.
  */
@@ -49,6 +58,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   // The folders that are not there any more.
   const gone = new Set<string>();
   const missing = (file: string) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
+  // The files that are not there, beside the folders that are gone. Every other file is.
+  const absent = new Set<string>();
   const app = Object.assign(new EventEmitter(), {
     setName: vi.fn(), setAppUserModelId: vi.fn(), isPackaged: system.packaged ?? false,
     dock: { setIcon: vi.fn() },
@@ -98,7 +109,21 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const setup = {
     answer: ((): SetupRun => ({ out: '{"use": null, "services": []}\n', code: 0 })) as (args: string[], input: string) => SetupRun | null,
   };
+  // The runs of the login shell, asked for its PATH, and what it writes. Null is a shell that says nothing and does not end.
+  const logins: any[] = [];
+  const says = system.loginShell === undefined ? SAID_PATH : system.loginShell;
   const spawn = vi.fn((_executable, args: string[], options) => {
+    if (args[0] === '-ilc') {
+      const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), kill: vi.fn() });
+      logins.push(child);
+      if (says !== null) {
+        queueMicrotask(() => {
+          if (says) child.stdout.emit('data', Buffer.from(says, 'utf8'));
+          child.emit('close', 0, null);
+        });
+      }
+      return child;
+    }
     if (args.includes('setup')) {
       const child = Object.assign(new EventEmitter(), {
         pid: 500 + setups.length, exitCode: null as number | null, signalCode: null,
@@ -167,7 +192,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     'node:child_process': { spawn },
     'node:readline': { createInterface: () => Object.assign(new EventEmitter(), { close: vi.fn() }) },
     'node:fs': {
-      existsSync: () => true, mkdirSync: vi.fn(), realpathSync,
+      existsSync: (file: string) => !absent.has(path.resolve(file)), mkdirSync: vi.fn(), realpathSync,
       statSync: (value: string) => {
         if (gone.has(path.resolve(value))) throw missing(value);
         return { isDirectory: () => true };
@@ -193,7 +218,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   };
   runInNewContext(source, {
     require: (name: string) => { if (!(name in modules)) throw new Error(`Unexpected module: ${name}`); return modules[name]; },
-    __dirname: path.dirname(mainPath), process: { platform, env, execPath: 'Columbina.exe' },
+    __dirname: path.dirname(mainPath), process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources },
     URL, setTimeout, clearTimeout,
   }, { filename: mainPath });
   await Promise.resolve();
@@ -211,8 +236,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     { sender: keyWindow().webContents, senderFrame: keyWindow().webContents.mainFrame }, ...args);
   return {
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, file, sent,
-    dialog, files, gone, preferences, writeFileSync, notifications, Notification: TestNotification, system: world,
-    setups, setup, keyWindow, asKeyWindow, menu,
+    dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world,
+    setups, setup, keyWindow, asKeyWindow, menu, logins,
     live: () => live, peakLive: () => peakLive,
   };
 }
@@ -447,6 +472,131 @@ describe('the window on each system', () => {
     const windows = await shellHarness();
     windows.window.emit('enter-full-screen');
     expect(windows.sent).toEqual([]);
+  });
+});
+
+describe('the service of a package', () => {
+  const windowsPython = path.join(resources, 'python', 'python.exe');
+  const macPython = path.join(resources, 'python', 'bin', 'python3');
+  // The PATH of an application that is opened from the Finder, and what is added to it where the login shell says nothing.
+  const finder = '/usr/bin:/bin:/usr/sbin:/sbin';
+  const added = `${finder}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin`;
+
+  it('runs the Python that the package brings, and adds nothing for that Python to the environment', async () => {
+    const env = { PATH: 'C:\\Windows', PYTHONPATH: 'C:\\elsewhere', USERPROFILE: 'C:\\Users\\a' };
+    const shell = await shellHarness(undefined, env, { packaged: true });
+    const cwd = await shell.select('/selected-project');
+    await expect(shell.invoke('start', { cwd })).resolves.toEqual({ mode: 'service', cwd });
+    const [executable, args, options] = shell.spawn.mock.calls[0];
+    expect(executable).toBe(windowsPython);
+    expect(args).toEqual(['-I', '-B', '-m', 'columbina', 'serve']);
+    // The commands of the agent inherit this environment. What keeps that Python to itself are its flags.
+    expect(options.env).toEqual(env);
+    expect(shell.logins).toEqual([]);
+  });
+
+  it('sets services up with the same Python', async () => {
+    const shell = await shellHarness(undefined, {}, { packaged: true });
+    await shell.invoke('services');
+    expect(shell.spawn.mock.calls[0][0]).toBe(windowsPython);
+    expect(shell.spawn.mock.calls[0][1]).toEqual(['-I', '-B', '-m', 'columbina', 'setup', '--list']);
+  });
+
+  it('never replays a recorded session, and says so where its Python is missing', async () => {
+    const shell = await shellHarness(undefined, {}, { packaged: true });
+    shell.absent.add(windowsPython);
+    const cwd = await shell.select('/selected-project');
+    await expect(shell.invoke('start', { cwd })).rejects.toThrow('This package has no service of its own.');
+    await expect(shell.invoke('services')).rejects.toThrow('This package has no service of its own.');
+    expect(shell.spawn).not.toHaveBeenCalled();
+  });
+
+  it('runs the program that is named instead, where one is', async () => {
+    const shell = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python }, { packaged: true });
+    const cwd = await shell.select('/selected-project');
+    await expect(shell.invoke('start', { cwd })).resolves.toEqual({ mode: 'service', cwd });
+    expect(shell.spawn.mock.calls[0][0]).toBe(python);
+    expect(shell.spawn.mock.calls[0][1]).toEqual(['-m', 'columbina', 'serve']);
+  });
+
+  it('on macOS runs bin/python3, with the PATH that the login shell of the user says', async () => {
+    const env = { SHELL: '/bin/bash', PATH: finder };
+    const shell = await shellHarness(undefined, env, { platform: 'darwin', packaged: true });
+    // The shell is asked once, as a terminal starts it, while the window opens.
+    expect(shell.logins).toHaveLength(1);
+    const [program, asked, options] = shell.spawn.mock.calls[0];
+    expect(program).toBe('/bin/bash');
+    expect(asked).toEqual(['-ilc', `printf '_COLUMBINA_PATH_%s_COLUMBINA_PATH_' "$PATH"`]);
+    expect(options.env).toEqual({ ...env, DISABLE_AUTO_UPDATE: 'true' });
+    expect(options.stdio).toEqual(['ignore', 'pipe', 'ignore']);
+    const cwd = await shell.select('/selected-project');
+    await expect(shell.invoke('start', { cwd })).resolves.toEqual({ mode: 'service', cwd });
+    const [executable, args, served] = shell.spawn.mock.calls[1];
+    expect(executable).toBe(macPython);
+    expect(args).toEqual(['-I', '-B', '-m', 'columbina', 'serve']);
+    expect(served.env).toEqual({ ...env, PATH: '/opt/homebrew/bin:/usr/bin:/bin' });
+    await shell.invoke('services');
+    expect(shell.spawn.mock.calls[2][2].env.PATH).toBe('/opt/homebrew/bin:/usr/bin:/bin');
+    expect(shell.logins).toHaveLength(1);
+  });
+
+  it('on macOS asks zsh where no shell of the user is named by its path', async () => {
+    for (const env of [{}, { SHELL: 'zsh' }, { SHELL: '' }] as Record<string, string>[]) {
+      const shell = await shellHarness(undefined, env, { platform: 'darwin', packaged: true });
+      expect(shell.spawn.mock.calls[0][0]).toBe('/bin/zsh');
+    }
+  });
+
+  it.each([
+    ['nothing', ''],
+    ['no mark', '/opt/homebrew/bin:/usr/bin'],
+    ['one mark only', '_COLUMBINA_PATH_/opt/homebrew/bin'],
+    ['an empty PATH', '_COLUMBINA_PATH_ _COLUMBINA_PATH_'],
+  ])('on macOS adds the usual places to the PATH where the login shell writes %s', async (_what, written) => {
+    const shell = await shellHarness(undefined, { PATH: finder }, { platform: 'darwin', packaged: true, loginShell: written });
+    const cwd = await shell.select('/selected-project');
+    await shell.invoke('start', { cwd });
+    expect(shell.spawn.mock.calls.at(-1)![2].env.PATH).toBe(added);
+  });
+
+  it('on macOS adds a usual place only where it is not in the PATH already', async () => {
+    const env = { PATH: '/usr/local/bin:/usr/bin:/bin' };
+    const shell = await shellHarness(undefined, env, { platform: 'darwin', packaged: true, loginShell: '' });
+    const cwd = await shell.select('/selected-project');
+    await shell.invoke('start', { cwd });
+    expect(shell.spawn.mock.calls.at(-1)![2].env.PATH)
+      .toBe('/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/sbin');
+  });
+
+  it('on macOS waits five seconds at most for a login shell that does not answer', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await shellHarness(undefined, { PATH: finder }, { platform: 'darwin', packaged: true, loginShell: null });
+      const cwd = await shell.select('/selected-project');
+      const started = shell.invoke('start', { cwd });
+      const listed = shell.invoke('services');
+      await vi.advanceTimersByTimeAsync(4_900);
+      // Only the login shell has been started.
+      expect(shell.spawn).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(200);
+      await expect(started).resolves.toEqual({ mode: 'service', cwd });
+      await expect(listed).resolves.toEqual({ use: null, services: [] });
+      expect(shell.logins[0].kill).toHaveBeenCalledOnce();
+      const [served, setUp] = ['serve', 'setup'].map(word => shell.spawn.mock.calls.find(([, args]) => args.includes(word))!);
+      expect(served[2].env.PATH).toBe(added);
+      expect(setUp[2].env.PATH).toBe(added);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks no login shell on Windows, nor in development', async () => {
+    const windows = await shellHarness(undefined, {}, { packaged: true });
+    expect(windows.logins).toEqual([]);
+    const development = await shellHarness(undefined, { PATH: finder }, { platform: 'darwin' });
+    expect(development.logins).toEqual([]);
+    const cwd = await development.select('/selected-project');
+    await expect(development.invoke('start', { cwd })).resolves.toEqual({ mode: 'mock', cwd });
   });
 });
 

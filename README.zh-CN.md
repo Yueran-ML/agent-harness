@@ -75,6 +75,21 @@ Columbina 让一个 Agent 接上语言模型，在你指定的目录里工作。
 
 ## 下载与部署
 
+### 桌面应用
+
+桌面应用在一个窗口里和 Columbina 对话。它自带 Python 和服务，不用再装别的东西，从本仓库的 [Releases](https://github.com/Yueran-ML/agent-harness/releases) 下载：
+
+- Windows 10 或 11（x64）：解压 `Columbina-…-windows-x64.zip`，打开 `Columbina.exe`。应用没有签名，SmartScreen 会拦一次：点“更多信息”，再点“仍要运行”。
+- macOS 12 或更新的版本（Apple 芯片）：解压 `Columbina-…-macos-arm64.zip`，把 `Columbina.app` 移到“应用程序”文件夹。它没有用 Apple 的证书签名，在终端里运行一次下面这条命令之后，macOS 才会打开它：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Columbina.app
+```
+
+在窗口里选一个项目文件夹，在设置里选模型服务、填密钥。窗口能做什么，见 [desktop/README.md](desktop/README.md)。
+
+### 命令行
+
 Columbina 需要 Python 3.11 或更新的版本，从 [PyPI](https://pypi.org/project/columbina/) 安装：
 
 ```bash

@@ -4,7 +4,7 @@ All notable changes are written down here. The version follows
 [Semantic Versioning](https://semver.org/), and while it is below 1.0 a minor version may
 change what was there before.
 
-## Unreleased
+## 0.1.1 (2026-10-16)
 
 - `columbina doctor` sees whether a session could start, and says what is in the way: the
   profile, the model and its service, which is asked for the list of its models with the

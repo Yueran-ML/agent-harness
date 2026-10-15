@@ -10,32 +10,36 @@ rights to these images, video, character designs, or any music.
 
 | Build filename | Source and treatment |
 | --- | --- |
-| `columbina-intro.mp4` | User-supplied Jimeng AI opening video, dated 2026-10-09. Original source only; never copied into the application. |
+| `columbina-intro.mp4` | User-supplied Jimeng AI opening video, dated 2026-10-09. Original source only; kept outside the repository and never copied into the application. |
 | `columbina-intro-extended.mp4` | Derived from that opening video. Final three seconds slowed to half speed, original audio removed. `AIGC`, `UserComment` and `LvMetaInfo` provenance tags are preserved and checked by the conversion script. |
 | `moonlit-columbina.png` | User-supplied AI fan illustration of Columbina, used as the opening poster. |
 | `columbina-icon.png`, `electron/icon.ico` | AI-generated silver dove, created using OpenAI's image generation tool. Prompt and conversion details are recorded in `electron/icon-design.md`. |
 
-No artwork or audio binary is committed to Git. The build copies only the three
-runtime visual assets into ignored `public/` and derives the ignored Windows icon.
-This notice is also copied to `dist/ASSET-NOTICES.txt` in the application package.
-These notices describe provenance and license boundaries; they are not a grant of
-permission from any third-party rights holder.
+The three runtime visual files, `columbina-intro-extended.mp4`, `moonlit-columbina.png`
+and `columbina-icon.png`, are kept in `desktop/assets/` since 2026-10-15, so that every
+build, on any machine and in CI, shows the same opening. They are still outside the
+MIT license of the code. No audio binary is committed, and neither is the original
+video. The build copies the three files into ignored `public/` and derives the icon
+of Windows from `columbina-icon.png`. This notice is also copied to
+`dist/ASSET-NOTICES.txt` in the application package. These notices describe provenance
+and license boundaries; they are not a grant of permission from any third-party rights
+holder.
 
-## Local artwork setup
+## Artwork setup
 
-Keep the four source/build files named above (excluding `icon.ico`) in a directory
-outside the repository. Point `COLUMBINA_ASSET_DIR` at that absolute directory, or
-create a local, ignored `desktop/assets.local.json`:
+`npm run dev` and `npm run build` copy the three files from `desktop/assets/`. To try other
+artwork, point `COLUMBINA_ASSET_DIR` at an absolute directory that holds files of the same
+names, or create a local, ignored `desktop/assets.local.json`:
 
 ```json
 { "assetDirectory": "F:\\path\\to\\columbina-local-assets" }
 ```
 
-Run `npm run assets:extend` when regenerating the silent, extended video; FFmpeg and
-FFprobe must be on PATH. The script stops if provenance tags are missing or changed.
-`npm run dev` and `npm run build` copy the runtime assets automatically. Run
-`npm run package:win` to build the UI, regenerate the Windows icon, and package it.
-The original video is archived externally and is not shipped alongside its derivative.
+Run `npm run assets:extend` when regenerating the silent, extended video from the
+original; FFmpeg and FFprobe must be on PATH, and the original must lie in such a
+directory. The script writes the result there, to be copied into `desktop/assets/`, and it
+stops if provenance tags are missing or changed. The original
+video is archived outside the repository and is not shipped alongside its derivative.
 
 ## Local background music
 

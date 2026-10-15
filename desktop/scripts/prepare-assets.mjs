@@ -3,6 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// The artwork comes with the repository, in assets/. A directory of one's own may be put
+// in its place, by COLUMBINA_ASSET_DIR or by a local, ignored assets.local.json.
 let assetDirectory = process.env.COLUMBINA_ASSET_DIR;
 if (!assetDirectory) {
   try {
@@ -12,8 +14,9 @@ if (!assetDirectory) {
     if (error.code !== 'ENOENT') throw error;
   }
 }
+assetDirectory ??= path.join(desktop, 'assets');
 if (typeof assetDirectory !== 'string' || !path.isAbsolute(assetDirectory)) {
-  throw new Error('Set COLUMBINA_ASSET_DIR to an external artwork directory, or create assets.local.json as described in ASSETS.md.');
+  throw new Error('COLUMBINA_ASSET_DIR and assets.local.json name the artwork directory by its absolute path, as described in ASSETS.md.');
 }
 
 // Only these three visual assets enter the application. The original source clip

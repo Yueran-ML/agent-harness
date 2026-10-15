@@ -4,7 +4,7 @@ dist/
 release/
 test-results/
 *.log
-# Artwork is supplied from a local external directory at build time.
+# The build copies the artwork of assets/ into public/ and makes the icon of Windows from it.
 public/
 electron/icon.ico
 assets.local.json

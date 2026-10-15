@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { languages } from '../src/app/locale';
 import { languageFor } from '../src/i18n';
 import { themes } from '../src/themes';
-import { themeColour } from './stylesheet';
+import { blockOf, themeColour } from './stylesheet';
 
 const mainPath = fileURLToPath(new URL('../electron/main.cjs', import.meta.url));
 const source = readFileSync(mainPath, 'utf8');
@@ -25,14 +25,23 @@ interface SetupRun {
   code: number;
 }
 
+/** The system that the shell runs on, and whether it runs as a package or from the checkout. */
+interface System {
+  platform?: 'win32' | 'darwin' | 'linux';
+  packaged?: boolean;
+}
+
 /**
  * The shell, with everything around it made up.
  *
  * Args:
  *   kept: What the file of preferences holds when the shell starts, as text. Without it there is no such file.
  *   env: The environment of the shell. Without the variable that names the service, the shell replays.
+ *   system: The system, Windows unless it is named, and whether the shell is a package, which it is not
+ *     unless that is said.
  */
-async function shellHarness(kept?: string, env: Record<string, string> = {}) {
+async function shellHarness(kept?: string, env: Record<string, string> = {}, system: System = {}) {
+  const platform = system.platform ?? 'win32';
   const handlers = new Map<string, (...args: any[]) => any>();
   // The files that the shell reads and writes whole, by their paths.
   const files = new Map<string, string>();
@@ -41,7 +50,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}) {
   const gone = new Set<string>();
   const missing = (file: string) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
   const app = Object.assign(new EventEmitter(), {
-    setName: vi.fn(), setAppUserModelId: vi.fn(), isPackaged: true,
+    setName: vi.fn(), setAppUserModelId: vi.fn(), isPackaged: system.packaged ?? false,
+    dock: { setIcon: vi.fn() },
     whenReady: () => Promise.resolve(), quit: vi.fn(),
     getPath: vi.fn((name: string) => {
       if (name === 'documents') throw new Error('Documents must never be used as a project.');
@@ -78,6 +88,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}) {
     destroy = vi.fn();
     setBackgroundColor = vi.fn();
     setTitleBarOverlay = vi.fn();
+    setSheetOffset = vi.fn();
   }
   let live = 0;
   let peakLive = 0;
@@ -145,11 +156,12 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}) {
     show = vi.fn();
     constructor(public options: unknown) { super(); notifications.push(this); }
   }
-  const system = { openExternal: vi.fn(), showItemInFolder: vi.fn() };
+  const world = { openExternal: vi.fn(), showItemInFolder: vi.fn() };
   const writeFileSync = vi.fn((file: string, text: string) => { files.set(path.resolve(file), String(text)); });
+  const menu = { buildFromTemplate: vi.fn((template: unknown[]) => ({ template })), setApplicationMenu: vi.fn() };
   const modules: Record<string, unknown> = {
     electron: {
-      app, BrowserWindow: TestWindow, dialog, shell: system, Notification: TestNotification,
+      app, BrowserWindow: TestWindow, Menu: menu, dialog, shell: world, Notification: TestNotification,
       ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => handlers.set(name, callback), on: vi.fn() },
     },
     'node:child_process': { spawn },
@@ -181,7 +193,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}) {
   };
   runInNewContext(source, {
     require: (name: string) => { if (!(name in modules)) throw new Error(`Unexpected module: ${name}`); return modules[name]; },
-    __dirname: path.dirname(mainPath), process: { platform: 'win32', env, execPath: 'Columbina.exe' },
+    __dirname: path.dirname(mainPath), process: { platform, env, execPath: 'Columbina.exe' },
     URL, setTimeout, clearTimeout,
   }, { filename: mainPath });
   await Promise.resolve();
@@ -199,8 +211,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}) {
     { sender: keyWindow().webContents, senderFrame: keyWindow().webContents.mainFrame }, ...args);
   return {
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, file, sent,
-    dialog, files, gone, preferences, writeFileSync, notifications, Notification: TestNotification, system,
-    setups, setup, keyWindow, asKeyWindow,
+    dialog, files, gone, preferences, writeFileSync, notifications, Notification: TestNotification, system: world,
+    setups, setup, keyWindow, asKeyWindow, menu,
     live: () => live, peakLive: () => peakLive,
   };
 }
@@ -374,6 +386,67 @@ describe('Electron window themes', () => {
     const unrelatedFrame = { sender: shell.event.sender, senderFrame: { url: shell.event.senderFrame.url } };
     expect(() => shell.handlers.get('columbina:set-theme')!(unrelatedFrame, themes[0])).toThrow('IPC sender');
     expect(shell.window.setTitleBarOverlay).not.toHaveBeenCalled();
+  });
+});
+
+describe('the window on each system', () => {
+  it('leaves the buttons of Windows over the right end of the bar, and the menu as it is', async () => {
+    const shell = await shellHarness();
+    expect(shell.window.options.titleBarStyle).toBe('hidden');
+    expect(shell.window.options.titleBarOverlay).toEqual(expect.objectContaining({ height: 40 }));
+    expect(shell.window.options).not.toHaveProperty('trafficLightPosition');
+    expect(shell.menu.setApplicationMenu).not.toHaveBeenCalled();
+    expect(shell.window.setSheetOffset).not.toHaveBeenCalled();
+    expect(shell.app.dock.setIcon).not.toHaveBeenCalled();
+  });
+
+  it('stands the buttons of macOS at the left end of the bar, in the middle of its height', async () => {
+    const shell = await shellHarness(undefined, {}, { platform: 'darwin' });
+    expect(shell.window.options.titleBarStyle).toBe('hidden');
+    expect(shell.window.options).not.toHaveProperty('titleBarOverlay');
+    expect(shell.window.options.trafficLightPosition).toEqual({ x: 16, y: 13 });
+    // A sheet, such as the dialog for a folder, comes down from under the bar that the page draws.
+    expect(shell.window.setSheetOffset).toHaveBeenCalledWith(40);
+    // The page draws the whole bar there: a theme changes what lies behind it, and no overlay.
+    shell.invoke('set-theme', 'moonwhite');
+    expect(shell.window.setBackgroundColor).toHaveBeenLastCalledWith(themeColour('moonwhite', 'ink-0'));
+    expect(shell.window.setTitleBarOverlay).not.toHaveBeenCalled();
+  });
+
+  it('has the page leave room in its bar where the buttons of each system stand', () => {
+    // The page names the system in the frame of the window, and says when it is in full screen.
+    const bar = readFileSync(new URL('../src/ui/shell.css', import.meta.url), 'utf8');
+    expect(blockOf(bar, '.window[data-native] .titlebar')).toContain('padding-right: 148px;');
+    const mac = blockOf(bar, ".window[data-native='darwin'] .titlebar");
+    expect(mac).toContain('padding-left: 84px;');
+    expect(mac).toContain('padding-right: var(--s4);');
+    expect(blockOf(bar, ".window[data-native='darwin'][data-full-screen] .titlebar")).toContain('padding-left: var(--s4);');
+  });
+
+  it('gives macOS a menu that copies and pastes, closes and leaves, and has nothing that reloads the page', async () => {
+    const shell = await shellHarness(undefined, {}, { platform: 'darwin' });
+    expect(shell.menu.buildFromTemplate).toHaveBeenCalledOnce();
+    expect(shell.menu.buildFromTemplate.mock.calls[0][0]).toEqual([
+      { role: 'appMenu' }, { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'windowMenu' },
+    ]);
+    expect(shell.menu.setApplicationMenu).toHaveBeenCalledWith(shell.menu.buildFromTemplate.mock.results[0].value);
+  });
+
+  it('gives the Dock the dove in development, where a package has its own icon', async () => {
+    const development = await shellHarness(undefined, {}, { platform: 'darwin' });
+    expect(development.app.dock.setIcon).toHaveBeenCalledWith(path.resolve(path.dirname(mainPath), '../dist/columbina-icon.png'));
+    const packaged = await shellHarness(undefined, {}, { platform: 'darwin', packaged: true });
+    expect(packaged.app.dock.setIcon).not.toHaveBeenCalled();
+  });
+
+  it('tells the page on macOS when the window goes into full screen and out of it', async () => {
+    const mac = await shellHarness(undefined, {}, { platform: 'darwin' });
+    mac.window.emit('enter-full-screen');
+    mac.window.emit('leave-full-screen');
+    expect(mac.sent).toEqual([['columbina:full-screen', true], ['columbina:full-screen', false]]);
+    const windows = await shellHarness();
+    windows.window.emit('enter-full-screen');
+    expect(windows.sent).toEqual([]);
   });
 });
 

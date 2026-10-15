@@ -993,6 +993,48 @@ describe('what the window looks like', () => {
     expect(setTheme.mock.calls).toEqual([['moonveil'], ['moonwhite']]);
   });
 
+  it('leaves room for the buttons of macOS at the left end of the bar, and takes it back in full screen', () => {
+    let tell = (_full: boolean) => {};
+    const stop = vi.fn();
+    const onFullScreen = vi.fn((listener: (full: boolean) => void) => { tell = listener; return stop; });
+    vi.stubGlobal('columbina', { platform: 'darwin', setTheme: vi.fn(async () => {}), onFullScreen });
+    const { unmount } = page(first());
+    const frame = document.querySelector('.window')!;
+    expect(frame.getAttribute('data-native')).toBe('darwin');
+    expect(frame.hasAttribute('data-full-screen')).toBe(false);
+    act(() => tell(true));
+    expect(frame.hasAttribute('data-full-screen')).toBe(true);
+    act(() => tell(false));
+    expect(frame.hasAttribute('data-full-screen')).toBe(false);
+    expect(onFullScreen).toHaveBeenCalledOnce();
+    unmount();
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it('names the system of the window, and hears of full screen on macOS only', () => {
+    const onFullScreen = vi.fn(() => () => {});
+    vi.stubGlobal('columbina', { platform: 'win32', setTheme: vi.fn(async () => {}), onFullScreen });
+    page(first());
+    expect(document.querySelector('.window')?.getAttribute('data-native')).toBe('win32');
+    expect(onFullScreen).not.toHaveBeenCalled();
+  });
+
+  it('writes the shortcut of the list of tasks with ⌘ on macOS, and with Ctrl elsewhere', () => {
+    const titled = (label: string) => document.querySelector(`button[aria-label="${label}"]`)?.getAttribute('title');
+    for (const [platform, written] of [['darwin', '⌘B'], ['win32', 'Ctrl+B'], [undefined, 'Ctrl+B']]) {
+      cleanup();
+      // Without a platform, the page is shown without the application, as in a browser.
+      vi.stubGlobal('columbina', platform ? { platform, setTheme: vi.fn(async () => {}), onFullScreen: () => () => {} } : undefined);
+      page(first());
+      expect(titled('Hide the list of tasks'), platform).toBe(`Hide the list of tasks (${written})`);
+      chord('b');
+      expect(titled('Show the list of tasks'), platform).toBe(`Show the list of tasks (${written})`);
+      // The key is the same on every system: ⌘ is taken where Ctrl is.
+      chord('b', { metaKey: true });
+      expect(titled('Hide the list of tasks'), platform).toBe(`Hide the list of tasks (${written})`);
+    }
+  });
+
   it('counts as the language counts, and asks for the window of the key in the language of its words', async () => {
     localStorage.setItem('columbina-language', 'zh');
     const task = first({

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Notification, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const {
@@ -38,6 +38,16 @@ const SETUP_MS = 45_000;
 // How much of what it writes is read, in characters. Its answer is one line.
 const SETUP_OUTPUT_MOST = 512 * 1024;
 const NO_SETUP = 'No service program is set up for this application, so its services cannot be set up from here.';
+
+/**
+ * How the bar of the window is drawn. The page draws the bar itself and leaves room for the
+ * buttons of the system: on Windows and Linux they lie over its right end, in the colours of
+ * the theme, and on macOS they stand at its left end, in the middle of its height.
+ */
+function windowBar(theme) {
+  if (process.platform === 'darwin') return { titleBarStyle: 'hidden', trafficLightPosition: { x: 16, y: 13 } };
+  return { titleBarStyle: 'hidden', titleBarOverlay: theme };
+}
 // What the shell says by itself, in every language that the interface speaks, each under the
 // name that a page gives it. Everything else that is said is said by a page.
 const WORDS = {
@@ -511,13 +521,28 @@ app.whenReady().then(() => {
   preferences = readPreferences();
   // The window opens in the theme that was chosen last, so that it does not begin in another one.
   const theme = titleBarThemes[preferences.theme];
+  if (process.platform === 'darwin') {
+    // On macOS the menu stands at the top of the screen, and the keys that copy and paste, close
+    // the window or leave go through it. These are all the menu that the application has there.
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]));
+    // A package has its icon in itself. In development the Dock would show that of Electron.
+    if (!app.isPackaged) app.dock?.setIcon(path.resolve(__dirname, '../dist/columbina-icon.png'));
+  }
   window = new BrowserWindow({
     width: 1380, height: 920, minWidth: 860, minHeight: 640, backgroundColor: theme.color, title: 'Columbina',
     icon: path.join(__dirname, 'icon.ico'),
-    titleBarStyle: 'hidden', titleBarOverlay: theme,
+    ...windowBar(theme),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, autoplayPolicy: 'no-user-gesture-required' },
   });
   window.setMenuBarVisibility(false);
+  if (process.platform === 'darwin') {
+    // A sheet, such as the dialog for a folder or the window for the key, comes down from under the
+    // bar that the page draws, and not over it.
+    window.setSheetOffset(theme.height);
+    // In full screen the buttons of the window are hidden, and the page gives their room back.
+    window.on('enter-full-screen', () => tell('columbina:full-screen', true));
+    window.on('leave-full-screen', () => tell('columbina:full-screen', false));
+  }
   // The production window only loads bundled assets. Vite's development CSP
   // can permit its local HMR socket; the desktop window has no network channel.
   window.webContents.session.webRequest.onBeforeRequest((details, callback) => {

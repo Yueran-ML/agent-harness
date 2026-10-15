@@ -1,4 +1,6 @@
 export interface ColumbinaBridge {
+  /** The system that the application runs on, as Node names it: `win32`, `darwin` or `linux`. */
+  platform: string;
   /**
    * Let the user choose a folder in the dialog of the system, which the shell titles in the
    * language that is named. Null if none was chosen.
@@ -10,6 +12,8 @@ export interface ColumbinaBridge {
   onLine(listener: (line: string) => void): () => void;
   onClose(listener: (reason: string) => void): () => void;
   onShutdown(listener: () => void): () => void;
+  /** Hear when the window goes into full screen, and out of it. Told of on macOS only. */
+  onFullScreen(listener: (full: boolean) => void): () => void;
   stop(): Promise<void>;
   setTheme(theme: 'moonveil' | 'moonwhite'): Promise<void>;
   /** The last lines that the service wrote for errors. They are still there after it has ended. */

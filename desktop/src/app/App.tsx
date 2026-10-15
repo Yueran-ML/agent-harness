@@ -23,6 +23,7 @@ import { StatusLine } from './StatusLine';
 import { Drafts, samePlace, Unread, type Place } from './drafts';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
 import { storedOpening, storeOpening } from './opening';
+import { onMac, shortcut } from './system';
 import {
   folderName, goneWords, joined, retryText, skillLine, STILL_STARTING_MS, taskTitle, waitingWords,
 } from './tell';
@@ -91,6 +92,9 @@ export default function App() {
   const [tellMe, setTellMe] = useState(storedTelling);
 
   const [sidebarHidden, setSidebarHidden] = useState(false);
+  // On macOS the buttons of the window are hidden in full screen, and the bar gives their room back.
+  const [fullScreen, setFullScreen] = useState(false);
+  useEffect(() => (onMac() ? window.columbina!.onFullScreen(setFullScreen) : undefined), []);
   const [inspector, setInspector] = useState<InspectorTab | null>(null);
   const [settings, setSettings] = useState<SettingsPart | null>(null);
   const [link, setLink] = useState<string | null>(null);
@@ -348,7 +352,11 @@ export default function App() {
   }, [folder]);
 
   return <Words.Provider value={words}>
-    <div className="window" data-native={window.columbina ? '' : undefined}>
+    <div
+      className="window"
+      data-native={window.columbina ? window.columbina.platform ?? '' : undefined}
+      data-full-screen={fullScreen ? '' : undefined}
+    >
       <header className="titlebar">
         <span className="brand"><span className="brand-moon" aria-hidden="true" />Columbina</span>
         {folder && <span className="titlebar-project" title={workspace.hello?.cwd}>{folder}</span>}
@@ -388,7 +396,7 @@ export default function App() {
               className="icon-btn"
               onClick={() => setSidebarHidden(false)}
               aria-label={words.label.showTasks}
-              title={`${words.label.showTasks} (Ctrl+B)`}
+              title={`${words.label.showTasks} (${shortcut('B')})`}
             >
               <PanelLeft size={16} />
             </button>}

@@ -5,6 +5,8 @@ const subscribe = (channel, callback) => {
   return () => ipcRenderer.removeListener(channel, listener);
 };
 contextBridge.exposeInMainWorld('columbina', {
+  // Where the page draws the bar of the window, and which keys it names, go by the system.
+  platform: process.platform,
   selectFolder: (asked) => ipcRenderer.invoke('columbina:select-folder', { language: asked?.language }),
   getLocalMusic: () => ipcRenderer.invoke('columbina:local-music'),
   start: (options) => ipcRenderer.invoke('columbina:start', { cwd: options?.cwd }),
@@ -12,6 +14,7 @@ contextBridge.exposeInMainWorld('columbina', {
   onLine: (callback) => subscribe('columbina:line', callback),
   onClose: (callback) => subscribe('columbina:closed', callback),
   onShutdown: (callback) => subscribe('columbina:shutdown', callback),
+  onFullScreen: (callback) => subscribe('columbina:full-screen', callback),
   stop: () => ipcRenderer.invoke('columbina:stop'),
   setTheme: (theme) => ipcRenderer.invoke('columbina:set-theme', theme),
   serviceTail: () => ipcRenderer.invoke('columbina:service-tail'),

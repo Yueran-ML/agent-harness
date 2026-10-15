@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Folder, PanelLeftClose, Search, Settings2, SquarePen } from 'lucide-react';
 import type { Workspace } from '../useWorkspace';
 import { useWords } from './locale';
+import { shortcut } from './system';
 import { agoOf, folderName, standingOf, taskTitle } from './tell';
 
 /** The time, told anew every minute. */
@@ -51,7 +52,7 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
       <button type="button" className="btn new-task" disabled={busy} onClick={onNewTask} data-test="new-task">
         <SquarePen size={15} aria-hidden="true" />{words.label.newTask}
       </button>
-      <button type="button" className="icon-btn" onClick={onHide} aria-label={words.label.hideTasks} title={`${words.label.hideTasks} (Ctrl+B)`}>
+      <button type="button" className="icon-btn" onClick={onHide} aria-label={words.label.hideTasks} title={`${words.label.hideTasks} (${shortcut('B')})`}>
         <PanelLeftClose size={16} />
       </button>
     </div>

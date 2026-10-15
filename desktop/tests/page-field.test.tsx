@@ -164,6 +164,18 @@ describe('a question of the agent', () => {
     expect(calls.onAnswer.mock.calls).toEqual([['allowed-once', false]]);
   });
 
+  it('names the key that is held with Enter as the system does: ⌘ on macOS, Ctrl elsewhere', () => {
+    const named = () => [...one('consent').querySelectorAll('kbd')].map(each => each.textContent);
+    card();
+    expect(named()).toEqual(['Ctrl', 'Enter']);
+    for (const [platform, held] of [['darwin', '⌘'], ['win32', 'Ctrl'], ['linux', 'Ctrl']]) {
+      cleanup();
+      vi.stubGlobal('columbina', { platform });
+      card();
+      expect(named(), platform).toEqual([held, 'Enter']);
+    }
+  });
+
   it('leaves the key to a sheet that is open above it', () => {
     const { calls } = card();
     settle();

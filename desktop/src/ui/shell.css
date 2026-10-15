@@ -22,9 +22,21 @@
   user-select: none;
 }
 
-/* Where the shell draws the three buttons of the window. */
+/*
+ * Where the shell draws the three buttons of the window: over the right end of the bar on
+ * Windows and Linux, and at its left end on macOS, where they are hidden in full screen.
+ */
 .window[data-native] .titlebar {
   padding-right: 148px;
+}
+
+.window[data-native='darwin'] .titlebar {
+  padding-right: var(--s4);
+  padding-left: 84px;
+}
+
+.window[data-native='darwin'][data-full-screen] .titlebar {
+  padding-left: var(--s4);
 }
 
 .brand {

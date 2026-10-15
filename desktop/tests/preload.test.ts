@@ -7,8 +7,8 @@ const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.ur
 type Call = (...given: any[]) => any;
 type Listener = (...given: unknown[]) => void;
 
-/** A script of a bridge, run with an Electron that writes down what is asked of it. */
-function bridgeOf(file: string) {
+/** A script of a bridge, run with an Electron that writes down what is asked of it, on a system. */
+function bridgeOf(file: string, platform = 'win32') {
   const invoked: unknown[][] = [];
   const sent: unknown[][] = [];
   const listening = new Map<string, Set<Listener>>();
@@ -26,14 +26,14 @@ function bridgeOf(file: string) {
     if (name !== 'electron') throw new Error(`The script of a bridge asks for ${name}.`);
     return electron;
   };
-  runInNewContext(read(file), { require });
+  runInNewContext(read(file), { require, process: { platform } });
   return { exposed, invoked, sent, listening };
 }
 
-/** The calls that an interface declares, by their names. */
+/** The calls and the values that an interface declares, by their names. */
 function declared(file: string, name: string): string[] {
   const body = new RegExp(`export interface ${name} \\{\\n([\\s\\S]*?)\\n\\}`).exec(read(file))?.[1] ?? '';
-  return [...body.matchAll(/^  (\w+)\(/gm)].map(found => found[1]);
+  return [...body.matchAll(/^  (\w+)(?:\(|: )/gm)].map(found => found[1]);
 }
 
 const shell = read('electron/main.cjs');
@@ -45,7 +45,10 @@ const told = [...new Set([...shell.matchAll(/\btell\('([^']+)'/g)].map(found => 
 /** Every call of a bridge made once, and the channels that this reached. */
 function reached(file: string, name: string) {
   const bridge = bridgeOf(file);
-  for (const [call, make] of Object.entries(bridge.exposed[name])) make(call.startsWith('on') ? () => undefined : {});
+  for (const [call, make] of Object.entries(bridge.exposed[name])) {
+    // A value, such as the system, is there to be read, and is not called.
+    if (typeof make === 'function') make(call.startsWith('on') ? () => undefined : {});
+  }
   return {
     asked: bridge.invoked.map(given => given[0] as string),
     said: bridge.sent.map(given => given[0] as string),
@@ -69,7 +72,7 @@ describe('the bridge of the main window', () => {
     expect(taken).toEqual(['columbina:send']);
     // And it listens to everything that the shell tells of.
     expect([...heard].sort()).toEqual([...told].sort());
-    expect(told.length).toBe(3);
+    expect(told.length).toBe(4);
   });
 
   it('hands on what a call names, and nothing else that came with it', () => {
@@ -91,6 +94,14 @@ describe('the bridge of the main window', () => {
     // What needs no word of the page is asked for without one.
     for (const call of ['getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services']) {
       expect(handed(call, more), call).toHaveLength(1);
+    }
+  });
+
+  it('tells the page which system it runs on, and asks the shell nothing for that', () => {
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      const { exposed, invoked, sent } = bridgeOf('electron/preload.cjs', platform);
+      expect(exposed.columbina.platform as unknown).toBe(platform);
+      expect([...invoked, ...sent]).toEqual([]);
     }
   });
 

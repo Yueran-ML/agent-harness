@@ -3,6 +3,7 @@ import { ChevronRight, ShieldQuestion } from 'lucide-react';
 import type { PendingApproval } from '../useWorkspace';
 import { isYes, keyOf, settled, SETTLE_MS } from './keys';
 import { useWords } from './locale';
+import { modifier } from './system';
 import { commandTools, scopeOf } from './tell';
 
 const writers = new Set(['write', 'edit']);
@@ -11,8 +12,8 @@ const writers = new Set(['write', 'edit']);
  * A question of the agent: may it do this.
  *
  * It stands above the field, and the conversation stays where it can be read.
- * It does not take the keyboard away from whoever is writing. Ctrl+Enter says
- * yes for this once, and Enter alone says yes to nothing.
+ * It does not take the keyboard away from whoever is writing. Ctrl+Enter, or
+ * ⌘Enter, says yes for this once, and Enter alone says yes to nothing.
  *
  * Every question has a card of its own: the caller gives each a key. So what
  * a card remembers, such as that it was answered, is never taken for the
@@ -92,7 +93,7 @@ export function ApprovalCard({ approval, cancelling, onAnswer, onStop }: {
       </button>}
       <button type="button" className="btn btn-main" disabled={answered || !ready} onClick={() => answer('allowed-once')} data-test="consent-once">
         {words.label.allowOnce}
-        <kbd>Ctrl</kbd><kbd>Enter</kbd>
+        <kbd>{modifier()}</kbd><kbd>Enter</kbd>
       </button>
     </div>
     {scope !== null && <p className="caption consent-scope" id="consent-scope">{scope}</p>}

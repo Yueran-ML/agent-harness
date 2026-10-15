@@ -86,8 +86,11 @@ describe('the bridge of the main window', () => {
     expect(handed('start', more)).toEqual(['columbina:start', { cwd: 'C:/work' }]);
     expect(handed('notify', more)).toEqual(['columbina:notify', { title: 'a title', body: 'a body' }]);
     expect(handed('setUpService', more)).toEqual(['columbina:set-up-service', { service: 'deepseek', language: 'ja' }]);
+    expect(handed('chooseModel', { ...more, model: 'deepseek-pro' }))
+      .toEqual(['columbina:choose-model', { service: 'deepseek', model: 'deepseek-pro' }]);
+    expect(handed('listModels', 'deepseek', more)).toEqual(['columbina:models', 'deepseek']);
     // A call that is made with nothing asks all the same, and the shell says what is missing.
-    for (const call of ['selectFolder', 'start', 'notify', 'setUpService']) {
+    for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'chooseModel']) {
       const [, given] = handed(call) as [string, Record<string, unknown>];
       expect(Object.values(given).every(value => value === undefined), call).toBe(true);
     }

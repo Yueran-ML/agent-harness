@@ -9,6 +9,7 @@ import { vi } from 'vitest';
 import type { SessionEvent, SessionStatus } from '../src/protocol';
 import { emptyPreview, projectEvents } from '../src/state';
 import type { GitHub } from '../src/useGitHub';
+import type { Models, ServiceModels } from '../src/useModels';
 import type { Workspace } from '../src/useWorkspace';
 
 /** Give the DOM of the tests what the parts of the page ask a browser for, each as little as they need. */
@@ -137,6 +138,15 @@ export const service = (
   key: given.key ?? 'none',
   key_page: given.key_page ?? null,
 });
+
+/** What the page knows of the models of the services: nothing, unless a test says what of which. */
+export function modelsWith(known: Record<string, Models> = {}): ServiceModels {
+  return {
+    of: (service: string) => known[service] ?? null,
+    ask: vi.fn(async () => {}),
+    freshen: vi.fn(),
+  };
+}
 
 /** Where the repositories that the GitHub App of the tests may reach are chosen. */
 export const INSTALL_URL = 'https://github.com/apps/columbina/installations/new';

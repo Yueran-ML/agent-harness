@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('columbina', {
   recentProjects: () => ipcRenderer.invoke('columbina:recent-projects'),
   openRecent: (folder) => ipcRenderer.invoke('columbina:open-recent', folder),
   services: () => ipcRenderer.invoke('columbina:services'),
+  listModels: (service) => ipcRenderer.invoke('columbina:models', service),
+  chooseModel: (asked) => ipcRenderer.invoke('columbina:choose-model', { service: asked?.service, model: asked?.model }),
   setUpService: (asked) => ipcRenderer.invoke('columbina:set-up-service', { service: asked?.service, language: asked?.language }),
   openExternal: (url) => ipcRenderer.invoke('columbina:open-external', url),
   githubStatus: () => ipcRenderer.invoke('columbina:github-status'),

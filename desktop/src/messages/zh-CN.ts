@@ -264,6 +264,15 @@ export const zhCN: Messages = {
       },
     },
 
+    models: {
+      button: (model: string) => `模型：${model}`,
+      filter: '筛选，或写下模型的名字',
+      again: '重新获取模型列表',
+      use: (model: string) => `使用 ${model}`,
+      tryAgain: '再试一次',
+      settings: '模型设置',
+    },
+
     github: {
       signIn: '用 GitHub 登录',
       enterCode: '在 GitHub 上输入这个验证码',
@@ -541,6 +550,29 @@ export const zhCN: Messages = {
       forgetAsk: (service: string) => `删除为 ${service} 保存的密钥吗？这个服务的其他设置保持不变。`,
       forgotten: (service: string) => `已删除 ${service} 的密钥。`,
       noneToForget: (service: string) => `${service} 没有保存过密钥。`,
+    },
+
+    models: {
+      asking: (service: string) => `正在向 ${service} 获取模型列表。`,
+      none: (service: string) => `${service} 没有列出任何模型。`,
+      noMatch: '没有匹配的模型。',
+      whenIdle: '模型要等 Columbina 空闲时才能换。',
+      unavailable: '应用运行真实的服务进程时才能在这里列出模型，回放时不能。',
+      notKept: '模型已经换好，但没能记下来，下次启动时不会再用它。',
+      failed: {
+        network: '连不上这个服务。看看这台电脑是否联网；如果用了代理，看看代理是否开着。',
+        timeout: '服务没有及时回答。稍后再试。',
+        key: '服务不接受为它设置的密钥。',
+        forbidden: '服务接受了密钥，但不让它列出模型：可能是账户余额不足，或者这个密钥没有使用模型的权限。',
+        address: '这个服务的地址上没有提供模型的服务在回答。',
+        busy: '服务正忙。稍后再试。',
+        unknown: '没能列出模型。',
+      },
+      notRunning: {
+        ollama: '本机的 Ollama 没有回答。先启动它（例如运行 ollama serve），再试一次。',
+        lmstudio: '本机的 LM Studio 没有回答。先启动它的本地服务器，再试一次。',
+        other: '本机的这个服务没有回答。先启动它，再试一次。',
+      },
     },
 
     start: {

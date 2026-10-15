@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { composerKey, isYes, keyOf, settled, SETTLE_MS, type ComposerState, type Key } from '../src/app/keys';
+import { composerKey, isYes, keyOf, pickerKey, settled, SETTLE_MS, type ComposerState, type Key } from '../src/app/keys';
 
 const key = (name: string, given: Partial<Key> = {}): Key => ({
   key: name, shift: false, ctrl: false, alt: false, meta: false, repeat: false, composing: false, ...given,
@@ -135,6 +135,35 @@ describe('a key in the field', () => {
         expect(composerKey(key('Escape', held), { ...running, armed: true })).toBeNull();
       }
     });
+  });
+});
+
+describe('a key in the filter of the models', () => {
+  it('moves through the models with the arrows, also while it is held down', () => {
+    expect(pickerKey(key('ArrowDown'))).toBe('next');
+    expect(pickerKey(key('ArrowUp'))).toBe('previous');
+    expect(pickerKey(key('ArrowDown', { repeat: true }))).toBe('next');
+    expect(pickerKey(key('ArrowUp', { repeat: true }))).toBe('previous');
+  });
+
+  it('chooses with Enter and closes with Esc, once for each press', () => {
+    expect(pickerKey(key('Enter'))).toBe('take');
+    expect(pickerKey(key('Escape'))).toBe('close');
+    expect(pickerKey(key('Enter', { repeat: true }))).toBeNull();
+    expect(pickerKey(key('Escape', { repeat: true }))).toBeNull();
+  });
+
+  it('leaves every other key to the filter, and Tab to the browser', () => {
+    for (const name of ['a', ' ', 'Tab', 'Home', 'End', 'ArrowLeft', 'ArrowRight', 'Backspace']) {
+      expect(pickerKey(key(name)), name).toBeNull();
+    }
+  });
+
+  it('does nothing of its own while an input method puts characters together, or with another key held down', () => {
+    for (const name of ['Enter', 'Escape', 'ArrowDown', 'ArrowUp']) {
+      expect(pickerKey(key(name, { composing: true })), name).toBeNull();
+      for (const held of modifiers) expect(pickerKey(key(name, held)), `${name} ${JSON.stringify(held)}`).toBeNull();
+    }
   });
 });
 

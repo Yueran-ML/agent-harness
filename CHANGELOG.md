@@ -76,6 +76,12 @@ change what was there before.
   a run starts with it, and naming the first model again gives its window back. The share of
   the window that the terminal and the desktop application show, and when a conversation is
   made shorter, follow the model that was named.
+- The field of the desktop application has a button at its foot with the model in use, and
+  the settings have it where the model is set. It opens the models that the service in use
+  lists, with a filter over them, and a name that the service does not list can be written
+  there too. The model that is chosen is used from the next request on, and is stored as
+  the model of its service for the next start. The window asks a service for its models with
+  the key that a session would send, so the page never has the key.
 
 ## 0.1.0 (2026-10-15)
 

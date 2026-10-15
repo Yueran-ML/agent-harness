@@ -13,7 +13,7 @@ import type { Listed } from '../src/key/form';
 import { projectEvents } from '../src/state';
 import type { Workspace } from '../src/useWorkspace';
 import {
-  begin, call, end, gitHubWith, likeABrowser, log, reply, result, service, statusOf, user, workspaceWith,
+  begin, call, end, gitHubWith, likeABrowser, log, modelsWith, reply, result, service, statusOf, user, workspaceWith,
 } from './mounted';
 
 beforeEach(likeABrowser);
@@ -490,16 +490,28 @@ describe('the settings', () => {
   };
   const calls = {
     onTheme: vi.fn(), onSize: vi.fn(), onLanguage: vi.fn(), onPlayOpening: vi.fn(), onPlayNow: vi.fn(), onTellMe: vi.fn(),
-    onCommand: vi.fn(), onClose: vi.fn(), onOpen: vi.fn(),
+    onCommand: vi.fn(), onClose: vi.fn(), onOpen: vi.fn(), onChooseModel: vi.fn(),
   };
+  // The service lists two models, of which the first is in use.
+  const deepseekModels = () => modelsWith({ deepseek: { kind: 'listed', models: ['deepseek-flash', 'deepseek-pro'], at: 0 } });
   // The words of this window are English here, whatever language the window for the key is asked for in.
-  const sheet = (workspace: Workspace, part: SettingsPart = 'model') => <Settings
+  const sheet = (workspace: Workspace, part: SettingsPart = 'model', models = deepseekModels()) => <Settings
     workspace={workspace} part={part} theme="moonveil" size="standard" language="system" shownLanguage="ja"
-    playOpening={false} tellMe music={music} github={gitHubWith()} {...calls}
+    playOpening={false} tellMe music={music} github={gitHubWith()} models={models} {...calls}
   />;
   const services = () => [...one('services').querySelectorAll('li')].map(row =>
     [...row.children].map(part => part.textContent).join(' | '));
-  const modelField = () => document.querySelector<HTMLInputElement>('[aria-labelledby="setting-model-title"]')!;
+  const modelButton = () => one('model-button') as HTMLButtonElement;
+  /** Whether a model can be chosen in the settings: now, once Columbina is at rest, or not there at all. */
+  const modelChoice = () => {
+    if (marked('model-button').length === 0) return 'none';
+    if (modelButton().disabled) return 'off';
+    fireEvent.click(modelButton());
+    const option = one('model-panel').querySelector('[role="option"]')!;
+    const choice = option.getAttribute('aria-disabled') === 'true' ? 'busy' : 'free';
+    fireEvent.click(modelButton());
+    return choice;
+  };
   const whenIdle = 'The model and the permissions can be changed when Columbina is at rest.';
   const unavailable = 'Services are set up here when the application runs the service itself, not a replay.';
   beforeEach(() => { for (const call of Object.values(calls)) call.mockClear(); });
@@ -549,36 +561,37 @@ describe('the settings', () => {
     expect(calls.onSize.mock.calls).toEqual([['large']]);
   });
 
-  it('send another model as a command, and offer none that changes nothing', () => {
-    const workspace = workspaceWith({ hello: able });
-    const { rerender } = render(sheet(workspace));
-    const field = modelField();
-    const apply = button('Apply');
-    expect(field.value).toBe('deepseek-flash');
-    expect(apply.disabled).toBe(true);
-    fireEvent.change(field, { target: { value: ' deepseek-flash ' } });
-    expect(apply.disabled).toBe(true);
-    fireEvent.change(field, { target: { value: '  ' } });
-    expect(apply.disabled).toBe(true);
-    fireEvent.submit(field.form!);
+  it('offer the models of the service in use, and hand on another one that is chosen', () => {
+    const models = deepseekModels();
+    const workspace = workspaceWith({ hello: able, services: listed('deepseek') });
+    const { rerender } = render(sheet(workspace, 'model', models));
+    // The list opens below the button, which stands where a field would.
+    expect(modelButton().textContent).toBe('deepseek-flash');
+    expect(modelButton().closest('section')?.querySelector('h3')?.textContent).toBe('Model');
+    fireEvent.click(modelButton());
+    expect(one('model-panel').dataset.placement).toBe('down');
+    expect(models.freshen).toHaveBeenCalledWith('deepseek');
+    // The settings are where it leads, so it leads nowhere further.
+    expect(marked('model-settings')).toEqual([]);
+    const options = () => [...one('model-panel').querySelectorAll<HTMLElement>('[role="option"]')];
+    expect(options().map(option => option.textContent)).toEqual(['deepseek-flash', 'deepseek-pro']);
+    // The model in use changes nothing, and closes the list.
+    fireEvent.click(options()[0]);
+    expect(calls.onChooseModel).not.toHaveBeenCalled();
+    expect(marked('model-panel')).toEqual([]);
+    expect(document.activeElement).toBe(modelButton());
+    fireEvent.click(modelButton());
+    fireEvent.click(options()[1]);
+    expect(calls.onChooseModel.mock.calls).toEqual([['deepseek-pro']]);
     expect(calls.onCommand).not.toHaveBeenCalled();
-    fireEvent.change(field, { target: { value: ' deepseek-pro ' } });
-    expect(apply.disabled).toBe(false);
-    fireEvent.submit(field.form!);
-    expect(calls.onCommand.mock.calls).toEqual([['/model deepseek-pro']]);
-    // What was written stays while a turn runs, and is not sent before the turn is over.
-    rerender(sheet({ ...workspace, status: atWork }));
-    expect(field.value).toBe(' deepseek-pro ');
-    expect(apply.disabled).toBe(true);
-    // Nor is it sent to a service process that was started since and has no command for it.
-    rerender(sheet({ ...workspace, hello: { ...able, commands: [able.commands[0]] } }));
-    expect(apply.disabled).toBe(true);
-    rerender(sheet(workspace));
-    expect(apply.disabled).toBe(false);
-    // The field follows the model that the service says is in use.
-    rerender(sheet({ ...workspace, status: statusOf({ model: { provider: 'deepseek', model: 'deepseek-other', context_window: 1000 } }) }));
-    expect(field.value).toBe('deepseek-other');
-    expect(apply.disabled).toBe(true);
+    // The button follows the model that the service says is in use.
+    rerender(sheet({ ...workspace, status: statusOf({ model: { provider: 'deepseek', model: 'deepseek-pro', context_window: 1000 } }) }, 'model', models));
+    expect(modelButton().textContent).toBe('deepseek-pro');
+    // Escape closes the list, and the settings stay open.
+    fireEvent.click(modelButton());
+    expect(fireEvent.keyDown(one('models-filter'), { key: 'Escape' })).toBe(false);
+    expect(marked('model-panel')).toEqual([]);
+    expect(calls.onClose).not.toHaveBeenCalled();
   });
 
   it('send a change of what the task may do as a command, and none for what holds already', () => {
@@ -610,24 +623,36 @@ describe('the settings', () => {
     expect(part.querySelector('.choices + .caption')?.textContent).toBe('Commands are confined to what these permissions allow.');
   });
 
+  it('say in a replay that no list of models is there', () => {
+    const models = deepseekModels();
+    render(sheet(workspaceWith({ hello: able, mode: 'mock' }), 'model', models));
+    fireEvent.click(modelButton());
+    expect(one('models-notes').textContent)
+      .toBe('The models of a service are listed where the application runs the service itself, not in a replay.');
+    expect(marked('models-filter')).toEqual([]);
+    expect(models.freshen).not.toHaveBeenCalled();
+  });
+
   it('offer no change while the agent is at work or cannot be asked', () => {
     const offered = (given: Partial<Workspace>) => {
       cleanup();
       render(sheet(workspaceWith({ hello: able, ...given })));
       const said = document.body.textContent!.split(whenIdle).length - 1;
-      return [!modelField().disabled, !one('preset-read-only').hasAttribute('disabled'), said];
+      return [modelChoice(), !one('preset-read-only').hasAttribute('disabled'), said];
     };
-    expect(offered({})).toEqual([true, true, 0]);
-    // Both parts say why nothing can be changed.
-    expect(offered({ status: atWork })).toEqual([false, false, 2]);
-    expect(offered({ status: statusOf({ status: 'stopped' }) })).toEqual([false, false, 0]);
-    expect(offered({ loading: true })).toEqual([false, false, 0]);
-    expect(offered({ connected: false })).toEqual([false, false, 0]);
-    expect(offered({ sending: true })).toEqual([false, false, 0]);
+    expect(offered({})).toEqual(['free', true, 0]);
+    // Both parts say why nothing can be changed. The models can be looked at all the same.
+    expect(offered({ status: atWork })).toEqual(['busy', false, 2]);
+    expect(offered({ sending: true })).toEqual(['busy', false, 0]);
+    expect(offered({ status: statusOf({ status: 'stopped' }) })).toEqual(['off', false, 0]);
+    expect(offered({ loading: true })).toEqual(['off', false, 0]);
+    expect(offered({ connected: false })).toEqual(['off', false, 0]);
     // A service process that knows one of the two commands is sent that one.
-    expect(offered({ hello: { ...able, commands: [able.commands[1]] } })).toEqual([true, false, 0]);
-    expect(offered({ hello: { ...able, commands: [able.commands[0]] } })).toEqual([false, true, 0]);
-    expect(offered({ hello: null })).toEqual([false, false, 0]);
+    expect(offered({ hello: { ...able, commands: [able.commands[1]] } })).toEqual(['free', false, 0]);
+    expect(offered({ hello: { ...able, commands: [able.commands[0]] } })).toEqual(['off', true, 0]);
+    expect(offered({ hello: null })).toEqual(['off', false, 0]);
+    // Before the service has said how the task stands there is no model to show.
+    expect(offered({ status: null })).toEqual(['none', true, 0]);
   });
 
   it('tell of the service in use, of those that the user added and of those with a key', () => {

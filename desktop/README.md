@@ -110,6 +110,20 @@ marks a model that looks like a key and a key with a blank inside it, and links 
 page of the service on which a key is made, naming the machine that it lies on. A key that
 is stored can be deleted there, once the window has asked whether it should be.
 
+The button at the foot of the field shows the model in use, and the settings show the same
+button where the model is set. It opens the models of the service in use, which the shell
+asks for with `columbina setup --check` and the key that a session would send, so that no key
+comes to the page this way either. A filter goes over them: the model that is written comes
+first, then those that begin with it, then the others that hold it. A name that the service
+does not list can be used as it is written, unless it looks like a key, so a model can be
+chosen where the service lists none or cannot be asked. A list is asked for again once it is
+five minutes old, and at once after a failure, which says what to look at as the window for
+the key does. The model that is chosen is used from the next request on, and it is stored
+for its service through `columbina setup --from-stdin`, without a key, so that the next start
+uses it too. While Columbina is at work the list can be looked at, and nothing in it chosen.
+Where another service was chosen in the window for the key and waits for the next start, a
+model that is chosen is used and not stored, and the other service stays chosen.
+
 This works where the application runs the service itself, and not in a replay. The
 service looks for the key with every request, so a key is used as soon as it is stored,
 and a turn that failed for want of it can be tried again with the button under it.

@@ -311,6 +311,15 @@ export const ja: Messages = {
       },
     },
 
+    models: {
+      button: (model: string) => `モデル：${model}`,
+      filter: '絞り込み、またはモデル名を入力',
+      again: 'モデルの一覧を再取得',
+      use: (model: string) => `${model} を使用`,
+      tryAgain: 'もう一度試す',
+      settings: 'モデルの設定',
+    },
+
     github: {
       signIn: 'GitHub でサインイン',
       enterCode: 'このコードを GitHub で入力',
@@ -591,6 +600,29 @@ export const ja: Messages = {
       forgetAsk: (service: string) => `${service} に保存したキーを削除しますか？ほかの設定はそのまま残ります。`,
       forgotten: (service: string) => `${service} のキーを削除しました。`,
       noneToForget: (service: string) => `${service} にはキーが保存されていませんでした。`,
+    },
+
+    models: {
+      asking: (service: string) => `${service} からモデルの一覧を取得しています。`,
+      none: (service: string) => `${service} にはモデルが一つもありません。`,
+      noMatch: '一致するモデルはありません。',
+      whenIdle: 'モデルは、Columbina が待機中のときに変更できます。',
+      unavailable: 'モデルの一覧は、アプリケーションが実際のサービスを動かしているときに表示されます。リプレイ中は表示されません。',
+      notKept: 'モデルは切り替わりましたが、次回の起動用に保存できませんでした。',
+      failed: {
+        network: 'サービスに接続できません。このコンピューターがネットワークにつながっているか、プロキシを使っていればそれが動いているかを確かめてください。',
+        timeout: 'サービスが時間内に応答しませんでした。少し待ってから、もう一度試してください。',
+        key: 'サービスが、設定されているキーを受け付けません。',
+        forbidden: 'サービスはキーを受け付けましたが、モデルの一覧の取得を許可していません。アカウントの残高がないか、キーにモデルを使う権限がない可能性があります。',
+        address: 'このサービスのアドレスでは、モデルを提供するサービスが応答していません。',
+        busy: 'サービスが混み合っています。少し待ってから、もう一度試してください。',
+        unknown: 'モデルの一覧を取得できませんでした。',
+      },
+      notRunning: {
+        ollama: 'このコンピューターの Ollama が応答しません。ollama serve などで起動してから、もう一度試してください。',
+        lmstudio: 'このコンピューターの LM Studio が応答しません。ローカルサーバーを起動してから、もう一度試してください。',
+        other: 'このコンピューターのサービスが応答しません。起動してから、もう一度試してください。',
+      },
     },
 
     start: {

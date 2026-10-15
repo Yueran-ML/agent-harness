@@ -6,9 +6,11 @@ import type { Hello } from '../protocol';
 import { sizes, type SizeId } from '../size';
 import { themes, type ThemeId } from '../themes';
 import type { GitHub } from '../useGitHub';
+import type { ServiceModels } from '../useModels';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { GitHubAccount } from './GitHubSignIn';
+import { ModelPicker } from './ModelPicker';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
 import { anotherServiceChosen, presetOf, presets, servicesToTell, serviceTitle } from './tell';
@@ -18,7 +20,7 @@ export type SettingsPart = 'appearance' | 'model' | 'account' | 'permissions';
 
 export function Settings({
   workspace, part, theme, onTheme, size, onSize, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
-  tellMe, onTellMe, music, github, onOpen, onCommand, onClose,
+  tellMe, onTellMe, music, github, models, onOpen, onChooseModel, onCommand, onClose,
 }: {
   workspace: Workspace;
   part: SettingsPart;
@@ -37,8 +39,12 @@ export function Settings({
   onTellMe: (tell: boolean) => void;
   music: BackgroundMusic;
   github: GitHub;
+  /** The models of the services, as the page knows them. */
+  models: ServiceModels;
   /** Open a page of the web in the browser of the system. */
   onOpen: (url: string) => void;
+  /** Have the service process ask another model. */
+  onChooseModel: (model: string) => void;
   /** Give a command to the service. A change that widens what the task may do is confirmed first. */
   onCommand: (line: string) => void;
   onClose: () => void;
@@ -50,9 +56,9 @@ export function Settings({
   const off = running || workspace.loading || !workspace.connected || workspace.sending || status?.status === 'stopped';
   const canModel = commands.some(command => command.name === 'model');
   const canPermissions = commands.some(command => command.name === 'permissions');
-
-  const [model, setModel] = useState(status?.model.model ?? '');
-  useEffect(() => setModel(status?.model.model ?? ''), [status?.model.model]);
+  // The list of models can be looked at while Columbina is at work. A model is chosen at rest.
+  const modelChoice = workspace.loading || !workspace.connected || status?.status === 'stopped' || !canModel ? 'off'
+    : running || workspace.sending ? 'busy' : 'free';
   const services = workspace.services;
   // The greeting of the service process that ran when something was stored that it does not
   // know of: another address, model or window for its service. One that is started later does.
@@ -156,27 +162,20 @@ export function Settings({
     </section>
 
     <section className="setting" ref={at('model')}>
-      <h3 id="setting-model-title">{words.label.model}</h3>
+      <h3>{words.label.model}</h3>
       {running && <p className="caption">{words.hint.settingsWhenIdle}</p>}
-      <form
-        className="setting-row"
-        onSubmit={event => {
-          event.preventDefault();
-          if (model.trim()) onCommand(`/model ${model.trim()}`);
-        }}
-      >
-        <input
-          aria-labelledby="setting-model-title"
-          className="field mono"
-          value={model}
-          onChange={event => setModel(event.target.value)}
-          disabled={off || !canModel}
-          spellCheck={false}
-        />
-        <button type="submit" className="btn" disabled={off || !canModel || !model.trim() || model.trim() === status?.model.model}>
-          {words.label.apply}
-        </button>
-      </form>
+      {status?.model.provider && status.model.model && <ModelPicker
+        provider={status.model.provider}
+        model={status.model.model}
+        services={services}
+        models={models.of(status.model.provider)}
+        choice={modelChoice}
+        replay={workspace.mode === 'mock'}
+        placement="down"
+        onOpen={() => models.freshen(status.model.provider)}
+        onAsk={() => void models.ask(status.model.provider)}
+        onChoose={onChooseModel}
+      />}
       {status && <p className="caption" data-test="model-service">{serviceTitle(status.model.provider, services)}</p>}
 
       <div className="overline services-title">{words.label.key.title}</div>

@@ -82,6 +82,23 @@ export function composerKey(key: Key, state: ComposerState): ComposerAction | nu
   return null;
 }
 
+/**
+ * What a key does in the filter of the list of models, or null for a key that the filter leaves
+ * to the browser: `next` and `previous` move through the models, `take` chooses the one that is
+ * marked, and `close` closes the list.
+ */
+export type PickerAction = 'next' | 'previous' | 'take' | 'close';
+
+export function pickerKey(key: Key): PickerAction | null {
+  if (key.composing || !plain(key)) return null;
+  if (key.key === 'ArrowDown') return 'next';
+  if (key.key === 'ArrowUp') return 'previous';
+  if (key.repeat) return null;
+  if (key.key === 'Enter') return 'take';
+  if (key.key === 'Escape') return 'close';
+  return null;
+}
+
 /** Whether a key says yes, for this once, to a question of the agent. */
 export function isYes(key: Key): boolean {
   return key.key === 'Enter' && (key.ctrl || key.meta) && !key.shift && !key.alt && !key.repeat && !key.composing;

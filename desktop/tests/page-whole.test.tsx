@@ -9,6 +9,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../src/app/App';
 import { openingStorageKey } from '../src/app/opening';
+import type { Listed } from '../src/key/form';
 import type { SessionEvent } from '../src/protocol';
 import { sizeStorageKey } from '../src/size';
 import { projectEvents } from '../src/state';
@@ -375,6 +376,93 @@ describe('a change of what a task may do', () => {
     expect(sheet()).not.toBeNull();
     now(inTask(task, 's-2'));
     expect(sheet()).toBeNull();
+  });
+});
+
+describe('choosing another model', () => {
+  const deepseek: Listed = { use: 'deepseek', services: [service('deepseek', 'DeepSeek', { key: 'stored' }), service('openai', 'OpenAI')] };
+  /** A shell that lists two models for the service in use, and stores what it is given unless a test says otherwise. */
+  const shell = (chooseModel = vi.fn(async (_asked: unknown): Promise<unknown> => ({ stored: { name: 'deepseek', model: 'deepseek-pro' } }))) => {
+    const listModels = vi.fn(async (service: string) => ({
+      models: service === 'ollama' ? ['qwen3:8b', 'llama3.2:3b'] : ['deepseek-flash', 'deepseek-pro'],
+    }));
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), listModels, chooseModel });
+    return { listModels, chooseModel };
+  };
+  /** Open the list of models at the foot of the field, and choose the second one. */
+  const choose = async () => {
+    await act(async () => { fireEvent.click(one('model-button')); });
+    await act(async () => { fireEvent.click([...document.querySelectorAll('[role="option"]')][1]); });
+  };
+  const notKept = 'The model is in use now, and could not be kept for the next start.';
+
+  it('tells the service process at once, without a line in the conversation, and keeps the model for the next start', async () => {
+    const { listModels, chooseModel } = shell();
+    const task = first({ services: deepseek });
+    page(task);
+    await choose();
+    expect(listModels.mock.calls).toEqual([['deepseek']]);
+    expect(called(task.send)).toEqual([['/model deepseek-pro', true]]);
+    expect(chooseModel.mock.calls).toEqual([[{ service: 'deepseek', model: 'deepseek-pro' }]]);
+    // What is set up is read again, with the model that is kept now.
+    expect(task.refreshServices).toHaveBeenCalledTimes(1);
+    expect(task.fail).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(box());
+    // Another service, and another model of it.
+    cleanup();
+    const local = first({
+      services: { use: 'ollama', services: [service('ollama', 'Ollama', { key_env: null })] },
+      status: statusOf({ model: { provider: 'ollama', model: 'qwen3:8b', context_window: null } }),
+    });
+    page(local);
+    await choose();
+    expect(listModels.mock.calls.at(-1)).toEqual(['ollama']);
+    expect(called(local.send)).toEqual([['/model llama3.2:3b', true]]);
+    expect(chooseModel.mock.calls.at(-1)).toEqual([{ service: 'ollama', model: 'llama3.2:3b' }]);
+  });
+
+  it('keeps nothing where another service was chosen and waits for the next start, or where the line was not taken', async () => {
+    const { chooseModel } = shell();
+    const waiting = first({ services: { ...deepseek, use: 'openai' } });
+    page(waiting);
+    await choose();
+    expect(called(waiting.send)).toEqual([['/model deepseek-pro', true]]);
+    cleanup();
+    const refused = first({ services: deepseek, send: vi.fn(async () => false) });
+    page(refused);
+    await choose();
+    expect(called(refused.send)).toEqual([['/model deepseek-pro', true]]);
+    expect(chooseModel).not.toHaveBeenCalled();
+  });
+
+  it('says that the model is in use and not kept, where the setup program does not keep it', async () => {
+    shell(vi.fn(async () => ({ error: 'what is stored cannot be read' })));
+    const told = first({ services: deepseek });
+    page(told);
+    await choose();
+    expect(called(told.fail)).toEqual([[`${notKept} What is stored cannot be read.`]]);
+    expect(told.refreshServices).not.toHaveBeenCalled();
+    cleanup();
+    shell(vi.fn(async () => { throw new Error('The setup program did not end in time.'); }));
+    const late = first({ services: deepseek });
+    page(late);
+    await choose();
+    expect(called(late.fail)).toEqual([[`${notKept} The setup program did not end in time.`]]);
+  });
+
+  it('leads from the foot of the field to the settings, at the model', async () => {
+    const seen: Element[] = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) { seen.push(this); };
+    shell();
+    page(first({ services: deepseek }));
+    await act(async () => { fireEvent.click(one('model-button')); });
+    fireEvent.click(one('model-settings'));
+    expect(sheet()?.getAttribute('aria-label')).toBe('Settings');
+    expect(seen.filter(each => each.tagName === 'SECTION').map(each => each.querySelector('h3')?.textContent)).toEqual(['Model']);
+    expect(one('model-service').textContent).toBe('DeepSeek');
+    // The settings have the list of their own, and the field's is closed.
+    expect(marked('model-button')).toHaveLength(2);
+    expect(marked('model-panel')).toEqual([]);
   });
 });
 

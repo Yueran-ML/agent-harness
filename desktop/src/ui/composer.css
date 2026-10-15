@@ -189,6 +189,234 @@
   color: var(--accent);
 }
 
+/* --- The model, on a button at the foot of the field and in the settings, and the models of its service. */
+.model-picker {
+  position: relative;
+  flex: none;
+  min-width: 0;
+}
+
+.model-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.model-button svg {
+  flex: none;
+  color: var(--moon-2);
+}
+
+.model-button:hover:not(:disabled),
+.model-button[aria-expanded='true'] {
+  background: var(--ink-3);
+  color: var(--moon-0);
+}
+
+.model-button[aria-expanded='true'] svg:first-child {
+  color: var(--accent);
+}
+
+.model-button:disabled,
+.model-button:disabled svg {
+  color: var(--moon-3);
+}
+
+.model-button-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
+
+/* In the settings the button stands where a field would, and looks like one. */
+.setting .model-button {
+  max-width: 100%;
+  height: 32px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-1);
+}
+
+.model-panel {
+  position: absolute;
+  left: 0;
+  z-index: 6;
+  width: min(320px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  padding: var(--s2);
+  border-radius: var(--r3);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-2);
+  box-shadow: var(--shadow);
+  outline: none;
+}
+
+.model-panel[data-placement='up'] {
+  bottom: calc(100% + var(--s2));
+}
+
+/* At the foot of the field the panel stands above the whole field, where the list of commands
+   stands, and leaves what is written in sight. */
+.composer .model-picker {
+  position: static;
+}
+
+.composer .model-panel {
+  left: -1px;
+}
+
+.model-panel[data-placement='down'] {
+  top: calc(100% + var(--s1));
+}
+
+/* Spaced by margins, so that an empty place for notes takes no room. */
+.model-panel > * + * {
+  margin-top: var(--s2);
+}
+
+.model-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding-left: var(--s2);
+}
+
+.model-service {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  font-weight: 600;
+  color: var(--moon-1);
+}
+
+.model-panel .field {
+  flex: none;
+  width: 100%;
+  font-size: var(--text-caption);
+}
+
+.model-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: 0 var(--s2);
+  line-height: 1.5;
+}
+
+.model-panel > .model-notes:empty {
+  margin-top: 0;
+}
+
+.model-asking {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* Its words stand where the words of the note above it begin. */
+.model-again {
+  align-self: flex-start;
+  min-height: 28px;
+  margin-left: calc(var(--s2) - var(--s3));
+}
+
+.model-list {
+  max-height: min(240px, 40vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.model-option {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 30px;
+  padding: 4px var(--s2);
+  border-radius: var(--r1);
+  text-align: left;
+  color: var(--moon-1);
+}
+
+.model-option[aria-selected='true'] {
+  background: var(--ink-4);
+  color: var(--moon-0);
+}
+
+.model-option[aria-disabled='true'] {
+  cursor: default;
+}
+
+.model-option svg,
+.model-mark {
+  flex: none;
+  width: 13px;
+  color: var(--accent);
+}
+
+.model-option[data-typed] svg {
+  color: var(--moon-2);
+}
+
+.model-option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: var(--text-caption);
+}
+
+.model-option[data-typed] .model-option-name {
+  font-family: var(--font-ui);
+}
+
+.model-foot {
+  margin-left: calc(-1 * var(--s2));
+  margin-right: calc(-1 * var(--s2));
+  padding: var(--s1) var(--s2) 0;
+  border-top: 1px solid var(--line);
+}
+
+.model-settings {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--s2);
+  border-radius: var(--r1);
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+}
+
+.model-settings:hover {
+  background: var(--ink-3);
+  color: var(--moon-0);
+}
+
+.model-settings svg {
+  flex: none;
+  color: var(--moon-2);
+}
+
 /* --- A question of the agent. */
 .consent {
   display: flex;

@@ -2,7 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type 
 import { ArrowUp, Clock3, Square, SquareSlash } from 'lucide-react';
 import { messageText } from '../state';
 import { canSubmitInput } from '../uiActions';
+import type { ServiceModels } from '../useModels';
 import type { Workspace } from '../useWorkspace';
+import { ModelPicker } from './ModelPicker';
 import { composerKey, keyOf } from './keys';
 import { useWords } from './locale';
 import { goneWords } from './tell';
@@ -22,8 +24,13 @@ const MOST_HEIGHT = 220;
  *   returned: Whether input that was dropped unread has just been put back into the field.
  *   declined: Whether the user has just said no to something that the agent asked for.
  *   commandsAsked: How often the list of commands was asked for from outside the field.
+ *   models: The models of the services, as the page knows them.
+ *   onChooseModel: Have the service process ask another model.
+ *   onModelSettings: Open the settings at the model.
  */
-export function Composer({ workspace, draft, onDraft, onSend, field, returned, declined, commandsAsked }: {
+export function Composer({
+  workspace, draft, onDraft, onSend, field, returned, declined, commandsAsked, models, onChooseModel, onModelSettings,
+}: {
   workspace: Workspace;
   draft: string;
   onDraft: (text: string) => void;
@@ -32,12 +39,19 @@ export function Composer({ workspace, draft, onDraft, onSend, field, returned, d
   returned: boolean;
   declined: boolean;
   commandsAsked: number;
+  models: ServiceModels;
+  onChooseModel: (model: string) => void;
+  onModelSettings: () => void;
 }) {
   const words = useWords();
   const { status, hello, projection } = workspace;
   const running = status?.status === 'running';
   const stopped = status?.status === 'stopped';
   const unavailable = workspace.loading || !workspace.connected || stopped || !workspace.hasProject;
+  // The model that the service process asks is known once it has said how the task stands.
+  const provider = status?.model.provider ?? '';
+  const model = status?.model.model ?? '';
+  const canModel = (hello?.commands ?? []).some(command => command.name === 'model');
   const state = { unavailable, sending: workspace.sending, running };
   const canSend = canSubmitInput(draft, state);
 
@@ -205,6 +219,21 @@ export function Composer({ workspace, draft, onDraft, onSend, field, returned, d
         >
           <SquareSlash size={16} />
         </button>
+        {provider !== '' && model !== '' && <ModelPicker
+          provider={provider}
+          model={model}
+          services={workspace.services}
+          models={models.of(provider)}
+          choice={unavailable || !canModel ? 'off' : running || workspace.sending ? 'busy' : 'free'}
+          replay={workspace.mode === 'mock'}
+          placement="up"
+          // The list of commands is put away while the panel stands where it would stand.
+          onOpen={() => { setClosedFor(draft); models.freshen(provider); }}
+          onAsk={() => void models.ask(provider)}
+          onChoose={onChooseModel}
+          onSettings={onModelSettings}
+          afterChoice={() => field.current?.focus()}
+        />}
         <p className="caption composer-hint" id="composer-hint" data-test="composer-hint" aria-live="polite">{hint}</p>
         {running && <button
           type="button"

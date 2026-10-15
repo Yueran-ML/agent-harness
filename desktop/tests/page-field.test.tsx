@@ -6,7 +6,7 @@ import { ApprovalCard } from '../src/app/ApprovalCard';
 import { Composer } from '../src/app/Composer';
 import { projectEvents } from '../src/state';
 import type { PendingApproval, Workspace } from '../src/useWorkspace';
-import { likeABrowser, statusOf, workspaceWith } from './mounted';
+import { likeABrowser, modelsWith, statusOf, workspaceWith } from './mounted';
 
 beforeEach(likeABrowser);
 afterEach(() => {
@@ -266,6 +266,7 @@ describe('the field', () => {
     return <Composer
       workspace={workspace} draft={draft} onDraft={setDraft} onSend={sent} field={field}
       returned={returned} declined={declined} commandsAsked={commandsAsked}
+      models={modelsWith()} onChooseModel={vi.fn()} onModelSettings={vi.fn()}
     />;
   }
   const taken = () => vi.fn(async (_text: string) => true);

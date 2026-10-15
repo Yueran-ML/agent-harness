@@ -335,6 +335,18 @@ export const en = {
       },
     },
 
+    /** The models of the service in use, as the field and the settings offer them. */
+    models: {
+      /** The name of the button that shows the model in use, for whoever cannot see it. */
+      button: (model: string) => `Model: ${model}`,
+      filter: 'Filter, or write the name of a model',
+      again: 'List the models again',
+      /** A model that was written into the filter, and that the service does not list. */
+      use: (model: string) => `Use ${model}`,
+      tryAgain: 'Try again',
+      settings: 'Model settings',
+    },
+
     /** Signing in to GitHub, and who is signed in. */
     github: {
       signIn: 'Sign in with GitHub',
@@ -638,6 +650,31 @@ export const en = {
       forgetAsk: (service: string) => `Delete the key that is stored for ${service}? What else is set up for it stays.`,
       forgotten: (service: string) => `The key of ${service} was deleted.`,
       noneToForget: (service: string) => `No key was stored for ${service}.`,
+    },
+
+    /** The models of the service in use. */
+    models: {
+      asking: (service: string) => `Asking ${service} for its models.`,
+      none: (service: string) => `${service} lists no model.`,
+      noMatch: 'No model matches.',
+      whenIdle: 'The model can be changed when Columbina is at rest.',
+      unavailable: 'The models of a service are listed where the application runs the service itself, not in a replay.',
+      /** The model was changed for the service process, and the setup program did not store it. */
+      notKept: 'The model is in use now, and could not be kept for the next start.',
+      failed: {
+        network: 'The service could not be reached. See whether this computer is online, and that the proxy is on if there is one.',
+        timeout: 'The service did not answer in time. Try again in a moment.',
+        key: 'The service does not take the key that is set up for it.',
+        forbidden: 'The service takes the key and does not let it list the models: the account may have no money left, or the key no right to them.',
+        address: 'Nothing that serves models answers at the address of this service.',
+        busy: 'The service is busy. Try again in a moment.',
+        unknown: 'The models could not be listed.',
+      },
+      notRunning: {
+        ollama: 'Ollama does not answer on this computer. Start it, for instance with ollama serve, and try again.',
+        lmstudio: 'LM Studio does not answer on this computer. Start its local server, and try again.',
+        other: 'The service does not answer on this computer. Start it, and try again.',
+      },
     },
 
     /** The first steps on the first page. */

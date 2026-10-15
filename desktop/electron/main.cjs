@@ -78,6 +78,8 @@ let keyChanged = false;
 let keyClosed = null;
 // The services that the window for the key was told of last, and the pages on which their keys are made.
 let keyListed = { names: [], pages: [] };
+// The services that the main window was told of last, by name. A model is listed and kept for one of them.
+let mainListed = [];
 // What the service of the moment wrote last for errors. It is told of when the service has ended.
 let lastWords = { lines: [], rest: '' };
 // What is kept from one start to the next. Read when the application is ready.
@@ -562,7 +564,27 @@ function installHandlers() {
     // The document says which services there are and where their keys come from. It holds no key.
     const document = await runProgram(['setup', '--list']);
     if (typeof document.error === 'string') throw new Error(document.error);
+    mainListed = namesAndPages(document).names;
     return document;
+  });
+  ipcMain.handle('columbina:models', async (event, name) => {
+    checkSender(event);
+    // Only a service that the window was told of. The document has no key: the program asks with
+    // the one that a session would send, so no key comes this way.
+    if (typeof name !== 'string' || !mainListed.includes(name)) throw new Error('That service is not among those that are set up.');
+    return runProgram(['setup', '--check'], JSON.stringify({ service: name }));
+  });
+  ipcMain.handle('columbina:choose-model', async (event, asked) => {
+    checkSender(event);
+    const name = asked?.service;
+    const model = asked?.model;
+    if (typeof name !== 'string' || !mainListed.includes(name)) throw new Error('That service is not among those that are set up.');
+    // A name as a service gives one: of one piece, and not long. What looks like a key is none:
+    // a model is kept as it is written, and not in the keyring. The program checks the rest.
+    if (typeof model !== 'string' || !/^\S{1,200}$/.test(model) || /[\x00-\x1f\x7f]/.test(model)
+      || /^sk-/i.test(model) || /^[A-Za-z0-9_]{40,}$/.test(model)) throw new Error('That is no name of a model.');
+    // Without a key, the key that is stored for the service stays as it is.
+    return runProgram(['setup', '--from-stdin'], JSON.stringify({ service: name, model }));
   });
   ipcMain.handle('columbina:set-up-service', async (event, asked) => {
     checkSender(event);

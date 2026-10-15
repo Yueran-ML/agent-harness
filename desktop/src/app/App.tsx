@@ -10,7 +10,9 @@ import type { Turn } from '../turns';
 import {
   canSubmitInput, permissionNeedsConfirmation, permissionPresetFromCommand, type PermissionPreset,
 } from '../uiActions';
+import { sentenceOf, storedOf } from '../key/form';
 import { useGitHub } from '../useGitHub';
+import { useModels } from '../useModels';
 import { useWorkspace, type Workspace } from '../useWorkspace';
 import { ApprovalCard } from './ApprovalCard';
 import { Composer } from './Composer';
@@ -26,7 +28,7 @@ import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor
 import { storedOpening, storeOpening } from './opening';
 import { onMac, shortcut } from './system';
 import {
-  folderName, goneWords, joined, retryText, skillLine, STILL_STARTING_MS, taskTitle, waitingWords,
+  anotherServiceChosen, folderName, goneWords, joined, retryText, skillLine, STILL_STARTING_MS, taskTitle, waitingWords,
 } from './tell';
 
 const tellingKey = 'columbina-tell-me';
@@ -79,6 +81,7 @@ interface PendingPermission {
 export default function App() {
   const workspace = useWorkspace();
   const github = useGitHub();
+  const models = useModels();
   const music = useBackgroundMusic();
   const { projection, status } = workspace;
 
@@ -223,6 +226,29 @@ export default function App() {
     const taken = await send(line);
     if (taken) forget(from, line);
     return taken;
+  };
+  /**
+   * Have the service process ask another model from its next request on, and keep the model as
+   * that of its service, for the next start. Where another service was chosen since and waits for
+   * the next start, nothing is kept: what is stored for a service chooses that service.
+   */
+  const chooseModel = async (model: string) => {
+    const provider = status?.model.provider;
+    if (!provider || !(await send(`/model ${model}`, true))) return;
+    if (!window.columbina || anotherServiceChosen(workspace.services, provider)) return;
+    let said: string;
+    try {
+      const told = storedOf(await window.columbina.chooseModel({ service: provider, model }));
+      if (told.kind === 'stored') {
+        void workspace.refreshServices();
+        return;
+      }
+      said = told.said;
+    } catch (problem) {
+      said = problem instanceof Error ? problem.message : String(problem);
+    }
+    // The model is in use all the same. The user is told that it is not kept.
+    workspace.fail(`${words.hint.models.notKept} ${sentenceOf(said)}`.trim());
   };
   const confirmPermission = async () => {
     const change = pendingPermission;
@@ -522,6 +548,9 @@ export default function App() {
                 returned={returned}
                 declined={declined}
                 commandsAsked={commandsAsked}
+                models={models}
+                onChooseModel={model => void chooseModel(model)}
+                onModelSettings={() => setSettings('model')}
               />
             </div>
             {bare && !starting && !gone && workspace.hasProject && <>
@@ -570,7 +599,9 @@ export default function App() {
         onPlayNow={() => { setSettings(null); setShowOpening(true); }}
         music={music}
         github={github}
+        models={models}
         onOpen={openPage}
+        onChooseModel={model => void chooseModel(model)}
         // What is changed here shows here: the answer of the command is not written into the conversation.
         onCommand={line => void send(line, true)}
         onClose={() => setSettings(null)}

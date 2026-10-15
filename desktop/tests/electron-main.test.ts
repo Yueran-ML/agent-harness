@@ -1418,6 +1418,84 @@ describe('the window for the key', () => {
   });
 });
 
+describe('the models of a service, for the main window', () => {
+  const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
+  const list = { use: 'deepseek', services: [{ name: 'deepseek' }, { name: 'ollama' }, { name: 7 }, null] };
+  /** A shell that has told the main window of the services, as the window asks for them when it opens. */
+  const told = async () => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = (args: string[]) => (args.includes('--list') ? { out: `${JSON.stringify(list)}\n`, code: 0 } : null);
+    await shell.invoke('services');
+    return shell;
+  };
+
+  it('lists the models of a service that the window was told of, asked with the key that a session would send', async () => {
+    const shell = await told();
+    shell.setup.answer = () => ({ out: '{"models": ["deepseek-flash", "deepseek-pro"]}\n', code: 0 });
+    await expect(shell.invoke('models', 'deepseek')).resolves.toEqual({ models: ['deepseek-flash', 'deepseek-pro'] });
+    const run = shell.setups.at(-1)!;
+    expect(run.args).toEqual(['-m', 'columbina', 'setup', '--check']);
+    // No key goes this way: the document names the service alone.
+    expect(JSON.parse(run.input!)).toEqual({ service: 'deepseek' });
+    // What the program says of a failure is answered as it is.
+    shell.setup.answer = () => ({ out: '{"error": "The key was refused.", "kind": "key"}\n', code: 0 });
+    await expect(shell.invoke('models', 'ollama')).resolves.toEqual({ error: 'The key was refused.', kind: 'key' });
+  });
+
+  it('lists nothing for a service that the window was not told of', async () => {
+    const before = await shellHarness(undefined, real);
+    await expect((async () => before.invoke('models', 'deepseek'))()).rejects.toThrow('not among those that are set up');
+    const shell = await told();
+    const runs = shell.setups.length;
+    for (const name of ['openai', 7, undefined, '7', ['deepseek']]) {
+      await expect((async () => shell.invoke('models', name))(), String(name)).rejects.toThrow('not among those that are set up');
+    }
+    expect(shell.setups).toHaveLength(runs);
+  });
+
+  it('keeps a model for a service that the window was told of, and with it nothing else and no key', async () => {
+    const shell = await told();
+    const stored = { stored: { name: 'deepseek', model: 'deepseek-pro' }, key_in: null };
+    shell.setup.answer = () => ({ out: `${JSON.stringify(stored)}\n`, code: 0 });
+    const asked = { service: 'deepseek', model: 'deepseek-pro', api_key: 'sk-never', base_url: 'https://elsewhere' };
+    await expect(shell.invoke('choose-model', asked)).resolves.toEqual(stored);
+    const run = shell.setups.at(-1)!;
+    expect(run.args).toEqual(['-m', 'columbina', 'setup', '--from-stdin']);
+    expect(JSON.parse(run.input!)).toEqual({ service: 'deepseek', model: 'deepseek-pro' });
+    // A name of a model as services write them.
+    for (const model of ['anthropic/claude-sonnet-4:beta', 'qwen2.5:7b', `model-${'x'.repeat(194)}`]) {
+      await shell.invoke('choose-model', { service: 'ollama', model });
+      expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({ service: 'ollama', model });
+    }
+  });
+
+  it('keeps no model for a service that the window was not told of, and nothing that is no name of a model', async () => {
+    const shell = await told();
+    const runs = shell.setups.length;
+    await expect((async () => shell.invoke('choose-model', { service: 'openai', model: 'gpt' }))()).rejects.toThrow('not among those that are set up');
+    for (const model of [
+      '', ' ', 'two words', 'tab\there', 'line\nbreak', 'bell\u0007', 7, undefined,
+      // One character too long, and like no key: the length alone refuses it.
+      `model-${'x'.repeat(195)}`,
+      'sk-0123456789abcdef', 'SK-abc', 'A'.repeat(40), 'a_b'.repeat(14),
+    ]) {
+      await expect((async () => shell.invoke('choose-model', { service: 'deepseek', model }))(), JSON.stringify(model))
+        .rejects.toThrow('no name of a model');
+    }
+    await expect((async () => shell.invoke('choose-model', undefined))()).rejects.toThrow('not among those that are set up');
+    expect(shell.setups).toHaveLength(runs);
+  });
+
+  it('answers none of this to anything but the page of the application', async () => {
+    const shell = await told();
+    const runs = shell.setups.length;
+    await expect((async () => shell.handlers.get('columbina:models')!(shell.unrelated, 'deepseek'))()).rejects.toThrow('IPC sender');
+    await expect((async () => shell.handlers.get('columbina:choose-model')!(shell.unrelated, { service: 'deepseek', model: 'deepseek-pro' }))())
+      .rejects.toThrow('IPC sender');
+    expect(shell.setups).toHaveLength(runs);
+  });
+});
+
 describe('signing in to GitHub', () => {
   const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
   const status = {

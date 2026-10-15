@@ -32,6 +32,17 @@ export interface ColumbinaBridge {
    */
   services(): Promise<unknown>;
   /**
+   * What `columbina setup --check` answers for one of the services that `services` named: the
+   * models that it lists, asked for with the key that a session would send, or why it listed
+   * none. No key comes this way.
+   */
+  listModels(service: string): Promise<unknown>;
+  /**
+   * Keep a model as the one of a service that `services` named, for the next start, with
+   * `columbina setup --from-stdin`. The key of the service stays as it is.
+   */
+  chooseModel(asked: { service: string; model: string }): Promise<unknown>;
+  /**
    * Open the window in which a service is chosen and its key is given, and wait until it is
    * closed. This window is told whether something was stored or deleted there, and nothing of what.
    */

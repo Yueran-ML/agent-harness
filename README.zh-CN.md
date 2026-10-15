@@ -63,6 +63,14 @@
 
 Columbina 让一个 Agent 接上语言模型，在你指定的目录里工作。Agent 读文件、搜索、改文件、执行命令，每次调用能做什么在执行之前判定。Columbina 的各个组成部分都是一个小型 asyncio 内核上的插件，包括模型适配器、工具注册表、会话日志，以及 Agent 循环本身。
 
+<p align="center">
+  <img src="docs/assets/demo.gif" width="100%"
+       alt="Columbina 在终端里：Agent 读了 check.py 和 calc.py，修好 calc.py，运行 python check.py 之前先征得同意，最后说明错在哪里。">
+</p>
+<p align="center">
+  <sub>在终端里回放的一次 DeepSeek 运行：模型的回复来自一次录制下来的真实运行，工具是真实执行的。<a href="docs/assets/README.md#the-demo">制作方法</a></sub>
+</p>
+
 **状态**：处于早期开发阶段。十个阶段已完成八个，Columbina 已经发布到 PyPI。另外两个阶段里，基准和供其他程序使用的服务已经做好。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 通过 OpenAI Chat Completions 协议与模型通信，默认接 DeepSeek。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。技能、钩子、子代理和 MCP 服务器的工具可以在不改程序的情况下扩展 Agent。有 Docker 时，Agent 的命令可以在容器里执行，容器里只有工作目录，没有网络。
 
 ## 下载与部署

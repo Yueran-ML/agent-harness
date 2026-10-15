@@ -81,6 +81,14 @@ do is decided before it runs. Everything that Columbina is made of is a plugin o
 asyncio kernel: the model adapter, the tool registry, the session log, and the agent loop
 itself.
 
+<p align="center">
+  <img src="docs/assets/demo.gif" width="100%"
+       alt="Columbina at the terminal: the agent reads check.py and calc.py, mends calc.py, asks before it runs python check.py, and says what was wrong.">
+</p>
+<p align="center">
+  <sub>A run of DeepSeek, played again at the terminal: the replies are those of a recorded run, and the tools ran for real. <a href="docs/assets/README.md#the-demo">How it was made</a></sub>
+</p>
+
 **Status:** early development. Eight of ten stages are done, and Columbina is on PyPI. Of
 the other two, the benchmark and the service for other programs are built. `columbina` holds a
 conversation with an agent at the terminal, and `columbina run` gives it one task and

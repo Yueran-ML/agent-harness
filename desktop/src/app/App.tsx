@@ -8,7 +8,7 @@ import { initialSize, storeSize, type SizeId } from '../size';
 import { initialTheme, storeTheme, type ThemeId } from '../themes';
 import type { Turn } from '../turns';
 import {
-  canSubmitInput, permissionNeedsConfirmation, permissionPresetFromCommand, type PermissionPreset,
+  canSubmitInput, isCommand, permissionNeedsConfirmation, permissionPresetFromCommand, type PermissionPreset,
 } from '../uiActions';
 import { sentenceOf, storedOf } from '../key/form';
 import { useGitHub } from '../useGitHub';
@@ -23,6 +23,9 @@ import { Sheet } from './Sheet';
 import { Sidebar } from './Sidebar';
 import { Recent, StartHead, StartSkills } from './Start';
 import { StatusLine } from './StatusLine';
+import {
+  added, Attachments, attachedOf, keptOf, withAttachments, type Attachment, type Refused,
+} from './attachments';
 import { Drafts, samePlace, Unread, type Place } from './drafts';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
 import { storedOpening, storeOpening } from './opening';
@@ -152,6 +155,13 @@ export default function App() {
   draftNow.current = draft;
   const returnedNow = useRef(returned);
   returnedNow.current = returned;
+  // The files that go with the message, and those that were not taken. Every task keeps its own
+  // files, as it keeps its draft.
+  const attachmentsKept = useRef(new Attachments());
+  const [attached, setAttached] = useState<Attachment[]>([]);
+  const [refused, setRefused] = useState<Refused[]>([]);
+  const attachedNow = useRef(attached);
+  attachedNow.current = attached;
   const project = workspace.hello?.cwd ?? null;
   const place = useMemo<Place | null>(
     () => (workspace.sessionId === null ? null : { project, task: workspace.sessionId }),
@@ -169,9 +179,12 @@ export default function App() {
     const left = unread.current.take(place, running, waiting);
     if (placeNow.current !== null) {
       drafts.current.keep(placeNow.current, joined([...left, draftNow.current]), returnedNow.current || left.length > 0);
+      attachmentsKept.current.keep(placeNow.current, attachedNow.current);
     }
     placeNow.current = place;
     setDraft(place === null ? '' : drafts.current.of(place));
+    setAttached(place === null ? [] : attachmentsKept.current.of(place));
+    setRefused([]);
     // What came back unread is still what the field holds, and the field goes on saying so.
     setReturned(place !== null && drafts.current.returned(place));
     setPendingPermission(null);
@@ -223,9 +236,67 @@ export default function App() {
   };
   const sendDraft = async (line: string): Promise<boolean> => {
     const from = placeNow.current;
-    const taken = await send(line);
-    if (taken) forget(from, line);
+    const files = attachedNow.current;
+    // A command takes no files: they wait for the next message.
+    if (files.length === 0 || isCommand(line)) {
+      const taken = await send(line);
+      if (taken) forget(from, line);
+      return taken;
+    }
+    if (!window.columbina || !canSubmitInput('files', state)) return false;
+    // The files are copied into the project first, and the message names where they are.
+    let kept: string[] | null = null;
+    let said = '';
+    try {
+      kept = keptOf(await window.columbina.keepAttachments(files.map(file => file.id)), files.length);
+    } catch (problem) {
+      said = problem instanceof Error ? problem.message : String(problem);
+    }
+    if (kept === null) {
+      workspace.fail(`${words.hint.attachments.notKept} ${sentenceOf(said)}`.trim());
+      return false;
+    }
+    const taken = await send(withAttachments(line, words.label.attachments.heading, kept));
+    if (!taken) return false;
+    forget(from, line);
+    // The files went with the message. The shell lets go of them, and the task has them no more.
+    void window.columbina.forgetAttachments(files.map(file => file.id)).catch(() => {});
+    if (samePlace(from, placeNow.current)) setAttached([]);
+    else if (from !== null) attachmentsKept.current.keep(from, []);
+    setRefused([]);
     return taken;
+  };
+  /** Take the files that the shell holds now, as many as go with the message, and say of the others why not. */
+  const takeAttached = (answer: unknown) => {
+    const { attached: coming, refused: notTaken } = attachedOf(answer);
+    const { files, over } = added(attachedNow.current, coming);
+    if (over.length > 0) void window.columbina?.forgetAttachments(over.map(file => file.id)).catch(() => {});
+    setAttached(files);
+    setRefused([...notTaken, ...over.map(file => ({ name: file.name, why: 'tooMany' as const }))]);
+  };
+  // Files go with a message where the application runs the service itself, and not in a replay.
+  const canAttach = window.columbina !== undefined && workspace.mode === 'service';
+  const chooseAttachments = async () => {
+    try {
+      const answer = await window.columbina!.chooseAttachments({ language: shownLanguage(language) });
+      if (answer !== null) takeAttached(answer);
+    } catch (problem) {
+      workspace.fail(problem);
+    }
+    field.current?.focus();
+  };
+  const dropAttachments = async (files: File[]) => {
+    try {
+      takeAttached(await window.columbina!.attachDropped(files));
+    } catch (problem) {
+      workspace.fail(problem);
+    }
+    field.current?.focus();
+  };
+  const removeAttachment = (file: Attachment) => {
+    setAttached(current => current.filter(each => each.id !== file.id));
+    setRefused([]);
+    void window.columbina?.forgetAttachments([file.id]).catch(() => {});
   };
   /**
    * Have the service process ask another model from its next request on, and keep the model as
@@ -551,6 +622,11 @@ export default function App() {
                 models={models}
                 onChooseModel={model => void chooseModel(model)}
                 onModelSettings={() => setSettings('model')}
+                attachments={attached}
+                refused={refused}
+                onAttach={canAttach ? () => void chooseAttachments() : undefined}
+                onDropFiles={canAttach ? files => void dropAttachments(files) : undefined}
+                onRemoveAttachment={removeAttachment}
               />
             </div>
             {bare && !starting && !gone && workspace.hasProject && <>

@@ -48,6 +48,18 @@ read at its next step. If the turn is stopped first, what was not read comes bac
 the input field. If the task is left first, it is the draft of that task when the task
 is opened again.
 
+Files go with a message through the paperclip at the foot of the field, or when they are
+dropped on it: ten at most, of up to 25 MB each. Each is shown with its name and size, and
+for a picture the field says that the model gets the file and does not see it. When the
+message is sent, the shell copies the files into `.columbina/attachments/` of the project,
+into a folder named for the second it was sent at, and the message ends with a line for each
+file that says where it is. A `.gitignore` there keeps them out of git, and in the mode
+`workspace-write` the tools of the agent read them and write nothing there. A message may be
+files alone. A command takes none, and they wait for the next message. Where the files
+cannot be copied, the message is not sent, and it stays in the field with them. Each task
+keeps the files of its message as it keeps its draft. Files are attached where the
+application runs the service itself, and not in a replay.
+
 The page of a new task says what the task may do and names the skills that there are.
 A click on a skill writes the command that hands it to the agent into the input field.
 
@@ -211,6 +223,11 @@ protocol, and the interface cannot read it. What the service process logs goes t
   store, check a service, delete a key, open the page on which a key is made, and close.
   The main window cannot make them. A key is deleted only for a service that the window
   was told of, and a page is opened only where a service links to it over https.
+- The page knows a file that goes with a message by an id, its name and its size, and never
+  by where it is. The shell takes the paths from the file dialog of the system and from
+  files that were dropped on the window, and holds 200 at most. It checks each file again
+  before it copies any, and copies them only into `.columbina/attachments/` of the project
+  that the service works in, never over a file that is there.
 - One sign-in to GitHub runs at a time. One that is begun takes the place of one that runs,
   whose page no longer waits for it. The page hears only the documents of JSON that the
   program writes, each line at most 2 MB, and that it has ended. A sign-in is stopped by

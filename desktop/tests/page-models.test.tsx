@@ -492,6 +492,7 @@ describe('the model at the foot of the field', () => {
     return <Composer
       workspace={workspace} draft={draft} onDraft={setDraft} onSend={async () => true} field={field}
       returned={false} declined={false} commandsAsked={0} models={models} {...calls}
+      attachments={[]} refused={[]} onRemoveAttachment={vi.fn()}
     />;
   }
   const field = (given: Partial<Workspace> = {}, models = modelsWith({ deepseek: two })) => {

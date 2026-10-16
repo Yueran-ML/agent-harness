@@ -87,6 +87,6 @@ export class Unread {
 }
 
 // Written as JSON, so that no two places have one name whatever stands in theirs.
-function nameOf(place: Place): string {
+export function nameOf(place: Place): string {
   return JSON.stringify([place.project, place.task]);
 }

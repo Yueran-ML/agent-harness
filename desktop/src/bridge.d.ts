@@ -43,6 +43,21 @@ export interface ColumbinaBridge {
    */
   chooseModel(asked: { service: string; model: string }): Promise<unknown>;
   /**
+   * Let the user choose files to go with a message, in the dialog of the system, which the shell
+   * titles in the language that is named. The answer names the files that the shell holds, by id,
+   * name and size, and the others with why not. Null if none was chosen.
+   */
+  chooseAttachments(asked: { language: string }): Promise<unknown>;
+  /** Hold files that were dropped on the window, as `chooseAttachments` does those that are chosen. */
+  attachDropped(files: File[]): Promise<unknown>;
+  /** Let go of files that are held and are not to go with a message after all. */
+  forgetAttachments(ids: string[]): Promise<void>;
+  /**
+   * Copy files that are held into the project, beside the other files that went with messages.
+   * The answer names where each is now, from the folder of the project.
+   */
+  keepAttachments(ids: string[]): Promise<unknown>;
+  /**
    * Open the window in which a service is chosen and its key is given, and wait until it is
    * closed. This window is told whether something was stored or deleted there, and nothing of what.
    */

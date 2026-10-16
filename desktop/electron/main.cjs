@@ -2,9 +2,9 @@ const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, shell } = requi
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const {
-  createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync,
+  constants, createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync,
 } = require('node:fs');
-const { open, realpath } = require('node:fs/promises');
+const { copyFile, mkdir, open, realpath, stat, writeFile } = require('node:fs/promises');
 const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const { pathToFileURL, fileURLToPath } = require('node:url');
@@ -64,10 +64,23 @@ function windowBar(theme) {
 // What the shell says by itself, in every language that the interface speaks, each under the
 // name that a page gives it. Everything else that is said is said by a page.
 const WORDS = {
-  en: { chooseFolder: 'Choose a project folder' },
-  ja: { chooseFolder: 'プロジェクトフォルダーを選択' },
-  'zh-CN': { chooseFolder: '选择项目文件夹' },
+  en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach' },
+  ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択' },
+  'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件' },
 };
+// The project that the service of the moment works in: the process, its folder, and whether it is a replay.
+let serviceProject = null;
+// The files that the user chose or dropped to go with a message, by the ids that the page knows
+// them by. The page is told their names and sizes, and never where they lie.
+const attachments = new Map();
+let attachmentNumber = 0;
+/** How large a file that goes with a message may be, and how many go with one message. */
+const ATTACHMENT_MOST_BYTES = 25 * 1024 * 1024;
+const ATTACHMENTS_MOST = 10;
+/** How many chosen files the shell holds at most, for all the messages that are being written. */
+const ATTACHMENTS_HELD_MOST = 200;
+/** Where the files that go with messages are kept in a project, from its folder. */
+const ATTACHMENTS_FOLDER = ['.columbina', 'attachments'];
 /** The language that a page names, if the shell speaks it, and English if not. */
 const spoken = (language) => (typeof language === 'string' && Object.hasOwn(WORDS, language) ? language : 'en');
 // The window for the key while it is open, what it was opened for, whether something was
@@ -402,6 +415,65 @@ async function runProgram(words, input = '', most = SETUP_OUTPUT_MOST) {
     child.stdin.end(input);
   });
 }
+/** The folder of the project that the service of the moment works in, or null where none runs or it replays. */
+function projectOfTheService() {
+  // The service of the project is gone once there is another service, or none.
+  return serviceProject?.child === service && serviceProject.mode === 'service' ? serviceProject.cwd : null;
+}
+/**
+ * Hold files that the user chose or dropped, each where it is a file and not too large. Returns
+ * what the page is told: the files that are held, by id, name and size, and the names of the
+ * others with why they are not. How many go with one message, the page sees to.
+ */
+async function attach(paths) {
+  const attached = [];
+  const refused = [];
+  for (const chosen of paths) {
+    const name = path.basename(chosen);
+    let found;
+    try {
+      found = await stat(chosen);
+    } catch {
+      refused.push({ name, why: 'gone' });
+      continue;
+    }
+    if (!found.isFile()) refused.push({ name, why: 'notAFile' });
+    else if (found.size > ATTACHMENT_MOST_BYTES) refused.push({ name, why: 'tooBig' });
+    else if (attachments.size >= ATTACHMENTS_HELD_MOST) refused.push({ name, why: 'tooMany' });
+    else {
+      const id = `attachment-${++attachmentNumber}`;
+      attachments.set(id, { path: chosen, name, size: found.size });
+      attached.push({ id, name, size: found.size });
+    }
+  }
+  return { attached, refused };
+}
+/** The name of the folder that the files of one message are kept in: when they were sent, to the second. */
+function sentAt(date) {
+  const two = (number) => String(number).padStart(2, '0');
+  return `${date.getFullYear()}${two(date.getMonth() + 1)}${two(date.getDate())}-`
+    + `${two(date.getHours())}${two(date.getMinutes())}${two(date.getSeconds())}`;
+}
+/**
+ * Copy a file into a folder under its name, or under the name with a number where one of that name
+ * is there already. What cannot be seen, such as the end of a line, is no part of the name: the
+ * message names each file on a line of its own. Returns the name that it has there.
+ */
+async function copiedInto(folder, file) {
+  const name = file.name.replace(/[\u0000-\u001f\u007f]/g, '_');
+  const dot = name.lastIndexOf('.');
+  const [stem, ending] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ''];
+  for (let number = 1; number <= ATTACHMENTS_HELD_MOST; number += 1) {
+    const taken = number === 1 ? name : `${stem} (${number})${ending}`;
+    try {
+      await copyFile(file.path, path.join(folder, taken), constants.COPYFILE_EXCL);
+      return taken;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
+  throw new Error(`There is no name left for ${file.name}.`);
+}
 /** The names of the services in what `setup --list` answered, and the pages on which their keys are made. */
 function namesAndPages(list) {
   const services = Array.isArray(list?.services) ? list.services : [];
@@ -460,6 +532,7 @@ function installHandlers() {
         detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
       });
       service = child;
+      serviceProject = { child, cwd, mode: config.mode };
       lastWords = listenForErrors(child);
       const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
       lines.on('line', (line) => { if (service === child) tell('columbina:line', line); });
@@ -585,6 +658,51 @@ function installHandlers() {
       || /^sk-/i.test(model) || /^[A-Za-z0-9_]{40,}$/.test(model)) throw new Error('That is no name of a model.');
     // Without a key, the key that is stored for the service stays as it is.
     return runProgram(['setup', '--from-stdin'], JSON.stringify({ service: name, model }));
+  });
+  ipcMain.handle('columbina:choose-attachments', async (event, asked) => {
+    checkSender(event);
+    const title = WORDS[spoken(asked?.language)].chooseFiles;
+    const result = await dialog.showOpenDialog(window, { title, properties: ['openFile', 'multiSelections'] });
+    if (result.canceled) return null;
+    return attach(result.filePaths);
+  });
+  ipcMain.handle('columbina:attach-paths', async (event, paths) => {
+    checkSender(event);
+    // The paths of files that were dropped on the window, as the preload has them from the files
+    // themselves. The page has no way of its own to name a path here.
+    if (!Array.isArray(paths) || paths.length > ATTACHMENTS_HELD_MOST
+      || paths.some((each) => typeof each !== 'string' || !path.isAbsolute(each))) throw new Error('Those are no files that were dropped.');
+    return attach(paths);
+  });
+  ipcMain.handle('columbina:forget-attachments', (event, ids) => {
+    checkSender(event);
+    for (const id of Array.isArray(ids) ? ids : []) attachments.delete(id);
+  });
+  ipcMain.handle('columbina:keep-attachments', async (event, ids) => {
+    checkSender(event);
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > ATTACHMENTS_MOST) throw new Error('That is no set of files for a message.');
+    const chosen = ids.map((id) => (typeof id === 'string' ? attachments.get(id) : undefined));
+    if (chosen.includes(undefined)) throw new Error('A file that is to go with the message was not chosen.');
+    const project = projectOfTheService();
+    if (project === null) throw new Error('No project is open, so the files have nowhere to be kept.');
+    // Each file is as it was chosen, or none is copied.
+    for (const file of chosen) {
+      const found = await stat(file.path).catch(() => null);
+      if (found === null) throw new Error(`${file.name} is not there any more.`);
+      if (!found.isFile() || found.size > ATTACHMENT_MOST_BYTES) throw new Error(`${file.name} is no longer a file that can go with a message.`);
+    }
+    const root = path.join(project, ...ATTACHMENTS_FOLDER);
+    const folder = path.join(root, sentAt(new Date()));
+    await mkdir(folder, { recursive: true });
+    // What is kept for the messages stays out of the history of the project.
+    await writeFile(path.join(root, '.gitignore'), '*\n', { flag: 'wx' }).catch((error) => {
+      if (error?.code !== 'EEXIST') throw error;
+    });
+    const kept = [];
+    for (const file of chosen) kept.push([...ATTACHMENTS_FOLDER, path.basename(folder), await copiedInto(folder, file)].join('/'));
+    // The files are still held until the page lets go of them: a message that does not go is sent
+    // again with them.
+    return { kept };
   });
   ipcMain.handle('columbina:set-up-service', async (event, asked) => {
     checkSender(event);

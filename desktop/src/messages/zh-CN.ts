@@ -273,6 +273,13 @@ export const zhCN: Messages = {
       settings: '模型设置',
     },
 
+    attachments: {
+      attach: '附上文件',
+      list: '随这条消息发送的文件',
+      remove: (name: string) => `移除 ${name}`,
+      heading: '附件：',
+    },
+
     github: {
       signIn: '用 GitHub 登录',
       enterCode: '在 GitHub 上输入这个验证码',
@@ -573,6 +580,19 @@ export const zhCN: Messages = {
         lmstudio: '本机的 LM Studio 没有回答。先启动它的本地服务器，再试一次。',
         other: '本机的这个服务没有回答。先启动它，再试一次。',
       },
+    },
+
+    attachments: {
+      picture: '模型拿到的是这个文件，看不到图片里的内容。',
+      refused: {
+        gone: (name: string) => `${name} 已经不在了。`,
+        notAFile: (name: string) => `${name} 是文件夹，只能附上文件。`,
+        tooBig: (name: string) => `${name} 超过了 25 MB。`,
+        tooMany: (name: string) => `${name} 没有附上：一条消息最多带 10 个文件。`,
+      },
+      command: '命令不带附件，附件会留到下一条消息。',
+      drop: '松开就能附上这些文件。',
+      notKept: '附件没能存进项目，所以消息没有发出。',
     },
 
     start: {

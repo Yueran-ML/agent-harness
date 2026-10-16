@@ -466,6 +466,234 @@ describe('choosing another model', () => {
   });
 });
 
+describe('files that go with a message', () => {
+  const kept = (...names: string[]) => names.map(name => `.columbina/attachments/20261016-153012/${name}`);
+  const notes = { id: 'attachment-1', name: 'notes.md', size: 1200 };
+  const shot = { id: 'attachment-2', name: 'shot.png', size: 3_500_000 };
+  /** A shell that holds what the dialog gives, and copies what it holds into the project. */
+  const shell = (chosen: unknown = { attached: [notes, shot], refused: [] }) => {
+    const bridge = {
+      setTheme: vi.fn(async () => {}),
+      chooseAttachments: vi.fn(async (_asked: unknown): Promise<unknown> => chosen),
+      attachDropped: vi.fn(async (_files: File[]): Promise<unknown> => ({ attached: [notes], refused: [] })),
+      forgetAttachments: vi.fn(async (_ids: string[]) => {}),
+      keepAttachments: vi.fn(async (ids: string[]): Promise<unknown> => ({
+        kept: kept(...ids.map(id => (id === shot.id ? shot.name : notes.name))),
+      })),
+    };
+    vi.stubGlobal('columbina', bridge);
+    return bridge;
+  };
+  const attach = async () => { await act(async () => { fireEvent.click(one('attach')); }); };
+  /** The files of the message, as their cards show them. */
+  const files = () => marked('attachment').map(card => card.textContent);
+  const notes_ = () => marked('attachments-notes').map(said => said.textContent);
+
+  it('are chosen with the button at the foot of the field, shown by name and size, and sent with the message', async () => {
+    const bridge = shell();
+    const task = first();
+    page(task);
+    expect(one('attach').getAttribute('aria-label')).toBe('Attach files');
+    await attach();
+    expect(bridge.chooseAttachments).toHaveBeenCalledTimes(1);
+    expect(files()).toEqual(['notes.md1 KB', 'shot.png3.3 MB']);
+    expect(one('attachments').getAttribute('aria-label')).toBe('Files that go with the message');
+    // Of a picture the model has the file, and not what it shows.
+    expect(notes_()).toEqual(['The model gets the file, and does not see the picture.']);
+    expect(document.activeElement).toBe(box());
+    write('  Sum these up.  ');
+    await enter();
+    expect(bridge.keepAttachments.mock.calls).toEqual([[['attachment-1', 'attachment-2']]]);
+    expect(called(task.send)).toEqual([[
+      'Sum these up.\n\nAttached files:\n- .columbina/attachments/20261016-153012/notes.md\n'
+        + '- .columbina/attachments/20261016-153012/shot.png',
+      false,
+    ]]);
+    expect(bridge.forgetAttachments.mock.calls).toEqual([[['attachment-1', 'attachment-2']]]);
+    expect(marked('attachments')).toEqual([]);
+    expect(box().value).toBe('');
+  });
+
+  it('go alone where nothing is written, and not with a command, which leaves them for the next message', async () => {
+    const bridge = shell({ attached: [notes], refused: [] });
+    const task = first();
+    page(task);
+    await attach();
+    // Nothing is written, and the files go all the same.
+    expect((one('send') as HTMLButtonElement).disabled).toBe(false);
+    // Past the name of the command its list is closed, and Enter sends.
+    write('/compact ');
+    expect(hint()).toBe('A command takes no files. They wait for the next message.');
+    await enter();
+    expect(called(task.send)).toEqual([['/compact ', false]]);
+    expect(bridge.keepAttachments).not.toHaveBeenCalled();
+    expect(files()).toEqual(['notes.md1 KB']);
+    write('');
+    await act(async () => { fireEvent.click(one('send')); });
+    expect(called(task.send).at(-1)).toEqual(['Attached files:\n- .columbina/attachments/20261016-153012/notes.md', false]);
+    expect(files()).toEqual([]);
+  });
+
+  it('are kept with their task, as its draft is', async () => {
+    shell({ attached: [notes], refused: [{ name: 'film.mp4', why: 'tooBig' }] });
+    const task = first();
+    const { now } = page(task);
+    await attach();
+    expect(notes_()).toEqual(['film.mp4 is larger than 25 MB.']);
+    now(inTask(task, 's-2'));
+    expect(marked('attachments')).toEqual([]);
+    // What was said of the files that were not taken was said of that moment, and is gone.
+    expect(marked('attachments-notes')).toEqual([]);
+    now(task);
+    expect(files()).toEqual(['notes.md1 KB']);
+    expect(marked('attachments-notes')).toEqual([]);
+  });
+
+  it('say why a file was not taken, and take ten at most', async () => {
+    const eleven = Array.from({ length: 11 }, (_unused, index) => ({ id: `attachment-${index + 1}`, name: `part-${index + 1}.md`, size: 10 }));
+    const bridge = shell({ attached: eleven, refused: [{ name: 'film.mp4', why: 'tooBig' }, { name: 'photos', why: 'notAFile' }] });
+    page(first());
+    await attach();
+    expect(files()).toHaveLength(10);
+    expect(notes_()).toEqual([
+      'film.mp4 is larger than 25 MB.photos is a folder, and only files can be attached.'
+        + 'part-11.md was left out: ten files at most go with one message.',
+    ]);
+    expect(bridge.forgetAttachments.mock.calls).toEqual([[['attachment-11']]]);
+    // A file that is taken out makes room, and the notes go.
+    await act(async () => { fireEvent.click(marked('attachment-remove')[0]); });
+    expect(files()).toHaveLength(9);
+    expect(bridge.forgetAttachments.mock.calls.at(-1)).toEqual([['attachment-1']]);
+    expect(marked('attachments-notes')).toEqual([]);
+  });
+
+  it('are taken out again with their buttons, which name them', async () => {
+    const bridge = shell();
+    page(first());
+    await attach();
+    const remove = marked('attachment-remove');
+    expect(remove.map(button => button.getAttribute('aria-label'))).toEqual(['Remove notes.md', 'Remove shot.png']);
+    // The keyboard was on the button, which goes with its file.
+    remove[1].focus();
+    await act(async () => { fireEvent.click(remove[1]); });
+    expect(files()).toEqual(['notes.md1 KB']);
+    expect(marked('attachments-notes')).toEqual([]);
+    expect(bridge.forgetAttachments.mock.calls).toEqual([[['attachment-2']]]);
+    expect(document.activeElement).toBe(box());
+  });
+
+  it('send nothing where the files cannot be kept in the project, and say why', async () => {
+    const bridge = shell({ attached: [notes], refused: [] });
+    bridge.keepAttachments.mockRejectedValueOnce(new Error('no project is open, so the files have nowhere to be kept'));
+    const task = first();
+    page(task);
+    await attach();
+    write('Sum it up.');
+    await enter();
+    expect(task.send).not.toHaveBeenCalled();
+    expect(called(task.fail)).toEqual([[
+      'The files could not be kept in the project, so the message was not sent. No project is open, so the files have nowhere to be kept.',
+    ]]);
+    expect(files()).toEqual(['notes.md1 KB']);
+    expect(box().value).toBe('Sum it up.');
+    // An answer that says no place for the file is as good as none.
+    bridge.keepAttachments.mockResolvedValueOnce({ kept: [] });
+    await enter();
+    expect(called(task.fail).at(-1)).toEqual(['The files could not be kept in the project, so the message was not sent.']);
+    expect(task.send).not.toHaveBeenCalled();
+  });
+
+  it('stay where the message did not go, to go with it again', async () => {
+    const bridge = shell({ attached: [notes], refused: [] });
+    const task = first({ send: vi.fn(async () => false) });
+    page(task);
+    await attach();
+    write('Sum it up.');
+    await enter();
+    expect(called(task.send)).toHaveLength(1);
+    expect(bridge.forgetAttachments).not.toHaveBeenCalled();
+    expect(files()).toEqual(['notes.md1 KB']);
+  });
+
+  it('are dropped on the field, which says where they go while they are dragged over it', async () => {
+    const bridge = shell();
+    page(first());
+    const form = box().closest('form')!;
+    const file = new File(['# Notes'], 'notes.md');
+    const dragged = { dataTransfer: { types: ['Files'], files: [file], dropEffect: 'none' } };
+    expect(fireEvent.dragEnter(form, dragged)).toBe(false);
+    expect(one('composer-drop').textContent).toBe('Let go of the files to attach them.');
+    expect(fireEvent.dragOver(form, dragged)).toBe(false);
+    expect(dragged.dataTransfer.dropEffect).toBe('copy');
+    // Inside the field the drag goes from one part to another, and the field still has it.
+    fireEvent.dragEnter(box(), dragged);
+    fireEvent.dragLeave(form, dragged);
+    expect(marked('composer-drop')).toHaveLength(1);
+    fireEvent.dragLeave(box(), dragged);
+    expect(marked('composer-drop')).toEqual([]);
+    fireEvent.dragEnter(form, dragged);
+    await act(async () => { expect(fireEvent.drop(form, dragged)).toBe(false); });
+    expect(bridge.attachDropped.mock.calls).toEqual([[[file]]]);
+    expect(marked('composer-drop')).toEqual([]);
+    expect(files()).toEqual(['notes.md1 KB']);
+    // What is dragged and is no file is left to the page.
+    const words = { dataTransfer: { types: ['text/plain'], files: [], dropEffect: 'none' } };
+    expect(fireEvent.dragEnter(form, words)).toBe(true);
+    expect(fireEvent.drop(form, words)).toBe(true);
+    expect(bridge.attachDropped).toHaveBeenCalledTimes(1);
+  });
+
+  it('go alone only when the field could send a message', async () => {
+    shell({ attached: [notes], refused: [] });
+    const task = first();
+    const { now } = page(task);
+    await attach();
+    expect((one('send') as HTMLButtonElement).disabled).toBe(false);
+    now({ ...task, sending: true });
+    expect((one('send') as HTMLButtonElement).disabled).toBe(true);
+    now({ ...task, connected: false });
+    expect((one('send') as HTMLButtonElement).disabled).toBe(true);
+    now(task);
+    expect((one('send') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('go with no message in a replay, and with none while the field cannot be used', async () => {
+    const bridge = shell();
+    const { now } = page(first({ mode: 'mock' }));
+    expect(marked('attach')).toEqual([]);
+    const form = box().closest('form')!;
+    expect(fireEvent.drop(form, { dataTransfer: { types: ['Files'], files: [new File(['x'], 'x.md')] } })).toBe(true);
+    expect(bridge.attachDropped).not.toHaveBeenCalled();
+    now(first({ connected: false }));
+    expect((one('attach') as HTMLButtonElement).disabled).toBe(true);
+    expect(fireEvent.dragEnter(form, { dataTransfer: { types: ['Files'], files: [] } })).toBe(true);
+    expect(marked('composer-drop')).toEqual([]);
+  });
+
+  it('say what went wrong where the shell could not be asked', async () => {
+    const bridge = shell();
+    bridge.chooseAttachments.mockRejectedValueOnce(new Error('The dialog could not be opened.'));
+    const task = first();
+    page(task);
+    await attach();
+    expect(called(task.fail)).toEqual([[new Error('The dialog could not be opened.')]]);
+    expect(marked('attachments')).toEqual([]);
+    // A dialog that was closed with nothing chosen changes nothing, not even what was said before.
+    bridge.chooseAttachments.mockResolvedValueOnce({ attached: [notes], refused: [{ name: 'film.mp4', why: 'tooBig' }] });
+    await attach();
+    bridge.chooseAttachments.mockResolvedValueOnce(null);
+    await attach();
+    expect(files()).toEqual(['notes.md1 KB']);
+    expect(notes_()).toEqual(['film.mp4 is larger than 25 MB.']);
+    // Files that are dropped and cannot be taken are told of the same way.
+    bridge.attachDropped.mockRejectedValueOnce(new Error('Those are no files that were dropped.'));
+    const form = box().closest('form')!;
+    await act(async () => { fireEvent.drop(form, { dataTransfer: { types: ['Files'], files: [new File(['x'], 'x.md')] } }); });
+    expect(called(task.fail).at(-1)).toEqual([new Error('Those are no files that were dropped.')]);
+    expect(files()).toEqual(['notes.md1 KB']);
+  });
+});
+
 describe('a link in the conversation', () => {
   const linked = log(
     begin(1), user('Where is it?'),

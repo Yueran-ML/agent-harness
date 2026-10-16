@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type RefObject } from 'react';
-import { ArrowUp, Clock3, Square, SquareSlash } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type DragEvent, type KeyboardEvent, type RefObject } from 'react';
+import { ArrowUp, Clock3, FileImage, FileText, Paperclip, Square, SquareSlash, X } from 'lucide-react';
 import { messageText } from '../state';
-import { canSubmitInput } from '../uiActions';
+import { canSubmitInput, isCommand } from '../uiActions';
 import type { ServiceModels } from '../useModels';
 import type { Workspace } from '../useWorkspace';
 import { ModelPicker } from './ModelPicker';
+import { isPicture, sizeOf, type Attachment, type Refused } from './attachments';
 import { composerKey, keyOf } from './keys';
 import { useWords } from './locale';
 import { goneWords } from './tell';
@@ -27,9 +28,16 @@ const MOST_HEIGHT = 220;
  *   models: The models of the services, as the page knows them.
  *   onChooseModel: Have the service process ask another model.
  *   onModelSettings: Open the settings at the model.
+ *   attachments: The files that go with the message. The caller keeps them, one set for each task.
+ *   refused: The files that were chosen or dropped last and not taken, with why.
+ *   onAttach: Let the user choose files to go with the message. Without it, as in a replay, no
+ *     file goes with a message.
+ *   onDropFiles: Take files that were dropped on the field.
+ *   onRemoveAttachment: Take a file out of the message.
  */
 export function Composer({
   workspace, draft, onDraft, onSend, field, returned, declined, commandsAsked, models, onChooseModel, onModelSettings,
+  attachments, refused, onAttach, onDropFiles, onRemoveAttachment,
 }: {
   workspace: Workspace;
   draft: string;
@@ -42,6 +50,11 @@ export function Composer({
   models: ServiceModels;
   onChooseModel: (model: string) => void;
   onModelSettings: () => void;
+  attachments: readonly Attachment[];
+  refused: readonly Refused[];
+  onAttach?: () => void;
+  onDropFiles?: (files: File[]) => void;
+  onRemoveAttachment: (attachment: Attachment) => void;
 }) {
   const words = useWords();
   const { status, hello, projection } = workspace;
@@ -53,7 +66,17 @@ export function Composer({
   const model = status?.model.model ?? '';
   const canModel = (hello?.commands ?? []).some(command => command.name === 'model');
   const state = { unavailable, sending: workspace.sending, running };
-  const canSend = canSubmitInput(draft, state);
+  // Files go with a message of their own where nothing is written. A command takes none.
+  const canSend = canSubmitInput(draft, state)
+    || (draft.trim() === '' && attachments.length > 0 && canSubmitInput('files', state));
+
+  // Files that are dragged over the field are taken where they are let go of. The field is told
+  // of every element inside it that the drag enters and leaves, and counts them.
+  const [dropping, setDropping] = useState(false);
+  const inside = useRef(0);
+  const takesDrop = (event: DragEvent) => onDropFiles !== undefined && !unavailable
+    && Array.from(event.dataTransfer.types).includes('Files');
+  useEffect(() => { if (unavailable) { inside.current = 0; setDropping(false); } }, [unavailable]);
 
   // The list of commands is open while the line is a slash and the beginning of a name.
   const [closedFor, setClosedFor] = useState<string | null>(null);
@@ -149,8 +172,9 @@ export function Composer({
       : armed ? words.hint.escAgain
         : returned ? words.hint.returned
           : declined && running ? words.hint.afterNo
-            : running && draft.trim().startsWith('/') ? words.hint.commandsWhenIdle
-              : running ? words.hint.keysRunning : words.hint.keysIdle;
+            : attachments.length > 0 && isCommand(draft) ? words.hint.attachments.command
+              : running && draft.trim().startsWith('/') ? words.hint.commandsWhenIdle
+                : running ? words.hint.keysRunning : words.hint.keysIdle;
 
   // What a person said and nothing has read yet. What a plugin put in is not shown here.
   const waiting = [...projection.queues['next-turn'], ...projection.queues['next-step']]
@@ -169,8 +193,33 @@ export function Composer({
       className="composer"
       data-running={running || undefined}
       data-off={unavailable || undefined}
+      data-dropping={dropping || undefined}
       onSubmit={event => { event.preventDefault(); void submit(); }}
+      onDragEnter={(event) => {
+        if (!takesDrop(event)) return;
+        event.preventDefault();
+        inside.current += 1;
+        setDropping(true);
+      }}
+      onDragOver={(event) => {
+        if (!takesDrop(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={() => {
+        inside.current = Math.max(0, inside.current - 1);
+        if (inside.current === 0) setDropping(false);
+      }}
+      onDrop={(event) => {
+        if (!takesDrop(event)) return;
+        event.preventDefault();
+        inside.current = 0;
+        setDropping(false);
+        const files = Array.from(event.dataTransfer.files);
+        if (files.length > 0) onDropFiles!(files);
+      }}
     >
+      {dropping && <div className="composer-drop" aria-hidden="true" data-test="composer-drop">{words.hint.attachments.drop}</div>}
       {listOpen && <div className="commands" id="commands" role="listbox" aria-label={words.label.commands} data-test="commands">
         <p className="caption commands-note">{words.hint.commandsList}</p>
         {matching.map((command, index) => <button
@@ -187,6 +236,31 @@ export function Composer({
           <code>/{command.name}</code>
           <span>{command.summary}</span>
         </button>)}
+      </div>}
+
+      {attachments.length > 0 && <ul className="attachments" aria-label={words.label.attachments.list} data-test="attachments">
+        {attachments.map(file => <li className="attachment" key={file.id} title={file.name} data-test="attachment">
+          {isPicture(file.name) ? <FileImage size={13} aria-hidden="true" /> : <FileText size={13} aria-hidden="true" />}
+          <span className="attachment-name">{file.name}</span>
+          <span className="attachment-size">{sizeOf(file.size)}</span>
+          <button
+            type="button"
+            className="attachment-remove"
+            aria-label={words.label.attachments.remove(file.name)}
+            title={words.label.attachments.remove(file.name)}
+            onClick={() => { onRemoveAttachment(file); field.current?.focus(); }}
+            data-test="attachment-remove"
+          >
+            <X size={12} />
+          </button>
+        </li>)}
+      </ul>}
+      {(refused.length > 0 || attachments.some(file => isPicture(file.name))) && <div className="attachments-notes" role="status" data-test="attachments-notes">
+        {/* Of a picture the model has the file, and not what it shows. */}
+        {attachments.some(file => isPicture(file.name)) && <p className="caption">{words.hint.attachments.picture}</p>}
+        {refused.map(file => <p className="caption" key={`${file.why} ${file.name}`} data-tone="warn">
+          {words.hint.attachments.refused[file.why](file.name)}
+        </p>)}
       </div>}
 
       <label htmlFor="composer" className="sr-only">{placeholder}</label>
@@ -219,6 +293,17 @@ export function Composer({
         >
           <SquareSlash size={16} />
         </button>
+        {onAttach && <button
+          type="button"
+          className="icon-btn"
+          disabled={unavailable}
+          aria-label={words.label.attachments.attach}
+          title={words.label.attachments.attach}
+          onClick={onAttach}
+          data-test="attach"
+        >
+          <Paperclip size={16} />
+        </button>}
         {provider !== '' && model !== '' && <ModelPicker
           provider={provider}
           model={model}

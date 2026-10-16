@@ -184,9 +184,30 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     stat: vi.fn().mockResolvedValue({ isFile: () => true, size: 3 }),
     readFile: readMusic, close: vi.fn().mockResolvedValue(undefined),
   };
+  // The files that can go with a message, and what is copied for them: by their paths, a file of a
+  // size or a folder. Every other path is not there.
+  const drive = new Map<string, { size: number } | 'folder'>();
+  const there = (error: string) => Object.assign(new Error(`EEXIST: ${error}`), { code: 'EEXIST' });
   const disk = {
     realpath: vi.fn(async (value: string) => path.resolve(value)),
     open: vi.fn().mockResolvedValue(file),
+    stat: vi.fn(async (value: string) => {
+      const found = drive.get(path.resolve(value));
+      if (found === undefined) throw missing(value);
+      return found === 'folder' ? { isFile: () => false, size: 0 } : { isFile: () => true, size: found.size };
+    }),
+    copyFile: vi.fn(async (from: string, to: string, _mode?: number) => {
+      const source = drive.get(path.resolve(from));
+      if (source === undefined || source === 'folder') throw missing(from);
+      if (drive.has(path.resolve(to))) throw there(to);
+      drive.set(path.resolve(to), { ...source });
+    }),
+    mkdir: vi.fn(async (_folder: string, _options?: unknown) => undefined),
+    writeFile: vi.fn(async (to: string, text: string, options?: { flag?: string }) => {
+      if (options?.flag === 'wx' && drive.has(path.resolve(to))) throw there(to);
+      drive.set(path.resolve(to), { size: String(text).length });
+      files.set(path.resolve(to), String(text));
+    }),
   };
   const notifications: any[] = [];
   class TestNotification extends EventEmitter {
@@ -212,6 +233,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       },
     },
     'node:fs': {
+      constants: { COPYFILE_EXCL: 1 },
       existsSync: (file: string) => !absent.has(path.resolve(file)), mkdirSync: vi.fn(), realpathSync,
       statSync: (value: string) => {
         if (gone.has(path.resolve(value))) throw missing(value);
@@ -239,7 +261,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   runInNewContext(source, {
     require: (name: string) => { if (!(name in modules)) throw new Error(`Unexpected module: ${name}`); return modules[name]; },
     __dirname: path.dirname(mainPath), process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources },
-    URL, setTimeout, clearTimeout,
+    // The clock of the tests, so that a test that sets it sets it for the shell too.
+    URL, setTimeout, clearTimeout, Date,
   }, { filename: mainPath });
   await Promise.resolve();
   const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
@@ -255,7 +278,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const asKeyWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-key:${name}`)!(
     { sender: keyWindow().webContents, senderFrame: keyWindow().webContents.mainFrame }, ...args);
   return {
-    handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, file, sent,
+    handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, drive, file, sent,
     dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world,
     setups, setup, keyWindow, asKeyWindow, menu, logins, signIns, lineReaders,
     live: () => live, peakLive: () => peakLive,
@@ -1493,6 +1516,194 @@ describe('the models of a service, for the main window', () => {
     await expect((async () => shell.handlers.get('columbina:choose-model')!(shell.unrelated, { service: 'deepseek', model: 'deepseek-pro' }))())
       .rejects.toThrow('IPC sender');
     expect(shell.setups).toHaveLength(runs);
+  });
+});
+
+describe('files that go with a message', () => {
+  const MOST = 25 * 1024 * 1024;
+  /** The shell, with the service at work in a project, unless a test says that it replays. */
+  const working = async (env: Record<string, string> = { COLUMBINA_SERVICE_EXECUTABLE: python }) => {
+    const shell = await shellHarness(undefined, env);
+    const cwd = await shell.select('/work/project');
+    await shell.invoke('start', { cwd });
+    return { shell, cwd };
+  };
+  type Shell = Awaited<ReturnType<typeof shellHarness>>;
+  type Told = { attached: { id: string; name: string; size: number }[]; refused: { name: string; why: string }[] };
+  /** A file of the user, outside the project. */
+  const at = (...names: string[]) => path.resolve('/home/me', ...names);
+  const put = (shell: Shell, name: string, size = 100) => {
+    shell.drive.set(at(name), { size });
+    return at(name);
+  };
+  /** Choose files in the dialog of the system. */
+  const choose = async (shell: Shell, ...chosen: string[]) => {
+    shell.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: chosen });
+    return await shell.invoke('choose-attachments', { language: 'ja' }) as Told;
+  };
+  const kept = (cwd: string, ...names: string[]) => path.join(cwd, '.columbina', 'attachments', ...names);
+
+  it('are chosen in the dialog of the system, titled in the language of the window, and told of by name and size', async () => {
+    const { shell } = await working();
+    const told = await choose(shell, put(shell, 'notes.md', 1200), put(shell, 'photo.png', 3_000_000));
+    const [over, options] = shell.dialog.showOpenDialog.mock.calls.at(-1)!;
+    expect(over).toBe(shell.window);
+    expect(options).toEqual({ title: '添付するファイルを選択', properties: ['openFile', 'multiSelections'] });
+    expect(told).toEqual({
+      attached: [{ id: expect.any(String), name: 'notes.md', size: 1200 }, { id: expect.any(String), name: 'photo.png', size: 3_000_000 }],
+      refused: [],
+    });
+    expect(new Set(told.attached.map(each => each.id)).size).toBe(2);
+    // Where the files lie stays with the shell.
+    expect(JSON.stringify(told)).not.toContain('home');
+    const titled = async (asked: unknown) => {
+      shell.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+      expect(await shell.invoke('choose-attachments', asked)).toBeNull();
+      return shell.dialog.showOpenDialog.mock.calls.at(-1)![1].title;
+    };
+    expect(await titled({ language: 'en' })).toBe('Choose files to attach');
+    expect(await titled({ language: 'zh-CN' })).toBe('选择要附上的文件');
+    expect(await titled({ language: 'de' })).toBe('Choose files to attach');
+    expect(await titled(undefined)).toBe('Choose files to attach');
+  });
+
+  it('take a file up to 25 MB, and say of every other one why it is not taken', async () => {
+    const { shell } = await working();
+    shell.drive.set(at('photos'), 'folder');
+    const told = await choose(shell, at('photos'), put(shell, 'film.mp4', MOST + 1), at('gone.txt'), put(shell, 'exactly.bin', MOST));
+    expect(told.attached.map(each => [each.name, each.size])).toEqual([['exactly.bin', MOST]]);
+    expect(told.refused).toEqual([
+      { name: 'photos', why: 'notAFile' }, { name: 'film.mp4', why: 'tooBig' }, { name: 'gone.txt', why: 'gone' },
+    ]);
+  });
+
+  it('take the files that were dropped, as the preload names them, and nothing that names none', async () => {
+    const { shell } = await working();
+    const notes = put(shell, 'notes.md');
+    expect(await shell.invoke('attach-paths', [notes])).toEqual({ attached: [{ id: expect.any(String), name: 'notes.md', size: 100 }], refused: [] });
+    for (const given of [undefined, notes, [7], ['notes.md'], Array<string>(201).fill(notes)]) {
+      await expect((async () => shell.invoke('attach-paths', given))(), String(given).slice(0, 40)).rejects.toThrow('no files that were dropped');
+    }
+  });
+
+  it('hold two hundred files at most, for all the messages that are being written', async () => {
+    const { shell } = await working();
+    const notes = put(shell, 'notes.md');
+    const first = await shell.invoke('attach-paths', Array<string>(200).fill(notes)) as Told;
+    expect(first.attached).toHaveLength(200);
+    expect(await shell.invoke('attach-paths', [notes])).toEqual({ attached: [], refused: [{ name: 'notes.md', why: 'tooMany' }] });
+    // One that is let go of makes room for one more.
+    await shell.invoke('forget-attachments', [first.attached[0].id]);
+    expect((await shell.invoke('attach-paths', [notes]) as Told).attached).toHaveLength(1);
+  });
+
+  it('are copied into the project when the message goes, beside a file that keeps them out of the history', async () => {
+    vi.useFakeTimers({ now: new Date(2026, 9, 16, 15, 30, 12), toFake: ['Date'] });
+    try {
+      const { shell, cwd } = await working();
+      const told = await choose(shell, put(shell, 'notes.md'), put(shell, 'data.csv', 2048));
+      const ids = told.attached.map(each => each.id);
+      expect(await shell.invoke('keep-attachments', ids)).toEqual({
+        kept: ['.columbina/attachments/20261016-153012/notes.md', '.columbina/attachments/20261016-153012/data.csv'],
+      });
+      expect(shell.drive.get(kept(cwd, '20261016-153012', 'data.csv'))).toEqual({ size: 2048 });
+      expect(shell.disk.mkdir).toHaveBeenCalledWith(kept(cwd, '20261016-153012'), { recursive: true });
+      expect(shell.files.get(kept(cwd, '.gitignore'))).toBe('*\n');
+      // A copy is made only where nothing is there yet.
+      expect(shell.disk.copyFile.mock.calls.map(called => called[2])).toEqual([1, 1]);
+      // The files are held until the page lets go of them, so that a message that did not go
+      // can be sent again with them.
+      expect(await shell.invoke('keep-attachments', ids)).toEqual({
+        kept: ['.columbina/attachments/20261016-153012/notes (2).md', '.columbina/attachments/20261016-153012/data (2).csv'],
+      });
+      await shell.invoke('forget-attachments', ids);
+      await expect((async () => shell.invoke('keep-attachments', ids))()).rejects.toThrow('was not chosen');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leave a file that keeps them out of the history as it is, and give a name that is there a number', async () => {
+    vi.useFakeTimers({ now: new Date(2026, 0, 2, 3, 4, 5), toFake: ['Date'] });
+    try {
+      const { shell, cwd } = await working();
+      shell.drive.set(kept(cwd, '.gitignore'), { size: 8 });
+      shell.files.set(kept(cwd, '.gitignore'), 'written\n');
+      shell.drive.set(at('other', 'notes.md'), { size: 1 });
+      shell.drive.set(at('other', 'Makefile'), { size: 1 });
+      shell.drive.set(at('other', '.env'), { size: 1 });
+      const told = await choose(
+        shell, put(shell, 'notes.md'), at('other', 'notes.md'), put(shell, 'Makefile'), at('other', 'Makefile'),
+        put(shell, '.env'), at('other', '.env'), put(shell, 'odd`name\u0007.txt'),
+      );
+      const answer = await shell.invoke('keep-attachments', told.attached.map(each => each.id)) as { kept: string[] };
+      // A name that begins with a dot has no ending: the number comes at its end.
+      expect(answer.kept.map(each => each.split('/').slice(2).join('/'))).toEqual([
+        '20260102-030405/notes.md', '20260102-030405/notes (2).md', '20260102-030405/Makefile', '20260102-030405/Makefile (2)',
+        '20260102-030405/.env', '20260102-030405/.env (2)', '20260102-030405/odd`name_.txt',
+      ]);
+      expect(shell.files.get(kept(cwd, '.gitignore'))).toBe('written\n');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('copy nothing where a file is gone or no longer fits, or where no project is there to keep them', async () => {
+    const { shell } = await working();
+    const ids = async (name: string, size = 100) => (await choose(shell, put(shell, name, size))).attached.map(each => each.id);
+    const refused = async (given: unknown, said: string) => {
+      await expect((async () => shell.invoke('keep-attachments', given))(), JSON.stringify(given)).rejects.toThrow(said);
+    };
+    const notes = await ids('notes.md');
+    const gone = await ids('gone.md');
+    shell.drive.delete(at('gone.md'));
+    await refused([...notes, ...gone], 'gone.md is not there any more');
+    const grown = await ids('grown.md');
+    shell.drive.set(at('grown.md'), { size: MOST + 1 });
+    await refused(grown, 'grown.md is no longer a file');
+    const folder = await ids('folder.md');
+    shell.drive.set(at('folder.md'), 'folder');
+    await refused(folder, 'folder.md is no longer a file');
+    for (const given of [undefined, 'attachment-1', [], [7], ['attachment-999']]) await refused(given, given === undefined || typeof given === 'string' || (Array.isArray(given) && given.length === 0) ? 'no set of files' : 'was not chosen');
+    await refused(Array<string>(11).fill(notes[0]), 'no set of files');
+    expect(shell.disk.copyFile).not.toHaveBeenCalled();
+    // What was refused is still held, and goes once the project is there for it.
+    expect(await shell.invoke('keep-attachments', notes)).toMatchObject({ kept: [expect.stringMatching(/notes\.md$/)] });
+    const later = await ids('later.md');
+    await shell.invoke('stop');
+    await refused(later, 'No project is open');
+  });
+
+  it('are kept nowhere in a replay, which has no project of its own', async () => {
+    const { shell } = await working({});
+    const told = await choose(shell, put(shell, 'notes.md'));
+    await expect((async () => shell.invoke('keep-attachments', told.attached.map(each => each.id)))()).rejects.toThrow('No project is open');
+    expect(shell.disk.copyFile).not.toHaveBeenCalled();
+  });
+
+  it('let go of files that are not to go with a message after all', async () => {
+    const { shell } = await working();
+    const told = await choose(shell, put(shell, 'one.md'), put(shell, 'two.md'));
+    const [one, two] = told.attached.map(each => each.id);
+    await shell.invoke('forget-attachments', [one, 7, 'attachment-999']);
+    await shell.invoke('forget-attachments', 'nothing that is a list');
+    await expect((async () => shell.invoke('keep-attachments', [one]))()).rejects.toThrow('was not chosen');
+    expect(await shell.invoke('keep-attachments', [two])).toMatchObject({ kept: [expect.stringMatching(/two\.md$/)] });
+  });
+
+  it('answer none of this to anything but the page of the application', async () => {
+    const { shell } = await working();
+    const notes = put(shell, 'notes.md');
+    const told = await choose(shell, notes);
+    const from = (name: string, ...given: unknown[]) => (async () => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, ...given))();
+    await expect(from('choose-attachments', { language: 'en' })).rejects.toThrow('IPC sender');
+    await expect(from('attach-paths', [notes])).rejects.toThrow('IPC sender');
+    await expect(from('forget-attachments', [told.attached[0].id])).rejects.toThrow('IPC sender');
+    await expect(from('keep-attachments', [told.attached[0].id])).rejects.toThrow('IPC sender');
+    expect(shell.dialog.showOpenDialog).toHaveBeenCalledTimes(2);
+    expect(shell.disk.copyFile).not.toHaveBeenCalled();
+    // The file is still held: nothing that was asked from elsewhere let go of it.
+    expect(await shell.invoke('keep-attachments', [told.attached[0].id])).toMatchObject({ kept: [expect.any(String)] });
   });
 });
 

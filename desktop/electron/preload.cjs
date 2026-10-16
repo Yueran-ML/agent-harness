@@ -1,4 +1,6 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
+/** The ids of files that go with a message, and nothing else that came with them. */
+const idsOf = (ids) => (Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : []);
 const subscribe = (channel, callback) => {
   const listener = (_event, value) => callback(value);
   ipcRenderer.on(channel, listener);
@@ -25,6 +27,18 @@ contextBridge.exposeInMainWorld('columbina', {
   services: () => ipcRenderer.invoke('columbina:services'),
   listModels: (service) => ipcRenderer.invoke('columbina:models', service),
   chooseModel: (asked) => ipcRenderer.invoke('columbina:choose-model', { service: asked?.service, model: asked?.model }),
+  chooseAttachments: (asked) => ipcRenderer.invoke('columbina:choose-attachments', { language: asked?.language }),
+  // Where a file that was dropped lies is found here, from the file itself. The page hands over
+  // the files and never names a path: a file that a page makes up has none, and is left out.
+  attachDropped: (files) => ipcRenderer.invoke('columbina:attach-paths', Array.from(files ?? [], (file) => {
+    try {
+      return webUtils.getPathForFile(file);
+    } catch {
+      return '';
+    }
+  }).filter((found) => typeof found === 'string' && found !== '')),
+  forgetAttachments: (ids) => ipcRenderer.invoke('columbina:forget-attachments', idsOf(ids)),
+  keepAttachments: (ids) => ipcRenderer.invoke('columbina:keep-attachments', idsOf(ids)),
   setUpService: (asked) => ipcRenderer.invoke('columbina:set-up-service', { service: asked?.service, language: asked?.language }),
   openExternal: (url) => ipcRenderer.invoke('columbina:open-external', url),
   githubStatus: () => ipcRenderer.invoke('columbina:github-status'),

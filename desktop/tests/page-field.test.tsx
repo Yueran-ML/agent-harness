@@ -267,6 +267,7 @@ describe('the field', () => {
       workspace={workspace} draft={draft} onDraft={setDraft} onSend={sent} field={field}
       returned={returned} declined={declined} commandsAsked={commandsAsked}
       models={modelsWith()} onChooseModel={vi.fn()} onModelSettings={vi.fn()}
+      attachments={[]} refused={[]} onRemoveAttachment={vi.fn()}
     />;
   }
   const taken = () => vi.fn(async (_text: string) => true);

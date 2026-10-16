@@ -189,6 +189,93 @@
   color: var(--accent);
 }
 
+/* --- The files that go with the message, above what is written. */
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+  list-style: none;
+  padding-top: 2px;
+}
+
+.attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  height: 26px;
+  padding: 0 2px 0 var(--s2);
+  border-radius: var(--r1);
+  border: 1px solid var(--line-strong);
+  background: var(--ink-1);
+  color: var(--moon-1);
+  font-size: var(--text-caption);
+}
+
+.attachment svg {
+  flex: none;
+  color: var(--moon-2);
+}
+
+.attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  flex: none;
+  color: var(--moon-2);
+}
+
+.attachment-remove {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+}
+
+.attachment-remove:hover {
+  background: var(--ink-3);
+}
+
+.attachment-remove:hover svg {
+  color: var(--moon-0);
+}
+
+.attachments-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attachments-notes [data-tone='warn'] {
+  color: var(--warn);
+}
+
+/* Files that are dragged over the field: it says where they go once they are let go of. The
+   words take no events, so that the field goes on hearing the drag. */
+.composer[data-dropping] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash), 0 8px 30px rgb(0 0 0 / 0.16);
+}
+
+.composer-drop {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--ink-2) 90%, transparent);
+  color: var(--accent);
+  font-size: var(--text-ui);
+  pointer-events: none;
+}
+
 /* --- The model, on a button at the foot of the field and in the settings, and the models of its service. */
 .model-picker {
   position: relative;

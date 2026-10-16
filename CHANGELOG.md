@@ -4,6 +4,14 @@ All notable changes are written down here. The version follows
 [Semantic Versioning](https://semver.org/), and while it is below 1.0 a minor version may
 change what was there before.
 
+## Unreleased
+
+- Files go with a message in the desktop application: chosen with the paperclip at the foot
+  of the field or dropped on it, ten at most and of up to 25 MB each. When the message is
+  sent they are copied into `.columbina/attachments/` of the project, which a `.gitignore`
+  keeps out of git, and the message ends with a line for each file that says where it is.
+  The page knows the files by an id, their names and sizes, and never by where they are.
+
 ## 0.1.1 (2026-10-16)
 
 - `columbina doctor` sees whether a session could start, and says what is in the way: the

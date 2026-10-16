@@ -347,6 +347,15 @@ export const en = {
       settings: 'Model settings',
     },
 
+    /** The files that go with a message. */
+    attachments: {
+      attach: 'Attach files',
+      list: 'Files that go with the message',
+      remove: (name: string) => `Remove ${name}`,
+      /** The line before the list of the files, at the end of the message. */
+      heading: 'Attached files:',
+    },
+
     /** Signing in to GitHub, and who is signed in. */
     github: {
       signIn: 'Sign in with GitHub',
@@ -675,6 +684,21 @@ export const en = {
         lmstudio: 'LM Studio does not answer on this computer. Start its local server, and try again.',
         other: 'The service does not answer on this computer. Start it, and try again.',
       },
+    },
+
+    /** The files that go with a message. */
+    attachments: {
+      picture: 'The model gets the file, and does not see the picture.',
+      refused: {
+        gone: (name: string) => `${name} is not there any more.`,
+        notAFile: (name: string) => `${name} is a folder, and only files can be attached.`,
+        tooBig: (name: string) => `${name} is larger than 25 MB.`,
+        tooMany: (name: string) => `${name} was left out: ten files at most go with one message.`,
+      },
+      command: 'A command takes no files. They wait for the next message.',
+      drop: 'Let go of the files to attach them.',
+      /** The files could not be copied into the project. The message was kept back with them. */
+      notKept: 'The files could not be kept in the project, so the message was not sent.',
     },
 
     /** The first steps on the first page. */

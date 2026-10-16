@@ -14,6 +14,14 @@ function bridgeOf(file: string, platform = 'win32') {
   const listening = new Map<string, Set<Listener>>();
   const exposed: Record<string, Record<string, Call>> = {};
   const electron = {
+    // Where a file lies, as Electron knows it of a file that was dropped: what the test wrote on it.
+    // A file that a page makes up has no place, and one that is no file at all is refused.
+    webUtils: {
+      getPathForFile: (file: unknown) => {
+        if (file === null || typeof file !== 'object' || !('name' in file)) throw new TypeError('That is no file.');
+        return (file as { at?: string }).at ?? '';
+      },
+    },
     contextBridge: { exposeInMainWorld: (name: string, calls: Record<string, Call>) => { exposed[name] = calls; } },
     ipcRenderer: {
       invoke: (...given: unknown[]) => { invoked.push(given); return Promise.resolve('what the shell answers'); },
@@ -89,6 +97,11 @@ describe('the bridge of the main window', () => {
     expect(handed('chooseModel', { ...more, model: 'deepseek-pro' }))
       .toEqual(['columbina:choose-model', { service: 'deepseek', model: 'deepseek-pro' }]);
     expect(handed('listModels', 'deepseek', more)).toEqual(['columbina:models', 'deepseek']);
+    expect(handed('chooseAttachments', more)).toEqual(['columbina:choose-attachments', { language: 'ja' }]);
+    expect(handed('forgetAttachments', ['attachment-1', 7, 'attachment-2'], more))
+      .toEqual(['columbina:forget-attachments', ['attachment-1', 'attachment-2']]);
+    expect(handed('keepAttachments', ['attachment-1', { then: 'more' }])).toEqual(['columbina:keep-attachments', ['attachment-1']]);
+    expect(handed('keepAttachments', 'attachment-1')).toEqual(['columbina:keep-attachments', []]);
     // A call that is made with nothing asks all the same, and the shell says what is missing.
     for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'chooseModel']) {
       const [, given] = handed(call) as [string, Record<string, unknown>];
@@ -98,6 +111,21 @@ describe('the bridge of the main window', () => {
     for (const call of ['getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services']) {
       expect(handed(call, more), call).toHaveLength(1);
     }
+  });
+
+  it('names a file that was dropped by where Electron says it lies, and nothing that the page wrote', () => {
+    const { exposed, invoked } = bridgeOf('electron/preload.cjs');
+    exposed.columbina.attachDropped([
+      { name: 'notes.md', at: 'C:\\work\\notes.md' },
+      // A file that the page made itself lies nowhere.
+      { name: 'made-up.txt' },
+      // A path that the page wrote is no file.
+      'C:\\Users\\me\\.ssh\\id_rsa',
+      { name: 'photo.png', at: '/Users/me/photo.png' },
+    ]);
+    expect(invoked.at(-1)).toEqual(['columbina:attach-paths', ['C:\\work\\notes.md', '/Users/me/photo.png']]);
+    exposed.columbina.attachDropped(undefined);
+    expect(invoked.at(-1)).toEqual(['columbina:attach-paths', []]);
   });
 
   it('tells the page which system it runs on, and asks the shell nothing for that', () => {

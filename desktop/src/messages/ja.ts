@@ -320,6 +320,13 @@ export const ja: Messages = {
       settings: 'モデルの設定',
     },
 
+    attachments: {
+      attach: 'ファイルを添付',
+      list: 'このメッセージに付けるファイル',
+      remove: (name: string) => `${name} を外す`,
+      heading: '添付ファイル：',
+    },
+
     github: {
       signIn: 'GitHub でサインイン',
       enterCode: 'このコードを GitHub で入力',
@@ -623,6 +630,19 @@ export const ja: Messages = {
         lmstudio: 'このコンピューターの LM Studio が応答しません。ローカルサーバーを起動してから、もう一度試してください。',
         other: 'このコンピューターのサービスが応答しません。起動してから、もう一度試してください。',
       },
+    },
+
+    attachments: {
+      picture: 'モデルが受け取るのはファイルで、画像の中身は見えません。',
+      refused: {
+        gone: (name: string) => `${name} は見つからなくなりました。`,
+        notAFile: (name: string) => `${name} はフォルダーです。添付できるのはファイルだけです。`,
+        tooBig: (name: string) => `${name} は 25 MB を超えています。`,
+        tooMany: (name: string) => `${name} は添付されませんでした。一つのメッセージに付けられるファイルは 10 個までです。`,
+      },
+      command: 'コマンドにはファイルを付けられません。ファイルは次のメッセージに付きます。',
+      drop: 'ここで離すと、ファイルを添付します。',
+      notKept: 'ファイルをプロジェクトに保存できなかったため、メッセージは送られませんでした。',
     },
 
     start: {

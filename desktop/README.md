@@ -143,6 +143,17 @@ uses it too. While Columbina is at work the list can be looked at, and nothing i
 Where another service was chosen in the window for the key and waits for the next start, a
 model that is chosen is used and not stored, and the other service stays chosen.
 
+Beside the model, a button shows how hard it thinks, and opens the levels that its service
+offers, each with a line on what it does. A service of the style of DeepSeek takes all of
+them: the default, which leaves it to the service, off, low, high, max, and ultra. Ultra asks
+for the most thinking there is, and tells the agent to plan, to hand the parts of the work
+that stand alone to subagents that work side by side, and to have one of them review the
+result before it answers. Another service is offered the default and ultra, and there ultra
+asks for the team and not for more thinking. A level is used from the next request on, by
+the subagents that are made from then on too, and it is kept for its service through
+`columbina setup --from-stdin` for the next start, except ultra, which holds for the run.
+While Columbina is at work the levels can be looked at, and none chosen.
+
 This works where the application runs the service itself, and not in a replay. The
 service looks for the key with every request, so a key is used as soon as it is stored,
 and a turn that failed for want of it can be tried again with the button under it.

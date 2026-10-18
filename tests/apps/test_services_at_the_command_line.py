@@ -914,7 +914,7 @@ def test_setup_stores_no_key_where_another_program_writes_none(
         (
             said(service="openai", model="gpt-test", key=KEY),
             "the document says something under a name that is not read. The names that are read "
-            "are: service, base_url, model, context_window, api_key",
+            "are: service, base_url, model, context_window, api_key, effort",
         ),
         (
             said(service="openai", model="gpt-test", api_key=f"{KEY} {KEY}"),
@@ -1551,3 +1551,207 @@ def test_a_stored_key_does_not_follow_a_variable_that_sends_the_requests_elsewhe
     assert (with_the_key_of_the_variable, second.out) == (0, "Hello.\n")
     # The one request that was made carries the key of the variable. The stored one went nowhere.
     assert [key for _path, key, _body in requests] == [f"Bearer {OTHER}"]
+
+
+# How hard the model thinks
+
+CHOSEN_TWO = (
+    "use: openai\nservices:\n  openai:\n    model: gpt-test\n"
+    "  deepseek:\n    model: deepseek-v4-pro\n    context_window: 500000\n"
+)
+
+
+def what_was_chosen(home: Path) -> Any:
+    return yaml.safe_load((home / "provider.yml").read_text(encoding="utf-8"))
+
+
+def test_a_level_of_effort_is_stored_alone_and_all_else_that_was_chosen_stays(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen(home, CHOSEN_TWO)
+    written_by_a_program(monkeypatch, said(service="deepseek", effort=" MAX "))
+
+    code = main(["setup", "--from-stdin"])
+
+    captured = capsys.readouterr()
+    assert (code, captured.out, captured.err) == (
+        0,
+        '{"effort": {"name": "deepseek", "effort": "max"}}\n',
+        "",
+    )
+    # The service in use stays the one it was, and so do the model and the window of the other.
+    assert what_was_chosen(home) == {
+        "use": "openai",
+        "services": {
+            "openai": {"model": "gpt-test"},
+            "deepseek": {"model": "deepseek-v4-pro", "context_window": 500000, "effort": "max"},
+        },
+    }
+
+
+def test_a_level_is_stored_for_a_service_that_nothing_was_chosen_of(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    written_by_a_program(monkeypatch, said(service="deepseek", effort="default"))
+
+    code = main(["setup", "--from-stdin"])
+
+    assert code == 0
+    assert one_document(capsys.readouterr().out) == {
+        "effort": {"name": "deepseek", "effort": "default"}
+    }
+    # The default is a choice: it asks for nothing even where a profile asks for a level.
+    assert what_was_chosen(home) == {"services": {"deepseek": {"effort": "default"}}}
+
+
+@pytest.mark.parametrize(
+    ("document", "error"),
+    [
+        (
+            said(service="deepseek", effort="ultra"),
+            "ultra holds for one run, and is not stored. "
+            "The levels that are stored are: default, off, low, high, max",
+        ),
+        (
+            said(service="deepseek", effort="sk-test-0123456789"),
+            "what the document says under 'effort' is no level of effort. "
+            "The levels that are stored are: default, off, low, high, max",
+        ),
+        (said(service="deepseek", effort="  "), "the document names no level of effort"),
+        (said(service="  ", effort="max"), "the document names no service"),
+        (said(service="deepseek", effort=3), "what the document says under 'effort' is not text"),
+        (
+            said(service="nowhere", effort="max"),
+            "there is no service 'nowhere'. The services are: "
+            f"{NAMES}. Another one is added with 'columbina setup'",
+        ),
+    ],
+    ids=["ultra", "a key for a level", "no level", "no service", "a number", "no such service"],
+)
+def test_a_level_that_is_not_stored_is_answered_in_json_and_nothing_is_stored(
+    home: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    document: bytes,
+    error: str,
+) -> None:
+    chosen(home, CHOSEN_TWO)
+    written_by_a_program(monkeypatch, document)
+
+    code = main(["setup", "--from-stdin"])
+
+    assert (code, one_document(capsys.readouterr().out)) == (2, {"error": error})
+    assert (home / "provider.yml").read_text(encoding="utf-8") == CHOSEN_TWO
+
+
+def test_a_model_that_is_stored_keeps_the_level_and_a_document_may_say_both(
+    home: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chosen(home, "services:\n  deepseek:\n    model: deepseek-v4-pro\n    effort: low\n")
+    written_by_a_program(monkeypatch, said(service="deepseek", model="deepseek-flash"))
+    assert main(["setup", "--from-stdin"]) == 0
+    kept = what_was_chosen(home)
+    written_by_a_program(
+        monkeypatch, said(service="deepseek", model="deepseek-v4-pro", effort="off")
+    )
+    assert main(["setup", "--from-stdin"]) == 0
+    both = what_was_chosen(home)
+    capsys.readouterr()
+
+    assert kept["services"]["deepseek"] == {"model": "deepseek-flash", "effort": "low"}
+    assert both["services"]["deepseek"] == {"model": "deepseek-v4-pro", "effort": "off"}
+
+
+def test_the_level_that_was_stored_goes_before_the_profile_and_a_patch_before_it(
+    dump: Dump, home: Path, tmp_path: Path
+) -> None:
+    asking_low = {"id": "frontend", "config": {"model": {"reasoning": "low"}}}
+    low = tmp_path / "low.yml"
+    low.write_text(yaml.safe_dump({"extends": "headless", "patch": [asking_low]}), "utf-8")
+    patch = tmp_path / "patch.yml"
+    patch.write_text(yaml.safe_dump([asking_low]), encoding="utf-8")
+    reasoned: list[object] = []
+    patched: list[object] = []
+    for effort in (None, "max", "default"):
+        level = "" if effort is None else f"    effort: {effort}\n"
+        chosen(home, f"use: deepseek\nservices:\n  deepseek:\n    model: deepseek-flash\n{level}")
+        reasoned.append(dump.model("--profile", str(low))[1].get("reasoning"))
+        patched.append(dump.model("--patch", str(patch))[1].get("reasoning"))
+
+    # Where nothing was chosen the profile decides, and the default asks for nothing at all.
+    assert reasoned == ["low", "max", None]
+    # A patch still has the last word.
+    assert patched == ["low", "low", "low"]
+
+
+def profile_asking(tmp_path: Path, **asked: Any) -> str:
+    """Write a profile whose frontend asks a model of DeepSeek, and what else is given of it.
+
+    Returns where the profile is.
+    """
+    model = {"provider": "deepseek", "model": "deepseek-flash", **asked}
+    asking = {"id": "frontend", "config": {"model": model}}
+    written = tmp_path / "asking.yml"
+    written.write_text(yaml.safe_dump({"extends": "headless", "patch": [asking]}), "utf-8")
+    return str(written)
+
+
+def test_a_level_holds_for_the_service_of_the_profile_where_no_service_is_chosen(
+    dump: Dump, home: Path, tmp_path: Path
+) -> None:
+    low = profile_asking(tmp_path, reasoning="low")
+    reasoned: list[object] = []
+    for services in (
+        "deepseek: {effort: max}",
+        "deepseek: {effort: default}",
+        "openai: {effort: high}",
+    ):
+        chosen(home, f"services:\n  {services}\n")
+        reasoned.append(dump.model("--profile", low)[1].get("reasoning"))
+
+    # Nothing chose the service, so the profile talks to the one that it names, and the level
+    # that was kept for that one holds. One that was kept for another service does not.
+    assert reasoned == ["max", None, "low"]
+
+
+def test_a_profile_that_names_its_service_in_no_way_that_can_be_read_is_left_as_it_is(
+    dump: Dump, home: Path, tmp_path: Path
+) -> None:
+    chosen(home, "services:\n  deepseek: {effort: max}\n")
+    odd = profile_asking(tmp_path, provider=["deepseek"], reasoning="low")
+
+    assert dump.model("--profile", odd)[1] == {
+        "provider": ["deepseek"],
+        "model": "deepseek-flash",
+        "reasoning": "low",
+    }
+
+
+def test_a_level_of_another_service_is_not_asked_of_one_that_the_command_line_names(
+    dump: Dump, home: Path, tmp_path: Path
+) -> None:
+    low = profile_asking(tmp_path, reasoning="low")
+    reasoned: list[object] = []
+    for text in (
+        "use: deepseek\nservices:\n  deepseek: {model: deepseek-flash, effort: max}\n",
+        "services:\n  deepseek: {effort: max}\n",
+        "services:\n  deepseek: {effort: max}\n  openai: {model: gpt-test, effort: high}\n",
+    ):
+        chosen(home, text)
+        named = dump.model("--profile", low, "--provider", "openai", "--model", "gpt-test")[1]
+        reasoned.append(named.get("reasoning"))
+
+    # The profile decides for a service that nothing was kept for, and a level that was kept
+    # for the service that is named holds.
+    assert reasoned == ["low", "low", "high"]
+
+
+def test_a_level_is_stored_for_a_service_of_ones_own_as_well(dump: Dump, home: Path) -> None:
+    chosen(
+        home,
+        # Written as setup writes it: unquoted, YAML would read the level as false.
+        "use: mine\nservices:\n  mine:\n    base_url: http://localhost:9/v1\n"
+        "    model: m\n    effort: 'off'\n",
+    )
+
+    assert dump.model()[1]["reasoning"] == "off"

@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('columbina', {
   services: () => ipcRenderer.invoke('columbina:services'),
   listModels: (service) => ipcRenderer.invoke('columbina:models', service),
   chooseModel: (asked) => ipcRenderer.invoke('columbina:choose-model', { service: asked?.service, model: asked?.model }),
+  chooseEffort: (asked) => ipcRenderer.invoke('columbina:choose-effort', { service: asked?.service, effort: asked?.effort }),
   chooseAttachments: (asked) => ipcRenderer.invoke('columbina:choose-attachments', { language: asked?.language }),
   // Where a file that was dropped lies is found here, from the file itself. The page hands over
   // the files and never names a path: a file that a page makes up has none, and is left out.

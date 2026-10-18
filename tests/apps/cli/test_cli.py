@@ -17,18 +17,20 @@ import columbina.commands
 import columbina.fs
 import columbina.permissions
 import columbina.sandbox
+import columbina.system_prompt
 import columbina.token_meter
 from columbina import cancellation
 from columbina.agent import INBOX, STREAM, Agent, AgentSpec, StreamFrame
 from columbina.approval import APPROVAL, ApprovalRequest
 from columbina.apps import FRONTEND, Frontend
 from columbina.apps.cli.terminal import TERMINAL
+from columbina.apps.effort import ULTRA
 from columbina.commands import COMMANDS, SWITCH, Command
 from columbina.commands import compact as compact_command
 from columbina.commands import fork as fork_command
 from columbina.compaction import COMPACTION, Outcome, Why
 from columbina.kernel import Context
-from columbina.llm import BlockEnd, BlockStart, Chunk, LlmFailure, TextDelta, Usage
+from columbina.llm import LLM, BlockEnd, BlockStart, Chunk, LlmFailure, TextDelta, Usage
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.session.store import SESSION_FILE
@@ -36,6 +38,7 @@ from columbina.token_meter import TOKEN_METER
 from columbina.tools import Tool, ToolRun
 from support.loop import MODEL, Harness, assistant, from_a_source, lingering, user
 from support.terminal import CTRL_D, ESCAPE, Desk, desk, stands, until
+from support.thinking import Thinking, system_text
 
 STEER = chr(0xBB)
 
@@ -259,10 +262,11 @@ async def test_a_line_that_begins_with_a_slash_is_carried_out_and_not_sent(
 
         at.enter("/help")
         await at.sees(
-            "/exit   Leave.\n"
-            "/help   List the commands.\n"
-            "/model  Show the model, or name another.\n"
-            "/new    End this session and begin another one.\n"
+            "/effort  Show how hard the model thinks, or choose a level.\n"
+            "/exit    Leave.\n"
+            "/help    List the commands.\n"
+            "/model   Show the model, or name another.\n"
+            "/new     End this session and begin another one.\n"
             "A line that does not begin with a slash goes to the agent.\n"
             "\n"
         )
@@ -330,6 +334,98 @@ async def test_another_model_can_be_named_and_the_next_request_goes_to_it(
 
     asked = [request.config.model for request in harness.model.requests]
     assert asked == [MODEL.model, "other-model"]
+
+
+async def test_how_hard_the_model_thinks_is_chosen_and_kept_when_the_model_is_named(
+    harness: Harness,
+) -> None:
+    harness.ctx.use(LLM).adapters.add(harness.ctx, "thinking", Thinking(harness.model))
+    await harness.ctx.plugin(columbina.system_prompt)
+    harness.model.add(Reply(text="One."), Reply(text="Two."), Reply(text="Three."))
+    with desk() as at:
+        cli = await frontend(harness, at, model={"provider": "thinking", "model": "deep"})
+        running = asyncio.ensure_future(cli.run())
+
+        at.enter("/effort loud")
+        await at.sees("loud is no level of effort.")
+        at.enter("/effort max")
+        await at.sees("The effort is max from the next request on.\n")
+        at.enter("First.")
+        await at.sees("One.\n")
+        at.enter("/effort ultra")
+        await at.sees("The effort is ultra from the next request on.\n")
+        at.enter("/model deep-2")
+        await at.sees("The model is deep-2 from the next request on.\n")
+        # The subagents that the agent makes from now on ask what it asks.
+        spec = agent_of(harness).spec.model
+        assert (spec.model, spec.reasoning) == ("deep-2", "max")
+        at.enter("Second.")
+        await at.sees("Two.\n")
+        at.enter("/effort low")
+        await at.sees("The effort is low from the next request on.\n")
+        # A session that is begun next begins with both.
+        at.enter("/new")
+        await at.sees("A new session begins: ")
+        spec = agent_of(harness).spec.model
+        assert (spec.model, spec.reasoning) == ("deep-2", "low")
+        at.enter("Third.")
+        await at.sees("Three.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    # Ultra asks for the most reasoning there is, and tells the agent how to work.
+    asked = [
+        (request.config.model, request.config.reasoning, ULTRA in system_text(request))
+        for request in harness.model.requests
+    ]
+    assert asked == [("deep", "max", False), ("deep-2", "max", True), ("deep-2", "low", False)]
+
+
+async def test_the_terminal_asks_what_the_config_asks_until_a_level_is_chosen(
+    harness: Harness,
+) -> None:
+    harness.ctx.use(LLM).adapters.add(harness.ctx, "thinking", Thinking(harness.model))
+    harness.model.add(Reply(text="One."), Reply(text="Two."))
+    with desk() as at:
+        model = {"provider": "thinking", "model": "deep", "reasoning": "low"}
+        cli = await frontend(harness, at, model=model)
+        running = asyncio.ensure_future(cli.run())
+
+        at.enter("First.")
+        await at.sees("One.\n")
+        at.enter("/effort default")
+        await at.sees("The effort is default from the next request on.\n")
+        at.enter("Second.")
+        await at.sees("Two.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    assert [request.config.reasoning for request in harness.model.requests] == ["low", None]
+
+
+async def test_the_terminal_offers_a_service_of_the_style_of_openai_the_level_of_its_config(
+    harness: Harness,
+) -> None:
+    harness.ctx.use(LLM).adapters.add(harness.ctx, "thinking", Thinking(harness.model, "openai"))
+    harness.model.add(Reply(text="One."), Reply(text="Two."))
+    with desk() as at:
+        model = {"provider": "thinking", "model": "deep", "reasoning": "high"}
+        cli = await frontend(harness, at, model=model)
+        running = asyncio.ensure_future(cli.run())
+
+        at.enter("/effort")
+        await at.sees("The effort is high. This service offers default, high and ultra.")
+        at.enter("First.")
+        await at.sees("One.\n")
+        at.enter("/effort ultra")
+        await at.sees("The effort is ultra from the next request on.\n")
+        at.enter("Second.")
+        await at.sees("Two.\n")
+        at.type(CTRL_D)
+        await left(running)
+
+    # Ultra asks what the config asks, and for the team.
+    assert [request.config.reasoning for request in harness.model.requests] == ["high", "high"]
 
 
 async def test_a_model_that_is_named_has_the_window_of_the_first_model_only_where_it_is_that_one(

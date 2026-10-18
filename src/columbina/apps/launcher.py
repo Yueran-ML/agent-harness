@@ -194,14 +194,20 @@ def _call_of(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _served(
-    entries: list[Entry], service: Service, env: Mapping[str, str], model: str | None
+    entries: list[Entry],
+    service: Service,
+    env: Mapping[str, str],
+    model: str | None,
+    *,
+    thinks: bool = True,
 ) -> bool:
     """Point the adapter of the entries and their frontend at a service.
 
     The config of the adapter is written anew as a whole: what a profile
     says of one service says nothing of another. Of what the frontend says
-    of the model, the provider, the model and the size of its window change
-    and the rest stays.
+    of the model, the provider, the model and the size of its window change,
+    and how much it reasons where the user chose that for the service. The
+    rest stays.
 
     Args:
         entries: The entries. They are changed in place.
@@ -209,6 +215,8 @@ def _served(
         env: The environment. The variables that name the model and the size
             of its window go before what is known of the service.
         model: The model that the command line names, if it names one.
+        thinks: Whether the level that the user chose for the service is
+            asked for. It is not where another service is to be served.
 
     Returns:
         Whether there was an adapter to point. Nothing is changed where
@@ -256,9 +264,41 @@ def _served(
                 # What is known of the size is known of one model, and what a profile says
                 # of it is said of the model of another service.
                 call.pop("context_window", None)
+            if thinks:
+                _thinks(call, service.effort)
             config["model"] = call
             entries[position] = entry.model_copy(update={"config": config})
     return True
+
+
+def _thinks(call: dict[str, Any], effort: str | None) -> None:
+    """Have a call think as hard as the user chose for its service, over what the profile says.
+
+    The default asks for nothing. Where the user chose nothing, the profile decides.
+    """
+    if effort == "default":
+        call.pop("reasoning", None)
+    elif effort is not None:
+        call["reasoning"] = effort
+
+
+def _thinks_as_kept(entries: list[Entry], stored: chosen_service.Chosen) -> None:
+    """Have the frontend think as hard as the user chose for the service that its profile names.
+
+    Where no service is chosen the profile talks to the service that it names, and a level that
+    was kept for that service holds all the same. The entries are changed in place.
+    """
+    for position, entry in enumerate(entries):
+        if entry.id == _FRONTEND and not entry.disabled:
+            config = _config_of(entry)
+            call = _call_of(config)
+            provider = call.get("provider")
+            said = stored.services.get(provider) if isinstance(provider, str) else None
+            if said is None or said.effort is None:
+                continue
+            _thinks(call, said.effort)
+            config["model"] = call
+            entries[position] = entry.model_copy(update={"config": config})
 
 
 def _permit(entries: list[Entry], args: argparse.Namespace) -> None:
@@ -371,17 +411,20 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
             "give one of the two"
         )
     stored = chosen_service.chosen(home)
+    named = args.provider or env.get("COLUMBINA_PROVIDER")
 
     def as_chosen(profile: list[Entry]) -> None:
-        # A profile that talks to its model in another way is left as it is.
+        # A profile that talks to its model in another way is left as it is. Where the command
+        # line names a service, the level that was kept for another one is not what it asks.
         if stored.use is not None:
             service = chosen_service.service_named(stored.use, stored)
-            _served(profile, service, env, args.model)
+            _served(profile, service, env, args.model, thinks=not named)
+        elif not named:
+            _thinks_as_kept(profile, stored)
 
     entries = _flattened(args, home, as_chosen)
     _permit(entries, args)
     _held(entries, args)
-    named = args.provider or env.get("COLUMBINA_PROVIDER")
     if named:
         service = chosen_service.service_named(named, stored)
         if not _served(entries, service, env, args.model):
@@ -650,9 +693,15 @@ def _setup_for_a_program(args: argparse.Namespace, home: Path, env: Mapping[str,
             if forgot.unasked is not None:
                 answer["unasked"] = forgot.unasked
         else:
-            answers = chosen_service.given(home, env, _from_another_program("--from-stdin"), show)
-            kept = chosen_service.store(home, env, answers, show)
-            answer = chosen_service.stored(answers, kept)
+            document = _from_another_program("--from-stdin")
+            # A document of a service and the level of effort for it alone changes that level.
+            effort = chosen_service.effort_stored(home, document)
+            if effort is None:
+                answers = chosen_service.given(home, env, document, show)
+                kept = chosen_service.store(home, env, answers, show)
+                answer = chosen_service.stored(answers, kept)
+            else:
+                answer = effort
     except chosen_service.SetupError as error:
         _answer({"error": str(error)})
         return 2

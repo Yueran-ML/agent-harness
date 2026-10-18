@@ -49,6 +49,7 @@ const samples: Record<string, unknown[][]> = {
   'hint.contextOf': [['12.4K', '128K'], ['2670', '104.9万'], ['1.2万', '100万']],
   'hint.contextUnknown': [['950'], ['1.2万']],
   'hint.about': [['0.1.0', 1]],
+  'label.effort.button': [['High'], ['最高']],
   'label.updates.told': [['0.1.3'], ['12.0.10']],
   'label.updates.toldInFull': [['0.1.3'], ['12.0.10']],
   'hint.updates.version': [['0.1.2'], ['0.1.2-dev']],

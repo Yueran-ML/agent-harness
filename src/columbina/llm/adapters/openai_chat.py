@@ -136,8 +136,10 @@ class Config(BaseModel):
             one only if one is found. Where neither a variable nor a file is
             named there is no key to look for, and none is sent.
         reasoning_style: How the service is told how much to reason.
-            ``deepseek`` sends ``thinking``, ``openai`` sends
-            ``reasoning_effort``, and ``none`` sends nothing.
+            ``deepseek`` sends ``thinking``, and with it ``reasoning_effort``
+            where the thinking is on. ``openai`` sends ``reasoning_effort``,
+            which it takes as ``low`` or ``high``, and ``none`` sends nothing.
+            What a call asks for is sent over what its options say of either.
         include_usage: Whether to ask for token counts at the end of the
             stream. Switch it off for a service that rejects the option.
         max_tokens_field: The name under which the limit on the length of a
@@ -296,13 +298,18 @@ def build_body(request: LlmRequest, config: Config) -> dict[str, JsonValue]:
         body["top_p"] = call.top_p
     if call.seed is not None:
         body["seed"] = call.seed
+    body.update(call.options)
+    # What the call asks of the reasoning is written last, over what the options say of it.
     if call.reasoning is not None:
         if config.reasoning_style == "deepseek":
-            enabled = "disabled" if call.reasoning == "off" else "enabled"
-            body["thinking"] = {"type": enabled}
+            if call.reasoning == "off":
+                body["thinking"] = {"type": "disabled"}
+                body.pop("reasoning_effort", None)
+            else:
+                body["thinking"] = {"type": "enabled"}
+                body["reasoning_effort"] = call.reasoning
         elif config.reasoning_style == "openai" and call.reasoning != "off":
             body["reasoning_effort"] = _EFFORT[call.reasoning]
-    body.update(call.options)
     return body
 
 
@@ -635,6 +642,11 @@ class OpenAIChat:
             transport=transport,
             proxy=None if transport is not None else proxy_for(config.base_url, os.environ),
         )
+
+    @property
+    def reasoning_style(self) -> Literal["deepseek", "openai", "none"]:
+        """How the service is told how much to reason."""
+        return self._config.reasoning_style
 
     async def aclose(self) -> None:
         """Close the connections to the service."""

@@ -32,6 +32,19 @@ export function likeABrowser(): void {
   HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.removeAttribute('open'); };
 }
 
+/**
+ * Have the elements of the page stand where `where` says, by their top and bottom, and those of
+ * which it says nothing nowhere, as all stand in the DOM of the tests. Returns what puts it back.
+ */
+export function standing(where: (element: HTMLElement) => [top: number, bottom: number] | null): () => void {
+  const asTheTestsHaveIt = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = function getBoundingClientRect(this: Element) {
+    const [top, bottom] = where(this as HTMLElement) ?? [0, 0];
+    return { top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top, toJSON() {} } as DOMRect;
+  };
+  return () => { Element.prototype.getBoundingClientRect = asTheTestsHaveIt; };
+}
+
 /** A log, written as a list of events. Each stands where it is listed, a tenth of a second after the one before. */
 export type Written = [type: string, data?: Record<string, unknown>];
 export const log = (...written: Written[]): SessionEvent[] =>

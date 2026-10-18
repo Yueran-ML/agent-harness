@@ -28,6 +28,7 @@ import {
   added, Attachments, attachedOf, keptOf, withAttachments, type Attachment, type Refused,
 } from './attachments';
 import { Drafts, samePlace, Unread, type Place } from './drafts';
+import { effortStoredOf, keptLevel, type Effort } from './effort';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
 import { storedOpening, storeOpening } from './opening';
 import { onMac, shortcut } from './system';
@@ -112,6 +113,8 @@ export default function App() {
   useEffect(() => (onMac() ? window.columbina!.onFullScreen(setFullScreen) : undefined), []);
   const [inspector, setInspector] = useState<InspectorTab | null>(null);
   const [settings, setSettings] = useState<SettingsPart | null>(null);
+  // A model or a level that was chosen and is in use, and could not be kept: what the settings say of it.
+  const [notKept, setNotKept] = useState<string | null>(null);
   const [link, setLink] = useState<string | null>(null);
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
   // Something that would stop the turn that is under way, and waits for a yes.
@@ -318,6 +321,7 @@ export default function App() {
   const chooseModel = async (model: string) => {
     const provider = status?.model.provider;
     if (!provider || !(await send(`/model ${model}`, true))) return;
+    setNotKept(null);
     if (!window.columbina || anotherServiceChosen(workspace.services, provider)) return;
     let said: string;
     try {
@@ -330,8 +334,32 @@ export default function App() {
     } catch (problem) {
       said = problem instanceof Error ? problem.message : String(problem);
     }
-    // The model is in use all the same. The user is told that it is not kept.
-    workspace.fail(`${words.hint.models.notKept} ${sentenceOf(said)}`.trim());
+    // The model is in use all the same. The user is told that it is not kept, also in the settings.
+    const notice = `${words.hint.models.notKept} ${sentenceOf(said)}`.trim();
+    workspace.fail(notice);
+    setNotKept(notice);
+  };
+  /**
+   * Have the service process ask for another level of thinking from its next request on, and keep
+   * the level for its service, for the next start. Ultra holds for this run, and is not kept.
+   */
+  const chooseEffort = async (effort: Effort) => {
+    const provider = status?.model.provider;
+    if (!provider || !(await send(`/effort ${effort}`, true))) return;
+    setNotKept(null);
+    if (!window.columbina || !keptLevel(effort)) return;
+    let said: string;
+    try {
+      const told = effortStoredOf(await window.columbina.chooseEffort({ service: provider, effort }));
+      if (told.kind === 'stored') return;
+      said = told.said;
+    } catch (problem) {
+      said = problem instanceof Error ? problem.message : String(problem);
+    }
+    // The level is in use all the same. The user is told that it is not kept, also in the settings.
+    const notice = `${words.hint.effort.notKept} ${sentenceOf(said)}`.trim();
+    workspace.fail(notice);
+    setNotKept(notice);
   };
   const confirmPermission = async () => {
     const change = pendingPermission;
@@ -644,6 +672,7 @@ export default function App() {
                 commandsAsked={commandsAsked}
                 models={models}
                 onChooseModel={model => void chooseModel(model)}
+                onChooseEffort={effort => void chooseEffort(effort)}
                 onModelSettings={() => setSettings('model')}
                 attachments={attached}
                 refused={refused}
@@ -706,9 +735,11 @@ export default function App() {
         onSkip={skip}
         onOpen={openPage}
         onChooseModel={model => void chooseModel(model)}
+        onChooseEffort={effort => void chooseEffort(effort)}
         // What is changed here shows here: the answer of the command is not written into the conversation.
         onCommand={line => void send(line, true)}
-        onClose={() => setSettings(null)}
+        notKept={notKept}
+        onClose={() => { setSettings(null); setNotKept(null); }}
       />}
 
       {pendingPermission && <Sheet

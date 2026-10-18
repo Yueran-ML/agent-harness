@@ -347,6 +347,14 @@ export const en = {
       settings: 'Model settings',
     },
 
+    /** How hard the model thinks, as the field and the settings offer it. */
+    effort: {
+      title: 'How hard the model thinks',
+      /** What the button that shows the level in use says. */
+      button: (level: string) => `Thinking: ${level}`,
+      names: { default: 'Default', off: 'Off', low: 'Low', high: 'High', max: 'Max', ultra: 'Ultra' },
+    },
+
     /** The files that go with a message. */
     attachments: {
       attach: 'Attach files',
@@ -686,6 +694,25 @@ export const en = {
       forgetAsk: (service: string) => `Delete the key that is stored for ${service}? What else is set up for it stays.`,
       forgotten: (service: string) => `The key of ${service} was deleted.`,
       noneToForget: (service: string) => `No key was stored for ${service}.`,
+    },
+
+    /** How hard the model thinks. */
+    effort: {
+      /** What each level does, beneath its name. */
+      notes: {
+        default: 'As the service decides.',
+        off: 'No thinking: the fastest answers.',
+        low: 'A little thinking.',
+        high: 'Thinks the task through.',
+        max: 'The most thinking that the model does.',
+        ultra: 'The most thinking, and subagents that share the work and review it. The slowest and the dearest, and only for this run.',
+        /** Ultra, where the service is not told how much to think. */
+        ultraTeam: 'Subagents that share the work and review it. The service is not asked to think harder. Only for this run.',
+      },
+      /** Before the levels: why none can be chosen now. */
+      whenIdle: 'How hard the model thinks can be changed when Columbina is at rest.',
+      /** The level was changed for the service process, and the setup program did not store it. */
+      notKept: 'The level of thinking is in use now, and could not be kept for the next start.',
     },
 
     /** The models of the service in use. */

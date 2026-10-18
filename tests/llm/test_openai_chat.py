@@ -424,8 +424,9 @@ async def test_reasoning_goes_back_only_to_the_adapter_it_came_from(ctx: Context
     ("style", "level", "expected"),
     [
         ("deepseek", "off", {"thinking": {"type": "disabled"}}),
-        ("deepseek", "low", {"thinking": {"type": "enabled"}}),
-        ("deepseek", "max", {"thinking": {"type": "enabled"}}),
+        ("deepseek", "low", {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}),
+        ("deepseek", "high", {"thinking": {"type": "enabled"}, "reasoning_effort": "high"}),
+        ("deepseek", "max", {"thinking": {"type": "enabled"}, "reasoning_effort": "max"}),
         ("deepseek", None, {}),
         ("openai", "low", {"reasoning_effort": "low"}),
         ("openai", "high", {"reasoning_effort": "high"}),
@@ -441,6 +442,62 @@ async def test_how_much_to_reason_is_said_in_the_dialect_of_the_service(
     connect(ctx, llm, service, CONFIG.model_copy(update={"reasoning_style": style}))
     config = CallConfig.model_validate(
         {"provider": "deepseek", "model": "deepseek-test", "reasoning": level}
+    )
+
+    await ask(llm, config=config)
+
+    sent = {
+        key: service.body[key] for key in ("thinking", "reasoning_effort") if key in service.body
+    }
+    assert sent == expected
+
+
+@pytest.mark.parametrize("style", ["deepseek", "openai", "none"])
+async def test_the_adapter_says_how_its_service_is_told_how_much_to_reason(style: str) -> None:
+    adapter = OpenAIChat(CONFIG.model_copy(update={"reasoning_style": style}))
+    try:
+        assert adapter.reasoning_style == style
+    finally:
+        await adapter.aclose()
+
+
+@pytest.mark.parametrize(
+    ("style", "level", "options", "expected"),
+    [
+        (
+            "deepseek",
+            "off",
+            {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+            {"thinking": {"type": "disabled"}},
+        ),
+        (
+            "deepseek",
+            "low",
+            {"thinking": {"type": "disabled"}, "reasoning_effort": "max"},
+            {"thinking": {"type": "enabled"}, "reasoning_effort": "low"},
+        ),
+        ("openai", "low", {"reasoning_effort": "high"}, {"reasoning_effort": "low"}),
+        # Where the call asks for nothing, the options say what they say.
+        (
+            "deepseek",
+            None,
+            {"thinking": {"type": "disabled"}, "reasoning_effort": "low"},
+            {"thinking": {"type": "disabled"}, "reasoning_effort": "low"},
+        ),
+    ],
+)
+async def test_how_much_to_reason_is_said_over_what_the_options_say(
+    ctx: Context,
+    llm: Llm,
+    style: str,
+    level: str | None,
+    options: dict[str, Any],
+    expected: dict[str, Any],
+) -> None:
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service, CONFIG.model_copy(update={"reasoning_style": style}))
+    config = CallConfig.model_validate(
+        {"provider": "deepseek", "model": "deepseek-test", "reasoning": level, "options": options}
     )
 
     await ask(llm, config=config)

@@ -68,7 +68,7 @@ import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast, get_args
 from urllib.parse import urlsplit
 
 import yaml
@@ -126,8 +126,11 @@ Show = Callable[[str], None]
 _NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 _LOCAL = frozenset({"localhost", "127.0.0.1", "::1"})
 _ENDPOINT = "/chat/completions"
-_SAID_UNDER = ("service", "base_url", "model", "context_window", "api_key")
+_SAID_UNDER = ("service", "base_url", "model", "context_window", "api_key", "effort")
 """The names under which a document says what is to be stored."""
+Kept = Literal["default", "off", "low", "high", "max"]
+"""A level of effort that is stored for a service. ``ultra`` holds for one run, and is not."""
+_KEPT: tuple[Kept, ...] = get_args(Kept)
 _NOT_A_KEY = (
     "what the document says under 'api_key' cannot be a key: there is a character in it that "
     "no key has, such as a blank or a line break in the middle. Nothing of it was kept"
@@ -159,6 +162,8 @@ class Own(BaseModel):
             that is known.
         model: The model to use.
         context_window: How many tokens that model takes, if the user said.
+        effort: How hard the model is to think, if the user chose that.
+            ``default`` asks for nothing, where a profile would ask for a level.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -166,6 +171,7 @@ class Own(BaseModel):
     base_url: str | None = None
     model: str | None = None
     context_window: int | None = Field(default=None, gt=0)
+    effort: Kept | None = None
 
 
 class Chosen(BaseModel):
@@ -258,7 +264,9 @@ def service_named(name: str, chosen: Chosen) -> Service:
                 "added with 'columbina setup'"
             )
         own = of_ones_own(name, said.base_url)
-        return replace(own, model=said.model, context_window=said.context_window)
+        return replace(
+            own, model=said.model, context_window=said.context_window, effort=said.effort
+        )
     if said is None:
         return known
     # What is known of the window is known of one model.
@@ -271,6 +279,7 @@ def service_named(name: str, chosen: Chosen) -> Service:
         context_window=said.context_window or (known.context_window if same else None),
         # At another address, such as a mirror, a key is not made on the page of the service.
         key_page=known.key_page if base_url == known.base_url else None,
+        effort=said.effort,
     )
 
 
@@ -579,6 +588,7 @@ def _answers(
     model: str,
     window: int | None,
     key: str | None,
+    effort: Kept | None = None,
 ) -> Answers:
     """Put together what is to be stored of a service, whoever said it and how.
 
@@ -591,6 +601,8 @@ def _answers(
         window: How many tokens that model takes, where that is to be
             written down.
         key: The key to store, or ``None`` for none.
+        effort: How hard the model is to think, or ``None`` to keep what was
+            chosen of that before.
     """
     said = before.services.get(service.name)
     if preset(service.name) is None:
@@ -598,8 +610,10 @@ def _answers(
     else:
         # The address of a service that is known is written down only where the user changed it.
         address = None if said is None else said.base_url
+    if effort is None and said is not None:
+        effort = said.effort
     services = before.services | {
-        service.name: Own(base_url=address, model=model, context_window=window)
+        service.name: Own(base_url=address, model=model, context_window=window, effort=effort)
     }
     there = _in_its_variable(service, env) or _is_stored(service, keys)
     return Answers(
@@ -686,6 +700,25 @@ def _text(said: Mapping[str, object], name: str) -> str | None:
     return found.strip() or None
 
 
+def _effort(said: Mapping[str, object]) -> Kept | None:
+    """Return the level of effort that a document says, or ``None`` if it does not say.
+
+    Raises:
+        SetupError: What the document gives there is no level that is stored.
+    """
+    found = _text(said, "effort")
+    if found is None:
+        return None
+    named = found.lower()
+    for level in _KEPT:
+        if level == named:
+            return level
+    stored = f"The levels that are stored are: {', '.join(_KEPT)}"
+    if named == "ultra":
+        raise SetupError(f"ultra holds for one run, and is not stored. {stored}")
+    raise SetupError(f"what the document says under 'effort' is no level of effort. {stored}")
+
+
 def _tokens(said: Mapping[str, object]) -> int | None:
     """Return how many tokens a document says the model takes, or ``None`` if it does not say.
 
@@ -768,6 +801,9 @@ def given(home: Path, env: Mapping[str, str], document: bytes, show: Show) -> An
     ``context_window`` says how many tokens that model takes. Without it,
     what was said of the size for this model stays. ``api_key`` gives the
     key. Without it no key is stored, and one that is stored stays.
+    ``effort`` says how hard the model is to think. Without it, what was
+    chosen of that stays. A document that says nothing but the service and
+    the level is read by :func:`effort_stored`.
 
     The blanks around a text are no part of it, as with what is typed, and
     a text that is empty counts as not given.
@@ -788,7 +824,7 @@ def given(home: Path, env: Mapping[str, str], document: bytes, show: Show) -> An
     said = _said_in(document)
     name, address = _text(said, "service"), _text(said, "base_url")
     model, key = _text(said, "model"), _text(said, "api_key")
-    window = _tokens(said)
+    window, effort = _tokens(said), _effort(said)
     if name is None:
         raise SetupError("the document names no service")
     if model is None:
@@ -807,7 +843,45 @@ def given(home: Path, env: Mapping[str, str], document: bytes, show: Show) -> An
     if window is None and earlier is not None and model == service.model:
         # The document does not say the size, so what was said of it for this model stays.
         window = earlier.context_window
-    return _answers(before, keys, env, service, model, window, key)
+    return _answers(before, keys, env, service, model, window, key, effort)
+
+
+def effort_stored(home: Path, document: bytes) -> dict[str, object] | None:
+    """Store how hard the model of a service is to think, where that is all that a document says.
+
+    The document is an object of JSON, in UTF-8::
+
+        {"service": "deepseek", "effort": "max"}
+
+    Only the level of that service changes. The service that is in use stays
+    the one it was, and so do the model, the window and the address of this
+    one. ``default`` is stored as well: it asks for nothing, even where the
+    profile asks for a level. ``ultra`` holds for one run, and is not stored.
+
+    Returns:
+        What was stored, for a program to read, or ``None`` where the
+        document says more than the service and the level::
+
+            {"effort": {"name": "deepseek", "effort": "max"}}
+
+    Raises:
+        SetupError: The document is not right, there is no such service, or
+            what was chosen cannot be read or written.
+    """
+    said = _said_in(document)
+    if said.keys() != {"service", "effort"}:
+        return None
+    name, effort = _text(said, "service"), _effort(said)
+    if name is None:
+        raise SetupError("the document names no service")
+    if effort is None:
+        raise SetupError("the document names no level of effort")
+    before = chosen(home)
+    service_named(name, before)
+    earlier = before.services.get(name) or Own()
+    services = before.services | {name: earlier.model_copy(update={"effort": effort})}
+    _written(home, Chosen(use=before.use, services=services))
+    return {"effort": {"name": name, "effort": effort}}
 
 
 def _why(failure: LlmFailure) -> str:

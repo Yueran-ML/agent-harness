@@ -37,4 +37,7 @@ def apply(ctx: Context, config: Config) -> None:
     commands = ctx.use(COMMANDS)
     server = Server(ctx, config, ctx.use(AGENTS), ctx.use(SESSIONS), commands)
     commands.registry.add(ctx, "model", Command(server.model, "Show the model, or name another."))
+    commands.registry.add(
+        ctx, "effort", Command(server.effort, "Show how hard the model thinks, or choose a level.")
+    )
     ctx.provide(FRONTEND, server)

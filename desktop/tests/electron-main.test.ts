@@ -41,6 +41,15 @@ const SAID_PATH = 'Last login: Thu Oct 15 on ttys000\n_COLUMBINA_PATH_/opt/homeb
 /** Where a package keeps what it brings beside the application, such as its Python. */
 const resources = path.resolve('/columbina-test/resources');
 
+/** Let what the shell has to do next come about. */
+const settled = () => new Promise(resolve => setTimeout(resolve, 0));
+/** End a run of the setup program that waits, with this document as its answer. */
+function answer(run: { child: any }, document: unknown) {
+  run.child.stdout.emit('data', Buffer.from(`${JSON.stringify(document)}\n`, 'utf8'));
+  run.child.exitCode = 0;
+  run.child.emit('close', 0, null);
+}
+
 /**
  * The shell, with everything around it made up.
  *
@@ -1412,6 +1421,24 @@ describe('the window for the key', () => {
     await expect(closed).resolves.toEqual({ changed: true });
   });
 
+  it('stores and deletes one thing at a time, in the order in which it was asked', async () => {
+    const { shell } = await told();
+    const before = shell.setups.length;
+    const asked = () => shell.setups.slice(before).map(run => run.args.slice(3));
+    const storing = shell.asKeyWindow('store', { service: 'deepseek', model: 'deepseek-flash', api_key: KEY });
+    const forgetting = shell.asKeyWindow('forget', 'deepseek');
+    await settled();
+    expect(asked()).toEqual([['--from-stdin']]);
+    const stored = { stored: { name: 'deepseek', model: 'deepseek-flash' }, key_in: 'keyring' };
+    answer(shell.setups.at(-1)!, stored);
+    await expect(storing).resolves.toEqual(stored);
+    await settled();
+    expect(asked()).toEqual([['--from-stdin'], ['--forget', 'deepseek', '--json']]);
+    const forgotten = { forgotten: { name: 'deepseek', key: true, chosen: false } };
+    answer(shell.setups.at(-1)!, forgotten);
+    await expect(forgetting).resolves.toEqual(forgotten);
+  });
+
   it('deletes nothing for a service that it was not told of, or before it was told of any', async () => {
     const first = await opened();
     await expect((async () => first.shell.asKeyWindow('forget', 'deepseek'))()).rejects.toThrow('not among');
@@ -1518,11 +1545,76 @@ describe('the models of a service, for the main window', () => {
     expect(shell.setups).toHaveLength(runs);
   });
 
+  it('keeps a level of thinking for a service that the window was told of, and with it nothing else', async () => {
+    const shell = await told();
+    const stored = { effort: { name: 'deepseek', effort: 'max' } };
+    shell.setup.answer = () => ({ out: `${JSON.stringify(stored)}\n`, code: 0 });
+    const asked = { service: 'deepseek', effort: 'max', model: 'deepseek-pro', api_key: 'sk-never' };
+    await expect(shell.invoke('choose-effort', asked)).resolves.toEqual(stored);
+    const run = shell.setups.at(-1)!;
+    expect(run.args).toEqual(['-m', 'columbina', 'setup', '--from-stdin']);
+    expect(JSON.parse(run.input!)).toEqual({ service: 'deepseek', effort: 'max' });
+    for (const effort of ['default', 'off', 'low', 'high']) {
+      await shell.invoke('choose-effort', { service: 'ollama', effort });
+      expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({ service: 'ollama', effort });
+    }
+  });
+
+  it('keeps no level for a service that the window was not told of, nor ultra, nor anything that is no level', async () => {
+    const shell = await told();
+    const runs = shell.setups.length;
+    await expect((async () => shell.invoke('choose-effort', { service: 'openai', effort: 'max' }))()).rejects.toThrow('not among those that are set up');
+    for (const effort of ['ultra', 'MAX', ' max', 'loud', '', 3, undefined, ['max']]) {
+      await expect((async () => shell.invoke('choose-effort', { service: 'deepseek', effort }))(), JSON.stringify(effort))
+        .rejects.toThrow('no level of thinking that is kept');
+    }
+    await expect((async () => shell.invoke('choose-effort', undefined))()).rejects.toThrow('not among those that are set up');
+    expect(shell.setups).toHaveLength(runs);
+  });
+
+  it('writes what is chosen one thing at a time, in the order in which it was chosen', async () => {
+    const shell = await told();
+    const before = shell.setups.length;
+    const written = () => shell.setups.slice(before).map(run => JSON.parse(run.input!));
+    const low = shell.invoke('choose-effort', { service: 'deepseek', effort: 'low' });
+    const model = shell.invoke('choose-model', { service: 'deepseek', model: 'deepseek-pro' });
+    const max = shell.invoke('choose-effort', { service: 'deepseek', effort: 'max' });
+    await settled();
+    // Each write reads all that is stored and writes it back: the others wait for the first.
+    expect(written()).toEqual([{ service: 'deepseek', effort: 'low' }]);
+    answer(shell.setups.at(-1)!, { effort: { name: 'deepseek', effort: 'low' } });
+    await expect(low).resolves.toEqual({ effort: { name: 'deepseek', effort: 'low' } });
+    await settled();
+    expect(written()).toEqual([{ service: 'deepseek', effort: 'low' }, { service: 'deepseek', model: 'deepseek-pro' }]);
+    answer(shell.setups.at(-1)!, { stored: { name: 'deepseek', model: 'deepseek-pro' }, key_in: null });
+    await model;
+    await settled();
+    expect(written().at(-1)).toEqual({ service: 'deepseek', effort: 'max' });
+    answer(shell.setups.at(-1)!, { effort: { name: 'deepseek', effort: 'max' } });
+    await expect(max).resolves.toEqual({ effort: { name: 'deepseek', effort: 'max' } });
+  });
+
+  it('writes what is chosen next where what was chosen before could not be written', async () => {
+    const shell = await told();
+    const before = shell.setups.length;
+    const failed = shell.invoke('choose-effort', { service: 'deepseek', effort: 'low' });
+    const next = shell.invoke('choose-effort', { service: 'deepseek', effort: 'max' });
+    await settled();
+    shell.setups.at(-1)!.child.emit('error', new Error('spawn ENOENT'));
+    await expect(failed).rejects.toThrow('could not be started: spawn ENOENT');
+    await settled();
+    expect(shell.setups).toHaveLength(before + 2);
+    answer(shell.setups.at(-1)!, { effort: { name: 'deepseek', effort: 'max' } });
+    await expect(next).resolves.toEqual({ effort: { name: 'deepseek', effort: 'max' } });
+  });
+
   it('answers none of this to anything but the page of the application', async () => {
     const shell = await told();
     const runs = shell.setups.length;
     await expect((async () => shell.handlers.get('columbina:models')!(shell.unrelated, 'deepseek'))()).rejects.toThrow('IPC sender');
     await expect((async () => shell.handlers.get('columbina:choose-model')!(shell.unrelated, { service: 'deepseek', model: 'deepseek-pro' }))())
+      .rejects.toThrow('IPC sender');
+    await expect((async () => shell.handlers.get('columbina:choose-effort')!(shell.unrelated, { service: 'deepseek', effort: 'max' }))())
       .rejects.toThrow('IPC sender');
     expect(shell.setups).toHaveLength(runs);
   });

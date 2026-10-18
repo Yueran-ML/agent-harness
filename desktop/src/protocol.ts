@@ -105,7 +105,13 @@ export interface SessionStatus {
   session_id: string;
   status: string;
   detail: string | null;
-  model: { provider: string; model: string; context_window: number | null };
+  /**
+   * The model in use. A program that knows levels of effort says the one in use and those that
+   * the service offers. An older one says neither.
+   */
+  model: {
+    provider: string; model: string; context_window: number | null; effort?: string; efforts?: string[];
+  };
   sandbox: { mode: string; strength: string } | null;
   approval: string | null;
 }

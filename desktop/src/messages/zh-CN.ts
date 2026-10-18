@@ -273,6 +273,12 @@ export const zhCN: Messages = {
       settings: '模型设置',
     },
 
+    effort: {
+      title: '思考深度',
+      button: (level: string) => `思考：${level}`,
+      names: { default: '默认', off: '关', low: '低', high: '高', max: '最高', ultra: 'Ultra 全力' },
+    },
+
     attachments: {
       attach: '附上文件',
       list: '随这条消息发送的文件',
@@ -581,6 +587,20 @@ export const zhCN: Messages = {
       forgetAsk: (service: string) => `删除为 ${service} 保存的密钥吗？这个服务的其他设置保持不变。`,
       forgotten: (service: string) => `已删除 ${service} 的密钥。`,
       noneToForget: (service: string) => `${service} 没有保存过密钥。`,
+    },
+
+    effort: {
+      notes: {
+        default: '由服务决定。',
+        off: '不思考，回答最快。',
+        low: '稍作思考。',
+        high: '把任务想透。',
+        max: '模型能做到的最深思考。',
+        ultra: '最深思考，并让子代理分工、最后复查。最慢、花费最多，只对这次运行有效。',
+        ultraTeam: '让子代理分工、最后复查，不要求服务想得更深。只对这次运行有效。',
+      },
+      whenIdle: '思考深度要等 Columbina 空闲时才能换。',
+      notKept: '思考深度已经生效，但没能记下来，下次启动时不会再用它。',
     },
 
     models: {

@@ -42,6 +42,7 @@ async def test_the_first_answer_says_what_the_program_is_and_what_it_can_be_told
         "cwd": str(served.harness.cwd),
         # By their names, and without the slash.
         "commands": [
+            {"name": "effort", "summary": "Show how hard the model thinks, or choose a level."},
             {"name": "help", "summary": "List the commands."},
             {"name": "model", "summary": "Show the model, or name another."},
         ],
@@ -63,6 +64,7 @@ async def test_the_commands_are_told_by_their_names_whenever_they_were_registere
 
     assert [command["name"] for command in hello["commands"]] == [
         "aardvark",
+        "effort",
         "help",
         "model",
         "zebra",

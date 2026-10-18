@@ -54,6 +54,10 @@ class Service:
             for the service, or ``None``.
         key_page: The page of the service on which a key is made, as its own
             documents link to it, or ``None`` for a service that asks for none.
+        effort: How hard its model is to think, as the user chose it for the
+            service: ``default`` asks for nothing, and the others ask for that
+            much reasoning. ``None`` where the user chose nothing, and the
+            profile decides.
     """
 
     name: str
@@ -67,6 +71,7 @@ class Service:
     context_window: int | None = None
     base_url_env: str | None = None
     key_page: str | None = None
+    effort: Literal["default", "off", "low", "high", "max"] | None = None
 
 
 PRESETS: tuple[Service, ...] = (

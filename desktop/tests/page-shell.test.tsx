@@ -491,6 +491,7 @@ describe('the settings', () => {
   const calls = {
     onTheme: vi.fn(), onSize: vi.fn(), onLanguage: vi.fn(), onPlayOpening: vi.fn(), onPlayNow: vi.fn(), onTellMe: vi.fn(),
     onCommand: vi.fn(), onClose: vi.fn(), onOpen: vi.fn(), onChooseModel: vi.fn(), onCheckingUpdates: vi.fn(), onSkip: vi.fn(),
+    onChooseEffort: vi.fn(),
   };
   // Nothing is known of newer versions: these settings are about other things.
   const updates = { about: null, found: null, asking: false, checkNow: vi.fn() };
@@ -500,7 +501,7 @@ describe('the settings', () => {
   const sheet = (workspace: Workspace, part: SettingsPart = 'model', models = deepseekModels()) => <Settings
     workspace={workspace} part={part} theme="moonveil" size="standard" language="system" shownLanguage="ja"
     playOpening={false} tellMe music={music} github={gitHubWith()} models={models} updates={updates} checkingUpdates
-    skipped={null} {...calls}
+    skipped={null} notKept={null} {...calls}
   />;
   const services = () => [...one('services').querySelectorAll('li')].map(row =>
     [...row.children].map(part => part.textContent).join(' | '));

@@ -9,6 +9,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../src/app/App';
 import { openingStorageKey } from '../src/app/opening';
+import { LEAST_ROOM } from '../src/app/room';
 import type { Listed } from '../src/key/form';
 import type { SessionEvent } from '../src/protocol';
 import { sizeStorageKey } from '../src/size';
@@ -17,7 +18,7 @@ import { themeStorageKey } from '../src/themes';
 import type { Updates } from '../src/useUpdates';
 import type { PendingApproval, Workspace } from '../src/useWorkspace';
 import {
-  begin, end, failed, gitHubWith, header, likeABrowser, log, reply, service, statusOf, user, workspaceWith,
+  begin, end, failed, gitHubWith, header, likeABrowser, log, reply, service, standing, statusOf, user, workspaceWith,
 } from './mounted';
 
 const held = vi.hoisted(() => ({
@@ -464,6 +465,24 @@ describe('choosing another model', () => {
     page(late);
     await choose();
     expect(called(late.fail)).toEqual([[`${notKept} The setup program did not end in time.`]]);
+  });
+
+  it('says in the settings that a model that is chosen there is not kept, until another is kept', async () => {
+    const { chooseModel } = shell(vi.fn(async (): Promise<unknown> => ({ error: 'what is stored cannot be read' })));
+    page(first({ services: deepseek }));
+    chord(',');
+    const settings = sheet()!;
+    const chooseThere = async () => {
+      await act(async () => { fireEvent.click(settings.querySelector('[data-test="model-button"]')!); });
+      await act(async () => { fireEvent.click([...settings.querySelectorAll('[role="option"]')][1]); });
+    };
+    await chooseThere();
+    const said = settings.querySelector('[data-test="model-not-kept"]')!;
+    expect(said.getAttribute('role')).toBe('alert');
+    expect(said.textContent).toBe(`${notKept} What is stored cannot be read.`);
+    chooseModel.mockImplementation(async () => ({ stored: { name: 'deepseek', model: 'deepseek-pro' }, key_in: null }));
+    await chooseThere();
+    expect(settings.querySelectorAll('[data-test="model-not-kept"]')).toHaveLength(0);
   });
 
   it('leads from the foot of the field to the settings, at the model', async () => {
@@ -1558,5 +1577,277 @@ describe('newer versions of the application', () => {
     now(first());
     expect(one('update-told').textContent).toBe('Update 0.1.4');
     expect(marked('update-skip')).toHaveLength(1);
+  });
+});
+
+describe('how hard the model thinks', () => {
+  const levels = ['default', 'off', 'low', 'high', 'max', 'ultra'];
+  /** A service process that takes the command, and its status with the level in use and those on offer. */
+  const knowing = { ...able, commands: [...able.commands, { name: 'effort', summary: '' }] };
+  const thinking = (effort = 'high', efforts = levels, given: Partial<ReturnType<typeof statusOf>> = {}) => statusOf({
+    model: { provider: 'deepseek', model: 'deepseek-flash', context_window: null, effort, efforts }, ...given,
+  });
+  const task = (given: Partial<Workspace> = {}) => first({ hello: knowing, status: thinking(), ...given });
+  /** A shell that keeps the level that it is given, unless a test says otherwise. */
+  const shell = (chooseEffort = vi.fn(async (_asked: unknown): Promise<unknown> => ({ effort: { name: 'deepseek', effort: 'max' } }))) => {
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), chooseEffort });
+    return chooseEffort;
+  };
+  const options = () => marked('effort-option');
+  const shown = () => options().map(option => [
+    option.querySelector('.effort-name')!.textContent, option.querySelector('.effort-note')!.textContent,
+  ]);
+  const open = async (within: ParentNode = document) => {
+    await act(async () => { fireEvent.click(within.querySelector('[data-test="effort-button"]')!); });
+  };
+  const pick = async (level: string) => {
+    await act(async () => { fireEvent.click(options().find(option => option.dataset.level === level)!); });
+  };
+  const notKept = 'The level of thinking is in use now, and could not be kept for the next start.';
+
+  it('stands beside the model and offers the levels of the service, each with what it does', async () => {
+    shell();
+    page(task());
+    const button_ = one('effort-button');
+    expect(button_.textContent).toBe('Thinking: High');
+    expect(one('model-button').closest('.model-picker')!.nextElementSibling).toBe(button_.closest('.model-picker'));
+    // It opens above the field, where the list of commands would stand, and puts that away.
+    write('/');
+    expect(marked('commands')).toHaveLength(1);
+    await open();
+    expect(marked('commands')).toEqual([]);
+    expect(one('effort-panel').dataset.placement).toBe('up');
+    // It is no higher than the room that it has, which the DOM of the tests makes the least.
+    expect(one('effort-panel').style.maxHeight).toBe(`${LEAST_ROOM}px`);
+    expect(shown()).toEqual([
+      ['Default', 'As the service decides.'],
+      ['Off', 'No thinking: the fastest answers.'],
+      ['Low', 'A little thinking.'],
+      ['High', 'Thinks the task through.'],
+      ['Max', 'The most thinking that the model does.'],
+      ['Ultra', 'The most thinking, and subagents that share the work and review it. The slowest and the dearest, and only for this run.'],
+    ]);
+    // The level in use is marked, and the keyboard is in the list, on it.
+    expect(options().filter(option => option.getAttribute('aria-current') === 'true').map(option => option.dataset.level)).toEqual(['high']);
+    const list = document.activeElement as HTMLElement;
+    expect(list.getAttribute('role')).toBe('listbox');
+    expect(document.getElementById(list.getAttribute('aria-activedescendant')!)?.dataset.level).toBe('high');
+  });
+
+  it('tells the service process without a line in the conversation, and keeps the level for the next start', async () => {
+    const chooseEffort = shell();
+    const it_ = task();
+    page(it_);
+    await open();
+    await pick('max');
+    expect(called(it_.send)).toEqual([['/effort max', true]]);
+    expect(chooseEffort.mock.calls).toEqual([[{ service: 'deepseek', effort: 'max' }]]);
+    expect(it_.fail).not.toHaveBeenCalled();
+    expect(marked('effort-panel')).toEqual([]);
+    expect(document.activeElement).toBe(box());
+    cleanup();
+    // The level is kept for the service in use, whichever it is.
+    page(task({ status: statusOf({ model: { provider: 'mine', model: 'mine-1', context_window: null, effort: 'high', efforts: levels } }) }));
+    await open();
+    await pick('off');
+    expect(chooseEffort.mock.calls.at(-1)).toEqual([{ service: 'mine', effort: 'off' }]);
+  });
+
+  it('keeps ultra for this run alone, and nothing where the line was not taken or the level is the one in use', async () => {
+    const chooseEffort = shell();
+    const ultra = task();
+    page(ultra);
+    await open();
+    await pick('ultra');
+    expect(called(ultra.send)).toEqual([['/effort ultra', true]]);
+    cleanup();
+    const refused = task({ send: vi.fn(async () => false) });
+    page(refused);
+    await open();
+    await pick('low');
+    expect(called(refused.send)).toEqual([['/effort low', true]]);
+    cleanup();
+    const same = task();
+    page(same);
+    await open();
+    await pick('high');
+    expect(called(same.send)).toEqual([]);
+    expect(chooseEffort).not.toHaveBeenCalled();
+  });
+
+  it('says that the level is in use and not kept, where the setup program does not keep it', async () => {
+    shell(vi.fn(async () => ({ error: 'what is stored cannot be read' })));
+    const told = task();
+    page(told);
+    await open();
+    await pick('off');
+    expect(called(told.fail)).toEqual([[`${notKept} What is stored cannot be read.`]]);
+    cleanup();
+    shell(vi.fn(async () => { throw new Error('That service is not among those that are set up.'); }));
+    const late = task();
+    page(late);
+    await open();
+    await pick('off');
+    expect(called(late.fail)).toEqual([[`${notKept} That service is not among those that are set up.`]]);
+  });
+
+  it('is chosen with the keyboard, and Esc gives the keyboard back to the button', async () => {
+    shell();
+    const keyed = task({ status: thinking('default') });
+    page(keyed);
+    await open();
+    const list = document.activeElement as HTMLElement;
+    const at = () => document.getElementById(list.getAttribute('aria-activedescendant')!)?.dataset.level;
+    fireEvent.keyDown(list, { key: 'ArrowUp' });
+    expect(at()).toBe('ultra');
+    fireEvent.keyDown(list, { key: 'ArrowDown' });
+    fireEvent.keyDown(list, { key: 'ArrowDown' });
+    expect(at()).toBe('off');
+    await act(async () => { fireEvent.keyDown(list, { key: 'Enter' }); });
+    expect(called(keyed.send)).toEqual([['/effort off', true]]);
+    // Opened again, the keyboard is on the level in use: the service has not told of another yet.
+    await open();
+    const again = document.activeElement as HTMLElement;
+    expect(document.getElementById(again.getAttribute('aria-activedescendant')!)?.dataset.level).toBe('default');
+    fireEvent.keyDown(again, { key: 'Escape' });
+    expect(marked('effort-panel')).toEqual([]);
+    expect(document.activeElement).toBe(one('effort-button'));
+  });
+
+  it('opens below the field where it has too little room above and more below', async () => {
+    shell();
+    page(task());
+    // A panel of 400 has 92 above its button, and more below it within the window.
+    const putBack = standing(element => (element.dataset.test === 'effort-panel' ? [-300, 100]
+      : element.classList.contains('effort-picker') ? [108, 240] : null));
+    try {
+      await open();
+      expect(one('effort-panel').dataset.placement).toBe('down');
+      expect(one('effort-panel').style.maxHeight).toBe(`${window.innerHeight - 240 - 8 - 8}px`);
+    } finally {
+      putBack();
+    }
+  });
+
+  it('keeps the level that the keyboard is on in sight, once the panel has its height', async () => {
+    // The level that was brought into sight, and how high the panel was at that moment.
+    const seen: [string | undefined, string | undefined][] = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) {
+      seen.push([(this as HTMLElement).dataset.level, this.closest<HTMLElement>('[data-test="effort-panel"]')?.style.maxHeight]);
+    };
+    shell();
+    page(task());
+    await open();
+    expect(seen.at(-1)).toEqual(['high', `${LEAST_ROOM}px`]);
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+    expect(seen.at(-1)).toEqual(['max', `${LEAST_ROOM}px`]);
+  });
+
+  it('can be looked at and not chosen while Columbina is at work', async () => {
+    shell();
+    const busy = task({ status: thinking('high', levels, { status: 'running' }), events: working });
+    page(busy);
+    await open();
+    expect(one('effort-panel').textContent).toContain('How hard the model thinks can be changed when Columbina is at rest.');
+    expect(options().every(option => option.getAttribute('aria-disabled') === 'true')).toBe(true);
+    await pick('max');
+    expect(called(busy.send)).toEqual([]);
+    // A level that is out of reach does nothing: the panel stands, and the button says the level in use.
+    expect(marked('effort-panel')).toHaveLength(1);
+    expect(one('effort-button').textContent).toBe('Thinking: High');
+  });
+
+  it('can be used as the field can, at the foot of the field and in the settings', async () => {
+    shell();
+    const whenIdle = 'How hard the model thinks can be changed when Columbina is at rest.';
+    const choice = async (within: ParentNode) => {
+      const opener = within.querySelector<HTMLButtonElement>('[data-test="effort-button"]')!;
+      if (opener.disabled) return 'off';
+      await open(within);
+      const said = within.querySelector('[data-test="effort-panel"]')!.textContent!.includes(whenIdle) ? 'busy' : 'free';
+      await open(within);
+      return said;
+    };
+    for (const [given, expected] of [
+      [{}, 'free'],
+      [{ status: thinking('high', levels, { status: 'running' }), events: working }, 'busy'],
+      [{ sending: true }, 'busy'],
+      [{ loading: true }, 'off'],
+      [{ connected: false }, 'off'],
+      [{ status: thinking('high', levels, { status: 'stopped' }) }, 'off'],
+    ] as [Partial<Workspace>, string][]) {
+      page(task(given));
+      expect(await choice(document.querySelector('.composer')!), JSON.stringify(given)).toBe(expected);
+      chord(',');
+      expect(await choice(sheet()!), `settings ${JSON.stringify(given)}`).toBe(expected);
+      cleanup();
+    }
+    // Where there is no project, the field cannot be used.
+    page(task({ hasProject: false }));
+    expect(await choice(document.querySelector('.composer')!)).toBe('off');
+  });
+
+  it('offers the work of a team alone where the service is not told how much to think', async () => {
+    shell();
+    page(task({ status: thinking('default', ['default', 'ultra']) }));
+    await open();
+    expect(shown()).toEqual([
+      ['Default', 'As the service decides.'],
+      ['Ultra', 'Subagents that share the work and review it. The service is not asked to think harder. Only for this run.'],
+    ]);
+  });
+
+  it('is offered by no program that does not know it, and not in a replay', () => {
+    page(first({ status: thinking() }));
+    expect(marked('effort-button')).toEqual([]);
+    chord(',');
+    expect(sheet()!.querySelectorAll('[data-test="effort-button"]')).toHaveLength(0);
+    cleanup();
+    page(task({ status: statusOf() }));
+    expect(marked('effort-button')).toEqual([]);
+    cleanup();
+    page(task({ status: thinking('loud') }));
+    expect(marked('effort-button')).toEqual([]);
+    cleanup();
+    page(task({ mode: 'mock' }));
+    expect(marked('effort-button')).toEqual([]);
+    chord(',');
+    expect(sheet()!.querySelectorAll('[data-test="effort-button"]')).toHaveLength(0);
+  });
+
+  it('stands in the settings beside the model', async () => {
+    shell();
+    const set = task();
+    page(set);
+    chord(',');
+    const settings = sheet()!;
+    expect(settings.querySelectorAll('[data-test="effort-button"]')).toHaveLength(1);
+    await open(settings);
+    await pick('low');
+    expect(called(set.send)).toEqual([['/effort low', true]]);
+  });
+
+  it('says in the settings that a level that is chosen there is not kept, until they are closed', async () => {
+    const chooseEffort = shell(vi.fn(async () => ({ error: 'what is stored cannot be read' })));
+    page(task());
+    chord(',');
+    await open(sheet()!);
+    await pick('off');
+    const said = sheet()!.querySelector('[data-test="model-not-kept"]')!;
+    expect(said.getAttribute('role')).toBe('alert');
+    expect(said.textContent).toBe(`${notKept} What is stored cannot be read.`);
+    // A level that is kept after it says nothing more of the one before.
+    chooseEffort.mockImplementation(async () => ({ effort: { name: 'deepseek', effort: 'max' } }));
+    await open(sheet()!);
+    await pick('max');
+    expect(sheet()!.querySelectorAll('[data-test="model-not-kept"]')).toHaveLength(0);
+    chooseEffort.mockImplementation(async () => ({ error: 'what is stored cannot be read' }));
+    await open(sheet()!);
+    await pick('low');
+    expect(sheet()!.querySelectorAll('[data-test="model-not-kept"]')).toHaveLength(1);
+    // Closed and opened again, the settings say nothing of it.
+    fireEvent.click(button('Done', sheet()!));
+    chord(',');
+    expect(sheet()!.querySelectorAll('[data-test="model-not-kept"]')).toHaveLength(0);
   });
 });

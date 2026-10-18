@@ -43,6 +43,12 @@ export interface ColumbinaBridge {
    */
   chooseModel(asked: { service: string; model: string }): Promise<unknown>;
   /**
+   * Keep how hard the model of a service that `services` named is to think, for the next start,
+   * with `columbina setup --from-stdin`. All else that was chosen stays, and so does the service
+   * that is in use. Ultra holds for one run, and is not kept.
+   */
+  chooseEffort(asked: { service: string; effort: string }): Promise<unknown>;
+  /**
    * Let the user choose files to go with a message, in the dialog of the system, which the shell
    * titles in the language that is named. The answer names the files that the shell holds, by id,
    * name and size, and the others with why not. Null if none was chosen.

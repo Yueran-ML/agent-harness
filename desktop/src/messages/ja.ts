@@ -320,6 +320,12 @@ export const ja: Messages = {
       settings: 'モデルの設定',
     },
 
+    effort: {
+      title: '思考の深さ',
+      button: (level: string) => `思考：${level}`,
+      names: { default: '既定', off: 'オフ', low: '低', high: '高', max: '最高', ultra: 'Ultra 全力' },
+    },
+
     attachments: {
       attach: 'ファイルを添付',
       list: 'このメッセージに付けるファイル',
@@ -631,6 +637,20 @@ export const ja: Messages = {
       forgetAsk: (service: string) => `${service} に保存したキーを削除しますか？ほかの設定はそのまま残ります。`,
       forgotten: (service: string) => `${service} のキーを削除しました。`,
       noneToForget: (service: string) => `${service} にはキーが保存されていませんでした。`,
+    },
+
+    effort: {
+      notes: {
+        default: 'サービスに任せます。',
+        off: '考えずに、最も速く答えます。',
+        low: '少しだけ考えます。',
+        high: 'タスクをじっくり考えます。',
+        max: 'モデルができる限り深く考えます。',
+        ultra: '最も深く考え、サブエージェントが作業を分担して最後に見直します。最も遅く、費用も最もかかります。この実行の間だけ有効です。',
+        ultraTeam: 'サブエージェントが作業を分担して最後に見直します。サービスにより深く考えるよう求めることはしません。この実行の間だけ有効です。',
+      },
+      whenIdle: '思考の深さは、Columbina が待機中のときに変更できます。',
+      notKept: '思考の深さは切り替わりましたが、次回の起動用に保存できませんでした。',
     },
 
     models: {

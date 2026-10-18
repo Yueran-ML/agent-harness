@@ -325,6 +325,50 @@
   font-variant-ligatures: none;
 }
 
+/* The level of thinking is a word of the interface, and not the name of a model. */
+.effort-button-name {
+  font-family: var(--font-ui);
+}
+
+/* A level: its name, and beneath it what it does. */
+.effort-option {
+  align-items: flex-start;
+  padding: 5px var(--s2);
+  cursor: pointer;
+}
+
+.effort-option svg,
+.effort-option .model-mark {
+  margin-top: 2px;
+}
+
+.effort-words {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.effort-name {
+  font-size: var(--text-caption);
+}
+
+.effort-note {
+  font-size: calc(11.5px * var(--type));
+  line-height: 1.4;
+  color: var(--moon-2);
+}
+
+.effort-option[data-level='ultra'] .effort-name {
+  color: var(--accent);
+}
+
+/* All the levels are shown where there is room: the panel says how much there is. */
+.effort-panel .model-list {
+  max-height: none;
+  outline: none;
+}
+
 /* In the settings the button stands where a field would, and looks like one. */
 .setting .model-button {
   max-width: 100%;
@@ -421,7 +465,10 @@
   margin-left: calc(var(--s2) - var(--s3));
 }
 
+/* Within a panel that has less room than it needs, the list gives way and scrolls. */
 .model-list {
+  flex: 0 1 auto;
+  min-height: 0;
   max-height: min(240px, 40vh);
   overflow-y: auto;
   display: flex;

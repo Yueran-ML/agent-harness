@@ -16,6 +16,28 @@ change what was there before.
   releases. A button at the end of the bar of the window names a version that is out and
   opens the page of its release. The settings show the version that runs, look again when
   asked, skip a version, and stop the looking.
+- `/effort` chooses how hard the model thinks, in the terminal and in the service, from the
+  next request on. A service of the style of DeepSeek offers default, off, low, high and max,
+  and is sent `reasoning_effort` with `thinking`, over what the options of the profile say of
+  either. A service of the style of OpenAI offers the level that its profile asks for, and is
+  asked for it until another level is chosen. Every service offers ultra. Ultra asks for the
+  most reasoning there is and has the agent plan, hand the parts of the work that stand alone
+  to subagents that work side by side, and have one of them review the result. The status of a
+  session tells of the level and of those on offer. `columbina setup --from-stdin` keeps a
+  level for a service from a document that says nothing else, and leaves the service in use
+  and all else as it is; ultra is not kept. A level that is kept holds for the service that
+  the profile names where no service is chosen, and not for another service that the command
+  line names. The desktop application offers the levels on a button beside the model.
+- A model or a level that is named during a run holds for the subagents that are made from then
+  on, as it does for the agent of the conversation, and for a session that is opened while it
+  is named.
+- The desktop application writes what is chosen through the setup program one write at a time,
+  so that a model and a level that are chosen one after the other are both kept. Where a model
+  or a level that is chosen in the settings is in use and not kept, the settings say so.
+- In the desktop application the panel of the model and that of the levels open below their
+  button where there is too little room above it and more below, and the other way round. They
+  are no higher than the room where they open, and their lists scroll, so that the head of a
+  panel is never cut off.
 
 ## 0.1.1 (2026-10-16)
 

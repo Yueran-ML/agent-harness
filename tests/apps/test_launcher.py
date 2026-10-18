@@ -1156,6 +1156,7 @@ def test_the_program_that_serves_holds_a_conversation_over_the_wire_of_its_proce
     # The commands of the program that is shipped, without the one that copies a session.
     assert [command["name"] for command in hello["result"]["commands"]] == [
         "compact",
+        "effort",
         "help",
         "mcp",
         "model",
@@ -1171,7 +1172,14 @@ def test_the_program_that_serves_holds_a_conversation_over_the_wire_of_its_proce
         "session_id": "s-1",
         "status": "idle",
         "detail": None,
-        "model": {"provider": "deepseek", "model": "swift-2", "context_window": 1048576},
+        "model": {
+            "provider": "deepseek",
+            "model": "swift-2",
+            "context_window": 1048576,
+            # The scripted model of the profile says nothing of how it is told to reason.
+            "effort": "default",
+            "efforts": ["default", "ultra"],
+        },
         "sandbox": {"mode": "workspace-write", "strength": "none"},
         "approval": "ask",
     }

@@ -119,8 +119,9 @@ async def test_a_command_is_carried_out_and_what_it_says_is_the_answer(served: S
     answer = await served.far.result("session/command", {"line": "/help"})
 
     assert answer == {
-        "text": "/help   List the commands.\n"
-        "/model  Show the model, or name another.\n"
+        "text": "/effort  Show how hard the model thinks, or choose a level.\n"
+        "/help    List the commands.\n"
+        "/model   Show the model, or name another.\n"
         "A line that does not begin with a slash goes to the agent."
     }
     # The model is told nothing of it.
@@ -774,6 +775,8 @@ async def test_the_model_that_was_named_stays_for_the_session_that_is_opened_nex
         "provider": "scripted",
         "model": "swift-2",
         "context_window": None,
+        "effort": "default",
+        "efforts": ["default", "ultra"],
     }
     assert served.harness.agents.live["second"].spec.model.context_window is None
 

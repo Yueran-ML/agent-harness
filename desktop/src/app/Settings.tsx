@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, FileText, KeyRound } from 'lucide-react';
+import { Download, FileText, KeyRound, TriangleAlert } from 'lucide-react';
 import { MusicSettings, type BackgroundMusic } from '../BackgroundMusic';
 import { called, changedBeyondKey } from '../key/form';
 import type { Hello } from '../protocol';
@@ -10,8 +10,10 @@ import type { ServiceModels } from '../useModels';
 import type { Updates } from '../useUpdates';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
+import { EffortPicker } from './EffortPicker';
 import { GitHubAccount } from './GitHubSignIn';
 import { ModelPicker } from './ModelPicker';
+import { effortOf, type Effort } from './effort';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
 import { anotherServiceChosen, presetOf, presets, servicesToTell, serviceTitle } from './tell';
@@ -22,7 +24,7 @@ export type SettingsPart = 'appearance' | 'model' | 'account' | 'permissions';
 export function Settings({
   workspace, part, theme, onTheme, size, onSize, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
   tellMe, onTellMe, music, github, models, updates, checkingUpdates, onCheckingUpdates, skipped, onSkip, onOpen, onChooseModel,
-  onCommand, onClose,
+  onChooseEffort, onCommand, notKept, onClose,
 }: {
   workspace: Workspace;
   part: SettingsPart;
@@ -55,8 +57,12 @@ export function Settings({
   onOpen: (url: string) => void;
   /** Have the service process ask another model. */
   onChooseModel: (model: string) => void;
+  /** Have the model think as hard as another level says. */
+  onChooseEffort: (effort: Effort) => void;
   /** Give a command to the service. A change that widens what the task may do is confirmed first. */
   onCommand: (line: string) => void;
+  /** What is said of a model or a level that was chosen and is in use, and could not be kept. */
+  notKept: string | null;
   onClose: () => void;
 }) {
   const words = useWords();
@@ -68,6 +74,11 @@ export function Settings({
   const canPermissions = commands.some(command => command.name === 'permissions');
   // The list of models can be looked at while Columbina is at work. A model is chosen at rest.
   const modelChoice = workspace.loading || !workspace.connected || status?.status === 'stopped' || !canModel ? 'off'
+    : running || workspace.sending ? 'busy' : 'free';
+  // How hard the model thinks, where the program tells of the levels and takes the command.
+  const thinking = workspace.mode === 'mock' || !commands.some(command => command.name === 'effort') ? null
+    : effortOf(status?.model);
+  const effortChoice = workspace.loading || !workspace.connected || status?.status === 'stopped' ? 'off'
     : running || workspace.sending ? 'busy' : 'free';
   const services = workspace.services;
   // The greeting of the service process that ran when something was stored that it does not
@@ -187,7 +198,18 @@ export function Settings({
         onAsk={() => void models.ask(status.model.provider)}
         onChoose={onChooseModel}
       />}
+      {thinking && <EffortPicker
+        effort={thinking.effort}
+        efforts={thinking.efforts}
+        choice={effortChoice}
+        placement="down"
+        onChoose={onChooseEffort}
+      />}
       {status && <p className="caption" data-test="model-service">{serviceTitle(status.model.provider, services)}</p>}
+      {notKept && <div className="callout" data-tone="bad" role="alert" data-test="model-not-kept">
+        <TriangleAlert size={15} aria-hidden="true" />
+        <div className="callout-words"><p>{notKept}</p></div>
+      </div>}
 
       <div className="overline services-title">{words.label.key.title}</div>
       {known.length > 0 && <ul className="services" data-test="services">

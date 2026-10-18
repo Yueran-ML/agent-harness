@@ -42,17 +42,25 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 import columbina
 from columbina.agent import (
-    REQUEST,
     STREAM,
     Agent,
     AgentError,
     Agents,
     AgentSpec,
-    RequestDraft,
     StreamFrame,
 )
 from columbina.approval import APPROVAL, APPROVAL_ASK, ApprovalRequest, Outcome
 from columbina.apps.common import DEFAULT_PROMPT, model_named, open_agent
+from columbina.apps.effort import (
+    ULTRA,
+    Effort,
+    Style,
+    effort_named,
+    effort_of,
+    offered,
+    reasoning_of,
+    style_of,
+)
 from columbina.apps.serve import wire as wires
 from columbina.apps.serve.rpc import (
     CANNOT_OPEN,
@@ -94,6 +102,7 @@ from columbina.session import (
 )
 from columbina.session.store import SESSION_FILE
 from columbina.skills import SKILLS, one_line
+from columbina.system_prompt import SYSTEM_PROMPT_ASSEMBLE, Draft
 
 __all__ = ["PAGE_BYTES", "PAGE_EVENTS", "PROTOCOL", "Config", "Server"]
 
@@ -227,6 +236,8 @@ class Server:
         self._sessions = sessions
         self._commands = commands
         self._model = config.model
+        # The level of effort that was chosen in this run, or None to go by the config.
+        self._effort: Effort | None = None
         self._send: Callable[[str], None] = lambda line: None
         self._greeted = False
         self._leaving = False
@@ -297,9 +308,58 @@ class Server:
         """Carry out the command that shows the model, or names another one."""
         if rest:
             self._model = model_named(self._config.model, rest)
+            self._hand_down(agent)
             self._look()
             return f"The model is {rest} from the next request on."
         return f"The model is {self._model.model}. Another one is named with /model ID."
+
+    async def effort(self, agent: Agent, rest: str) -> str:
+        """Carry out the command that shows how hard the model thinks, or chooses another level."""
+        chosen, said = effort_named(self._chosen_effort(), self._levels(), rest)
+        if chosen is not None:
+            self._effort = chosen
+            self._hand_down(agent)
+            self._look()
+        return said
+
+    # The model, and how hard it thinks
+
+    def _style(self) -> Style:
+        """How the service in use is told how much to reason."""
+        return style_of(self._ctx, self._model.provider)
+
+    def _levels(self) -> tuple[Effort, ...]:
+        """The levels that the service in use offers, the least first."""
+        return offered(self._style(), self._config.model.reasoning)
+
+    def _chosen_effort(self) -> Effort:
+        """The level of effort in force: the one that was chosen in this run, or the config's."""
+        if self._effort is not None:
+            return self._effort
+        return effort_of(self._config.model.reasoning, self._style())
+
+    def _call(self) -> CallConfig:
+        """The model that a request of this run asks, and how much it asks it to reason.
+
+        Until a level is chosen in this run, it asks what the config asks.
+        """
+        if self._effort is None:
+            return self._model
+        reasoning = reasoning_of(self._effort, self._style(), self._config.model.reasoning)
+        return self._model.model_copy(update={"reasoning": reasoning})
+
+    def _hand_down(self, agent: Agent) -> None:
+        """Have ``agent`` ask what this run asks from its next request on.
+
+        So does the agent of the conversation where that is another one by now, as where a
+        session was opened while a command was carried out. The subagents that either makes
+        from then on ask the same: a subagent is made from the spec of its parent.
+        """
+        call = self._call()
+        agent.spec = agent.spec.model_copy(update={"model": call})
+        current = self._agent
+        if current is not None and current is not agent:
+            current.spec = current.spec.model_copy(update={"model": call})
 
     # Lines
 
@@ -452,6 +512,8 @@ class Server:
             raise RpcError(CANNOT_OPEN, f"The session cannot be opened: {error}.") from None
         self._let_go()
         self._adopt(agent)
+        # A model or a level that was named while the agent was made holds for it too.
+        self._hand_down(agent)
         self._grant_again(agent)
         opened = {
             "session_id": agent.id,
@@ -636,7 +698,7 @@ class Server:
 
     def _spec(self) -> AgentSpec:
         config = self._config
-        return AgentSpec(cwd=config.cwd, model=self._model, system_prompt=config.system_prompt)
+        return AgentSpec(cwd=config.cwd, model=self._call(), system_prompt=config.system_prompt)
 
     def _open_agent(self) -> Agent:
         if self._agent is None:
@@ -683,7 +745,8 @@ class Server:
         agent.ctx.on(SESSION_EVENT, event)
         agent.ctx.on(STREAM, chunk)
         agent.ctx.on(APPROVAL_ASK, self._asker(agent))
-        agent.ctx.on(REQUEST, self._with_the_model)
+        # Only the agent of the conversation hears this: a subagent has a scope of its own.
+        agent.ctx.on(SYSTEM_PROMPT_ASSEMBLE, self._with_the_effort)
 
     def _event(self, committed: Committed) -> None:
         event = encode_event(committed.event)
@@ -696,15 +759,10 @@ class Server:
         where = f'"session_id":{text(frame.agent.id)},"turn":{frame.turn},"step":{frame.step}'
         self._send(told("session.stream", f'{{{where},"chunk":{chunk}}}'))
 
-    async def _with_the_model(
-        self, draft: RequestDraft, proceed: Next[RequestDraft, CallConfig]
-    ) -> CallConfig:
-        """Make a request with the model that was named last, and what is known of its window."""
-        config = await proceed(draft)
-        named = self._model
-        return config.model_copy(
-            update={"model": named.model, "context_window": named.context_window}
-        )
+    async def _with_the_effort(self, draft: Draft, proceed: Next[Draft, str]) -> str:
+        """Tell the agent of the conversation how to work, where the level of effort is ultra."""
+        text = await proceed(draft)
+        return f"{text}\n\n{ULTRA}" if self._chosen_effort() == "ultra" else text
 
     # Where the agent stands
 
@@ -763,6 +821,8 @@ class Server:
                     "provider": model.provider,
                     "model": model.model,
                     "context_window": model.context_window,
+                    "effort": self._chosen_effort(),
+                    "efforts": list(self._levels()),
                 },
                 "sandbox": held,
                 "approval": None if approval is None else policy or approval.policy(session),

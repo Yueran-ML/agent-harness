@@ -6,6 +6,7 @@ import type { Models } from '../useModels';
 import { keyOf, pickerKey } from './keys';
 import { useWords } from './locale';
 import { filtered, typedModel } from './models';
+import { useRoom } from './room';
 
 /** Whether a model can be chosen: now, once Columbina is at rest, or not here at all. */
 export type ModelChoice = 'free' | 'busy' | 'off';
@@ -49,7 +50,7 @@ function Written({ words, model }: { words: string; model: string }) {
  *   choice: Whether a model can be chosen. While Columbina is at work the list can be looked
  *     at, and nothing in it chosen.
  *   replay: Whether the page shows a replay, which no service answers.
- *   placement: Whether the panel opens above the button or below it.
+ *   placement: Whether the panel opens above the button or below it, where it has the room.
  *   onOpen: The panel is opened. The models are asked for where what is known of them is old.
  *   onAsk: The models are asked for again.
  *   onChoose: Another model is chosen.
@@ -86,6 +87,10 @@ export function ModelPicker({
   const id = useId();
   const panelId = `${id}panel`;
   const listId = `${id}list`;
+  // The panel stands within what holds it. Where it has too little room on the side that it is
+  // asked to open on and more on the other, it opens there; where it has less than it needs, its
+  // list scrolls.
+  const { room, placement: side } = useRoom(panel, open, placement);
 
   const service = services?.services.find(candidate => candidate.name === provider) ?? null;
   const name = serviceCalled(provider, services);
@@ -120,10 +125,11 @@ export function ModelPicker({
     document.addEventListener('pointerdown', away);
     return () => document.removeEventListener('pointerdown', away);
   }, [open]);
-  // The model that the keyboard is on stays in sight.
+  // The model that the keyboard is on stays in sight: once more when the panel has been given
+  // the height that it has room for.
   useEffect(() => {
     if (active >= 0) list.current?.children[active]?.scrollIntoView({ block: 'nearest' });
-  }, [active, open]);
+  }, [active, open, room]);
 
   const show = () => {
     setQuery('');
@@ -194,10 +200,11 @@ export function ModelPicker({
       className="model-panel"
       id={panelId}
       ref={panel}
+      style={room === null ? undefined : { maxHeight: room }}
       role="dialog"
       aria-label={words.label.model}
       tabIndex={-1}
-      data-placement={placement}
+      data-placement={side}
       onKeyDown={onKeyDown}
       data-test="model-panel"
     >

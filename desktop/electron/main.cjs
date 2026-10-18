@@ -372,6 +372,18 @@ function programCommand(words) {
   // What follows `serve` was meant for serving, such as a profile.
   return { executable: config.executable, args: [...config.args.slice(0, serves), ...words], env: config.env };
 }
+// What is written through the setup program, one write after the other.
+let writing = Promise.resolve();
+/**
+ * Have the setup program write something once all that was asked to be written before is
+ * written. A write reads all that is stored and writes it back, so two at once would lose what
+ * one of them wrote. A write that fails holds up none after it.
+ */
+function inTurn(write) {
+  const turn = writing.then(write);
+  writing = turn.then(() => undefined, () => undefined);
+  return turn;
+}
 /**
  * Run a command of the program in a form that asks nothing, such as `setup --list`, and return
  * the document that it answers with.
@@ -732,7 +744,17 @@ function installHandlers() {
     if (typeof model !== 'string' || !/^\S{1,200}$/.test(model) || /[\x00-\x1f\x7f]/.test(model)
       || /^sk-/i.test(model) || /^[A-Za-z0-9_]{40,}$/.test(model)) throw new Error('That is no name of a model.');
     // Without a key, the key that is stored for the service stays as it is.
-    return runProgram(['setup', '--from-stdin'], JSON.stringify({ service: name, model }));
+    return inTurn(() => runProgram(['setup', '--from-stdin'], JSON.stringify({ service: name, model })));
+  });
+  ipcMain.handle('columbina:choose-effort', async (event, asked) => {
+    checkSender(event);
+    const name = asked?.service;
+    const effort = asked?.effort;
+    if (typeof name !== 'string' || !mainListed.includes(name)) throw new Error('That service is not among those that are set up.');
+    // A level that is kept for the next start. Ultra holds for one run, and is not kept.
+    if (!['default', 'off', 'low', 'high', 'max'].includes(effort)) throw new Error('That is no level of thinking that is kept.');
+    // A document of the service and the level alone changes the level, and nothing else.
+    return inTurn(() => runProgram(['setup', '--from-stdin'], JSON.stringify({ service: name, effort })));
   });
   ipcMain.handle('columbina:choose-attachments', async (event, asked) => {
     checkSender(event);
@@ -832,7 +854,7 @@ function installHandlers() {
     checkKeySender(event);
     // Only a service that the window was told of: the name goes on a command line.
     if (typeof name !== 'string' || !keyListed.names.includes(name)) throw new Error('That service is not among those that are set up.');
-    const answer = await runProgram(['setup', '--forget', name, '--json']);
+    const answer = await inTurn(() => runProgram(['setup', '--forget', name, '--json']));
     if (answer.forgotten) keyChanged = true;
     return answer;
   });
@@ -852,7 +874,7 @@ function installHandlers() {
       if (typeof given?.[name] === 'string') document[name] = given[name];
     }
     if (Number.isInteger(given?.context_window)) document.context_window = given.context_window;
-    const answer = await runProgram(['setup', '--from-stdin'], JSON.stringify(document));
+    const answer = await inTurn(() => runProgram(['setup', '--from-stdin'], JSON.stringify(document)));
     if (answer.stored) keyChanged = true;
     return answer;
   });

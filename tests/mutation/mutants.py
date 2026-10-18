@@ -165,6 +165,7 @@ SERVE_RPC = "src/columbina/apps/serve/rpc.py"
 SERVE_WIRE = "src/columbina/apps/serve/wire.py"
 SERVE_SERVER = "src/columbina/apps/serve/server.py"
 SERVE_BUNDLE = "src/columbina/bundles/serve.yml"
+EFFORT_APP = "src/columbina/apps/effort.py"
 WITHHELD = "src/columbina/withheld.py"
 
 
@@ -9475,18 +9476,17 @@ _CLI = (
     mutant(
         "the model that was named last is not the one that is asked",
         CLI_FRONTEND,
-        "        return config.model_copy(\n"
-        '            update={"model": named.model, "context_window": named.context_window}\n'
-        "        )\n",
-        "        return config\n",
+        "            self._model = model_named(self._config.model, rest)\n"
+        "            self._hand_down(agent)\n",
+        "            self._model = model_named(self._config.model, rest)\n",
     ),
     mutant(
         "a request goes with the window of the model that the session was opened with",
         CLI_FRONTEND,
-        "        return config.model_copy(\n"
-        '            update={"model": named.model, "context_window": named.context_window}\n'
+        '        return self._model.model_copy(update={"reasoning": reasoning})\n',
+        "        return self._config.model.model_copy(\n"
+        '            update={"model": self._model.model, "reasoning": reasoning}\n'
         "        )\n",
-        '        return config.model_copy(update={"model": named.model})\n',
     ),
     mutant(
         "naming another model changes nothing",
@@ -18617,7 +18617,9 @@ _SERVICES = (
     mutant(
         "a service of one's own has no model and no window",
         SETUP_APP,
-        "        return replace(own, model=said.model, context_window=said.context_window)\n",
+        "        return replace(\n"
+        "            own, model=said.model, context_window=said.context_window, effort=said.effort\n"
+        "        )\n",
         "        return own\n",
     ),
     mutant(
@@ -21786,8 +21788,11 @@ _SERVE = (
     mutant(
         "a model that was named is told to nobody",
         SERVE_SERVER,
-        "            self._model = model_named(self._config.model, rest)\n            self._look()\n",
-        "            self._model = model_named(self._config.model, rest)\n",
+        "            self._model = model_named(self._config.model, rest)\n"
+        "            self._hand_down(agent)\n"
+        "            self._look()\n",
+        "            self._model = model_named(self._config.model, rest)\n"
+        "            self._hand_down(agent)\n",
     ),
     mutant(
         "a model that is named keeps the window of the one before",
@@ -21798,18 +21803,17 @@ _SERVE = (
     mutant(
         "the model that was named is not the one that is asked",
         SERVE_SERVER,
-        "        return config.model_copy(\n"
-        '            update={"model": named.model, "context_window": named.context_window}\n'
-        "        )\n",
-        "        return config\n",
+        "            self._model = model_named(self._config.model, rest)\n"
+        "            self._hand_down(agent)\n",
+        "            self._model = model_named(self._config.model, rest)\n",
     ),
     mutant(
         "a request goes with the window of the model that the session was opened with",
         SERVE_SERVER,
-        "        return config.model_copy(\n"
-        '            update={"model": named.model, "context_window": named.context_window}\n'
+        '        return self._model.model_copy(update={"reasoning": reasoning})\n',
+        "        return self._config.model.model_copy(\n"
+        '            update={"model": self._model.model, "reasoning": reasoning}\n'
         "        )\n",
-        '        return config.model_copy(update={"model": named.model})\n',
     ),
     mutant(
         "every model that is named has the window of the model that the run started with",
@@ -22180,8 +22184,8 @@ _SERVE = (
     mutant(
         "a longer yes is gone when its session is opened again",
         SERVE_SERVER,
-        "        self._adopt(agent)\n        self._grant_again(agent)\n",
-        "        self._adopt(agent)\n",
+        "        self._hand_down(agent)\n        self._grant_again(agent)\n",
+        "        self._hand_down(agent)\n",
     ),
     mutant(
         "a longer yes for one session is given to every session that is opened",
@@ -24234,6 +24238,405 @@ _GITHUB_TOOLS = (
     ),
 )
 
+_EFFORT = (
+    # The levels, and what each asks of a service.
+    mutant(
+        "every service offers every level",
+        EFFORT_APP,
+        '    return ("default", "ultra")\n',
+        "    return EFFORTS\n",
+    ),
+    mutant(
+        "a service that is told nothing of reasoning is offered no team",
+        EFFORT_APP,
+        '    return ("default", "ultra")\n',
+        '    return ("default",)\n',
+    ),
+    mutant(
+        "a service of the style of OpenAI is not offered what its config asks for",
+        EFFORT_APP,
+        '        return ("default", configured, "ultra")\n',
+        '        return ("default", "ultra")\n',
+    ),
+    mutant(
+        "a service that is told nothing is offered what its config asks for",
+        EFFORT_APP,
+        '    if style == "openai" and configured is not None and configured != "off":\n',
+        '    if configured is not None and configured != "off":\n',
+    ),
+    mutant(
+        "off is offered to a service of the style of OpenAI",
+        EFFORT_APP,
+        '    if style == "openai" and configured is not None and configured != "off":\n',
+        '    if style == "openai" and configured is not None:\n',
+    ),
+    mutant(
+        "the default asks for reasoning",
+        EFFORT_APP,
+        '    if effort == "default":\n        return None\n',
+        "",
+    ),
+    mutant(
+        "a service of the style of OpenAI is asked for a level",
+        EFFORT_APP,
+        '    if style != "deepseek":\n        return configured\n',
+        '    if style == "none":\n        return configured\n',
+    ),
+    mutant(
+        "a service that is not of the style of DeepSeek is asked for nothing at any level",
+        EFFORT_APP,
+        "        return configured\n",
+        "        return None\n",
+    ),
+    mutant(
+        "ultra asks for no more than high",
+        EFFORT_APP,
+        '    return "max" if effort == "ultra" else effort\n',
+        '    return "high" if effort == "ultra" else effort\n',
+    ),
+    mutant(
+        "what a config asks for is taken where the service does not offer it",
+        EFFORT_APP,
+        '    return effort if effort in offered(style, configured) else "default"\n',
+        "    return effort\n",
+    ),
+    mutant(
+        "a service of the style of OpenAI is told nothing",
+        EFFORT_APP,
+        '        case "openai":\n            return "openai"\n',
+        "",
+    ),
+    mutant(
+        "a level written in capitals is none",
+        EFFORT_APP,
+        "    named = rest.strip().lower()\n",
+        "    named = rest.strip()\n",
+    ),
+    mutant(
+        "a level that the service does not offer is chosen",
+        EFFORT_APP,
+        "    for level in levels:\n",
+        "    for level in EFFORTS:\n",
+    ),
+    mutant(
+        "the command chooses nothing",
+        EFFORT_APP,
+        '            return level, f"The effort is {level} from the next request on."\n',
+        '            return effort, f"The effort is {level} from the next request on."\n',
+    ),
+    mutant(
+        "the command says no levels",
+        EFFORT_APP,
+        '        said = f"The effort is {effort}. This service offers {_listed(levels)}."\n',
+        '        said = f"The effort is {effort}."\n',
+    ),
+    # What the adapter sends.
+    mutant(
+        "the thinking that is off goes with a level of the options",
+        OPENAI_CHAT,
+        '                body["thinking"] = {"type": "disabled"}\n'
+        '                body.pop("reasoning_effort", None)\n',
+        '                body["thinking"] = {"type": "disabled"}\n',
+    ),
+    mutant(
+        "the thinking that is on is off",
+        OPENAI_CHAT,
+        '                body["thinking"] = {"type": "enabled"}\n',
+        '                body["thinking"] = {"type": "disabled"}\n',
+    ),
+    mutant(
+        "DeepSeek is told no level",
+        OPENAI_CHAT,
+        '                body["reasoning_effort"] = call.reasoning\n',
+        "",
+    ),
+    mutant(
+        "DeepSeek is told the levels of OpenAI",
+        OPENAI_CHAT,
+        '                body["reasoning_effort"] = call.reasoning\n',
+        '                body["reasoning_effort"] = _EFFORT[call.reasoning]\n',
+    ),
+    mutant(
+        "the options say the last word of the reasoning",
+        OPENAI_CHAT,
+        "    body.update(call.options)\n"
+        "    # What the call asks of the reasoning is written last, over what the options say of it.\n",
+        "    # What the call asks of the reasoning is written last, over what the options say of it.\n",
+        (
+            '            body["reasoning_effort"] = _EFFORT[call.reasoning]\n    return body\n',
+            '            body["reasoning_effort"] = _EFFORT[call.reasoning]\n    body.update(call.options)\n'
+            "    return body\n",
+        ),
+    ),
+    mutant(
+        "the adapter says nothing of its style",
+        OPENAI_CHAT,
+        "        return self._config.reasoning_style\n",
+        '        return "none"\n',
+    ),
+    # The service process.
+    mutant(
+        "a level that is chosen holds for nothing",
+        SERVE_SERVER,
+        "        if chosen is not None:\n            self._effort = chosen\n",
+        "        if chosen is not None:\n",
+    ),
+    mutant(
+        "a level that is chosen is told to nobody",
+        SERVE_SERVER,
+        "            self._effort = chosen\n            self._hand_down(agent)\n            self._look()\n",
+        "            self._effort = chosen\n            self._hand_down(agent)\n",
+    ),
+    mutant(
+        "a level that is chosen is not handed down",
+        SERVE_SERVER,
+        "            self._effort = chosen\n            self._hand_down(agent)\n",
+        "            self._effort = chosen\n",
+    ),
+    mutant(
+        "the level of the config holds whatever was chosen",
+        SERVE_SERVER,
+        "        if self._effort is not None:\n            return self._effort\n",
+        "",
+    ),
+    mutant(
+        "the service in use is told nothing of reasoning",
+        SERVE_SERVER,
+        "        return style_of(self._ctx, self._model.provider)\n",
+        '        return "none"\n',
+    ),
+    mutant(
+        "a request asks for the reasoning of the config",
+        SERVE_SERVER,
+        "        reasoning = reasoning_of(self._effort, self._style(), self._config.model.reasoning)\n"
+        '        return self._model.model_copy(update={"reasoning": reasoning})\n',
+        "        return self._model\n",
+    ),
+    mutant(
+        "a call drops what the config asks before a level is chosen",
+        SERVE_SERVER,
+        "        if self._effort is None:\n            return self._model\n",
+        "",
+    ),
+    mutant(
+        "a level that is chosen asks a service of the style of OpenAI for nothing",
+        SERVE_SERVER,
+        "reasoning_of(self._effort, self._style(), self._config.model.reasoning)",
+        "reasoning_of(self._effort, self._style())",
+    ),
+    mutant(
+        "ultra tells the agent nothing",
+        SERVE_SERVER,
+        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
+        "        return text\n",
+    ),
+    mutant(
+        "every level tells the agent of the team",
+        SERVE_SERVER,
+        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
+        '        return f"{text}\\n\\n{ULTRA}"\n',
+    ),
+    mutant(
+        "the agent of the conversation hears nothing of the team",
+        SERVE_SERVER,
+        "        agent.ctx.on(SYSTEM_PROMPT_ASSEMBLE, self._with_the_effort)\n",
+        "",
+    ),
+    mutant(
+        "the status tells of no levels",
+        SERVE_SERVER,
+        '                    "efforts": list(self._levels()),\n',
+        '                    "efforts": [],\n',
+    ),
+    mutant(
+        "the service offers no level that its config asks for",
+        SERVE_SERVER,
+        "        return offered(self._style(), self._config.model.reasoning)\n",
+        "        return offered(self._style())\n",
+    ),
+    mutant(
+        "a session that is opened takes no level that was named while it was made",
+        SERVE_SERVER,
+        "        # A model or a level that was named while the agent was made holds for it too.\n"
+        "        self._hand_down(agent)\n",
+        "",
+    ),
+    mutant(
+        "the agent of the conversation is not told of a level that is named in another",
+        SERVE_SERVER,
+        "        current = self._agent\n"
+        "        if current is not None and current is not agent:\n"
+        '            current.spec = current.spec.model_copy(update={"model": call})\n',
+        "",
+    ),
+    mutant(
+        "the status tells of the default whatever was chosen",
+        SERVE_SERVER,
+        '                    "effort": self._chosen_effort(),\n',
+        '                    "effort": "default",\n',
+    ),
+    # The terminal.
+    mutant(
+        "a level that is chosen at the terminal holds for nothing",
+        CLI_FRONTEND,
+        "        if chosen is not None:\n            self._effort = chosen\n",
+        "        if chosen is not None:\n",
+    ),
+    mutant(
+        "a level that is chosen at the terminal is not handed down",
+        CLI_FRONTEND,
+        "            self._effort = chosen\n            self._hand_down(agent)\n",
+        "            self._effort = chosen\n",
+    ),
+    mutant(
+        "the level of the config holds at the terminal whatever was chosen",
+        CLI_FRONTEND,
+        "        if self._effort is not None:\n            return self._effort\n",
+        "",
+    ),
+    mutant(
+        "a request of the terminal asks for the reasoning of the config",
+        CLI_FRONTEND,
+        "        reasoning = reasoning_of(self._effort, self._style(), self._config.model.reasoning)\n"
+        '        return self._model.model_copy(update={"reasoning": reasoning})\n',
+        "        return self._model\n",
+    ),
+    mutant(
+        "a call of the terminal drops what the config asks before a level is chosen",
+        CLI_FRONTEND,
+        "        if self._effort is None:\n            return self._model\n",
+        "",
+    ),
+    mutant(
+        "the terminal offers no level that its config asks for",
+        CLI_FRONTEND,
+        "        return offered(self._style(), self._config.model.reasoning)\n",
+        "        return offered(self._style())\n",
+    ),
+    mutant(
+        "ultra tells the agent at the terminal nothing",
+        CLI_FRONTEND,
+        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
+        "        return text\n",
+    ),
+    mutant(
+        "every level tells the agent at the terminal of the team",
+        CLI_FRONTEND,
+        '        return f"{text}\\n\\n{ULTRA}" if self._chosen_effort() == "ultra" else text\n',
+        '        return f"{text}\\n\\n{ULTRA}"\n',
+    ),
+    mutant(
+        "a session that is begun anew at the terminal asks what the run began with",
+        CLI_FRONTEND,
+        "        return AgentSpec(cwd=config.cwd, model=self._call(), system_prompt=config.system_prompt)\n",
+        "        return AgentSpec(cwd=config.cwd, model=self._model, system_prompt=config.system_prompt)\n",
+    ),
+    # What is kept, and read at the start.
+    mutant(
+        "the level of a service is lost when it is read",
+        SETUP_APP,
+        "        effort=said.effort,\n    )\n",
+        "    )\n",
+    ),
+    mutant(
+        "a model that is stored drops the level",
+        SETUP_APP,
+        "    if effort is None and said is not None:\n        effort = said.effort\n",
+        "",
+    ),
+    mutant(
+        "the level that a document says with a model is not stored",
+        SETUP_APP,
+        "    return _answers(before, keys, env, service, model, window, key, effort)\n",
+        "    return _answers(before, keys, env, service, model, window, key)\n",
+    ),
+    mutant(
+        "ultra is refused as no level",
+        SETUP_APP,
+        '    if named == "ultra":\n'
+        '        raise SetupError(f"ultra holds for one run, and is not stored. {stored}")\n',
+        "",
+    ),
+    mutant(
+        "a level written in capitals is not stored",
+        SETUP_APP,
+        "    named = found.lower()\n",
+        "    named = found\n",
+    ),
+    mutant(
+        "a level that is stored alone changes the service in use",
+        SETUP_APP,
+        "    _written(home, Chosen(use=before.use, services=services))\n",
+        "    _written(home, Chosen(use=name, services=services))\n",
+    ),
+    mutant(
+        "a level that is stored alone forgets the rest of its service",
+        SETUP_APP,
+        "    earlier = before.services.get(name) or Own()\n",
+        "    earlier = Own()\n",
+    ),
+    mutant(
+        "a document that says more than a level is taken for a level alone",
+        SETUP_APP,
+        '    if said.keys() != {"service", "effort"}:\n',
+        '    if "effort" not in said:\n',
+    ),
+    mutant(
+        "a level is stored for a service that there is not",
+        SETUP_APP,
+        "    service_named(name, before)\n    earlier =",
+        "    earlier =",
+    ),
+    mutant(
+        "the default leaves what the profile asks for",
+        LAUNCHER,
+        '        call.pop("reasoning", None)\n',
+        "        pass\n",
+    ),
+    mutant(
+        "a level that is stored is not asked for",
+        LAUNCHER,
+        '        call["reasoning"] = effort\n',
+        "        pass\n",
+    ),
+    mutant(
+        "a level that is kept where no service is chosen holds for nothing",
+        LAUNCHER,
+        "        elif not named:\n            _thinks_as_kept(profile, stored)\n",
+        "",
+    ),
+    mutant(
+        "the level of the service in use is asked of the one that the command line names",
+        LAUNCHER,
+        "            _served(profile, service, env, args.model, thinks=not named)\n",
+        "            _served(profile, service, env, args.model)\n",
+    ),
+    mutant(
+        "the level of the service of the profile is asked of the one that the command line names",
+        LAUNCHER,
+        "        elif not named:\n",
+        "        else:\n",
+    ),
+    mutant(
+        "a level is asked of a service that another is served after",
+        LAUNCHER,
+        "            if thinks:\n                _thinks(call, service.effort)\n",
+        "            _thinks(call, service.effort)\n",
+    ),
+    mutant(
+        "a level that was kept for another service holds for that of the profile",
+        LAUNCHER,
+        "            said = stored.services.get(provider) if isinstance(provider, str) else None\n",
+        "            said = next(iter(stored.services.values()), None)\n",
+    ),
+    mutant(
+        "a service that is named in a way that cannot be read is looked up",
+        LAUNCHER,
+        "if isinstance(provider, str) else None",
+        "if provider else None",
+    ),
+)
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -24382,6 +24785,17 @@ SETS: dict[str, MutantSet] = {
         _SERVICES,
     ),
     "keys": MutantSet(("tests/llm/test_credentials.py", "tests/llm/test_openai_chat.py"), _KEYS),
+    "effort": MutantSet(
+        (
+            "tests/apps/test_effort.py",
+            "tests/apps/serve/test_effort.py",
+            "tests/apps/cli/test_cli.py",
+            "tests/llm/test_openai_chat.py",
+            "tests/apps/test_services_at_the_command_line.py",
+            "tests/apps/test_setup.py",
+        ),
+        _EFFORT,
+    ),
     "doctor": MutantSet(("tests/apps/test_doctor.py",), _DOCTOR),
     # The file at the top of the tests comes last: pytest loses the fixtures of a directory
     # that is named after it.

@@ -8,10 +8,11 @@ import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Composer } from '../src/app/Composer';
 import { ModelPicker } from '../src/app/ModelPicker';
+import { LEAST_ROOM } from '../src/app/room';
 import type { Failure, Listed } from '../src/key/form';
 import type { Models, ServiceModels } from '../src/useModels';
 import type { Workspace } from '../src/useWorkspace';
-import { likeABrowser, modelsWith, service, statusOf, workspaceWith } from './mounted';
+import { likeABrowser, modelsWith, service, standing, statusOf, workspaceWith } from './mounted';
 
 beforeEach(likeABrowser);
 afterEach(() => {
@@ -86,10 +87,26 @@ describe('the button of the model', () => {
     expect(panel()!.getAttribute('role')).toBe('dialog');
     expect(panel()!.getAttribute('aria-label')).toBe('Model');
     expect(panel()!.dataset.placement).toBe('up');
+    // It is no higher than the room that it has, which the DOM of the tests makes the least.
+    expect(panel()!.style.maxHeight).toBe(`${LEAST_ROOM}px`);
     // Pressed again, it closes what it opened.
     open();
     expect(panel()).toBeNull();
     expect(opener().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('opens below its button where it has too little room above and more below', () => {
+    // A panel of 400 has 92 above its button, and more below it within the window.
+    const putBack = standing(element => (element.dataset.test === 'model-panel' ? [-300, 100]
+      : element.classList.contains('model-picker') ? [108, 140] : null));
+    try {
+      drawn();
+      open();
+      expect(panel()!.dataset.placement).toBe('down');
+      expect(panel()!.style.maxHeight).toBe(`${window.innerHeight - 140 - 8 - 8}px`);
+    } finally {
+      putBack();
+    }
   });
 
   it('calls a service that the list does not have by its name', () => {
@@ -257,14 +274,17 @@ describe('the panel of the models', () => {
     for (const key of ['a', 'Home', 'End', 'ArrowLeft', 'Tab']) expect(press(key), key).toBe(false);
   });
 
-  it('keeps the model that the keyboard is on in sight', () => {
-    const seen: Element[] = [];
-    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) { seen.push(this); };
+  it('keeps the model that the keyboard is on in sight, once the panel has its height', () => {
+    // The model that was brought into sight, and how high the panel was at that moment.
+    const seen: [Element, string | undefined][] = [];
+    Element.prototype.scrollIntoView = function scrollIntoView(this: Element) {
+      seen.push([this, this.closest<HTMLElement>('[data-test="model-panel"]')?.style.maxHeight]);
+    };
     drawn({ models: listed('a-1', 'a-2', 'a-3'), model: 'a-1' });
     open();
-    expect(seen.at(-1)).toBe(options()[0]);
+    expect(seen.at(-1)).toEqual([options()[0], `${LEAST_ROOM}px`]);
     press('ArrowUp');
-    expect(seen.at(-1)).toBe(options()[2]);
+    expect(seen.at(-1)).toEqual([options()[2], `${LEAST_ROOM}px`]);
   });
 
   it('chooses with Enter or a click, closes, and gives the keyboard on', () => {

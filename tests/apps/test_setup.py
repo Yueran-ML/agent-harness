@@ -1452,7 +1452,7 @@ NOT_AN_OBJECT = "the document is not an object of JSON"
 TOO_LONG = "the document is longer than 65536 bytes, which is more than is read"
 NOT_READ_HERE = (
     "the document says something under a name that is not read. The names that are read are: "
-    "service, base_url, model, context_window, api_key"
+    "service, base_url, model, context_window, api_key, effort"
 )
 NOT_TOKENS = (
     "what the document says under 'context_window' is not a number of tokens, such as 128000"

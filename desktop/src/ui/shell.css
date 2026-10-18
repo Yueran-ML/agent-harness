@@ -74,6 +74,43 @@
   color: var(--moon-2);
 }
 
+/* A newer version that was found: a small button at the end of the bar, in the accent. */
+.titlebar-update {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 var(--s3) 0 var(--s2);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.titlebar-update:hover {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.titlebar-update svg {
+  flex: none;
+}
+
+/* In a narrow window the button keeps its arrow, and says the rest when it is pointed at. */
+@media (max-width: 720px) {
+  .titlebar-update {
+    padding: 0 var(--s2);
+  }
+
+  .titlebar-update span {
+    display: none;
+  }
+}
+
 /* --- The three columns under the bar. */
 .shell {
   flex: 1;

@@ -49,6 +49,10 @@ const samples: Record<string, unknown[][]> = {
   'hint.contextOf': [['12.4K', '128K'], ['2670', '104.9万'], ['1.2万', '100万']],
   'hint.contextUnknown': [['950'], ['1.2万']],
   'hint.about': [['0.1.0', 1]],
+  'label.updates.told': [['0.1.3'], ['12.0.10']],
+  'label.updates.toldInFull': [['0.1.3'], ['12.0.10']],
+  'hint.updates.version': [['0.1.2'], ['0.1.2-dev']],
+  'hint.updates.newer': [['0.1.3'], ['12.0.10']],
   // The name of a variable, which is written in capitals. A name with an underscore in it
   // would be taken for a code of the service by the test below.
   'hint.key.fromVariable': [['MYKEY']],
@@ -246,9 +250,10 @@ describe('the catalogues', () => {
     expect(said.filter(({ text }) => !new RegExp(japanese).test(text))).toEqual([]);
     // And none was left as it is in Chinese, which has no kana. A sentence of Japanese has some.
     expect(said.filter(({ text }) => text.endsWith('。') && !new RegExp(kana).test(text))).toEqual([]);
-    // A sentence is in the polite form. The one that names the version is no sentence but a line with a stop.
+    // A sentence is in the polite form. Those that name a version are no sentences but lines with a stop.
     const polite = /(です|ます|ました|ません|でした|ください)(（[^（）]*）)?$/;
-    const sentences = said.filter(({ path, text }) => text.endsWith('。') && path !== 'hint.about')
+    const versions = ['hint.about', 'hint.updates.version'];
+    const sentences = said.filter(({ path, text }) => text.endsWith('。') && !versions.includes(path))
       .flatMap(({ path, text }) => text.split('。').filter(Boolean).map(sentence => ({ path, sentence })));
     expect(sentences.length).toBeGreaterThan(150);
     expect(sentences.filter(({ sentence }) => !polite.test(sentence))).toEqual([]);

@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('columbina', {
   keepAttachments: (ids) => ipcRenderer.invoke('columbina:keep-attachments', idsOf(ids)),
   setUpService: (asked) => ipcRenderer.invoke('columbina:set-up-service', { service: asked?.service, language: asked?.language }),
   openExternal: (url) => ipcRenderer.invoke('columbina:open-external', url),
+  about: () => ipcRenderer.invoke('columbina:about'),
+  updates: (asked) => ipcRenderer.invoke('columbina:updates', { now: asked?.now === true }),
   githubStatus: () => ipcRenderer.invoke('columbina:github-status'),
   githubSignIn: () => ipcRenderer.invoke('columbina:github-sign-in'),
   githubCancel: () => ipcRenderer.invoke('columbina:github-cancel'),

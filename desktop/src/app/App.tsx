@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, FileDiff, FileText, PanelLeft, Settings2, SlidersHorizontal, X } from 'lucide-react';
+import { ChevronRight, Download, FileDiff, FileText, PanelLeft, Settings2, SlidersHorizontal, X } from 'lucide-react';
 import { MusicTitlebar, useBackgroundMusic } from '../BackgroundMusic';
 import { StartupVideo } from '../StartupVideo';
 import type { ActionKey } from '../outcomes';
@@ -13,6 +13,7 @@ import {
 import { sentenceOf, storedOf } from '../key/form';
 import { useGitHub } from '../useGitHub';
 import { useModels } from '../useModels';
+import { useUpdates } from '../useUpdates';
 import { useWorkspace, type Workspace } from '../useWorkspace';
 import { ApprovalCard } from './ApprovalCard';
 import { Composer } from './Composer';
@@ -33,6 +34,7 @@ import { onMac, shortcut } from './system';
 import {
   anotherServiceChosen, folderName, goneWords, joined, retryText, skillLine, STILL_STARTING_MS, taskTitle, waitingWords,
 } from './tell';
+import { storeChecking, storedChecking, storedSkipped, storeSkipped, toldOf } from './updates';
 
 const tellingKey = 'columbina-tell-me';
 
@@ -98,6 +100,11 @@ export default function App() {
   const [playOpening, setPlayOpening] = useState(opening.always);
   const [showOpening, setShowOpening] = useState(opening.show);
   const [tellMe, setTellMe] = useState(storedTelling);
+  // Newer versions of the application: whether it looks for them, and the one the user skipped.
+  const [checkingUpdates, setCheckingUpdates] = useState(storedChecking);
+  const [skipped, setSkipped] = useState(storedSkipped);
+  const updates = useUpdates(checkingUpdates);
+  const told = toldOf(updates.found, skipped);
 
   const [sidebarHidden, setSidebarHidden] = useState(false);
   // On macOS the buttons of the window are hidden in full screen, and the bar gives their room back.
@@ -142,6 +149,11 @@ export default function App() {
       // Without storage the choice holds for this window.
     }
   }, [tellMe]);
+  useEffect(() => storeChecking(checkingUpdates), [checkingUpdates]);
+  const skip = (version: string) => {
+    setSkipped(version);
+    storeSkipped(version);
+  };
   // Kept from the first moment on: a start that came this far has had its opening.
   useEffect(() => storeOpening(playOpening), [playOpening]);
   // A question of the agent is not kept waiting behind a film.
@@ -466,6 +478,17 @@ export default function App() {
         <span className="brand"><span className="brand-moon" aria-hidden="true" />Columbina</span>
         {folder && <span className="titlebar-project" title={workspace.hello?.cwd}>{folder}</span>}
         <MusicTitlebar music={music} />
+        {/* A newer version, at the end of the bar: a click opens the page of its release. Not over the opening. */}
+        {told && !showOpening && <button
+          type="button"
+          className="titlebar-update"
+          aria-label={words.label.updates.toldInFull(told.version)}
+          title={words.label.updates.toldInFull(told.version)}
+          onClick={() => openPage(told.page)}
+          data-test="update-told"
+        >
+          <Download size={13} aria-hidden="true" /><span>{words.label.updates.told(told.version)}</span>
+        </button>}
       </header>
 
       {showOpening && <StartupVideo
@@ -676,6 +699,11 @@ export default function App() {
         music={music}
         github={github}
         models={models}
+        updates={updates}
+        checkingUpdates={checkingUpdates}
+        onCheckingUpdates={setCheckingUpdates}
+        skipped={skipped}
+        onSkip={skip}
         onOpen={openPage}
         onChooseModel={model => void chooseModel(model)}
         // What is changed here shows here: the answer of the command is not written into the conversation.

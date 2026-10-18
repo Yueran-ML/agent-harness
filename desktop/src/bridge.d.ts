@@ -63,6 +63,14 @@ export interface ColumbinaBridge {
    */
   setUpService(asked: { service: string | null; language: string }): Promise<{ changed: boolean }>;
   openExternal(url: string): Promise<void>;
+  /** The version of the application that runs, and whether it looks for newer ones: a package does, and a checkout does not. */
+  about(): Promise<unknown>;
+  /**
+   * Ask which release of the application is the newest: the version that comes after the one that
+   * runs, with the page of its release, or none, or why that is not known. The shell takes an
+   * answer of the last hour as it is, unless it is asked now.
+   */
+  updates(asked: { now: boolean }): Promise<unknown>;
   /**
    * What `columbina login --status --json` says: who is signed in to GitHub, with the picture
    * as an address of data, and what Columbina may reach; with `skipped`, whether the user said

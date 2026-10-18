@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, session, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const {
@@ -81,6 +81,23 @@ const ATTACHMENTS_MOST = 10;
 const ATTACHMENTS_HELD_MOST = 200;
 /** Where the files that go with messages are kept in a project, from its folder. */
 const ATTACHMENTS_FOLDER = ['.columbina', 'attachments'];
+// Where a package asks which version of the application is the newest: the releases of its
+// repository on GitHub. The page of a release is named here as well, so that the page is never
+// told an address of GitHub's answer to open.
+const RELEASES = 'https://api.github.com/repos/Yueran-ML/agent-harness/releases?per_page=30';
+const RELEASE_PAGE = 'https://github.com/Yueran-ML/agent-harness/releases/tag/desktop-v';
+/** How long GitHub is given to answer, and how long an answer is taken as it is before GitHub is asked again. */
+const UPDATE_MS = 15_000;
+const UPDATE_KEPT_MS = 60 * 60_000;
+/** How much of the answer is read, in characters. A list of thirty releases is far less. */
+const UPDATE_OUTPUT_MOST = 4 * 1024 * 1024;
+// What GitHub said last, and when, and the question that is under way.
+let updateKnown = null;
+let updateAsking = null;
+// The session that asks GitHub: one of its own, kept in memory only. The session of the window
+// lets nothing out but the files of the application, and stays so.
+const RELEASES_PARTITION = 'columbina-releases';
+let releasesSession = null;
 /** The language that a page names, if the shell speaks it, and English if not. */
 const spoken = (language) => (typeof language === 'string' && Object.hasOwn(WORDS, language) ? language : 'en');
 // The window for the key while it is open, what it was opened for, whether something was
@@ -474,6 +491,64 @@ async function copiedInto(folder, file) {
   }
   throw new Error(`There is no name left for ${file.name}.`);
 }
+/**
+ * Where the shell asks which version is the newest: GitHub, in a package. From source it asks
+ * only where the environment names another address, which the walks through the window use,
+ * and nowhere otherwise.
+ */
+function releasesFeed() {
+  if (app.isPackaged) return RELEASES;
+  const named = process.env.COLUMBINA_UPDATE_FEED;
+  return typeof named === 'string' && /^https?:\/\/\S+$/.test(named) ? named : null;
+}
+/** The numbers of a version as a release names it, with what goes before them, or null for no such version. */
+function versionOf(text, before = '') {
+  const found = typeof text === 'string' ? new RegExp(`^${before}(\\d{1,6})\\.(\\d{1,6})\\.(\\d{1,6})$`).exec(text) : null;
+  return found ? found.slice(1).map(Number) : null;
+}
+/** Whether one version comes after another. */
+function later(one, other) {
+  for (let at = 0; at < 3; at += 1) if (one[at] !== other[at]) return one[at] > other[at];
+  return false;
+}
+/**
+ * Ask GitHub which release of the desktop application is the newest. Returns what the page is
+ * told: the version that comes after the one that runs, with the page of its release, or none,
+ * or why it is not known. A release of the program alone, a draft, one that is tried before it
+ * is released and a tag of any other shape are not releases of the application.
+ */
+async function newerRelease(feed) {
+  const none = { newer: null, page: null, failure: null };
+  const failed = (failure) => ({ ...none, failure });
+  let response;
+  let text;
+  try {
+    releasesSession ??= session.fromPartition(RELEASES_PARTITION);
+    response = await releasesSession.fetch(feed, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': `Columbina/${app.getVersion()}` },
+      signal: AbortSignal.timeout(UPDATE_MS),
+    });
+    // GitHub turns away who asks too often, for an hour at most.
+    if (response.status === 403 || response.status === 429) return failed('busy');
+    if (!response.ok) return failed('unreadable');
+    text = await response.text();
+  } catch {
+    return failed('network');
+  }
+  let releases = null;
+  try { releases = text.length > UPDATE_OUTPUT_MOST ? null : JSON.parse(text); } catch { /* No list, as below. */ }
+  if (!Array.isArray(releases)) return failed('unreadable');
+  let newest = null;
+  for (const release of releases) {
+    if (release === null || typeof release !== 'object' || release.draft !== false || release.prerelease !== false) continue;
+    const version = versionOf(release.tag_name, 'desktop-v');
+    if (version !== null && (newest === null || later(version, newest))) newest = version;
+  }
+  const running = versionOf(app.getVersion());
+  if (newest === null || running === null || !later(newest, running)) return none;
+  const newer = newest.join('.');
+  return { newer, page: `${RELEASE_PAGE}${newer}`, failure: null };
+}
 /** The names of the services in what `setup --list` answered, and the pages on which their keys are made. */
 function namesAndPages(list) {
   const services = Array.isArray(list?.services) ? list.services : [];
@@ -791,6 +866,25 @@ function installHandlers() {
     const url = new URL(address);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Only http and https links can be opened.');
     await shell.openExternal(url.href);
+  });
+  ipcMain.handle('columbina:about', (event) => {
+    checkSender(event);
+    // The version that runs, and whether this application asks for newer ones at all.
+    return { version: app.getVersion(), checks: releasesFeed() !== null };
+  });
+  ipcMain.handle('columbina:updates', async (event, asked) => {
+    checkSender(event);
+    const feed = releasesFeed();
+    if (feed === null) throw new Error('This application does not look for newer versions.');
+    // An answer is taken as it is for an hour, so that a page that is loaded again does not ask
+    // again. Asked now, GitHub is asked now. One question is under way at a time.
+    if (asked?.now !== true && updateKnown !== null && Date.now() - updateKnown.at < UPDATE_KEPT_MS) return updateKnown.answer;
+    updateAsking ??= newerRelease(feed).then((answer) => {
+      // What failed is asked again the next time.
+      updateKnown = answer.failure === null ? { at: Date.now(), answer } : null;
+      return answer;
+    }).finally(() => { updateAsking = null; });
+    return updateAsking;
   });
   ipcMain.handle('columbina:github-status', async (event) => {
     checkSender(event);

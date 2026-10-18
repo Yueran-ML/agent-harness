@@ -14,13 +14,24 @@ import type { SessionEvent } from '../src/protocol';
 import { sizeStorageKey } from '../src/size';
 import { projectEvents } from '../src/state';
 import { themeStorageKey } from '../src/themes';
+import type { Updates } from '../src/useUpdates';
 import type { PendingApproval, Workspace } from '../src/useWorkspace';
 import {
   begin, end, failed, gitHubWith, header, likeABrowser, log, reply, service, statusOf, user, workspaceWith,
 } from './mounted';
 
-const held = vi.hoisted(() => ({ workspace: null as unknown, github: null as unknown }));
+const held = vi.hoisted(() => ({
+  workspace: null as unknown, github: null as unknown, updates: null as unknown,
+  /** Whether the page last said that the application is to look for newer versions by itself. */
+  checking: null as boolean | null,
+}));
 vi.mock('../src/useWorkspace', () => ({ useWorkspace: () => held.workspace }));
+vi.mock('../src/useUpdates', () => ({
+  useUpdates: (checking: boolean) => {
+    held.checking = checking;
+    return held.updates;
+  },
+}));
 vi.mock('../src/useGitHub', async original => ({ ...await original<object>(), useGitHub: () => held.github }));
 vi.mock('../src/BackgroundMusic', () => ({
   useBackgroundMusic: () => ({ hasTrack: false, muted: false, setMuted: () => {} }),
@@ -36,9 +47,14 @@ vi.mock('../src/StartupVideo', async () => {
   };
 });
 
+/** What the page knows of newer versions of the application: nothing, unless a test says otherwise. */
+const updatesWith = (given: Partial<Updates> = {}): Updates => ({ about: null, found: null, asking: false, checkNow: vi.fn(), ...given });
+
 beforeEach(() => {
   likeABrowser();
   held.github = gitHubWith();
+  held.updates = updatesWith();
+  held.checking = null;
   localStorage.clear();
   // A start that has had its opening: the page is there at once.
   localStorage.setItem(openingStorageKey, 'seen');
@@ -1383,5 +1399,164 @@ describe('what the window looks like', () => {
     fireEvent.change(one('language'), { target: { value: 'system' } });
     expect(localStorage.getItem('columbina-language')).toBeNull();
     expect(document.documentElement.lang).toBe('en');
+  });
+});
+
+describe('newer versions of the application', () => {
+  const releaseOf = (version: string) => `https://github.com/Yueran-ML/agent-harness/releases/tag/desktop-v${version}`;
+  const packaged = { version: '0.1.2', checks: true };
+  const newer = (version = '0.1.3') => ({ newer: { version, page: releaseOf(version) }, failure: null });
+  /** A shell that opens pages, as the page asks it to. */
+  const opening = () => {
+    const openExternal = vi.fn(async (_address: string) => {});
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), openExternal });
+    return openExternal;
+  };
+  /** What the settings say of the last question. */
+  const state = () => one('update-state').textContent;
+  const told = 'Columbina 0.1.3 is out. Open the page to download it';
+
+  it('are pointed to at the end of the bar of the window, and the button opens the page of the release', async () => {
+    const openExternal = opening();
+    held.updates = updatesWith({ about: packaged, found: newer() });
+    page(first());
+    const button_ = one('update-told');
+    expect(button_.closest('.titlebar')?.lastElementChild).toBe(button_);
+    expect(button_.textContent).toBe('Update 0.1.3');
+    expect([button_.getAttribute('aria-label'), button_.getAttribute('title')]).toEqual([told, told]);
+    await act(async () => { fireEvent.click(button_); });
+    expect(openExternal.mock.calls).toEqual([[releaseOf('0.1.3')]]);
+  });
+
+  it('are pointed to only where one was found and not skipped', () => {
+    held.updates = updatesWith({ about: packaged, found: { newer: null, failure: null } });
+    const { now } = page(first());
+    expect(marked('update-told')).toEqual([]);
+    held.updates = updatesWith({ about: packaged, found: { newer: null, failure: 'network' } });
+    now(first());
+    expect(marked('update-told')).toEqual([]);
+    held.updates = updatesWith({ about: packaged, found: newer('0.1.4') });
+    now(first());
+    expect(one('update-told').textContent).toBe('Update 0.1.4');
+    cleanup();
+    localStorage.setItem('columbina-update-skipped', '0.1.4');
+    const again = page(first());
+    expect(marked('update-told')).toEqual([]);
+    held.updates = updatesWith({ about: packaged, found: newer('0.1.5') });
+    again.now(first());
+    expect(one('update-told').textContent).toBe('Update 0.1.5');
+  });
+
+  it('are not pointed to over the opening', () => {
+    localStorage.removeItem(openingStorageKey);
+    held.updates = updatesWith({ about: packaged, found: newer() });
+    page(first());
+    expect(marked('opening')).toHaveLength(1);
+    expect(marked('update-told')).toEqual([]);
+    fireEvent.click(one('opening'));
+    expect(one('update-told').textContent).toBe('Update 0.1.3');
+  });
+
+  it('are looked for by the application itself, unless the user says no in the settings', () => {
+    held.updates = updatesWith({ about: packaged });
+    page(first());
+    expect(held.checking).toBe(true);
+    chord(',');
+    const checking = one('check-updates') as HTMLInputElement;
+    expect(checking.checked).toBe(true);
+    fireEvent.click(checking);
+    expect([held.checking, checking.checked]).toEqual([false, false]);
+    expect(localStorage.getItem('columbina-check-updates')).toBe('false');
+    // The next start goes by what was chosen.
+    cleanup();
+    page(first());
+    expect(held.checking).toBe(false);
+    chord(',');
+    fireEvent.click(one('check-updates'));
+    expect(held.checking).toBe(true);
+    expect(localStorage.getItem('columbina-check-updates')).toBe('true');
+  });
+
+  it('show in the settings the version that runs, and that one from source looks for none', () => {
+    held.updates = updatesWith({ about: { version: '0.1.2', checks: false } });
+    page(first());
+    chord(',');
+    expect(one('desktop-version').textContent).toBe('Desktop application 0.1.2.');
+    expect(one('updates').textContent).toContain('Run from source, the application does not look for newer versions.');
+    expect([marked('check-updates'), marked('check-now'), marked('update-state')]).toEqual([[], [], []]);
+  });
+
+  it('show nothing in the settings where the shell said nothing of the application', () => {
+    page(first());
+    chord(',');
+    expect(one('updates').textContent).toBe('Updates');
+  });
+
+  it('show in the settings what the last question found, and ask now where the user asks', async () => {
+    const openExternal = opening();
+    const asking = updatesWith({ about: packaged, asking: true, found: newer() });
+    held.updates = asking;
+    const { now } = page(first());
+    chord(',');
+    expect(state()).toBe('Asking GitHub for the newest version.');
+    expect((one('check-now') as HTMLButtonElement).disabled).toBe(true);
+    // While it asks, nothing of an earlier answer is offered.
+    expect([marked('update-open'), marked('update-skip')]).toEqual([[], []]);
+    const shown = (given: Partial<Updates>) => {
+      held.updates = updatesWith({ about: packaged, ...given });
+      now(first());
+      return state();
+    };
+    expect(shown({ found: null })).toBe('');
+    expect(shown({ found: { newer: null, failure: null } })).toBe('This is the newest version.');
+    expect(shown({ found: { newer: null, failure: 'network' } })).toBe('GitHub could not be reached.');
+    expect(shown({ found: { newer: null, failure: 'busy' } })).toBe('GitHub turned the question away for now. Try again in a while.');
+    expect(shown({ found: { newer: null, failure: 'unreadable' } })).toBe('No list of releases came from GitHub.');
+    // A failure with no version that was found is said once, in the line itself.
+    expect([marked('update-open'), marked('update-skip'), marked('update-failed')]).toEqual([[], [], []]);
+    expect(shown({ found: newer() })).toBe('Columbina 0.1.3 is out.');
+    expect(marked('update-failed')).toEqual([]);
+    expect((one('check-now') as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => { fireEvent.click(one('update-open')); });
+    expect(openExternal.mock.calls).toEqual([[releaseOf('0.1.3')]]);
+    const shownUpdates = held.updates as Updates;
+    fireEvent.click(one('check-now'));
+    expect(shownUpdates.checkNow).toHaveBeenCalledTimes(1);
+    expect(asking.checkNow).not.toHaveBeenCalled();
+    expect(one('updates').textContent).toContain('The check asks GitHub for the list of releases of Columbina, and sends nothing else.');
+    expect(one('desktop-version').textContent).toBe('Desktop application 0.1.2.');
+    expect(one('updates').textContent).not.toContain('Run from source');
+  });
+
+  it('stay offered when a later look fails, which the settings say beneath', () => {
+    const failed = { newer: { version: '0.1.3', page: releaseOf('0.1.3') }, failure: 'busy' as const };
+    held.updates = updatesWith({ about: packaged, found: failed });
+    const { now } = page(first());
+    expect(one('update-told').textContent).toBe('Update 0.1.3');
+    chord(',');
+    expect(state()).toBe('Columbina 0.1.3 is out.');
+    expect(one('update-failed').textContent).toBe('GitHub turned the question away for now. Try again in a while.');
+    expect([marked('update-open'), marked('update-skip')].map(found => found.length)).toEqual([1, 1]);
+    // While it asks again, what the last look said is put away.
+    held.updates = updatesWith({ about: packaged, found: failed, asking: true });
+    now(first());
+    expect([marked('update-failed'), marked('update-open')]).toEqual([[], []]);
+  });
+
+  it('can be skipped one version at a time', () => {
+    held.updates = updatesWith({ about: packaged, found: newer() });
+    const { now } = page(first());
+    chord(',');
+    fireEvent.click(one('update-skip'));
+    expect(localStorage.getItem('columbina-update-skipped')).toBe('0.1.3');
+    expect([marked('update-told'), marked('update-skip')]).toEqual([[], []]);
+    // The page of the release is still offered in the settings.
+    expect(marked('update-open')).toHaveLength(1);
+    expect(state()).toBe('Columbina 0.1.3 is out.');
+    // A version after the one that was skipped is pointed to again.
+    held.updates = updatesWith({ about: packaged, found: newer('0.1.4') });
+    now(first());
+    expect(one('update-told').textContent).toBe('Update 0.1.4');
+    expect(marked('update-skip')).toHaveLength(1);
   });
 });

@@ -102,13 +102,16 @@ describe('the bridge of the main window', () => {
       .toEqual(['columbina:forget-attachments', ['attachment-1', 'attachment-2']]);
     expect(handed('keepAttachments', ['attachment-1', { then: 'more' }])).toEqual(['columbina:keep-attachments', ['attachment-1']]);
     expect(handed('keepAttachments', 'attachment-1')).toEqual(['columbina:keep-attachments', []]);
+    // Asked now only where the page says so in so many words.
+    expect(handed('updates', { ...more, now: true })).toEqual(['columbina:updates', { now: true }]);
+    for (const asked of [{ now: 'yes' }, { now: 1 }, {}, undefined]) expect(handed('updates', asked)).toEqual(['columbina:updates', { now: false }]);
     // A call that is made with nothing asks all the same, and the shell says what is missing.
     for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'chooseModel']) {
       const [, given] = handed(call) as [string, Record<string, unknown>];
       expect(Object.values(given).every(value => value === undefined), call).toBe(true);
     }
     // What needs no word of the page is asked for without one.
-    for (const call of ['getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services']) {
+    for (const call of ['getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services', 'about']) {
       expect(handed(call, more), call).toHaveLength(1);
     }
   });

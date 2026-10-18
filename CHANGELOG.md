@@ -11,6 +11,11 @@ change what was there before.
   sent they are copied into `.columbina/attachments/` of the project, which a `.gitignore`
   keeps out of git, and the message ends with a line for each file that says where it is.
   The page knows the files by an id, their names and sizes, and never by where they are.
+- A package of the desktop application looks for a newer version of itself a few seconds
+  after it starts and once a day after that, and asks GitHub for nothing but the list of
+  releases. A button at the end of the bar of the window names a version that is out and
+  opens the page of its release. The settings show the version that runs, look again when
+  asked, skip a version, and stop the looking.
 
 ## 0.1.1 (2026-10-16)
 

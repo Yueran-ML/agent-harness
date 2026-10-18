@@ -94,6 +94,14 @@ The interface speaks English, Chinese and Japanese and follows the language of t
 system unless another is chosen in the settings. It has a dark theme and a light one,
 and three sizes of type.
 
+A package looks for a newer version of itself a few seconds after it starts and once a day
+after that. It asks GitHub for the list of releases of Columbina and sends nothing else.
+Where a newer version is out, a button at the end of the bar of the window names it and
+opens the page of its release, from which it is downloaded: the application does not
+replace itself. The settings show the version that runs and what the last look found. They
+look again when asked, skip a version, and stop the looking. An application that runs from
+source does not look.
+
 The first start begins with a short film. Any key or a click leaves it, and the starts
 after that go without it unless the settings say that it is to play every time.
 
@@ -233,6 +241,10 @@ protocol, and the interface cannot read it. What the service process logs goes t
   program writes, each line at most 2 MB, and that it has ended. A sign-in is stopped by
   closing its input, and ended with what it started where it has not ended three seconds
   later; it is stopped when the page is gone and when the window is closed.
+- A package asks GitHub for the list of releases of Columbina, and that is the only request
+  of the shell itself to the network. It keeps an answer for an hour unless the user asks
+  again, and tells the page only the newer version and the page of its release, whose
+  address the shell writes itself.
 - The page loads only files of the application. Its content security policy allows no
   connection to the network, no frame and no script from elsewhere. Navigation and new
   windows are blocked. A link is opened in the browser of the system, after its full

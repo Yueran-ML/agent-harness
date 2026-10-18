@@ -451,6 +451,16 @@ export const zhCN: Messages = {
     playOpeningNow: '现在播放开场',
     about: '关于',
 
+    updates: {
+      title: '更新',
+      told: (version: string) => `新版本 ${version}`,
+      toldInFull: (version: string) => `Columbina ${version} 已发布，打开下载页`,
+      open: '打开下载页',
+      skip: '跳过这个版本',
+      checking: '启动时和每天检查一次新版本',
+      now: '现在检查',
+    },
+
     confirmFullAccess: '允许完全访问？',
     confirmWrite: '允许 Columbina 修改文件？',
     allowFullAccess: '允许完全访问',
@@ -514,6 +524,20 @@ export const zhCN: Messages = {
     noChanges: '这个任务没有改动任何文件。',
     about: (version: string, protocol: number) => `Columbina ${version}，协议版本 ${protocol}。`,
     logKept: '服务进程出的问题会写进这台电脑上的一份日志。',
+
+    updates: {
+      version: (version: string) => `桌面版 ${version}。`,
+      fromSource: '从源码运行时不检查新版本。',
+      asking: '正在向 GitHub 查询最新版本。',
+      newer: (version: string) => `Columbina ${version} 已发布。`,
+      newest: '已是最新版本。',
+      failed: {
+        network: '连不上 GitHub。',
+        busy: 'GitHub 暂时不让查询，过一会儿再试。',
+        unreadable: '没能从 GitHub 拿到发布列表。',
+      },
+      sent: '检查时只向 GitHub 请求 Columbina 的发布列表，不发送其他内容。',
+    },
     openingUnavailable: '开场无法播放。',
 
     key: {

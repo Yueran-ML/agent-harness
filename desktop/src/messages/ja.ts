@@ -498,6 +498,16 @@ export const ja: Messages = {
     playOpeningNow: '今すぐオープニングを再生',
     about: 'このアプリについて',
 
+    updates: {
+      title: 'アップデート',
+      told: (version: string) => `新バージョン ${version}`,
+      toldInFull: (version: string) => `Columbina ${version} が公開されています。ダウンロードページを開きます`,
+      open: 'ダウンロードページを開く',
+      skip: 'このバージョンをスキップ',
+      checking: '起動時と 1 日 1 回、新しいバージョンを確認する',
+      now: '今すぐ確認',
+    },
+
     confirmFullAccess: 'フルアクセスを許可しますか？',
     confirmWrite: 'Columbina にファイルの変更を許可しますか？',
     allowFullAccess: 'フルアクセスを許可',
@@ -562,6 +572,20 @@ export const ja: Messages = {
     noChanges: 'このタスクでは、ファイルは変更されていません。',
     about: (version: string, protocol: number) => `Columbina ${version}、プロトコル ${protocol}。`,
     logKept: 'サービスプロセスで起きた問題は、このコンピューター上のログに書き込まれます。',
+
+    updates: {
+      version: (version: string) => `デスクトップ版 ${version}。`,
+      fromSource: 'ソースから実行しているときは、新しいバージョンを確認しません。',
+      asking: 'GitHub に最新バージョンを問い合わせています。',
+      newer: (version: string) => `Columbina ${version} が公開されています。`,
+      newest: '最新バージョンです。',
+      failed: {
+        network: 'GitHub に接続できませんでした。',
+        busy: 'GitHub が今は問い合わせを受け付けていません。しばらくしてからもう一度お試しください。',
+        unreadable: 'GitHub からリリース一覧を取得できませんでした。',
+      },
+      sent: '確認では GitHub に Columbina のリリース一覧を問い合わせるだけで、ほかには何も送りません。',
+    },
     openingUnavailable: 'オープニングを再生できません。',
 
     key: {

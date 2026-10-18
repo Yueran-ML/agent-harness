@@ -539,6 +539,18 @@ export const en = {
     playOpeningNow: 'Play the opening now',
     about: 'About',
 
+    /** Newer versions of the application. */
+    updates: {
+      title: 'Updates',
+      /** The button in the bar of the window, short, and what it does, in full. */
+      told: (version: string) => `Update ${version}`,
+      toldInFull: (version: string) => `Columbina ${version} is out. Open the page to download it`,
+      open: 'Open the download page',
+      skip: 'Skip this version',
+      checking: 'Look for a newer version at start and once a day',
+      now: 'Check now',
+    },
+
     confirmFullAccess: 'Allow full access?',
     confirmWrite: 'Let Columbina change files?',
     allowFullAccess: 'Allow full access',
@@ -609,6 +621,21 @@ export const en = {
     noChanges: 'No file was changed in this task.',
     about: (version: string, protocol: number) => `Columbina ${version}, protocol ${protocol}.`,
     logKept: 'What goes wrong in the service process is written to a log on this computer.',
+
+    /** Newer versions of the application. */
+    updates: {
+      version: (version: string) => `Desktop application ${version}.`,
+      fromSource: 'Run from source, the application does not look for newer versions.',
+      asking: 'Asking GitHub for the newest version.',
+      newer: (version: string) => `Columbina ${version} is out.`,
+      newest: 'This is the newest version.',
+      failed: {
+        network: 'GitHub could not be reached.',
+        busy: 'GitHub turned the question away for now. Try again in a while.',
+        unreadable: 'No list of releases came from GitHub.',
+      },
+      sent: 'The check asks GitHub for the list of releases of Columbina, and sends nothing else.',
+    },
     openingUnavailable: 'The opening cannot be played.',
 
     /** The window in which a service is chosen and its key is given. */

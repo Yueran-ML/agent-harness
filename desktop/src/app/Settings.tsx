@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { FileText, KeyRound } from 'lucide-react';
+import { Download, FileText, KeyRound } from 'lucide-react';
 import { MusicSettings, type BackgroundMusic } from '../BackgroundMusic';
 import { called, changedBeyondKey } from '../key/form';
 import type { Hello } from '../protocol';
@@ -7,6 +7,7 @@ import { sizes, type SizeId } from '../size';
 import { themes, type ThemeId } from '../themes';
 import type { GitHub } from '../useGitHub';
 import type { ServiceModels } from '../useModels';
+import type { Updates } from '../useUpdates';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { GitHubAccount } from './GitHubSignIn';
@@ -20,7 +21,8 @@ export type SettingsPart = 'appearance' | 'model' | 'account' | 'permissions';
 
 export function Settings({
   workspace, part, theme, onTheme, size, onSize, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
-  tellMe, onTellMe, music, github, models, onOpen, onChooseModel, onCommand, onClose,
+  tellMe, onTellMe, music, github, models, updates, checkingUpdates, onCheckingUpdates, skipped, onSkip, onOpen, onChooseModel,
+  onCommand, onClose,
 }: {
   workspace: Workspace;
   part: SettingsPart;
@@ -41,6 +43,14 @@ export function Settings({
   github: GitHub;
   /** The models of the services, as the page knows them. */
   models: ServiceModels;
+  /** Newer versions of the application, as the page knows them. */
+  updates: Updates;
+  /** Whether the application looks for a newer version by itself. */
+  checkingUpdates: boolean;
+  onCheckingUpdates: (checking: boolean) => void;
+  /** The version that the user said not to be told of. */
+  skipped: string | null;
+  onSkip: (version: string) => void;
   /** Open a page of the web in the browser of the system. */
   onOpen: (url: string) => void;
   /** Have the service process ask another model. */
@@ -104,6 +114,7 @@ export function Settings({
   }, []);
   const at = (name: SettingsPart) => (part === name ? start : undefined);
 
+  const { about, found } = updates;
   const mode = status?.sandbox?.mode ?? null;
   const policy = status?.approval ?? null;
   const current = presetOf(mode, policy);
@@ -262,6 +273,49 @@ export function Settings({
         </label>
       </div>
       <p className="caption">{words.hint.tellMe}</p>
+    </section>
+
+    <section className="setting" data-test="updates">
+      <h3>{words.label.updates.title}</h3>
+      {about && <p className="setting-now" data-test="desktop-version">{words.hint.updates.version(about.version)}</p>}
+      {about && !about.checks && <p className="caption">{words.hint.updates.fromSource}</p>}
+      {about?.checks && <>
+        <div className="setting-row">
+          <p className="caption setting-grow" role="status" data-test="update-state">
+            {updates.asking ? words.hint.updates.asking
+              : found === null ? ''
+                : found.newer ? words.hint.updates.newer(found.newer.version)
+                  : found.failure ? words.hint.updates.failed[found.failure] : words.hint.updates.newest}
+          </p>
+          {!updates.asking && found?.newer && <>
+            <button type="button" className="btn btn-main" onClick={() => onOpen(found.newer!.page)} data-test="update-open">
+              <Download size={14} aria-hidden="true" />{words.label.updates.open}
+            </button>
+            {found.newer.version !== skipped && <button
+              type="button"
+              className="btn btn-quiet"
+              onClick={() => onSkip(found.newer!.version)}
+              data-test="update-skip"
+            >
+              {words.label.updates.skip}
+            </button>}
+          </>}
+        </div>
+        {/* A version that was found stays offered. That the last look failed is said beneath it. */}
+        {!updates.asking && found?.newer && found.failure && <p className="caption" data-test="update-failed">
+          {words.hint.updates.failed[found.failure]}
+        </p>}
+        <div className="setting-row">
+          <label className="check setting-grow">
+            <input type="checkbox" checked={checkingUpdates} onChange={event => onCheckingUpdates(event.target.checked)} data-test="check-updates" />
+            {words.label.updates.checking}
+          </label>
+          <button type="button" className="btn" disabled={updates.asking} onClick={updates.checkNow} data-test="check-now">
+            {words.label.updates.now}
+          </button>
+        </div>
+        <p className="caption">{words.hint.updates.sent}</p>
+      </>}
     </section>
 
     <section className="setting" data-test="about">

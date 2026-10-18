@@ -29,6 +29,8 @@ interface SetupRun {
 interface System {
   platform?: 'win32' | 'darwin' | 'linux';
   packaged?: boolean;
+  /** The version of the application, 0.1.2 unless it is named. */
+  version?: string;
   /** What the login shell of the user writes when it is asked for its PATH. Null is a shell that never ends. */
   loginShell?: string | null;
 }
@@ -62,6 +64,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const absent = new Set<string>();
   const app = Object.assign(new EventEmitter(), {
     setName: vi.fn(), setAppUserModelId: vi.fn(), isPackaged: system.packaged ?? false,
+    getVersion: () => system.version ?? '0.1.2',
     dock: { setIcon: vi.fn() },
     whenReady: () => Promise.resolve(), quit: vi.fn(),
     getPath: vi.fn((name: string) => {
@@ -217,11 +220,16 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     constructor(public options: unknown) { super(); notifications.push(this); }
   }
   const world = { openExternal: vi.fn(), showItemInFolder: vi.fn() };
+  // The network, which answers nothing unless a test says what, and the sessions of their own that
+  // the shell asks it through, by the names of their partitions.
+  const net = { fetch: vi.fn(async (_address: string, _init?: any): Promise<any> => { throw new Error('No network in the tests.'); }) };
+  const partitions: string[] = [];
+  const session = { fromPartition: vi.fn((name: string) => { partitions.push(name); return { fetch: net.fetch }; }) };
   const writeFileSync = vi.fn((file: string, text: string) => { files.set(path.resolve(file), String(text)); });
   const menu = { buildFromTemplate: vi.fn((template: unknown[]) => ({ template })), setApplicationMenu: vi.fn() };
   const modules: Record<string, unknown> = {
     electron: {
-      app, BrowserWindow: TestWindow, Menu: menu, dialog, shell: world, Notification: TestNotification,
+      app, BrowserWindow: TestWindow, Menu: menu, dialog, shell: world, Notification: TestNotification, session,
       ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => handlers.set(name, callback), on: vi.fn() },
     },
     'node:child_process': { spawn },
@@ -262,7 +270,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     require: (name: string) => { if (!(name in modules)) throw new Error(`Unexpected module: ${name}`); return modules[name]; },
     __dirname: path.dirname(mainPath), process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources },
     // The clock of the tests, so that a test that sets it sets it for the shell too.
-    URL, setTimeout, clearTimeout, Date,
+    URL, setTimeout, clearTimeout, Date, AbortSignal,
   }, { filename: mainPath });
   await Promise.resolve();
   const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
@@ -279,7 +287,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     { sender: keyWindow().webContents, senderFrame: keyWindow().webContents.mainFrame }, ...args);
   return {
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, drive, file, sent,
-    dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world,
+    dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
+    partitions,
     setups, setup, keyWindow, asKeyWindow, menu, logins, signIns, lineReaders,
     live: () => live, peakLive: () => peakLive,
   };
@@ -1914,5 +1923,170 @@ describe('signing in to GitHub', () => {
     }
     expect(shell.signIns).toEqual([]);
     expect(shell.setups).toEqual([]);
+  });
+});
+
+describe('newer versions of the application', () => {
+  const RELEASES = 'https://api.github.com/repos/Yueran-ML/agent-harness/releases?per_page=30';
+  const pageOf = (version: string) => `https://github.com/Yueran-ML/agent-harness/releases/tag/desktop-v${version}`;
+  /** A release as GitHub lists it: published, and not one that is tried before it is released. */
+  const release = (tag: string, given: Record<string, unknown> = {}) => ({ tag_name: tag, draft: false, prerelease: false, ...given });
+  /** What GitHub answers, with a status, and a body as it is sent. */
+  const answered = (body: unknown, status = 200) => ({
+    status, ok: status >= 200 && status < 300, text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
+  });
+  const none = { newer: null, page: null, failure: null };
+  /** A package whose GitHub lists these releases. */
+  const packageWith = async (releases: unknown[], system: System = {}) => {
+    const shell = await shellHarness(undefined, {}, { packaged: true, ...system });
+    shell.net.fetch.mockResolvedValue(answered(releases));
+    return shell;
+  };
+
+  it('says the version that runs, and looks for newer ones only in a package', async () => {
+    const source = await shellHarness();
+    expect(source.invoke('about')).toEqual({ version: '0.1.2', checks: false });
+    await expect(source.invoke('updates', { now: true })).rejects.toThrow('does not look for newer versions');
+    expect(source.net.fetch).not.toHaveBeenCalled();
+    const packaged = await packageWith([], { version: '0.3.1' });
+    expect(packaged.invoke('about')).toEqual({ version: '0.3.1', checks: true });
+  });
+
+  it('asks where the environment names from source, which the walks through the window use, and only there', async () => {
+    const feed = 'http://127.0.0.1:8123/releases';
+    const named = await shellHarness(undefined, { COLUMBINA_UPDATE_FEED: feed });
+    named.net.fetch.mockResolvedValue(answered([release('desktop-v0.1.3')]));
+    expect(named.invoke('about')).toEqual({ version: '0.1.2', checks: true });
+    await expect(named.invoke('updates', { now: false })).resolves.toEqual({ newer: '0.1.3', page: pageOf('0.1.3'), failure: null });
+    expect(named.net.fetch.mock.calls[0][0]).toBe(feed);
+    for (const other of ['', 'file:///C:/releases.json', 'ftp://127.0.0.1/releases', 'http://', 'http://127.0.0.1/a b', 'releases']) {
+      const shell = await shellHarness(undefined, { COLUMBINA_UPDATE_FEED: other });
+      expect(shell.invoke('about')).toEqual({ version: '0.1.2', checks: false });
+    }
+    // A package asks GitHub, whatever the environment names.
+    const packaged = await shellHarness(undefined, { COLUMBINA_UPDATE_FEED: feed }, { packaged: true });
+    packaged.net.fetch.mockResolvedValue(answered([]));
+    await packaged.invoke('updates', { now: false });
+    expect(packaged.net.fetch.mock.calls[0][0]).toBe(RELEASES);
+  });
+
+  it('asks GitHub for its releases, and tells of the newest release of the application that comes after the one that runs', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const shell = await packageWith([
+      release('v0.9.5'), release('desktop-v0.1.3'), release('desktop-v0.2.0', { draft: true }),
+      release('desktop-v0.3.5', { prerelease: true }), release('desktop-v0.1.4-beta'), release('desktop-v0.1.10'),
+      null, 'desktop-v9.9.9', release('desktop-v0.1.11', { draft: null }), { tag_name: 'desktop-v3.0.0' },
+      { tag_name: 5, draft: false, prerelease: false }, release('desktop-v1234567.0.0'), release('Desktop-v0.3.0'),
+      release(' desktop-v0.4.0'), release('desktop-v0.5'), release('desktop-0.6.0'),
+    ]);
+    await expect(shell.invoke('updates', { now: false })).resolves.toEqual({ newer: '0.1.10', page: pageOf('0.1.10'), failure: null });
+    expect(shell.net.fetch).toHaveBeenCalledTimes(1);
+    const [address, init] = shell.net.fetch.mock.calls[0];
+    expect(address).toBe(RELEASES);
+    expect(init.headers).toEqual({ Accept: 'application/vnd.github+json', 'User-Agent': 'Columbina/0.1.2' });
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(timeout.mock.calls).toEqual([[15_000]]);
+    // Through a session of its own, kept in memory only: that of the window lets nothing out.
+    // It is made once.
+    await shell.invoke('updates', { now: true });
+    expect(shell.partitions).toEqual(['columbina-releases']);
+  });
+
+  it('goes by the numbers of a version, the first of them first', async () => {
+    const newestOf = async (tags: string[], version = '0.1.2') => {
+      const shell = await packageWith(tags.map(tag => release(tag)), { version });
+      return ((await shell.invoke('updates', { now: false })) as { newer: string | null }).newer;
+    };
+    expect(await newestOf(['desktop-v0.9.9', 'desktop-v1.0.0', 'desktop-v0.10.0'])).toBe('1.0.0');
+    expect(await newestOf(['desktop-v0.2.0', 'desktop-v0.10.0', 'desktop-v0.9.0'])).toBe('0.10.0');
+    expect(await newestOf(['desktop-v0.1.3', 'desktop-v0.1.20', 'desktop-v0.1.4'])).toBe('0.1.20');
+    expect(await newestOf(['desktop-v0.2.0'])).toBe('0.2.0');
+    expect(await newestOf(['desktop-v1.0.0'])).toBe('1.0.0');
+    // A release that is the one that runs, or comes before it, is none to tell of.
+    expect(await newestOf(['desktop-v0.1.2'])).toBeNull();
+    expect(await newestOf(['desktop-v0.1.1', 'desktop-v0.0.9'])).toBeNull();
+    expect(await newestOf(['desktop-v0.9.9', 'desktop-v0.10.0'], '1.0.0')).toBeNull();
+    expect(await newestOf(['desktop-v1.0.0'], '1.0.1')).toBeNull();
+    expect(await newestOf([])).toBeNull();
+    // A version that runs and is no release, as one from source can be, has none after it.
+    expect(await newestOf(['desktop-v0.1.3'], '0.1.2-dev')).toBeNull();
+  });
+
+  it('says why it is not known: GitHub was not reached, turned the question away, or gave no list', async () => {
+    const said = async (answer: () => Promise<unknown>) => {
+      const shell = await packageWith([]);
+      shell.net.fetch.mockImplementation(answer);
+      return ((await shell.invoke('updates', { now: false })) as { failure: string | null }).failure;
+    };
+    expect(await said(async () => { throw new Error('getaddrinfo ENOTFOUND api.github.com'); })).toBe('network');
+    expect(await said(async () => ({ status: 200, ok: true, text: async () => { throw new Error('The connection was reset.'); } }))).toBe('network');
+    expect(await said(async () => answered({ message: 'API rate limit exceeded' }, 403))).toBe('busy');
+    expect(await said(async () => answered({ message: 'Too many requests' }, 429))).toBe('busy');
+    expect(await said(async () => answered({ message: 'Not Found' }, 404))).toBe('unreadable');
+    expect(await said(async () => answered('', 500))).toBe('unreadable');
+    // What comes with a status of failure is not read, though it were a list.
+    expect(await said(async () => answered([release('desktop-v0.1.3')], 500))).toBe('unreadable');
+    expect(await said(async () => answered('<html>Unicorn!</html>'))).toBe('unreadable');
+    expect(await said(async () => answered({ message: 'Moved' }))).toBe('unreadable');
+    expect(await said(async () => answered('null'))).toBe('unreadable');
+    // A list beyond what is read is none. One of that length is read.
+    const most = 4 * 1024 * 1024;
+    expect(await said(async () => answered(`[${' '.repeat(most - 1)}]`))).toBe('unreadable');
+    expect(await said(async () => answered(`[${' '.repeat(most - 2)}]`))).toBeNull();
+  });
+
+  it('takes an answer of the last hour as it is, unless it is asked now, and asks again after a failure', async () => {
+    vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
+    try {
+      const shell = await packageWith([release('desktop-v0.1.3')]);
+      const found = { newer: '0.1.3', page: pageOf('0.1.3'), failure: null };
+      await expect(shell.invoke('updates', { now: false })).resolves.toEqual(found);
+      shell.net.fetch.mockResolvedValue(answered([release('desktop-v0.1.4')]));
+      vi.setSystemTime(1_000_000 + 60 * 60_000 - 1);
+      await expect(shell.invoke('updates', { now: false })).resolves.toEqual(found);
+      await expect(shell.invoke('updates', {})).resolves.toEqual(found);
+      expect(shell.net.fetch).toHaveBeenCalledTimes(1);
+      // Asked now, GitHub is asked now, and its answer is the one that is kept from then on.
+      await expect(shell.invoke('updates', { now: true })).resolves.toEqual({ newer: '0.1.4', page: pageOf('0.1.4'), failure: null });
+      expect(shell.net.fetch).toHaveBeenCalledTimes(2);
+      vi.setSystemTime(1_000_000 + 2 * 60 * 60_000 - 2);
+      await shell.invoke('updates', { now: false });
+      expect(shell.net.fetch).toHaveBeenCalledTimes(2);
+      vi.setSystemTime(1_000_000 + 2 * 60 * 60_000);
+      shell.net.fetch.mockResolvedValue(answered([]));
+      await expect(shell.invoke('updates', { now: false })).resolves.toEqual(none);
+      expect(shell.net.fetch).toHaveBeenCalledTimes(3);
+      // What failed is not kept: the next question asks GitHub again.
+      shell.net.fetch.mockRejectedValue(new Error('offline'));
+      await expect(shell.invoke('updates', { now: true })).resolves.toEqual({ ...none, failure: 'network' });
+      shell.net.fetch.mockResolvedValue(answered([release('desktop-v0.1.5')]));
+      await expect(shell.invoke('updates', { now: false })).resolves.toEqual({ newer: '0.1.5', page: pageOf('0.1.5'), failure: null });
+      expect(shell.net.fetch).toHaveBeenCalledTimes(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('asks one question at a time', async () => {
+    const shell = await packageWith([]);
+    let answer!: (value: unknown) => void;
+    shell.net.fetch.mockReturnValueOnce(new Promise(resolve => { answer = resolve; }));
+    const first = shell.invoke('updates', { now: false });
+    const second = shell.invoke('updates', { now: true });
+    expect(shell.net.fetch).toHaveBeenCalledTimes(1);
+    answer(answered([release('desktop-v0.1.3')]));
+    const found = { newer: '0.1.3', page: pageOf('0.1.3'), failure: null };
+    await expect(first).resolves.toEqual(found);
+    await expect(second).resolves.toEqual(found);
+    // Once it is answered, the next question that is asked now asks GitHub again.
+    await shell.invoke('updates', { now: true });
+    expect(shell.net.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('answers only the page of the application', async () => {
+    const shell = await packageWith([release('desktop-v0.1.3')]);
+    expect(() => shell.handlers.get('columbina:about')!(shell.unrelated)).toThrow('IPC sender');
+    await expect((async () => shell.handlers.get('columbina:updates')!(shell.unrelated, { now: true }))()).rejects.toThrow('IPC sender');
+    expect(shell.net.fetch).not.toHaveBeenCalled();
   });
 });

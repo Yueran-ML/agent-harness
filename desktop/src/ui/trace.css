@@ -1,0 +1,421 @@
+/* --- The trace of a task: its steps side by side, the switches and the search, and its rows. */
+
+/* How the task is shown, in the middle of the title bar. */
+.titlebar-views {
+  flex: none;
+  display: inline-flex;
+  margin: 0 auto;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-views button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 var(--s3);
+  border-radius: 999px;
+  color: var(--moon-2);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.titlebar-views button:hover {
+  color: var(--moon-0);
+}
+
+.titlebar-views button[aria-pressed='true'] {
+  background: var(--ink-4);
+  color: var(--moon-0);
+}
+
+/* In a narrow window the switch keeps its signs, and says the rest when it is pointed at. */
+@media (max-width: 720px) {
+  .titlebar-views button {
+    padding: 0 var(--s2);
+  }
+
+  .titlebar-views button span {
+    display: none;
+  }
+}
+
+.trace-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 1180px);
+  margin: 0 auto;
+  padding: var(--s3) var(--s5) 0;
+  gap: var(--s3);
+}
+
+.trace-empty {
+  margin: auto;
+}
+
+/* The steps side by side: it scrolls across where there are more than it has room for. */
+.trace-overview {
+  flex: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: var(--ink-1);
+}
+
+.trace-overview svg {
+  display: block;
+  outline: none;
+}
+
+.trace-overview svg:focus-visible {
+  box-shadow: 0 0 0 2px var(--focus);
+  border-radius: 4px;
+}
+
+.trace-column {
+  cursor: pointer;
+}
+
+.trace-hit {
+  fill: transparent;
+}
+
+.trace-column:hover .trace-hit,
+.trace-column[data-at] .trace-hit {
+  fill: var(--line-strong);
+}
+
+.trace-cell[data-lane='input'] {
+  fill: var(--ok);
+}
+
+.trace-cell[data-lane='model'] {
+  fill: var(--accent);
+}
+
+.trace-cell[data-lane='model'][data-failed] {
+  stroke: var(--warn);
+  stroke-width: 1.5;
+}
+
+.trace-cell[data-lane='tool'] {
+  fill: var(--warn);
+}
+
+.trace-cell[data-lane='tool'][data-state='failed'],
+.trace-cell[data-lane='tool'][data-state='refused'] {
+  fill: var(--bad);
+}
+
+.trace-cell[data-lane='tool'][data-state='cut'] {
+  fill: var(--moon-3);
+}
+
+.trace-cell[data-lane='tool'][data-state='waiting'] {
+  fill: transparent;
+  stroke: var(--warn);
+  stroke-width: 1.5;
+}
+
+.trace-cell[data-lane='tool'][data-state='running'] {
+  fill: var(--accent-strong);
+}
+
+/* The switches of the kinds, and the search. */
+.trace-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.trace-gap {
+  flex: 1;
+}
+
+.chip {
+  height: 26px;
+  padding: 0 var(--s3);
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--moon-2);
+  font-size: var(--text-caption);
+  white-space: nowrap;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease), border-color var(--quick) var(--ease);
+}
+
+.chip:hover {
+  color: var(--moon-0);
+}
+
+.chip[aria-pressed='true'] {
+  background: var(--accent-wash);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--moon-0);
+}
+
+.chip[data-tone='bad'][aria-pressed='true'] {
+  background: var(--bad-wash);
+  border-color: color-mix(in srgb, var(--bad) 45%, transparent);
+  color: var(--bad);
+}
+
+.trace-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--s2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r1);
+  background: var(--ink-1);
+  color: var(--moon-2);
+}
+
+.trace-search .field {
+  width: 220px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: var(--text-caption);
+}
+
+.trace-search:focus-within {
+  border-color: var(--focus);
+}
+
+/* The box around the search says where the keyboard is: the field in it says nothing of its own. */
+.trace-search .field:focus,
+.trace-search .field:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.trace-count {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The rows, turn by turn. */
+.trace-scroll-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.trace-scroll {
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.trace-list {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: var(--s5);
+}
+
+.trace-turn {
+  display: flex;
+  flex-direction: column;
+}
+
+.trace-turn-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 34px;
+  padding: 0 var(--s2);
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.trace-turn-name {
+  font-weight: 600;
+  color: var(--moon-0);
+}
+
+.trace-chevron {
+  flex: none;
+  color: var(--moon-3);
+  transition: transform var(--quick) var(--ease);
+}
+
+.trace-turn-head[aria-expanded='true'] .trace-chevron,
+.trace-row[aria-expanded='true'] .trace-chevron {
+  transform: rotate(90deg);
+}
+
+.trace-item {
+  /* A row that is out of sight costs nothing to lay out. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 34px;
+  border-bottom: 1px solid var(--line);
+}
+
+.trace-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: 34px;
+  padding: 0 var(--s2);
+  text-align: left;
+  color: var(--moon-1);
+  transition: background var(--quick) var(--ease);
+}
+
+.trace-row:hover,
+.trace-row[data-marked] {
+  background: var(--ink-2);
+}
+
+.trace-row[data-found] {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.trace-tag {
+  flex: none;
+  min-width: 44px;
+  padding: 1px 6px;
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  text-align: center;
+  background: var(--ink-3);
+  color: var(--moon-2);
+}
+
+.trace-row[data-kind='input'] .trace-tag {
+  background: var(--ok-wash);
+  color: var(--ok);
+}
+
+.trace-row[data-kind='reply'] .trace-tag,
+.trace-row[data-kind='thinking'] .trace-tag {
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+
+.trace-row[data-kind='tool'] .trace-tag {
+  background: var(--warn-wash);
+  color: var(--warn);
+}
+
+.trace-row[data-wrong] .trace-tag {
+  background: var(--bad-wash);
+  color: var(--bad);
+}
+
+.trace-row[data-kind='thinking'] .trace-main,
+.trace-main[data-quiet] {
+  color: var(--moon-2);
+}
+
+.trace-row[data-wrong] .trace-main,
+.trace-row[data-wrong] .trace-result {
+  color: var(--bad);
+}
+
+.trace-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.trace-main > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-name {
+  flex: none;
+  color: var(--moon-0);
+}
+
+.trace-args,
+.trace-result {
+  min-width: 0;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.trace-args {
+  flex: 0 1 auto;
+}
+
+.trace-result {
+  flex: 1 1 0;
+}
+
+.trace-meta {
+  flex: none;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-row[data-state='waiting'] .trace-meta,
+.trace-row[data-state='running'] .trace-meta {
+  color: var(--accent);
+}
+
+.trace-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2) var(--s2) var(--s3) calc(var(--s2) + 12px + var(--s2));
+}
+
+.trace-block-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.trace-block .block {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* In a narrow window what a row took stands under what it says. */
+@media (max-width: 760px) {
+  .trace-wrap {
+    padding: var(--s2) var(--s3) 0;
+  }
+
+  .trace-row {
+    flex-wrap: wrap;
+    padding: var(--s1) var(--s2);
+  }
+
+  .trace-meta {
+    flex-basis: 100%;
+    padding-left: calc(12px + var(--s2) + 44px + var(--s2));
+  }
+
+  .trace-search .field {
+    width: 140px;
+  }
+}

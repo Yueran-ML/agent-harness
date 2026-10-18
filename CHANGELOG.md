@@ -34,6 +34,13 @@ change what was there before.
 - The desktop application writes what is chosen through the setup program one write at a time,
   so that a model and a level that are chosen one after the other are both kept. Where a model
   or a level that is chosen in the settings is in use and not kept, the settings say so.
+- The line under the field of the desktop application says how far the task has come: its turns
+  and steps, how many tokens the model wrote a second on average, and the tokens of all its
+  requests with what came from the cache. A task can be shown as its trace, with a switch in the
+  bar of the window or Ctrl+J: its steps side by side, and turn by turn what was said, each answer
+  with its time and tokens, and each call with its arguments, result and time. Rows can be left
+  out by their kind or looked through, only what went wrong can be shown, and a row opens to
+  show all that it holds.
 - In the desktop application the panel of the model and that of the levels open below their
   button where there is too little room above it and more below, and the other way round. They
   are no higher than the room where they open, and their lists scroll, so that the head of a

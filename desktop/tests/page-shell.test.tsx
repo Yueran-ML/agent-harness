@@ -14,6 +14,7 @@ import { projectEvents } from '../src/state';
 import type { Workspace } from '../src/useWorkspace';
 import {
   begin, call, end, gitHubWith, likeABrowser, log, modelsWith, reply, result, service, statusOf, user, workspaceWith,
+  type Written,
 } from './mounted';
 
 beforeEach(likeABrowser);
@@ -43,9 +44,9 @@ const fullAccess = statusOf({ sandbox: { mode: 'danger-full-access', strength: '
 const notConfined = 'Commands are not confined on this computer. A command that runs can do whatever you can do.';
 
 describe('the status line', () => {
-  const drawn = (workspace: Workspace) => {
+  const drawn = (workspace: Workspace, locale = 'en') => {
     const calls = { onPermissions: vi.fn(), onDetails: vi.fn() };
-    render(<StatusLine workspace={workspace} {...calls} />);
+    render(<StatusLine workspace={workspace} locale={locale} {...calls} />);
     return calls;
   };
   const confined = (strength: string) => statusOf({ sandbox: { mode: 'workspace-write', strength } });
@@ -146,6 +147,74 @@ describe('the status line', () => {
     expect(filled / whole).toBeCloseTo(0.25, 10);
     fireEvent.click(shown);
     expect(counted(calls)).toEqual({ onPermissions: 0, onDetails: 1 });
+  });
+
+  describe('how far the task has come', () => {
+    /** A step of the model that read and wrote so much, and took a tenth of a second, as the log is written. */
+    const step = (turn: number, number: number, input: number, output: number, cached = 0): Written[] => [
+      ['step/start', { turn, step: number }],
+      ['assistant/message', {
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
+        usage: { input_tokens: input, output_tokens: output, cache_read_tokens: cached, cache_write_tokens: 0 },
+        finish_reason: 'stop',
+      }],
+    ];
+    const worked = log(
+      begin(1), user('Fix the parser.'), ...step(1, 1, 1_000, 30, 9_000), ...step(1, 2, 2_000, 10, 980_800), end(1),
+      begin(2), user('Now the tests.'), ...step(2, 1, 200, 60, 7_000), end(2),
+    );
+    const stats = () => one('status-stats');
+
+    it('says the turns and steps, how fast the model wrote, the tokens and what came from the cache', () => {
+      const calls = drawn(workspaceWith({ events: worked }));
+      // Each answer took a tenth of a second: 100 tokens in three tenths.
+      expect(stats().querySelector('.status-stats-run')!.textContent).toBe('2 turns · 3 steps · 333 tok/s');
+      // A million read and 100 written. 996,800 read from the cache is 99.68%, said as 99.6: what
+      // was nearly all read from the cache is not said to be more than it was.
+      expect(stats().querySelector('.status-stats-spent')!.textContent).toBe('1M tokens · 99.6% cached');
+      expect(stats().getAttribute('title')).toBe(
+        '2 turns and 3 steps. The model wrote 333 tokens a second on average, from when a request was made to when '
+        + 'its answer was in. 1,000,100 tokens in all: 1,000,000 read, 996,800 of them from the cache, and 100 written.',
+      );
+      expect(stats().getAttribute('aria-label')).toBe(stats().getAttribute('title'));
+      fireEvent.click(stats());
+      expect(counted(calls)).toEqual({ onPermissions: 0, onDetails: 1 });
+    });
+
+    it('says the numbers as the language of the page writes them', () => {
+      drawn(workspaceWith({ events: worked }), 'zh-CN');
+      expect(stats().querySelector('.status-stats-spent')!.textContent).toBe('100万 tokens · 99.6% cached');
+      cleanup();
+      drawn(workspaceWith({ events: worked }), 'de');
+      expect(stats().querySelector('.status-stats-spent')!.textContent).toBe('1 Mio. tokens · 99,6% cached');
+    });
+
+    it('leaves out what the log does not tell', () => {
+      // One turn, and one step whose answer was cut short: nothing tells how fast the model wrote.
+      drawn(workspaceWith({ events: log(begin(1), ['step/start', { turn: 1, step: 1 }], ['assistant/message', {
+        message: { role: 'assistant', content: [] }, usage: null, finish_reason: null,
+      }]) }));
+      expect(stats().querySelector('.status-stats-run')!.textContent).toBe('1 turn · 1 step');
+      expect(stats().querySelector('.status-stats-spent')!.textContent).toBe('0 tokens');
+      expect(stats().getAttribute('title')).toBe('1 turn and 1 step. 0 tokens in all: 0 read, and 0 written.');
+    });
+
+    it('says nothing of a task that has not begun, or of no task', () => {
+      drawn(workspaceWith({ events: log(user('Waiting.')) }));
+      expect(marked('status-stats')).toEqual([]);
+      cleanup();
+      drawn(workspaceWith({ events: worked, hasProject: false }));
+      expect(marked('status-stats')).toEqual([]);
+    });
+
+    it('says how fast the model wrote once, however often the line is drawn again', () => {
+      // What the projection holds is read as it is: no turn is counted twice.
+      const workspace = workspaceWith({ events: worked });
+      const { rerender } = render(<StatusLine workspace={workspace} locale="en" onPermissions={vi.fn()} onDetails={vi.fn()} />);
+      rerender(<StatusLine workspace={{ ...workspace }} locale="en" onPermissions={vi.fn()} onDetails={vi.fn()} />);
+      expect(marked('status-stats').map(each => each.querySelector('.status-stats-run')!.textContent))
+        .toEqual(['2 turns · 3 steps · 333 tok/s']);
+    });
   });
 
   it('says nothing of the context of a model whose window is not known', () => {

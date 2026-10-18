@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Download, FileDiff, FileText, PanelLeft, Settings2, SlidersHorizontal, X } from 'lucide-react';
+import { ChevronRight, Download, FileDiff, FileText, ListTree, MessageSquare, PanelLeft, Settings2, SlidersHorizontal, X } from 'lucide-react';
 import { MusicTitlebar, useBackgroundMusic } from '../BackgroundMusic';
 import { StartupVideo } from '../StartupVideo';
 import type { ActionKey } from '../outcomes';
@@ -24,6 +24,7 @@ import { Sheet } from './Sheet';
 import { Sidebar } from './Sidebar';
 import { Recent, StartHead, StartSkills } from './Start';
 import { StatusLine } from './StatusLine';
+import { TraceView } from './TraceView';
 import {
   added, Attachments, attachedOf, keptOf, withAttachments, type Attachment, type Refused,
 } from './attachments';
@@ -84,6 +85,9 @@ interface PendingPermission {
   quiet: boolean;
 }
 
+/** How a task is shown: as its conversation, or as its trace. */
+type TaskView = 'conversation' | 'trace';
+
 export default function App() {
   const workspace = useWorkspace();
   const github = useGitHub();
@@ -113,6 +117,9 @@ export default function App() {
   useEffect(() => (onMac() ? window.columbina!.onFullScreen(setFullScreen) : undefined), []);
   const [inspector, setInspector] = useState<InspectorTab | null>(null);
   const [settings, setSettings] = useState<SettingsPart | null>(null);
+  // What each task was last looked at as, by its id: its conversation, or its trace. A task
+  // that was not looked at yet shows its conversation.
+  const [views, setViews] = useState<Readonly<Record<string, TaskView>>>({});
   // A model or a level that was chosen and is in use, and could not be kept: what the settings say of it.
   const [notKept, setNotKept] = useState<string | null>(null);
   const [link, setLink] = useState<string | null>(null);
@@ -456,6 +463,9 @@ export default function App() {
       } else if (key === ',') {
         event.preventDefault();
         setSettings('appearance');
+      } else if (key === 'j' && traced) {
+        event.preventDefault();
+        showView(view === 'trace' ? 'conversation' : 'trace');
       } else if (key === 'k' && !unavailable) {
         event.preventDefault();
         setCommandsAsked(count => count + 1);
@@ -488,6 +498,13 @@ export default function App() {
   // A service that ended with nothing on the page: there is nothing to welcome anyone to,
   // and the line that says so stands alone.
   const gone = workspace.hasProject && workspace.closed !== null && empty;
+  // A task with something to show can be shown as its conversation or as its trace.
+  const traced = workspace.hasProject && !bare && !starting && !gone && workspace.sessionId !== null;
+  const view: TaskView = traced ? views[workspace.sessionId!] ?? 'conversation' : 'conversation';
+  const showView = (next: TaskView) => {
+    const id = workspace.sessionId;
+    if (id !== null) setViews(current => ({ ...current, [id]: next }));
+  };
   // Without a project there are no tasks to list.
   const noSidebar = sidebarHidden || !workspace.hasProject;
   const showInspector = (tab: InspectorTab) => setInspector(current => (current === tab ? null : tab));
@@ -506,6 +523,20 @@ export default function App() {
         <span className="brand"><span className="brand-moon" aria-hidden="true" />Columbina</span>
         {folder && <span className="titlebar-project" title={workspace.hello?.cwd}>{folder}</span>}
         <MusicTitlebar music={music} />
+        {/* How the task that is open is shown: as its conversation, or as its trace. Not over the opening. */}
+        {traced && !showOpening && <div className="titlebar-views" role="group" aria-label={words.label.trace.views} data-test="views">
+          {(['conversation', 'trace'] as const).map(each => <button
+            key={each}
+            type="button"
+            aria-pressed={view === each}
+            title={`${words.label.trace.view[each]} (${shortcut('J')})`}
+            onClick={() => showView(each)}
+            data-test={`view-${each}`}
+          >
+            {each === 'conversation' ? <MessageSquare size={13} aria-hidden="true" /> : <ListTree size={13} aria-hidden="true" />}
+            <span>{words.label.trace.view[each]}</span>
+          </button>)}
+        </div>}
         {/* A newer version, at the end of the bar: a click opens the page of its release. Not over the opening. */}
         {told && !showOpening && <button
           type="button"
@@ -648,7 +679,9 @@ export default function App() {
                       onOpenPage={openPage}
                       firstButton={firstButton}
                     />
-                  : <Conversation workspace={workspace} onLink={setLink} onAction={onAction} />}
+                  : view === 'trace'
+                    ? <TraceView workspace={workspace} locale={shownLanguage(language)} />
+                    : <Conversation workspace={workspace} onLink={setLink} onAction={onAction} />}
             <div className="dock" hidden={!workspace.hasProject || starting || gone}>
               {/* A card of its own for every question, so that nothing of one question is left for the next. */}
               {workspace.approval && <ApprovalCard
@@ -696,6 +729,7 @@ export default function App() {
 
           <StatusLine
             workspace={workspace}
+            locale={shownLanguage(language)}
             onPermissions={() => setSettings('permissions')}
             onDetails={() => setInspector('details')}
           />

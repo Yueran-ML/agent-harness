@@ -63,6 +63,21 @@ application runs the service itself, and not in a replay.
 The page of a new task says what the task may do and names the skills that there are.
 A click on a skill writes the command that hands it to the agent into the input field.
 
+The line under the field says how far the task has come: its turns and steps, how many
+tokens the model wrote a second on average, from when a request was made to when its
+answer was in, and the tokens of all its requests with how many of those that were read came
+from the cache. Pointed at, it gives the exact numbers, and a click opens the details.
+
+A task can also be shown as its trace, with the switch in the middle of the bar of the window
+or Ctrl+J. Above, its steps stand side by side, one column each: whether input came in for the
+step, how long its request to the model took, and how its calls went, in red where one went
+wrong. A column leads to the step. Below, turn by turn, are what was said, each answer of the
+model with what it took and read and wrote, and each call with its arguments, its result and
+how long it ran. Kinds of rows can be left out, what the model thought is shown when it is
+asked for, and a switch shows only what went wrong. A search looks through the rows, Enter goes
+to the next find, and a row opens to show all that it holds, to be copied. Each task keeps the
+view that it was last shown in.
+
 | Key | What it does |
 |---|---|
 | Enter | Sends what is written. Shift+Enter starts a new line |
@@ -72,6 +87,7 @@ A click on a skill writes the command that hands it to the agent into the input 
 | Ctrl+N | Begins a new task |
 | Ctrl+B | Shows or hides the list of tasks |
 | Ctrl+K | Goes to the input field. On an empty field it opens the list of commands |
+| Ctrl+J | Shows the task that is open as its conversation or as its trace |
 | Ctrl+, | Opens the settings |
 
 On macOS ⌘ is held where the table says Ctrl, and the window writes its shortcuts with ⌘.

@@ -171,7 +171,7 @@ const record = (value: unknown): JsonRecord =>
 const string = (value: unknown): string => typeof value === 'string' ? value : '';
 const number = (value: unknown): number => typeof value === 'number' && Number.isFinite(value) ? value : 0;
 
-function messageOf(value: unknown): Message {
+export function messageOf(value: unknown): Message {
   const message = record(value);
   return {
     ...message,
@@ -186,7 +186,7 @@ export function messageText(message: Message, kind = 'text'): string {
   return message.content.filter(block => block.type === kind).map(block => string(block.text)).join('');
 }
 
-function usageOf(value: unknown): Usage {
+export function usageOf(value: unknown): Usage {
   const usage = record(value);
   return {
     input_tokens: number(usage.input_tokens),

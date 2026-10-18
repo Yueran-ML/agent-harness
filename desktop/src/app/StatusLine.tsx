@@ -1,8 +1,10 @@
-import { ShieldAlert, ShieldCheck, TriangleAlert } from 'lucide-react';
+import { useMemo } from 'react';
+import { Activity, Coins, ShieldAlert, ShieldCheck, TriangleAlert } from 'lucide-react';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { useWords } from './locale';
-import { contextPercent, standingOf } from './tell';
+import { contextPercent, countOf, standingOf } from './tell';
+import { speedOf } from './trace';
 
 /** A ring that fills with the context. */
 function Ring({ percent }: { percent: number }) {
@@ -18,11 +20,49 @@ function Ring({ percent }: { percent: number }) {
 }
 
 /**
- * One line under the field: what the task may do, in a sentence, and where
- * the agent stands.
+ * How far the task has come and what it took: its turns and steps, how fast the model wrote,
+ * and the tokens of all its requests, with how many of those that were read came from the cache.
+ * The whole of it is said when it is pointed at, and it leads to the details.
  */
-export function StatusLine({ workspace, onPermissions, onDetails }: {
+function Stats({ workspace, locale, onDetails }: { workspace: Workspace; locale: string; onDetails: () => void }) {
+  const words = useWords();
+  const { projection } = workspace;
+  const speed = useMemo(() => speedOf(workspace.events), [workspace.events]);
+  const turns = projection.turns.length;
+  if (turns === 0) return null;
+  const steps = projection.turns.reduce((sum, turn) => sum + turn.steps, 0);
+  const { usage } = projection;
+  const read = usage.input_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+  // To a tenth, and never more than it is: what was nearly all read from the cache is not said to be all.
+  const cached = read > 0 ? Math.floor(usage.cache_read_tokens / read * 1000) / 10 : null;
+  const whole = (count: number) => Intl.NumberFormat(locale, { maximumFractionDigits: 0 }).format(count);
+  const tenths = (count: number) => Intl.NumberFormat(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(count);
+  const run = [
+    words.label.stats.turns(turns), words.label.stats.steps(steps),
+    ...(speed === null ? [] : [words.label.stats.speed(whole(speed))]),
+  ].join(' · ');
+  const spent = [
+    words.label.stats.tokens(countOf(read + usage.output_tokens, locale)),
+    ...(cached === null ? [] : [words.label.stats.cached(tenths(cached))]),
+  ].join(' · ');
+  const told = words.hint.stats({
+    turns, steps, speed: speed === null ? null : whole(speed), tokens: whole(read + usage.output_tokens),
+    read: whole(read), cached: read > 0 ? whole(usage.cache_read_tokens) : null, written: whole(usage.output_tokens),
+  });
+  return <button type="button" className="status-stats" onClick={onDetails} title={told} aria-label={told} data-test="status-stats">
+    <span className="status-stats-run"><Activity size={13} aria-hidden="true" />{run}</span>
+    <span className="status-stats-spent"><Coins size={13} aria-hidden="true" />{spent}</span>
+  </button>;
+}
+
+/**
+ * One line under the field: what the task may do, in a sentence, where
+ * the agent stands, and how far the task has come.
+ */
+export function StatusLine({ workspace, locale, onPermissions, onDetails }: {
   workspace: Workspace;
+  /** The language of the page, for numbers. */
+  locale: string;
   onPermissions: () => void;
   onDetails: () => void;
 }) {
@@ -52,6 +92,7 @@ export function StatusLine({ workspace, onPermissions, onDetails }: {
     {workspace.hasProject && <span className="status-stands" data-tone={tone} data-test="status-stands" role="status">
       <span className="dot" aria-hidden="true" />{stands}
     </span>}
+    {workspace.hasProject && <Stats workspace={workspace} locale={locale} onDetails={onDetails} />}
     {percent !== null && <button
       type="button"
       className="status-context"

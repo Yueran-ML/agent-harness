@@ -1851,3 +1851,43 @@ describe('how hard the model thinks', () => {
     expect(sheet()!.querySelectorAll('[data-test="model-not-kept"]')).toHaveLength(0);
   });
 });
+
+describe('the trace of the task that is open', () => {
+  const view = () => (marked('trace').length > 0 ? 'trace' : marked('talk').length > 0 ? 'conversation' : 'neither');
+
+  it('stands in the place of the conversation, from the title bar and with Ctrl+J', () => {
+    page(first());
+    expect(one('views').getAttribute('aria-label')).toBe('View of the task');
+    expect(one('view-conversation').getAttribute('aria-pressed')).toBe('true');
+    expect(one('view-trace').getAttribute('title')).toMatch(/^Trace \(.+J\)$/);
+    expect(view()).toBe('conversation');
+    fireEvent.click(one('view-trace'));
+    expect(view()).toBe('trace');
+    expect(one('view-trace').getAttribute('aria-pressed')).toBe('true');
+    // The field stays where it is.
+    expect(marked('composer')).toHaveLength(1);
+    expect(chord('j')).toBe(true);
+    expect(view()).toBe('conversation');
+    chord('j');
+    expect(view()).toBe('trace');
+  });
+
+  it('is remembered for each task, and a task that was not looked at shows its conversation', () => {
+    const shown = page(first());
+    fireEvent.click(one('view-trace'));
+    shown.now(first({ sessionId: 's-2' }));
+    expect(view()).toBe('conversation');
+    shown.now(first({ sessionId: 's-1' }));
+    expect(view()).toBe('trace');
+  });
+
+  it('is not offered where no task is open, or where the task has nothing in it yet', () => {
+    page(first({ hasProject: false }));
+    expect(marked('views')).toEqual([]);
+    expect(chord('j')).toBe(false);
+    cleanup();
+    page(first({ events: [] }));
+    expect(marked('views')).toEqual([]);
+    expect(chord('j')).toBe(false);
+  });
+});

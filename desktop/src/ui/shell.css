@@ -560,6 +560,46 @@ button.task:hover:not(:disabled) {
   padding: 0 var(--s4) 0 var(--s5);
   font-size: var(--text-caption);
   color: var(--moon-2);
+  /* What the line holds goes by how wide the line is, whether the list of tasks is shown or not. */
+  container-type: inline-size;
+}
+
+/* How far the task has come, in two groups that give way one after the other where the line is narrow. */
+.status-stats {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s4);
+  min-height: 24px;
+  padding: 0 6px;
+  margin: 0 -6px;
+  border-radius: var(--r1);
+  color: inherit;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
+}
+
+.status-stats > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-stats:hover {
+  background: var(--ink-2);
+  color: var(--moon-0);
+}
+
+@container (max-width: 820px) {
+  .status-stats-spent {
+    display: none;
+  }
+}
+
+@container (max-width: 640px) {
+  .status-stats {
+    display: none;
+  }
 }
 
 .status-may,

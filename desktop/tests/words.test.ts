@@ -50,6 +50,24 @@ const samples: Record<string, unknown[][]> = {
   'hint.contextUnknown': [['950'], ['1.2万']],
   'hint.about': [['0.1.0', 1]],
   'label.effort.button': [['High'], ['最高']],
+  'label.stats.turns': [[1], [6]],
+  'label.stats.steps': [[1], [371]],
+  'label.stats.speed': [['313'], ['1,024']],
+  'label.stats.tokens': [['94.1M'], ['9410万']],
+  'label.stats.cached': [['99.7'], ['0.0']],
+  'label.trace.found': [[1, 1], [3, 17]],
+  'label.trace.turn': [[1], [12]],
+  'label.trace.onlyCalls': [[1], [3]],
+  'label.trace.tokens': [['12K', '320'], ['1.2万', '4,096']],
+  'hint.trace.step': [
+    [{ turn: 1, step: 1, took: null, calls: 0, wrong: 0, failed: 0 }],
+    [{ turn: 2, step: 3, took: '2.1 s', calls: 1, wrong: 0, failed: 1 }],
+    [{ turn: 12, step: 40, took: '1 min 4 s', calls: 5, wrong: 2, failed: 3 }],
+  ],
+  'hint.stats': [
+    [{ turns: 1, steps: 1, speed: null, tokens: '0', read: '0', cached: null, written: '0' }],
+    [{ turns: 6, steps: 371, speed: '313', tokens: '94,123,456', read: '93,800,000', cached: '93,500,000', written: '323,456' }],
+  ],
   'label.updates.told': [['0.1.3'], ['12.0.10']],
   'label.updates.toldInFull': [['0.1.3'], ['12.0.10']],
   'hint.updates.version': [['0.1.2'], ['0.1.2-dev']],
@@ -158,10 +176,10 @@ describe('the catalogues', () => {
         'in_progress', 'aborted', 'disposed',
       ];
       // An event is named with a slash, as in `turn/end`. An address of the web has slashes
-      // of its own and names no event.
+      // of its own and names no event, and neither does the unit of how fast a model writes.
       const event = /[a-z]+\/[a-z]+/;
       const address = /https?:\/\/[^\s，。]+/g;
-      const found = said.filter(({ text }) => event.test(text.replace(address, ''))
+      const found = said.filter(({ text }) => event.test(text.replace(address, '').replace(/\btok\/s\b/g, ''))
         || values.some(value => text.includes(value)));
       expect(found).toEqual([]);
     });

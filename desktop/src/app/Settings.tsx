@@ -11,6 +11,7 @@ import type { Updates } from '../useUpdates';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { EffortPicker } from './EffortPicker';
+import { FeishuAssistant } from './FeishuAssistant';
 import { GitHubAccount } from './GitHubSignIn';
 import { ModelPicker } from './ModelPicker';
 import { effortOf, type Effort } from './effort';
@@ -244,6 +245,11 @@ export function Settings({
     <section className="setting" ref={at('account')} data-test="account">
       <h3>{words.label.account}</h3>
       <GitHubAccount github={github} onOpen={onOpen} />
+    </section>
+
+    <section className="setting" data-test="feishu">
+      <h3>{words.label.feishu.title}</h3>
+      <FeishuAssistant language={shownLanguage} onOpen={onOpen} />
     </section>
 
     <section className="setting" ref={at('permissions')}>

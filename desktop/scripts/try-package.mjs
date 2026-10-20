@@ -80,7 +80,7 @@ function greetAndLeave(options) {
 
 // What the window shows.
 const page = path.join(resources, 'app', 'dist');
-for (const name of ['index.html', 'key.html', 'columbina-intro-extended.mp4', 'moonlit-columbina.png', 'columbina-icon.png', 'ASSET-NOTICES.txt']) {
+for (const name of ['index.html', 'key.html', 'feishu.html', 'columbina-intro-extended.mp4', 'moonlit-columbina.png', 'columbina-icon.png', 'ASSET-NOTICES.txt']) {
   await stat(path.join(page, name)).catch(() => fail(`it has no ${name}`));
 }
 await checkPackageAssets(page);
@@ -96,6 +96,12 @@ try {
 
   version = said(['--version'], { env });
   if (!/^columbina \d+\.\d+\.\d+/.test(version)) fail(`it says its version is ${JSON.stringify(version)}`);
+
+  // The assistant in Feishu: its command answers, and its Python has the package of its connection.
+  const feishu = JSON.parse(said(['feishu', '--status', '--json'], { env }));
+  if (feishu.set_up !== false || feishu.running !== false) fail(`the assistant in Feishu says ${JSON.stringify(feishu)}`);
+  const connection = spawnSync(python, ['-I', '-B', '-c', 'import websockets'], { encoding: 'utf8', timeout: 120_000, env });
+  if (connection.status !== 0) fail(`its Python has no websockets for the assistant in Feishu:\n${connection.stderr}`);
 
   const patch = path.join(work, 'patch.yml');
   await writeFile(patch, [

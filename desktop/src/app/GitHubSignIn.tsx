@@ -10,7 +10,7 @@ import { useWords } from './locale';
 type Open = (url: string) => void;
 
 /** What a program said, where a person may want to see it: under the words of the page, folded away. */
-function Details({ said }: { said: string }) {
+export function Details({ said }: { said: string }) {
   const words = useWords();
   if (said === '') return null;
   return <details className="aside">

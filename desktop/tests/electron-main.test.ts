@@ -120,6 +120,9 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const setups: { args: string[]; cwd: string; input: string | null; child: any }[] = [];
   // The runs of `columbina login github`, which write their lines through a reader of lines.
   const signIns: any[] = [];
+  // The runs of the assistant in Feishu, `columbina feishu --json`, which write their lines through a
+  // reader of lines too, and end when the test says so.
+  const bots: any[] = [];
   const lineReaders: any[] = [];
   const setup = {
     answer: ((): SetupRun => ({ out: '{"use": null, "services": []}\n', code: 0 })) as (args: string[], input: string) => SetupRun | null,
@@ -150,7 +153,17 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       queueMicrotask(() => child.emit('spawn'));
       return child;
     }
-    if (args.includes('setup') || args.includes('--status') || args.includes('logout')) {
+    if (args.at(-2) === 'feishu' && args.at(-1) === '--json') {
+      const child = Object.assign(new EventEmitter(), {
+        pid: 900 + bots.length, exitCode: null as number | null, signalCode: null, args, options,
+        stdout: new EventEmitter(), stderr: Object.assign(new EventEmitter(), { pipe: vi.fn() }),
+        stdin: Object.assign(new EventEmitter(), { end: vi.fn() }),
+      });
+      bots.push(child);
+      queueMicrotask(() => child.emit('spawn'));
+      return child;
+    }
+    if (args.includes('setup') || args.includes('--status') || args.includes('logout') || args.includes('feishu')) {
       const child = Object.assign(new EventEmitter(), {
         pid: 500 + setups.length, exitCode: null as number | null, signalCode: null,
         stdout: new EventEmitter(), stderr: new EventEmitter(),
@@ -294,11 +307,15 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const keyWindow = () => windows[1];
   const asKeyWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-key:${name}`)!(
     { sender: keyWindow().webContents, senderFrame: keyWindow().webContents.mainFrame }, ...args);
+  // The window for the app of Feishu, once the shell has opened it, and a call as that window makes it.
+  const feishuWindow = () => windows.filter(each => String(each.options?.webPreferences?.preload).endsWith('feishu-preload.cjs')).at(-1);
+  const asFeishuWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-feishu:${name}`)!(
+    { sender: feishuWindow().webContents, senderFrame: feishuWindow().webContents.mainFrame }, ...args);
   return {
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, drive, file, sent,
     dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
     partitions,
-    setups, setup, keyWindow, asKeyWindow, menu, logins, signIns, lineReaders,
+    setups, setup, keyWindow, asKeyWindow, feishuWindow, asFeishuWindow, menu, logins, signIns, bots, lineReaders,
     live: () => live, peakLive: () => peakLive,
   };
 }
@@ -950,7 +967,7 @@ describe('what the shell keeps from one start to the next', () => {
   it('keeps the theme when it is set, and nothing of a theme that it refuses', async () => {
     const shell = await shellHarness();
     shell.invoke('set-theme', 'moonwhite');
-    expect(shell.preferences()).toEqual({ theme: 'moonwhite', recent: [], githubSkipped: false });
+    expect(shell.preferences()).toEqual({ theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false });
     expect(() => shell.invoke('set-theme', 'frostlight')).toThrow('Unknown application theme.');
     expect(shell.preferences().theme).toBe('moonwhite');
   });
@@ -2180,5 +2197,429 @@ describe('newer versions of the application', () => {
     expect(() => shell.handlers.get('columbina:about')!(shell.unrelated)).toThrow('IPC sender');
     await expect((async () => shell.handlers.get('columbina:updates')!(shell.unrelated, { now: true }))()).rejects.toThrow('IPC sender');
     expect(shell.net.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('the assistant in Feishu', () => {
+  const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
+  const app = {
+    set_up: true, domain: 'feishu', app_id: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: false,
+    running: false, state: null, code: null, error: null,
+  };
+  const feishuPage = pathToFileURL(path.resolve(path.dirname(mainPath), '../dist/feishu.html')).href;
+  const logOfFeishu = path.resolve('/columbina-test/logs/columbina-feishu.log');
+  const toldOfFeishu = (shell: Awaited<ReturnType<typeof shellHarness>>) => shell.sent
+    .filter(([channel]) => channel === 'columbina:feishu').map(([, value]) => value);
+  const readerOf = (shell: Awaited<ReturnType<typeof shellHarness>>, child: any) =>
+    shell.lineReaders.find((reader: any) => reader.input === child.stdout);
+  /** The shell with an app set up, which the program says of whenever it is asked. */
+  const withApp = async (kept?: string) => {
+    const shell = await shellHarness(kept, real);
+    shell.setup.answer = (args) => (args.includes('--status')
+      ? { out: `${JSON.stringify(app)}\n`, code: 0 }
+      : args.includes('--forget') ? { out: '{"forgotten": true}\n', code: 0 }
+        : { out: '{"stored": {"domain": "feishu", "app_id": "cli_a1b2c3d4"}, "secret_in": "keyring"}\n', code: 0 });
+    return shell;
+  };
+  /** End an assistant that runs, as it ends once its input was closed. */
+  const ended = (child: any, code = 0) => {
+    child.exitCode = code;
+    child.emit('close', code, null);
+  };
+
+  it('has nothing to say of it in a replay', async () => {
+    const shell = await shellHarness();
+    await expect(shell.invoke('feishu-status')).resolves.toBeNull();
+    await expect((async () => shell.invoke('feishu-start'))()).rejects.toThrow('No service program');
+    await expect((async () => shell.invoke('set-up-feishu', { language: 'en' }))()).rejects.toThrow('No service program');
+    expect(shell.bots).toEqual([]);
+    expect(shell.setups).toEqual([]);
+  });
+
+  it('asks the program how the assistant is doing, and adds what the shell knows of it', async () => {
+    const shell = await withApp();
+    await expect(shell.invoke('feishu-status')).resolves.toEqual({ ...app, own: false, on: false, ended: null });
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'feishu', '--status', '--json']);
+    expect(shell.setups.at(-1)!.input).toBe('');
+  });
+
+  it('starts the assistant, tells the page what it says of itself, and that it ended', async () => {
+    const shell = await withApp();
+    await expect(shell.invoke('feishu-start')).resolves.toBeUndefined();
+    const [child] = shell.bots;
+    expect(child.args).toEqual(['-m', 'columbina', 'feishu', '--json']);
+    expect(child.options.cwd).toBe(path.resolve('/columbina-test/home'));
+    expect(child.options).toMatchObject({ detached: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    expect(child.stderr.pipe).toHaveBeenCalledOnce();
+    // It runs again at the next start of the application, until the user stops it.
+    expect(shell.preferences().feishuOn).toBe(true);
+    await expect(shell.invoke('feishu-status')).resolves.toMatchObject({ own: true, on: true });
+
+    const reader = readerOf(shell, child);
+    reader.emit('line', '{"state": "connecting", "paired": false, "code": "123456", "error": null}');
+    // What is no document of JSON, or no object, or longer than such a line is, is passed over.
+    for (const line of ['not json', '[1, 2]', 'null', `{"state": "${'x'.repeat(70_000)}"}`]) reader.emit('line', line);
+    reader.emit('line', '{"state": "connected", "paired": false, "code": "123456", "error": null}');
+    child.stderr.emit('data', Buffer.from('columbina: connected to Feishu\ncolumbina: the session of the assistant cannot be opened: it is open elsewhere\n'));
+    ended(child, 1);
+    expect(toldOfFeishu(shell)).toEqual([
+      { state: 'connecting', paired: false, code: '123456', error: null },
+      { state: 'connected', paired: false, code: '123456', error: null },
+      { ended: true, code: 1, said: 'the session of the assistant cannot be opened: it is open elsewhere' },
+    ]);
+    // A page that asks later is told how it ended, until another one starts.
+    await expect(shell.invoke('feishu-status')).resolves.toMatchObject({
+      own: false, ended: { code: 1, said: 'the session of the assistant cannot be opened: it is open elsewhere' },
+    });
+    await shell.invoke('feishu-start');
+    await expect(shell.invoke('feishu-status')).resolves.toMatchObject({ own: true, ended: null });
+  });
+
+  it('tells nothing that an assistant writes once it has ended', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start');
+    const [child] = shell.bots;
+    const reader = readerOf(shell, child);
+    ended(child);
+    reader.emit('line', '{"state": "connected", "paired": true, "code": null, "error": null}');
+    expect(toldOfFeishu(shell)).toEqual([{ ended: true, code: 0, said: '' }]);
+  });
+
+  it('runs one assistant at most, and tells nothing of one that ended well', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start');
+    await shell.invoke('feishu-start');
+    expect(shell.bots).toHaveLength(1);
+    // A line that it wrote last and did not end is told as far as it came.
+    shell.bots[0].stderr.emit('data', Buffer.from('columbina: stopped'));
+    ended(shell.bots[0]);
+    expect(toldOfFeishu(shell)).toEqual([{ ended: true, code: 0, said: 'stopped' }]);
+    await expect(shell.invoke('feishu-status')).resolves.toMatchObject({ ended: null });
+  });
+
+  it('stops the assistant by closing its input, and ends it where it has not ended a few seconds later', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await withApp();
+      await shell.invoke('feishu-start');
+      const [child] = shell.bots;
+      const stopped = shell.invoke('feishu-stop') as Promise<void>;
+      expect(child.stdin.end).toHaveBeenCalledOnce();
+      // It is not started with the application any more.
+      expect(shell.preferences().feishuOn).toBe(false);
+      await vi.advanceTimersByTimeAsync(5_900);
+      expect(shell.spawn.mock.calls.some(call => call[0] === 'taskkill.exe')).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(shell.spawn.mock.calls.at(-1)!.slice(0, 2)).toEqual(['taskkill.exe', ['/pid', String(child.pid), '/T', '/F']]);
+      // It has stopped once it has ended, and not before.
+      let done = false;
+      void stopped.then(() => { done = true; });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(done).toBe(false);
+      child.emit('close', null, 'SIGKILL');
+      await expect(stopped).resolves.toBeUndefined();
+      // A stop where none runs stops nothing.
+      await shell.invoke('feishu-stop');
+      expect(child.stdin.end).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says that the assistant did not stop where it is still there after it was ended', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await withApp();
+      await shell.invoke('feishu-start');
+      const [child] = shell.bots;
+      const stopped = shell.invoke('feishu-stop') as Promise<void>;
+      const refused = expect(stopped).rejects.toThrow('The assistant in Feishu did not end.');
+      await vi.advanceTimersByTimeAsync(6_000 + 5_000);
+      await refused;
+      // It runs still, as far as the shell knows: no other is started beside it.
+      await expect(shell.invoke('feishu-status')).resolves.toMatchObject({ own: true });
+      await shell.invoke('feishu-start');
+      expect(shell.bots).toHaveLength(1);
+      // Nor is an app stored or deleted while it may run.
+      const forgetting = expect((async () => shell.invoke('feishu-forget'))()).rejects.toThrow('did not end');
+      await vi.advanceTimersByTimeAsync(6_000 + 5_000);
+      await forgetting;
+      expect(shell.setups.filter(run => run.args.includes('--forget'))).toEqual([]);
+      ended(child);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts nothing once the application is closing', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start');
+    const [child] = shell.bots;
+    const stopping = shell.invoke('feishu-stop') as Promise<void>;
+    // A start that waits for the stop to end, while the windows are closed meanwhile.
+    const starting = shell.invoke('feishu-start') as Promise<void>;
+    shell.app.emit('window-all-closed');
+    ended(child);
+    await stopping;
+    await starting;
+    await settled();
+    expect(shell.bots).toHaveLength(1);
+    expect(shell.app.quit).toHaveBeenCalled();
+  });
+
+  it('keeps the window for the app open while an app is stored from it', async () => {
+    const shell = await withApp();
+    shell.setup.answer = () => null;
+    void shell.invoke('set-up-feishu', { language: 'en' });
+    await Promise.resolve();
+    const storing = shell.asFeishuWindow('store', { domain: 'feishu', app_id: 'cli_a1b2c3d4', app_secret: 'made up' }) as Promise<unknown>;
+    await settled();
+    const closing = { preventDefault: vi.fn() };
+    shell.feishuWindow().emit('close', closing);
+    expect(closing.preventDefault).toHaveBeenCalledOnce();
+    answer(shell.setups.at(-1)!, { stored: { domain: 'feishu', app_id: 'cli_a1b2c3d4' }, secret_in: 'keyring' });
+    await storing;
+    const later = { preventDefault: vi.fn() };
+    shell.feishuWindow().emit('close', later);
+    expect(later.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('ends nothing where the assistant ended once its input was closed', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await withApp();
+      await shell.invoke('feishu-start');
+      const [child] = shell.bots;
+      const stopped = shell.invoke('feishu-stop') as Promise<void>;
+      // Two stops at once wait for the same end.
+      const again = shell.invoke('feishu-stop') as Promise<void>;
+      ended(child);
+      await expect(Promise.all([stopped, again])).resolves.toEqual([undefined, undefined]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(shell.spawn.mock.calls.some(call => call[0] === 'taskkill.exe')).toBe(false);
+      expect(child.stdin.end).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('deletes the app once the assistant has stopped', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start');
+    const [child] = shell.bots;
+    const forgetting = shell.invoke('feishu-forget') as Promise<unknown>;
+    await settled();
+    expect(child.stdin.end).toHaveBeenCalledOnce();
+    expect(shell.setups.filter(run => run.args.includes('--forget'))).toEqual([]);
+    ended(child);
+    await expect(forgetting).resolves.toEqual({ forgotten: true });
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'feishu', '--forget', '--json']);
+    expect(shell.preferences().feishuOn).toBe(false);
+  });
+
+  it('says why the assistant could not be started, and lets another start', async () => {
+    const shell = await withApp();
+    const failed = Object.assign(new EventEmitter(), {
+      pid: 0, exitCode: null as number | null, signalCode: null,
+      stdout: new EventEmitter(), stderr: Object.assign(new EventEmitter(), { pipe: vi.fn() }),
+      stdin: Object.assign(new EventEmitter(), { end: vi.fn() }),
+    });
+    shell.spawn.mockImplementationOnce(() => {
+      queueMicrotask(() => failed.emit('error', new Error('spawn ENOENT')));
+      return failed;
+    });
+    await expect((async () => shell.invoke('feishu-start'))()).rejects.toThrow('The assistant in Feishu could not be started: spawn ENOENT');
+    failed.emit('close', -2, null);
+    expect(toldOfFeishu(shell)).toEqual([]);
+    expect(shell.preferences()).toBeNull();
+    await expect(shell.invoke('feishu-status')).resolves.toMatchObject({ own: false, ended: { code: null, said: 'spawn ENOENT' } });
+    await shell.invoke('feishu-stop');
+    expect(failed.stdin.end).not.toHaveBeenCalled();
+    await expect(shell.invoke('feishu-start')).resolves.toBeUndefined();
+    // An error of an assistant that started leaves it to end by itself.
+    shell.bots[0].emit('error', new Error('kill EPERM'));
+    ended(shell.bots[0]);
+    expect(toldOfFeishu(shell)).toEqual([{ ended: true, code: 0, said: '' }]);
+  });
+
+  it('starts the assistant with the application where it ran when the application was left', async () => {
+    const shell = await shellHarness(JSON.stringify({ feishuOn: true }), real);
+    await settled();
+    expect(shell.bots).toHaveLength(1);
+    expect(shell.bots[0].args).toEqual(['-m', 'columbina', 'feishu', '--json']);
+    // And not where it did not, nor in a replay.
+    const off = await shellHarness(JSON.stringify({ feishuOn: false }), real);
+    const replay = await shellHarness(JSON.stringify({ feishuOn: true }));
+    await settled();
+    expect([...off.bots, ...replay.bots]).toEqual([]);
+  });
+
+  it('lets the assistant stop before the application leaves', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start');
+    const [child] = shell.bots;
+    // The window is not closed at once: the page is asked to end first, as while a service runs.
+    const preventDefault = vi.fn();
+    shell.window.emit('close', { preventDefault });
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(shell.sent.at(-1)?.[0]).toBe('columbina:shutdown');
+    await shell.invoke('stop');
+    expect(shell.window.destroy).toHaveBeenCalledOnce();
+    expect(child.stdin.end).toHaveBeenCalledOnce();
+    expect(shell.app.quit).not.toHaveBeenCalled();
+    ended(child);
+    await settled();
+    expect(shell.app.quit).toHaveBeenCalled();
+  });
+
+  it('lets the assistant stop when the windows are all closed', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start');
+    const [child] = shell.bots;
+    shell.app.emit('window-all-closed');
+    await settled();
+    expect(child.stdin.end).toHaveBeenCalledOnce();
+    expect(shell.app.quit).not.toHaveBeenCalled();
+    ended(child);
+    await settled();
+    expect(shell.app.quit).toHaveBeenCalledOnce();
+  });
+
+  it('shows the log of the assistant in its folder', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-log');
+    expect(shell.system.showItemInFolder).toHaveBeenCalledWith(logOfFeishu);
+  });
+
+  it('answers the calls of the assistant to the main window alone', async () => {
+    const shell = await withApp();
+    for (const name of ['feishu-status', 'feishu-start', 'feishu-stop', 'feishu-forget', 'feishu-log', 'set-up-feishu']) {
+      await expect((async () => shell.handlers.get(`columbina:${name}`)!(shell.unrelated))()).rejects.toThrow('IPC sender');
+    }
+    expect(shell.bots).toEqual([]);
+    expect(shell.setups).toEqual([]);
+  });
+
+  describe('and the window for its app', () => {
+    const opened = async (kept?: string) => {
+      const shell = await withApp(kept);
+      const closed = shell.invoke('set-up-feishu', { language: 'zh-CN', then: 'more' }) as Promise<unknown>;
+      await Promise.resolve();
+      return { shell, closed };
+    };
+
+    it('is a window of its own under the main one, as closed to the world as the main one', async () => {
+      const { shell } = await opened();
+      const window = shell.feishuWindow();
+      expect(shell.windows).toHaveLength(2);
+      expect(window.options).toMatchObject({ parent: shell.window, modal: true, resizable: false });
+      expect(window.options.webPreferences).toEqual({
+        preload: path.join(path.dirname(mainPath), 'feishu-preload.cjs'),
+        contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+      });
+      expect(window.loadFile).toHaveBeenCalledWith(path.resolve(path.dirname(mainPath), '../dist/feishu.html'));
+      expect(window.webContents.mainFrame.url).toBe(feishuPage);
+      expect(window.webContents.setWindowOpenHandler.mock.calls[0][0]()).toEqual({ action: 'deny' });
+      for (const happening of ['will-navigate', 'will-attach-webview']) {
+        const event = { preventDefault: vi.fn() };
+        window.webContents.emit(happening, event);
+        expect(event.preventDefault).toHaveBeenCalledOnce();
+      }
+      window.emit('ready-to-show');
+      expect(window.show).toHaveBeenCalledOnce();
+    });
+
+    it('opens once, and says when it has closed whether an app was stored there', async () => {
+      const { shell, closed } = await opened();
+      const again = shell.invoke('set-up-feishu', { language: 'en' }) as Promise<unknown>;
+      expect(shell.windows).toHaveLength(2);
+      expect(shell.feishuWindow().focus).toHaveBeenCalledOnce();
+      await shell.asFeishuWindow('close');
+      await expect(closed).resolves.toEqual({ changed: false });
+      await expect(again).resolves.toEqual({ changed: false });
+      // Another one opens once that one has closed.
+      const next = shell.invoke('set-up-feishu', { language: 'en' }) as Promise<unknown>;
+      await Promise.resolve();
+      expect(shell.windows).toHaveLength(3);
+      await shell.asFeishuWindow('store', { domain: 'feishu', app_id: 'cli_a1b2c3d4', app_secret: 'made up' });
+      await shell.asFeishuWindow('close');
+      await expect(next).resolves.toEqual({ changed: true });
+    });
+
+    it('tells its page the language, the theme and what is set up', async () => {
+      const { shell } = await opened(JSON.stringify({ theme: 'moonwhite' }));
+      await expect(shell.asFeishuWindow('context')).resolves.toEqual({ language: 'zh-CN', theme: 'moonwhite', status: app });
+      expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'feishu', '--status', '--json']);
+      // A language that the shell does not speak is English.
+      await shell.asFeishuWindow('close');
+      void shell.invoke('set-up-feishu', { language: 'xx' });
+      await Promise.resolve();
+      await expect(shell.asFeishuWindow('context')).resolves.toMatchObject({ language: 'en' });
+    });
+
+    it('hands the program the app on its standard input, and nothing else that came with it', async () => {
+      const { shell } = await opened();
+      const answer = await shell.asFeishuWindow('store', {
+        domain: 'lark', app_id: 'cli_a1b2c3d4', app_secret: 'made up', then: 'more', owner: 'ou_somebody', number: 3,
+      });
+      expect(answer).toEqual({ stored: { domain: 'feishu', app_id: 'cli_a1b2c3d4' }, secret_in: 'keyring' });
+      const run = shell.setups.at(-1)!;
+      expect(run.args).toEqual(['-m', 'columbina', 'feishu', '--from-stdin']);
+      expect(JSON.parse(run.input!)).toEqual({ domain: 'lark', app_id: 'cli_a1b2c3d4', app_secret: 'made up' });
+      // What is not a text is left out, and the program says what is missing.
+      await shell.asFeishuWindow('store', { domain: 3, app_id: null, app_secret: { secret: true } });
+      expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({});
+      // No secret goes onto a command line.
+      expect(shell.setups.flatMap(each => each.args).join(' ')).not.toContain('made up');
+    });
+
+    it('stops the assistant that runs while the app is stored, and starts it again then', async () => {
+      const { shell } = await opened();
+      await shell.invoke('feishu-start');
+      const [first] = shell.bots;
+      const storing = shell.asFeishuWindow('store', { domain: 'feishu', app_id: 'cli_a1b2c3d4', app_secret: 'made up' }) as Promise<unknown>;
+      await settled();
+      expect(first.stdin.end).toHaveBeenCalledOnce();
+      expect(shell.setups.filter(run => run.args.includes('--from-stdin'))).toEqual([]);
+      ended(first);
+      await expect(storing).resolves.toMatchObject({ secret_in: 'keyring' });
+      await settled();
+      expect(shell.bots).toHaveLength(2);
+      // One that does not run is not started by a store.
+      const stopping = shell.invoke('feishu-stop') as Promise<void>;
+      ended(shell.bots[1]);
+      await stopping;
+      await shell.asFeishuWindow('store', { domain: 'feishu', app_id: 'cli_a1b2c3d4', app_secret: 'made up' });
+      await settled();
+      expect(shell.bots).toHaveLength(2);
+    });
+
+    it('opens the consoles of the two platforms, and no other page', async () => {
+      const { shell } = await opened();
+      await shell.asFeishuWindow('open-page', 'https://open.feishu.cn/app');
+      await shell.asFeishuWindow('open-page', 'https://open.larksuite.com/app');
+      expect(shell.system.openExternal.mock.calls).toEqual([['https://open.feishu.cn/app'], ['https://open.larksuite.com/app']]);
+      for (const address of ['https://open.feishu.cn/app/cli_a1b2c3d4', 'http://open.feishu.cn/app', 'file:///C:/', 7]) {
+        await expect((async () => shell.asFeishuWindow('open-page', address))()).rejects.toThrow('not the console');
+      }
+      expect(shell.system.openExternal).toHaveBeenCalledTimes(2);
+    });
+
+    it('answers its calls to it alone', async () => {
+      const { shell } = await opened();
+      const main = { sender: shell.window.webContents, senderFrame: shell.window.webContents.mainFrame };
+      for (const name of ['context', 'store', 'open-page', 'close']) {
+        await expect((async () => shell.handlers.get(`columbina-feishu:${name}`)!(main, {}))()).rejects.toThrow('the window for the app of Feishu');
+      }
+      // And none of the main window, nor of the window for the key.
+      const asIt = { sender: shell.feishuWindow().webContents, senderFrame: shell.feishuWindow().webContents.mainFrame };
+      await expect((async () => shell.handlers.get('columbina:feishu-start')!(asIt))()).rejects.toThrow('IPC sender');
+      await expect((async () => shell.handlers.get('columbina-key:context')!(asIt))()).rejects.toThrow('IPC sender');
+      // Nor once it has closed.
+      await shell.asFeishuWindow('close');
+      const gone = shell.windows[1];
+      await expect((async () => shell.handlers.get('columbina-feishu:context')!(
+        { sender: gone.webContents, senderFrame: gone.webContents.mainFrame }))()).rejects.toThrow('the window for the app of Feishu');
+    });
   });
 });

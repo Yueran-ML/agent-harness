@@ -202,6 +202,28 @@ In the conversation a call on GitHub says what it does there, such as `Push fix-
 a question asks with a sentence of its own whether Columbina may push, open a pull request or
 comment, above the whole of what it would send.
 
+## The assistant in Feishu
+
+The settings have a part for the assistant that answers its owner in Feishu or Lark. The app
+of Feishu and its App Secret are given in a window of their own, which lists what to do in the
+developer console step by step, with the permissions to add, and opens the console. Feishu is
+asked for a token of the app before it is stored, and the window says whether the keyring of
+the system took the App Secret. Once the app is stored, the window lists the steps that are
+left.
+
+The settings start and stop the assistant, and show how it is doing: connecting, connected, or
+waiting for the code of pairing, which they show large with a way to copy it. They show what
+went wrong last, and the last line that an assistant wrote before it ended badly. An assistant
+that runs elsewhere, such as in a terminal, is said to run there and is left alone. Deleting
+the app is asked first. The assistant runs while the application is open, and starts again
+with the application where it ran when the application was closed.
+
+The shell runs `columbina feishu --json` for the assistant, `columbina feishu --status
+--json` to say how it is doing, `columbina feishu --from-stdin` to store the app and
+`columbina feishu --forget --json` to delete it. The assistant tells the page how it is
+doing in lines of JSON, and what it writes for errors goes into `columbina-feishu.log` in the
+folder of the logs.
+
 ## On Windows and on macOS
 
 The page draws the bar of the window, and leaves room for the buttons of the system. On
@@ -263,6 +285,13 @@ protocol, and the interface cannot read it. What the service process logs goes t
   files that were dropped on the window, and holds 200 at most. It checks each file again
   before it copies any, and copies them only into `.columbina/attachments/` of the project
   that the service works in, never over a file that is there.
+- The window for the app of Feishu has a bridge of its own, with four calls: read what is set
+  up, store, open the developer console of one of the two platforms, and close. The App
+  Secret goes from it to the standard input of the program and nowhere else, and the main
+  window is told only whether an app was stored.
+- The shell runs one assistant in Feishu at most. It stops it by closing its input, and ends
+  it and what it started where it has not ended six seconds later. The assistant is stopped
+  while an app is stored and started again after, and stopped before an app is deleted.
 - One sign-in to GitHub runs at a time. One that is begun takes the place of one that runs,
   whose page no longer waits for it. The page hears only the documents of JSON that the
   program writes, each line at most 2 MB, and that it has ended. A sign-in is stopped by

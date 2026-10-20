@@ -80,7 +80,7 @@ describe('the bridge of the main window', () => {
     expect(taken).toEqual(['columbina:send']);
     // And it listens to everything that the shell tells of.
     expect([...heard].sort()).toEqual([...told].sort());
-    expect(told.length).toBe(5);
+    expect(told.length).toBe(6);
   });
 
   it('hands on what a call names, and nothing else that came with it', () => {
@@ -94,6 +94,7 @@ describe('the bridge of the main window', () => {
     expect(handed('start', more)).toEqual(['columbina:start', { cwd: 'C:/work' }]);
     expect(handed('notify', more)).toEqual(['columbina:notify', { title: 'a title', body: 'a body' }]);
     expect(handed('setUpService', more)).toEqual(['columbina:set-up-service', { service: 'deepseek', language: 'ja' }]);
+    expect(handed('setUpFeishu', more)).toEqual(['columbina:set-up-feishu', { language: 'ja' }]);
     expect(handed('chooseModel', { ...more, model: 'deepseek-pro' }))
       .toEqual(['columbina:choose-model', { service: 'deepseek', model: 'deepseek-pro' }]);
     expect(handed('chooseEffort', { ...more, effort: 'max' }))
@@ -108,12 +109,15 @@ describe('the bridge of the main window', () => {
     expect(handed('updates', { ...more, now: true })).toEqual(['columbina:updates', { now: true }]);
     for (const asked of [{ now: 'yes' }, { now: 1 }, {}, undefined]) expect(handed('updates', asked)).toEqual(['columbina:updates', { now: false }]);
     // A call that is made with nothing asks all the same, and the shell says what is missing.
-    for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'chooseModel', 'chooseEffort']) {
+    for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'setUpFeishu', 'chooseModel', 'chooseEffort']) {
       const [, given] = handed(call) as [string, Record<string, unknown>];
       expect(Object.values(given).every(value => value === undefined), call).toBe(true);
     }
     // What needs no word of the page is asked for without one.
-    for (const call of ['getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services', 'about']) {
+    for (const call of [
+      'getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services', 'about',
+      'feishuStatus', 'feishuStart', 'feishuStop', 'feishuForget', 'feishuLog',
+    ]) {
       expect(handed(call, more), call).toHaveLength(1);
     }
   });
@@ -185,12 +189,37 @@ describe('the bridge of the window for the key', () => {
   });
 });
 
-describe('the two bridges', () => {
+describe('the bridge of the window for the app of Feishu', () => {
+  it('offers the calls that its page is told of, and no other', () => {
+    const { exposed } = bridgeOf('electron/feishu-preload.cjs');
+    expect(Object.keys(exposed)).toEqual(['columbinaFeishu']);
+    expect(Object.keys(exposed.columbinaFeishu).sort()).toEqual(declared('src/feishu/bridge.d.ts', 'FeishuBridge').sort());
+  });
+
+  it('asks the shell for everything that the shell answers to this window, and listens to nothing', () => {
+    const { asked, said, heard } = reached('electron/feishu-preload.cjs', 'columbinaFeishu');
+    expect([...asked].sort()).toEqual(answered.filter(channel => channel.startsWith('columbina-feishu:')).sort());
+    expect(said).toEqual([]);
+    expect(heard).toEqual([]);
+  });
+
+  it('hands the shell what is to be stored as it is given', () => {
+    // The shell cuts it down to what the program reads, and is tested for that.
+    const { exposed, invoked } = bridgeOf('electron/feishu-preload.cjs');
+    const document = { domain: 'feishu', app_id: 'cli_a1b2c3d4', app_secret: 'made up' };
+    exposed.columbinaFeishu.store(document);
+    expect(invoked.at(-1)).toEqual(['columbina-feishu:store', document]);
+  });
+});
+
+describe('the three bridges', () => {
   it('reach every call that the shell answers between them', () => {
     const main = reached('electron/preload.cjs', 'columbina');
     const key = reached('electron/key-preload.cjs', 'columbinaKey');
-    expect([...main.asked, ...key.asked].sort()).toEqual([...answered].sort());
-    expect([...main.said, ...key.said]).toEqual(taken);
-    expect(main.asked.filter(channel => key.asked.includes(channel))).toEqual([]);
+    const feishu = reached('electron/feishu-preload.cjs', 'columbinaFeishu');
+    expect([...main.asked, ...key.asked, ...feishu.asked].sort()).toEqual([...answered].sort());
+    expect([...main.said, ...key.said, ...feishu.said]).toEqual(taken);
+    expect(main.asked.filter(channel => key.asked.includes(channel) || feishu.asked.includes(channel))).toEqual([]);
+    expect(key.asked.filter(channel => feishu.asked.includes(channel))).toEqual([]);
   });
 });

@@ -34,6 +34,11 @@ vi.mock('../src/useUpdates', () => ({
   },
 }));
 vi.mock('../src/useGitHub', async original => ({ ...await original<object>(), useGitHub: () => held.github }));
+// The assistant in Feishu is tried in page-feishu.test.tsx.
+vi.mock('../src/useFeishu', async () => {
+  const { noFeishu } = await import('./feishuAside');
+  return { useFeishu: () => noFeishu };
+});
 vi.mock('../src/BackgroundMusic', () => ({
   useBackgroundMusic: () => ({ hasTrack: false, muted: false, setMuted: () => {} }),
   MusicTitlebar: () => null,

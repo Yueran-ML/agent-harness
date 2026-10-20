@@ -5,9 +5,9 @@
 // The interpreter is a CPython of python-build-standalone, which runs from whatever folder it lies
 // in. uv fetches it at the version that is named here, so that every package has the same one.
 // Columbina is built from this checkout, and what it needs is installed at the versions and with
-// the hashes of uv.lock, the tools for servers of the Model Context Protocol among them. What a
-// service never uses is taken out, and every module is compiled ahead, so that the package is not
-// written to while it runs. Then the result is tried once.
+// the hashes of uv.lock, the tools for servers of the Model Context Protocol and the connection of
+// the assistant in Feishu among them. What a service never uses is taken out, and every module is
+// compiled ahead, so that the package is not written to while it runs. Then the result is tried once.
 import { spawnSync } from 'node:child_process';
 import { cp, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -68,7 +68,7 @@ const wheels = path.join(work, 'wheel');
 const requirements = path.join(work, 'requirements.txt');
 run('uv', ['build', '--wheel', '--out-dir', wheels], { cwd: checkout });
 run('uv', [
-  'export', '--quiet', '--locked', '--no-default-groups', '--extra', 'mcp', '--no-emit-project',
+  'export', '--quiet', '--locked', '--no-default-groups', '--extra', 'mcp', '--extra', 'feishu', '--no-emit-project',
   '--format', 'requirements-txt', '--output-file', requirements,
 ], { cwd: checkout });
 // Copied, and not linked to the cache of uv: the package is a folder of its own.

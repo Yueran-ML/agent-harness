@@ -87,9 +87,66 @@ describe('the window for the key', () => {
   });
 });
 
+describe('the window for the app of Feishu', () => {
+  const files = readdirSync(path.join(desktop, 'src/feishu')).filter(file => /\.(tsx?|css)$/.test(file));
+
+  it('is made of its own files', () => {
+    expect(files.sort()).toEqual(['FeishuApp.tsx', 'bridge.d.ts', 'feishu.css', 'form.ts', 'main.tsx']);
+  });
+
+  it('takes nothing from the part of the application that shows a conversation', () => {
+    // It shares what the window for the key shares, and the look and the plain helpers of that window.
+    const shared = new Set([
+      '../app/locale', '../i18n', '../size', '../themes', '../ui/tokens.css', '../ui/base.css',
+      '../key/key.css', '../key/form', './FeishuApp', './form', './feishu.css',
+    ]);
+    const packages = new Set([
+      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/inter', '@fontsource-variable/jetbrains-mono',
+    ]);
+    for (const file of files.filter(name => !name.endsWith('.css'))) {
+      const named = importsOf(read(`src/feishu/${file}`));
+      expect(named.filter(place => !shared.has(place) && !packages.has(place)), file).toEqual([]);
+    }
+  });
+
+  it('never reaches for the bridge of the main window or of the window for the key', () => {
+    for (const file of files) {
+      const source = read(`src/feishu/${file}`);
+      expect(source.replaceAll('window.columbinaFeishu', ''), file).not.toMatch(/window\.columbina(Key)?\b/);
+    }
+  });
+
+  it('has a page that loads its own script and nothing from elsewhere', () => {
+    const page = read('feishu.html');
+    const policy = policyOf(page);
+    expect(policy).toEqual(policyOf(read('key.html')));
+    expect(policy.get('connect-src')).toEqual(["'none'"]);
+    expect([...page.matchAll(/<script[^>]*src="([^"]+)"/g)].map(found => found[1])).toEqual(['/src/feishu/main.tsx']);
+    expect(page).not.toMatch(/<script(?![^>]*\bsrc=)/);
+  });
+
+  it('has a bridge that offers four things and nothing of the other windows', () => {
+    const preload = read('electron/feishu-preload.cjs');
+    expect([...preload.matchAll(/ipcRenderer\.(?:invoke|send|on)\('([^']+)'/g)].map(found => found[1]).sort())
+      .toEqual(['columbina-feishu:close', 'columbina-feishu:context', 'columbina-feishu:open-page', 'columbina-feishu:store']);
+    expect(preload).toContain("exposeInMainWorld('columbinaFeishu'");
+  });
+
+  it('keeps what is typed for the App Secret out of sight and out of what a browser remembers', () => {
+    const source = read('src/feishu/FeishuApp.tsx');
+    const field = /<input ref=\{secretField\}[^>]*>/.exec(source.replace(/\s+/g, ' '))?.[0] ?? '';
+    expect(field).toContain('type="password"');
+    expect(field).toContain('autoComplete="off"');
+    expect(field).toContain('spellCheck={false}');
+    expect(field).not.toContain('value=');
+    expect(source).not.toMatch(/localStorage|sessionStorage|indexedDB|location\.|history\./);
+  });
+});
+
 describe('the main window and the key', () => {
-  it('has no way to the calls of the window for the key', () => {
+  it('has no way to the calls of the window for the key, nor of the window for the app of Feishu', () => {
     expect(read('electron/preload.cjs')).not.toContain('columbina-key:');
+    expect(read('electron/preload.cjs')).not.toContain('columbina-feishu:');
   });
 
   it('is handed the services without a key, and only whether something was stored or deleted', () => {
@@ -98,6 +155,12 @@ describe('the main window and the key', () => {
     for (const file of ['src/useWorkspace.ts', 'src/app/Settings.tsx', 'src/app/App.tsx']) {
       expect(read(file), file).not.toMatch(/api_key|apiKey/);
     }
+    // And whether an app of Feishu was stored, and nothing of its App Secret.
+    expect(bridge).toContain('setUpFeishu(asked: { language: string }): Promise<{ changed: boolean }>;');
+    for (const file of ['src/useFeishu.ts', 'src/app/feishu.ts', 'src/app/FeishuAssistant.tsx']) {
+      // What the code names, and not what its comments say of the App Secret.
+      expect(read(file), file).not.toMatch(/app_secret|appSecret|\bsecret\s*[:=(]|\.secret\b/);
+    }
   });
 });
 
@@ -105,16 +168,17 @@ describe('what the packed application holds of the shell', () => {
   it('is every file that the shell names beside itself', () => {
     const shell = read('electron/main.cjs');
     const named = [...shell.matchAll(/path\.join\(__dirname, '([^']+)'\)/g)].map(found => found[1]);
-    expect(new Set(named)).toEqual(new Set(['icon.ico', 'preload.cjs', 'key-preload.cjs', 'mock-service.mjs']));
+    expect(new Set(named)).toEqual(new Set(['icon.ico', 'preload.cjs', 'key-preload.cjs', 'feishu-preload.cjs', 'mock-service.mjs']));
     const packer = read('electron/package.mjs');
     for (const file of ['main.cjs', ...named]) expect(packer, file).toContain(`'/electron/${file}'`);
   });
 
-  it('is both pages of the build', () => {
+  it('is the three pages of the build', () => {
     const config = read('vite.config.ts');
-    expect(config).toContain("input: { index: 'index.html', key: 'key.html' }");
+    expect(config).toContain("input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html' }");
     const shell = read('electron/main.cjs');
     expect(shell).toContain("path.resolve(__dirname, '../dist/index.html')");
     expect(shell).toContain("path.resolve(__dirname, '../dist/key.html')");
+    expect(shell).toContain("path.resolve(__dirname, '../dist/feishu.html')");
   });
 });

@@ -1,0 +1,95 @@
+/* The window in which the app of Feishu is given. It has the look of the window for the key, and these besides. */
+
+/* What is done in the developer console: all of it, folded away once an app is set up, or what
+   is left once the app is stored. */
+.feishu-steps {
+  margin-top: var(--s2);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--line);
+  border-radius: var(--r2);
+  background: color-mix(in srgb, var(--ink-1) 72%, transparent);
+}
+
+.feishu-steps > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  color: var(--moon-0);
+  font-weight: 600;
+  list-style: none;
+}
+
+.feishu-steps > summary::-webkit-details-marker {
+  display: none;
+}
+
+.feishu-steps > summary svg {
+  flex: none;
+  color: var(--moon-2);
+  transition: transform var(--quick) var(--ease);
+}
+
+.feishu-steps[open] > summary svg {
+  transform: rotate(90deg);
+}
+
+.feishu-steps[open] > summary,
+.feishu-steps > h2 {
+  margin-bottom: var(--s2);
+}
+
+.feishu-console {
+  margin-top: 0;
+}
+
+.feishu-steps ol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin: var(--s2) 0 0;
+  padding-left: 1.4em;
+  color: var(--moon-1);
+  line-height: 1.5;
+}
+
+.feishu-steps ol > li {
+  overflow-wrap: anywhere;
+}
+
+/* The permissions, each one marked whole by a click so that it can be copied into the console. */
+.feishu-scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: var(--s2) 0 var(--s1);
+  padding: 0;
+  list-style: none;
+}
+
+.feishu-scopes code {
+  display: inline-block;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r1);
+  background: var(--ink-1);
+  color: var(--moon-0);
+  font-size: var(--text-caption);
+  user-select: all;
+}
+
+/* The buttons of the form stay at the foot of the window while what is above them is read. They
+   reach to its edges, and to its bottom: the page leaves no room beneath them. */
+.feishu-page:has(.feishu-foot) {
+  padding-bottom: 0;
+}
+
+.feishu-foot {
+  position: sticky;
+  bottom: 0;
+  margin-left: calc(-1 * var(--s5));
+  margin-right: calc(-1 * var(--s5));
+  padding: var(--s3) var(--s5) var(--s4);
+  border-top: 1px solid var(--line);
+  background: var(--ink-0);
+}

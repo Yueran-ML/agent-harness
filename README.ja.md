@@ -142,6 +142,10 @@ GitHub にサインインすると、エージェントはあなたが GitHub �
 columbina login github
 ```
 
+### Feishu アシスタント
+
+Columbina は [Feishu](https://www.feishu.cn) や Lark でもあなたに返信できます。あなた自身のカスタムアプリを使い、話せるのはあなただけです。アプリに共有されたドキュメントと、送られたテキストファイルを読みます。`SKILL.md` を送るとスキルとして追加します。コマンドは実行せず、あなたのファイルも変更しません。送ったものはアシスタント専用のフォルダーに保存されます。デスクトップアプリでは「設定」の「Feishu アシスタント」で設定でき、Feishu の開発者コンソールで行う手順もそこに載っています。アシスタントはアプリが開いている間だけ動きます。コマンドラインでは `columbina feishu --setup` でアプリを設定し、`columbina feishu` でアシスタントを動かします。接続に必要なパッケージは `pip install "columbina[feishu]"` で入ります。
+
 ## ドキュメント
 
 - [エンジニアリングレポート](docs/report.md)では、Columbina の組み立て、形を決めた選択、テストの方法、性能を説明しています（[中国語版](docs/report.zh-CN.md)）。

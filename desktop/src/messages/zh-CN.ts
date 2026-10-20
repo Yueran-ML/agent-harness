@@ -14,7 +14,7 @@
  */
 import { splitDuration } from './duration';
 import type { Messages } from './en';
-import { beforeWord } from './spacing';
+import { afterWord, beforeWord, between } from './spacing';
 
 function duration(seconds: number): string {
   const time = splitDuration(seconds);
@@ -301,6 +301,32 @@ export const zhCN: Messages = {
       signOut: '退出登录',
       stay: '保持登录',
       revoke: '到 GitHub 撤销授权',
+    },
+
+    feishu: {
+      title: '飞书助手',
+      setUp: '设置飞书应用',
+      change: '更换应用',
+      start: '启动助手',
+      starting: '正在启动',
+      stop: '停止',
+      stopping: '正在停止',
+      forget: '删除应用',
+      forgetConfirm: '删除',
+      keep: '保留',
+      console: '打开开发者后台',
+      log: '查看日志',
+      checkAgain: '重新查看',
+      copyCode: '复制配对码',
+      pair: (platform: string) => `在${between(platform)}里给机器人发送这个配对码`,
+      platform: '平台',
+      platforms: { feishu: '飞书', lark: 'Lark' },
+      appId: 'App ID',
+      appSecret: 'App Secret',
+      store: '验证并保存',
+      storing: '正在验证',
+      steps: '在开发者后台要做的事',
+      next: '接下来',
     },
 
     start: {
@@ -726,6 +752,52 @@ export const zhCN: Messages = {
         notStarted: '登录没能启动。',
         unknown: '登录没有完成。',
       },
+    },
+
+    feishu: {
+      lead: '在飞书或 Lark 里和 Columbina 聊天，用你自己在开放平台创建的应用。助手只回复你一个人，'
+        + '能读分享给应用的文档；它不运行命令，也不改动你的文件，你发给它的文件和技能存在它自己的文件夹里。',
+      reading: '正在查看飞书助手的状态。',
+      unavailable: '应用自己运行服务时才能在这里设置飞书助手，回放时不能。',
+      statusFailed: 'Columbina 没能查到飞书助手的状态。',
+      notRunning: '助手没有运行。',
+      connecting: (platform: string) => `正在连接${afterWord(platform)}。`,
+      reconnecting: (platform: string) => `暂时连不上${afterWord(platform)}，助手会一直重试。`,
+      connected: (platform: string) => `已连接。助手会在${between(platform)}里回复你。`,
+      trouble: '最近有一件事没办成。',
+      pairNote: '第一个发来配对码的人，就是助手要回复的人。配对码 10 分钟内有效，过期后给机器人发任意一条消息，这里会换一个新码。',
+      pairNotHeard: '机器人没有回应的话，到开发者后台确认：订阅方式是长连接，添加了「接收消息」事件，应用也发布了版本。',
+      noCode: '配对码输错的次数太多，已经作废。停止助手再启动，就能拿到新的配对码。',
+      stopping: '正在停止助手。',
+      elsewhere: '助手正在这台电脑的别处运行，比如在终端里，要在那里停止。',
+      withColumbina: '助手只在 Columbina 开着时运行。关掉 Columbina 时它在运行的话，下次打开会自动启动。',
+      ended: '助手停止了。',
+      lastError: '助手上次运行出了问题。',
+      startFailed: '助手没能启动。',
+      stopFailed: '助手没能停止。',
+      forgetAsk: (appId: string) => `在这台电脑上删除应用 ${appId}？它的 App Secret 和配对的人都会删除，助手在运行的话会先停下。`
+        + '开放平台上的应用不受影响。',
+      forgotten: '已在这台电脑上删除应用。',
+      forgetFailed: '应用没能删除。',
+      windowLead: '你在飞书或 Lark 开放平台创建的应用。App ID 和 App Secret 在应用的「凭证与基础信息」页。',
+      appId: '以 cli_ 开头。',
+      appIdWrong: 'App ID 以 cli_ 开头，后面是字母和数字。',
+      secret: 'App Secret 从这个窗口直接交给 Columbina，由它存进系统密钥环。显示对话的那个窗口始终拿不到它。',
+      secretAgain: '已保存的 App Secret 不会显示。要重新保存应用，请再输入一次。',
+      blankInSecret: 'App Secret 中间不会有空白。看看粘贴时是不是多带了别的内容。',
+      done: (appId: string, platform: string) => `${beforeWord(platform)}接受了应用 ${appId}，已经保存。`,
+      inKeyring: 'App Secret 已经存进系统密钥环。',
+      inFile: '没有密钥环接收 App Secret。它原样存在 Columbina 文件夹里的一个文件中，没有加密。',
+      steps: (platform: string) => [
+        '在开发者后台创建企业自建应用。App ID 和 App Secret 在「凭证与基础信息」里。',
+        '在「添加应用能力」里添加「机器人」。',
+        '在「权限管理」里开通下面这些权限。',
+        '在这里保存应用后，到设置里启动助手。',
+        '助手运行时，在「事件与回调」里把订阅方式设为「使用长连接接收事件」，再添加事件「接收消息」（im.message.receive_v1）。',
+        '在「版本管理与发布」里创建版本并申请发布，「可用范围」里要有你自己。',
+        `在${between(platform)}里搜索机器人的名字，进入单聊，发送配对码。`,
+      ],
+      scopes: '后三项用来读文档，用不到可以不开。',
     },
 
     music: {

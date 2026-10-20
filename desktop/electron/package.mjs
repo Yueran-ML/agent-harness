@@ -55,7 +55,7 @@ if (process.platform === 'win32') {
 const manifest = JSON.parse(await readFile(path.join(desktop, 'package.json'), 'utf8'));
 const electron = JSON.parse(await readFile(path.join(desktop, 'node_modules/electron/package.json'), 'utf8'));
 const runtimeFiles = new Set([
-  '/package.json', '/electron', '/electron/main.cjs', '/electron/preload.cjs', '/electron/key-preload.cjs',
+  '/package.json', '/electron', '/electron/main.cjs', '/electron/preload.cjs', '/electron/key-preload.cjs', '/electron/feishu-preload.cjs',
   '/electron/mock-service.mjs', '/electron/icon.ico', '/src',
   '/src/replay.shared.js', '/src/mock-fixture.js',
 ]);

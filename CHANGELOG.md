@@ -58,6 +58,11 @@ change what was there before.
   a terminal and `--from-stdin` from another program, `--status` says how the assistant is
   doing, and `--forget` deletes the app; an app is kept or deleted only while no assistant
   runs. The package of the connection comes with `columbina[feishu]`.
+- The settings of the desktop application have a part for the assistant in Feishu. The app and
+  its App Secret are given in a window of their own, which lists what to do in the developer
+  console, and Feishu is asked whether it takes the app before it is stored. The assistant is
+  started and stopped there and shows its code of pairing. It runs while the application is
+  open, and starts again with the application where it ran when the application was closed.
 
 ## 0.1.1 (2026-10-16)
 

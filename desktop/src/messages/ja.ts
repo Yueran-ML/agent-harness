@@ -15,7 +15,7 @@
  */
 import { splitDuration } from './duration';
 import type { Messages } from './en';
-import { beforeWord } from './spacing';
+import { afterWord, beforeWord, between } from './spacing';
 
 function duration(seconds: number): string {
   const time = splitDuration(seconds);
@@ -348,6 +348,32 @@ export const ja: Messages = {
       signOut: 'サインアウト',
       stay: 'サインインしたままにする',
       revoke: 'GitHub で権限を取り消す',
+    },
+
+    feishu: {
+      title: 'Feishu アシスタント',
+      setUp: 'アプリを設定',
+      change: 'アプリを変更',
+      start: 'アシスタントを起動',
+      starting: '起動しています',
+      stop: '停止',
+      stopping: '停止しています',
+      forget: 'アプリを削除',
+      forgetConfirm: '削除する',
+      keep: '残す',
+      console: '開発者コンソールを開く',
+      log: 'ログを表示',
+      checkAgain: 'もう一度確認',
+      copyCode: 'コードをコピー',
+      pair: (platform: string) => `このコードを${between(platform)}でボットに送ってください`,
+      platform: 'プラットフォーム',
+      platforms: { feishu: 'Feishu', lark: 'Lark' },
+      appId: 'App ID',
+      appSecret: 'App Secret',
+      store: '確認して保存',
+      storing: '確認しています',
+      steps: '開発者コンソールで行うこと',
+      next: '次の手順',
     },
 
     start: {
@@ -780,6 +806,58 @@ export const ja: Messages = {
         notStarted: 'サインインを始められませんでした。',
         unknown: 'サインインできませんでした。',
       },
+    },
+
+    feishu: {
+      lead: 'Feishu や Lark で Columbina と話せます。オープンプラットフォームで作ったあなた自身のアプリを使います。'
+        + 'アシスタントはあなたにだけ返信し、アプリに共有されたドキュメントを読みます。コマンドは実行せず、あなたのファイルも変更しません。'
+        + '送ったファイルとスキルは、アシスタント専用のフォルダーに保存されます。',
+      reading: 'Feishu アシスタントの状態を確認しています。',
+      unavailable: 'Feishu アシスタントの設定は、アプリケーションが実際のサービスを動かしているときに行えます。リプレイ中は行えません。',
+      statusFailed: 'Columbina は Feishu アシスタントの状態を確認できませんでした。',
+      notRunning: 'アシスタントは動いていません。',
+      connecting: (platform: string) => `${beforeWord(platform)}に接続しています。`,
+      reconnecting: (platform: string) => `いまは${between(platform)}に接続できません。アシスタントは接続を試し続けます。`,
+      connected: (platform: string) => `接続しました。アシスタントは${between(platform)}であなたに返信します。`,
+      trouble: '最近、うまくいかなかったことがあります。',
+      pairNote: '最初にコードを送った人が、アシスタントの返信する相手になります。コードの有効期限は 10 分です。'
+        + '期限が切れたあとにボットへメッセージを送ると、ここに新しいコードが表示されます。',
+      pairNotHeard: 'ボットから返信がない場合は、開発者コンソールで、受信方法が長時間接続であること、'
+        + 'メッセージ受信のイベントが追加されていること、アプリのバージョンがリリースされていることを確かめてください。',
+      noCode: '間違ったコードが多すぎたため、コードは無効になりました。アシスタントを停止してもう一度起動すると、新しいコードが表示されます。',
+      stopping: 'アシスタントを停止しています。',
+      elsewhere: 'アシスタントはこのコンピューターの別の場所（ターミナルなど）で動いています。停止はそちらで行ってください。',
+      withColumbina: 'アシスタントは Columbina が開いている間だけ動きます。Columbina を閉じたときに動いていれば、'
+        + '次に開いたときにまた起動します。',
+      ended: 'アシスタントが止まりました。',
+      lastError: '前回のアシスタントの実行は正常に終わりませんでした。',
+      startFailed: 'アシスタントを起動できませんでした。',
+      stopFailed: 'アシスタントを停止できませんでした。',
+      forgetAsk: (appId: string) => `このコンピューターからアプリ ${appId} を削除しますか？App Secret と返信相手の情報が削除され、`
+        + 'アシスタントが動いていれば先に停止します。オープンプラットフォーム上のアプリはそのまま残ります。',
+      forgotten: 'このコンピューターからアプリを削除しました。',
+      forgetFailed: 'アプリを削除できませんでした。',
+      windowLead: 'Feishu または Lark のオープンプラットフォームで作ったアプリです。App ID と App Secret はアプリの認証情報のページにあります。',
+      appId: 'cli_ で始まります。',
+      appIdWrong: 'App ID は cli_ で始まり、そのあとに英字と数字が続きます。',
+      secret: 'App Secret はこのウィンドウから Columbina に直接渡され、システムのキーリングに保存されます。'
+        + '会話を表示するウィンドウが受け取ることはありません。',
+      secretAgain: '保存された App Secret は表示されません。アプリを保存し直すには、もう一度入力してください。',
+      blankInSecret: 'App Secret の途中に空白は入りません。貼り付けたときに余分なものが入っていないか確かめてください。',
+      done: (appId: string, platform: string) => `${beforeWord(platform)}がアプリ ${appId} を受け付け、保存しました。`,
+      inKeyring: 'App Secret はシステムのキーリングに保存されました。',
+      inFile: 'App Secret を受け取るキーリングがありませんでした。Columbina のフォルダー内のファイルに、暗号化されずそのまま保存されています。',
+      steps: (platform: string) => [
+        '開発者コンソールでカスタムアプリを作成します。App ID と App Secret は認証情報と基本情報にあります。',
+        '機能の追加でボットを追加します。',
+        '権限管理で下の権限を追加します。',
+        'ここでアプリを保存したら、設定でアシスタントを起動します。',
+        'アシスタントの実行中に、イベントとコールバックで受信方法を長時間接続に設定し、メッセージ受信のイベント'
+          + '（im.message.receive_v1）を追加します。',
+        'バージョン管理とリリースでバージョンを作成してリリースを申請します。利用できる人の範囲に自分を含めてください。',
+        `${beforeWord(platform)}でボットの名前を検索し、1 対 1 のチャットでコードを送ります。`,
+      ],
+      scopes: '最後の 3 つはドキュメントを読むためのものです。不要なら追加しなくてもかまいません。',
     },
 
     music: {

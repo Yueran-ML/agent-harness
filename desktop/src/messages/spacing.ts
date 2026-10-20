@@ -11,3 +11,13 @@
 export function beforeWord(count: string): string {
   return /[0-9A-Za-z]$/.test(count) ? `${count} ` : count;
 }
+
+/** A name, as it stands after a word of Chinese or Japanese: with a blank before it where it begins in a Latin letter or a digit. */
+export function afterWord(name: string): string {
+  return /^[0-9A-Za-z]/.test(name) ? ` ${name}` : name;
+}
+
+/** A name, as it stands between two words of Chinese or Japanese. */
+export function between(name: string): string {
+  return afterWord(beforeWord(name));
+}

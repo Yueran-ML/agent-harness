@@ -17,6 +17,12 @@ import {
   type Written,
 } from './mounted';
 
+// The assistant in Feishu is tried in page-feishu.test.tsx.
+vi.mock('../src/useFeishu', async () => {
+  const { noFeishu } = await import('./feishuAside');
+  return { useFeishu: () => noFeishu };
+});
+
 beforeEach(likeABrowser);
 afterEach(() => {
   cleanup();

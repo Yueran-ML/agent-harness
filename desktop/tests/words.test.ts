@@ -96,9 +96,20 @@ const samples: Record<string, unknown[][]> = {
   'hint.github.signedIn': [['octocat']],
   'hint.github.moreRepositories': [[1], [3], [12]],
   'hint.github.signOutAsk': [['octocat']],
+  'hint.feishu.forgetAsk': [['cli_a1b2c3d4']],
+  'hint.feishu.done': [['cli_a1b2c3d4', 'Lark'], ['cli_a1b2c3d4', 'Feishu']],
+  'hint.feishu.connecting': [['Lark'], ['Feishu']],
+  'hint.feishu.reconnecting': [['Lark'], ['Feishu']],
+  'hint.feishu.connected': [['Lark'], ['Feishu']],
+  'hint.feishu.steps': [['Lark']],
+  'label.feishu.pair': [['Lark'], ['Feishu']],
 };
 
 type Said = { path: string; text: string };
+
+// What is written in every language as it is: the names of the two platforms of Feishu, and the
+// names of the fields of an app, as both of their consoles write them.
+const NAMES = new Set(['Feishu', 'Lark', 'App ID', 'App Secret']);
 
 // Every string that a catalogue can say, with the place where it stands.
 function everythingSaid(value: unknown, path = ''): Said[] {
@@ -246,8 +257,9 @@ describe('the catalogues', () => {
     expect(said.filter(({ text }) => text.includes('您'))).toEqual([]);
     // Every sentence is in Chinese: none was left as it is in English.
     const english = new Set(everythingSaid(en).map(({ text }) => text));
-    expect(said.filter(({ text }) => english.has(text))).toEqual([]);
-    expect(said.filter(({ text }) => !new RegExp(chinese).test(text))).toEqual([]);
+    const translated = said.filter(({ text }) => !NAMES.has(text));
+    expect(translated.filter(({ text }) => english.has(text))).toEqual([]);
+    expect(translated.filter(({ text }) => !new RegExp(chinese).test(text))).toEqual([]);
   });
 
   it('are written as Japanese is written, in the Japanese one', () => {
@@ -265,8 +277,9 @@ describe('the catalogues', () => {
     expect(said.filter(({ text }) => touching.test(text))).toEqual([]);
     // Every line is in Japanese: none was left as it is in English.
     const english = new Set(everythingSaid(en).map(({ text }) => text));
-    expect(said.filter(({ text }) => english.has(text))).toEqual([]);
-    expect(said.filter(({ text }) => !new RegExp(japanese).test(text))).toEqual([]);
+    const translated = said.filter(({ text }) => !NAMES.has(text));
+    expect(translated.filter(({ text }) => english.has(text))).toEqual([]);
+    expect(translated.filter(({ text }) => !new RegExp(japanese).test(text))).toEqual([]);
     // And none was left as it is in Chinese, which has no kana. A sentence of Japanese has some.
     expect(said.filter(({ text }) => text.endsWith('。') && !new RegExp(kana).test(text))).toEqual([]);
     // A sentence is in the polite form. Those that name a version are no sentences but lines with a stop.

@@ -383,6 +383,33 @@ export const en = {
       revoke: 'Take back the right on GitHub',
     },
 
+    /** The assistant in Feishu: in the settings, and in the window that takes its app. */
+    feishu: {
+      title: 'Assistant in Feishu',
+      setUp: 'Set up an app',
+      change: 'Change the app',
+      start: 'Start the assistant',
+      starting: 'Starting',
+      stop: 'Stop',
+      stopping: 'Stopping',
+      forget: 'Delete the app',
+      forgetConfirm: 'Delete it',
+      keep: 'Keep it',
+      console: 'Open the developer console',
+      log: 'Show the log',
+      checkAgain: 'Check again',
+      copyCode: 'Copy the code',
+      pair: (platform: string) => `Send the bot this code in ${platform}`,
+      platform: 'Platform',
+      platforms: { feishu: 'Feishu', lark: 'Lark' },
+      appId: 'App ID',
+      appSecret: 'App Secret',
+      store: 'Check and store',
+      storing: 'Checking',
+      steps: 'In the developer console',
+      next: 'Next steps',
+    },
+
     /** The first steps on the first page. */
     start: {
       title: 'Getting started',
@@ -847,6 +874,60 @@ export const en = {
         notStarted: 'The sign-in could not be started.',
         unknown: 'The sign-in did not go through.',
       },
+    },
+
+    /** The assistant in Feishu. */
+    feishu: {
+      lead: 'Talk to Columbina in Feishu or Lark, through an app of your own on its open platform. The assistant answers '
+        + 'you alone and reads the documents that are shared with the app. It runs no commands and changes none of your '
+        + 'files: the files and skills that you send it are kept in a folder of its own.',
+      reading: 'Asking how the assistant in Feishu is doing.',
+      unavailable: 'The assistant in Feishu is set up here where the application runs the service itself, and not in a replay.',
+      statusFailed: 'Columbina could not find out how the assistant in Feishu is doing.',
+      notRunning: 'The assistant does not run.',
+      connecting: (platform: string) => `Connecting to ${platform}.`,
+      reconnecting: (platform: string) => `${platform} cannot be reached just now. The assistant keeps trying.`,
+      connected: (platform: string) => `Connected. The assistant answers you in ${platform}.`,
+      trouble: 'Something did not go through lately.',
+      pairNote: 'Whoever sends it first is the one whom the assistant answers. The code holds for 10 minutes. '
+        + 'After that, a message to the bot makes a new one here.',
+      pairNotHeard: 'No answer from the bot? In the developer console, see that events come through a persistent '
+        + 'connection, that the event for receiving messages is added, and that a version of the app is released.',
+      noCode: 'The code was given up on after too many wrong tries. Stop the assistant and start it again for a new one.',
+      stopping: 'Stopping the assistant.',
+      elsewhere: 'The assistant runs elsewhere on this computer, such as in a terminal, and is stopped there.',
+      withColumbina: 'The assistant runs only while Columbina is open. If it runs when you close Columbina, it starts again the '
+        + 'next time.',
+      ended: 'The assistant stopped.',
+      lastError: 'The last run of the assistant did not end well.',
+      startFailed: 'The assistant could not be started.',
+      stopFailed: 'The assistant could not be stopped.',
+      forgetAsk: (appId: string) => `Delete the app ${appId} on this computer? Its App Secret and whom the assistant answers `
+        + 'are deleted, and an assistant that runs stops first. The app on the open platform stays as it is.',
+      forgotten: 'The app was deleted on this computer.',
+      forgetFailed: 'The app could not be deleted.',
+      windowLead: 'An app that you made on the open platform of Feishu or Lark. Its App ID and App Secret are on its page of '
+        + 'credentials.',
+      appId: 'It begins with cli_.',
+      appIdWrong: 'An App ID begins with cli_, followed by letters and digits.',
+      secret: 'The App Secret goes from this window to Columbina, which keeps it in the keyring of the system. '
+        + 'The window that shows the conversation never has it.',
+      secretAgain: 'The App Secret that is stored is not shown. Enter it again to store the app anew.',
+      blankInSecret: 'An App Secret has no blank in it. See whether what was pasted brought more along.',
+      done: (appId: string, platform: string) => `${platform} takes the app ${appId}, and it is stored.`,
+      inKeyring: 'The App Secret is in the keyring of the system.',
+      inFile: 'No keyring took the App Secret. It lies in a file in the folder of Columbina, as it is and not encrypted.',
+      steps: (platform: string) => [
+        'In the developer console, make a custom app. Its App ID and App Secret are under Credentials & Basic Info.',
+        'Under Add Features, add a bot.',
+        'Under Permissions & Scopes, add the permissions below.',
+        'Once the app is stored here, start the assistant in the settings.',
+        'While the assistant runs, set the subscription mode under Events & Callbacks to a persistent connection, and add '
+          + 'the event for receiving messages, im.message.receive_v1.',
+        'Under Version Management & Release, make a version and ask for its release, with yourself among those who may use it.',
+        `Find the bot by its name in ${platform}, and send it the code in a chat of your own.`,
+      ],
+      scopes: 'The last three are for reading documents, and may be left out.',
     },
 
     music: {

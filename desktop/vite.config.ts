@@ -11,8 +11,8 @@ export default defineConfig({
     // that way: its policy is `font-src 'self'`.
     assetsInlineLimit: 0,
     rollupOptions: {
-      // Two pages: the application, and the window that takes a key.
-      input: { index: 'index.html', key: 'key.html' },
+      // Three pages: the application, the window that takes a key, and the one that takes the app of Feishu.
+      input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html' },
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name].js',

@@ -95,6 +95,34 @@ export interface ColumbinaBridge {
   /** Say whether GitHub is to wait, so that the first page offers it no more, or again. */
   skipGitHub(skipped: boolean): Promise<void>;
   onGitHub(listener: (said: Record<string, unknown>) => void): () => void;
+  /**
+   * What `columbina feishu --status --json` says: which app of Feishu is set up and how its
+   * assistant is doing, without the App Secret. With `own`, whether this application runs the
+   * assistant; with `on`, whether it starts it when it starts; with `ended`, how the last one that
+   * it ran ended badly, or why it did not start. Null where the application does not run the service.
+   */
+  feishuStatus(): Promise<unknown>;
+  /**
+   * Start the assistant in Feishu, which then runs whenever the application runs, until it is
+   * stopped. What it says of how it is doing comes as documents to `onFeishu`, and so does its end.
+   */
+  feishuStart(): Promise<void>;
+  /** Stop the assistant in Feishu that this application runs. It no longer starts with the application. */
+  feishuStop(): Promise<void>;
+  /** Stop the assistant in Feishu, and delete its app, its App Secret and whom it answered. */
+  feishuForget(): Promise<unknown>;
+  /** Show the log of the assistant in Feishu in its folder. */
+  feishuLog(): Promise<void>;
+  /**
+   * Open the window in which the app of Feishu and its App Secret are given, and wait until it is
+   * closed. This window is told whether an app was stored there, and nothing of it.
+   */
+  setUpFeishu(asked: { language: string }): Promise<{ changed: boolean }>;
+  /**
+   * Hear how the assistant in Feishu that the application runs is doing: its state, whether it is
+   * paired, the code of pairing and what went wrong. Its end comes as `{ ended: true, code, said }`.
+   */
+  onFeishu(listener: (said: Record<string, unknown>) => void): () => void;
 }
 
 declare global {

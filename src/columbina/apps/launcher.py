@@ -17,7 +17,11 @@ there, ``columbina login --status`` says who is signed in, and
 ``columbina logout github`` deletes the sign-in, each with lines of JSON for
 another program where ``--json`` asks for them. ``columbina doctor`` sees
 whether a session could start, and says what is in the way: the service and
-its key, the shell, or the sandbox.
+its key, the shell, or the sandbox. ``columbina feishu`` is an assistant that
+its owner talks to in Feishu, see :mod:`columbina.feishu.bot`. Its app is set
+up at a terminal with ``--setup`` or by another program with ``--from-stdin``,
+and with ``--json`` another program reads how it is doing, in lines of JSON,
+and stops it by closing its standard input.
 
 Either way the program is built from layers, which are lists of plugin
 entries: first the profile, then the patch of the user, then the patches named
@@ -61,7 +65,6 @@ import logging
 import os
 import shutil
 import sys
-import threading
 import time
 import webbrowser
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -78,9 +81,12 @@ from columbina.apps import doctor as health
 from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
 from columbina.apps import setup as chosen_service
+from columbina.apps.common import when_the_input_closes
 from columbina.apps.serve import wire as serve_wire
 from columbina.apps.serve.wire import WIRE, Wire
 from columbina.apps.terminal_text import escaped, harmless
+from columbina.feishu import setup as feishu_setup
+from columbina.feishu.app import FeishuError
 from columbina.github import oauth, signing, store
 from columbina.github.app import GitHubError, web_of
 from columbina.github.client import GitHub
@@ -126,6 +132,9 @@ _SHOWN_REPOSITORIES = 20
 """How many repositories a person is shown, before how many more there are."""
 _STOPPED = "the sign-in was stopped"
 _DOCTOR = "doctor"
+_FEISHU = "feishu"
+_FEISHU_DOCUMENT = 64 * 1024
+"""How many bytes the document of an app that another program gives may be long."""
 _MODEL = "model"
 _SPEAKS_OPENAI = "columbina.llm.adapters.openai_chat"
 """The plugin that talks to every service that has a name."""
@@ -454,6 +463,9 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                 config["task"] = args.task
                 if args.json is not None:
                     config["json_lines"] = args.json
+            elif args.command == _FEISHU and args.json:
+                # Another program reads how the assistant is doing, and stops it.
+                config["json_lines"] = True
             elif args.command == _CHAT and args.resume:
                 config["resume"] = True
                 # Which session to take up is said here. One that a profile names is not it.
@@ -798,32 +810,6 @@ def _sentence(said: str) -> str:
     return said if said.endswith(".") else f"{said}."
 
 
-def _when_the_input_closes() -> asyncio.Event:
-    """Return an event that is set when the standard input comes to its end.
-
-    Another program stops a sign-in by closing the standard input of the command. Where
-    there is no standard input to watch, the event is never set.
-    """
-    loop = asyncio.get_running_loop()
-    closed = asyncio.Event()
-    try:
-        descriptor = sys.stdin.fileno()
-    except (AttributeError, OSError, ValueError):
-        return closed
-
-    def watch() -> None:
-        # The descriptor, and not sys.stdin: a thread that is still in a read of a stream of
-        # Python when the program ends holds its lock, and Python cannot end cleanly.
-        with contextlib.suppress(OSError):
-            while os.read(descriptor, 4096):
-                pass
-        with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(closed.set)
-
-    threading.Thread(target=watch, name="columbina-input", daemon=True).start()
-    return closed
-
-
 class _Stopped(Exception):  # noqa: N818 - how the waiting is told to stop, and no error
     """The program that waits for the sign-in closed the standard input."""
 
@@ -908,7 +894,7 @@ async def _login_for_a_program(home: Path, env: Mapping[str, str]) -> int:
         _answer({"code": code.user_code, "url": code.verification_uri, "expires_in": expires_in})
         # The program that reads it shows the code while this one waits.
         sys.stdout.flush()
-        tokens = await _waited(github, code, _when_the_input_closes())
+        tokens = await _waited(github, code, when_the_input_closes())
         if tokens is None:
             _answer({"error": _STOPPED, "code": "STOPPED"})
             return _INTERRUPTED
@@ -1216,6 +1202,102 @@ def _written(command: argparse.ArgumentParser) -> None:
         )
 
 
+def _feishu_given() -> dict[str, Any]:
+    """Return the app that another program wrote to the standard input as JSON.
+
+    Raises:
+        FeishuError: The standard input is a terminal, or holds no document of an app.
+    """
+    # Windows says of a standard input that leads nowhere that it is a terminal too.
+    if sys.stdin.isatty():
+        raise FeishuError(
+            "'columbina feishu --from-stdin' reads what another program writes to its standard "
+            "input, and this one is a terminal. 'columbina feishu --setup' asks for the App "
+            "Secret without showing it",
+            code="INVALID",
+        )
+    read = sys.stdin.buffer.read(_FEISHU_DOCUMENT + 1)
+    if len(read) > _FEISHU_DOCUMENT:
+        raise FeishuError("the standard input holds more than a document of an app", code="INVALID")
+    return feishu_setup.read_given(read.decode("utf-8", errors="replace"))
+
+
+def _feishu_status(said: Mapping[str, object]) -> str:
+    """Say how the assistant in Feishu is doing, for a person."""
+    if not said["set_up"]:
+        return "No app of Feishu is set up. 'columbina feishu --setup' sets one up."
+    lines = [f"The app {said['app_id']} in {said['domain']} is set up."]
+    if said["running"]:
+        lines.append(f"Its assistant runs, and is {said['state'] or 'starting'}.")
+    else:
+        lines.append("Its assistant does not run. 'columbina feishu' runs it.")
+    if said["code"]:
+        lines.append(f"Send the bot this code in Feishu to pair: {said['code']}")
+    elif not said["paired"]:
+        lines.append("Nobody has paired with it yet.")
+    if said["error"]:
+        lines.append(f"What went wrong last: {said['error']}")
+    return "\n".join(lines)
+
+
+def _feishu(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Run the assistant in Feishu, or set it up, say how it is doing, or forget it."""
+    if args.json and (args.setup or args.dump_config):
+        raise _UsageError("--json goes with --status, --forget or a run of the assistant")
+    if args.setup:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise _UsageError(
+                "'columbina feishu --setup' asks its questions at a terminal, and this is none. "
+                "Another program gives the app with --from-stdin"
+            )
+
+        def show(told: str) -> None:
+            print(harmless(told))
+
+        try:
+            return asyncio.run(
+                feishu_setup.at_a_terminal(
+                    home,
+                    env,
+                    lambda question: input(harmless(question)),
+                    lambda question: getpass.getpass(harmless(question)),
+                    show,
+                )
+            )
+        except (EOFError, KeyboardInterrupt):
+            print()
+            _tell("nothing was stored")
+            return _INTERRUPTED
+    if args.from_stdin or args.status or args.forget:
+        try:
+            if args.from_stdin:
+                answer = asyncio.run(feishu_setup.kept_from(home, _feishu_given(), env))
+            elif args.status:
+                answer = feishu_setup.status_of(home, env)
+            else:
+                answer = feishu_setup.forgotten(home)
+        except FeishuError as error:
+            if args.from_stdin or args.json:
+                _answer({"error": str(error), "code": error.code})
+            else:
+                _tell(str(error))
+            return 2
+        if args.from_stdin or args.json:
+            _answer(answer)
+        elif args.status:
+            print(harmless(_feishu_status(answer)))
+        else:
+            gone = "The app of Feishu is deleted." if answer["forgotten"] else "No app was set up."
+            print(gone)
+        return 0
+    entries = _entries(args, home, env)
+    if args.dump_config:
+        dumped = _dump(entries)
+        sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)
+        return 0
+    return asyncio.run(_run(entries, env))
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog="columbina",
@@ -1314,6 +1396,50 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="say what was deleted in one document of JSON, for another program",
     )
+    feishu = commands.add_parser(
+        _FEISHU,
+        help="be an assistant that you talk to in Feishu or Lark, through an app of your own",
+    )
+    _from_the_profile(feishu, "feishu")
+    feishu.add_argument("--model", metavar="ID", help="the model to use")
+    feishu.add_argument(
+        "--provider",
+        metavar="NAME",
+        help="the service that the model comes from, as for a conversation",
+    )
+    # No option takes the App Secret. On the command line it would stay in the history.
+    doing = feishu.add_mutually_exclusive_group()
+    doing.add_argument(
+        "--setup", action="store_true", help="ask for the app at the terminal, and keep it"
+    )
+    doing.add_argument(
+        "--from-stdin",
+        action="store_true",
+        help="keep the app that a document of JSON on the standard input gives, for another "
+        "program, and answer in one document of JSON",
+    )
+    doing.add_argument(
+        "--status", action="store_true", help="say which app is set up and how it is doing"
+    )
+    doing.add_argument(
+        "--forget", action="store_true", help="delete the app, its App Secret and its owner"
+    )
+    feishu.add_argument(
+        "--json",
+        action="store_true",
+        help="for another program: with --status or --forget, answer in one document of JSON; "
+        "else run the assistant, say how it is doing in lines of JSON, and stop it when the "
+        "standard input closes",
+    )
+    feishu.add_argument(
+        "--dump-config",
+        action="store_true",
+        help="print the plugin entries that would be loaded, and stop",
+    )
+    # What a conversation asks of the command line besides, and the assistant does not.
+    feishu.set_defaults(
+        cwd=None, session_id=None, permission=None, allow=[], resume=False, sandbox=None
+    )
     doctor = commands.add_parser(
         _DOCTOR,
         help="see whether a session could start: the service and its key, the shell, and "
@@ -1359,6 +1485,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _logout(args, home, env)
         if args.command == _DOCTOR:
             return _doctor(args, home, env)
+        if args.command == _FEISHU:
+            return _feishu(args, home, env)
         entries = _entries(args, home, env)
         if args.dump_config:
             dumped = _dump(entries)

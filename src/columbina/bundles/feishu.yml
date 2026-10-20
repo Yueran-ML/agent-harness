@@ -1,0 +1,49 @@
+# What `columbina feishu` loads: the base program without what changes files, runs commands,
+# reaches GitHub or hands work to other agents, and the assistant that its owner talks to in
+# Feishu. Its agent reads: the files in its own directory, its skills, and documents of Feishu
+# that are shared with the app. Nobody is there to say yes to anything else.
+extends: base
+patch:
+  - id: tool-write
+    disabled: true
+  - id: tool-edit
+    disabled: true
+  - id: tool-shell
+    disabled: true
+  - id: github
+    disabled: true
+  - id: subagents
+    disabled: true
+  - id: subagent-spawn
+    disabled: true
+  - id: tool-subagent
+    disabled: true
+  - id: mcp
+    disabled: true
+  - id: hooks
+    disabled: true
+  - id: todo
+    disabled: true
+  # A call that would need a yes asks nobody, so it does not run.
+  - id: permissions
+    config:
+      preset: read-only
+  # The skills of the assistant are its own. The many that a user may keep for other tools
+  # would crowd them out of the list that a model is given.
+  - id: skills
+    config:
+      home: ${COLUMBINA_HOME}/feishu/skills
+  # Nothing is changed, so what the conduct says about changing things is left out.
+  - id: system-prompt-conduct
+    config:
+      leave_out: [changes]
+  - insert:
+      - id: frontend
+        plugin: columbina.feishu.bot
+        config:
+          model:
+            provider: deepseek
+            model: ${COLUMBINA_MODEL:-deepseek-flash}
+            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}
+          cwd: ${COLUMBINA_HOME}/feishu
+          home: ${COLUMBINA_HOME}

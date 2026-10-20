@@ -50,6 +50,8 @@ Changelog = "https://github.com/Yueran-ML/agent-harness/blob/main/CHANGELOG.md"
 # no MCP server does not need them: `pip install columbina[mcp]` installs them.
 [project.optional-dependencies]
 mcp = ["mcp>=2.3,<3"]
+# The assistant in Feishu hears its bot over a WebSocket: `pip install columbina[feishu]`.
+feishu = ["websockets>=16"]
 
 [dependency-groups]
 dev = [
@@ -62,6 +64,7 @@ dev = [
   "pytest-timeout>=2.3",
   "ruff>=0.9",
   "types-pyyaml>=6.0.12",
+  "websockets>=16",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -113,6 +116,8 @@ convention = "google"
 "tests/mutation/mutants.py" = ["E501"]  # the text of source lines, kept whole
 "examples/**" = ["D"]
 "src/columbina/fs/paths.py" = ["PTH"]  # a path is walked there name by name, as text
+"src/columbina/feishu/words.py" = ["RUF001"]  # Chinese is written with Chinese punctuation
+"tests/feishu/**" = ["D", "ASYNC240", "RUF001"]  # and the tests compare it
 
 [tool.pyright]
 include = ["src", "tests", "examples", "bench"]

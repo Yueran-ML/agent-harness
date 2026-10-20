@@ -1,9 +1,15 @@
 """What the frontends share.
 
 The words an agent begins with, how its session is found, what is known of a
-model that is named during a run, and how a person is told that a turn did not
-end well.
+model that is named during a run, how a person is told that a turn did not
+end well, and how another program that runs a command stops it.
 """
+
+import asyncio
+import contextlib
+import os
+import sys
+import threading
 
 from columbina.agent import Agent, Agents, AgentSpec
 from columbina.kernel import Context
@@ -11,7 +17,13 @@ from columbina.llm import CallConfig
 from columbina.session import Sessions, TurnEndEvent
 from columbina.session.store import SESSION_FILE
 
-__all__ = ["DEFAULT_PROMPT", "how_it_ended", "model_named", "open_agent"]
+__all__ = [
+    "DEFAULT_PROMPT",
+    "how_it_ended",
+    "model_named",
+    "open_agent",
+    "when_the_input_closes",
+]
 
 DEFAULT_PROMPT = (
     "You are Columbina, an agent that works in a directory on the user's machine. "
@@ -76,3 +88,30 @@ def how_it_ended(end: TurnEndEvent) -> str | None:
     if end.reason == "forked":
         return "(the turn was cut short where its session was copied)"
     return None
+
+
+def when_the_input_closes() -> asyncio.Event:
+    """Return an event that is set when the standard input comes to its end.
+
+    Another program stops a command that it runs, such as a sign-in or the assistant in
+    Feishu, by closing the standard input of the command. Where there is no standard input
+    to watch, the event is never set.
+    """
+    loop = asyncio.get_running_loop()
+    closed = asyncio.Event()
+    try:
+        descriptor = sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return closed
+
+    def watch() -> None:
+        # The descriptor, and not sys.stdin: a thread that is still in a read of a stream of
+        # Python when the program ends holds its lock, and Python cannot end cleanly.
+        with contextlib.suppress(OSError):
+            while os.read(descriptor, 4096):
+                pass
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(closed.set)
+
+    threading.Thread(target=watch, name="columbina-input", daemon=True).start()
+    return closed

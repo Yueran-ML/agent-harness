@@ -10,7 +10,7 @@ import columbina
 from columbina.kernel import flatten, import_plugin
 from support.launch import bundle
 
-BUNDLES = ["base", "cli", "headless", "minimal", "serve"]
+BUNDLES = ["base", "cli", "feishu", "headless", "minimal", "serve"]
 
 
 def test_version_matches_the_installed_distribution() -> None:
@@ -49,6 +49,8 @@ def test_every_bundle_builds_on_the_one_before_it() -> None:
     # Whoever is served over a wire is given what a terminal is given, but for one command:
     # nothing tells an interface yet that the conversation went over to a copy.
     assert ids["serve"] == [entry for entry in ids["cli"] if entry != "command-fork"]
+    # The assistant in Feishu is the base program, with what it may not do switched off.
+    assert ids["feishu"] == [*ids["base"], "frontend"]
 
 
 def test_whoever_is_served_talks_to_the_model_that_the_terminal_talks_to() -> None:

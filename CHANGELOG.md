@@ -45,6 +45,19 @@ change what was there before.
   button where there is too little room above it and more below, and the other way round. They
   are no higher than the room where they open, and their lists scroll, so that the head of a
   panel is never cut off.
+- `columbina feishu` is an assistant that its owner talks to in Feishu or Lark, through a
+  custom app of the owner's own. It holds the long connection of the app, so nothing on the
+  computer is reached from outside, and it answers one person: whoever first sends the code of
+  pairing that it shows. Each message is a turn of a conversation that is taken up again when
+  the assistant starts again, and the answer is a reply to the message, shown as Markdown and
+  sent in parts where it is long. `/new`, `/stop`, `/skills` and `/help` are done by the
+  assistant itself. A `SKILL.md` that is sent becomes a skill of the assistant, and another
+  file of text is kept for the agent to read. The agent reads the documents, pages of a wiki
+  and spreadsheets of Feishu that are shared with the app, and changes and runs nothing. The
+  App Secret is kept in the keyring of the system. `columbina feishu --setup` takes the app at
+  a terminal and `--from-stdin` from another program, `--status` says how the assistant is
+  doing, and `--forget` deletes the app; an app is kept or deleted only while no assistant
+  runs. The package of the connection comes with `columbina[feishu]`.
 
 ## 0.1.1 (2026-10-16)
 

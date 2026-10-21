@@ -386,7 +386,11 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
           };
           projection.items.push(call);
         } else {
-          call.durationMs = Math.max(0, event.time - call.beganAt);
+          // How long the tool ran, as the program measured it beside the result. A log of a version
+          // that did not measure it has the time from the call, or from the yes, to the result,
+          // which holds the wait for a place to run and for the results of the calls before it.
+          const ran = record(data.meta).duration_ms;
+          call.durationMs = typeof ran === 'number' && ran >= 0 ? ran : Math.max(0, event.time - call.beganAt);
         }
         call.result = messageText(message);
         const error = record(data.error);

@@ -79,11 +79,14 @@ export function speedOf(events: readonly SessionEvent[]): number | null {
 /** How a call stands: done, failed, refused before it ran, cut short, waiting for a yes, or running. */
 export type CallState = 'done' | 'failed' | 'refused' | 'cut' | 'waiting' | 'running';
 
+/** What the program says of a call whose turn was stopped while it ran, or before it ran. */
+const STOPPED = new Set(['TOOL_CANCELLED', 'ABORTED_BEFORE_DISPATCH']);
+
 /** How a call of the conversation stands. */
 export function callStateOf(item: ToolItem): CallState {
   const outcome = item.approval?.outcome;
   if (outcome === 'rejected' || outcome === 'cancelled' || outcome === 'unavailable') return 'refused';
-  if (item.interrupted) return 'cut';
+  if (item.interrupted || (item.error !== null && STOPPED.has(item.error.code))) return 'cut';
   if (item.result === null) return item.approval && outcome === null ? 'waiting' : 'running';
   return item.error ? 'failed' : 'done';
 }
@@ -185,15 +188,20 @@ export function traceOf(events: readonly SessionEvent[], projection: Projection)
     if (turn !== null && (event.type === 'assistant/message' || event.type === 'assistant/attempt' || event.type === 'request/aside')) {
       tokens.set(turn, (tokens.get(turn) ?? 0) + total(usageOf(data.usage)));
     }
+    // What comes between two steps, such as what was said meanwhile, is of neither.
+    if (event.type === 'step/end') current = null;
     if (event.type === 'turn/end') {
       turn = null;
       current = null;
     }
   }
 
-  // The first step of each turn, which reads what was said before it began.
-  const firstOf = new Map<number, number>();
-  steps.forEach((step, index) => { if (!firstOf.has(step.turn)) firstOf.set(step.turn, index); });
+  // What was said outside of a step is read by the next step of its turn: what was said before
+  // the turn began by its first step, and what was said while a step ran by the one after it.
+  const readBy = (seq: number, turn: number | null): number | null => {
+    const index = turn === null ? -1 : steps.findIndex(step => step.turn === turn && step.seq > seq);
+    return index < 0 ? null : index;
+  };
 
   const rows: TraceRow[] = [];
   // Each answer, with what the model thought before it, from its event.
@@ -211,8 +219,7 @@ export function traceOf(events: readonly SessionEvent[], projection: Projection)
     const base = { seq: item.seq, time: item.time, turn: item.turn, step: at };
     switch (item.type) {
       case 'user': {
-        // What was said before the first step of its turn is read by that step.
-        const step = at ?? (item.turn === null ? null : firstOf.get(item.turn) ?? null);
+        const step = at ?? readBy(item.seq, item.turn);
         rows.push({ ...base, id: item.id, kind: 'input', step, text: item.text, source: item.source });
         if (step !== null) steps[step].input = true;
         break;

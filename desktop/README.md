@@ -73,7 +73,9 @@ or Ctrl+J. Above, its steps stand side by side, one column each: whether input c
 step, how long its request to the model took, and how its calls went, in red where one went
 wrong. A column leads to the step. Below, turn by turn, are what was said, each answer of the
 model with what it took and read and wrote, and each call with its arguments, its result and
-how long it ran. Kinds of rows can be left out, what the model thought is shown when it is
+how long it ran, as the program measured it. A call that the end of its turn cut short, or
+did not run, is shown cut short, and what was said while a step ran belongs to the step
+after it, which reads it. Kinds of rows can be left out, what the model thought is shown when it is
 asked for, and a switch shows only what went wrong. A search looks through the rows, Enter goes
 to the next find, and a row opens to show all that it holds, to be copied. Each task keeps the
 view that it was last shown in.

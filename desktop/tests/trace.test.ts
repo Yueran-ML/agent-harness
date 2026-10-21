@@ -155,6 +155,27 @@ describe('the trace of a task', () => {
     ]);
   });
 
+  it('gives what was said while a step ran to the step after it, which reads it', () => {
+    const events = log(
+      begin(1), user('Fix the parser.'),
+      step(1, 1), answer('Let me look.'), call('c1', 'read', {}), result('c1', 'text'), ['step/end', { turn: 1, step: 1 }],
+      // The program writes down what came in meanwhile when the next step takes it up.
+      user('Look at the tests too.'),
+      step(1, 2), answer('Done.'), ['step/end', { turn: 1, step: 2 }],
+      end(1),
+    );
+    const trace = traced(events);
+    expect(trace.steps.map(each => each.input)).toEqual([true, true]);
+    expect(kinds(trace)).toEqual(['input@0', 'reply@0', 'tool@0', 'input@1', 'reply@1']);
+    expect(trace.steps[1].row).toBe('event-7');
+    // What was said after the last step of a turn is read by no step of it, nor by one of the next turn.
+    const after = traced(log(
+      begin(1), step(1, 1), answer('Done.'), ['step/end', { turn: 1, step: 1 }], user('And?'), end(1),
+      begin(2), step(2, 1), answer('Again.'),
+    ));
+    expect(after.rows.find(row => row.kind === 'input')).toMatchObject({ step: null, turn: 1 });
+  });
+
   it('says how each call stands', () => {
     const events = log(
       begin(1), user('Go.'), step(1, 1), answer('', ''),
@@ -166,6 +187,19 @@ describe('the trace of a task', () => {
       call('running', 'grep', {}),
     );
     expect(traced(events).steps[0].calls).toEqual(['done', 'failed', 'refused', 'waiting', 'running']);
+    // The program gives a result to each call of a turn that is stopped: one that it cut short
+    // while it ran, or one that it did not run. Neither failed.
+    const stopped = (id: string, code: string): Written => ['tool/result', {
+      message: { role: 'tool', call_id: id, content: [{ type: 'text', text: 'stopped' }] }, error: { code, reason: 'stopped' },
+    }];
+    const ended = log(
+      begin(1), step(1, 1), answer('', ''),
+      call('ran', 'run', {}), stopped('ran', 'TOOL_CANCELLED'),
+      call('waited', 'run', {}), stopped('waited', 'ABORTED_BEFORE_DISPATCH'),
+      end(1, 'aborted'),
+    );
+    expect(traced(ended).steps[0].calls).toEqual(['cut', 'cut']);
+    expect(traced(ended).rows.filter(wentWrong)).toEqual([]);
     // A turn that ends cuts short what has no result.
     expect(traced([...events, { seq: 99, type: 'turn/end', data: { turn: 1, reason: 'aborted' }, time: 9_999 }]).steps[0].calls)
       .toEqual(['done', 'failed', 'refused', 'cut', 'cut']);

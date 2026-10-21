@@ -60,6 +60,25 @@ describe('durable event projection', () => {
     expect(projection.items[1]).toMatchObject({ callId: 'b', result: 'read output', durationMs: 30 });
   });
 
+  it('takes how long a call ran from what the program measured, where the log has it', () => {
+    // Two calls run side by side. The result of the second waits for that of the first.
+    const measured = (id: string, words: string, ms: unknown) => ({ ...result(id, words), meta: { duration_ms: ms } });
+    const projection = projectEvents([
+      event(0, 'tool/call', { call_id: 'slow', name: 'bash', arguments: 'sleep' }, 10),
+      event(1, 'tool/call', { call_id: 'fast', name: 'read', arguments: 'file' }, 20),
+      event(2, 'tool/result', measured('slow', 'slept', 30_000), 30_010),
+      event(3, 'tool/result', measured('fast', 'text', 40), 30_011),
+      // What is no number, or less than none, is no time: the times of the log stand for it.
+      event(4, 'tool/call', { call_id: 'odd', name: 'read', arguments: 'file' }, 40_000),
+      event(5, 'tool/result', measured('odd', 'text', '12'), 40_250),
+      event(6, 'tool/call', { call_id: 'less', name: 'read', arguments: 'file' }, 50_000),
+      event(7, 'tool/result', measured('less', 'text', -5), 50_100),
+    ]);
+    expect(projection.items.map(item => item.type === 'tool' && [item.callId, item.durationMs])).toEqual([
+      ['slow', 30_000], ['fast', 40], ['odd', 250], ['less', 100],
+    ]);
+  });
+
   it('says when a call began to run: when it was made, or when it was allowed', () => {
     const began = (events: SessionEvent[]) =>
       projectEvents(events).items.map(item => item.type === 'tool' && [item.callId, item.beganAt, item.durationMs]);

@@ -85,6 +85,11 @@ change what was there before.
   such as the ids that some services give their calls or text that is only blank, is put in
   a shape that it takes, and calls and their results are told of in text where a request
   offers no tools, as one for a summary does.
+- In the trace of a task in the desktop application, a call shows how long it ran as the
+  program measured it, and not the time until its result was written, which held the wait
+  for a place to run and for the results of the calls before it. A call that the end of its
+  turn cut short, or did not run, is cut short and not failed, and what was said while a step
+  ran belongs to the step after it, which reads it.
 
 ## 0.1.1 (2026-10-16)
 

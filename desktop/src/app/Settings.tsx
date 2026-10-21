@@ -17,7 +17,7 @@ import { ModelPicker } from './ModelPicker';
 import { effortOf, type Effort } from './effort';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
-import { anotherServiceChosen, presetOf, presets, servicesToTell, serviceTitle } from './tell';
+import { anotherServiceChosen, presetOf, presets, servicesToSwitchTo, servicesToTell, serviceTitle } from './tell';
 
 /** The part of the settings that a way into them leads to. */
 export type SettingsPart = 'appearance' | 'model' | 'account' | 'permissions';
@@ -25,7 +25,7 @@ export type SettingsPart = 'appearance' | 'model' | 'account' | 'permissions';
 export function Settings({
   workspace, part, theme, onTheme, size, onSize, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
   tellMe, onTellMe, music, github, models, updates, checkingUpdates, onCheckingUpdates, skipped, onSkip, onOpen, onChooseModel,
-  onChooseEffort, onCommand, notKept, onClose,
+  onSwitchService, onChooseEffort, onCommand, notKept, onClose,
 }: {
   workspace: Workspace;
   part: SettingsPart;
@@ -58,6 +58,8 @@ export function Settings({
   onOpen: (url: string) => void;
   /** Have the service process ask another model. */
   onChooseModel: (model: string) => void;
+  /** Have Columbina go on with a model of another service that is set up. Without it only the models of the service in use are offered. */
+  onSwitchService?: (service: string, model: string) => void;
   /** Have the model think as hard as another level says. */
   onChooseEffort: (effort: Effort) => void;
   /** Give a command to the service. A change that widens what the task may do is confirmed first. */
@@ -198,6 +200,13 @@ export function Settings({
         onOpen={() => models.freshen(status.model.provider)}
         onAsk={() => void models.ask(status.model.provider)}
         onChoose={onChooseModel}
+        switching={onSwitchService && {
+          services: servicesToSwitchTo(services, status.model.provider),
+          models: models.of,
+          onShow: models.freshen,
+          onAsk: service => void models.ask(service),
+          onSwitch: onSwitchService,
+        }}
       />}
       {thinking && <EffortPicker
         effort={thinking.effort}

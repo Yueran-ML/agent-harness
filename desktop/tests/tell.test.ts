@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   agoOf, anotherServiceChosen, argumentsOf, callSeconds, consentOf, contextPercent, countOf, folderName, goneWords, HISTORY_PAGE,
   joined, keyAtHand, objectOf, presetOf,
-  presets, retryText, scopeOf, servicesToTell, serviceTitle, skillLine, skillNamed, SKILLS_SHOWN, skillsOf, skillsToShow, standingOf,
+  presets, retryText, scopeOf, servicesToSwitchTo, servicesToTell, serviceTitle, skillLine, skillNamed, SKILLS_SHOWN, skillsOf, skillsToShow, standingOf,
   stepped,
   STILL_STARTING_MS, subagentKind, tail, taskTitle, TIME_WORTH_SAYING_MS, toolKind, verbOf, waitingWords,
 } from '../src/app/tell';
@@ -251,6 +251,35 @@ describe('the services that the settings tell of', () => {
   it('do not hold a service in use that the list does not have', () => {
     // The profile names a service of its own. It is in use, and the list has nothing to say of it.
     expect(servicesToTell({ use: null, services: [service('deepseek')] }, 'in-house')).toEqual({ inUse: 'in-house', known: [] });
+  });
+});
+
+describe('the services that the list of models offers to switch to', () => {
+  const service = (name: string, given: { key?: string; own?: boolean; key_env?: string | null; model?: string | null } = {}) => ({
+    name, title: name.toUpperCase(), base_url: 'https://api.example.com/v1', own: given.own ?? false,
+    model: given.model === undefined ? 'a-model' : given.model, context_window: null,
+    key_env: given.key_env === undefined ? 'A_KEY' : given.key_env, key: given.key ?? 'none', key_page: null,
+  });
+  const all = [
+    service('deepseek'), service('openai', { key: 'stored' }), service('moonshot', { key: 'environment' }),
+    service('zhipu', { key: 'stored-for-another-address' }), service('ollama', { key_env: null }),
+    service('lmstudio', { key_env: null, model: null }), service('my-own', { own: true }),
+  ];
+  const names = (given: { name: string }[]) => given.map(each => each.name);
+
+  it('are the one in use and those that are set up, in the order of the list', () => {
+    // A key that is stored for another address is not sent, and a service that asks for no key is
+    // set up once a model is said for it.
+    expect(names(servicesToSwitchTo({ use: 'deepseek', services: all }, 'deepseek'))).toEqual([
+      'deepseek', 'openai', 'moonshot', 'ollama', 'my-own',
+    ]);
+    expect(names(servicesToSwitchTo({ use: 'lmstudio', services: all }, 'lmstudio'))).toEqual([
+      'openai', 'moonshot', 'ollama', 'lmstudio', 'my-own',
+    ]);
+  });
+
+  it('are none where the window has no list', () => {
+    expect(servicesToSwitchTo(null, 'deepseek')).toEqual([]);
   });
 });
 

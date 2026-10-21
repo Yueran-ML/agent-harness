@@ -163,6 +163,8 @@ function AppPart({ app, feishu, onOpen }: { app: App; feishu: Feishu; onOpen: Op
       </button>
     </div>
     {(!app.running || app.own) && <p className="caption">{words.hint.feishu.withColumbina}</p>}
+    {/* It reads the service when it starts, and does not follow another that is chosen while it runs. */}
+    {app.running && <p className="caption" data-test="feishu-service">{words.hint.feishu.service}</p>}
   </>;
 }
 

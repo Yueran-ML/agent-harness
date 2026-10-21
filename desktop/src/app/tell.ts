@@ -104,6 +104,22 @@ export function servicesToTell(
 }
 
 /**
+ * The services that the list of models offers to switch to, the one in use among them, in the
+ * order of the list: those that are set up. A service is set up where its key is in its variable
+ * or is stored for it, where it is one of the user's own, and, for one that asks for no key,
+ * where a model was said for it. A service that is not set up is set up in its window first.
+ *
+ * Args:
+ *   listed: The services that are set up, where the window has the list.
+ *   provider: The name of the service that the service process talks to.
+ */
+export function servicesToSwitchTo(listed: Listed | null, provider: string): ListedService[] {
+  return listed?.services.filter(service => service.name === provider || service.own
+    || service.key === 'environment' || service.key === 'stored'
+    || (service.key_env === null && service.model !== null)) ?? [];
+}
+
+/**
  * Whether the service that was chosen is another than the one that the service process talks
  * to. The process reads the choice when it starts, so it takes a new start to follow it.
  */

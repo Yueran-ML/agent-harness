@@ -90,6 +90,10 @@ change what was there before.
   for a place to run and for the results of the calls before it. A call that the end of its
   turn cut short, or did not run, is cut short and not failed, and what was said while a step
   ran belongs to the step after it, which reads it.
+- The list of models of the desktop application names the services that are set up, and
+  shows the models of the one that is clicked. A model of another service chooses that
+  service, and the service process is started again at the task that is open, which goes on
+  with it. This is done at rest only.
 
 ## 0.1.1 (2026-10-16)
 

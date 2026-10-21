@@ -161,13 +161,24 @@ uses it too. While Columbina is at work the list can be looked at, and nothing i
 Where another service was chosen in the window for the key and waits for the next start, a
 model that is chosen is used and not stored, and the other service stays chosen.
 
+Where more than one service is set up, the head of the list names them, the one in use
+marked, and a click on one shows its models. A service is set up where its key is in its
+variable or is stored, where it is one of the user's own, and, for one that asks for no key,
+where a model was said for it. A model of another service is stored for that service through
+`columbina setup --from-stdin`, which chooses the service, and the service process is started
+again at the task that is open, which goes on with the other service. This too is done at
+rest only. The assistant in Feishu reads the service when it starts, so it is stopped and
+started again to follow a switch.
+
 Beside the model, a button shows how hard it thinks, and opens the levels that its service
 offers, each with a line on what it does. A service of the style of DeepSeek takes all of
 them: the default, which leaves it to the service, off, low, high, max, and ultra. Ultra asks
 for the most thinking there is, and tells the agent to plan, to hand the parts of the work
 that stand alone to subagents that work side by side, and to have one of them review the
-result before it answers. Another service is offered the default and ultra, and there ultra
-asks for the team and not for more thinking. A level is used from the next request on, by
+result before it answers. A service of the style of Anthropic, which Claude is, takes all of
+them but off, since not every model of Claude lets its thinking be turned off. Another
+service is offered the default and ultra, and there ultra asks for the team and not for more
+thinking. A level is used from the next request on, by
 the subagents that are made from then on too, and it is kept for its service through
 `columbina setup --from-stdin` for the next start, except ultra, which holds for the run.
 While Columbina is at work the levels can be looked at, and none chosen.

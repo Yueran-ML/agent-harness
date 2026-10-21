@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { Check, ChevronDown, CornerDownLeft, RotateCw, Settings2, Sparkles } from 'lucide-react';
-import { looksLikeAKey, sentenceOf, serviceCalled, type Failure, type Listed, type ListedService } from '../key/form';
+import { called, looksLikeAKey, sentenceOf, serviceCalled, type Failure, type Listed, type ListedService } from '../key/form';
 import type { Messages } from '../messages/en';
 import type { Models } from '../useModels';
 import { keyOf, pickerKey } from './keys';
@@ -10,6 +10,20 @@ import { useRoom } from './room';
 
 /** Whether a model can be chosen: now, once Columbina is at rest, or not here at all. */
 export type ModelChoice = 'free' | 'busy' | 'off';
+
+/** What the panel needs to offer the models of the other services that are set up. */
+export interface Switching {
+  /** The services that can be switched to, the one in use among them, in the order of the list. */
+  services: ListedService[];
+  /** What is known of the models of a service. */
+  models: (service: string) => Models | null;
+  /** A service is shown: its models are asked for where what is known of them is old. */
+  onShow: (service: string) => void;
+  /** The models of a service are asked for again. */
+  onAsk: (service: string) => void;
+  /** A model of another service is chosen: Columbina goes on with that service. */
+  onSwitch: (service: string, model: string) => void;
+}
 
 /**
  * Say why a service listed no models. A service on this computer that does not answer has not
@@ -41,6 +55,10 @@ function Written({ words, model }: { words: string; model: string }) {
  * through the list, Enter chooses, and Esc closes the panel and gives the keyboard back to the
  * button.
  *
+ * Where more than one service is set up, the head of the panel names each of them, and shows the
+ * models of the one that is pressed: the one in use when the panel opens. A model of another
+ * service is chosen as one of the service in use is, and Columbina goes on with that service.
+ *
  * Args:
  *   provider: The name of the service that the service process talks to.
  *   model: The model that it asks.
@@ -56,9 +74,11 @@ function Written({ words, model }: { words: string; model: string }) {
  *   onChoose: Another model is chosen.
  *   onSettings: Lead to the settings of the model. Without it the panel has no way there.
  *   afterChoice: Give the keyboard to where it goes once a model is chosen. The button keeps it otherwise.
+ *   switching: How the other services that are set up are offered. Without it, or in a replay, only
+ *     the models of the service in use are.
  */
 export function ModelPicker({
-  provider, model, services, models, choice, replay, placement, onOpen, onAsk, onChoose, onSettings, afterChoice,
+  provider, model, services, models, choice, replay, placement, onOpen, onAsk, onChoose, onSettings, afterChoice, switching,
 }: {
   provider: string;
   model: string;
@@ -72,9 +92,12 @@ export function ModelPicker({
   onChoose: (model: string) => void;
   onSettings?: () => void;
   afterChoice?: () => void;
+  switching?: Switching;
 }) {
   const words = useWords();
   const [open, setOpen] = useState(false);
+  // The service whose models are shown. Where it is none of those offered, they are those of the service in use.
+  const [looked, setLooked] = useState(provider);
   const [query, setQuery] = useState('');
   // The model that the keyboard is on, by its name. Where it is none of those offered, the
   // keyboard is on the model in use, or on the first one that the filter keeps.
@@ -92,11 +115,20 @@ export function ModelPicker({
   // list scrolls.
   const { room, placement: side } = useRoom(panel, open, placement);
 
-  const service = services?.services.find(candidate => candidate.name === provider) ?? null;
-  const name = serviceCalled(provider, services);
-  const asking = !replay && (models === null || models.kind === 'asking');
-  const failed = !replay && models?.kind === 'failed' ? models : null;
-  const listed = models === null || models.kind === 'failed' ? [] : models.models;
+  // The services are offered where the one in use is among them, with another one to switch to.
+  const offered = !replay && switching && switching.services.length > 1
+    && switching.services.some(each => each.name === provider) ? switching : null;
+  const showing = offered?.services.some(each => each.name === looked) ? looked : provider;
+  // Where the models of another service are shown, what is done with them is for switching to it.
+  const other = offered !== null && showing !== provider ? offered : null;
+  const elsewhere = other !== null;
+  const service = offered?.services.find(candidate => candidate.name === showing)
+    ?? services?.services.find(candidate => candidate.name === showing) ?? null;
+  const name = service ? called(service) : showing;
+  const known = other ? other.models(showing) : models;
+  const asking = !replay && (known === null || known.kind === 'asking');
+  const failed = !replay && known?.kind === 'failed' ? known : null;
+  const listed = known === null || known.kind === 'failed' ? [] : known.models;
   const written = query.trim();
   const shown = replay ? [] : filtered(listed, query);
   const typed = replay ? null : typedModel(listed, query);
@@ -105,7 +137,7 @@ export function ModelPicker({
     ...(typed === null ? [] : [{ model: typed, typed: true }]),
   ];
   const markedAt = options.findIndex(option => option.model === marked);
-  const inUseAt = written === '' ? options.findIndex(option => option.model === model) : -1;
+  const inUseAt = written === '' && !elsewhere ? options.findIndex(option => option.model === model) : -1;
   const active = options.length === 0 ? -1 : markedAt >= 0 ? markedAt : Math.max(0, inUseAt);
 
   // A panel of which nothing can be used any more is closed.
@@ -134,7 +166,21 @@ export function ModelPicker({
   const show = () => {
     setQuery('');
     setMarked(null);
+    setLooked(provider);
     setOpen(true);
+  };
+  // Another service is shown, with the keyboard in the filter.
+  const look = (at: string) => {
+    if (!offered) return;
+    setQuery('');
+    setMarked(null);
+    setLooked(at);
+    offered.onShow(at);
+    filter.current?.focus();
+  };
+  const askAgain = () => {
+    if (other) other.onAsk(showing);
+    else onAsk();
   };
   const close = (giveBack: boolean) => {
     setOpen(false);
@@ -143,7 +189,8 @@ export function ModelPicker({
   const take = (chosen: string) => {
     if (choice !== 'free') return;
     close(false);
-    if (chosen !== model) onChoose(chosen);
+    if (other) other.onSwitch(showing, chosen);
+    else if (chosen !== model) onChoose(chosen);
     if (afterChoice) afterChoice();
     else button.current?.focus();
   };
@@ -187,7 +234,7 @@ export function ModelPicker({
       aria-expanded={open}
       aria-controls={open ? panelId : undefined}
       aria-label={words.label.models.button(model)}
-      title={`${name} · ${model}`}
+      title={`${serviceCalled(provider, services)} · ${model}`}
       onClick={() => (open ? close(false) : show())}
       data-test="model-button"
     >
@@ -210,14 +257,29 @@ export function ModelPicker({
     >
       <div className="model-head">
         {/* A service of the user's own is known by its name, and where it is shows when it is pointed at. */}
-        <span className="model-service" title={service?.own ? service.base_url : undefined}>{name}</span>
+        {offered ? <div className="model-services" role="group" aria-label={words.label.models.services}>
+          {offered.services.map(each => <button
+            type="button"
+            key={each.name}
+            className="chip model-service-choice"
+            aria-pressed={each.name === showing}
+            aria-label={each.name === provider ? words.label.models.inUse(called(each)) : undefined}
+            title={each.own ? each.base_url : undefined}
+            data-in-use={each.name === provider || undefined}
+            onClick={() => look(each.name)}
+            data-test="model-service-choice"
+          >
+            {called(each)}
+          </button>)}
+        </div>
+          : <span className="model-service" title={service?.own ? service.base_url : undefined}>{name}</span>}
         {!replay && <button
           type="button"
           className="icon-btn"
           aria-label={words.label.models.again}
           title={words.label.models.again}
           // It stays where it is while the service is asked, and keeps the keyboard if it has it.
-          onClick={() => { if (models?.kind !== 'asking') onAsk(); }}
+          onClick={() => { if (known?.kind !== 'asking') askAgain(); }}
           data-test="models-again"
         >
           <RotateCw size={13} className={asking ? 'spin' : undefined} />
@@ -244,11 +306,12 @@ export function ModelPicker({
       <div className="model-notes" aria-live="polite" data-test="models-notes">
         {replay && <p className="caption">{words.hint.models.unavailable}</p>}
         {!replay && choice === 'busy' && <p className="caption">{words.hint.models.whenIdle}</p>}
+        {elsewhere && choice === 'free' && <p className="caption">{words.hint.models.switch(name)}</p>}
         {asking && listed.length === 0 && <p className="caption model-asking">
           <span className="moon" aria-hidden="true" />{words.hint.models.asking(name)}
         </p>}
         {failed && <p className="caption">{sayListFailed(words, failed.failure, failed.said, service)}</p>}
-        {models?.kind === 'listed' && listed.length === 0 && <p className="caption">{words.hint.models.none(name)}</p>}
+        {known?.kind === 'listed' && listed.length === 0 && <p className="caption">{words.hint.models.none(name)}</p>}
         {/* A key that was pasted into the filter is not offered as the name of a model, and the user is told why. */}
         {!replay && written !== '' && looksLikeAKey(written) ? <p className="caption">{words.hint.key.likeAKey}</p>
           : listed.length > 0 && written !== '' && shown.length === 0 && <p className="caption">{words.hint.models.noMatch}</p>}
@@ -257,7 +320,7 @@ export function ModelPicker({
         type="button"
         className="btn btn-quiet model-again"
         // The button goes away while the service is asked, and the keyboard goes back to the filter.
-        onClick={() => { onAsk(); filter.current?.focus(); }}
+        onClick={() => { askAgain(); filter.current?.focus(); }}
         data-test="models-try-again"
       >
         {words.label.models.tryAgain}
@@ -272,7 +335,7 @@ export function ModelPicker({
           className="model-option"
           data-typed={option.typed || undefined}
           aria-selected={index === active}
-          aria-current={!option.typed && option.model === model ? 'true' : undefined}
+          aria-current={!elsewhere && !option.typed && option.model === model ? 'true' : undefined}
           aria-disabled={choice !== 'free' || undefined}
           // The keyboard stays in the filter, and the list is worked from there.
           tabIndex={-1}
@@ -282,7 +345,7 @@ export function ModelPicker({
           onClick={() => take(option.model)}
         >
           {option.typed ? <CornerDownLeft size={13} aria-hidden="true" />
-            : option.model === model ? <Check size={13} aria-hidden="true" />
+            : !elsewhere && option.model === model ? <Check size={13} aria-hidden="true" />
               : <span className="model-mark" aria-hidden="true" />}
           <span className="model-option-name">
             {option.typed ? <Written words={words.label.models.use(option.model)} model={option.model} /> : option.model}

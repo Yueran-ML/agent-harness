@@ -406,7 +406,8 @@ describe('choosing another model', () => {
   /** A shell that lists two models for the service in use, and stores what it is given unless a test says otherwise. */
   const shell = (chooseModel = vi.fn(async (_asked: unknown): Promise<unknown> => ({ stored: { name: 'deepseek', model: 'deepseek-pro' } }))) => {
     const listModels = vi.fn(async (service: string) => ({
-      models: service === 'ollama' ? ['qwen3:8b', 'llama3.2:3b'] : ['deepseek-flash', 'deepseek-pro'],
+      models: service === 'ollama' ? ['qwen3:8b', 'llama3.2:3b']
+        : service === 'anthropic' ? ['claude-opus-5-5', 'claude-haiku-5-5'] : ['deepseek-flash', 'deepseek-pro'],
     }));
     vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), listModels, chooseModel });
     return { listModels, chooseModel };
@@ -487,6 +488,76 @@ describe('choosing another model', () => {
     expect(said.textContent).toBe(`${notKept} What is stored cannot be read.`);
     chooseModel.mockImplementation(async () => ({ stored: { name: 'deepseek', model: 'deepseek-pro' }, key_in: null }));
     await chooseThere();
+    expect(settings.querySelectorAll('[data-test="model-not-kept"]')).toHaveLength(0);
+  });
+
+  const both: Listed = {
+    use: 'deepseek',
+    services: [service('deepseek', 'DeepSeek', { key: 'stored' }), service('anthropic', 'Anthropic (Claude)', { key: 'stored' })],
+  };
+  /** Open the list of models at the foot of the field, show those of Claude, and choose the second one. */
+  const switchToClaude = async () => {
+    await act(async () => { fireEvent.click(one('model-button')); });
+    await act(async () => { fireEvent.click(marked('model-service-choice')[1]); });
+    await act(async () => { fireEvent.click([...document.querySelectorAll('[role="option"]')][1]); });
+  };
+
+  it('switches to a model of another service: keeps it, which chooses the service, and starts again at the task', async () => {
+    const { listModels, chooseModel } = shell(vi.fn(async (): Promise<unknown> => ({ stored: { name: 'anthropic', model: 'claude-haiku-5-5' } })));
+    const task = first({ services: both });
+    page(task);
+    await switchToClaude();
+    expect(listModels.mock.calls).toEqual([['deepseek'], ['anthropic']]);
+    expect(chooseModel.mock.calls).toEqual([[{ service: 'anthropic', model: 'claude-haiku-5-5' }]]);
+    // The service process is not told of a model that is not of its service: it is started again.
+    expect(called(task.send)).toEqual([]);
+    expect(task.refreshServices).toHaveBeenCalledTimes(1);
+    expect(task.reconnect).toHaveBeenCalledTimes(1);
+    expect(task.fail).not.toHaveBeenCalled();
+  });
+
+  it('says that the service was not changed, where the setup program does not keep the model', async () => {
+    shell(vi.fn(async (): Promise<unknown> => ({ error: 'what is stored cannot be read' })));
+    const told = first({ services: both });
+    page(told);
+    await switchToClaude();
+    expect(called(told.fail)).toEqual([['The service was not changed. What is stored cannot be read.']]);
+    expect(told.reconnect).not.toHaveBeenCalled();
+    expect(told.refreshServices).not.toHaveBeenCalled();
+    cleanup();
+    shell(vi.fn(async () => { throw new Error('The setup program did not end in time.'); }));
+    const late = first({ services: both });
+    page(late);
+    await switchToClaude();
+    expect(called(late.fail)).toEqual([['The service was not changed. The setup program did not end in time.']]);
+    expect(late.reconnect).not.toHaveBeenCalled();
+  });
+
+  it('switches to a model of another service from the settings as well, and says there when it could not', async () => {
+    const { listModels, chooseModel } = shell(vi.fn(async (): Promise<unknown> => ({ error: 'what is stored cannot be read' })));
+    const task = first({ services: both });
+    page(task);
+    chord(',');
+    const settings = sheet()!;
+    const switchThere = async () => {
+      await act(async () => { fireEvent.click(settings.querySelector('[data-test="model-button"]')!); });
+      await act(async () => { fireEvent.click(settings.querySelectorAll('[data-test="model-service-choice"]')[1]); });
+      await act(async () => { fireEvent.click([...settings.querySelectorAll('[role="option"]')][1]); });
+    };
+    await switchThere();
+    expect(settings.querySelector('[data-test="model-not-kept"]')!.textContent)
+      .toBe('The service was not changed. What is stored cannot be read.');
+    // The models of the other service are asked for again from there too.
+    await act(async () => { fireEvent.click(settings.querySelector('[data-test="model-button"]')!); });
+    await act(async () => { fireEvent.click(settings.querySelectorAll('[data-test="model-service-choice"]')[1]); });
+    const asked = listModels.mock.calls.length;
+    await act(async () => { fireEvent.click(settings.querySelector('[data-test="models-again"]')!); });
+    expect(listModels.mock.calls.slice(asked)).toEqual([['anthropic']]);
+    await act(async () => { fireEvent.click(settings.querySelector('[data-test="model-button"]')!); });
+    chooseModel.mockImplementation(async () => ({ stored: { name: 'anthropic', model: 'claude-haiku-5-5' } }));
+    await switchThere();
+    expect(chooseModel.mock.calls.at(-1)).toEqual([{ service: 'anthropic', model: 'claude-haiku-5-5' }]);
+    expect(task.reconnect).toHaveBeenCalledTimes(1);
     expect(settings.querySelectorAll('[data-test="model-not-kept"]')).toHaveLength(0);
   });
 

@@ -271,6 +271,8 @@ export const zhCN: Messages = {
       use: (model: string) => `使用 ${model}`,
       tryAgain: '再试一次',
       settings: '模型设置',
+      services: '服务',
+      inUse: (service: string) => `${service}（正在使用）`,
     },
 
     effort: {
@@ -687,6 +689,8 @@ export const zhCN: Messages = {
       whenIdle: '模型要等 Columbina 空闲时才能换。',
       unavailable: '应用运行真实的服务进程时才能在这里列出模型，回放时不能。',
       notKept: '模型已经换好，但没能记下来，下次启动时不会再用它。',
+      switch: (service: string) => `选 ${service} 的模型会让 Columbina 改用 ${service} 重新启动，当前任务接着做。`,
+      notSwitched: '服务没有换成。',
       failed: {
         network: '连不上这个服务。看看这台电脑是否联网；如果用了代理，看看代理是否开着。',
         timeout: '服务没有及时回答。稍后再试。',
@@ -772,6 +776,7 @@ export const zhCN: Messages = {
       stopping: '正在停止助手。',
       elsewhere: '助手正在这台电脑的别处运行，比如在终端里，要在那里停止。',
       withColumbina: '助手只在 Columbina 开着时运行。关掉 Columbina 时它在运行的话，下次打开会自动启动。',
+      service: '助手用的是它启动时 Columbina 在用的服务。换了服务以后，把助手停下再启动一次。',
       ended: '助手停止了。',
       lastError: '助手上次运行出了问题。',
       startFailed: '助手没能启动。',

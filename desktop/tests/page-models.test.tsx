@@ -10,6 +10,7 @@ import { Composer } from '../src/app/Composer';
 import { ModelPicker } from '../src/app/ModelPicker';
 import { LEAST_ROOM } from '../src/app/room';
 import type { Failure, Listed } from '../src/key/form';
+import type { Switching } from '../src/app/ModelPicker';
 import type { Models, ServiceModels } from '../src/useModels';
 import type { Workspace } from '../src/useWorkspace';
 import { likeABrowser, modelsWith, service, standing, statusOf, workspaceWith } from './mounted';
@@ -496,6 +497,152 @@ describe('the panel of the models', () => {
   });
 });
 
+describe('the other services that are set up, in the panel', () => {
+  const claude = service('anthropic', 'Anthropic (Claude)', { key: 'stored' });
+  const claudes = listed('claude-opus-5-5', 'claude-haiku-5-5');
+  /** Switching between DeepSeek, in use, and Claude, of which two models are listed unless a test says otherwise. */
+  const switching = (given: Partial<Switching> = {}): Switching => ({
+    services: [services.services[0], claude],
+    models: (name: string) => (name === 'anthropic' ? claudes : name === 'deepseek' ? two : null),
+    onShow: vi.fn(),
+    onAsk: vi.fn(),
+    onSwitch: vi.fn(),
+    ...given,
+  });
+  const choices = () => marked('model-service-choice');
+  /** The services in the head: a dot before the one in use, and an arrow after the one whose models are shown. */
+  const named = () => choices().map(choice => `${choice.dataset.inUse === undefined ? '' : '• '}${choice.textContent}`
+    + `${choice.getAttribute('aria-pressed') === 'true' ? ' <' : ''}`);
+  /** Press a service as a pointer does, which gives it the keyboard first. */
+  const look = (at: number) => {
+    choices()[at].focus();
+    fireEvent.click(choices()[at]);
+  };
+  const switchNote = 'Choosing a model of Anthropic (Claude) starts Columbina again with Anthropic (Claude), and the task goes on.';
+
+  it('names each one, the one in use pressed and marked, where there is another one', () => {
+    drawn({ switching: switching() });
+    open();
+    expect(named()).toEqual(['• DeepSeek <', 'Anthropic (Claude)']);
+    const group = choices()[0].parentElement!;
+    expect(group.getAttribute('role')).toBe('group');
+    expect(group.getAttribute('aria-label')).toBe('Services');
+    // The mark is a picture, and whoever cannot see it is told which one is in use.
+    expect(choices().map(choice => choice.getAttribute('aria-label'))).toEqual(['DeepSeek, in use', null]);
+    expect(panel()!.querySelector('.model-service')).toBeNull();
+    expect(offered()).toEqual(['✓ deepseek-flash <', 'deepseek-pro']);
+  });
+
+  it('shows the models of another one when it is pressed, with no tick, and asks it for them', () => {
+    const given = switching();
+    const { onAsk } = drawn({ switching: given });
+    open();
+    write('pro');
+    look(1);
+    expect(filter().value).toBe('');
+    expect(named()).toEqual(['• DeepSeek', 'Anthropic (Claude) <']);
+    expect(given.onShow).toHaveBeenCalledWith('anthropic');
+    expect(offered()).toEqual(['claude-opus-5-5 <', 'claude-haiku-5-5']);
+    expect(options().map(option => !!option.querySelector('svg'))).toEqual([false, false]);
+    expect(notes()).toEqual([switchNote]);
+    // The keyboard is in the filter, which begins empty.
+    expect(document.activeElement).toBe(filter());
+    // That service is asked again, and not the one in use.
+    fireEvent.click(one('models-again'));
+    expect(given.onAsk).toHaveBeenCalledWith('anthropic');
+    expect(onAsk).not.toHaveBeenCalled();
+    // The button still shows the model in use, and its service.
+    expect(opener().title).toBe('DeepSeek · deepseek-flash');
+    // Back at the service in use, its models are shown with the tick.
+    look(0);
+    expect(given.onShow).toHaveBeenLastCalledWith('deepseek');
+    expect(offered()).toEqual(['✓ deepseek-flash <', 'deepseek-pro']);
+    expect(notes()).toEqual([]);
+  });
+
+  it('switches to a model of another one that is chosen, with Enter or a click, or as it is written', () => {
+    const given = switching();
+    const afterChoice = vi.fn();
+    const { onChoose } = drawn({ switching: given, afterChoice });
+    open();
+    look(1);
+    press('ArrowDown');
+    expect(press('Enter')).toBe(true);
+    expect(given.onSwitch).toHaveBeenLastCalledWith('anthropic', 'claude-haiku-5-5');
+    expect(panel()).toBeNull();
+    expect(afterChoice).toHaveBeenCalledTimes(1);
+    open();
+    look(1);
+    fireEvent.click(options()[0]);
+    expect(given.onSwitch).toHaveBeenLastCalledWith('anthropic', 'claude-opus-5-5');
+    open();
+    look(1);
+    write('claude-next');
+    press('Enter');
+    expect(given.onSwitch).toHaveBeenLastCalledWith('anthropic', 'claude-next');
+    expect(given.onSwitch).toHaveBeenCalledTimes(3);
+    expect(onChoose).not.toHaveBeenCalled();
+  });
+
+  it('ticks no model of another service, though it has the name of the one in use', () => {
+    const own = services.services[4];
+    drawn({
+      switching: switching({ services: [services.services[0], own], models: name => (name === 'my-own' ? listed('tiny', 'deepseek-flash') : two) }),
+    });
+    open();
+    look(1);
+    expect(offered()).toEqual(['tiny <', 'deepseek-flash']);
+    expect(options().map(option => !!option.querySelector('svg'))).toEqual([false, false]);
+  });
+
+  it('opens at the service in use again', () => {
+    drawn({ switching: switching() });
+    open();
+    look(1);
+    open();
+    open();
+    expect(named()).toEqual(['• DeepSeek <', 'Anthropic (Claude)']);
+    expect(offered()).toEqual(['✓ deepseek-flash <', 'deepseek-pro']);
+  });
+
+  it('switches to nothing while Columbina is at work, and says so', () => {
+    const given = switching();
+    drawn({ switching: given, choice: 'busy' });
+    open();
+    look(1);
+    expect(notes()).toEqual([whenIdle]);
+    fireEvent.click(options()[0]);
+    expect(given.onSwitch).not.toHaveBeenCalled();
+    expect(panel()).not.toBeNull();
+  });
+
+  it('says why another one listed no models, and asks it again', () => {
+    const given = switching({ models: name => (name === 'anthropic' ? failedWith('key') : two) });
+    drawn({ switching: given });
+    open();
+    look(1);
+    expect(notes()).toEqual([switchNote, 'The service does not take the key that is set up for it.']);
+    fireEvent.click(one('models-try-again'));
+    expect(given.onAsk).toHaveBeenCalledWith('anthropic');
+    expect(document.activeElement).toBe(filter());
+  });
+
+  it('names no services where the one in use has none to switch to, is not among them, or in a replay', () => {
+    drawn({ switching: switching({ services: [services.services[0]] }) });
+    open();
+    expect(choices()).toEqual([]);
+    expect(panel()!.querySelector('.model-service')!.textContent).toBe('DeepSeek');
+    cleanup();
+    drawn({ switching: switching({ services: [claude, services.services[4]] }) });
+    open();
+    expect(choices()).toEqual([]);
+    cleanup();
+    drawn({ switching: switching(), replay: true });
+    open();
+    expect(choices()).toEqual([]);
+  });
+});
+
 describe('the model at the foot of the field', () => {
   const able = {
     protocol: 1, server: { name: 'columbina', version: '0.1.0' }, cwd: 'F:\\work',
@@ -505,7 +652,7 @@ describe('the model at the foot of the field', () => {
   function Held({ workspace, models, calls }: {
     workspace: Workspace;
     models: ServiceModels;
-    calls: { onChooseModel: (model: string) => void; onModelSettings: () => void };
+    calls: { onChooseModel: (model: string) => void; onSwitchService?: (service: string, model: string) => void; onModelSettings: () => void };
   }) {
     const [draft, setDraft] = useState('');
     const [field] = useState(() => ({ current: null as HTMLTextAreaElement | null }));
@@ -516,7 +663,7 @@ describe('the model at the foot of the field', () => {
     />;
   }
   const field = (given: Partial<Workspace> = {}, models = modelsWith({ deepseek: two })) => {
-    const calls = { onChooseModel: vi.fn(), onModelSettings: vi.fn() };
+    const calls = { onChooseModel: vi.fn(), onSwitchService: vi.fn(), onModelSettings: vi.fn() };
     const drawnField = render(<Held workspace={workspaceWith({ hello: able, services, ...given })} models={models} calls={calls} />);
     return {
       ...calls,
@@ -555,6 +702,28 @@ describe('the model at the foot of the field', () => {
     fireEvent.click(options()[1]);
     expect(onChooseModel.mock.calls).toEqual([['deepseek-pro']]);
     expect(document.activeElement).toBe(box());
+  });
+
+  it('offers the services that are set up, and hands on a model of another one', () => {
+    const { models, onSwitchService, onChooseModel } = field({}, modelsWith({ deepseek: two, 'my-own': listed('tiny') }));
+    open();
+    // Of those that ask for no key, the ones for which no model was said are not set up.
+    expect(marked('model-service-choice').map(choice => choice.textContent)).toEqual([
+      'DeepSeek', 'Ollama', 'LM Studio', 'my-box', 'my-own',
+    ]);
+    fireEvent.click(marked('model-service-choice')[4]);
+    expect(models.freshen).toHaveBeenLastCalledWith('my-own');
+    fireEvent.click(one('models-again'));
+    expect(models.ask).toHaveBeenLastCalledWith('my-own');
+    fireEvent.click(options()[0]);
+    expect(onSwitchService.mock.calls).toEqual([['my-own', 'tiny']]);
+    expect(onChooseModel).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(box());
+    cleanup();
+    const keyless = { ...services, services: [services.services[0], service('ollama', 'Ollama', { key_env: null, model: null })] };
+    field({ services: keyless });
+    open();
+    expect(marked('model-service-choice')).toEqual([]);
   });
 
   it('leads to the settings of the model', () => {

@@ -168,6 +168,8 @@ describe('the assistant in the settings', () => {
       'Start the assistant', 'Change the app', 'Delete the app', 'Open the developer console', 'Show the log',
     ]);
     expect(document.body.textContent).toContain('The assistant runs only while Columbina is open.');
+    // Of the service it is told once it runs.
+    expect(marked('feishu-service')).toEqual([]);
 
     shell.feishuStatus.mockResolvedValueOnce({ ...app, own: true, on: true });
     await press('feishu-start');
@@ -274,6 +276,9 @@ describe('the assistant in the settings', () => {
     expect(marked('feishu-change')).toEqual([]);
     expect(marked('feishu-forget')).toEqual([]);
     expect(document.body.textContent).not.toContain('The assistant runs only while Columbina is open.');
+    // It talks to the service that was in use when it started.
+    expect(one('feishu-service').textContent).toBe('The assistant talks to the service that Columbina uses when the assistant '
+      + 'starts. After another service is chosen, stop the assistant and start it again.');
   });
 
   it('says that something did not go through while the assistant is connected', async () => {

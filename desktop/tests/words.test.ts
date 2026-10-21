@@ -84,6 +84,8 @@ const samples: Record<string, unknown[][]> = {
   'hint.key.noneToForget': [['OpenAI']],
   'label.models.button': [['deepseek-flash'], ['qwen3:8b']],
   'label.models.use': [['deepseek-old']],
+  'label.models.inUse': [['DeepSeek'], ['my-own']],
+  'hint.models.switch': [['DeepSeek'], ['my-own']],
   'hint.models.asking': [['DeepSeek'], ['my-own']],
   'hint.models.none': [['LM Studio']],
   'label.attachments.remove': [['notes.md']],

@@ -10,7 +10,7 @@ import { isPicture, sizeOf, type Attachment, type Refused } from './attachments'
 import { effortOf, type Effort } from './effort';
 import { composerKey, keyOf } from './keys';
 import { useWords } from './locale';
-import { goneWords } from './tell';
+import { goneWords, servicesToSwitchTo } from './tell';
 
 /** How long the first Esc of two stays in mind. */
 const ESC_TWICE_MS = 2000;
@@ -29,6 +29,8 @@ const MOST_HEIGHT = 220;
  *   commandsAsked: How often the list of commands was asked for from outside the field.
  *   models: The models of the services, as the page knows them.
  *   onChooseModel: Have the service process ask another model.
+ *   onSwitchService: Have Columbina go on with a model of another service that is set up. Without
+ *     it only the models of the service in use are offered.
  *   onChooseEffort: Have the model think as hard as another level says. Without it no level is offered.
  *   onModelSettings: Open the settings at the model.
  *   attachments: The files that go with the message. The caller keeps them, one set for each task.
@@ -39,8 +41,8 @@ const MOST_HEIGHT = 220;
  *   onRemoveAttachment: Take a file out of the message.
  */
 export function Composer({
-  workspace, draft, onDraft, onSend, field, returned, declined, commandsAsked, models, onChooseModel, onChooseEffort,
-  onModelSettings, attachments, refused, onAttach, onDropFiles, onRemoveAttachment,
+  workspace, draft, onDraft, onSend, field, returned, declined, commandsAsked, models, onChooseModel, onSwitchService,
+  onChooseEffort, onModelSettings, attachments, refused, onAttach, onDropFiles, onRemoveAttachment,
 }: {
   workspace: Workspace;
   draft: string;
@@ -52,6 +54,7 @@ export function Composer({
   commandsAsked: number;
   models: ServiceModels;
   onChooseModel: (model: string) => void;
+  onSwitchService?: (service: string, model: string) => void;
   onChooseEffort?: (effort: Effort) => void;
   onModelSettings: () => void;
   attachments: readonly Attachment[];
@@ -325,6 +328,13 @@ export function Composer({
           onChoose={onChooseModel}
           onSettings={onModelSettings}
           afterChoice={() => field.current?.focus()}
+          switching={onSwitchService && {
+            services: servicesToSwitchTo(workspace.services, provider),
+            models: models.of,
+            onShow: models.freshen,
+            onAsk: service => void models.ask(service),
+            onSwitch: onSwitchService,
+          }}
         />}
         {thinking && canEffort && onChooseEffort && workspace.mode !== 'mock' && <EffortPicker
           effort={thinking.effort}

@@ -318,6 +318,8 @@ export const ja: Messages = {
       use: (model: string) => `${model} を使用`,
       tryAgain: 'もう一度試す',
       settings: 'モデルの設定',
+      services: 'サービス',
+      inUse: (service: string) => `${service}（使用中）`,
     },
 
     effort: {
@@ -738,6 +740,8 @@ export const ja: Messages = {
       whenIdle: 'モデルは、Columbina が待機中のときに変更できます。',
       unavailable: 'モデルの一覧は、アプリケーションが実際のサービスを動かしているときに表示されます。リプレイ中は表示されません。',
       notKept: 'モデルは切り替わりましたが、次回の起動用に保存できませんでした。',
+      switch: (service: string) => `${service} のモデルを選ぶと、Columbina は ${service} で起動し直し、今のタスクを続けます。`,
+      notSwitched: 'サービスは切り替わりませんでした。',
       failed: {
         network: 'サービスに接続できません。このコンピューターがネットワークにつながっているか、プロキシを使っていればそれが動いているかを確かめてください。',
         timeout: 'サービスが時間内に応答しませんでした。少し待ってから、もう一度試してください。',
@@ -830,6 +834,8 @@ export const ja: Messages = {
       elsewhere: 'アシスタントはこのコンピューターの別の場所（ターミナルなど）で動いています。停止はそちらで行ってください。',
       withColumbina: 'アシスタントは Columbina が開いている間だけ動きます。Columbina を閉じたときに動いていれば、'
         + '次に開いたときにまた起動します。',
+      service: 'アシスタントは、起動したときに Columbina が使っているサービスと話します。別のサービスを選んだあとは、'
+        + 'アシスタントを停止して、もう一度起動してください。',
       ended: 'アシスタントが止まりました。',
       lastError: '前回のアシスタントの実行は正常に終わりませんでした。',
       startFailed: 'アシスタントを起動できませんでした。',

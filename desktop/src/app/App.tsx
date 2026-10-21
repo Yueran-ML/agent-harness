@@ -347,6 +347,31 @@ export default function App() {
     setNotKept(notice);
   };
   /**
+   * Have Columbina go on with a model of another service. The model is kept as that of the service,
+   * which chooses the service, and the service process is started again at the task that is open,
+   * as it is after a change in the window of the key. It is offered at rest only.
+   */
+  const switchService = async (service: string, model: string) => {
+    if (!window.columbina) return;
+    setNotKept(null);
+    let said: string;
+    try {
+      const told = storedOf(await window.columbina.chooseModel({ service, model }));
+      if (told.kind === 'stored') {
+        void workspace.refreshServices();
+        void workspace.reconnect();
+        return;
+      }
+      said = told.said;
+    } catch (problem) {
+      said = problem instanceof Error ? problem.message : String(problem);
+    }
+    // Nothing was changed. The user is told so, also in the settings.
+    const notice = `${words.hint.models.notSwitched} ${sentenceOf(said)}`.trim();
+    workspace.fail(notice);
+    setNotKept(notice);
+  };
+  /**
    * Have the service process ask for another level of thinking from its next request on, and keep
    * the level for its service, for the next start. Ultra holds for this run, and is not kept.
    */
@@ -705,6 +730,7 @@ export default function App() {
                 commandsAsked={commandsAsked}
                 models={models}
                 onChooseModel={model => void chooseModel(model)}
+                onSwitchService={(service, model) => void switchService(service, model)}
                 onChooseEffort={effort => void chooseEffort(effort)}
                 onModelSettings={() => setSettings('model')}
                 attachments={attached}
@@ -769,6 +795,7 @@ export default function App() {
         onSkip={skip}
         onOpen={openPage}
         onChooseModel={model => void chooseModel(model)}
+        onSwitchService={(service, model) => void switchService(service, model)}
         onChooseEffort={effort => void chooseEffort(effort)}
         // What is changed here shows here: the answer of the command is not written into the conversation.
         onCommand={line => void send(line, true)}

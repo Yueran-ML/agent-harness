@@ -345,6 +345,10 @@ export const en = {
       use: (model: string) => `Use ${model}`,
       tryAgain: 'Try again',
       settings: 'Model settings',
+      /** The services that are set up, at the head of the list of models. */
+      services: 'Services',
+      /** The name of the service in use among them, for whoever cannot see its mark. */
+      inUse: (service: string) => `${service}, in use`,
     },
 
     /** How hard the model thinks, as the field and the settings offer it. */
@@ -802,6 +806,10 @@ export const en = {
       unavailable: 'The models of a service are listed where the application runs the service itself, not in a replay.',
       /** The model was changed for the service process, and the setup program did not store it. */
       notKept: 'The model is in use now, and could not be kept for the next start.',
+      /** A model of another service is shown, and can be chosen. */
+      switch: (service: string) => `Choosing a model of ${service} starts Columbina again with ${service}, and the task goes on.`,
+      /** The setup program did not store the service and the model that were chosen. */
+      notSwitched: 'The service was not changed.',
       failed: {
         network: 'The service could not be reached. See whether this computer is online, and that the proxy is on if there is one.',
         timeout: 'The service did not answer in time. Try again in a moment.',
@@ -899,6 +907,8 @@ export const en = {
       elsewhere: 'The assistant runs elsewhere on this computer, such as in a terminal, and is stopped there.',
       withColumbina: 'The assistant runs only while Columbina is open. If it runs when you close Columbina, it starts again the '
         + 'next time.',
+      service: 'The assistant talks to the service that Columbina uses when the assistant starts. After another service is '
+        + 'chosen, stop the assistant and start it again.',
       ended: 'The assistant stopped.',
       lastError: 'The last run of the assistant did not end well.',
       startFailed: 'The assistant could not be started.',

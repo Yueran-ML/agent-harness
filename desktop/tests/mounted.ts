@@ -139,13 +139,15 @@ export function workspaceWith(given: Partial<Workspace> = {}): Workspace {
 
 /** A service as `columbina setup --list` tells of it. */
 export const service = (
-  name: string, title: string, given: { own?: boolean; key?: string; key_env?: string | null; key_page?: string | null } = {},
+  name: string,
+  title: string,
+  given: { own?: boolean; key?: string; key_env?: string | null; key_page?: string | null; model?: string | null } = {},
 ) => ({
   name,
   title,
   base_url: given.own ? 'http://10.0.0.5:8000/v1' : `https://api.${name}.example/v1`,
   own: given.own ?? false,
-  model: 'a-model',
+  model: given.model === undefined ? 'a-model' : given.model,
   context_window: 32_768,
   key_env: given.key_env === undefined ? 'A_KEY' : given.key_env,
   key: given.key ?? 'none',

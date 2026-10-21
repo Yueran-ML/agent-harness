@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Notification, dialog, ipcMain, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, session, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const {
@@ -81,10 +81,12 @@ function windowBar(theme) {
 // What the shell says by itself, in every language that the interface speaks, each under the
 // name that a page gives it. Everything else that is said is said by a page.
 const WORDS = {
-  en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach' },
-  ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択' },
-  'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件' },
+  en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach', open: 'Open Columbina', quit: 'Quit Columbina' },
+  ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択', open: 'Columbina を開く', quit: 'Columbina を終了' },
+  'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件', open: '打开 Columbina', quit: '退出 Columbina' },
 };
+// What the start at login gives the application, which then waits in the tray with its window put away.
+const HIDDEN = '--hidden';
 // The project that the service of the moment works in: the process, its folder, and whether it is a replay.
 let serviceProject = null;
 // The files that the user chose or dropped to go with a message, by the ids that the page knows
@@ -130,7 +132,12 @@ let mainListed = [];
 // What the service of the moment wrote last for errors. It is told of when the service has ended.
 let lastWords = { lines: [], rest: '' };
 // What is kept from one start to the next. Read when the application is ready.
-let preferences = { theme: 'moonveil', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null };
+let preferences = { theme: 'moonveil', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null, language: null };
+// The icon in the tray, once the window was put away there, and whether the user asked from there to quit.
+let tray = null;
+let quitting = false;
+// Whether the window was asked for before it was there: by a second start while the first one began.
+let wanted = false;
 let flashing = false;
 // The notification that shows, held so that it is not cleared away while it does.
 let shown = null;
@@ -208,10 +215,12 @@ function readPreferences() {
     if (recent.length === RECENT_MOST) break;
   }
   // Whether the user said on the first page that GitHub can wait, whether the assistant in Feishu
-  // ran when the user last started or stopped it, and in which language it said things by itself.
+  // ran when the user last started or stopped it, in which language it said things by itself, and
+  // the language of the page, in which the menu of the tray speaks before the page has said it.
   return {
     theme, recent, githubSkipped: given.githubSkipped === true, feishuOn: given.feishuOn === true,
     feishuLanguage: FEISHU_LANGUAGES.includes(given.feishuLanguage) ? given.feishuLanguage : null,
+    language: typeof given.language === 'string' && Object.hasOwn(WORDS, given.language) ? given.language : null,
   };
 }
 /** Write down what is kept. It is written beside its place and moved there, so that a start never finds half of it. */
@@ -727,6 +736,27 @@ function installHandlers() {
       keepPreferences();
     }
   });
+  ipcMain.handle('columbina:set-language', (event, language) => {
+    checkSender(event);
+    if (typeof language !== 'string' || !Object.hasOwn(WORDS, language)) throw new Error('Unknown language of the page.');
+    // The menu of the tray speaks it, also at the next start before the page has said it.
+    if (preferences.language !== language) {
+      preferences.language = language;
+      keepPreferences();
+    }
+    if (tray) trayMenu();
+  });
+  ipcMain.handle('columbina:login-item', (event) => {
+    checkSender(event);
+    return loginItem();
+  });
+  ipcMain.handle('columbina:set-login-item', (event, on) => {
+    checkSender(event);
+    if (typeof on !== 'boolean') throw new Error('Starting with the system is on or off.');
+    if (!loginItemOffered()) throw new Error('This application does not start with the system.');
+    app.setLoginItemSettings({ openAtLogin: on, path: process.execPath, args: [HIDDEN] });
+    return loginItem();
+  });
   ipcMain.handle('columbina:service-tail', (event) => {
     checkSender(event);
     // A line that is still being written is told of as far as it has come.
@@ -1044,6 +1074,30 @@ function installHandlers() {
     checkSender(event);
     shell.showItemInFolder(feishuLogPath());
   });
+  ipcMain.handle('columbina:feishu-writable', async (event, writable) => {
+    checkSender(event);
+    if (typeof writable !== 'boolean') throw new Error('Whether the assistant may change files is true or false.');
+    // The program changes it only while no assistant runs. One that the application runs is
+    // stopped first and started again after, with what was changed.
+    const ran = feishu !== null;
+    if (ran) await stopFeishu();
+    let answer;
+    try {
+      answer = await inTurn(() => runProgram(['feishu', '--from-stdin'], JSON.stringify({ writable })));
+    } finally {
+      if (ran && !exiting) await startFeishu().catch(() => {});
+    }
+    return answer;
+  });
+  ipcMain.handle('columbina:feishu-folder', async (event) => {
+    checkSender(event);
+    // The folder that the program names, and no other: the page names none.
+    const folder = (await runProgram(['feishu', '--status', '--json']))?.folder;
+    if (typeof folder !== 'string' || !path.isAbsolute(folder)) throw new Error('The program named no folder of the assistant.');
+    mkdirSync(folder, { recursive: true });
+    const failed = await shell.openPath(folder);
+    if (failed) throw new Error(failed);
+  });
   ipcMain.handle('columbina:set-up-feishu', async (event, asked) => {
     checkSender(event);
     if (!programCommand([])) throw new Error(NO_SETUP);
@@ -1225,6 +1279,67 @@ function keepFeishuLanguage(language) {
   preferences.feishuLanguage = language;
   keepPreferences();
 }
+/** Whether the application can start with the system: a package on Windows. */
+function loginItemOffered() {
+  return app.isPackaged && process.platform === 'win32';
+}
+/** Whether the application starts with the system, in the tray, where it can. */
+function loginItem() {
+  if (!loginItemOffered()) return { offered: false, on: false };
+  return { offered: true, on: app.getLoginItemSettings({ path: process.execPath, args: [HIDDEN] }).openAtLogin === true };
+}
+/** The words of the tray: in the language of the page, as it said last, or of the system. */
+function trayWords() {
+  const system = String(app.getLocale());
+  return WORDS[preferences.language ?? (system.startsWith('zh') ? 'zh-CN' : system.startsWith('ja') ? 'ja' : 'en')];
+}
+/** The menu of the tray, in the words of the moment. */
+function trayMenu() {
+  const words = trayWords();
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: words.open, click: showWindow },
+    { type: 'separator' },
+    { label: words.quit, click: quitFromTray },
+  ]));
+}
+/**
+ * Put the window away, with an icon in the tray that brings it back. What runs goes on, the
+ * assistant in Feishu among it, and what plays in the page, such as the music, is not heard.
+ */
+function toTray() {
+  if (!tray) {
+    const image = process.platform === 'win32' ? path.join(__dirname, 'icon.ico')
+      : nativeImage.createFromPath(path.resolve(__dirname, '../dist/columbina-icon.png')).resize({ width: 16, height: 16 });
+    tray = new Tray(image);
+    tray.setToolTip('Columbina');
+    tray.on('click', showWindow);
+    trayMenu();
+  }
+  window.hide();
+  window.webContents.setAudioMuted(true);
+}
+/** Show the window: from the tray, or where the application was started again while it ran. */
+function showWindow() {
+  if (!window || window.isDestroyed()) {
+    wanted = true;
+    return;
+  }
+  window.webContents.setAudioMuted(false);
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+/** Quit from the tray: the window closes as it does where nothing keeps it, and the assistant stops. */
+function quitFromTray() {
+  quitting = true;
+  window.close();
+}
+/** Stop what runs and quit, without the page: the window has gone, or the system ends the session. */
+function endAll() {
+  exiting = true;
+  stopSigningIn();
+  void Promise.allSettled([enqueueService(stopService), stopFeishu()]).then(() => app.quit());
+}
 function finishWindowClose() {
   clearTimeout(closeTimer);
   if (window && !window.isDestroyed()) window.destroy();
@@ -1240,7 +1355,12 @@ function requestWindowClose() {
   // timer only covers a missing renderer or an unanswered shutdown request.
   closeTimer = setTimeout(() => { void enqueueService(stopService).finally(finishWindowClose); }, 1800);
 }
+// One application at a time. Another start shows the window of the first, also from the tray, and ends.
+const alone = app.requestSingleInstanceLock();
+if (alone) app.on('second-instance', showWindow);
+else app.quit();
 app.whenReady().then(() => {
+  if (!alone) return;
   if (!existsSync(indexPath)) throw new Error('Build the desktop client before starting Electron: npm run build');
   installHandlers();
   preferences = readPreferences();
@@ -1258,8 +1378,10 @@ app.whenReady().then(() => {
       app.dock?.setIcon(path.resolve(__dirname, '../dist/columbina-icon.png'));
     }
   }
+  // Started at login, the application waits in the tray, and its window shows when it is asked for.
+  const hidden = process.argv.includes(HIDDEN);
   window = new BrowserWindow({
-    width: 1380, height: 920, minWidth: 860, minHeight: 640, backgroundColor: theme.color, title: 'Columbina',
+    width: 1380, height: 920, minWidth: 860, minHeight: 640, backgroundColor: theme.color, title: 'Columbina', show: !hidden,
     icon: path.join(__dirname, 'icon.ico'),
     ...windowBar(theme),
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, autoplayPolicy: 'no-user-gesture-required' },
@@ -1292,11 +1414,30 @@ app.whenReady().then(() => {
     },
   }));
   closeToTheWorld(window);
-  window.on('close', (event) => { if ((service || feishu || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
+  window.on('close', (event) => {
+    if (exiting) return;
+    // While the assistant in Feishu runs, the window is put away in the tray and the assistant goes
+    // on. Quitting from the tray ends both.
+    if (feishu && !quitting) {
+      event.preventDefault();
+      toTray();
+      return;
+    }
+    if (service || feishu || pendingServiceOperations) {
+      event.preventDefault();
+      requestWindowClose();
+    }
+  });
+  // Windows ends the session: what runs is stopped without waiting for the page.
+  window.on('session-end', endAll);
+  if (hidden && wanted) showWindow();
+  else if (hidden) toTray();
   window.webContents.on('render-process-gone', () => { stopSigningIn(); void enqueueService(stopService); });
   void window.loadFile(indexPath);
   // The assistant in Feishu runs again where it ran when the application was left.
   if (preferences.feishuOn) void startFeishu().catch(() => {});
 });
 app.on('before-quit', (event) => { if ((service || feishu || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
-app.on('window-all-closed', () => { exiting = true; stopSigningIn(); void Promise.allSettled([enqueueService(stopService), stopFeishu()]).then(() => app.quit()); });
+app.on('window-all-closed', endAll);
+// On macOS a click on the icon in the Dock shows the window that was put away.
+app.on('activate', showWindow);

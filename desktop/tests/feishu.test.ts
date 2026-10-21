@@ -12,7 +12,17 @@ const status = {
 };
 const app = (given: Partial<App> = {}): Extract<Assistant, { kind: 'app' }> => ({
   kind: 'app', platform: 'feishu', appId: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: false,
-  running: false, own: false, state: null, code: null, error: null, ended: null, ...given,
+  folder: null, writable: false, running: false, own: false, state: null, code: null, error: null, ended: null, ...given,
+});
+
+describe('the folder of the assistant, as the shell says it', () => {
+  it('is named, with whether its agent may change the files there', () => {
+    expect(assistantOf({ ...status, folder: 'C:/me/Columbina/feishu', writable: true }))
+      .toMatchObject({ folder: 'C:/me/Columbina/feishu', writable: true });
+    // Where nothing that could be one is said, there is none, and nothing may be changed.
+    expect(assistantOf({ ...status, folder: 7, writable: 'yes' })).toMatchObject({ folder: null, writable: false });
+    expect(assistantOf(status)).toMatchObject({ folder: null, writable: false });
+  });
 });
 
 describe('how the assistant is doing, as the shell says it', () => {

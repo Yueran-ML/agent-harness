@@ -15,4 +15,6 @@ export const noFeishu: Feishu = {
   forget: async () => false,
   setUp: async () => {},
   showLog: () => {},
+  setWritable: async () => {},
+  openFolder: async () => {},
 };

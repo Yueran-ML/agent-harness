@@ -14,6 +14,7 @@ import { projectEvents, type ToolItem } from '../src/state';
 import { groupTurns, type Turn } from '../src/turns';
 import { permissionPresetFromCommand } from '../src/uiActions';
 import { sayPermissions } from '../src/words';
+import { loginItemOf } from '../src/app/system';
 import { approvalPolicies, sandboxModes } from './appendix';
 
 const minute = 60_000;
@@ -251,6 +252,16 @@ describe('the services that the settings tell of', () => {
   it('do not hold a service in use that the list does not have', () => {
     // The profile names a service of its own. It is in use, and the list has nothing to say of it.
     expect(servicesToTell({ use: null, services: [service('deepseek')] }, 'in-house')).toEqual({ inUse: 'in-house', known: [] });
+  });
+});
+
+describe('the start with the system, as the shell says it', () => {
+  it('is offered and on only where the shell says so in so many words', () => {
+    expect(loginItemOf({ offered: true, on: true })).toEqual({ offered: true, on: true });
+    expect(loginItemOf({ offered: true, on: false })).toEqual({ offered: true, on: false });
+    for (const answer of [{ offered: 'yes', on: 1 }, { offered: 1, on: 'true' }, null, 'on', undefined]) {
+      expect(loginItemOf(answer)).toEqual({ offered: false, on: false });
+    }
   });
 });
 

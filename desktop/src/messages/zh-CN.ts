@@ -234,6 +234,8 @@ export const zhCN: Messages = {
     recentProjects: '最近的项目',
     notices: '通知',
     tellMe: 'Columbina 等我或者做完时通知我',
+    startup: '启动',
+    loginItem: '登录 Windows 时启动 Columbina 并留在托盘里',
 
     key: {
       title: '模型服务',
@@ -318,6 +320,8 @@ export const zhCN: Messages = {
       keep: '保留',
       console: '打开开发者后台',
       log: '查看日志',
+      writable: '允许助手修改它文件夹里的文件',
+      folder: '打开它的文件夹',
       checkAgain: '重新查看',
       copyCode: '复制配对码',
       pair: (platform: string) => `在${between(platform)}里给机器人发送这个配对码`,
@@ -576,6 +580,7 @@ export const zhCN: Messages = {
     serviceEnded: '服务进程已经结束。',
     serviceNotStarted: '服务进程没能启动。',
     tellMe: '只在这个窗口不在前台时通知。',
+    loginItem: '如果上次退出 Columbina 时飞书助手在运行，它会跟着启动。点托盘里的图标可以打开窗口。',
 
     consentRun: 'Columbina 想运行这条命令。',
     consentWrite: 'Columbina 想修改这个文件。',
@@ -775,7 +780,10 @@ export const zhCN: Messages = {
       noCode: '配对码输错的次数太多，已经作废。停止助手再启动，就能拿到新的配对码。',
       stopping: '正在停止助手。',
       elsewhere: '助手正在这台电脑的别处运行，比如在终端里，要在那里停止。',
-      withColumbina: '助手只在 Columbina 开着时运行。关掉 Columbina 时它在运行的话，下次打开会自动启动。',
+      withColumbina: '助手运行时，关掉窗口后 Columbina 会留在托盘里，助手照常回复；要都停下，在托盘里选退出。退出时助手在运行的话，下次打开会自动启动。',
+      writable: '打开后，助手可以在它自己的文件夹里新建和修改文件，但仍然不能运行命令。助手在运行的话，改动后会重新启动。',
+      writableFailed: '没能更改助手能否修改文件的设置。',
+      folderFailed: '没能打开助手的文件夹。',
       service: '助手用的是它启动时 Columbina 在用的服务。换了服务以后，把助手停下再启动一次。',
       ended: '助手停止了。',
       lastError: '助手上次运行出了问题。',

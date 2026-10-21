@@ -120,6 +120,14 @@ replace itself. The settings show the version that runs and what the last look f
 look again when asked, skip a version, and stop the looking. An application that runs from
 source does not look.
 
+While the assistant in Feishu runs, closing the window puts the application in the tray, where
+the assistant goes on answering and nothing in the page is heard. A click on the icon of the tray
+opens the window again, and its menu opens it or quits, which stops the assistant as the closing
+of the window did before. Only one application runs at a time: starting it again shows the window
+of the one that runs. On Windows, a package can start with the system, in the tray, which the
+settings switch on under *Starting*; the assistant starts with it where it ran when the
+application last quit.
+
 The first start begins with a short film. Any key or a click leaves it, and the starts
 after that go without it unless the settings say that it is to play every time.
 
@@ -229,12 +237,16 @@ The settings start and stop the assistant, and show how it is doing: connecting,
 waiting for the code of pairing, which they show large with a way to copy it. They show what
 went wrong last, and the last line that an assistant wrote before it ended badly. An assistant
 that runs elsewhere, such as in a terminal, is said to run there and is left alone. Deleting
-the app is asked first. The assistant runs while the application is open, and starts again
-with the application where it ran when the application was closed.
+the app is asked first. The assistant runs while the application runs, in the tray where its
+window was closed, and starts again with the application where it ran when the application
+quit. A switch lets the assistant change the files in its folder, which the program changes only
+while no assistant runs, so an assistant that runs is stopped first and started again after; a
+button opens that folder.
 
 The shell runs `columbina feishu --json` for the assistant, `columbina feishu --status
---json` to say how it is doing, `columbina feishu --from-stdin` to store the app and
-`columbina feishu --forget --json` to delete it. Where the page speaks Chinese or English, the
+--json` to say how it is doing and where its folder is, `columbina feishu --from-stdin` to
+store the app or whether its files may change, and `columbina feishu --forget --json` to delete
+it. Where the page speaks Chinese or English, the
 assistant is given `--language` for it, and keeps it when it starts again with the
 application. The assistant tells the page how it is doing in lines of JSON, and what it writes
 for errors goes into `columbina-feishu.log` in the folder of the logs.

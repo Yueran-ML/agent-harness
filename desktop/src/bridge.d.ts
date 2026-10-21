@@ -16,6 +16,12 @@ export interface ColumbinaBridge {
   onFullScreen(listener: (full: boolean) => void): () => void;
   stop(): Promise<void>;
   setTheme(theme: 'moonveil' | 'moonwhite'): Promise<void>;
+  /** Tell the shell the language of the page, in which the menu of the tray speaks. */
+  setLanguage(language: string): Promise<void>;
+  /** Whether the application can start with the system, in the tray, and whether it does. */
+  loginItem(): Promise<unknown>;
+  /** Have the application start with the system, in the tray, or not. It answers as `loginItem`. */
+  setLoginItem(on: boolean): Promise<unknown>;
   /** The last lines that the service wrote for errors. They are still there after it has ended. */
   serviceTail(): Promise<string[]>;
   /** Show the log of the service in its folder. */
@@ -114,6 +120,13 @@ export interface ColumbinaBridge {
   feishuForget(): Promise<unknown>;
   /** Show the log of the assistant in Feishu in its folder. */
   feishuLog(): Promise<void>;
+  /**
+   * Say whether the agent of the assistant in Feishu may change the files of its folder. One that
+   * runs is stopped first and started again after. The answer is what the program kept, or why not.
+   */
+  feishuWritable(writable: boolean): Promise<unknown>;
+  /** Open the folder of the assistant in Feishu, as the program names it. */
+  openFeishuFolder(): Promise<void>;
   /**
    * Open the window in which the app of Feishu and its App Secret are given, and wait until it is
    * closed. This window is told whether an app was stored there, and nothing of it.

@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('columbina', {
   onFullScreen: (callback) => subscribe('columbina:full-screen', callback),
   stop: () => ipcRenderer.invoke('columbina:stop'),
   setTheme: (theme) => ipcRenderer.invoke('columbina:set-theme', theme),
+  setLanguage: (language) => ipcRenderer.invoke('columbina:set-language', language),
+  loginItem: () => ipcRenderer.invoke('columbina:login-item'),
+  setLoginItem: (on) => ipcRenderer.invoke('columbina:set-login-item', on === true),
   serviceTail: () => ipcRenderer.invoke('columbina:service-tail'),
   showLog: () => ipcRenderer.invoke('columbina:show-log'),
   notify: (message) => ipcRenderer.invoke('columbina:notify', { title: message?.title, body: message?.body }),
@@ -55,6 +58,8 @@ contextBridge.exposeInMainWorld('columbina', {
   feishuStop: () => ipcRenderer.invoke('columbina:feishu-stop'),
   feishuForget: () => ipcRenderer.invoke('columbina:feishu-forget'),
   feishuLog: () => ipcRenderer.invoke('columbina:feishu-log'),
+  feishuWritable: (writable) => ipcRenderer.invoke('columbina:feishu-writable', writable === true),
+  openFeishuFolder: () => ipcRenderer.invoke('columbina:feishu-folder'),
   setUpFeishu: (asked) => ipcRenderer.invoke('columbina:set-up-feishu', { language: asked?.language }),
   onFeishu: (callback) => subscribe('columbina:feishu', callback),
 });

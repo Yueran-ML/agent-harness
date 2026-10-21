@@ -150,6 +150,8 @@ export default function App() {
   useEffect(() => {
     // The language that is shown, which is English where the system has one that there are no words for.
     document.documentElement.lang = shownLanguage(language);
+    // The menu of the tray speaks it too. What goes wrong there is nothing to the page.
+    void Promise.resolve().then(() => window.columbina?.setLanguage(shownLanguage(language))).catch(() => {});
     storeLanguage(language);
   }, [language]);
   useEffect(() => {

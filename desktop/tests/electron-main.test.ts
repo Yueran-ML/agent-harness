@@ -33,6 +33,14 @@ interface System {
   version?: string;
   /** What the login shell of the user writes when it is asked for its PATH. Null is a shell that never ends. */
   loginShell?: string | null;
+  /** Whether no other application of Columbina runs, which it does not unless that is said. */
+  alone?: boolean;
+  /** The language of the system, English unless it is named. */
+  locale?: string;
+  /** What the application was started with besides its program. */
+  argv?: string[];
+  /** What happens to the application after its script ran and before it is ready, such as a second start. */
+  beforeReady?: (app: EventEmitter) => void;
 }
 
 /** What a login shell writes by itself, before it says its PATH. */
@@ -71,11 +79,17 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const missing = (file: string) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
   // The files that are not there, beside the folders that are gone. Every other file is.
   const absent = new Set<string>();
+  // Whether the application starts with the system, as the system keeps it.
+  const loginItem = { openAtLogin: false };
   const app = Object.assign(new EventEmitter(), {
+    requestSingleInstanceLock: vi.fn(() => system.alone ?? true),
+    getLocale: vi.fn(() => system.locale ?? 'en-US'),
+    setLoginItemSettings: vi.fn((settings: { openAtLogin: boolean }) => { loginItem.openAtLogin = settings.openAtLogin; }),
+    getLoginItemSettings: vi.fn((_asked?: unknown) => ({ openAtLogin: loginItem.openAtLogin })),
     setName: vi.fn(), setAppUserModelId: vi.fn(), isPackaged: system.packaged ?? false,
     getVersion: () => system.version ?? '0.1.2',
     dock: { setIcon: vi.fn() },
-    whenReady: () => Promise.resolve(), quit: vi.fn(),
+    whenReady: () => { system.beforeReady?.(app); return Promise.resolve(); }, quit: vi.fn(),
     getPath: vi.fn((name: string) => {
       if (name === 'documents') throw new Error('Documents must never be used as a project.');
       return path.resolve(`/columbina-test/${name}`);
@@ -93,6 +107,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       send: (channel: string, value: unknown) => sent.push([channel, value]),
       session: { webRequest: { onBeforeRequest: vi.fn(), onHeadersReceived: vi.fn() } },
       setWindowOpenHandler: vi.fn(),
+      setAudioMuted: vi.fn(),
     });
     options: any;
     constructor(options: unknown) { super(); this.options = options; windows.push(this); window ??= this; }
@@ -104,6 +119,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     isMinimized = () => this.minimized;
     flashFrame = vi.fn();
     show = vi.fn();
+    hide = vi.fn();
     focus = vi.fn();
     restore = vi.fn();
     isDestroyed = () => false;
@@ -242,7 +258,15 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     show = vi.fn();
     constructor(public options: unknown) { super(); notifications.push(this); }
   }
-  const world = { openExternal: vi.fn(), showItemInFolder: vi.fn() };
+  const world = { openExternal: vi.fn(), showItemInFolder: vi.fn(), openPath: vi.fn(async (_folder: string) => '') };
+  // The icons that the shell put in the tray, and the pictures that it made for them.
+  const trays: any[] = [];
+  class TestTray extends EventEmitter {
+    setToolTip = vi.fn();
+    setContextMenu = vi.fn();
+    constructor(public image: unknown) { super(); trays.push(this); }
+  }
+  const pictures = { createFromPath: vi.fn((file: string) => ({ file, resize: vi.fn((size: unknown) => ({ file, size })) })) };
   // The network, which answers nothing unless a test says what, and the sessions of their own that
   // the shell asks it through, by the names of their partitions.
   const net = { fetch: vi.fn(async (_address: string, _init?: any): Promise<any> => { throw new Error('No network in the tests.'); }) };
@@ -253,6 +277,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const modules: Record<string, unknown> = {
     electron: {
       app, BrowserWindow: TestWindow, Menu: menu, dialog, shell: world, Notification: TestNotification, session,
+      Tray: TestTray, nativeImage: pictures,
       ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => handlers.set(name, callback), on: vi.fn() },
     },
     'node:child_process': { spawn },
@@ -291,18 +316,20 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   };
   runInNewContext(source, {
     require: (name: string) => { if (!(name in modules)) throw new Error(`Unexpected module: ${name}`); return modules[name]; },
-    __dirname: path.dirname(mainPath), process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources },
+    __dirname: path.dirname(mainPath),
+    process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources, argv: ['Columbina.exe', ...(system.argv ?? [])] },
     // The clock of the tests, so that a test that sets it sets it for the shell too.
     URL, setTimeout, clearTimeout, Date, AbortSignal,
   }, { filename: mainPath });
   await Promise.resolve();
-  const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame };
+  // A second application of Columbina makes no window, and nothing calls it.
+  const event = window ? { sender: window.webContents, senderFrame: window.webContents.mainFrame } : { sender: null, senderFrame: null };
   const invoke = (name: string, ...args: unknown[]) => handlers.get(`columbina:${name}`)!(event, ...args);
   const select = async (folder: string) => {
     dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [folder] });
     return invoke('select-folder') as Promise<string>;
   };
-  const unrelated = { sender: window.webContents, senderFrame: { url: window.webContents.mainFrame.url } };
+  const unrelated = window ? { sender: window.webContents, senderFrame: { url: window.webContents.mainFrame.url } } : { sender: null, senderFrame: null };
   const preferences = () => JSON.parse(files.get(preferencesFile) ?? 'null');
   // The window for the key, once the shell has opened it, and a call as that window makes it.
   const keyWindow = () => windows[1];
@@ -315,7 +342,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   return {
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, drive, file, sent,
     dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
-    partitions,
+    partitions, trays, pictures,
     setups, setup, keyWindow, asKeyWindow, feishuWindow, asFeishuWindow, menu, logins, signIns, bots, lineReaders,
     live: () => live, peakLive: () => peakLive,
   };
@@ -969,7 +996,7 @@ describe('what the shell keeps from one start to the next', () => {
     const shell = await shellHarness();
     shell.invoke('set-theme', 'moonwhite');
     expect(shell.preferences()).toEqual({
-      theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
+      theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null, language: null,
     });
     expect(() => shell.invoke('set-theme', 'frostlight')).toThrow('Unknown application theme.');
     expect(shell.preferences().theme).toBe('moonwhite');
@@ -2484,11 +2511,20 @@ describe('the assistant in Feishu', () => {
     expect([...off.bots, ...replay.bots]).toEqual([]);
   });
 
-  it('lets the assistant stop before the application leaves', async () => {
+  it('lets the assistant stop before the application leaves from the tray', async () => {
     const shell = await withApp();
     await shell.invoke('feishu-start');
     const [child] = shell.bots;
-    // The window is not closed at once: the page is asked to end first, as while a service runs.
+    // Closed, the window is put away in the tray, and the assistant goes on.
+    const putAway = vi.fn();
+    shell.window.emit('close', { preventDefault: putAway });
+    expect(putAway).toHaveBeenCalledOnce();
+    expect(shell.window.hide).toHaveBeenCalledOnce();
+    expect(child.stdin.end).not.toHaveBeenCalled();
+    // Quitting from there closes it as where nothing keeps it: the page is asked to end first.
+    const [, , quit] = shell.menu.buildFromTemplate.mock.calls.at(-1)![0] as { click?: () => void }[];
+    quit.click!();
+    expect(shell.window.close).toHaveBeenCalledOnce();
     const preventDefault = vi.fn();
     shell.window.emit('close', { preventDefault });
     expect(preventDefault).toHaveBeenCalledOnce();
@@ -2651,5 +2687,229 @@ describe('the assistant in Feishu', () => {
       await expect((async () => shell.handlers.get('columbina-feishu:context')!(
         { sender: gone.webContents, senderFrame: gone.webContents.mainFrame }))()).rejects.toThrow('the window for the app of Feishu');
     });
+  });
+});
+
+
+describe('the tray, the start with the system, and one application at a time', () => {
+  const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
+  const app = {
+    set_up: true, domain: 'feishu', app_id: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: true,
+    running: false, state: null, code: null, error: null, folder: path.resolve('/home/columbina-test/Columbina/feishu'), writable: false,
+  };
+  /** The shell with an app set up, which the program says of whenever it is asked. */
+  const withApp = async (system: System = {}, said: Record<string, unknown> = app) => {
+    const shell = await shellHarness(undefined, real, system);
+    shell.setup.answer = (args) => (args.includes('--status')
+      ? { out: `${JSON.stringify(said)}\n`, code: 0 }
+      : { out: `${JSON.stringify({ writable: true })}\n`, code: 0 });
+    return shell;
+  };
+  /** The words of the menu of the tray that the shell made last. */
+  const menuOf = (shell: Awaited<ReturnType<typeof shellHarness>>) =>
+    (shell.menu.buildFromTemplate.mock.calls.at(-1)![0] as { label?: string; type?: string }[]).map(item => item.label ?? item.type);
+
+  it('puts the window away in the tray while the assistant runs, and brings it back from there', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start');
+    const putAway = vi.fn();
+    shell.window.emit('close', { preventDefault: putAway });
+    expect(putAway).toHaveBeenCalledOnce();
+    expect(shell.window.hide).toHaveBeenCalledOnce();
+    // What plays in the page is not heard from the tray.
+    expect(shell.window.webContents.setAudioMuted).toHaveBeenLastCalledWith(true);
+    const [tray] = shell.trays;
+    expect(tray.image).toBe(path.join(path.dirname(mainPath), 'icon.ico'));
+    expect(tray.setToolTip).toHaveBeenCalledWith('Columbina');
+    expect(menuOf(shell)).toEqual(['Open Columbina', 'separator', 'Quit Columbina']);
+    // A click on the icon, or on what the menu opens with, brings the window back.
+    shell.window.minimized = true;
+    tray.emit('click');
+    expect(shell.window.restore).toHaveBeenCalledOnce();
+    expect(shell.window.show).toHaveBeenCalledOnce();
+    expect(shell.window.focus).toHaveBeenCalled();
+    expect(shell.window.webContents.setAudioMuted).toHaveBeenLastCalledWith(false);
+    const [open] = shell.menu.buildFromTemplate.mock.calls.at(-1)![0] as { click?: () => void }[];
+    open.click!();
+    expect(shell.window.show).toHaveBeenCalledTimes(2);
+    // Put away again, it has the same icon.
+    shell.window.emit('close', { preventDefault: vi.fn() });
+    expect(shell.trays).toHaveLength(1);
+    expect(shell.window.hide).toHaveBeenCalledTimes(2);
+  });
+
+  it('closes as it did where the assistant does not run', async () => {
+    const shell = await withApp();
+    const preventDefault = vi.fn();
+    shell.window.emit('close', { preventDefault });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(shell.trays).toEqual([]);
+    // Nor once the application is closing.
+    await shell.invoke('feishu-start');
+    shell.app.emit('before-quit', { preventDefault: vi.fn() });
+    const later = vi.fn();
+    shell.window.emit('close', { preventDefault: later });
+    expect(later).not.toHaveBeenCalled();
+    expect(shell.trays).toEqual([]);
+  });
+
+  it('draws the icon of the tray from the picture of the application on macOS', async () => {
+    const shell = await withApp({ platform: 'darwin' });
+    await shell.invoke('feishu-start');
+    shell.window.emit('close', { preventDefault: vi.fn() });
+    expect(shell.pictures.createFromPath).toHaveBeenCalledWith(path.resolve(path.dirname(mainPath), '../dist/columbina-icon.png'));
+    expect(shell.trays[0].image).toEqual({ file: path.resolve(path.dirname(mainPath), '../dist/columbina-icon.png'), size: { width: 16, height: 16 } });
+    // A click on its icon in the Dock brings the window back.
+    shell.app.emit('activate');
+    expect(shell.window.show).toHaveBeenCalledOnce();
+  });
+
+  it('speaks in the language of the page in the tray, and of the system before the page has said it', async () => {
+    const chinese = await withApp({ locale: 'zh-CN' });
+    await chinese.invoke('feishu-start');
+    chinese.window.emit('close', { preventDefault: vi.fn() });
+    expect(menuOf(chinese)).toEqual(['打开 Columbina', 'separator', '退出 Columbina']);
+    await chinese.invoke('set-language', 'ja');
+    expect(menuOf(chinese)).toEqual(['Columbina を開く', 'separator', 'Columbina を終了']);
+    expect(chinese.preferences().language).toBe('ja');
+    await expect((async () => chinese.invoke('set-language', 'fr'))()).rejects.toThrow('Unknown language of the page');
+    // What the page said last holds at the next start too, whatever the system speaks.
+    const kept = await shellHarness(JSON.stringify({ language: 'zh-CN' }), real, { locale: 'ja-JP' });
+    kept.setup.answer = () => ({ out: `${JSON.stringify(app)}\n`, code: 0 });
+    await kept.invoke('feishu-start');
+    kept.window.emit('close', { preventDefault: vi.fn() });
+    expect(menuOf(kept)).toEqual(['打开 Columbina', 'separator', '退出 Columbina']);
+    // A language that the shell does not speak is not kept, and the page has not changed it before the tray.
+    const odd = await shellHarness(JSON.stringify({ language: 'fr' }), real, { locale: 'ja-JP' });
+    odd.setup.answer = () => ({ out: `${JSON.stringify(app)}\n`, code: 0 });
+    await odd.invoke('feishu-start');
+    odd.window.emit('close', { preventDefault: vi.fn() });
+    expect(menuOf(odd)).toEqual(['Columbina を開く', 'separator', 'Columbina を終了']);
+    const writes = () => odd.writeFileSync.mock.calls.filter(([file]) => String(file).startsWith(preferencesFile)).length;
+    const before = writes();
+    await odd.invoke('set-language', 'en');
+    expect(odd.preferences().language).toBe('en');
+    // The same language again is not written down again.
+    await odd.invoke('set-language', 'en');
+    expect(writes()).toBe(before + 1);
+  });
+
+  it('starts at login in the tray, with its window put away', async () => {
+    const shell = await withApp({ argv: ['--hidden'] });
+    expect(shell.window.options.show).toBe(false);
+    expect(shell.trays).toHaveLength(1);
+    expect(shell.window.webContents.setAudioMuted).toHaveBeenLastCalledWith(true);
+    // Started otherwise, it shows its window.
+    const shown = await withApp();
+    expect(shown.window.options.show).toBe(true);
+    expect(shown.trays).toEqual([]);
+  });
+
+  it('shows its window where it was started again while it started at login', async () => {
+    const shell = await withApp({ argv: ['--hidden'], beforeReady: (started) => started.emit('second-instance') });
+    expect(shell.window.options.show).toBe(false);
+    expect(shell.window.show).toHaveBeenCalledOnce();
+    expect(shell.window.webContents.setAudioMuted).toHaveBeenLastCalledWith(false);
+    expect(shell.trays).toEqual([]);
+  });
+
+  it('shows the window of the application that runs where it is started again, and the second ends', async () => {
+    const first = await withApp();
+    first.app.emit('second-instance');
+    expect(first.window.show).toHaveBeenCalledOnce();
+    expect(first.app.quit).not.toHaveBeenCalled();
+    const second = await shellHarness(undefined, real, { alone: false });
+    await settled();
+    expect(second.app.quit).toHaveBeenCalledOnce();
+    expect(second.windows).toEqual([]);
+  });
+
+  it('stops what runs where Windows ends the session', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start');
+    const [child] = shell.bots;
+    shell.window.emit('session-end');
+    await settled();
+    expect(child.stdin.end).toHaveBeenCalledOnce();
+    child.exitCode = 0;
+    child.emit('close', 0, null);
+    await settled();
+    expect(shell.app.quit).toHaveBeenCalled();
+  });
+
+  it('starts with the system in the tray where it is a package on Windows', async () => {
+    const shell = await withApp({ packaged: true });
+    expect(shell.invoke('login-item')).toEqual({ offered: true, on: false });
+    expect(shell.invoke('set-login-item', true)).toEqual({ offered: true, on: true });
+    expect(shell.app.setLoginItemSettings).toHaveBeenLastCalledWith({ openAtLogin: true, path: 'Columbina.exe', args: ['--hidden'] });
+    expect(shell.app.getLoginItemSettings).toHaveBeenLastCalledWith({ path: 'Columbina.exe', args: ['--hidden'] });
+    expect(shell.invoke('set-login-item', false)).toEqual({ offered: true, on: false });
+    await expect((async () => shell.invoke('set-login-item', 'yes'))()).rejects.toThrow('on or off');
+    // Not from the checkout, nor on another system.
+    for (const system of [{}, { packaged: true, platform: 'darwin' as const }]) {
+      const other = await withApp(system);
+      expect(other.invoke('login-item')).toEqual({ offered: false, on: false });
+      await expect((async () => other.invoke('set-login-item', true))()).rejects.toThrow('does not start with the system');
+      expect(other.app.setLoginItemSettings).not.toHaveBeenCalled();
+    }
+  });
+
+  it('says whether the assistant may change its files, stopping it first and starting it again', async () => {
+    const shell = await withApp();
+    await expect(shell.invoke('feishu-writable', true)).resolves.toEqual({ writable: true });
+    const asked = shell.setups.at(-1)!;
+    expect(asked.args).toEqual(['-m', 'columbina', 'feishu', '--from-stdin']);
+    expect(JSON.parse(asked.input!)).toEqual({ writable: true });
+    expect(shell.bots).toEqual([]);
+    // One that runs is stopped first, and started again after.
+    await shell.invoke('feishu-start');
+    const [running] = shell.bots;
+    const changing = shell.invoke('feishu-writable', false);
+    await settled();
+    expect(running.stdin.end).toHaveBeenCalledOnce();
+    running.exitCode = 0;
+    running.emit('close', 0, null);
+    await expect(changing).resolves.toEqual({ writable: true });
+    expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({ writable: false });
+    expect(shell.bots).toHaveLength(2);
+    await expect((async () => shell.invoke('feishu-writable', 'yes'))()).rejects.toThrow('true or false');
+  });
+
+  it('starts the assistant again even where what was asked did not go through', async () => {
+    const shell = await withApp();
+    shell.setup.answer = (args) => (args.includes('--from-stdin') ? { out: '', code: 1 } : { out: `${JSON.stringify(app)}\n`, code: 0 });
+    await shell.invoke('feishu-start');
+    const [running] = shell.bots;
+    const changing = shell.invoke('feishu-writable', true);
+    await settled();
+    running.exitCode = 0;
+    running.emit('close', 0, null);
+    await expect(changing).rejects.toThrow();
+    expect(shell.bots).toHaveLength(2);
+  });
+
+  it('opens the folder of the assistant that the program names, and no other', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-folder');
+    expect(shell.system.openPath).toHaveBeenCalledWith(app.folder);
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'feishu', '--status', '--json']);
+    shell.system.openPath.mockResolvedValueOnce('No application opens it.');
+    await expect((async () => shell.invoke('feishu-folder'))()).rejects.toThrow('No application opens it.');
+    for (const folder of [undefined, 'relative/folder']) {
+      const odd = await withApp({}, { ...app, folder });
+      await expect((async () => odd.invoke('feishu-folder'))()).rejects.toThrow('named no folder');
+      expect(odd.system.openPath).not.toHaveBeenCalled();
+    }
+    const replay = await shellHarness();
+    await expect((async () => replay.invoke('feishu-folder'))()).rejects.toThrow('No service program');
+  });
+
+  it('answers these calls to the main window alone', async () => {
+    const shell = await withApp({ packaged: true });
+    for (const [name, given] of [['set-language', 'en'], ['login-item'], ['set-login-item', true], ['feishu-writable', true], ['feishu-folder']] as [string, unknown?][]) {
+      await expect((async () => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, given))()).rejects.toThrow('IPC sender');
+    }
+    expect(shell.app.setLoginItemSettings).not.toHaveBeenCalled();
+    expect(shell.setups).toEqual([]);
   });
 });

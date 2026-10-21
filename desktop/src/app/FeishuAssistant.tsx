@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, ExternalLink, FileText, Play, RefreshCw, Settings2, Square, TriangleAlert } from 'lucide-react';
+import { Check, Copy, ExternalLink, FileText, FolderOpen, Play, RefreshCw, Settings2, Square, TriangleAlert } from 'lucide-react';
 import { sentenceOf } from '../key/form';
 import { useFeishu, type Feishu } from '../useFeishu';
 import { doingOf, type App, type Ended } from './feishu';
@@ -154,10 +154,33 @@ function AppPart({ app, feishu, onOpen }: { app: App; feishu: Feishu; onOpen: Op
         </div>
       </div>
     </div>}
+    {/* The program changes it only while no assistant runs: one that runs elsewhere is stopped there first. */}
+    <div className="setting-row">
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={app.writable}
+          disabled={busy !== null || (app.running && !app.own)}
+          onChange={event => void feishu.setWritable(event.target.checked)}
+          data-test="feishu-writable"
+        />
+        {labels.writable}
+      </label>
+    </div>
+    <p className="caption">{words.hint.feishu.writable}</p>
     <div className="setting-row feishu-links">
       <button type="button" className="btn btn-quiet" onClick={() => onOpen(app.console)} data-test="feishu-console">
         <ExternalLink size={14} aria-hidden="true" />{labels.console}
       </button>
+      {app.folder !== null && <button
+        type="button"
+        className="btn btn-quiet"
+        title={app.folder}
+        onClick={() => void feishu.openFolder()}
+        data-test="feishu-folder"
+      >
+        <FolderOpen size={14} aria-hidden="true" />{labels.folder}
+      </button>}
       <button type="button" className="btn btn-quiet" onClick={feishu.showLog} data-test="feishu-log">
         <FileText size={14} aria-hidden="true" />{labels.log}
       </button>
@@ -181,7 +204,8 @@ export function FeishuAssistant({ language, onOpen }: { language: string; onOpen
   const failed = failure === null ? null : <Trouble
     tone="bad"
     words={failure.what === 'start' ? hints.startFailed : failure.what === 'stop' ? hints.stopFailed
-      : failure.what === 'forget' ? hints.forgetFailed : words.hint.requestFailed}
+      : failure.what === 'forget' ? hints.forgetFailed : failure.what === 'writable' ? hints.writableFailed
+        : failure.what === 'folder' ? hints.folderFailed : words.hint.requestFailed}
     details={sentenceOf(failure.said)}
     test="feishu-failed"
   />;

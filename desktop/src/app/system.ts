@@ -6,6 +6,18 @@
  * Ctrl and ⌘ are both taken on every system.
  */
 
+/** Whether the application can start with the system, in the tray, and whether it does. */
+export interface LoginItem {
+  offered: boolean;
+  on: boolean;
+}
+
+/** What the shell says of the start with the system. Anything else offers none. */
+export function loginItemOf(answer: unknown): LoginItem {
+  const given = answer !== null && typeof answer === 'object' ? answer as Record<string, unknown> : {};
+  return { offered: given.offered === true, on: given.on === true };
+}
+
 /** Whether the page is shown in the application on macOS. */
 export function onMac(): boolean {
   return window.columbina?.platform === 'darwin';

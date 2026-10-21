@@ -27,6 +27,10 @@ export interface App {
   console: string;
   /** Whether somebody paired with the assistant, whom it answers. */
   paired: boolean;
+  /** The folder of the assistant, where the program names one. */
+  folder: string | null;
+  /** Whether the agent of the assistant may change the files of its folder. */
+  writable: boolean;
   /** Whether an assistant runs on this computer, here or elsewhere. */
   running: boolean;
   /** Whether this application runs it. */
@@ -105,6 +109,8 @@ export function assistantOf(answer: unknown): Assistant {
     appId: text(given.app_id),
     console: CONSOLES[platform],
     paired: given.paired === true,
+    folder: text(given.folder) || null,
+    writable: given.writable === true,
     running,
     own,
     state: stateOf(given.state, running),

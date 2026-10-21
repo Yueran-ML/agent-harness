@@ -281,6 +281,8 @@ export const ja: Messages = {
     recentProjects: '最近のプロジェクト',
     notices: '通知',
     tellMe: 'Columbina が回答を待っているときや、作業を終えたときに知らせる',
+    startup: '起動',
+    loginItem: 'Windows にサインインしたときに Columbina をトレイで起動する',
 
     key: {
       title: 'モデルサービス',
@@ -365,6 +367,8 @@ export const ja: Messages = {
       keep: '残す',
       console: '開発者コンソールを開く',
       log: 'ログを表示',
+      writable: 'アシスタントが自分のフォルダーのファイルを変更できるようにする',
+      folder: 'フォルダーを開く',
       checkAgain: 'もう一度確認',
       copyCode: 'コードをコピー',
       pair: (platform: string) => `このコードを${between(platform)}でボットに送ってください`,
@@ -624,6 +628,8 @@ export const ja: Messages = {
     serviceEnded: 'サービスプロセスが終了しました。',
     serviceNotStarted: 'サービスプロセスを起動できませんでした。',
     tellMe: 'このウィンドウが背面にあるときだけ知らせます。',
+    loginItem: '前回 Columbina を終了したときに Feishu のアシスタントが動いていれば、一緒に起動します。トレイのアイコンをクリックすると'
+      + 'ウィンドウが開きます。',
 
     consentRun: 'Columbina がこのコマンドを実行しようとしています。',
     consentWrite: 'Columbina がこのファイルを変更しようとしています。',
@@ -832,8 +838,12 @@ export const ja: Messages = {
       noCode: '間違ったコードが多すぎたため、コードは無効になりました。アシスタントを停止してもう一度起動すると、新しいコードが表示されます。',
       stopping: 'アシスタントを停止しています。',
       elsewhere: 'アシスタントはこのコンピューターの別の場所（ターミナルなど）で動いています。停止はそちらで行ってください。',
-      withColumbina: 'アシスタントは Columbina が開いている間だけ動きます。Columbina を閉じたときに動いていれば、'
-        + '次に開いたときにまた起動します。',
+      withColumbina: 'アシスタントが動いている間は、ウィンドウを閉じても Columbina はトレイに残り、アシスタントは返事を続けます。'
+        + '両方を止めるにはトレイから終了してください。終了したときに動いていれば、次に開いたときにまた起動します。',
+      writable: 'オンにすると、アシスタントは自分のフォルダーでファイルを作成・変更できます。コマンドは引き続き実行しません。'
+        + '動いているアシスタントは、変更のために起動し直します。',
+      writableFailed: 'アシスタントがファイルを変更できるかどうかを切り替えられませんでした。',
+      folderFailed: 'アシスタントのフォルダーを開けませんでした。',
       service: 'アシスタントは、起動したときに Columbina が使っているサービスと話します。別のサービスを選んだあとは、'
         + 'アシスタントを停止して、もう一度起動してください。',
       ended: 'アシスタントが止まりました。',

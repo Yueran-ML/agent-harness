@@ -401,6 +401,34 @@ describe('a change of what a task may do', () => {
   });
 });
 
+describe('the language of the page, as the shell is told of it', () => {
+  it('is told when the page is drawn and whenever it changes', async () => {
+    const setLanguage = vi.fn(async (_language: string) => {});
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), setLanguage });
+    page(first());
+    await act(async () => {});
+    expect(setLanguage.mock.calls).toEqual([['en']]);
+    chord(',');
+    await act(async () => {
+      fireEvent.change(sheet()!.querySelector('#setting-language')!, { target: { value: 'zh' } });
+    });
+    expect(setLanguage).toHaveBeenLastCalledWith('zh-CN');
+  });
+
+  it('is nothing to the page where the shell does not take it, or has no such call', async () => {
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), setLanguage: vi.fn(async () => { throw new Error('no'); }) });
+    page(first());
+    await act(async () => {});
+    expect(marked('composer')).toHaveLength(1);
+    cleanup();
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}) });
+    const task = first();
+    page(task);
+    await act(async () => {});
+    expect(task.fail).not.toHaveBeenCalled();
+  });
+});
+
 describe('choosing another model', () => {
   const deepseek: Listed = { use: 'deepseek', services: [service('deepseek', 'DeepSeek', { key: 'stored' }), service('openai', 'OpenAI')] };
   /** A shell that lists two models for the service in use, and stores what it is given unless a test says otherwise. */

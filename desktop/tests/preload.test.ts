@@ -109,6 +109,13 @@ describe('the bridge of the main window', () => {
     // Asked now only where the page says so in so many words.
     expect(handed('updates', { ...more, now: true })).toEqual(['columbina:updates', { now: true }]);
     for (const asked of [{ now: 'yes' }, { now: 1 }, {}, undefined]) expect(handed('updates', asked)).toEqual(['columbina:updates', { now: false }]);
+    // On only where the page says so in so many words.
+    expect(handed('feishuWritable', true)).toEqual(['columbina:feishu-writable', true]);
+    expect(handed('setLoginItem', true)).toEqual(['columbina:set-login-item', true]);
+    for (const asked of ['true', 1, {}, undefined]) {
+      expect(handed('feishuWritable', asked)).toEqual(['columbina:feishu-writable', false]);
+      expect(handed('setLoginItem', asked)).toEqual(['columbina:set-login-item', false]);
+    }
     // A call that is made with nothing asks all the same, and the shell says what is missing.
     for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'setUpFeishu', 'feishuStart', 'chooseModel', 'chooseEffort']) {
       const [, given] = handed(call) as [string, Record<string, unknown>];

@@ -4,11 +4,11 @@ import { assistantAfter, assistantOf, type Assistant } from './app/feishu';
 const said = (problem: unknown) => (problem instanceof Error ? problem.message : String(problem));
 
 /** What the panel is doing with the assistant, while it does it. */
-export type Busy = 'starting' | 'stopping' | 'forgetting' | 'settingUp';
+export type Busy = 'starting' | 'stopping' | 'forgetting' | 'settingUp' | 'changing';
 
 /** What did not go through, and what the shell said of it. */
 export interface Failure {
-  what: 'start' | 'stop' | 'forget' | 'setUp';
+  what: 'start' | 'stop' | 'forget' | 'setUp' | 'writable' | 'folder';
   said: string;
 }
 
@@ -120,7 +120,31 @@ export function useFeishu(language: string) {
     void window.columbina?.feishuLog().catch(() => {});
   }, []);
 
-  return { assistant, busy, failure, forgotten, refresh, start, stop, forget, setUp, showLog };
+  /** Say whether the agent of the assistant may change the files of its folder. One that runs starts again for it. */
+  const setWritable = useCallback(async (writable: boolean) => {
+    const bridge = window.columbina;
+    if (!bridge) return;
+    await doing('changing', 'writable', async () => {
+      const answer = await bridge.feishuWritable(writable);
+      const error = (answer as { error?: unknown } | null)?.error;
+      if (typeof error === 'string') throw new Error(error);
+    });
+    await refresh();
+  }, [doing, refresh]);
+
+  /** Open the folder of the assistant, as the program names it. */
+  const openFolder = useCallback(async () => {
+    const bridge = window.columbina;
+    if (!bridge) return;
+    setFailure(null);
+    try {
+      await bridge.openFeishuFolder();
+    } catch (problem) {
+      setFailure({ what: 'folder', said: said(problem) });
+    }
+  }, []);
+
+  return { assistant, busy, failure, forgotten, refresh, start, stop, forget, setUp, showLog, setWritable, openFolder };
 }
 
 export type Feishu = ReturnType<typeof useFeishu>;

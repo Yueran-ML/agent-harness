@@ -17,6 +17,7 @@ import { ModelPicker } from './ModelPicker';
 import { effortOf, type Effort } from './effort';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
+import { loginItemOf, type LoginItem } from './system';
 import { anotherServiceChosen, presetOf, presets, servicesToSwitchTo, servicesToTell, serviceTitle } from './tell';
 
 /** The part of the settings that a way into them leads to. */
@@ -129,6 +130,23 @@ export function Settings({
   const at = (name: SettingsPart) => (part === name ? start : undefined);
 
   const { about, found } = updates;
+  // Whether the application starts with the system, where the shell can say. Where it cannot, as
+  // in a replay, nothing is offered.
+  const [loginItem, setLoginItem] = useState<LoginItem | null>(null);
+  useEffect(() => {
+    void (async () => {
+      try {
+        setLoginItem(loginItemOf(await window.columbina!.loginItem()));
+      } catch { /* The shell says nothing of it, and nothing is offered. */ }
+    })();
+  }, []);
+  const startWithSystem = async (on: boolean) => {
+    try {
+      setLoginItem(loginItemOf(await window.columbina!.setLoginItem(on)));
+    } catch (problem) {
+      workspace.fail(problem);
+    }
+  };
   const mode = status?.sandbox?.mode ?? null;
   const policy = status?.approval ?? null;
   const current = presetOf(mode, policy);
@@ -311,6 +329,17 @@ export function Settings({
       </div>
       <p className="caption">{words.hint.tellMe}</p>
     </section>
+
+    {loginItem?.offered && <section className="setting" data-test="login-item">
+      <h3>{words.label.startup}</h3>
+      <div className="setting-row">
+        <label className="check">
+          <input type="checkbox" checked={loginItem.on} onChange={event => void startWithSystem(event.target.checked)} data-test="login-item-on" />
+          {words.label.loginItem}
+        </label>
+      </div>
+      <p className="caption">{words.hint.loginItem}</p>
+    </section>}
 
     <section className="setting" data-test="updates">
       <h3>{words.label.updates.title}</h3>

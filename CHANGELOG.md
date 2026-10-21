@@ -108,6 +108,11 @@ change what was there before.
   `permissions.yml` hold for it. A folder that lies in the home of the program is not one whose
   files it may change. `columbina feishu --status` says where the folder is and whether its files
   may be changed.
+- The settings of the desktop application have a switch for that, which stops an assistant that
+  runs and starts it again, and open the folder of the assistant. While the assistant runs,
+  closing the window puts the application in the tray, where the assistant goes on, and the
+  tray opens the window again or quits. Only one application runs at a time, and starting it
+  again shows the window. On Windows a package can start with the system, in the tray.
 
 ## 0.1.1 (2026-10-16)
 

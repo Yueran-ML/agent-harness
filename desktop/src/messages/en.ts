@@ -304,6 +304,9 @@ export const en = {
     recentProjects: 'Recent projects',
     notices: 'Notices',
     tellMe: 'Tell me when Columbina waits for me or has finished',
+    /** Whether the application starts with the system. */
+    startup: 'Starting',
+    loginItem: 'Start Columbina in the tray when I sign in to Windows',
 
     /** The window in which a service is chosen and its key is given. */
     key: {
@@ -401,6 +404,9 @@ export const en = {
       keep: 'Keep it',
       console: 'Open the developer console',
       log: 'Show the log',
+      /** Whether the agent of the assistant may change the files of its folder. */
+      writable: 'Let the assistant change the files in its folder',
+      folder: 'Open its folder',
       checkAgain: 'Check again',
       copyCode: 'Copy the code',
       pair: (platform: string) => `Send the bot this code in ${platform}`,
@@ -672,6 +678,8 @@ export const en = {
     serviceEnded: 'The service process has ended.',
     serviceNotStarted: 'The service process could not be started.',
     tellMe: 'Only while this window is in the background.',
+    loginItem: 'The assistant in Feishu starts with it where it ran when Columbina last quit. A click on the icon in the '
+      + 'tray opens the window.',
 
     consentRun: 'Columbina wants to run this command.',
     consentWrite: 'Columbina wants to change this file.',
@@ -905,8 +913,12 @@ export const en = {
       noCode: 'The code was given up on after too many wrong tries. Stop the assistant and start it again for a new one.',
       stopping: 'Stopping the assistant.',
       elsewhere: 'The assistant runs elsewhere on this computer, such as in a terminal, and is stopped there.',
-      withColumbina: 'The assistant runs only while Columbina is open. If it runs when you close Columbina, it starts again the '
-        + 'next time.',
+      withColumbina: 'While the assistant runs, closing the window keeps Columbina in the tray, where the assistant goes on '
+        + 'answering. Quit from the tray to stop both. If it runs when Columbina quits, it starts again the next time.',
+      writable: 'It can then make and change files in its own folder, and still runs no commands. A running assistant starts '
+        + 'again for the change.',
+      writableFailed: 'Whether the assistant may change files could not be changed.',
+      folderFailed: 'The folder of the assistant could not be opened.',
       service: 'The assistant talks to the service that Columbina uses when the assistant starts. After another service is '
         + 'chosen, stop the assistant and start it again.',
       ended: 'The assistant stopped.',

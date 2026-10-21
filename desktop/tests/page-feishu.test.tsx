@@ -48,6 +48,8 @@ function shellOfFeishu(answer: unknown = app) {
     feishuStop: vi.fn(async () => {}),
     feishuForget: vi.fn(async (): Promise<unknown> => ({ forgotten: true })),
     feishuLog: vi.fn(async () => {}),
+    feishuWritable: vi.fn(async (_writable: boolean): Promise<unknown> => ({ writable: _writable })),
+    openFeishuFolder: vi.fn(async () => {}),
     setUpFeishu: vi.fn(async (_asked: { language: string }) => ({ changed: false })),
     onFeishu: vi.fn((listener: (said: Record<string, unknown>) => void) => {
       listeners.add(listener);
@@ -75,6 +77,65 @@ async function drawn(language = 'en') {
   return { ...result, opened };
 }
 
+describe('whether the assistant may change the files of its folder', () => {
+  const folder = 'C:\\Users\\me\\Columbina\\feishu';
+  const box = () => one('feishu-writable') as HTMLInputElement;
+
+  it('is said, and changed at a click, after which the page asks again how the assistant is doing', async () => {
+    const { shell } = shellOfFeishu({ ...app, folder, writable: false });
+    await drawn();
+    expect(box().checked).toBe(false);
+    expect(box().disabled).toBe(false);
+    expect(document.body.textContent).toContain('Let the assistant change the files in its folder');
+    expect(document.body.textContent).toContain('It can then make and change files in its own folder, and still runs no commands.');
+    shell.feishuStatus.mockResolvedValue({ ...app, folder, writable: true });
+    await press('feishu-writable');
+    expect(shell.feishuWritable.mock.calls).toEqual([[true]]);
+    expect(shell.feishuStatus).toHaveBeenCalledTimes(2);
+    expect(box().checked).toBe(true);
+  });
+
+  it('is not changed here where the assistant runs elsewhere', async () => {
+    shellOfFeishu({ ...app, folder, running: true, state: 'connected', paired: true });
+    await drawn();
+    expect(box().disabled).toBe(true);
+  });
+
+  it('says where it could not be changed, and why', async () => {
+    const { shell } = shellOfFeishu({ ...app, folder });
+    shell.feishuWritable.mockResolvedValueOnce({ error: 'an assistant in Feishu runs on this computer', code: 'RUNNING' });
+    await drawn();
+    await press('feishu-writable');
+    const failed = one('feishu-failed');
+    expect(failed.textContent).toContain('Whether the assistant may change files could not be changed.');
+    expect(failed.textContent).toContain('An assistant in Feishu runs on this computer.');
+    shell.feishuWritable.mockRejectedValueOnce(new Error('The program did not answer.'));
+    await press('feishu-writable');
+    expect(one('feishu-failed').textContent).toContain('The program did not answer.');
+    // What is done next says nothing of it any more.
+    await press('feishu-folder');
+    expect(marked('feishu-failed')).toEqual([]);
+  });
+
+  it('opens the folder of the assistant, which is named where it is pointed at', async () => {
+    const { shell } = shellOfFeishu({ ...app, folder });
+    await drawn();
+    expect(one('feishu-folder').title).toBe(folder);
+    expect(one('feishu-folder').textContent).toBe('Open its folder');
+    await press('feishu-folder');
+    expect(shell.openFeishuFolder).toHaveBeenCalledOnce();
+    expect(marked('feishu-failed')).toEqual([]);
+    shell.openFeishuFolder.mockRejectedValueOnce(new Error('No application opens it.'));
+    await press('feishu-folder');
+    expect(one('feishu-failed').textContent).toContain('The folder of the assistant could not be opened.');
+    // A program that names no folder has none to open.
+    cleanup();
+    shellOfFeishu(app);
+    await drawn();
+    expect(marked('feishu-folder')).toEqual([]);
+  });
+});
+
 describe('what the page holds of the assistant', () => {
   it('has nothing to ask where there is no shell, as in a replay', async () => {
     const { result } = renderHook(() => useFeishu('en'));
@@ -86,6 +147,8 @@ describe('what the page holds of the assistant', () => {
       expect(await result.current.forget()).toBe(false);
       await result.current.setUp();
       result.current.showLog();
+      await result.current.setWritable(true);
+      await result.current.openFolder();
     });
     expect(result.current.assistant).toEqual({ kind: 'unavailable' });
     expect(result.current.failure).toBeNull();
@@ -167,7 +230,7 @@ describe('the assistant in the settings', () => {
     expect(buttons()).toEqual([
       'Start the assistant', 'Change the app', 'Delete the app', 'Open the developer console', 'Show the log',
     ]);
-    expect(document.body.textContent).toContain('The assistant runs only while Columbina is open.');
+    expect(document.body.textContent).toContain('While the assistant runs, closing the window keeps Columbina in the tray');
     // Of the service it is told once it runs.
     expect(marked('feishu-service')).toEqual([]);
 
@@ -275,7 +338,7 @@ describe('the assistant in the settings', () => {
     // It goes on with the app that it read, so the app is changed where it is stopped.
     expect(marked('feishu-change')).toEqual([]);
     expect(marked('feishu-forget')).toEqual([]);
-    expect(document.body.textContent).not.toContain('The assistant runs only while Columbina is open.');
+    expect(document.body.textContent).not.toContain('While the assistant runs, closing the window keeps Columbina in the tray');
     // It talks to the service that was in use when it started.
     expect(one('feishu-service').textContent).toBe('The assistant talks to the service that Columbina uses when the assistant '
       + 'starts. After another service is chosen, stop the assistant and start it again.');

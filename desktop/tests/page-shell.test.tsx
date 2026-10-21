@@ -595,6 +595,51 @@ describe('the settings', () => {
   const unavailable = 'Services are set up here when the application runs the service itself, not a replay.';
   beforeEach(() => { for (const call of Object.values(calls)) call.mockClear(); });
 
+  it('offer to start the application with the system, in the tray, where the shell can', async () => {
+    const loginItem = vi.fn(async (): Promise<unknown> => ({ offered: true, on: false }));
+    const setLoginItem = vi.fn(async (on: boolean): Promise<unknown> => ({ offered: true, on }));
+    vi.stubGlobal('columbina', { loginItem, setLoginItem });
+    render(sheet(workspaceWith({ hello: able })));
+    await act(async () => {});
+    const box = () => one('login-item-on') as HTMLInputElement;
+    expect(box().checked).toBe(false);
+    expect(one('login-item').textContent).toContain('Start Columbina in the tray when I sign in to Windows');
+    expect(one('login-item').textContent).toContain('A click on the icon in the tray opens the window.');
+    await act(async () => { fireEvent.click(box()); });
+    expect(setLoginItem.mock.calls).toEqual([[true]]);
+    expect(box().checked).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it('offer no start with the system where the shell offers none or says nothing of it', async () => {
+    for (const shell of [
+      { loginItem: vi.fn(async () => ({ offered: false, on: false })) },
+      { loginItem: vi.fn(async () => { throw new Error('no such call'); }) },
+      undefined,
+    ]) {
+      vi.stubGlobal('columbina', shell);
+      render(sheet(workspaceWith({ hello: able })));
+      await act(async () => {});
+      expect(marked('login-item')).toEqual([]);
+      cleanup();
+    }
+    vi.unstubAllGlobals();
+  });
+
+  it('say where the start with the system could not be changed, and leave it as it was', async () => {
+    const fail = vi.fn();
+    vi.stubGlobal('columbina', {
+      loginItem: vi.fn(async () => ({ offered: true, on: true })),
+      setLoginItem: vi.fn(async () => { throw new Error('The system said no.'); }),
+    });
+    render(sheet(workspaceWith({ hello: able, fail })));
+    await act(async () => {});
+    await act(async () => { fireEvent.click(one('login-item-on')); });
+    expect(String(fail.mock.calls[0][0])).toContain('The system said no.');
+    expect((one('login-item-on') as HTMLInputElement).checked).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
   it('open at the part that was asked for', () => {
     const seen: Element[] = [];
     Element.prototype.scrollIntoView = function scrollIntoView(this: Element) { seen.push(this); };

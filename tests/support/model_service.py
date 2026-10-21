@@ -28,9 +28,11 @@ class _Models(BaseHTTPRequestHandler):
 
     said: dict[str, Any]
     asked: list[tuple[str, str | None]]
+    heard: list[dict[str, str]]
 
     def do_GET(self) -> None:
         self.asked.append((self.path, self.headers["Authorization"]))
+        self.heard.append({name.lower(): value for name, value in self.headers.items()})
         time.sleep(self.said.get("delay", 0.0))
         body = self.said["body"]
         content = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -71,11 +73,13 @@ class Service:
         address: Its address, as a config of the adapter has it.
         asked: The path and the header of the key of each request.
         said: What it answers: a status and a body, after a delay.
+        heard: The headers of each request, by their names in lower case.
     """
 
     address: str
     asked: list[tuple[str, str | None]]
     said: dict[str, Any]
+    heard: list[dict[str, str]]
 
     def answers(self, status: int, body: object) -> None:
         self.said.update(status=status, body=body)
@@ -89,13 +93,14 @@ class Service:
 def serving(*models: str) -> Generator[Service]:
     """Serve a service on this machine that lists these models, until the block is left."""
     asked: list[tuple[str, str | None]] = []
+    heard: list[dict[str, str]] = []
     said: dict[str, Any] = {"status": 200, "body": listing(*models)}
-    handler = type("Handler", (_Models,), {"asked": asked, "said": said})
+    handler = type("Handler", (_Models,), {"asked": asked, "said": said, "heard": heard})
     with _OnThisMachine(("127.0.0.1", 0), handler) as server:
         thread = threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True)
         thread.start()
         try:
-            yield Service(f"http://127.0.0.1:{server.server_address[1]}/v1", asked, said)
+            yield Service(f"http://127.0.0.1:{server.server_address[1]}/v1", asked, said, heard)
         finally:
             server.shutdown()
             thread.join(timeout=5)

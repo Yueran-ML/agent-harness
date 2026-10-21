@@ -40,15 +40,10 @@ its own, ``httpx``, which at the level INFO writes the status line of every
 response as the service sent it.
 """
 
-import asyncio
-import math
 import os
-import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from datetime import UTC
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Literal
 
@@ -56,14 +51,8 @@ import httpx
 from pydantic import BaseModel, Field, JsonValue, ValidationError
 
 from columbina.kernel import Context
-from columbina.llm.credentials import (
-    CredentialsError,
-    key_for,
-    origin_of,
-    sendable,
-    spellings,
-    trimmed,
-)
+from columbina.llm.adapters.common import events, failure_of, retry_after_ms, secret_of
+from columbina.llm.credentials import trimmed
 from columbina.llm.runtime import LLM, LlmError
 from columbina.llm.types import (
     AssistantMessage,
@@ -112,10 +101,6 @@ _STATUS_CODES = {
 _EFFORT = {"low": "low", "high": "high", "max": "high"}
 _LIST_SECONDS = 30.0
 """How long the list of the models of a service may take to arrive."""
-_MESSAGE_CHARACTERS = 500
-"""How much of the text of a failure is kept."""
-_ID_CHARACTERS = 200
-"""How much of the id of a request is kept."""
 
 
 class Config(BaseModel):
@@ -313,22 +298,6 @@ def build_body(request: LlmRequest, config: Config) -> dict[str, JsonValue]:
     return body
 
 
-async def _events(lines: AsyncIterator[str]) -> AsyncIterator[str]:
-    """Yield the data of each server-sent event of a stream of lines."""
-    data: list[str] = []
-    async for line in lines:
-        if not line:
-            if data:
-                yield "\n".join(data)
-                data = []
-            continue
-        field, _, value = line.partition(":")
-        if field == "data":
-            data.append(value.removeprefix(" "))
-    if data:
-        yield "\n".join(data)
-
-
 @dataclass(slots=True)
 class _Call:
     """A tool call of a streamed reply.
@@ -502,28 +471,6 @@ def _usage(raw: _Usage) -> Usage:
     )
 
 
-def _describe(error: BaseException) -> str:
-    text = str(error)
-    return f"{type(error).__name__}: {text}" if text else type(error).__name__
-
-
-def _retry_after_ms(response: httpx.Response) -> int | None:
-    """Return how long the service asks to wait: it names seconds, or a point in time."""
-    value = response.headers.get("retry-after", "")
-    try:
-        seconds = float(value)
-    except ValueError:
-        try:
-            moment = parsedate_to_datetime(value)
-        except ValueError:
-            return None
-        if moment.tzinfo is None:
-            # A date of HTTP is in universal time also where it does not say so.
-            moment = moment.replace(tzinfo=UTC)
-        return max(round((moment.timestamp() - time.time()) * 1000), 0)
-    return round(seconds * 1000) if math.isfinite(seconds) and seconds >= 0 else None
-
-
 def _refusal(response: httpx.Response) -> LlmFailure:
     """Turn a response that is not a stream into a failure."""
     status = response.status_code
@@ -547,7 +494,7 @@ def _refusal(response: httpx.Response) -> LlmFailure:
         message=message,
         code=code,
         status=status,
-        retry_after_ms=_retry_after_ms(response),
+        retry_after_ms=retry_after_ms(response),
         request_id=response.headers.get("x-request-id"),
     )
 
@@ -569,47 +516,6 @@ def _listed(content: bytes) -> list[str]:
             )
         ) from None
     return [model.id for model in listing.data]
-
-
-def _failure(error: httpx.RequestError | LlmError, secret: str | None) -> LlmFailure:
-    """Return the failure that an error stands for, fit to be shown and to be stored.
-
-    Every failure of the adapter passes through here. The key is cut out of
-    every text that came from outside, which is the message and the id of the
-    request. Then the text is cut to a length. In this order no part of the key
-    is left at the end of it.
-    """
-    if isinstance(error, LlmError):
-        failure = error.failure
-    else:
-        code = "TIMEOUT" if isinstance(error, httpx.TimeoutException) else "TRANSPORT"
-        failure = LlmFailure(message=_describe(error), code=code)
-    cleaned: dict[str, str] = {"message": _cleaned(failure.message, secret, _MESSAGE_CHARACTERS)}
-    if failure.request_id is not None:
-        cleaned["request_id"] = _cleaned(failure.request_id, secret, _ID_CHARACTERS)
-    return failure.model_copy(update=cleaned)
-
-
-def _cleaned(text: str, secret: str | None, limit: int) -> str:
-    if secret:
-        for spelling in spellings(secret):
-            text = text.replace(spelling, "[key]")
-    return text[:limit]
-
-
-def _missing(config: Config) -> str | None:
-    """Return what to say where no key is found, or ``None`` if a request is made without one."""
-    variable, file = config.api_key_env, config.api_key_file
-    if not config.api_key_required or (variable is None and file is None):
-        return None
-    if file is None:
-        return f"the environment variable {variable} is not set"
-    if variable is None:
-        return f"no API key is stored for {config.provider}. Enter one with 'columbina setup'"
-    return (
-        f"there is no API key for {config.provider}: the environment variable {variable} is "
-        "not set, and no key is stored. Enter one with 'columbina setup', or set the variable"
-    )
 
 
 class OpenAIChat:
@@ -659,7 +565,7 @@ class OpenAIChat:
             LlmError: The key is missing, the service could not be reached or
                 refused, or its reply cannot be read.
         """
-        secret = await self._secret()
+        secret = await secret_of(self._config, self._given)
         headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}
         body = build_body(request, self._config)
         translator = _Translator(self._config.provider)
@@ -671,7 +577,7 @@ class OpenAIChat:
                 if response.status_code != 200:
                     await response.aread()
                     raise LlmError(_refusal(response))
-                async for data in _events(response.aiter_lines()):
+                async for data in events(response.aiter_lines()):
                     if data == "[DONE]":
                         break
                     for chunk in translator.feed(data):
@@ -679,7 +585,7 @@ class OpenAIChat:
             for chunk in translator.finish():
                 yield chunk
         except (httpx.RequestError, LlmError) as error:
-            failure = _failure(error, secret)
+            failure = failure_of(error, secret)
         if failure is not None:
             # Raised out here, so that the error that was caught is not held on to. Its text
             # may hold the key, and so may that of its cause.
@@ -696,7 +602,7 @@ class OpenAIChat:
             LlmError: The key is missing, the service could not be reached or
                 refused, or what it answered is no list of models.
         """
-        secret = await self._secret()
+        secret = await secret_of(self._config, self._given)
         headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}
         timeout = httpx.Timeout(self._config.connect_timeout_seconds, read=_LIST_SECONDS)
         try:
@@ -705,52 +611,9 @@ class OpenAIChat:
                 raise LlmError(_refusal(response))
             return _listed(response.content)
         except (httpx.RequestError, LlmError) as error:
-            failure = _failure(error, secret)
+            failure = failure_of(error, secret)
         # Raised out here, as a failure of a reply is.
         raise LlmError(failure)
-
-    async def _secret(self) -> str | None:
-        """Return the key to send, or ``None`` for a service that is sent none.
-
-        Raises:
-            LlmError: A key is needed and none is found, the key that is
-                found cannot be sent, or the stored keys cannot be used.
-        """
-        config = self._config
-        variable, file = config.api_key_env, config.api_key_file
-        if self._given is not None:
-            secret, where, again = self._given, "that was given", "Give it again"
-        else:
-            secret = "" if variable is None else trimmed(os.environ.get(variable, ""))
-            where = f"in the environment variable {variable}"
-            again = "Set it again"
-        if not secret and file is not None:
-            try:
-                # A stored key is for the place that it was typed in for, and for no other.
-                place = origin_of(config.base_url)
-                stored = await asyncio.to_thread(key_for, file, config.provider, place)
-                secret = trimmed(stored or "")
-            except CredentialsError as error:
-                # The error says what is wrong with the stored keys, and holds none of them.
-                failure = LlmFailure(message=str(error), code="AUTH")
-                raise LlmError(failure) from None
-            where = f"that is stored for {config.provider}"
-            again = "Enter it again with 'columbina setup'"
-        if not secret:
-            missing = _missing(config)
-            if missing is None:
-                return None
-            raise LlmError(LlmFailure(message=missing, code="AUTH"))
-        if not sendable(secret):
-            raise LlmError(
-                LlmFailure(
-                    message=f"the API key {where} cannot be sent: there is a character in "
-                    "it that no key has, such as a blank, a line break or a quotation mark "
-                    f"of a word processor. {again}",
-                    code="AUTH",
-                )
-            )
-        return secret
 
 
 def apply(ctx: Context, config: Config) -> None:

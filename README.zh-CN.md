@@ -71,7 +71,7 @@ Columbina 让一个 Agent 接上语言模型，在你指定的目录里工作。
   <sub>在终端里回放的一次 DeepSeek 运行：模型的回复来自一次录制下来的真实运行，工具是真实执行的。<a href="docs/assets/README.md#the-demo">制作方法</a></sub>
 </p>
 
-**状态**：处于早期开发阶段。十个阶段已完成九个，Columbina 已经发布到 PyPI。最后一个阶段里，供其他程序使用的服务已经做好，建在它上面的桌面应用正在进行。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 通过 OpenAI Chat Completions 协议与模型通信，默认接 DeepSeek。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。技能、钩子、子代理和 MCP 服务器的工具可以在不改程序的情况下扩展 Agent。有 Docker 时，Agent 的命令可以在容器里执行，容器里只有工作目录，没有网络。
+**状态**：处于早期开发阶段。十个阶段已完成九个，Columbina 已经发布到 PyPI。最后一个阶段里，供其他程序使用的服务已经做好，建在它上面的桌面应用正在进行。`columbina` 在终端里和 Agent 对话，`columbina run` 把一个任务交给它并打印回答。Agent 通过 OpenAI Chat Completions 协议与模型通信，默认接 DeepSeek；和 Claude 则通过 Anthropic 的 Messages API 通信。对话超过模型的上限时会自动压缩，进程被杀之后可以接着原来的会话继续。技能、钩子、子代理和 MCP 服务器的工具可以在不改程序的情况下扩展 Agent。有 Docker 时，Agent 的命令可以在容器里执行，容器里只有工作目录，没有网络。
 
 ## 下载与部署
 
@@ -104,7 +104,7 @@ pip install columbina
 columbina setup
 ```
 
-它会问模型来自哪个服务、用哪个模型，以及密钥是什么。DeepSeek、OpenAI、OpenRouter、Moonshot、智谱和硅基流动可以直接按名字选，本机上的 Ollama 和 LM Studio 也一样。其他支持 OpenAI Chat Completions 协议的服务可以按地址添加。输入密钥时屏幕上不显示。密钥保存在系统密钥环里，例如 Windows 的凭据管理器或 macOS 的钥匙串；系统没有密钥环时，保存在 `~/.columbina` 里的一个文件中。
+它会问模型来自哪个服务、用哪个模型，以及密钥是什么。DeepSeek、OpenAI、Anthropic（Claude）、OpenRouter、Moonshot、智谱和硅基流动可以直接按名字选，本机上的 Ollama 和 LM Studio 也一样。Claude 走 Anthropic 自己的协议，对话开头会进缓存，也能看到模型的思考。其他支持 OpenAI Chat Completions 协议的服务可以按地址添加。输入密钥时屏幕上不显示。密钥保存在系统密钥环里，例如 Windows 的凭据管理器或 macOS 的钥匙串；系统没有密钥环时，保存在 `~/.columbina` 里的一个文件中。
 
 密钥也可以放在环境变量里，环境变量优先于保存下来的密钥。什么都没选的时候，Columbina 接 DeepSeek，读取 `DEEPSEEK_API_KEY`。在 Windows 的 PowerShell 里这样写：
 

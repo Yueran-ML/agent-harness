@@ -69,6 +69,22 @@ change what was there before.
   is started and stopped there and shows its code of pairing, and says what it says by itself
   in the language of the application. It runs while the application is open, and starts again
   with the application where it ran when the application was closed.
+- Anthropic is a service that is known by name, as `anthropic`, with `claude-opus-5-5` and a
+  window of a million tokens. It is spoken to in its own protocol, the Messages API, by the
+  new adapter `columbina.llm.adapters.anthropic_messages`, and not through the layer of
+  Anthropic that answers as OpenAI does. Every request asks the service to keep the
+  conversation in its cache, for five minutes unless the config says an hour or not at all,
+  so that a request that begins as the one before it did reads that beginning at a fraction
+  of the price. The thinking of the model is shown as its summary, and goes back with its
+  signature in the requests that follow. `/effort` offers it every level but off, which not
+  every model of Claude allows, and sends the level as the effort of the request.
+  `columbina setup --check`, `columbina doctor` and the list of models of the desktop
+  application ask Anthropic for its models with the version of the API that it wants. The key
+  is looked for, and kept out of every failure, as for the other services. A conversation
+  that began with another service goes on with Claude: what Anthropic would refuse in it,
+  such as the ids that some services give their calls or text that is only blank, is put in
+  a shape that it takes, and calls and their results are told of in text where a request
+  offers no tools, as one for a summary does.
 
 ## 0.1.1 (2026-10-16)
 

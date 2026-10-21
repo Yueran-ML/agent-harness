@@ -137,7 +137,11 @@ _FEISHU_DOCUMENT = 64 * 1024
 """How many bytes the document of an app that another program gives may be long."""
 _MODEL = "model"
 _SPEAKS_OPENAI = "columbina.llm.adapters.openai_chat"
-"""The plugin that talks to every service that has a name."""
+"""The plugin that talks to every service that has a name, but Anthropic."""
+_SPEAKS_ANTHROPIC = "columbina.llm.adapters.anthropic_messages"
+"""The plugin that talks to Anthropic."""
+_ADAPTERS = {"openai-chat": _SPEAKS_OPENAI, "anthropic": _SPEAKS_ANTHROPIC}
+"""The plugin that talks to a service, by the protocol that the service speaks."""
 _STORED_KEYS = "${COLUMBINA_HOME}/" + chosen_service.KEYS
 """Where the keys lie that the user stored, as a config says it."""
 
@@ -213,7 +217,8 @@ def _served(
     """Point the adapter of the entries and their frontend at a service.
 
     The config of the adapter is written anew as a whole: what a profile
-    says of one service says nothing of another. Of what the frontend says
+    says of one service says nothing of another. So is its plugin, which is
+    the one for the protocol of the service. Of what the frontend says
     of the model, the provider, the model and the size of its window change,
     and how much it reasons where the user chose that for the service. The
     rest stays.
@@ -239,7 +244,7 @@ def _served(
         (
             position
             for position, entry in enumerate(entries)
-            if entry.id == _MODEL and entry.plugin == _SPEAKS_OPENAI and not entry.disabled
+            if entry.id == _MODEL and entry.plugin in _ADAPTERS.values() and not entry.disabled
         ),
         None,
     )
@@ -252,7 +257,8 @@ def _served(
             "by default. Name one with --model, or choose one with 'columbina setup'"
         )
     config = adapter_config(service, _STORED_KEYS, env)
-    entries[at] = entries[at].model_copy(update={"config": config})
+    plugin = _ADAPTERS[service.protocol]
+    entries[at] = entries[at].model_copy(update={"plugin": plugin, "config": config})
     for position, entry in enumerate(entries):
         if entry.id == _FRONTEND and not entry.disabled:
             config = _config_of(entry)
@@ -438,8 +444,9 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
         service = chosen_service.service_named(named, stored)
         if not _served(entries, service, env, args.model):
             raise _UsageError(
-                f"the profile has no entry {_MODEL!r} that loads {_SPEAKS_OPENAI}, or it is "
-                f"disabled, so there is nothing to point at the service {named}"
+                f"the profile has no entry {_MODEL!r} that loads {_SPEAKS_OPENAI} or "
+                f"{_SPEAKS_ANTHROPIC}, or it is disabled, so there is nothing to point at the "
+                f"service {named}"
             )
     for position, entry in enumerate(entries):
         if entry.id == _FRONTEND:

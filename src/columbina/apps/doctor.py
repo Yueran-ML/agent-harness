@@ -10,7 +10,8 @@ words where something is wrong.
 Nothing is left behind. No container is made, no session is stored, and the
 model is asked for no reply. The one request that leaves this machine asks
 the service for the list of its models, with the key, see
-:meth:`columbina.llm.adapters.openai_chat.OpenAIChat.models`.
+:meth:`columbina.llm.adapters.openai_chat.OpenAIChat.models` and, for
+Anthropic, :meth:`columbina.llm.adapters.anthropic_messages.AnthropicMessages.models`.
 
 Each finding is a line: whether it is all right, what it is about, and what
 was found. ``ok`` is as a session needs it, ``warn`` lets a session start
@@ -37,6 +38,8 @@ from columbina import shells
 from columbina.builtin_tools.shell import NAME as SHELL
 from columbina.kernel import CompositionError, Entry, interpolate
 from columbina.llm import CallConfig, LlmError
+from columbina.llm.adapters.anthropic_messages import AnthropicMessages
+from columbina.llm.adapters.anthropic_messages import Config as AnthropicConfig
 from columbina.llm.adapters.openai_chat import Config as AdapterConfig
 from columbina.llm.adapters.openai_chat import OpenAIChat
 from columbina.llm.credentials import CredentialsError, stored, trimmed
@@ -50,6 +53,7 @@ State = Literal["ok", "warn", "fail"]
 
 _FRONTEND = "frontend"
 _SPEAKS_OPENAI = "columbina.llm.adapters.openai_chat"
+_SPEAKS_ANTHROPIC = "columbina.llm.adapters.anthropic_messages"
 _SANDBOX = "columbina.sandbox"
 _COLUMNS = (6, 9)
 """How wide the state and the subject of a line are."""
@@ -126,10 +130,12 @@ async def _served(entries: Sequence[Entry], env: Mapping[str, str]) -> list[Find
         why = _why(error)
         return [Finding("fail", "model", f"the frontend names no model that can be read: {why}")]
     try:
-        adapters = [
+        adapters: list[AdapterConfig | AnthropicConfig] = [
             _config(entry, AdapterConfig, env)
+            if entry.plugin == _SPEAKS_OPENAI
+            else _config(entry, AnthropicConfig, env)
             for entry in entries
-            if entry.plugin == _SPEAKS_OPENAI and not entry.disabled
+            if entry.plugin in (_SPEAKS_OPENAI, _SPEAKS_ANTHROPIC) and not entry.disabled
         ]
     except _ConfigError as error:
         return [Finding("fail", "model", str(error))]
@@ -140,27 +146,32 @@ async def _served(entries: Sequence[Entry], env: Mapping[str, str]) -> list[Find
                 "warn",
                 "model",
                 f"{call.model} of {call.provider}, which no entry that loads {_SPEAKS_OPENAI} "
-                "is for, so no service is asked",
+                f"or {_SPEAKS_ANTHROPIC} is for, so no service is asked",
             )
         ]
     model = Finding("ok", "model", f"{call.model} of {call.provider}, at {config.base_url}")
     return [model, await _answered(config, call.model, env)]
 
 
-async def _answered(config: AdapterConfig, model: str, env: Mapping[str, str]) -> Finding:
+async def _answered(
+    config: AdapterConfig | AnthropicConfig, model: str, env: Mapping[str, str]
+) -> Finding:
     """Ask the service for its models, and say how that went."""
-    adapter = OpenAIChat(config)
+    adapter = (
+        AnthropicMessages(config) if isinstance(config, AnthropicConfig) else OpenAIChat(config)
+    )
     began = time.monotonic()
     try:
         ids = await adapter.models()
     except LlmError as error:
         failure = error.failure
         if failure.status == 404:
+            listed_at = "v1/models" if isinstance(config, AnthropicConfig) else "models"
             return Finding(
                 "warn",
                 "service",
-                f"it has no list of models at {config.base_url}/models, so whether it takes "
-                "the key shows only when a session asks it",
+                f"it has no list of models at {config.base_url}/{listed_at}, so whether it "
+                "takes the key shows only when a session asks it",
             )
         return Finding("fail", "service", failure.message)
     finally:
@@ -178,7 +189,7 @@ async def _answered(config: AdapterConfig, model: str, env: Mapping[str, str]) -
     )
 
 
-def _key(config: AdapterConfig, env: Mapping[str, str]) -> str:
+def _key(config: AdapterConfig | AnthropicConfig, env: Mapping[str, str]) -> str:
     """Say which key the adapter sent: the one of the variable, the stored one, or none."""
     variable, file = config.api_key_env, config.api_key_file
     if variable is not None and trimmed(env.get(variable, "")):

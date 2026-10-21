@@ -2,9 +2,11 @@
 
 Many services speak the OpenAI Chat Completions protocol, and one adapter
 talks to all of them. They differ in little: where they are, which
-environment variable holds their key, and a few habits. What is known of a
-service is written down here once, so that a user names a service and not
-its address.
+environment variable holds their key, and a few habits. Anthropic is spoken
+to in its own protocol, by an adapter of its own, see
+:mod:`columbina.llm.adapters.anthropic_messages`. What is known of a service
+is written down here once, so that a user names a service and not its
+address.
 
 A service that is not listed here needs no entry: its address is enough for
 the adapter, and :func:`of_ones_own` makes a :class:`Service` of it.
@@ -32,13 +34,14 @@ KEY_OF_ONES_OWN = "COLUMBINA_API_KEY"
 
 @dataclass(frozen=True, slots=True)
 class Service:
-    """A service that speaks the OpenAI Chat Completions protocol.
+    """A service that a model comes from.
 
     Attributes:
         name: The name by which a user chooses the service. Its adapter is
             registered under it, and its stored key is kept under it.
         title: What the service is called, for a list.
-        base_url: Its address, up to but without ``/chat/completions``.
+        base_url: Its address, up to but without ``/chat/completions``, or
+            for Anthropic without ``/v1``.
         key_env: The environment variable that may hold its key, or ``None``
             if no variable does.
         key_required: Whether the service is talked to only with a key. One
@@ -58,6 +61,11 @@ class Service:
             service: ``default`` asks for nothing, and the others ask for that
             much reasoning. ``None`` where the user chose nothing, and the
             profile decides.
+        protocol: What it speaks: the protocol of OpenAI, or that of
+            Anthropic. The first is spoken to by
+            :mod:`columbina.llm.adapters.openai_chat`, the second by
+            :mod:`columbina.llm.adapters.anthropic_messages`, which knows how
+            the service is told how much to reason.
     """
 
     name: str
@@ -72,6 +80,7 @@ class Service:
     base_url_env: str | None = None
     key_page: str | None = None
     effort: Literal["default", "off", "low", "high", "max"] | None = None
+    protocol: Literal["openai-chat", "anthropic"] = "openai-chat"
 
 
 PRESETS: tuple[Service, ...] = (
@@ -95,6 +104,17 @@ PRESETS: tuple[Service, ...] = (
         # The models that reason refuse the older name, and the others take both.
         max_tokens_field="max_completion_tokens",
         key_page="https://platform.openai.com/api-keys",
+    ),
+    Service(
+        name="anthropic",
+        title="Anthropic (Claude)",
+        base_url="https://api.anthropic.com",
+        key_env="ANTHROPIC_API_KEY",
+        model="claude-opus-5-5",
+        context_window=1_000_000,
+        base_url_env="ANTHROPIC_BASE_URL",
+        key_page="https://platform.claude.com/settings/keys",
+        protocol="anthropic",
     ),
     Service(
         name="openrouter",

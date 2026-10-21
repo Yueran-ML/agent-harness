@@ -315,8 +315,8 @@ def test_a_model_that_no_adapter_of_a_service_is_for_is_not_asked_for(
     state, said = found(lines)["model"]
     assert state == "warn"
     assert said.endswith(
-        ", which no entry that loads columbina.llm.adapters.openai_chat is for, so no service "
-        "is asked"
+        ", which no entry that loads columbina.llm.adapters.openai_chat or "
+        "columbina.llm.adapters.anthropic_messages is for, so no service is asked"
     )
     assert "service" not in found(lines)
     assert service.asked == []
@@ -450,6 +450,51 @@ async def test_containers_that_could_not_run_a_command_are_in_the_way(
         "sandbox",
         "docker: the image python:3.12 is not on this machine, and no image is fetched for a "
         "command. Fetch it with: docker pull python:3.12",
+    )
+
+
+# Claude
+
+
+def claude(base_url: str) -> list[Entry]:
+    """The entries of a session that asks Claude, at a place on this machine, for no key."""
+    model = {"provider": "claude", "model": "claude-tiny"}
+    adapter = {"provider": "claude", "base_url": base_url, "api_key_required": False}
+    return [
+        Entry(id="frontend", plugin="columbina.apps.headless", config={"model": model}),
+        Entry(id="model", plugin="columbina.llm.adapters.anthropic_messages", config=adapter),
+    ]
+
+
+async def test_claude_is_asked_for_its_models_in_the_protocol_of_anthropic(
+    service: Service, work: Path
+) -> None:
+    service.answers(200, listing("claude-tiny"))
+    base_url = service.address.removesuffix("/v1")
+
+    findings = await looked(claude(base_url), {}, work)
+
+    assert findings[0] == Finding("ok", "model", f"claude-tiny of claude, at {base_url}")
+    assert re.fullmatch(
+        r"answered in \d+\.\d s without a key, and lists claude-tiny", findings[1].said
+    )
+    assert service.asked == [("/v1/models?limit=1000", None)]
+    assert service.heard[0]["anthropic-version"] == "2023-06-01"
+
+
+async def test_claude_without_a_list_of_models_is_worth_a_look(
+    service: Service, work: Path
+) -> None:
+    service.answers(404, {"type": "error", "error": {"type": "not_found_error", "message": "no"}})
+    base_url = service.address.removesuffix("/v1")
+
+    findings = await looked(claude(base_url), {}, work)
+
+    assert findings[1] == Finding(
+        "warn",
+        "service",
+        f"it has no list of models at {base_url}/v1/models, so whether it takes the key shows "
+        "only when a session asks it",
     )
 
 

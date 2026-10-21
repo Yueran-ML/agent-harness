@@ -54,6 +54,20 @@ async def test_a_key_that_is_checked_lists_the_models_and_is_kept_nowhere(
     assert not (home / "provider.yml").exists()
 
 
+async def test_claude_is_asked_for_its_models_in_the_protocol_of_anthropic(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with serving("claude-opus-5-5", "claude-haiku-5-5") as claude:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", claude.address.removesuffix("/v1"))
+
+        answer = await check(home, service="anthropic", api_key=KEY)
+
+    assert answer == {"models": ["claude-opus-5-5", "claude-haiku-5-5"]}
+    assert claude.asked == [("/v1/models?limit=1000", None)]
+    assert claude.heard[0]["x-api-key"] == KEY
+    assert claude.heard[0]["anthropic-version"] == "2023-06-01"
+
+
 async def test_the_blanks_around_a_key_that_is_checked_are_not_sent(
     home: Path, service: Service
 ) -> None:

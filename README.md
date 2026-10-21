@@ -93,7 +93,8 @@ itself.
 the last, the service for other programs is built, and the desktop app on top of it is under way. `columbina` holds a
 conversation with an agent at the terminal, and `columbina run` gives it one task and
 prints the answer. The agent talks to a model over the OpenAI Chat Completions protocol,
-DeepSeek by default. A conversation that outgrows its model is made shorter by itself,
+DeepSeek by default, and to Claude over the Messages API of Anthropic. A conversation that
+outgrows its model is made shorter by itself,
 and a session can be taken up again after the program was killed. Skills, hooks, subagents
 and the tools of MCP servers add to the agent without a change to the program. With
 Docker, the commands of the agent run in a container that has the working directory and no
@@ -142,9 +143,11 @@ columbina setup
 ```
 
 It asks which service the model is to come from, which model to use, and for the key.
-DeepSeek, OpenAI, OpenRouter, Moonshot, Zhipu and SiliconFlow are known by name, and so are
-Ollama and LM Studio on the same machine. Any other service that speaks the OpenAI Chat
-Completions protocol is added by its address. The key is typed without being shown. It is
+DeepSeek, OpenAI, Anthropic (Claude), OpenRouter, Moonshot, Zhipu and SiliconFlow are known
+by name, and so are Ollama and LM Studio on the same machine. Claude is spoken to in the
+protocol of Anthropic itself, which keeps the beginning of a conversation in a cache and
+tells what the model thought. Any other service that speaks the OpenAI Chat Completions
+protocol is added by its address. The key is typed without being shown. It is
 stored in the keyring of the system, such as the Credential Manager of Windows or the
 Keychain of macOS, and in a file in `~/.columbina` where the system has none.
 

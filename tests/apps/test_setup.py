@@ -150,12 +150,13 @@ def test_what_a_person_is_told_the_first_time(home: Path) -> None:
             "",
             "   1  deepseek     DeepSeek                   no key",
             "   2  openai       OpenAI                     no key",
-            "   3  openrouter   OpenRouter                 no key",
-            "   4  moonshot     Moonshot AI (Kimi)         no key",
-            "   5  zhipu        Zhipu AI (GLM)             no key",
-            "   6  siliconflow  SiliconFlow                no key",
-            "   7  ollama       Ollama on this machine     asks for no key",
-            "   8  lmstudio     LM Studio on this machine  asks for no key",
+            "   3  anthropic    Anthropic (Claude)         no key",
+            "   4  openrouter   OpenRouter                 no key",
+            "   5  moonshot     Moonshot AI (Kimi)         no key",
+            "   6  zhipu        Zhipu AI (GLM)             no key",
+            "   7  siliconflow  SiliconFlow                no key",
+            "   8  ollama       Ollama on this machine     asks for no key",
+            "   9  lmstudio     LM Studio on this machine  asks for no key",
             "",
             "None of them is chosen yet. The profiles that come with Columbina talk to deepseek.",
             ADDED,
@@ -228,7 +229,7 @@ def test_a_service_is_chosen_by_its_name(home: Path) -> None:
 
 @pytest.mark.parametrize(
     ("typed", "name"),
-    [("1", "deepseek"), (" 2 ", "openai"), ("8", "lmstudio"), ("9", "mine")],
+    [("1", "deepseek"), (" 2 ", "openai"), ("9", "lmstudio"), ("10", "mine")],
 )
 def test_a_service_is_chosen_by_its_number_in_the_list(home: Path, typed: str, name: str) -> None:
     by_hand(home, "services:\n  mine:\n    base_url: http://localhost:8000/v1\n    model: tiny\n")
@@ -242,13 +243,13 @@ def test_a_service_is_chosen_by_its_number_in_the_list(home: Path, typed: str, n
 def test_a_number_that_no_service_has_and_a_name_that_is_none_are_asked_for_again(
     home: Path,
 ) -> None:
-    person = Person("0", "9", "Not A Name", "9lives", "x" * 33, "-", "x" * 32, "", "openrouter")
+    person = Person("0", "10", "Not A Name", "9lives", "x" * 33, "-", "x" * 32, "", "openrouter")
     person.answers += ["some/model", ""]
 
     set_up(home, person)
 
     assert person.through
-    no_such = ["There is no service with the number 0.", "There is no service with the number 9."]
+    no_such = ["There is no service with the number 0.", "There is no service with the number 10."]
     assert [told for told in person.shown if told in (*no_such, A_NAME)] == [
         *no_such,
         A_NAME,
@@ -351,7 +352,7 @@ def test_a_service_of_ones_own_is_listed_from_then_on_and_keeps_its_address(home
 
     set_up(home, person)
 
-    assert "   9  my-server    https://models.example.test/v1  no key" in person.told.splitlines()
+    assert "  10  my-server    https://models.example.test/v1  no key" in person.told.splitlines()
     assert "In use: my-server, with the model tiny." in person.told
     assert person.asked == [
         "Service, by its number or its name [my-server]: ",
@@ -616,7 +617,7 @@ def test_a_service_on_this_machine_may_have_a_key_all_the_same(home: Path) -> No
 
     assert keys(home) == {"lmstudio": KEY}
     assert (
-        "   8  lmstudio     LM Studio on this machine  a key is stored" in person.told.splitlines()
+        "   9  lmstudio     LM Studio on this machine  a key is stored" in person.told.splitlines()
     )
     assert person.asked_unseen == ["A new key, or Enter to keep the one that is stored: "]
 
@@ -630,7 +631,7 @@ def test_the_key_of_a_service_of_ones_own_may_be_in_the_variable_for_such_keys(
     set_up(home, person, {"COLUMBINA_API_KEY": KEY})
 
     assert (
-        "   9  mine         http://localhost:8000/v1   its key is in the variable COLUMBINA_API_KEY"
+        "  10  mine         http://localhost:8000/v1   its key is in the variable COLUMBINA_API_KEY"
     ) in person.told.splitlines()
     assert person.asked_unseen == ["A key to store as well, or Enter for none: "]
 
@@ -933,9 +934,9 @@ def test_a_name_that_no_service_has_is_refused_with_the_names_that_there_are() -
             service_named(name, there)
 
         assert str(refused.value) == (
-            f"there is no service {name!r}. The services are: deepseek, openai, openrouter, "
-            "moonshot, zhipu, siliconflow, ollama, lmstudio, mine, zebra. Another one is added "
-            "with 'columbina setup'"
+            f"there is no service {name!r}. The services are: deepseek, openai, anthropic, "
+            "openrouter, moonshot, zhipu, siliconflow, ollama, lmstudio, mine, zebra. Another one "
+            "is added with 'columbina setup'"
         )
 
 
@@ -1074,7 +1075,7 @@ def test_a_key_that_was_stored_for_another_address_is_told_as_that_and_asked_for
     set_up(home, person)
 
     assert (
-        "   4  moonshot     Moonshot AI (Kimi)         a key is stored for another address"
+        "   5  moonshot     Moonshot AI (Kimi)         a key is stored for another address"
     ) in person.told.splitlines()
     assert person.shown[person.shown.index(NOT_SHOWN) - 1] == (
         "The key that is stored for moonshot is for https://api.moonshot.cn, and it is not "
@@ -1266,6 +1267,15 @@ KNOWN: dict[str, dict[str, object]] = {
         "https://api.openai.com/v1",
         key_env="OPENAI_API_KEY",
         key_page=PAGES["openai"],
+    ),
+    "anthropic": entry(
+        "anthropic",
+        "Anthropic (Claude)",
+        "https://api.anthropic.com",
+        model="claude-opus-5-5",
+        context_window=1_000_000,
+        key_env="ANTHROPIC_API_KEY",
+        key_page=PAGES["anthropic"],
     ),
     "openrouter": entry(
         "openrouter",

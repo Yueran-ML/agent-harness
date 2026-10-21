@@ -8,7 +8,9 @@ to hand the parts that stand alone to subagents that work side by side, and to h
 them review the result before it answers.
 
 Which levels a service offers goes by how its requests say how much to reason, which is the
-reasoning style of its adapter. A service of the style of DeepSeek takes all of them. Where
+reasoning style of its adapter. A service of the style of DeepSeek takes all of them. One of
+the style of Anthropic takes all but ``off``: not every model of Claude lets its thinking be
+turned off, and ``ultra`` asks it for ``max``. Where
 the style is that of OpenAI, a model that does not reason refuses a request that names an
 effort, and nothing tells the program which models reason. So there ``default`` and
 ``ultra`` are offered, and between them the level that the config asks for, if it asks for
@@ -44,7 +46,7 @@ Effort = Literal["default", "off", "low", "high", "max", "ultra"]
 Reasoning = Literal["off", "low", "high", "max"]
 """What a call asks of a service, where it asks anything."""
 
-Style = Literal["deepseek", "openai", "none"]
+Style = Literal["deepseek", "anthropic", "openai", "none"]
 """How the requests of a service say how much to reason."""
 
 EFFORTS: tuple[Effort, ...] = get_args(Effort)
@@ -61,6 +63,8 @@ def style_of(ctx: Context, provider: str) -> Style:
     match getattr(adapter, "reasoning_style", None):
         case "deepseek":
             return "deepseek"
+        case "anthropic":
+            return "anthropic"
         case "openai":
             return "openai"
         case _:
@@ -77,6 +81,8 @@ def offered(style: Style, configured: Reasoning | None = None) -> tuple[Effort, 
     """
     if style == "deepseek":
         return EFFORTS
+    if style == "anthropic":
+        return tuple(effort for effort in EFFORTS if effort != "off")
     if style == "openai" and configured is not None and configured != "off":
         return ("default", configured, "ultra")
     return ("default", "ultra")
@@ -113,9 +119,10 @@ def reasoning_of(
 ) -> Reasoning | None:
     """Return what a call asks for at a level that was chosen, of a service of this style.
 
-    ``None`` asks for nothing: the service decides. A service that is not of the style of
-    DeepSeek offers no level of its own besides the default, so every other level asks it
-    for what the config asks.
+    ``None`` asks for nothing: the service decides. A service of the style of DeepSeek or of
+    Anthropic is asked for the level, and for ``max`` at ``ultra``. Another service offers no
+    level of its own besides the default, so every other level asks it for what the config
+    asks.
 
     Args:
         effort: The level that was chosen.
@@ -124,7 +131,7 @@ def reasoning_of(
     """
     if effort == "default":
         return None
-    if style != "deepseek":
+    if style not in ("deepseek", "anthropic"):
         return configured
     return "max" if effort == "ultra" else effort
 
@@ -132,9 +139,12 @@ def reasoning_of(
 def effort_of(configured: Reasoning | None, style: Style) -> Effort:
     """Return the level that what a config asks for stands for, among those that are offered.
 
-    What a service of this style is not asked for is ``default``.
+    What a service of this style is not asked for is ``default``. A service of the style of
+    Anthropic is asked for ``low`` where the config asks for ``off``, and so that is the level.
     """
     effort: Effort = "default" if configured is None else configured
+    if style == "anthropic" and effort == "off":
+        effort = "low"
     return effort if effort in offered(style, configured) else "default"
 
 

@@ -45,6 +45,12 @@ def test_a_service_of_the_style_of_openai_offers_the_level_that_its_config_asks_
     assert offered("none", "high") == ("default", "ultra")
 
 
+def test_a_service_that_reasons_as_anthropic_offers_every_level_but_off() -> None:
+    # Not every model of Claude lets its thinking be turned off.
+    assert offered("anthropic") == ("default", "low", "high", "max", "ultra")
+    assert offered("anthropic", "off") == ("default", "low", "high", "max", "ultra")
+
+
 @pytest.mark.parametrize(
     ("effort", "deepseek"),
     [
@@ -62,6 +68,8 @@ def test_a_level_that_is_chosen_asks_a_service_for_so_much_reasoning_where_it_ta
     assert reasoning_of(effort, "deepseek") == deepseek
     # What the config asks is no matter where the level is chosen from all of them.
     assert reasoning_of(effort, "deepseek", "low") == deepseek
+    # Nor where the service reasons as Anthropic does, which is asked for the level as well.
+    assert reasoning_of(effort, "anthropic", "high") == deepseek
     # The others are asked what the config asks at every level but the default: at ultra the
     # team is what is asked for besides.
     assert reasoning_of(effort, "openai") is None
@@ -75,6 +83,10 @@ def test_what_a_config_asks_for_stands_for_a_level_that_is_offered() -> None:
     assert effort_of("low", "deepseek") == "low"
     assert effort_of("max", "deepseek") == "max"
     assert effort_of("high", "openai") == "high"
+    assert effort_of("max", "anthropic") == "max"
+    assert effort_of("off", "deepseek") == "off"
+    # Claude is asked for the least thinking where the config asks for none.
+    assert effort_of("off", "anthropic") == "low"
     # A level that the service does not take is the default.
     assert effort_of("off", "openai") == "default"
     assert effort_of("low", "none") == "default"
@@ -126,6 +138,13 @@ class _Plain:
 
 
 class _Odd:
+    reasoning_style = "mistral"
+
+    def stream(self, request: LlmRequest) -> AsyncIterator[Chunk]:
+        raise AssertionError("nothing is asked of it")
+
+
+class _Anthropic:
     reasoning_style = "anthropic"
 
     def stream(self, request: LlmRequest) -> AsyncIterator[Chunk]:
@@ -145,9 +164,11 @@ async def test_the_style_of_a_service_is_what_its_adapter_says(harness: Harness)
     adapters.add(harness.ctx, "plain", _Plain())
     adapters.add(harness.ctx, "odd", _Odd())
     adapters.add(harness.ctx, "openai", _OpenAI())
+    adapters.add(harness.ctx, "anthropic", _Anthropic())
 
     assert style_of(harness.ctx, "thinking") == "deepseek"
     assert style_of(harness.ctx, "openai") == "openai"
+    assert style_of(harness.ctx, "anthropic") == "anthropic"
     # The scripted model says nothing of it, and neither does a service that is not there.
     assert style_of(harness.ctx, "scripted") == "none"
     assert style_of(harness.ctx, "plain") == "none"

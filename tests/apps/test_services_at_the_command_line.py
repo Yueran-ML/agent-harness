@@ -51,10 +51,10 @@ DEEPSEEK = {
 }
 NO_ADAPTER = (
     "columbina: the profile has no entry 'model' that loads "
-    "columbina.llm.adapters.openai_chat, or it is disabled, so there is nothing to point at "
-    "the service {}\n"
+    "columbina.llm.adapters.openai_chat or columbina.llm.adapters.anthropic_messages, or it "
+    "is disabled, so there is nothing to point at the service {}\n"
 )
-NAMES = "deepseek, openai, openrouter, moonshot, zhipu, siliconflow, ollama, lmstudio"
+NAMES = "deepseek, openai, anthropic, openrouter, moonshot, zhipu, siliconflow, ollama, lmstudio"
 
 
 class Dump:
@@ -142,6 +142,38 @@ def test_only_the_entries_of_the_model_are_changed(dump: Dump) -> None:
         "api_key_file": KEYS,
         "api_key_required": False,
     }
+
+
+def test_claude_is_talked_to_by_the_adapter_of_anthropic(dump: Dump) -> None:
+    entries = dump.entries("--provider", "anthropic")
+
+    assert entries["model"]["plugin"] == "columbina.llm.adapters.anthropic_messages"
+    assert entries["model"]["config"] == {
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "api_key_file": KEYS,
+    }
+    assert entries["frontend"]["config"]["model"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-5-5",
+        "context_window": 1_000_000,
+    }
+
+
+def test_claude_that_was_chosen_is_talked_to_and_another_service_named_goes_before_it(
+    dump: Dump, home: Path
+) -> None:
+    chosen(home, "use: anthropic\nservices:\n  anthropic:\n    model: claude-sonnet-5-5\n")
+
+    claude = dump.entries()
+    named = dump.entries("--provider", "openai", "--model", "gpt-test")
+
+    assert claude["model"]["plugin"] == "columbina.llm.adapters.anthropic_messages"
+    assert claude["frontend"]["config"]["model"]["model"] == "claude-sonnet-5-5"
+    # The adapter of the protocol of the service that is named, whatever was chosen.
+    assert named["model"]["plugin"] == "columbina.llm.adapters.openai_chat"
+    assert named["model"]["config"] == OPENAI
 
 
 def test_naming_the_service_of_the_profiles_changes_nothing_that_is_loaded(

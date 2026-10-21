@@ -76,6 +76,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from columbina import plain_yaml
 from columbina.llm import LlmError, credentials
+from columbina.llm.adapters.anthropic_messages import AnthropicMessages
+from columbina.llm.adapters.anthropic_messages import Config as AnthropicConfig
 from columbina.llm.adapters.openai_chat import Config as AdapterConfig
 from columbina.llm.adapters.openai_chat import OpenAIChat
 from columbina.llm.credentials import CredentialsError, origin_of, sendable, trimmed
@@ -940,8 +942,12 @@ async def checked(
     if key is not None and not sendable(key):
         raise SetupError(_NOT_A_KEY)
     service = _meant(name, address, chosen(home), show)
-    config = AdapterConfig.model_validate(adapter_config(service, str(home / KEYS), env))
-    adapter = OpenAIChat(config, secret=key)
+    config = adapter_config(service, str(home / KEYS), env)
+    adapter: OpenAIChat | AnthropicMessages
+    if service.protocol == "anthropic":
+        adapter = AnthropicMessages(AnthropicConfig.model_validate(config), secret=key)
+    else:
+        adapter = OpenAIChat(AdapterConfig.model_validate(config), secret=key)
     try:
         models = await adapter.models()
     except LlmError as error:

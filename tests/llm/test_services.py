@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 import pytest
 
 from columbina.kernel import Entry, Insert, interpolate
+from columbina.llm.adapters.anthropic_messages import Config as AnthropicConfig
 from columbina.llm.adapters.openai_chat import Config
 from columbina.llm.services import (
     KEY_OF_ONES_OWN,
@@ -42,6 +43,7 @@ def test_the_services_are_listed_with_the_one_of_the_profiles_first() -> None:
     assert [service.name for service in PRESETS] == [
         "deepseek",
         "openai",
+        "anthropic",
         "openrouter",
         "moonshot",
         "zhipu",
@@ -63,6 +65,7 @@ def test_where_each_service_is_and_which_variable_holds_its_key() -> None:
     assert {service.name: (service.base_url, service.key_env) for service in PRESETS} == {
         "deepseek": ("https://api.deepseek.com", "DEEPSEEK_API_KEY"),
         "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
+        "anthropic": ("https://api.anthropic.com", "ANTHROPIC_API_KEY"),
         "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
         "moonshot": ("https://api.moonshot.cn/v1", "MOONSHOT_API_KEY"),
         "zhipu": ("https://open.bigmodel.cn/api/paas/v4", "ZAI_API_KEY"),
@@ -73,10 +76,12 @@ def test_where_each_service_is_and_which_variable_holds_its_key() -> None:
 
 
 def test_where_each_service_gives_out_its_keys() -> None:
-    # As the documents of each service link to the page, on 2026-10-15.
+    # As the documents of each service link to the page, on 2026-10-15, and of Anthropic on
+    # 2026-10-21.
     assert {service.name: service.key_page for service in PRESETS} == {
         "deepseek": "https://platform.deepseek.com/api_keys",
         "openai": "https://platform.openai.com/api-keys",
+        "anthropic": "https://platform.claude.com/settings/keys",
         "openrouter": "https://openrouter.ai/keys",
         "moonshot": "https://platform.kimi.com/console/api-keys",
         "zhipu": "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
@@ -90,6 +95,7 @@ def test_what_is_called_what() -> None:
     assert [service.title for service in PRESETS] == [
         "DeepSeek",
         "OpenAI",
+        "Anthropic (Claude)",
         "OpenRouter",
         "Moonshot AI (Kimi)",
         "Zhipu AI (GLM)",
@@ -99,11 +105,13 @@ def test_what_is_called_what() -> None:
     ]
 
 
-def test_only_the_first_service_has_a_model_that_is_used_where_none_is_named() -> None:
-    first, *others = PRESETS
-
-    assert (first.model, first.context_window) == ("deepseek-flash", 1_048_576)
-    assert [(service.model, service.context_window) for service in others] == [(None, None)] * 7
+def test_the_services_that_have_a_model_that_is_used_where_none_is_named() -> None:
+    # Of Anthropic the model that its documents name first, with the window that they give it.
+    assert {
+        service.name: (service.model, service.context_window)
+        for service in PRESETS
+        if service.model is not None or service.context_window is not None
+    } == {"deepseek": ("deepseek-flash", 1_048_576), "anthropic": ("claude-opus-5-5", 1_000_000)}
 
 
 def test_the_habits_of_the_services() -> None:
@@ -115,7 +123,13 @@ def test_the_habits_of_the_services() -> None:
     } == {
         "deepseek": ("deepseek", "max_tokens", "DEEPSEEK_BASE_URL"),
         "openai": ("openai", "max_completion_tokens", None),
+        "anthropic": ("none", "max_tokens", "ANTHROPIC_BASE_URL"),
     }
+
+
+def test_anthropic_alone_is_spoken_to_in_its_own_protocol() -> None:
+    assert {service.name for service in PRESETS if service.protocol == "anthropic"} == {"anthropic"}
+    assert of_ones_own("mine", "https://api.anthropic.com").protocol == "openai-chat"
 
 
 def test_no_two_services_share_a_name_or_a_variable() -> None:
@@ -149,8 +163,9 @@ def test_what_is_written_of_a_service_makes_sense(service: Service) -> None:
     # A key is made on a page of the service, which is reached as anything else is.
     assert (service.key_page is not None) == service.key_required
     assert service.key_page is None or urlsplit(service.key_page).scheme == "https"
-    # And the adapter takes the config that is made of it.
-    Config.model_validate(interpolate(adapter_config(service, KEYS, ENV), ENV))
+    # And the adapter of its protocol takes the config that is made of it.
+    taken = AnthropicConfig if service.protocol == "anthropic" else Config
+    taken.model_validate(interpolate(adapter_config(service, KEYS, ENV), ENV))
 
 
 def test_the_config_of_an_adapter_says_what_is_known_of_its_service() -> None:
@@ -166,6 +181,13 @@ def test_the_config_of_an_adapter_says_what_is_known_of_its_service() -> None:
         "provider": "moonshot",
         "base_url": "https://api.moonshot.cn/v1",
         "api_key_env": "MOONSHOT_API_KEY",
+        "api_key_file": KEYS,
+    }
+    # Anthropic is told nothing of how a service of OpenAI is spoken to.
+    assert adapter_config(known("anthropic"), KEYS, {}) == {
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key_env": "ANTHROPIC_API_KEY",
         "api_key_file": KEYS,
     }
     assert adapter_config(known("ollama"), "elsewhere.json", {}) == {

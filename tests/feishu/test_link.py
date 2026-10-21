@@ -14,10 +14,11 @@ import pytest
 from columbina.feishu import link as link_module
 from columbina.feishu.app import FeishuError, Host
 from columbina.feishu.frames import CONTROL, DATA, Frame, decoded, encoded
-from columbina.feishu.link import ENDPOINT, Link, Rhythm, Socket
+from columbina.feishu.link import ENDPOINT, Link, Rhythm, Socket, platform_checked
 from columbina.net import proxy_for
 
 HOST = Host("feishu", "https://open.feishu.cn")
+LARK = Host("lark", "https://open.larksuite.com")
 SECRET = "s3cr3t-0123456789abcdef"
 ADDRESS = "wss://msg-frontier.feishu.cn/ws/v2?device_id=d1&service_id=4321&access_key=k"
 LONG = 3600.0
@@ -133,6 +134,7 @@ class Run:
         *,
         env: dict[str, str] | None = None,
         heard: Callable[[dict[str, Any]], None] | None = None,
+        host: Host = HOST,
     ) -> None:
         self.heard: list[dict[str, Any]] = []
         self.told: list[tuple[str, str | None]] = []
@@ -140,7 +142,7 @@ class Run:
         self.clock = Clock()
         self.http = httpx.AsyncClient(transport=httpx.MockTransport(feishu))
         self.link = Link(
-            host=HOST,
+            host=host,
             app_id="cli_a1b2c3",
             secret=SECRET,
             http=self.http,
@@ -620,6 +622,87 @@ async def test_a_refusal_without_a_reason_says_so() -> None:
     await run.http.aclose()
 
 
+ELSEWHERE = {"code": 1000040351, "msg": "Incorrect domain name"}
+"""What a platform answers when it is asked for a connection of an app of the other one."""
+
+
+@pytest.mark.parametrize(
+    ("host", "said"),
+    [
+        pytest.param(
+            HOST,
+            "Feishu does not know this app, which is one of Lark (Incorrect domain name, code "
+            "1000040351). Set it up as an app of Lark",
+            id="an app of lark asked about at feishu",
+        ),
+        pytest.param(
+            LARK,
+            "Lark does not know this app, which is one of Feishu (Incorrect domain name, code "
+            "1000040351). Set it up as an app of Feishu",
+            id="an app of feishu asked about at lark",
+        ),
+    ],
+)
+async def test_an_app_of_the_other_platform_is_said_to_be_one_and_not_tried_again(
+    host: Host, said: str
+) -> None:
+    feishu = Feishu(lambda request: httpx.Response(200, json=ELSEWHERE))
+    run = Run(feishu, Opened(), host=host)
+
+    with pytest.raises(FeishuError) as refused:
+        await run.link.run()
+
+    assert refused.value.code == "WRONG_PLATFORM"
+    assert str(refused.value) == said
+    assert [str(request.url) for request in feishu.asked] == [f"{host.api}{ENDPOINT}"]
+    await run.http.aclose()
+
+
+async def test_an_app_of_the_other_platform_without_words_is_named_by_the_code() -> None:
+    feishu = Feishu(lambda request: httpx.Response(200, json={"code": 1000040351}))
+    run = Run(feishu, Opened())
+
+    with pytest.raises(FeishuError) as refused:
+        await run.link.run()
+
+    assert "which is one of Lark (code 1000040351). Set it up" in str(refused.value)
+    await run.http.aclose()
+
+
+async def test_an_app_of_the_other_platform_is_found_before_it_is_kept() -> None:
+    feishu = Feishu(lambda request: httpx.Response(200, json=ELSEWHERE))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(feishu)) as http:
+        with pytest.raises(FeishuError) as refused:
+            await platform_checked(HOST, "cli_a1b2c3", SECRET, http)
+
+    assert refused.value.code == "WRONG_PLATFORM"
+    assert str(refused.value).endswith("Set it up as an app of Lark")
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        pytest.param(answering(200, json.dumps(endpoint()).encode()), id="given"),
+        pytest.param(answering(200, b'{"code": 1, "msg": "system busy"}'), id="busy"),
+        pytest.param(answering(502, b"{}"), id="no answer of json"),
+        pytest.param(failing_with(httpx.ConnectError("refused")), id="not reached"),
+        pytest.param(answering(200, b'{"code": 1000040344}'), id="refused otherwise"),
+    ],
+)
+async def test_an_app_that_its_platform_knows_or_cannot_tell_about_now_is_taken(
+    answer: Callable[[httpx.Request], httpx.Response],
+) -> None:
+    feishu = Feishu(answer)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(feishu)) as http:
+        await platform_checked(HOST, "cli_a1b2c3", SECRET, http)
+
+    (asked,) = feishu.asked
+    assert str(asked.url) == f"{HOST.api}{ENDPOINT}"
+    assert json.loads(asked.content) == {"AppID": "cli_a1b2c3", "AppSecret": SECRET}
+
+
 class RefusedError(Exception):
     """What the library raises where Feishu does not let a WebSocket be opened."""
 
@@ -751,9 +834,8 @@ def serving(
     where: list[str] = []
 
     def run() -> None:
-        loop = asyncio.SelectorEventLoop()
-
         async def main() -> None:
+            loop = asyncio.get_running_loop()
             done = asyncio.Event()
             async with serve(answer, "127.0.0.1", 0) as server:
                 port = next(iter(server.sockets)).getsockname()[1]
@@ -766,8 +848,11 @@ def serving(
                 ready.set()
                 await done.wait()
 
-        loop.run_until_complete(main())
-        loop.close()
+        # The runner ends what is still pending before it closes its loop, such as a connection
+        # that came in while the server closed. Left pending, it is destroyed later, in another
+        # test, which then fails.
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(main())
 
     thread = threading.Thread(target=run, daemon=True)
     thread.start()

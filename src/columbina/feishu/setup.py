@@ -5,8 +5,10 @@ such as the desktop application, with ``columbina feishu --from-stdin``, which r
 as one document of JSON from the standard input. The App Secret is never an argument of the
 command line, where it would stay in the history of the shell.
 
-Before an app is kept, Feishu is asked for a token in its name. An App ID and an App Secret
-that do not belong together are not kept.
+Before an app is kept, Feishu is asked for a token in its name, and for the address of a
+connection. An App ID and an App Secret that do not belong together are not kept, and neither
+is an app of Lark that is said to be one of Feishu, or the other way round: either platform
+gives a token to an app of the other, and only the address tells them apart.
 
 An assistant that runs goes on with the app that it read when it started, and writes down
 whom it answers and in which session. So the app is kept or deleted only while no assistant
@@ -26,6 +28,7 @@ import httpx
 from columbina.feishu import store
 from columbina.feishu.app import DOMAINS, Domain, FeishuError, host
 from columbina.feishu.client import Feishu
+from columbina.feishu.link import platform_checked
 from columbina.llm.credentials import sendable, trimmed
 from columbina.session.lock import acquire
 
@@ -95,14 +98,18 @@ async def checked(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> None:
-    """Ask Feishu for a token of the app, which it gives only where the two belong together.
+    """Ask the platform for a token of the app, and whether the app is one of its own.
+
+    A token is given only where the App ID and the App Secret belong together, and either
+    platform gives one to an app of the other as well.
 
     Raises:
-        FeishuError: It gave none.
+        FeishuError: It gave no token, or the app is one of the other platform.
     """
     client = Feishu(host(domain, env), app_id, secret, env, transport=transport)
     try:
         await client.token()
+        await platform_checked(client.host, app_id, secret, client.http)
     finally:
         await client.aclose()
 

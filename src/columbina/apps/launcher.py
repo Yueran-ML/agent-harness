@@ -463,9 +463,12 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                 config["task"] = args.task
                 if args.json is not None:
                     config["json_lines"] = args.json
-            elif args.command == _FEISHU and args.json:
-                # Another program reads how the assistant is doing, and stops it.
-                config["json_lines"] = True
+            elif args.command == _FEISHU:
+                if args.json:
+                    # Another program reads how the assistant is doing, and stops it.
+                    config["json_lines"] = True
+                if args.language is not None:
+                    config["language"] = args.language
             elif args.command == _CHAT and args.resume:
                 config["resume"] = True
                 # Which session to take up is said here. One that a profile names is not it.
@@ -1430,6 +1433,12 @@ def _parser() -> argparse.ArgumentParser:
         help="for another program: with --status or --forget, answer in one document of JSON; "
         "else run the assistant, say how it is doing in lines of JSON, and stop it when the "
         "standard input closes",
+    )
+    feishu.add_argument(
+        "--language",
+        choices=("zh", "en"),
+        help="the language of what the assistant says by itself, such as its help; by default "
+        "Chinese for an app of Feishu and English for one of Lark",
     )
     feishu.add_argument(
         "--dump-config",

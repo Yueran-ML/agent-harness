@@ -18,6 +18,10 @@ and after a fixed pause each time a try fails. A connection that Feishu refuses 
 that waiting does not change, such as an App Secret that is wrong, is not tried again: the
 error says why.
 
+Each of the two platforms gives a token to an app of the other as well, but the address of a
+connection only to an app of its own. So the address is where an app of Lark that was set up
+as one of Feishu, or the other way round, is found: before it is kept, and when it runs.
+
 What is written about the connection names the host it goes to, and never the address: the
 address that Feishu gives holds what lets the connection in.
 """
@@ -36,12 +40,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
-from columbina.feishu.app import FeishuError, Host
+from columbina.feishu.app import Domain, FeishuError, Host
 from columbina.feishu.frames import CONTROL, DATA, Frame, FrameError, decoded, encoded
 from columbina.llm.credentials import spellings
 from columbina.net import proxy_for
 
-__all__ = ["ENDPOINT", "Link", "Opener", "Rhythm", "Socket"]
+__all__ = ["ENDPOINT", "Link", "Opener", "Rhythm", "Socket", "platform_checked"]
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,12 @@ ENDPOINT = "/callback/ws/endpoint"
 
 _BUSY = (1, 1000040343)
 """The codes with which Feishu says that it cannot give an address now, and may later."""
+
+_ELSEWHERE = 1000040351
+"""The code with which a platform says that the app is not one of its own, with the words
+"Incorrect domain name": an app of Lark asked about at Feishu, or one of Feishu at Lark."""
+
+_NAMES: dict[Domain, str] = {"feishu": "Feishu", "lark": "Lark"}
 
 _FORBIDDEN = "403"
 _AUTH_FAILED = "514"
@@ -311,6 +321,15 @@ class Link:
         code, message = given.get("code"), self._said(str(given.get("msg") or ""))
         if code in _BUSY:
             raise _Passing(f"Feishu is busy: {message or code}")
+        if code == _ELSEWHERE:
+            asked = _NAMES[self.host.domain]
+            other = _NAMES["lark" if self.host.domain == "feishu" else "feishu"]
+            why = f"{message}, code {code}" if message else f"code {code}"
+            raise FeishuError(
+                f"{asked} does not know this app, which is one of {other} ({why}). Set it up as "
+                f"an app of {other}",
+                code="WRONG_PLATFORM",
+            )
         if code != 0:
             raise FeishuError(
                 f"Feishu opens no connection for this app: {message or 'it gave no reason'} "
@@ -419,3 +438,24 @@ class Link:
             return None
         del self._pieces[key]
         return b"".join(part for part in held.parts if part is not None)
+
+
+async def platform_checked(host: Host, app_id: str, secret: str, http: httpx.AsyncClient) -> None:
+    """Say whether an app is one of the other platform than the one that it is to be kept in.
+
+    The platform is asked for the address of a connection, which it gives only to an app of its
+    own. Nothing else is said here: an address that cannot be had now, or that is refused for
+    another reason, is said when the assistant starts.
+
+    Raises:
+        FeishuError: The app is one of the other platform. Its code is ``WRONG_PLATFORM``.
+    """
+    link = Link(host, app_id, secret, http, heard=lambda event: None, told=lambda state, why: None)
+    try:
+        # The address is asked for as the assistant asks for it, and is not used.
+        await link._address()  # pyright: ignore[reportPrivateUsage]
+    except _Passing:
+        return
+    except FeishuError as error:
+        if error.code == "WRONG_PLATFORM":
+            raise

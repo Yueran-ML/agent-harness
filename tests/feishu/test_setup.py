@@ -1,6 +1,7 @@
 """Setting up the assistant in Feishu: ``columbina.feishu.setup``."""
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import httpx
@@ -9,6 +10,7 @@ import pytest
 from columbina.feishu import store
 from columbina.feishu.app import FeishuError, Host
 from columbina.feishu.client import TOKEN
+from columbina.feishu.link import ENDPOINT
 from columbina.feishu.setup import (
     NEXT,
     at_a_terminal,
@@ -27,8 +29,31 @@ FEISHU = Host("feishu", "https://open.feishu.cn")
 APP = {"domain": "feishu", "app_id": "cli_a1b2c3d4", "app_secret": SECRET}
 
 
-def platform(code: int = 0) -> httpx.MockTransport:
+Answer = Callable[[httpx.Request], httpx.Response]
+
+
+def answering(status: int, body: object = None) -> Answer:
+    return lambda request: httpx.Response(status, json=body)
+
+
+connection_given = answering(200, {"code": 0, "data": {"URL": "wss://x/ws?service_id=1"}})
+elsewhere = answering(200, {"code": 1000040351, "msg": "Incorrect domain name"})
+"""What a platform answers for a connection of an app of the other one."""
+
+
+def platform(
+    code: int = 0,
+    *,
+    connection: Answer = connection_given,
+    asked: list[httpx.Request] | None = None,
+) -> httpx.MockTransport:
+    """The open platform: a token for the app or a refusal, and the address of a connection."""
+
     def answer(request: httpx.Request) -> httpx.Response:
+        if asked is not None:
+            asked.append(request)
+        if request.url.path == ENDPOINT:
+            return connection(request)
         assert request.url.path == TOKEN
         if code:
             return httpx.Response(400, json={"code": code, "msg": "app secret invalid"})
@@ -109,8 +134,56 @@ async def test_an_app_that_feishu_does_not_take_is_not_kept(home: Path) -> None:
     assert store.settings(home) is None
 
 
-async def test_an_app_is_checked_by_asking_for_its_token() -> None:
-    await checked("feishu", "cli_a1b2c3d4", SECRET, {}, transport=platform())
+async def test_an_app_is_checked_by_asking_for_its_token_and_then_for_a_connection() -> None:
+    asked: list[httpx.Request] = []
+
+    await checked("feishu", "cli_a1b2c3d4", SECRET, {}, transport=platform(asked=asked))
+
+    assert [str(request.url) for request in asked] == [
+        f"https://open.feishu.cn{TOKEN}",
+        f"https://open.feishu.cn{ENDPOINT}",
+    ]
+    assert json.loads(asked[1].content) == {"AppID": "cli_a1b2c3d4", "AppSecret": SECRET}
+
+
+async def test_no_connection_is_asked_for_an_app_without_a_token() -> None:
+    asked: list[httpx.Request] = []
+
+    with pytest.raises(FeishuError):
+        await checked("feishu", "cli_a1b2c3d4", SECRET, {}, transport=platform(10014, asked=asked))
+
+    assert [request.url.path for request in asked] == [TOKEN]
+
+
+@pytest.mark.parametrize(("domain", "other"), [("feishu", "Lark"), ("lark", "Feishu")])
+async def test_an_app_of_the_other_platform_is_not_kept(
+    home: Path, domain: str, other: str
+) -> None:
+    # Either platform gives a token to an app of the other: only the connection tells them apart.
+    given = {**APP, "domain": domain}
+    with pytest.raises(FeishuError) as refused:
+        await kept_from(home, given, {}, transport=platform(connection=elsewhere))
+
+    assert refused.value.code == "WRONG_PLATFORM"
+    assert str(refused.value).endswith(f"Set it up as an app of {other}")
+    assert store.settings(home) is None
+
+
+@pytest.mark.parametrize(
+    "connection",
+    [
+        pytest.param(answering(200, {"code": 1, "msg": "system busy"}), id="busy"),
+        pytest.param(answering(502), id="no answer"),
+        pytest.param(answering(200, {"code": 1000040344, "msg": "no"}), id="refused otherwise"),
+    ],
+)
+async def test_an_app_whose_connection_cannot_be_told_of_now_is_kept_all_the_same(
+    home: Path, connection: Answer
+) -> None:
+    answer = await kept_from(home, APP, {}, transport=platform(connection=connection))
+
+    assert answer["stored"] == {"domain": "feishu", "app_id": "cli_a1b2c3d4"}
+    assert store.secret(home, FEISHU) == SECRET
 
 
 async def test_the_app_is_neither_kept_nor_deleted_while_an_assistant_runs(home: Path) -> None:
@@ -284,3 +357,26 @@ async def test_an_app_that_is_not_kept_is_said_to_be_so_at_a_terminal(home: Path
 
     assert code == 2
     assert shown[-1].startswith("The app is not kept: ")
+
+
+async def test_an_app_of_lark_that_is_said_to_be_in_feishu_is_not_kept_at_a_terminal(
+    home: Path,
+) -> None:
+    answers = iter(["", "cli_a1b2c3d4"])
+    shown: list[str] = []
+
+    code = await at_a_terminal(
+        home,
+        {},
+        lambda question: next(answers),
+        lambda question: SECRET,
+        shown.append,
+        transport=platform(connection=elsewhere),
+    )
+
+    assert code == 2
+    assert shown[-1] == (
+        "The app is not kept: Feishu does not know this app, which is one of Lark (Incorrect "
+        "domain name, code 1000040351). Set it up as an app of Lark."
+    )
+    assert store.settings(home) is None

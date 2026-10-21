@@ -314,6 +314,39 @@ def test_an_assistant_that_another_program_runs_says_how_it_is_doing_in_lines_of
     assert config.get("json_lines") == json_lines
 
 
+@pytest.mark.parametrize(
+    ("given", "language"), [(["--language", "zh"], "zh"), (["--language", "en"], "en"), ([], None)]
+)
+def test_the_language_of_what_the_assistant_says_by_itself_is_chosen(
+    home: Path, monkeypatch: pytest.MonkeyPatch, given: list[str], language: str | None
+) -> None:
+    configs: list[dict[str, object]] = []
+
+    async def run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
+        configs.extend(
+            cast("dict[str, object]", entry.config) for entry in entries if entry.id == "frontend"
+        )
+        return 0
+
+    monkeypatch.setattr(launcher, "_run", run)
+
+    assert main(["feishu", "--json", *given]) == 0
+
+    (config,) = configs
+    assert config.get("language") == language
+    assert config.get("json_lines") is True
+
+
+def test_a_language_that_the_assistant_does_not_speak_is_refused(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main(["feishu", "--language", "fr"])
+
+    assert stopped.value.code == 2
+    assert "invalid choice: 'fr'" in capsys.readouterr().err
+
+
 def free_port() -> int:
     """Return a port of this machine that nothing listens on."""
     with socket.socket() as probe:

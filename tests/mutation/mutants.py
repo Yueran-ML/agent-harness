@@ -25245,8 +25245,8 @@ _FEISHU = (
     mutant(
         "a run of the assistant for another program writes no lines of JSON",
         LAUNCHER,
-        '                config["json_lines"] = True\n',
-        '                config["json_lines"] = False\n',
+        '                    config["json_lines"] = True\n',
+        '                    config["json_lines"] = False\n',
     ),
     mutant(
         "--json goes with printing the plugins",
@@ -25319,6 +25319,54 @@ _FEISHU = (
         FEISHU_SETUP,
         '        raise FeishuError(f"{folder} cannot be used: {error.strerror}", code="STORE") from None\n',
         "        raise\n",
+    ),
+    mutant(
+        "an app of the other platform is taken for one that is refused otherwise",
+        FEISHU_LINK,
+        "        if code == _ELSEWHERE:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the platform that was asked is named as the other one",
+        FEISHU_LINK,
+        '            other = _NAMES["lark" if self.host.domain == "feishu" else "feishu"]\n',
+        '            other = _NAMES["feishu" if self.host.domain == "feishu" else "lark"]\n',
+    ),
+    mutant(
+        "what the platform says of an app of the other one is not said",
+        FEISHU_LINK,
+        '            why = f"{message}, code {code}" if message else f"code {code}"\n',
+        '            why = f"code {code}"\n',
+    ),
+    mutant(
+        "an app of the other platform is kept",
+        FEISHU_LINK,
+        '        if error.code == "WRONG_PLATFORM":\n            raise\n',
+        '        if error.code == "WRONG_PLATFORM":\n            return\n',
+    ),
+    mutant(
+        "a connection that cannot be had now keeps the app from being kept",
+        FEISHU_LINK,
+        "    except _Passing:\n        return\n    except FeishuError as error:\n",
+        "    except FeishuError as error:\n",
+    ),
+    mutant(
+        "another refusal of a connection keeps the app from being kept",
+        FEISHU_LINK,
+        '        if error.code == "WRONG_PLATFORM":\n            raise\n',
+        "        if error.code:\n            raise\n",
+    ),
+    mutant(
+        "an app is kept without asking whether it is one of its platform",
+        FEISHU_SETUP,
+        "        await platform_checked(client.host, app_id, secret, client.http)\n",
+        "",
+    ),
+    mutant(
+        "the language that is chosen for the assistant is not taken",
+        LAUNCHER,
+        '                    config["language"] = args.language\n',
+        "                    pass\n",
     ),
 )
 

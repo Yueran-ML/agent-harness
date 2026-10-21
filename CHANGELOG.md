@@ -57,7 +57,11 @@ change what was there before.
   App Secret is kept in the keyring of the system. `columbina feishu --setup` takes the app at
   a terminal and `--from-stdin` from another program, `--status` says how the assistant is
   doing, and `--forget` deletes the app; an app is kept or deleted only while no assistant
-  runs. The package of the connection comes with `columbina[feishu]`.
+  runs. An app of Lark that is said to be one of Feishu, or the other way round, is not kept,
+  and is said to be so: either platform gives a token to an app of the other, and only the
+  address of a connection tells them apart. `--language` chooses whether the assistant says
+  what it says by itself, such as its help, in Chinese or in English. The package of the
+  connection comes with `columbina[feishu]`.
 - The settings of the desktop application have a part for the assistant in Feishu. The app and
   its App Secret are given in a window of their own, which lists what to do in the developer
   console, and Feishu is asked whether it takes the app before it is stored. The assistant is

@@ -1,5 +1,6 @@
 """What is kept for the assistant in Feishu: ``columbina.feishu.store``."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -8,12 +9,14 @@ import pytest
 from columbina.feishu import store as store_module
 from columbina.feishu.app import FeishuError, Host
 from columbina.feishu.store import (
+    ASSISTANT_HOME,
     CREDENTIALS,
     FOLDER,
     SETTINGS,
     STATUS,
     Settings,
     Status,
+    directory,
     forget,
     keep,
     save,
@@ -21,6 +24,7 @@ from columbina.feishu.store import (
     settings,
     status,
     tell,
+    within,
 )
 from columbina.llm import credentials
 from columbina.llm.credentials import key_for
@@ -92,13 +96,12 @@ def test_the_secret_of_an_app_is_apart_from_the_keys_of_models(home: Path) -> No
 
 def test_the_same_app_kept_again_keeps_whom_it_answers_and_where(home: Path) -> None:
     keep(home, APP, SECRET, FEISHU)
-    save(home, APP.model_copy(update={"owner": "ou_owner", "session_id": "20261020T000000-ab"}))
+    said = {"owner": "ou_owner", "session_id": "20261020T000000-ab", "writable": True}
+    save(home, APP.model_copy(update=said))
 
     keep(home, APP, "another-secret-0123", FEISHU)
 
-    assert settings(home) == APP.model_copy(
-        update={"owner": "ou_owner", "session_id": "20261020T000000-ab"}
-    )
+    assert settings(home) == APP.model_copy(update=said)
     assert secret(home, FEISHU) == "another-secret-0123"
 
 
@@ -111,11 +114,53 @@ def test_the_same_app_kept_again_keeps_whom_it_answers_and_where(home: Path) -> 
 )
 def test_another_app_begins_with_nobody_to_answer(home: Path, other: Settings) -> None:
     keep(home, APP, SECRET, FEISHU)
-    save(home, APP.model_copy(update={"owner": "ou_owner", "session_id": "s"}))
+    save(home, APP.model_copy(update={"owner": "ou_owner", "session_id": "s", "writable": True}))
 
     keep(home, other, SECRET, FEISHU if other.domain == "feishu" else LARK)
 
     assert settings(home) == other
+
+
+def test_an_app_kept_before_its_agent_could_change_files_changes_none(home: Path) -> None:
+    keep(home, APP, SECRET, FEISHU)
+    written = (home / SETTINGS).read_text(encoding="utf-8").replace('  "writable": false\n', "")
+    (home / SETTINGS).write_text(written.replace(",\n}", "\n}"), encoding="utf-8")
+
+    assert "writable" not in (home / SETTINGS).read_text(encoding="utf-8")
+    assert settings(home) == APP
+
+
+def test_the_directory_of_the_assistant_lies_beside_the_home_of_the_program(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / ".columbina"
+
+    assert directory(home, {}) == tmp_path / "Columbina" / "feishu"
+    assert directory(home, {ASSISTANT_HOME: str(tmp_path / "elsewhere")}) == tmp_path / "elsewhere"
+    # A variable that names nothing is no directory.
+    assert directory(home, {ASSISTANT_HOME: ""}) == tmp_path / "Columbina" / "feishu"
+
+
+def test_a_path_lies_in_a_folder_as_the_two_are_written(tmp_path: Path) -> None:
+    folder = tmp_path / "home"
+
+    assert within(folder, folder)
+    assert within(folder / "feishu" / "skills", folder)
+    assert within(folder / "x" / ".." / "feishu", folder)
+    assert not within(folder / ".." / "feishu", folder)
+    assert not within(tmp_path / "home2", folder)
+    assert not within(tmp_path, folder)
+    assert within(folder, Path(folder.anchor))
+
+
+def test_a_path_in_other_cases_lies_in_a_folder_where_the_system_does_not_tell_them_apart(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "home"
+
+    shouted = Path(str(folder / "feishu").upper())
+
+    assert within(shouted, folder) == (os.path.normcase("A") == "a")
 
 
 def test_nothing_is_set_up_where_nothing_is_kept(home: Path) -> None:

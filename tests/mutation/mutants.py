@@ -180,6 +180,8 @@ FEISHU_MESSAGES = "src/columbina/feishu/messages.py"
 FEISHU_DOCUMENTS = "src/columbina/feishu/documents.py"
 FEISHU_BOT = "src/columbina/feishu/bot.py"
 FEISHU_SETUP = "src/columbina/feishu/setup.py"
+FEISHU_BUNDLE = "src/columbina/bundles/feishu.yml"
+FEISHU_WRITABLE_BUNDLE = "src/columbina/bundles/feishu-writable.yml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24650,6 +24652,392 @@ _EFFORT = (
 
 _FEISHU = (
     mutant(
+        "the directory of the assistant is not where the environment says",
+        FEISHU_STORE,
+        '    return Path(named) if named else home.parent / "Columbina" / "feishu"\n',
+        '    return home.parent / "Columbina" / "feishu"\n',
+    ),
+    mutant(
+        "the directory of the assistant lies in the home of the program",
+        FEISHU_STORE,
+        '    return Path(named) if named else home.parent / "Columbina" / "feishu"\n',
+        '    return Path(named) if named else home / "feishu"\n',
+    ),
+    mutant(
+        "an empty variable names the directory of the assistant",
+        FEISHU_STORE,
+        '    return Path(named) if named else home.parent / "Columbina" / "feishu"\n',
+        '    return Path(named) if named is not None else home.parent / "Columbina" / "feishu"\n',
+    ),
+    mutant(
+        "the directory of the assistant is not named for its profile",
+        LAUNCHER,
+        '    env[feishu_store.ASSISTANT_HOME] = str(feishu_store.directory(Path(env["COLUMBINA_HOME"]), env))\n',
+        "",
+    ),
+    mutant(
+        "the directory of the assistant is not the one that the environment names",
+        LAUNCHER,
+        '    env[feishu_store.ASSISTANT_HOME] = str(feishu_store.directory(Path(env["COLUMBINA_HOME"]), env))\n',
+        '    env[feishu_store.ASSISTANT_HOME] = str(feishu_store.directory(Path(env["COLUMBINA_HOME"]), {}))\n',
+    ),
+    mutant(
+        "the status says nothing of the directory where nothing is set up",
+        FEISHU_SETUP,
+        '        return {"set_up": False, "running": _running(home), "folder": folder}\n',
+        '        return {"set_up": False, "running": _running(home)}\n',
+    ),
+    mutant(
+        "the status says nothing of the directory of an app",
+        FEISHU_SETUP,
+        '        "folder": folder,\n',
+        "",
+    ),
+    mutant(
+        "nothing is brought along",
+        FEISHU_BOT,
+        "                self._moved_in(folder, chosen.session_id)\n",
+        "                pass\n",
+    ),
+    mutant(
+        "the lock comes along",
+        FEISHU_BOT,
+        "    kept = {store.LOCK, store.STATUS, SEEN}\n",
+        "    kept = {store.STATUS, SEEN}\n",
+    ),
+    mutant(
+        "how it was doing comes along",
+        FEISHU_BOT,
+        "    kept = {store.LOCK, store.STATUS, SEEN}\n",
+        "    kept = {store.LOCK, SEEN}\n",
+    ),
+    mutant(
+        "which messages were taken comes along",
+        FEISHU_BOT,
+        "    kept = {store.LOCK, store.STATUS, SEEN}\n",
+        "    kept = {store.LOCK, store.STATUS}\n",
+    ),
+    mutant(
+        "the session does not come along",
+        FEISHU_BOT,
+        "                    brought = self._session_moved(before, session_id) or brought\n",
+        "                    pass\n",
+    ),
+    mutant(
+        "a session that came along alone is not told of",
+        FEISHU_BOT,
+        "                    brought = self._session_moved(before, session_id) or brought\n",
+        "                    self._session_moved(before, session_id)\n",
+    ),
+    mutant(
+        "a new assistant is told that something came along",
+        FEISHU_BOT,
+        "                if brought:\n",
+        "                if True:\n",
+    ),
+    mutant(
+        "what the program keeps for the assistant is taken for something that came along",
+        FEISHU_BOT,
+        "                brought = bool(set(names) - left(os.fspath(before), names))\n",
+        "                brought = bool(names)\n",
+    ),
+    mutant(
+        "a conversation without a session has one copied",
+        FEISHU_BOT,
+        "                if session_id is not None and self._sessions.root is not None:\n",
+        "                if self._sessions.root is not None:\n",
+    ),
+    mutant(
+        "an id that names no directory breaks the bringing along",
+        FEISHU_BOT,
+        "        except ValueError:\n            # An id that names no directory names no session either, and opening it says so.\n            return False\n",
+        "        except KeyError:\n            # An id that names no directory names no session either, and opening it says so.\n            return False\n",
+    ),
+    mutant(
+        "a session that is not there is copied",
+        FEISHU_BOT,
+        "        if not stored.is_dir() or moved.exists():\n",
+        "        if moved.exists():\n",
+    ),
+    mutant(
+        "a session that is there is copied over",
+        FEISHU_BOT,
+        "        if not stored.is_dir() or moved.exists():\n",
+        "        if not stored.is_dir():\n",
+    ),
+    mutant(
+        "half the copy of a session is left in the way",
+        FEISHU_BOT,
+        "        shutil.rmtree(part, ignore_errors=True)\n",
+        "",
+    ),
+    mutant(
+        "the session is copied straight to its place",
+        FEISHU_BOT,
+        '        part = moved.with_name(f"{moved.name}.copying")\n',
+        "        part = moved\n",
+    ),
+    mutant(
+        "what came along is brought again",
+        FEISHU_BOT,
+        "        if not mark.exists():\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "nothing comes along the first time",
+        FEISHU_BOT,
+        "        if not mark.exists():\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "it is not noted that it came along",
+        FEISHU_BOT,
+        '            files.replaced(mark, f"{new}\\n")\n',
+        "            pass\n",
+    ),
+    mutant(
+        "it is noted without where to",
+        FEISHU_BOT,
+        '            files.replaced(mark, f"{new}\\n")\n',
+        '            files.replaced(mark, "")\n',
+    ),
+    mutant(
+        "a directory in the one that it worked in is copied into itself",
+        FEISHU_BOT,
+        "            if not store.within(new, before):\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "the directory of the assistant is not made",
+        FEISHU_BOT,
+        "        new.mkdir(parents=True, exist_ok=True)\n",
+        "",
+    ),
+    mutant(
+        "a file that is there gets the one from before",
+        FEISHU_BOT,
+        "    if not place.exists():\n",
+        "    if True:\n",
+    ),
+    mutant(
+        "half the copy of a file is taken for the file",
+        FEISHU_BOT,
+        '        part = place.with_name(f"{place.name}.copying")\n',
+        "        part = place\n",
+    ),
+    mutant(
+        "a file is never put in its place",
+        FEISHU_BOT,
+        "        part.replace(place)\n",
+        "",
+    ),
+    mutant(
+        "what the program keeps stays behind further down as well",
+        FEISHU_BOT,
+        "        if directory == top:\n",
+        "        if True:\n",
+    ),
+    mutant(
+        "a link comes along",
+        FEISHU_BOT,
+        "        links = {name for name in names if bound.link_at(Path(directory, name)) is not None}\n",
+        "        links: set[str] = set()\n",
+    ),
+    mutant(
+        "an assistant started to change files runs where its owner does not let it",
+        FEISHU_BOT,
+        "            if config.writable and not chosen.writable:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "an assistant that changes nothing does not run where its owner lets it change files",
+        FEISHU_BOT,
+        "            if config.writable and not chosen.writable:\n",
+        "            if not chosen.writable:\n",
+    ),
+    mutant(
+        "an assistant whose directory lies in the home of the program changes files there",
+        FEISHU_BOT,
+        "            if config.writable and store.within(config.cwd, config.home):\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "an assistant that changes nothing does not run in the home of the program",
+        FEISHU_BOT,
+        "            if config.writable and store.within(config.cwd, config.home):\n",
+        "            if store.within(config.cwd, config.home):\n",
+    ),
+    mutant(
+        "the preset of the program holds for the assistant",
+        FEISHU_BOT,
+        "        if permissions is not None:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the agent that may change files is let change none",
+        FEISHU_BOT,
+        '                agent.session, "workspace-write" if config.writable else "read-only"\n',
+        '                agent.session, "read-only"\n',
+    ),
+    mutant(
+        "the agent that may change nothing is let change files",
+        FEISHU_BOT,
+        '                agent.session, "workspace-write" if config.writable else "read-only"\n',
+        '                agent.session, "workspace-write"\n',
+    ),
+    mutant(
+        "the messages that were taken are known in the directory of the assistant",
+        FEISHU_BOT,
+        "        self._seen = _Seen(config.home / store.FOLDER / SEEN)\n",
+        "        self._seen = _Seen(config.cwd / SEEN)\n",
+    ),
+    mutant(
+        "a document that says whether files may change is taken for an app",
+        FEISHU_SETUP,
+        '    if set(given) == {"writable"}:\n',
+        "    if False:\n",
+    ),
+    mutant(
+        "a document that says more is taken for whether files may change",
+        FEISHU_SETUP,
+        '    if set(given) == {"writable"}:\n',
+        '    if "writable" in given:\n',
+    ),
+    mutant(
+        "whether files may change is any value",
+        FEISHU_SETUP,
+        "    if not isinstance(writable, bool):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "an agent whose directory lies in the home of the program may change files",
+        FEISHU_SETUP,
+        "    if writable and store.within(folder, home):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "an agent whose directory lies in the home of the program may not be let change nothing",
+        FEISHU_SETUP,
+        "    if writable and store.within(folder, home):\n",
+        "    if store.within(folder, home):\n",
+    ),
+    mutant(
+        "whether files may change is kept where the directory is not the one named",
+        FEISHU_SETUP,
+        "    folder = store.directory(home, env)\n",
+        "    folder = store.directory(home, {})\n",
+    ),
+    mutant(
+        "whether files may change is kept without the environment",
+        FEISHU_SETUP,
+        '        return made_writable(home, given["writable"], env)\n',
+        '        return made_writable(home, given["writable"], {})\n',
+    ),
+    mutant(
+        "a folder does not lie in itself",
+        FEISHU_STORE,
+        "    return one == other or one.startswith(other.rstrip(os.sep) + os.sep)\n",
+        "    return one.startswith(other.rstrip(os.sep) + os.sep)\n",
+    ),
+    mutant(
+        "nothing lies in the root of a drive",
+        FEISHU_STORE,
+        "    return one == other or one.startswith(other.rstrip(os.sep) + os.sep)\n",
+        "    return one == other or one.startswith(other + os.sep)\n",
+    ),
+    mutant(
+        "a folder holds whatever begins with its name",
+        FEISHU_STORE,
+        "    return one == other or one.startswith(other.rstrip(os.sep) + os.sep)\n",
+        "    return one == other or one.startswith(other.rstrip(os.sep))\n",
+    ),
+    on_windows(
+        mutant(
+            "cases are told apart where the system does not",
+            FEISHU_STORE,
+            "    one = os.path.normcase(os.path.abspath(path))  # noqa: PTH100\n",
+            "    one = os.path.abspath(path)  # noqa: PTH100\n",
+        )
+    ),
+    mutant(
+        "a path is taken as it is written, with its steps back",
+        FEISHU_STORE,
+        "    one = os.path.normcase(os.path.abspath(path))  # noqa: PTH100\n",
+        "    one = os.path.normcase(path)  # noqa: PTH100\n",
+    ),
+    mutant(
+        "the assistant is not told that it may change files",
+        LAUNCHER,
+        "                if args.profile == _FEISHU_WRITABLE:\n",
+        "                if False:\n",
+    ),
+    mutant(
+        "every assistant is told that it may change files",
+        LAUNCHER,
+        "                if args.profile == _FEISHU_WRITABLE:\n",
+        "                if True:\n",
+    ),
+    mutant(
+        "the rules of the user do not hold for the assistant",
+        FEISHU_BUNDLE,
+        "      user_file: ${COLUMBINA_HOME}/permissions.yml\n",
+        "",
+    ),
+    mutant(
+        "the rules of the user do not hold for the assistant that changes files",
+        FEISHU_WRITABLE_BUNDLE,
+        "      user_file: ${COLUMBINA_HOME}/permissions.yml\n",
+        "",
+    ),
+    mutant(
+        "whether files may change is kept without an app",
+        FEISHU_SETUP,
+        '        if chosen is None:\n            raise FeishuError("no app of Feishu is set up", code="NONE")\n',
+        "",
+    ),
+    mutant(
+        "whether files may change is not kept",
+        FEISHU_SETUP,
+        '        store.save(home, chosen.model_copy(update={"writable": writable}))\n',
+        "        pass\n",
+    ),
+    mutant(
+        "the status does not say whether files may change",
+        FEISHU_SETUP,
+        '        "writable": chosen.writable,\n',
+        '        "writable": False,\n',
+    ),
+    mutant(
+        "an agent that may change files is given the tools that read",
+        LAUNCHER,
+        "    if args.profile == _FEISHU and _writable(home):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a profile that is named gives way to the one that writes",
+        LAUNCHER,
+        "    if args.profile == _FEISHU and _writable(home):\n",
+        "    if _writable(home):\n",
+    ),
+    mutant(
+        "an app that cannot be read breaks the run",
+        LAUNCHER,
+        "    except FeishuError:\n        return False\n    return chosen is not None and chosen.writable\n",
+        "    except KeyError:\n        return False\n    return chosen is not None and chosen.writable\n",
+    ),
+    mutant(
+        "every app lets its agent change files",
+        LAUNCHER,
+        "    return chosen is not None and chosen.writable\n",
+        "    return chosen is not None\n",
+    ),
+    mutant(
+        "the status says that files may change where they may not",
+        LAUNCHER,
+        '        + ("and may change the files there." if said["writable"] else "and changes no file there.")\n',
+        '        + ("and may change the files there." if not said["writable"] else "and changes no file there.")\n',
+    ),
+    mutant(
         "a number is written without the mark that more of it follows",
         FEISHU_FRAMES,
         "        written.append(value & 0x7F | 0x80)\n",
@@ -24712,8 +25100,20 @@ _FEISHU = (
     mutant(
         "the same app forgets whom it answered",
         FEISHU_STORE,
-        '        chosen = chosen.model_copy(update={"owner": before.owner, "session_id": before.session_id})\n',
-        '        chosen = chosen.model_copy(update={"session_id": before.session_id})\n',
+        '            "owner": before.owner,\n',
+        "",
+    ),
+    mutant(
+        "the same app forgets its session",
+        FEISHU_STORE,
+        '            "session_id": before.session_id,\n',
+        "",
+    ),
+    mutant(
+        "the same app forgets whether its agent may change files",
+        FEISHU_STORE,
+        '            "writable": before.writable,\n',
+        "",
     ),
     mutant(
         "the secret that came before is not put back where the app cannot be written",
@@ -25309,8 +25709,14 @@ _FEISHU = (
     mutant(
         "an app is deleted while an assistant runs",
         FEISHU_SETUP,
-        "    with _alone(home, make=False):\n",
-        "    with contextlib.nullcontext():\n",
+        '    with _alone(home, make=False):\n        return {"forgotten": store.forget(home)}\n',
+        '    with contextlib.nullcontext():\n        return {"forgotten": store.forget(home)}\n',
+    ),
+    mutant(
+        "whether the agent may change files is changed while an assistant runs",
+        FEISHU_SETUP,
+        "    with _alone(home, make=False):\n        chosen = store.settings(home)\n",
+        "    with contextlib.nullcontext():\n        chosen = store.settings(home)\n",
     ),
     mutant(
         "a directory of the assistant that cannot be used breaks the setting up",

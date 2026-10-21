@@ -5,14 +5,21 @@ filed under a file of its own, ``feishu-credentials.json``, apart from the keys 
 is handed out only for the host of the app.
 
 ``feishu.json`` holds what is no secret: which app it is and where, whom the assistant
-answers, and which session the conversation with that person is in. The directory
-``feishu`` holds the rest: the working directory of the assistant, with its instruction file,
-its skills and the files that it was sent; the lock that one running assistant holds; and
-``status.json``, which says how the running assistant is doing, for whoever shows it.
+answers, in which session the conversation with that person is, and whether its agent may
+change the files of its directory. The directory ``feishu`` holds what the program keeps for
+the assistant: the lock that one running assistant holds, and ``status.json``, which says how
+the running assistant is doing, for whoever shows it.
+
+The directory of the assistant itself, the working directory of its agent with its
+instruction file, its skills and the files that it was sent, lies apart from the home of the
+program, see :func:`directory`. An agent that may change the files of its directory reaches
+nothing of the program there.
 """
 
 import contextlib
+import os
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
@@ -24,6 +31,7 @@ from columbina.llm import credentials
 from columbina.llm.credentials import CredentialsError, Kept, origin_of
 
 __all__ = [
+    "ASSISTANT_HOME",
     "CREDENTIALS",
     "FOLDER",
     "LOCK",
@@ -32,6 +40,7 @@ __all__ = [
     "Settings",
     "State",
     "Status",
+    "directory",
     "forget",
     "keep",
     "save",
@@ -39,6 +48,7 @@ __all__ = [
     "settings",
     "status",
     "tell",
+    "within",
 ]
 
 CREDENTIALS = "feishu-credentials.json"
@@ -48,7 +58,10 @@ SETTINGS = "feishu.json"
 """The file in the home of the program that names the app and the person it answers."""
 
 FOLDER = "feishu"
-"""The directory of the assistant in the home of the program."""
+"""The directory in the home of the program that the program keeps for the assistant."""
+
+ASSISTANT_HOME = "COLUMBINA_FEISHU_HOME"
+"""The variable of the environment that names the directory of the assistant."""
 
 STATUS = "status.json"
 """The file in that directory that says how the running assistant is doing."""
@@ -68,6 +81,7 @@ class Settings(BaseModel):
         owner: The open ID of the person whom the assistant answers, once that person has
             given the code of pairing; ``None`` before.
         session_id: The session of the conversation with that person, once there is one.
+        writable: Whether the agent may change the files of the directory of the assistant.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -77,6 +91,27 @@ class Settings(BaseModel):
     app_id: str
     owner: str | None = None
     session_id: str | None = None
+    writable: bool = False
+
+
+def directory(home: Path, env: Mapping[str, str]) -> Path:
+    """Return the directory of the assistant: the working directory of its agent.
+
+    It is the one that :data:`ASSISTANT_HOME` names, and else ``Columbina/feishu`` beside the
+    home of the program, so ``~/Columbina/feishu`` where the home is ``~/.columbina``.
+    """
+    named = env.get(ASSISTANT_HOME)
+    return Path(named) if named else home.parent / "Columbina" / "feishu"
+
+
+def within(path: Path, folder: Path) -> bool:
+    """Tell whether a path is a folder or lies in it, as the paths are written.
+
+    Where the system does not tell cases apart, neither does this.
+    """
+    one = os.path.normcase(os.path.abspath(path))  # noqa: PTH100
+    other = os.path.normcase(os.path.abspath(folder))  # noqa: PTH100
+    return one == other or one.startswith(other.rstrip(os.sep) + os.sep)
 
 
 State = Literal["connecting", "connected", "stopped", "failed"]
@@ -120,9 +155,10 @@ def _written(path: Path, model: BaseModel, *, private: bool) -> None:
 def keep(home: Path, chosen: Settings, secret: str, host: Host) -> Kept:
     """Keep the App Secret of an app, and which app it is.
 
-    Whom the assistant answered, and in which session, belongs to the app that it answered
-    for: another app begins without either. Where the app cannot be written down, the secret
-    that was kept before is put back, so that the secret and the app never belong to two apps.
+    Whom the assistant answered, in which session, and whether its agent may change files,
+    belongs to the app that it answered for: another app begins without any of it. Where the
+    app cannot be written down, the secret that was kept before is put back, so that the
+    secret and the app never belong to two apps.
 
     Returns:
         Where the secret was kept.
@@ -140,7 +176,12 @@ def keep(home: Path, chosen: Settings, secret: str, host: Host) -> Kept:
     except CredentialsError as error:
         raise _unusable(error) from None
     if before is not None and (before.app_id, before.domain) == (chosen.app_id, chosen.domain):
-        chosen = chosen.model_copy(update={"owner": before.owner, "session_id": before.session_id})
+        kept_of_it = {
+            "owner": before.owner,
+            "session_id": before.session_id,
+            "writable": before.writable,
+        }
+        chosen = chosen.model_copy(update=kept_of_it)
     try:
         _written(home / SETTINGS, chosen, private=True)
     except FeishuError:

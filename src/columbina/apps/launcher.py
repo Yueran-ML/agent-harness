@@ -86,6 +86,7 @@ from columbina.apps.serve import wire as serve_wire
 from columbina.apps.serve.wire import WIRE, Wire
 from columbina.apps.terminal_text import escaped, harmless
 from columbina.feishu import setup as feishu_setup
+from columbina.feishu import store as feishu_store
 from columbina.feishu.app import FeishuError
 from columbina.github import oauth, signing, store
 from columbina.github.app import GitHubError, web_of
@@ -133,6 +134,8 @@ _SHOWN_REPOSITORIES = 20
 _STOPPED = "the sign-in was stopped"
 _DOCTOR = "doctor"
 _FEISHU = "feishu"
+_FEISHU_WRITABLE = "feishu-writable"
+"""The profile of the assistant in Feishu where its agent may change the files of its directory."""
 _FEISHU_DOCUMENT = 64 * 1024
 """How many bytes the document of an app that another program gives may be long."""
 _MODEL = "model"
@@ -474,6 +477,9 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                 if args.json:
                     # Another program reads how the assistant is doing, and stops it.
                     config["json_lines"] = True
+                if args.profile == _FEISHU_WRITABLE:
+                    # It runs only where its owner lets it, and changes files in its directory.
+                    config["writable"] = True
                 if args.language is not None:
                     config["language"] = args.language
             elif args.command == _CHAT and args.resume:
@@ -1237,6 +1243,10 @@ def _feishu_status(said: Mapping[str, object]) -> str:
     if not said["set_up"]:
         return "No app of Feishu is set up. 'columbina feishu --setup' sets one up."
     lines = [f"The app {said['app_id']} in {said['domain']} is set up."]
+    lines.append(
+        f"Its assistant works in {said['folder']}, "
+        + ("and may change the files there." if said["writable"] else "and changes no file there.")
+    )
     if said["running"]:
         lines.append(f"Its assistant runs, and is {said['state'] or 'starting'}.")
     else:
@@ -1300,12 +1310,27 @@ def _feishu(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int
             gone = "The app of Feishu is deleted." if answer["forgotten"] else "No app was set up."
             print(gone)
         return 0
+    if args.profile == _FEISHU and _writable(home):
+        # Its owner lets its agent change the files of its directory.
+        args = argparse.Namespace(**{**vars(args), "profile": _FEISHU_WRITABLE})
     entries = _entries(args, home, env)
     if args.dump_config:
         dumped = _dump(entries)
         sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)
         return 0
     return asyncio.run(_run(entries, env))
+
+
+def _writable(home: Path) -> bool:
+    """Tell whether the agent of the assistant in Feishu may change the files of its directory.
+
+    What cannot be read lets it change nothing, and the assistant says why when it starts.
+    """
+    try:
+        chosen = feishu_store.settings(home)
+    except FeishuError:
+        return False
+    return chosen is not None and chosen.writable
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1479,6 +1504,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
     env = dict(os.environ)
     env.setdefault("COLUMBINA_HOME", str(Path.home() / ".columbina"))
+    # The directory of the assistant in Feishu, apart from the home of the program.
+    env[feishu_store.ASSISTANT_HOME] = str(feishu_store.directory(Path(env["COLUMBINA_HOME"]), env))
     # Where the user keeps what several tools read, skills for one.
     env.setdefault("COLUMBINA_AGENTS_HOME", str(Path.home() / ".agents"))
     log = logging.getLogger("columbina")

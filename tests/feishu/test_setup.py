@@ -17,6 +17,7 @@ from columbina.feishu.setup import (
     checked,
     forgotten,
     kept_from,
+    made_writable,
     read_given,
     said,
     status_of,
@@ -219,7 +220,13 @@ async def test_a_directory_of_the_assistant_that_cannot_be_used_keeps_nothing(ho
 
 
 def test_nothing_set_up_is_said(home: Path) -> None:
-    assert status_of(home, {}) == {"set_up": False, "running": False}
+    assert status_of(home, {}) == {
+        "set_up": False,
+        "running": False,
+        "folder": str(home.parent / "Columbina" / "feishu"),
+    }
+    elsewhere = str(home / "mine")
+    assert status_of(home, {store.ASSISTANT_HOME: elsewhere})["folder"] == elsewhere
 
 
 def test_an_app_that_is_set_up_and_not_running_is_said(home: Path) -> None:
@@ -237,6 +244,8 @@ def test_an_app_that_is_set_up_and_not_running_is_said(home: Path) -> None:
         "app_id": "cli_a1b2c3d4",
         "console": "https://open.larksuite.com/app",
         "paired": False,
+        "folder": str(home.parent / "Columbina" / "feishu"),
+        "writable": False,
         "running": False,
         "state": None,
         "code": None,
@@ -277,6 +286,77 @@ def test_an_assistant_that_stopped_says_nothing_of_its_last_run(home: Path) -> N
     told = status_of(home, {})
 
     assert (told["state"], told["error"]) == (None, None)
+
+
+# Whether the agent may change files
+
+
+async def test_whether_the_agent_may_change_files_is_kept_by_itself(home: Path) -> None:
+    kept = store.Settings(domain="feishu", app_id="cli_a1b2c3d4", owner="ou_1", session_id="s-1")
+    store.keep(home, kept, SECRET, FEISHU)
+
+    assert await kept_from(home, {"writable": True}, {}) == {"writable": True}
+
+    assert store.settings(home) == kept.model_copy(update={"writable": True})
+    assert status_of(home, {})["writable"] is True
+    assert made_writable(home, False, {}) == {"writable": False}
+    assert store.settings(home) == kept
+
+
+async def test_a_document_that_says_more_than_that_is_one_of_an_app(home: Path) -> None:
+    with pytest.raises(FeishuError) as raised:
+        await kept_from(home, {"writable": True, "domain": "feishu"}, {})
+
+    assert raised.value.code == "INVALID"
+
+
+@pytest.mark.parametrize("given", ["true", 1, None])
+def test_whether_the_agent_may_change_files_is_true_or_false(home: Path, given: object) -> None:
+    store.keep(home, store.Settings(domain="feishu", app_id="cli_a1b2c3d4"), SECRET, FEISHU)
+
+    with pytest.raises(FeishuError) as raised:
+        made_writable(home, given, {})
+
+    assert raised.value.code == "INVALID"
+    assert store.settings(home) == store.Settings(domain="feishu", app_id="cli_a1b2c3d4")
+
+
+def test_without_an_app_its_agent_is_let_change_nothing(home: Path) -> None:
+    with pytest.raises(FeishuError) as raised:
+        made_writable(home, True, {})
+
+    assert raised.value.code == "NONE"
+    assert store.settings(home) is None
+
+
+def test_whether_the_agent_may_change_files_is_not_changed_while_it_runs(home: Path) -> None:
+    store.keep(home, store.Settings(domain="feishu", app_id="cli_a1b2c3d4"), SECRET, FEISHU)
+    (home / store.FOLDER).mkdir()
+    held = acquire(home / store.FOLDER / store.LOCK)
+
+    with pytest.raises(FeishuError) as raised:
+        made_writable(home, True, {})
+
+    assert held is not None
+    held.release()
+    assert raised.value.code == "RUNNING"
+    assert store.settings(home) == store.Settings(domain="feishu", app_id="cli_a1b2c3d4")
+
+
+async def test_an_agent_whose_directory_lies_in_the_home_of_the_program_changes_nothing(
+    home: Path,
+) -> None:
+    store.keep(home, store.Settings(domain="feishu", app_id="cli_a1b2c3d4"), SECRET, FEISHU)
+    env = {store.ASSISTANT_HOME: str(home / "assistant")}
+
+    with pytest.raises(FeishuError) as raised:
+        await kept_from(home, {"writable": True}, env)
+
+    assert raised.value.code == "FOLDER"
+    assert store.ASSISTANT_HOME in str(raised.value)
+    assert store.settings(home) == store.Settings(domain="feishu", app_id="cli_a1b2c3d4")
+    # It may always be let change nothing.
+    assert made_writable(home, False, env) == {"writable": False}
 
 
 def test_a_forgotten_app_is_said_to_be_gone(home: Path) -> None:

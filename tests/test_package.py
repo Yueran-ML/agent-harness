@@ -10,7 +10,7 @@ import columbina
 from columbina.kernel import flatten, import_plugin
 from support.launch import bundle
 
-BUNDLES = ["base", "cli", "feishu", "headless", "minimal", "serve"]
+BUNDLES = ["base", "cli", "feishu", "feishu-writable", "headless", "minimal", "serve"]
 
 
 def test_version_matches_the_installed_distribution() -> None:
@@ -24,9 +24,9 @@ def test_version_looks_like_a_release_number() -> None:
 def test_the_bundles_come_with_the_package() -> None:
     files = resources.files("columbina.bundles").iterdir()
 
-    assert sorted(file.name for file in files if file.name.endswith(".yml")) == [
+    assert sorted(file.name for file in files if file.name.endswith(".yml")) == sorted(
         f"{name}.yml" for name in BUNDLES
-    ]
+    )
 
 
 @pytest.mark.parametrize("name", BUNDLES)

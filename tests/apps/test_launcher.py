@@ -633,7 +633,7 @@ def test_a_profile_that_does_not_exist_is_refused(
     assert captured.out == ""
     assert captured.err == (
         "columbina: there is no profile 'nowhere'. The profiles that come with Columbina are: "
-        "base, cli, feishu, headless, minimal, serve\n"
+        "base, cli, feishu, feishu-writable, headless, minimal, serve\n"
     )
 
 

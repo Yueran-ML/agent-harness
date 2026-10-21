@@ -94,6 +94,20 @@ change what was there before.
   shows the models of the one that is clicked. A model of another service chooses that
   service, and the service process is started again at the task that is open, which goes on
   with it. This is done at rest only.
+- The assistant in Feishu works in a folder of its own, `~/Columbina/feishu`, beside the home
+  of the program, or where `COLUMBINA_FEISHU_HOME` says, and no longer in `~/.columbina/feishu`,
+  where the program keeps its lock, how it is doing and which messages it took. The first time
+  that it starts after that, its instruction file, skills, the files that it was sent and its
+  session are copied into its folder, each one whole and none over a file that is there already,
+  and its conversation goes on. That is done once; links stay behind. Its owner may let its agent
+  change the files of that folder: `columbina feishu --from-stdin` keeps `{"writable": true}`
+  alone, while no assistant runs, and the assistant then runs with the profile `feishu-writable`,
+  which gives it the tools that write and edit files in the mode that holds them to its folder.
+  It still runs no commands. Its conversation goes by what its owner lets it do, whatever it was
+  let do before and whatever the program lets other agents do, and the rules of the user in
+  `permissions.yml` hold for it. A folder that lies in the home of the program is not one whose
+  files it may change. `columbina feishu --status` says where the folder is and whether its files
+  may be changed.
 
 ## 0.1.1 (2026-10-16)
 

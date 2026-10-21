@@ -195,6 +195,8 @@ def test_an_assistant_that_does_not_run_is_said_to_a_person(
 
     out = capsys.readouterr().out
     assert "The app cli_a1b2c3d4 in feishu is set up." in out
+    where = home.parent / "Columbina" / "feishu"
+    assert f"Its assistant works in {where}, and changes no file there." in out
     assert "Its assistant does not run." in out
     assert "Nobody has paired with it yet." in out
     assert "What went wrong last: Feishu refuses it" in out
@@ -203,7 +205,7 @@ def test_an_assistant_that_does_not_run_is_said_to_a_person(
 def test_a_running_assistant_that_waits_for_pairing_shows_its_code(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    set_up(home, owner="ou_owner")
+    set_up(home, owner="ou_owner", writable=True)
     store.tell(home, 7, "connected", paired=False, code="123456")
     held = acquire(home / store.FOLDER / store.LOCK)
 
@@ -212,6 +214,7 @@ def test_a_running_assistant_that_waits_for_pairing_shows_its_code(
     assert held is not None
     held.release()
     out = capsys.readouterr().out
+    assert "and may change the files there." in out
     assert "Its assistant runs, and is connected." in out
     assert "Send the bot this code in Feishu to pair: 123456" in out
 
@@ -284,6 +287,104 @@ def test_the_profile_of_the_assistant_is_printed(
     out = capsys.readouterr().out
     assert "plugin: columbina.feishu.bot" in out
     assert "preset: read-only" in out
+
+
+def started(monkeypatch: pytest.MonkeyPatch) -> list[tuple[dict[str, Entry], Mapping[str, str]]]:
+    # The assistant runs no further than the entries and the environment that it would run with.
+    runs: list[tuple[dict[str, Entry], Mapping[str, str]]] = []
+
+    async def run(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
+        runs.append(({entry.id: entry for entry in entries}, env))
+        return 0
+
+    monkeypatch.setattr(launcher, "_run", run)
+    return runs
+
+
+def test_the_assistant_works_beside_the_home_of_the_program_or_where_it_is_told(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = started(monkeypatch)
+    set_up(home)
+
+    assert main(["feishu"]) == 0
+    monkeypatch.setenv(store.ASSISTANT_HOME, str(home / "mine"))
+    assert main(["feishu"]) == 0
+
+    (entries, beside), (_, told) = runs
+    assert beside[store.ASSISTANT_HOME] == str(home.parent / "Columbina" / "feishu")
+    assert told[store.ASSISTANT_HOME] == str(home / "mine")
+    frontend = cast("dict[str, object]", entries["frontend"].config)
+    skills = cast("dict[str, object]", entries["skills"].config)
+    assert (frontend["cwd"], skills["home"]) == (
+        "${COLUMBINA_FEISHU_HOME}",
+        "${COLUMBINA_FEISHU_HOME}/skills",
+    )
+
+
+def test_an_assistant_whose_agent_may_change_files_has_the_tools_for_it(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = started(monkeypatch)
+    set_up(home)
+    assert main(["feishu"]) == 0
+    feishu_setup.made_writable(home, True, {})
+    assert main(["feishu"]) == 0
+
+    (reads, _), (writes, _) = runs
+    assert (reads["tool-write"].disabled, reads["tool-edit"].disabled) == (True, True)
+    assert cast("dict[str, object]", reads["permissions"].config)["preset"] == "read-only"
+    assert (writes["tool-write"].disabled, writes["tool-edit"].disabled) == (False, False)
+    assert cast("dict[str, object]", writes["permissions"].config)["preset"] == "workspace-write"
+    # What the conduct says about changing things holds for it. It still runs nothing.
+    assert reads["system-prompt-conduct"].config == {"leave_out": ["changes"]}
+    assert writes["system-prompt-conduct"].config is None
+    assert writes["tool-shell"].disabled is True
+    # The assistant is told, and runs only where its owner lets it.
+    assert "writable" not in cast("dict[str, object]", reads["frontend"].config)
+    assert cast("dict[str, object]", writes["frontend"].config)["writable"] is True
+    # The rules of the user hold for it, as for every other agent.
+    for loaded in (reads, writes):
+        permissions = cast("dict[str, object]", loaded["permissions"].config)
+        assert permissions["user_file"] == "${COLUMBINA_HOME}/permissions.yml"
+
+
+def test_a_profile_that_is_named_is_the_one_loaded(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = started(monkeypatch)
+    set_up(home, writable=True)
+
+    assert main(["feishu", "--profile", "cli"]) == 0
+
+    ((entries, _),) = runs
+    assert entries["frontend"].plugin != "columbina.feishu.bot"
+
+
+def test_an_app_that_cannot_be_read_lets_the_agent_change_nothing(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = started(monkeypatch)
+    (home / store.SETTINGS).mkdir(parents=True)
+
+    assert main(["feishu"]) == 0
+
+    ((entries, _),) = runs
+    assert entries["tool-write"].disabled is True
+
+
+def test_another_program_says_whether_the_agent_may_change_files(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    set_up(home)
+    monkeypatch.setattr("sys.stdin", Input(b'{"writable": true}'))
+
+    assert main(["feishu", "--from-stdin"]) == 0
+
+    assert answer_of(capsys) == {"writable": True}
+    settings = store.settings(home)
+    assert settings is not None
+    assert settings.writable is True
 
 
 def test_an_assistant_without_an_app_does_not_run(

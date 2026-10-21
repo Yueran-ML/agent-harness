@@ -201,12 +201,13 @@ columbina login github
 Columbina can also answer you in [Feishu](https://www.feishu.cn) or Lark, through a custom app
 of your own that only you talk to. It reads the documents that you share with the app and the
 files of text that you send it, and takes a skill that is sent as a `SKILL.md`. It runs no
-commands and changes none of your files: what you send it is kept in a folder of its own. In
-the desktop application it is set up under *Settings*, *Assistant in
-Feishu*, which also lists what to do in the developer console of Feishu, and it runs while the
-application is open. At the command line, `columbina feishu --setup` takes the app and
-`columbina feishu` runs the assistant. The package of its connection comes with
-`pip install "columbina[feishu]"`.
+commands and changes none of your files: what you send it is kept in a folder of its own,
+`~/Columbina/feishu`, and you may let it change the files in that folder. In the desktop
+application it is set up under *Settings*, *Assistant in Feishu*, which also lists what to do in
+the developer console of Feishu. While it runs, closing the window keeps the application in the
+tray, and on Windows the application can start in the tray when you sign in. At the command
+line, `columbina feishu --setup` takes the app and `columbina feishu` runs the assistant. The
+package of its connection comes with `pip install "columbina[feishu]"`.
 
 ## Documentation
 

@@ -26,7 +26,11 @@ Another program, such as the desktop application, may run the assistant. It is t
 how the assistant is doing in lines of JSON, and stops it by closing the standard input.
 
 The agent may read, and not change anything or run anything: the profile gives it no such
-tool, and nobody is there to say yes to one.
+tool, and nobody is there to say yes to one. Its owner may let it change the files of the
+directory of the assistant, with the profile ``feishu-writable``. That directory lies apart
+from the home of the program, where the program keeps the lock of the assistant, how it is
+doing and which messages it took. An assistant worked there before, and what was its own
+there comes along, once, the first time that it starts.
 """
 
 import asyncio
@@ -37,6 +41,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sys
 import time
 from collections import deque
@@ -58,8 +63,10 @@ from columbina.feishu.client import AGAIN, Feishu, field
 from columbina.feishu.documents import read_tool
 from columbina.feishu.link import Link
 from columbina.feishu.words import Language, words_for
+from columbina.fs import bound
 from columbina.kernel import Context
 from columbina.llm import CallConfig
+from columbina.permissions import PERMISSIONS
 from columbina.session import (
     SESSION_EVENT,
     SESSIONS,
@@ -92,7 +99,11 @@ PROMPT = (
 """The words that open a conversation of the assistant."""
 
 SEEN = "seen.json"
-"""The file in the directory of the assistant that names the messages that were taken."""
+"""The file that names the messages that were taken, in what the program keeps for the assistant."""
+
+MOVED = "moved"
+"""The file, in what the program keeps for the assistant, that says that what was its own came
+along to its directory, and where to."""
 
 UPLOADS = "uploads"
 """The directory, in the directory of the assistant, of the files that the owner sent."""
@@ -162,7 +173,8 @@ class Config(BaseModel):
     Attributes:
         model: The model that the agent talks to, and how.
         cwd: The directory of the assistant: the working directory of the agent, with its
-            instruction file, its skills and the files that it was sent.
+            instruction file, its skills and the files that it was sent. It lies apart from the
+            home of the program.
         home: The home of the program, where the app is kept.
         system_prompt: The instructions that open a conversation.
         language: The language of what the assistant says by itself. Without one, Chinese
@@ -171,6 +183,9 @@ class Config(BaseModel):
         json_lines: Whether another program runs the assistant, such as the desktop
             application. It is then told how the assistant is doing in lines of JSON on the
             standard output, and stops it by closing the standard input.
+        writable: Whether the agent is given the tools that change files. It runs only where its
+            owner lets it, and changes no file outside its directory. Otherwise it changes none
+            at all, whatever tools it was given.
     """
 
     model: CallConfig
@@ -180,11 +195,39 @@ class Config(BaseModel):
     language: Language | None = None
     pairing_minutes: float = Field(default=10.0, gt=0)
     json_lines: bool = False
+    writable: bool = False
 
 
 def _tell(message: str) -> None:
     """Say something to whoever started the assistant."""
     print(harmless(f"columbina: {message}"), file=sys.stderr)
+
+
+def _left_behind(before: Path) -> Callable[[str, list[str]], set[str]]:
+    """Return what is not copied of the directory that the assistant worked in before.
+
+    That is a link, which could lead anywhere, and what the program keeps for the assistant at
+    the top of the directory. A file of such a name further down is the owner's, and comes along.
+    """
+    kept = {store.LOCK, store.STATUS, SEEN}
+    top = os.fspath(before)
+
+    def left(directory: str, names: list[str]) -> set[str]:
+        links = {name for name in names if bound.link_at(Path(directory, name)) is not None}
+        if directory == top:
+            links |= kept.intersection(names)
+        return links
+
+    return left
+
+
+def _copied_once(source: str, target: str) -> None:
+    """Copy a file where none is, whole or not at all. One that is there stays as it is."""
+    place = Path(target)
+    if not place.exists():
+        part = place.with_name(f"{place.name}.copying")
+        shutil.copy2(source, part)
+        part.replace(place)
 
 
 def _uuid(*parts: str) -> str:
@@ -293,9 +336,8 @@ class Assistant:
                 "'pip install columbina[feishu]'"
             )
             return 2
+        folder = config.home / store.FOLDER
         try:
-            config.cwd.mkdir(parents=True, exist_ok=True)
-            folder = config.home / store.FOLDER
             folder.mkdir(parents=True, exist_ok=True)
             held = acquire(folder / store.LOCK)
         except OSError as error:
@@ -319,15 +361,94 @@ class Assistant:
                     "application, or with 'columbina feishu --setup'"
                 )
                 return 2
+            if config.writable and not chosen.writable:
+                # Its owner took that back after the program chose what to load.
+                _tell(
+                    "the assistant was started to change files, which its owner does not let it "
+                    "do. Start it again"
+                )
+                return 2
+            if config.writable and store.within(config.cwd, config.home):
+                _tell(
+                    f"the directory of the assistant, {config.cwd}, lies in the home of the "
+                    "program, where it may change no file. Name another with "
+                    f"{store.ASSISTANT_HOME}"
+                )
+                return 2
+            try:
+                self._moved_in(folder, chosen.session_id)
+            except OSError as error:
+                _tell(f"the directory of the assistant cannot be used: {error}")
+                return 2
             return await self._serve(chosen, where, secret)
         finally:
             held.release()
+
+    def _moved_in(self, before: Path, session_id: str | None) -> None:
+        """Make the directory of the assistant, with what was its own where it worked before.
+
+        That is done once, as a mark in what the program keeps for the assistant says. Its
+        instruction file, its skills and the files that it was sent are copied there, each one
+        whole or not at all, and none in the place of a file that is there; then its session,
+        which goes on there, where none of that id is there yet. A start that is cut off half
+        way is finished by the next one. What was there stays, and so does what was copied.
+
+        Args:
+            before: The directory in which the assistant worked before.
+            session_id: The session of its conversation, if it has one.
+
+        Raises:
+            OSError: What was there could not be copied.
+        """
+        new = self._config.cwd
+        mark = before / MOVED
+        if not mark.exists():
+            # A directory in the one that it worked in would be copied into itself without end.
+            if not store.within(new, before):
+                left = _left_behind(before)
+                names = [path.name for path in before.iterdir()]
+                brought = bool(set(names) - left(os.fspath(before), names))
+                shutil.copytree(
+                    before, new, ignore=left, copy_function=_copied_once, dirs_exist_ok=True
+                )
+                if session_id is not None and self._sessions.root is not None:
+                    brought = self._session_moved(before, session_id) or brought
+                if brought:
+                    _tell(
+                        f"what the assistant had in {before} is copied to {new}, where it works now"
+                    )
+            files.replaced(mark, f"{new}\n")
+        new.mkdir(parents=True, exist_ok=True)
+
+    def _session_moved(self, before: Path, session_id: str) -> bool:
+        """Copy the session of the conversation to where the sessions of the new directory are.
+
+        It is copied whole beside its place and then put there, where no session of that id is
+        yet. One that is there goes on as it is.
+
+        Returns:
+            Whether it was copied.
+        """
+        sessions = self._sessions
+        try:
+            stored = sessions.directory(before, session_id)
+            moved = sessions.directory(self._config.cwd, session_id)
+        except ValueError:
+            # An id that names no directory names no session either, and opening it says so.
+            return False
+        if not stored.is_dir() or moved.exists():
+            return False
+        part = moved.with_name(f"{moved.name}.copying")
+        shutil.rmtree(part, ignore_errors=True)
+        shutil.copytree(stored, part)
+        part.rename(moved)
+        return True
 
     async def _serve(self, chosen: store.Settings, where: Host, secret: str) -> int:
         config = self._config
         self._settings = chosen
         self._words = words_for(config.language or ("zh" if chosen.domain == "feishu" else "en"))
-        self._seen = _Seen(config.cwd / SEEN)
+        self._seen = _Seen(config.home / store.FOLDER / SEEN)
         client = self._client = Feishu(where, chosen.app_id, secret, os.environ)
         if chosen.owner is None:
             self._pair_anew()
@@ -426,6 +547,13 @@ class Assistant:
         config = self._config
         spec = AgentSpec(cwd=config.cwd, model=config.model, system_prompt=config.system_prompt)
         agent = await open_agent(self._ctx, self._agents, self._sessions, spec, session_id)
+        permissions = self._ctx.get(PERMISSIONS)
+        if permissions is not None:
+            # What its owner lets it do holds for the conversation that goes on as well, whatever
+            # its log or the configuration of the program said.
+            permissions.set_preset(
+                agent.session, "workspace-write" if config.writable else "read-only"
+            )
         agent.ctx.on(SESSION_EVENT, self._follower(agent))
         settings = self._settings
         if settings is not None and settings.session_id != agent.id:

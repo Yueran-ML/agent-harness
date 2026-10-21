@@ -11,6 +11,10 @@ from typing import Any
 import httpx
 import pytest
 
+import columbina.approval
+import columbina.fs
+import columbina.permissions
+import columbina.sandbox
 import columbina.skills
 from columbina.agent import InboxItem
 from columbina.agent.inbox import enqueue
@@ -18,12 +22,15 @@ from columbina.apps import FRONTEND, common
 from columbina.feishu import bot as bot_module
 from columbina.feishu import store
 from columbina.feishu.app import FeishuError, Host
-from columbina.feishu.bot import SEEN, Assistant
+from columbina.feishu.bot import MOVED, SEEN, Assistant
 from columbina.feishu.client import Feishu
 from columbina.llm import LlmFailure, TextBlock, UserMessage
 from columbina.llm.adapters.scripted import Reply
+from columbina.permissions import PERMISSIONS
 from columbina.session import SessionError
+from columbina.session.store import SESSION_FILE
 from support.fake_feishu import SECRET, FakeFeishu, done, refused
+from support.links import link_directory
 from support.loop import MODEL, Harness
 
 OWNER = "ou_owner"
@@ -102,6 +109,8 @@ class Rig:
         self.harness = harness
         self.home = home
         self.folder = home / store.FOLDER
+        # The directory of the assistant, apart from the home of the program.
+        self.cwd = home.parent / "Columbina" / "feishu"
         self.files: dict[str, httpx.Response] = {}
         self.reactions = 0
         self.react: Callable[[httpx.Request], httpx.Response] | None = None
@@ -159,7 +168,7 @@ class Rig:
     async def start(self, **config: object) -> Assistant:
         await self.harness.ctx.plugin(
             bot_module,
-            {"model": MODEL.model_dump(), "cwd": self.folder, "home": self.home, **config},
+            {"model": MODEL.model_dump(), "cwd": self.cwd, "home": self.home, **config},
         )
         assistant = self.harness.ctx.use(FRONTEND)
         assert isinstance(assistant, Assistant)
@@ -831,8 +840,8 @@ async def test_what_waited_when_the_program_ended_is_answered_to_the_owner(
     rig: Rig, harness: Harness
 ) -> None:
     rig.set_up(owner=OWNER, session_id="s-left")
-    spec = harness.spec(cwd=rig.folder)
-    rig.folder.mkdir(parents=True)
+    spec = harness.spec(cwd=rig.cwd)
+    rig.cwd.mkdir(parents=True)
     left = await harness.agents.create(harness.ctx, spec, session_id="s-left")
     # What waited when the program ended: input in the inbox, which no turn took.
     waiting = InboxItem(message=UserMessage(content=(TextBlock(text="are you there"),)))
@@ -1021,7 +1030,7 @@ SKILL = (
 
 
 async def test_skills_are_listed(rig: Rig) -> None:
-    skills = rig.folder / "skills"
+    skills = rig.cwd / "skills"
     (skills / "greet").mkdir(parents=True)
     (skills / "greet" / "SKILL.md").write_bytes(SKILL)
     await rig.harness.ctx.plugin(columbina.skills, {"home": skills})
@@ -1038,15 +1047,15 @@ async def test_skills_are_listed(rig: Rig) -> None:
 
 
 async def test_a_skill_of_the_assistant_is_deleted(rig: Rig) -> None:
-    (rig.folder / "skills" / "greet").mkdir(parents=True)
-    (rig.folder / "skills" / "greet" / "SKILL.md").write_bytes(SKILL)
+    (rig.cwd / "skills" / "greet").mkdir(parents=True)
+    (rig.cwd / "skills" / "greet" / "SKILL.md").write_bytes(SKILL)
     await paired(rig)
 
     rig.say("/skills rm greet", "om_1")
     await until(lambda: bool(rig.replies()))
 
     assert rig.replies() == [("om_1", "已删掉技能 greet。")]
-    assert not (rig.folder / "skills" / "greet").exists()
+    assert not (rig.cwd / "skills" / "greet").exists()
     await rig.stop()
 
 
@@ -1062,7 +1071,7 @@ async def test_a_skill_that_is_not_there_is_not_deleted(rig: Rig, named: str) ->
 
 
 async def test_a_name_that_leads_out_of_the_skills_deletes_nothing(rig: Rig) -> None:
-    outside = rig.folder / "escape"
+    outside = rig.cwd / "escape"
     outside.mkdir(parents=True)
     (outside / "SKILL.md").write_bytes(SKILL)
     await paired(rig)
@@ -1076,7 +1085,7 @@ async def test_a_name_that_leads_out_of_the_skills_deletes_nothing(rig: Rig) -> 
 
 
 async def test_a_skill_with_other_files_is_left_for_the_user_to_delete(rig: Rig) -> None:
-    skill = rig.folder / "skills" / "greet"
+    skill = rig.cwd / "skills" / "greet"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_bytes(SKILL)
     (skill / "notes.txt").write_text("kept", encoding="utf-8")
@@ -1088,6 +1097,346 @@ async def test_a_skill_with_other_files_is_left_for_the_user_to_delete(rig: Rig)
     assert rig.replies()[0][1].startswith("技能 greet 的目录里还有别的文件")
     assert (skill / "SKILL.md").exists()
     await rig.stop()
+
+
+# A directory of its own
+
+
+async def test_what_was_its_own_in_the_home_of_the_program_comes_along(
+    rig: Rig, harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Before, the assistant worked where the program keeps its lock and how it is doing.
+    rig.set_up(owner=OWNER, session_id="s-before")
+    before = rig.folder
+    (before / "skills" / "greet").mkdir(parents=True)
+    (before / "skills" / "greet" / "SKILL.md").write_bytes(SKILL)
+    (before / "AGENTS.md").write_text("Be kind.", encoding="utf-8")
+    (before / "uploads" / "om_1").mkdir(parents=True)
+    (before / "uploads" / "om_1" / "notes.md").write_text("notes", encoding="utf-8")
+    (before / SEEN).write_text(json.dumps(["om_old"]), encoding="utf-8")
+    (before / store.STATUS).write_text("{}", encoding="utf-8")
+    left = await harness.agents.create(harness.ctx, harness.spec(cwd=before), session_id="s-before")
+    waiting = InboxItem(message=UserMessage(content=(TextBlock(text="are you there"),)))
+    enqueue(left.session, "next-turn", waiting)
+    await left.close()
+    harness.model.add(Reply(text="I am"))
+
+    await rig.start()
+    await until(lambda: bool(rig.replies()))
+
+    copied = sorted(
+        path.relative_to(rig.cwd).as_posix() for path in rig.cwd.rglob("*") if path.is_file()
+    )
+    assert copied == ["AGENTS.md", "skills/greet/SKILL.md", "uploads/om_1/notes.md"]
+    # What was there stays where it was.
+    assert (before / "skills" / "greet" / "SKILL.md").read_bytes() == SKILL
+    # The conversation goes on in the directory of the assistant, and what was taken stays known.
+    assert rig.replies() == [("owner", "I am")]
+    rig.say("again", "om_old")
+    await asyncio.sleep(0.05)
+    assert rig.replies() == [("owner", "I am")]
+    assert f"is copied to {rig.cwd}, where it works now" in capsys.readouterr().err
+    # It is noted that it came along, and where to.
+    assert (before / MOVED).read_text(encoding="utf-8") == f"{rig.cwd}\n"
+    await rig.stop()
+
+
+def waiting(text: str) -> InboxItem:
+    """A message that was taken and not answered yet."""
+    return InboxItem(message=UserMessage(content=(TextBlock(text=text),)))
+
+
+async def test_a_new_assistant_brings_nothing_along(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER)
+
+    await rig.start()
+
+    assert list(rig.cwd.iterdir()) == []
+    assert "is copied to" not in capsys.readouterr().err
+    # Nothing is looked for again.
+    assert (rig.folder / MOVED).exists()
+    await rig.stop()
+
+
+async def test_a_session_alone_comes_along(
+    rig: Rig, harness: Harness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER, session_id="s-before")
+    rig.folder.mkdir(parents=True)
+    left = await harness.agents.create(
+        harness.ctx, harness.spec(cwd=rig.folder), session_id="s-before"
+    )
+    enqueue(left.session, "next-turn", waiting("are you there"))
+    await left.close()
+    harness.model.add(Reply(text="I am"))
+
+    await rig.start()
+    await until(lambda: bool(rig.replies()))
+
+    assert rig.replies() == [("owner", "I am")]
+    assert f"is copied to {rig.cwd}, where it works now" in capsys.readouterr().err
+    await rig.stop()
+
+
+async def test_a_session_that_is_stored_nowhere_begins_anew(rig: Rig) -> None:
+    rig.set_up(owner=OWNER, session_id="s-gone")
+
+    assistant = await rig.start()
+
+    agent = assistant._agent  # pyright: ignore[reportPrivateUsage]
+    assert agent is not None
+    assert agent.id == "s-gone"
+    await rig.stop()
+
+
+async def test_what_was_its_own_comes_along_once(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER)
+    rig.folder.mkdir(parents=True)
+    (rig.folder / "AGENTS.md").write_text("Be kind.", encoding="utf-8")
+    # It came along before, and its owner has cleared its directory since.
+    (rig.folder / MOVED).write_text(f"{rig.cwd}\n", encoding="utf-8")
+
+    await rig.start()
+
+    assert list(rig.cwd.iterdir()) == []
+    assert "is copied to" not in capsys.readouterr().err
+    await rig.stop()
+
+
+async def test_a_session_that_came_along_before_goes_on_as_it_is(
+    rig: Rig, harness: Harness
+) -> None:
+    # The start before was cut off after its session came along, and before that was noted.
+    rig.set_up(owner=OWNER, session_id="s-before")
+    rig.folder.mkdir(parents=True)
+    left = await harness.agents.create(
+        harness.ctx, harness.spec(cwd=rig.folder), session_id="s-before"
+    )
+    enqueue(left.session, "next-turn", waiting("are you there"))
+    await left.close()
+    rig.cwd.mkdir(parents=True)
+    going = await harness.agents.create(
+        harness.ctx, harness.spec(cwd=rig.cwd), session_id="s-before"
+    )
+    enqueue(going.session, "next-turn", waiting("hello again"))
+    await going.close()
+    harness.model.add(Reply(text="I am"))
+
+    await rig.start()
+    await until(lambda: bool(rig.replies()))
+
+    log = (harness.sessions.directory(rig.cwd, "s-before") / SESSION_FILE).read_bytes()
+    assert b"hello again" in log
+    assert b"are you there" not in log
+    await rig.stop()
+
+
+async def test_a_session_whose_copy_was_cut_off_comes_along_whole(
+    rig: Rig, harness: Harness
+) -> None:
+    rig.set_up(owner=OWNER, session_id="s-before")
+    rig.folder.mkdir(parents=True)
+    left = await harness.agents.create(
+        harness.ctx, harness.spec(cwd=rig.folder), session_id="s-before"
+    )
+    enqueue(left.session, "next-turn", waiting("are you there"))
+    await left.close()
+    moved = harness.sessions.directory(rig.cwd, "s-before")
+    half = moved.with_name("s-before.copying")
+    half.mkdir(parents=True)
+    (half / "half").write_text("half", encoding="utf-8")
+    harness.model.add(Reply(text="I am"))
+
+    await rig.start()
+    await until(lambda: bool(rig.replies()))
+
+    assert rig.replies() == [("owner", "I am")]
+    assert not half.exists()
+    assert not (moved / "half").exists()
+    await rig.stop()
+
+
+async def test_files_of_the_owner_named_as_what_the_program_keeps_come_along(rig: Rig) -> None:
+    rig.set_up(owner=OWNER)
+    sent = rig.folder / "uploads" / "om_1"
+    sent.mkdir(parents=True)
+    names = sorted([store.LOCK, store.STATUS, SEEN])
+    for name in names:
+        (sent / name).write_text(name, encoding="utf-8")
+
+    await rig.start()
+
+    assert sorted(path.name for path in (rig.cwd / "uploads" / "om_1").iterdir()) == names
+    await rig.stop()
+
+
+async def test_a_link_where_it_worked_before_stays_behind(rig: Rig, tmp_path: Path) -> None:
+    rig.set_up(owner=OWNER)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.md").write_text("private", encoding="utf-8")
+    rig.folder.mkdir(parents=True)
+    link_directory(rig.folder / "elsewhere", outside)
+    (rig.folder / "AGENTS.md").write_text("Be kind.", encoding="utf-8")
+
+    await rig.start()
+
+    assert [path.name for path in rig.cwd.iterdir()] == ["AGENTS.md"]
+    await rig.stop()
+
+
+async def test_an_empty_directory_of_the_assistant_gets_what_was_its_own(rig: Rig) -> None:
+    rig.set_up(owner=OWNER)
+    rig.folder.mkdir(parents=True)
+    (rig.folder / "AGENTS.md").write_text("Be kind.", encoding="utf-8")
+    rig.cwd.mkdir(parents=True)
+
+    await rig.start()
+
+    assert (rig.cwd / "AGENTS.md").read_text(encoding="utf-8") == "Be kind."
+    await rig.stop()
+
+
+async def test_a_file_in_the_directory_of_the_assistant_is_left_as_it_is(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER)
+    rig.folder.mkdir(parents=True)
+    (rig.folder / "AGENTS.md").write_text("Be kind.", encoding="utf-8")
+    (rig.folder / "skills" / "greet").mkdir(parents=True)
+    (rig.folder / "skills" / "greet" / "SKILL.md").write_bytes(SKILL)
+    rig.cwd.mkdir(parents=True)
+    (rig.cwd / "AGENTS.md").write_text("Be brief.", encoding="utf-8")
+    # A start that was cut off left half the copy of a file.
+    (rig.cwd / "skills" / "greet").mkdir(parents=True)
+    (rig.cwd / "skills" / "greet" / "SKILL.md.copying").write_bytes(b"half")
+
+    await rig.start()
+
+    assert (rig.cwd / "AGENTS.md").read_text(encoding="utf-8") == "Be brief."
+    assert [path.name for path in (rig.cwd / "skills" / "greet").iterdir()] == ["SKILL.md"]
+    assert (rig.cwd / "skills" / "greet" / "SKILL.md").read_bytes() == SKILL
+    assert "is copied to" in capsys.readouterr().err
+    await rig.stop()
+
+
+async def test_an_assistant_that_works_in_the_home_of_the_program_moves_nothing(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER)
+
+    await rig.start(cwd=rig.folder / ".")
+
+    assert not rig.cwd.exists()
+    assert "is copied to" not in capsys.readouterr().err
+    await rig.stop()
+
+
+async def test_a_directory_of_the_assistant_in_the_one_it_worked_in_is_not_copied_into(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER)
+    inside = rig.folder / "work"
+    inside.mkdir(parents=True)
+    (rig.folder / "AGENTS.md").write_text("Be kind.", encoding="utf-8")
+
+    await rig.start(cwd=inside)
+
+    assert rig.task is not None
+    assert not rig.task.done()
+    assert list(inside.iterdir()) == []
+    assert "is copied to" not in capsys.readouterr().err
+    await rig.stop()
+
+
+# What its agent may do
+
+
+async def test_an_assistant_started_to_change_files_that_its_owner_does_not_let_does_not_run(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER)
+
+    await rig.start(writable=True)
+
+    assert rig.task is not None
+    assert await rig.task == 2
+    assert "which its owner does not let it do. Start it again" in capsys.readouterr().err
+    assert not rig.cwd.exists()
+
+
+async def test_an_assistant_whose_directory_lies_in_the_home_of_the_program_does_not_run(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER, writable=True)
+
+    await rig.start(writable=True, cwd=rig.home / "assistant")
+
+    assert rig.task is not None
+    assert await rig.task == 2
+    assert "lies in the home of the program, where it may change no file" in (
+        capsys.readouterr().err
+    )
+
+
+async def kept_in_check(rig: Rig, preset: str) -> None:
+    """Load what keeps a session in check, with the preset of the program as a whole."""
+    for plugin in (columbina.fs, columbina.sandbox, columbina.approval):
+        await rig.harness.ctx.plugin(plugin)
+    await rig.harness.ctx.plugin(columbina.permissions, {"preset": preset})
+
+
+async def test_the_agent_of_the_assistant_changes_nothing_whatever_others_may_do(
+    rig: Rig, harness: Harness
+) -> None:
+    await kept_in_check(rig, "full-access")
+
+    assistant = await paired(rig)
+
+    agent = assistant._agent  # pyright: ignore[reportPrivateUsage]
+    assert agent is not None
+    assert harness.ctx.use(PERMISSIONS).in_force(agent.session) == ("read-only", "ask")
+    await rig.stop()
+
+
+async def test_the_agent_that_its_owner_lets_change_files_changes_them_in_its_directory(
+    rig: Rig, harness: Harness
+) -> None:
+    await kept_in_check(rig, "full-access")
+    # Its conversation went on before, where it was let change nothing.
+    rig.set_up(owner=OWNER, writable=True, session_id="s-before")
+    rig.cwd.mkdir(parents=True)
+    left = await harness.agents.create(
+        harness.ctx, harness.spec(cwd=rig.cwd), session_id="s-before"
+    )
+    harness.ctx.use(PERMISSIONS).set_preset(left.session, "read-only")
+    await left.close()
+
+    assistant = await rig.start(writable=True)
+
+    agent = assistant._agent  # pyright: ignore[reportPrivateUsage]
+    assert agent is not None
+    assert agent.id == "s-before"
+    assert harness.ctx.use(PERMISSIONS).in_force(agent.session) == ("workspace-write", "ask")
+    await rig.stop()
+
+
+async def test_a_directory_of_the_assistant_that_cannot_be_made_ends_the_run(
+    rig: Rig, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rig.set_up(owner=OWNER)
+    rig.cwd.parent.mkdir(parents=True)
+    rig.cwd.write_text("a file where the directory would be", encoding="utf-8")
+
+    await rig.start()
+
+    assert rig.task is not None
+    assert await rig.task == 2
+    assert "the directory of the assistant cannot be used" in capsys.readouterr().err
 
 
 # Files and skills
@@ -1105,14 +1454,14 @@ async def test_a_skill_that_is_sent_is_added(rig: Rig) -> None:
     await until(lambda: bool(rig.replies()))
 
     assert rig.replies() == [("om_1", "已装上技能 greet。")]
-    assert (rig.folder / "skills" / "greet" / "SKILL.md").read_bytes() == SKILL
+    assert (rig.cwd / "skills" / "greet" / "SKILL.md").read_bytes() == SKILL
     await rig.stop()
 
 
 async def test_a_skill_that_is_sent_again_replaces_its_file_and_leaves_the_rest(
     rig: Rig,
 ) -> None:
-    skill = rig.folder / "skills" / "greet"
+    skill = rig.cwd / "skills" / "greet"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_bytes(b"old")
     (skill / "notes.txt").write_text("kept", encoding="utf-8")
@@ -1141,8 +1490,8 @@ async def test_a_skill_file_that_is_no_skill_says_why(rig: Rig) -> None:
 
 
 async def test_a_skill_that_cannot_be_written_says_so(rig: Rig) -> None:
-    (rig.folder / "skills").mkdir(parents=True)
-    (rig.folder / "skills" / "greet").write_text("a file", encoding="utf-8")
+    (rig.cwd / "skills").mkdir(parents=True)
+    (rig.cwd / "skills" / "greet").write_text("a file", encoding="utf-8")
     await paired(rig)
     rig.files["file_1"] = httpx.Response(200, content=SKILL)
 
@@ -1161,7 +1510,7 @@ async def test_a_file_of_text_is_kept_and_the_agent_is_told_of_it(rig: Rig) -> N
     rig.link.heard(file_event("../纪要.md", "om_1"))
     await until(lambda: bool(rig.replies()))
 
-    kept = rig.folder / "uploads" / "om_1" / "纪要.md"
+    kept = rig.cwd / "uploads" / "om_1" / "纪要.md"
     assert kept.read_text(encoding="utf-8") == "会议纪要"
     assert rig.replies() == [("om_1", "I read it")]
     told = rig.harness.model.requests[0].messages[-1]
@@ -1171,8 +1520,8 @@ async def test_a_file_of_text_is_kept_and_the_agent_is_told_of_it(rig: Rig) -> N
 
 
 async def test_a_file_that_cannot_be_kept_says_so(rig: Rig) -> None:
-    (rig.folder / "uploads").mkdir(parents=True)
-    (rig.folder / "uploads" / "om_1").write_text("in the way", encoding="utf-8")
+    (rig.cwd / "uploads").mkdir(parents=True)
+    (rig.cwd / "uploads" / "om_1").write_text("in the way", encoding="utf-8")
     await paired(rig)
     rig.files["file_1"] = httpx.Response(200, content=b"text")
 

@@ -13,7 +13,8 @@ gives a token to an app of the other, and only the address tells them apart.
 An assistant that runs goes on with the app that it read when it started, and writes down
 whom it answers and in which session. So the app is kept or deleted only while no assistant
 runs, and under the lock that a running assistant holds, which no assistant can take
-meanwhile.
+meanwhile. So is whether its agent may change the files of its directory, which another
+program gives as a document that says that alone.
 """
 
 import contextlib
@@ -39,6 +40,7 @@ __all__ = [
     "checked",
     "forgotten",
     "kept_from",
+    "made_writable",
     "read_given",
     "said",
     "status_of",
@@ -123,6 +125,9 @@ async def kept_from(
 ) -> dict[str, object]:
     """Check an app with Feishu and keep it, and return what to answer.
 
+    A document that holds ``writable`` alone says whether the agent of the assistant may
+    change the files of its directory, and changes that alone, see :func:`made_writable`.
+
     Args:
         home: The home of the program.
         given: The app: ``domain``, ``app_id`` and ``app_secret``.
@@ -138,6 +143,8 @@ async def kept_from(
         FeishuError: The app is not one, or Feishu does not take it, or it cannot be kept, or an
             assistant runs.
     """
+    if set(given) == {"writable"}:
+        return made_writable(home, given["writable"], env)
     domain = _domain(given.get("domain", "feishu"))
     app_id = _app_id(given.get("app_id"))
     secret = _secret(given.get("app_secret"))
@@ -150,6 +157,38 @@ async def kept_from(
         "stored": {"domain": domain, "app_id": app_id},
         "secret_in": "file" if kept.keyring is None else "keyring",
     }
+
+
+def made_writable(home: Path, writable: object, env: Mapping[str, str]) -> dict[str, object]:
+    """Keep whether the agent of the assistant may change the files of its directory.
+
+    A running assistant writes down what it read of the app when it started, so this is
+    changed only while none runs, as the app is. A directory that lies in the home of the
+    program, among what the program keeps, is not one that the agent may change.
+
+    Returns:
+        What is kept now.
+
+    Raises:
+        FeishuError: What is given is not ``true`` or ``false``, the directory lies in the home
+            of the program, no app is set up, what is kept cannot be read or written, or an
+            assistant runs.
+    """
+    if not isinstance(writable, bool):
+        raise FeishuError("whether the assistant may change files is true or false", code="INVALID")
+    folder = store.directory(home, env)
+    if writable and store.within(folder, home):
+        raise FeishuError(
+            f"the directory of the assistant, {folder}, lies in the home of the program, where "
+            f"it may change no file. Name another with {store.ASSISTANT_HOME}",
+            code="FOLDER",
+        )
+    with _alone(home, make=False):
+        chosen = store.settings(home)
+        if chosen is None:
+            raise FeishuError("no app of Feishu is set up", code="NONE")
+        store.save(home, chosen.model_copy(update={"writable": writable}))
+    return {"writable": writable}
 
 
 @contextlib.contextmanager
@@ -200,12 +239,16 @@ def _running(home: Path) -> bool:
 def status_of(home: Path, env: Mapping[str, str]) -> dict[str, object]:
     """Say which app is set up and how its assistant is doing, for a program to read.
 
+    ``folder`` is the directory of the assistant, and ``writable`` whether its agent may change
+    the files there.
+
     Raises:
         FeishuError: What is kept cannot be read.
     """
     chosen = store.settings(home)
+    folder = str(store.directory(home, env))
     if chosen is None:
-        return {"set_up": False, "running": _running(home)}
+        return {"set_up": False, "running": _running(home), "folder": folder}
     running = _running(home)
     told = store.status(home)
     said: dict[str, object] = {
@@ -214,6 +257,8 @@ def status_of(home: Path, env: Mapping[str, str]) -> dict[str, object]:
         "app_id": chosen.app_id,
         "console": host(chosen.domain, env).console,
         "paired": chosen.owner is not None,
+        "folder": folder,
+        "writable": chosen.writable,
         "running": running,
         "state": None,
         "code": None,

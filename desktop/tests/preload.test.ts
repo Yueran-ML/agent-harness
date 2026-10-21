@@ -95,6 +95,7 @@ describe('the bridge of the main window', () => {
     expect(handed('notify', more)).toEqual(['columbina:notify', { title: 'a title', body: 'a body' }]);
     expect(handed('setUpService', more)).toEqual(['columbina:set-up-service', { service: 'deepseek', language: 'ja' }]);
     expect(handed('setUpFeishu', more)).toEqual(['columbina:set-up-feishu', { language: 'ja' }]);
+    expect(handed('feishuStart', more)).toEqual(['columbina:feishu-start', { language: 'ja' }]);
     expect(handed('chooseModel', { ...more, model: 'deepseek-pro' }))
       .toEqual(['columbina:choose-model', { service: 'deepseek', model: 'deepseek-pro' }]);
     expect(handed('chooseEffort', { ...more, effort: 'max' }))
@@ -109,14 +110,14 @@ describe('the bridge of the main window', () => {
     expect(handed('updates', { ...more, now: true })).toEqual(['columbina:updates', { now: true }]);
     for (const asked of [{ now: 'yes' }, { now: 1 }, {}, undefined]) expect(handed('updates', asked)).toEqual(['columbina:updates', { now: false }]);
     // A call that is made with nothing asks all the same, and the shell says what is missing.
-    for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'setUpFeishu', 'chooseModel', 'chooseEffort']) {
+    for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'setUpFeishu', 'feishuStart', 'chooseModel', 'chooseEffort']) {
       const [, given] = handed(call) as [string, Record<string, unknown>];
       expect(Object.values(given).every(value => value === undefined), call).toBe(true);
     }
     // What needs no word of the page is asked for without one.
     for (const call of [
       'getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services', 'about',
-      'feishuStatus', 'feishuStart', 'feishuStop', 'feishuForget', 'feishuLog',
+      'feishuStatus', 'feishuStop', 'feishuForget', 'feishuLog',
     ]) {
       expect(handed(call, more), call).toHaveLength(1);
     }

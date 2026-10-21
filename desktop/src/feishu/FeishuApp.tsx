@@ -5,7 +5,7 @@ import { messagesFor } from '../i18n';
 import { sentenceOf } from '../key/form';
 import { themes } from '../themes';
 import {
-  appIdFits, blankInside, complete, CONSOLES, documentOf, formOf, hostOf, SCOPES, storedOf,
+  appIdFits, blankInside, complete, CONSOLES, documentOf, formOf, hostOf, OTHER, SCOPES, storedOf,
   type Form, type Platform, type Stored,
 } from './form';
 
@@ -64,6 +64,7 @@ export function FeishuApp() {
   const [answer, setAnswer] = useState<Stored | null>(null);
   const appField = useRef<HTMLInputElement>(null);
   const secretField = useRef<HTMLInputElement>(null);
+  const storeButton = useRef<HTMLButtonElement>(null);
   const done = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -136,7 +137,7 @@ export function FeishuApp() {
       // Once it is stored, the App Secret has no business in this window any more.
       if (told.kind === 'stored') setForm(current => (current === null ? current : { ...current, secret: '' }));
     } catch (problem) {
-      setAnswer({ kind: 'refused', said: problem instanceof Error ? problem.message : String(problem) });
+      setAnswer({ kind: 'refused', said: problem instanceof Error ? problem.message : String(problem), elsewhere: false });
     } finally {
       setStoring(false);
     }
@@ -221,7 +222,19 @@ export function FeishuApp() {
 
         {answer?.kind === 'refused' && <div className="key-said" data-tone="bad" role="alert" data-test="feishu-refused">
           <TriangleAlert size={15} aria-hidden="true" />
-          <p>{sentenceOf(answer.said) || words.hint.requestFailed}</p>
+          {/* An app of the other platform: that one is chosen at a click, and the App Secret that
+              was typed stays for the next try. Nothing is stored before the user stores it. */}
+          {answer.elsewhere ? <div className="key-ask">
+            <p>{hints.wrongPlatform(labels.platforms[form.platform], labels.platforms[OTHER[form.platform]])}</p>
+            <div className="key-ask-actions">
+              <button type="button" className="btn" data-test="feishu-choose" onClick={() => {
+                change({ platform: OTHER[form.platform] });
+                storeButton.current?.focus();
+              }}>
+                {labels.choose(labels.platforms[OTHER[form.platform]])}
+              </button>
+            </div>
+          </div> : <p>{sentenceOf(answer.said) || words.hint.requestFailed}</p>}
         </div>}
 
         {/* Open where no app is set up: the first steps give what the form asks for. */}
@@ -233,7 +246,8 @@ export function FeishuApp() {
         {/* It stays at the foot of the window while the steps above it are read. */}
         <div className="key-foot feishu-foot">
           <button type="button" className="btn" disabled={storing} onClick={close}>{words.label.cancel}</button>
-          <button type="submit" className="btn btn-main" disabled={storing || !complete(form)} data-test="feishu-store">
+          <button type="submit" ref={storeButton} className="btn btn-main" disabled={storing || !complete(form)}
+            data-test="feishu-store">
             {storing ? labels.storing : labels.store}
           </button>
         </div>

@@ -54,6 +54,11 @@ const FEISHU_KILL_MS = 5_000;
 const FEISHU_LINE_MOST = 64 * 1024;
 // The consoles of the two platforms, where an app is made. They are the pages that the window for the app opens.
 const FEISHU_CONSOLES = ['https://open.feishu.cn/app', 'https://open.larksuite.com/app'];
+// The languages in which the assistant in Feishu can say things by itself, such as its help, and
+// the one for the language of the page that starts it. For a page in another language, the
+// assistant goes by the platform of its app.
+const FEISHU_LANGUAGES = ['zh', 'en'];
+const feishuLanguageOf = (language) => (language === 'zh-CN' ? 'zh' : language === 'en' ? 'en' : null);
 // How long the login shell of the user may take on macOS to say what it has, and how much of what it writes is read.
 const LOGIN_SHELL_MS = 5_000;
 const LOGIN_SHELL_OUTPUT_MOST = 64 * 1024;
@@ -125,7 +130,7 @@ let mainListed = [];
 // What the service of the moment wrote last for errors. It is told of when the service has ended.
 let lastWords = { lines: [], rest: '' };
 // What is kept from one start to the next. Read when the application is ready.
-let preferences = { theme: 'moonveil', recent: [], githubSkipped: false, feishuOn: false };
+let preferences = { theme: 'moonveil', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null };
 let flashing = false;
 // The notification that shows, held so that it is not cleared away while it does.
 let shown = null;
@@ -202,9 +207,12 @@ function readPreferences() {
     recent.push(folder);
     if (recent.length === RECENT_MOST) break;
   }
-  // Whether the user said on the first page that GitHub can wait, and whether the assistant in
-  // Feishu ran when the user last started or stopped it.
-  return { theme, recent, githubSkipped: given.githubSkipped === true, feishuOn: given.feishuOn === true };
+  // Whether the user said on the first page that GitHub can wait, whether the assistant in Feishu
+  // ran when the user last started or stopped it, and in which language it said things by itself.
+  return {
+    theme, recent, githubSkipped: given.githubSkipped === true, feishuOn: given.feishuOn === true,
+    feishuLanguage: FEISHU_LANGUAGES.includes(given.feishuLanguage) ? given.feishuLanguage : null,
+  };
 }
 /** Write down what is kept. It is written beside its place and moved there, so that a start never finds half of it. */
 function keepPreferences() {
@@ -1012,8 +1020,10 @@ function installHandlers() {
     const answer = await runProgram(['feishu', '--status', '--json']);
     return { ...answer, own: feishu !== null, on: preferences.feishuOn, ended: feishuEnded };
   });
-  ipcMain.handle('columbina:feishu-start', async (event) => {
+  ipcMain.handle('columbina:feishu-start', async (event, asked) => {
     checkSender(event);
+    // It speaks the language of the page, also when it starts again with the application.
+    keepFeishuLanguage(feishuLanguageOf(asked?.language));
     await startFeishu();
     // It runs again when the application is started again, until the user stops it.
     keepFeishuOn(true);
@@ -1133,7 +1143,8 @@ async function startFeishu() {
   if (feishuStopping) await feishuStopping;
   // An application that is closing meanwhile starts nothing any more.
   if (feishu || exiting) return;
-  const command = programCommand(['feishu', '--json']);
+  const speaks = preferences.feishuLanguage;
+  const command = programCommand(['feishu', '--json', ...(speaks ? ['--language', speaks] : [])]);
   if (!command) throw new Error(NO_SETUP);
   mkdirSync(path.dirname(feishuLogPath()), { recursive: true });
   const log = createWriteStream(feishuLogPath(), { flags: 'a' });
@@ -1206,6 +1217,12 @@ function stopFeishu() {
 function keepFeishuOn(on) {
   if (preferences.feishuOn === on) return;
   preferences.feishuOn = on;
+  keepPreferences();
+}
+/** Remember the language that the assistant in Feishu says things in by itself, or none. */
+function keepFeishuLanguage(language) {
+  if (preferences.feishuLanguage === language) return;
+  preferences.feishuLanguage = language;
   keepPreferences();
 }
 function finishWindowClose() {

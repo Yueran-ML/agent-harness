@@ -19,6 +19,9 @@ export const CONSOLES: Record<Platform, string> = {
   lark: 'https://open.larksuite.com/app',
 };
 
+/** The other platform: where an app is that one of the two does not know. */
+export const OTHER: Record<Platform, Platform> = { feishu: 'lark', lark: 'feishu' };
+
 /**
  * The permissions that the app is to be given: those for messages, which the assistant needs,
  * and those for reading documents, which it may do without.
@@ -71,10 +74,13 @@ export function documentOf(form: Form): { domain: Platform; app_id: string; app_
   return { domain: form.platform, app_id: form.appId.trim(), app_secret: form.secret.trim() };
 }
 
-/** What the program answered: the app that it stored and where the App Secret went, or what is wrong. */
+/**
+ * What the program answered: the app that it stored and where the App Secret went, or what is
+ * wrong, and whether that is that the app is one of the other platform.
+ */
 export type Stored =
   | { kind: 'stored'; appId: string; secretIn: 'keyring' | 'file' | null }
-  | { kind: 'refused'; said: string };
+  | { kind: 'refused'; said: string; elsewhere: boolean };
 
 /** Read what `columbina feishu --from-stdin` answered. It never holds the App Secret. */
 export function storedOf(answer: unknown): Stored {
@@ -84,7 +90,11 @@ export function storedOf(answer: unknown): Stored {
     const secretIn = given.secret_in === 'keyring' || given.secret_in === 'file' ? given.secret_in : null;
     return { kind: 'stored', appId: stored.app_id, secretIn };
   }
-  return { kind: 'refused', said: typeof given.error === 'string' ? given.error : '' };
+  return {
+    kind: 'refused',
+    said: typeof given.error === 'string' ? given.error : '',
+    elsewhere: given.code === 'WRONG_PLATFORM',
+  };
 }
 
 /** The machine that a page is on, as the window shows it beside the button that opens the page. */

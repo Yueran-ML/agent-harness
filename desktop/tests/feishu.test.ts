@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { assistantAfter, assistantOf, doingOf, endedOf, type App, type Assistant } from '../src/app/feishu';
-import { appIdFits, blankInside, complete, CONSOLES, documentOf, formOf, hostOf, SCOPES, storedOf } from '../src/feishu/form';
+import { appIdFits, blankInside, complete, CONSOLES, documentOf, formOf, hostOf, OTHER, SCOPES, storedOf } from '../src/feishu/form';
 
 const status = {
   set_up: true, domain: 'feishu', app_id: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: false,
@@ -195,12 +195,18 @@ describe('the window for the app', () => {
     expect(storedOf({ stored: { app_id: 'cli_a1b2c3d4' }, secret_in: 'elsewhere' }))
       .toEqual({ kind: 'stored', appId: 'cli_a1b2c3d4', secretIn: null });
     expect(storedOf({ error: 'Feishu does not take the app', code: 'REFUSED' }))
-      .toEqual({ kind: 'refused', said: 'Feishu does not take the app' });
-    expect(storedOf({ stored: { app_id: 7 } })).toEqual({ kind: 'refused', said: '' });
-    expect(storedOf(null)).toEqual({ kind: 'refused', said: '' });
+      .toEqual({ kind: 'refused', said: 'Feishu does not take the app', elsewhere: false });
+    // An app of the other platform is told apart by the code, whatever the words.
+    expect(storedOf({ error: 'Feishu does not know this app', code: 'WRONG_PLATFORM' }))
+      .toEqual({ kind: 'refused', said: 'Feishu does not know this app', elsewhere: true });
+    expect(storedOf({ error: 'WRONG_PLATFORM', code: 'REFUSED' }))
+      .toEqual({ kind: 'refused', said: 'WRONG_PLATFORM', elsewhere: false });
+    expect(storedOf({ stored: { app_id: 7 } })).toEqual({ kind: 'refused', said: '', elsewhere: false });
+    expect(storedOf(null)).toEqual({ kind: 'refused', said: '', elsewhere: false });
   });
 
   it('opens the consoles that the shell opens, and names their machines', () => {
+    expect(OTHER).toEqual({ feishu: 'lark', lark: 'feishu' });
     expect(CONSOLES).toEqual({ feishu: 'https://open.feishu.cn/app', lark: 'https://open.larksuite.com/app' });
     expect(hostOf(CONSOLES.lark)).toBe('open.larksuite.com');
     expect(hostOf('no address')).toBe('no address');

@@ -321,6 +321,7 @@ export const zhCN: Messages = {
       pair: (platform: string) => `在${between(platform)}里给机器人发送这个配对码`,
       platform: '平台',
       platforms: { feishu: '飞书', lark: 'Lark' },
+      choose: (platform: string) => `改选${afterWord(platform)}`,
       appId: 'App ID',
       appSecret: 'App Secret',
       store: '验证并保存',
@@ -785,6 +786,8 @@ export const zhCN: Messages = {
       secret: 'App Secret 从这个窗口直接交给 Columbina，由它存进系统密钥环。显示对话的那个窗口始终拿不到它。',
       secretAgain: '已保存的 App Secret 不会显示。要重新保存应用，请再输入一次。',
       blankInSecret: 'App Secret 中间不会有空白。看看粘贴时是不是多带了别的内容。',
+      wrongPlatform: (asked: string, other: string) => `${beforeWord(asked)}上没有这个应用。`
+        + `在${between(other)}开发者后台建的应用，平台要选${afterWord(other)}，再保存一次。`,
       done: (appId: string, platform: string) => `${beforeWord(platform)}接受了应用 ${appId}，已经保存。`,
       inKeyring: 'App Secret 已经存进系统密钥环。',
       inFile: '没有密钥环接收 App Secret。它原样存在 Columbina 文件夹里的一个文件中，没有加密。',

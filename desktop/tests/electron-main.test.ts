@@ -153,7 +153,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       queueMicrotask(() => child.emit('spawn'));
       return child;
     }
-    if (args.at(-2) === 'feishu' && args.at(-1) === '--json') {
+    // A run of the assistant, which the shell starts with `--json` first and maybe a language after.
+    if (args.includes('feishu') && args[args.indexOf('feishu') + 1] === '--json') {
       const child = Object.assign(new EventEmitter(), {
         pid: 900 + bots.length, exitCode: null as number | null, signalCode: null, args, options,
         stdout: new EventEmitter(), stderr: Object.assign(new EventEmitter(), { pipe: vi.fn() }),
@@ -967,7 +968,9 @@ describe('what the shell keeps from one start to the next', () => {
   it('keeps the theme when it is set, and nothing of a theme that it refuses', async () => {
     const shell = await shellHarness();
     shell.invoke('set-theme', 'moonwhite');
-    expect(shell.preferences()).toEqual({ theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false });
+    expect(shell.preferences()).toEqual({
+      theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
+    });
     expect(() => shell.invoke('set-theme', 'frostlight')).toThrow('Unknown application theme.');
     expect(shell.preferences().theme).toBe('moonwhite');
   });
@@ -2442,11 +2445,38 @@ describe('the assistant in Feishu', () => {
     expect(toldOfFeishu(shell)).toEqual([{ ended: true, code: 0, said: '' }]);
   });
 
+  it('has the assistant say things by itself in the language of the page that starts it', async () => {
+    const shell = await withApp();
+    await shell.invoke('feishu-start', { language: 'zh-CN' });
+    expect(shell.bots[0].args).toEqual(['-m', 'columbina', 'feishu', '--json', '--language', 'zh']);
+    // It is kept for the next start of the application.
+    expect(shell.preferences().feishuLanguage).toBe('zh');
+    ended(shell.bots[0]);
+    await shell.invoke('feishu-start', { language: 'en' });
+    expect(shell.bots[1].args).toEqual(['-m', 'columbina', 'feishu', '--json', '--language', 'en']);
+    // A page in a language that the assistant does not speak leaves it to the platform of the app.
+    for (const language of ['ja', 'zh', undefined]) {
+      ended(shell.bots.at(-1));
+      await shell.invoke('feishu-start', { language });
+      expect(shell.bots.at(-1).args).toEqual(['-m', 'columbina', 'feishu', '--json']);
+      expect(shell.preferences().feishuLanguage).toBeNull();
+    }
+    ended(shell.bots.at(-1));
+    await shell.invoke('feishu-start');
+    expect(shell.bots.at(-1).args).toEqual(['-m', 'columbina', 'feishu', '--json']);
+  });
+
   it('starts the assistant with the application where it ran when the application was left', async () => {
     const shell = await shellHarness(JSON.stringify({ feishuOn: true }), real);
     await settled();
     expect(shell.bots).toHaveLength(1);
     expect(shell.bots[0].args).toEqual(['-m', 'columbina', 'feishu', '--json']);
+    // In the language that it spoke when it was started, as far as the assistant speaks it.
+    const speaking = await shellHarness(JSON.stringify({ feishuOn: true, feishuLanguage: 'zh' }), real);
+    const unknown = await shellHarness(JSON.stringify({ feishuOn: true, feishuLanguage: 'fr' }), real);
+    await settled();
+    expect(speaking.bots[0].args).toEqual(['-m', 'columbina', 'feishu', '--json', '--language', 'zh']);
+    expect(unknown.bots[0].args).toEqual(['-m', 'columbina', 'feishu', '--json']);
     // And not where it did not, nor in a replay.
     const off = await shellHarness(JSON.stringify({ feishuOn: false }), real);
     const replay = await shellHarness(JSON.stringify({ feishuOn: true }));

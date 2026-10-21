@@ -44,7 +44,7 @@ function shellOfFeishu(answer: unknown = app) {
   const listeners = new Set<(said: Record<string, unknown>) => void>();
   const shell = {
     feishuStatus: vi.fn(async (): Promise<unknown> => answer),
-    feishuStart: vi.fn(async () => {}),
+    feishuStart: vi.fn(async (_asked: { language: string }) => {}),
     feishuStop: vi.fn(async () => {}),
     feishuForget: vi.fn(async (): Promise<unknown> => ({ forgotten: true })),
     feishuLog: vi.fn(async () => {}),
@@ -153,6 +153,9 @@ describe('the assistant in the settings', () => {
     expect(shell.setUpFeishu.mock.calls).toEqual([[{ language: 'ja' }]]);
     expect(shell.feishuStatus).toHaveBeenCalledTimes(2);
     expect(one('feishu-app').textContent).toBe('Feishucli_a1b2c3d4');
+    // Its assistant is started in the language of the page as well.
+    await press('feishu-start');
+    expect(shell.feishuStart.mock.calls).toEqual([[{ language: 'ja' }]]);
   });
 
   it('shows the app that does not run, and starts its assistant', async () => {
@@ -168,7 +171,8 @@ describe('the assistant in the settings', () => {
 
     shell.feishuStatus.mockResolvedValueOnce({ ...app, own: true, on: true });
     await press('feishu-start');
-    expect(shell.feishuStart).toHaveBeenCalledOnce();
+    // What the assistant says by itself, it is to say in the language of the page.
+    expect(shell.feishuStart.mock.calls).toEqual([[{ language: 'en' }]]);
     expect(one('feishu-doing').textContent).toBe('Connecting to Feishu.');
     expect(one('feishu-app').querySelector('.feishu-light')?.hasAttribute('data-on')).toBe(true);
     expect(buttons()).toEqual(['Stop', 'Change the app', 'Delete the app', 'Open the developer console', 'Show the log']);

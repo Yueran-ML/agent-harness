@@ -207,9 +207,10 @@ comment, above the whole of what it would send.
 The settings have a part for the assistant that answers its owner in Feishu or Lark. The app
 of Feishu and its App Secret are given in a window of their own, which lists what to do in the
 developer console step by step, with the permissions to add, and opens the console. Feishu is
-asked for a token of the app before it is stored, and the window says whether the keyring of
-the system took the App Secret. Once the app is stored, the window lists the steps that are
-left.
+asked for a token of the app and for the address of a connection before it is stored. Where
+the app is one of the other platform, the window says so, and a button chooses that platform;
+the App Secret that was typed stays for the next try. Once the app is stored, the window says
+whether the keyring of the system took the App Secret and lists the steps that are left.
 
 The settings start and stop the assistant, and show how it is doing: connecting, connected, or
 waiting for the code of pairing, which they show large with a way to copy it. They show what
@@ -220,9 +221,10 @@ with the application where it ran when the application was closed.
 
 The shell runs `columbina feishu --json` for the assistant, `columbina feishu --status
 --json` to say how it is doing, `columbina feishu --from-stdin` to store the app and
-`columbina feishu --forget --json` to delete it. The assistant tells the page how it is
-doing in lines of JSON, and what it writes for errors goes into `columbina-feishu.log` in the
-folder of the logs.
+`columbina feishu --forget --json` to delete it. Where the page speaks Chinese or English, the
+assistant is given `--language` for it, and keeps it when it starts again with the
+application. The assistant tells the page how it is doing in lines of JSON, and what it writes
+for errors goes into `columbina-feishu.log` in the folder of the logs.
 
 ## On Windows and on macOS
 

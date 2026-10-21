@@ -64,9 +64,11 @@ change what was there before.
   connection comes with `columbina[feishu]`.
 - The settings of the desktop application have a part for the assistant in Feishu. The app and
   its App Secret are given in a window of their own, which lists what to do in the developer
-  console, and Feishu is asked whether it takes the app before it is stored. The assistant is
-  started and stopped there and shows its code of pairing. It runs while the application is
-  open, and starts again with the application where it ran when the application was closed.
+  console, and Feishu is asked whether it takes the app before it is stored. Where the app is
+  one of the other platform, the window says so and chooses that one at a click. The assistant
+  is started and stopped there and shows its code of pairing, and says what it says by itself
+  in the language of the application. It runs while the application is open, and starts again
+  with the application where it ran when the application was closed.
 
 ## 0.1.1 (2026-10-16)
 

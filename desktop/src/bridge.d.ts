@@ -105,8 +105,9 @@ export interface ColumbinaBridge {
   /**
    * Start the assistant in Feishu, which then runs whenever the application runs, until it is
    * stopped. What it says of how it is doing comes as documents to `onFeishu`, and so does its end.
+   * What it says by itself, such as its help, it says in the language of the page where it can.
    */
-  feishuStart(): Promise<void>;
+  feishuStart(asked: { language: string }): Promise<void>;
   /** Stop the assistant in Feishu that this application runs. It no longer starts with the application. */
   feishuStop(): Promise<void>;
   /** Stop the assistant in Feishu, and delete its app, its App Secret and whom it answered. */

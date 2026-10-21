@@ -368,6 +368,7 @@ export const ja: Messages = {
       pair: (platform: string) => `このコードを${between(platform)}でボットに送ってください`,
       platform: 'プラットフォーム',
       platforms: { feishu: 'Feishu', lark: 'Lark' },
+      choose: (platform: string) => `${beforeWord(platform)}を選ぶ`,
       appId: 'App ID',
       appSecret: 'App Secret',
       store: '確認して保存',
@@ -844,6 +845,8 @@ export const ja: Messages = {
         + '会話を表示するウィンドウが受け取ることはありません。',
       secretAgain: '保存された App Secret は表示されません。アプリを保存し直すには、もう一度入力してください。',
       blankInSecret: 'App Secret の途中に空白は入りません。貼り付けたときに余分なものが入っていないか確かめてください。',
+      wrongPlatform: (asked: string, other: string) => `${beforeWord(asked)}にはこのアプリがありません。`
+        + `${beforeWord(other)}の開発者コンソールで作ったアプリなら、プラットフォームで${between(other)}を選んで、もう一度保存してください。`,
       done: (appId: string, platform: string) => `${beforeWord(platform)}がアプリ ${appId} を受け付け、保存しました。`,
       inKeyring: 'App Secret はシステムのキーリングに保存されました。',
       inFile: 'App Secret を受け取るキーリングがありませんでした。Columbina のフォルダー内のファイルに、暗号化されずそのまま保存されています。',

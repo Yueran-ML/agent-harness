@@ -402,6 +402,7 @@ export const en = {
       pair: (platform: string) => `Send the bot this code in ${platform}`,
       platform: 'Platform',
       platforms: { feishu: 'Feishu', lark: 'Lark' },
+      choose: (platform: string) => `Choose ${platform}`,
       appId: 'App ID',
       appSecret: 'App Secret',
       store: 'Check and store',
@@ -914,6 +915,8 @@ export const en = {
         + 'The window that shows the conversation never has it.',
       secretAgain: 'The App Secret that is stored is not shown. Enter it again to store the app anew.',
       blankInSecret: 'An App Secret has no blank in it. See whether what was pasted brought more along.',
+      wrongPlatform: (asked: string, other: string) => `${asked} does not know this app. An app that was made in the `
+        + `developer console of ${other} is one of ${other}: choose ${other}, and store it again.`,
       done: (appId: string, platform: string) => `${platform} takes the app ${appId}, and it is stored.`,
       inKeyring: 'The App Secret is in the keyring of the system.',
       inFile: 'No keyring took the App Secret. It lies in a file in the folder of Columbina, as it is and not encrypted.',

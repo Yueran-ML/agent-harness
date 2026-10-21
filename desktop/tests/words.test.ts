@@ -102,7 +102,9 @@ const samples: Record<string, unknown[][]> = {
   'hint.feishu.reconnecting': [['Lark'], ['Feishu']],
   'hint.feishu.connected': [['Lark'], ['Feishu']],
   'hint.feishu.steps': [['Lark']],
+  'hint.feishu.wrongPlatform': [['Feishu', 'Lark'], ['Lark', 'Feishu']],
   'label.feishu.pair': [['Lark'], ['Feishu']],
+  'label.feishu.choose': [['Lark'], ['Feishu']],
 };
 
 type Said = { path: string; text: string };

@@ -51,7 +51,7 @@ contextBridge.exposeInMainWorld('columbina', {
   skipGitHub: (skipped) => ipcRenderer.invoke('columbina:skip-github', skipped === true),
   onGitHub: (callback) => subscribe('columbina:github', callback),
   feishuStatus: () => ipcRenderer.invoke('columbina:feishu-status'),
-  feishuStart: () => ipcRenderer.invoke('columbina:feishu-start'),
+  feishuStart: (asked) => ipcRenderer.invoke('columbina:feishu-start', { language: asked?.language }),
   feishuStop: () => ipcRenderer.invoke('columbina:feishu-stop'),
   feishuForget: () => ipcRenderer.invoke('columbina:feishu-forget'),
   feishuLog: () => ipcRenderer.invoke('columbina:feishu-log'),

@@ -164,6 +164,47 @@ describe('the window for the app of Feishu', () => {
     expect(one('feishu-refused').textContent).toBe('That did not go through.');
   });
 
+  it('says where an app is one of the other platform, and chooses that one at a click without storing it', async () => {
+    const shell = await opened();
+    shell.store.mockResolvedValueOnce({
+      error: 'Feishu does not know this app, which is one of Lark (Incorrect domain name, code 1000040351). '
+        + 'Set it up as an app of Lark',
+      code: 'WRONG_PLATFORM',
+    });
+    write('feishu-app-id', 'cli_a1b2c3d4');
+    write('feishu-secret', SECRET);
+    await store();
+    expect(one('feishu-refused').querySelector('p')?.textContent).toBe(
+      'Feishu does not know this app. An app that was made in the developer console of Lark is one of Lark: '
+        + 'choose Lark, and store it again.',
+    );
+    expect(one('feishu-choose').textContent).toBe('Choose Lark');
+    fireEvent.click(one('feishu-choose'));
+    expect((one('feishu-platform') as HTMLSelectElement).value).toBe('lark');
+    expect(marked('feishu-refused')).toEqual([]);
+    expect(one('feishu-steps').querySelector('.caption.mono')?.textContent).toBe('open.larksuite.com');
+    // Nothing is stored at the click. The App Secret that was typed is there for the next try,
+    // and the keyboard is at the button that stores it.
+    expect(shell.store).toHaveBeenCalledOnce();
+    expect(field('feishu-secret').value).toBe(SECRET);
+    expect(document.activeElement).toBe(one('feishu-store'));
+    await store();
+    expect(shell.store.mock.calls[1]).toEqual([{ domain: 'lark', app_id: 'cli_a1b2c3d4', app_secret: SECRET }]);
+    expect(one('feishu-done').textContent).toContain('Lark takes the app cli_a1b2c3d4, and it is stored.');
+  });
+
+  it('says so in the language of the window, the other way round as well', async () => {
+    const shell = await opened({ language: 'zh-CN', status: { ...set, domain: 'lark' } });
+    shell.store.mockResolvedValueOnce({ error: 'Lark does not know this app', code: 'WRONG_PLATFORM' });
+    write('feishu-secret', SECRET);
+    await store();
+    expect(one('feishu-refused').querySelector('p')?.textContent)
+      .toBe('Lark 上没有这个应用。在飞书开发者后台建的应用，平台要选飞书，再保存一次。');
+    expect(one('feishu-choose').textContent).toBe('改选飞书');
+    fireEvent.click(one('feishu-choose'));
+    expect((one('feishu-platform') as HTMLSelectElement).value).toBe('feishu');
+  });
+
   it('stores nothing while it stores, nor what is not complete', async () => {
     const shell = await opened();
     const answer = held<unknown>();

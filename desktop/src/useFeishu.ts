@@ -82,9 +82,10 @@ export function useFeishu(language: string) {
   const start = useCallback(async () => {
     const bridge = window.columbina;
     if (!bridge) return;
-    await doing('starting', 'start', () => bridge.feishuStart());
+    // What the assistant says by itself, such as its help, it says in the language of the page.
+    await doing('starting', 'start', () => bridge.feishuStart({ language }));
     await refresh();
-  }, [doing, refresh]);
+  }, [doing, refresh, language]);
 
   const stop = useCallback(async () => {
     const bridge = window.columbina;

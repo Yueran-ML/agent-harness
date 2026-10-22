@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Folder, PanelLeftClose, Search, Settings2, SquarePen } from 'lucide-react';
+import { Folder, MessageCircle, PanelLeftClose, Search, Settings2, SquarePen } from 'lucide-react';
 import type { Workspace } from '../useWorkspace';
 import { useWords } from './locale';
 import { shortcut } from './system';
@@ -15,14 +15,19 @@ export function useNow(): number {
   return now;
 }
 
-/** The tasks of the project, and the ways to a new task, another project and the settings. */
-export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject, onSettings, onHide }: {
+/**
+ * The tasks of the project, or of the chat, and the ways to a new task, another project, the
+ * chat and the settings.
+ */
+export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject, onOpenChat, onSettings, onHide }: {
   workspace: Workspace;
   /** What the task that is open is called. */
   title: string;
   onNewTask: () => void;
   onOpenTask: (id: string) => void;
   onOpenProject: () => void;
+  /** Start a conversation that belongs to no project. */
+  onOpenChat: () => void;
   onSettings: () => void;
   onHide: () => void;
 }) {
@@ -100,10 +105,15 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
     </nav>
 
     <div className="sidebar-foot">
-      <button type="button" className="foot-row" onClick={onOpenProject} title={hello?.cwd ?? words.label.otherProject} aria-label={words.label.otherProject} data-test="open-project">
+      {/* In a chat no project is open, and this is the way into one. */}
+      <button type="button" className="foot-row" onClick={onOpenProject} title={workspace.chat ? words.label.openProject : hello?.cwd ?? words.label.otherProject} aria-label={workspace.chat ? words.label.openProject : words.label.otherProject} data-test="open-project">
         <Folder size={15} aria-hidden="true" />
-        <span>{hello ? folderName(hello.cwd) : words.label.openProject}</span>
+        <span>{hello && !workspace.chat ? folderName(hello.cwd) : words.label.openProject}</span>
       </button>
+      {!workspace.chat && <button type="button" className="foot-row" onClick={onOpenChat} title={words.hint.justChat} data-test="open-chat">
+        <MessageCircle size={15} aria-hidden="true" />
+        <span>{words.label.justChat}</span>
+      </button>}
       <button type="button" className="foot-row" onClick={onSettings} data-test="open-settings">
         <Settings2 size={15} aria-hidden="true" />
         <span>{words.label.settings}</span>

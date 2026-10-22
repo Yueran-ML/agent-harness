@@ -108,6 +108,13 @@ project, such as `DeepSeek · deepseek-flash · @octocat`, and a click on it ope
 again. They come back where a key was deleted meanwhile. The page asks again what is set
 up whenever the window comes back to the front.
 
+*Just chat*, under the button that opens a project and at the foot of the list of tasks,
+begins a conversation that belongs to no project. The shell starts the service with the
+profile `chat` in a folder of its own beside the home of the program, `~/Columbina/chat`, and
+its agent changes no file there, runs no command and reaches no GitHub.
+The window calls it *Chat*, the list of tasks holds the conversations of the chat, and the foot
+of the list leads into a project from there. It is not among the recent projects.
+
 The interface speaks English, Chinese and Japanese and follows the language of the
 system unless another is chosen in the settings. It has a dark theme and a light one,
 and three sizes of type.

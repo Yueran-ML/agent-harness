@@ -1,0 +1,41 @@
+# What the desktop application loads for a conversation that belongs to no project: the program
+# of `columbina serve`, whose agent changes no file, runs no command, reaches no GitHub and hands
+# no work to other agents. Its directory is a folder of its own that holds nothing of the user's
+# work.
+extends: serve
+patch:
+  - id: tool-write
+    disabled: true
+  - id: tool-edit
+    disabled: true
+  - id: tool-shell
+    disabled: true
+  # The tools of GitHub clone into the directory and push: the work of a project.
+  - id: github
+    disabled: true
+  - id: subagents
+    disabled: true
+  - id: subagent-spawn
+    disabled: true
+  - id: tool-subagent
+    disabled: true
+  - id: permissions
+    config:
+      preset: read-only
+      user_file: ${COLUMBINA_HOME}/permissions.yml
+  # Nothing is changed, so what the conduct says about changing things is left out.
+  - id: system-prompt-conduct
+    config:
+      leave_out: [changes]
+  # The model is the one that serve.yml names, and the agent is told where it is.
+  - id: frontend
+    config:
+      model:
+        provider: deepseek
+        model: ${COLUMBINA_MODEL:-deepseek-flash}
+        context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}
+      system_prompt: >-
+        You are Columbina, an assistant whom the user talks with. This conversation belongs to
+        no project: the directory that you are in holds nothing of the user's work. Answer from
+        what you know and from what the user tells you. Where something needs the files of a
+        project, say that the user can open the project in Columbina.

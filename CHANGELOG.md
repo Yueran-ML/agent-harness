@@ -113,6 +113,12 @@ change what was there before.
   closing the window puts the application in the tray, where the assistant goes on, and the
   tray opens the window again or quits. Only one application runs at a time, and starting it
   again shows the window. On Windows a package can start with the system, in the tray.
+- A conversation can belong to no project. The profile `chat` is that of `columbina serve`,
+  whose agent changes no file, runs no command, reaches no GitHub and hands no work to other
+  agents, and is told that it is in no project.
+- *Just chat*, on the first page of the desktop application and at the foot of the list of
+  tasks, starts the service with that profile in a folder of its own, `~/Columbina/chat`. The
+  window calls it a chat, and the line under the field says what it may do in its own words.
 
 ## 0.1.1 (2026-10-16)
 

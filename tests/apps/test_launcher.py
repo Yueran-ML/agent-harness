@@ -633,7 +633,7 @@ def test_a_profile_that_does_not_exist_is_refused(
     assert captured.out == ""
     assert captured.err == (
         "columbina: there is no profile 'nowhere'. The profiles that come with Columbina are: "
-        "base, cli, feishu, feishu-writable, headless, minimal, serve\n"
+        "base, chat, cli, feishu, feishu-writable, headless, minimal, serve\n"
     )
 
 
@@ -1077,6 +1077,43 @@ def test_the_help_names_the_commands(capsys: pytest.CaptureFixture[str], flag: s
     assert "hold a conversation at the terminal" in shown
     assert "run one task and print the answer" in shown
     assert "hold a conversation for another program" in shown
+
+
+def test_a_conversation_in_no_project_changes_nothing_and_is_told_where_it_is(
+    home: Path, work: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["serve", "--cwd", str(work), "--profile", "chat", "--dump-config"])
+
+    entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
+    assert code == 0
+    off = [
+        "tool-write",
+        "tool-edit",
+        "tool-shell",
+        "github",
+        "subagents",
+        "subagent-spawn",
+        "tool-subagent",
+    ]
+    assert [entry for entry in off if entries[entry].get("disabled")] == off
+    # It reads, and it has what the user keeps for every conversation.
+    on = ["tool-glob", "tool-grep", "skills", "mcp", "hooks", "commands", "command-mcp"]
+    assert [entry for entry in on if entries[entry].get("disabled")] == []
+    assert entries["permissions"]["config"] == {
+        "preset": "read-only",
+        "user_file": "${COLUMBINA_HOME}/permissions.yml",
+    }
+    assert entries["system-prompt-conduct"]["config"] == {"leave_out": ["changes"]}
+    frontend = entries["frontend"]["config"]
+    assert frontend["cwd"] == str(work)
+    assert frontend["system_prompt"].startswith(
+        "You are Columbina, an assistant whom the user talks with. This conversation belongs to "
+        "no project: the directory that you are in holds nothing of the user's work."
+    )
+    assert frontend["system_prompt"].endswith(
+        "Where something needs the files of a project, say that the user can open the project "
+        "in Columbina."
+    )
 
 
 def test_the_program_that_serves_can_be_printed_instead_of_run(

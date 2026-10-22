@@ -120,7 +120,9 @@ xattr -dr com.apple.quarantine /Applications/Columbina.app
 ```
 
 The first page leads to a service of models and its key, to GitHub if you like, and to a
-project folder. [desktop/README.md](desktop/README.md) says what the window does.
+project folder. *Just chat* begins a conversation that belongs to no project, in which Columbina
+changes no file and runs no command. [desktop/README.md](desktop/README.md) says what the window
+does.
 
 ### The command line
 

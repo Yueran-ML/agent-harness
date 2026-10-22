@@ -187,6 +187,7 @@ export const zhCN: Messages = {
     writeStrict: '可以修改这个项目里的文件，只运行规则允许的命令。',
     fullAccess: '可以读写这台电脑上的任何文件，运行命令也不再询问。',
     unknown: '这个任务能做什么，现在不清楚。',
+    chat: '不改动文件，也不运行命令。',
   },
 
   confinement: {
@@ -211,6 +212,8 @@ export const zhCN: Messages = {
     searchTasks: '搜索任务',
     tasks: '任务',
     openProject: '打开项目',
+    chat: '聊天',
+    justChat: '只聊天',
     settings: '设置',
     hideTasks: '收起任务列表',
     showTasks: '展开任务列表',
@@ -484,6 +487,7 @@ export const zhCN: Messages = {
     summary: '较早对话的摘要',
 
     placeholderIdle: '交给 Columbina 一件事',
+    placeholderChat: '和 Columbina 聊点什么',
     placeholderRunning: '补充一句，它下一步会读到',
     placeholderNoProject: '先打开一个项目',
     placeholderStarting: 'Columbina 正在启动',
@@ -558,6 +562,7 @@ export const zhCN: Messages = {
     noTasks: '这个项目里还没有任务。',
     noMatch: '没有匹配的任务。',
     emptyNoProject: '先选一个文件夹，Columbina 就在里面工作。',
+    justChat: '不属于任何项目的对话。Columbina 在这里不改动文件，也不运行命令。',
     moreSkills: (count: number) => `还有 ${count} 个，用 /skills 可以全部列出。`,
     replay: '这是一段录好的会话的回放，不会请求任何模型。',
     stats: (told: {

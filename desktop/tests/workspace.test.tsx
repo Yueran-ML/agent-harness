@@ -35,6 +35,8 @@ function held<T>() {
 }
 
 const hello = { protocol: 1, server: { name: 'columbina', version: '0.1.0' }, cwd: 'F:\\work', commands: [] };
+/** The folder that the shell names for a conversation in no project. */
+const CHAT = 'C:\\Users\\me\\Columbina\\chat';
 
 /** A service process as the page meets it through the shell, played by the test. */
 class Service {
@@ -74,6 +76,7 @@ class Service {
 
   readonly bridge = {
     start: vi.fn(async ({ cwd }: { cwd: string }) => ({ mode: 'service' as const, cwd })),
+    startChat: vi.fn(async () => ({ mode: 'service' as const, cwd: CHAT })),
     stop: vi.fn(async () => {}),
     send: (line: string) => this.receive(line),
     onLine: (listener: (line: string) => void) => { this.lines.add(listener); return () => { this.lines.delete(listener); }; },
@@ -444,6 +447,75 @@ describe('a project that is opened', () => {
     await act(async () => { await now().cancelStart(); });
     expect(service.bridge.stop.mock.calls.length).toBe(stops);
     expect([now().connected, now().hasProject]).toEqual([true, true]);
+  });
+});
+
+describe('a chat, which belongs to no project', () => {
+  it('is started by the shell in a folder of its own, and is called a chat', async () => {
+    const service = new Service();
+    const { now } = mounted(service);
+    await act(async () => { await now().openChat(); });
+    expect(service.bridge.startChat).toHaveBeenCalledTimes(1);
+    expect(service.bridge.start).not.toHaveBeenCalled();
+    // Whatever ran before is stopped first.
+    expect(service.bridge.stop.mock.invocationCallOrder[0]).toBeLessThan(service.bridge.startChat.mock.invocationCallOrder[0]);
+    const page = now();
+    expect([page.chat, page.hasProject, page.connected, page.folder, page.sessionId]).toEqual([true, true, true, null, 's-1']);
+  });
+
+  it('is started again as a chat, and a project that is opened after it is none', async () => {
+    const service = new Service();
+    const { now } = mounted(service);
+    await act(async () => { await now().openChat(); });
+    await act(async () => { await now().reconnect(); });
+    expect(service.bridge.startChat).toHaveBeenCalledTimes(2);
+    expect(service.bridge.start).not.toHaveBeenCalled();
+    // Its folder is no project's, and is not told of as one.
+    expect([now().chat, now().folder]).toEqual([true, null]);
+    await act(async () => { await now().openFolder('F:\\work'); });
+    expect(service.bridge.start.mock.calls).toEqual([[{ cwd: 'F:\\work' }]]);
+    expect([now().chat, now().folder]).toEqual([false, 'F:\\work']);
+    // And the project is started again as the project.
+    await act(async () => { await now().reconnect(); });
+    expect(service.bridge.start.mock.calls).toEqual([[{ cwd: 'F:\\work' }], [{ cwd: 'F:\\work' }]]);
+    expect(service.bridge.startChat).toHaveBeenCalledTimes(2);
+    // A chat after a project is a chat again, also when it is started again.
+    await act(async () => { await now().openChat(); });
+    expect([now().chat, now().folder, service.bridge.startChat.mock.calls.length]).toEqual([true, null, 3]);
+    await act(async () => { await now().reconnect(); });
+    expect([now().chat, now().folder, service.bridge.startChat.mock.calls.length]).toEqual([true, null, 4]);
+    expect(service.bridge.start).toHaveBeenCalledTimes(2);
+  });
+
+  it('is not begun while a project starts, and a chat that is given up while it starts is none', async () => {
+    const service = new Service();
+    const starting = held<{ mode: 'service'; cwd: string }>();
+    service.bridge.start.mockImplementationOnce(() => starting.promise);
+    const { now } = mounted(service);
+    let opened!: Promise<void>;
+    act(() => { opened = now().openFolder('F:\\work'); });
+    await settled();
+    await act(async () => { await now().openChat(); });
+    expect(service.bridge.startChat).not.toHaveBeenCalled();
+    expect(now().chat).toBe(false);
+    starting.release({ mode: 'service', cwd: 'F:\\work' });
+    await act(async () => { await opened; });
+    expect([now().chat, now().connected]).toEqual([false, true]);
+
+    const chatting = held<{ mode: 'service'; cwd: string }>();
+    service.bridge.startChat.mockImplementationOnce(() => chatting.promise);
+    let chat!: Promise<void>;
+    act(() => { chat = now().openChat(); });
+    await settled();
+    expect(now().chat).toBe(true);
+    await act(async () => { await now().cancelStart(); });
+    expect([now().chat, now().hasProject]).toEqual([false, false]);
+    chatting.release({ mode: 'service', cwd: CHAT });
+    await act(async () => { await chat; });
+    expect([now().chat, now().hasProject]).toEqual([false, false]);
+    // Nothing is there to start again: not the chat that was given up.
+    await act(async () => { await now().reconnect(); });
+    expect(service.bridge.startChat).toHaveBeenCalledTimes(1);
   });
 });
 

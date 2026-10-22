@@ -250,6 +250,8 @@ export const en = {
     writeStrict: 'Can change the files of this project, and runs only commands that a rule allows.',
     fullAccess: 'Can read and change files anywhere on this computer, and runs commands without asking.',
     unknown: 'What this task may do is not known.',
+    // A chat has no tool for either, whatever its preset says.
+    chat: 'Changes no file and runs no command.',
   },
 
   /** How well this computer holds a command to what the task may do. */
@@ -281,6 +283,9 @@ export const en = {
     searchTasks: 'Search tasks',
     tasks: 'Tasks',
     openProject: 'Open a project',
+    // A conversation that belongs to no project, as it is named, and the way into it.
+    chat: 'Chat',
+    justChat: 'Just chat',
     settings: 'Settings',
     hideTasks: 'Hide the list of tasks',
     showTasks: 'Show the list of tasks',
@@ -577,6 +582,7 @@ export const en = {
     summary: 'Earlier messages, summed up',
 
     placeholderIdle: 'Give Columbina something to do',
+    placeholderChat: 'Say something to Columbina',
     placeholderRunning: 'Add something for its next step',
     placeholderNoProject: 'Open a project first',
     placeholderStarting: 'Columbina is starting',
@@ -656,6 +662,7 @@ export const en = {
     noTasks: 'No task yet in this project.',
     noMatch: 'No task matches.',
     emptyNoProject: 'Choose the folder that Columbina is to work in.',
+    justChat: 'A conversation that belongs to no project. Columbina changes no file in it and runs no command.',
     moreSkills: (count: number) => (count === 1 ? 'And 1 more. /skills lists them all.' : `And ${count} more. /skills lists them all.`),
     replay: 'This is a replay of a recorded session. No model is asked for anything.',
     stats: (told: {

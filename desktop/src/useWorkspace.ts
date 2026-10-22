@@ -39,6 +39,9 @@ export function useWorkspace() {
   const [openedAt, setOpenedAt] = useState(0);
   // The folder of the project, from the moment it is chosen.
   const [folder, setFolder] = useState<string | null>(null);
+  // Whether what is open is a conversation that belongs to no project, in a folder that the shell names.
+  const [chat, setChat] = useState(false);
+  const inChat = useRef(false);
   // The folders that were chosen at earlier times, as the shell keeps them.
   const [recent, setRecent] = useState<{ path: string; name: string }[]>([]);
   // The services of the model and where the key of each comes from, as the program of the
@@ -187,7 +190,7 @@ export function useWorkspace() {
     }
   }, [fail]);
   const connect = useCallback(async (cwd?: string, resumeId?: string) => {
-    if (connecting.current || (window.columbina && !cwd)) return;
+    if (connecting.current || (window.columbina && !cwd && !inChat.current)) return;
     connecting.current = true;
     const attempt = ++attempts.current;
     // A start that was given up goes on to its next wait, and is to change nothing after that.
@@ -221,9 +224,10 @@ export function useWorkspace() {
       if (bridge) {
         await bridge.stop();
         if (!wanted()) return;
-        const started = await bridge.start({ cwd: cwd! });
+        const started = inChat.current ? await bridge.startChat() : await bridge.start({ cwd: cwd! });
         if (!wanted()) return;
-        selectedDirectory.current = started.cwd;
+        // A conversation in no project is started again as one, wherever its folder is.
+        if (!inChat.current) selectedDirectory.current = started.cwd;
         setMode(started.mode);
       } else setMode('mock');
       const transport = bridge ? createElectronTransport(bridge) : createMockTransport({ cwd });
@@ -326,6 +330,8 @@ export function useWorkspace() {
     opening.current = false;
     paging.current = false;
     selectedDirectory.current = null;
+    inChat.current = false;
+    setChat(false);
     setLoading(false);
     setConnected(false);
     setReading(null);
@@ -462,9 +468,22 @@ export function useWorkspace() {
 
   /** Start the service in a folder that the shell has let through, and open a task there. */
   const openFolder = useCallback(async (chosen: string) => {
+    inChat.current = false;
+    setChat(false);
     selectedDirectory.current = chosen;
     setHasProject(true);
     await connect(chosen);
+  }, [connect]);
+
+  /** Start a conversation that belongs to no project, and open a task in it. */
+  const openChat = useCallback(async () => {
+    if (connecting.current) return;
+    inChat.current = true;
+    setChat(true);
+    selectedDirectory.current = null;
+    setFolder(null);
+    setHasProject(true);
+    await connect();
   }, [connect]);
 
   /** The folder to start in for one of the recent projects, or null if the shell does not let it through. */
@@ -483,8 +502,8 @@ export function useWorkspace() {
   const projection = useMemo(() => projectEvents(events, closed !== null), [events, closed]);
   return {
     hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending,
-    cancelling, error, closed, lastWords, openedAt, folder, recent, services, checkingServices, skills, mode, projection,
-    reading, openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, setUpService,
+    cancelling, error, closed, lastWords, openedAt, folder, chat, recent, services, checkingServices, skills, mode, projection,
+    reading, openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, openChat, setUpService,
     refreshServices, cancelStart,
     reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined),
     showLog: () => void window.columbina?.showLog().catch(fail),

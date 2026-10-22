@@ -92,6 +92,7 @@ describe('the bridge of the main window', () => {
     };
     expect(handed('selectFolder', more)).toEqual(['columbina:select-folder', { language: 'ja' }]);
     expect(handed('start', more)).toEqual(['columbina:start', { cwd: 'C:/work' }]);
+    expect(handed('startChat', more)).toEqual(['columbina:start-chat']);
     expect(handed('notify', more)).toEqual(['columbina:notify', { title: 'a title', body: 'a body' }]);
     expect(handed('setUpService', more)).toEqual(['columbina:set-up-service', { service: 'deepseek', language: 'ja' }]);
     expect(handed('setUpFeishu', more)).toEqual(['columbina:set-up-feishu', { language: 'ja' }]);

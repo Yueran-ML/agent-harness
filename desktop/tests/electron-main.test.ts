@@ -221,6 +221,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     return child;
   });
   const realpathSync = vi.fn((value: string) => path.resolve(value));
+  const mkdirSync = vi.fn();
   const readMusic = vi.fn().mockResolvedValue(Buffer.from([1, 2, 3]));
   const file = {
     stat: vi.fn().mockResolvedValue({ isFile: () => true, size: 3 }),
@@ -290,7 +291,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     },
     'node:fs': {
       constants: { COPYFILE_EXCL: 1 },
-      existsSync: (file: string) => !absent.has(path.resolve(file)), mkdirSync: vi.fn(), realpathSync,
+      existsSync: (file: string) => !absent.has(path.resolve(file)), mkdirSync, realpathSync,
       statSync: (value: string) => {
         if (gone.has(path.resolve(value))) throw missing(value);
         return { isDirectory: () => true };
@@ -340,7 +341,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const asFeishuWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-feishu:${name}`)!(
     { sender: feishuWindow().webContents, senderFrame: feishuWindow().webContents.mainFrame }, ...args);
   return {
-    handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, disk, drive, file, sent,
+    handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, mkdirSync, disk, drive, file, sent,
     dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
     partitions, trays, pictures,
     setups, setup, keyWindow, asKeyWindow, feishuWindow, asFeishuWindow, menu, logins, signIns, bots, lineReaders,
@@ -422,11 +423,48 @@ describe('Electron project and process boundary', () => {
   it('rejects another frame before showing a dialog, starting a service, or reading music', async () => {
     const shell = await shellHarness();
     const unrelatedFrame = { sender: shell.event.sender, senderFrame: { url: shell.event.senderFrame.url } };
-    for (const method of ['select-folder', 'start', 'local-music']) {
+    for (const method of ['select-folder', 'start', 'start-chat', 'local-music']) {
       await expect(shell.handlers.get(`columbina:${method}`)!(unrelatedFrame, { cwd: '/selected-project' })).rejects.toThrow('IPC sender');
     }
     expect(shell.spawn).not.toHaveBeenCalled();
     expect(shell.disk.open).not.toHaveBeenCalled();
+  });
+
+  it('starts a chat in a folder of its own beside the home of the program, with the profile for it', async () => {
+    const shell = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python });
+    const chat = path.join(path.resolve('/columbina-test/home'), 'Columbina', 'chat');
+    await expect(shell.invoke('start-chat')).resolves.toEqual({ mode: 'service', cwd: chat });
+    expect(shell.mkdirSync).toHaveBeenCalledWith(chat, { recursive: true });
+    const [executable, args, options] = shell.spawn.mock.calls.at(-1)!;
+    expect([executable, args, options.cwd]).toEqual([python, ['-m', 'columbina', 'serve', '--profile', 'chat'], chat]);
+    // It is no project: it is not among the recent ones, and it cannot be started as one.
+    expect(await shell.invoke('recent-projects')).toEqual([]);
+    await expect(shell.invoke('start', { cwd: chat })).rejects.toThrow('native folder dialog');
+    // Where the home of the program is elsewhere, the folder of a chat is beside it there.
+    const elsewhere = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python, COLUMBINA_HOME: path.resolve('/data/.columbina') });
+    expect((await elsewhere.invoke('start-chat')).cwd).toBe(path.join(path.resolve('/data'), 'Columbina', 'chat'));
+  });
+
+  it('starts a chat after the project that runs has stopped, and a replay for it as for a project', async () => {
+    const shell = await shellHarness();
+    const project = await shell.select('/selected-project');
+    await shell.invoke('start', { cwd: project });
+    const started = await shell.invoke('start-chat');
+    expect(started.mode).toBe('mock');
+    expect(shell.children[0].stdin.end).toHaveBeenCalledOnce();
+    expect(shell.peakLive()).toBe(1);
+    // A replay takes no profile.
+    expect(shell.spawn.mock.calls.at(-1)![1]).toEqual(shell.spawn.mock.calls[0][1]);
+    expect(shell.children[1].cwd).toBe(started.cwd);
+  });
+
+  it('starts a chat with what the service is given, and no profile where the command does not serve', async () => {
+    const serves = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python, COLUMBINA_SERVICE_ARGS: JSON.stringify(['-m', 'columbina', 'serve', '--verbose']) });
+    await serves.invoke('start-chat');
+    expect(serves.spawn.mock.calls.at(-1)![1]).toEqual(['-m', 'columbina', 'serve', '--verbose', '--profile', 'chat']);
+    const other = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python, COLUMBINA_SERVICE_ARGS: JSON.stringify(['replay.py']) });
+    await other.invoke('start-chat');
+    expect(other.spawn.mock.calls.at(-1)![1]).toEqual(['replay.py']);
   });
 
   it('finishes closing as soon as the renderer stops the service', async () => {

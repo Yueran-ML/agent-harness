@@ -176,7 +176,8 @@ export function Composer({
       : stopped ? words.label.placeholderStopped
         : !workspace.connected ? words.label.placeholderStarting
           : workspace.loading ? words.label.placeholderOpening
-          : running ? words.label.placeholderRunning : words.label.placeholderIdle;
+          : running ? words.label.placeholderRunning
+            : workspace.chat ? words.label.placeholderChat : words.label.placeholderIdle;
   const hint = unavailable ? ''
     : workspace.cancelling ? words.label.stopping
       : armed ? words.hint.escAgain

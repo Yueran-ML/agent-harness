@@ -86,7 +86,7 @@ Columbina 让一个 Agent 接上语言模型，在你指定的目录里工作。
 xattr -dr com.apple.quarantine /Applications/Columbina.app
 ```
 
-首页会带你连上模型服务、填好密钥，愿意的话登录 GitHub，再选一个项目文件夹。窗口能做什么，见 [desktop/README.md](desktop/README.md)。
+首页会带你连上模型服务、填好密钥，愿意的话登录 GitHub，再选一个项目文件夹。不想选项目的话，点“只聊天”就能直接聊，这样的对话不属于任何项目，Columbina 在里面不改动文件，也不运行命令。窗口能做什么，见 [desktop/README.md](desktop/README.md)。
 
 ### 命令行
 

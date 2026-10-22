@@ -8,6 +8,8 @@ export interface ColumbinaBridge {
   selectFolder(asked: { language: string }): Promise<string | null>;
   getLocalMusic(): Promise<{ name: string; bytes: ArrayBuffer; mimeType: string } | null>;
   start(options: { cwd: string }): Promise<{ mode: 'mock' | 'service'; cwd: string }>;
+  /** Start the service for a conversation that belongs to no project, in a folder that the shell names. */
+  startChat(): Promise<{ mode: 'mock' | 'service'; cwd: string }>;
   send(line: string): void;
   onLine(listener: (line: string) => void): () => void;
   onClose(listener: (reason: string) => void): () => void;

@@ -38,7 +38,7 @@ const before = (given: Partial<Workspace> = {}) =>
   workspaceWith({ hasProject: false, hello: null, status: null, sessionId: null, ...given });
 
 function page(workspace: Workspace, github: GitHub = gitHubWith()) {
-  const calls = { onOpenProject: vi.fn(), onOpenRecent: vi.fn(), onPermissions: vi.fn(), onSetUp: vi.fn(), onOpenPage: vi.fn() };
+  const calls = { onOpenProject: vi.fn(), onOpenRecent: vi.fn(), onOpenChat: vi.fn(), onPermissions: vi.fn(), onSetUp: vi.fn(), onOpenPage: vi.fn() };
   const firstButton = { current: null as HTMLButtonElement | null };
   const drawn = render(<StartHead workspace={workspace} github={github} {...calls} firstButton={firstButton} />);
   return {
@@ -48,6 +48,26 @@ function page(workspace: Workspace, github: GitHub = gitHubWith()) {
       drawn.rerender(<StartHead workspace={next} github={nextGitHub} {...calls} firstButton={firstButton} />),
   };
 }
+
+describe('a chat on the first page', () => {
+  it('is offered with the steps, and under the way into a project once they are done', () => {
+    const { calls } = page(before({ services: listed() }), gitHubWith());
+    expect(marked('first-steps')).toHaveLength(1);
+    const chat = one('open-chat-start');
+    expect([chat.textContent, chat.className]).toEqual(['Just chat', 'btn btn-quiet start-chat']);
+    expect(chat.getAttribute('title')).toBe('A conversation that belongs to no project. Columbina changes no file in it and runs no command.');
+    fireEvent.click(chat);
+    expect(calls.onOpenChat).toHaveBeenCalledTimes(1);
+    expect(calls.onOpenProject).not.toHaveBeenCalled();
+    cleanup();
+    const done = page(before({ services: listed('stored') }), gitHubWith({ account: signedIn() }));
+    expect(marked('first-steps')).toEqual([]);
+    const order = [...one('start').children].map(child => child.getAttribute('data-test'));
+    expect(order.indexOf('open-chat-start')).toBe(order.indexOf('open-project-start') + 1);
+    fireEvent.click(one('open-chat-start'));
+    expect(done.calls.onOpenChat).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('the first steps', () => {
   it('are not shown while it is not known where they stand: the page is the way to a project then', () => {

@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('columbina', {
   selectFolder: (asked) => ipcRenderer.invoke('columbina:select-folder', { language: asked?.language }),
   getLocalMusic: () => ipcRenderer.invoke('columbina:local-music'),
   start: (options) => ipcRenderer.invoke('columbina:start', { cwd: options?.cwd }),
+  startChat: () => ipcRenderer.invoke('columbina:start-chat'),
   send: (line) => ipcRenderer.send('columbina:send', line),
   onLine: (callback) => subscribe('columbina:line', callback),
   onClose: (callback) => subscribe('columbina:closed', callback),

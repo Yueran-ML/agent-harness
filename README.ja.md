@@ -86,7 +86,7 @@ Columbina は、エージェントを言語モデルにつなぎ、指定した�
 xattr -dr com.apple.quarantine /Applications/Columbina.app
 ```
 
-最初のページが、モデルのサービスとキー、必要なら GitHub へのサインイン、プロジェクトのフォルダの順に案内します。ウィンドウでできることは [desktop/README.md](desktop/README.md) で説明しています。
+最初のページが、モデルのサービスとキー、必要なら GitHub へのサインイン、プロジェクトのフォルダの順に案内します。プロジェクトを選ばずに話したいときは「チャットだけ」を選びます。どのプロジェクトにも属さない会話で、Columbina はファイルを変更せず、コマンドも実行しません。ウィンドウでできることは [desktop/README.md](desktop/README.md) で説明しています。
 
 ### コマンドライン
 

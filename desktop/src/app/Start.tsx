@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type RefObject } from 'react';
-import { Check, ExternalLink, FolderOpen, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
+import { Check, ExternalLink, FolderOpen, MessageCircle, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
 import { useRefreshOnFocus, type GitHub } from '../useGitHub';
 import type { Workspace } from '../useWorkspace';
 import { sayPermissions } from '../words';
@@ -24,11 +24,12 @@ function focusIfLost(element: HTMLElement | null | undefined) {
  * them again. Whatever was set up elsewhere meanwhile, such as a key in a terminal or
  * repositories on GitHub, is asked for when the user comes back to the window.
  */
-function FirstPage({ workspace, github, onOpenProject, onOpenRecent, onSetUp, onOpenPage, firstButton }: {
+function FirstPage({ workspace, github, onOpenProject, onOpenRecent, onOpenChat, onSetUp, onOpenPage, firstButton }: {
   workspace: Workspace;
   github: GitHub;
   onOpenProject: () => void;
   onOpenRecent: (folder: string) => void;
+  onOpenChat: () => void;
   onSetUp: (service: string) => void;
   onOpenPage: (url: string) => void;
   firstButton: RefObject<HTMLButtonElement | null>;
@@ -64,11 +65,22 @@ function FirstPage({ workspace, github, onOpenProject, onOpenRecent, onSetUp, on
   >
     <FolderOpen size={large ? 16 : 14} aria-hidden="true" />{words.label.openProject}
   </button>;
+  // A conversation that belongs to no project, for whoever only wants to talk.
+  const justChat = <button
+    type="button"
+    className="btn btn-quiet start-chat"
+    title={words.hint.justChat}
+    onClick={onOpenChat}
+    data-test="open-chat-start"
+  >
+    <MessageCircle size={14} aria-hidden="true" />{words.label.justChat}
+  </button>;
   return <div className="start-head" data-test="start">
     <span className="crescent" aria-hidden="true" />
     <h2 className="display">{shown ? words.label.start.title : words.label.emptyNoProjectTitle}</h2>
     <p className="start-lead">{shown ? words.hint.start.lead : words.hint.emptyNoProject}</p>
     {!shown && openProject(true)}
+    {!shown && justChat}
     {!shown && steps.kind === 'done' && <button
       type="button"
       className="start-may first-steps-line"
@@ -145,6 +157,7 @@ function FirstPage({ workspace, github, onOpenProject, onOpenRecent, onSetUp, on
         {openProject(false)}
       </li>
     </ol>}
+    {shown && justChat}
     {shown && steps.kind === 'done' && <button
       type="button"
       className="btn btn-quiet first-steps-hide"
@@ -174,11 +187,13 @@ function FirstPage({ workspace, github, onOpenProject, onOpenRecent, onSetUp, on
  * What stands above the field on the page of a task in which nothing was said
  * yet. Before any project is open, it is the whole page.
  */
-export function StartHead({ workspace, github, onOpenProject, onOpenRecent, onPermissions, onSetUp, onOpenPage, firstButton }: {
+export function StartHead({ workspace, github, onOpenProject, onOpenRecent, onOpenChat, onPermissions, onSetUp, onOpenPage, firstButton }: {
   workspace: Workspace;
   github: GitHub;
   onOpenProject: () => void;
   onOpenRecent: (folder: string) => void;
+  /** Start a conversation that belongs to no project. */
+  onOpenChat: () => void;
   /** Open the settings where what a task may do is chosen. */
   onPermissions: () => void;
   /** Open the window in which a service is set up, at this service. */
@@ -198,6 +213,7 @@ export function StartHead({ workspace, github, onOpenProject, onOpenRecent, onPe
       github={github}
       onOpenProject={onOpenProject}
       onOpenRecent={onOpenRecent}
+      onOpenChat={onOpenChat}
       onSetUp={onSetUp}
       onOpenPage={onOpenPage}
       firstButton={firstButton}
@@ -208,9 +224,11 @@ export function StartHead({ workspace, github, onOpenProject, onOpenRecent, onPe
   return <div className="start-head" data-test="start">
     <span className="crescent" aria-hidden="true" />
     <h2 className="display">{words.label.emptyTitle}</h2>
-    {workspace.hello && <p className="start-lead mono" title={workspace.hello.cwd}>{workspace.hello.cwd}</p>}
+    {workspace.hello && (workspace.chat
+      ? <p className="start-lead" data-test="start-chat-lead">{words.hint.justChat}</p>
+      : <p className="start-lead mono" title={workspace.hello.cwd}>{workspace.hello.cwd}</p>)}
     {/* What the task that is about to begin may do, where it is decided whether to begin it. */}
-    {status && <button type="button" className="start-may" data-tone={full ? 'warn' : undefined} onClick={onPermissions} data-test="start-may">
+    {status && !workspace.chat && <button type="button" className="start-may" data-tone={full ? 'warn' : undefined} onClick={onPermissions} data-test="start-may">
       {full ? <ShieldAlert size={13} aria-hidden="true" /> : <ShieldCheck size={13} aria-hidden="true" />}
       <span>{sayPermissions(words, status.sandbox?.mode ?? null, status.approval)}</span>
     </button>}

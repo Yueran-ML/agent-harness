@@ -423,6 +423,7 @@ export default function App() {
   };
   const openProject = () => leave(() => void leaveProject(workspace.pickFolder(shownLanguage(language))));
   const openRecent = (kept: string) => leave(() => void leaveProject(workspace.pickRecent(kept)));
+  const openChat = () => leave(() => void workspace.openChat());
 
   // A page that the application itself leads to, such as one of GitHub. It is opened without a question.
   const openPage = (url: string) => {
@@ -512,8 +513,10 @@ export default function App() {
   }, [showOpening, unavailable, workspace.hasProject, workspace.sessionId, workspace.closed, stopped]);
 
   // --- What is shown.
-  const folder = workspace.hello ? folderName(workspace.hello.cwd)
-    : workspace.folder ? folderName(workspace.folder) : '';
+  // A conversation in no project is called a chat, and not by the name of its folder.
+  const folder = workspace.chat ? words.label.chat
+    : workspace.hello ? folderName(workspace.hello.cwd)
+      : workspace.folder ? folderName(workspace.folder) : '';
   const changes = changesOf(workspace).length;
   const writing = workspace.preview.text !== '' || workspace.preview.reasoning !== '' || workspace.preview.tools.length > 0;
   const empty = projection.items.length === 0 && projection.turns.length === 0
@@ -599,6 +602,7 @@ export default function App() {
           onNewTask={newTask}
           onOpenTask={openTask}
           onOpenProject={openProject}
+          onOpenChat={openChat}
           onSettings={() => setSettings('appearance')}
           onHide={() => setSidebarHidden(true)}
         />}
@@ -701,6 +705,7 @@ export default function App() {
                       github={github}
                       onOpenProject={openProject}
                       onOpenRecent={openRecent}
+                      onOpenChat={openChat}
                       onPermissions={() => setSettings('permissions')}
                       onSetUp={service => void workspace.setUpService(service, shownLanguage(language))}
                       onOpenPage={openPage}

@@ -234,6 +234,7 @@ export const ja: Messages = {
     writeStrict: 'このプロジェクトのファイルを変更できます。ルールで認められたコマンドだけを実行します。',
     fullAccess: 'このコンピューター上のどのファイルも読み書きでき、確認なしでコマンドを実行します。',
     unknown: 'このタスクに何が許されているかは分かりません。',
+    chat: 'ファイルを変更せず、コマンドも実行しません。',
   },
 
   confinement: {
@@ -258,6 +259,8 @@ export const ja: Messages = {
     searchTasks: 'タスクを検索',
     tasks: 'タスク',
     openProject: 'プロジェクトを開く',
+    chat: 'チャット',
+    justChat: 'チャットだけ',
     settings: '設定',
     hideTasks: 'タスク一覧を隠す',
     showTasks: 'タスク一覧を表示',
@@ -532,6 +535,7 @@ export const ja: Messages = {
     summary: 'これまでの対話の要約',
 
     placeholderIdle: 'Columbina に頼みたいことを入力',
+    placeholderChat: 'Columbina に話しかける',
     placeholderRunning: '次のステップへの補足を入力',
     placeholderNoProject: 'まずプロジェクトを開いてください',
     placeholderStarting: 'Columbina を起動しています',
@@ -606,6 +610,7 @@ export const ja: Messages = {
     noTasks: 'このプロジェクトには、まだタスクがありません。',
     noMatch: '一致するタスクはありません。',
     emptyNoProject: 'Columbina が作業するフォルダーを選んでください。',
+    justChat: 'どのプロジェクトにも属さない会話です。Columbina はここでファイルを変更せず、コマンドも実行しません。',
     moreSkills: (count: number) => `ほかに ${count} 件あります。/skills ですべて表示できます。`,
     replay: 'これは記録済みセッションのリプレイです。モデルへのリクエストは行われません。',
     stats: (told: {

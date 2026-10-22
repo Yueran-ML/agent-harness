@@ -294,6 +294,20 @@ describe('leaving a task', () => {
     expect(called(none.openFolder)).toEqual([['D:\\notes']]);
   });
 
+  it('goes to a chat from the first page, and asks first where a turn is under way', async () => {
+    const none = workspaceWith({ hasProject: false, hello: null, sessionId: null, status: null, folder: null });
+    page(none);
+    await act(async () => { fireEvent.click(one('open-chat-start')); });
+    expect(called(none.openChat)).toEqual([[]]);
+    cleanup();
+    const task = firstAtWork();
+    page(task);
+    fireEvent.click(one('open-chat'));
+    expect(task.openChat).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.click(one('confirm-leave')); });
+    expect(called(task.openChat)).toEqual([[]]);
+  });
+
   it('opens no project where none was chosen', async () => {
     const task = first();
     page(task);
@@ -1247,6 +1261,13 @@ describe('what the page is called and what stands at its top', () => {
     expect(document.querySelector('.titlebar-project')?.getAttribute('title')).toBe('F:\\work');
     expect(one('title').textContent).toBe('Fix the parser.');
     expect(document.querySelector('.window')?.hasAttribute('data-native')).toBe(false);
+  });
+
+  it('calls a chat a chat, in the bar of the window and in its name', () => {
+    page(workspaceWith({ chat: true, hello: { ...workspaceWith().hello!, cwd: 'C:\\Users\\me\\Columbina\\chat' } }));
+    expect(document.title).toBe('Chat · Columbina');
+    expect(document.querySelector('.titlebar-project')?.textContent).toBe('Chat');
+    expect(document.querySelector('.titlebar-project')?.getAttribute('title')).toBe('C:\\Users\\me\\Columbina\\chat');
   });
 
   it('names the window by itself before there is a folder', () => {

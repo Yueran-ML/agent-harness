@@ -182,6 +182,7 @@ FEISHU_BOT = "src/columbina/feishu/bot.py"
 FEISHU_SETUP = "src/columbina/feishu/setup.py"
 FEISHU_BUNDLE = "src/columbina/bundles/feishu.yml"
 FEISHU_WRITABLE_BUNDLE = "src/columbina/bundles/feishu-writable.yml"
+CHAT_BUNDLE = "src/columbina/bundles/chat.yml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -26927,6 +26928,70 @@ _ANTHROPIC_APPS = (
 )
 
 
+_CHAT_PROFILE = (
+    mutant(
+        "a chat writes files",
+        CHAT_BUNDLE,
+        "  - id: tool-write\n    disabled: true\n",
+        "",
+    ),
+    mutant(
+        "a chat edits files",
+        CHAT_BUNDLE,
+        "  - id: tool-edit\n    disabled: true\n",
+        "",
+    ),
+    mutant(
+        "a chat runs commands",
+        CHAT_BUNDLE,
+        "  - id: tool-shell\n    disabled: true\n",
+        "",
+    ),
+    mutant(
+        "a chat reaches GitHub",
+        CHAT_BUNDLE,
+        "  - id: github\n    disabled: true\n",
+        "",
+    ),
+    mutant(
+        "a chat hands work to other agents",
+        CHAT_BUNDLE,
+        "  - id: tool-subagent\n    disabled: true\n",
+        "",
+    ),
+    mutant(
+        "a chat goes by the preset of whoever is served",
+        CHAT_BUNDLE,
+        "      preset: read-only\n",
+        "      preset: workspace-write\n",
+    ),
+    mutant(
+        "the rules of the user do not hold in a chat",
+        CHAT_BUNDLE,
+        "      user_file: ${COLUMBINA_HOME}/permissions.yml\n",
+        "",
+    ),
+    mutant(
+        "a chat is told how to change things",
+        CHAT_BUNDLE,
+        "      leave_out: [changes]\n",
+        "      leave_out: []\n",
+    ),
+    mutant(
+        "a chat talks to another model",
+        CHAT_BUNDLE,
+        "        model: ${COLUMBINA_MODEL:-deepseek-flash}\n",
+        "        model: ${COLUMBINA_MODEL:-deepseek-pro}\n",
+    ),
+    mutant(
+        "a chat is not told that it is in no project",
+        CHAT_BUNDLE,
+        "        You are Columbina, an assistant whom the user talks with. This conversation belongs to\n",
+        "        You are Columbina, an assistant whom the user talks with. This conversation belongs to\n        a project:\n",
+    ),
+)
+
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -27119,6 +27184,9 @@ SETS: dict[str, MutantSet] = {
         _SERVE,
     ),
     "feishu": MutantSet(("tests/feishu", "tests/apps/test_feishu_command.py"), _FEISHU),
+    "chat-profile": MutantSet(
+        ("tests/test_package.py", "tests/apps/test_launcher.py"), _CHAT_PROFILE
+    ),
     "anthropic": MutantSet(("tests/llm/test_anthropic_messages.py",), _ANTHROPIC),
     "anthropic-apps": MutantSet(
         (

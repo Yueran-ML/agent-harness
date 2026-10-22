@@ -68,9 +68,11 @@ export function StatusLine({ workspace, locale, onPermissions, onDetails }: {
 }) {
   const words = useWords();
   const { status } = workspace;
-  const full = status?.sandbox?.mode === 'danger-full-access';
+  // A chat changes no file and runs no command, whatever its preset says, and nothing is to be confined there.
+  const chat = workspace.chat;
+  const full = !chat && status?.sandbox?.mode === 'danger-full-access';
   const confinement = status?.sandbox ? sayConfinement(words, status.sandbox.strength) : null;
-  const loose = status?.sandbox?.strength === 'none' || status?.sandbox?.strength === 'partial';
+  const loose = !chat && (status?.sandbox?.strength === 'none' || status?.sandbox?.strength === 'partial');
   const percent = contextPercent(workspace.projection.lastInputTokens, status?.model.context_window);
 
   const { words: stands, tone } = standingOf(words, {
@@ -82,7 +84,7 @@ export function StatusLine({ workspace, locale, onPermissions, onDetails }: {
   return <footer className="status" data-tone={full ? 'warn' : undefined} data-test="status">
     {status && <button type="button" className="status-may" onClick={onPermissions} data-test="status-may">
       {full ? <ShieldAlert size={13} aria-hidden="true" /> : <ShieldCheck size={13} aria-hidden="true" />}
-      <span>{sayPermissions(words, status.sandbox?.mode ?? null, status.approval)}</span>
+      <span>{chat ? words.permissions.chat : sayPermissions(words, status.sandbox?.mode ?? null, status.approval)}</span>
     </button>}
     {confinement && loose && !full && <button type="button" className="status-loose" onClick={onPermissions} title={confinement} aria-label={confinement}>
       <TriangleAlert size={13} />

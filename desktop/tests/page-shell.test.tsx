@@ -84,6 +84,19 @@ describe('the status line', () => {
     expect(sign()).toBeNull();
   });
 
+  it('says of a chat that it changes nothing, under any preset, and has no sign of commands', () => {
+    const calls = drawn(workspaceWith({ chat: true }));
+    expect(one('status-may').textContent).toBe('Changes no file and runs no command.');
+    expect(sign()).toBeNull();
+    fireEvent.click(one('status-may'));
+    expect(counted(calls)).toEqual({ onPermissions: 1, onDetails: 0 });
+    cleanup();
+    drawn(workspaceWith({ chat: true, status: fullAccess }));
+    expect(one('status-may').textContent).toBe('Changes no file and runs no command.');
+    expect(one('status').dataset.tone).toBeUndefined();
+    expect(one('status-may').querySelector('svg')?.getAttribute('class')).toContain('shield-check');
+  });
+
   it('is in the tone of a warning as a whole under full access', () => {
     drawn(workspaceWith({ status: fullAccess }));
     expect(one('status').dataset.tone).toBe('warn');
@@ -248,7 +261,7 @@ describe('the list of tasks', () => {
     { id: 's-2', modified_ms: Date.now() - 3 * 3_600_000, first_input: 'Write the notes.' },
   ];
   const drawn = (workspace: Workspace, title = 'Fix the parser.') => {
-    const calls = { onNewTask: vi.fn(), onOpenTask: vi.fn(), onOpenProject: vi.fn(), onSettings: vi.fn(), onHide: vi.fn() };
+    const calls = { onNewTask: vi.fn(), onOpenTask: vi.fn(), onOpenProject: vi.fn(), onOpenChat: vi.fn(), onSettings: vi.fn(), onHide: vi.fn() };
     render(<Sidebar workspace={workspace} title={title} {...calls} />);
     return calls;
   };
@@ -369,19 +382,37 @@ describe('the list of tasks', () => {
     expect(one('open-project').textContent).toBe('work');
     expect(one('open-project').getAttribute('title')).toBe('F:\\work');
     fireEvent.click(one('new-task'));
-    expect(counted(calls)).toEqual({ onNewTask: 1, onOpenTask: 0, onOpenProject: 0, onSettings: 0, onHide: 0 });
+    expect(counted(calls)).toEqual({ onNewTask: 1, onOpenTask: 0, onOpenProject: 0, onOpenChat: 0, onSettings: 0, onHide: 0 });
     fireEvent.click(one('open-project'));
-    expect(counted(calls)).toEqual({ onNewTask: 1, onOpenTask: 0, onOpenProject: 1, onSettings: 0, onHide: 0 });
+    expect(counted(calls)).toEqual({ onNewTask: 1, onOpenTask: 0, onOpenProject: 1, onOpenChat: 0, onSettings: 0, onHide: 0 });
     fireEvent.click(one('open-settings'));
-    expect(counted(calls)).toEqual({ onNewTask: 1, onOpenTask: 0, onOpenProject: 1, onSettings: 1, onHide: 0 });
+    expect(counted(calls)).toEqual({ onNewTask: 1, onOpenTask: 0, onOpenProject: 1, onOpenChat: 0, onSettings: 1, onHide: 0 });
     fireEvent.click(document.querySelector('[aria-label="Hide the list of tasks"]')!);
-    expect(counted(calls)).toEqual({ onNewTask: 1, onOpenTask: 0, onOpenProject: 1, onSettings: 1, onHide: 1 });
+    expect(counted(calls)).toEqual({ onNewTask: 1, onOpenTask: 0, onOpenProject: 1, onOpenChat: 0, onSettings: 1, onHide: 1 });
   });
 
   it('offers a project to open where none has answered', () => {
     drawn(workspaceWith({ hello: null, sessionId: null }));
     expect(one('open-project').textContent).toBe('Open a project');
     expect(one('open-project').getAttribute('title')).toBe('Open another project');
+  });
+
+  it('leads from a project to a chat, and from a chat into a project', () => {
+    const calls = drawn(workspaceWith({ sessions }));
+    const chat = one('open-chat');
+    expect(chat.textContent).toBe('Just chat');
+    expect(chat.getAttribute('title')).toBe('A conversation that belongs to no project. Columbina changes no file in it and runs no command.');
+    fireEvent.click(chat);
+    expect(counted(calls)).toEqual({ onNewTask: 0, onOpenTask: 0, onOpenProject: 0, onOpenChat: 1, onSettings: 0, onHide: 0 });
+    cleanup();
+    // In a chat no project is open: the way into one says so, and the way into a chat is not offered.
+    const inChat = drawn(workspaceWith({ chat: true, sessions, hello: { ...workspaceWith().hello!, cwd: 'C:\\Users\\me\\Columbina\\chat' } }));
+    expect(one('open-project').textContent).toBe('Open a project');
+    expect(one('open-project').getAttribute('title')).toBe('Open a project');
+    expect(one('open-project').getAttribute('aria-label')).toBe('Open a project');
+    expect(marked('open-chat')).toEqual([]);
+    fireEvent.click(one('open-project'));
+    expect(counted(inChat)).toEqual({ onNewTask: 0, onOpenTask: 0, onOpenProject: 1, onOpenChat: 0, onSettings: 0, onHide: 0 });
   });
 
   it('tells anew every minute when a task was written last', () => {
@@ -401,7 +432,7 @@ describe('the page of a new task', () => {
     name, description: `What ${name} is for.`, user_invocable, model_invocable: true,
   });
   const head = (workspace: Workspace, github = gitHubWith()) => {
-    const calls = { onOpenProject: vi.fn(), onOpenRecent: vi.fn(), onPermissions: vi.fn(), onSetUp: vi.fn(), onOpenPage: vi.fn() };
+    const calls = { onOpenProject: vi.fn(), onOpenRecent: vi.fn(), onOpenChat: vi.fn(), onPermissions: vi.fn(), onSetUp: vi.fn(), onOpenPage: vi.fn() };
     const firstButton = { current: null as HTMLButtonElement | null };
     const drawn = render(<StartHead workspace={workspace} github={github} {...calls} firstButton={firstButton} />);
     return { calls, firstButton, github, drawn };
@@ -414,7 +445,7 @@ describe('the page of a new task', () => {
     // The button is handed to the page, which gives it the keyboard.
     expect(firstButton.current).toBe(one('open-project-start'));
     fireEvent.click(one('open-project-start'));
-    expect(counted(calls)).toEqual({ onOpenProject: 1, onOpenRecent: 0, onPermissions: 0, onSetUp: 0, onOpenPage: 0 });
+    expect(counted(calls)).toEqual({ onOpenProject: 1, onOpenRecent: 0, onOpenChat: 0, onPermissions: 0, onSetUp: 0, onOpenPage: 0 });
     const rows = [...one('recent-projects').querySelectorAll('button')];
     expect(rows.map(row => [row.querySelector('.task-name')?.textContent, row.querySelector('.task-when')?.textContent, row.title]))
       .toEqual([['work', 'F:\\work', 'F:\\work'], ['notes', 'D:\\notes', 'D:\\notes']]);
@@ -428,6 +459,17 @@ describe('the page of a new task', () => {
     expect(marked('recent-projects')).toEqual([]);
   });
 
+  it('says of a chat what it is, and not where its folder is', () => {
+    head(workspaceWith({ chat: true, hello: { ...workspaceWith().hello!, cwd: 'C:\\Users\\me\\Columbina\\chat' } }));
+    const lead = one('start').querySelector('.start-lead');
+    expect(lead?.textContent).toBe('A conversation that belongs to no project. Columbina changes no file in it and runs no command.');
+    expect(lead?.className).toBe('start-lead');
+    expect(lead?.hasAttribute('title')).toBe(false);
+    expect(one('start-chat-lead')).toBe(lead);
+    // What it may do is what the lead says: there is no line for it beside.
+    expect(marked('start-may')).toEqual([]);
+  });
+
   it('says where the task works and what it may do, and leads to where that is chosen', () => {
     const { calls } = head(workspaceWith());
     expect(one('start').querySelector('h2')?.textContent).toBe('What shall we work on?');
@@ -437,7 +479,7 @@ describe('the page of a new task', () => {
     expect(one('start-may').textContent).toBe('Can change the files of this project, and asks before it runs a command.');
     expect(one('start-may').dataset.tone).toBeUndefined();
     fireEvent.click(one('start-may'));
-    expect(counted(calls)).toEqual({ onOpenProject: 0, onOpenRecent: 0, onPermissions: 1, onSetUp: 0, onOpenPage: 0 });
+    expect(counted(calls)).toEqual({ onOpenProject: 0, onOpenRecent: 0, onOpenChat: 0, onPermissions: 1, onSetUp: 0, onOpenPage: 0 });
   });
 
   it('says it as a warning under full access, and says nothing before the service has said it', () => {

@@ -446,6 +446,11 @@ button.task:hover:not(:disabled) {
   margin-top: var(--s3);
 }
 
+/* A conversation that belongs to no project: a quiet way, beside the way into a project. */
+.start-chat {
+  color: var(--moon-1);
+}
+
 /* What the task that is about to begin may do. A click leads to where that is chosen. */
 .start-may {
   display: inline-flex;

@@ -261,8 +261,8 @@ describe('the status line under full access', () => {
   it('is in the colour of a warning as a whole', () => {
     expect(rules).toContain('background: var(--warn-wash);');
     expect(rules).toContain('color: var(--warn);');
-    // The line has the tone, and not one part of it. Full access is what gives it.
-    expect(line).toContain("const full = status?.sandbox?.mode === 'danger-full-access';");
+    // The line has the tone, and not one part of it. Full access is what gives it, outside a chat.
+    expect(line).toContain("const full = !chat && status?.sandbox?.mode === 'danger-full-access';");
     expect(line).toContain(`<footer className="status" data-tone={full ? 'warn' : undefined} data-test="status">`);
     expect(line.match(/data-tone=\{full/g)).toHaveLength(1);
   });

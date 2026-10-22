@@ -317,6 +317,57 @@ async function stopService() {
   try { await stopping; } finally { stopping = null; }
 }
 /**
+ * The folder of a conversation that belongs to no project. It lies beside the home of the program,
+ * as the folder of the assistant in Feishu does: ~/Columbina/chat where the home is ~/.columbina.
+ */
+function chatFolder() {
+  const home = process.env.COLUMBINA_HOME || path.join(app.getPath('home'), '.columbina');
+  return path.join(path.dirname(home), 'Columbina', 'chat');
+}
+/**
+ * Start the service process once the one that runs has stopped. `where` names the folder that it
+ * works in when the turn of this start has come, and `words` follow `serve` in the command of the
+ * program, such as a profile. A replay takes none.
+ */
+async function startServiceIn(where, words) {
+  if (exiting) throw new Error('The application is closing.');
+  const cwd = where();
+  await stopService();
+  if (askingLoginShell) await askingLoginShell;
+  if (exiting) throw new Error('The application is closing.');
+  const config = serviceCommand();
+  const args = config.mode === 'service' && config.args.includes('serve') ? [...config.args, ...words] : config.args;
+  mkdirSync(path.dirname(logPath()), { recursive: true });
+  const log = createWriteStream(logPath(), { flags: 'a' });
+  log.on('error', () => {});
+  const child = spawn(config.executable, args, {
+    cwd, env: config.env, windowsHide: true,
+    detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  service = child;
+  serviceProject = { child, cwd, mode: config.mode };
+  lastWords = listenForErrors(child);
+  const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  lines.on('line', (line) => { if (service === child) tell('columbina:line', line); });
+  child.stderr.pipe(log);
+  child.stdin.on('error', (error) => {
+    if (service === child) tell('columbina:closed', `The service input closed: ${error.message}`);
+  });
+  child.on('error', (error) => {
+    if (service === child) tell('columbina:closed', `The service could not start: ${error.message}`);
+  });
+  child.on('close', (code, signal) => {
+    lines.close();
+    log.end();
+    if (service === child) {
+      service = null;
+      tell('columbina:closed', code === 0 ? 'The service has shut down.' : `The service process exited (${signal || code}).`);
+    }
+  });
+  await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+  return { mode: config.mode, cwd };
+}
+/**
  * Ask the login shell of the user, the way a terminal starts it, what its PATH is and which proxy
  * it sets. The answer holds what it said of each variable, which is empty for one that it does not
  * set, and is null where it says nothing in time.
@@ -656,43 +707,17 @@ function installHandlers() {
     checkSender(event);
     // Validate before queueing so an unapproved request cannot stop a running project.
     approvedDirectory(options);
-    return enqueueService(async () => {
-      if (exiting) throw new Error('The application is closing.');
-      const cwd = approvedDirectory(options);
-      await stopService();
-      if (askingLoginShell) await askingLoginShell;
-      if (exiting) throw new Error('The application is closing.');
-      const config = serviceCommand();
-      mkdirSync(path.dirname(logPath()), { recursive: true });
-      const log = createWriteStream(logPath(), { flags: 'a' });
-      log.on('error', () => {});
-      const child = spawn(config.executable, config.args, {
-        cwd, env: config.env, windowsHide: true,
-        detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      service = child;
-      serviceProject = { child, cwd, mode: config.mode };
-      lastWords = listenForErrors(child);
-      const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-      lines.on('line', (line) => { if (service === child) tell('columbina:line', line); });
-      child.stderr.pipe(log);
-      child.stdin.on('error', (error) => {
-        if (service === child) tell('columbina:closed', `The service input closed: ${error.message}`);
-      });
-      child.on('error', (error) => {
-        if (service === child) tell('columbina:closed', `The service could not start: ${error.message}`);
-      });
-      child.on('close', (code, signal) => {
-        lines.close();
-        log.end();
-        if (service === child) {
-          service = null;
-          tell('columbina:closed', code === 0 ? 'The service has shut down.' : `The service process exited (${signal || code}).`);
-        }
-      });
-      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-      return { mode: config.mode, cwd };
-    });
+    return enqueueService(() => startServiceIn(() => approvedDirectory(options), []));
+  });
+  ipcMain.handle('columbina:start-chat', async (event) => {
+    checkSender(event);
+    // A conversation that belongs to no project, in the folder that the shell names for it. Its
+    // agent changes nothing there: the profile chat gives it no tool for that.
+    return enqueueService(() => startServiceIn(() => {
+      const folder = chatFolder();
+      mkdirSync(folder, { recursive: true });
+      return folder;
+    }, ['--profile', 'chat']));
   });
   ipcMain.on('columbina:send', (event, line) => {
     try {

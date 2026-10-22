@@ -564,6 +564,8 @@ describe('the field', () => {
       return [box().placeholder, box().disabled, hint(), box().form?.dataset.off ?? null, list() !== null, commandsButton().disabled];
     };
     expect(told({})).toEqual(['Give Columbina something to do', false, keysIdle, null, true, false]);
+    // In a chat the field asks for a word and not for a task.
+    expect(told({ chat: true })).toEqual(['Say something to Columbina', false, keysIdle, null, true, false]);
     expect(told({ hasProject: false, hello: null, status: null, sessionId: null }))
       .toEqual(['Open a project first', true, '', 'true', false, true]);
     expect(told({ connected: false, closed: 'It ended with the code 1.' }))

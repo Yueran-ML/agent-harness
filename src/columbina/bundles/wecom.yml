@@ -1,0 +1,51 @@
+# What `columbina wecom` loads: the base program without what changes files, runs commands,
+# reaches GitHub or hands work to other agents, and the assistant that its owner talks to in
+# WeCom. Its agent reads: the files in its own directory and its skills. Nobody is there to say
+# yes to anything else. Its directory lies apart from the home of the program, where
+# COLUMBINA_WECOM_HOME says.
+extends: base
+patch:
+  - id: tool-write
+    disabled: true
+  - id: tool-edit
+    disabled: true
+  - id: tool-shell
+    disabled: true
+  - id: github
+    disabled: true
+  - id: subagents
+    disabled: true
+  - id: subagent-spawn
+    disabled: true
+  - id: tool-subagent
+    disabled: true
+  - id: mcp
+    disabled: true
+  - id: hooks
+    disabled: true
+  - id: todo
+    disabled: true
+  # A call that would need a yes asks nobody, so it does not run. The rules of the user hold.
+  - id: permissions
+    config:
+      preset: read-only
+      user_file: ${COLUMBINA_HOME}/permissions.yml
+  # The skills of the assistant are its own. The many that a user may keep for other tools
+  # would crowd them out of the list that a model is given.
+  - id: skills
+    config:
+      home: ${COLUMBINA_WECOM_HOME}/skills
+  # Nothing is changed, so what the conduct says about changing things is left out.
+  - id: system-prompt-conduct
+    config:
+      leave_out: [changes]
+  - insert:
+      - id: frontend
+        plugin: columbina.wecom.bot
+        config:
+          model:
+            provider: deepseek
+            model: ${COLUMBINA_MODEL:-deepseek-flash}
+            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}
+          cwd: ${COLUMBINA_WECOM_HOME}
+          home: ${COLUMBINA_HOME}

@@ -192,10 +192,15 @@ feishu = [
 mcp = [
     { name = "mcp" },
 ]
+wecom = [
+    { name = "cryptography" },
+    { name = "websockets" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
+    { name = "cryptography" },
     { name = "hypothesis" },
     { name = "mcp" },
     { name = "pyright" },
@@ -209,6 +214,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", marker = "extra == 'wecom'", specifier = ">=43" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "keyring", specifier = ">=25" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3,<3" },
@@ -217,12 +223,14 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "rich", specifier = ">=13.9" },
     { name = "websockets", marker = "extra == 'feishu'", specifier = ">=16" },
+    { name = "websockets", marker = "extra == 'wecom'", specifier = ">=16" },
 ]
-provides-extras = ["mcp", "feishu"]
+provides-extras = ["mcp", "feishu", "wecom"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = ">=7.6" },
+    { name = "cryptography", specifier = ">=43" },
     { name = "hypothesis", specifier = ">=6.115" },
     { name = "mcp", specifier = ">=2.3,<3" },
     { name = "pyright", specifier = ">=1.1.400" },

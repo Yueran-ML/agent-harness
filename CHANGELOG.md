@@ -6,6 +6,14 @@ change what was there before.
 
 ## Unreleased
 
+- An assistant in WeCom answers its owner through a smart bot that uses the API mode with a long
+  connection, as the one in Feishu answers through an app. `columbina wecom --setup` checks the
+  Bot ID and the Secret with WeCom and keeps them, the Secret in the keyring of the system, and
+  `columbina wecom` runs the assistant, which pairs with the one who sends the code that it
+  shows. It answers in a single chat alone, reads text, what WeCom writes out of a voice
+  message, quotes and files, which it decrypts, and works in `~/Columbina/wecom`, whose files
+  its owner may let it change, as with the one in Feishu. Its answer streams into the chat while
+  the turn runs. The package comes with `pip install "columbina[wecom]"`.
 - Files go with a message in the desktop application: chosen with the paperclip at the foot
   of the field or dropped on it, ten at most and of up to 25 MB each. When the message is
   sent they are copied into `.columbina/attachments/` of the project, which a `.gitignore`

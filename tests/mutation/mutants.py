@@ -183,6 +183,15 @@ FEISHU_SETUP = "src/columbina/feishu/setup.py"
 FEISHU_BUNDLE = "src/columbina/bundles/feishu.yml"
 FEISHU_WRITABLE_BUNDLE = "src/columbina/bundles/feishu-writable.yml"
 CHAT_BUNDLE = "src/columbina/bundles/chat.yml"
+WECOM_LINK = "src/columbina/wecom/link.py"
+WECOM_MEDIA = "src/columbina/wecom/media.py"
+WECOM_APP = "src/columbina/wecom/app.py"
+WECOM_STORE = "src/columbina/wecom/store.py"
+WECOM_SETUP = "src/columbina/wecom/setup.py"
+WECOM_BOT = "src/columbina/wecom/bot.py"
+WECOM_MESSAGES = "src/columbina/wecom/messages.py"
+WECOM_BUNDLE = "src/columbina/bundles/wecom.yml"
+WECOM_WRITABLE_BUNDLE = "src/columbina/bundles/wecom-writable.yml"
 
 
 @dataclass(frozen=True, slots=True)
@@ -24969,13 +24978,13 @@ _FEISHU = (
     mutant(
         "the assistant is not told that it may change files",
         LAUNCHER,
-        "                if args.profile == _FEISHU_WRITABLE:\n",
+        "                if args.profile in (_FEISHU_WRITABLE, _WECOM_WRITABLE):\n",
         "                if False:\n",
     ),
     mutant(
         "every assistant is told that it may change files",
         LAUNCHER,
-        "                if args.profile == _FEISHU_WRITABLE:\n",
+        "                if args.profile in (_FEISHU_WRITABLE, _WECOM_WRITABLE):\n",
         "                if True:\n",
     ),
     mutant(
@@ -25029,14 +25038,14 @@ _FEISHU = (
     mutant(
         "every app lets its agent change files",
         LAUNCHER,
-        "    return chosen is not None and chosen.writable\n",
-        "    return chosen is not None\n",
+        "    except FeishuError:\n        return False\n    return chosen is not None and chosen.writable\n",
+        "    except FeishuError:\n        return False\n    return chosen is not None\n",
     ),
     mutant(
         "the status says that files may change where they may not",
         LAUNCHER,
-        '        + ("and may change the files there." if said["writable"] else "and changes no file there.")\n',
-        '        + ("and may change the files there." if not said["writable"] else "and changes no file there.")\n',
+        '    lines = [f"The app {said[\'app_id\']} in {said[\'domain\']} is set up."]\n    lines.append(\n        f"Its assistant works in {said[\'folder\']}, "\n        + ("and may change the files there." if said["writable"] else "and changes no file there.")\n',
+        '    lines = [f"The app {said[\'app_id\']} in {said[\'domain\']} is set up."]\n    lines.append(\n        f"Its assistant works in {said[\'folder\']}, "\n        + ("and may change the files there." if not said["writable"] else "and changes no file there.")\n',
     ),
     mutant(
         "a number is written without the mark that more of it follows",
@@ -25650,8 +25659,8 @@ _FEISHU = (
     mutant(
         "--json goes with printing the plugins",
         LAUNCHER,
-        "    if args.json and (args.setup or args.dump_config):\n",
-        "    if args.json and args.setup:\n",
+        '    """Run the assistant in Feishu, or set it up, say how it is doing, or forget it."""\n    if args.json and (args.setup or args.dump_config):\n',
+        '    """Run the assistant in Feishu, or set it up, say how it is doing, or forget it."""\n    if args.json and args.setup:\n',
     ),
     mutant(
         "one sender may send one wrong code more than is allowed",
@@ -26992,6 +27001,586 @@ _CHAT_PROFILE = (
 )
 
 
+_WECOM = (
+    mutant(
+        "the bot signs in without its secret",
+        WECOM_LINK,
+        '        await socket.send(_frame(SUBSCRIBE, asked, {"bot_id": self.bot_id, "secret": self.secret}))\n',
+        '        await socket.send(_frame(SUBSCRIBE, asked, {"bot_id": self.bot_id}))\n',
+    ),
+    mutant(
+        "a wrong secret is tried again",
+        WECOM_LINK,
+        "        if number == _WRONG:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a bot without the long connection is tried again",
+        WECOM_LINK,
+        "        if number == _NOT_LONG:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "refusals are never given up",
+        WECOM_LINK,
+        "                if refused >= _REFUSALS_MOST:\n",
+        "                if False:\n",
+    ),
+    mutant(
+        "refusals are counted on after a sign-in",
+        WECOM_LINK,
+        "                    failed = refused = 0\n",
+        "                    failed = 0\n",
+    ),
+    mutant(
+        "the pauses do not double",
+        WECOM_LINK,
+        "            await self.sleep(min(_FIRST_PAUSE * 2 ** (failed - 1), _LONGEST_PAUSE))\n",
+        "            await self.sleep(_FIRST_PAUSE)\n",
+    ),
+    mutant(
+        "the pauses grow without end",
+        WECOM_LINK,
+        "            await self.sleep(min(_FIRST_PAUSE * 2 ** (failed - 1), _LONGEST_PAUSE))\n",
+        "            await self.sleep(_FIRST_PAUSE * 2 ** (failed - 1))\n",
+    ),
+    mutant(
+        "the answer to another frame is taken for that of the sign-in",
+        WECOM_LINK,
+        "                    if frame is not None and _req_id(frame) == asked:\n",
+        "                    if frame is not None:\n",
+    ),
+    mutant(
+        "two unanswered pings are taken for more",
+        WECOM_LINK,
+        "            if self._missed >= _MISSED_MOST:\n",
+        "            if self._missed > _MISSED_MOST:\n",
+    ),
+    mutant(
+        "an answered ping does not count the unanswered anew",
+        WECOM_LINK,
+        '            if frame.get("errcode") == 0:\n                self._missed = 0\n',
+        '            if frame.get("errcode") == 0:\n                pass\n',
+    ),
+    mutant(
+        "a ping answered with an error counts as answered",
+        WECOM_LINK,
+        '            if frame.get("errcode") == 0:\n                self._missed = 0\n',
+        "            if True:\n                self._missed = 0\n",
+    ),
+    mutant(
+        "pings are not counted",
+        WECOM_LINK,
+        "            self._missed += 1\n",
+        "            pass\n",
+    ),
+    mutant(
+        "another program signing in is taken for an event",
+        WECOM_LINK,
+        '            if cmd == EVENT and event.get("eventtype") == _TAKEN_OVER:\n',
+        "            if False:\n",
+    ),
+    mutant(
+        "events are not heard",
+        WECOM_LINK,
+        "        if cmd in (MESSAGE, EVENT):\n",
+        "        if cmd == MESSAGE:\n",
+    ),
+    mutant(
+        "control characters break a frame",
+        WECOM_LINK,
+        '            frame: object = json.loads(_CONTROL.sub("", text))\n',
+        "            frame: object = json.loads(text)\n",
+    ),
+    mutant(
+        "the frames of one message go out at once",
+        WECOM_LINK,
+        "            async with line.lock:\n                return await self._answered(cmd, named, body)\n",
+        "            if True:\n                return await self._answered(cmd, named, body)\n",
+    ),
+    mutant(
+        "the lines of messages are kept for ever",
+        WECOM_LINK,
+        "            if line.users == 0:\n                del self._lines[named]\n",
+        "            if line.users == 0:\n                pass\n",
+    ),
+    mutant(
+        "a refused frame is taken",
+        WECOM_LINK,
+        "        if number != 0:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the waits for answers are not told of a lost connection",
+        WECOM_LINK,
+        "            self._lost()\n",
+        "            pass\n",
+    ),
+    mutant(
+        "the secret is said",
+        WECOM_LINK,
+        '            text = text.replace(spelling, "[Secret]")\n',
+        "            pass\n",
+    ),
+    mutant(
+        "a stopped connection is not closed politely",
+        WECOM_LINK,
+        "            # The assistant stops. WeCom is told that the connection ended as it was meant to.\n            try:\n                await socket.close()\n",
+        "            # The assistant stops. WeCom is told that the connection ended as it was meant to.\n            try:\n                pass\n",
+    ),
+    mutant(
+        "the proxy of the environment is not taken",
+        WECOM_LINK,
+        "        if any(name.lower() in _PROXY_VARIABLES and value for name, value in self.env.items()):\n            return True\n",
+        "        if any(name.lower() in _PROXY_VARIABLES and value for name, value in self.env.items()):\n            return None\n",
+    ),
+    mutant(
+        "a check leaves the connection open",
+        WECOM_LINK,
+        "                await self._signed_in(socket, aiter(socket))\n                await socket.close()\n",
+        "                await self._signed_in(socket, aiter(socket))\n",
+    ),
+    mutant(
+        "a refusal at a check is taken for an unreachable WeCom",
+        WECOM_LINK,
+        '        except _Refused as error:\n            raise WecomError(str(error), code="REFUSED") from None\n',
+        "",
+    ),
+    mutant(
+        "a key without its padding is no key",
+        WECOM_MEDIA,
+        '        raw = base64.b64decode(written + "=" * (-len(written) % 4), validate=True)\n',
+        "        raw = base64.b64decode(written, validate=True)\n",
+    ),
+    mutant(
+        "the vector is the end of the key",
+        WECOM_MEDIA,
+        "    opened = Cipher(algorithms.AES(raw), modes.CBC(raw[:16])).decryptor()\n",
+        "    opened = Cipher(algorithms.AES(raw), modes.CBC(raw[16:])).decryptor()\n",
+    ),
+    mutant(
+        "the filling stays on",
+        WECOM_MEDIA,
+        "    return plain[:-filled]\n",
+        "    return plain\n",
+    ),
+    mutant(
+        "a file of any size is downloaded",
+        WECOM_MEDIA,
+        "                if len(kept) > most + _BLOCK:\n",
+        "                if False:\n",
+    ),
+    mutant(
+        "the filling is not allowed for",
+        WECOM_MEDIA,
+        "                if len(kept) > most + _BLOCK:\n",
+        "                if len(kept) > most:\n",
+    ),
+    mutant(
+        "a file at a place that is not safe is downloaded",
+        WECOM_MEDIA,
+        "    if not safe_to_fetch(url):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a failed download is taken",
+        WECOM_MEDIA,
+        "            if response.status_code != HTTPStatus.OK:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a name is not decoded",
+        WECOM_MEDIA,
+        '            name = unquote(found.group(1).strip(), errors="replace")\n',
+        "            name = found.group(1).strip()\n",
+    ),
+    mutant(
+        "the plain name goes before the starred one",
+        WECOM_MEDIA,
+        "    for pattern in (_STARRED, _PLAIN):\n",
+        "    for pattern in (_PLAIN, _STARRED):\n",
+    ),
+    mutant(
+        "WeCom is reached without encryption anywhere",
+        WECOM_APP,
+        '    if parts.scheme != "wss" and not (parts.scheme == "ws" and parts.hostname in _HERE):\n',
+        '    if parts.scheme not in ("wss", "ws"):\n',
+    ),
+    mutant(
+        "a file is downloaded without encryption",
+        WECOM_APP,
+        '    return parts.scheme == "https" or (parts.scheme == "http" and parts.hostname in _HERE)\n',
+        '    return parts.scheme in ("https", "http")\n',
+    ),
+    mutant(
+        "another bot takes over whom the one before answered",
+        WECOM_STORE,
+        "    if before is not None and before.bot_id == chosen.bot_id:\n",
+        "    if before is not None:\n",
+    ),
+    mutant(
+        "the same bot forgets whom it answered",
+        WECOM_STORE,
+        '            "owner": before.owner,\n',
+        "",
+    ),
+    mutant(
+        "the same bot forgets its session",
+        WECOM_STORE,
+        '            "session_id": before.session_id,\n',
+        "",
+    ),
+    mutant(
+        "the same bot forgets whether its agent may change files",
+        WECOM_STORE,
+        '            "writable": before.writable,\n',
+        "",
+    ),
+    mutant(
+        "the secret is handed out for one place whatever is asked",
+        WECOM_STORE,
+        "        return credentials.key_for(home / CREDENTIALS, _SECRET, origin_of(place))\n",
+        '        return credentials.key_for(home / CREDENTIALS, _SECRET, "wss://openws.work.weixin.qq.com")\n',
+    ),
+    mutant(
+        "the status is not written",
+        WECOM_STORE,
+        "        _written(home / FOLDER / STATUS, said, private=True)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "the directory of the assistant is not where the environment says",
+        WECOM_STORE,
+        '    return Path(named) if named else home.parent / "Columbina" / "wecom"\n',
+        '    return home.parent / "Columbina" / "wecom"\n',
+    ),
+    mutant(
+        "a bot that WeCom does not take is kept",
+        WECOM_SETUP,
+        "        await checked(bot_id, secret, env, opener=opener)\n",
+        "        pass\n",
+    ),
+    mutant(
+        "whether files may change is kept without the environment",
+        WECOM_SETUP,
+        '        return made_writable(home, given["writable"], env)\n',
+        '        return made_writable(home, given["writable"], {})\n',
+    ),
+    mutant(
+        "an agent whose directory lies in the home of the program may change files",
+        WECOM_SETUP,
+        "    if writable and within(folder, home):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "an agent whose directory lies in the home of the program may not be let change nothing",
+        WECOM_SETUP,
+        "    if writable and within(folder, home):\n",
+        "    if within(folder, home):\n",
+    ),
+    mutant(
+        "a bot id of the longest length is none",
+        WECOM_SETUP,
+        "    if not bot_id or len(bot_id) > _LONGEST_ID or not sendable(bot_id):\n",
+        "    if not bot_id or len(bot_id) >= _LONGEST_ID or not sendable(bot_id):\n",
+    ),
+    mutant(
+        "the status does not say where the assistant works",
+        WECOM_SETUP,
+        '        "folder": folder,\n        "writable": chosen.writable,\n',
+        '        "writable": chosen.writable,\n',
+    ),
+    mutant(
+        "the status of an assistant that failed is not told after it ended",
+        WECOM_SETUP,
+        '    if told is not None and (running or told.state == "failed"):\n',
+        "    if told is not None and running:\n",
+    ),
+    mutant(
+        "whether files may change is kept without a bot",
+        WECOM_SETUP,
+        '        if chosen is None:\n            raise WecomError("no bot of WeCom is set up", code="NONE")\n',
+        "",
+    ),
+    mutant(
+        "a check goes where the environment does not say",
+        WECOM_SETUP,
+        "        address(env),\n",
+        "        address({}),\n",
+    ),
+    mutant(
+        "a voice message is not read",
+        WECOM_MESSAGES,
+        '    if kind == "voice":\n        return _text(_object(body.get("voice")).get("content"))\n',
+        "",
+    ),
+    mutant(
+        "what a message quotes is not kept",
+        WECOM_MESSAGES,
+        '    return Text(words, _words(_object(body.get("quote"))) or None)\n',
+        "    return Text(words)\n",
+    ),
+    mutant(
+        "an answer is not begun",
+        WECOM_BOT,
+        "        asked.beginning = self._later(self._begin(asked))\n",
+        "",
+    ),
+    mutant(
+        "an answer is ended where it is begun",
+        WECOM_BOT,
+        "        thinking = _stream(asked, self._words.thinking, finish=False)\n",
+        "        thinking = _stream(asked, self._words.thinking, finish=True)\n",
+    ),
+    mutant(
+        "an answer is not ended",
+        WECOM_BOT,
+        '        return await self._sent(RESPOND, _stream(asked, text, finish=True), asked.req_id, "answer")\n',
+        '        return await self._sent(RESPOND, _stream(asked, text, finish=False), asked.req_id, "answer")\n',
+    ),
+    mutant(
+        "an answer is written for ever",
+        WECOM_BOT,
+        "        if asked.began is not None and self._clock() - asked.began >= _STREAM_SECONDS:\n            return False\n",
+        "",
+    ),
+    mutant(
+        "an answer that takes long is not ended in time",
+        WECOM_BOT,
+        "            asked.expiring = self._later(self._expiring(asked))\n",
+        "            pass\n",
+    ),
+    mutant(
+        "an answer is ended twice",
+        WECOM_BOT,
+        "        if asked.closed:\n            return False\n",
+        "",
+    ),
+    mutant(
+        "what the answer could not hold is dropped",
+        WECOM_BOT,
+        "        if asked is not None and await self._closed(asked, pieces[0]):\n            pieces = pieces[1:]\n",
+        "        if asked is not None:\n            await self._closed(asked, pieces[0])\n            pieces = pieces[1:]\n",
+    ),
+    mutant(
+        "the rest of a long answer is not sent",
+        WECOM_BOT,
+        "        for piece in pieces:\n            await self._pushed(piece)\n",
+        "",
+    ),
+    mutant(
+        "a message of its own goes to a group",
+        WECOM_BOT,
+        '        body = {"chatid": settings.owner, "chat_type": 1, **_markdown(text)}\n',
+        '        body = {"chatid": settings.owner, "chat_type": 2, **_markdown(text)}\n',
+    ),
+    mutant(
+        "a message of its own goes to the bot",
+        WECOM_BOT,
+        '        body = {"chatid": settings.owner, "chat_type": 1, **_markdown(text)}\n',
+        '        body = {"chatid": settings.bot_id, "chat_type": 1, **_markdown(text)}\n',
+    ),
+    mutant(
+        "a message in a group is taken",
+        WECOM_BOT,
+        '        if body.get("chattype") != "single" or "compat_info" in body:\n',
+        '        if "compat_info" in body:\n',
+    ),
+    mutant(
+        "a message that is passed on is taken",
+        WECOM_BOT,
+        '        if body.get("chattype") != "single" or "compat_info" in body:\n',
+        '        if body.get("chattype") != "single":\n',
+    ),
+    mutant(
+        "a message that comes again is answered again",
+        WECOM_BOT,
+        "        if message_id in seen:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the paired owner is greeted as a stranger",
+        WECOM_BOT,
+        "                and settings.owner is None\n",
+        "",
+    ),
+    mutant(
+        "nobody is greeted",
+        WECOM_BOT,
+        '                self._later(self._sent(WELCOME, welcome, req_id, "welcome", tries=1))\n',
+        "                pass\n",
+    ),
+    mutant(
+        "a stopped answer is left thinking",
+        WECOM_BOT,
+        "                await self._closed(asked, words.stopped_here)\n",
+        "                pass\n",
+    ),
+    mutant(
+        "what a new conversation drops is left thinking",
+        WECOM_BOT,
+        "        for asked in dropped:\n            self._later(self._closed(asked, words.dropped_here))\n",
+        "",
+    ),
+    mutant(
+        "what a stop drops is left thinking",
+        WECOM_BOT,
+        "        for asked in waiting:\n            self._later(self._closed(asked, words.dropped_here))\n",
+        "",
+    ),
+    mutant(
+        "the answers being written are left thinking when the assistant stops",
+        WECOM_BOT,
+        "                await self._leave()\n",
+        "                pass\n",
+    ),
+    mutant(
+        "what a message quotes is not given to the agent",
+        WECOM_BOT,
+        "                self._ask(said.asked(), req_id)\n",
+        "                self._ask(said.text, req_id)\n",
+    ),
+    mutant(
+        "a file of text without a name is not read",
+        WECOM_BOT,
+        "            if not _text_like(content):\n",
+        "            if True:\n",
+    ),
+    mutant(
+        "a skill without a name is kept as text",
+        WECOM_BOT,
+        "            if _a_skill(content):\n                await self._install(content, req_id)\n                return\n",
+        "",
+    ),
+    mutant(
+        "a decrypted file of any size is taken",
+        WECOM_BOT,
+        "        if len(content) > MAX_BYTES:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a file is kept under a name that is not safe",
+        WECOM_BOT,
+        "        named = _UNNAMED if got.name is None else _safe(got.name)\n",
+        "        named = _UNNAMED if got.name is None else got.name\n",
+    ),
+    mutant(
+        "an answer that WeCom takes no more of for now is not sent again",
+        WECOM_BOT,
+        '                passing = error.code == "UNREACHABLE" or error.number == _TOO_OFTEN\n',
+        '                passing = error.code == "UNREACHABLE"\n',
+    ),
+    mutant(
+        "an answer that went out leaves the trouble of the last one",
+        WECOM_BOT,
+        "            if self._error is not None and self._error.startswith(_SEND_FAILED):\n                self._error = None\n                self._status()\n            return True\n",
+        "            return True\n",
+    ),
+    mutant(
+        "an answer that could not be sent is not said in the status",
+        WECOM_BOT,
+        '                self._error = f"{_SEND_FAILED}: {error}"\n',
+        "                pass\n",
+    ),
+    mutant(
+        "the preset of the program holds for the assistant",
+        WECOM_BOT,
+        "        if permissions is not None:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the agent that may change files is let change none",
+        WECOM_BOT,
+        '                agent.session, "workspace-write" if config.writable else "read-only"\n',
+        '                agent.session, "read-only"\n',
+    ),
+    mutant(
+        "an assistant started to change files runs where its owner does not let it",
+        WECOM_BOT,
+        "            if config.writable and not chosen.writable:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "an assistant whose directory lies in the home of the program changes files there",
+        WECOM_BOT,
+        "            if config.writable and within(config.cwd, config.home):\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "the status does not say which bot it is of",
+        WECOM_BOT,
+        '                "bot_id": None if settings is None else settings.bot_id,\n',
+        '                "bot_id": None,\n',
+    ),
+    mutant(
+        "a code that ran out is still taken",
+        WECOM_BOT,
+        "        if pairing.until < self._now():\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a package that it needs is not asked for",
+        WECOM_BOT,
+        '        if any(\n            importlib.util.find_spec(package) is None for package in ("websockets", "cryptography")\n        ):\n',
+        '        if any(importlib.util.find_spec(package) is None for package in ("websockets",)):\n',
+    ),
+    mutant(
+        "the assistant in WeCom is not told where it works",
+        LAUNCHER,
+        '    env[wecom_store.ASSISTANT_HOME] = str(wecom_store.directory(Path(env["COLUMBINA_HOME"]), env))\n',
+        "",
+    ),
+    mutant(
+        "an agent in WeCom that may change files is given the tools that read",
+        LAUNCHER,
+        "    if args.profile == _WECOM and _wecom_writable(home):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "every bot lets its agent change files",
+        LAUNCHER,
+        "        chosen = wecom_store.settings(home)\n    except WecomError:\n        return False\n    return chosen is not None and chosen.writable\n",
+        "        chosen = wecom_store.settings(home)\n    except WecomError:\n        return False\n    return chosen is not None\n",
+    ),
+    mutant(
+        "the assistant in WeCom is given no lines of JSON",
+        LAUNCHER,
+        "            elif args.command in (_FEISHU, _WECOM):\n",
+        "            elif args.command == _FEISHU:\n",
+    ),
+    mutant(
+        "the assistant in WeCom is not told that it may change files",
+        LAUNCHER,
+        "                if args.profile in (_FEISHU_WRITABLE, _WECOM_WRITABLE):\n",
+        "                if args.profile == _FEISHU_WRITABLE:\n",
+    ),
+    mutant(
+        "the assistant in WeCom writes files",
+        WECOM_BUNDLE,
+        "  - id: tool-write\n    disabled: true\n",
+        "",
+    ),
+    mutant(
+        "the rules of the user do not hold for the assistant in WeCom",
+        WECOM_BUNDLE,
+        "      user_file: ${COLUMBINA_HOME}/permissions.yml\n",
+        "",
+    ),
+    mutant(
+        "the rules of the user do not hold for the assistant in WeCom that changes files",
+        WECOM_WRITABLE_BUNDLE,
+        "      user_file: ${COLUMBINA_HOME}/permissions.yml\n",
+        "",
+    ),
+    mutant(
+        "the assistant in WeCom that changes files edits none",
+        WECOM_WRITABLE_BUNDLE,
+        "  - id: tool-edit\n    disabled: false\n",
+        "",
+    ),
+)
+
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -27184,6 +27773,7 @@ SETS: dict[str, MutantSet] = {
         _SERVE,
     ),
     "feishu": MutantSet(("tests/feishu", "tests/apps/test_feishu_command.py"), _FEISHU),
+    "wecom": MutantSet(("tests/wecom", "tests/apps/test_wecom_command.py"), _WECOM),
     "chat-profile": MutantSet(
         ("tests/test_package.py", "tests/apps/test_launcher.py"), _CHAT_PROFILE
     ),

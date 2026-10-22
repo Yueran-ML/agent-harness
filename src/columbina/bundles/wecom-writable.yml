@@ -1,0 +1,17 @@
+# What `columbina wecom` loads where its owner lets its agent change the files of its own
+# directory: the assistant of wecom.yml, with the tools that write and edit files, in the mode
+# that holds them to the working directory. It still runs no commands, and a call that would
+# need a yes asks nobody, so it does not run.
+extends: wecom
+patch:
+  - id: tool-write
+    disabled: false
+  - id: tool-edit
+    disabled: false
+  - id: permissions
+    config:
+      preset: workspace-write
+      user_file: ${COLUMBINA_HOME}/permissions.yml
+  # It changes things now, so what the conduct says about changing things holds for it.
+  - id: system-prompt-conduct
+    config: null

@@ -8,6 +8,7 @@ from columbina.apps.cli import prompt
 from columbina.apps.setup import IN_THE_WAY
 from columbina.feishu.store import ASSISTANT_HOME
 from columbina.llm.services import KEY_OF_ONES_OWN, PRESETS
+from columbina.wecom.store import ASSISTANT_HOME as WECOM_HOME
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +31,15 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("COLUMBINA_AGENTS_HOME", str(tmp_path / "agents"))
     # Whatever the one who runs the tests has set to choose a service and a model of their own.
     keys = [service.key_env for service in PRESETS if service.key_env is not None]
-    in_the_way = (*keys, KEY_OF_ONES_OWN, "DEEPSEEK_BASE_URL", *IN_THE_WAY, ASSISTANT_HOME)
+    in_the_way = (
+        *keys,
+        KEY_OF_ONES_OWN,
+        "DEEPSEEK_BASE_URL",
+        *IN_THE_WAY,
+        ASSISTANT_HOME,
+        WECOM_HOME,
+        "COLUMBINA_WECOM_WS",
+    )
     for variable in in_the_way:
         monkeypatch.delenv(variable, raising=False)
     return directory

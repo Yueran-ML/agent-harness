@@ -68,7 +68,7 @@ const wheels = path.join(work, 'wheel');
 const requirements = path.join(work, 'requirements.txt');
 run('uv', ['build', '--wheel', '--out-dir', wheels], { cwd: checkout });
 run('uv', [
-  'export', '--quiet', '--locked', '--no-default-groups', '--extra', 'mcp', '--extra', 'feishu', '--no-emit-project',
+  'export', '--quiet', '--locked', '--no-default-groups', '--extra', 'mcp', '--extra', 'feishu', '--extra', 'wecom', '--no-emit-project',
   '--format', 'requirements-txt', '--output-file', requirements,
 ], { cwd: checkout });
 // Copied, and not linked to the cache of uv: the package is a folder of its own.

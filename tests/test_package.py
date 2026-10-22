@@ -10,7 +10,18 @@ import columbina
 from columbina.kernel import flatten, import_plugin
 from support.launch import bundle
 
-BUNDLES = ["base", "chat", "cli", "feishu", "feishu-writable", "headless", "minimal", "serve"]
+BUNDLES = [
+    "base",
+    "chat",
+    "cli",
+    "feishu",
+    "feishu-writable",
+    "headless",
+    "minimal",
+    "serve",
+    "wecom",
+    "wecom-writable",
+]
 
 
 def test_version_matches_the_installed_distribution() -> None:
@@ -51,6 +62,8 @@ def test_every_bundle_builds_on_the_one_before_it() -> None:
     assert ids["serve"] == [entry for entry in ids["cli"] if entry != "command-fork"]
     # The assistant in Feishu is the base program, with what it may not do switched off.
     assert ids["feishu"] == [*ids["base"], "frontend"]
+    # So is the assistant in WeCom.
+    assert ids["wecom"] == [*ids["base"], "frontend"]
     # A conversation in no project is whoever is served, with what it may not do switched off.
     assert ids["chat"] == ids["serve"]
 

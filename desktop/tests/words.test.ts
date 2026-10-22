@@ -107,13 +107,19 @@ const samples: Record<string, unknown[][]> = {
   'hint.feishu.wrongPlatform': [['Feishu', 'Lark'], ['Lark', 'Feishu']],
   'label.feishu.pair': [['Lark'], ['Feishu']],
   'label.feishu.choose': [['Lark'], ['Feishu']],
+  'hint.wecom.forgetAsk': [['aibTestBot0123']],
+  'hint.wecom.done': [['aibTestBot0123']],
+  'hint.wecom.connecting': [['WeCom'], ['企业微信']],
+  'hint.wecom.reconnecting': [['WeCom'], ['企业微信']],
+  'hint.wecom.connected': [['WeCom'], ['企业微信']],
+  'label.wecom.pair': [['WeCom'], ['企业微信']],
 };
 
 type Said = { path: string; text: string };
 
-// What is written in every language as it is: the names of the two platforms of Feishu, and the
-// names of the fields of an app, as both of their consoles write them.
-const NAMES = new Set(['Feishu', 'Lark', 'App ID', 'App Secret']);
+// What is written in every language as it is: the names of the platforms, and the names of the
+// fields of an app or a bot, as their consoles write them.
+const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'App ID', 'App Secret', 'Bot ID', 'Secret']);
 
 // Every string that a catalogue can say, with the place where it stands.
 function everythingSaid(value: unknown, path = ''): Said[] {

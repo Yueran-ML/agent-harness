@@ -395,6 +395,9 @@ export const en = {
       revoke: 'Take back the right on GitHub',
     },
 
+    /** The platforms on which an assistant answers. */
+    platforms: { feishu: 'Feishu', lark: 'Lark', wecom: 'WeCom' },
+
     /** The assistant in Feishu: in the settings, and in the window that takes its app. */
     feishu: {
       title: 'Assistant in Feishu',
@@ -416,13 +419,40 @@ export const en = {
       copyCode: 'Copy the code',
       pair: (platform: string) => `Send the bot this code in ${platform}`,
       platform: 'Platform',
-      platforms: { feishu: 'Feishu', lark: 'Lark' },
       choose: (platform: string) => `Choose ${platform}`,
       appId: 'App ID',
       appSecret: 'App Secret',
       store: 'Check and store',
       storing: 'Checking',
       steps: 'In the developer console',
+      next: 'Next steps',
+    },
+
+    /** The assistant in WeCom: in the settings, and in the window that takes its bot. */
+    wecom: {
+      title: 'Assistant in WeCom',
+      setUp: 'Set up a bot',
+      change: 'Change the bot',
+      start: 'Start the assistant',
+      starting: 'Starting',
+      stop: 'Stop',
+      stopping: 'Stopping',
+      forget: 'Delete the bot',
+      forgetConfirm: 'Delete it',
+      keep: 'Keep it',
+      console: 'Open the admin console',
+      log: 'Show the log',
+      /** Whether the agent of the assistant may change the files of its folder. */
+      writable: 'Let the assistant change the files in its folder',
+      folder: 'Open its folder',
+      checkAgain: 'Check again',
+      copyCode: 'Copy the code',
+      pair: (platform: string) => `Send the bot this code in a chat of your own in ${platform}`,
+      botId: 'Bot ID',
+      secret: 'Secret',
+      store: 'Check and store',
+      storing: 'Checking',
+      steps: 'In the admin console',
       next: 'Next steps',
     },
 
@@ -960,6 +990,61 @@ export const en = {
         `Find the bot by its name in ${platform}, and send it the code in a chat of your own.`,
       ],
       scopes: 'The last three are for reading documents, and may be left out.',
+    },
+
+    /** The assistant in WeCom. */
+    wecom: {
+      lead: 'Talk to Columbina in WeCom, through a smart bot of your own. The assistant answers you alone, in a chat of your '
+        + 'own with the bot. It runs no commands and changes none of your files: the files and skills that you send it are '
+        + 'kept in a folder of its own.',
+      reading: 'Asking how the assistant in WeCom is doing.',
+      unavailable: 'The assistant in WeCom is set up here where the application runs the service itself, and not in a replay.',
+      statusFailed: 'Columbina could not find out how the assistant in WeCom is doing.',
+      notRunning: 'The assistant does not run.',
+      connecting: (platform: string) => `Connecting to ${platform}.`,
+      reconnecting: (platform: string) => `${platform} cannot be reached just now. The assistant keeps trying.`,
+      connected: (platform: string) => `Connected. The assistant answers you in ${platform}.`,
+      trouble: 'Something did not go through lately.',
+      pairNote: 'Whoever sends it first is the one whom the assistant answers. The code holds for 10 minutes. '
+        + 'After that, a message to the bot makes a new one here.',
+      pairNotHeard: 'No answer from the bot? In the admin console, see that the bot uses the API mode with a long connection, '
+        + 'and not an address for callbacks.',
+      noCode: 'The code was given up on after too many wrong tries. Stop the assistant and start it again for a new one.',
+      stopping: 'Stopping the assistant.',
+      elsewhere: 'The assistant runs elsewhere on this computer, such as in a terminal, and is stopped there.',
+      withColumbina: 'While the assistant runs, closing the window keeps Columbina in the tray, where the assistant goes on '
+        + 'answering. Quit from the tray to stop both. If it runs when Columbina quits, it starts again the next time.',
+      writable: 'It can then make and change files in its own folder, and still runs no commands. A running assistant starts '
+        + 'again for the change.',
+      writableFailed: 'Whether the assistant may change files could not be changed.',
+      folderFailed: 'The folder of the assistant could not be opened.',
+      service: 'The assistant talks to the service that Columbina uses when the assistant starts. After another service is '
+        + 'chosen, stop the assistant and start it again.',
+      ended: 'The assistant stopped.',
+      lastError: 'The last run of the assistant did not end well.',
+      startFailed: 'The assistant could not be started.',
+      stopFailed: 'The assistant could not be stopped.',
+      forgetAsk: (botId: string) => `Delete the bot ${botId} on this computer? Its Secret and whom the assistant answers `
+        + 'are deleted, and an assistant that runs stops first. The bot in WeCom stays as it is.',
+      forgotten: 'The bot was deleted on this computer.',
+      forgetFailed: 'The bot could not be deleted.',
+      windowLead: 'A smart bot that you made in the admin console of WeCom. Once it uses the API mode with a long connection, '
+        + 'its page shows its Bot ID and Secret.',
+      botId: 'As the page of the bot shows it.',
+      botIdWrong: 'A Bot ID is made of letters, digits and signs, with no blank in it.',
+      secret: 'The Secret goes from this window to Columbina, which keeps it in the keyring of the system. '
+        + 'The window that shows the conversation never has it.',
+      secretAgain: 'The Secret that is stored is not shown. Enter it again to store the bot anew.',
+      blankInSecret: 'A Secret has no blank in it. See whether what was pasted brought more along.',
+      done: (botId: string) => `WeCom takes the bot ${botId}, and it is stored.`,
+      inKeyring: 'The Secret is in the keyring of the system.',
+      inFile: 'No keyring took the Secret. It lies in a file in the folder of Columbina, as it is and not encrypted.',
+      steps: [
+        'In the admin console of WeCom, make a smart bot.',
+        'On the page of the bot, turn on the API mode and choose the long connection. The page then shows its Bot ID and Secret.',
+        'Once the bot is stored here, start the assistant in the settings.',
+        'Find the bot in WeCom, and send it the code in a chat of your own.',
+      ],
     },
 
     music: {

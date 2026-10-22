@@ -1,10 +1,10 @@
-import type { Feishu } from '../src/useFeishu';
+import type { AssistantHandle } from '../src/useAssistant';
 
 /**
- * The assistant in Feishu where a test is about something else: there is no service program to
- * ask, as in a replay. The settings are tried with it in page-feishu.test.tsx.
+ * An assistant in Feishu or in WeCom where a test is about something else: there is no service
+ * program to ask, as in a replay. The settings are tried with them in page-assistant.test.tsx.
  */
-export const noFeishu: Feishu = {
+export const noAssistant: AssistantHandle = {
   assistant: { kind: 'unavailable' },
   busy: null,
   failure: null,

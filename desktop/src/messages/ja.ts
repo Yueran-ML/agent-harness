@@ -357,6 +357,8 @@ export const ja: Messages = {
       revoke: 'GitHub で権限を取り消す',
     },
 
+    platforms: { feishu: 'Feishu', lark: 'Lark', wecom: 'WeCom' },
+
     feishu: {
       title: 'Feishu アシスタント',
       setUp: 'アプリを設定',
@@ -376,13 +378,38 @@ export const ja: Messages = {
       copyCode: 'コードをコピー',
       pair: (platform: string) => `このコードを${between(platform)}でボットに送ってください`,
       platform: 'プラットフォーム',
-      platforms: { feishu: 'Feishu', lark: 'Lark' },
       choose: (platform: string) => `${beforeWord(platform)}を選ぶ`,
       appId: 'App ID',
       appSecret: 'App Secret',
       store: '確認して保存',
       storing: '確認しています',
       steps: '開発者コンソールで行うこと',
+      next: '次の手順',
+    },
+
+    wecom: {
+      title: 'WeCom アシスタント',
+      setUp: 'ボットを設定',
+      change: 'ボットを変更',
+      start: 'アシスタントを起動',
+      starting: '起動しています',
+      stop: '停止',
+      stopping: '停止しています',
+      forget: 'ボットを削除',
+      forgetConfirm: '削除する',
+      keep: '残す',
+      console: '管理コンソールを開く',
+      log: 'ログを表示',
+      writable: 'アシスタントが自分のフォルダーのファイルを変更できるようにする',
+      folder: 'フォルダーを開く',
+      checkAgain: 'もう一度確認',
+      copyCode: 'コードをコピー',
+      pair: (platform: string) => `このコードを${between(platform)}のボットとの 1 対 1 のチャットで送ってください`,
+      botId: 'Bot ID',
+      secret: 'Secret',
+      store: '確認して保存',
+      storing: '確認しています',
+      steps: '管理コンソールで行うこと',
       next: '次の手順',
     },
 
@@ -882,6 +909,59 @@ export const ja: Messages = {
         `${beforeWord(platform)}でボットの名前を検索し、1 対 1 のチャットでコードを送ります。`,
       ],
       scopes: '最後の 3 つはドキュメントを読むためのものです。不要なら追加しなくてもかまいません。',
+    },
+
+    wecom: {
+      lead: 'WeCom で Columbina と話せます。あなた自身が作ったスマートボットを使います。'
+        + 'アシスタントはボットとの 1 対 1 のチャットで、あなたにだけ返信します。コマンドは実行せず、あなたのファイルも変更しません。'
+        + '送ったファイルとスキルは、アシスタント専用のフォルダーに保存されます。',
+      reading: 'WeCom アシスタントの状態を確認しています。',
+      unavailable: 'WeCom アシスタントの設定は、アプリケーションが実際のサービスを動かしているときに行えます。リプレイ中は行えません。',
+      statusFailed: 'Columbina は WeCom アシスタントの状態を確認できませんでした。',
+      notRunning: 'アシスタントは動いていません。',
+      connecting: (platform: string) => `${beforeWord(platform)}に接続しています。`,
+      reconnecting: (platform: string) => `いまは${between(platform)}に接続できません。アシスタントは接続を試し続けます。`,
+      connected: (platform: string) => `接続しました。アシスタントは${between(platform)}であなたに返信します。`,
+      trouble: '最近、うまくいかなかったことがあります。',
+      pairNote: '最初にコードを送った人が、アシスタントの返信する相手になります。コードの有効期限は 10 分です。'
+        + '期限が切れたあとにボットへメッセージを送ると、ここに新しいコードが表示されます。',
+      pairNotHeard: 'ボットから返信がない場合は、管理コンソールで、ボットが API モードの長時間接続を使っていること'
+        + '（コールバック URL ではないこと）を確かめてください。',
+      noCode: '間違ったコードが多すぎたため、コードは無効になりました。アシスタントを停止してもう一度起動すると、新しいコードが表示されます。',
+      stopping: 'アシスタントを停止しています。',
+      elsewhere: 'アシスタントはこのコンピューターの別の場所（ターミナルなど）で動いています。停止はそちらで行ってください。',
+      withColumbina: 'アシスタントが動いている間は、ウィンドウを閉じても Columbina はトレイに残り、アシスタントは返事を続けます。'
+        + '両方を止めるにはトレイから終了してください。終了したときに動いていれば、次に開いたときにまた起動します。',
+      writable: 'オンにすると、アシスタントは自分のフォルダーでファイルを作成・変更できます。コマンドは引き続き実行しません。'
+        + '動いているアシスタントは、変更のために起動し直します。',
+      writableFailed: 'アシスタントがファイルを変更できるかどうかを切り替えられませんでした。',
+      folderFailed: 'アシスタントのフォルダーを開けませんでした。',
+      service: 'アシスタントは、起動したときに Columbina が使っているサービスと話します。別のサービスを選んだあとは、'
+        + 'アシスタントを停止して、もう一度起動してください。',
+      ended: 'アシスタントが止まりました。',
+      lastError: '前回のアシスタントの実行は正常に終わりませんでした。',
+      startFailed: 'アシスタントを起動できませんでした。',
+      stopFailed: 'アシスタントを停止できませんでした。',
+      forgetAsk: (botId: string) => `このコンピューターからボット ${botId} を削除しますか？Secret と返信相手の情報が削除され、`
+        + 'アシスタントが動いていれば先に停止します。WeCom 上のボットはそのまま残ります。',
+      forgotten: 'このコンピューターからボットを削除しました。',
+      forgetFailed: 'ボットを削除できませんでした。',
+      windowLead: 'WeCom の管理コンソールで作ったスマートボットです。API モードで長時間接続を選ぶと、ボットのページに Bot ID と Secret が表示されます。',
+      botId: 'ボットのページに表示されているとおりに入力します。',
+      botIdWrong: 'Bot ID は英字・数字・記号からなり、途中に空白は入りません。',
+      secret: 'Secret はこのウィンドウから Columbina に直接渡され、システムのキーリングに保存されます。'
+        + '会話を表示するウィンドウが受け取ることはありません。',
+      secretAgain: '保存された Secret は表示されません。ボットを保存し直すには、もう一度入力してください。',
+      blankInSecret: 'Secret の途中に空白は入りません。貼り付けたときに余分なものが入っていないか確かめてください。',
+      done: (botId: string) => `WeCom がボット ${botId} を受け付け、保存しました。`,
+      inKeyring: 'Secret はシステムのキーリングに保存されました。',
+      inFile: 'Secret を受け取るキーリングがありませんでした。Columbina のフォルダー内のファイルに、暗号化されずそのまま保存されています。',
+      steps: [
+        'WeCom の管理コンソールでスマートボットを作成します。',
+        'ボットのページで API モードを有効にし、長時間接続を選びます。ページに Bot ID と Secret が表示されます。',
+        'ここでボットを保存したら、設定でアシスタントを起動します。',
+        'WeCom でボットを見つけ、1 対 1 のチャットでコードを送ります。',
+      ],
     },
 
     music: {

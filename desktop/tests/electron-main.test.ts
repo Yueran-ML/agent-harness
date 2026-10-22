@@ -136,8 +136,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const setups: { args: string[]; cwd: string; input: string | null; child: any }[] = [];
   // The runs of `columbina login github`, which write their lines through a reader of lines.
   const signIns: any[] = [];
-  // The runs of the assistant in Feishu, `columbina feishu --json`, which write their lines through a
-  // reader of lines too, and end when the test says so.
+  // The runs of an assistant, `columbina feishu --json` or `columbina wecom --json`, which write their
+  // lines through a reader of lines too, and end when the test says so.
   const bots: any[] = [];
   const lineReaders: any[] = [];
   const setup = {
@@ -169,8 +169,9 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       queueMicrotask(() => child.emit('spawn'));
       return child;
     }
-    // A run of the assistant, which the shell starts with `--json` first and maybe a language after.
-    if (args.includes('feishu') && args[args.indexOf('feishu') + 1] === '--json') {
+    // A run of an assistant, which the shell starts with `--json` first and maybe a language after.
+    const assistant = ['feishu', 'wecom'].find(kind => args.includes(kind));
+    if (assistant && args[args.indexOf(assistant) + 1] === '--json') {
       const child = Object.assign(new EventEmitter(), {
         pid: 900 + bots.length, exitCode: null as number | null, signalCode: null, args, options,
         stdout: new EventEmitter(), stderr: Object.assign(new EventEmitter(), { pipe: vi.fn() }),
@@ -180,7 +181,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       queueMicrotask(() => child.emit('spawn'));
       return child;
     }
-    if (args.includes('setup') || args.includes('--status') || args.includes('logout') || args.includes('feishu')) {
+    if (args.includes('setup') || args.includes('--status') || args.includes('logout') || assistant) {
       const child = Object.assign(new EventEmitter(), {
         pid: 500 + setups.length, exitCode: null as number | null, signalCode: null,
         stdout: new EventEmitter(), stderr: new EventEmitter(),
@@ -340,11 +341,16 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const feishuWindow = () => windows.filter(each => String(each.options?.webPreferences?.preload).endsWith('feishu-preload.cjs')).at(-1);
   const asFeishuWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-feishu:${name}`)!(
     { sender: feishuWindow().webContents, senderFrame: feishuWindow().webContents.mainFrame }, ...args);
+  // The window for the bot of WeCom, likewise.
+  const wecomWindow = () => windows.filter(each => String(each.options?.webPreferences?.preload).endsWith('wecom-preload.cjs')).at(-1);
+  const asWecomWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-wecom:${name}`)!(
+    { sender: wecomWindow().webContents, senderFrame: wecomWindow().webContents.mainFrame }, ...args);
   return {
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, mkdirSync, disk, drive, file, sent,
     dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
     partitions, trays, pictures,
-    setups, setup, keyWindow, asKeyWindow, feishuWindow, asFeishuWindow, menu, logins, signIns, bots, lineReaders,
+    setups, setup, keyWindow, asKeyWindow, feishuWindow, asFeishuWindow, wecomWindow, asWecomWindow, menu, logins, signIns, bots,
+    lineReaders,
     live: () => live, peakLive: () => peakLive,
   };
 }
@@ -1034,7 +1040,8 @@ describe('what the shell keeps from one start to the next', () => {
     const shell = await shellHarness();
     shell.invoke('set-theme', 'moonwhite');
     expect(shell.preferences()).toEqual({
-      theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null, language: null,
+      theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
+      wecomOn: false, wecomLanguage: null, language: null,
     });
     expect(() => shell.invoke('set-theme', 'frostlight')).toThrow('Unknown application theme.');
     expect(shell.preferences().theme).toBe('moonwhite');
@@ -2728,6 +2735,277 @@ describe('the assistant in Feishu', () => {
   });
 });
 
+
+describe('the assistant in WeCom', () => {
+  const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
+  const bot = {
+    set_up: true, bot_id: 'aibTestBot0123', paired: false, folder: path.resolve('/home/columbina-test/Columbina/wecom'),
+    writable: false, running: false, state: null, code: null, error: null,
+  };
+  const feishuApp = {
+    set_up: true, domain: 'feishu', app_id: 'cli_a1b2c3d4', paired: false, running: false, state: null, code: null, error: null,
+  };
+  const wecomPage = pathToFileURL(path.resolve(path.dirname(mainPath), '../dist/wecom.html')).href;
+  const told = (shell: Awaited<ReturnType<typeof shellHarness>>, kind: string) => shell.sent
+    .filter(([channel]) => channel === `columbina:${kind}`).map(([, value]) => value);
+  const readerOf = (shell: Awaited<ReturnType<typeof shellHarness>>, child: any) =>
+    shell.lineReaders.find((reader: any) => reader.input === child.stdout);
+  /** The shell with a bot set up, and an app of Feishu, which the program says of whenever it is asked. */
+  const withBot = async (kept?: string) => {
+    const shell = await shellHarness(kept, real);
+    shell.setup.answer = (args) => (args.includes('--status')
+      ? { out: `${JSON.stringify(args.includes('wecom') ? bot : feishuApp)}\n`, code: 0 }
+      : args.includes('--forget') ? { out: '{"forgotten": true}\n', code: 0 }
+        : { out: '{"stored": {"bot_id": "aibTestBot0123"}, "secret_in": "keyring"}\n', code: 0 });
+    return shell;
+  };
+  const ended = (child: any, code = 0) => {
+    child.exitCode = code;
+    child.emit('close', code, null);
+  };
+
+  it('has nothing to say of it in a replay', async () => {
+    const shell = await shellHarness();
+    await expect(shell.invoke('wecom-status')).resolves.toBeNull();
+    await expect((async () => shell.invoke('wecom-start'))()).rejects.toThrow('No service program');
+    await expect((async () => shell.invoke('set-up-wecom', { language: 'en' }))()).rejects.toThrow('No service program');
+    expect(shell.bots).toEqual([]);
+  });
+
+  it('asks the program how the assistant is doing, and adds what the shell knows of it', async () => {
+    const shell = await withBot();
+    await expect(shell.invoke('wecom-status')).resolves.toEqual({ ...bot, own: false, on: false, ended: null });
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'wecom', '--status', '--json']);
+  });
+
+  it('starts the assistant, tells the page what it says of itself on a channel of its own, and that it ended', async () => {
+    const shell = await withBot();
+    await shell.invoke('wecom-start', { language: 'zh-CN' });
+    const [child] = shell.bots;
+    expect(child.args).toEqual(['-m', 'columbina', 'wecom', '--json', '--language', 'zh']);
+    expect(child.options.cwd).toBe(path.resolve('/columbina-test/home'));
+    expect(shell.preferences()).toMatchObject({ wecomOn: true, wecomLanguage: 'zh', feishuOn: false, feishuLanguage: null });
+    await expect(shell.invoke('wecom-status')).resolves.toMatchObject({ own: true, on: true });
+    await expect(shell.invoke('feishu-status')).resolves.toMatchObject({ own: false, on: false });
+
+    readerOf(shell, child).emit('line', '{"state": "connected", "paired": false, "code": "123456", "error": null, "bot_id": "aibTestBot0123"}');
+    child.stderr.emit('data', Buffer.from('columbina: WeCom refused the bot\n'));
+    ended(child, 1);
+    expect(told(shell, 'wecom')).toEqual([
+      { state: 'connected', paired: false, code: '123456', error: null, bot_id: 'aibTestBot0123' },
+      { ended: true, code: 1, said: 'WeCom refused the bot' },
+    ]);
+    expect(told(shell, 'feishu')).toEqual([]);
+    await expect(shell.invoke('wecom-status')).resolves.toMatchObject({ own: false, ended: { code: 1, said: 'WeCom refused the bot' } });
+    // The assistant in Feishu has nothing to say of it.
+    await expect(shell.invoke('feishu-status')).resolves.toMatchObject({ ended: null });
+  });
+
+  it('runs beside the assistant in Feishu, and each is stopped alone', async () => {
+    const shell = await withBot();
+    await shell.invoke('feishu-start');
+    await shell.invoke('wecom-start');
+    expect(shell.bots.map(child => child.args[2])).toEqual(['feishu', 'wecom']);
+    await shell.invoke('wecom-start');
+    expect(shell.bots).toHaveLength(2);
+    const [feishu, wecom] = shell.bots;
+    const stopping = shell.invoke('wecom-stop') as Promise<void>;
+    expect(wecom.stdin.end).toHaveBeenCalledOnce();
+    expect(feishu.stdin.end).not.toHaveBeenCalled();
+    ended(wecom);
+    await stopping;
+    expect(shell.preferences()).toMatchObject({ wecomOn: false, feishuOn: true });
+  });
+
+  it('says that the assistant did not stop where it is still there after it was ended', async () => {
+    vi.useFakeTimers();
+    try {
+      const shell = await withBot();
+      await shell.invoke('wecom-start');
+      const stopping = (shell.invoke('wecom-stop') as Promise<void>).catch((problem: Error) => problem);
+      await vi.advanceTimersByTimeAsync(11_000);
+      await expect(stopping).resolves.toEqual(new Error('The assistant in WeCom did not end.'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says why the assistant could not be started', async () => {
+    const shell = await withBot();
+    const failed = Object.assign(new EventEmitter(), {
+      pid: 0, exitCode: null as number | null, signalCode: null,
+      stdout: new EventEmitter(), stderr: Object.assign(new EventEmitter(), { pipe: vi.fn() }),
+      stdin: Object.assign(new EventEmitter(), { end: vi.fn() }),
+    });
+    shell.spawn.mockImplementationOnce(() => {
+      queueMicrotask(() => failed.emit('error', new Error('spawn ENOENT')));
+      return failed;
+    });
+    await expect((async () => shell.invoke('wecom-start'))()).rejects.toThrow('The assistant in WeCom could not be started: spawn ENOENT');
+    await expect(shell.invoke('wecom-status')).resolves.toMatchObject({ own: false, ended: { code: null, said: 'spawn ENOENT' } });
+  });
+
+  it('deletes the bot once the assistant has stopped, and changes what its agent may do with the program', async () => {
+    const shell = await withBot();
+    await shell.invoke('wecom-start');
+    const forgetting = shell.invoke('wecom-forget') as Promise<unknown>;
+    await settled();
+    ended(shell.bots[0]);
+    await expect(forgetting).resolves.toEqual({ forgotten: true });
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'wecom', '--forget', '--json']);
+    expect(shell.preferences().wecomOn).toBe(false);
+    await shell.invoke('wecom-writable', true);
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'wecom', '--from-stdin']);
+    expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({ writable: true });
+    await expect((async () => shell.invoke('wecom-writable', 'yes'))()).rejects.toThrow('true or false');
+  });
+
+  it('shows the log and the folder of the assistant', async () => {
+    const shell = await withBot();
+    await shell.invoke('wecom-log');
+    expect(shell.system.showItemInFolder).toHaveBeenCalledWith(path.resolve('/columbina-test/logs/columbina-wecom.log'));
+    await shell.invoke('wecom-folder');
+    expect(shell.system.openPath).toHaveBeenCalledWith(bot.folder);
+  });
+
+  it('starts the assistant with the application where it ran when the application was left, beside the one in Feishu', async () => {
+    const shell = await shellHarness(JSON.stringify({ wecomOn: true, wecomLanguage: 'en' }), real);
+    await settled();
+    expect(shell.bots.map(child => child.args)).toEqual([['-m', 'columbina', 'wecom', '--json', '--language', 'en']]);
+    const both = await shellHarness(JSON.stringify({ feishuOn: true, wecomOn: true, wecomLanguage: 'fr' }), real);
+    await settled();
+    expect(both.bots.map(child => child.args)).toEqual([['-m', 'columbina', 'feishu', '--json'], ['-m', 'columbina', 'wecom', '--json']]);
+  });
+
+  it('keeps the window in the tray while it runs, and lets it stop before the application leaves', async () => {
+    const shell = await withBot();
+    await shell.invoke('wecom-start');
+    const [child] = shell.bots;
+    const putAway = vi.fn();
+    shell.window.emit('close', { preventDefault: putAway });
+    expect(putAway).toHaveBeenCalledOnce();
+    expect(shell.window.hide).toHaveBeenCalledOnce();
+    const [, , quit] = shell.menu.buildFromTemplate.mock.calls.at(-1)![0] as { click?: () => void }[];
+    quit.click!();
+    shell.window.emit('close', { preventDefault: vi.fn() });
+    await shell.invoke('stop');
+    expect(child.stdin.end).toHaveBeenCalledOnce();
+    expect(shell.app.quit).not.toHaveBeenCalled();
+    ended(child);
+    await settled();
+    expect(shell.app.quit).toHaveBeenCalled();
+  });
+
+  it('waits for every assistant before the application quits', async () => {
+    const shell = await withBot();
+    await shell.invoke('feishu-start');
+    await shell.invoke('wecom-start');
+    const [feishu, wecom] = shell.bots;
+    const leaving = { preventDefault: vi.fn() };
+    shell.app.emit('before-quit', leaving);
+    expect(leaving.preventDefault).toHaveBeenCalledOnce();
+    shell.app.emit('window-all-closed');
+    await settled();
+    expect(feishu.stdin.end).toHaveBeenCalledOnce();
+    expect(wecom.stdin.end).toHaveBeenCalledOnce();
+    ended(feishu);
+    await settled();
+    expect(shell.app.quit).not.toHaveBeenCalled();
+    ended(wecom);
+    await settled();
+    expect(shell.app.quit).toHaveBeenCalledOnce();
+  });
+
+  it('answers the calls of the assistant to the main window alone', async () => {
+    const shell = await withBot();
+    for (const name of ['wecom-status', 'wecom-start', 'wecom-stop', 'wecom-forget', 'wecom-log', 'wecom-writable', 'wecom-folder', 'set-up-wecom']) {
+      await expect((async () => shell.handlers.get(`columbina:${name}`)!(shell.unrelated))()).rejects.toThrow('IPC sender');
+    }
+    expect(shell.bots).toEqual([]);
+  });
+
+  describe('and the window for its bot', () => {
+    const opened = async (kept?: string) => {
+      const shell = await withBot(kept);
+      const closed = shell.invoke('set-up-wecom', { language: 'ja' }) as Promise<unknown>;
+      await Promise.resolve();
+      return { shell, closed };
+    };
+
+    it('is a window of its own under the main one, with a page and a bridge of its own', async () => {
+      const { shell } = await opened();
+      const window = shell.wecomWindow();
+      expect(window.options).toMatchObject({ parent: shell.window, modal: true, resizable: false });
+      expect(window.options.webPreferences).toEqual({
+        preload: path.join(path.dirname(mainPath), 'wecom-preload.cjs'),
+        contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+      });
+      expect(window.loadFile).toHaveBeenCalledWith(path.resolve(path.dirname(mainPath), '../dist/wecom.html'));
+      expect(window.webContents.mainFrame.url).toBe(wecomPage);
+      expect(shell.feishuWindow()).toBeUndefined();
+    });
+
+    it('tells its page the language, the theme and the bot, and says when it has closed whether a bot was stored there', async () => {
+      const { shell, closed } = await opened(JSON.stringify({ theme: 'moonwhite' }));
+      await expect(shell.asWecomWindow('context')).resolves.toEqual({ language: 'ja', theme: 'moonwhite', status: bot });
+      expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'wecom', '--status', '--json']);
+      await shell.asWecomWindow('store', { bot_id: 'aibTestBot0123', secret: 'made up' });
+      await shell.asWecomWindow('close');
+      await expect(closed).resolves.toEqual({ changed: true });
+    });
+
+    it('hands the program the bot on its standard input, and nothing else that came with it', async () => {
+      const { shell } = await opened();
+      const answer = await shell.asWecomWindow('store', {
+        bot_id: 'aibTestBot0123', secret: 'made up', domain: 'lark', app_id: 'cli_a1b2c3d4', app_secret: 'other', writable: true,
+      });
+      expect(answer).toEqual({ stored: { bot_id: 'aibTestBot0123' }, secret_in: 'keyring' });
+      const run = shell.setups.at(-1)!;
+      expect(run.args).toEqual(['-m', 'columbina', 'wecom', '--from-stdin']);
+      expect(JSON.parse(run.input!)).toEqual({ bot_id: 'aibTestBot0123', secret: 'made up' });
+      expect(shell.setups.flatMap(each => each.args).join(' ')).not.toContain('made up');
+    });
+
+    it('stops the assistant that runs while the bot is stored, and starts it again then', async () => {
+      const { shell } = await opened();
+      await shell.invoke('wecom-start');
+      const storing = shell.asWecomWindow('store', { bot_id: 'aibTestBot0123', secret: 'made up' }) as Promise<unknown>;
+      await settled();
+      expect(shell.bots[0].stdin.end).toHaveBeenCalledOnce();
+      ended(shell.bots[0]);
+      await storing;
+      await settled();
+      expect(shell.bots.map(child => child.args[2])).toEqual(['wecom', 'wecom']);
+    });
+
+    it('opens the admin console of WeCom, and no other page', async () => {
+      const { shell } = await opened();
+      await shell.asWecomWindow('open-page', 'https://work.weixin.qq.com/wework_admin/frame');
+      expect(shell.system.openExternal.mock.calls).toEqual([['https://work.weixin.qq.com/wework_admin/frame']]);
+      for (const address of ['https://open.feishu.cn/app', 'https://work.weixin.qq.com/', 'http://work.weixin.qq.com/wework_admin/frame', 7]) {
+        await expect((async () => shell.asWecomWindow('open-page', address))()).rejects.toThrow('not the admin console of WeCom');
+      }
+    });
+
+    it('answers its calls to it alone, and the window for the app of Feishu answers none of them', async () => {
+      const { shell } = await opened();
+      const main = { sender: shell.window.webContents, senderFrame: shell.window.webContents.mainFrame };
+      for (const name of ['context', 'store', 'open-page', 'close']) {
+        await expect((async () => shell.handlers.get(`columbina-wecom:${name}`)!(main, {}))()).rejects.toThrow('the window for the bot of WeCom');
+      }
+      const asIt = { sender: shell.wecomWindow().webContents, senderFrame: shell.wecomWindow().webContents.mainFrame };
+      for (const name of ['columbina-feishu:context', 'columbina-feishu:store', 'columbina:wecom-start']) {
+        await expect((async () => shell.handlers.get(name)!(asIt, {}))()).rejects.toThrow(/IPC sender/);
+      }
+      await shell.asWecomWindow('close');
+      // Once it has closed, the window for the app of Feishu opens beside nothing.
+      void shell.invoke('set-up-feishu', { language: 'en' });
+      await Promise.resolve();
+      const feishu = { sender: shell.feishuWindow().webContents, senderFrame: shell.feishuWindow().webContents.mainFrame };
+      await expect((async () => shell.handlers.get('columbina-wecom:context')!(feishu))()).rejects.toThrow('the window for the bot of WeCom');
+    });
+  });
+});
 
 describe('the tray, the start with the system, and one application at a time', () => {
   const real = { COLUMBINA_SERVICE_EXECUTABLE: python };

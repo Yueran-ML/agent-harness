@@ -22,7 +22,7 @@ const STORED_AT = 4;
 function StepList({ words, platform, from = 1 }: { words: Messages; platform: Platform; from?: number }) {
   const page = CONSOLES[platform];
   return <>
-    <div className="key-link feishu-console">
+    <div className="key-link setup-console">
       <button type="button" className="btn btn-quiet" onClick={() => void window.columbinaFeishu?.openPage(page)}
         data-test="feishu-console">
         <ExternalLink size={14} aria-hidden="true" />{words.label.feishu.console}
@@ -30,11 +30,11 @@ function StepList({ words, platform, from = 1 }: { words: Messages; platform: Pl
       <span className="caption mono" title={page}>{hostOf(page)}</span>
     </div>
     <ol start={from}>
-      {words.hint.feishu.steps(words.label.feishu.platforms[platform]).map((step, index) => (index + 1 < from ? null : <li key={step}>
+      {words.hint.feishu.steps(words.label.platforms[platform]).map((step, index) => (index + 1 < from ? null : <li key={step}>
         <span>{step}</span>
         {/* The permissions belong to the step that adds them: the third. */}
         {index === 2 && <>
-          <ul className="feishu-scopes" data-test="feishu-scopes">
+          <ul className="setup-scopes" data-test="feishu-scopes">
             {[...SCOPES.messages, ...SCOPES.documents].map(scope => <li key={scope}><code className="mono">{scope}</code></li>)}
           </ul>
           <span className="caption">{words.hint.feishu.scopes}</span>
@@ -150,7 +150,7 @@ export function FeishuApp() {
   const blank = form !== null && blankInside(form.secret);
 
   return <Words.Provider value={words}>
-    <main className="key-page feishu-page" data-test="feishu-page">
+    <main className="key-page setup-page" data-test="feishu-page">
       <header className="key-head">
         <MessageCircle size={18} aria-hidden="true" />
         <h1 className="display">{labels.title}</h1>
@@ -168,7 +168,7 @@ export function FeishuApp() {
       {answer?.kind === 'stored' && form !== null && <div className="key-done" role="status" data-test="feishu-done">
         <div className="key-said" data-tone="ok">
           <Check size={15} aria-hidden="true" />
-          <p>{hints.done(answer.appId, labels.platforms[form.platform])}</p>
+          <p>{hints.done(answer.appId, words.label.platforms[form.platform])}</p>
         </div>
         {answer.secretIn === 'keyring' && <p className="caption">{hints.inKeyring}</p>}
         {answer.secretIn === 'file' && <div className="key-said" data-tone="warn">
@@ -176,7 +176,7 @@ export function FeishuApp() {
           <p>{hints.inFile}</p>
         </div>}
         {/* What is left to do once the app is stored. */}
-        <section className="feishu-steps" data-test="feishu-steps">
+        <section className="setup-steps" data-test="feishu-steps">
           <h2 className="overline" data-test="feishu-next">{labels.next}</h2>
           <StepList words={words} platform={form.platform} from={STORED_AT} />
         </section>
@@ -192,8 +192,8 @@ export function FeishuApp() {
             onChange={event => change({ platform: event.target.value === 'lark' ? 'lark' : 'feishu' })}
             data-test="feishu-platform"
           >
-            <option value="feishu">{labels.platforms.feishu}</option>
-            <option value="lark">{labels.platforms.lark}</option>
+            <option value="feishu">{words.label.platforms.feishu}</option>
+            <option value="lark">{words.label.platforms.lark}</option>
           </select>
         </label>
 
@@ -225,26 +225,26 @@ export function FeishuApp() {
           {/* An app of the other platform: that one is chosen at a click, and the App Secret that
               was typed stays for the next try. Nothing is stored before the user stores it. */}
           {answer.elsewhere ? <div className="key-ask">
-            <p>{hints.wrongPlatform(labels.platforms[form.platform], labels.platforms[OTHER[form.platform]])}</p>
+            <p>{hints.wrongPlatform(words.label.platforms[form.platform], words.label.platforms[OTHER[form.platform]])}</p>
             <div className="key-ask-actions">
               <button type="button" className="btn" data-test="feishu-choose" onClick={() => {
                 change({ platform: OTHER[form.platform] });
                 storeButton.current?.focus();
               }}>
-                {labels.choose(labels.platforms[OTHER[form.platform]])}
+                {labels.choose(words.label.platforms[OTHER[form.platform]])}
               </button>
             </div>
           </div> : <p>{sentenceOf(answer.said) || words.hint.requestFailed}</p>}
         </div>}
 
         {/* Open where no app is set up: the first steps give what the form asks for. */}
-        <details className="feishu-steps" open={!setUp} data-test="feishu-steps">
+        <details className="setup-steps" open={!setUp} data-test="feishu-steps">
           <summary><ChevronRight size={14} aria-hidden="true" />{labels.steps}</summary>
           <StepList words={words} platform={form.platform} />
         </details>
 
         {/* It stays at the foot of the window while the steps above it are read. */}
-        <div className="key-foot feishu-foot">
+        <div className="key-foot setup-foot">
           <button type="button" className="btn" disabled={storing} onClick={close}>{words.label.cancel}</button>
           <button type="submit" ref={storeButton} className="btn btn-main" disabled={storing || !complete(form)}
             data-test="feishu-store">

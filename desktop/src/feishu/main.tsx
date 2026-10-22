@@ -5,7 +5,7 @@ import { initialSize } from '../size';
 import '../ui/tokens.css';
 import '../ui/base.css';
 import '../key/key.css';
-import './feishu.css';
+import '../key/steps.css';
 import { FeishuApp } from './FeishuApp';
 
 // The size of type that was chosen in the main window holds here too.

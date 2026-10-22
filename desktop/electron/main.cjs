@@ -22,9 +22,34 @@ const indexUrl = pathToFileURL(indexPath).href;
 // The page of the window that takes a key. It shows nothing that a model wrote.
 const keyPath = path.resolve(__dirname, '../dist/key.html');
 const keyUrl = pathToFileURL(keyPath).href;
-// The page of the window that takes the app of Feishu and its App Secret. It too shows nothing that a model wrote.
-const feishuPath = path.resolve(__dirname, '../dist/feishu.html');
-const feishuUrl = pathToFileURL(feishuPath).href;
+/**
+ * An assistant in the chat of another platform that the application runs: a command of the program,
+ * set up in a window of its own that shows nothing that a model wrote. It has the name of the
+ * platform; what is set up there, as the window says it; the fields of the document that the window
+ * hands to the program; and the pages that the window may open, which are the consoles where that is
+ * made, and what they are.
+ *
+ * Of each, the application runs one at most, and keeps the stopping of it while that lasts. Another
+ * program may run one, such as a terminal: the program allows one of each at a time on a computer,
+ * and says whether one runs. The window is kept while it is open, with the language that it speaks,
+ * whether something was stored from it, and the promise that says so when it has closed. Whether
+ * something is being stored is kept too, as the window is not closed then. So is how the last
+ * assistant that the application ran ended where it did not end well, or why it did not start.
+ */
+function assistantOf(kind, name, what, fields, pages, where) {
+  const page = path.resolve(__dirname, `../dist/${kind}.html`);
+  return {
+    kind, name, what, fields, pages, where, page, url: pathToFileURL(page).href,
+    child: null, stopping: null, storing: false, ended: null,
+    window: null, asked: { language: 'en' }, changed: false, closed: null,
+  };
+}
+const assistants = {
+  feishu: assistantOf('feishu', 'Feishu', 'the app of Feishu', ['domain', 'app_id', 'app_secret'],
+    ['https://open.feishu.cn/app', 'https://open.larksuite.com/app'], 'the console of Feishu or Lark'),
+  wecom: assistantOf('wecom', 'WeCom', 'the bot of WeCom', ['bot_id', 'secret'],
+    ['https://work.weixin.qq.com/wework_admin/frame'], 'the admin console of WeCom'),
+};
 // The bar of the window in each theme: the furthest surface of `src/ui/tokens.css`, and its text.
 const titleBarThemes = {
   moonveil: { color: '#090b12', symbolColor: '#eef0f8', height: 40 },
@@ -45,20 +70,18 @@ const NO_SETUP = 'No service program is set up for this application, so its serv
 const ACCOUNT_OUTPUT_MOST = 2 * 1024 * 1024;
 // How long the program that signs in to GitHub is given to end after its input was closed.
 const SIGN_IN_STOP_MS = 3_000;
-// How long the assistant in Feishu is given to end after its input was closed. It takes a few
-// seconds to stop showing in Feishu that it writes an answer. Where it has not ended then, it is
-// ended, and given a few seconds more to be gone; otherwise it is said not to have stopped.
-const FEISHU_STOP_MS = 6_000;
-const FEISHU_KILL_MS = 5_000;
-// How long a line may be that the assistant in Feishu writes of how it is doing. Its lines are short.
-const FEISHU_LINE_MOST = 64 * 1024;
-// The consoles of the two platforms, where an app is made. They are the pages that the window for the app opens.
-const FEISHU_CONSOLES = ['https://open.feishu.cn/app', 'https://open.larksuite.com/app'];
-// The languages in which the assistant in Feishu can say things by itself, such as its help, and
-// the one for the language of the page that starts it. For a page in another language, the
-// assistant goes by the platform of its app.
-const FEISHU_LANGUAGES = ['zh', 'en'];
-const feishuLanguageOf = (language) => (language === 'zh-CN' ? 'zh' : language === 'en' ? 'en' : null);
+// How long an assistant is given to end after its input was closed. It takes a few seconds to stop
+// showing that it writes an answer, or to say so in the answers that it writes. Where it has not
+// ended then, it is ended, and given a few seconds more to be gone; otherwise it is said not to have stopped.
+const ASSISTANT_STOP_MS = 6_000;
+const ASSISTANT_KILL_MS = 5_000;
+// How long a line may be that an assistant writes of how it is doing. Its lines are short.
+const ASSISTANT_LINE_MOST = 64 * 1024;
+// The languages in which an assistant can say things by itself, such as its help, and the one for
+// the language of the page that starts it. For a page in another language, the assistant goes by
+// what its platform speaks.
+const ASSISTANT_LANGUAGES = ['zh', 'en'];
+const assistantLanguageOf = (language) => (language === 'zh-CN' ? 'zh' : language === 'en' ? 'en' : null);
 // How long the login shell of the user may take on macOS to say what it has, and how much of what it writes is read.
 const LOGIN_SHELL_MS = 5_000;
 const LOGIN_SHELL_OUTPUT_MOST = 64 * 1024;
@@ -132,7 +155,10 @@ let mainListed = [];
 // What the service of the moment wrote last for errors. It is told of when the service has ended.
 let lastWords = { lines: [], rest: '' };
 // What is kept from one start to the next. Read when the application is ready.
-let preferences = { theme: 'moonveil', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null, language: null };
+let preferences = {
+  theme: 'moonveil', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
+  wecomOn: false, wecomLanguage: null, language: null,
+};
 // The icon in the tray, once the window was put away there, and whether the user asked from there to quit.
 let tray = null;
 let quitting = false;
@@ -146,28 +172,14 @@ let loginShell = null;
 let askingLoginShell = null;
 // The program that signs in to GitHub while it waits for the user. There is one at most.
 let signingIn = null;
-// The window for the app of Feishu while it is open, the language that it speaks, whether an app
-// was stored from it, and the promise that says so when it has closed.
-let feishuWindow = null;
-let feishuAsked = { language: 'en' };
-let feishuChanged = false;
-let feishuClosed = null;
-// The assistant in Feishu that the application runs, at most one, and the stopping of it while that
-// lasts. Another program may run one, such as a terminal: the program allows one at a time on a
-// computer, and says whether one runs.
-let feishu = null;
-let feishuStopping = null;
-// Whether an app is being stored from the window for the app, which is then not closed.
-let feishuStoring = false;
-// How the last assistant that the application ran ended where it did not end well, or why it did
-// not start: how it ended and the last line that it wrote for errors. The page may have missed it.
-let feishuEnded = null;
 
 app.setName('Columbina');
 if (process.platform === 'win32') app.setAppUserModelId('dev.columbina.desktop');
 
 const logPath = () => path.join(app.getPath('logs'), 'columbina-service.log');
-const feishuLogPath = () => path.join(app.getPath('logs'), 'columbina-feishu.log');
+const assistantLogPath = (one) => path.join(app.getPath('logs'), `columbina-${one.kind}.log`);
+/** Whether the application runs an assistant: in Feishu, in WeCom, or in both. */
+const anyAssistant = () => Object.values(assistants).some((one) => one.child !== null);
 const preferencesPath = () => path.join(app.getPath('userData'), 'preferences.json');
 
 /** Text as it may be shown: on one line, without what steers a terminal. */
@@ -214,12 +226,14 @@ function readPreferences() {
     recent.push(folder);
     if (recent.length === RECENT_MOST) break;
   }
-  // Whether the user said on the first page that GitHub can wait, whether the assistant in Feishu
-  // ran when the user last started or stopped it, in which language it said things by itself, and
-  // the language of the page, in which the menu of the tray speaks before the page has said it.
+  // Whether the user said on the first page that GitHub can wait, whether each assistant ran when
+  // the user last started or stopped it, in which language it said things by itself, and the
+  // language of the page, in which the menu of the tray speaks before the page has said it.
+  const known = (language) => (ASSISTANT_LANGUAGES.includes(language) ? language : null);
   return {
-    theme, recent, githubSkipped: given.githubSkipped === true, feishuOn: given.feishuOn === true,
-    feishuLanguage: FEISHU_LANGUAGES.includes(given.feishuLanguage) ? given.feishuLanguage : null,
+    theme, recent, githubSkipped: given.githubSkipped === true,
+    feishuOn: given.feishuOn === true, feishuLanguage: known(given.feishuLanguage),
+    wecomOn: given.wecomOn === true, wecomLanguage: known(given.wecomLanguage),
     language: typeof given.language === 'string' && Object.hasOwn(WORDS, given.language) ? given.language : null,
   };
 }
@@ -252,9 +266,10 @@ function checkKeySender(event) {
     throw new Error('IPC sender is not the window for the key.');
   }
 }
-function checkFeishuSender(event) {
-  if (!feishuWindow || event.sender !== feishuWindow.webContents || event.senderFrame !== feishuWindow.webContents.mainFrame || event.senderFrame.url !== feishuUrl) {
-    throw new Error('IPC sender is not the window for the app of Feishu.');
+function checkAssistantSender(event, one) {
+  const opened = one.window;
+  if (!opened || event.sender !== opened.webContents || event.senderFrame !== opened.webContents.mainFrame || event.senderFrame.url !== one.url) {
+    throw new Error(`IPC sender is not the window for ${one.what}.`);
   }
 }
 /** A window opens no other window, goes to no other page and holds no page inside its own. */
@@ -1067,129 +1082,134 @@ function installHandlers() {
     preferences.githubSkipped = skipped === true;
     keepPreferences();
   });
-  ipcMain.handle('columbina:feishu-status', async (event) => {
+  for (const one of Object.values(assistants)) installAssistant(one);
+}
+/** Answer the main window about an assistant, and the window in which it is set up. */
+function installAssistant(one) {
+  const { kind } = one;
+  ipcMain.handle(`columbina:${kind}-status`, async (event) => {
     checkSender(event);
     if (!programCommand([])) return null;
-    // Which app is set up and how its assistant is doing, without the App Secret; whether this
-    // application runs the assistant and starts it with itself; and how the last one ended badly.
-    const answer = await runProgram(['feishu', '--status', '--json']);
-    return { ...answer, own: feishu !== null, on: preferences.feishuOn, ended: feishuEnded };
+    // What is set up and how its assistant is doing, without the secret; whether this application
+    // runs the assistant and starts it with itself; and how the last one ended badly.
+    const answer = await runProgram([kind, '--status', '--json']);
+    return { ...answer, own: one.child !== null, on: preferences[`${kind}On`], ended: one.ended };
   });
-  ipcMain.handle('columbina:feishu-start', async (event, asked) => {
+  ipcMain.handle(`columbina:${kind}-start`, async (event, asked) => {
     checkSender(event);
     // It speaks the language of the page, also when it starts again with the application.
-    keepFeishuLanguage(feishuLanguageOf(asked?.language));
-    await startFeishu();
+    keepAssistantLanguage(one, assistantLanguageOf(asked?.language));
+    await startAssistant(one);
     // It runs again when the application is started again, until the user stops it.
-    keepFeishuOn(true);
+    keepAssistantOn(one, true);
   });
-  ipcMain.handle('columbina:feishu-stop', async (event) => {
+  ipcMain.handle(`columbina:${kind}-stop`, async (event) => {
     checkSender(event);
-    keepFeishuOn(false);
-    await stopFeishu();
+    keepAssistantOn(one, false);
+    await stopAssistant(one);
   });
-  ipcMain.handle('columbina:feishu-forget', async (event) => {
+  ipcMain.handle(`columbina:${kind}-forget`, async (event) => {
     checkSender(event);
-    // An assistant goes on with the app that it read when it started, so it is stopped first.
-    keepFeishuOn(false);
-    await stopFeishu();
-    return inTurn(() => runProgram(['feishu', '--forget', '--json']));
+    // An assistant goes on with what it read when it started, so it is stopped first.
+    keepAssistantOn(one, false);
+    await stopAssistant(one);
+    return inTurn(() => runProgram([kind, '--forget', '--json']));
   });
-  ipcMain.handle('columbina:feishu-log', (event) => {
+  ipcMain.handle(`columbina:${kind}-log`, (event) => {
     checkSender(event);
-    shell.showItemInFolder(feishuLogPath());
+    shell.showItemInFolder(assistantLogPath(one));
   });
-  ipcMain.handle('columbina:feishu-writable', async (event, writable) => {
+  ipcMain.handle(`columbina:${kind}-writable`, async (event, writable) => {
     checkSender(event);
     if (typeof writable !== 'boolean') throw new Error('Whether the assistant may change files is true or false.');
     // The program changes it only while no assistant runs. One that the application runs is
     // stopped first and started again after, with what was changed.
-    const ran = feishu !== null;
-    if (ran) await stopFeishu();
+    const ran = one.child !== null;
+    if (ran) await stopAssistant(one);
     let answer;
     try {
-      answer = await inTurn(() => runProgram(['feishu', '--from-stdin'], JSON.stringify({ writable })));
+      answer = await inTurn(() => runProgram([kind, '--from-stdin'], JSON.stringify({ writable })));
     } finally {
-      if (ran && !exiting) await startFeishu().catch(() => {});
+      if (ran && !exiting) await startAssistant(one).catch(() => {});
     }
     return answer;
   });
-  ipcMain.handle('columbina:feishu-folder', async (event) => {
+  ipcMain.handle(`columbina:${kind}-folder`, async (event) => {
     checkSender(event);
     // The folder that the program names, and no other: the page names none.
-    const folder = (await runProgram(['feishu', '--status', '--json']))?.folder;
+    const folder = (await runProgram([kind, '--status', '--json']))?.folder;
     if (typeof folder !== 'string' || !path.isAbsolute(folder)) throw new Error('The program named no folder of the assistant.');
     mkdirSync(folder, { recursive: true });
     const failed = await shell.openPath(folder);
     if (failed) throw new Error(failed);
   });
-  ipcMain.handle('columbina:set-up-feishu', async (event, asked) => {
+  ipcMain.handle(`columbina:set-up-${kind}`, async (event, asked) => {
     checkSender(event);
     if (!programCommand([])) throw new Error(NO_SETUP);
-    if (feishuWindow) {
-      feishuWindow.focus();
-      return feishuClosed;
+    if (one.window) {
+      one.window.focus();
+      return one.closed;
     }
-    feishuAsked = { language: spoken(asked?.language) };
-    feishuChanged = false;
-    // A window of its own, so that the App Secret is never in the window that shows what a model wrote.
+    one.asked = { language: spoken(asked?.language) };
+    one.changed = false;
+    // A window of its own, so that the secret is never in the window that shows what a model wrote.
     const opened = new BrowserWindow({
       parent: window, modal: true, width: 560, height: 720, resizable: false, minimizable: false, maximizable: false,
       show: false, backgroundColor: titleBarThemes[preferences.theme].color, title: 'Columbina',
       icon: path.join(__dirname, 'icon.ico'),
-      webPreferences: { preload: path.join(__dirname, 'feishu-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+      webPreferences: { preload: path.join(__dirname, `${kind}-preload.cjs`), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
     });
-    feishuWindow = opened;
+    one.window = opened;
     opened.setMenuBarVisibility(false);
     closeToTheWorld(opened);
-    opened.on('close', (closing) => { if (feishuStoring) closing.preventDefault(); });
+    opened.on('close', (closing) => { if (one.storing) closing.preventDefault(); });
     opened.once('ready-to-show', () => opened.show());
-    feishuClosed = new Promise((resolve) => {
+    one.closed = new Promise((resolve) => {
       opened.once('closed', () => {
-        if (feishuWindow === opened) feishuWindow = null;
-        // The main window is told that an app was stored, and nothing of it.
-        resolve({ changed: feishuChanged });
+        if (one.window === opened) one.window = null;
+        // The main window is told that something was stored, and nothing of it.
+        resolve({ changed: one.changed });
       });
     });
-    void opened.loadFile(feishuPath);
-    return feishuClosed;
+    void opened.loadFile(one.page);
+    return one.closed;
   });
-  ipcMain.handle('columbina-feishu:context', async (event) => {
-    checkFeishuSender(event);
-    const status = await runProgram(['feishu', '--status', '--json']);
-    return { ...feishuAsked, theme: preferences.theme, status };
+  ipcMain.handle(`columbina-${kind}:context`, async (event) => {
+    checkAssistantSender(event, one);
+    const status = await runProgram([kind, '--status', '--json']);
+    return { ...one.asked, theme: preferences.theme, status };
   });
-  ipcMain.handle('columbina-feishu:store', async (event, given) => {
-    checkFeishuSender(event);
-    // The three things that the program reads, each of its kind. The program checks the rest.
+  ipcMain.handle(`columbina-${kind}:store`, async (event, given) => {
+    checkAssistantSender(event, one);
+    // The things that the program reads, each of its kind. The program checks the rest.
     const document = {};
-    for (const name of ['domain', 'app_id', 'app_secret']) {
+    for (const name of one.fields) {
       if (typeof given?.[name] === 'string') document[name] = given[name];
     }
-    // An assistant that runs here goes on with the app that it read when it started. It is
-    // stopped while the app is stored, and started again with what is stored then. The window
-    // is not closed meanwhile, so that whoever waits for it hears what was stored.
-    const running = feishu !== null;
-    feishuStoring = true;
+    // An assistant that runs here goes on with what it read when it started. It is stopped while
+    // that is stored, and started again with what is stored then. The window is not closed
+    // meanwhile, so that whoever waits for it hears what was stored.
+    const running = one.child !== null;
+    one.storing = true;
     try {
-      await stopFeishu();
-      const answer = await inTurn(() => runProgram(['feishu', '--from-stdin'], JSON.stringify(document)));
-      if (answer.stored) feishuChanged = true;
+      await stopAssistant(one);
+      const answer = await inTurn(() => runProgram([kind, '--from-stdin'], JSON.stringify(document)));
+      if (answer.stored) one.changed = true;
       return answer;
     } finally {
-      feishuStoring = false;
-      if (running && !exiting) void startFeishu().catch(() => {});
+      one.storing = false;
+      if (running && !exiting) void startAssistant(one).catch(() => {});
     }
   });
-  ipcMain.handle('columbina-feishu:open-page', async (event, address) => {
-    checkFeishuSender(event);
-    // Only the console of one of the two platforms.
-    if (typeof address !== 'string' || !FEISHU_CONSOLES.includes(address)) throw new Error('That page is not the console of Feishu or Lark.');
+  ipcMain.handle(`columbina-${kind}:open-page`, async (event, address) => {
+    checkAssistantSender(event, one);
+    // Only a console where what the assistant answers through is made.
+    if (typeof address !== 'string' || !one.pages.includes(address)) throw new Error(`That page is not ${one.where}.`);
     await shell.openExternal(address);
   });
-  ipcMain.handle('columbina-feishu:close', (event) => {
-    checkFeishuSender(event);
-    feishuWindow.close();
+  ipcMain.handle(`columbina-${kind}:close`, (event) => {
+    checkAssistantSender(event, one);
+    one.window.close();
   });
 }
 /**
@@ -1211,49 +1231,49 @@ function lastSaid(words) {
   return short(line.replace(/^columbina: /, ''), TAIL_LINE_CHARS);
 }
 /**
- * Start the assistant in Feishu, unless the application runs it already. What it says of how it is
- * doing comes to the page a document at a time on `columbina:feishu`, and so does its end:
- * `{ ended: true, code, said }`, with how it ended and the last line that it wrote for errors.
- * What it writes for errors is kept in a log of its own.
+ * Start an assistant, unless the application runs it already. What it says of how it is doing
+ * comes to the page a document at a time on `columbina:` and the name of its command, and so does
+ * its end: `{ ended: true, code, said }`, with how it ended and the last line that it wrote for
+ * errors. What it writes for errors is kept in a log of its own.
  */
-async function startFeishu() {
+async function startAssistant(one) {
   if (askingLoginShell) await askingLoginShell;
-  // A stop that is under way ends first: the program allows one assistant at a time.
-  if (feishuStopping) await feishuStopping;
+  // A stop that is under way ends first: the program allows one assistant of a kind at a time.
+  if (one.stopping) await one.stopping;
   // An application that is closing meanwhile starts nothing any more.
-  if (feishu || exiting) return;
-  const speaks = preferences.feishuLanguage;
-  const command = programCommand(['feishu', '--json', ...(speaks ? ['--language', speaks] : [])]);
+  if (one.child || exiting) return;
+  const speaks = preferences[`${one.kind}Language`];
+  const command = programCommand([one.kind, '--json', ...(speaks ? ['--language', speaks] : [])]);
   if (!command) throw new Error(NO_SETUP);
-  mkdirSync(path.dirname(feishuLogPath()), { recursive: true });
-  const log = createWriteStream(feishuLogPath(), { flags: 'a' });
+  mkdirSync(path.dirname(assistantLogPath(one)), { recursive: true });
+  const log = createWriteStream(assistantLogPath(one), { flags: 'a' });
   log.on('error', () => {});
   const child = spawn(command.executable, command.args, {
     cwd: app.getPath('home'), env: command.env, windowsHide: true,
     detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
   });
-  feishu = child;
-  feishuEnded = null;
+  one.child = child;
+  one.ended = null;
   const words = listenForErrors(child);
   child.stderr.pipe(log);
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   lines.on('line', (line) => {
-    // Each line is a document of JSON: how the assistant is doing. No line holds the App Secret.
-    if (feishu !== child || line.length > FEISHU_LINE_MOST) return;
+    // Each line is a document of JSON: how the assistant is doing. No line holds a secret.
+    if (one.child !== child || line.length > ASSISTANT_LINE_MOST) return;
     let said = null;
     try { said = JSON.parse(line); } catch { return; }
-    if (said !== null && typeof said === 'object' && !Array.isArray(said)) tell('columbina:feishu', said);
+    if (said !== null && typeof said === 'object' && !Array.isArray(said)) tell(`columbina:${one.kind}`, said);
   });
   // An assistant that ended before it read is told of by how it ended.
   child.stdin.on('error', () => {});
   child.on('close', (code, signal) => {
     lines.close();
     log.end();
-    if (feishu !== child) return;
-    feishu = null;
+    if (one.child !== child) return;
+    one.child = null;
     const ended = { code: code ?? signal ?? null, said: lastSaid(words) };
-    if (ended.code !== 0) feishuEnded = ended;
-    tell('columbina:feishu', { ended: true, ...ended });
+    if (ended.code !== 0) one.ended = ended;
+    tell(`columbina:${one.kind}`, { ended: true, ...ended });
   });
   let started = false;
   await new Promise((resolve, reject) => {
@@ -1261,23 +1281,23 @@ async function startFeishu() {
     child.on('error', (error) => {
       // An assistant that started ends by itself, and its end is told of. One that did not never will.
       if (started) return;
-      if (feishu === child) feishu = null;
+      if (one.child === child) one.child = null;
       log.end();
-      feishuEnded = { code: null, said: error.message };
-      reject(new Error(`The assistant in Feishu could not be started: ${error.message}`));
+      one.ended = { code: null, said: error.message };
+      reject(new Error(`The assistant in ${one.name} could not be started: ${error.message}`));
     });
   });
 }
 /**
- * Stop the assistant in Feishu that the application runs, if it runs. Its input is closed, which it
- * takes for a stop, and it and what it started are ended where it has not ended a few seconds
- * later. The promise is kept once it has ended, and broken where it is still there after that.
+ * Stop an assistant that the application runs, if it runs. Its input is closed, which it takes for
+ * a stop, and it and what it started are ended where it has not ended a few seconds later. The
+ * promise is kept once it has ended, and broken where it is still there after that.
  */
-function stopFeishu() {
-  if (feishuStopping) return feishuStopping;
-  const child = feishu;
+function stopAssistant(one) {
+  if (one.stopping) return one.stopping;
+  const child = one.child;
   if (!child) return Promise.resolve();
-  feishuStopping = new Promise((resolve, reject) => {
+  one.stopping = new Promise((resolve, reject) => {
     let timer = null;
     const done = () => { clearTimeout(timer); resolve(); };
     child.once('close', done);
@@ -1285,23 +1305,25 @@ function stopFeishu() {
       killTree(child);
       timer = setTimeout(() => {
         child.removeListener('close', done);
-        reject(new Error('The assistant in Feishu did not end.'));
-      }, FEISHU_KILL_MS);
-    }, FEISHU_STOP_MS);
+        reject(new Error(`The assistant in ${one.name} did not end.`));
+      }, ASSISTANT_KILL_MS);
+    }, ASSISTANT_STOP_MS);
     child.stdin.end();
-  }).finally(() => { feishuStopping = null; });
-  return feishuStopping;
+  }).finally(() => { one.stopping = null; });
+  return one.stopping;
 }
-/** Remember whether the assistant in Feishu is to run when the application starts. */
-function keepFeishuOn(on) {
-  if (preferences.feishuOn === on) return;
-  preferences.feishuOn = on;
+/** Stop every assistant that the application runs. */
+const stopAssistants = () => Promise.allSettled(Object.values(assistants).map(stopAssistant));
+/** Remember whether an assistant is to run when the application starts. */
+function keepAssistantOn(one, on) {
+  if (preferences[`${one.kind}On`] === on) return;
+  preferences[`${one.kind}On`] = on;
   keepPreferences();
 }
-/** Remember the language that the assistant in Feishu says things in by itself, or none. */
-function keepFeishuLanguage(language) {
-  if (preferences.feishuLanguage === language) return;
-  preferences.feishuLanguage = language;
+/** Remember the language that an assistant says things in by itself, or none. */
+function keepAssistantLanguage(one, language) {
+  if (preferences[`${one.kind}Language`] === language) return;
+  preferences[`${one.kind}Language`] = language;
   keepPreferences();
 }
 /** Whether the application can start with the system: a package on Windows. */
@@ -1329,7 +1351,7 @@ function trayMenu() {
 }
 /**
  * Put the window away, with an icon in the tray that brings it back. What runs goes on, the
- * assistant in Feishu among it, and what plays in the page, such as the music, is not heard.
+ * assistants in Feishu and in WeCom among it, and what plays in the page, such as the music, is not heard.
  */
 function toTray() {
   if (!tray) {
@@ -1363,13 +1385,13 @@ function quitFromTray() {
 function endAll() {
   exiting = true;
   stopSigningIn();
-  void Promise.allSettled([enqueueService(stopService), stopFeishu()]).then(() => app.quit());
+  void Promise.allSettled([enqueueService(stopService), stopAssistants()]).then(() => app.quit());
 }
 function finishWindowClose() {
   clearTimeout(closeTimer);
   if (window && !window.isDestroyed()) window.destroy();
-  // The assistant in Feishu is given its time to stop showing in Feishu that it writes an answer.
-  if (feishu) void stopFeishu().catch(() => {}).then(() => app.quit());
+  // An assistant is given its time to stop showing that it writes an answer.
+  if (anyAssistant()) void stopAssistants().then(() => app.quit());
   else app.quit();
 }
 function requestWindowClose() {
@@ -1441,14 +1463,14 @@ app.whenReady().then(() => {
   closeToTheWorld(window);
   window.on('close', (event) => {
     if (exiting) return;
-    // While the assistant in Feishu runs, the window is put away in the tray and the assistant goes
-    // on. Quitting from the tray ends both.
-    if (feishu && !quitting) {
+    // While an assistant runs, the window is put away in the tray and the assistant goes on.
+    // Quitting from the tray ends them all.
+    if (anyAssistant() && !quitting) {
       event.preventDefault();
       toTray();
       return;
     }
-    if (service || feishu || pendingServiceOperations) {
+    if (service || anyAssistant() || pendingServiceOperations) {
       event.preventDefault();
       requestWindowClose();
     }
@@ -1459,10 +1481,12 @@ app.whenReady().then(() => {
   else if (hidden) toTray();
   window.webContents.on('render-process-gone', () => { stopSigningIn(); void enqueueService(stopService); });
   void window.loadFile(indexPath);
-  // The assistant in Feishu runs again where it ran when the application was left.
-  if (preferences.feishuOn) void startFeishu().catch(() => {});
+  // An assistant runs again where it ran when the application was left.
+  for (const one of Object.values(assistants)) {
+    if (preferences[`${one.kind}On`]) void startAssistant(one).catch(() => {});
+  }
 });
-app.on('before-quit', (event) => { if ((service || feishu || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
+app.on('before-quit', (event) => { if ((service || anyAssistant() || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
 app.on('window-all-closed', endAll);
 // On macOS a click on the icon in the Dock shows the window that was put away.
 app.on('activate', showWindow);

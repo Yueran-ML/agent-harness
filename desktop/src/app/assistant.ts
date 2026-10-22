@@ -1,9 +1,13 @@
 /**
- * What the page makes of the assistant in Feishu: which app is set up and how its assistant is
- * doing, as `columbina feishu --status --json` says with what the shell adds, and how the
- * assistant that the application runs tells of itself line by line. Nothing here draws, so all
- * of it can be tried with plain values.
+ * What the page makes of an assistant in the chats of another platform, in Feishu or in WeCom:
+ * what is set up and how its assistant is doing, as `columbina feishu --status --json` or
+ * `columbina wecom --status --json` says with what the shell adds, and how the assistant that the
+ * application runs tells of itself line by line. Nothing here draws, so all of it can be tried
+ * with plain values.
  */
+
+/** The assistants: the one in Feishu, which answers through an app, and the one in WeCom, which answers through a bot. */
+export type Kind = 'feishu' | 'wecom';
 
 /** How an assistant that the application ran ended badly, or why it did not start. */
 export interface Ended {
@@ -13,17 +17,18 @@ export interface Ended {
   said: string;
 }
 
-/** The two platforms: Feishu in China, and Lark outside it. */
-export type Platform = 'feishu' | 'lark';
+/** The platforms: Feishu in China, Lark outside it, and WeCom. */
+export type Platform = 'feishu' | 'lark' | 'wecom';
 
 /** How the assistant is doing, while it runs. */
 export type State = 'connecting' | 'connected' | 'stopping' | 'failed';
 
-/** The app that is set up, and its assistant. */
+/** The app or the bot that is set up, and its assistant. */
 export interface App {
   platform: Platform;
-  appId: string;
-  /** The developer console of the platform, where the app is made and changed. */
+  /** The App ID of the app, or the Bot ID of the bot. */
+  id: string;
+  /** The console of the platform, where the app or the bot is made and changed. */
   console: string;
   /** Whether somebody paired with the assistant, whom it answers. */
   paired: boolean;
@@ -45,15 +50,15 @@ export interface App {
   ended: Ended | null;
 }
 
-/** The assistant in Feishu, as far as the page knows. */
+/** An assistant, as far as the page knows. */
 export type Assistant =
   /** Not asked yet, or the answer has not come. */
   | { kind: 'unknown' }
   /** There is no service program to ask, as in a replay. */
   | { kind: 'unavailable' }
-  /** What is kept of the app could not be read, or the program could not be run. */
+  /** What is kept of the app or the bot could not be read, or the program could not be run. */
   | { kind: 'failed'; said: string }
-  /** No app is set up. */
+  /** Nothing is set up. */
   | { kind: 'none'; ended: Ended | null }
   | ({ kind: 'app' } & App);
 
@@ -64,8 +69,11 @@ const fields = (value: unknown): Record<string, unknown> =>
 const CONSOLES: Record<Platform, string> = {
   feishu: 'https://open.feishu.cn/app',
   lark: 'https://open.larksuite.com/app',
+  wecom: 'https://work.weixin.qq.com/wework_admin/frame',
 };
-const platformOf = (value: unknown): Platform => (value === 'lark' ? 'lark' : 'feishu');
+/** The field in which the program names the app or the bot. */
+const ID: Record<Kind, string> = { feishu: 'app_id', wecom: 'bot_id' };
+const platformOf = (kind: Kind, value: unknown): Platform => (kind === 'wecom' ? 'wecom' : value === 'lark' ? 'lark' : 'feishu');
 const codeOf = (value: unknown): string | null => (/^\d{6}$/.test(text(value)) ? text(value) : null);
 
 /** How an assistant ended, from what the shell says of it, or null where it says nothing of an end. */
@@ -88,25 +96,25 @@ function stateOf(value: unknown, running: boolean): State | null {
 }
 
 /**
- * Read what `columbina feishu --status --json` answered, with what the shell adds: whether the
+ * Read what the status of an assistant answered, with what the shell adds: whether the
  * application runs the assistant and how the last one that it ran ended badly. Null is the
  * answer where there is no service program.
  */
-export function assistantOf(answer: unknown): Assistant {
+export function assistantOf(kind: Kind, answer: unknown): Assistant {
   if (answer === null || typeof answer !== 'object') return { kind: 'unavailable' };
   const given = fields(answer);
-  // The program says why it could not answer in a document of its own. The status of an app
-  // says what went wrong with the assistant under the same name.
+  // The program says why it could not answer in a document of its own. The status of an app or
+  // a bot says what went wrong with the assistant under the same name.
   if (!('set_up' in given)) return { kind: 'failed', said: text(given.error) };
   const ended = endedOf(given.ended);
   if (given.set_up !== true) return { kind: 'none', ended };
-  const platform = platformOf(given.domain);
+  const platform = platformOf(kind, given.domain);
   const own = given.own === true;
   const running = given.running === true || own;
   return {
     kind: 'app',
     platform,
-    appId: text(given.app_id),
+    id: text(given[ID[kind]]),
     console: CONSOLES[platform],
     paired: given.paired === true,
     folder: text(given.folder) || null,
@@ -122,14 +130,15 @@ export function assistantOf(answer: unknown): Assistant {
 
 /**
  * The assistant after something that the assistant which the application runs said: how it is
- * doing, or that it ended. Null where the page knows of no app to which that belongs, so that
- * it asks again.
+ * doing, or that it ended. Null where the page knows of no app or bot to which that belongs, so
+ * that it asks again.
  */
-export function assistantAfter(current: Assistant, told: Record<string, unknown>): Assistant | null {
+export function assistantAfter(kind: Kind, current: Assistant, told: Record<string, unknown>): Assistant | null {
   if (current.kind !== 'app') return null;
-  // The assistant of another app than the page knows of, as after the app was changed.
-  const { domain, app_id: appId } = told;
-  if ((typeof appId === 'string' && appId !== current.appId)
+  // The assistant of another app or bot than the page knows of, as after it was changed.
+  const id = told[ID[kind]];
+  const { domain } = told;
+  if ((typeof id === 'string' && id !== current.id)
     || ((domain === 'feishu' || domain === 'lark') && domain !== current.platform)) return null;
   if (told.ended === true) {
     const ended = endedOf(told);
@@ -168,4 +177,3 @@ export function doingOf(app: App): Doing {
   if (app.paired) return 'connected';
   return app.code !== null ? 'pair' : 'noCode';
 }
-

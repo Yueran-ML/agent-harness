@@ -146,6 +146,10 @@ columbina login github
 
 Columbina 也可以在[飞书](https://www.feishu.cn)或 Lark 里回复你：用你自己创建的企业自建应用，只有你能和它聊天。它能读分享给应用的文档和你发给它的文本文件，发给它一个 `SKILL.md` 就装上一个技能；它不运行命令，也不改动你的文件，你发给它的东西存在它自己的文件夹 `~/Columbina/feishu` 里；你也可以允许它修改这个文件夹里的文件。桌面应用里在“设置”的“飞书助手”一节设置，那里也列出了在飞书开发者后台要做的步骤；助手运行时关掉窗口，应用会留在托盘里，在 Windows 上还可以设成登录时启动到托盘。命令行里用 `columbina feishu --setup` 填入应用，用 `columbina feishu` 运行助手，长连接需要的包用 `pip install "columbina[feishu]"` 安装。
 
+### 企业微信助手
+
+Columbina 也可以在[企业微信](https://work.weixin.qq.com)里回复你：用你自己创建的智能机器人，开启“API 模式”并选择“长连接”。助手只在你和机器人的单聊里回复你一个人，能读你写的消息、语音转成的文字和你发给它的文本文件。它在自己的文件夹 `~/Columbina/wecom` 里工作。桌面应用里在“设置”的“企业微信助手”一节设置，填入机器人配置页上的 Bot ID 和 Secret。命令行里用 `columbina wecom --setup` 填入机器人，用 `columbina wecom` 运行助手，需要的包用 `pip install "columbina[wecom]"` 安装。
+
 ## 文档
 
 - [工程报告](docs/report.zh-CN.md)讲 Columbina 怎样组成、哪些选择决定了它的样子、怎样测试以及做得怎样（[英文版](docs/report.md)）。

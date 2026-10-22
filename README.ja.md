@@ -146,6 +146,10 @@ columbina login github
 
 Columbina は [Feishu](https://www.feishu.cn) や Lark でもあなたに返信できます。あなた自身のカスタムアプリを使い、話せるのはあなただけです。アプリに共有されたドキュメントと、送られたテキストファイルを読みます。`SKILL.md` を送るとスキルとして追加します。コマンドは実行せず、あなたのファイルも変更しません。送ったものはアシスタント専用のフォルダー `~/Columbina/feishu` に保存され、そのフォルダーのファイルを変更できるようにすることもできます。デスクトップアプリでは「設定」の「Feishu アシスタント」で設定でき、Feishu の開発者コンソールで行う手順もそこに載っています。アシスタントが動いている間はウィンドウを閉じてもアプリはトレイに残り、Windows ではサインインしたときにトレイで起動するようにもできます。コマンドラインでは `columbina feishu --setup` でアプリを設定し、`columbina feishu` でアシスタントを動かします。接続に必要なパッケージは `pip install "columbina[feishu]"` で入ります。
 
+### WeCom アシスタント
+
+同じように、Columbina は [WeCom](https://work.weixin.qq.com) でもあなたに返信できます。API モードの長時間接続を使う、あなた自身のスマートボットを使います。アシスタントはボットとの個別のチャットであなたにだけ返信し、書いたメッセージ、音声から起こされた文字、送られたテキストファイルを読みます。アシスタント専用のフォルダー `~/Columbina/wecom` で作業します。デスクトップアプリでは「設定」の「WeCom アシスタント」で、ボットのページにある Bot ID と Secret を入力して設定します。コマンドラインでは `columbina wecom --setup` でボットを設定し、`columbina wecom` でアシスタントを動かします。必要なパッケージは `pip install "columbina[wecom]"` で入ります。
+
 ## ドキュメント
 
 - [エンジニアリングレポート](docs/report.md)では、Columbina の組み立て、形を決めた選択、テストの方法、性能を説明しています（[中国語版](docs/report.zh-CN.md)）。

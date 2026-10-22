@@ -45,10 +45,15 @@ function declared(file: string, name: string): string[] {
 }
 
 const shell = read('electron/main.cjs');
+/** The assistants that the shell runs, by the names of their commands, which name their channels too. */
+const kinds = [...shell.matchAll(/^ {2}(\w+): assistantOf\('(\w+)'/gm)].map(([, key, kind]) => (key === kind ? kind : `${key}?`));
+/** A channel that the shell names, or the channels of each assistant where it names them by the assistant. */
+const channels = (named: string) => (/\$\{(?:one\.)?kind\}/.test(named)
+  ? kinds.map(kind => named.replace(/\$\{(?:one\.)?kind\}/g, kind)) : [named]);
 /** What the shell answers, what it takes without an answer, and what it tells a page without being asked. */
-const answered = [...shell.matchAll(/ipcMain\.handle\('([^']+)'/g)].map(found => found[1]);
+const answered = [...shell.matchAll(/ipcMain\.handle\((['`])([^'`]+)\1/g)].flatMap(found => channels(found[2]));
 const taken = [...shell.matchAll(/ipcMain\.on\('([^']+)'/g)].map(found => found[1]);
-const told = [...new Set([...shell.matchAll(/\btell\('([^']+)'/g)].map(found => found[1]))];
+const told = [...new Set([...shell.matchAll(/\btell\((['`])([^'`]+)\1/g)].flatMap(found => channels(found[2])))];
 
 /** Every call of a bridge made once, and the channels that this reached. */
 function reached(file: string, name: string) {
@@ -63,6 +68,16 @@ function reached(file: string, name: string) {
     heard: [...bridge.listening.keys()],
   };
 }
+
+describe('the channels of the assistants', () => {
+  it('are those of the one in Feishu and of the one in WeCom', () => {
+    expect(kinds).toEqual(['feishu', 'wecom']);
+    expect(answered.filter(channel => channel.startsWith('columbina-wecom:')).sort())
+      .toEqual(['columbina-wecom:close', 'columbina-wecom:context', 'columbina-wecom:open-page', 'columbina-wecom:store']);
+    expect(answered).toContain('columbina:set-up-wecom');
+    expect(told).toContain('columbina:wecom');
+  });
+});
 
 describe('the bridge of the main window', () => {
   it('offers the calls that the page is told of, and no other', () => {
@@ -80,7 +95,7 @@ describe('the bridge of the main window', () => {
     expect(taken).toEqual(['columbina:send']);
     // And it listens to everything that the shell tells of.
     expect([...heard].sort()).toEqual([...told].sort());
-    expect(told.length).toBe(6);
+    expect(told.length).toBe(7);
   });
 
   it('hands on what a call names, and nothing else that came with it', () => {
@@ -97,6 +112,8 @@ describe('the bridge of the main window', () => {
     expect(handed('setUpService', more)).toEqual(['columbina:set-up-service', { service: 'deepseek', language: 'ja' }]);
     expect(handed('setUpFeishu', more)).toEqual(['columbina:set-up-feishu', { language: 'ja' }]);
     expect(handed('feishuStart', more)).toEqual(['columbina:feishu-start', { language: 'ja' }]);
+    expect(handed('setUpWecom', more)).toEqual(['columbina:set-up-wecom', { language: 'ja' }]);
+    expect(handed('wecomStart', more)).toEqual(['columbina:wecom-start', { language: 'ja' }]);
     expect(handed('chooseModel', { ...more, model: 'deepseek-pro' }))
       .toEqual(['columbina:choose-model', { service: 'deepseek', model: 'deepseek-pro' }]);
     expect(handed('chooseEffort', { ...more, effort: 'max' }))
@@ -112,20 +129,26 @@ describe('the bridge of the main window', () => {
     for (const asked of [{ now: 'yes' }, { now: 1 }, {}, undefined]) expect(handed('updates', asked)).toEqual(['columbina:updates', { now: false }]);
     // On only where the page says so in so many words.
     expect(handed('feishuWritable', true)).toEqual(['columbina:feishu-writable', true]);
+    expect(handed('wecomWritable', true)).toEqual(['columbina:wecom-writable', true]);
     expect(handed('setLoginItem', true)).toEqual(['columbina:set-login-item', true]);
     for (const asked of ['true', 1, {}, undefined]) {
       expect(handed('feishuWritable', asked)).toEqual(['columbina:feishu-writable', false]);
+      expect(handed('wecomWritable', asked)).toEqual(['columbina:wecom-writable', false]);
       expect(handed('setLoginItem', asked)).toEqual(['columbina:set-login-item', false]);
     }
     // A call that is made with nothing asks all the same, and the shell says what is missing.
-    for (const call of ['selectFolder', 'start', 'notify', 'setUpService', 'setUpFeishu', 'feishuStart', 'chooseModel', 'chooseEffort']) {
+    for (const call of [
+      'selectFolder', 'start', 'notify', 'setUpService', 'setUpFeishu', 'feishuStart', 'setUpWecom', 'wecomStart', 'chooseModel',
+      'chooseEffort',
+    ]) {
       const [, given] = handed(call) as [string, Record<string, unknown>];
       expect(Object.values(given).every(value => value === undefined), call).toBe(true);
     }
     // What needs no word of the page is asked for without one.
     for (const call of [
       'getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services', 'about',
-      'feishuStatus', 'feishuStop', 'feishuForget', 'feishuLog',
+      'feishuStatus', 'feishuStop', 'feishuForget', 'feishuLog', 'openFeishuFolder',
+      'wecomStatus', 'wecomStop', 'wecomForget', 'wecomLog', 'openWecomFolder',
     ]) {
       expect(handed(call, more), call).toHaveLength(1);
     }
@@ -221,14 +244,39 @@ describe('the bridge of the window for the app of Feishu', () => {
   });
 });
 
-describe('the three bridges', () => {
+describe('the bridge of the window for the bot of WeCom', () => {
+  it('offers the calls that its page is told of, and no other', () => {
+    const { exposed } = bridgeOf('electron/wecom-preload.cjs');
+    expect(Object.keys(exposed)).toEqual(['columbinaWecom']);
+    expect(Object.keys(exposed.columbinaWecom).sort()).toEqual(declared('src/wecom/bridge.d.ts', 'WecomBridge').sort());
+  });
+
+  it('asks the shell for everything that the shell answers to this window, and listens to nothing', () => {
+    const { asked, said, heard } = reached('electron/wecom-preload.cjs', 'columbinaWecom');
+    expect([...asked].sort()).toEqual(answered.filter(channel => channel.startsWith('columbina-wecom:')).sort());
+    expect(said).toEqual([]);
+    expect(heard).toEqual([]);
+  });
+
+  it('hands the shell what is to be stored as it is given', () => {
+    const { exposed, invoked } = bridgeOf('electron/wecom-preload.cjs');
+    const document = { bot_id: 'aibTestBot0123', secret: 'made up' };
+    exposed.columbinaWecom.store(document);
+    expect(invoked.at(-1)).toEqual(['columbina-wecom:store', document]);
+  });
+});
+
+describe('the four bridges', () => {
   it('reach every call that the shell answers between them', () => {
     const main = reached('electron/preload.cjs', 'columbina');
     const key = reached('electron/key-preload.cjs', 'columbinaKey');
     const feishu = reached('electron/feishu-preload.cjs', 'columbinaFeishu');
-    expect([...main.asked, ...key.asked, ...feishu.asked].sort()).toEqual([...answered].sort());
-    expect([...main.said, ...key.said, ...feishu.said]).toEqual(taken);
-    expect(main.asked.filter(channel => key.asked.includes(channel) || feishu.asked.includes(channel))).toEqual([]);
-    expect(key.asked.filter(channel => feishu.asked.includes(channel))).toEqual([]);
+    const wecom = reached('electron/wecom-preload.cjs', 'columbinaWecom');
+    const all = [main, key, feishu, wecom];
+    expect(all.flatMap(bridge => bridge.asked).sort()).toEqual([...answered].sort());
+    expect(all.flatMap(bridge => bridge.said)).toEqual(taken);
+    // No channel is asked by two of them.
+    const asked = all.flatMap(bridge => [...new Set(bridge.asked)]);
+    expect(asked.filter((channel, index) => asked.indexOf(channel) !== index)).toEqual([]);
   });
 });

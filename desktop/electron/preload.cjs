@@ -63,4 +63,13 @@ contextBridge.exposeInMainWorld('columbina', {
   openFeishuFolder: () => ipcRenderer.invoke('columbina:feishu-folder'),
   setUpFeishu: (asked) => ipcRenderer.invoke('columbina:set-up-feishu', { language: asked?.language }),
   onFeishu: (callback) => subscribe('columbina:feishu', callback),
+  wecomStatus: () => ipcRenderer.invoke('columbina:wecom-status'),
+  wecomStart: (asked) => ipcRenderer.invoke('columbina:wecom-start', { language: asked?.language }),
+  wecomStop: () => ipcRenderer.invoke('columbina:wecom-stop'),
+  wecomForget: () => ipcRenderer.invoke('columbina:wecom-forget'),
+  wecomLog: () => ipcRenderer.invoke('columbina:wecom-log'),
+  wecomWritable: (writable) => ipcRenderer.invoke('columbina:wecom-writable', writable === true),
+  openWecomFolder: () => ipcRenderer.invoke('columbina:wecom-folder'),
+  setUpWecom: (asked) => ipcRenderer.invoke('columbina:set-up-wecom', { language: asked?.language }),
+  onWecom: (callback) => subscribe('columbina:wecom', callback),
 });

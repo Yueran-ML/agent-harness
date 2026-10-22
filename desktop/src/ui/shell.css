@@ -1508,21 +1508,21 @@ select.field {
   gap: var(--s2);
 }
 
-/* --- The assistant in Feishu, in the settings. */
-/* The app that is set up: the platform, the App ID, and a light that is on while its assistant runs. */
-.feishu-app {
+/* --- The assistants in Feishu and in WeCom, in the settings. */
+/* The app or the bot that is set up: the platform, its ID, and a light that is on while its assistant runs. */
+.assistant-app {
   display: flex;
   align-items: center;
   gap: var(--s2);
   min-width: 0;
 }
 
-.feishu-platform {
+.assistant-platform {
   color: var(--moon-0);
   font-weight: 600;
 }
 
-.feishu-id {
+.assistant-id {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1531,7 +1531,7 @@ select.field {
   font-size: var(--text-caption);
 }
 
-.feishu-light {
+.assistant-light {
   flex: none;
   width: 8px;
   height: 8px;
@@ -1539,21 +1539,21 @@ select.field {
   background: var(--moon-3);
 }
 
-.feishu-light[data-on] {
+.assistant-light[data-on] {
   background: var(--ok);
   box-shadow: 0 0 0 3px var(--ok-wash);
 }
 
-.feishu-doing > svg {
+.assistant-doing > svg {
   flex: none;
   color: var(--ok);
 }
 
-.feishu-actions {
+.assistant-actions {
   flex-wrap: wrap;
 }
 
 /* The ways to the console and to the log stand back: their words begin where the section does. */
-.feishu-links {
+.assistant-links {
   margin-left: calc(-1 * var(--s3));
 }

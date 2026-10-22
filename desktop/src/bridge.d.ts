@@ -139,6 +139,30 @@ export interface ColumbinaBridge {
    * paired, the code of pairing and what went wrong. Its end comes as `{ ended: true, code, said }`.
    */
   onFeishu(listener: (said: Record<string, unknown>) => void): () => void;
+  /**
+   * What `columbina wecom --status --json` says: which bot of WeCom is set up and how its assistant
+   * is doing, without the Secret, with what the shell adds as to `feishuStatus`.
+   */
+  wecomStatus(): Promise<unknown>;
+  /** Start the assistant in WeCom, as `feishuStart` starts the one in Feishu. Its lines come to `onWecom`. */
+  wecomStart(asked: { language: string }): Promise<void>;
+  /** Stop the assistant in WeCom that this application runs. It no longer starts with the application. */
+  wecomStop(): Promise<void>;
+  /** Stop the assistant in WeCom, and delete its bot, its Secret and whom it answered. */
+  wecomForget(): Promise<unknown>;
+  /** Show the log of the assistant in WeCom in its folder. */
+  wecomLog(): Promise<void>;
+  /** Say whether the agent of the assistant in WeCom may change the files of its folder, as `feishuWritable` does. */
+  wecomWritable(writable: boolean): Promise<unknown>;
+  /** Open the folder of the assistant in WeCom, as the program names it. */
+  openWecomFolder(): Promise<void>;
+  /**
+   * Open the window in which the bot of WeCom and its Secret are given, and wait until it is
+   * closed. This window is told whether a bot was stored there, and nothing of it.
+   */
+  setUpWecom(asked: { language: string }): Promise<{ changed: boolean }>;
+  /** Hear how the assistant in WeCom that the application runs is doing, as `onFeishu` does of the one in Feishu. */
+  onWecom(listener: (said: Record<string, unknown>) => void): () => void;
 }
 
 declare global {

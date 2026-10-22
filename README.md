@@ -211,6 +211,16 @@ tray, and on Windows the application can start in the tray when you sign in. At 
 line, `columbina feishu --setup` takes the app and `columbina feishu` runs the assistant. The
 package of its connection comes with `pip install "columbina[feishu]"`.
 
+### An assistant in WeCom
+
+In the same way, Columbina can answer you in [WeCom](https://work.weixin.qq.com), through a smart
+bot of your own that uses the API mode with a long connection. It answers you alone, in your
+chat with the bot, and reads what you write or say there and the files of text that you send
+it. It works in a folder of its own, `~/Columbina/wecom`, and is set up under *Settings*,
+*Assistant in WeCom*, with the Bot ID and the Secret from the page of the bot. At the command
+line, `columbina wecom --setup` takes the bot and `columbina wecom` runs the assistant. What it
+needs comes with `pip install "columbina[wecom]"`.
+
 ## Documentation
 
 - [The engineering report](docs/report.md) tells how Columbina is put together, which choices

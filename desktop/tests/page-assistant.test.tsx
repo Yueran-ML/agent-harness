@@ -5,10 +5,10 @@
  */
 import { act, cleanup, fireEvent, render, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { FeishuAssistant } from '../src/app/FeishuAssistant';
+import { AssistantPanel } from '../src/app/AssistantPanel';
 import { Words } from '../src/app/locale';
 import { messagesFor } from '../src/i18n';
-import { useFeishu } from '../src/useFeishu';
+import { useAssistant } from '../src/useAssistant';
 import { likeABrowser } from './mounted';
 
 beforeEach(likeABrowser);
@@ -71,7 +71,7 @@ function shellOfFeishu(answer: unknown = app) {
 async function drawn(language = 'en') {
   const opened = vi.fn();
   const result = render(<Words.Provider value={messagesFor(language)}>
-    <FeishuAssistant language={language} onOpen={opened} />
+    <AssistantPanel kind="feishu" language={language} onOpen={opened} />
   </Words.Provider>);
   await act(async () => {});
   return { ...result, opened };
@@ -138,7 +138,7 @@ describe('whether the assistant may change the files of its folder', () => {
 
 describe('what the page holds of the assistant', () => {
   it('has nothing to ask where there is no shell, as in a replay', async () => {
-    const { result } = renderHook(() => useFeishu('en'));
+    const { result } = renderHook(() => useAssistant('feishu', 'en'));
     expect(result.current.assistant).toEqual({ kind: 'unavailable' });
     await act(async () => {
       await result.current.refresh();
@@ -157,7 +157,7 @@ describe('what the page holds of the assistant', () => {
   it('takes what the assistant says over an answer that was asked for before it', async () => {
     const { shell, tell } = shellOfFeishu();
     const late = held<unknown>();
-    const { result } = renderHook(() => useFeishu('en'));
+    const { result } = renderHook(() => useAssistant('feishu', 'en'));
     await act(async () => {});
     shell.feishuStatus.mockImplementationOnce(() => late.promise);
     let asking!: Promise<void>;
@@ -172,7 +172,7 @@ describe('what the page holds of the assistant', () => {
 
   it('asks again where the assistant says something of an app that the page does not know of', async () => {
     const { shell, tell } = shellOfFeishu({ set_up: false, running: false, own: false, on: false, ended: null });
-    renderHook(() => useFeishu('en'));
+    renderHook(() => useAssistant('feishu', 'en'));
     await act(async () => {});
     expect(shell.feishuStatus).toHaveBeenCalledTimes(1);
     shell.feishuStatus.mockResolvedValueOnce({ ...app, own: true });
@@ -183,7 +183,7 @@ describe('what the page holds of the assistant', () => {
 
   it('stops listening when it is gone', async () => {
     const { listening } = shellOfFeishu();
-    const { unmount } = renderHook(() => useFeishu('en'));
+    const { unmount } = renderHook(() => useAssistant('feishu', 'en'));
     expect(listening()).toBe(1);
     unmount();
     expect(listening()).toBe(0);
@@ -195,12 +195,12 @@ describe('the assistant in the settings', () => {
     const { shell } = shellOfFeishu();
     const answer = held<unknown>();
     shell.feishuStatus.mockImplementationOnce(() => answer.promise);
-    render(<FeishuAssistant language="en" onOpen={vi.fn()} />);
+    render(<AssistantPanel kind="feishu" language="en" onOpen={vi.fn()} />);
     expect(document.body.textContent).toBe('Asking how the assistant in Feishu is doing.');
     await act(async () => answer.release(app));
     cleanup();
     vi.unstubAllGlobals();
-    render(<FeishuAssistant language="en" onOpen={vi.fn()} />);
+    render(<AssistantPanel kind="feishu" language="en" onOpen={vi.fn()} />);
     expect(document.body.textContent).toBe(
       'The assistant in Feishu is set up here where the application runs the service itself, and not in a replay.',
     );
@@ -225,7 +225,7 @@ describe('the assistant in the settings', () => {
     const { shell, tell } = shellOfFeishu();
     const { opened } = await drawn();
     expect(one('feishu-app').textContent).toBe('Feishucli_a1b2c3d4');
-    expect(one('feishu-app').querySelector('.feishu-light')?.hasAttribute('data-on')).toBe(false);
+    expect(one('feishu-app').querySelector('.assistant-light')?.hasAttribute('data-on')).toBe(false);
     expect(one('feishu-not-running').textContent).toBe('The assistant does not run.');
     expect(buttons()).toEqual([
       'Start the assistant', 'Change the app', 'Delete the app', 'Open the developer console', 'Show the log',
@@ -239,7 +239,7 @@ describe('the assistant in the settings', () => {
     // What the assistant says by itself, it is to say in the language of the page.
     expect(shell.feishuStart.mock.calls).toEqual([[{ language: 'en' }]]);
     expect(one('feishu-doing').textContent).toBe('Connecting to Feishu.');
-    expect(one('feishu-app').querySelector('.feishu-light')?.hasAttribute('data-on')).toBe(true);
+    expect(one('feishu-app').querySelector('.assistant-light')?.hasAttribute('data-on')).toBe(true);
     expect(buttons()).toEqual(['Stop', 'Change the app', 'Delete the app', 'Open the developer console', 'Show the log']);
 
     await tell({ state: 'connected', paired: false, code: '123456', error: null });
@@ -447,5 +447,138 @@ describe('the assistant in the settings', () => {
     expect(one('feishu-pair').textContent).toContain('在飞书里给机器人发送这个配对码');
     expect(one('feishu-app').textContent).toBe('飞书cli_a1b2c3d4');
     expect(buttons()).toContain('停止');
+  });
+});
+
+describe('the assistant in WeCom in the settings', () => {
+  const bot = {
+    set_up: true, bot_id: 'aibTestBot0123', paired: false, folder: 'C:\Users\me\Columbina\wecom', writable: false,
+    running: false, state: null, code: null, error: null, own: false, on: false, ended: null,
+  };
+
+  /** The shell as the page meets it, as far as the assistant in WeCom goes, beside one in Feishu that is set up. */
+  function shellOfWecom(answer: unknown = bot) {
+    const listeners = new Set<(said: Record<string, unknown>) => void>();
+    const { shell: feishu } = shellOfFeishu();
+    const shell = {
+      ...feishu,
+      wecomStatus: vi.fn(async (): Promise<unknown> => answer),
+      wecomStart: vi.fn(async (_asked: { language: string }) => {}),
+      wecomStop: vi.fn(async () => {}),
+      wecomForget: vi.fn(async (): Promise<unknown> => ({ forgotten: true })),
+      wecomLog: vi.fn(async () => {}),
+      wecomWritable: vi.fn(async (_writable: boolean): Promise<unknown> => ({ writable: _writable })),
+      openWecomFolder: vi.fn(async () => {}),
+      setUpWecom: vi.fn(async (_asked: { language: string }) => ({ changed: false })),
+      onWecom: vi.fn((listener: (said: Record<string, unknown>) => void) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      }),
+    };
+    vi.stubGlobal('columbina', shell);
+    return {
+      shell,
+      tell: (...said: Record<string, unknown>[]) => act(() => {
+        for (const document of said) for (const listener of [...listeners]) listener(document);
+      }),
+    };
+  }
+
+  async function drawnWecom(language = 'en') {
+    const opened = vi.fn();
+    render(<Words.Provider value={messagesFor(language)}>
+      <AssistantPanel kind="wecom" language={language} onOpen={opened} />
+    </Words.Provider>);
+    await act(async () => {});
+    return { opened };
+  }
+
+  it('offers to set up a bot where none is, and asks the shell of WeCom alone', async () => {
+    const { shell } = shellOfWecom({ set_up: false, running: false, folder: bot.folder, own: false, on: false, ended: null });
+    await drawnWecom();
+    expect(document.body.textContent).toContain('Talk to Columbina in WeCom, through a smart bot of your own.');
+    expect(buttons()).toEqual(['Set up a bot']);
+    shell.wecomStatus.mockResolvedValueOnce(bot);
+    shell.setUpWecom.mockResolvedValueOnce({ changed: true });
+    await press('wecom-set-up');
+    expect(shell.setUpWecom.mock.calls).toEqual([[{ language: 'en' }]]);
+    expect(one('wecom-app').textContent).toBe('WeComaibTestBot0123');
+    expect(shell.feishuStatus).not.toHaveBeenCalled();
+    expect(shell.setUpFeishu).not.toHaveBeenCalled();
+  });
+
+  it('shows the bot that does not run, starts its assistant, and shows the code to send it in WeCom', async () => {
+    const { shell, tell } = shellOfWecom();
+    const { opened } = await drawnWecom();
+    expect(one('wecom-not-running').textContent).toBe('The assistant does not run.');
+    expect(buttons()).toEqual([
+      'Start the assistant', 'Change the bot', 'Delete the bot', 'Open the admin console', 'Open its folder', 'Show the log',
+    ]);
+    shell.wecomStatus.mockResolvedValueOnce({ ...bot, own: true, on: true });
+    await press('wecom-start');
+    expect(shell.wecomStart.mock.calls).toEqual([[{ language: 'en' }]]);
+    expect(shell.feishuStart).not.toHaveBeenCalled();
+    expect(one('wecom-doing').textContent).toBe('Connecting to WeCom.');
+
+    await tell({ state: 'connected', paired: false, code: '123456', error: null, bot_id: 'aibTestBot0123' });
+    expect(one('wecom-code').textContent).toBe('123456');
+    expect(one('wecom-pair').textContent).toContain('Send the bot this code in a chat of your own in WeCom');
+    expect(one('wecom-not-heard').textContent).toContain('the bot uses the API mode with a long connection');
+    await tell({ state: 'connected', paired: true, code: null, error: null, bot_id: 'aibTestBot0123' });
+    expect(one('wecom-doing').textContent).toBe('Connected. The assistant answers you in WeCom.');
+
+    fireEvent.click(one('wecom-console'));
+    expect(opened.mock.calls).toEqual([['https://work.weixin.qq.com/wework_admin/frame']]);
+    fireEvent.click(one('wecom-log'));
+    expect(shell.wecomLog).toHaveBeenCalledOnce();
+    await press('wecom-folder');
+    expect(shell.openWecomFolder).toHaveBeenCalledOnce();
+    expect(shell.openFeishuFolder).not.toHaveBeenCalled();
+  });
+
+  it('asks again where the assistant tells of another bot than the page knows of', async () => {
+    const { shell, tell } = shellOfWecom({ ...bot, own: true, state: 'connected', paired: true });
+    await drawnWecom();
+    expect(shell.wecomStatus).toHaveBeenCalledTimes(1);
+    await tell({ state: 'connected', paired: true, code: null, error: null, bot_id: 'aibOtherBot99' });
+    await act(async () => {});
+    expect(shell.wecomStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops the assistant, changes whether it may change files, and deletes the bot with the shell of WeCom', async () => {
+    const { shell } = shellOfWecom({ ...bot, own: true, state: 'connected', paired: true });
+    await drawnWecom();
+    await press('wecom-stop');
+    expect(shell.wecomStop).toHaveBeenCalledOnce();
+    await press('wecom-writable');
+    expect(shell.wecomWritable.mock.calls).toEqual([[true]]);
+    await press('wecom-forget');
+    expect(one('wecom-forget-ask').textContent).toContain('Delete the bot aibTestBot0123 on this computer?');
+    shell.wecomStatus.mockResolvedValueOnce({ set_up: false, running: false, own: false, on: false, ended: null });
+    await press('wecom-forget-sure');
+    expect(shell.wecomForget).toHaveBeenCalledOnce();
+    expect(one('wecom-forgotten').textContent).toBe('The bot was deleted on this computer.');
+    expect([shell.feishuStop, shell.feishuWritable, shell.feishuForget].map(call => call.mock.calls.length)).toEqual([0, 0, 0]);
+  });
+
+  it('says what did not go through, as it does of the assistant in Feishu', async () => {
+    const { shell } = shellOfWecom({ error: 'what is kept of the bot cannot be read', code: 'STORE' });
+    await drawnWecom();
+    expect(one('wecom-status-failed').querySelector('p')?.textContent).toBe(
+      'Columbina could not find out how the assistant in WeCom is doing.',
+    );
+    shell.wecomStatus.mockResolvedValue(bot);
+    await press('wecom-check-again');
+    shell.wecomStart.mockRejectedValueOnce(new Error('The assistant in WeCom could not be started: spawn ENOENT'));
+    await press('wecom-start');
+    expect(one('wecom-failed').querySelector('p')?.textContent).toBe('The assistant could not be started.');
+  });
+
+  it('says it in Chinese', async () => {
+    shellOfWecom({ ...bot, own: true, state: 'connected', code: '123456' });
+    await drawnWecom('zh-CN');
+    expect(one('wecom-pair').textContent).toContain('在企业微信里和机器人单聊，发送这个配对码');
+    expect(one('wecom-app').textContent).toBe('企业微信aibTestBot0123');
+    expect(one('wecom-not-heard').textContent).toContain('用的是「长连接」');
   });
 });

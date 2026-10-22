@@ -14,6 +14,10 @@ change what was there before.
   message, quotes and files, which it decrypts, and works in `~/Columbina/wecom`, whose files
   its owner may let it change, as with the one in Feishu. Its answer streams into the chat while
   the turn runs. The package comes with `pip install "columbina[wecom]"`.
+- The settings of the desktop application have a part for the assistant in WeCom beside the one
+  in Feishu, and a window of its own takes the Bot ID and the Secret. Both assistants can run at
+  once, each starts with the application where it ran when the application was left, and while
+  either runs, closing the window keeps the application in the tray.
 - Files go with a message in the desktop application: chosen with the paperclip at the foot
   of the field or dropped on it, ten at most and of up to 25 MB each. When the message is
   sent they are copied into `.columbina/attachments/` of the project, which a `.gitignore`

@@ -127,13 +127,13 @@ replace itself. The settings show the version that runs and what the last look f
 look again when asked, skip a version, and stop the looking. An application that runs from
 source does not look.
 
-While the assistant in Feishu runs, closing the window puts the application in the tray, where
-the assistant goes on answering and nothing in the page is heard. A click on the icon of the tray
-opens the window again, and its menu opens it or quits, which stops the assistant as the closing
-of the window did before. Only one application runs at a time: starting it again shows the window
-of the one that runs. On Windows, a package can start with the system, in the tray, which the
-settings switch on under *Starting*; the assistant starts with it where it ran when the
-application last quit.
+While an assistant in Feishu or in WeCom runs, closing the window puts the application in the
+tray, where the assistant goes on answering and nothing in the page is heard. A click on the icon
+of the tray opens the window again, and its menu opens it or quits, which stops the assistants as
+the closing of the window did before. Only one application runs at a time: starting it again shows
+the window of the one that runs. On Windows, a package can start with the system, in the tray,
+which the settings switch on under *Starting*; each assistant starts with it where it ran when
+the application last quit.
 
 The first start begins with a short film. Any key or a click leaves it, and the starts
 after that go without it unless the settings say that it is to play every time.
@@ -182,8 +182,8 @@ variable or is stored, where it is one of the user's own, and, for one that asks
 where a model was said for it. A model of another service is stored for that service through
 `columbina setup --from-stdin`, which chooses the service, and the service process is started
 again at the task that is open, which goes on with the other service. This too is done at
-rest only. The assistant in Feishu reads the service when it starts, so it is stopped and
-started again to follow a switch.
+rest only. The assistants in Feishu and in WeCom read the service when they start, so one is
+stopped and started again to follow a switch.
 
 Beside the model, a button shows how hard it thinks, and opens the levels that its service
 offers, each with a line on what it does. A service of the style of DeepSeek takes all of
@@ -257,6 +257,19 @@ it. Where the page speaks Chinese or English, the
 assistant is given `--language` for it, and keeps it when it starts again with the
 application. The assistant tells the page how it is doing in lines of JSON, and what it writes
 for errors goes into `columbina-feishu.log` in the folder of the logs.
+
+## The assistant in WeCom
+
+The assistant in WeCom has a part of the settings of its own, below the one in Feishu, and does
+there what that one does: it is started and stopped, shows the code of pairing and how it is
+doing, and is let change the files of its folder, `~/Columbina/wecom`. The Bot ID and the
+Secret of the smart bot are given in a window of their own, which lists the steps in the admin
+console of WeCom and opens it. WeCom is asked whether it takes the bot before it is stored.
+
+The shell runs `columbina wecom` with the same options as `columbina feishu`, and the two
+assistants run side by side, each in a process of its own with a log of its own,
+`columbina-wecom.log`. While either runs, closing the window keeps the application in the tray,
+and quitting stops both.
 
 ## On Windows and on macOS
 

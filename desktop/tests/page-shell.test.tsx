@@ -17,10 +17,10 @@ import {
   type Written,
 } from './mounted';
 
-// The assistant in Feishu is tried in page-feishu.test.tsx.
-vi.mock('../src/useFeishu', async () => {
-  const { noFeishu } = await import('./feishuAside');
-  return { useFeishu: () => noFeishu };
+// The assistants in Feishu and in WeCom are tried in page-assistant.test.tsx.
+vi.mock('../src/useAssistant', async () => {
+  const { noAssistant } = await import('./assistantAside');
+  return { useAssistant: () => noAssistant };
 });
 
 beforeEach(likeABrowser);

@@ -80,7 +80,7 @@ function greetAndLeave(options) {
 
 // What the window shows.
 const page = path.join(resources, 'app', 'dist');
-for (const name of ['index.html', 'key.html', 'feishu.html', 'columbina-intro-extended.mp4', 'moonlit-columbina.png', 'columbina-icon.png', 'ASSET-NOTICES.txt']) {
+for (const name of ['index.html', 'key.html', 'feishu.html', 'wecom.html', 'columbina-intro-extended.mp4', 'moonlit-columbina.png', 'columbina-icon.png', 'ASSET-NOTICES.txt']) {
   await stat(path.join(page, name)).catch(() => fail(`it has no ${name}`));
 }
 await checkPackageAssets(page);
@@ -102,6 +102,12 @@ try {
   if (feishu.set_up !== false || feishu.running !== false) fail(`the assistant in Feishu says ${JSON.stringify(feishu)}`);
   const connection = spawnSync(python, ['-I', '-B', '-c', 'import websockets'], { encoding: 'utf8', timeout: 120_000, env });
   if (connection.status !== 0) fail(`its Python has no websockets for the assistant in Feishu:\n${connection.stderr}`);
+
+  // The assistant in WeCom: its command answers, and its Python decrypts the files that WeCom sends.
+  const wecom = JSON.parse(said(['wecom', '--status', '--json'], { env }));
+  if (wecom.set_up !== false || wecom.running !== false) fail(`the assistant in WeCom says ${JSON.stringify(wecom)}`);
+  const decryption = spawnSync(python, ['-I', '-B', '-c', 'import websockets, cryptography'], { encoding: 'utf8', timeout: 120_000, env });
+  if (decryption.status !== 0) fail(`its Python has no cryptography for the assistant in WeCom:\n${decryption.stderr}`);
 
   const patch = path.join(work, 'patch.yml');
   await writeFile(patch, [

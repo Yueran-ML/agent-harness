@@ -34,10 +34,10 @@ vi.mock('../src/useUpdates', () => ({
   },
 }));
 vi.mock('../src/useGitHub', async original => ({ ...await original<object>(), useGitHub: () => held.github }));
-// The assistant in Feishu is tried in page-feishu.test.tsx.
-vi.mock('../src/useFeishu', async () => {
-  const { noFeishu } = await import('./feishuAside');
-  return { useFeishu: () => noFeishu };
+// The assistants in Feishu and in WeCom are tried in page-assistant.test.tsx.
+vi.mock('../src/useAssistant', async () => {
+  const { noAssistant } = await import('./assistantAside');
+  return { useAssistant: () => noAssistant };
 });
 vi.mock('../src/BackgroundMusic', () => ({
   useBackgroundMusic: () => ({ hasTrack: false, muted: false, setMuted: () => {} }),
@@ -1543,6 +1543,17 @@ describe('what the window looks like', () => {
     fireEvent.change(one('language'), { target: { value: 'system' } });
     expect(localStorage.getItem('columbina-language')).toBeNull();
     expect(document.documentElement.lang).toBe('en');
+  });
+});
+
+describe('the assistants in the settings', () => {
+  it('are the one in Feishu and the one in WeCom, each under its own name and with its own words', () => {
+    page(first());
+    chord(',');
+    expect(one('feishu').querySelector('h3')?.textContent).toBe('Assistant in Feishu');
+    expect(one('feishu').textContent).toContain('The assistant in Feishu is set up here where the application runs the service itself');
+    expect(one('wecom').querySelector('h3')?.textContent).toBe('Assistant in WeCom');
+    expect(one('wecom').textContent).toContain('The assistant in WeCom is set up here where the application runs the service itself');
   });
 });
 

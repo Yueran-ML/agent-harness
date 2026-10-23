@@ -71,6 +71,10 @@ class Reply(Data):
             its request, whichever request comes before it. Replies with the
             same text are used once each, in the order in which they stand.
             Where two agents ask at once, this is how each gets its own.
+        after: A text that the user has to have said last in some request,
+            of any agent, before this reply is sent. Until such a request
+            has come, the reply waits. Where two agents work at once, this
+            is how the one is kept from ending before the other has asked.
     """
 
     text: str = ""
@@ -82,6 +86,7 @@ class Reply(Data):
     failure: LlmFailure | None = None
     hold: bool = False
     when: str | None = Field(default=None, min_length=1)
+    after: str | None = Field(default=None, min_length=1)
 
 
 Fixed = Reply | list[Chunk] | tuple[Chunk, ...] | Exception
@@ -155,13 +160,15 @@ class Scripted:
         requests: Every request received so far, in order.
     """
 
-    __slots__ = ("_held", "_numbers", "_released", "_script", "requests")
+    __slots__ = ("_asked", "_held", "_numbers", "_released", "_script", "requests")
 
     def __init__(self, script: Iterable[Step] = ()) -> None:
         self._script = deque(script)
         self._numbers = itertools.count(1)
         self._held = asyncio.Event()
         self._released = asyncio.Event()
+        # Told of every request, for the replies that wait for one: see Reply.after.
+        self._asked = asyncio.Condition()
         self.requests: list[LlmRequest] = []
 
     @property
@@ -188,6 +195,8 @@ class Scripted:
     async def stream(self, request: LlmRequest) -> AsyncIterator[Chunk]:
         """Play the next step of the script."""
         self.requests.append(request)
+        async with self._asked:
+            self._asked.notify_all()
         step = self._taken(request)
         if step is None:
             raise LlmError(
@@ -203,6 +212,8 @@ class Scripted:
             for chunk in fixed:
                 yield chunk
             return
+        if fixed.after is not None:
+            await self._after(fixed.after)
         for chunk in _content(fixed, self._numbers):
             yield chunk
         if fixed.hold:
@@ -223,6 +234,13 @@ class Scripted:
                     del self._script[at]
                     return step
         return None
+
+    async def _after(self, text: str) -> None:
+        """Wait until the user said this last in some request, this one or another."""
+        async with self._asked:
+            await self._asked.wait_for(
+                lambda: any(text in (_said_last(one) or "") for one in self.requests)
+            )
 
     async def _hold(self) -> None:
         self._held.set()

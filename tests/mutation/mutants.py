@@ -23043,6 +23043,36 @@ _SCRIPTED = (
         "    when: str | None = Field(default=None, min_length=1)\n",
         "    when: str | None = None\n",
     ),
+    mutant(
+        "a reply that waits for another request is sent at once",
+        SCRIPTED,
+        "        if fixed.after is not None:\n            await self._after(fixed.after)\n",
+        "",
+    ),
+    mutant(
+        "a reply that waits is not told of the request that it waits for",
+        SCRIPTED,
+        "        async with self._asked:\n            self._asked.notify_all()\n",
+        "",
+    ),
+    mutant(
+        "a reply waits until every request has said the text",
+        SCRIPTED,
+        '                lambda: any(text in (_said_last(one) or "") for one in self.requests)\n',
+        '                lambda: all(text in (_said_last(one) or "") for one in self.requests)\n',
+    ),
+    mutant(
+        "a reply waits for any request that does not say the text",
+        SCRIPTED,
+        '                lambda: any(text in (_said_last(one) or "") for one in self.requests)\n',
+        '                lambda: any(text not in (_said_last(one) or "") for one in self.requests)\n',
+    ),
+    mutant(
+        "a reply may wait for a text of no length",
+        SCRIPTED,
+        "    after: str | None = Field(default=None, min_length=1)\n",
+        "    after: str | None = None\n",
+    ),
 )
 
 _EXTENSIONS = (

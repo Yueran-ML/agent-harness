@@ -329,7 +329,9 @@ def test_two_subagents_work_side_by_side_and_one_that_runs_out_of_steps_is_a_fai
         },
         {"calls": [hand("Read notes.txt", "Read the file notes.txt.", type="hasty")]},
         {"text": "Alpha is 1 and Beta is 2."},
-        *helper("a.txt", call("read", path="a.txt"), {"text": "Alpha is 1."}),
+        # The helper for a.txt does not end before the one for b.txt has asked, which it can
+        # only do once it has begun: the two are under way together, however fast each is.
+        *helper("a.txt", call("read", path="a.txt"), {"text": "Alpha is 1.", "after": "b.txt"}),
         *helper("b.txt", call("read", path="b.txt"), {"text": "Beta is 2."}),
         *helper("notes.txt", call("read", path="notes.txt")),
     )
@@ -368,6 +370,8 @@ def test_two_subagents_work_side_by_side_and_one_that_runs_out_of_steps_is_a_fai
         SubagentEndedEvent,
     ]
     started = [one for one in told if isinstance(one, SubagentStartedEvent)]
+    # Which of the two of the first reply began first is not known.
+    started[:2] = sorted(started[:2], key=lambda one: one.description)
     assert [(one.kind, one.description) for one in started] == [
         (None, "Read a.txt"),
         (None, "Read b.txt"),

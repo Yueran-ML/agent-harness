@@ -448,3 +448,57 @@ async def test_the_plugin_reads_which_request_a_reply_is_meant_for(ctx: Context,
 
     assert (await ask(llm, "task B")).message.text == "for anyone"
     assert (await ask(llm, "task A")).message.text == "for the first"
+
+
+async def test_a_reply_that_waits_for_another_request_is_sent_once_that_one_has_come() -> None:
+    # The adapter is asked directly: the model service of these tests gives up on a stream
+    # that stays silent for longer than a moment.
+    adapter = Scripted(
+        [
+            Reply(text="done with A", when="task A", after="task B"),
+            Reply(text="done with B", when="task B"),
+        ]
+    )
+    sent: list[Chunk] = []
+
+    async def read() -> None:
+        async for chunk in adapter.stream(request("Here is task A.")):
+            sent.append(chunk)  # noqa: PERF401 - each chunk is kept as it comes, while the test looks
+
+    reader = asyncio.ensure_future(read())
+    # Nothing of the reply is sent while no request of task B has come.
+    done, _ = await asyncio.wait({reader}, timeout=0.05)
+    assert not done
+    assert sent == []
+
+    other = [chunk async for chunk in adapter.stream(request("And task B."))]
+    await asyncio.wait_for(reader, timeout=1)
+
+    assert sent == [
+        BlockStart(index=0, kind="text"),
+        TextDelta(index=0, text="done with A"),
+        BlockEnd(index=0),
+        Finish(reason="stop"),
+    ]
+    assert TextDelta(index=0, text="done with B") in other
+
+
+async def test_a_reply_waits_for_no_request_that_has_come_already(ctx: Context, llm: Llm) -> None:
+    play(
+        ctx,
+        llm,
+        Reply(text="its own", after="task B"),
+        Reply(text="an earlier one", after="task B"),
+    )
+
+    # The request that it answers is one of those that have come.
+    own = await asyncio.wait_for(ask(llm, "Here is task B."), timeout=1)
+    earlier = await asyncio.wait_for(ask(llm, "Something else."), timeout=1)
+
+    assert (own.message.text, earlier.message.text) == ("its own", "an earlier one")
+
+
+def test_a_reply_cannot_wait_for_a_text_of_no_length() -> None:
+    # A text of no length is in every text, so the reply would wait for nothing.
+    with pytest.raises(ValidationError):
+        Reply(text="for whom", after="")

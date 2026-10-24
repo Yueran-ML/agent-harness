@@ -315,7 +315,7 @@ export const zhCN: Messages = {
       revoke: '到 GitHub 撤销授权',
     },
 
-    platforms: { feishu: '飞书', lark: 'Lark', wecom: '企业微信' },
+    platforms: { feishu: '飞书', lark: 'Lark', wecom: '企业微信', qq: 'QQ' },
 
     feishu: {
       title: '飞书助手',
@@ -368,6 +368,31 @@ export const zhCN: Messages = {
       store: '验证并保存',
       storing: '正在验证',
       steps: '在管理后台要做的事',
+      next: '接下来',
+    },
+
+    qq: {
+      title: 'QQ 助手',
+      setUp: '设置机器人',
+      change: '更换机器人',
+      start: '启动助手',
+      starting: '正在启动',
+      stop: '停止',
+      stopping: '正在停止',
+      forget: '删除机器人',
+      forgetConfirm: '删除',
+      keep: '保留',
+      console: '打开 QQ 开放平台',
+      log: '查看日志',
+      folder: '打开它的文件夹',
+      checkAgain: '重新查看',
+      copyCode: '复制配对码',
+      pair: (platform: string) => `在${between(platform)}里和机器人私聊，发送这个配对码`,
+      appId: 'AppID',
+      secret: 'AppSecret',
+      store: '验证并保存',
+      storing: '正在验证',
+      steps: '在开放平台要做的事',
       next: '接下来',
     },
 
@@ -868,7 +893,8 @@ export const zhCN: Messages = {
 
     wecom: {
       lead: '在企业微信里和 Columbina 聊天，用你自己创建的智能机器人。助手只在你和机器人的单聊里回复你一个人；'
-        + '它不运行命令，也不改动你的文件，你发给它的文件和技能存在它自己的文件夹里。',
+        + '它不运行命令，也不改动你的文件，你发给它的文件和技能存在它自己的文件夹里。'
+        + '把机器人拉进群后，群里谁 @ 它都会回复，每个群单独一个对话；在群里它只读，看不到你的文件、技能和私人说明。',
       reading: '正在查看企业微信助手的状态。',
       unavailable: '应用自己运行服务时才能在这里设置企业微信助手，回放时不能。',
       statusFailed: 'Columbina 没能查到企业微信助手的状态。',
@@ -909,6 +935,51 @@ export const zhCN: Messages = {
         '在机器人的配置页开启「API 模式」，选择「长连接」。页面上会显示 Bot ID 和 Secret。',
         '在这里保存机器人后，到设置里启动助手。',
         '在企业微信里找到这个机器人，进入单聊，发送配对码。',
+      ],
+    },
+
+    qq: {
+      lead: '在 QQ 里和 Columbina 聊天，用你自己创建的机器人。私聊里只回复你一个人；把机器人拉进群后，群里谁 @ 它都会回复，'
+        + '每个群单独一个对话。它回答得快、不深想，不改文件也不运行命令，在群里看不到你的文件和私人说明。',
+      reading: '正在查看 QQ 助手的状态。',
+      unavailable: '应用自己运行服务时才能在这里设置 QQ 助手，回放时不能。',
+      statusFailed: 'Columbina 没能查到 QQ 助手的状态。',
+      notRunning: '助手没有运行。',
+      connecting: (platform: string) => `正在连接${afterWord(platform)}。`,
+      reconnecting: (platform: string) => `暂时连不上${afterWord(platform)}，助手会一直重试。`,
+      connected: (platform: string) => `已连接。助手会在${between(platform)}里回复你。`,
+      trouble: '最近有一件事没办成。',
+      pairNote: '第一个发来配对码的人，就是助手私聊里要回复的人。配对码 10 分钟内有效，过期后给机器人发任意一条消息，这里会换一个新码。',
+      pairNotHeard: '机器人没有回应的话，到开放平台确认事件用的是 WebSocket，并且机器人没公开时你在可使用的成员里。',
+      noCode: '配对码输错太多次，已经作废。停止助手再启动，会换一个新码。',
+      stopping: '正在停止助手。',
+      elsewhere: '助手正在这台电脑的别处运行（比如终端），要在那里停止。',
+      withColumbina: '助手运行时，关闭窗口后 Columbina 会留在托盘里，助手继续回复。从托盘退出会把两者都停下。'
+        + 'Columbina 退出时助手若在运行，下次启动会自动重新运行。',
+      folderFailed: '没能打开助手的文件夹。',
+      service: '助手启动时使用 Columbina 当时选用的模型服务。换了服务以后，请停止助手再重新启动。',
+      ended: '助手停下了。',
+      lastError: '助手上一次运行没有正常结束。',
+      startFailed: '没能启动助手。',
+      stopFailed: '没能停止助手。',
+      forgetAsk: (appId: string) => `在这台电脑上删除机器人 ${appId}？它的 AppSecret 和助手回复的人都会删掉，正在运行的助手会先停下。`
+        + 'QQ 里的机器人保持原样。',
+      forgotten: '已在这台电脑上删除机器人。',
+      forgetFailed: '没能删除机器人。',
+      windowLead: '你在 QQ 开放平台创建的机器人。它的开发设置页上能看到 AppID 和 AppSecret。',
+      appId: '照机器人开发设置页上写的填。',
+      appIdWrong: 'AppID 由字母、数字和符号组成，中间没有空格。',
+      secret: 'AppSecret 从这个窗口交给 Columbina，存进系统的钥匙串。显示对话的窗口永远拿不到它。',
+      secretAgain: '已保存的 AppSecret 不会显示出来。重新填一遍就能重新保存机器人。',
+      blankInSecret: 'AppSecret 中间没有空格，看看是不是粘贴时带进了别的内容。',
+      done: (appId: string) => `QQ 接受了机器人 ${appId}，已经保存。`,
+      inKeyring: 'AppSecret 存在系统的钥匙串里。',
+      inFile: '没有钥匙串接收 AppSecret，它以明文存在 Columbina 文件夹里的一个文件中。',
+      steps: [
+        '在 QQ 开放平台创建一个机器人。',
+        '在它的开发设置里，把事件接收方式设为 WebSocket。这里能看到 AppID 和 AppSecret。',
+        '机器人在这里保存好后，到设置里启动助手。',
+        '在 QQ 里找到机器人，私聊发送配对码。拉进群后，群里谁都可以 @ 它。',
       ],
     },
 

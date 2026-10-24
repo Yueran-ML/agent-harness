@@ -155,20 +155,23 @@ function AppPart({ kind, app, assistant, onOpen }: { kind: Kind; app: App; assis
         </div>
       </div>
     </div>}
-    {/* The program changes it only while no assistant runs: one that runs elsewhere is stopped there first. */}
-    <div className="setting-row">
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={app.writable}
-          disabled={busy !== null || (app.running && !app.own)}
-          onChange={event => void assistant.setWritable(event.target.checked)}
-          data-test={`${kind}-writable`}
-        />
-        {labels.writable}
-      </label>
-    </div>
-    <p className="caption">{hints.writable}</p>
+    {/* The program changes it only while no assistant runs: one that runs elsewhere is stopped there first.
+        The agents of the assistant in QQ change nothing at all. */}
+    {kind !== 'qq' && <>
+      <div className="setting-row">
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={app.writable}
+            disabled={busy !== null || (app.running && !app.own)}
+            onChange={event => void assistant.setWritable(event.target.checked)}
+            data-test={`${kind}-writable`}
+          />
+          {words.label[kind].writable}
+        </label>
+      </div>
+      <p className="caption">{words.hint[kind].writable}</p>
+    </>}
     <div className="setting-row assistant-links">
       <button type="button" className="btn btn-quiet" onClick={() => onOpen(app.console)} data-test={`${kind}-console`}>
         <ExternalLink size={14} aria-hidden="true" />{labels.console}
@@ -193,7 +196,7 @@ function AppPart({ kind, app, assistant, onOpen }: { kind: Kind; app: App; assis
 }
 
 /**
- * An assistant in Feishu or in WeCom, in the settings: the app or the bot that is set up, how its
+ * An assistant in Feishu, WeCom or QQ, in the settings: the app or the bot that is set up, how its
  * assistant is doing and the code to pair with it, and the ways to start it, stop it, change what
  * is set up or delete it. The secret is given in a window of its own, and never comes here.
  */
@@ -205,7 +208,7 @@ export function AssistantPanel({ kind, language, onOpen }: { kind: Kind; languag
   const failed = failure === null ? null : <Trouble
     tone="bad"
     words={failure.what === 'start' ? hints.startFailed : failure.what === 'stop' ? hints.stopFailed
-      : failure.what === 'forget' ? hints.forgetFailed : failure.what === 'writable' ? hints.writableFailed
+      : failure.what === 'forget' ? hints.forgetFailed : failure.what === 'writable' && kind !== 'qq' ? words.hint[kind].writableFailed
         : failure.what === 'folder' ? hints.folderFailed : words.hint.requestFailed}
     details={sentenceOf(failure.said)}
     test={`${kind}-failed`}

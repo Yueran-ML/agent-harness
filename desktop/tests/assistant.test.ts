@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { assistantAfter, assistantOf, doingOf, endedOf, type App, type Assistant } from '../src/app/assistant';
 import { appIdFits, blankInside, complete, CONSOLES, documentOf, formOf, hostOf, OTHER, SCOPES, storedOf } from '../src/feishu/form';
 import * as wecom from '../src/wecom/form';
+import * as qq from '../src/qq/form';
 
 const status = {
   set_up: true, domain: 'feishu', app_id: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: false,
@@ -320,5 +321,41 @@ describe('the window for the bot', () => {
 
   it('opens the console that the shell opens', () => {
     expect(wecom.CONSOLE).toBe('https://work.weixin.qq.com/wework_admin/frame');
+  });
+});
+
+describe('the assistant in QQ', () => {
+  const bot = {
+    set_up: true, app_id: '102030405', paired: false, folder: 'C:/me/Columbina/qq',
+    running: false, state: null, code: null, error: null, own: false, on: false, ended: null,
+  };
+
+  it('is a bot, named by its AppID, with the open platform of QQ, whose agents change nothing', () => {
+    expect(assistantOf('qq', bot)).toEqual(app({
+      platform: 'qq', id: '102030405', console: 'https://q.qq.com/', folder: 'C:/me/Columbina/qq', writable: false,
+    }));
+    // Neither a platform nor a Bot ID makes it another.
+    expect(assistantOf('qq', { ...bot, domain: 'lark', bot_id: 'aibTestBot0123' })).toMatchObject({ platform: 'qq', id: '102030405' });
+  });
+});
+
+describe('the window for the bot of QQ', () => {
+  it('opens with the bot that is set up, or empty', () => {
+    expect(qq.formOf({ set_up: true, app_id: '102030405' })).toEqual({ form: { appId: '102030405', secret: '' }, setUp: true });
+    expect(qq.formOf({ set_up: true, app_id: 7 })).toEqual({ form: { appId: '', secret: '' }, setUp: false });
+  });
+
+  it('takes an AppID as the program does', () => {
+    for (const fits of ['1', '102030405', ' 102030405 ', 'x'.repeat(64)]) expect(qq.appIdFits(fits), fits).toBe(true);
+    for (const wrong of ['', 'x'.repeat(65), '1020 30405', 'QQ机器人']) expect(qq.appIdFits(wrong), wrong).toBe(false);
+  });
+
+  it('hands the program the bot, and reads what it answered', () => {
+    expect(qq.complete({ appId: '102030405', secret: 's3cr3t' })).toBe(true);
+    expect(qq.complete({ appId: '', secret: 's3cr3t' })).toBe(false);
+    expect(qq.documentOf({ appId: ' 102030405 ', secret: '\ts3cr3t\n' })).toEqual({ app_id: '102030405', secret: 's3cr3t' });
+    expect(qq.storedOf({ stored: { app_id: '102030405' }, secret_in: 'keyring' }))
+      .toEqual({ kind: 'stored', appId: '102030405', secretIn: 'keyring' });
+    expect(qq.storedOf({ error: 'QQ refused the bot', code: 'REFUSED' })).toEqual({ kind: 'refused', said: 'QQ refused the bot' });
   });
 });

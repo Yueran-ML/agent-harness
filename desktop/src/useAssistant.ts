@@ -25,7 +25,7 @@ function callsOf(bridge: ColumbinaBridge, kind: Kind) {
     folder: () => bridge.openFeishuFolder(),
     setUp: (asked: { language: string }) => bridge.setUpFeishu(asked),
     on: (listener: (told: Record<string, unknown>) => void) => bridge.onFeishu(listener),
-  } : {
+  } : kind === 'wecom' ? {
     status: () => bridge.wecomStatus(),
     start: (asked: { language: string }) => bridge.wecomStart(asked),
     stop: () => bridge.wecomStop(),
@@ -35,6 +35,17 @@ function callsOf(bridge: ColumbinaBridge, kind: Kind) {
     folder: () => bridge.openWecomFolder(),
     setUp: (asked: { language: string }) => bridge.setUpWecom(asked),
     on: (listener: (told: Record<string, unknown>) => void) => bridge.onWecom(listener),
+  } : {
+    status: () => bridge.qqStatus(),
+    start: (asked: { language: string }) => bridge.qqStart(asked),
+    stop: () => bridge.qqStop(),
+    forget: () => bridge.qqForget(),
+    log: () => bridge.qqLog(),
+    // The agents of the assistant in QQ change nothing, and nothing asks it to.
+    writable: async (writable: boolean) => ({ writable }),
+    folder: () => bridge.openQqFolder(),
+    setUp: (asked: { language: string }) => bridge.setUpQq(asked),
+    on: (listener: (told: Record<string, unknown>) => void) => bridge.onQq(listener),
   };
 }
 

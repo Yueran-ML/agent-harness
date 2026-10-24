@@ -13,7 +13,7 @@ export default defineConfig({
     rollupOptions: {
       // Four pages: the application, the window that takes a key, the one that takes the app of
       // Feishu, and the one that takes the bot of WeCom.
-      input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html' },
+      input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html', qq: 'qq.html' },
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name].js',

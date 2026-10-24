@@ -1,13 +1,13 @@
 /**
- * What the page makes of an assistant in the chats of another platform, in Feishu or in WeCom:
- * what is set up and how its assistant is doing, as `columbina feishu --status --json` or
- * `columbina wecom --status --json` says with what the shell adds, and how the assistant that the
+ * What the page makes of an assistant in the chats of another platform, in Feishu, WeCom or QQ:
+ * what is set up and how its assistant is doing, as `columbina feishu --status --json`,
+ * `columbina wecom --status --json` or `columbina qq --status --json` says with what the shell adds, and how the assistant that the
  * application runs tells of itself line by line. Nothing here draws, so all of it can be tried
  * with plain values.
  */
 
-/** The assistants: the one in Feishu, which answers through an app, and the one in WeCom, which answers through a bot. */
-export type Kind = 'feishu' | 'wecom';
+/** The assistants: the one in Feishu, which answers through an app, and those in WeCom and QQ, which answer through a bot. */
+export type Kind = 'feishu' | 'wecom' | 'qq';
 
 /** How an assistant that the application ran ended badly, or why it did not start. */
 export interface Ended {
@@ -17,8 +17,8 @@ export interface Ended {
   said: string;
 }
 
-/** The platforms: Feishu in China, Lark outside it, and WeCom. */
-export type Platform = 'feishu' | 'lark' | 'wecom';
+/** The platforms: Feishu in China, Lark outside it, WeCom and QQ. */
+export type Platform = 'feishu' | 'lark' | 'wecom' | 'qq';
 
 /** How the assistant is doing, while it runs. */
 export type State = 'connecting' | 'connected' | 'stopping' | 'failed';
@@ -70,10 +70,11 @@ const CONSOLES: Record<Platform, string> = {
   feishu: 'https://open.feishu.cn/app',
   lark: 'https://open.larksuite.com/app',
   wecom: 'https://work.weixin.qq.com/wework_admin/frame',
+  qq: 'https://q.qq.com/',
 };
 /** The field in which the program names the app or the bot. */
-const ID: Record<Kind, string> = { feishu: 'app_id', wecom: 'bot_id' };
-const platformOf = (kind: Kind, value: unknown): Platform => (kind === 'wecom' ? 'wecom' : value === 'lark' ? 'lark' : 'feishu');
+const ID: Record<Kind, string> = { feishu: 'app_id', wecom: 'bot_id', qq: 'app_id' };
+const platformOf = (kind: Kind, value: unknown): Platform => (kind !== 'feishu' ? kind : value === 'lark' ? 'lark' : 'feishu');
 const codeOf = (value: unknown): string | null => (/^\d{6}$/.test(text(value)) ? text(value) : null);
 
 /** How an assistant ended, from what the shell says of it, or null where it says nothing of an end. */

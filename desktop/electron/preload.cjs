@@ -74,4 +74,12 @@ contextBridge.exposeInMainWorld('columbina', {
   openWecomFolder: () => ipcRenderer.invoke('columbina:wecom-folder'),
   setUpWecom: (asked) => ipcRenderer.invoke('columbina:set-up-wecom', { language: asked?.language }),
   onWecom: (callback) => subscribe('columbina:wecom', callback),
+  qqStatus: () => ipcRenderer.invoke('columbina:qq-status'),
+  qqStart: (asked) => ipcRenderer.invoke('columbina:qq-start', { language: asked?.language }),
+  qqStop: () => ipcRenderer.invoke('columbina:qq-stop'),
+  qqForget: () => ipcRenderer.invoke('columbina:qq-forget'),
+  qqLog: () => ipcRenderer.invoke('columbina:qq-log'),
+  openQqFolder: () => ipcRenderer.invoke('columbina:qq-folder'),
+  setUpQq: (asked) => ipcRenderer.invoke('columbina:set-up-qq', { language: asked?.language }),
+  onQq: (callback) => subscribe('columbina:qq', callback),
 });

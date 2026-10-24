@@ -170,7 +170,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       return child;
     }
     // A run of an assistant, which the shell starts with `--json` first and maybe a language after.
-    const assistant = ['feishu', 'wecom'].find(kind => args.includes(kind));
+    const assistant = ['feishu', 'wecom', 'qq'].find(kind => args.includes(kind));
     if (assistant && args[args.indexOf(assistant) + 1] === '--json') {
       const child = Object.assign(new EventEmitter(), {
         pid: 900 + bots.length, exitCode: null as number | null, signalCode: null, args, options,
@@ -1041,7 +1041,7 @@ describe('what the shell keeps from one start to the next', () => {
     shell.invoke('set-theme', 'moonwhite');
     expect(shell.preferences()).toEqual({
       theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
-      wecomOn: false, wecomLanguage: null, language: null,
+      wecomOn: false, wecomLanguage: null, qqOn: false, qqLanguage: null, language: null,
     });
     expect(() => shell.invoke('set-theme', 'frostlight')).toThrow('Unknown application theme.');
     expect(shell.preferences().theme).toBe('moonwhite');
@@ -2909,6 +2909,16 @@ describe('the assistant in WeCom', () => {
     const both = await shellHarness(JSON.stringify({ feishuOn: true, wecomOn: true, wecomLanguage: 'fr' }), real);
     await settled();
     expect(both.bots.map(child => child.args)).toEqual([['-m', 'columbina', 'feishu', '--json'], ['-m', 'columbina', 'wecom', '--json']]);
+    // And so does the one in QQ.
+    const qq = await shellHarness(JSON.stringify({ qqOn: true, qqLanguage: 'zh' }), real);
+    await settled();
+    expect(qq.bots.map(child => child.args)).toEqual([['-m', 'columbina', 'qq', '--json', '--language', 'zh']]);
+  });
+
+  it('answers no question of whether the agents of the assistant in QQ may change files', async () => {
+    const shell = await shellHarness();
+    expect(shell.handlers.has('columbina:qq-writable')).toBe(false);
+    expect(shell.handlers.has('columbina:wecom-writable')).toBe(true);
   });
 
   it('keeps the window in the tray while it runs, and lets it stop before the application leaves', async () => {

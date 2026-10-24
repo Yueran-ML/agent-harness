@@ -113,6 +113,12 @@ const samples: Record<string, unknown[][]> = {
   'hint.wecom.reconnecting': [['WeCom'], ['企业微信']],
   'hint.wecom.connected': [['WeCom'], ['企业微信']],
   'label.wecom.pair': [['WeCom'], ['企业微信']],
+  'hint.qq.forgetAsk': [['102030405']],
+  'hint.qq.done': [['102030405']],
+  'hint.qq.connecting': [['QQ']],
+  'hint.qq.reconnecting': [['QQ']],
+  'hint.qq.connected': [['QQ']],
+  'label.qq.pair': [['QQ']],
   'hint.balance.amount': [['DeepSeek', '¥110.00', '¥100.00', '¥10.00'], ['My service', '12.5 EUR', '12.5 EUR', '0 EUR']],
   'hint.balance.none': [['DeepSeek']],
   'hint.balance.unsupported': [['OpenAI'], ['Claude']],
@@ -123,7 +129,7 @@ type Said = { path: string; text: string };
 
 // What is written in every language as it is: the names of the platforms, and the names of the
 // fields of an app or a bot, as their consoles write them.
-const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'App ID', 'App Secret', 'Bot ID', 'Secret']);
+const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret']);
 
 // Every string that a catalogue can say, with the place where it stands.
 function everythingSaid(value: unknown, path = ''): Said[] {

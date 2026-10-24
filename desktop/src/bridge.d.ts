@@ -174,6 +174,28 @@ export interface ColumbinaBridge {
   setUpWecom(asked: { language: string }): Promise<{ changed: boolean }>;
   /** Hear how the assistant in WeCom that the application runs is doing, as `onFeishu` does of the one in Feishu. */
   onWecom(listener: (said: Record<string, unknown>) => void): () => void;
+  /**
+   * What `columbina qq --status --json` says: which bot of QQ is set up and how its assistant is
+   * doing, without the AppSecret, with what the shell adds as to `feishuStatus`.
+   */
+  qqStatus(): Promise<unknown>;
+  /** Start the assistant in QQ, as `feishuStart` starts the one in Feishu. Its lines come to `onQq`. */
+  qqStart(asked: { language: string }): Promise<void>;
+  /** Stop the assistant in QQ that this application runs. It no longer starts with the application. */
+  qqStop(): Promise<void>;
+  /** Stop the assistant in QQ, and delete its bot, its AppSecret and whom it answered. */
+  qqForget(): Promise<unknown>;
+  /** Show the log of the assistant in QQ in its folder. */
+  qqLog(): Promise<void>;
+  /** Open the folder of the assistant in QQ, as the program names it. */
+  openQqFolder(): Promise<void>;
+  /**
+   * Open the window in which the bot of QQ and its AppSecret are given, and wait until it is
+   * closed. This window is told whether a bot was stored there, and nothing of it.
+   */
+  setUpQq(asked: { language: string }): Promise<{ changed: boolean }>;
+  /** Hear how the assistant in QQ that the application runs is doing, as `onFeishu` does of the one in Feishu. */
+  onQq(listener: (said: Record<string, unknown>) => void): () => void;
 }
 
 declare global {

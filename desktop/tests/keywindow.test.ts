@@ -196,11 +196,65 @@ describe('the window for the bot of WeCom', () => {
   });
 });
 
+describe('the window for the bot of QQ', () => {
+  const files = readdirSync(path.join(desktop, 'src/qq')).filter(file => /\.(tsx?|css)$/.test(file));
+
+  it('is made of its own files', () => {
+    expect(files.sort()).toEqual(['QqApp.tsx', 'bridge.d.ts', 'form.ts', 'main.tsx']);
+  });
+
+  it('takes nothing from the part of the application that shows a conversation, nor from the windows for Feishu and WeCom', () => {
+    const shared = new Set([
+      '../app/locale', '../i18n', '../size', '../themes', '../ui/tokens.css', '../ui/base.css',
+      '../key/key.css', '../key/steps.css', '../key/form', './QqApp', './form',
+    ]);
+    const packages = new Set([
+      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/inter', '@fontsource-variable/jetbrains-mono',
+    ]);
+    for (const file of files) {
+      const named = importsOf(read(`src/qq/${file}`));
+      expect(named.filter(place => !shared.has(place) && !packages.has(place)), file).toEqual([]);
+    }
+  });
+
+  it('never reaches for the bridge of another window', () => {
+    for (const file of files) {
+      const source = read(`src/qq/${file}`);
+      expect(source.replaceAll('window.columbinaQq', ''), file).not.toMatch(/window\.columbina(Key|Feishu|Wecom)?\b/);
+    }
+  });
+
+  it('has a page that loads its own script and nothing from elsewhere', () => {
+    const page = read('qq.html');
+    expect(policyOf(page)).toEqual(policyOf(read('key.html')));
+    expect([...page.matchAll(/<script[^>]*src="([^"]+)"/g)].map(found => found[1])).toEqual(['/src/qq/main.tsx']);
+    expect(page).not.toMatch(/<script(?![^>]*\bsrc=)/);
+  });
+
+  it('has a bridge that offers four things and nothing of the other windows', () => {
+    const preload = read('electron/qq-preload.cjs');
+    expect([...preload.matchAll(/ipcRenderer\.(?:invoke|send|on)\('([^']+)'/g)].map(found => found[1]).sort())
+      .toEqual(['columbina-qq:close', 'columbina-qq:context', 'columbina-qq:open-page', 'columbina-qq:store']);
+    expect(preload).toContain("exposeInMainWorld('columbinaQq'");
+  });
+
+  it('keeps what is typed for the AppSecret out of sight and out of what a browser remembers', () => {
+    const source = read('src/qq/QqApp.tsx');
+    const field = /<input ref=\{secretField\}[^>]*>/.exec(source.replace(/\s+/g, ' '))?.[0] ?? '';
+    expect(field).toContain('type="password"');
+    expect(field).toContain('autoComplete="off"');
+    expect(field).toContain('spellCheck={false}');
+    expect(field).not.toContain('value=');
+    expect(source).not.toMatch(/localStorage|sessionStorage|indexedDB|location\.|history\./);
+  });
+});
+
 describe('the main window and the key', () => {
   it('has no way to the calls of the window for the key, nor of the windows for the assistants', () => {
     expect(read('electron/preload.cjs')).not.toContain('columbina-key:');
     expect(read('electron/preload.cjs')).not.toContain('columbina-feishu:');
     expect(read('electron/preload.cjs')).not.toContain('columbina-wecom:');
+    expect(read('electron/preload.cjs')).not.toContain('columbina-qq:');
   });
 
   it('is handed the services without a key, and only whether something was stored or deleted', () => {
@@ -212,6 +266,7 @@ describe('the main window and the key', () => {
     // And whether an app of Feishu or a bot of WeCom was stored, and nothing of its secret.
     expect(bridge).toContain('setUpFeishu(asked: { language: string }): Promise<{ changed: boolean }>;');
     expect(bridge).toContain('setUpWecom(asked: { language: string }): Promise<{ changed: boolean }>;');
+    expect(bridge).toContain('setUpQq(asked: { language: string }): Promise<{ changed: boolean }>;');
     for (const file of ['src/useAssistant.ts', 'src/app/assistant.ts', 'src/app/AssistantPanel.tsx']) {
       // What the code names, and not what its comments say of the App Secret.
       expect(read(file), file).not.toMatch(/app_secret|appSecret|\bsecret\s*[:=(]|\.secret\b/);
@@ -224,19 +279,20 @@ describe('what the packed application holds of the shell', () => {
     const shell = read('electron/main.cjs');
     // A file of each assistant is named by the command of the assistant.
     const kinds = [...shell.matchAll(/^ {2}(\w+): assistantOf\('\1'/gm)].map(found => found[1]);
-    expect(kinds).toEqual(['feishu', 'wecom']);
+    expect(kinds).toEqual(['feishu', 'wecom', 'qq']);
     const named = [...shell.matchAll(/path\.join\(__dirname, (['`])([^'`]+)\1\)/g)]
       .flatMap(found => (found[2].includes('${kind}') ? kinds.map(kind => found[2].replace('${kind}', kind)) : [found[2]]));
     expect(new Set(named)).toEqual(new Set([
-      'icon.ico', 'preload.cjs', 'key-preload.cjs', 'feishu-preload.cjs', 'wecom-preload.cjs', 'mock-service.mjs',
+      'icon.ico', 'preload.cjs', 'key-preload.cjs', 'feishu-preload.cjs', 'wecom-preload.cjs', 'qq-preload.cjs',
+      'mock-service.mjs',
     ]));
     const packer = read('electron/package.mjs');
     for (const file of ['main.cjs', ...named]) expect(packer, file).toContain(`'/electron/${file}'`);
   });
 
-  it('is the four pages of the build', () => {
+  it('is the five pages of the build', () => {
     const config = read('vite.config.ts');
-    expect(config).toContain("input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html' }");
+    expect(config).toContain("input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html', qq: 'qq.html' }");
     const shell = read('electron/main.cjs');
     expect(shell).toContain("path.resolve(__dirname, '../dist/index.html')");
     expect(shell).toContain("path.resolve(__dirname, '../dist/key.html')");

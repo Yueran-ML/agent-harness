@@ -306,6 +306,11 @@ export function Settings({
       <AssistantPanel kind="wecom" language={shownLanguage} onOpen={onOpen} />
     </section>
 
+    <section className="setting" data-test="qq">
+      <h3>{words.label.qq.title}</h3>
+      <AssistantPanel kind="qq" language={shownLanguage} onOpen={onOpen} />
+    </section>
+
     <section className="setting" ref={at('permissions')}>
       <h3>{words.label.permissions}</h3>
       {running && <p className="caption">{words.hint.settingsWhenIdle}</p>}

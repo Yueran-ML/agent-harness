@@ -582,3 +582,104 @@ describe('the assistant in WeCom in the settings', () => {
     expect(one('wecom-not-heard').textContent).toContain('用的是「长连接」');
   });
 });
+
+describe('the assistant in QQ in the settings', () => {
+  const bot = {
+    set_up: true, app_id: '102030405', paired: false, folder: 'C:/Users/me/Columbina/qq',
+    running: false, state: null, code: null, error: null, own: false, on: false, ended: null,
+  };
+
+  /** The shell as the page meets it, as far as the assistant in QQ goes, beside one in Feishu that is set up. */
+  function shellOfQq(answer: unknown = bot) {
+    const listeners = new Set<(said: Record<string, unknown>) => void>();
+    const { shell: feishu } = shellOfFeishu();
+    const shell = {
+      ...feishu,
+      qqStatus: vi.fn(async (): Promise<unknown> => answer),
+      qqStart: vi.fn(async (_asked: { language: string }) => {}),
+      qqStop: vi.fn(async () => {}),
+      qqForget: vi.fn(async (): Promise<unknown> => ({ forgotten: true })),
+      qqLog: vi.fn(async () => {}),
+      openQqFolder: vi.fn(async () => {}),
+      setUpQq: vi.fn(async (_asked: { language: string }) => ({ changed: false })),
+      onQq: vi.fn((listener: (said: Record<string, unknown>) => void) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      }),
+    };
+    vi.stubGlobal('columbina', shell);
+    return {
+      shell,
+      tell: (...said: Record<string, unknown>[]) => act(() => {
+        for (const document of said) for (const listener of [...listeners]) listener(document);
+      }),
+    };
+  }
+
+  async function drawnQq(language = 'en') {
+    const opened = vi.fn();
+    render(<Words.Provider value={messagesFor(language)}>
+      <AssistantPanel kind="qq" language={language} onOpen={opened} />
+    </Words.Provider>);
+    await act(async () => {});
+    return { opened };
+  }
+
+  it('offers to set up a bot where none is, and asks the shell of QQ alone', async () => {
+    const { shell } = shellOfQq({ set_up: false, running: false, folder: bot.folder, own: false, on: false, ended: null });
+    await drawnQq();
+    expect(document.body.textContent).toContain('Chat with Columbina in QQ, through a bot of your own.');
+    shell.qqStatus.mockResolvedValueOnce(bot);
+    shell.setUpQq.mockResolvedValueOnce({ changed: true });
+    await press('qq-set-up');
+    expect(shell.setUpQq.mock.calls).toEqual([[{ language: 'en' }]]);
+    expect(one('qq-app').textContent).toBe('QQ102030405');
+    expect(shell.setUpFeishu).not.toHaveBeenCalled();
+  });
+
+  it('starts the assistant and shows the code, and offers no way to let it change files', async () => {
+    const { shell, tell } = shellOfQq();
+    const { opened } = await drawnQq();
+    expect(buttons()).toEqual([
+      'Start the assistant', 'Change the bot', 'Delete the bot', 'Open the open platform', 'Open its folder', 'Show the log',
+    ]);
+    expect(marked('qq-writable')).toEqual([]);
+    shell.qqStatus.mockResolvedValueOnce({ ...bot, own: true, on: true });
+    await press('qq-start');
+    expect(shell.qqStart.mock.calls).toEqual([[{ language: 'en' }]]);
+
+    await tell({ state: 'connected', paired: false, code: '123456', error: null, app_id: '102030405' });
+    expect(one('qq-code').textContent).toBe('123456');
+    expect(one('qq-pair').textContent).toContain('Send the bot this code in a chat of your own in QQ');
+    expect(one('qq-not-heard').textContent).toContain('its events come by WebSocket');
+    await tell({ state: 'connected', paired: true, code: null, error: null, app_id: '102030405' });
+    expect(one('qq-doing').textContent).toBe('Connected. The assistant answers you in QQ.');
+
+    fireEvent.click(one('qq-console'));
+    expect(opened.mock.calls).toEqual([['https://q.qq.com/']]);
+    fireEvent.click(one('qq-log'));
+    expect(shell.qqLog).toHaveBeenCalledOnce();
+    await press('qq-folder');
+    expect(shell.openQqFolder).toHaveBeenCalledOnce();
+    await press('qq-stop');
+    expect(shell.qqStop).toHaveBeenCalledOnce();
+  });
+
+  it('deletes the bot with the shell of QQ', async () => {
+    const { shell } = shellOfQq();
+    await drawnQq();
+    await press('qq-forget');
+    expect(one('qq-forget-ask').textContent).toContain('Delete the bot 102030405 on this computer?');
+    shell.qqStatus.mockResolvedValueOnce({ set_up: false, running: false, own: false, on: false, ended: null });
+    await press('qq-forget-sure');
+    expect(shell.qqForget).toHaveBeenCalledOnce();
+    expect(one('qq-forgotten').textContent).toBe('The bot was deleted on this computer.');
+  });
+
+  it('says it in Chinese', async () => {
+    shellOfQq({ ...bot, own: true, state: 'connected', code: '123456' });
+    await drawnQq('zh-CN');
+    expect(one('qq-pair').textContent).toContain('在 QQ 里和机器人私聊，发送这个配对码');
+    expect(one('qq-app').textContent).toBe('QQ102030405');
+  });
+});

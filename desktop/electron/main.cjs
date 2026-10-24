@@ -26,8 +26,8 @@ const keyUrl = pathToFileURL(keyPath).href;
  * An assistant in the chat of another platform that the application runs: a command of the program,
  * set up in a window of its own that shows nothing that a model wrote. It has the name of the
  * platform; what is set up there, as the window says it; the fields of the document that the window
- * hands to the program; and the pages that the window may open, which are the consoles where that is
- * made, and what they are.
+ * hands to the program; the pages that the window may open, which are the consoles where that is
+ * made, and what they are; and whether its owner may let its agent change the files of its folder.
  *
  * Of each, the application runs one at most, and keeps the stopping of it while that lasts. Another
  * program may run one, such as a terminal: the program allows one of each at a time on a computer,
@@ -36,10 +36,10 @@ const keyUrl = pathToFileURL(keyPath).href;
  * something is being stored is kept too, as the window is not closed then. So is how the last
  * assistant that the application ran ended where it did not end well, or why it did not start.
  */
-function assistantOf(kind, name, what, fields, pages, where) {
+function assistantOf(kind, name, what, fields, pages, where, writable = true) {
   const page = path.resolve(__dirname, `../dist/${kind}.html`);
   return {
-    kind, name, what, fields, pages, where, page, url: pathToFileURL(page).href,
+    kind, name, what, fields, pages, where, writable, page, url: pathToFileURL(page).href,
     child: null, stopping: null, storing: false, ended: null,
     window: null, asked: { language: 'en' }, changed: false, closed: null,
   };
@@ -49,6 +49,9 @@ const assistants = {
     ['https://open.feishu.cn/app', 'https://open.larksuite.com/app'], 'the console of Feishu or Lark'),
   wecom: assistantOf('wecom', 'WeCom', 'the bot of WeCom', ['bot_id', 'secret'],
     ['https://work.weixin.qq.com/wework_admin/frame'], 'the admin console of WeCom'),
+  // Its agents change no file, whatever the user says.
+  qq: assistantOf('qq', 'QQ', 'the bot of QQ', ['app_id', 'secret'], ['https://q.qq.com/'],
+    'the open platform of QQ', false),
 };
 // The bar of the window in each theme: the furthest surface of `src/ui/tokens.css`, and its text.
 const titleBarThemes = {
@@ -157,7 +160,7 @@ let lastWords = { lines: [], rest: '' };
 // What is kept from one start to the next. Read when the application is ready.
 let preferences = {
   theme: 'moonveil', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
-  wecomOn: false, wecomLanguage: null, language: null,
+  wecomOn: false, wecomLanguage: null, qqOn: false, qqLanguage: null, language: null,
 };
 // The icon in the tray, once the window was put away there, and whether the user asked from there to quit.
 let tray = null;
@@ -234,6 +237,7 @@ function readPreferences() {
     theme, recent, githubSkipped: given.githubSkipped === true,
     feishuOn: given.feishuOn === true, feishuLanguage: known(given.feishuLanguage),
     wecomOn: given.wecomOn === true, wecomLanguage: known(given.wecomLanguage),
+    qqOn: given.qqOn === true, qqLanguage: known(given.qqLanguage),
     language: typeof given.language === 'string' && Object.hasOwn(WORDS, given.language) ? given.language : null,
   };
 }
@@ -1132,7 +1136,7 @@ function installAssistant(one) {
     checkSender(event);
     shell.showItemInFolder(assistantLogPath(one));
   });
-  ipcMain.handle(`columbina:${kind}-writable`, async (event, writable) => {
+  if (one.writable) ipcMain.handle(`columbina:${kind}-writable`, async (event, writable) => {
     checkSender(event);
     if (typeof writable !== 'boolean') throw new Error('Whether the assistant may change files is true or false.');
     // The program changes it only while no assistant runs. One that the application runs is

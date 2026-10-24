@@ -363,6 +363,7 @@ def test_the_composition_can_be_printed_instead_of_run(
         "system-prompt",
         "system-prompt-conduct",
         "context-instructions",
+        "context-reasoning-language",
         "context-runtime",
         "retry",
         "token-meter",
@@ -396,6 +397,9 @@ def test_the_composition_can_be_printed_instead_of_run(
         "config": {"preset": "workspace-write", "user_file": "${COLUMBINA_HOME}/permissions.yml"},
     }
     assert entries["context-instructions"]["config"] == {"user_file": "${COLUMBINA_HOME}/AGENTS.md"}
+    assert entries["context-reasoning-language"]["config"] == {
+        "file": "${COLUMBINA_HOME}/reasoning-language"
+    }
     # What the user adds to the program lies in the home of the program too. Skills are also
     # looked for where the user keeps those that other tools read.
     assert entries["skills"]["config"] == {

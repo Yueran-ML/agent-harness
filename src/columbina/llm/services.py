@@ -66,6 +66,13 @@ class Service:
             :mod:`columbina.llm.adapters.openai_chat`, the second by
             :mod:`columbina.llm.adapters.anthropic_messages`, which knows how
             the service is told how much to reason.
+        balance: How the service is asked how much money its account has
+            left, or ``None`` if it cannot be asked with its key: ``deepseek``
+            for ``GET /user/balance``.
+        drops_unbound_thinking: Whether the service can be asked to leave out
+            thinking that was bound to a beginning of the conversation that
+            has changed since, as a summary changes it, rather than refuse
+            the request.
     """
 
     name: str
@@ -81,6 +88,8 @@ class Service:
     key_page: str | None = None
     effort: Literal["default", "off", "low", "high", "max"] | None = None
     protocol: Literal["openai-chat", "anthropic"] = "openai-chat"
+    balance: Literal["deepseek"] | None = None
+    drops_unbound_thinking: bool = False
 
 
 PRESETS: tuple[Service, ...] = (
@@ -94,6 +103,7 @@ PRESETS: tuple[Service, ...] = (
         context_window=1_048_576,
         base_url_env="DEEPSEEK_BASE_URL",
         key_page="https://platform.deepseek.com/api_keys",
+        balance="deepseek",
     ),
     Service(
         name="openai",
@@ -115,6 +125,7 @@ PRESETS: tuple[Service, ...] = (
         base_url_env="ANTHROPIC_BASE_URL",
         key_page="https://platform.claude.com/settings/keys",
         protocol="anthropic",
+        drops_unbound_thinking=True,
     ),
     Service(
         name="openrouter",
@@ -212,4 +223,7 @@ def adapter_config(service: Service, keys: str, env: Mapping[str, str]) -> dict[
         config["reasoning_style"] = service.reasoning_style
     if service.max_tokens_field != "max_tokens":
         config["max_tokens_field"] = service.max_tokens_field
+    # What another address takes, such as one that answers as Anthropic does, is not known.
+    if service.drops_unbound_thinking and base_url == service.base_url:
+        config["drop_unbound_thinking"] = True
     return config

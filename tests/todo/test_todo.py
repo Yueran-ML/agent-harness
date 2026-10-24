@@ -406,17 +406,20 @@ async def test_what_is_told_again_is_the_list_that_was_written_last(harness: Har
 
     await turn(agent)
 
-    (now,) = recalled(agent)
+    first, now = recalled(agent)
     assert now.message == context(
         "todo",
+        "This takes the place of what the same source said earlier in the conversation.\n\n"
         "This is your list of things to do, as you wrote it last. The call that wrote it is in "
         "the part of the conversation that was summed up.\n"
         "[>] Run the check\n"
         "Write the whole list again with todo_write when something on it changes.",
     )
-    # It stands where the old one stood, which the model still saw.
+    # The old one stays where the model saw it, and the new one follows the conversation.
     session = agent.session
-    assert session.events[session.surface[old]].data == now
+    seen = [session.events[seq].data for seq in session.surface]
+    assert seen[old] == first
+    assert seen.index(now) > old
 
 
 async def test_a_list_that_was_emptied_is_not_told_again(harness: Harness) -> None:

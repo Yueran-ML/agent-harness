@@ -105,11 +105,20 @@ def _resolve(step: Step, request: LlmRequest) -> Fixed:
     return step(request)
 
 
+_CONTEXT = '<context source="'
+"""How a message begins that a program gave as context, such as the steps that a turn has left."""
+
+
 def _said_last(request: LlmRequest) -> str | None:
-    """Return what the user said last in a request, or ``None`` if they said nothing."""
+    """Return what the user said last in a request, or ``None`` if they said nothing.
+
+    Context is no word of the user: a message that a program gave as context is passed over.
+    """
     for message in reversed(request.messages):
         if isinstance(message, UserMessage):
-            return "".join(block.text for block in message.content)
+            text = "".join(block.text for block in message.content)
+            if not text.startswith(_CONTEXT):
+                return text
     return None
 
 

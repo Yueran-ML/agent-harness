@@ -120,6 +120,8 @@ class ToolOutcome:
         concludes_turn: Whether the tool asked for the turn to end.
         duration_ms: How long the tool ran, in milliseconds, or ``None`` if
             it did not run.
+        wrote: The file that a tool which writes changed, as the checks were
+            told of it, if the call went through.
     """
 
     call: ToolCallBlock
@@ -128,22 +130,25 @@ class ToolOutcome:
     value: object = None
     concludes_turn: bool = False
     duration_ms: int | None = None
+    wrote: str | None = None
 
     def to_event(self) -> ToolResultEvent:
         """Return the event that records the outcome in a session log.
 
-        How long the tool ran is written down beside the result, where the
-        model does not see it.
+        How long the tool ran, and which file it changed, are written down
+        beside the result, where the model does not see them.
         """
         message = ToolMessage(
             call_id=self.call.call_id,
             content=(TextBlock(text=self.text),),
             is_error=self.error is not None,
         )
-        meta: dict[str, JsonValue] | None = None
+        meta: dict[str, JsonValue] = {}
         if self.duration_ms is not None:
-            meta = {"duration_ms": self.duration_ms}
-        return ToolResultEvent(message=message, error=self.error, meta=meta)
+            meta["duration_ms"] = self.duration_ms
+        if self.wrote is not None:
+            meta["wrote"] = self.wrote
+        return ToolResultEvent(message=message, error=self.error, meta=meta or None)
 
 
 PRE_EXECUTE: WaterfallEvent[Invocation, Decision] = WaterfallEvent("tools/pre-execute")
@@ -442,6 +447,7 @@ class PendingCall:
                     value=value,
                     concludes_turn=invocation.run.concludes_turn,
                     duration_ms=took,
+                    wrote=invocation.run.target if tool.effect == "write" else None,
                 )
             )
         if isinstance(verdict, Block):

@@ -183,13 +183,18 @@ def test_the_config_of_an_adapter_says_what_is_known_of_its_service() -> None:
         "api_key_env": "MOONSHOT_API_KEY",
         "api_key_file": KEYS,
     }
-    # Anthropic is told nothing of how a service of OpenAI is spoken to.
+    # Anthropic is told nothing of how a service of OpenAI is spoken to. It is asked to leave
+    # out thinking whose conversation changed, but not at another address, which may only
+    # answer as Anthropic does.
     assert adapter_config(known("anthropic"), KEYS, {}) == {
         "provider": "anthropic",
         "base_url": "https://api.anthropic.com",
         "api_key_env": "ANTHROPIC_API_KEY",
         "api_key_file": KEYS,
+        "drop_unbound_thinking": True,
     }
+    elsewhere = {"ANTHROPIC_BASE_URL": "https://claude.example.test"}
+    assert "drop_unbound_thinking" not in adapter_config(known("anthropic"), KEYS, elsewhere)
     assert adapter_config(known("ollama"), "elsewhere.json", {}) == {
         "provider": "ollama",
         "base_url": "http://localhost:11434/v1",

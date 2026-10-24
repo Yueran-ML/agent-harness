@@ -12,9 +12,12 @@ of the project down to the working directory. The root of the project is the
 nearest directory, from the working directory upwards, that holds ``.git``.
 Without one, only the working directory is looked at.
 
-The text takes the place of the one that was given before when it changes, so
-the model always has one set of instructions before it, and they are the
-current ones. If the files go away, the model is told that too.
+When the text changes, the new one follows the conversation, said to take the
+place of the one that was given before, so the model knows which instructions
+are the current ones. The old text stays where it stands: the beginning of a
+conversation that stays the same is what a provider keeps from one request to
+the next, and some bind the thinking of their model to it. If the files go
+away, the model is told that too.
 
 The files are read for the user and not by the agent, so the sandbox, which
 holds an agent in its working directory, is not asked about them. That makes

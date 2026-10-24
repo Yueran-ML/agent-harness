@@ -122,6 +122,8 @@ export DEEPSEEK_API_KEY="your-key"
 
 `columbina doctor` 检查这些是否都已就绪。它带上密钥向服务索取模型列表，查看 shell 和沙箱，并逐行说明哪一项会挡住会话。
 
+`columbina balance` 查询密钥所在账户的余额，目前只有 DeepSeek 对程序公开余额。`columbina reasoning-language zh` 让模型从下一回合起在所有对话里用中文推理；也可以选 `en` 或 `ja`，`none` 表示不指定。
+
 执行下面的命令就开始在终端里对话，Agent 在执行命令的那个目录里工作：
 
 ```bash

@@ -51,21 +51,28 @@ def how_it_was_made(name: str) -> dict[str, Any]:
     return yaml.safe_load((RECORDED / name / "recording.yml").read_text(encoding="utf-8"))
 
 
+_LATER = ("duration_ms", "wrote")
+"""What the result of a tool tells beside it that the recordings were made without."""
+
+
 def timeless(data: dict[str, Any]) -> dict[str, Any]:
-    """Return what an event holds without how long a tool ran, which differs from run to run."""
+    """Return what an event holds without what the recordings were made without.
+
+    How long a tool ran differs from run to run besides.
+    """
     meta: object = data.get("meta")
-    if not isinstance(meta, dict) or "duration_ms" not in meta:
+    if not isinstance(meta, dict):
         return data
     told = cast("dict[str, Any]", meta)
-    rest = {key: value for key, value in told.items() if key != "duration_ms"}
+    rest = {key: value for key, value in told.items() if key not in _LATER}
     return {**data, "meta": rest or None}
 
 
 def essence(events: list[SessionEvent[EventData]], work: Path | None = None) -> list[Essence]:
     """What each event is, apart from the moment and the place it was written at.
 
-    How long a tool ran is a moment too: the recordings were made before it was written
-    down, and it is another number every time.
+    How long a tool ran is a moment too: it is another number every time. That and which
+    file a tool changed were not written down when the recordings were made.
     """
     plain = [(e, timeless(e.data.model_dump(mode="json"))) for e in events]
     return [

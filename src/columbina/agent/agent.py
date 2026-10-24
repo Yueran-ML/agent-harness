@@ -207,8 +207,10 @@ class ContextSource:
         order: Where the source stands among the others: lower numbers first.
         kind: How the text is kept. ``append`` and ``replace`` are for text
             that holds until it changes: it is written when it differs from
-            what this source gave last, after the conversation so far or in
-            the place of the last one. ``note`` is for word of something that
+            what this source gave last, after the conversation so far. Text
+            of ``replace`` says there that it takes the place of the last
+            one, which stays where the model saw it: the beginning of a
+            conversation is not written over. ``note`` is for word of something that
             happened: it is written every time the source gives it, and the
             source is asked only when a turn begins.
     """

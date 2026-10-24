@@ -153,6 +153,7 @@ def test_claude_is_talked_to_by_the_adapter_of_anthropic(dump: Dump) -> None:
         "base_url": "https://api.anthropic.com",
         "api_key_env": "ANTHROPIC_API_KEY",
         "api_key_file": KEYS,
+        "drop_unbound_thinking": True,
     }
     assert entries["frontend"]["config"]["model"] == {
         "provider": "anthropic",

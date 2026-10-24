@@ -298,6 +298,17 @@ async def test_without_instructions_there_is_no_system_message(harness: Harness)
     assert harness.model.requests[0].messages == (user("Say hello."),)
 
 
+NEW = (
+    "The instructions that this conversation began with have changed. These hold from now on, "
+    "in their place:"
+)
+
+
+def instead(prompt: str) -> UserMessage:
+    """The message that tells the model of instructions that hold in the place of the first ones."""
+    return context("system-prompt", f"{NEW}\n\n{prompt}")
+
+
 async def test_changed_instructions_take_the_place_of_the_old_ones(harness: Harness) -> None:
     first = await harness.agent(Reply(text="Hello!"), Reply(text="Hi."))
     first.followup("Say hello.")
@@ -310,17 +321,16 @@ async def test_changed_instructions_take_the_place_of_the_old_ones(harness: Harn
     second.followup("Again.")
     await idle(second)
 
-    terse = SystemMessage(content=(TextBlock(text="You are terse."),))
+    # The conversation opens as it did: a service reads that from its cache, and thinking
+    # that is bound to it holds. The new instructions follow it, said to hold instead.
     assert harness.model.requests[1].messages == (
-        terse,
+        SYSTEM,
         user("Say hello."),
         assistant("Hello!"),
+        instead("You are terse."),
         user("Again."),
     )
-    replacement = next(
-        event for event in second.session.events if event.data == SystemMessageEvent(message=terse)
-    )
-    assert replacement.replaces == (2,)
+    assert second.session.replaced == 0
 
 
 async def test_a_resumed_agent_goes_on_counting_turns(harness: Harness) -> None:
@@ -515,10 +525,15 @@ async def test_instructions_that_change_between_turns_take_the_place_of_the_old_
     agent.followup("Third.")
     await idle(agent)
 
-    longer = SystemMessage(content=(TextBlock(text="You are helpful.\n\nAdded later."),))
-    assert [request.messages[0] for request in harness.model.requests] == [SYSTEM, longer, SYSTEM]
-    assert types(agent.session).count("system/message") == 3
-    assert [len(request.messages) for request in harness.model.requests] == [2, 4, 6]
+    # Instructions that are as they were at first are news again, after others.
+    assert [request.messages[0] for request in harness.model.requests] == [SYSTEM] * 3
+    assert types(agent.session).count("system/message") == 1
+    assert harness.model.requests[1].messages[-2:] == (
+        instead("You are helpful.\n\nAdded later."),
+        user("Second."),
+    )
+    assert harness.model.requests[2].messages[-2:] == (instead("You are helpful."), user("Third."))
+    assert [len(request.messages) for request in harness.model.requests] == [2, 5, 8]
 
 
 async def test_instructions_that_stay_the_same_are_not_written_again(harness: Harness) -> None:
@@ -532,6 +547,34 @@ async def test_instructions_that_stay_the_same_are_not_written_again(harness: Ha
     await idle(agent)
 
     assert types(agent.session).count("system/message") == 1
+
+
+async def test_instructions_that_held_instead_are_told_again_where_a_summary_took_them(
+    harness: Harness,
+) -> None:
+    await harness.ctx.plugin(columbina.system_prompt)
+    sections = harness.ctx.use(SYSTEM_PROMPT).sections
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."), Reply(text="Three."))
+    agent.followup("First.")
+    await idle(agent)
+    sections.add(harness.ctx, "late", Section("Added later."))
+    agent.followup("Second.")
+    await idle(agent)
+    told = next(
+        event
+        for event in agent.session.events
+        if isinstance(event.data, UserMessageEvent) and event.data.source == "context/system-prompt"
+    )
+    summary = UserMessageEvent(message=user("(a summary)"), source="summary")
+    agent.session.append(summary, replaces=[told.seq])
+
+    agent.followup("Third.")
+    await idle(agent)
+
+    assert harness.model.requests[2].messages[-2:] == (
+        instead("You are helpful.\n\nAdded later."),
+        user("Third."),
+    )
 
 
 async def test_the_instructions_are_asked_for_once_in_a_turn(harness: Harness) -> None:

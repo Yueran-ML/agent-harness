@@ -6,6 +6,26 @@ change what was there before.
 
 ## Unreleased
 
+- A turn whose steps are limited tells the model when five are left and when the last one
+  begins, so that it keeps what it found and answers in time. A subagent that is stopped
+  before it has finished hands back, beside what it was writing, the files that its tools
+  changed and the last two things it wrote before.
+- `columbina balance` says how much money the account of a service has left, as DeepSeek tells
+  it, and `--json` says it to another program. The settings of the desktop application show it
+  for the service in use, with a button to ask again. At another address than its own, a
+  service is not asked.
+- Instructions that change in the middle of a conversation, such as an instruction file, the
+  skills, the list of things to do or the system prompt that ultra adds to, no longer take the
+  place of the old text at the beginning of the conversation. The new text follows the
+  conversation and says that it holds instead. The beginning stays as it was, so a service
+  reads it from its cache, and Claude no longer refuses the thinking it did before. Requests to
+  Anthropic itself ask it to leave out thinking whose conversation changed, as a summary
+  changes it, rather than refuse them. A refusal of that kind has the code `THINKING_REFUSED`,
+  and the desktop application says that a new conversation goes on.
+- `columbina reasoning-language` chooses the language that the model reasons in, from the
+  next turn on and in every conversation: `zh`, `en`, `ja`, or `none`. The model is told in a
+  message of its own, which follows the conversation when the choice changes. The settings of
+  the desktop application offer the language of the interface, Chinese, English, or none.
 - An assistant in WeCom answers its owner through a smart bot that uses the API mode with a long
   connection, as the one in Feishu answers through an app. `columbina wecom --setup` checks the
   Bot ID and the Secret with WeCom and keeps them, the Secret in the keyring of the system, and

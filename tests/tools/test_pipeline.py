@@ -1825,3 +1825,36 @@ async def test_whoever_listens_for_the_result_of_a_tool_is_handed_text_that_can_
 
     assert handed == [f"notes{GONE}.txt"]
     assert outcome.text == f"notes{GONE}.txt"
+
+
+# What a call changed
+
+
+async def test_a_call_of_a_tool_that_writes_says_which_file_it_changed(
+    ctx: Context, tools: Tools, run: ToolRun, journal: Journal, clock: Clock
+) -> None:
+    def target(args: EchoArgs, run: ToolRun) -> str:
+        return f"notes/{args.text}"
+
+    tools.add(
+        ctx,
+        tool("put", journal.echo, effect="write", target=target),
+        tool("look", journal.echo, effect="read", target=target),
+        tool("spoil", journal.fail, effect="write", target=target),
+    )
+
+    put = await tools.run(ctx, call("put", '{"text": "a.md"}'), run)
+    looked = await tools.run(ctx, call("look", '{"text": "a.md"}'), run)
+    spoiled = await tools.run(ctx, call("spoil", '{"text": "a.md"}'), run)
+
+    assert put.wrote == "notes/a.md"
+    assert put.to_event().meta == {"duration_ms": 0, "wrote": "notes/a.md"}
+    # A tool that only reads changed nothing, and neither did a call that failed.
+    assert (looked.wrote, spoiled.wrote) == (None, None)
+    assert spoiled.to_event().meta == {"duration_ms": 0}
+
+
+def test_an_outcome_that_says_nothing_beside_its_result_has_no_meta() -> None:
+    outcome = ToolOutcome(call=call("echo"), text="not run", error=ToolError(code="X", reason="no"))
+
+    assert outcome.to_event().meta is None

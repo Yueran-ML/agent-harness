@@ -144,6 +144,7 @@ ADAPTERS_COMMON = "src/columbina/llm/adapters/common.py"
 ANTHROPIC_MESSAGES = "src/columbina/llm/adapters/anthropic_messages.py"
 SERVICES = "src/columbina/llm/services.py"
 SCRIPTED = "src/columbina/llm/adapters/scripted.py"
+REASONING_LANGUAGE = "src/columbina/context/reasoning_language.py"
 SETUP_APP = "src/columbina/apps/setup.py"
 NET = "src/columbina/net.py"
 GITHUB_APP = "src/columbina/github/app.py"
@@ -1850,8 +1851,26 @@ _TOOLS = (
     mutant(
         "how long a tool ran is not written down beside its result",
         PIPELINE,
-        '            meta = {"duration_ms": self.duration_ms}\n',
+        '            meta["duration_ms"] = self.duration_ms\n',
         "            pass\n",
+    ),
+    mutant(
+        "which file a tool changed is not written down beside its result",
+        PIPELINE,
+        '            meta["wrote"] = self.wrote\n',
+        "            pass\n",
+    ),
+    mutant(
+        "a call of a tool that writes says no file",
+        PIPELINE,
+        '            wrote=invocation.run.target if tool.effect == "write" else None,\n',
+        "            wrote=None,\n",
+    ),
+    mutant(
+        "a call of a tool that reads says that it changed a file",
+        PIPELINE,
+        '            wrote=invocation.run.target if tool.effect == "write" else None,\n',
+        "            wrote=invocation.run.target,\n",
     ),
     mutant(
         "a call that did not run is written down as one that ran for no time",
@@ -7473,22 +7492,65 @@ _CONTEXT = (
         "            elif True:",
     ),
     mutant(
-        "text of a source that replaces is put after the conversation",
+        "text of a source that replaces is not said to hold instead",
         LOOP,
-        '                if source.kind == "replace" and last is not None and seen:',
-        "                if False:",
+        '            elif source.kind == "replace" and last is not None and seen:',
+        "            elif False:",
     ),
     mutant(
-        "text of a source that appends takes the place of its old text",
+        "text of a source that appends is said to hold instead",
         LOOP,
-        '                if source.kind == "replace" and last is not None and seen:',
-        "                if last is not None and seen:",
+        '            elif source.kind == "replace" and last is not None and seen:',
+        "            elif last is not None and seen:",
     ),
     mutant(
-        "text that the model no longer sees is replaced all the same",
+        "text that the model no longer sees is said to hold instead, or nothing",
         LOOP,
-        '                if source.kind == "replace" and last is not None and seen:',
-        '                if source.kind == "replace" and last is not None:',
+        '            elif source.kind == "replace" and last is not None and seen:',
+        '            elif source.kind == "replace" and last is not None:',
+    ),
+    mutant(
+        "text that holds instead is written again at every turn",
+        LOOP,
+        "                if last.data not in (written, instead):\n",
+        "                if last.data != written:\n",
+    ),
+    mutant(
+        "text that holds instead does not say so",
+        LOOP,
+        '                    message=_framed(name, f"{_INSTEAD}\\n\\n{whole(text)}"), source=written.source\n',
+        "                    message=_framed(name, whole(text)), source=written.source\n",
+    ),
+    mutant(
+        "text that holds instead is written over the old one",
+        LOOP,
+        "                    session.append(instead)\n",
+        "                    session.append(instead, replaces=[last.seq])\n",
+    ),
+    mutant(
+        "changed instructions are not told",
+        LOOP,
+        "        if not holding:\n            session.append(written)\n",
+        "        if False:\n            session.append(written)\n",
+    ),
+    mutant(
+        "changed instructions are written over the first ones",
+        LOOP,
+        "        if not holding:\n            session.append(written)\n",
+        "        if not holding:\n"
+        "            session.append(SystemMessageEvent(message=wanted), replaces=[first.seq])\n",
+    ),
+    mutant(
+        "instructions that hold instead are measured against the first ones",
+        LOOP,
+        "        if last is not None and last.seq in session.surface:\n            holding = ",
+        "        if False:\n            holding = ",
+    ),
+    mutant(
+        "instructions that hold instead count where the model no longer sees them",
+        LOOP,
+        "        if last is not None and last.seq in session.surface:\n            holding = ",
+        "        if last is not None:\n            holding = ",
     ),
     mutant(
         "a closing tag in a text ends the frame around it",
@@ -16599,20 +16661,32 @@ _SUBAGENTS = (
     mutant(
         "what an unfinished subagent wrote is kept from its parent",
         SUBAGENTS_SEAM,
-        "    if outcome.text.strip():\n        message += (\n",
-        "    if False:\n        message += (\n",
+        "    if outcome.text.strip():\n        said = ",
+        "    if False:\n        said = ",
     ),
     mutant(
         "a failure is followed by words about a text that is not there",
         SUBAGENTS_SEAM,
-        "    if outcome.text.strip():\n        message += (\n",
-        "    if True:\n        message += (\n",
+        "    if outcome.text.strip():\n        said = ",
+        "    if True:\n        said = ",
     ),
     mutant(
         "what an unfinished subagent wrote is not marked as unfinished",
         SUBAGENTS_SEAM,
-        '            "\\nWhat it had written until then follows. It is not a finished answer."\n',
-        '            "\\nWhat it had written until then follows."\n',
+        "It is not a finished answer.\\n\\n{said}",
+        "\\n\\n{said}",
+    ),
+    mutant(
+        "what an unfinished subagent wrote before is kept from its parent",
+        SUBAGENTS_SEAM,
+        '        said = "\\n\\n".join((*outcome.earlier, outcome.text))\n',
+        "        said = outcome.text\n",
+    ),
+    mutant(
+        "the files that an unfinished subagent changed are kept from its parent",
+        SUBAGENTS_SEAM,
+        "    if outcome.changed:\n",
+        "    if False:\n",
     ),
     mutant(
         "a failure does not carry what the subagent had written",
@@ -16972,14 +17046,56 @@ _SUBAGENTS = (
     mutant(
         "what a failed subagent had written is only what it had replied",
         SPAWN,
-        '        text=replied if reason == "completed" else arrived,\n',
-        "        text=replied,\n",
+        "    text = replied if finished else arrived or replied\n",
+        "    text = replied\n",
     ),
     mutant(
         "the answer of a subagent is whatever arrived last",
         SPAWN,
-        '        text=replied if reason == "completed" else arrived,\n',
-        "        text=arrived,\n",
+        "    text = replied if finished else arrived or replied\n",
+        "    text = arrived\n",
+    ),
+    mutant(
+        "an unfinished subagent hands back its last reply over what arrived after it",
+        SPAWN,
+        "    text = replied if finished else arrived or replied\n",
+        "    text = replied if finished else replied or arrived\n",
+    ),
+    mutant(
+        "what a subagent said before is told twice",
+        SPAWN,
+        "    before = said if arrived else said[:-1]\n",
+        "    before = said\n",
+    ),
+    mutant(
+        "a reply before the words of a request that failed is left out",
+        SPAWN,
+        "    before = said if arrived else said[:-1]\n",
+        "    before = said[:-1]\n",
+    ),
+    mutant(
+        "a finished subagent hands back what it said before",
+        SPAWN,
+        "        earlier=() if finished else tuple(before[-_EARLIER:]),\n",
+        "        earlier=tuple(before[-_EARLIER:]),\n",
+    ),
+    mutant(
+        "an unfinished subagent hands back all that it said before",
+        SPAWN,
+        "_EARLIER = 2\n",
+        "_EARLIER = 9\n",
+    ),
+    mutant(
+        "a file that a call which failed names counts as changed",
+        SPAWN,
+        "            if data.error is None and isinstance(wrote, str) and wrote not in changed:\n",
+        "            if isinstance(wrote, str) and wrote not in changed:\n",
+    ),
+    mutant(
+        "a file that was changed twice is told twice",
+        SPAWN,
+        "            if data.error is None and isinstance(wrote, str) and wrote not in changed:\n",
+        "            if data.error is None and isinstance(wrote, str):\n",
     ),
     mutant(
         "why the turn of a subagent ended is not read",
@@ -18366,8 +18482,8 @@ _KEYS = (
         OPENAI_CHAT,
         "            if response.status_code != 200:\n"
         "                raise LlmError(_refusal(response))\n"
-        "            return _listed(response.content)\n",
-        "            return _listed(response.content)\n",
+        "            return read(response.content)\n",
+        "            return read(response.content)\n",
     ),
     mutant(
         "the list of models is taken for empty",
@@ -18378,8 +18494,8 @@ _KEYS = (
     mutant(
         "the key is left in a failure of the list of models",
         OPENAI_CHAT,
-        "            return _listed(response.content)\n        except (httpx.RequestError, LlmError) as error:\n            failure = failure_of(error, secret)\n",
-        "            return _listed(response.content)\n        except (httpx.RequestError, LlmError) as error:\n            failure = failure_of(error, None)\n",
+        "            return read(response.content)\n        except (httpx.RequestError, LlmError) as error:\n            failure = failure_of(error, secret)\n",
+        "            return read(response.content)\n        except (httpx.RequestError, LlmError) as error:\n            failure = failure_of(error, None)\n",
     ),
     mutant(
         "a failure of the list of models holds on to the error that held the key",
@@ -19852,14 +19968,16 @@ _SERVICES = (
     mutant(
         "what is wrong is not answered",
         LAUNCHER,
-        '        _answer({"error": str(error)})\n        return 2\n',
-        "        return 2\n",
+        '    except chosen_service.SetupError as error:\n        _answer({"error": str(error)})\n',
+        "    except chosen_service.SetupError as error:\n",
     ),
     mutant(
         "what is wrong is answered, and the program ends as if nothing were",
         LAUNCHER,
-        '        _answer({"error": str(error)})\n        return 2\n',
-        '        _answer({"error": str(error)})\n        return 0\n',
+        '    except chosen_service.SetupError as error:\n        _answer({"error": str(error)})\n'
+        "        return 2\n",
+        '    except chosen_service.SetupError as error:\n        _answer({"error": str(error)})\n'
+        "        return 0\n",
     ),
     mutant(
         "what was asked for is not answered",
@@ -22997,9 +23115,15 @@ _SCRIPTED = (
     mutant(
         "a reply is meant for a request by what anybody said last in it",
         SCRIPTED,
-        '        if isinstance(message, UserMessage):\n            return "".join(block.text for block in message.content)\n',
-        '        if not isinstance(message, ToolMessage):\n            return "".join(getattr(block, "text", "") for block in message.content)\n',
+        '        if isinstance(message, UserMessage):\n            text = "".join(block.text for block in message.content)\n',
+        '        if not isinstance(message, ToolMessage):\n            text = "".join(getattr(block, "text", "") for block in message.content)\n',
         ("    UserMessage,\n)\n", "    ToolMessage,\n    UserMessage,\n)\n"),
+    ),
+    mutant(
+        "context is taken for what the user said",
+        SCRIPTED,
+        "            if not text.startswith(_CONTEXT):\n",
+        "            if True:\n",
     ),
     mutant(
         "a reply is meant for a request by what the user said first",
@@ -23728,8 +23852,20 @@ _KEY_CHECK = (
     mutant(
         "a mirror of a listed service takes its page of keys along",
         SETUP_APP,
-        "        key_page=known.key_page if base_url == known.base_url else None,\n",
+        "        key_page=known.key_page if home else None,\n",
         "        key_page=known.key_page,\n",
+    ),
+    mutant(
+        "a mirror of a listed service is asked for the balance of its account",
+        SETUP_APP,
+        "        balance=known.balance if home else None,\n",
+        "        balance=known.balance,\n",
+    ),
+    mutant(
+        "a mirror of Anthropic is asked to leave out thinking",
+        SETUP_APP,
+        "        drops_unbound_thinking=known.drops_unbound_thinking and home,\n",
+        "        drops_unbound_thinking=known.drops_unbound_thinking,\n",
     ),
     mutant(
         "another program is not told where a key is made",
@@ -24588,8 +24724,8 @@ _EFFORT = (
     mutant(
         "the level of a service is lost when it is read",
         SETUP_APP,
-        "        effort=said.effort,\n    )\n",
-        "    )\n",
+        "        effort=said.effort,\n        balance=",
+        "        balance=",
     ),
     mutant(
         "a model that is stored drops the level",
@@ -25962,14 +26098,14 @@ _ANTHROPIC = (
     mutant(
         "the thinking is shown whatever the config says",
         ANTHROPIC_MESSAGES,
-        '        "thinking": {"type": "adaptive", "display": config.thinking_display},\n',
-        '        "thinking": {"type": "adaptive", "display": "summarized"},\n',
+        '{"type": "adaptive", "display": config.thinking_display}\n',
+        '{"type": "adaptive", "display": "summarized"}\n',
     ),
     mutant(
         "the model is told how long to think",
         ANTHROPIC_MESSAGES,
-        '        "thinking": {"type": "adaptive", "display": config.thinking_display},\n',
-        '        "thinking": {"type": "enabled", "display": config.thinking_display},\n',
+        '{"type": "adaptive", "display": config.thinking_display}\n',
+        '{"type": "enabled", "display": config.thinking_display}\n',
     ),
     mutant(
         "the instructions are joined without a blank line",
@@ -26628,7 +26764,7 @@ _ANTHROPIC = (
     mutant(
         "the version is the one that the adapter knows",
         ANTHROPIC_MESSAGES,
-        '        headers = {"anthropic-version": self._config.version}\n',
+        '        headers = {"anthropic-version": config.version}\n',
         '        headers = {"anthropic-version": "2023-06-01"}\n',
     ),
     mutant(
@@ -27611,6 +27747,243 @@ _WECOM = (
 )
 
 
+_BATCH_10 = (
+    # The steps that a turn has left.
+    mutant(
+        "the model is not told of its last step",
+        BUDGET,
+        "    if left == 1:\n",
+        "    if left == 0:\n",
+    ),
+    mutant(
+        "the model is told of the steps that are left at every step",
+        BUDGET,
+        "    if left == _FEW:\n",
+        "    if left >= _FEW:\n",
+    ),
+    mutant(
+        "the model is told of the steps that are left one step late",
+        BUDGET,
+        "    left = steps - step + 1\n",
+        "    left = steps - step\n",
+    ),
+    mutant(
+        "the model is told of the steps that are left too early",
+        BUDGET,
+        "_FEW = 5\n",
+        "_FEW = 6\n",
+    ),
+    mutant(
+        "the limit of the config counts over that of the spec",
+        BUDGET,
+        "        steps = info.agent.spec.max_steps or self._config.max_steps\n",
+        "        steps = self._config.max_steps or info.agent.spec.max_steps\n",
+    ),
+    mutant(
+        "the model is not told of its steps",
+        BUDGET,
+        "        if told is not None:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a note of the steps is no context",
+        BUDGET,
+        "            info.agent.session.append(UserMessageEvent(message=note, source=STEPS_LEFT))\n",
+        "            info.agent.session.append(UserMessageEvent(message=note))\n",
+    ),
+    # The balance of a service.
+    mutant(
+        "a service of no balance is asked for one",
+        SETUP_APP,
+        "    if service.balance is None:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "the service in use is not the one asked by default",
+        SETUP_APP,
+        "    named = name or before.use or _BY_DEFAULT\n",
+        "    named = name or _BY_DEFAULT\n",
+    ),
+    mutant(
+        "a service that cannot be reached is not said to be so",
+        SETUP_APP,
+        '            "error": f"{told.rstrip(\'.\')}. {_UNREACHABLE}" if kind == "network" else told,\n',
+        '            "error": told,\n',
+    ),
+    mutant(
+        "an account that cannot pay is said to pay",
+        SETUP_APP,
+        '"available": kept.available, "balances": amounts}\n',
+        '"available": True, "balances": amounts}\n',
+    ),
+    mutant(
+        "what was paid in is said to be given",
+        SETUP_APP,
+        '            "topped_up": one.topped_up,\n',
+        '            "topped_up": one.granted,\n',
+    ),
+    mutant(
+        "the balance is asked for without the key",
+        OPENAI_CHAT,
+        '        headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}\n'
+        "        timeout",
+        "        headers: dict[str, str] = {}\n        timeout",
+    ),
+    mutant(
+        "the balance is asked for at the list of models",
+        OPENAI_CHAT,
+        '        return await self._got("user/balance", _balance)\n',
+        '        return await self._got("models", _balance)\n',
+    ),
+    mutant(
+        "a balance that cannot be read is taken as none",
+        OPENAI_CHAT,
+        "        sent = _Balance.model_validate_json(content)\n    except ValidationError as error:\n",
+        "        sent = _Balance.model_validate_json(content)\n    except ArithmeticError as error:\n",
+    ),
+    mutant(
+        "what was given is said to be paid in",
+        OPENAI_CHAT,
+        "        Amount(one.currency, one.total_balance, one.granted_balance, one.topped_up_balance)\n",
+        "        Amount(one.currency, one.total_balance, one.topped_up_balance, one.granted_balance)\n",
+    ),
+    mutant(
+        "a person is told what a program is told",
+        LAUNCHER,
+        "    if as_json:\n        _answer(said)\n",
+        "    if True:\n        _answer(said)\n",
+    ),
+    mutant(
+        "a service that cannot be asked ends the program as if it could",
+        LAUNCHER,
+        '        return 2 if "error" in said else 0\n',
+        "        return 0\n",
+    ),
+    mutant(
+        "an account that cannot pay is not said to",
+        LAUNCHER,
+        '    if not said["available"]:\n',
+        "    if False:\n",
+    ),
+    # What holds instead of what was said before, and thinking that is left out.
+    mutant(
+        "a refusal of thinking is no refusal of its own",
+        ANTHROPIC_MESSAGES,
+        "    if all(word in lowered for word in _UNBOUND):\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "a refusal that speaks of thinking alone is taken for a refusal of thinking",
+        ANTHROPIC_MESSAGES,
+        "    if all(word in lowered for word in _UNBOUND):\n",
+        "    if any(word in lowered for word in _UNBOUND):\n",
+    ),
+    mutant(
+        "thinking whose conversation changed is refused at every service",
+        ANTHROPIC_MESSAGES,
+        "    if config.drop_unbound_thinking:\n        thinking[",
+        "    if False:\n        thinking[",
+    ),
+    mutant(
+        "every service is asked to leave out thinking",
+        ANTHROPIC_MESSAGES,
+        "    if config.drop_unbound_thinking:\n        thinking[",
+        "    if True:\n        thinking[",
+    ),
+    mutant(
+        "the beta is not asked for",
+        ANTHROPIC_MESSAGES,
+        "        if config.drop_unbound_thinking:\n            # Betas",
+        "        if False:\n            # Betas",
+    ),
+    mutant(
+        "the betas that the config names are left out",
+        ANTHROPIC_MESSAGES,
+        '            headers[_BETA] = ",".join([*betas, _BINDING])\n',
+        "            headers[_BETA] = _BINDING\n",
+    ),
+    mutant(
+        "a beta that the config names otherwise written is left out",
+        ANTHROPIC_MESSAGES,
+        "key.lower() == _BETA)\n",
+        "key == _BETA)\n",
+    ),
+    mutant(
+        "Anthropic at another address is asked to leave out thinking",
+        SERVICES,
+        "    if service.drops_unbound_thinking and base_url == service.base_url:\n",
+        "    if service.drops_unbound_thinking:\n",
+    ),
+    mutant(
+        "every service at its own address is asked to leave out thinking",
+        SERVICES,
+        "    if service.drops_unbound_thinking and base_url == service.base_url:\n",
+        "    if base_url == service.base_url:\n",
+    ),
+    # The language of reasoning.
+    mutant(
+        "a language that is chosen is kept as none",
+        REASONING_LANGUAGE,
+        '    path.write_text(f"{code}\\n", encoding="utf-8")\n',
+        '    path.write_text("\\n", encoding="utf-8")\n',
+    ),
+    mutant(
+        "a language that cannot be chosen is kept",
+        REASONING_LANGUAGE,
+        "    if code not in LANGUAGES:\n        raise",
+        "    if False:\n        raise",
+    ),
+    mutant(
+        "a file names a language that is not known",
+        REASONING_LANGUAGE,
+        "    return code if code in LANGUAGES else None\n",
+        "    return code or None\n",
+    ),
+    mutant(
+        "a model that was told a language is not told that none holds",
+        REASONING_LANGUAGE,
+        "            return _FREE if _GIVEN.of(agent.session) else None\n",
+        "            return None\n",
+    ),
+    mutant(
+        "a model that was told no language is told that none holds",
+        REASONING_LANGUAGE,
+        "            return _FREE if _GIVEN.of(agent.session) else None\n",
+        "            return _FREE\n",
+    ),
+    mutant(
+        "a language that the user chose takes the place of the old one without a word",
+        REASONING_LANGUAGE,
+        'ContextSource(render, order=10, kind="replace")',
+        'ContextSource(render, order=10, kind="append")',
+    ),
+    mutant(
+        "the language that is chosen is not said",
+        LAUNCHER,
+        "    elif args.language is None:\n        print(code or _NO_LANGUAGE)\n",
+        "    elif args.language is None:\n        pass\n",
+    ),
+    mutant(
+        "none chooses a language of that name",
+        LAUNCHER,
+        "                path, None if args.language == _NO_LANGUAGE else args.language\n",
+        "                path, args.language\n",
+    ),
+    mutant(
+        "a choice that cannot be kept ends the program as if it was",
+        LAUNCHER,
+        '                _answer({"error": said})\n            else:\n                _tell(said)\n            return 2\n',
+        '                _answer({"error": said})\n            else:\n                _tell(said)\n            return 0\n',
+    ),
+    mutant(
+        "the language of reasoning is not told of",
+        BASE_BUNDLE,
+        "      - id: context-reasoning-language\n",
+        "      - id: context-reasoning-language\n        disabled: true\n",
+    ),
+)
+
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -27808,6 +28181,21 @@ SETS: dict[str, MutantSet] = {
         ("tests/test_package.py", "tests/apps/test_launcher.py"), _CHAT_PROFILE
     ),
     "anthropic": MutantSet(("tests/llm/test_anthropic_messages.py",), _ANTHROPIC),
+    "batch-10": MutantSet(
+        (
+            "tests/guard/test_budget.py",
+            "tests/apps/test_balance.py",
+            "tests/apps/test_setup.py",
+            "tests/llm/test_openai_chat.py",
+            "tests/llm/test_anthropic_messages.py",
+            "tests/llm/test_services.py",
+            "tests/context/test_reasoning_language.py",
+            "tests/apps/test_reasoning_language_command.py",
+            "tests/apps/test_launcher.py",
+            "tests/apps/test_base_program.py",
+        ),
+        _BATCH_10,
+    ),
     "anthropic-apps": MutantSet(
         (
             "tests/llm/test_services.py",

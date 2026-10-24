@@ -42,10 +42,10 @@ response as the service sent it.
 
 import os
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, Field, JsonValue, ValidationError
@@ -99,8 +99,9 @@ _STATUS_CODES = {
     429: "RATE_LIMIT",
 }
 _EFFORT = {"low": "low", "high": "high", "max": "high"}
+_T = TypeVar("_T")
 _LIST_SECONDS = 30.0
-"""How long the list of the models of a service may take to arrive."""
+"""How long the list of the models of a service, or its balance, may take to arrive."""
 
 
 class Config(BaseModel):
@@ -203,6 +204,71 @@ class _Listed(BaseModel):
 
 class _Listing(BaseModel):
     data: list[_Listed]
+
+
+class _Amount(BaseModel):
+    currency: str
+    total_balance: str
+    granted_balance: str = "0"
+    topped_up_balance: str = "0"
+
+
+class _Balance(BaseModel):
+    is_available: bool
+    balance_infos: list[_Amount] = Field(default_factory=list[_Amount])
+
+
+@dataclass(frozen=True, slots=True)
+class Amount:
+    """What an account has in one currency, as the service wrote the numbers.
+
+    Attributes:
+        currency: The currency, such as ``CNY``.
+        total: All of it.
+        granted: What was given to the account and has not expired.
+        topped_up: What was paid in.
+    """
+
+    currency: str
+    total: str
+    granted: str
+    topped_up: str
+
+
+@dataclass(frozen=True, slots=True)
+class Balance:
+    """How much money the account of a key has left.
+
+    Attributes:
+        available: Whether the account can pay for calls.
+        amounts: What it has, in each currency.
+    """
+
+    available: bool
+    amounts: tuple[Amount, ...]
+
+
+def _balance(content: bytes) -> Balance:
+    """Return the balance that a service of DeepSeek sent.
+
+    Raises:
+        LlmError: What it sent is no balance.
+    """
+    try:
+        sent = _Balance.model_validate_json(content)
+    except ValidationError as error:
+        problem = error.errors()[0]["msg"]
+        raise LlmError(
+            LlmFailure(
+                message=f"the service sent a balance that cannot be read: {problem}",
+                code="MALFORMED_RESPONSE",
+            )
+        ) from None
+    amounts = tuple(
+        Amount(one.currency, one.total_balance, one.granted_balance, one.topped_up_balance)
+        for one in sent.balance_infos
+    )
+    return Balance(available=sent.is_available, amounts=amounts)
 
 
 def _joined(content: tuple[TextBlock, ...]) -> str:
@@ -602,14 +668,32 @@ class OpenAIChat:
             LlmError: The key is missing, the service could not be reached or
                 refused, or what it answered is no list of models.
         """
+        return await self._got("models", _listed)
+
+    async def balance(self) -> Balance:
+        """Return how much money the account of the key has left, as a service of DeepSeek says.
+
+        Raises:
+            LlmError: The key is missing, the service could not be reached or
+                refused, or what it answered is no balance.
+        """
+        return await self._got("user/balance", _balance)
+
+    async def _got(self, path: str, read: Callable[[bytes], _T]) -> _T:
+        """Return what the service answers to a GET of a path, asked with the key, as read.
+
+        Raises:
+            LlmError: The key is missing, the service could not be reached or
+                refused, or what it answered cannot be read.
+        """
         secret = await secret_of(self._config, self._given)
         headers = {} if secret is None else {"Authorization": f"Bearer {secret}"}
         timeout = httpx.Timeout(self._config.connect_timeout_seconds, read=_LIST_SECONDS)
         try:
-            response = await self._client.get("models", headers=headers, timeout=timeout)
+            response = await self._client.get(path, headers=headers, timeout=timeout)
             if response.status_code != 200:
                 raise LlmError(_refusal(response))
-            return _listed(response.content)
+            return read(response.content)
         except (httpx.RequestError, LlmError) as error:
             failure = failure_of(error, secret)
         # Raised out here, as a failure of a reply is.

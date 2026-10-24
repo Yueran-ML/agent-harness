@@ -18,6 +18,11 @@ it came, with its signature, in the requests that follow: within a turn with
 tools the service requires that. The reasoning of another adapter is not
 sent, since the service could not read it.
 
+A block of thinking is bound to the conversation before it. Where the
+beginning changed since, as a summary changes it, the service refuses the
+request. A config may ask it to leave such thinking out instead, which a beta
+of the service does: the reply then goes on without that thinking.
+
 **The cache.** Every request asks the service to cache the conversation up to
 its last block, which it does once the prompt is long enough. A request that
 begins as the one before it did reads that beginning from the cache, at a
@@ -127,10 +132,16 @@ _TOO_LONG = "prompt is too long"
 """What Anthropic says of a conversation that does not fit into the window of the model."""
 _NO_MONEY = "credit balance is too low"
 """What Anthropic says of an account that cannot pay for a request."""
+_UNBOUND = ("signature", "thinking")
+"""What Anthropic speaks of where it refuses thinking of the model that it sent before, such as
+thinking whose conversation began otherwise when the model thought."""
 _NOT_IN_AN_ID = re.compile(r"[^A-Za-z0-9_]")
 """What the id of a call may not hold, for Anthropic."""
 _LEFT_OUT = "(The beginning of the conversation is left out here.)"
 """What a conversation that begins with a reply of the model begins with."""
+_BETA = "anthropic-beta"
+_BINDING = "thinking-binding-controls-2026-08-01"
+"""The beta of the service by which thinking whose conversation changed is left out."""
 
 
 class Config(BaseModel):
@@ -151,6 +162,11 @@ class Config(BaseModel):
             the model thought, or for its signature alone.
         cache: How long the service is asked to keep the beginning of a
             conversation: five minutes, an hour, or not at all.
+        drop_unbound_thinking: Whether the service is asked to leave out
+            thinking that is bound to a beginning of the conversation that has
+            changed, rather than refuse the request. It is a beta of
+            Anthropic, which a service that only answers as Anthropic does
+            may not know.
         connect_timeout_seconds: How long connecting may take. Silence after
             that is the business of the model service, not of the adapter.
         headers: Further headers for every request. Do not put a key here.
@@ -165,6 +181,7 @@ class Config(BaseModel):
     max_output_tokens: int = Field(default=32_000, gt=0)
     thinking_display: Literal["summarized", "omitted"] = "summarized"
     cache: Literal["5m", "1h", "off"] = "5m"
+    drop_unbound_thinking: bool = False
     connect_timeout_seconds: float = Field(default=10.0, gt=0)
     headers: dict[str, str] = Field(default_factory=dict[str, str])
 
@@ -341,12 +358,15 @@ def build_body(request: LlmRequest, config: Config) -> dict[str, JsonValue]:
     and an option that is ``None`` takes out what stands under its name.
     """
     call = request.config
+    thinking: dict[str, JsonValue] = {"type": "adaptive", "display": config.thinking_display}
+    if config.drop_unbound_thinking:
+        thinking["block_binding"] = {"prefix_mismatch_behavior": "drop_block"}
     body: dict[str, JsonValue] = {
         "model": call.model,
         "max_tokens": call.max_output_tokens or config.max_output_tokens,
         "messages": _conversation(request, config.provider),
         "stream": True,
-        "thinking": {"type": "adaptive", "display": config.thinking_display},
+        "thinking": thinking,
     }
     system = "\n\n".join(
         _joined(message.content)
@@ -576,6 +596,8 @@ def _code_of(kind: str, message: str, status: int | None) -> str:
         return "CONTEXT_WINDOW_EXCEEDED"
     if _NO_MONEY in lowered:
         return "QUOTA"
+    if all(word in lowered for word in _UNBOUND):
+        return "THINKING_REFUSED"
     if kind in _ERROR_TYPES:
         return _ERROR_TYPES[kind]
     if status is None:
@@ -672,9 +694,15 @@ class AnthropicMessages:
         await self._client.aclose()
 
     def _headers(self, secret: str | None) -> dict[str, str]:
-        headers = {"anthropic-version": self._config.version}
+        config = self._config
+        headers = {"anthropic-version": config.version}
         if secret is not None:
             headers["x-api-key"] = secret
+        if config.drop_unbound_thinking:
+            # Betas that the config names go along.
+            named = (value for key, value in config.headers.items() if key.lower() == _BETA)
+            betas = [beta.strip() for value in named for beta in value.split(",") if beta.strip()]
+            headers[_BETA] = ",".join([*betas, _BINDING])
         return headers
 
     async def stream(self, request: LlmRequest) -> AsyncIterator[Chunk]:

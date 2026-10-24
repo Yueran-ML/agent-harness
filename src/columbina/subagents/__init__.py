@@ -218,6 +218,10 @@ class Outcome:
         steps: How many steps the turn took.
         usage: What the subagent cost.
         code: The code of the end of the turn, for a program, if it has one.
+        changed: The files that its tools changed, in the order in which
+            they were first changed.
+        earlier: Of a turn that did not come to its end, the last few things
+            that it said before ``text``, the oldest first.
     """
 
     reason: TurnEndReason | None
@@ -226,6 +230,8 @@ class Outcome:
     steps: int
     usage: Usage
     code: str | None = None
+    changed: tuple[str, ...] = ()
+    earlier: tuple[str, ...] = ()
 
 
 class Child(Protocol):
@@ -310,10 +316,13 @@ def handed_back(outcome: Outcome) -> str:
             reason="completed",
         )
     message = f"The subagent did not finish its task: {_how(outcome)}."
+    if outcome.changed:
+        # What it changed is there, finished or not, and whoever goes on from it starts there.
+        message += f"\nIts tools changed these files: {', '.join(outcome.changed)}."
     if outcome.text.strip():
+        said = "\n\n".join((*outcome.earlier, outcome.text))
         message += (
-            "\nWhat it had written until then follows. It is not a finished answer."
-            f"\n\n{outcome.text}"
+            f"\nWhat it had written until then follows. It is not a finished answer.\n\n{said}"
         )
     raise SubagentFailed(
         message, code="SUBAGENT_FAILED", reason=outcome.reason, partial=outcome.text

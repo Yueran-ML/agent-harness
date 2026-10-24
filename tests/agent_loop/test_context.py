@@ -217,29 +217,40 @@ async def test_text_of_a_source_that_appends_follows_the_conversation_when_it_ch
     )
 
 
-async def test_text_of_a_source_that_replaces_takes_the_place_of_its_old_text(
+INSTEAD = "This takes the place of what the same source said earlier in the conversation."
+
+
+async def test_text_of_a_source_that_replaces_says_that_it_takes_the_place_of_its_old_text(
     harness: Harness, board: Board
 ) -> None:
     board.add("rules", "Be quiet.", kind="replace")
-    agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."), Reply(text="Three."))
     await turn(agent, "First.")
 
     board.texts["rules"] = "Be loud."
     await turn(agent, "Second.")
+    await turn(agent, "Third.")
+    board.texts["rules"] = "Be quiet."
+    await turn(agent, "Fourth.")
 
-    assert sent(harness.model.requests[1]) == (
+    # The beginning of the conversation is not written over, so a service reads it from its
+    # cache, and thinking that is bound to it holds.
+    assert sent(harness.model.requests[2]) == (
         SYSTEM,
-        context("rules", "Be loud."),
+        context("rules", "Be quiet."),
         user("First."),
         assistant("One."),
+        context("rules", f"{INSTEAD}\n\nBe loud."),
         user("Second."),
+        assistant("Two."),
+        user("Third."),
     )
-    old, new = (
-        event
-        for event in agent.session.events
-        if isinstance(event.data, UserMessageEvent) and event.data.source == "context/rules"
+    # Text that holds again is news again, though the model saw it before.
+    assert sent(harness.model.requests[3])[-2:] == (
+        context("rules", f"{INSTEAD}\n\nBe quiet."),
+        user("Fourth."),
     )
-    assert new.replaces == (old.seq,)
+    assert agent.session.replaced == 0
 
 
 async def test_text_that_the_model_no_longer_sees_is_not_replaced_but_given_anew(
@@ -456,19 +467,21 @@ async def test_a_replacement_that_leaves_the_context_in_sight_writes_nothing(
     assert board.asked == ["place", "place"]
 
 
-async def test_what_the_loop_itself_replaces_does_not_make_it_ask_the_sources_again(
+async def test_what_was_replaced_before_a_turn_began_does_not_make_the_loop_ask_twice(
     harness: Harness, board: Board
 ) -> None:
     board.add("rules", "Be quiet.", kind="replace")
     agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
     await turn(agent, "First.")
-    board.texts["rules"] = "Be loud."
+    (rules,) = given_by(agent, "rules")
+    summarize(agent.session, rules.seq)
 
     await turn(agent, "Second.")
 
-    # The new text took the place of the old one, which is a replacement like any other.
+    # The sources were asked when the turn began, after the replacement, and that is enough.
     assert agent.session.replaced == 1
     assert board.asked == ["rules", "rules"]
+    assert sent(harness.model.requests[1])[-2:] == (context("rules", "Be quiet."), user("Second."))
 
 
 async def test_a_source_that_fails_when_it_is_asked_again_ends_the_turn_there(

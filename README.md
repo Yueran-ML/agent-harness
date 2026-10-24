@@ -175,6 +175,11 @@ error message before the message is shown or stored.
 with the key, looks for the shell and the sandbox, and says in a line each what would be in
 the way of a session.
 
+`columbina balance` says how much money the account of the key has left. DeepSeek is the one
+service that tells a program. `columbina reasoning-language zh` has the model reason in
+Chinese from the next turn on, in every conversation; `en` and `ja` are the others, and `none`
+asks for no language.
+
 A conversation at the terminal begins with this command, and the agent works in the
 directory that it is given in:
 

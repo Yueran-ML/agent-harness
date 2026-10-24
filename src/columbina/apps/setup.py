@@ -138,6 +138,8 @@ _NOT_A_KEY = (
     "no key has, such as a blank or a line break in the middle. Nothing of it was kept"
 )
 _UNREACHABLE = "If the service is reached through a proxy, see that the proxy is on"
+_BY_DEFAULT = PRESETS[0].name
+"""The service that a profile talks to where nothing was chosen: the first that is known by name."""
 _NOT_ENCRYPTED = (
     "This address is not encrypted. The key and the conversation cross the network as they are."
 )
@@ -274,14 +276,18 @@ def service_named(name: str, chosen: Chosen) -> Service:
     # What is known of the window is known of one model.
     same = said.model is None or said.model == known.model
     base_url = said.base_url or known.base_url
+    # At another address, such as a mirror, a key is not made on the page of the service,
+    # and the account that pays may be another one.
+    home = base_url == known.base_url
     return replace(
         known,
         base_url=base_url,
         model=said.model or known.model,
         context_window=said.context_window or (known.context_window if same else None),
-        # At another address, such as a mirror, a key is not made on the page of the service.
-        key_page=known.key_page if base_url == known.base_url else None,
+        key_page=known.key_page if home else None,
         effort=said.effort,
+        balance=known.balance if home else None,
+        drops_unbound_thinking=known.drops_unbound_thinking and home,
     )
 
 
@@ -960,6 +966,61 @@ async def checked(
     finally:
         await adapter.aclose()
     return {"models": models}
+
+
+async def balance(home: Path, env: Mapping[str, str], name: str | None) -> dict[str, object]:
+    """Ask a service how much money the account of its key has left, for a program to read.
+
+    The service is the one of the name, or else the one in use, or else
+    the one that a profile talks to where nothing was chosen. Its key is
+    looked for as a session looks for it.
+
+    Returns:
+        ``{"service": ..., "title": ..., "supported": false}`` for a service
+        that cannot be asked with its key. Otherwise ``"supported": true``
+        and either ``"available"``, whether the account can pay for calls,
+        with ``"balances"``, a list of ``{"currency", "total", "granted",
+        "topped_up"}`` as the service wrote the numbers, or ``"error"`` and
+        ``"kind"`` as :func:`checked` gives them. None holds the key.
+
+    Raises:
+        SetupError: There is no service of the name, or what is stored
+            cannot be read.
+    """
+    before = chosen(home)
+    named = name or before.use or _BY_DEFAULT
+    service = next((one for one in _all(before) if one.name == named), None)
+    if service is None:
+        raise SetupError(f"there is no service named {named!r}")
+    said: dict[str, object] = {"service": service.name, "title": service.title}
+    if service.balance is None:
+        return {**said, "supported": False}
+    adapter = OpenAIChat(
+        AdapterConfig.model_validate(adapter_config(service, str(home / KEYS), env))
+    )
+    try:
+        kept = await adapter.balance()
+    except LlmError as error:
+        kind = _why(error.failure)
+        told = error.failure.message
+        return {
+            **said,
+            "supported": True,
+            "error": f"{told.rstrip('.')}. {_UNREACHABLE}" if kind == "network" else told,
+            "kind": kind,
+        }
+    finally:
+        await adapter.aclose()
+    amounts = [
+        {
+            "currency": one.currency,
+            "total": one.total,
+            "granted": one.granted,
+            "topped_up": one.topped_up,
+        }
+        for one in kept.amounts
+    ]
+    return {**said, "supported": True, "available": kept.available, "balances": amounts}
 
 
 def store(

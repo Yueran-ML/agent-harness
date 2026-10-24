@@ -33,6 +33,13 @@ def told(*parts: str) -> str:
     return "\n\n".join([OPENING, *parts])
 
 
+def instead(text: str) -> str:
+    """The text of the instructions that take the place of those that the model saw before."""
+    return (
+        f"This takes the place of what the same source said earlier in the conversation.\n\n{text}"
+    )
+
+
 def given(agent: Agent) -> list[str]:
     """The instructions that were written in a session, without the frame around them."""
     return [
@@ -626,13 +633,16 @@ async def test_a_file_that_changed_is_given_anew_in_the_place_of_the_old_one(
 
     assert given(agent) == [
         told("==> AGENTS.md <==\nBe quiet."),
-        told("==> AGENTS.md <==\nBe loud."),
+        instead(told("==> AGENTS.md <==\nBe loud.")),
     ]
-    # The model sees the new text where the old one stood, and the old one no more.
-    assert harness.model.requests[1].messages[1] == context(
-        "instructions", told("==> AGENTS.md <==\nBe loud.")
+    # The beginning of the conversation is not written over: a service reads it from its
+    # cache, and thinking that is bound to it holds. The new text follows, said to hold instead.
+    first, second = harness.model.requests
+    assert second.messages[: len(first.messages)] == first.messages
+    assert second.messages[-2:] == (
+        context("instructions", instead(told("==> AGENTS.md <==\nBe loud."))),
+        user("Second."),
     )
-    assert len(harness.model.requests[1].messages) == 5
 
 
 async def test_the_model_is_told_when_the_files_are_gone_and_only_once(harness: Harness) -> None:
@@ -644,8 +654,8 @@ async def test_the_model_is_told_when_the_files_are_gone_and_only_once(harness: 
     await turn(agent, "Second.")
     await turn(agent, "Third.")
 
-    assert given(agent) == [told("==> AGENTS.md <==\nBe quiet."), GONE]
-    assert harness.model.requests[2].messages[1] == context("instructions", GONE)
+    assert given(agent) == [told("==> AGENTS.md <==\nBe quiet."), instead(GONE)]
+    assert harness.model.requests[2].messages[4] == context("instructions", instead(GONE))
 
 
 async def test_files_that_come_back_are_given_again(harness: Harness) -> None:
@@ -660,8 +670,8 @@ async def test_files_that_come_back_are_given_again(harness: Harness) -> None:
 
     assert given(agent) == [
         told("==> AGENTS.md <==\nBe quiet."),
-        GONE,
-        told("==> AGENTS.md <==\nBe quiet."),
+        instead(GONE),
+        instead(told("==> AGENTS.md <==\nBe quiet.")),
     ]
 
 

@@ -34,6 +34,7 @@ from columbina.session import (
     AssistantAttemptEvent,
     AssistantMessageEvent,
     Session,
+    ToolResultEvent,
     TurnEndEvent,
     TurnEndReason,
 )
@@ -47,6 +48,9 @@ inject = (AGENTS, SUBAGENTS)
 PROVIDER = "spawn"
 """The name under which this provider is registered."""
 
+_EARLIER = 2
+"""How many things that a subagent said before its last are handed back where it did not finish."""
+
 
 def outcome_of(session: Session) -> Outcome:
     """Read from the log of a subagent how its turn ended and what it had said.
@@ -56,15 +60,24 @@ def outcome_of(session: Session) -> Outcome:
     request that failed: they are what the subagent had written until then.
     A reply that was cut off and taken up again is one reply with what went
     on from it.
+
+    Of one that did not come to its end, a few things that it said before are
+    given besides, and of every turn the files that its tools changed: whoever
+    goes on from a task that was not done needs to know how far it came.
     """
     reason: TurnEndReason | None = None
     detail: str | None = None
     code: str | None = None
     arrived = ""
+    changed: list[str] = []
     for event in session.events:
         data = event.data
         if isinstance(data, TurnEndEvent):
             reason, detail, code = data.reason, data.detail, data.code
+        elif isinstance(data, ToolResultEvent):
+            wrote = (data.meta or {}).get("wrote")
+            if data.error is None and isinstance(wrote, str) and wrote not in changed:
+                changed.append(wrote)
         elif isinstance(data, AssistantMessageEvent):
             # Told below, with what it went on from.
             arrived = "" if data.message.text.strip() else arrived
@@ -72,14 +85,20 @@ def outcome_of(session: Session) -> Outcome:
             arrived = data.message.text
     said = [text for text in replies(event.data for event in session.events) if text.strip()]
     replied = said[-1] if said else ""
-    arrived = arrived or replied
+    finished = reason == "completed"
+    text = replied if finished else arrived or replied
+    # What it said before the words that are handed back: a reply, where those are the words
+    # of a request that failed after it.
+    before = said if arrived else said[:-1]
     return Outcome(
         reason=reason,
         detail=detail,
-        text=replied if reason == "completed" else arrived,
+        text=text,
         steps=TURN.of(session).step,
         usage=USAGE.of(session).usage,
         code=code,
+        changed=tuple(changed),
+        earlier=() if finished else tuple(before[-_EARLIER:]),
     )
 
 

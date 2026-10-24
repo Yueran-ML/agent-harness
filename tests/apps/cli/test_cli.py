@@ -38,7 +38,7 @@ from columbina.token_meter import TOKEN_METER
 from columbina.tools import Tool, ToolRun
 from support.loop import MODEL, Harness, assistant, from_a_source, lingering, user
 from support.terminal import CTRL_D, ESCAPE, Desk, desk, stands, until
-from support.thinking import Thinking, system_text
+from support.thinking import Thinking, instructions_now
 
 STEER = chr(0xBB)
 
@@ -375,7 +375,7 @@ async def test_how_hard_the_model_thinks_is_chosen_and_kept_when_the_model_is_na
 
     # Ultra asks for the most reasoning there is, and tells the agent how to work.
     asked = [
-        (request.config.model, request.config.reasoning, ULTRA in system_text(request))
+        (request.config.model, request.config.reasoning, ULTRA in instructions_now(request))
         for request in harness.model.requests
     ]
     assert asked == [("deep", "max", False), ("deep-2", "max", True), ("deep-2", "low", False)]

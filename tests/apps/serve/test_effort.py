@@ -17,7 +17,7 @@ from columbina.llm import LLM, LlmRequest
 from columbina.llm.adapters.scripted import Reply
 from support.loop import Harness
 from support.served import Served, loaded
-from support.thinking import Thinking, system_text
+from support.thinking import Thinking, instructions_now, system_text
 from support.wires import Far
 
 LEVELS = ["default", "off", "low", "high", "max", "ultra"]
@@ -221,9 +221,11 @@ async def test_ultra_tells_the_agent_of_the_conversation_how_to_work_and_no_othe
     other.followup("Hello.")
     await other.when_idle()
 
-    assert ULTRA in system_text(at_ultra)
-    assert ULTRA not in system_text(after)
-    assert ULTRA not in system_text(served.harness.model.requests[-1])
+    assert ULTRA in instructions_now(at_ultra)
+    assert ULTRA not in instructions_now(after)
+    assert ULTRA not in instructions_now(served.harness.model.requests[-1])
+    # What the conversation opened with stays as it was, and the service reads it from its cache.
+    assert system_text(at_ultra) == system_text(after)
 
 
 async def test_what_the_agent_asks_is_handed_down_and_kept_when_the_model_is_named(

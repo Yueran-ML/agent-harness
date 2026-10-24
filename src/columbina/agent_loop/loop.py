@@ -147,6 +147,15 @@ _GIVEN: Projection[Mapping[str, SessionEvent[EventData]]] = Projection(
 )
 """The last message that each source of context gave, by the source of the message."""
 
+_INSTEAD = "This takes the place of what the same source said earlier in the conversation."
+"""What new text of a source that replaces begins with, where the model still sees the old."""
+_SYSTEM = "system-prompt"
+"""The source of the instructions that take the place of those the conversation began with."""
+_NEW_SYSTEM = (
+    "The instructions that this conversation began with have changed. These hold from now on, "
+    "in their place:"
+)
+
 
 def _framed(name: str, text: str) -> UserMessage:
     """Return the message that carries the text of a source of context.
@@ -555,6 +564,12 @@ class LoopAgent(Agent):
         if the system prompt service is there. They are asked for once, when
         a turn begins: the beginning of a conversation that stays the same is
         what a provider can keep from one request to the next.
+
+        Instructions that differ from those the conversation began with are
+        not put in their place: they follow the conversation so far, said to
+        hold instead. A provider reads a conversation whose beginning changed
+        again in full, and one that binds the thinking of its model to what
+        stood before it refuses that thinking.
         """
         session = self.session
         prompt = self.spec.system_prompt
@@ -572,8 +587,17 @@ class LoopAgent(Agent):
             logger.warning(
                 "the session %r has history without instructions, so none are added", session.id
             )
-        elif first.data.message != wanted:
-            session.append(SystemMessageEvent(message=wanted), replaces=[first.seq])
+            return
+        written = UserMessageEvent(
+            message=_framed(_SYSTEM, f"{_NEW_SYSTEM}\n\n{prompt}"), source=_CONTEXT + _SYSTEM
+        )
+        last = _GIVEN.of(session).get(written.source)
+        if last is not None and last.seq in session.surface:
+            holding = last.data == written
+        else:
+            holding = first.data.message == wanted
+        if not holding:
+            session.append(written)
 
     async def _restore_context(self) -> None:
         """Give the model back the context that was taken from what it sees.
@@ -628,13 +652,17 @@ class LoopAgent(Agent):
             seen = last is not None and last.seq in session.surface
             if source.kind == "note":
                 session.append(written)
+            elif source.kind == "replace" and last is not None and seen:
+                # The old text stays where the model saw it: a conversation whose beginning
+                # changes is read again in full, and thinking that was bound to it is lost.
+                instead = UserMessageEvent(
+                    message=_framed(name, f"{_INSTEAD}\n\n{whole(text)}"), source=written.source
+                )
+                if last.data not in (written, instead):
+                    session.append(instead)
             elif last is None or last.data != written or not seen:
-                if source.kind == "replace" and last is not None and seen:
-                    # The old text is replaced where it stands, as the model still sees it there.
-                    session.append(written, replaces=[last.seq])
-                else:
-                    session.append(written)
-        # What the loop itself has just replaced takes no context from the model.
+                session.append(written)
+        # What was replaced until now took no context from the model that it does not see again.
         self._replaced = session.replaced
 
     async def _step(self, turn: int, step: int) -> _StepEnd:

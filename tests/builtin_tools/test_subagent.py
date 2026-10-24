@@ -328,11 +328,12 @@ async def test_an_agent_is_told_when_the_kinds_are_gone(harness: Harness) -> Non
 
     gone = context(
         "agents",
+        "This takes the place of what the same source said earlier in the conversation.\n\n"
         "No kind of subagent is there any more. The kinds that you were told of before cannot "
         "be named. The tool `subagent` works without a type.",
     )
-    assert gone in harness.model.requests[1].messages
-    assert all(KINDS not in str(message) for message in harness.model.requests[1].messages)
+    # What the agent was told before stays where it saw it, and this follows it.
+    assert harness.model.requests[1].messages[-2:] == (gone, user("Hello again."))
 
 
 async def test_an_agent_that_was_never_told_of_kinds_is_not_told_that_they_are_gone(

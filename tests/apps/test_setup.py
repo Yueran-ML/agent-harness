@@ -895,6 +895,12 @@ def test_what_was_said_of_a_listed_service_stands_in_the_place_of_what_is_known(
         base_url_env="DEEPSEEK_BASE_URL",
     )
     assert with_said(model="deepseek-v4-pro").key_page == deepseek.key_page
+    # Nor is it known what the account there has left.
+    assert with_said(base_url="https://mirror.example.test/v1").balance is None
+    # Nor whether it can leave out the thinking of the model whose conversation changed.
+    anthropic = Chosen(services={"anthropic": Own(base_url="https://claude.example.test")})
+    assert PRESETS[2].drops_unbound_thinking
+    assert not service_named("anthropic", anthropic).drops_unbound_thinking
     # What is known of the size of the window is known of the one model.
     assert with_said(model="deepseek-flash").context_window == 1_048_576
     assert with_said(model="deepseek-v4-pro").model == "deepseek-v4-pro"

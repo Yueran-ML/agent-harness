@@ -21,6 +21,12 @@ the conversation that delegates to it.
 A turn is not cut off in the middle of a step. The step that is under way
 when a limit is reached runs to its end, with its calls, and the next one
 does not begin.
+
+The model is told of the steps before they run out, since it cannot count
+them itself: when a few are left, and when the step that begins is the last.
+It is told in a message of its log that the step begins with, which is read
+as context and is no word of the user. So it can save what it found and say
+what it did while it still has a step for it.
 """
 
 import time
@@ -29,12 +35,12 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
-from columbina.agent import PRE_STEP, Reject, StepDecision, StepInfo
+from columbina.agent import CONTEXT_PREFIX, PRE_STEP, Reject, StepDecision, StepInfo
 from columbina.kernel import Context, Next
-from columbina.llm import Usage
-from columbina.session import USAGE, Session
+from columbina.llm import TextBlock, Usage, UserMessage
+from columbina.session import USAGE, Session, UserMessageEvent
 
-__all__ = ["STEP_BUDGET", "TIME_BUDGET", "TOKEN_BUDGET", "Config", "apply", "name"]
+__all__ = ["STEPS_LEFT", "STEP_BUDGET", "TIME_BUDGET", "TOKEN_BUDGET", "Config", "apply", "name"]
 
 name = "turn-budget"
 
@@ -47,6 +53,30 @@ TIME_BUDGET = "TIME_BUDGET"
 
 _now = time.monotonic
 """The clock that the time of a turn is read from."""
+
+STEPS_LEFT = CONTEXT_PREFIX + "steps-left"
+"""The source of the message that tells the model how many steps its turn has left."""
+
+_FEW = 5
+"""How many steps are left, this one among them, when the model is first told."""
+
+
+def _steps_left(steps: int, step: int) -> str | None:
+    """Return what the model is told when a step begins, or ``None`` if nothing."""
+    left = steps - step + 1
+    if left == 1:
+        return (
+            f"This is the last step of this turn: it may take {steps}, and this is step {step}. "
+            "A tool that you call now runs, but you will not see what it gives back. Give your "
+            "answer now: what you did, what you found, and what is left undone."
+        )
+    if left == _FEW:
+        return (
+            f"This turn may take {steps} steps, and this is step {step}: {left} are left, this "
+            "one among them. Finish what matters most, and save what you found where your task "
+            "says, before the steps run out. Keep the last step for your answer."
+        )
+    return None
 
 
 class Config(BaseModel):
@@ -108,6 +138,13 @@ class _Budget:
         if over is not None:
             # Nobody else is asked about a step that does not begin.
             return Reject(*over)
+        steps = info.agent.spec.max_steps or self._config.max_steps
+        told = None if steps is None else _steps_left(steps, info.step)
+        if told is not None:
+            source = STEPS_LEFT.removeprefix(CONTEXT_PREFIX)
+            framed = f'<context source="{source}">\n{told}\n</context>'
+            note = UserMessage(content=(TextBlock(text=framed),))
+            info.agent.session.append(UserMessageEvent(message=note, source=STEPS_LEFT))
         return await proceed(info)
 
     def _over(self, info: StepInfo) -> tuple[str, str] | None:

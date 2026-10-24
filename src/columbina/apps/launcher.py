@@ -85,6 +85,7 @@ from columbina.apps.common import when_the_input_closes
 from columbina.apps.serve import wire as serve_wire
 from columbina.apps.serve.wire import WIRE, Wire
 from columbina.apps.terminal_text import escaped, harmless
+from columbina.context import reasoning_language
 from columbina.feishu import setup as feishu_setup
 from columbina.feishu import store as feishu_store
 from columbina.feishu.app import FeishuError
@@ -136,6 +137,10 @@ _SHOWN_REPOSITORIES = 20
 """How many repositories a person is shown, before how many more there are."""
 _STOPPED = "the sign-in was stopped"
 _DOCTOR = "doctor"
+_BALANCE = "balance"
+_REASONING_LANGUAGE = "reasoning-language"
+_NO_LANGUAGE = "none"
+"""What chooses no language of reasoning."""
 _FEISHU = "feishu"
 _FEISHU_WRITABLE = "feishu-writable"
 """The profile of the assistant in Feishu where its agent may change the files of its directory."""
@@ -783,6 +788,77 @@ def _setup(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     # Whoever interrupts the storing itself is told nothing of what was stored: it may be
     # the key, or the key and what was chosen.
     chosen_service.store(home, env, answers, show)
+    return 0
+
+
+def _balance(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Say how much money the account of the key of a service has left.
+
+    With ``--json`` the standard output holds one document of JSON, the
+    answer of :func:`columbina.apps.setup.balance` or what is wrong, and the
+    code is 2 where the service could not be asked. A person is told the
+    same in a sentence.
+    """
+    try:
+        said = asyncio.run(chosen_service.balance(home, env, args.service))
+    except chosen_service.SetupError as error:
+        if not args.json:
+            raise
+        _answer({"error": str(error)})
+        return 2
+    return _balance_told(said, as_json=args.json)
+
+
+def _balance_told(said: dict[str, object], *, as_json: bool) -> int:
+    """Tell a program or a person what a service said of its balance, and return the code."""
+    if as_json:
+        _answer(said)
+        return 2 if "error" in said else 0
+    title = said["title"]
+    if not said["supported"]:
+        print(f"{title} does not tell a program how much money its account has left.")
+        return 0
+    if "error" in said:
+        _tell(f"{title} could not be asked how much money its account has left: {said['error']}")
+        return 2
+    balances = cast("list[dict[str, str]]", said["balances"])
+    for one in balances:
+        print(
+            f"{title}: {one['total']} {one['currency']}, of which {one['topped_up']} were paid "
+            f"in and {one['granted']} were given."
+        )
+    if not balances:
+        print(f"{title} names no money in its account.")
+    if not said["available"]:
+        print("The account cannot pay for calls.")
+    return 0
+
+
+def _reasoning_language(args: argparse.Namespace, home: Path) -> int:
+    """Choose the language that the model reasons in, or say which one is chosen.
+
+    The choice holds from the next turn on, in every conversation. With
+    ``--json`` the standard output holds one document of JSON: the language
+    that is chosen, or what is wrong, with the code 2.
+    """
+    path = home / _REASONING_LANGUAGE
+    if args.language is not None:
+        try:
+            reasoning_language.choose(
+                path, None if args.language == _NO_LANGUAGE else args.language
+            )
+        except OSError as error:
+            said = f"the language of reasoning cannot be kept in {path}: {error}"
+            if args.json:
+                _answer({"error": said})
+            else:
+                _tell(said)
+            return 2
+    code = reasoning_language.chosen(path)
+    if args.json:
+        _answer({"language": code})
+    elif args.language is None:
+        print(code or _NO_LANGUAGE)
     return 0
 
 
@@ -1660,6 +1736,32 @@ def _parser() -> argparse.ArgumentParser:
     _where(doctor, "cli")
     # What a session asks of the command line besides, and the doctor does not.
     doctor.set_defaults(session_id=None, permission=None, allow=[], resume=False)
+    money = commands.add_parser(
+        _BALANCE, help="say how much money the account of the service in use has left"
+    )
+    money.add_argument(
+        "--service", metavar="NAME", help="the service to ask, instead of the one in use"
+    )
+    money.add_argument(
+        "--json",
+        action="store_true",
+        help="answer in one document of JSON, for another program",
+    )
+    language = commands.add_parser(
+        _REASONING_LANGUAGE,
+        help="choose the language that the model reasons in, from the next turn on",
+    )
+    language.add_argument(
+        "language",
+        nargs="?",
+        choices=[*reasoning_language.LANGUAGES, _NO_LANGUAGE],
+        help="the language, or none to ask for none. Without it, the one that is chosen is said",
+    )
+    language.add_argument(
+        "--json",
+        action="store_true",
+        help="answer in one document of JSON, for another program",
+    )
     return parser
 
 
@@ -1701,6 +1803,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _logout(args, home, env)
         if args.command == _DOCTOR:
             return _doctor(args, home, env)
+        if args.command == _BALANCE:
+            return _balance(args, home, env)
+        if args.command == _REASONING_LANGUAGE:
+            return _reasoning_language(args, home)
         if args.command == _FEISHU:
             return _feishu(args, home, env)
         if args.command == _WECOM:

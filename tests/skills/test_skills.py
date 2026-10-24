@@ -41,6 +41,13 @@ FROM_THERE = "A path in what follows that does not begin at a root is meant from
 SOMEWHERE = Root(Path("/skills"), "home", own=True)
 
 
+def instead(text: str) -> str:
+    """What a model is told of skills where it still sees what it was told before."""
+    return (
+        f"This takes the place of what the same source said earlier in the conversation.\n\n{text}"
+    )
+
+
 def listed(*lines: str) -> str:
     """What a model is told: the words before the list, and a line for each skill."""
     return "\n".join([INTRO, *lines])
@@ -366,8 +373,11 @@ async def test_a_change_of_the_skills_is_told_in_the_place_of_what_was_told_befo
     put(of_the_project(harness), "notes", "Write release notes.")
     await turn(agent)
 
-    # The model sees one list, and it is the one that holds now.
-    assert told(agent) == [listed("- deploy: Deploy the service.", "- notes: Write release notes.")]
+    # The model sees the new list after the old one, said to hold in its place.
+    assert told(agent) == [
+        listed("- deploy: Deploy the service."),
+        instead(listed("- deploy: Deploy the service.", "- notes: Write release notes.")),
+    ]
     assert times_told(agent) == 2
 
     # Another text of a skill is no other list.
@@ -385,13 +395,13 @@ async def test_a_model_is_told_when_its_skills_are_gone(harness: Harness) -> Non
     (directory / FILE).unlink()
     await turn(agent)
 
-    assert told(agent) == [GONE]
+    assert told(agent) == [listed("- deploy: Deploy the service."), instead(GONE)]
 
     # They may come back.
     put(of_the_project(harness), "deploy", "Deploy the service.")
     await turn(agent)
 
-    assert told(agent) == [listed("- deploy: Deploy the service.")]
+    assert told(agent)[-1] == instead(listed("- deploy: Deploy the service."))
 
 
 async def test_what_a_summary_took_from_the_model_is_told_again(harness: Harness) -> None:
@@ -468,11 +478,14 @@ async def test_a_place_that_cannot_be_looked_into_is_taken_as_it_was_found_befor
     await turn(agent)
 
     assert told(agent) == [
-        listed(
-            "- audit: Audit a change.",
-            "- deploy: Deploy the service.",
-            "- notes: Write release notes.",
-        )
+        whole,
+        instead(
+            listed(
+                "- audit: Audit a change.",
+                "- deploy: Deploy the service.",
+                "- notes: Write release notes.",
+            )
+        ),
     ]
 
 

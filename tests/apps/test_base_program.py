@@ -416,6 +416,18 @@ def test_the_model_is_given_the_instructions_of_the_user_and_of_the_project(
     ]
 
 
+def test_the_model_is_told_the_language_that_the_user_chose_to_read_its_reasoning_in(
+    program: Program,
+) -> None:
+    program.home.mkdir()
+    (program.home / "reasoning-language").write_text("ja\n", encoding="utf-8")
+
+    program.run()
+
+    (told,) = program.told("context/reasoning-language")
+    assert told.startswith("Reason in Japanese (日本語): ")
+
+
 def test_the_model_is_told_where_it_runs_and_what_it_may_do(program: Program) -> None:
     program.run()
 

@@ -15,7 +15,7 @@ import columbina.subagents.spawn
 from columbina.agent import Agent, AgentError, Agents
 from columbina.approval import APPROVAL, Approval, ApprovalPolicyEvent
 from columbina.guard import budget
-from columbina.llm import AssistantMessage, LlmFailure, TextBlock, Usage
+from columbina.llm import AssistantMessage, LlmFailure, TextBlock, ToolMessage, Usage
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.sandbox import SANDBOX, SandboxModeEvent
 from columbina.session import (
@@ -28,6 +28,8 @@ from columbina.session import (
     EventData,
     Session,
     StoredSession,
+    ToolError,
+    ToolResultEvent,
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
@@ -578,3 +580,101 @@ async def test_a_subagent_that_stopped_for_good_is_a_failure_and_no_error(
     # Its log says how far it came, and that was nowhere.
     assert raised.value.reason is None
     assert "it ended without its turn having come to an end" in str(raised.value)
+
+
+# How far a subagent that did not finish came
+
+
+async def test_a_subagent_that_did_not_finish_hands_back_what_it_changed_and_said(
+    harness: Harness, tmp_path: Path
+) -> None:
+    subagents = await loaded(harness, max_steps=4)
+    await harness.ctx.plugin(budget)
+
+    def target(args: Args, run: ToolRun) -> str:
+        return "notes/a.md"
+
+    harness.tools.add(
+        harness.ctx,
+        Tool(
+            name="put",
+            description="Put it.",
+            parameters=Args,
+            execute=did,
+            effect="write",
+            target=target,
+        ),
+    )
+    tools(harness, "work")
+    parent = await harness.agent()
+    harness.model.add(
+        Reply(text="I begin with a.md.", calls=(Call(name="put"),)),
+        Reply(text="", calls=(Call(name="put"),)),
+        Reply(text="a.md is done; b.md is next.", calls=(Call(name="work"),)),
+        Reply(text="Looking at b.md.", calls=(Call(name="work"),)),
+        Reply(text="never"),
+    )
+
+    with pytest.raises(SubagentFailed) as raised:
+        await subagents.run(parent, task())
+
+    assert str(raised.value) == (
+        "The subagent did not finish its task: the turn has taken its 4 steps.\n"
+        "Its tools changed these files: notes/a.md.\n"
+        "What it had written until then follows. It is not a finished answer.\n\n"
+        "I begin with a.md.\n\na.md is done; b.md is next.\n\nLooking at b.md."
+    )
+    assert raised.value.partial == "Looking at b.md."
+
+
+def test_a_subagent_that_finished_hands_back_its_answer_alone(harness: Harness) -> None:
+    session = harness.sessions.create(harness.ctx, harness.cwd, session_id="s-made")
+    session.append(TurnStartEvent(turn=1))
+    session.append(
+        AssistantMessageEvent(message=said("Counting."), usage=Usage(), finish_reason="stop")
+    )
+    session.append(
+        AssistantMessageEvent(message=said("Three."), usage=Usage(), finish_reason="stop")
+    )
+    session.append(TurnEndEvent(turn=1, reason="completed"))
+
+    outcome = outcome_of(session)
+
+    assert (outcome.text, outcome.earlier, outcome.changed) == ("Three.", (), ())
+
+
+def test_a_file_counts_as_changed_once_and_only_by_a_call_that_succeeded(
+    harness: Harness,
+) -> None:
+    session = harness.sessions.create(harness.ctx, harness.cwd, session_id="s-made")
+    session.append(TurnStartEvent(turn=1))
+    refused = ToolError(code="TOOL_ERROR", reason="it broke")
+    for call_id, file, error in (
+        ("c1", "a.md", None),
+        ("c2", "b.md", refused),
+        ("c3", "a.md", None),
+    ):
+        message = ToolMessage(call_id=call_id, content=(TextBlock(text="ok"),))
+        session.append(ToolResultEvent(message=message, error=error, meta={"wrote": file}))
+    session.append(TurnEndEvent(turn=1, reason="error", detail="it broke"))
+
+    assert outcome_of(session).changed == ("a.md",)
+
+
+def test_a_subagent_whose_request_failed_hands_back_what_it_said_before_that(
+    harness: Harness,
+) -> None:
+    failure = LlmFailure(message="it broke", code="SERVER")
+    session = harness.sessions.create(harness.ctx, harness.cwd, session_id="s-made")
+    session.append(TurnStartEvent(turn=1))
+    for text in ("One.", "Two.", "Three."):
+        session.append(
+            AssistantMessageEvent(message=said(text), usage=Usage(), finish_reason="stop")
+        )
+    session.append(AssistantAttemptEvent(message=said("Half a"), usage=Usage(), failure=failure))
+    session.append(TurnEndEvent(turn=1, reason="error", detail="it broke"))
+
+    outcome = outcome_of(session)
+
+    # The words of the request that failed come last, after the last two replies before them.
+    assert (outcome.text, outcome.earlier) == ("Half a", ("Two.", "Three."))

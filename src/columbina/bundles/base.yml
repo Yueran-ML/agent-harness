@@ -44,6 +44,11 @@ patch:
         plugin: columbina.context.instructions
         config:
           user_file: ${COLUMBINA_HOME}/AGENTS.md
+      # The language that the model reasons in, as `columbina reasoning-language` chose it.
+      - id: context-reasoning-language
+        plugin: columbina.context.reasoning_language
+        config:
+          file: ${COLUMBINA_HOME}/reasoning-language
       - id: context-runtime
         plugin: columbina.context.runtime
       # A request that fails for a passing reason is made again.

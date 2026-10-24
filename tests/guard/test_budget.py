@@ -6,9 +6,9 @@ from pydantic import BaseModel, ValidationError
 from columbina.agent import PRE_STEP, Agent, StepDecision, StepInfo
 from columbina.guard import budget
 from columbina.kernel import Next
-from columbina.llm import Usage
+from columbina.llm import LlmRequest, Usage, UserMessage
 from columbina.llm.adapters.scripted import Call, Reply
-from columbina.session import TurnEndEvent
+from columbina.session import TurnEndEvent, UserMessageEvent
 from columbina.tools import Tool, ToolRun
 from support.loop import Harness, idle
 
@@ -321,3 +321,110 @@ async def test_the_budget_is_asked_before_those_that_were_there_before_it(
 def test_a_limit_that_lets_nothing_happen_is_refused(bad: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         budget.Config.model_validate(bad)
+
+
+# What the model is told of its steps
+
+
+def told_of_steps(agent: Agent) -> list[str]:
+    """The notes of the steps that are left, as the model reads them."""
+    return [
+        "".join(block.text for block in event.data.message.content)
+        for event in agent.session.events
+        if isinstance(event.data, UserMessageEvent) and event.data.source == budget.STEPS_LEFT
+    ]
+
+
+def said(request: LlmRequest) -> str:
+    """All that a request holds in the role of the user."""
+    users = [message for message in request.messages if isinstance(message, UserMessage)]
+    return "".join(block.text for message in users for block in message.content)
+
+
+def said_last(request: LlmRequest) -> str:
+    """The text of the last message of a request in the role of the user."""
+    users = [message for message in request.messages if isinstance(message, UserMessage)]
+    return "".join(block.text for block in users[-1].content)
+
+
+async def test_the_model_is_told_when_a_few_steps_are_left_and_when_the_last_one_begins(
+    harness: Harness,
+) -> None:
+    await loaded(harness, max_steps=6)
+    agent = await harness.agent(*[works() for _ in range(5)], Reply(text="Done."))
+
+    await turn(agent)
+
+    assert ends(agent) == [TurnEndEvent(turn=1, reason="completed")]
+    assert told_of_steps(agent) == [
+        '<context source="steps-left">\n'
+        "This turn may take 6 steps, and this is step 2: 5 are left, this one among them. "
+        "Finish what matters most, and save what you found where your task says, before the "
+        "steps run out. Keep the last step for your answer.\n"
+        "</context>",
+        '<context source="steps-left">\n'
+        "This is the last step of this turn: it may take 6, and this is step 6. A tool that you "
+        "call now runs, but you will not see what it gives back. Give your answer now: what you "
+        "did, what you found, and what is left undone.\n"
+        "</context>",
+    ]
+    # Each is read first by the step that it belongs to, after all else that the step begins with.
+    requests = harness.model.requests
+    noted = [said(request).count('<context source="steps-left">') for request in requests]
+    assert noted == [0, 1, 1, 1, 1, 2]
+    assert said_last(requests[1]).startswith("<context")
+    assert said_last(requests[5]).startswith("<context")
+
+
+async def test_a_turn_of_one_step_is_told_that_it_is_the_last(harness: Harness) -> None:
+    await loaded(harness)
+    agent = await harness.agent(Reply(text="Done."), max_steps=1)
+
+    await turn(agent)
+
+    assert len(told_of_steps(agent)) == 1
+    assert (
+        "This is the last step of this turn: it may take 1, and this is step 1."
+        in told_of_steps(agent)[0]
+    )
+
+
+async def test_the_steps_that_the_spec_names_are_those_that_the_model_is_told_of(
+    harness: Harness,
+) -> None:
+    await loaded(harness, max_steps=9)
+    agent = await harness.agent(Reply(text="Done."), max_steps=1)
+
+    await turn(agent)
+
+    assert len(told_of_steps(agent)) == 1
+    assert "it may take 1, and this is step 1." in told_of_steps(agent)[0]
+
+
+async def test_every_turn_is_told_of_its_own_steps(harness: Harness) -> None:
+    await loaded(harness, max_steps=1)
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."))
+
+    await turn(agent)
+    await turn(agent, "Again.")
+
+    assert len(told_of_steps(agent)) == 2
+
+
+async def test_a_turn_without_a_limit_of_steps_is_told_nothing(harness: Harness) -> None:
+    await loaded(harness, max_tokens=1_000_000)
+    agent = await harness.agent(*[works() for _ in range(6)], Reply(text="Done."))
+
+    await turn(agent)
+
+    assert told_of_steps(agent) == []
+
+
+async def test_a_step_that_is_refused_is_told_nothing(harness: Harness) -> None:
+    await loaded(harness, max_steps=1)
+    agent = await harness.agent(works(), Reply(text="never"))
+
+    await turn(agent)
+
+    # Told once, by the step that ran. The one after it does not begin.
+    assert len(told_of_steps(agent)) == 1

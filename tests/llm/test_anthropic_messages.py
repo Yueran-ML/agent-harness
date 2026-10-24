@@ -1053,6 +1053,20 @@ async def test_a_message_start_without_its_message_counts_nothing(ctx: Context, 
         ),
         (
             400,
+            {
+                "type": "invalid_request_error",
+                "message": "messages.1.content.0: Invalid `signature` in `thinking` block. The "
+                "block is bound to a different conversation. The system prompt differs.",
+            },
+            "THINKING_REFUSED",
+        ),
+        (
+            400,
+            {"type": "invalid_request_error", "message": "messages.3: a thinking block is missing"},
+            "INVALID_REQUEST",
+        ),
+        (
+            400,
             {"type": "invalid_request_error", "message": "messages: field required"},
             "INVALID_REQUEST",
         ),
@@ -1193,6 +1207,50 @@ async def test_a_stored_key_is_sent_where_the_variable_holds_none(
 
     assert call.failure is None
     assert service.requests[0].headers["x-api-key"] == STORED
+
+
+def test_thinking_whose_conversation_changed_is_left_out_where_the_config_asks() -> None:
+    body = build_body(request(*HELLO), CONFIG.model_copy(update={"drop_unbound_thinking": True}))
+
+    assert body["thinking"] == {
+        "type": "adaptive",
+        "display": "summarized",
+        "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("headers", "beta"),
+    [
+        ({}, "thinking-binding-controls-2026-08-01"),
+        (
+            {"Anthropic-Beta": "x-1, x-2", "x-other": "y"},
+            "x-1,x-2,thinking-binding-controls-2026-08-01",
+        ),
+    ],
+)
+async def test_the_beta_by_which_thinking_is_left_out_goes_with_those_that_the_config_names(
+    ctx: Context, llm: Llm, headers: dict[str, str], beta: str
+) -> None:
+    service = Service(streamed(TEXT_REPLY), listing("claude-a"))
+    config = CONFIG.model_copy(update={"drop_unbound_thinking": True, "headers": headers})
+    adapter = connect(ctx, llm, service, config)
+
+    await ask(llm)
+    assert service.body["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+    await adapter.models()
+
+    assert [sent.headers["anthropic-beta"] for sent in service.requests] == [beta, beta]
+
+
+async def test_without_it_no_beta_is_asked_for(ctx: Context, llm: Llm) -> None:
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service)
+
+    await ask(llm)
+
+    assert "anthropic-beta" not in service.requests[0].headers
+    assert "block_binding" not in service.body["thinking"]
 
 
 async def test_further_headers_go_with_every_request(ctx: Context, llm: Llm) -> None:

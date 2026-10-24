@@ -502,3 +502,26 @@ def test_a_reply_cannot_wait_for_a_text_of_no_length() -> None:
     # A text of no length is in every text, so the reply would wait for nothing.
     with pytest.raises(ValidationError):
         Reply(text="for whom", after="")
+
+
+async def test_a_reply_is_meant_for_a_request_by_what_the_user_said_and_not_by_context(
+    ctx: Context, llm: Llm
+) -> None:
+    play(ctx, llm, Reply(text="for the task", when="task A"), Reply(text="for anyone"))
+    asked = asked_with("Here is task A.")
+    noted = asked.model_copy(
+        update={
+            "messages": (
+                *asked.messages,
+                UserMessage(
+                    content=(
+                        TextBlock(text='<context source="steps-left">\nTwo left.\n</context>'),
+                    )
+                ),
+            )
+        }
+    )
+
+    call = await answered(llm, noted)
+
+    assert call.message.text == "for the task"

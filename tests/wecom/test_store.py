@@ -84,7 +84,12 @@ def test_the_secret_is_handed_out_only_for_the_place_of_its_connection(home: Pat
 
 def test_the_same_bot_kept_again_keeps_whom_it_answers_and_where(home: Path) -> None:
     keep(home, BOT, SECRET, PLACE)
-    said = {"owner": "zhangsan", "session_id": "20261022T000000-ab", "writable": True}
+    said = {
+        "owner": "zhangsan",
+        "session_id": "20261022T000000-ab",
+        "writable": True,
+        "groups": {"group-1": "20261024T000000-cd"},
+    }
     save(home, BOT.model_copy(update=said))
 
     keep(home, BOT, "another-secret-0123", PLACE)

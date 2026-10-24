@@ -22,7 +22,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from columbina import files
 from columbina.llm import credentials
@@ -79,6 +79,8 @@ class Settings(BaseModel):
             given the code of pairing; ``None`` before.
         session_id: The session of the conversation with that person, once there is one.
         writable: Whether the agent may change the files of the directory of the assistant.
+        groups: The session of the conversation in each group that the bot was asked in, by
+            the id of the group.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -88,6 +90,7 @@ class Settings(BaseModel):
     owner: str | None = None
     session_id: str | None = None
     writable: bool = False
+    groups: dict[str, str] = Field(default_factory=dict[str, str])
 
 
 def directory(home: Path, env: Mapping[str, str]) -> Path:
@@ -173,6 +176,7 @@ def keep(home: Path, chosen: Settings, secret: str, place: str) -> Kept:
             "owner": before.owner,
             "session_id": before.session_id,
             "writable": before.writable,
+            "groups": before.groups,
         }
         chosen = chosen.model_copy(update=kept_of_it)
     try:

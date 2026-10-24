@@ -144,6 +144,10 @@ ADAPTERS_COMMON = "src/columbina/llm/adapters/common.py"
 ANTHROPIC_MESSAGES = "src/columbina/llm/adapters/anthropic_messages.py"
 SERVICES = "src/columbina/llm/services.py"
 SCRIPTED = "src/columbina/llm/adapters/scripted.py"
+QQ_APP = "src/columbina/qq/app.py"
+QQ_LINK = "src/columbina/qq/link.py"
+QQ_BOT = "src/columbina/qq/bot.py"
+QQ_BUNDLE = "src/columbina/bundles/qq.yml"
 REASONING_LANGUAGE = "src/columbina/context/reasoning_language.py"
 SETUP_APP = "src/columbina/apps/setup.py"
 NET = "src/columbina/net.py"
@@ -19454,8 +19458,8 @@ _SERVICES = (
     mutant(
         "a service is named for a profile without the adapter and nothing is said",
         LAUNCHER,
-        "        if not _served(entries, service, env, args.model):\n",
-        "        if not _served(entries, service, env, args.model) and False:\n",
+        "        if not _served(entries, service, env, args.model, thinks=args.command != _QQ):\n",
+        "        if not _served(entries, service, env, args.model, thinks=args.command != _QQ) and False:\n",
     ),
     mutant(
         "a dollar sign in the name of a model on the command line is the beginning of a variable",
@@ -24791,20 +24795,20 @@ _EFFORT = (
     mutant(
         "a level that is kept where no service is chosen holds for nothing",
         LAUNCHER,
-        "        elif not named:\n            _thinks_as_kept(profile, stored)\n",
+        "        elif not named and not quick:\n            _thinks_as_kept(profile, stored)\n",
         "",
     ),
     mutant(
         "the level of the service in use is asked of the one that the command line names",
         LAUNCHER,
-        "            _served(profile, service, env, args.model, thinks=not named)\n",
-        "            _served(profile, service, env, args.model)\n",
+        "            _served(profile, service, env, args.model, thinks=not named and not quick)\n",
+        "            _served(profile, service, env, args.model, thinks=not quick)\n",
     ),
     mutant(
         "the level of the service of the profile is asked of the one that the command line names",
         LAUNCHER,
-        "        elif not named:\n",
-        "        else:\n",
+        "        elif not named and not quick:\n",
+        "        elif not quick:\n",
     ),
     mutant(
         "a level is asked of a service that another is served after",
@@ -27531,7 +27535,7 @@ _WECOM = (
     mutant(
         "the rest of a long answer is not sent",
         WECOM_BOT,
-        "        for piece in pieces:\n            await self._pushed(piece)\n",
+        "        for piece in pieces:\n            await self._pushed(piece, talk.chat)\n",
         "",
     ),
     mutant(
@@ -27547,16 +27551,16 @@ _WECOM = (
         '        body = {"chatid": settings.bot_id, "chat_type": 1, **_markdown(text)}\n',
     ),
     mutant(
-        "a message in a group is taken",
+        "a message of a chat of another kind is taken",
         WECOM_BOT,
-        '        if body.get("chattype") != "single" or "compat_info" in body:\n',
+        '        if chattype not in ("single", "group") or "compat_info" in body:\n',
         '        if "compat_info" in body:\n',
     ),
     mutant(
         "a message that is passed on is taken",
         WECOM_BOT,
-        '        if body.get("chattype") != "single" or "compat_info" in body:\n',
-        '        if body.get("chattype") != "single":\n',
+        '        if chattype not in ("single", "group") or "compat_info" in body:\n',
+        '        if chattype not in ("single", "group"):\n',
     ),
     mutant(
         "a message that comes again is answered again",
@@ -27603,8 +27607,8 @@ _WECOM = (
     mutant(
         "what a message quotes is not given to the agent",
         WECOM_BOT,
-        "                self._ask(said.asked(), req_id)\n",
-        "                self._ask(said.text, req_id)\n",
+        "                self._ask(self._owner, said.asked(), req_id)\n",
+        "                self._ask(self._owner, said.text, req_id)\n",
     ),
     mutant(
         "a file of text without a name is not read",
@@ -27657,8 +27661,8 @@ _WECOM = (
     mutant(
         "the agent that may change files is let change none",
         WECOM_BOT,
-        '                agent.session, "workspace-write" if config.writable else "read-only"\n',
-        '                agent.session, "read-only"\n',
+        '            permissions.set_preset(agent.session, "workspace-write" if writes else "read-only")\n',
+        '            permissions.set_preset(agent.session, "read-only")\n',
     ),
     mutant(
         "an assistant started to change files runs where its owner does not let it",
@@ -27711,8 +27715,8 @@ _WECOM = (
     mutant(
         "the assistant in WeCom is given no lines of JSON",
         LAUNCHER,
-        "            elif args.command in (_FEISHU, _WECOM):\n",
-        "            elif args.command == _FEISHU:\n",
+        "            elif args.command in (_FEISHU, _WECOM, _QQ):\n",
+        "            elif args.command in (_FEISHU, _QQ):\n",
     ),
     mutant(
         "the assistant in WeCom is not told that it may change files",
@@ -27984,6 +27988,450 @@ _BATCH_10 = (
 )
 
 
+_GROUPS = (
+    mutant(
+        "a chat of another kind is taken for one with the bot",
+        WECOM_BOT,
+        '        if chattype not in ("single", "group") or "compat_info" in body:\n',
+        '        if chattype not in ("single", "group", "channel") or "compat_info" in body:\n',
+    ),
+    mutant(
+        "a message in a group is taken for one of a chat of two",
+        WECOM_BOT,
+        '        if chattype == "group":\n            await self._in_group(',
+        "        if False:\n            await self._in_group(",
+    ),
+    mutant(
+        "a group of an empty id is answered",
+        WECOM_BOT,
+        "        if not isinstance(chat, str) or not chat:\n",
+        "        if not isinstance(chat, str):\n",
+    ),
+    mutant(
+        "a message in a group that holds no words is passed over without a word",
+        WECOM_BOT,
+        "            self._say(req_id, words.group_unread)\n",
+        "            pass\n",
+    ),
+    mutant(
+        "the mention of the bot is given to the agent",
+        WECOM_BOT,
+        '        text = _MENTION.sub("", said.text.strip(), count=1).strip()\n',
+        "        text = said.text.strip()\n",
+    ),
+    mutant(
+        "a mention alone is given to the agent",
+        WECOM_BOT,
+        "        if not text:\n            return\n        talk = self._groups.get(chat)\n",
+        "        talk = self._groups.get(chat)\n",
+    ),
+    mutant(
+        "the session of a group is not taken up after a new start",
+        WECOM_BOT,
+        "            known = None if self._settings is None else self._settings.groups.get(chat)\n",
+        "            known = None\n",
+    ),
+    mutant(
+        "a conversation of a group that could not be opened is not said to be so",
+        WECOM_BOT,
+        "                self._say(req_id, words.group_failed.format(reason=error))\n",
+        "                pass\n",
+    ),
+    mutant(
+        "the agent of a group is not told who wrote",
+        WECOM_BOT,
+        '        self._ask(talk, f"[{who} wrote:]\\n{quoted}", req_id)\n',
+        "        self._ask(talk, quoted, req_id)\n",
+    ),
+    mutant(
+        "what a message in a group quotes is left out",
+        WECOM_BOT,
+        "        quoted = messages.Text(text, said.quoted).asked()\n",
+        "        quoted = text\n",
+    ),
+    mutant(
+        "the agent of a group may use every tool",
+        WECOM_BOT,
+        "                tools=GROUP_TOOLS,\n",
+        "                tools=None,\n",
+    ),
+    mutant(
+        "the agent of a group is given what the user keeps for their own work",
+        WECOM_BOT,
+        "                strangers=True,\n",
+        "                strangers=False,\n",
+    ),
+    mutant(
+        "the agent of a group is told it talks with its owner",
+        WECOM_BOT,
+        "                system_prompt=GROUP_PROMPT,\n",
+        "                system_prompt=config.system_prompt,\n",
+    ),
+    mutant(
+        "the agent of a group works in the directory of the owner",
+        WECOM_BOT,
+        "            cwd = config.cwd / GROUPS / _safe(chat)\n",
+        "            cwd = config.cwd\n",
+    ),
+    mutant(
+        "the agent of a group changes files where the owner lets theirs",
+        WECOM_BOT,
+        "            writes = config.writable and chat is None\n",
+        "            writes = config.writable\n",
+    ),
+    mutant(
+        "the session of a group is not written down",
+        WECOM_BOT,
+        "        elif settings is not None and chat is not None and settings.groups.get(chat) != agent.id:\n",
+        "        elif False:\n",
+    ),
+    mutant(
+        "the session of a group takes the place of those of the other groups",
+        WECOM_BOT,
+        "            groups = {**settings.groups, chat: agent.id}\n",
+        "            groups = {chat: agent.id}\n",
+    ),
+    mutant(
+        "what goes on of an answer in a group goes to the owner",
+        WECOM_BOT,
+        "            await self._pushed(piece, talk.chat)\n",
+        "            await self._pushed(piece)\n",
+    ),
+    mutant(
+        "a message to a group is sent as one to a person",
+        WECOM_BOT,
+        '{"chatid": chat, "chat_type": 2, **_markdown(text)}',
+        '{"chatid": chat, "chat_type": 1, **_markdown(text)}',
+    ),
+    mutant(
+        "the answers being written in groups are not ended when the assistant stops",
+        WECOM_BOT,
+        "        left = [asked for talk in self._talks() for asked in talk.undone()]\n",
+        "        left = self._owner.undone()\n",
+    ),
+    mutant(
+        "the agent of a stranger is given the file of the user",
+        INSTRUCTIONS,
+        "        used = among_strangers if agent.spec.strangers else config\n",
+        "        used = config\n",
+    ),
+    mutant(
+        "the agent of a stranger is told of the skills",
+        SKILLS_PLUGIN,
+        "        if agent.spec.strangers:\n            # The skills",
+        "        if False:\n            # The skills",
+    ),
+)
+
+
+_QQ = (
+    # The requests.
+    mutant(
+        "a token is asked for at every request",
+        QQ_APP,
+        "        if held is not None and self._clock() < held.until - _EARLY:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a token is kept until it has run out",
+        QQ_APP,
+        "_EARLY = 60.0\n",
+        "_EARLY = 0.0\n",
+    ),
+    mutant(
+        "a token of no time is taken",
+        QQ_APP,
+        "        if not isinstance(value, str) or not value or seconds <= 0:\n",
+        "        if not isinstance(value, str) or not value:\n",
+    ),
+    mutant(
+        "a token that QQ no longer takes is kept",
+        QQ_APP,
+        "            if response.status_code == 401 and signed:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "a refusal is taken for an answer",
+        QQ_APP,
+        "        if response.status_code >= 300:\n",
+        "        if response.status_code >= 400 and response.status_code != 404:\n",
+    ),
+    mutant(
+        "a busy service is said to refuse",
+        QQ_APP,
+        '                code="UNREACHABLE" if response.status_code >= 500 else "REFUSED",\n',
+        '                code="REFUSED",\n',
+    ),
+    mutant(
+        "an answer in a group goes to a person",
+        QQ_APP,
+        '        where = f"groups/{group}" if group is not None else f"users/{user}"\n',
+        '        where = f"users/{user}"\n',
+    ),
+    mutant(
+        "every answer to a message is its first",
+        QQ_APP,
+        '"msg_id": message_id, "msg_seq": number}\n',
+        '"msg_id": message_id, "msg_seq": 1}\n',
+    ),
+    mutant(
+        "a request is sent without the token",
+        QQ_APP,
+        '            headers["Authorization"] = f"QQBot {await self.token()}"\n',
+        "            await self.token()\n",
+    ),
+    mutant(
+        "the AppSecret is left in what is said",
+        QQ_APP,
+        '                text = text.replace(spelling, "[secret]")\n',
+        "                pass\n",
+    ),
+    # The gateway.
+    mutant(
+        "the bot asks for events of no groups",
+        QQ_LINK,
+        "INTENTS = 1 << 25\n",
+        "INTENTS = 1 << 30\n",
+    ),
+    mutant(
+        "the time between two heartbeats is not the one that QQ asks for",
+        QQ_LINK,
+        "                    self._every = interval / 1000\n",
+        "                    self._every = interval\n",
+    ),
+    mutant(
+        "a session is never taken up",
+        QQ_LINK,
+        "                if self._session is not None:\n                    resume",
+        "                if False:\n                    resume",
+    ),
+    mutant(
+        "a session is taken up from its beginning",
+        QQ_LINK,
+        '"session_id": self._session, "seq": self._number}\n',
+        '"session_id": self._session, "seq": None}\n',
+    ),
+    mutant(
+        "QQ that closes before the bot is ready is tried for ever",
+        QQ_LINK,
+        "                    if refused >= _REFUSALS_MOST:\n",
+        "                    if False:\n",
+    ),
+    mutant(
+        "the pause before another try does not grow",
+        QQ_LINK,
+        "            await self.sleep(min(_FIRST_PAUSE * 2 ** min(failed - 1, 5), _LONGEST_PAUSE))\n",
+        "            await self.sleep(_FIRST_PAUSE)\n",
+    ),
+    mutant(
+        "a bot that QQ refuses is tried again",
+        QQ_LINK,
+        '                if error.code != "UNREACHABLE":\n                    raise\n',
+        "                pass\n",
+    ),
+    mutant(
+        "a bot that QQ closes for good is tried again",
+        QQ_LINK,
+        "        if code in _FOR_GOOD:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a token that QQ did not take is used again",
+        QQ_LINK,
+        "        if code == 4004:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a session that cannot be taken up is tried again",
+        QQ_LINK,
+        "        if code in (4006, 4007, 4009):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the network counts as QQ refusing the bot",
+        QQ_LINK,
+        "            return str(error) or type(error).__name__, False\n",
+        "            return str(error) or type(error).__name__, True\n",
+    ),
+    mutant(
+        "unanswered heartbeats are not noticed",
+        QQ_LINK,
+        "            if self._missed >= _MISSED_MOST:\n",
+        "            if False:\n",
+    ),
+    mutant(
+        "an answered heartbeat is not counted",
+        QQ_LINK,
+        "            elif op == _ACK:\n                self._missed = 0\n",
+        "            elif op == _ACK:\n                pass\n",
+    ),
+    mutant(
+        "a heartbeat that QQ asks for is not sent",
+        QQ_LINK,
+        "            elif op == _HEARTBEAT:\n                await self._beat(socket)\n",
+        "            elif op == _HEARTBEAT:\n                pass\n",
+    ),
+    mutant(
+        "what QQ sends while a session is taken up is lost",
+        QQ_LINK,
+        "                    # What QQ sends again while a session is taken up counts as well.\n                    self._dispatch(frame)\n",
+        "                    pass\n",
+    ),
+    # The assistant.
+    mutant(
+        "the agent of the owner may use every tool",
+        QQ_BOT,
+        "                tools=OWNER_TOOLS,\n",
+        "                tools=None,\n",
+    ),
+    mutant(
+        "the agent of a group may read",
+        QQ_BOT,
+        "                tools=frozenset(),\n",
+        "                tools=OWNER_TOOLS,\n",
+    ),
+    mutant(
+        "the agent of a group is told it talks with its owner",
+        QQ_BOT,
+        "                system_prompt=GROUP_PROMPT,\n",
+        "                system_prompt=config.system_prompt,\n",
+    ),
+    mutant(
+        "an event of another kind is taken",
+        QQ_BOT,
+        "        if kind not in (GROUP, PRIVATE):\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a message that comes again is answered again",
+        QQ_BOT,
+        "        if message_id in seen:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a message in a group of nobody is answered",
+        QQ_BOT,
+        "            if group and who:\n",
+        "            if group:\n",
+    ),
+    mutant(
+        "somebody else than the owner is answered",
+        QQ_BOT,
+        "        elif who != settings.owner:\n",
+        "        elif False:\n",
+    ),
+    mutant(
+        "a command is given to the agent",
+        QQ_BOT,
+        '        elif text.startswith("/"):\n',
+        "        elif False:\n",
+    ),
+    mutant(
+        "the agent of a group is not told who wrote",
+        QQ_BOT,
+        '        self._ask(talk, f"[{who} wrote:]\\n{text}", asked)\n',
+        "        self._ask(talk, text, asked)\n",
+    ),
+    mutant(
+        "the session of a group is not taken up after a new start",
+        QQ_BOT,
+        "            known = None if self._settings is None else self._settings.groups.get(group)\n",
+        "            known = None\n",
+    ),
+    mutant(
+        "a code that ran out still pairs",
+        QQ_BOT,
+        "        if pairing.until < self._now():\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "the code is never given up on",
+        QQ_BOT,
+        "        if tries >= _TRIES_EACH or pairing.total >= _TRIES_ALL:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a wrong code is answered every time",
+        QQ_BOT,
+        "        elif tries == 1:\n",
+        "        elif tries >= 1:\n",
+    ),
+    mutant(
+        "a turn that was stopped says nothing of it",
+        QQ_BOT,
+        '        if end.reason == "aborted":\n',
+        "        if False:\n",
+    ),
+    mutant(
+        "a message is answered twice",
+        QQ_BOT,
+        "        if asked.closed:\n            return\n",
+        "        if False:\n            return\n",
+    ),
+    mutant(
+        "an answer goes on in more messages than QQ takes",
+        QQ_BOT,
+        "        if len(pieces) > most:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "a group takes as few answers as a chat of two",
+        QQ_BOT,
+        "_ANSWERS = {True: 5, False: 4}\n",
+        "_ANSWERS = {True: 4, False: 4}\n",
+    ),
+    mutant(
+        "an answer that comes too late is sent all the same",
+        QQ_BOT,
+        "        if self._clock() - asked.at > _WINDOW[in_group]:\n",
+        "        if False:\n",
+    ),
+    mutant(
+        "every answer to a message has the same number",
+        QQ_BOT,
+        "        number, asked.number = asked.number, asked.number + 1\n",
+        "        number = asked.number\n",
+    ),
+    mutant(
+        "an answer that went out does not clear what went wrong",
+        QQ_BOT,
+        "        if self._error is not None and self._error.startswith(_SEND_FAILED):\n",
+        "        if False:\n",
+    ),
+    # The command, and its profile.
+    mutant(
+        "the assistant in QQ thinks as hard as was chosen for the service",
+        LAUNCHER,
+        "        quick = args.command == _QQ\n",
+        "        quick = False\n",
+    ),
+    mutant(
+        "the assistant in QQ thinks as hard as was chosen for a service that is named",
+        LAUNCHER,
+        "        if not _served(entries, service, env, args.model, thinks=args.command != _QQ):\n",
+        "        if not _served(entries, service, env, args.model):\n",
+    ),
+    mutant(
+        "the assistant in QQ is given no lines of JSON",
+        LAUNCHER,
+        "            elif args.command in (_FEISHU, _WECOM, _QQ):\n",
+        "            elif args.command in (_FEISHU, _WECOM):\n",
+    ),
+    mutant(
+        "the model of the assistant in QQ thinks",
+        QQ_BUNDLE,
+        '            reasoning: "off"\n',
+        "",
+    ),
+    mutant(
+        "the assistant in QQ changes files",
+        QQ_BUNDLE,
+        "  - id: tool-write\n    disabled: true\n",
+        "",
+    ),
+)
+
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -28177,6 +28625,11 @@ SETS: dict[str, MutantSet] = {
     ),
     "feishu": MutantSet(("tests/feishu", "tests/apps/test_feishu_command.py"), _FEISHU),
     "wecom": MutantSet(("tests/wecom", "tests/apps/test_wecom_command.py"), _WECOM),
+    "qq": MutantSet(("tests/qq", "tests/apps/test_qq_command.py"), _QQ),
+    "groups": MutantSet(
+        ("tests/wecom/test_bot.py", "tests/context/test_instructions.py", "tests/skills"),
+        _GROUPS,
+    ),
     "chat-profile": MutantSet(
         ("tests/test_package.py", "tests/apps/test_launcher.py"), _CHAT_PROFILE
     ),

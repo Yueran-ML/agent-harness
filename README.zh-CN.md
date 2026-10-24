@@ -152,6 +152,12 @@ Columbina 也可以在[飞书](https://www.feishu.cn)或 Lark 里回复你：用
 
 Columbina 也可以在[企业微信](https://work.weixin.qq.com)里回复你：用你自己创建的智能机器人，开启“API 模式”并选择“长连接”。助手只在你和机器人的单聊里回复你一个人，能读你写的消息、语音转成的文字和你发给它的文本文件。它在自己的文件夹 `~/Columbina/wecom` 里工作。桌面应用里在“设置”的“企业微信助手”一节设置，填入机器人配置页上的 Bot ID 和 Secret。命令行里用 `columbina wecom --setup` 填入机器人，用 `columbina wecom` 运行助手，需要的包用 `pip install "columbina[wecom]"` 安装。
 
+把机器人拉进群后，群里谁 @ 它都会回复，每个群单独一个对话。在群里它只读，而且只读这个群在 `groups` 下的文件夹，看不到你的文件、技能和私人说明。
+
+### QQ 助手
+
+Columbina 也可以在 [QQ](https://q.qq.com) 里聊天：用你自己创建的机器人，事件接收方式选 WebSocket。私聊里只回复你一个人；把机器人拉进群后，群里谁 @ 它都会回复，每个群单独一个对话。它用不深想的快模型回答，不改文件也不运行命令，也读不到你的私人说明；在群里它不用任何工具。桌面应用里在“设置”的“QQ 助手”一节设置，填入机器人的 AppID 和 AppSecret。命令行里用 `columbina qq --setup` 填入机器人，用 `columbina qq` 运行助手，需要的包用 `pip install "columbina[qq]"` 安装。
+
 ## 文档
 
 - [工程报告](docs/report.zh-CN.md)讲 Columbina 怎样组成、哪些选择决定了它的样子、怎样测试以及做得怎样（[英文版](docs/report.md)）。

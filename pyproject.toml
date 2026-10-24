@@ -55,6 +55,8 @@ feishu = ["websockets>=16"]
 # The assistant in WeCom does too, and decrypts the files that are sent to it:
 # `pip install columbina[wecom]`.
 wecom = ["websockets>=16", "cryptography>=43"]
+# `pip install columbina[qq]`.
+qq = ["websockets>=16"]
 
 [dependency-groups]
 dev = [
@@ -124,6 +126,8 @@ convention = "google"
 "tests/feishu/**" = ["D", "ASYNC240", "RUF001"]  # and the tests compare it
 "src/columbina/wecom/words.py" = ["RUF001"]
 "tests/wecom/**" = ["D", "ASYNC240", "RUF001"]
+"src/columbina/qq/words.py" = ["RUF001"]
+"tests/qq/**" = ["D", "ASYNC240", "RUF001"]
 
 [tool.pyright]
 include = ["src", "tests", "examples", "bench"]

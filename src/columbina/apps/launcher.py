@@ -107,6 +107,9 @@ from columbina.kernel import (
 )
 from columbina.llm.services import PRESETS, Service, adapter_config
 from columbina.permissions import Preset
+from columbina.qq import setup as qq_setup
+from columbina.qq import store as qq_store
+from columbina.qq.app import QqError
 from columbina.session import SESSIONS, SessionError
 from columbina.wecom import setup as wecom_setup
 from columbina.wecom import store as wecom_store
@@ -146,6 +149,7 @@ _FEISHU_WRITABLE = "feishu-writable"
 """The profile of the assistant in Feishu where its agent may change the files of its directory."""
 _WECOM = "wecom"
 _WECOM_WRITABLE = "wecom-writable"
+_QQ = "qq"
 """The profile of the assistant in WeCom where its agent may change the files of its directory."""
 _FEISHU_DOCUMENT = 64 * 1024
 """How many bytes the document of an app that another program gives may be long."""
@@ -445,10 +449,11 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
     def as_chosen(profile: list[Entry]) -> None:
         # A profile that talks to its model in another way is left as it is. Where the command
         # line names a service, the level that was kept for another one is not what it asks.
+        quick = args.command == _QQ
         if stored.use is not None:
             service = chosen_service.service_named(stored.use, stored)
-            _served(profile, service, env, args.model, thinks=not named)
-        elif not named:
+            _served(profile, service, env, args.model, thinks=not named and not quick)
+        elif not named and not quick:
             _thinks_as_kept(profile, stored)
 
     entries = _flattened(args, home, as_chosen)
@@ -456,7 +461,7 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
     _held(entries, args)
     if named:
         service = chosen_service.service_named(named, stored)
-        if not _served(entries, service, env, args.model):
+        if not _served(entries, service, env, args.model, thinks=args.command != _QQ):
             raise _UsageError(
                 f"the profile has no entry {_MODEL!r} that loads {_SPEAKS_OPENAI} or "
                 f"{_SPEAKS_ANTHROPIC}, or it is disabled, so there is nothing to point at the "
@@ -484,7 +489,7 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                 config["task"] = args.task
                 if args.json is not None:
                     config["json_lines"] = args.json
-            elif args.command in (_FEISHU, _WECOM):
+            elif args.command in (_FEISHU, _WECOM, _QQ):
                 if args.json:
                     # Another program reads how the assistant is doing, and stops it.
                     config["json_lines"] = True
@@ -1518,6 +1523,100 @@ def _wecom(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     return asyncio.run(_run(entries, env))
 
 
+def _qq_given() -> dict[str, Any]:
+    """Return the bot that another program wrote to the standard input as JSON.
+
+    Raises:
+        QqError: The standard input is a terminal, or holds no document of a bot.
+    """
+    if sys.stdin.isatty():
+        raise QqError(
+            "'columbina qq --from-stdin' reads what another program writes to its standard "
+            "input, and this one is a terminal. 'columbina qq --setup' asks for the AppSecret "
+            "without showing it",
+            code="INVALID",
+        )
+    read = sys.stdin.buffer.read(_FEISHU_DOCUMENT + 1)
+    if len(read) > _FEISHU_DOCUMENT:
+        raise QqError("the standard input holds more than a document of a bot", code="INVALID")
+    return qq_setup.read_given(read.decode("utf-8", errors="replace"))
+
+
+def _qq_status(said: Mapping[str, object]) -> str:
+    """Say how the assistant in QQ is doing, for a person."""
+    if not said["set_up"]:
+        return "No bot of QQ is set up. 'columbina qq --setup' sets one up."
+    lines = [f"The bot {said['app_id']} is set up, and its assistant works in {said['folder']}."]
+    if said["running"]:
+        lines.append(f"Its assistant runs, and is {said['state'] or 'starting'}.")
+    else:
+        lines.append("Its assistant does not run. 'columbina qq' runs it.")
+    if said["code"]:
+        lines.append(f"Send the bot this code in QQ to pair: {said['code']}")
+    elif not said["paired"]:
+        lines.append("Nobody has paired with it yet.")
+    if said["error"]:
+        lines.append(f"What went wrong last: {said['error']}")
+    return "\n".join(lines)
+
+
+def _qq(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Run the assistant in QQ, or set it up, say how it is doing, or forget it."""
+    if args.json and (args.setup or args.dump_config):
+        raise _UsageError("--json goes with --status, --forget or a run of the assistant")
+    if args.setup:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise _UsageError(
+                "'columbina qq --setup' asks its questions at a terminal, and this is none. "
+                "Another program gives the bot with --from-stdin"
+            )
+
+        def show(told: str) -> None:
+            print(harmless(told))
+
+        try:
+            return asyncio.run(
+                qq_setup.at_a_terminal(
+                    home,
+                    env,
+                    lambda question: input(harmless(question)),
+                    lambda question: getpass.getpass(harmless(question)),
+                    show,
+                )
+            )
+        except (EOFError, KeyboardInterrupt):
+            print()
+            _tell("nothing was stored")
+            return _INTERRUPTED
+    if args.from_stdin or args.status or args.forget:
+        try:
+            if args.from_stdin:
+                answer = asyncio.run(qq_setup.kept_from(home, _qq_given(), env))
+            elif args.status:
+                answer = qq_setup.status_of(home, env)
+            else:
+                answer = qq_setup.forgotten(home)
+        except QqError as error:
+            if args.from_stdin or args.json:
+                _answer({"error": str(error), "code": error.code})
+            else:
+                _tell(str(error))
+            return 2
+        if args.from_stdin or args.json:
+            _answer(answer)
+        elif args.status:
+            print(harmless(_qq_status(answer)))
+        else:
+            print("The bot of QQ is deleted." if answer["forgotten"] else "No bot was set up.")
+        return 0
+    entries = _entries(args, home, env)
+    if args.dump_config:
+        dumped = _dump(entries)
+        sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)
+        return 0
+    return asyncio.run(_run(entries, env))
+
+
 def _wecom_writable(home: Path) -> bool:
     """Tell whether the agent of the assistant in WeCom may change the files of its directory.
 
@@ -1728,6 +1827,55 @@ def _parser() -> argparse.ArgumentParser:
     wecom.set_defaults(
         cwd=None, session_id=None, permission=None, allow=[], resume=False, sandbox=None
     )
+    qq = commands.add_parser(
+        _QQ,
+        help="be an assistant that you and your groups talk to in QQ, through a bot of your own",
+    )
+    _from_the_profile(qq, "qq")
+    qq.add_argument("--model", metavar="ID", help="the model to use")
+    qq.add_argument(
+        "--provider",
+        metavar="NAME",
+        help="the service that the model comes from, as for a conversation",
+    )
+    # No option takes the AppSecret. On the command line it would stay in the history.
+    acting = qq.add_mutually_exclusive_group()
+    acting.add_argument(
+        "--setup", action="store_true", help="ask for the bot at the terminal, and keep it"
+    )
+    acting.add_argument(
+        "--from-stdin",
+        action="store_true",
+        help="keep the bot that a document of JSON on the standard input gives, for another "
+        "program, and answer in one document of JSON",
+    )
+    acting.add_argument(
+        "--status", action="store_true", help="say which bot is set up and how it is doing"
+    )
+    acting.add_argument(
+        "--forget", action="store_true", help="delete the bot, its AppSecret and its owner"
+    )
+    qq.add_argument(
+        "--json",
+        action="store_true",
+        help="for another program: with --status or --forget, answer in one document of JSON; "
+        "else run the assistant, say how it is doing in lines of JSON, and stop it when the "
+        "standard input closes",
+    )
+    qq.add_argument(
+        "--language",
+        choices=("zh", "en"),
+        help="the language of what the assistant says by itself, such as its help; Chinese by "
+        "default",
+    )
+    qq.add_argument(
+        "--dump-config",
+        action="store_true",
+        help="print the plugin entries that would be loaded, and stop",
+    )
+    qq.set_defaults(
+        cwd=None, session_id=None, permission=None, allow=[], resume=False, sandbox=None
+    )
     doctor = commands.add_parser(
         _DOCTOR,
         help="see whether a session could start: the service and its key, the shell, and "
@@ -1781,6 +1929,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     env[feishu_store.ASSISTANT_HOME] = str(feishu_store.directory(Path(env["COLUMBINA_HOME"]), env))
     # And that of the assistant in WeCom.
     env[wecom_store.ASSISTANT_HOME] = str(wecom_store.directory(Path(env["COLUMBINA_HOME"]), env))
+    # And that of the assistant in QQ.
+    env[qq_store.ASSISTANT_HOME] = str(qq_store.directory(Path(env["COLUMBINA_HOME"]), env))
     # Where the user keeps what several tools read, skills for one.
     env.setdefault("COLUMBINA_AGENTS_HOME", str(Path.home() / ".agents"))
     log = logging.getLogger("columbina")
@@ -1811,6 +1961,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _feishu(args, home, env)
         if args.command == _WECOM:
             return _wecom(args, home, env)
+        if args.command == _QQ:
+            return _qq(args, home, env)
         entries = _entries(args, home, env)
         if args.dump_config:
             dumped = _dump(entries)

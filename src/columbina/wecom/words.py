@@ -50,6 +50,10 @@ class Words:
     no_such_skill: str
     skill_not_removable: str
     unread: str
+    group_unread: str
+    """What the assistant says in a group to a message that holds no words."""
+    group_failed: str
+    """What it says in a group where its conversation there cannot be opened."""
     too_large: str
     file_failed: str
     unknown_command: str
@@ -93,6 +97,8 @@ CHINESE = Words(
     no_such_skill="我自己的技能目录里没有叫 {name} 的技能。",
     skill_not_removable="技能 {name} 的目录里还有别的文件，请在电脑上删掉这个目录：{path}",
     unread="我现在只看得懂文字、语音和文本文件。",
+    group_unread="在群里我只看得懂文字和语音。",
+    group_failed="这个群的对话没能打开：{reason}。",
     too_large="文件太大了，我只收 {most} 以内的文本文件。",
     file_failed="这个文件没能收下：{reason}",
     unknown_command="不认识这个命令。发 /help 看看有哪些。",
@@ -139,6 +145,8 @@ ENGLISH = Words(
     skill_not_removable="The directory of the skill {name} holds other files too. Delete it on "
     "the computer: {path}",
     unread="For now I read only text, voice and text files.",
+    group_unread="In a group I read only text and voice.",
+    group_failed="The conversation of this group could not be opened: {reason}.",
     too_large="The file is too large. I take text files of up to {most}.",
     file_failed="The file could not be taken: {reason}",
     unknown_command="I do not know that command. Send /help to see the commands.",

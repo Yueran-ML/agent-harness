@@ -6,6 +6,24 @@ change what was there before.
 
 ## Unreleased
 
+- An assistant in QQ answers through a bot of the open platform of QQ whose events come by
+  WebSocket, so that it needs no address on the internet. `columbina qq --setup` checks the
+  AppID and the AppSecret with QQ and keeps them, the AppSecret in the keyring of the system,
+  and `columbina qq` runs the assistant. In a chat of two it answers the one who sent the code
+  of pairing; in a group it answers whoever mentions the bot, in a conversation for each group
+  with a folder of its own. It is for chatting: the model thinks not at all, whatever was
+  chosen for the service, its agents change no file and run no command, the agent of a group
+  has no tool, and none is given the instructions that the user keeps for their own work. An
+  answer goes out as QQ takes answers: within five minutes of a message in a group and an hour
+  in a chat of two, in a few messages at most. The package comes with
+  `pip install "columbina[qq]"`, and the settings of the desktop application have a part for it
+  with a window of its own that takes the AppID and the AppSecret.
+- The assistant in WeCom answers in groups as well: whoever mentions the bot there, owner or
+  not. Each group has a conversation of its own, taken up again after a new start, and a folder
+  of its own in `groups`. Its agent is told who wrote each message, reads the files of that
+  folder alone, and changes nothing. It is given none of the owner's files or skills, and not
+  the instructions that the user keeps for their own work: an agent whose spec says that
+  `strangers` talk with it is given neither.
 - A turn whose steps are limited tells the model when five are left and when the last one
   begins, so that it keeps what it found and answers in time. A subagent that is stopped
   before it has finished hands back, beside what it was writing, the files that its tools

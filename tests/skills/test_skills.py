@@ -971,3 +971,21 @@ def test_the_list_may_not_be_given_too_little_room() -> None:
     assert Config(catalog_max_chars=1000).catalog_max_chars == 1000
     with pytest.raises(ValidationError):
         Config(catalog_max_chars=999)
+
+
+async def test_an_agent_that_talks_with_strangers_is_told_of_no_skill_and_reads_none(
+    harness: Harness, tmp_path: Path
+) -> None:
+    home = (tmp_path / "home").resolve()
+    directory = put(home, "notes", text="The codenames are in codenames.txt.")
+    await harness.ctx.plugin(columbina.fs)
+    await harness.ctx.plugin(columbina.sandbox)
+    await harness.ctx.plugin(read)
+    await harness.ctx.plugin(columbina.skills, {"home": home})
+    agent = await harness.agent(reads(directory / FILE), Reply(text="Done."), strangers=True)
+
+    await turn(agent)
+
+    assert told(agent) == []
+    # A skill opens what lies beside it to a session that was told of it, and this one was not.
+    assert [code for _, code in results(agent)] == ["OUTSIDE_WORKING_DIRECTORY"]

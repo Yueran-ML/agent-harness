@@ -192,6 +192,9 @@ feishu = [
 mcp = [
     { name = "mcp" },
 ]
+qq = [
+    { name = "websockets" },
+]
 wecom = [
     { name = "cryptography" },
     { name = "websockets" },
@@ -223,9 +226,10 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "rich", specifier = ">=13.9" },
     { name = "websockets", marker = "extra == 'feishu'", specifier = ">=16" },
+    { name = "websockets", marker = "extra == 'qq'", specifier = ">=16" },
     { name = "websockets", marker = "extra == 'wecom'", specifier = ">=16" },
 ]
-provides-extras = ["mcp", "feishu", "wecom"]
+provides-extras = ["mcp", "feishu", "wecom", "qq"]
 
 [package.metadata.requires-dev]
 dev = [

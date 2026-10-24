@@ -226,6 +226,21 @@ it. It works in a folder of its own, `~/Columbina/wecom`, and is set up under *S
 line, `columbina wecom --setup` takes the bot and `columbina wecom` runs the assistant. What it
 needs comes with `pip install "columbina[wecom]"`.
 
+Put the bot in a group, and it answers whoever mentions it there, in a conversation for each
+group. In a group it only reads, and only the files of the folder that the group has in
+`groups`: none of your files, skills or own instructions.
+
+### An assistant in QQ
+
+Columbina can chat in [QQ](https://q.qq.com) too, through a bot of your own whose events come by
+WebSocket. In a chat of your own it answers you alone; put it in a group, and it answers whoever
+mentions it there, in a conversation for each group. It answers quickly with a fast model that
+thinks not at all, changes no file and runs no command, and is given none of your own
+instructions. In a group it uses no tool at all. It is set up under *Settings*, *Assistant in
+QQ*, with the AppID and the AppSecret of the bot. At the command line, `columbina qq --setup`
+takes the bot and `columbina qq` runs the assistant. What it needs comes with
+`pip install "columbina[qq]"`.
+
 ## Documentation
 
 - [The engineering report](docs/report.md) tells how Columbina is put together, which choices

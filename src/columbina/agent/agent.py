@@ -45,6 +45,9 @@ class AgentSpec(Data):
         max_steps: How many steps a turn of the agent may take, or ``None``
             if the spec sets no limit. The loop does not count steps itself.
             Whatever keeps turns within a budget goes by this.
+        strangers: Whether people other than the user talk with the agent, as
+            in a group chat. Such an agent is given nothing that the user
+            keeps for their own work: their instruction file and their skills.
     """
 
     cwd: Path
@@ -53,6 +56,7 @@ class AgentSpec(Data):
     loop: str = "default"
     tools: frozenset[str] | None = None
     max_steps: int | None = Field(default=None, ge=1)
+    strangers: bool = False
 
 
 class Agent(ABC):

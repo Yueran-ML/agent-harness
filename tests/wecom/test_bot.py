@@ -672,7 +672,9 @@ async def test_a_turn_that_failed_says_so(rig: Rig) -> None:
 @pytest.mark.parametrize(
     "heard",
     [
-        message("hi", message_id="m-g", chattype="group", chatid="group-1"),
+        message("hi", message_id="m-g", chattype="group"),
+        message("hi", message_id="m-e", chattype="group", chatid=""),
+        message("hi", message_id="m-o", chattype="channel", chatid="c-1"),
         message("hi", message_id="m-s", sender=STRANGER),
         message("hi", message_id="m-c", compat_info={"source": "channel"}),
         message("   ", message_id="m-blank"),
@@ -681,7 +683,18 @@ async def test_a_turn_that_failed_says_so(rig: Rig) -> None:
         {"cmd": "aibot_msg_callback", "headers": {"req_id": "r"}, "body": {"msgid": ""}},
         {"cmd": "aibot_msg_callback", "headers": {"req_id": "r"}, "body": {}},
     ],
-    ids=["group", "stranger", "passed on", "blank", "no sender", "no req_id", "no id", "nothing"],
+    ids=[
+        "group of no id",
+        "group of an empty id",
+        "other chat",
+        "stranger",
+        "passed on",
+        "blank",
+        "no sender",
+        "no req_id",
+        "no id",
+        "nothing",
+    ],
 )
 async def test_what_is_no_message_of_the_owner_to_the_bot_is_passed_over(
     rig: Rig, heard: dict[str, Any]
@@ -949,7 +962,7 @@ async def test_new_begins_a_new_conversation_and_drops_what_waited(rig: Rig) -> 
     after = store.settings(rig.home)
     assert after is not None
     assert after.session_id != before.session_id
-    assert assistant._agent is not None  # pyright: ignore[reportPrivateUsage]
+    assert assistant._owner.agent is not None  # pyright: ignore[reportPrivateUsage]
     rig.harness.model.release()
     await rig.stop()
 
@@ -969,7 +982,7 @@ async def test_a_new_conversation_that_cannot_begin_says_so_and_nothing_is_answe
 ) -> None:
     assistant = await paired(rig)
 
-    async def broken(session_id: str | None) -> Any:
+    async def broken(talk: object, session_id: str | None) -> Any:
         raise ValueError("the sessions are gone")
 
     monkeypatch.setattr(assistant, "_opened", broken)
@@ -1328,7 +1341,7 @@ async def test_the_agent_of_the_assistant_changes_nothing_whatever_others_may_do
 
     assistant = await paired(rig)
 
-    agent = assistant._agent  # pyright: ignore[reportPrivateUsage]
+    agent = assistant._owner.agent  # pyright: ignore[reportPrivateUsage]
     assert agent is not None
     assert harness.ctx.use(PERMISSIONS).in_force(agent.session) == ("read-only", "ask")
     await rig.stop()
@@ -1342,7 +1355,7 @@ async def test_the_agent_that_its_owner_lets_change_files_changes_them_in_its_di
 
     assistant = await rig.start(writable=True)
 
-    agent = assistant._agent  # pyright: ignore[reportPrivateUsage]
+    agent = assistant._owner.agent  # pyright: ignore[reportPrivateUsage]
     assert agent is not None
     assert harness.ctx.use(PERMISSIONS).in_force(agent.session) == ("workspace-write", "ask")
     await rig.stop()
@@ -1353,7 +1366,7 @@ async def test_an_agent_that_ends_badly_is_logged(
 ) -> None:
     caplog.set_level(logging.ERROR)
     assistant = await paired(rig)
-    agent = assistant._agent  # pyright: ignore[reportPrivateUsage]
+    agent = assistant._owner.agent  # pyright: ignore[reportPrivateUsage]
     assert agent is not None
 
     async def broken() -> None:
@@ -1386,4 +1399,265 @@ async def test_a_message_that_cannot_be_taken_is_logged_and_the_next_one_is_take
     await until(lambda: len(rig.answers()) == 2)
 
     assert "a message from WeCom could not be taken" in caplog.text
+    await rig.stop()
+
+
+# Groups
+
+
+def in_group(
+    rig: Rig,
+    said: str | None,
+    message_id: str,
+    *,
+    group: str = "group-1",
+    sender: str = STRANGER,
+    **more: Any,
+) -> None:
+    rig.socket.tell(
+        message(said, message_id=message_id, sender=sender, chattype="group", chatid=group, **more)
+    )
+
+
+def asked_of(request: Any) -> str:
+    """What a request asked last, as the user."""
+    last = request.messages[-1]
+    assert isinstance(last, UserMessage)
+    return "".join(block.text for block in last.content)
+
+
+async def test_whoever_mentions_the_bot_in_a_group_is_answered_in_the_conversation_of_the_group(
+    rig: Rig,
+) -> None:
+    rig.harness.model.add(Reply(text="大家好"))
+    assistant = await paired(rig)
+
+    in_group(rig, "@Columbina 你好", "g1")
+    await until(lambda: len(rig.answers()) == 2)
+
+    assert rig.answers() == [
+        ("req-g1", "stream", THINKING, False),
+        ("req-g1", "stream", "大家好", True),
+    ]
+    request = rig.harness.model.requests[0]
+    # The mention of the bot is left out, and the agent is told who wrote.
+    assert asked_of(request) == f"[{STRANGER} wrote:]\n你好"
+    assert request.messages[0].content[0].text == bot_module.GROUP_PROMPT  # type: ignore[union-attr]
+    group = assistant._groups["group-1"].agent  # pyright: ignore[reportPrivateUsage]
+    assert group is not None
+    assert group.spec.tools == bot_module.GROUP_TOOLS
+    assert group.spec.strangers
+    assert group.cwd == rig.cwd / "groups" / "group-1"
+    assert group.cwd.is_dir()
+    # It is no conversation of the owner's, and it is taken up after a new start.
+    kept = store.settings(rig.home)
+    assert kept is not None
+    assert kept.groups == {"group-1": group.id}
+    assert kept.session_id != group.id
+    await rig.stop()
+
+
+async def test_a_group_is_answered_also_before_anybody_is_paired(rig: Rig) -> None:
+    rig.harness.model.add(Reply(text="在"))
+    rig.set_up()
+    await rig.start()
+
+    in_group(rig, "@Columbina 在吗", "g1", sender=OWNER)
+    await until(lambda: len(rig.replies()) == 1)
+
+    assert rig.replies() == [("req-g1", "在")]
+    settings = store.settings(rig.home)
+    assert settings is not None
+    assert settings.owner is None
+    await rig.stop()
+
+
+async def test_each_group_has_a_conversation_of_its_own_apart_from_the_owner(rig: Rig) -> None:
+    rig.harness.model.add(Reply(text="one"), Reply(text="two"), Reply(text="three"))
+    await paired(rig)
+
+    in_group(rig, "@Columbina 甲", "g1", group="group-1")
+    await until(lambda: len(rig.replies()) == 1)
+    in_group(rig, "@Columbina 乙", "g2", group="group-2")
+    await until(lambda: len(rig.replies()) == 2)
+    rig.say("丙", "m3")
+    await until(lambda: len(rig.replies()) == 3)
+
+    _, second, third = rig.harness.model.requests
+    # No conversation sees what was said in another.
+    assert "甲" not in str(second.messages)
+    assert "甲" not in str(third.messages)
+    assert "乙" not in str(third.messages)
+    assert asked_of(third) == "丙"
+    kept = store.settings(rig.home)
+    assert kept is not None
+    assert set(kept.groups) == {"group-1", "group-2"}
+    await rig.stop()
+
+
+async def test_the_conversation_of_a_group_goes_on_after_a_new_start(
+    rig: Rig, harness: Harness
+) -> None:
+    rig.set_up(owner=OWNER, groups={"group-1": "s-group"})
+    cwd = rig.cwd / "groups" / "group-1"
+    cwd.mkdir(parents=True)
+    before = await harness.agents.create(harness.ctx, harness.spec(cwd=cwd), session_id="s-group")
+    harness.model.add(Reply(text="记下了"), Reply(text="42"))
+    before.followup("记住 42")
+    await before.when_idle()
+    await before.close()
+
+    assistant = await rig.start()
+    in_group(rig, "@Columbina 是几？", "g1")
+    await until(lambda: len(rig.replies()) == 1)
+
+    assert "记住 42" in str(harness.model.requests[-1].messages)
+    group = assistant._groups["group-1"].agent  # pyright: ignore[reportPrivateUsage]
+    assert group is not None
+    assert group.id == "s-group"
+    await rig.stop()
+
+
+async def test_a_long_answer_in_a_group_goes_on_in_the_group(rig: Rig) -> None:
+    line = "段落" * 900
+    long = "\n".join([line] * 8)
+    rig.harness.model.add(Reply(text=long))
+    await paired(rig)
+
+    in_group(rig, "@Columbina 说吧", "g1")
+    await until(lambda: len(rig.socket.of(SEND)) >= 1)
+    await asyncio.sleep(0.05)
+
+    pushed = rig.socket.of(SEND)
+    assert {frame["body"]["chatid"] for frame in pushed} == {"group-1"}
+    assert {frame["body"]["chat_type"] for frame in pushed} == {2}
+    await rig.stop()
+
+
+async def test_a_message_in_a_group_that_holds_no_words_is_said_to_be_unread(rig: Rig) -> None:
+    await paired(rig)
+
+    in_group(rig, None, "g1", kind="image", content={"url": "https://example.test/a.png"})
+    await until(lambda: len(rig.replies()) == 1)
+
+    assert rig.replies() == [("req-g1", "在群里我只看得懂文字和语音。")]
+    await rig.stop()
+
+
+async def test_a_mention_alone_is_passed_over(rig: Rig) -> None:
+    await paired(rig)
+
+    in_group(rig, "@Columbina", "g1")
+    await asyncio.sleep(0.05)
+
+    assert rig.answers() == []
+    await rig.stop()
+
+
+async def test_a_quote_in_a_group_is_given_with_who_wrote(rig: Rig) -> None:
+    rig.harness.model.add(Reply(text="ok"))
+    await paired(rig)
+
+    in_group(
+        rig,
+        "@Columbina 这句对吗",
+        "g1",
+        quote={"msgtype": "text", "text": {"content": "地球是平的"}},
+    )
+    await until(lambda: len(rig.replies()) == 1)
+
+    assert (
+        asked_of(rig.harness.model.requests[0]) == f"[{STRANGER} wrote:]\n> 地球是平的\n\n这句对吗"
+    )
+    await rig.stop()
+
+
+async def test_a_command_in_a_group_is_only_words(rig: Rig) -> None:
+    rig.harness.model.add(Reply(text="嗯"))
+    assistant = await paired(rig)
+    owner = assistant._owner.agent  # pyright: ignore[reportPrivateUsage]
+
+    in_group(rig, "@Columbina /new", "g1")
+    await until(lambda: len(rig.replies()) == 1)
+
+    assert asked_of(rig.harness.model.requests[0]) == f"[{STRANGER} wrote:]\n/new"
+    assert assistant._owner.agent is owner  # pyright: ignore[reportPrivateUsage]
+    await rig.stop()
+
+
+async def test_a_group_whose_conversation_cannot_be_opened_says_so_and_tries_again_later(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig.harness.model.add(Reply(text="好了"))
+    assistant = await paired(rig)
+    real = assistant._opened  # pyright: ignore[reportPrivateUsage]
+    broken = [True]
+
+    async def opened(talk: Any, session_id: str | None) -> Any:
+        if broken[0]:
+            raise OSError("the disk is full")
+        return await real(talk, session_id)
+
+    monkeypatch.setattr(assistant, "_opened", opened)
+    in_group(rig, "@Columbina 你好", "g1")
+    await until(lambda: len(rig.replies()) == 1)
+    broken[0] = False
+    in_group(rig, "@Columbina 你好", "g2")
+    await until(lambda: len(rig.replies()) == 2)
+
+    assert rig.replies() == [
+        ("req-g1", "这个群的对话没能打开：the disk is full。"),
+        ("req-g2", "好了"),
+    ]
+    await rig.stop()
+
+
+async def test_the_agent_of_a_group_changes_nothing_though_the_owner_lets_theirs(
+    rig: Rig, harness: Harness
+) -> None:
+    await kept_in_check(rig, "full-access")
+    rig.harness.model.add(Reply(text="ok"))
+    rig.set_up(owner=OWNER, writable=True)
+    assistant = await rig.start(writable=True)
+
+    in_group(rig, "@Columbina 改一下文件", "g1")
+    await until(lambda: len(rig.replies()) == 1)
+
+    group = assistant._groups["group-1"].agent  # pyright: ignore[reportPrivateUsage]
+    assert group is not None
+    assert harness.ctx.use(PERMISSIONS).in_force(group.session) == ("read-only", "ask")
+    await rig.stop()
+
+
+async def test_the_answers_being_written_in_groups_say_so_when_the_assistant_is_stopped(
+    rig: Rig, input_closes: asyncio.Event
+) -> None:
+    rig.harness.model.add(Reply(text="never", hold=True))
+    await paired(rig, json_lines=True)
+    in_group(rig, "@Columbina 慢慢想", "g1")
+    await asyncio.wait_for(rig.harness.model.held(), timeout=5)
+    await until(lambda: len(rig.answers()) == 1)
+
+    input_closes.set()
+    assert rig.task is not None
+    assert await asyncio.wait_for(rig.task, timeout=5) == 0
+
+    assert rig.answers()[-1] == (
+        "req-g1",
+        "stream",
+        "（Columbina 中途退出了，这次的回答没写完。）",
+        True,
+    )
+
+
+async def test_a_second_message_in_a_group_goes_on_in_its_conversation(rig: Rig) -> None:
+    rig.harness.model.add(Reply(text="one"), Reply(text="two"))
+    await paired(rig)
+
+    in_group(rig, "@Columbina 甲", "g1")
+    await until(lambda: len(rig.replies()) == 1)
+    in_group(rig, "@Columbina 乙", "g2")
+    await until(lambda: len(rig.replies()) == 2)
+
+    assert "甲" in str(rig.harness.model.requests[1].messages)
     await rig.stop()

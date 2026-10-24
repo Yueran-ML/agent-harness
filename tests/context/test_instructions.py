@@ -688,3 +688,17 @@ async def test_the_instructions_come_before_what_other_sources_say(harness: Harn
         if isinstance(event.data, UserMessageEvent)
     ]
     assert sources == ["context/instructions", "context/runtime", "user"]
+
+
+async def test_an_agent_that_talks_with_strangers_is_not_given_the_file_of_the_user(
+    harness: Harness, tmp_path: Path
+) -> None:
+    mine = tmp_path / "home" / "AGENTS.md"
+    put(mine, "Call me by my nickname.")
+    put(harness.cwd / "AGENTS.md", "Answer the group briefly.")
+    await harness.ctx.plugin(instructions, {"user_file": mine})
+    agent = await harness.agent(Reply(text="Hello!"), strangers=True)
+
+    await turn(agent, "Say hello.")
+
+    assert given(agent) == [told("==> AGENTS.md <==\nAnswer the group briefly.")]

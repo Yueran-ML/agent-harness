@@ -6,7 +6,15 @@ The assistant keeps the long connection of the bot, :mod:`columbina.wecom.link`,
 every message that is written to it. It answers one person, its owner, in a chat of the two.
 Whoever sends the code of pairing first becomes the owner. The code is shown on the computer
 that the assistant runs on, holds for some minutes, and is given up after too many wrong
-tries. What anybody else writes is passed over, and so is what is written in a group.
+tries. What anybody else writes to the bot alone is passed over.
+
+In a group the bot is told only what mentions it, and it answers whoever wrote that, owner or
+not, before anybody is paired too. Each group has a conversation of its own, with a session
+that is taken up again after a new start, and a directory of its own in ``groups``. Its agent
+is told who wrote each message. It may read the files of that directory, and nothing else: no
+file of the owner, no skill, nor the instructions that the user keeps for their own work. It
+changes nothing, whatever the owner lets the agent of their own conversation do. The commands
+are the owner's, so in a group they are words like any others.
 
 What the owner writes goes to an agent, in a session of its own that is taken up again when
 the assistant starts again. Each message is a turn of its own, and the answer of the turn
@@ -46,7 +54,7 @@ import sys
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Coroutine, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -96,6 +104,22 @@ PROMPT = (
     "text. A file that the user sends you lies in the directory uploads, and you are told where."
 )
 """The words that open a conversation of the assistant."""
+
+GROUP_PROMPT = (
+    "You are Columbina, an assistant in a group chat of WeCom. The people of the group write "
+    "to you by mentioning you, and you see nothing else that is written in the group. Each "
+    "message says who wrote it. Answer the way one does in a chat: to the point, and at length "
+    "only where somebody asks for it. What you write is shown as Markdown. You change nothing "
+    "and run nothing. The files of the directory that you are in are there for this group, and "
+    "you may read them."
+)
+"""The words that open the conversation in a group."""
+
+GROUPS = "groups"
+"""The directory, in the directory of the assistant, that holds one directory for each group."""
+
+GROUP_TOOLS = frozenset({"read", "glob", "grep"})
+"""The tools of the agent of a group: those that read, in the directory of the group alone."""
 
 SEEN = "seen.json"
 """The file that names the messages that were taken, in what the program keeps for the assistant."""
@@ -174,6 +198,9 @@ _UNSAFE = re.compile(r'[\x00-\x1f\x7f<>:"/\\|?*]')
 
 _NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 """What the name of a skill is made of."""
+
+_MENTION = re.compile(r"^@\S+\s*")
+"""How a message in a group begins: with the name of the bot that it mentions."""
 
 
 class Config(BaseModel):
@@ -290,6 +317,30 @@ class _Asked:
     closed: bool = False
 
 
+@dataclass(slots=True)
+class _Talk:
+    """A conversation that the assistant holds: with its owner, or in a group.
+
+    Attributes:
+        chat: The group, as WeCom names it, or ``None`` for the conversation with the owner.
+        agent: The agent of the conversation, once it is open.
+        waiting: The messages that the agent was given, and has not begun to answer.
+        turns: The turns under way, by their number: the message that each answers, and how
+            long the log was when it began.
+    """
+
+    chat: str | None = None
+    agent: Agent | None = None
+    waiting: deque[_Asked] = field(default_factory=deque[_Asked])
+    turns: dict[int, tuple[_Asked | None, int]] = field(
+        default_factory=dict[int, tuple[_Asked | None, int]]
+    )
+
+    def undone(self) -> list[_Asked]:
+        """Return the messages that the agent is answering or will answer."""
+        return [*(asked for asked, _ in self.turns.values() if asked), *self.waiting]
+
+
 def _markdown(text: str) -> dict[str, Any]:
     return {"msgtype": "markdown", "markdown": {"content": text}}
 
@@ -313,12 +364,11 @@ class Assistant:
         self._link: Link | None = None
         self._http: httpx.AsyncClient | None = None
         self._settings: store.Settings | None = None
-        self._agent: Agent | None = None
+        self._owner = _Talk()
+        self._groups: dict[str, _Talk] = {}
         self._seen: _Seen | None = None
         self._pairing: _Pairing | None = None
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._waiting: deque[_Asked] = deque()
-        self._turns: dict[int, tuple[_Asked | None, int]] = {}
         self._doing: set[asyncio.Future[Any]] = set()
         self._state: store.State = "connecting"
         self._error: str | None = None
@@ -402,7 +452,7 @@ class Assistant:
         working = asyncio.ensure_future(self._work())
         try:
             try:
-                self._agent = await self._opened(chosen.session_id)
+                self._owner.agent = await self._opened(self._owner, chosen.session_id)
             except (SessionError, AgentError, ValueError) as error:
                 self._failed(f"the session of the assistant cannot be opened: {error}")
                 return 1
@@ -444,7 +494,7 @@ class Assistant:
 
     async def _leave(self) -> None:
         """Say in the answers that are being written that they will not be: the assistant stops."""
-        left = [*(asked for asked, _ in self._turns.values() if asked), *self._waiting]
+        left = [asked for talk in self._talks() for asked in talk.undone()]
         if left:
             closing = [
                 asyncio.ensure_future(self._closed(asked, self._words.interrupted))
@@ -455,17 +505,21 @@ class Assistant:
                 doing.cancel()
 
     async def _end(self, http: httpx.AsyncClient) -> None:
-        """End the agent and what is done on the side, and say that the assistant stopped."""
-        agent, self._agent = self._agent, None
-        if agent is not None:
+        """End the agents and what is done on the side, and say that the assistant stopped."""
+        talks = self._talks()
+        self._groups.clear()
+        for talk in talks:
+            agent, talk.agent = talk.agent, None
+            talk.waiting.clear()
+            talk.turns.clear()
+            if agent is None:
+                continue
             try:
                 if not agent.at_rest:
                     agent.cancel("user", keep_inbox=True)
                 await asyncio.shield(agent.close())
             except Exception as error:
                 logger.error("the agent of the assistant stopped badly: %s", error)
-        self._waiting.clear()
-        self._turns.clear()
         # What is still being sent then is broken off: the connection is gone.
         for doing in list(self._doing):
             doing.cancel()
@@ -482,28 +536,50 @@ class Assistant:
         self._status()
         _tell(why)
 
-    async def _opened(self, session_id: str | None) -> Agent:
-        """Open the session of the conversation, and take up what waited in it.
+    def _talks(self) -> list[_Talk]:
+        """Return the conversations: the one with the owner first, then those in groups."""
+        return [self._owner, *self._groups.values()]
+
+    async def _opened(self, talk: _Talk, session_id: str | None) -> Agent:
+        """Open the session of a conversation, and take up what waited in it.
 
         Raises:
             SessionError: The stored session cannot be read or is open elsewhere.
             AgentError: The agent could not be made.
             ValueError: The id cannot name a session.
+            OSError: The directory of a group cannot be made.
         """
         config = self._config
-        spec = AgentSpec(cwd=config.cwd, model=config.model, system_prompt=config.system_prompt)
+        chat = talk.chat
+        if chat is None:
+            spec = AgentSpec(cwd=config.cwd, model=config.model, system_prompt=config.system_prompt)
+        else:
+            # The people of a group are no owner: they read the directory of their group, and
+            # nothing that the owner keeps.
+            cwd = config.cwd / GROUPS / _safe(chat)
+            cwd.mkdir(parents=True, exist_ok=True)
+            spec = AgentSpec(
+                cwd=cwd,
+                model=config.model,
+                system_prompt=GROUP_PROMPT,
+                tools=GROUP_TOOLS,
+                strangers=True,
+            )
         agent = await open_agent(self._ctx, self._agents, self._sessions, spec, session_id)
         permissions = self._ctx.get(PERMISSIONS)
         if permissions is not None:
             # What its owner lets it do holds for the conversation that goes on as well, whatever
-            # its log or the configuration of the program said.
-            permissions.set_preset(
-                agent.session, "workspace-write" if config.writable else "read-only"
-            )
-        agent.ctx.on(SESSION_EVENT, self._follower(agent))
+            # its log or the configuration of the program said. In a group nothing is changed.
+            writes = config.writable and chat is None
+            permissions.set_preset(agent.session, "workspace-write" if writes else "read-only")
+        agent.ctx.on(SESSION_EVENT, self._follower(talk, agent))
         settings = self._settings
-        if settings is not None and settings.session_id != agent.id:
+        if settings is not None and chat is None and settings.session_id != agent.id:
             self._settings = settings.model_copy(update={"session_id": agent.id})
+            self._save()
+        elif settings is not None and chat is not None and settings.groups.get(chat) != agent.id:
+            groups = {**settings.groups, chat: agent.id}
+            self._settings = settings.model_copy(update={"groups": groups})
             self._save()
         # A message that was taken and not answered before the program ended is answered now.
         agent.wake()
@@ -617,8 +693,9 @@ class Assistant:
     async def _take(self, frame: dict[str, Any]) -> None:
         body = _object(frame.get("body"))
         req_id = _object(frame.get("headers")).get("req_id")
-        # A message in a group, or one that some other part of WeCom passes on, is no chat of two.
-        if body.get("chattype") != "single" or "compat_info" in body:
+        # A message that some other part of WeCom passes on is no chat with the bot.
+        chattype = body.get("chattype")
+        if chattype not in ("single", "group") or "compat_info" in body:
             return
         who, message_id = _object(body.get("from")).get("userid"), body.get("msgid")
         if not isinstance(who, str) or not who or not isinstance(req_id, str) or not req_id:
@@ -627,7 +704,9 @@ class Assistant:
         settings = self._settings
         if settings is None:  # pragma: no cover - set before the first message is taken
             return
-        if settings.owner is None:
+        if chattype == "group":
+            await self._in_group(body.get("chatid"), who, said, req_id)
+        elif settings.owner is None:
             await self._pair(who, req_id, said)
         elif who != settings.owner:
             logger.info("a message from someone other than the owner is passed over")
@@ -636,7 +715,7 @@ class Assistant:
             if text.startswith("/"):
                 await self._command(text, req_id)
             elif text:
-                self._ask(said.asked(), req_id)
+                self._ask(self._owner, said.asked(), req_id)
         elif isinstance(said, messages.File):
             await self._file(said, req_id, str(message_id))
         else:
@@ -679,15 +758,43 @@ class Assistant:
         elif tries == 1:
             self._say(req_id, self._words.pair_please)
 
-    def _ask(self, text: str, req_id: str) -> None:
-        """Give the agent a message, which it answers in a turn of its own."""
-        agent = self._agent
+    async def _in_group(self, chat: object, who: str, said: messages.Said, req_id: str) -> None:
+        """Answer a message in a group, whoever wrote it: they mentioned the bot.
+
+        The conversation of a group is opened when somebody first writes in it after a start.
+        """
+        if not isinstance(chat, str) or not chat:
+            return
+        words = self._words
+        if not isinstance(said, messages.Text):
+            self._say(req_id, words.group_unread)
+            return
+        text = _MENTION.sub("", said.text.strip(), count=1).strip()
+        if not text:
+            return
+        talk = self._groups.get(chat)
+        if talk is None:
+            talk = self._groups[chat] = _Talk(chat)
+        if talk.agent is None:
+            known = None if self._settings is None else self._settings.groups.get(chat)
+            try:
+                talk.agent = await self._opened(talk, known)
+            except (SessionError, AgentError, ValueError, OSError) as error:
+                logger.error("the conversation of a group cannot be opened: %s", error)
+                self._say(req_id, words.group_failed.format(reason=error))
+                return
+        quoted = messages.Text(text, said.quoted).asked()
+        self._ask(talk, f"[{who} wrote:]\n{quoted}", req_id)
+
+    def _ask(self, talk: _Talk, text: str, req_id: str) -> None:
+        """Give the agent of a conversation a message, which it answers in a turn of its own."""
+        agent = talk.agent
         if agent is None:
             # A new session could not be opened: the owner is told how to try again.
             self._say(req_id, self._words.no_session)
             return
         asked = _Asked(req_id, request_id("stream"))
-        self._waiting.append(asked)
+        talk.waiting.append(asked)
         agent.followup(text)
         asked.beginning = self._later(self._begin(asked))
 
@@ -710,17 +817,13 @@ class Assistant:
         else:
             self._say(req_id, words.unknown_command)
 
-    def _undone(self) -> list[_Asked]:
-        """Forget the messages that the agent is answering or will answer, and return them."""
-        undone = [*(asked for asked, _ in self._turns.values() if asked), *self._waiting]
-        self._turns.clear()
-        self._waiting.clear()
-        return undone
-
     async def _new(self, req_id: str) -> None:
-        old = self._agent
-        self._agent = None
-        dropped = self._undone()
+        owner = self._owner
+        old, owner.agent = owner.agent, None
+        # The messages that the agent was answering or would answer are forgotten.
+        dropped = owner.undone()
+        owner.turns.clear()
+        owner.waiting.clear()
         words = self._words
         if old is not None:
             if not old.at_rest:
@@ -729,7 +832,7 @@ class Assistant:
         for asked in dropped:
             self._later(self._closed(asked, words.dropped_here))
         try:
-            self._agent = await self._opened(None)
+            owner.agent = await self._opened(owner, None)
         except (SessionError, AgentError, ValueError) as error:
             # Without a session the assistant answers nothing: the owner is told, and may try again.
             logger.error("a new session of the assistant cannot be opened: %s", error)
@@ -739,13 +842,14 @@ class Assistant:
         self._say(req_id, said)
 
     async def _stop(self, req_id: str) -> None:
-        agent = self._agent
+        owner = self._owner
+        agent = owner.agent
         words = self._words
-        waiting = list(self._waiting)
+        waiting = list(owner.waiting)
         if agent is None or (agent.at_rest and not waiting):
             self._say(req_id, words.nothing_to_stop)
             return
-        self._waiting.clear()
+        owner.waiting.clear()
         # Input that waits is dropped with the turn. The answer of the turn says that it stopped.
         agent.cancel("user")
         for asked in waiting:
@@ -757,7 +861,7 @@ class Assistant:
         return self._config.cwd / SKILLS_DIRECTORY
 
     async def _list(self, req_id: str) -> None:
-        skills, agent = self._ctx.get(SKILLS), self._agent
+        skills, agent = self._ctx.get(SKILLS), self._owner.agent
         found = (
             None
             if skills is None or agent is None
@@ -829,6 +933,7 @@ class Assistant:
             return
         where = place.relative_to(self._config.cwd).as_posix()
         self._ask(
+            self._owner,
             f"[I sent you the file {where}, in your working directory. Read it with the tool "
             "read when you need it.]",
             req_id,
@@ -866,24 +971,26 @@ class Assistant:
         doing.add_done_callback(self._doing.discard)
         return doing
 
-    def _follower(self, agent: Agent) -> Callable[[Committed], None]:
-        """Return what follows the turns of an agent, while it is the one of the conversation."""
+    def _follower(self, talk: _Talk, agent: Agent) -> Callable[[Committed], None]:
+        """Return what follows the turns of an agent, while it is the one of its conversation."""
 
         def follow(committed: Committed) -> None:
-            if agent is not self._agent or committed.session is not agent.session:
+            if agent is not talk.agent or committed.session is not agent.session:
                 return
             data = committed.event.data
             if isinstance(data, TurnStartEvent):
-                asked = self._waiting.popleft() if self._waiting else None
-                self._turns[data.turn] = (asked, len(agent.session.events))
+                asked = talk.waiting.popleft() if talk.waiting else None
+                talk.turns[data.turn] = (asked, len(agent.session.events))
             elif isinstance(data, TurnEndEvent):
-                asked, began = self._turns.pop(data.turn, (None, len(agent.session.events)))
+                asked, began = talk.turns.pop(data.turn, (None, len(agent.session.events)))
                 said = replies(event.data for event in agent.session.events[began:])
-                self._later(self._answered(asked, data, said[-1] if said else ""))
+                self._later(self._answered(talk, asked, data, said[-1] if said else ""))
 
         return follow
 
-    async def _answered(self, asked: _Asked | None, end: TurnEndEvent, text: str) -> None:
+    async def _answered(
+        self, talk: _Talk, asked: _Asked | None, end: TurnEndEvent, text: str
+    ) -> None:
         """Send the answer of a turn, with how the turn ended where it did not end well."""
         words = self._words
         if end.reason == "aborted":
@@ -903,7 +1010,7 @@ class Assistant:
         if asked is not None and await self._closed(asked, pieces[0]):
             pieces = pieces[1:]
         for piece in pieces:
-            await self._pushed(piece)
+            await self._pushed(piece, talk.chat)
 
     async def _begin(self, asked: _Asked) -> None:
         """Begin the answer to a message: say in it that the agent is thinking."""
@@ -935,8 +1042,13 @@ class Assistant:
             return False
         return await self._sent(RESPOND, _stream(asked, text, finish=True), asked.req_id, "answer")
 
-    async def _pushed(self, text: str) -> None:
-        """Send the owner a message that answers no message of the moment."""
+    async def _pushed(self, text: str, chat: str | None = None) -> None:
+        """Send a message that answers no message of the moment: to a group, or to the owner."""
+        if chat is not None:
+            await self._sent(
+                SEND, {"chatid": chat, "chat_type": 2, **_markdown(text)}, None, "message"
+            )
+            return
         settings = self._settings
         if settings is None or settings.owner is None:  # pragma: no cover - paired by then
             return

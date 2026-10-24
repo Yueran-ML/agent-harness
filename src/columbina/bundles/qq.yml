@@ -1,0 +1,50 @@
+# What `columbina qq` loads: the base program without what changes files, runs commands, reaches
+# GitHub, hands work to other agents or loads skills, and the assistant that its owner and the
+# people of its groups talk to in QQ. A chat in QQ is quick: the model thinks not at all. The
+# agent of the owner reads the files of its own directory, and the agent of a group reads
+# nothing. Neither is given the instructions that the user keeps for their own work. Its
+# directory lies apart from the home of the program, where COLUMBINA_QQ_HOME says.
+extends: base
+patch:
+  - id: tool-write
+    disabled: true
+  - id: tool-edit
+    disabled: true
+  - id: tool-shell
+    disabled: true
+  - id: github
+    disabled: true
+  - id: subagents
+    disabled: true
+  - id: subagent-spawn
+    disabled: true
+  - id: tool-subagent
+    disabled: true
+  - id: mcp
+    disabled: true
+  - id: hooks
+    disabled: true
+  - id: todo
+    disabled: true
+  - id: skills
+    disabled: true
+  # A call that would need a yes asks nobody, so it does not run. The rules of the user hold.
+  - id: permissions
+    config:
+      preset: read-only
+      user_file: ${COLUMBINA_HOME}/permissions.yml
+  # Nothing is changed, so what the conduct says about changing things is left out.
+  - id: system-prompt-conduct
+    config:
+      leave_out: [changes]
+  - insert:
+      - id: frontend
+        plugin: columbina.qq.bot
+        config:
+          model:
+            provider: deepseek
+            model: ${COLUMBINA_MODEL:-deepseek-flash}
+            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}
+            reasoning: "off"
+          cwd: ${COLUMBINA_QQ_HOME}
+          home: ${COLUMBINA_HOME}

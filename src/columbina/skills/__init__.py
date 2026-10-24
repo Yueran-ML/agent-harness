@@ -372,6 +372,9 @@ def apply(ctx: Context, config: Config) -> None:
     skills = Skills(config)
 
     async def render(agent: Agent) -> str | None:
+        if agent.spec.strangers:
+            # The skills are the user's. A session that was never told of one reads none.
+            return None
         found = await skills.found(agent.session, agent.cwd)
         said = catalog(list(found.skills.values()), config.catalog_max_chars)
         if said is None and _GIVEN.of(agent.session):

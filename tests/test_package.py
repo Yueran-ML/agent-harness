@@ -18,6 +18,7 @@ BUNDLES = [
     "feishu-writable",
     "headless",
     "minimal",
+    "qq",
     "serve",
     "wecom",
     "wecom-writable",

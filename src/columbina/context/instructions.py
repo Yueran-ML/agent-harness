@@ -221,9 +221,12 @@ def _said(gathered: _Gathered, max_bytes: int) -> str | None:
 
 def apply(ctx: Context, config: Config) -> None:
     """Register the source of context that gives the instruction files."""
+    # What the user keeps for their own work is no business of the people of a group chat.
+    among_strangers = config.model_copy(update={"user_file": None})
 
     async def render(agent: Agent) -> str | None:
-        gathered = await asyncio.to_thread(_gather, agent.cwd, config)
+        used = among_strangers if agent.spec.strangers else config
+        gathered = await asyncio.to_thread(_gather, agent.cwd, used)
         said = _said(gathered, config.max_bytes)
         if said is None and _GIVEN.of(agent.session):
             return _GONE

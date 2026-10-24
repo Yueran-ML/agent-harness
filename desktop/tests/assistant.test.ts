@@ -14,7 +14,8 @@ const status = {
 };
 const app = (given: Partial<App> = {}): Extract<Assistant, { kind: 'app' }> => ({
   kind: 'app', platform: 'feishu', id: 'cli_a1b2c3d4', console: 'https://open.feishu.cn/app', paired: false,
-  folder: null, writable: false, running: false, own: false, state: null, code: null, error: null, ended: null, ...given,
+  folder: null, writable: false, model: null, effort: null, running: false, own: false, state: null, code: null,
+  error: null, ended: null, ...given,
 });
 
 describe('the folder of the assistant, as the shell says it', () => {

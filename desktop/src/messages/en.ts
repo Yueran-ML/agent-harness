@@ -489,6 +489,17 @@ export const en = {
       next: 'Next steps',
     },
 
+    /** The model of an assistant and how hard it thinks, in its part of the settings. */
+    assistantThinking: {
+      model: 'Model',
+      effort: 'Thinking',
+      followModel: 'The model that Columbina uses',
+      keep: 'Keep',
+      levels: {
+        follow: 'As for all', default: 'As the service has it', off: 'Off', low: 'Low', high: 'High', max: 'The most',
+      },
+    },
+
     /** The first steps on the first page. */
     start: {
       title: 'Getting started',
@@ -1145,6 +1156,12 @@ export const en = {
         'Once the bot is stored here, start the assistant in the settings.',
         'Find the bot in QQ and send it the code in a chat of your own. Put it in a group, and anyone can mention it there.',
       ],
+    },
+
+    /** The model of an assistant and how hard it thinks. */
+    assistantThinking: {
+      note: 'What is left empty follows what holds for all. An assistant that runs starts again for a change.',
+      failed: 'The model and the thinking of the assistant could not be changed.',
     },
 
     music: {

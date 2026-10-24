@@ -84,6 +84,8 @@ const ASSISTANT_LINE_MOST = 64 * 1024;
 // the language of the page that starts it. For a page in another language, the assistant goes by
 // what its platform speaks.
 const ASSISTANT_LANGUAGES = ['zh', 'en'];
+// How hard the model of an assistant may be asked to think.
+const EFFORTS = ['default', 'off', 'low', 'high', 'max'];
 const assistantLanguageOf = (language) => (language === 'zh-CN' ? 'zh' : language === 'en' ? 'en' : null);
 // How long the login shell of the user may take on macOS to say what it has, and how much of what it writes is read.
 const LOGIN_SHELL_MS = 5_000;
@@ -1146,6 +1148,26 @@ function installAssistant(one) {
     let answer;
     try {
       answer = await inTurn(() => runProgram([kind, '--from-stdin'], JSON.stringify({ writable })));
+    } finally {
+      if (ran && !exiting) await startAssistant(one).catch(() => {});
+    }
+    return answer;
+  });
+  ipcMain.handle(`columbina:${kind}-thinking`, async (event, asked) => {
+    checkSender(event);
+    const model = asked?.model ?? null;
+    const effort = asked?.effort ?? null;
+    if (model !== null && (typeof model !== 'string' || !model.trim() || model.length > 200)) {
+      throw new Error('A model is named by its id, as the service lists it.');
+    }
+    if (effort !== null && !EFFORTS.includes(effort)) throw new Error('How hard the model thinks is one of default, off, low, high and max.');
+    // As for whether it may change files: the program changes it only while no assistant runs.
+    const ran = one.child !== null;
+    if (ran) await stopAssistant(one);
+    let answer;
+    try {
+      const chosen = JSON.stringify({ model: model === null ? null : model.trim(), effort });
+      answer = await inTurn(() => runProgram([kind, '--from-stdin'], chosen));
     } finally {
       if (ran && !exiting) await startAssistant(one).catch(() => {});
     }

@@ -16,5 +16,6 @@ export const noAssistant: AssistantHandle = {
   setUp: async () => {},
   showLog: () => {},
   setWritable: async () => {},
+  setThinking: async () => {},
   openFolder: async () => {},
 };

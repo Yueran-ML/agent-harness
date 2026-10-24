@@ -20,6 +20,12 @@ export interface Ended {
 /** The platforms: Feishu in China, Lark outside it, WeCom and QQ. */
 export type Platform = 'feishu' | 'lark' | 'wecom' | 'qq';
 
+/** How hard the model of an assistant is asked to think. */
+export type Effort = 'default' | 'off' | 'low' | 'high' | 'max';
+
+/** The levels, from the one that asks for nothing to the one that asks for the most. */
+export const EFFORTS: readonly Effort[] = ['default', 'off', 'low', 'high', 'max'];
+
 /** How the assistant is doing, while it runs. */
 export type State = 'connecting' | 'connected' | 'stopping' | 'failed';
 
@@ -36,6 +42,10 @@ export interface App {
   folder: string | null;
   /** Whether the agent of the assistant may change the files of its folder. */
   writable: boolean;
+  /** The model that the assistant asks, or null for the one that holds for all. */
+  model: string | null;
+  /** How hard that model thinks, or null for what holds for all. */
+  effort: Effort | null;
   /** Whether an assistant runs on this computer, here or elsewhere. */
   running: boolean;
   /** Whether this application runs it. */
@@ -120,6 +130,8 @@ export function assistantOf(kind: Kind, answer: unknown): Assistant {
     paired: given.paired === true,
     folder: text(given.folder) || null,
     writable: given.writable === true,
+    model: text(given.model) || null,
+    effort: EFFORTS.find(effort => effort === given.effort) ?? null,
     running,
     own,
     state: stateOf(given.state, running),

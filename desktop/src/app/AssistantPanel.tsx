@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, ExternalLink, FileText, FolderOpen, Play, RefreshCw, Settings2, Square, TriangleAlert } from 'lucide-react';
 import { sentenceOf } from '../key/form';
 import { useAssistant, type AssistantHandle } from '../useAssistant';
-import { doingOf, type App, type Ended, type Kind } from './assistant';
+import { doingOf, EFFORTS, type App, type Effort, type Ended, type Kind } from './assistant';
 import { Details } from './GitHubSignIn';
 import { useWords } from './locale';
 
@@ -77,6 +77,63 @@ function Doing({ kind, app }: { kind: Kind; app: App }) {
     {doing === 'reconnecting' && <Details said={sentenceOf(app.error ?? '')} />}
     {trouble}
   </>;
+}
+
+/**
+ * The model that the assistant asks and how hard it thinks, which follow what holds for all where
+ * they are left empty. One that runs elsewhere goes on with what it read, and is changed there.
+ */
+function ThinkingPart({ kind, app, assistant }: { kind: Kind; app: App; assistant: AssistantHandle }) {
+  const words = useWords();
+  const [model, setModel] = useState(app.model ?? '');
+  const [effort, setEffort] = useState<Effort | ''>(app.effort ?? '');
+  // What the program kept is what the fields show again, once it has said so.
+  useEffect(() => {
+    setModel(app.model ?? '');
+    setEffort(app.effort ?? '');
+  }, [app.model, app.effort]);
+  const off = assistant.busy !== null || (app.running && !app.own);
+  const changed = (model.trim() || null) !== app.model || (effort || null) !== app.effort;
+  const labels = words.label.assistantThinking;
+  return <div className="assistant-thinking" data-test={`${kind}-thinking`}>
+    <div className="setting-row">
+      <label className="setting-name" htmlFor={`${kind}-model`}>{labels.model}</label>
+      <input
+        id={`${kind}-model`}
+        className="field mono setting-grow"
+        value={model}
+        placeholder={labels.followModel}
+        spellCheck={false}
+        disabled={off}
+        onChange={event => setModel(event.target.value)}
+        data-test={`${kind}-model`}
+      />
+    </div>
+    <div className="setting-row">
+      <label className="setting-name" htmlFor={`${kind}-effort`}>{labels.effort}</label>
+      <select
+        id={`${kind}-effort`}
+        className="field"
+        value={effort}
+        disabled={off}
+        onChange={event => setEffort(event.target.value as Effort | '')}
+        data-test={`${kind}-effort`}
+      >
+        <option value="">{labels.levels.follow}</option>
+        {EFFORTS.map(level => <option key={level} value={level}>{labels.levels[level]}</option>)}
+      </select>
+      <button
+        type="button"
+        className="btn"
+        disabled={off || !changed}
+        onClick={() => void assistant.setThinking({ model: model.trim() || null, effort: effort || null })}
+        data-test={`${kind}-thinking-keep`}
+      >
+        {labels.keep}
+      </button>
+    </div>
+    <p className="caption">{words.hint.assistantThinking.note}</p>
+  </div>;
 }
 
 /** The app or the bot that is set up, its assistant, and what can be done with them. */
@@ -172,6 +229,7 @@ function AppPart({ kind, app, assistant, onOpen }: { kind: Kind; app: App; assis
       </div>
       <p className="caption">{words.hint[kind].writable}</p>
     </>}
+    <ThinkingPart kind={kind} app={app} assistant={assistant} />
     <div className="setting-row assistant-links">
       <button type="button" className="btn btn-quiet" onClick={() => onOpen(app.console)} data-test={`${kind}-console`}>
         <ExternalLink size={14} aria-hidden="true" />{labels.console}
@@ -209,6 +267,7 @@ export function AssistantPanel({ kind, language, onOpen }: { kind: Kind; languag
     tone="bad"
     words={failure.what === 'start' ? hints.startFailed : failure.what === 'stop' ? hints.stopFailed
       : failure.what === 'forget' ? hints.forgetFailed : failure.what === 'writable' && kind !== 'qq' ? words.hint[kind].writableFailed
+        : failure.what === 'thinking' ? words.hint.assistantThinking.failed
         : failure.what === 'folder' ? hints.folderFailed : words.hint.requestFailed}
     details={sentenceOf(failure.said)}
     test={`${kind}-failed`}

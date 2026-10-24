@@ -228,7 +228,7 @@ describe('the assistant in the settings', () => {
     expect(one('feishu-app').querySelector('.assistant-light')?.hasAttribute('data-on')).toBe(false);
     expect(one('feishu-not-running').textContent).toBe('The assistant does not run.');
     expect(buttons()).toEqual([
-      'Start the assistant', 'Change the app', 'Delete the app', 'Open the developer console', 'Show the log',
+      'Start the assistant', 'Change the app', 'Delete the app', 'Keep', 'Open the developer console', 'Show the log',
     ]);
     expect(document.body.textContent).toContain('While the assistant runs, closing the window keeps Columbina in the tray');
     // Of the service it is told once it runs.
@@ -240,7 +240,7 @@ describe('the assistant in the settings', () => {
     expect(shell.feishuStart.mock.calls).toEqual([[{ language: 'en' }]]);
     expect(one('feishu-doing').textContent).toBe('Connecting to Feishu.');
     expect(one('feishu-app').querySelector('.assistant-light')?.hasAttribute('data-on')).toBe(true);
-    expect(buttons()).toEqual(['Stop', 'Change the app', 'Delete the app', 'Open the developer console', 'Show the log']);
+    expect(buttons()).toEqual(['Stop', 'Change the app', 'Delete the app', 'Keep', 'Open the developer console', 'Show the log']);
 
     await tell({ state: 'connected', paired: false, code: '123456', error: null });
     expect(one('feishu-code').textContent).toBe('123456');
@@ -512,7 +512,7 @@ describe('the assistant in WeCom in the settings', () => {
     const { opened } = await drawnWecom();
     expect(one('wecom-not-running').textContent).toBe('The assistant does not run.');
     expect(buttons()).toEqual([
-      'Start the assistant', 'Change the bot', 'Delete the bot', 'Open the admin console', 'Open its folder', 'Show the log',
+      'Start the assistant', 'Change the bot', 'Delete the bot', 'Keep', 'Open the admin console', 'Open its folder', 'Show the log',
     ]);
     shell.wecomStatus.mockResolvedValueOnce({ ...bot, own: true, on: true });
     await press('wecom-start');
@@ -641,7 +641,7 @@ describe('the assistant in QQ in the settings', () => {
     const { shell, tell } = shellOfQq();
     const { opened } = await drawnQq();
     expect(buttons()).toEqual([
-      'Start the assistant', 'Change the bot', 'Delete the bot', 'Open the open platform', 'Open its folder', 'Show the log',
+      'Start the assistant', 'Change the bot', 'Delete the bot', 'Keep', 'Open the open platform', 'Open its folder', 'Show the log',
     ]);
     expect(marked('qq-writable')).toEqual([]);
     shell.qqStatus.mockResolvedValueOnce({ ...bot, own: true, on: true });
@@ -681,5 +681,73 @@ describe('the assistant in QQ in the settings', () => {
     await drawnQq('zh-CN');
     expect(one('qq-pair').textContent).toContain('在 QQ 里和机器人私聊，发送这个配对码');
     expect(one('qq-app').textContent).toBe('QQ102030405');
+  });
+});
+
+describe('the model of an assistant and how hard it thinks, in the settings', () => {
+  const bot = {
+    set_up: true, app_id: '102030405', paired: true, folder: 'C:/Users/me/Columbina/qq', model: null, effort: 'off',
+    running: false, state: null, code: null, error: null, own: false, on: false, ended: null,
+  };
+
+  function shellOf(answer: unknown = bot) {
+    const shell = {
+      qqStatus: vi.fn(async (): Promise<unknown> => answer),
+      qqThinking: vi.fn(async (asked: { model: string | null; effort: string | null }): Promise<unknown> => asked),
+      onQq: vi.fn(() => () => {}),
+    };
+    vi.stubGlobal('columbina', shell);
+    return shell;
+  }
+
+  async function drawnQq(language = 'en') {
+    render(<Words.Provider value={messagesFor(language)}>
+      <AssistantPanel kind="qq" language={language} onOpen={vi.fn()} />
+    </Words.Provider>);
+    await act(async () => {});
+  }
+
+  const model = () => one('qq-model') as HTMLInputElement;
+  const effort = () => one('qq-effort') as HTMLSelectElement;
+  const keep = () => one('qq-thinking-keep') as HTMLButtonElement;
+
+  it('shows what was kept, and keeps a change, where empty follows what holds for all', async () => {
+    const shell = shellOf();
+    await drawnQq();
+    expect([model().value, model().placeholder, effort().value]).toEqual(['', 'The model that Columbina uses', 'off']);
+    expect([...effort().options].map(option => option.textContent)).toEqual([
+      'As for all', 'As the service has it', 'Off', 'Low', 'High', 'The most',
+    ]);
+    expect(keep().disabled).toBe(true);
+    fireEvent.change(model(), { target: { value: ' deepseek-v4-pro ' } });
+    fireEvent.change(effort(), { target: { value: '' } });
+    expect(keep().disabled).toBe(false);
+    shell.qqStatus.mockResolvedValueOnce({ ...bot, model: 'deepseek-v4-pro', effort: null });
+    await press('qq-thinking-keep');
+    expect(shell.qqThinking.mock.calls).toEqual([[{ model: 'deepseek-v4-pro', effort: null }]]);
+    expect([model().value, effort().value]).toEqual(['deepseek-v4-pro', '']);
+    expect(keep().disabled).toBe(true);
+  });
+
+  it('says what the program refused', async () => {
+    const shell = shellOf();
+    shell.qqThinking.mockResolvedValueOnce({ error: 'a model is named by its id, as the service lists it', code: 'INVALID' });
+    await drawnQq();
+    fireEvent.change(effort(), { target: { value: 'high' } });
+    await press('qq-thinking-keep');
+    expect(one('qq-failed').querySelector('p')?.textContent).toBe('The model and the thinking of the assistant could not be changed.');
+  });
+
+  it('is changed where the assistant runs, and not here where it runs elsewhere', async () => {
+    shellOf({ ...bot, running: true, own: false, state: 'connected' });
+    await drawnQq();
+    expect([model().disabled, effort().disabled, keep().disabled]).toEqual([true, true, true]);
+  });
+
+  it('says it in Chinese', async () => {
+    shellOf();
+    await drawnQq('zh-CN');
+    expect(model().placeholder).toBe('跟随 Columbina 当前用的模型');
+    expect(effort().selectedOptions[0]?.textContent).toBe('不思考');
   });
 });

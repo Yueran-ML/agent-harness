@@ -2894,6 +2894,21 @@ describe('the assistant in WeCom', () => {
     await expect((async () => shell.invoke('wecom-writable', 'yes'))()).rejects.toThrow('true or false');
   });
 
+  it('changes the model of the assistant and how hard it thinks with the program', async () => {
+    const shell = await withBot();
+    await shell.invoke('wecom-thinking', { model: ' deepseek-v4-pro ', effort: 'high', more: 'never' });
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'wecom', '--from-stdin']);
+    expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({ model: 'deepseek-v4-pro', effort: 'high' });
+    await shell.invoke('wecom-thinking', {});
+    expect(JSON.parse(shell.setups.at(-1)!.input!)).toEqual({ model: null, effort: null });
+    const runs = shell.setups.length;
+    for (const asked of [{ model: '  ' }, { model: 7 }, { model: 'x'.repeat(201) }, { effort: 'ultra' }]) {
+      await expect((async () => shell.invoke('wecom-thinking', asked))(), JSON.stringify(asked)).rejects.toThrow(/model|thinks/);
+    }
+    expect(shell.setups).toHaveLength(runs);
+    await expect((async () => shell.handlers.get('columbina:wecom-thinking')!(shell.unrelated, {}))()).rejects.toThrow('IPC sender');
+  });
+
   it('shows the log and the folder of the assistant', async () => {
     const shell = await withBot();
     await shell.invoke('wecom-log');

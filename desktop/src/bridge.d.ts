@@ -151,6 +151,11 @@ export interface ColumbinaBridge {
    */
   onFeishu(listener: (said: Record<string, unknown>) => void): () => void;
   /**
+   * Choose the model that the assistant in Feishu asks and how hard it thinks, or follow what holds
+   * for all with null. One that runs starts again for it. What the program answered comes back.
+   */
+  feishuThinking(asked: { model: string | null; effort: 'default' | 'off' | 'low' | 'high' | 'max' | null }): Promise<unknown>;
+  /**
    * What `columbina wecom --status --json` says: which bot of WeCom is set up and how its assistant
    * is doing, without the Secret, with what the shell adds as to `feishuStatus`.
    */
@@ -175,6 +180,11 @@ export interface ColumbinaBridge {
   /** Hear how the assistant in WeCom that the application runs is doing, as `onFeishu` does of the one in Feishu. */
   onWecom(listener: (said: Record<string, unknown>) => void): () => void;
   /**
+   * Choose the model that the assistant in WeCom asks and how hard it thinks, or follow what holds
+   * for all with null. One that runs starts again for it. What the program answered comes back.
+   */
+  wecomThinking(asked: { model: string | null; effort: 'default' | 'off' | 'low' | 'high' | 'max' | null }): Promise<unknown>;
+  /**
    * What `columbina qq --status --json` says: which bot of QQ is set up and how its assistant is
    * doing, without the AppSecret, with what the shell adds as to `feishuStatus`.
    */
@@ -196,6 +206,11 @@ export interface ColumbinaBridge {
   setUpQq(asked: { language: string }): Promise<{ changed: boolean }>;
   /** Hear how the assistant in QQ that the application runs is doing, as `onFeishu` does of the one in Feishu. */
   onQq(listener: (said: Record<string, unknown>) => void): () => void;
+  /**
+   * Choose the model that the assistant in QQ asks and how hard it thinks, or follow what holds
+   * for all with null. One that runs starts again for it. What the program answered comes back.
+   */
+  qqThinking(asked: { model: string | null; effort: 'default' | 'off' | 'low' | 'high' | 'max' | null }): Promise<unknown>;
 }
 
 declare global {

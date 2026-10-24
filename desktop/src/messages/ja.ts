@@ -444,6 +444,14 @@ export const ja: Messages = {
       next: '次にすること',
     },
 
+    assistantThinking: {
+      model: 'モデル',
+      effort: '思考の深さ',
+      followModel: 'Columbina が使っているモデル',
+      keep: '保存',
+      levels: { follow: '全体に合わせる', default: 'サービスの既定', off: '考えない', low: '低', high: '高', max: '最大' },
+    },
+
     start: {
       title: 'はじめに',
       model: 'モデルサービス',
@@ -1057,6 +1065,11 @@ export const ja: Messages = {
         'ここでボットを保存したら、設定でアシスタントを起動します。',
         'QQ でボットを見つけ、個別のチャットでコードを送ります。グループに入れると、誰でもメンションできます。',
       ],
+    },
+
+    assistantThinking: {
+      note: '空のままの項目は全体の設定に合わせます。動いているアシスタントは、変更すると起動し直します。',
+      failed: 'アシスタントのモデルと思考の深さを変更できませんでした。',
     },
 
     music: {

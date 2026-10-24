@@ -396,6 +396,14 @@ export const zhCN: Messages = {
       next: '接下来',
     },
 
+    assistantThinking: {
+      model: '模型',
+      effort: '思考强度',
+      followModel: '跟随 Columbina 当前用的模型',
+      keep: '保存',
+      levels: { follow: '跟随全局', default: '服务默认', off: '不思考', low: '低', high: '高', max: '最高' },
+    },
+
     start: {
       title: '开始使用',
       model: '模型服务',
@@ -981,6 +989,11 @@ export const zhCN: Messages = {
         '机器人在这里保存好后，到设置里启动助手。',
         '在 QQ 里找到机器人，私聊发送配对码。拉进群后，群里谁都可以 @ 它。',
       ],
+    },
+
+    assistantThinking: {
+      note: '留空的一项跟随全局设置。助手在运行时改了，会自动重启。',
+      failed: '没能更改助手的模型和思考强度。',
     },
 
     music: {

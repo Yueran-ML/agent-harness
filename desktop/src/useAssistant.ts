@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { assistantAfter, assistantOf, type Assistant, type Kind } from './app/assistant';
+import { assistantAfter, assistantOf, type Assistant, type Effort, type Kind } from './app/assistant';
 import type { ColumbinaBridge } from './bridge';
 
 const said = (problem: unknown) => (problem instanceof Error ? problem.message : String(problem));
@@ -9,8 +9,14 @@ export type Busy = 'starting' | 'stopping' | 'forgetting' | 'settingUp' | 'chang
 
 /** What did not go through, and what the shell said of it. */
 export interface Failure {
-  what: 'start' | 'stop' | 'forget' | 'setUp' | 'writable' | 'folder';
+  what: 'start' | 'stop' | 'forget' | 'setUp' | 'writable' | 'thinking' | 'folder';
   said: string;
+}
+
+/** The model that an assistant asks and how hard it thinks, null for what holds for all. */
+export interface Thinking {
+  model: string | null;
+  effort: Effort | null;
 }
 
 /** What the shell is asked of an assistant, by what the assistant is. */
@@ -22,6 +28,7 @@ function callsOf(bridge: ColumbinaBridge, kind: Kind) {
     forget: () => bridge.feishuForget(),
     log: () => bridge.feishuLog(),
     writable: (writable: boolean) => bridge.feishuWritable(writable),
+    thinking: (asked: Thinking) => bridge.feishuThinking(asked),
     folder: () => bridge.openFeishuFolder(),
     setUp: (asked: { language: string }) => bridge.setUpFeishu(asked),
     on: (listener: (told: Record<string, unknown>) => void) => bridge.onFeishu(listener),
@@ -32,6 +39,7 @@ function callsOf(bridge: ColumbinaBridge, kind: Kind) {
     forget: () => bridge.wecomForget(),
     log: () => bridge.wecomLog(),
     writable: (writable: boolean) => bridge.wecomWritable(writable),
+    thinking: (asked: Thinking) => bridge.wecomThinking(asked),
     folder: () => bridge.openWecomFolder(),
     setUp: (asked: { language: string }) => bridge.setUpWecom(asked),
     on: (listener: (told: Record<string, unknown>) => void) => bridge.onWecom(listener),
@@ -43,6 +51,7 @@ function callsOf(bridge: ColumbinaBridge, kind: Kind) {
     log: () => bridge.qqLog(),
     // The agents of the assistant in QQ change nothing, and nothing asks it to.
     writable: async (writable: boolean) => ({ writable }),
+    thinking: (asked: Thinking) => bridge.qqThinking(asked),
     folder: () => bridge.openQqFolder(),
     setUp: (asked: { language: string }) => bridge.setUpQq(asked),
     on: (listener: (told: Record<string, unknown>) => void) => bridge.onQq(listener),
@@ -173,6 +182,18 @@ export function useAssistant(kind: Kind, language: string) {
     await refresh();
   }, [kind, doing, refresh]);
 
+  /** Choose the model of the assistant and how hard it thinks. One that runs starts again for it. */
+  const setThinking = useCallback(async (asked: Thinking) => {
+    const shell = shellFor(kind);
+    if (!shell) return;
+    await doing('changing', 'thinking', async () => {
+      const answer = await shell.thinking(asked);
+      const error = (answer as { error?: unknown } | null)?.error;
+      if (typeof error === 'string') throw new Error(error);
+    });
+    await refresh();
+  }, [kind, doing, refresh]);
+
   /** Open the folder of the assistant, as the program names it. */
   const openFolder = useCallback(async () => {
     const shell = shellFor(kind);
@@ -185,7 +206,7 @@ export function useAssistant(kind: Kind, language: string) {
     }
   }, [kind]);
 
-  return { assistant, busy, failure, forgotten, refresh, start, stop, forget, setUp, showLog, setWritable, openFolder };
+  return { assistant, busy, failure, forgotten, refresh, start, stop, forget, setUp, showLog, setWritable, setThinking, openFolder };
 }
 
 export type AssistantHandle = ReturnType<typeof useAssistant>;

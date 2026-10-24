@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('columbina', {
   openFeishuFolder: () => ipcRenderer.invoke('columbina:feishu-folder'),
   setUpFeishu: (asked) => ipcRenderer.invoke('columbina:set-up-feishu', { language: asked?.language }),
   onFeishu: (callback) => subscribe('columbina:feishu', callback),
+  feishuThinking: (asked) => ipcRenderer.invoke('columbina:feishu-thinking', { model: asked?.model ?? null, effort: asked?.effort ?? null }),
   wecomStatus: () => ipcRenderer.invoke('columbina:wecom-status'),
   wecomStart: (asked) => ipcRenderer.invoke('columbina:wecom-start', { language: asked?.language }),
   wecomStop: () => ipcRenderer.invoke('columbina:wecom-stop'),
@@ -74,6 +75,7 @@ contextBridge.exposeInMainWorld('columbina', {
   openWecomFolder: () => ipcRenderer.invoke('columbina:wecom-folder'),
   setUpWecom: (asked) => ipcRenderer.invoke('columbina:set-up-wecom', { language: asked?.language }),
   onWecom: (callback) => subscribe('columbina:wecom', callback),
+  wecomThinking: (asked) => ipcRenderer.invoke('columbina:wecom-thinking', { model: asked?.model ?? null, effort: asked?.effort ?? null }),
   qqStatus: () => ipcRenderer.invoke('columbina:qq-status'),
   qqStart: (asked) => ipcRenderer.invoke('columbina:qq-start', { language: asked?.language }),
   qqStop: () => ipcRenderer.invoke('columbina:qq-stop'),
@@ -82,4 +84,5 @@ contextBridge.exposeInMainWorld('columbina', {
   openQqFolder: () => ipcRenderer.invoke('columbina:qq-folder'),
   setUpQq: (asked) => ipcRenderer.invoke('columbina:set-up-qq', { language: asked?.language }),
   onQq: (callback) => subscribe('columbina:qq', callback),
+  qqThinking: (asked) => ipcRenderer.invoke('columbina:qq-thinking', { model: asked?.model ?? null, effort: asked?.effort ?? null }),
 });

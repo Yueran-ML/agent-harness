@@ -145,6 +145,9 @@ describe('the bridge of the main window', () => {
     // On only where the page says so in so many words.
     expect(handed('feishuWritable', true)).toEqual(['columbina:feishu-writable', true]);
     expect(handed('wecomWritable', true)).toEqual(['columbina:wecom-writable', true]);
+    expect(handed('qqThinking', { model: 'm', effort: 'off', more: 1 })).toEqual(['columbina:qq-thinking', { model: 'm', effort: 'off' }]);
+    expect(handed('feishuThinking')).toEqual(['columbina:feishu-thinking', { model: null, effort: null }]);
+    expect(handed('wecomThinking', { effort: 'low' })).toEqual(['columbina:wecom-thinking', { model: null, effort: 'low' }]);
     expect(handed('setLoginItem', true)).toEqual(['columbina:set-login-item', true]);
     for (const asked of ['true', 1, {}, undefined]) {
       expect(handed('feishuWritable', asked)).toEqual(['columbina:feishu-writable', false]);

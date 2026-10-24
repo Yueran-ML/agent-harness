@@ -171,6 +171,11 @@ export const en = {
       what: 'The model service did not take the request.',
       why: 'The name of the model or the address of the service may be wrong.',
     },
+    thinkingRefused: {
+      what: 'The model service refused what the model thought earlier in this conversation.',
+      why: 'The beginning of the conversation changed after the model thought, and the service takes '
+        + 'its thinking only with the beginning that it was made with. Begin a new conversation to go on.',
+    },
     server: { what: 'The model service ran into an error.', why: 'The fault is on its side.' },
     timeout: { what: 'The model service took too long to answer.' },
     unreachable: {
@@ -283,6 +288,8 @@ export const en = {
     searchTasks: 'Search tasks',
     tasks: 'Tasks',
     openProject: 'Open a project',
+    /** Asks the service again how much money its account has left. */
+    balanceAgain: 'Check the balance',
     // A conversation that belongs to no project, as it is named, and the way into it.
     chat: 'Chat',
     justChat: 'Just chat',
@@ -640,6 +647,8 @@ export const en = {
     themeNames: { moonveil: 'Moonveil', moonwhite: 'Moonwhite' },
     language: 'Language',
     languageSystem: 'As the system has it',
+    reasoningLanguage: 'Language of reasoning',
+    reasoningLanguages: { interface: 'As the interface', zh: 'Chinese', en: 'English', none: 'Not set' },
     typeSize: 'Size of type',
     typeSizes: { small: 'Small', standard: 'Standard', large: 'Large' },
     model: 'Model',
@@ -745,6 +754,7 @@ export const en = {
     },
 
     settingsWhenIdle: 'The model and the permissions can be changed when Columbina is at rest.',
+    reasoningLanguage: 'The model is asked to reason in it from the next turn on, in every conversation.',
     confirmFullAccess: 'Columbina will run commands without asking, and nothing will hold them back.',
     confirmWrite: 'Columbina will be able to change the files of this project. It still asks before it runs a command.',
     openLink: 'It was written in the conversation. It opens in your browser.',
@@ -990,6 +1000,18 @@ export const en = {
         `Find the bot by its name in ${platform}, and send it the code in a chat of your own.`,
       ],
       scopes: 'The last three are for reading documents, and may be left out.',
+    },
+
+    /** How much money the account of the service in use has left. */
+    balance: {
+      reading: 'Asking the service how much money its account has left.',
+      amount: (service: string, total: string, paid: string, given: string) =>
+        `${service}: ${total} left, of which ${paid} paid in and ${given} given.`,
+      none: (service: string) => `${service} names no money in its account.`,
+      cannotPay: 'The account cannot pay for calls: top it up on the page of the service.',
+      unsupported: (service: string) => `${service} does not tell a program how much money its account has left. `
+        + 'See it on the page of the service.',
+      failed: (service: string) => `${service} could not be asked how much money its account has left.`,
     },
 
     /** The assistant in WeCom. */

@@ -113,6 +113,10 @@ const samples: Record<string, unknown[][]> = {
   'hint.wecom.reconnecting': [['WeCom'], ['企业微信']],
   'hint.wecom.connected': [['WeCom'], ['企业微信']],
   'label.wecom.pair': [['WeCom'], ['企业微信']],
+  'hint.balance.amount': [['DeepSeek', '¥110.00', '¥100.00', '¥10.00'], ['My service', '12.5 EUR', '12.5 EUR', '0 EUR']],
+  'hint.balance.none': [['DeepSeek']],
+  'hint.balance.unsupported': [['OpenAI'], ['Claude']],
+  'hint.balance.failed': [['DeepSeek']],
 };
 
 type Said = { path: string; text: string };

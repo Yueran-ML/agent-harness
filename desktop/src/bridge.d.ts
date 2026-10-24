@@ -46,6 +46,17 @@ export interface ColumbinaBridge {
    */
   listModels(service: string): Promise<unknown>;
   /**
+   * What `columbina balance --json` says of a service that the window was told of: how much money
+   * the account of its key has left, that the service does not say, or why it could not be asked.
+   * It holds no key.
+   */
+  balance(service: string): Promise<unknown>;
+  /**
+   * Have the model reason in a language from the next turn on, in every conversation, or in
+   * whatever language suits it, for `none`. It fails where the choice cannot be kept.
+   */
+  setReasoningLanguage(language: 'zh' | 'en' | 'ja' | 'none'): Promise<unknown>;
+  /**
    * Keep a model as the one of a service that `services` named, for the next start, with
    * `columbina setup --from-stdin`. The key of the service stays as it is.
    */

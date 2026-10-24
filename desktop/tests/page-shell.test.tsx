@@ -608,7 +608,7 @@ describe('the settings', () => {
   const calls = {
     onTheme: vi.fn(), onSize: vi.fn(), onLanguage: vi.fn(), onPlayOpening: vi.fn(), onPlayNow: vi.fn(), onTellMe: vi.fn(),
     onCommand: vi.fn(), onClose: vi.fn(), onOpen: vi.fn(), onChooseModel: vi.fn(), onCheckingUpdates: vi.fn(), onSkip: vi.fn(),
-    onChooseEffort: vi.fn(),
+    onChooseEffort: vi.fn(), onReasoning: vi.fn(),
   };
   // Nothing is known of newer versions: these settings are about other things.
   const updates = { about: null, found: null, asking: false, checkNow: vi.fn() };
@@ -616,7 +616,7 @@ describe('the settings', () => {
   const deepseekModels = () => modelsWith({ deepseek: { kind: 'listed', models: ['deepseek-flash', 'deepseek-pro'], at: 0 } });
   // The words of this window are English here, whatever language the window for the key is asked for in.
   const sheet = (workspace: Workspace, part: SettingsPart = 'model', models = deepseekModels()) => <Settings
-    workspace={workspace} part={part} theme="moonveil" size="standard" language="system" shownLanguage="ja"
+    workspace={workspace} part={part} theme="moonveil" size="standard" language="system" shownLanguage="ja" reasoning="none"
     playOpening={false} tellMe music={music} github={gitHubWith()} models={models} updates={updates} checkingUpdates
     skipped={null} notKept={null} {...calls}
   />;

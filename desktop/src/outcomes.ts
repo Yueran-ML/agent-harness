@@ -33,6 +33,7 @@ export type ModelFailureKind =
   | 'contextTooLong'
   | 'contentFilter'
   | 'invalidRequest'
+  | 'thinkingRefused'
   | 'server'
   | 'timeout'
   | 'unreachable'
@@ -72,6 +73,9 @@ const MODEL_FAILURES: Record<string, { kind: ModelFailureKind; next: ActionKey }
   CONTENT_FILTER: { kind: 'contentFilter', next: 'none' },
   // HTTP 400, 404 or 422, or no adapter is there for the provider that the config names.
   INVALID_REQUEST: { kind: 'invalidRequest', next: 'openModelSettings' },
+  // HTTP 400 of Anthropic that refuses thinking of the model that it sent before, as
+  // thinking whose conversation began otherwise then. Asking again changes nothing.
+  THINKING_REFUSED: { kind: 'thinkingRefused', next: 'none' },
   // HTTP 500 and above, or an error in the middle of the reply.
   SERVER: { kind: 'server', next: 'retry' },
   // HTTP 408, no connection in time, or no piece of the reply for too long.
@@ -91,7 +95,8 @@ const MODEL_FAILURES: Record<string, { kind: ModelFailureKind; next: ActionKey }
 /**
  * Say why a request to the model failed.
  *
- * The codes are those of `llm/adapters/openai_chat.py` and `llm/runtime.py`.
+ * The codes are those of `llm/adapters/openai_chat.py`, `llm/adapters/anthropic_messages.py`
+ * and `llm/runtime.py`.
  * A code that is not known here, such as `HTTP_418` for a status that the
  * adapter has no name for, is a failure of kind `unknown`.
  */

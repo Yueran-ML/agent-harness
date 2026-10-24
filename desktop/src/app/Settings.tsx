@@ -12,11 +12,13 @@ import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { EffortPicker } from './EffortPicker';
 import { AssistantPanel } from './AssistantPanel';
+import { BalanceLine } from './BalanceLine';
 import { GitHubAccount } from './GitHubSignIn';
 import { ModelPicker } from './ModelPicker';
 import { effortOf, type Effort } from './effort';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
+import { reasoningChoices, type ReasoningChoice } from './reasoning';
 import { loginItemOf, type LoginItem } from './system';
 import { anotherServiceChosen, presetOf, presets, servicesToSwitchTo, servicesToTell, serviceTitle } from './tell';
 
@@ -24,7 +26,8 @@ import { anotherServiceChosen, presetOf, presets, servicesToSwitchTo, servicesTo
 export type SettingsPart = 'appearance' | 'model' | 'account' | 'permissions';
 
 export function Settings({
-  workspace, part, theme, onTheme, size, onSize, language, onLanguage, shownLanguage, playOpening, onPlayOpening, onPlayNow,
+  workspace, part, theme, onTheme, size, onSize, language, onLanguage, shownLanguage, reasoning, onReasoning,
+  playOpening, onPlayOpening, onPlayNow,
   tellMe, onTellMe, music, github, models, updates, checkingUpdates, onCheckingUpdates, skipped, onSkip, onOpen, onChooseModel,
   onSwitchService, onChooseEffort, onCommand, notKept, onClose,
 }: {
@@ -38,6 +41,9 @@ export function Settings({
   onLanguage: (language: LanguageChoice) => void;
   /** The language of the words that are shown, as a page names it. */
   shownLanguage: string;
+  /** The language that the model reasons in, as the user chose it. */
+  reasoning: ReasoningChoice;
+  onReasoning: (reasoning: ReasoningChoice) => void;
   playOpening: boolean;
   onPlayOpening: (play: boolean) => void;
   onPlayNow: () => void;
@@ -234,6 +240,21 @@ export function Settings({
         onChoose={onChooseEffort}
       />}
       {status && <p className="caption" data-test="model-service">{serviceTitle(status.model.provider, services)}</p>}
+      <div className="setting-row">
+        <div className="setting-grow">
+          <label className="setting-name" htmlFor="setting-reasoning-language">{words.label.reasoningLanguage}</label>
+          <p className="caption">{words.hint.reasoningLanguage}</p>
+        </div>
+        <select
+          id="setting-reasoning-language"
+          className="field"
+          value={reasoning}
+          onChange={event => onReasoning(event.target.value as ReasoningChoice)}
+          data-test="reasoning-language"
+        >
+          {reasoningChoices.map(choice => <option key={choice} value={choice}>{words.label.reasoningLanguages[choice]}</option>)}
+        </select>
+      </div>
       {notKept && <div className="callout" data-tone="bad" role="alert" data-test="model-not-kept">
         <TriangleAlert size={15} aria-hidden="true" />
         <div className="callout-words"><p>{notKept}</p></div>
@@ -250,6 +271,7 @@ export function Settings({
         </li>)}
       </ul>}
       {services === null && <p className="caption">{words.hint.key.unavailable}</p>}
+      {inUse !== null && workspace.mode !== 'mock' && <BalanceLine key={inUse} service={inUse} />}
       <div className="setting-row">
         <button
           type="button"

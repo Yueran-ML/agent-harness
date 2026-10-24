@@ -165,6 +165,11 @@ export const ja: Messages = {
       what: 'モデルサービスがリクエストを受け付けませんでした。',
       why: 'モデルの名前か、サービスのアドレスが間違っている可能性があります。',
     },
+    thinkingRefused: {
+      what: 'モデルサービスが、この対話でモデルが以前に考えた内容を受け付けませんでした。',
+      why: 'モデルが考えた後で対話の冒頭が変わり、サービスは元の冒頭と合う思考しか受け付けません。'
+        + '新しい対話を始めて続けてください。',
+    },
     server: { what: 'モデルサービスでエラーが起きました。', why: '原因はサービス側にあります。' },
     timeout: { what: 'モデルサービスの応答に時間がかかりすぎました。' },
     unreachable: {
@@ -259,6 +264,7 @@ export const ja: Messages = {
     searchTasks: 'タスクを検索',
     tasks: 'タスク',
     openProject: 'プロジェクトを開く',
+    balanceAgain: '残高を確認',
     chat: 'チャット',
     justChat: 'チャットだけ',
     settings: '設定',
@@ -588,6 +594,8 @@ export const ja: Messages = {
     themeNames: { moonveil: '月夜', moonwhite: '月白' },
     language: '言語',
     languageSystem: 'システムに合わせる',
+    reasoningLanguage: '推論の言語',
+    reasoningLanguages: { interface: '表示言語に合わせる', zh: '中国語', en: '英語', none: '指定しない' },
     typeSize: '文字サイズ',
     typeSizes: { small: '小', standard: '標準', large: '大' },
     model: 'モデル',
@@ -684,6 +692,7 @@ export const ja: Messages = {
     },
 
     settingsWhenIdle: 'モデルと権限は、Columbina が待機中のときに変更できます。',
+    reasoningLanguage: '次のターンから、すべての対話でモデルはこの言語で推論します。',
     confirmFullAccess: 'Columbina は確認なしでコマンドを実行するようになり、コマンドを制限するものは何もなくなります。',
     confirmWrite: 'Columbina がこのプロジェクトのファイルを変更できるようになります。コマンドを実行する前の確認は、これまでどおり行われます。',
     openLink: '対話の中に書かれていたリンクです。ブラウザーで開きます。',
@@ -909,6 +918,16 @@ export const ja: Messages = {
         `${beforeWord(platform)}でボットの名前を検索し、1 対 1 のチャットでコードを送ります。`,
       ],
       scopes: '最後の 3 つはドキュメントを読むためのものです。不要なら追加しなくてもかまいません。',
+    },
+
+    balance: {
+      reading: 'サービスにアカウントの残高を問い合わせています。',
+      amount: (service: string, total: string, paid: string, given: string) =>
+        `${beforeWord(service)}の残高は ${total} です（入金 ${paid}、付与 ${given}）。`,
+      none: (service: string) => `${beforeWord(service)}はアカウントの残高を示していません。`,
+      cannotPay: '残高が足りず、モデルを呼び出せません。サービスのページでチャージしてください。',
+      unsupported: (service: string) => `${beforeWord(service)}はプログラムに残高を教えません。サービスのページで確認してください。`,
+      failed: (service: string) => `${beforeWord(service)}に残高を問い合わせることができませんでした。`,
     },
 
     wecom: {

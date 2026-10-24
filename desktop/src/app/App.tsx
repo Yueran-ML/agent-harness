@@ -31,6 +31,7 @@ import {
 import { Drafts, samePlace, Unread, type Place } from './drafts';
 import { effortStoredOf, keptLevel, type Effort } from './effort';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
+import { reasoningLanguage, rememberTold, storedReasoning, storeReasoning, toldReasoning, type ReasoningChoice } from './reasoning';
 import { storedOpening, storeOpening } from './opening';
 import { onMac, shortcut } from './system';
 import {
@@ -98,6 +99,7 @@ export default function App() {
   const [theme, setTheme] = useState<ThemeId>(initialTheme);
   const [size, setSize] = useState<SizeId>(initialSize);
   const [language, setLanguage] = useState<LanguageChoice>(storedLanguage);
+  const [reasoning, setReasoning] = useState<ReasoningChoice>(storedReasoning);
   const words = useMemo(() => wordsFor(language), [language]);
   // The opening plays at the first start. After that it plays where the user chose to see it
   // at every start, which is what the switch in the settings says.
@@ -154,6 +156,15 @@ export default function App() {
     void Promise.resolve().then(() => window.columbina?.setLanguage(shownLanguage(language))).catch(() => {});
     storeLanguage(language);
   }, [language]);
+  // The language that the model reasons in. The program is told of it where it was told another.
+  const reasoningIn = reasoningLanguage(reasoning, shownLanguage(language));
+  useEffect(() => {
+    storeReasoning(reasoning);
+    // A replay has no program to tell.
+    const bridge = window.columbina;
+    if (typeof bridge?.setReasoningLanguage !== 'function' || toldReasoning() === reasoningIn) return;
+    void bridge.setReasoningLanguage(reasoningIn).then(() => rememberTold(reasoningIn), workspace.fail);
+  }, [reasoning, reasoningIn, workspace.fail]);
   useEffect(() => {
     try {
       localStorage.setItem(tellingKey, String(tellMe));
@@ -787,6 +798,8 @@ export default function App() {
         language={language}
         onLanguage={setLanguage}
         shownLanguage={shownLanguage(language)}
+        reasoning={reasoning}
+        onReasoning={setReasoning}
         playOpening={playOpening}
         onPlayOpening={setPlayOpening}
         tellMe={tellMe}

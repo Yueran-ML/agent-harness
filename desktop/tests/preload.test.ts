@@ -119,6 +119,8 @@ describe('the bridge of the main window', () => {
     expect(handed('chooseEffort', { ...more, effort: 'max' }))
       .toEqual(['columbina:choose-effort', { service: 'deepseek', effort: 'max' }]);
     expect(handed('listModels', 'deepseek', more)).toEqual(['columbina:models', 'deepseek']);
+    expect(handed('balance', 'deepseek', more)).toEqual(['columbina:balance', 'deepseek']);
+    expect(handed('setReasoningLanguage', 'zh', more)).toEqual(['columbina:reasoning-language', 'zh']);
     expect(handed('chooseAttachments', more)).toEqual(['columbina:choose-attachments', { language: 'ja' }]);
     expect(handed('forgetAttachments', ['attachment-1', 7, 'attachment-2'], more))
       .toEqual(['columbina:forget-attachments', ['attachment-1', 'attachment-2']]);

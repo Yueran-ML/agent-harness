@@ -128,6 +128,10 @@ export const zhCN: Messages = {
       what: '模型服务没有接受这次请求。',
       why: '模型的名字或者服务的地址可能填错了。',
     },
+    thinkingRefused: {
+      what: '模型服务不再接受这段对话里模型之前的思考。',
+      why: '模型思考之后，对话的开头变了，服务只认与原来开头相符的思考。请新开一个对话继续。',
+    },
     server: { what: '模型服务出错了。', why: '问题出在服务那一边。' },
     timeout: { what: '模型服务迟迟没有回应。' },
     unreachable: { what: '连不上模型服务。', why: '可能是网络不通，也可能是服务的地址不对。' },
@@ -212,6 +216,7 @@ export const zhCN: Messages = {
     searchTasks: '搜索任务',
     tasks: '任务',
     openProject: '打开项目',
+    balanceAgain: '查询余额',
     chat: '聊天',
     justChat: '只聊天',
     settings: '设置',
@@ -540,6 +545,8 @@ export const zhCN: Messages = {
     themeNames: { moonveil: '月夜', moonwhite: '月白' },
     language: '语言',
     languageSystem: '跟随系统',
+    reasoningLanguage: '推理语言',
+    reasoningLanguages: { interface: '跟随界面', zh: '中文', en: '英文', none: '不指定' },
     typeSize: '字号',
     typeSizes: { small: '小', standard: '标准', large: '大' },
     model: '模型',
@@ -635,6 +642,7 @@ export const zhCN: Messages = {
     },
 
     settingsWhenIdle: '模型和权限要等 Columbina 空闲时才能改。',
+    reasoningLanguage: '从下一回合起，所有对话里的模型都用这种语言推理。',
     confirmFullAccess: 'Columbina 将不经询问就运行命令，也没有任何东西约束它们。',
     confirmWrite: 'Columbina 将可以修改这个项目里的文件。运行命令之前它仍然会问。',
     openLink: '它出现在对话里，会在你的浏览器里打开。',
@@ -846,6 +854,16 @@ export const zhCN: Messages = {
         `在${between(platform)}里搜索机器人的名字，进入单聊，发送配对码。`,
       ],
       scopes: '后三项用来读文档，用不到可以不开。',
+    },
+
+    balance: {
+      reading: '正在向服务查询账户余额。',
+      amount: (service: string, total: string, paid: string, given: string) =>
+        `${beforeWord(service)}账户余额 ${total}，其中充值 ${paid}，赠送 ${given}。`,
+      none: (service: string) => `${beforeWord(service)}没有列出账户里的钱。`,
+      cannotPay: '账户余额不足，没法再调用模型，请到服务的页面充值。',
+      unsupported: (service: string) => `${beforeWord(service)}不对程序公开账户余额，请到服务的页面查看。`,
+      failed: (service: string) => `没能向${between(service)}查到账户余额。`,
     },
 
     wecom: {

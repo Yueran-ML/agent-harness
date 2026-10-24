@@ -354,6 +354,8 @@ describe('why a request to the model failed', () => {
     CONTEXT_WINDOW_EXCEEDED: ['contextTooLong', 'compact'],
     CONTENT_FILTER: ['contentFilter', 'none'],
     INVALID_REQUEST: ['invalidRequest', 'openModelSettings'],
+    // Asking again or choosing another model changes nothing: a new conversation does.
+    THINKING_REFUSED: ['thinkingRefused', 'none'],
     SERVER: ['server', 'retry'],
     TIMEOUT: ['timeout', 'retry'],
     TRANSPORT: ['unreachable', 'retry'],

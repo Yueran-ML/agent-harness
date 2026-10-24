@@ -181,7 +181,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       queueMicrotask(() => child.emit('spawn'));
       return child;
     }
-    if (args.includes('setup') || args.includes('--status') || args.includes('logout') || assistant) {
+    if (args.includes('setup') || args.includes('--status') || args.includes('logout') || args.includes('balance') || args.includes('reasoning-language') || assistant) {
       const child = Object.assign(new EventEmitter(), {
         pid: 500 + setups.length, exitCode: null as number | null, signalCode: null,
         stdout: new EventEmitter(), stderr: new EventEmitter(),
@@ -1591,6 +1591,40 @@ describe('the models of a service, for the main window', () => {
     // What the program says of a failure is answered as it is.
     shell.setup.answer = () => ({ out: '{"error": "The key was refused.", "kind": "key"}\n', code: 0 });
     await expect(shell.invoke('models', 'ollama')).resolves.toEqual({ error: 'The key was refused.', kind: 'key' });
+  });
+
+  it('asks the program for the balance of a service that the window was told of, and of no other', async () => {
+    const shell = await told();
+    const said = { service: 'deepseek', title: 'DeepSeek', supported: true, available: true, balances: [] };
+    shell.setup.answer = () => ({ out: `${JSON.stringify(said)}\n`, code: 0 });
+    await expect(shell.invoke('balance', 'deepseek')).resolves.toEqual(said);
+    const run = shell.setups.at(-1)!;
+    expect(run.args).toEqual(['-m', 'columbina', 'balance', '--json', '--service', 'deepseek']);
+    // No key goes this way, and nothing else either.
+    expect(run.input).toBe('');
+    const runs = shell.setups.length;
+    for (const name of ['openai', 7, undefined, ['deepseek']]) {
+      await expect((async () => shell.invoke('balance', name))(), String(name)).rejects.toThrow('not among those that are set up');
+    }
+    expect(shell.setups).toHaveLength(runs);
+    await expect((async () => shell.handlers.get('columbina:balance')!(shell.unrelated, 'deepseek'))()).rejects.toThrow('IPC sender');
+  });
+
+  it('has the program keep the language of reasoning, and says why where it could not', async () => {
+    const shell = await told();
+    shell.setup.answer = () => ({ out: '{"language": "zh"}\n', code: 0 });
+    await expect(shell.invoke('reasoning-language', 'zh')).resolves.toEqual({ language: 'zh' });
+    expect(shell.setups.at(-1)!.args).toEqual(['-m', 'columbina', 'reasoning-language', 'zh', '--json']);
+    shell.setup.answer = () => ({ out: '{"error": "the language of reasoning cannot be kept in x"}\n', code: 2 });
+    await expect(shell.invoke('reasoning-language', 'none')).rejects.toThrow('cannot be kept in x');
+    const runs = shell.setups.length;
+    for (const language of ['fr', 7, undefined, ['zh']]) {
+      await expect((async () => shell.invoke('reasoning-language', language))(), String(language))
+        .rejects.toThrow('Unknown language of reasoning.');
+    }
+    expect(shell.setups).toHaveLength(runs);
+    await expect((async () => shell.handlers.get('columbina:reasoning-language')!(shell.unrelated, 'zh'))())
+      .rejects.toThrow('IPC sender');
   });
 
   it('lists nothing for a service that the window was not told of', async () => {

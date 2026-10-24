@@ -847,6 +847,19 @@ function installHandlers() {
     if (typeof name !== 'string' || !mainListed.includes(name)) throw new Error('That service is not among those that are set up.');
     return runProgram(['setup', '--check'], JSON.stringify({ service: name }));
   });
+  ipcMain.handle('columbina:reasoning-language', async (event, language) => {
+    checkSender(event);
+    if (!['zh', 'en', 'ja', 'none'].includes(language)) throw new Error('Unknown language of reasoning.');
+    const said = await runProgram(['reasoning-language', language, '--json']);
+    if (typeof said.error === 'string') throw new Error(said.error);
+    return said;
+  });
+  ipcMain.handle('columbina:balance', async (event, name) => {
+    checkSender(event);
+    // As for the models: a service that the window was told of, asked with its own key.
+    if (typeof name !== 'string' || !mainListed.includes(name)) throw new Error('That service is not among those that are set up.');
+    return runProgram(['balance', '--json', '--service', name]);
+  });
   ipcMain.handle('columbina:choose-model', async (event, asked) => {
     checkSender(event);
     const name = asked?.service;

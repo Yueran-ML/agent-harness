@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('columbina', {
   openRecent: (folder) => ipcRenderer.invoke('columbina:open-recent', folder),
   services: () => ipcRenderer.invoke('columbina:services'),
   listModels: (service) => ipcRenderer.invoke('columbina:models', service),
+  balance: (service) => ipcRenderer.invoke('columbina:balance', service),
+  setReasoningLanguage: (language) => ipcRenderer.invoke('columbina:reasoning-language', language),
   chooseModel: (asked) => ipcRenderer.invoke('columbina:choose-model', { service: asked?.service, model: asked?.model }),
   chooseEffort: (asked) => ipcRenderer.invoke('columbina:choose-effort', { service: asked?.service, effort: asked?.effort }),
   chooseAttachments: (asked) => ipcRenderer.invoke('columbina:choose-attachments', { language: asked?.language }),

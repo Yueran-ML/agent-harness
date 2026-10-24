@@ -443,6 +443,61 @@ describe('the language of the page, as the shell is told of it', () => {
   });
 });
 
+describe('the language that the model reasons in, as the program is told of it', () => {
+  const reasoningIn = () => sheet()!.querySelector<HTMLSelectElement>('#setting-reasoning-language')!;
+
+  it('is told where the program was told another, and whenever the choice leads to another', async () => {
+    const setReasoningLanguage = vi.fn(async (_language: string): Promise<unknown> => ({}));
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), setReasoningLanguage });
+    const task = first();
+    page(task);
+    await act(async () => {});
+    // Nothing was chosen, and the program is told so once.
+    expect(setReasoningLanguage.mock.calls).toEqual([['none']]);
+    chord(',');
+    expect([...reasoningIn().options].map(option => option.textContent))
+      .toEqual(['As the interface', 'Chinese', 'English', 'Not set']);
+    await act(async () => { fireEvent.change(reasoningIn(), { target: { value: 'interface' } }); });
+    expect(setReasoningLanguage).toHaveBeenLastCalledWith('en');
+    // The interface speaks another language, and the model reasons in it.
+    await act(async () => {
+      fireEvent.change(sheet()!.querySelector('#setting-language')!, { target: { value: 'ja' } });
+    });
+    expect(setReasoningLanguage).toHaveBeenLastCalledWith('ja');
+    await act(async () => { fireEvent.change(reasoningIn(), { target: { value: 'zh' } }); });
+    expect(setReasoningLanguage.mock.calls).toEqual([['none'], ['en'], ['ja'], ['zh']]);
+    expect(task.fail).not.toHaveBeenCalled();
+    // At the next start the program knows it already.
+    cleanup();
+    page(first());
+    await act(async () => {});
+    expect(setReasoningLanguage).toHaveBeenCalledTimes(4);
+  });
+
+  it('is told again at the next start where it could not be kept, and the page says why', async () => {
+    const setReasoningLanguage = vi.fn(async (_language: string): Promise<unknown> => {
+      throw new Error('The language of reasoning cannot be kept.');
+    });
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), setReasoningLanguage });
+    const task = first();
+    page(task);
+    await act(async () => {});
+    expect(called(task.fail)).toEqual([[new Error('The language of reasoning cannot be kept.')]]);
+    cleanup();
+    page(first());
+    await act(async () => {});
+    expect(setReasoningLanguage).toHaveBeenCalledTimes(2);
+  });
+
+  it('is nothing to a page without a program to tell', async () => {
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}) });
+    const task = first();
+    page(task);
+    await act(async () => {});
+    expect(task.fail).not.toHaveBeenCalled();
+  });
+});
+
 describe('choosing another model', () => {
   const deepseek: Listed = { use: 'deepseek', services: [service('deepseek', 'DeepSeek', { key: 'stored' }), service('openai', 'OpenAI')] };
   /** A shell that lists two models for the service in use, and stores what it is given unless a test says otherwise. */

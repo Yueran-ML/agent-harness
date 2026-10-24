@@ -144,6 +144,9 @@ ADAPTERS_COMMON = "src/columbina/llm/adapters/common.py"
 ANTHROPIC_MESSAGES = "src/columbina/llm/adapters/anthropic_messages.py"
 SERVICES = "src/columbina/llm/services.py"
 SCRIPTED = "src/columbina/llm/adapters/scripted.py"
+THINKING = "src/columbina/apps/thinking.py"
+QQ_STORE = "src/columbina/qq/store.py"
+QQ_SETUP = "src/columbina/qq/setup.py"
 QQ_APP = "src/columbina/qq/app.py"
 QQ_LINK = "src/columbina/qq/link.py"
 QQ_BOT = "src/columbina/qq/bot.py"
@@ -25172,8 +25175,9 @@ _FEISHU = (
     mutant(
         "whether files may change is kept without an app",
         FEISHU_SETUP,
-        '        if chosen is None:\n            raise FeishuError("no app of Feishu is set up", code="NONE")\n',
-        "",
+        '        if chosen is None:\n            raise FeishuError("no app of Feishu is set up", code="NONE")\n'
+        '        store.save(home, chosen.model_copy(update={"writable": writable}))\n',
+        '        store.save(home, chosen.model_copy(update={"writable": writable}))\n',
     ),
     mutant(
         "whether files may change is not kept",
@@ -25895,8 +25899,14 @@ _FEISHU = (
     mutant(
         "whether the agent may change files is changed while an assistant runs",
         FEISHU_SETUP,
-        "    with _alone(home, make=False):\n        chosen = store.settings(home)\n",
-        "    with contextlib.nullcontext():\n        chosen = store.settings(home)\n",
+        "    with _alone(home, make=False):\n        chosen = store.settings(home)\n"
+        "        if chosen is None:\n"
+        '            raise FeishuError("no app of Feishu is set up", code="NONE")\n'
+        '        store.save(home, chosen.model_copy(update={"writable": writable}))\n',
+        "    with contextlib.nullcontext():\n        chosen = store.settings(home)\n"
+        "        if chosen is None:\n"
+        '            raise FeishuError("no app of Feishu is set up", code="NONE")\n'
+        '        store.save(home, chosen.model_copy(update={"writable": writable}))\n',
     ),
     mutant(
         "a directory of the assistant that cannot be used breaks the setting up",
@@ -27469,8 +27479,9 @@ _WECOM = (
     mutant(
         "whether files may change is kept without a bot",
         WECOM_SETUP,
-        '        if chosen is None:\n            raise WecomError("no bot of WeCom is set up", code="NONE")\n',
-        "",
+        '        if chosen is None:\n            raise WecomError("no bot of WeCom is set up", code="NONE")\n'
+        '        store.save(home, chosen.model_copy(update={"writable": writable}))\n',
+        '        store.save(home, chosen.model_copy(update={"writable": writable}))\n',
     ),
     mutant(
         "a check goes where the environment does not say",
@@ -28432,6 +28443,112 @@ _QQ = (
 )
 
 
+_THINKING = (
+    mutant(
+        "a document of more than the model and the level is a choice of them",
+        THINKING,
+        '    return bool(given) and set(given) <= {"model", "effort"}\n',
+        '    return bool(given) and bool(set(given) & {"model", "effort"})\n',
+    ),
+    mutant(
+        "an empty document is a choice of the model and the level",
+        THINKING,
+        '    return bool(given) and set(given) <= {"model", "effort"}\n',
+        '    return set(given) <= {"model", "effort"}\n',
+    ),
+    mutant(
+        "a model is kept with the blanks around it",
+        THINKING,
+        "        model = named\n",
+        "",
+    ),
+    mutant(
+        "a model of any length is taken",
+        THINKING,
+        "        if not named or len(named) > _LONGEST_MODEL or not sendable(named):\n",
+        "        if not named or not sendable(named):\n",
+    ),
+    mutant(
+        "a model that cannot be sent is taken",
+        THINKING,
+        "        if not named or len(named) > _LONGEST_MODEL or not sendable(named):\n",
+        "        if not named or len(named) > _LONGEST_MODEL:\n",
+    ),
+    mutant(
+        "any level is taken",
+        THINKING,
+        "    if effort is not None and effort not in EFFORTS:\n",
+        "    if False:\n",
+    ),
+    mutant(
+        "the level kept for the assistant in Feishu is not heeded",
+        LAUNCHER,
+        "    args = _as_kept_for_the_assistant(args, lambda: feishu_store.settings(home))\n",
+        "",
+    ),
+    mutant(
+        "the level kept for the assistant in WeCom is not heeded",
+        LAUNCHER,
+        "    args = _as_kept_for_the_assistant(args, lambda: wecom_store.settings(home))\n",
+        "",
+    ),
+    mutant(
+        "the level kept for the assistant in QQ is not heeded",
+        LAUNCHER,
+        "    args = _as_kept_for_the_assistant(args, lambda: qq_store.settings(home))\n",
+        "",
+    ),
+    mutant(
+        "what was kept counts for more than the command line",
+        LAUNCHER,
+        '        **{**vars(args), "model": args.model or model, "effort": args.effort or effort}\n',
+        '        **{**vars(args), "model": model or args.model, "effort": effort or args.effort}\n',
+    ),
+    mutant(
+        "the level of the assistant is not asked for",
+        LAUNCHER,
+        "                if args.effort is not None:\n",
+        "                if False:\n",
+    ),
+    mutant(
+        "the assistant in Feishu set up again forgets its model",
+        FEISHU_STORE,
+        '            "model": before.model,\n',
+        "",
+    ),
+    mutant(
+        "the assistant in WeCom set up again forgets its level",
+        WECOM_STORE,
+        '            "effort": before.effort,\n',
+        "",
+    ),
+    mutant(
+        "the assistant in QQ set up again forgets its level",
+        QQ_STORE,
+        '            "effort": before.effort,\n',
+        "",
+    ),
+    mutant(
+        "the assistant in Feishu takes the model and the level for an app",
+        FEISHU_SETUP,
+        "    if thinking.is_a_choice(given):\n        return made_thinking(home, given)\n",
+        "",
+    ),
+    mutant(
+        "the assistant in QQ keeps no model nor level",
+        QQ_SETUP,
+        '        store.save(home, chosen.model_copy(update={"model": model, "effort": effort}))\n',
+        "        store.save(home, chosen)\n",
+    ),
+    mutant(
+        "the assistant in WeCom does not say its level",
+        WECOM_SETUP,
+        '        "effort": chosen.effort,\n',
+        "",
+    ),
+)
+
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -28626,6 +28743,20 @@ SETS: dict[str, MutantSet] = {
     "feishu": MutantSet(("tests/feishu", "tests/apps/test_feishu_command.py"), _FEISHU),
     "wecom": MutantSet(("tests/wecom", "tests/apps/test_wecom_command.py"), _WECOM),
     "qq": MutantSet(("tests/qq", "tests/apps/test_qq_command.py"), _QQ),
+    "thinking": MutantSet(
+        (
+            "tests/apps/test_thinking.py",
+            "tests/feishu/test_setup.py",
+            "tests/feishu/test_store.py",
+            "tests/wecom/test_setup.py",
+            "tests/wecom/test_store.py",
+            "tests/qq/test_setup.py",
+            "tests/apps/test_feishu_command.py",
+            "tests/apps/test_wecom_command.py",
+            "tests/apps/test_qq_command.py",
+        ),
+        _THINKING,
+    ),
     "groups": MutantSet(
         ("tests/wecom/test_bot.py", "tests/context/test_instructions.py", "tests/skills"),
         _GROUPS,

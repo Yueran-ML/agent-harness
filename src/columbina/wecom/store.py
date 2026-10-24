@@ -25,6 +25,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from columbina import files
+from columbina.apps.thinking import Effort
 from columbina.llm import credentials
 from columbina.llm.credentials import CredentialsError, Kept, origin_of
 from columbina.wecom.app import WecomError
@@ -81,6 +82,8 @@ class Settings(BaseModel):
         writable: Whether the agent may change the files of the directory of the assistant.
         groups: The session of the conversation in each group that the bot was asked in, by
             the id of the group.
+        model: The model that the assistant asks, or ``None`` for the one that holds for all.
+        effort: How hard that model thinks, or ``None`` for what holds for all.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -91,6 +94,8 @@ class Settings(BaseModel):
     session_id: str | None = None
     writable: bool = False
     groups: dict[str, str] = Field(default_factory=dict[str, str])
+    model: str | None = None
+    effort: Effort | None = None
 
 
 def directory(home: Path, env: Mapping[str, str]) -> Path:
@@ -177,6 +182,8 @@ def keep(home: Path, chosen: Settings, secret: str, place: str) -> Kept:
             "session_id": before.session_id,
             "writable": before.writable,
             "groups": before.groups,
+            "model": before.model,
+            "effort": before.effort,
         }
         chosen = chosen.model_copy(update=kept_of_it)
     try:

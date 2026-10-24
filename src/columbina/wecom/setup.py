@@ -22,6 +22,7 @@ from collections.abc import Callable, Generator, Mapping
 from pathlib import Path
 from typing import Any, cast
 
+from columbina.apps import thinking
 from columbina.feishu.store import within
 from columbina.llm.credentials import sendable, trimmed
 from columbina.session.lock import acquire
@@ -127,6 +128,8 @@ async def kept_from(
     """
     if set(given) == {"writable"}:
         return made_writable(home, given["writable"], env)
+    if thinking.is_a_choice(given):
+        return made_thinking(home, given)
     bot_id = _bot_id(given.get("bot_id"))
     secret = _secret(given.get("secret"))
     place = address(env)
@@ -169,6 +172,31 @@ def made_writable(home: Path, writable: object, env: Mapping[str, str]) -> dict[
             raise WecomError("no bot of WeCom is set up", code="NONE")
         store.save(home, chosen.model_copy(update={"writable": writable}))
     return {"writable": writable}
+
+
+def made_thinking(home: Path, given: Mapping[str, object]) -> dict[str, object]:
+    """Keep which model the assistant asks and how hard it thinks, from a document of those alone.
+
+    A running assistant goes on with what it read when it started, so this is changed only while
+    none runs, as the bot is.
+
+    Returns:
+        What is kept now.
+
+    Raises:
+        WecomError: What is given is no model or no level, no bot is set up, what is kept
+            cannot be read or written, or an assistant runs.
+    """
+    try:
+        model, effort = thinking.chosen(given)
+    except ValueError as problem:
+        raise WecomError(str(problem), code="INVALID") from None
+    with _alone(home, make=False):
+        chosen = store.settings(home)
+        if chosen is None:
+            raise WecomError("no bot of WeCom is set up", code="NONE")
+        store.save(home, chosen.model_copy(update={"model": model, "effort": effort}))
+    return {"model": model, "effort": effort}
 
 
 @contextlib.contextmanager
@@ -237,6 +265,8 @@ def status_of(home: Path, env: Mapping[str, str]) -> dict[str, object]:
         "paired": chosen.owner is not None,
         "folder": folder,
         "writable": chosen.writable,
+        "model": chosen.model,
+        "effort": chosen.effort,
         "running": running,
         "state": None,
         "code": None,

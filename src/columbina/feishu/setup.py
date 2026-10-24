@@ -26,6 +26,7 @@ from typing import Any, cast
 
 import httpx
 
+from columbina.apps import thinking
 from columbina.feishu import store
 from columbina.feishu.app import DOMAINS, Domain, FeishuError, host
 from columbina.feishu.client import Feishu
@@ -145,6 +146,8 @@ async def kept_from(
     """
     if set(given) == {"writable"}:
         return made_writable(home, given["writable"], env)
+    if thinking.is_a_choice(given):
+        return made_thinking(home, given)
     domain = _domain(given.get("domain", "feishu"))
     app_id = _app_id(given.get("app_id"))
     secret = _secret(given.get("app_secret"))
@@ -189,6 +192,31 @@ def made_writable(home: Path, writable: object, env: Mapping[str, str]) -> dict[
             raise FeishuError("no app of Feishu is set up", code="NONE")
         store.save(home, chosen.model_copy(update={"writable": writable}))
     return {"writable": writable}
+
+
+def made_thinking(home: Path, given: Mapping[str, object]) -> dict[str, object]:
+    """Keep which model the assistant asks and how hard it thinks, from a document of those alone.
+
+    A running assistant goes on with what it read when it started, so this is changed only while
+    none runs, as the app is.
+
+    Returns:
+        What is kept now.
+
+    Raises:
+        FeishuError: What is given is no model or no level, no app is set up, what is kept
+            cannot be read or written, or an assistant runs.
+    """
+    try:
+        model, effort = thinking.chosen(given)
+    except ValueError as problem:
+        raise FeishuError(str(problem), code="INVALID") from None
+    with _alone(home, make=False):
+        chosen = store.settings(home)
+        if chosen is None:
+            raise FeishuError("no app of Feishu is set up", code="NONE")
+        store.save(home, chosen.model_copy(update={"model": model, "effort": effort}))
+    return {"model": model, "effort": effort}
 
 
 @contextlib.contextmanager
@@ -259,6 +287,8 @@ def status_of(home: Path, env: Mapping[str, str]) -> dict[str, object]:
         "paired": chosen.owner is not None,
         "folder": folder,
         "writable": chosen.writable,
+        "model": chosen.model,
+        "effort": chosen.effort,
         "running": running,
         "state": None,
         "code": None,

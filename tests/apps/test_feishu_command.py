@@ -499,3 +499,19 @@ def test_a_program_runs_the_assistant_and_stops_it_by_closing_the_input(home: Pa
     told = store.status(home)
     assert told is not None
     assert told.state == "stopped"
+
+
+def test_the_model_and_the_level_kept_for_the_assistant_hold_and_the_command_line_counts_more(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = started(monkeypatch)
+    set_up(home, model="deepseek-v4-pro", effort="high")
+
+    assert main(["feishu"]) == 0
+    assert main(["feishu", "--effort", "off"]) == 0
+
+    (kept, _), (named, _) = runs
+    first = cast("dict[str, object]", cast("dict[str, object]", kept["frontend"].config)["model"])
+    second = cast("dict[str, object]", cast("dict[str, object]", named["frontend"].config)["model"])
+    assert (first["model"], first["reasoning"]) == ("deepseek-v4-pro", "high")
+    assert (second["model"], second["reasoning"]) == ("deepseek-v4-pro", "off")

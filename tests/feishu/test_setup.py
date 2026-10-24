@@ -17,6 +17,7 @@ from columbina.feishu.setup import (
     checked,
     forgotten,
     kept_from,
+    made_thinking,
     made_writable,
     read_given,
     said,
@@ -246,6 +247,8 @@ def test_an_app_that_is_set_up_and_not_running_is_said(home: Path) -> None:
         "paired": False,
         "folder": str(home.parent / "Columbina" / "feishu"),
         "writable": False,
+        "model": None,
+        "effort": None,
         "running": False,
         "state": None,
         "code": None,
@@ -460,3 +463,32 @@ async def test_an_app_of_lark_that_is_said_to_be_in_feishu_is_not_kept_at_a_term
         "domain name, code 1000040351). Set it up as an app of Lark."
     )
     assert store.settings(home) is None
+
+
+# The model of the assistant, and how hard it thinks
+
+
+async def test_the_model_and_how_hard_it_thinks_are_kept_by_themselves(home: Path) -> None:
+    kept = store.Settings(domain="feishu", app_id="cli_a1b2c3d4", owner="ou_1", writable=True)
+    store.keep(home, kept, SECRET, FEISHU)
+
+    answer = await kept_from(home, {"model": "deepseek-v4-pro", "effort": "high"}, {})
+
+    assert answer == {"model": "deepseek-v4-pro", "effort": "high"}
+    assert store.settings(home) == kept.model_copy(
+        update={"model": "deepseek-v4-pro", "effort": "high"}
+    )
+    said = status_of(home, {})
+    assert (said["model"], said["effort"]) == ("deepseek-v4-pro", "high")
+    assert made_thinking(home, {"model": None, "effort": None}) == {"model": None, "effort": None}
+    assert store.settings(home) == kept
+
+
+def test_a_model_or_a_level_that_is_none_is_refused_and_nothing_without_an_app(home: Path) -> None:
+    with pytest.raises(FeishuError) as none:
+        made_thinking(home, {"effort": "off"})
+    store.keep(home, store.Settings(domain="feishu", app_id="cli_a1b2c3d4"), SECRET, FEISHU)
+    with pytest.raises(FeishuError, match="one of default") as wrong:
+        made_thinking(home, {"effort": "ultra"})
+
+    assert (none.value.code, wrong.value.code) == ("NONE", "INVALID")

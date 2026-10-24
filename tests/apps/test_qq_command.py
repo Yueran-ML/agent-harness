@@ -364,3 +364,29 @@ def test_the_language_and_the_lines_of_json_are_given_to_the_assistant(
     config = cast("dict[str, object]", entries["frontend"].config)
     assert (config.get("language"), config.get("json_lines")) == (language, json_lines)
     assert "writable" not in config
+
+
+def test_the_model_and_the_level_kept_for_the_assistant_hold_and_the_command_line_counts_more(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = started(monkeypatch)
+    set_up(home, model="deepseek-v4-pro", effort="low")
+
+    assert main(["qq"]) == 0
+    assert main(["qq", "--effort", "max", "--model", "deepseek-flash"]) == 0
+
+    (kept, _), (named, _) = runs
+    assert (model_of(kept)["model"], model_of(kept)["reasoning"]) == ("deepseek-v4-pro", "low")
+    assert (model_of(named)["model"], model_of(named)["reasoning"]) == ("deepseek-flash", "max")
+
+
+def test_a_bot_that_cannot_be_read_keeps_no_model_of_its_own(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = started(monkeypatch)
+    (home / store.SETTINGS).mkdir(parents=True)
+
+    assert main(["qq"]) == 0
+
+    ((entries, _),) = runs
+    assert model_of(entries)["reasoning"] == "off"

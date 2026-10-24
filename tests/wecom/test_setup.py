@@ -15,6 +15,7 @@ from columbina.wecom.setup import (
     checked,
     forgotten,
     kept_from,
+    made_thinking,
     made_writable,
     read_given,
     said,
@@ -253,6 +254,8 @@ async def test_a_bot_that_is_set_up_and_not_running_is_said(home: Path) -> None:
         "paired": False,
         "folder": str(home.parent / "mine"),
         "writable": False,
+        "model": None,
+        "effort": None,
         "running": False,
         "state": None,
         "code": None,
@@ -372,3 +375,30 @@ async def test_a_bot_that_is_not_kept_is_said_to_be_so_at_a_terminal(home: Path)
     assert code == 2
     assert shown[-1].startswith("The bot is not kept: WeCom does not take this Bot ID")
     assert json.dumps(SECRET) not in "".join(shown)
+
+
+# The model of the assistant, and how hard it thinks
+
+
+async def test_the_model_and_how_hard_it_thinks_are_kept_by_themselves(home: Path) -> None:
+    kept = store.Settings(bot_id=BOT_ID, owner="zhangsan", groups={"group-1": "s-1"})
+    store.keep(home, kept, SECRET, PLACE)
+
+    answer = await kept_from(home, {"model": "deepseek-flash", "effort": "low"}, {})
+
+    assert answer == {"model": "deepseek-flash", "effort": "low"}
+    assert store.settings(home) == kept.model_copy(
+        update={"model": "deepseek-flash", "effort": "low"}
+    )
+    assert status_of(home, {})["effort"] == "low"
+    assert made_thinking(home, {"effort": None}) == {"model": None, "effort": None}
+
+
+def test_a_model_or_a_level_that_is_none_is_refused_and_nothing_without_a_bot(home: Path) -> None:
+    with pytest.raises(WecomError) as none:
+        made_thinking(home, {"effort": "off"})
+    store.keep(home, store.Settings(bot_id=BOT_ID), SECRET, PLACE)
+    with pytest.raises(WecomError, match="a model is named by its id") as wrong:
+        made_thinking(home, {"model": "two words"})
+
+    assert (none.value.code, wrong.value.code) == ("NONE", "INVALID")

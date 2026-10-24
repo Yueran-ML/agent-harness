@@ -158,6 +158,8 @@ Columbina 也可以在[企业微信](https://work.weixin.qq.com)里回复你：�
 
 Columbina 也可以在 [QQ](https://q.qq.com) 里聊天：用你自己创建的机器人，事件接收方式选 WebSocket。私聊里只回复你一个人；把机器人拉进群后，群里谁 @ 它都会回复，每个群单独一个对话。它用不深想的快模型回答，不改文件也不运行命令，也读不到你的私人说明；在群里它不用任何工具。桌面应用里在“设置”的“QQ 助手”一节设置，填入机器人的 AppID 和 AppSecret。命令行里用 `columbina qq --setup` 填入机器人，用 `columbina qq` 运行助手，需要的包用 `pip install "columbina[qq]"` 安装。
 
+每个助手都可以单独选模型和思考强度：在“设置”里各自那一节选，或者用 `--model` 和 `--effort`。留空的一项跟随全局设置。
+
 ## 文档
 
 - [工程报告](docs/report.zh-CN.md)讲 Columbina 怎样组成、哪些选择决定了它的样子、怎样测试以及做得怎样（[英文版](docs/report.md)）。

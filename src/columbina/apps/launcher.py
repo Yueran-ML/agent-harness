@@ -85,6 +85,7 @@ from columbina.apps.common import when_the_input_closes
 from columbina.apps.serve import wire as serve_wire
 from columbina.apps.serve.wire import WIRE, Wire
 from columbina.apps.terminal_text import escaped, harmless
+from columbina.apps.thinking import EFFORTS
 from columbina.context import reasoning_language
 from columbina.feishu import setup as feishu_setup
 from columbina.feishu import store as feishu_store
@@ -490,6 +491,11 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                 if args.json is not None:
                     config["json_lines"] = args.json
             elif args.command in (_FEISHU, _WECOM, _QQ):
+                if args.effort is not None:
+                    # How hard the model of the assistant thinks, over what holds for all.
+                    call = _call_of(config)
+                    _thinks(call, args.effort)
+                    config["model"] = call
                 if args.json:
                     # Another program reads how the assistant is doing, and stops it.
                     config["json_lines"] = True
@@ -1400,6 +1406,7 @@ def _feishu(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int
     if args.profile == _FEISHU and _writable(home):
         # Its owner lets its agent change the files of its directory.
         args = argparse.Namespace(**{**vars(args), "profile": _FEISHU_WRITABLE})
+    args = _as_kept_for_the_assistant(args, lambda: feishu_store.settings(home))
     entries = _entries(args, home, env)
     if args.dump_config:
         dumped = _dump(entries)
@@ -1515,6 +1522,7 @@ def _wecom(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     if args.profile == _WECOM and _wecom_writable(home):
         # Its owner lets its agent change the files of its directory.
         args = argparse.Namespace(**{**vars(args), "profile": _WECOM_WRITABLE})
+    args = _as_kept_for_the_assistant(args, lambda: wecom_store.settings(home))
     entries = _entries(args, home, env)
     if args.dump_config:
         dumped = _dump(entries)
@@ -1609,12 +1617,32 @@ def _qq(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
         else:
             print("The bot of QQ is deleted." if answer["forgotten"] else "No bot was set up.")
         return 0
+    args = _as_kept_for_the_assistant(args, lambda: qq_store.settings(home))
     entries = _entries(args, home, env)
     if args.dump_config:
         dumped = _dump(entries)
         sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)
         return 0
     return asyncio.run(_run(entries, env))
+
+
+def _as_kept_for_the_assistant(
+    args: argparse.Namespace, kept: Callable[[], object]
+) -> argparse.Namespace:
+    """Have an assistant ask the model and think as hard as was kept for it.
+
+    The command line counts for more. What cannot be read keeps nothing, and the assistant says
+    why when it starts.
+    """
+    try:
+        settings = kept()
+    except (FeishuError, WecomError, QqError):
+        settings = None
+    model = getattr(settings, "model", None)
+    effort = getattr(settings, "effort", None)
+    return argparse.Namespace(
+        **{**vars(args), "model": args.model or model, "effort": args.effort or effort}
+    )
 
 
 def _wecom_writable(home: Path) -> bool:
@@ -1734,6 +1762,11 @@ def _parser() -> argparse.ArgumentParser:
     _from_the_profile(feishu, "feishu")
     feishu.add_argument("--model", metavar="ID", help="the model to use")
     feishu.add_argument(
+        "--effort",
+        choices=EFFORTS,
+        help="how hard the model thinks, over what was kept for the assistant and for all",
+    )
+    feishu.add_argument(
         "--provider",
         metavar="NAME",
         help="the service that the model comes from, as for a conversation",
@@ -1784,6 +1817,11 @@ def _parser() -> argparse.ArgumentParser:
     _from_the_profile(wecom, "wecom")
     wecom.add_argument("--model", metavar="ID", help="the model to use")
     wecom.add_argument(
+        "--effort",
+        choices=EFFORTS,
+        help="how hard the model thinks, over what was kept for the assistant and for all",
+    )
+    wecom.add_argument(
         "--provider",
         metavar="NAME",
         help="the service that the model comes from, as for a conversation",
@@ -1833,6 +1871,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     _from_the_profile(qq, "qq")
     qq.add_argument("--model", metavar="ID", help="the model to use")
+    qq.add_argument(
+        "--effort",
+        choices=EFFORTS,
+        help="how hard the model thinks, over what was kept for the assistant and for all",
+    )
     qq.add_argument(
         "--provider",
         metavar="NAME",

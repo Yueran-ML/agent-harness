@@ -241,6 +241,9 @@ QQ*, with the AppID and the AppSecret of the bot. At the command line, `columbin
 takes the bot and `columbina qq` runs the assistant. What it needs comes with
 `pip install "columbina[qq]"`.
 
+Each assistant may ask a model of its own, and think as hard as you choose for it, in its part of
+*Settings* or with `--model` and `--effort`. What is left empty follows what holds for all.
+
 ## Documentation
 
 - [The engineering report](docs/report.md) tells how Columbina is put together, which choices

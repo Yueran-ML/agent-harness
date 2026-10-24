@@ -21,6 +21,7 @@ from typing import Any, cast
 
 import httpx
 
+from columbina.apps import thinking
 from columbina.llm.credentials import sendable, trimmed
 from columbina.qq import store
 from columbina.qq.app import Api, QqError, token_url
@@ -115,6 +116,8 @@ async def kept_from(
         QqError: The bot is not one, or QQ does not take it, or it cannot be kept, or an
             assistant runs.
     """
+    if thinking.is_a_choice(given):
+        return made_thinking(home, given)
     app_id = _app_id(given.get("app_id"))
     secret = _secret(given.get("secret"))
     with _alone(home, make=True):
@@ -124,6 +127,31 @@ async def kept_from(
         "stored": {"app_id": app_id},
         "secret_in": "file" if kept.keyring is None else "keyring",
     }
+
+
+def made_thinking(home: Path, given: Mapping[str, object]) -> dict[str, object]:
+    """Keep which model the assistant asks and how hard it thinks, from a document of those alone.
+
+    A running assistant goes on with what it read when it started, so this is changed only while
+    none runs, as the bot is.
+
+    Returns:
+        What is kept now.
+
+    Raises:
+        QqError: What is given is no model or no level, no bot is set up, what is kept
+            cannot be read or written, or an assistant runs.
+    """
+    try:
+        model, effort = thinking.chosen(given)
+    except ValueError as problem:
+        raise QqError(str(problem), code="INVALID") from None
+    with _alone(home, make=False):
+        chosen = store.settings(home)
+        if chosen is None:
+            raise QqError("no bot of QQ is set up", code="NONE")
+        store.save(home, chosen.model_copy(update={"model": model, "effort": effort}))
+    return {"model": model, "effort": effort}
 
 
 @contextlib.contextmanager
@@ -185,6 +213,8 @@ def status_of(home: Path, env: Mapping[str, str]) -> dict[str, object]:
         "app_id": chosen.app_id,
         "paired": chosen.owner is not None,
         "folder": folder,
+        "model": chosen.model,
+        "effort": chosen.effort,
         "running": running,
         "state": None,
         "code": None,

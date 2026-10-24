@@ -89,6 +89,8 @@ def test_the_same_bot_kept_again_keeps_whom_it_answers_and_where(home: Path) -> 
         "session_id": "20261022T000000-ab",
         "writable": True,
         "groups": {"group-1": "20261024T000000-cd"},
+        "model": "deepseek-flash",
+        "effort": "off",
     }
     save(home, BOT.model_copy(update=said))
 

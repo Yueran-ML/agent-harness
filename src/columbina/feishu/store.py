@@ -26,6 +26,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from columbina import files
+from columbina.apps.thinking import Effort
 from columbina.feishu.app import Domain, FeishuError, Host
 from columbina.llm import credentials
 from columbina.llm.credentials import CredentialsError, Kept, origin_of
@@ -82,6 +83,8 @@ class Settings(BaseModel):
             given the code of pairing; ``None`` before.
         session_id: The session of the conversation with that person, once there is one.
         writable: Whether the agent may change the files of the directory of the assistant.
+        model: The model that the assistant asks, or ``None`` for the one that holds for all.
+        effort: How hard that model thinks, or ``None`` for what holds for all.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -92,6 +95,8 @@ class Settings(BaseModel):
     owner: str | None = None
     session_id: str | None = None
     writable: bool = False
+    model: str | None = None
+    effort: Effort | None = None
 
 
 def directory(home: Path, env: Mapping[str, str]) -> Path:
@@ -180,6 +185,8 @@ def keep(home: Path, chosen: Settings, secret: str, host: Host) -> Kept:
             "owner": before.owner,
             "session_id": before.session_id,
             "writable": before.writable,
+            "model": before.model,
+            "effort": before.effort,
         }
         chosen = chosen.model_copy(update=kept_of_it)
     try:

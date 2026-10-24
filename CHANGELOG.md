@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- Each assistant, in Feishu, in WeCom and in QQ, may ask a model of its own and think as hard as
+  its owner chose for it, apart from the others: a chat in QQ quick, work in Feishu careful.
+  What is left empty follows what holds for all, and the service and its key stay the same for
+  all. The settings of the desktop application choose them in the part of each assistant, which
+  starts again for a change, and the command line takes `--effort` beside `--model`. Another
+  program changes them with a document of JSON that holds `model` and `effort` alone.
 - An assistant in QQ answers through a bot of the open platform of QQ whose events come by
   WebSocket, so that it needs no address on the internet. `columbina qq --setup` checks the
   AppID and the AppSecret with QQ and keeps them, the AppSecret in the keyring of the system,

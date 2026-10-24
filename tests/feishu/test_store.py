@@ -1,5 +1,6 @@
 """What is kept for the assistant in Feishu: ``columbina.feishu.store``."""
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -96,7 +97,13 @@ def test_the_secret_of_an_app_is_apart_from_the_keys_of_models(home: Path) -> No
 
 def test_the_same_app_kept_again_keeps_whom_it_answers_and_where(home: Path) -> None:
     keep(home, APP, SECRET, FEISHU)
-    said = {"owner": "ou_owner", "session_id": "20261020T000000-ab", "writable": True}
+    said = {
+        "owner": "ou_owner",
+        "session_id": "20261020T000000-ab",
+        "writable": True,
+        "model": "deepseek-v4-pro",
+        "effort": "high",
+    }
     save(home, APP.model_copy(update=said))
 
     keep(home, APP, "another-secret-0123", FEISHU)
@@ -123,8 +130,11 @@ def test_another_app_begins_with_nobody_to_answer(home: Path, other: Settings) -
 
 def test_an_app_kept_before_its_agent_could_change_files_changes_none(home: Path) -> None:
     keep(home, APP, SECRET, FEISHU)
-    written = (home / SETTINGS).read_text(encoding="utf-8").replace('  "writable": false\n', "")
-    (home / SETTINGS).write_text(written.replace(",\n}", "\n}"), encoding="utf-8")
+    written = json.loads((home / SETTINGS).read_text(encoding="utf-8"))
+    # What was written before the agent could change files, or ask a model of its own.
+    for later in ("writable", "model", "effort"):
+        del written[later]
+    (home / SETTINGS).write_text(json.dumps(written), encoding="utf-8")
 
     assert "writable" not in (home / SETTINGS).read_text(encoding="utf-8")
     assert settings(home) == APP

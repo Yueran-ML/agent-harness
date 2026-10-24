@@ -11,6 +11,7 @@ from columbina.qq.setup import (
     at_a_terminal,
     forgotten,
     kept_from,
+    made_thinking,
     read_given,
     status_of,
 )
@@ -142,6 +143,8 @@ async def test_a_bot_whose_assistant_does_not_run_is_said_so(home: Path, qq: Fak
         "app_id": APP_ID,
         "paired": False,
         "folder": str(Path("/somewhere")),
+        "model": None,
+        "effort": None,
         "running": False,
         "state": None,
         "code": None,
@@ -267,3 +270,30 @@ async def test_a_person_is_told_why_the_bot_is_not_kept(home: Path, qq: FakeApi)
 
     assert code == 2
     assert shown[1].startswith("The bot is not kept: QQ does not take this AppID")
+
+
+# The model of the assistant, and how hard it thinks
+
+
+async def test_the_model_and_how_hard_it_thinks_are_kept_by_themselves(
+    home: Path, qq: FakeApi
+) -> None:
+    await kept_from(home, BOT, {}, transport=qq.transport)
+
+    answer = await kept_from(home, {"effort": "low"}, {}, transport=qq.transport)
+
+    assert answer == {"model": None, "effort": "low"}
+    assert store.settings(home) == store.Settings(app_id=APP_ID, effort="low")
+    assert status_of(home, {})["effort"] == "low"
+    # The bot set up again keeps them.
+    await kept_from(home, BOT, {}, transport=qq.transport)
+    assert store.settings(home) == store.Settings(app_id=APP_ID, effort="low")
+
+
+def test_a_model_or_a_level_that_is_none_is_refused_and_nothing_without_a_bot(home: Path) -> None:
+    with pytest.raises(QqError) as none:
+        made_thinking(home, {"effort": "off"})
+    with pytest.raises(QqError, match="one of default") as wrong:
+        made_thinking(home, {"effort": "slow"})
+
+    assert (none.value.code, wrong.value.code) == ("NONE", "INVALID")

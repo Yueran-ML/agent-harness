@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { drawPets } from './draw-pets.mjs';
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // The artwork comes with the repository, in assets/. A directory of one's own may be put
@@ -33,3 +34,5 @@ for (const name of assets) {
 }
 await copyFile(path.join(desktop, 'ASSETS.md'), path.join(desktop, 'public', 'ASSET-NOTICES.txt'));
 console.log(`Prepared ${assets.length} visual assets from ${assetDirectory}; no audio copied.`);
+// The pets that come with the application are drawn, and no picture of them is kept.
+console.log(`Drew the pets ${drawPets(path.join(desktop, 'public', 'pets')).join(', ')}.`);

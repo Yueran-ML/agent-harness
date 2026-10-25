@@ -606,6 +606,16 @@ export const zhCN: Messages = {
       now: '现在检查',
     },
 
+    pet: {
+      title: '桌宠',
+      show: '显示跟着任务走的桌宠',
+      choose: '桌宠',
+      share: '把任务状态告诉别的桌宠程序',
+      openFolder: '打开自制桌宠文件夹',
+      builtin: { moon: '小月亮', cat: '小猫', star: '小星灵' },
+      mine: '自制',
+    },
+
     confirmFullAccess: '允许完全访问？',
     confirmWrite: '允许 Columbina 修改文件？',
     allowFullAccess: '允许完全访问',
@@ -701,6 +711,15 @@ export const zhCN: Messages = {
         unreadable: '没能从 GitHub 拿到发布列表。',
       },
       sent: '检查时只向 GitHub 请求 Columbina 的发布列表，不发送其他内容。',
+    },
+    pet: {
+      about: '桌宠显示在其他窗口上面。点它回到 Columbina，也可以拖到合适的位置。',
+      share: (file: string) => `任务状态和工具名会写到 ${file}，供别的程序读取，不写对话内容。`,
+      own: '自制桌宠是一个文件夹，里面有 pet.json 和一张帧图，布局与 Codex 的桌宠相同。放进这个文件夹，就能在这里选。',
+      none: '没有可以显示的桌宠。',
+      waiting: (tool: string) => (tool ? `等你点头：${tool}。` : '等你点头。'),
+      done: '做完了。',
+      failed: '遇到点难题。',
     },
     openingUnavailable: '开场无法播放。',
 

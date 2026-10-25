@@ -211,6 +211,37 @@ export interface ColumbinaBridge {
    * for all with null. One that runs starts again for it. What the program answered comes back.
    */
   qqThinking(asked: { model: string | null; effort: 'default' | 'off' | 'low' | 'high' | 'max' | null }): Promise<unknown>;
+  /**
+   * The pets that can be chosen, the one that is, whether it shows, whether other programs are told
+   * what the task does, the folder for pets of the user's own, and the file that tells them.
+   */
+  pets(): Promise<PetChoices>;
+  /** Show or hide the pet, choose another one, or tell other programs what the task does, or stop. */
+  setPet(asked: { on?: boolean; chosen?: string; share?: boolean }): Promise<void>;
+  /** Open the folder for pets of the user's own, made where it is not there. */
+  openPetsFolder(): Promise<void>;
+  /** Say what the task does, for the pet, and for the programs that follow it. */
+  petState(shown: { state: string; label: string; bubble: string }): void;
+  /** Hear that the pet was hidden from its own menu. */
+  onPet(listener: (said: { on: boolean }) => void): () => void;
+}
+
+/** A pet that can be chosen. */
+export interface PetChoice {
+  key: string;
+  name: string;
+  description: string;
+  /** Whether it comes with the application, or is one of the user's own. */
+  origin: 'builtin' | 'user';
+}
+
+export interface PetChoices {
+  on: boolean;
+  share: boolean;
+  chosen: string | null;
+  pets: PetChoice[];
+  folder: string;
+  stateFile: string;
 }
 
 declare global {

@@ -1,0 +1,49 @@
+/* The window of the pet: nothing but the pet and its bubble, on nothing. */
+html,
+body.pet-page {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+body.pet-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  font-family: system-ui, sans-serif;
+}
+
+/* A cell of the sheet, at the size that the window shows it. */
+.pet {
+  width: 144px;
+  height: 156px;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  cursor: grab;
+  flex: none;
+}
+
+.pet:active {
+  cursor: grabbing;
+}
+
+.pet-bubble {
+  max-width: 200px;
+  margin-bottom: 2px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  background: rgb(250 248 255 / 0.96);
+  color: #1e1a2e;
+  font-size: 12px;
+  line-height: 1.35;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.25);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.pet-bubble[hidden] {
+  display: none;
+}

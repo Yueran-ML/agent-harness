@@ -103,10 +103,11 @@ describe('the bridge of the main window', () => {
     expect([...asked].sort()).toEqual(answered.filter(channel => channel.startsWith('columbina:')).sort());
     // A line for the service is said and not asked: the shell gives no answer to it.
     expect(said).toEqual(taken);
-    expect(taken).toEqual(['columbina:send']);
+    // What the task does is said for the pet in the same way.
+    expect(taken).toEqual(['columbina:send', 'columbina:pet-state']);
     // And it listens to everything that the shell tells of.
     expect([...heard].sort()).toEqual([...told].sort());
-    expect(told.length).toBe(8);
+    expect(told.length).toBe(9);
   });
 
   it('hands on what a call names, and nothing else that came with it', () => {
@@ -149,6 +150,9 @@ describe('the bridge of the main window', () => {
     expect(handed('feishuThinking')).toEqual(['columbina:feishu-thinking', { model: null, effort: null }]);
     expect(handed('wecomThinking', { effort: 'low' })).toEqual(['columbina:wecom-thinking', { model: null, effort: 'low' }]);
     expect(handed('setLoginItem', true)).toEqual(['columbina:set-login-item', true]);
+    expect(handed('setPet', { on: true, chosen: 'builtin/cat', share: false, more: 1 }))
+      .toEqual(['columbina:set-pet', { on: true, chosen: 'builtin/cat', share: false }]);
+    expect(handed('setPet')).toEqual(['columbina:set-pet', { on: undefined, chosen: undefined, share: undefined }]);
     for (const asked of ['true', 1, {}, undefined]) {
       expect(handed('feishuWritable', asked)).toEqual(['columbina:feishu-writable', false]);
       expect(handed('wecomWritable', asked)).toEqual(['columbina:wecom-writable', false]);
@@ -167,7 +171,7 @@ describe('the bridge of the main window', () => {
       'getLocalMusic', 'stop', 'serviceTail', 'showLog', 'recentProjects', 'services', 'about',
       'feishuStatus', 'feishuStop', 'feishuForget', 'feishuLog', 'openFeishuFolder',
       'wecomStatus', 'wecomStop', 'wecomForget', 'wecomLog', 'openWecomFolder',
-      'qqStatus', 'qqStop', 'qqForget', 'qqLog', 'openQqFolder',
+      'qqStatus', 'qqStop', 'qqForget', 'qqLog', 'openQqFolder', 'pets', 'openPetsFolder',
     ]) {
       expect(handed(call, more), call).toHaveLength(1);
     }
@@ -307,14 +311,43 @@ describe('the bridge of the window for the bot of QQ', () => {
   });
 });
 
-describe('the five bridges', () => {
+describe('the bridge of the window of the pet', () => {
+  it('offers the calls that the page is told of, and no other', () => {
+    const { exposed } = bridgeOf('electron/pet-preload.cjs');
+    expect(Object.keys(exposed)).toEqual(['columbinaPet']);
+    expect(Object.keys(exposed.columbinaPet).sort()).toEqual(declared('src/pet/bridge.d.ts', 'PetBridge').sort());
+  });
+
+  it('asks the shell for what it answers to the pet, and hears what it tells the pet', () => {
+    const { asked, said, heard } = reached('electron/pet-preload.cjs', 'columbinaPet');
+    expect([...asked].sort()).toEqual(answered.filter(channel => channel.startsWith('columbina-pet:')).sort());
+    expect(said).toEqual([]);
+    expect([...heard].sort()).toEqual(['columbina-pet:sheet', 'columbina-pet:shown']);
+    const told = [...shell.matchAll(/\btellPet\((['`])([^'`]+)\1/g)].map(found => found[2]);
+    expect([...new Set(told)].sort()).toEqual(['columbina-pet:sheet', 'columbina-pet:shown']);
+  });
+
+  it('hands on the phase of a drag, and says what the task does with what it names alone', () => {
+    const pet = bridgeOf('electron/pet-preload.cjs');
+    pet.exposed.columbinaPet.drag('move');
+    expect(pet.invoked.at(-1)).toEqual(['columbina-pet:drag', 'move']);
+    const main = bridgeOf('electron/preload.cjs');
+    main.exposed.columbina.petState({ state: 'review', label: 'read', bubble: '', secret: 'never' });
+    expect(main.sent.at(-1)).toEqual(['columbina:pet-state', { state: 'review', label: 'read', bubble: '' }]);
+    main.exposed.columbina.petState(undefined);
+    expect(main.sent.at(-1)).toEqual(['columbina:pet-state', { state: undefined, label: undefined, bubble: undefined }]);
+  });
+});
+
+describe('the six bridges', () => {
   it('reach every call that the shell answers between them', () => {
     const main = reached('electron/preload.cjs', 'columbina');
     const key = reached('electron/key-preload.cjs', 'columbinaKey');
     const feishu = reached('electron/feishu-preload.cjs', 'columbinaFeishu');
     const wecom = reached('electron/wecom-preload.cjs', 'columbinaWecom');
     const qq = reached('electron/qq-preload.cjs', 'columbinaQq');
-    const all = [main, key, feishu, wecom, qq];
+    const pet = reached('electron/pet-preload.cjs', 'columbinaPet');
+    const all = [main, key, feishu, wecom, qq, pet];
     expect(all.flatMap(bridge => bridge.asked).sort()).toEqual([...answered].sort());
     expect(all.flatMap(bridge => bridge.said)).toEqual(taken);
     // No channel is asked by two of them.

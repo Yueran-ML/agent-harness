@@ -164,6 +164,7 @@ Columbina 也可以在 [QQ](https://q.qq.com) 里聊天：用你自己创建的�
 
 - [工程报告](docs/report.zh-CN.md)讲 Columbina 怎样组成、哪些选择决定了它的样子、怎样测试以及做得怎样（[英文版](docs/report.md)）。
 - [基准的表](docs/bench/README.md)给出 DeepSeek 两个模型上的结果、各部件的对比和花费。
+- [桌宠](docs/pets.md)讲怎样给桌面端做一只桌宠，以及你自己的程序怎样跟着任务的状态走（英文）。
 
 ## 许可证
 

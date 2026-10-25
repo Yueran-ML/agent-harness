@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, session, shell } = require('electron');
+const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeImage, screen, session, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const {
@@ -8,6 +8,7 @@ const { copyFile, mkdir, open, realpath, stat, writeFile } = require('node:fs/pr
 const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const { pathToFileURL, fileURLToPath } = require('node:url');
+const pets = require('./pets.cjs');
 
 let window;
 let service = null;
@@ -22,6 +23,17 @@ const indexUrl = pathToFileURL(indexPath).href;
 // The page of the window that takes a key. It shows nothing that a model wrote.
 const keyPath = path.resolve(__dirname, '../dist/key.html');
 const keyUrl = pathToFileURL(keyPath).href;
+// The page of the window of the pet, and the pets that come with the application.
+const petPath = path.resolve(__dirname, '../dist/pet.html');
+const petUrl = pathToFileURL(petPath).href;
+const petsBuiltIn = path.resolve(__dirname, '../dist/pets');
+// The window of the pet while it shows, what the main window said last of the task, and where a
+// drag of the pet began: the pointer and the window.
+let petWindow = null;
+let petShown = { state: 'idle', label: '', bubble: '' };
+let petDrag = null;
+/** How large the window of the pet is: room for the pet, and for its bubble above it. */
+const PET_SIZE = { width: 220, height: 240 };
 /**
  * An assistant in the chat of another platform that the application runs: a command of the program,
  * set up in a window of its own that shows nothing that a model wrote. It has the name of the
@@ -109,9 +121,9 @@ function windowBar(theme) {
 // What the shell says by itself, in every language that the interface speaks, each under the
 // name that a page gives it. Everything else that is said is said by a page.
 const WORDS = {
-  en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach', open: 'Open Columbina', quit: 'Quit Columbina' },
-  ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択', open: 'Columbina を開く', quit: 'Columbina を終了' },
-  'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件', open: '打开 Columbina', quit: '退出 Columbina' },
+  en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach', open: 'Open Columbina', quit: 'Quit Columbina', hidePet: 'Hide the pet' },
+  ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択', open: 'Columbina を開く', quit: 'Columbina を終了', hidePet: 'ペットをしまう' },
+  'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件', open: '打开 Columbina', quit: '退出 Columbina', hidePet: '收起桌宠' },
 };
 // What the start at login gives the application, which then waits in the tray with its window put away.
 const HIDDEN = '--hidden';
@@ -163,6 +175,7 @@ let lastWords = { lines: [], rest: '' };
 let preferences = {
   theme: 'moonveil', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
   wecomOn: false, wecomLanguage: null, qqOn: false, qqLanguage: null, language: null,
+  petOn: false, pet: 'builtin/moon', petShare: false, petAt: null,
 };
 // The icon in the tray, once the window was put away there, and whether the user asked from there to quit.
 let tray = null;
@@ -241,6 +254,12 @@ function readPreferences() {
     wecomOn: given.wecomOn === true, wecomLanguage: known(given.wecomLanguage),
     qqOn: given.qqOn === true, qqLanguage: known(given.qqLanguage),
     language: typeof given.language === 'string' && Object.hasOwn(WORDS, given.language) ? given.language : null,
+    // Whether the pet shows, which one, whether other programs are told what the task does, and
+    // where the pet stood.
+    petOn: given.petOn === true,
+    pet: typeof given.pet === 'string' && /^(builtin|user)\/[^\\/]{1,128}$/.test(given.pet) ? given.pet : 'builtin/moon',
+    petShare: given.petShare === true,
+    petAt: Number.isInteger(given.petAt?.x) && Number.isInteger(given.petAt?.y) ? { x: given.petAt.x, y: given.petAt.y } : null,
   };
 }
 /** Write down what is kept. It is written beside its place and moved there, so that a start never finds half of it. */
@@ -276,6 +295,11 @@ function checkAssistantSender(event, one) {
   const opened = one.window;
   if (!opened || event.sender !== opened.webContents || event.senderFrame !== opened.webContents.mainFrame || event.senderFrame.url !== one.url) {
     throw new Error(`IPC sender is not the window for ${one.what}.`);
+  }
+}
+function checkPetSender(event) {
+  if (!petWindow || event.sender !== petWindow.webContents || event.senderFrame !== petWindow.webContents.mainFrame || event.senderFrame.url !== petUrl) {
+    throw new Error('IPC sender is not the window of the pet.');
   }
 }
 /** A window opens no other window, goes to no other page and holds no page inside its own. */
@@ -694,6 +718,57 @@ function namesAndPages(list) {
     pages: services.flatMap((service) => text(service?.key_page)),
   };
 }
+/** Where the user keeps pets of their own, and the file that tells other programs what the task does. */
+const userPets = () => path.join(app.getPath('userData'), 'pets');
+const petStateFile = () => path.join(app.getPath('userData'), 'pet-state.json');
+/** The pets that can be chosen: those that come with the application, and those of the user. */
+function petList() {
+  return pets.listPets([{ folder: petsBuiltIn, origin: 'builtin' }, { folder: userPets(), origin: 'user' }]);
+}
+/** The pet that was chosen, or the first one where that one is gone, or none. */
+function chosenPet() {
+  const all = petList();
+  return all.find((one) => one.key === preferences.pet) ?? all[0] ?? null;
+}
+/** What the window of the pet is given of a pet: its picture and the rows that its package names. */
+function petSheet() {
+  const pet = chosenPet();
+  if (!pet) return null;
+  try {
+    return { sheet: pets.sheetOf(pet), animations: pet.animations, name: pet.name };
+  } catch {
+    return null;
+  }
+}
+function tellPet(channel, value) {
+  if (petWindow && !petWindow.isDestroyed() && !petWindow.webContents.isDestroyed()) petWindow.webContents.send(channel, value);
+}
+/** Show the pet, where it stood last, over the other windows. */
+function openPet() {
+  if (petWindow) return;
+  const opened = new BrowserWindow({
+    ...PET_SIZE, ...(preferences.petAt ?? {}), transparent: true, frame: false, resizable: false, minimizable: false,
+    maximizable: false, fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, hasShadow: false, show: false,
+    backgroundColor: '#00000000', title: 'Columbina',
+    webPreferences: { preload: path.join(__dirname, 'pet-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true },
+  });
+  petWindow = opened;
+  opened.setMenuBarVisibility(false);
+  closeToTheWorld(opened);
+  opened.once('ready-to-show', () => opened.showInactive());
+  opened.once('closed', () => { if (petWindow === opened) petWindow = null; });
+  void opened.loadFile(petPath);
+}
+function closePet() {
+  const opened = petWindow;
+  petWindow = null;
+  petDrag = null;
+  if (opened && !opened.isDestroyed()) opened.destroy();
+}
+/** Tell the pet and the programs that follow the task what it does, as the main window said it. */
+function sharePet() {
+  if (preferences.petShare) pets.writeState(petStateFile(), petShown, process.pid, Date.now());
+}
 function installHandlers() {
   ipcMain.handle('columbina:select-folder', async (event, asked) => {
     checkSender(event);
@@ -781,6 +856,79 @@ function installHandlers() {
       preferences.theme = theme;
       keepPreferences();
     }
+  });
+  ipcMain.handle('columbina:pets', (event) => {
+    checkSender(event);
+    const chosen = chosenPet();
+    return {
+      on: preferences.petOn, share: preferences.petShare, chosen: chosen?.key ?? null,
+      pets: petList().map(({ key, name, description, origin }) => ({ key, name, description, origin })),
+      folder: userPets(), stateFile: petStateFile(),
+    };
+  });
+  ipcMain.handle('columbina:set-pet', (event, asked) => {
+    checkSender(event);
+    if (typeof asked?.on === 'boolean') preferences.petOn = asked.on;
+    if (typeof asked?.share === 'boolean' && asked.share !== preferences.petShare) {
+      preferences.petShare = asked.share;
+      // A program that followed the task is told that nobody tells it any more.
+      if (asked.share) sharePet();
+      else pets.forgetState(petStateFile());
+    }
+    if (typeof asked?.chosen === 'string' && petList().some((one) => one.key === asked.chosen)) {
+      preferences.pet = asked.chosen;
+      tellPet('columbina-pet:sheet', petSheet());
+    }
+    keepPreferences();
+    if (preferences.petOn) openPet();
+    else closePet();
+  });
+  ipcMain.handle('columbina:open-pets-folder', async (event) => {
+    checkSender(event);
+    mkdirSync(userPets(), { recursive: true });
+    const failed = await shell.openPath(userPets());
+    if (failed) throw new Error(failed);
+  });
+  ipcMain.on('columbina:pet-state', (event, given) => {
+    try { checkSender(event); } catch { return; }
+    const shown = pets.shownOf(given);
+    if (!shown) return;
+    petShown = shown;
+    tellPet('columbina-pet:shown', petShown);
+    sharePet();
+  });
+  ipcMain.handle('columbina-pet:ready', (event) => {
+    checkPetSender(event);
+    return { pet: petSheet(), shown: petShown };
+  });
+  ipcMain.handle('columbina-pet:click', (event) => {
+    checkPetSender(event);
+    showWindow();
+  });
+  ipcMain.handle('columbina-pet:drag', (event, phase) => {
+    checkPetSender(event);
+    if (phase === 'start') {
+      petDrag = { cursor: screen.getCursorScreenPoint(), at: petWindow.getPosition() };
+      return;
+    }
+    if (!petDrag || (phase !== 'move' && phase !== 'end')) return;
+    const cursor = screen.getCursorScreenPoint();
+    const x = petDrag.at[0] + cursor.x - petDrag.cursor.x;
+    const y = petDrag.at[1] + cursor.y - petDrag.cursor.y;
+    petWindow.setPosition(x, y);
+    if (phase === 'end') {
+      petDrag = null;
+      preferences.petAt = { x, y };
+      keepPreferences();
+    }
+  });
+  ipcMain.handle('columbina-pet:menu', (event) => {
+    checkPetSender(event);
+    const words = trayWords();
+    Menu.buildFromTemplate([
+      { label: words.open, click: showWindow },
+      { label: words.hidePet, click: () => { preferences.petOn = false; keepPreferences(); closePet(); tell('columbina:pet', { on: false }); } },
+    ]).popup({ window: petWindow });
   });
   ipcMain.handle('columbina:set-language', (event, language) => {
     checkSender(event);
@@ -1516,6 +1664,9 @@ app.whenReady().then(() => {
   });
   // Windows ends the session: what runs is stopped without waiting for the page.
   window.on('session-end', endAll);
+  // The pet goes with the window: the application is not kept open by the pet alone.
+  window.on('closed', closePet);
+  if (preferences.petOn) openPet();
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
   window.webContents.on('render-process-gone', () => { stopSigningIn(); void enqueueService(stopService); });
@@ -1527,5 +1678,9 @@ app.whenReady().then(() => {
 });
 app.on('before-quit', (event) => { if ((service || anyAssistant() || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
 app.on('window-all-closed', endAll);
+// The programs that follow the task are told that it rests, as nothing tells them any more.
+app.on('will-quit', () => {
+  if (preferences.petShare) pets.writeState(petStateFile(), { state: 'idle', label: '', bubble: '' }, process.pid, Date.now());
+});
 // On macOS a click on the icon in the Dock shows the window that was put away.
 app.on('activate', showWindow);

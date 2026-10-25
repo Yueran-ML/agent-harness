@@ -11,9 +11,9 @@ export default defineConfig({
     // that way: its policy is `font-src 'self'`.
     assetsInlineLimit: 0,
     rollupOptions: {
-      // Four pages: the application, the window that takes a key, the one that takes the app of
-      // Feishu, and the one that takes the bot of WeCom.
-      input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html', qq: 'qq.html' },
+      // The pages: the application, the window that takes a key, the ones that take the app of
+      // Feishu, the bot of WeCom and the bot of QQ, and the window of the pet.
+      input: { index: 'index.html', key: 'key.html', feishu: 'feishu.html', wecom: 'wecom.html', qq: 'qq.html', pet: 'pet.html' },
       output: {
         entryFileNames: 'assets/[name].js',
         chunkFileNames: 'assets/[name].js',

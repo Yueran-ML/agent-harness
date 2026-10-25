@@ -9,6 +9,8 @@ import { languages } from '../src/app/locale';
 import { languageFor } from '../src/i18n';
 import { themes } from '../src/themes';
 import { blockOf, themeColour } from './stylesheet';
+// The parts of the pets that only look at what they are given are the shell's own here.
+import realPets from '../electron/pets.cjs';
 
 const mainPath = fileURLToPath(new URL('../electron/main.cjs', import.meta.url));
 const source = readFileSync(mainPath, 'utf8');
@@ -128,6 +130,10 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     setBackgroundColor = vi.fn();
     setTitleBarOverlay = vi.fn();
     setSheetOffset = vi.fn();
+    showInactive = vi.fn();
+    position: [number, number] = [0, 0];
+    getPosition = () => this.position;
+    setPosition = vi.fn((x: number, y: number) => { this.position = [x, y]; });
   }
   let live = 0;
   let peakLive = 0;
@@ -275,12 +281,29 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const partitions: string[] = [];
   const session = { fromPartition: vi.fn((name: string) => { partitions.push(name); return { fetch: net.fetch }; }) };
   const writeFileSync = vi.fn((file: string, text: string) => { files.set(path.resolve(file), String(text)); });
-  const menu = { buildFromTemplate: vi.fn((template: unknown[]) => ({ template })), setApplicationMenu: vi.fn() };
+  const menu = { buildFromTemplate: vi.fn((template: unknown[]) => ({ template, popup: vi.fn() })), setApplicationMenu: vi.fn() };
+  // The pets that the shell finds, by the folders it looks in, and what it writes for other programs.
+  const petsFound: any[] = [];
+  const pets = {
+    listPets: vi.fn((_places: unknown) => petsFound),
+    sheetOf: vi.fn((pet: { key: string }) => `data:image/png;base64,${pet.key}`),
+    shownOf: realPets.shownOf,
+    writeState: vi.fn((_file: string, _shown: unknown, _pid: number, _at: number) => true),
+    forgetState: vi.fn((_file: string) => undefined),
+  };
+  // Where the pointer is on the screen.
+  const pointer = { x: 0, y: 0 };
+  const screen = { getCursorScreenPoint: vi.fn(() => ({ ...pointer })) };
+  // What the windows say without waiting for an answer, by the channel.
+  const listeners = new Map<string, (...args: any[]) => any>();
   const modules: Record<string, unknown> = {
     electron: {
       app, BrowserWindow: TestWindow, Menu: menu, dialog, shell: world, Notification: TestNotification, session,
-      Tray: TestTray, nativeImage: pictures,
-      ipcMain: { handle: (name: string, callback: (...args: any[]) => any) => handlers.set(name, callback), on: vi.fn() },
+      Tray: TestTray, nativeImage: pictures, screen,
+      ipcMain: {
+        handle: (name: string, callback: (...args: any[]) => any) => handlers.set(name, callback),
+        on: (name: string, callback: (...args: any[]) => any) => listeners.set(name, callback),
+      },
     },
     'node:child_process': { spawn },
     'node:readline': {
@@ -315,11 +338,12 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     'node:path': path,
     'node:url': { pathToFileURL, fileURLToPath },
     'node:string_decoder': { StringDecoder },
+    './pets.cjs': pets,
   };
   runInNewContext(source, {
     require: (name: string) => { if (!(name in modules)) throw new Error(`Unexpected module: ${name}`); return modules[name]; },
     __dirname: path.dirname(mainPath),
-    process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources, argv: ['Columbina.exe', ...(system.argv ?? [])] },
+    process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources, argv: ['Columbina.exe', ...(system.argv ?? [])], pid: 4242 },
     // The clock of the tests, so that a test that sets it sets it for the shell too.
     URL, setTimeout, clearTimeout, Date, AbortSignal,
   }, { filename: mainPath });
@@ -345,7 +369,14 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const wecomWindow = () => windows.filter(each => String(each.options?.webPreferences?.preload).endsWith('wecom-preload.cjs')).at(-1);
   const asWecomWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-wecom:${name}`)!(
     { sender: wecomWindow().webContents, senderFrame: wecomWindow().webContents.mainFrame }, ...args);
+  // The window of the pet, once the shell has opened it, and a call as that window makes it.
+  const petWindow = () => windows.filter(each => String(each.options?.webPreferences?.preload).endsWith('pet-preload.cjs')).at(-1);
+  const asPetWindow = (name: string, ...args: unknown[]) => handlers.get(`columbina-pet:${name}`)!(
+    { sender: petWindow().webContents, senderFrame: petWindow().webContents.mainFrame }, ...args);
+  // What the main window says without waiting, as it says it.
+  const say = (channel: string, ...args: unknown[]) => listeners.get(channel)!(event, ...args);
   return {
+    petsFound, pets, pointer, screen, petWindow, asPetWindow, say, listeners,
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, mkdirSync, disk, drive, file, sent,
     dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
     partitions, trays, pictures,
@@ -1042,6 +1073,7 @@ describe('what the shell keeps from one start to the next', () => {
     expect(shell.preferences()).toEqual({
       theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
       wecomOn: false, wecomLanguage: null, qqOn: false, qqLanguage: null, language: null,
+      petOn: false, pet: 'builtin/moon', petShare: false, petAt: null,
     });
     expect(() => shell.invoke('set-theme', 'frostlight')).toThrow('Unknown application theme.');
     expect(shell.preferences().theme).toBe('moonwhite');
@@ -3286,5 +3318,244 @@ describe('the tray, the start with the system, and one application at a time', (
     }
     expect(shell.app.setLoginItemSettings).not.toHaveBeenCalled();
     expect(shell.setups).toEqual([]);
+  });
+});
+
+describe('the pet', () => {
+  const userData = path.resolve('/columbina-test/userData');
+  const builtIn = path.resolve(path.dirname(mainPath), '../dist/pets');
+  const petPage = path.resolve(path.dirname(mainPath), '../dist/pet.html');
+  const found = (key: string, origin = 'builtin') => ({
+    key, id: key.split('/')[1], name: `The ${key}`, description: 'A pet.', origin, sheet: `/sheets/${key}.png`, animations: null,
+  });
+
+  it('shows where it showed at the last start, where it stood then, over the other windows', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true, petAt: { x: 5, y: 6 } }));
+    const pet = shell.petWindow();
+    expect(pet.options).toMatchObject({
+      width: 220, height: 240, x: 5, y: 6, transparent: true, frame: false, alwaysOnTop: true, skipTaskbar: true, show: false,
+      webPreferences: { preload: path.join(path.dirname(mainPath), 'pet-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    expect(pet.loadFile).toHaveBeenCalledWith(petPage);
+    pet.emit('ready-to-show');
+    expect(pet.showInactive).toHaveBeenCalledTimes(1);
+    // It is never focused by showing, and it opens no other page.
+    expect(pet.show).not.toHaveBeenCalled();
+    expect(pet.webContents.setWindowOpenHandler).toHaveBeenCalled();
+    expect((await shellHarness()).petWindow()).toBeUndefined();
+  });
+
+  it('keeps what was chosen of it as far as it can be, and nothing else', async () => {
+    const kept = await shellHarness(JSON.stringify({ petOn: true, pet: 'user/mine', petShare: true, petAt: { x: -40, y: 7 } }));
+    kept.invoke('set-theme', 'moonwhite');
+    expect(kept.preferences()).toMatchObject({ petOn: true, pet: 'user/mine', petShare: true, petAt: { x: -40, y: 7 } });
+    const refused = await shellHarness(JSON.stringify({ petOn: 'yes', pet: 'builtin/../../secret', petShare: 1, petAt: { x: 1.5, y: 2 } }));
+    refused.invoke('set-theme', 'moonwhite');
+    expect(refused.preferences()).toMatchObject({ petOn: false, pet: 'builtin/moon', petShare: false, petAt: null });
+    for (const pet of ['elsewhere/moon', 'user/', 'builtin/a\\b', 7]) {
+      const shell = await shellHarness(JSON.stringify({ pet }));
+      shell.invoke('set-theme', 'moonwhite');
+      expect(shell.preferences().pet, String(pet)).toBe('builtin/moon');
+    }
+  });
+
+  it('tells the main window the pets that can be chosen, from the application and the user, and which one is', async () => {
+    const shell = await shellHarness(JSON.stringify({ pet: 'user/mochi', petShare: true }));
+    shell.petsFound.push(found('builtin/moon'), found('user/mochi', 'user'));
+    expect(await shell.invoke('pets')).toEqual({
+      on: false, share: true, chosen: 'user/mochi',
+      pets: [
+        { key: 'builtin/moon', name: 'The builtin/moon', description: 'A pet.', origin: 'builtin' },
+        { key: 'user/mochi', name: 'The user/mochi', description: 'A pet.', origin: 'user' },
+      ],
+      folder: path.join(userData, 'pets'), stateFile: path.join(userData, 'pet-state.json'),
+    });
+    expect(shell.pets.listPets).toHaveBeenLastCalledWith([{ folder: builtIn, origin: 'builtin' }, { folder: path.join(userData, 'pets'), origin: 'user' }]);
+    // The one that was chosen is gone: the first one stands in for it, and none where there is none.
+    shell.petsFound.splice(1);
+    expect((await shell.invoke('pets')).chosen).toBe('builtin/moon');
+    shell.petsFound.splice(0);
+    expect((await shell.invoke('pets')).chosen).toBeNull();
+  });
+
+  it('shows and hides as it is asked, one at a time, and keeps that for the next start', async () => {
+    const shell = await shellHarness();
+    shell.petsFound.push(found('builtin/moon'), found('builtin/cat'));
+    await shell.invoke('set-pet', { on: true });
+    await shell.invoke('set-pet', { on: true });
+    expect(shell.windows.filter(each => String(each.options?.webPreferences?.preload).endsWith('pet-preload.cjs'))).toHaveLength(1);
+    expect(shell.preferences().petOn).toBe(true);
+    const pet = shell.petWindow();
+    await shell.invoke('set-pet', { chosen: 'builtin/cat' });
+    expect(shell.preferences().pet).toBe('builtin/cat');
+    expect(shell.sent.at(-1)).toEqual(['columbina-pet:sheet', { sheet: 'data:image/png;base64,builtin/cat', animations: null, name: 'The builtin/cat' }]);
+    // A pet that is not there is not chosen.
+    await shell.invoke('set-pet', { chosen: 'builtin/dog' });
+    expect(shell.preferences().pet).toBe('builtin/cat');
+    await shell.invoke('set-pet', { on: false });
+    expect(pet.destroy).toHaveBeenCalledTimes(1);
+    expect(shell.preferences().petOn).toBe(false);
+    await shell.invoke('set-pet', {});
+    expect(pet.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('tells other programs what the task does only where the user asked for it, and stops telling them', async () => {
+    const shell = await shellHarness();
+    shell.say('columbina:pet-state', { state: 'thinking', label: '', bubble: '' });
+    expect(shell.pets.writeState).not.toHaveBeenCalled();
+    await shell.invoke('set-pet', { share: true });
+    expect(shell.pets.writeState).toHaveBeenLastCalledWith(path.join(userData, 'pet-state.json'), { state: 'thinking', label: '', bubble: '' }, 4242, expect.any(Number));
+    shell.say('columbina:pet-state', { state: 'waiting', label: 'shell', bubble: 'Waiting for your yes to shell.' });
+    expect(shell.pets.writeState).toHaveBeenCalledTimes(2);
+    expect(shell.pets.writeState.mock.calls[1][1]).toEqual({ state: 'waiting', label: 'shell', bubble: 'Waiting for your yes to shell.' });
+    // Asked again, nothing changes.
+    await shell.invoke('set-pet', { share: true });
+    expect(shell.pets.writeState).toHaveBeenCalledTimes(2);
+    expect(shell.preferences().petShare).toBe(true);
+    await shell.invoke('set-pet', { share: false });
+    expect(shell.pets.forgetState).toHaveBeenCalledWith(path.join(userData, 'pet-state.json'));
+    shell.say('columbina:pet-state', { state: 'idle' });
+    expect(shell.pets.writeState).toHaveBeenCalledTimes(2);
+  });
+
+  it('hands on to the pet what the main window says of the task, and nothing that is no state', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true }));
+    shell.say('columbina:pet-state', { state: 'review', label: 'read', bubble: '', more: 'never' });
+    expect(shell.sent.at(-1)).toEqual(['columbina-pet:shown', { state: 'review', label: 'read', bubble: '' }]);
+    const before = shell.sent.length;
+    shell.say('columbina:pet-state', { state: 'dancing' });
+    shell.say('columbina:pet-state', null);
+    // Another frame of the main window says nothing to the pet.
+    shell.listeners.get('columbina:pet-state')!(shell.unrelated, { state: 'idle' });
+    expect(shell.sent.length).toBe(before);
+    expect(await shell.asPetWindow('ready')).toMatchObject({ shown: { state: 'review', label: 'read', bubble: '' } });
+  });
+
+  it('gives its window the picture of the pet that is chosen, and nothing where it cannot', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true }));
+    expect(await shell.asPetWindow('ready')).toEqual({ pet: null, shown: { state: 'idle', label: '', bubble: '' } });
+    shell.petsFound.push(found('builtin/moon'));
+    expect((await shell.asPetWindow('ready')).pet).toEqual({ sheet: 'data:image/png;base64,builtin/moon', animations: null, name: 'The builtin/moon' });
+    shell.pets.sheetOf.mockImplementationOnce(() => { throw new Error('the sheet is too large'); });
+    expect((await shell.asPetWindow('ready')).pet).toBeNull();
+  });
+
+  it('answers its own window only, and the main window only what is the main window', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true }));
+    for (const name of ['ready', 'click', 'drag', 'menu']) {
+      expect(() => shell.handlers.get(`columbina-pet:${name}`)!(shell.event), name).toThrow('IPC sender is not the window of the pet.');
+    }
+    const pet = shell.petWindow();
+    const asPet = { sender: pet.webContents, senderFrame: pet.webContents.mainFrame };
+    for (const name of ['pets', 'set-pet', 'open-pets-folder']) {
+      await expect(Promise.resolve().then(() => shell.handlers.get(`columbina:${name}`)!(asPet)), name).rejects.toThrow('IPC sender is not the application window.');
+    }
+    // A frame of the window that went to another page is not the pet.
+    pet.webContents.mainFrame.url = 'file:///elsewhere/pet.html';
+    expect(() => shell.handlers.get('columbina-pet:ready')!(asPet)).toThrow('IPC sender is not the window of the pet.');
+    pet.webContents.mainFrame.url = pathToFileURL(petPage).href;
+    expect(shell.handlers.get('columbina-pet:ready')!(asPet)).toMatchObject({ pet: null });
+    // Once it is gone, nothing answers as its window.
+    await shell.invoke('set-pet', { on: false });
+    expect(() => shell.handlers.get('columbina-pet:ready')!(asPet)).toThrow('IPC sender is not the window of the pet.');
+  });
+
+  it('shows the main window at a click', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true }));
+    shell.window.minimized = true;
+    await shell.asPetWindow('click');
+    expect(shell.window.restore).toHaveBeenCalled();
+    expect(shell.window.show).toHaveBeenCalled();
+    expect(shell.window.focus).toHaveBeenCalled();
+  });
+
+  it('is moved with the pointer, and keeps where it was put', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true }));
+    const pet = shell.petWindow();
+    pet.position = [300, 400];
+    // A drag that has not begun moves nothing.
+    await shell.asPetWindow('drag', 'move');
+    expect(pet.setPosition).not.toHaveBeenCalled();
+    Object.assign(shell.pointer, { x: 1000, y: 500 });
+    await shell.asPetWindow('drag', 'start');
+    Object.assign(shell.pointer, { x: 1010, y: 480 });
+    await shell.asPetWindow('drag', 'move');
+    expect(pet.setPosition).toHaveBeenLastCalledWith(310, 380);
+    expect(shell.preferences()?.petAt ?? null).toBeNull();
+    await shell.asPetWindow('drag', 'sideways');
+    expect(pet.setPosition).toHaveBeenCalledTimes(1);
+    Object.assign(shell.pointer, { x: 900, y: 520 });
+    await shell.asPetWindow('drag', 'end');
+    expect(pet.setPosition).toHaveBeenLastCalledWith(200, 420);
+    expect(shell.preferences().petAt).toEqual({ x: 200, y: 420 });
+    // The drag is over.
+    await shell.asPetWindow('drag', 'move');
+    expect(pet.setPosition).toHaveBeenCalledTimes(2);
+  });
+
+  it('opens a menu that shows Columbina or hides the pet, in the language of the page', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true, language: 'zh-CN' }));
+    const pet = shell.petWindow();
+    await shell.asPetWindow('menu');
+    const built = shell.menu.buildFromTemplate.mock.results.at(-1)!.value;
+    expect(built.template.map((item: { label: string }) => item.label)).toEqual(['打开 Columbina', '收起桌宠']);
+    expect(built.popup).toHaveBeenCalledWith({ window: pet });
+    built.template[0].click();
+    expect(shell.window.show).toHaveBeenCalled();
+    built.template[1].click();
+    expect(pet.destroy).toHaveBeenCalledTimes(1);
+    expect(shell.preferences().petOn).toBe(false);
+    expect(shell.sent.at(-1)).toEqual(['columbina:pet', { on: false }]);
+    for (const [language, words] of [['en', ['Open Columbina', 'Hide the pet']], ['ja', ['Columbina を開く', 'ペットをしまう']]] as const) {
+      const other = await shellHarness(JSON.stringify({ petOn: true, language }));
+      await other.asPetWindow('menu');
+      expect(other.menu.buildFromTemplate.mock.results.at(-1)!.value.template.map((item: { label: string }) => item.label)).toEqual(words);
+    }
+  });
+
+  it('goes with the main window, and leaves the programs that follow the task at rest when the application ends', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true, petShare: true }));
+    const pet = shell.petWindow();
+    shell.say('columbina:pet-state', { state: 'thinking', label: '', bubble: '' });
+    shell.window.emit('closed');
+    expect(pet.destroy).toHaveBeenCalledTimes(1);
+    shell.app.emit('will-quit');
+    expect(shell.pets.writeState).toHaveBeenLastCalledWith(path.join(userData, 'pet-state.json'), { state: 'idle', label: '', bubble: '' }, 4242, expect.any(Number));
+    const quiet = await shellHarness();
+    quiet.app.emit('will-quit');
+    expect(quiet.pets.writeState).not.toHaveBeenCalled();
+  });
+
+  it('keeps the window that it opened last, where one that was put away says late that it closed', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true }));
+    const first = shell.petWindow();
+    await shell.invoke('set-pet', { on: false });
+    await shell.invoke('set-pet', { on: true });
+    first.emit('closed');
+    expect(await shell.asPetWindow('ready')).toMatchObject({ shown: { state: 'idle' } });
+  });
+
+  it('forgets its window where the window closed by itself, and makes another when it is asked', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true }));
+    const pet = shell.petWindow();
+    pet.emit('closed');
+    await shell.invoke('set-pet', { on: true });
+    expect(shell.windows.filter(each => String(each.options?.webPreferences?.preload).endsWith('pet-preload.cjs'))).toHaveLength(2);
+    const again = shell.petWindow();
+    // An old window that closes late takes nothing of the new one.
+    pet.emit('closed');
+    again.isDestroyed = () => true;
+    shell.window.emit('closed');
+    expect(again.destroy).not.toHaveBeenCalled();
+    expect(pet.destroy).not.toHaveBeenCalled();
+  });
+
+  it('opens the folder for pets of the user, made where it is not there', async () => {
+    const shell = await shellHarness();
+    await shell.invoke('open-pets-folder');
+    expect(shell.mkdirSync).toHaveBeenCalledWith(path.join(userData, 'pets'), { recursive: true });
+    expect(shell.system.openPath).toHaveBeenCalledWith(path.join(userData, 'pets'));
+    shell.system.openPath.mockResolvedValueOnce('No application opens folders.');
+    await expect(shell.invoke('open-pets-folder')).rejects.toThrow('No application opens folders.');
   });
 });

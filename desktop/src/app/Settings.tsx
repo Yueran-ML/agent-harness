@@ -15,6 +15,7 @@ import { AssistantPanel } from './AssistantPanel';
 import { BalanceLine } from './BalanceLine';
 import { GitHubAccount } from './GitHubSignIn';
 import { ModelPicker } from './ModelPicker';
+import { PetSettings } from './PetSettings';
 import { effortOf, type Effort } from './effort';
 import { Sheet } from './Sheet';
 import { languages, useWords, type LanguageChoice } from './locale';
@@ -310,6 +311,8 @@ export function Settings({
       <h3>{words.label.qq.title}</h3>
       <AssistantPanel kind="qq" language={shownLanguage} onOpen={onOpen} />
     </section>
+
+    <PetSettings />
 
     <section className="setting" ref={at('permissions')}>
       <h3>{words.label.permissions}</h3>

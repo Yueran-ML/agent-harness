@@ -85,4 +85,10 @@ contextBridge.exposeInMainWorld('columbina', {
   setUpQq: (asked) => ipcRenderer.invoke('columbina:set-up-qq', { language: asked?.language }),
   onQq: (callback) => subscribe('columbina:qq', callback),
   qqThinking: (asked) => ipcRenderer.invoke('columbina:qq-thinking', { model: asked?.model ?? null, effort: asked?.effort ?? null }),
+  pets: () => ipcRenderer.invoke('columbina:pets'),
+  setPet: (asked) => ipcRenderer.invoke('columbina:set-pet', { on: asked?.on, chosen: asked?.chosen, share: asked?.share }),
+  openPetsFolder: () => ipcRenderer.invoke('columbina:open-pets-folder'),
+  // What the task does, for the pet. It is said often, and nothing waits for an answer.
+  petState: (shown) => ipcRenderer.send('columbina:pet-state', { state: shown?.state, label: shown?.label, bubble: shown?.bubble }),
+  onPet: (callback) => subscribe('columbina:pet', callback),
 });

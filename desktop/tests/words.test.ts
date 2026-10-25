@@ -43,6 +43,8 @@ const samples: Record<string, unknown[][]> = {
   'label.verb.other': [['fetch']],
   'hint.starting': [['F:\\work\\project']],
   'hint.keysRunning': [['Ctrl'], ['⌘']],
+  'hint.pet.share': [['C:\\Users\\me\\AppData\\Roaming\\Columbina\\pet-state.json']],
+  'hint.pet.waiting': [['shell'], ['']],
   'hint.reading': [[0, 4200], [1500, 4200]],
   'hint.consentOther': [['fetch']],
   'hint.scope.anyCall': [['fetch']],

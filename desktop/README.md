@@ -51,6 +51,12 @@ runs a command finishes first. If the turn is stopped first, what was not read c
 back into the input field. If the task is left first, it is the draft of that task when the task
 is opened again.
 
+A pet can stand on the desktop, over the other windows, and follow the task: it thinks while
+the model does, reads while a tool runs, waits with you for a yes and waves when a turn is done.
+A click on it brings the window back. Three pets come with the application, the settings show
+and choose one, and a pet of your own is a folder put in the folder that they open. The settings
+can also tell other programs what the task is doing. See [Pets](../docs/pets.md).
+
 Files go with a message through the paperclip at the foot of the field, or when they are
 dropped on it: ten at most, of up to 25 MB each. Each is shown with its name and size, and
 for a picture the field says that the model gets the file and does not see it. When the

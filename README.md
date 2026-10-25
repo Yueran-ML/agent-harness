@@ -250,6 +250,8 @@ Each assistant may ask a model of its own, and think as hard as you choose for i
   shaped it, how it is tested and how well it works ([in Chinese](docs/report.zh-CN.md)).
 - [The tables of the benchmark](docs/bench/README.md) give its results with two models of
   DeepSeek, part by part, and what they cost.
+- [Pets](docs/pets.md) says how to make a pet for the desktop application, and how a program of
+  your own can follow what the task is doing.
 
 ## License
 

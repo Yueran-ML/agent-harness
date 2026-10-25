@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- The desktop application can show a pet over the other windows that follows the task that is
+  open: it thinks, reads while a tool runs, waits with the user for a yes, waves when a turn is
+  done and shows a failure. A click brings the window back, and a drag moves it. Three pets of
+  pixel art come with it, drawn by a script of the repository. A pet of the user's own is a
+  folder with `pet.json` and a sheet of frames in the layout of the pets of Codex, and other
+  programs can follow the task through a file of its state. docs/pets.md says how.
 - What the user says while a turn runs can be read at once, with Ctrl+Enter in the desktop
   application and with `now` in `session/steer`: the step that runs is cut short, and the turn
   goes on with what was said, its steps counted on. What had arrived of the reply is kept and

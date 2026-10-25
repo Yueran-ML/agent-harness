@@ -714,6 +714,16 @@ export const en = {
       now: 'Check now',
     },
 
+    pet: {
+      title: 'Desktop pet',
+      show: 'Show a pet that follows the task',
+      choose: 'Pet',
+      share: 'Tell other pet programs what the task is doing',
+      openFolder: 'Open the folder for your own pets',
+      builtin: { moon: 'Little Moon', cat: 'Little Cat', star: 'Little Star' },
+      mine: 'yours',
+    },
+
     confirmFullAccess: 'Allow full access?',
     confirmWrite: 'Let Columbina change files?',
     allowFullAccess: 'Allow full access',
@@ -818,6 +828,15 @@ export const en = {
         unreadable: 'No list of releases came from GitHub.',
       },
       sent: 'The check asks GitHub for the list of releases of Columbina, and sends nothing else.',
+    },
+    pet: {
+      about: 'The pet stands over the other windows. A click on it brings Columbina back, and it can be dragged where it suits you.',
+      share: (file: string) => `The state of the task, and the name of a tool, are written to ${file} for other programs. Nothing of the conversation is.`,
+      own: 'A pet of your own is a folder with pet.json and a sheet of frames, in the layout of the pets of Codex. Put it in the folder, and it can be chosen here.',
+      none: 'No pet can be shown.',
+      waiting: (tool: string) => (tool ? `Waiting for your yes to ${tool}.` : 'Waiting for your yes.'),
+      done: 'Done.',
+      failed: 'Something went wrong.',
     },
     openingUnavailable: 'The opening cannot be played.',
 

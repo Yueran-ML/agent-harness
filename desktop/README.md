@@ -44,8 +44,11 @@ what can be done next.
 
 When the agent needs a yes, a card with the full command or path stands above the
 input field, and the conversation stays readable. What is sent while a turn runs is
-read at its next step. If the turn is stopped first, what was not read comes back into
-the input field. If the task is left first, it is the draft of that task when the task
+read at its next step. Sent with Ctrl+Enter (⌘Enter on macOS), it is read at once: the
+reply that is being written stops, what had arrived of it stays, and the turn goes on
+with what was said. A tool that only reads is stopped, and one that changes files or
+runs a command finishes first. If the turn is stopped first, what was not read comes
+back into the input field. If the task is left first, it is the draft of that task when the task
 is opened again.
 
 Files go with a message through the paperclip at the foot of the field, or when they are
@@ -85,7 +88,7 @@ view that it was last shown in.
 | Enter | Sends what is written. Shift+Enter starts a new line |
 | `/` | Opens the list of commands. Up and Down choose, Enter or Tab takes one, Esc closes the list |
 | Esc, twice | Stops the turn that is under way |
-| Ctrl+Enter | Says yes, for this once, to what the agent asks |
+| Ctrl+Enter | Says yes, for this once, to what the agent asks. Where it asks nothing, sends what is written, and while a turn runs has it read at once |
 | Ctrl+N | Begins a new task |
 | Ctrl+B | Shows or hides the list of tasks |
 | Ctrl+K | Goes to the input field. On an empty field it opens the list of commands |

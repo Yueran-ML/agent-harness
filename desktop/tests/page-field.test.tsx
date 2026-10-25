@@ -249,7 +249,7 @@ describe('the field', () => {
   ];
   const able = { protocol: 1, server: { name: 'columbina', version: '0.1.0' }, cwd: 'F:\\work', commands };
   const keysIdle = 'Enter sends. Shift+Enter starts a new line. A slash opens the commands.';
-  const keysRunning = 'What you send now is read at the next step. Esc, pressed twice, stops the turn.';
+  const keysRunning = 'What you send with Ctrl+Enter is read at once, and with Enter at the next step. Esc, pressed twice, stops the turn.';
   const escAgain = 'Press Esc once more to stop the turn.';
 
   /** The field with what is written in it kept by whoever shows it, as the page does. */
@@ -321,9 +321,9 @@ describe('the field', () => {
     const sent = taken();
     render(<Held workspace={workspaceWith()} first="Fix the parser." sent={sent} />);
     await act(async () => {
-      // Shift+Enter starts a new line, and Ctrl+Enter answers a question.
+      // Shift+Enter starts a new line, and Alt+Enter is no key of the field.
       expect(press('Enter', { shiftKey: true })).toBe(false);
-      expect(press('Enter', { ctrlKey: true })).toBe(false);
+      expect(press('Enter', { altKey: true })).toBe(false);
       // An input method that is putting characters together ends its work with Enter.
       expect(press('Enter', { isComposing: true })).toBe(false);
       expect(press('Enter', { keyCode: 229 })).toBe(false);
@@ -333,6 +333,26 @@ describe('the field', () => {
       expect(press('a')).toBe(false);
     });
     expect(sent).not.toHaveBeenCalled();
+  });
+
+  it('sends with Ctrl+Enter, to be read at once while a turn runs, unless a question waits', async () => {
+    const sent = taken();
+    const { rerender } = render(<Held workspace={workspaceWith()} first="Fix the parser." sent={sent} />);
+    await act(async () => { expect(press('Enter', { ctrlKey: true })).toBe(true); });
+    expect(sent.mock.calls).toEqual([['Fix the parser.']]);
+
+    rerender(<Held workspace={workspaceWith({ status: atWork })} first="Fix the parser." sent={sent} />);
+    await act(async () => { expect(press('Enter', { ctrlKey: true })).toBe(true); });
+    expect(sent.mock.calls).toEqual([['Fix the parser.'], ['Fix the parser.', true]]);
+
+    // The key answers the question, and the field leaves it alone.
+    const approval: PendingApproval = {
+      requestId: 7, session_id: 's-1', call_id: 'c-1', tool: 'bash', summary: 'Run a command.',
+      reason: 'The command is not among those that run without a question.', target: 'npm test', standing: null,
+    };
+    rerender(<Held workspace={workspaceWith({ status: atWork, approval })} first="Fix the parser." sent={sent} />);
+    await act(async () => { expect(press('Enter', { ctrlKey: true })).toBe(false); });
+    expect(sent).toHaveBeenCalledTimes(2);
   });
 
   it('opens the list of commands at a slash, and narrows it with what is written', () => {
@@ -488,6 +508,8 @@ describe('the field', () => {
     expect(box().placeholder).toBe('Add something for its next step');
     expect(box().form?.dataset.running).toBe('true');
     expect(hint()).toBe(keysRunning);
+    // A narrow field cuts the line short. It is shown whole on the way over it.
+    expect(one('composer-hint').title).toBe(keysRunning);
     expect(one('stop').textContent).toBe('Stop');
     fireEvent.click(one('stop'));
     expect(workspace.cancel).toHaveBeenCalledTimes(1);

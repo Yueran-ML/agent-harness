@@ -172,6 +172,17 @@ describe('the way to the answer of a turn', () => {
     expect(marked('last-thought')).toEqual([]);
   });
 
+  it('says of a reply that what the user said cut it short', () => {
+    const [kind, data] = reply('Reading a');
+    const cut: Written = [kind, { ...data, finish_reason: null }];
+    drawn(workspaceWith({
+      events: log(begin(1), user('Read a.'), cut, user('No, b.', 'steer'), reply('Reading b.'), end(1)),
+    }));
+    expect(marked('steered')).toEqual([]);
+    fireEvent.click(marked('steps-toggle')[0]);
+    expect(marked('steered').map(part => part.textContent)).toEqual(['Turned to what you said']);
+  });
+
   it('is no line at all where the model answered at once', () => {
     drawn(workspaceWith({ events: log(begin(1), user('ask'), reply('Done.'), end(1)) }));
     expect(marked('steps-toggle')).toEqual([]);

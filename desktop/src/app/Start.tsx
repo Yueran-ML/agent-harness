@@ -91,7 +91,7 @@ function FirstPage({ workspace, github, onOpenProject, onOpenRecent, onOpenChat,
     >
       <Check size={13} aria-hidden="true" /><span>{steps.line}</span>
     </button>}
-    {shown && (model.kind === 'ready' || model.kind === 'missing') && <ol className="steps" data-test="first-steps">
+    {shown && (model.kind === 'ready' || model.kind === 'missing') && <ol className="first-steps" data-test="first-steps">
       <li className="step" data-done={modelReady ? '' : undefined} data-test="step-model">
         <span className="step-mark" aria-hidden="true">{modelReady ? <Check size={13} /> : 1}</span>
         <div className="step-body">

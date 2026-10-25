@@ -42,6 +42,7 @@ const samples: Record<string, unknown[][]> = {
   'label.context': [[0], [87]],
   'label.verb.other': [['fetch']],
   'hint.starting': [['F:\\work\\project']],
+  'hint.keysRunning': [['Ctrl'], ['⌘']],
   'hint.reading': [[0, 4200], [1500, 4200]],
   'hint.consentOther': [['fetch']],
   'hint.scope.anyCall': [['fetch']],

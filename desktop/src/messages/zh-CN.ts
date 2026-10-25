@@ -548,6 +548,7 @@ export const zhCN: Messages = {
     writing: '正在写',
     preparing: '正在准备调用',
     saidOnTheWay: '中途补充',
+    steeredAway: '已按你的话转向',
     waiting: '排队中',
     summary: '较早对话的摘要',
 
@@ -615,7 +616,7 @@ export const zhCN: Messages = {
 
   hint: {
     keysIdle: '回车发送，Shift+回车换行，输入斜杠打开命令。',
-    keysRunning: '现在发送的话会在下一步被读到。连按两次 Esc 停下回合。',
+    keysRunning: (key: string) => `${key}+回车发送的话马上被读到，回车发送的等下一步。连按两次 Esc 停下回合。`,
     escAgain: '再按一次 Esc 停下回合。',
     returned: '你发出的话还没有被读到，已经放回输入框。',
     confirmLeave: 'Columbina 还在处理这个任务，离开会停下这个回合。',

@@ -392,20 +392,23 @@ export function useWorkspace() {
 
   /**
    * Give the agent something to read: a task while it rests, words for its next step while it
-   * works. Whatever the text looks like, it is never carried out as a command.
+   * works. With `now` the step that runs is cut short, so that the agent reads them at once.
+   * Whatever the text looks like, it is never carried out as a command.
    */
-  const prompt = useCallback(async (text: string) => {
+  const prompt = useCallback(async (text: string, now = false) => {
     const rpc = client.current;
     if (!rpc || !text.trim()) return false;
-    return sent(() => rpc.request(status?.status === 'running' ? 'session/steer' : 'session/prompt', { text }));
+    if (status?.status !== 'running') return sent(() => rpc.request('session/prompt', { text }));
+    return sent(() => rpc.request('session/steer', now ? { text, now } : { text }));
   }, [sent, status]);
 
   /**
    * Send a line: a command if it begins with a slash, and input for the agent otherwise.
-   * `quiet` keeps what a command answers out of the conversation, see `command`.
+   * `quiet` keeps what a command answers out of the conversation, see `command`. `now` has a
+   * turn that runs read the input at once.
    */
-  const send = useCallback(async (text: string, quiet = false) => {
-    if (!isCommand(text)) return prompt(text);
+  const send = useCallback(async (text: string, quiet = false, now = false) => {
+    if (!isCommand(text)) return prompt(text, now);
     if (!client.current) return false;
     return sent(() => command(text.trim(), quiet));
   }, [command, prompt, sent]);

@@ -5,7 +5,7 @@ const key = (name: string, given: Partial<Key> = {}): Key => ({
   key: name, shift: false, ctrl: false, alt: false, meta: false, repeat: false, composing: false, ...given,
 });
 const state = (given: Partial<ComposerState> = {}): ComposerState => ({
-  listOpen: false, running: false, cancelling: false, armed: false, ...given,
+  listOpen: false, running: false, cancelling: false, armed: false, asking: false, ...given,
 });
 const modifiers: Partial<Key>[] = [{ shift: true }, { ctrl: true }, { alt: true }, { meta: true }];
 
@@ -92,10 +92,24 @@ describe('a key in the field', () => {
       expect(composerKey(key('Enter', { shift: true }), state())).toBeNull();
     });
 
-    it('does not send with Enter and another key held down', () => {
-      for (const held of [{ ctrl: true }, { alt: true }, { meta: true }]) {
-        expect(composerKey(key('Enter', held), state())).toBeNull();
+    it('does not send with Enter and Alt held down', () => {
+      expect(composerKey(key('Enter', { alt: true }), state())).toBeNull();
+      expect(composerKey(key('Enter', { alt: true }), state({ running: true }))).toBeNull();
+    });
+
+    it('sends with Ctrl+Enter, and while a turn runs has what it sends read at once', () => {
+      for (const held of [{ ctrl: true }, { meta: true }]) {
+        expect(composerKey(key('Enter', held), state())).toBe('send');
+        expect(composerKey(key('Enter', held), state({ running: true }))).toBe('sendNow');
+        expect(composerKey(key('Enter', { ...held, shift: true }), state({ running: true }))).toBeNull();
+        expect(composerKey(key('Enter', { ...held, repeat: true }), state({ running: true }))).toBeNull();
+        expect(composerKey(key('Enter', { ...held, composing: true }), state({ running: true }))).toBeNull();
       }
+    });
+
+    it('leaves Ctrl+Enter to a question of the agent that waits', () => {
+      expect(composerKey(key('Enter', { ctrl: true }), state({ running: true, asking: true }))).toBeNull();
+      expect(composerKey(key('Enter', { ctrl: true }), state({ asking: true }))).toBeNull();
     });
 
     it('does not send again while Enter is held down', () => {

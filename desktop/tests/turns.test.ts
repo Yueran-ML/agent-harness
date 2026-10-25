@@ -138,7 +138,7 @@ describe('the record of a turn', () => {
     // An item that names a turn which never began: the turn is made up from the item.
     const [made] = turns(groupTurns({
       ...emptyProjection(),
-      items: [{ id: 'event-4', seq: 4, time: 1400, turn: 9, type: 'assistant', text: 'hello', reasoning: '', interrupted: false }],
+      items: [{ id: 'event-4', seq: 4, time: 1400, turn: 9, type: 'assistant', text: 'hello', reasoning: '', interrupted: false, steered: false }],
     }));
     expect(made).toMatchObject({ number: 9, provider: null });
   });

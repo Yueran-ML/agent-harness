@@ -652,6 +652,7 @@ export const en = {
     writing: 'Writing',
     preparing: 'Preparing a call',
     saidOnTheWay: 'Added on the way',
+    steeredAway: 'Turned to what you said',
     waiting: 'Waiting',
     summary: 'Earlier messages, summed up',
 
@@ -724,7 +725,7 @@ export const en = {
   /** Sentences that explain: under a field, in an empty place, while something is waited for. */
   hint: {
     keysIdle: 'Enter sends. Shift+Enter starts a new line. A slash opens the commands.',
-    keysRunning: 'What you send now is read at the next step. Esc, pressed twice, stops the turn.',
+    keysRunning: (key: string) => `What you send with ${key}+Enter is read at once, and with Enter at the next step. Esc, pressed twice, stops the turn.`,
     escAgain: 'Press Esc once more to stop the turn.',
     returned: 'What you had sent was not read. It is back in the field.',
     confirmLeave: 'Columbina is still at work on this task. Leaving it stops the turn.',

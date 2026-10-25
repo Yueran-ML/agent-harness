@@ -663,6 +663,18 @@ describe('what the user sends', () => {
     ]);
   });
 
+  it('is read at once by an agent at work where it is to be, and is a task for one at rest all the same', async () => {
+    const service = new Service();
+    const { now } = await started(service);
+    await act(async () => { await now().send('Fix the parser.', false, true); });
+    act(() => { service.tell('session.status', statusOf({ status: 'running' })); });
+    await act(async () => { await now().send('Mind the tests.', false, true); });
+    expect(service.asked.slice(-2).map(one => [one.method, one.params])).toEqual([
+      ['session/prompt', { text: 'Fix the parser.' }],
+      ['session/steer', { text: 'Mind the tests.', now: true }],
+    ]);
+  });
+
   it('is nothing where it is made of blanks', async () => {
     const service = new Service();
     const { now } = await started(service);

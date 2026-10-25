@@ -22,6 +22,8 @@ export interface AssistantItem extends ItemBase {
   text: string;
   reasoning: string;
   interrupted: boolean;
+  /** Whether it was cut short for what the user said, and the turn went on with that. */
+  steered: boolean;
 }
 
 /** A question that was put about a call before it ran. */
@@ -205,6 +207,20 @@ function inputTokens(usage: Usage): number {
 }
 
 /**
+ * Mark the reply that what the user said cut short. It is the last thing shown, with nothing
+ * after it but its calls, and it was cut short: a turn goes on after such a reply only for that.
+ * A turn that ended with it says so after it.
+ */
+function steeredAway(items: ConversationItem[]): void {
+  for (let at = items.length - 1; at >= 0; at -= 1) {
+    const item = items[at];
+    if (item.type === 'tool') continue;
+    if (item.type === 'assistant' && item.interrupted) item.steered = true;
+    return;
+  }
+}
+
+/**
  * Rebuild presentation from the append-only log; model surface replacements do not erase history.
  *
  * Args:
@@ -282,6 +298,7 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
           projection.items.push(note);
           cutOff?.notes.push(note);
         } else if (!source.startsWith('context/') && !isReplacement(event)) {
+          if (source === 'steer') steeredAway(projection.items);
           projection.items.push({ ...base, type: 'user', source, text });
         }
         // Whatever somebody said stands between: the reply that comes next answers that. What
@@ -309,6 +326,7 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
             text: (began?.text ?? '') + text,
             reasoning: [began?.reasoning, reasoning].filter(Boolean).join('\n\n'),
             interrupted: data.finish_reason === null,
+            steered: false,
           };
           projection.items.push(whole);
           said = whole;

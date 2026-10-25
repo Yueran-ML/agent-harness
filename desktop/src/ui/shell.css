@@ -1414,7 +1414,7 @@ select.field {
 }
 
 /* --- The first steps, on the page before any project is open. */
-.steps {
+.first-steps {
   width: min(100vw - 2 * var(--s5), 560px);
   margin-top: var(--s2);
   display: flex;
@@ -1496,7 +1496,7 @@ select.field {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .steps {
+  .first-steps {
     animation: none;
   }
 }

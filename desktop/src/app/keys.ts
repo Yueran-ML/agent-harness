@@ -53,19 +53,25 @@ export interface ComposerState {
   cancelling: boolean;
   /** Whether Esc was pressed once a moment ago. */
   armed: boolean;
+  /** Whether a question of the agent waits for an answer. */
+  asking: boolean;
 }
 
 /**
  * What a key does in the field, or null for a key that the field leaves to the
  * browser: `next` and `previous` move through the list of commands, `take`
  * writes the chosen command into the field, `arm` keeps a first Esc in mind,
- * and `stop` stops the turn.
+ * `stop` stops the turn, and `sendNow` sends what is written to be read at
+ * once, so that the turn turns to it in the middle of its step.
  */
-export type ComposerAction = 'next' | 'previous' | 'take' | 'closeList' | 'send' | 'arm' | 'stop';
+export type ComposerAction = 'next' | 'previous' | 'take' | 'closeList' | 'send' | 'sendNow' | 'arm' | 'stop';
 
 export function composerKey(key: Key, state: ComposerState): ComposerAction | null {
+  // Ctrl+Enter answers a question where one waits. Otherwise it sends, and while a turn runs
+  // what it sends is read at once.
+  if (isYes(key) && !state.listOpen && !state.asking) return state.running ? 'sendNow' : 'send';
   // A key with another one held down is meant for something else: Shift+Tab goes back,
-  // Shift+Enter is a new line, Ctrl+Enter answers a question.
+  // Shift+Enter is a new line.
   if (key.composing || !plain(key)) return null;
   if (state.listOpen) {
     if (key.key === 'ArrowDown') return 'next';

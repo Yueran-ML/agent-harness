@@ -10,6 +10,7 @@ import { isPicture, sizeOf, type Attachment, type Refused } from './attachments'
 import { effortOf, type Effort } from './effort';
 import { composerKey, keyOf } from './keys';
 import { useWords } from './locale';
+import { modifier } from './system';
 import { goneWords, servicesToSwitchTo } from './tell';
 
 /** How long the first Esc of two stays in mind. */
@@ -23,7 +24,8 @@ const MOST_HEIGHT = 220;
  *
  * Args:
  *   draft, onDraft: What is written and not sent. The caller keeps it, one for each task.
- *   onSend: Send a line. It resolves to whether the line was taken.
+ *   onSend: Send a line, with `now` to have a turn that runs read it at once. It resolves to
+ *     whether the line was taken.
  *   returned: Whether input that was dropped unread has just been put back into the field.
  *   declined: Whether the user has just said no to something that the agent asked for.
  *   commandsAsked: How often the list of commands was asked for from outside the field.
@@ -47,7 +49,7 @@ export function Composer({
   workspace: Workspace;
   draft: string;
   onDraft: (text: string) => void;
-  onSend: (text: string) => Promise<boolean>;
+  onSend: (text: string, now?: boolean) => Promise<boolean>;
   field: RefObject<HTMLTextAreaElement | null>;
   returned: boolean;
   declined: boolean;
@@ -127,11 +129,11 @@ export function Composer({
   }, [draft, field, unavailable, workspace.hasProject, workspace.loading]);
 
   const submitting = useRef(false);
-  const submit = async () => {
+  const submit = async (now = false) => {
     if (!canSend || submitting.current) return;
     submitting.current = true;
     try {
-      await onSend(draft);
+      await (now ? onSend(draft, true) : onSend(draft));
     } finally {
       submitting.current = false;
     }
@@ -142,7 +144,8 @@ export function Composer({
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    const action = composerKey(keyOf(event), { listOpen, running, cancelling: workspace.cancelling, armed });
+    const asking = workspace.approval !== null;
+    const action = composerKey(keyOf(event), { listOpen, running, cancelling: workspace.cancelling, armed, asking });
     if (action === null) return;
     event.preventDefault();
     switch (action) {
@@ -160,6 +163,9 @@ export function Composer({
         break;
       case 'send':
         void submit();
+        break;
+      case 'sendNow':
+        void submit(true);
         break;
       case 'arm':
         setArmed(true);
@@ -185,7 +191,7 @@ export function Composer({
           : declined && running ? words.hint.afterNo
             : attachments.length > 0 && isCommand(draft) ? words.hint.attachments.command
               : running && draft.trim().startsWith('/') ? words.hint.commandsWhenIdle
-                : running ? words.hint.keysRunning : words.hint.keysIdle;
+                : running ? words.hint.keysRunning(modifier()) : words.hint.keysIdle;
 
   // What a person said and nothing has read yet. What a plugin put in is not shown here.
   const waiting = [...projection.queues['next-turn'], ...projection.queues['next-step']]
@@ -347,7 +353,8 @@ export function Composer({
           onChoose={onChooseEffort}
           afterChoice={() => field.current?.focus()}
         />}
-        <p className="caption composer-hint" id="composer-hint" data-test="composer-hint" aria-live="polite">{hint}</p>
+        {/* A narrow window cuts the line short, and the whole of it is shown on the way over it. */}
+        <p className="caption composer-hint" id="composer-hint" data-test="composer-hint" aria-live="polite" title={hint}>{hint}</p>
         {running && <button
           type="button"
           className="btn stop"

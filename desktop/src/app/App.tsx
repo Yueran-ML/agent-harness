@@ -251,14 +251,14 @@ export default function App() {
 
   // --- Sending.
   const state = { unavailable, sending: workspace.sending, running };
-  const send = async (line: string, quiet = false): Promise<boolean> => {
+  const send = async (line: string, quiet = false, now = false): Promise<boolean> => {
     if (!canSubmitInput(line, state)) return false;
     const preset = permissionPresetFromCommand(line);
     if (preset && permissionNeedsConfirmation(preset, status)) {
       setPendingPermission({ preset, line, sessionId: workspace.sessionId, quiet });
       return false;
     }
-    return workspace.send(line, quiet);
+    return now ? workspace.send(line, quiet, true) : workspace.send(line, quiet);
   };
   /** What was sent from a task is no draft of it any more, wherever the user is by the time the answer comes. */
   const forget = (from: Place | null, line: string) => {
@@ -269,12 +269,12 @@ export default function App() {
       setReturned(false);
     } else drafts.current.sent(from, line);
   };
-  const sendDraft = async (line: string): Promise<boolean> => {
+  const sendDraft = async (line: string, now = false): Promise<boolean> => {
     const from = placeNow.current;
     const files = attachedNow.current;
     // A command takes no files: they wait for the next message.
     if (files.length === 0 || isCommand(line)) {
-      const taken = await send(line);
+      const taken = await send(line, false, now);
       if (taken) forget(from, line);
       return taken;
     }
@@ -291,7 +291,7 @@ export default function App() {
       workspace.fail(`${words.hint.attachments.notKept} ${sentenceOf(said)}`.trim());
       return false;
     }
-    const taken = await send(withAttachments(line, words.label.attachments.heading, kept));
+    const taken = await send(withAttachments(line, words.label.attachments.heading, kept), false, now);
     if (!taken) return false;
     forget(from, line);
     // The files went with the message. The shell lets go of them, and the task has them no more.

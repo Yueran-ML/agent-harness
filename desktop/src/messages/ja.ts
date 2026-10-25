@@ -597,6 +597,7 @@ export const ja: Messages = {
     writing: '執筆中',
     preparing: '呼び出しを準備中',
     saidOnTheWay: '途中で追加',
+    steeredAway: 'あなたの言葉で方向を変えました',
     waiting: '読み取り待ち',
     summary: 'これまでの対話の要約',
 
@@ -664,7 +665,7 @@ export const ja: Messages = {
 
   hint: {
     keysIdle: 'Enter で送信、Shift+Enter で改行、スラッシュでコマンドを開きます。',
-    keysRunning: '今送った内容は、次のステップで読まれます。Esc を 2 回押すと、ターンが止まります。',
+    keysRunning: (key: string) => `${key}+Enter で送った内容はすぐに、Enter で送った内容は次のステップで読まれます。Esc を 2 回押すと、ターンが止まります。`,
     escAgain: 'もう一度 Esc を押すと、ターンが止まります。',
     returned: '送った内容は読まれなかったため、入力欄に戻しました。',
     confirmLeave: 'Columbina はまだこのタスクの作業中です。離れると、ターンは止まります。',

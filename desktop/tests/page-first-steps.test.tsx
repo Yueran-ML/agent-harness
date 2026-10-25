@@ -3,6 +3,7 @@
  * The first steps on the page before any project is open: a model service with its key, GitHub
  * if the user likes, and the project, with a workspace and a sign-in that the test holds in its hand.
  */
+import { readFileSync } from 'node:fs';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StartHead } from '../src/app/Start';
@@ -48,6 +49,19 @@ function page(workspace: Workspace, github: GitHub = gitHubWith()) {
       drawn.rerender(<StartHead workspace={next} github={nextGitHub} {...calls} firstButton={firstButton} />),
   };
 }
+
+describe('the look of the first steps', () => {
+  it('is theirs alone, and not that of the steps of a turn', () => {
+    page(before({ services: listed() }), gitHubWith());
+    expect(one('first-steps').className).toBe('first-steps');
+    // The steps of a turn are styled with the conversation, and nowhere else: a block of the shell
+    // that named them as well gave them a frame and an entrance that hid them where it did not run.
+    // The tests run in the folder of the application.
+    const shell = readFileSync('src/ui/shell.css', 'utf8');
+    expect(shell).toMatch(/^\.first-steps \{[^}]*animation: rise/m);
+    expect(shell).not.toMatch(/^\s*\.steps\s*\{/m);
+  });
+});
 
 describe('a chat on the first page', () => {
   it('is offered with the steps, and under the way into a project once they are done', () => {

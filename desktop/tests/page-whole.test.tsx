@@ -174,6 +174,15 @@ describe('what is written and not sent', () => {
     expect(box().value).toBe('');
   });
 
+  it('is read at once where it was sent with Ctrl+Enter while a turn runs', async () => {
+    const task = firstAtWork({ send: vi.fn(async () => true) });
+    page(task);
+    write('Mind the build.');
+    await act(async () => { fireEvent.keyDown(box(), { key: 'Enter', ctrlKey: true }); });
+    expect(called(task.send)).toEqual([['Mind the build.', false, true]]);
+    expect(box().value).toBe('');
+  });
+
   it('is not sent while nothing can be sent', async () => {
     const task = first({ sending: true });
     page(task);
@@ -1050,7 +1059,7 @@ describe('a question of the agent, on the page', () => {
     expect(hint()).toBe('It was not done. You can tell Columbina how to go about it instead.');
     // Once something is written, the field says what its keys do again.
     write('Use the other script.');
-    expect(hint()).toBe('What you send now is read at the next step. Esc, pressed twice, stops the turn.');
+    expect(hint()).toBe('What you send with Ctrl+Enter is read at once, and with Enter at the next step. Esc, pressed twice, stops the turn.');
   });
 
   it('says nothing of a no once the turn is over', () => {
@@ -1062,7 +1071,7 @@ describe('a question of the agent, on the page', () => {
     expect(hint()).toBe(keysIdle);
     // Nor in the turn after it.
     now({ ...task, approval: null });
-    expect(hint()).toBe('What you send now is read at the next step. Esc, pressed twice, stops the turn.');
+    expect(hint()).toBe('What you send with Ctrl+Enter is read at once, and with Enter at the next step. Esc, pressed twice, stops the turn.');
   });
 
   it('passes on a yes, with whether it holds for longer', () => {
@@ -1071,7 +1080,7 @@ describe('a question of the agent, on the page', () => {
     settle();
     fireEvent.click(one('consent-always'));
     expect(called(task.answer)).toEqual([[7, 'allowed-once', true]]);
-    expect(hint()).toBe('What you send now is read at the next step. Esc, pressed twice, stops the turn.');
+    expect(hint()).toBe('What you send with Ctrl+Enter is read at once, and with Enter at the next step. Esc, pressed twice, stops the turn.');
   });
 
   it('has a card of its own for every question, and stops the turn from the card', () => {

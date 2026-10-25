@@ -209,7 +209,7 @@ describe('durable event projection', () => {
       // The model wrote on where it had stopped, so the two are one text: a list or a block
       // of code that the limit fell into is whole only when they are put together.
       expect(projection.items).toEqual([
-        { id: 'event-0', seq: 0, time: 0, turn: null, type: 'assistant', text: 'This sentence never ends.', reasoning: '', interrupted: false },
+        { id: 'event-0', seq: 0, time: 0, turn: null, type: 'assistant', text: 'This sentence never ends.', reasoning: '', interrupted: false, steered: false },
       ]);
       // What the request cost counts although nothing of it is shown.
       expect(projection.usage.input_tokens).toBe(32);
@@ -262,7 +262,7 @@ describe('durable event projection', () => {
     it('that held nothing yet begins with what the model wrote next', () => {
       const projection = projectEvents([said(0, '', 'max-tokens'), goOn(1), said(2, 'All of it.', 'stop')]);
       expect(projection.items).toEqual([
-        { id: 'event-2', seq: 2, time: 200, turn: null, type: 'assistant', text: 'All of it.', reasoning: '', interrupted: false },
+        { id: 'event-2', seq: 2, time: 200, turn: null, type: 'assistant', text: 'All of it.', reasoning: '', interrupted: false, steered: false },
       ]);
     });
 
@@ -517,6 +517,37 @@ describe('durable event projection', () => {
     expect(projection.items).toMatchObject([{ type: 'assistant', text: '<script>literal</script>', interrupted: true }]);
     expect(projection.tools[0].name).toBe('write');
     expect(emptyProjection()).toEqual(emptyProjection());
+  });
+
+  it('marks a reply that was cut short for what the user said, and the turn went on', () => {
+    const said = (seq: number, text: string, source: string) =>
+      event(seq, 'user/message', { message: { role: 'user', content: [{ type: 'text', text }] }, source });
+    const reply = (seq: number, text: string, finish: string | null, calls: object[] = []) =>
+      event(seq, 'assistant/message', {
+        message: { role: 'assistant', content: [{ type: 'text', text }, ...calls] }, finish_reason: finish,
+      });
+    const look = { type: 'tool-call', call_id: 'c-1', name: 'read', arguments: '{}' };
+    const projection = projectEvents([
+      event(0, 'turn/start', { turn: 1 }),
+      said(1, 'Read a.txt.', 'user'),
+      reply(2, 'Reading a', null, [look]),
+      event(3, 'tool/call', { call_id: 'c-1', name: 'read', arguments: '{}' }),
+      said(4, 'No, b.txt.', 'steer'),
+      reply(5, 'Reading b.', 'stop'),
+      // A steer that is read when a reply was done changes nothing of it.
+      said(6, 'And c.', 'steer'),
+      event(7, 'turn/end', { turn: 1, reason: 'aborted', detail: 'user' }),
+      // Nor does one that opens a turn after a turn that was stopped.
+      event(8, 'turn/start', { turn: 2 }),
+      reply(9, 'Hm', null),
+      event(10, 'turn/end', { turn: 2, reason: 'aborted', detail: 'user' }),
+      event(11, 'turn/start', { turn: 3 }),
+      said(12, 'Go on.', 'steer'),
+    ]);
+    const replies = projection.items.filter(item => item.type === 'assistant');
+    expect(replies.map(item => [item.text, item.steered])).toEqual([
+      ['Reading a', true], ['Reading b.', false], ['Hm', false],
+    ]);
   });
 
   it.each(['deepseek-read', 'deepseek-fix'])('replays the real %s recording without duplicate tool cards', recording => {

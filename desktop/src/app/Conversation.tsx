@@ -94,6 +94,7 @@ function Step({ item, live = false, last = false, onLink }: {
           <p className="thought">{item.reasoning}</p>
         </details>}
         {item.text && <Markdown text={item.text} onLink={onLink} />}
+        {item.steered && <p className="caption" data-test="steered">{words.label.steeredAway}</p>}
       </div>;
     case 'user':
       if (item.source === 'steer') {

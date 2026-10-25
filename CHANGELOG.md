@@ -6,6 +6,18 @@ change what was there before.
 
 ## Unreleased
 
+- What the user says while a turn runs can be read at once, with Ctrl+Enter in the desktop
+  application and with `now` in `session/steer`: the step that runs is cut short, and the turn
+  goes on with what was said, its steps counted on. What had arrived of the reply is kept and
+  shown as turned away from; tools that only read are stopped, tools that change something or
+  run a program finish first, and calls that had not begun are not carried out. `Agent.steer`
+  takes `now`, and `Agent.cut_short` cuts the step alone.
+- The steps of a turn, unfolded in the desktop application, are no longer drawn as the first
+  steps of the first page, with their frame and their entrance, which left them unseen where the
+  entrance did not run.
+- Reasoning that DeepSeek was writing when its reply was cut short goes back to it with the
+  next request, as far as it had arrived, and a reply without text or a tool call goes back
+  with empty content: a request with tools needs the reasoning of every reply before it.
 - Each assistant, in Feishu, in WeCom and in QQ, may ask a model of its own and think as hard as
   its owner chose for it, apart from the others: a chat in QQ quick, work in Feishu careful.
   What is left empty follows what holds for all, and the service and its key stay the same for

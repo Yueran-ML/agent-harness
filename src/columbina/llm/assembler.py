@@ -142,7 +142,9 @@ class Assembler:
             raise MalformedStreamError(
                 f"block {chunk.index}: a tool-call block needs a call id and a name"
             )
-        self._blocks[chunk.index] = _Partial(chunk.kind, chunk.call_id, chunk.name)
+        self._blocks[chunk.index] = _Partial(
+            chunk.kind, chunk.call_id, chunk.name, replay_state=chunk.replay_state
+        )
 
     def _open(self, index: int, kind: BlockKind | None) -> _Partial:
         block = self._blocks.get(index)

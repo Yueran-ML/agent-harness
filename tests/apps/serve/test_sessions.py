@@ -281,16 +281,20 @@ async def test_opening_another_session_ends_the_one_that_was_open_and_tells_no_m
 
     asked = served.far.ask("session/open", {"session_id": "second"})
     answer = await served.far.answer(asked)
-    await until(lambda: list(harness.agents.live) == ["second"])
+
+    def ended() -> list[TurnEndEvent]:
+        return [
+            event.data
+            for event in harness.sessions.read(harness.cwd, "first").events
+            if isinstance(event.data, TurnEndEvent)
+        ]
+
+    # The first one is ended after the answer, on the side.
+    await until(lambda: list(harness.agents.live) == ["second"] and ended() != [])
 
     assert answer["result"]["session_id"] == "second"
     # The turn of the first one was stopped, and its session is closed and stored.
-    ended = [
-        event.data
-        for event in harness.sessions.read(harness.cwd, "first").events
-        if isinstance(event.data, TurnEndEvent)
-    ]
-    assert ended == [TurnEndEvent(turn=1, reason="aborted", detail="user")]
+    assert ended() == [TurnEndEvent(turn=1, reason="aborted", detail="user")]
     # Nothing of that was told: from the answer on, the conversation is the second one.
     assert {message["params"]["session_id"] for message in after(served, answer)} == {"second"}
     assert [message["method"] for message in after(served, answer)] == ["session.status"]

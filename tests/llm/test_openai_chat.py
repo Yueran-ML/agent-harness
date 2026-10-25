@@ -400,6 +400,29 @@ async def test_a_conversation_is_sent_in_the_shape_of_the_protocol(ctx: Context,
     ]
 
 
+async def test_a_reply_that_was_cut_short_in_its_reasoning_goes_back_as_far_as_it_arrived(
+    ctx: Context, llm: Llm
+) -> None:
+    service = Service(streamed(TEXT_REPLY))
+    connect(ctx, llm, service)
+    messages: tuple[Message, ...] = (
+        *HELLO,
+        AssistantMessage(
+            content=(ReasoningBlock(text="Half a tho", replay_state={"adapter": "deepseek"}),)
+        ),
+        *HELLO,
+    )
+
+    await ask(llm, messages)
+
+    # A reply without a tool call goes with its content, if only an empty one.
+    assert service.body["messages"][1] == {
+        "role": "assistant",
+        "content": "",
+        "reasoning_content": "Half a tho",
+    }
+
+
 async def test_reasoning_goes_back_only_to_the_adapter_it_came_from(ctx: Context, llm: Llm) -> None:
     service = Service(streamed(TEXT_REPLY))
     connect(ctx, llm, service)
@@ -552,7 +575,7 @@ async def test_reasoning_comes_before_the_text_and_remembers_its_adapter(
     call = await ask(llm)
 
     assert call.chunks == [
-        BlockStart(index=0, kind="reasoning"),
+        BlockStart(index=0, kind="reasoning", replay_state={"adapter": "deepseek"}),
         ReasoningDelta(index=0, text="Let me "),
         ReasoningDelta(index=0, text="think."),
         BlockEnd(index=0, replay_state={"adapter": "deepseek"}),

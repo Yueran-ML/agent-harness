@@ -44,6 +44,8 @@ class Still(Agent):
     def __init__(self, ctx: Context, spec: AgentSpec, session: Session) -> None:
         super().__init__(ctx, spec, session)
         self.woken = 0
+        # What waited in the inbox each time a step was cut short.
+        self.cut: list[Inbox] = []
         self.cancelled: list[tuple[CancelCause, bool]] = []
         ctx.effect(lambda: self.stopped)
 
@@ -55,6 +57,9 @@ class Still(Agent):
 
     def cancel(self, cause: CancelCause = "user", *, keep_inbox: bool = False) -> None:
         self.cancelled.append((cause, keep_inbox))
+
+    def cut_short(self) -> None:
+        self.cut.append(INBOX.of(self.session))
 
     async def when_idle(self) -> None:
         return None
@@ -194,6 +199,20 @@ async def test_a_steer_waits_for_the_next_step_and_wakes_the_agent(
     agent.steer("Use the other file.")
 
     assert INBOX.of(agent.session) == Inbox(next_step=(item("Use the other file.", "steer"),))
+    assert agent.woken == 1
+    assert agent.cut == []
+
+
+async def test_a_steer_to_be_read_at_once_cuts_the_step_short_once_it_waits(
+    ctx: Context, agents: Agents, tmp_path: Path
+) -> None:
+    agent = await agents.create(ctx, spec(tmp_path))
+    assert isinstance(agent, Still)
+
+    agent.steer("Use the other file.", now=True)
+
+    # The step is cut short once the steer waits for the next one.
+    assert agent.cut == [Inbox(next_step=(item("Use the other file.", "steer"),))]
     assert agent.woken == 1
 
 

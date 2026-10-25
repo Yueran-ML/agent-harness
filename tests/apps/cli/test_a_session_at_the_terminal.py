@@ -56,8 +56,9 @@ WHAT_THE_USER_DOES: tuple[dict[str, Any], ...] = (
     {"sees": f"    {CHECK}\n", "asked": True, "keys": "a"},
     # Something is said while the turn runs.
     {"sees": "(allowed, and not asked about again in this session)\n", "keys": ALSO + ENTER},
-    # A second task, with a command that runs for a long time.
-    {"sees": f"{ANSWER}\n", "keys": "Now wait a minute." + ENTER},
+    # A second task, with a command that runs for a long time, once the first turn is over: the
+    # line under the answer says so.
+    {"sees": f"{ANSWER}\n\n", "keys": "Now wait a minute." + ENTER},
     {"sees": f"    {WAIT}\n", "asked": True, "keys": "y"},
     # It is stopped.
     {"sees": "(allowed, this once)\n", "keys": ESCAPE},

@@ -98,13 +98,23 @@ class Agent(ABC):
         enqueue(self.session, "next-turn", _item(content, source))
         self.wake()
 
-    def steer(self, content: str | UserMessage, *, source: str = "steer") -> None:
+    def steer(
+        self, content: str | UserMessage, *, source: str = "steer", now: bool = False
+    ) -> None:
         """Redirect the agent.
 
         A turn that is running reads this at its next step. If none is
         running, a turn opens.
+
+        Args:
+            content: What the agent is told.
+            source: Who tells it.
+            now: Whether the step that runs is cut short for it, with
+                :meth:`cut_short`, so that the turn reads it at once.
         """
         enqueue(self.session, "next-step", _item(content, source))
+        if now:
+            self.cut_short()
         self.wake()
 
     def inject(self, content: str | UserMessage, *, source: str = "inject") -> None:
@@ -127,6 +137,19 @@ class Agent(ABC):
             cause: Who is cancelling. It is recorded with the end of the turn.
             keep_inbox: Whether input that waits is kept. By default it is
                 dropped, so that the agent comes to rest.
+        """
+
+    @abstractmethod
+    def cut_short(self) -> None:
+        """Cut the step that is running short, so that the turn reads at once what waits.
+
+        A reply that is being written stops, and what had arrived of it is
+        kept. Tool calls that only read are stopped. A call that changes
+        something or runs a program is let finish first, so that nothing is
+        left half done, and calls that have not begun are not carried out.
+        The step then ends like any other: the turn goes on with what waits
+        for its next step, and without anything it ends. Without a turn that
+        runs, this does nothing.
         """
 
     @abstractmethod

@@ -598,6 +598,187 @@ async def test_a_new_turn_after_a_cancellation_sends_a_history_that_holds_togeth
     assert messages[-1] == user("Say hello.")
 
 
+# Cutting a step short for what the user said
+
+SPOKEN_FIRST = "The user said something before this call ran, so it was not carried out."
+SPOKEN_MEANWHILE = "The call was stopped when the user said something. It changed nothing."
+
+
+@pytest.fixture
+def effects(harness: Harness, board: Board) -> Board:
+    """The board, with tools that say what they do: one reads, two write, beside others or not."""
+    harness.tools.add(
+        harness.ctx,
+        Tool(
+            name="look",
+            description="Read.",
+            parameters=Args,
+            execute=board.work,
+            concurrency_safe=True,
+            effect="read",
+        ),
+        Tool(
+            name="store",
+            description="Write beside others.",
+            parameters=Args,
+            execute=board.work,
+            concurrency_safe=True,
+            effect="write",
+        ),
+        Tool(
+            name="change", description="Write.", parameters=Args, execute=board.work, effect="write"
+        ),
+    )
+    return board
+
+
+def named(tool: str, *names: str) -> tuple[Call, ...]:
+    return tuple(Call(name=tool, arguments={"name": name}) for name in names)
+
+
+async def test_a_steer_that_is_read_at_once_stops_a_call_that_reads(
+    harness: Harness, effects: Board
+) -> None:
+    effects.gate("a")
+    agent = await harness.agent(
+        Reply(calls=(*named("look", "a"), *named("change", "x"))), Reply(text="Looking at c.")
+    )
+    agent.followup("Look at a, then change x.")
+    await asyncio.wait_for(effects.begun("a").wait(), timeout=5)
+
+    agent.steer("Look at c instead.", now=True)
+    await idle(agent)
+
+    assert effects.log == ["start a", "stopped a"]
+    assert results(agent) == [
+        ("call-1", SPOKEN_MEANWHILE, "TOOL_CANCELLED"),
+        ("call-2", SPOKEN_FIRST, "ABORTED_BEFORE_DISPATCH"),
+    ]
+    assert harness.model.requests[1].messages[-1] == user("Look at c instead.")
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+
+
+async def test_a_steer_that_is_read_at_once_lets_a_call_that_writes_finish(
+    harness: Harness, effects: Board
+) -> None:
+    effects.gate("x")
+    agent = await harness.agent(
+        Reply(calls=(*named("change", "x"), *named("look", "a"))), Reply(text="Changing y.")
+    )
+    agent.followup("Change x, then look at a.")
+    await asyncio.wait_for(effects.begun("x").wait(), timeout=5)
+
+    agent.steer("Change y instead.", now=True)
+    await asyncio.sleep(0.02)
+    # Said again while the call finishes, it does not stop the call either.
+    agent.steer("Really, y.", now=True)
+    await asyncio.sleep(0.02)
+    assert effects.log == ["start x"]
+    assert len(harness.model.requests) == 1
+    effects.gate("x").set()
+    await idle(agent)
+
+    assert effects.log == ["start x", "end x"]
+    assert results(agent) == [
+        ("call-1", "did x", None),
+        ("call-2", SPOKEN_FIRST, "ABORTED_BEFORE_DISPATCH"),
+    ]
+    assert harness.model.requests[1].messages[-2:] == (
+        user("Change y instead."),
+        user("Really, y."),
+    )
+
+
+async def test_a_steer_that_is_read_at_once_stops_only_the_calls_that_read_of_those_that_overlap(
+    harness: Harness, effects: Board
+) -> None:
+    effects.gate("a")
+    effects.gate("b")
+    agent = await harness.agent(
+        Reply(calls=(*named("look", "a"), *named("store", "b"))), Reply(text="Fine.")
+    )
+    agent.followup("Look at a and store b.")
+    await asyncio.wait_for(effects.begun("b").wait(), timeout=5)
+
+    agent.steer("Never mind a.", now=True)
+    await asyncio.sleep(0.02)
+    assert effects.log == ["start a", "start b", "stopped a"]
+    effects.gate("b").set()
+    await idle(agent)
+
+    assert results(agent) == [
+        ("call-1", SPOKEN_MEANWHILE, "TOOL_CANCELLED"),
+        ("call-2", "did b", None),
+    ]
+
+
+async def test_a_call_that_is_let_finish_through_a_cut_may_still_end_the_turn(
+    harness: Harness, effects: Board
+) -> None:
+    gate = asyncio.Event()
+    began = asyncio.Event()
+
+    async def hand_over(args: Args, run: ToolRun) -> str:
+        began.set()
+        await gate.wait()
+        run.conclude_turn()
+        return "handed over"
+
+    harness.tools.add(
+        harness.ctx,
+        Tool(name="handover", description="Hand over.", parameters=Args, execute=hand_over),
+    )
+    agent = await harness.agent(
+        Reply(calls=(Call(name="handover"), *named("look", "a"))), Reply(text="Yes?")
+    )
+    agent.followup("Hand over, then look at a.")
+    await asyncio.wait_for(began.wait(), timeout=5)
+
+    agent.steer("Wait, one more thing.", now=True)
+    await asyncio.sleep(0.02)
+    gate.set()
+    await idle(agent)
+
+    assert results(agent) == [
+        ("call-1", "handed over", None),
+        ("call-2", SPOKEN_FIRST, "ABORTED_BEFORE_DISPATCH"),
+    ]
+    ends = [e.data for e in agent.session.events if isinstance(e.data, TurnEndEvent)]
+    # The turn ends with the call, and what was said opens one of its own, as without a turn.
+    assert ends == [
+        TurnEndEvent(turn=1, reason="completed"),
+        TurnEndEvent(turn=2, reason="completed"),
+    ]
+    assert harness.model.requests[1].messages[-1] == user("Wait, one more thing.")
+    steps = [e.data for e in agent.session.events if isinstance(e.data, StepStartEvent)]
+    assert steps == [StepStartEvent(turn=1, step=1), StepStartEvent(turn=2, step=1)]
+
+
+async def test_a_turn_that_is_cancelled_while_a_call_that_writes_is_let_finish_stops_it(
+    harness: Harness, effects: Board
+) -> None:
+    effects.gate("x")
+    agent = await harness.agent(Reply(calls=named("change", "x")), Reply(text="never"))
+    agent.followup("Change x.")
+    await asyncio.wait_for(effects.begun("x").wait(), timeout=5)
+    agent.steer("Change y instead.", now=True)
+    await asyncio.sleep(0.02)
+
+    agent.cancel()
+    await idle(agent)
+
+    assert effects.log == ["start x", "stopped x"]
+    assert results(agent) == [
+        (
+            "call-1",
+            "The call was cancelled while it ran. It may have taken effect in part.",
+            "TOOL_CANCELLED",
+        )
+    ]
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
+    assert len(harness.model.requests) == 1
+
+
 # Review round 6
 
 

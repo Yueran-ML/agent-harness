@@ -92,6 +92,7 @@ async def test_a_reply_is_told_chunk_by_chunk_while_it_is_written(served: Served
         "kind": "text",
         "call_id": None,
         "name": None,
+        "replay_state": None,
     }
     assert chunks[1] == {"type": "text-delta", "index": 0, "text": "Hello!"}
     assert chunks[-1] == {"type": "finish", "reason": "stop", "failure": None}
@@ -223,6 +224,35 @@ async def test_what_is_said_to_a_turn_on_its_way_is_read_at_its_next_step(served
         if one["event"]["type"] == "turn/end"
     ]
     assert turns == [1]
+    assert len(model.requests) == 2
+    replies = [
+        one["event"]["data"]["finish_reason"]
+        for one in served.far.told("session.event")
+        if one["event"]["type"] == "assistant/message"
+    ]
+    # Said without more, it waits for the reply to be done.
+    assert replies == ["stop", "stop"]
+
+
+async def test_what_is_said_to_be_read_at_once_cuts_the_reply_short(served: Served) -> None:
+    await served.opened()
+    model = served.harness.model
+    model.add(Reply(text="Reading a.txt", hold=True), Reply(text="Reading b.txt."))
+
+    await served.far.result("session/prompt", {"text": "Read a.txt."})
+    await model.held()
+    answer = await served.far.result("session/steer", {"text": "No, read b.txt.", "now": True})
+    await rested(served)
+
+    assert answer == {}
+    assert said(served) == [("user", "Read a.txt."), ("steer", "No, read b.txt.")]
+    replies = [
+        one["event"]["data"]["finish_reason"]
+        for one in served.far.told("session.event")
+        if one["event"]["type"] == "assistant/message"
+    ]
+    # The first reply was cut short, without its hold being let go.
+    assert replies == [None, "stop"]
     assert len(model.requests) == 2
 
 

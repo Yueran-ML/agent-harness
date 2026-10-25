@@ -291,7 +291,10 @@ def _wire(message: Message, adapter: str) -> dict[str, JsonValue]:
 
 
 def _wire_assistant(message: AssistantMessage, adapter: str) -> dict[str, JsonValue]:
-    wire: dict[str, JsonValue] = {"role": "assistant", "content": message.text or None}
+    # A reply without a tool call has its content, if only an empty one: one that was cut short
+    # in its reasoning has no text.
+    content = message.text or (None if message.tool_calls else "")
+    wire: dict[str, JsonValue] = {"role": "assistant", "content": content}
     # Reasoning goes back only to the adapter that it came from, which marked it.
     reasoning = "".join(
         block.text
@@ -459,7 +462,11 @@ class _Translator:
             yield from self._close()
             self._open = (self._next, kind)
             self._next += 1
-            yield BlockStart(index=self._open[0], kind=kind)
+            # Reasoning goes back as far as it arrived, also where the reply was cut short.
+            state: dict[str, JsonValue] | None = None
+            if kind == "reasoning":
+                state = {"adapter": self._adapter}
+            yield BlockStart(index=self._open[0], kind=kind, replay_state=state)
         index = self._open[0]
         if kind == "reasoning":
             yield ReasoningDelta(index=index, text=piece)

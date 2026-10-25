@@ -144,13 +144,20 @@ BlockKind = Literal["text", "reasoning", "tool-call"]
 
 
 class BlockStart(Data):
-    """A new content block begins. A tool call carries its id and name here."""
+    """A new content block begins. A tool call carries its id and name here.
+
+    A block of reasoning may carry its ``replay_state`` from the beginning, for
+    an adapter that can send the reasoning back in part: what had arrived of it
+    when the reply was cut short is then sent back with the next request. What
+    the end of the block carries takes its place.
+    """
 
     type: Literal["block-start"] = "block-start"
     index: int
     kind: BlockKind
     call_id: str | None = None
     name: str | None = None
+    replay_state: dict[str, JsonValue] | None = None
 
 
 class TextDelta(Data):

@@ -7,8 +7,19 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 import columbina.agent_loop
-from columbina.agent import INBOX, STREAM, Inbox, InboxItem, InboxSplicedEvent, StreamFrame
-from columbina.llm import AssistantMessage, TextDelta, Usage
+from columbina.agent import (
+    INBOX,
+    PRE_STEP,
+    STREAM,
+    Inbox,
+    InboxItem,
+    InboxSplicedEvent,
+    StepDecision,
+    StepInfo,
+    StreamFrame,
+)
+from columbina.kernel import Next
+from columbina.llm import AssistantMessage, TextBlock, TextDelta, ToolMessage, Usage
 from columbina.llm.adapters.scripted import Call, Reply
 from columbina.session import (
     SESSION_EVENT,
@@ -17,6 +28,7 @@ from columbina.session import (
     Committed,
     SessionStoreError,
     StepEndEvent,
+    StepStartEvent,
     TurnEndEvent,
     TurnStartEvent,
     UserMessageEvent,
@@ -107,6 +119,232 @@ async def test_a_task_given_to_a_running_agent_waits_for_a_turn_of_its_own(
     ]
     assert harness.model.requests[0].messages[-1] == user("First.")
     assert harness.model.requests[1].messages[-1] == user("Second.")
+
+
+# Input that is read at once
+
+
+async def test_a_steer_that_is_read_at_once_cuts_the_reply_short_and_the_turn_goes_on(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(
+        Reply(text="Reading a.txt", hold=True), Reply(text="Reading b.txt.")
+    )
+    agent.followup("Read a.txt.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    agent.steer("No, read b.txt.", now=True)
+    await idle(agent)
+
+    assert types(agent.session, 5) == [
+        "step/start",
+        "request/header",
+        "agent/inbox/spliced",
+        "assistant/message",
+        "step/end",
+        "agent/inbox/spliced",
+        "user/message",
+        "step/start",
+        "assistant/message",
+        "step/end",
+        "turn/end",
+    ]
+    assert agent.session.events[8].data == AssistantMessageEvent(
+        message=assistant("Reading a.txt"), usage=Usage(), finish_reason=None
+    )
+    assert harness.model.requests[1].messages == (
+        SYSTEM,
+        user("Read a.txt."),
+        assistant("Reading a.txt"),
+        user("No, read b.txt."),
+    )
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+
+
+async def test_the_calls_of_a_reply_that_was_cut_short_for_a_steer_are_not_carried_out(
+    harness: Harness,
+) -> None:
+    ran: list[str] = []
+
+    class Nothing(BaseModel):
+        pass
+
+    async def look(args: Nothing, run: ToolRun) -> str:
+        ran.append(run.call_id)
+        return "seen"
+
+    harness.tools.add(
+        harness.ctx, Tool(name="look", description="Look.", parameters=Nothing, execute=look)
+    )
+    agent = await harness.agent(
+        Reply(text="First", calls=(Call(name="look"),), hold=True), Reply(text="Then b.")
+    )
+    agent.followup("Look at a.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    agent.steer("Look at b.", now=True)
+    await idle(agent)
+
+    assert ran == []
+    told = harness.model.requests[1].messages[-2:]
+    assert told[0] == ToolMessage(
+        call_id="call-1",
+        content=(
+            TextBlock(
+                text="The user said something before this call ran, so it was not carried out."
+            ),
+        ),
+        is_error=True,
+    )
+    assert told[1] == user("Look at b.")
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+
+
+async def test_a_steer_that_is_read_at_once_opens_a_turn_where_none_runs(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Done."))
+
+    agent.steer("Do it.", now=True)
+    await idle(agent)
+
+    assert harness.model.requests[0].messages == (SYSTEM, user("Do it."))
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+
+
+async def test_a_steer_that_comes_while_a_step_is_entered_is_read_by_that_step(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Done."))
+    entered: list[int] = []
+
+    async def meanwhile(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        entered.append(info.step)
+        if len(entered) == 1:
+            agent.steer("And be quick.", now=True)
+        return await proceed(info)
+
+    agent.ctx.on(PRE_STEP, meanwhile)
+    agent.followup("Do it.")
+    await idle(agent)
+
+    assert entered == [1, 1]
+    assert harness.model.requests[0].messages == (SYSTEM, user("Do it."), user("And be quick."))
+    starts = [e.data for e in agent.session.events if isinstance(e.data, StepStartEvent)]
+    assert starts == [StepStartEvent(turn=1, step=1)]
+
+
+async def test_a_step_that_is_cut_short_with_nothing_to_read_ends_the_turn_as_a_step_does(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Reading a", hold=True), Reply(text="never"))
+    agent.followup("Read a.txt.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    agent.cut_short()
+    await idle(agent)
+
+    assert len(harness.model.requests) == 1
+    assert types(agent.session)[-3:] == ["assistant/message", "step/end", "turn/end"]
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+
+
+async def test_a_turn_can_be_cut_short_at_one_step_and_at_the_next(harness: Harness) -> None:
+    agent = await harness.agent(
+        Reply(text="Reading a", hold=True), Reply(text="Reading b", hold=True), Reply(text="C.")
+    )
+    second = asyncio.Event()
+
+    def at_the_second_step(committed: Committed) -> None:
+        if committed.event.data == StepStartEvent(turn=1, step=2):
+            second.set()
+
+    agent.ctx.on(SESSION_EVENT, at_the_second_step)
+    agent.followup("Read a.txt.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+    agent.steer("No, b.txt.", now=True)
+    await asyncio.wait_for(second.wait(), timeout=5)
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    agent.steer("No, c.txt.", now=True)
+    await idle(agent)
+
+    replies = [e.data for e in agent.session.events if isinstance(e.data, AssistantMessageEvent)]
+    assert [reply.finish_reason for reply in replies] == [None, None, "stop"]
+    assert harness.model.requests[2].messages[-1] == user("No, c.txt.")
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="completed")
+
+
+async def test_a_steer_that_comes_while_a_later_step_is_entered_is_read_by_that_step(
+    harness: Harness,
+) -> None:
+    class Nothing(BaseModel):
+        pass
+
+    async def look(args: Nothing, run: ToolRun) -> str:
+        return "seen"
+
+    harness.tools.add(
+        harness.ctx, Tool(name="look", description="Look.", parameters=Nothing, execute=look)
+    )
+    agent = await harness.agent(Reply(calls=(Call(name="look"),)), Reply(text="Done."))
+    entered: list[int] = []
+
+    async def meanwhile(info: StepInfo, proceed: Next[StepInfo, StepDecision]) -> StepDecision:
+        entered.append(info.step)
+        if entered == [1, 2]:
+            agent.steer("And be quick.", now=True)
+        return await proceed(info)
+
+    agent.ctx.on(PRE_STEP, meanwhile)
+    agent.followup("Look.")
+    await idle(agent)
+
+    assert entered == [1, 2, 2]
+    assert len(harness.model.requests) == 2
+    assert harness.model.requests[1].messages[-1] == user("And be quick.")
+
+
+async def test_a_cut_that_was_asked_for_between_two_turns_cuts_nothing_of_the_next(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="Done."))
+
+    agent.cut_short()
+    agent.followup("Do it.")
+    await idle(agent)
+
+    assert harness.model.requests[0].messages == (SYSTEM, user("Do it."))
+    assert types(agent.session)[-3:] == ["assistant/message", "step/end", "turn/end"]
+
+
+async def test_a_cancellation_counts_for_more_than_a_cut(harness: Harness) -> None:
+    agent = await harness.agent(Reply(text="thinking", hold=True), Reply(text="never"))
+    agent.followup("Think.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    agent.cancel()
+    agent.cut_short()
+    await idle(agent)
+
+    assert len(harness.model.requests) == 1
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
+
+
+async def test_a_turn_that_is_cancelled_while_its_step_is_cut_short_ends(
+    harness: Harness,
+) -> None:
+    agent = await harness.agent(Reply(text="thinking", hold=True), Reply(text="never"))
+    agent.followup("Think.")
+    await asyncio.wait_for(harness.model.held(), timeout=5)
+
+    agent.steer("Think of b.", now=True)
+    agent.cancel()
+    await idle(agent)
+
+    assert len(harness.model.requests) == 1
+    assert agent.session.events[-1].data == TurnEndEvent(turn=1, reason="aborted", detail="user")
+    assert INBOX.of(agent.session) == Inbox()
 
 
 # Limits

@@ -211,6 +211,32 @@ def test_an_empty_reasoning_block_that_carries_replay_state_is_kept() -> None:
     )
 
 
+def test_reasoning_that_is_cut_short_keeps_the_replay_state_that_it_began_with() -> None:
+    assembler = assemble(
+        [
+            BlockStart(index=0, kind="reasoning", replay_state={"adapter": "deepseek"}),
+            ReasoningDelta(index=0, text="Half a tho"),
+        ]
+    )
+
+    assert assembler.message().content == (
+        ReasoningBlock(text="Half a tho", replay_state={"adapter": "deepseek"}),
+    )
+
+
+def test_the_replay_state_of_the_end_of_a_block_takes_the_place_of_that_of_its_beginning() -> None:
+    chunks: list[Chunk] = [
+        BlockStart(index=0, kind="reasoning", replay_state={"adapter": "deepseek"}),
+        ReasoningDelta(index=0, text="think"),
+        BlockEnd(index=0, replay_state={"signature": "abc"}),
+        Finish(reason="stop"),
+    ]
+
+    assert assemble(chunks).message().content == (
+        ReasoningBlock(text="think", replay_state={"signature": "abc"}),
+    )
+
+
 def test_a_failure_is_kept_with_the_finish() -> None:
     failure = LlmFailure(message="too many requests", code="RATE_LIMIT", status=429)
 

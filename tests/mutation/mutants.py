@@ -368,9 +368,7 @@ _LOOP = (
     mutant(
         "tools cancelled: started calls get no result",
         LOOP,
-        "                        outcomes[index] = pending.outcome or pending.fail(\n"
-        '                            "TOOL_CANCELLED", _CUT_SHORT\n'
-        "                        )\n",
+        '                        outcomes[index] = pending.outcome or pending.fail("TOOL_CANCELLED", why)\n',
         "                        pass\n",
     ),
     mutant(
@@ -391,10 +389,10 @@ _LOOP = (
         "step end is not written when a step fails",
         LOOP,
         "            try:\n"
-        "                ended = await self._step(turn, step)\n"
+        "                ended = await self._cuttable(self._step(turn, step))\n"
         "            finally:\n"
         "                session.append(StepEndEvent(turn=turn, step=step))\n",
-        "            ended = await self._step(turn, step)\n"
+        "            ended = await self._cuttable(self._step(turn, step))\n"
         "            session.append(StepEndEvent(turn=turn, step=step))\n",
     ),
     mutant(
@@ -7453,7 +7451,7 @@ _PROMPT = (
     mutant(
         "the instructions are asked for at every step",
         LOOP,
-        "            if step == 0:\n                try:\n"
+        "            if first:\n                try:\n"
         "                    await self._reconcile_system_message()",
         "            if True:\n                try:\n"
         "                    await self._reconcile_system_message()",
@@ -21869,7 +21867,7 @@ _SERVE = (
     mutant(
         "what is said on the way is given to the agent as a task of its own",
         SERVE_SERVER,
-        "        self._give(agent, agent.steer, said)\n",
+        "        self._give(agent, functools.partial(agent.steer, now=params.now), said)\n",
         "        self._give(agent, agent.followup, said)\n",
     ),
     mutant(
@@ -28548,6 +28546,164 @@ _THINKING = (
     ),
 )
 
+_STEER_NOW = (
+    # Cutting a step short.
+    mutant(
+        "a cut asked for while no step runs is forgotten",
+        LOOP,
+        "            self._cut_asked = True\n",
+        "            self._cut_asked = False\n",
+    ),
+    mutant(
+        "a step that is being cut short is cancelled again",
+        LOOP,
+        "        elif not self._cutting:\n",
+        "        else:\n",
+    ),
+    mutant(
+        "a cut does not say that the step is being cut",
+        LOOP,
+        "            self._cutting = True\n",
+        "            self._cutting = False\n",
+    ),
+    mutant(
+        "a step that is cut short while the turn is cancelled counts as cut",
+        LOOP,
+        "        return self._cutting and self._cause is None\n",
+        "        return self._cutting\n",
+    ),
+    mutant(
+        "a step that was entered while a cut was asked for does not read what was said first",
+        LOOP,
+        "            if self._cut_asked:\n                # The user said",
+        "            if False:\n                # The user said",
+    ),
+    mutant(
+        "every step begins as the first one does",
+        LOOP,
+        "            first = False\n            if opening is not None:\n",
+        "            if opening is not None:\n",
+    ),
+    mutant(
+        "a turn that is cancelled while its step is cut short goes on",
+        LOOP,
+        '            if cancellation.requests():\n                raise\n            return "cut"\n',
+        '            return "cut"\n',
+    ),
+    mutant(
+        "the step that ran is taken for the one that runs",
+        LOOP,
+        "            self._step_task = None\n            self._cutting = False\n",
+        "            self._cutting = False\n",
+    ),
+    mutant(
+        "a step that was cut short keeps the next one from being cut",
+        LOOP,
+        "            self._step_task = None\n            self._cutting = False\n",
+        "            self._step_task = None\n",
+    ),
+    mutant(
+        "a call that was not carried out for a cut says that the turn was cancelled",
+        LOOP,
+        "        why = _SPOKEN_FIRST if self._cut() else _NOT_RUN\n",
+        "        why = _NOT_RUN\n",
+    ),
+    mutant(
+        "a cut stops a call that changes something",
+        LOOP,
+        '                if not cut or cast("PendingCall", pendings[index]).only_reads:\n',
+        "                if True:\n",
+    ),
+    mutant(
+        "a cut stops no call that reads",
+        LOOP,
+        '                if not cut or cast("PendingCall", pendings[index]).only_reads:\n',
+        "                if not cut:\n",
+    ),
+    mutant(
+        "a call that runs alone overlaps with the next one",
+        LOOP,
+        "                    if not pending.concurrency_safe:\n                        await until_running(0)\n",
+        "",
+    ),
+    mutant(
+        "a turn that is cancelled while a call is let finish leaves the call running",
+        LOOP,
+        "                for task in running:\n                    task.cancel()\n                raise\n",
+        "                raise\n",
+    ),
+    mutant(
+        "a call that was stopped for a cut says that the turn was cancelled",
+        LOOP,
+        "                        why = _SPOKEN_MEANWHILE if self._cut() else _CUT_SHORT\n",
+        "                        why = _CUT_SHORT\n",
+    ),
+    mutant(
+        "a cut does not wait for the calls that it lets finish",
+        LOOP,
+        "                if running:\n                    await asyncio.wait(list(running))\n",
+        "                pass\n",
+    ),
+    mutant(
+        "a step that was cut short forgets that a call it let finish ended the turn",
+        LOOP,
+        "            if not cut:\n                raise\n",
+        "            raise\n",
+    ),
+    mutant(
+        "a call that reads is not known as one",
+        PIPELINE,
+        '        return self._invocation is not None and self._invocation.tool.effect == "read"\n',
+        '        return self._invocation is not None and self._invocation.tool.effect != "read"\n',
+    ),
+    # Saying it.
+    mutant(
+        "a steer is read at once where it was not to be",
+        AGENTS_SERVICE,
+        "        if now:\n            self.cut_short()\n",
+        "        if not now:\n            self.cut_short()\n",
+    ),
+    mutant(
+        "the step is cut short before what was said waits for the next one",
+        AGENTS_SERVICE,
+        '        enqueue(self.session, "next-step", _item(content, source))\n'
+        "        if now:\n            self.cut_short()\n",
+        "        if now:\n            self.cut_short()\n"
+        '        enqueue(self.session, "next-step", _item(content, source))\n',
+    ),
+    mutant(
+        "the service process does not pass on that a steer is to be read at once",
+        SERVE_SERVER,
+        "functools.partial(agent.steer, now=params.now)",
+        "agent.steer",
+    ),
+    mutant(
+        "the service process reads every steer at once",
+        SERVE_SERVER,
+        "    now: bool = False\n",
+        "    now: bool = True\n",
+    ),
+    # Reasoning that was cut short.
+    mutant(
+        "a block forgets the replay state that it began with",
+        ASSEMBLER,
+        "            chunk.kind, chunk.call_id, chunk.name, replay_state=chunk.replay_state\n",
+        "            chunk.kind, chunk.call_id, chunk.name\n",
+    ),
+    mutant(
+        "reasoning that DeepSeek was writing is not marked as its own",
+        OPENAI_CHAT,
+        "            yield BlockStart(index=self._open[0], kind=kind, replay_state=state)\n",
+        "            yield BlockStart(index=self._open[0], kind=kind)\n",
+    ),
+    mutant(
+        "a reply without text or calls goes back without content",
+        OPENAI_CHAT,
+        '    content = message.text or (None if message.tool_calls else "")\n',
+        "    content = message.text or None\n",
+    ),
+)
+
 
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
@@ -28765,6 +28921,16 @@ SETS: dict[str, MutantSet] = {
         ("tests/test_package.py", "tests/apps/test_launcher.py"), _CHAT_PROFILE
     ),
     "anthropic": MutantSet(("tests/llm/test_anthropic_messages.py",), _ANTHROPIC),
+    "steer-now": MutantSet(
+        (
+            "tests/agent_loop",
+            "tests/agent/test_agents.py",
+            "tests/llm/test_assembler.py",
+            "tests/llm/test_openai_chat.py",
+            "tests/apps/serve/test_turns.py",
+        ),
+        _STEER_NOW,
+    ),
     "batch-10": MutantSet(
         (
             "tests/guard/test_budget.py",

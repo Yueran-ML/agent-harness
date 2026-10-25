@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass
 from typing import Literal, TypeVar, cast
 
@@ -90,8 +90,13 @@ were carried out and it has to be asked again, or one of the tools asked for
 the turn to end.
 """
 
+_Cut = Literal["cut"]
+"""That a step was cut short, so that the turn reads at once what waits for its next step."""
+
 _NOT_RUN = "The turn was cancelled before this call ran."
 _CUT_SHORT = "The call was cancelled while it ran. It may have taken effect in part."
+_SPOKEN_FIRST = "The user said something before this call ran, so it was not carried out."
+_SPOKEN_MEANWHILE = "The call was stopped when the user said something. It changed nothing."
 
 _CUT_OFF = "Your reply was cut off: it reached the limit on the length of one reply."
 _PLAIN_NAME = re.compile("[A-Za-z0-9_.-]{1,64}")
@@ -261,6 +266,11 @@ class LoopAgent(Agent):
         self._continuations = continuations
         # The tool calls that the last reply was writing when it was cut off.
         self._unfinished: tuple[str, ...] = ()
+        # The step that runs, and whether it is being cut short for what the user said.
+        self._step_task: asyncio.Task[_StepEnd] | None = None
+        self._cutting = False
+        # Whether a step was to be cut short while none ran: the next one reads what was said.
+        self._cut_asked = False
         self._wake = asyncio.Event()
         self._idle = asyncio.Event()
         self._idle.set()
@@ -311,6 +321,22 @@ class LoopAgent(Agent):
             elif self._cause is None:
                 self._cause = cause
                 task.cancel()
+
+    def cut_short(self) -> None:
+        """Cut the step that is running short. It ends as a step ends.
+
+        A cancellation of the turn counts for more, whichever was asked for first.
+        """
+        task = self._step_task
+        if task is None:
+            self._cut_asked = True
+        elif not self._cutting:
+            self._cutting = True
+            task.cancel()
+
+    def _cut(self) -> bool:
+        """Tell whether the step is being cut short, and the turn is not being stopped."""
+        return self._cutting and self._cause is None
 
     async def when_idle(self) -> None:
         """Wait until the agent is at rest.
@@ -472,9 +498,10 @@ class LoopAgent(Agent):
         session = self.session
         step = 0
         taken_up = 0
+        first = True
         while True:
             opening: Exception | None = None
-            if step == 0:
+            if first:
                 try:
                     await self._reconcile_system_message()
                     self._write_context(await self._ask_for_context())
@@ -482,8 +509,10 @@ class LoopAgent(Agent):
                     # The input is taken all the same. Left in the inbox, it would begin
                     # another turn at once, and that one would fail the same way.
                     opening = error
-            for item in self._claim(first_step=step == 0):
+            self._cut_asked = False
+            for item in self._claim(first_step=first):
                 session.append(UserMessageEvent(message=item.message, source=item.source))
+            first = False
             if opening is not None:
                 raise opening
             decision = cast(
@@ -498,10 +527,13 @@ class LoopAgent(Agent):
             if not isinstance(decision, Enter):
                 # No answer is no permission.
                 return "blocked", "a listener of agent/pre-step gave no decision", NO_DECISION
+            if self._cut_asked:
+                # The user said something while the step was being entered. It is read first.
+                continue
             step += 1
             session.append(StepStartEvent(turn=turn, step=step))
             try:
-                ended = await self._step(turn, step)
+                ended = await self._cuttable(self._step(turn, step))
             finally:
                 session.append(StepEndEvent(turn=turn, step=step))
             if ended == "tools":
@@ -525,6 +557,29 @@ class LoopAgent(Agent):
             await self._heard(TURN_STOPPING, self.ctx.serial(TURN_STOPPING, stopping))
             if not INBOX.of(session).next_step:
                 return reason, None, None
+
+    async def _cuttable(self, running: Coroutine[object, object, _StepEnd]) -> _StepEnd | _Cut:
+        """Run a step in a task of its own, which :meth:`cut_short` can cancel alone.
+
+        A step that was cut short ends like any other: the turn goes on if
+        input waits for its next step, as what was said to cut it short does.
+
+        Returns:
+            How the step ended, or ``"cut"`` where it was cut short.
+        """
+        task = self._step_task = asyncio.ensure_future(running)
+        try:
+            ended = await task
+        except asyncio.CancelledError:
+            # Nothing cancels the step but a cut, and the turn, which is cancelled then. That
+            # may have been asked for before the step began, as the step was entered.
+            if cancellation.requests():
+                raise
+            return "cut"
+        finally:
+            self._step_task = None
+            self._cutting = False
+        return ended
 
     def _claim(self, *, first_step: bool) -> tuple[InboxItem, ...]:
         """Take from the inbox what a step begins with.
@@ -761,8 +816,12 @@ class LoopAgent(Agent):
 
     def _not_run(self, call: ToolCallBlock) -> ToolOutcome:
         """Write down a tool call that will not be carried out, and return its result."""
-        pending = self._begin(call)
-        return pending.outcome or pending.fail("ABORTED_BEFORE_DISPATCH", _NOT_RUN)
+        return self._given_up(self._begin(call))
+
+    def _given_up(self, pending: PendingCall) -> ToolOutcome:
+        """Return the result of a call that was begun and will not run."""
+        why = _SPOKEN_FIRST if self._cut() else _NOT_RUN
+        return pending.outcome or pending.fail("ABORTED_BEFORE_DISPATCH", why)
 
     async def _run_tools(self, calls: tuple[ToolCallBlock, ...]) -> bool:
         """Carry out the tool calls of a reply. Return whether a tool asked for the turn to end.
@@ -778,7 +837,12 @@ class LoopAgent(Agent):
 
         The results are written in the order of the model, each as soon as
         all before it are in. If the turn is cancelled, the tools that run
-        are stopped, and every call still gets a result.
+        are stopped, and every call still gets a result. If the step is cut
+        short, only the calls that read are stopped: a call that changes
+        something or runs a program is let finish, so that nothing is left
+        half done. Every call runs in a task of its own for that, also one
+        that runs alone. The step then ends as one whose calls were carried
+        out, and a call that was let finish may end the turn.
         """
         session = self.session
         pendings: list[PendingCall | None] = [None] * len(calls)
@@ -814,23 +878,27 @@ class LoopAgent(Agent):
                 if pending.outcome is not None:
                     outcomes[index] = pending.outcome
                     write()
-                elif pending.concurrency_safe:
+                else:
                     started.add(index)
                     task = asyncio.ensure_future(pending.execute())
                     running[task] = index
                     task.add_done_callback(finished)
-                else:
-                    started.add(index)
-                    outcomes[index] = await pending.execute()
-                    write()
+                    if not pending.concurrency_safe:
+                        await until_running(0)
             await until_running(0)
         except asyncio.CancelledError:
-            stopping = list(running)
-            for task in stopping:
-                task.cancel()
+            cut = self._cut()
+            for task, index in running.items():
+                if not cut or cast("PendingCall", pendings[index]).only_reads:
+                    task.cancel()
             try:
-                if stopping:
-                    await asyncio.wait(stopping)
+                if running:
+                    await asyncio.wait(list(running))
+            except asyncio.CancelledError:
+                # The turn is stopped while calls that were let finish run: they are stopped too.
+                for task in running:
+                    task.cancel()
+                raise
             finally:
                 # Whether or not the tools have come to rest, every call gets its result
                 # now: a second cancellation must not leave a call without one.
@@ -842,13 +910,13 @@ class LoopAgent(Agent):
                         write()
                         outcomes[index] = self._not_run(call)
                     elif index in started:
-                        outcomes[index] = pending.outcome or pending.fail(
-                            "TOOL_CANCELLED", _CUT_SHORT
-                        )
+                        why = _SPOKEN_MEANWHILE if self._cut() else _CUT_SHORT
+                        outcomes[index] = pending.outcome or pending.fail("TOOL_CANCELLED", why)
                     else:
-                        outcomes[index] = pending.outcome or pending.fail(
-                            "ABORTED_BEFORE_DISPATCH", _NOT_RUN
-                        )
+                        outcomes[index] = self._given_up(pending)
                 write()
-            raise
+            if not cut:
+                raise
+            # The calls that were let finish are done, and a step that was cut short then
+            # ends as any step whose calls were carried out: one of them may end the turn.
         return any(outcome.concludes_turn for outcome in outcomes.values())

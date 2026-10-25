@@ -32,6 +32,7 @@ included, is a no.
 """
 
 import asyncio
+import functools
 import logging
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -174,6 +175,10 @@ class _Said(_Params):
     text: str
 
 
+class _Steered(_Said):
+    now: bool = False
+
+
 class _Line(_Params):
     line: str
 
@@ -269,7 +274,7 @@ class Server:
             "session/open": (_Open, self._open),
             "session/events": (_Events, self._events),
             "session/prompt": (_Said, self._prompt),
-            "session/steer": (_Said, self._steer),
+            "session/steer": (_Steered, self._steer),
             "session/cancel": (_Nothing, self._cancel),
             "session/command": (_Line, self._command),
             "session/skills": (_Nothing, self._skills),
@@ -601,9 +606,10 @@ class Server:
         self._give(agent, agent.followup, said)
         return "{}"
 
-    async def _steer(self, params: _Said, id: Id) -> str:
+    async def _steer(self, params: _Steered, id: Id) -> str:
+        """Give the agent words for its next step. With ``now``, the step that runs is cut short."""
         agent, said = self._working_agent(), self._words(params)
-        self._give(agent, agent.steer, said)
+        self._give(agent, functools.partial(agent.steer, now=params.now), said)
         return "{}"
 
     def _give(self, agent: Agent, give: Callable[[str], None], said: str) -> None:

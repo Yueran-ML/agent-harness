@@ -115,6 +115,8 @@ class Bench:
                 parameters=Args,
                 execute=self.echo,
                 concurrency_safe=True,
+                # A cut stops it, and lets the others finish.
+                effect="read",
             ),
             Tool(name="slow", description="Take a while.", parameters=Args, execute=self.slow),
             Tool(
@@ -171,6 +173,7 @@ actions = st.sampled_from(
         "task",
         "steer",
         "steer",
+        "steer-now",
         "inject",
         "cancel",
         "cancel-and-keep",
@@ -290,6 +293,8 @@ class Run:
             self.agent.followup(text)
         elif kind == "steer":
             self.agent.steer(text)
+        elif kind == "steer-now":
+            self.agent.steer(text, now=True)
         else:
             self.agent.inject(text)
 
@@ -432,6 +437,15 @@ async def play(data: st.DataObject, root: Path | None) -> None:
     tools_left: list[int] = []
     keep_at_an_event: list[bool] = []
     change_of_mind: list[tuple[str, str]] = []
+    # Whether a trap at a chunk or a tool has the user say something to be read at once, in
+    # place of a cancellation.
+    cutting: list[bool] = [False]
+
+    def spring() -> None:
+        if cutting[0]:
+            run.give("steer-now", f"said at once {len(run.given)}")
+        else:
+            run.cancel(keep_inbox=True)
 
     def at_a_tool() -> None:
         # Ask for a cancellation while a tool is running: from the tool itself, as it begins.
@@ -439,7 +453,7 @@ async def play(data: st.DataObject, root: Path | None) -> None:
             tools_left[0] -= 1
             if tools_left[0] <= 0:
                 tools_left.clear()
-                run.cancel(keep_inbox=True)
+                spring()
 
     run.bench.on_start = at_a_tool
 
@@ -461,7 +475,7 @@ async def play(data: st.DataObject, root: Path | None) -> None:
             chunks_left[0] -= 1
             if chunks_left[0] <= 0:
                 chunks_left.clear()
-                run.cancel(keep_inbox=True)
+                spring()
 
     agent.ctx.on(SESSION_EVENT, at_an_event)
     agent.ctx.on(STREAM, at_a_chunk)
@@ -469,7 +483,7 @@ async def play(data: st.DataObject, root: Path | None) -> None:
         for number in range(data.draw(st.integers(min_value=1, max_value=7), label="actions")):
             # Every example begins with a task, so that the model is asked at least once.
             action = "task" if number == 0 else data.draw(actions, label="action")
-            if action in ("task", "steer", "inject"):
+            if action in ("task", "steer", "steer-now", "inject"):
                 run.give(action, f"input {number}")
             elif action == "cancel":
                 run.cancel(keep_inbox=False)
@@ -491,8 +505,10 @@ async def play(data: st.DataObject, root: Path | None) -> None:
                 change_of_mind[:] = [] if instead == "nothing" else [(instead, f"instead {number}")]
                 events_left[:] = [at]
             elif trap == "chunk":
+                cutting[0] = data.draw(st.booleans(), label="cut")
                 chunks_left[:] = [data.draw(st.integers(min_value=1, max_value=9), label="at")]
             elif trap == "tool":
+                cutting[0] = data.draw(st.booleans(), label="cut")
                 tools_left[:] = [data.draw(st.integers(min_value=1, max_value=3), label="at")]
             for _ in range(data.draw(st.integers(min_value=0, max_value=6), label="yields")):
                 await asyncio.sleep(0)

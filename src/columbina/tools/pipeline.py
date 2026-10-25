@@ -277,6 +277,11 @@ class PendingCall:
         """How the call ended, or ``None`` while that is open."""
         return self._outcome
 
+    @property
+    def only_reads(self) -> bool:
+        """Whether the call only reads: stopping it while it runs leaves nothing half done."""
+        return self._invocation is not None and self._invocation.tool.effect == "read"
+
     def fail(self, code: str, text: str) -> ToolOutcome:
         """End the call with an error result, without waiting for the tool.
 

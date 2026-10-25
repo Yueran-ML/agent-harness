@@ -6,6 +6,8 @@ change what was there before.
 
 ## Unreleased
 
+## 0.2.0 (2026-10-25)
+
 - The desktop application can show a pet over the other windows that follows the task that is
   open: it thinks, reads while a tool runs, waits with the user for a yes, waves when a turn is
   done and shows a failure. A click brings the window back, and a drag moves it. Three pets of

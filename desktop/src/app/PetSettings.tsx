@@ -7,9 +7,9 @@ import { useWords } from './locale';
 const saidOf = (problem: unknown) => (problem instanceof Error ? problem.message : String(problem));
 
 /**
- * The part of the settings for the pet: whether it shows and which one, whether other programs
- * are told what the task does, and the folder for pets of the user's own. Without the shell, as in
- * a replay, there is no pet and no part for it.
+ * The part of the settings for the pet: whether it shows and which one, where the task is told
+ * for other programs, and the folder for pets of the user's own. Without the shell, as in a
+ * replay, there is no pet and no part for it.
  */
 export function PetSettings() {
   const words = useWords();
@@ -27,7 +27,7 @@ export function PetSettings() {
   }, [bridge]);
   if (!bridge || choices === null) return null;
 
-  const change = async (asked: { on?: boolean; chosen?: string; share?: boolean }) => {
+  const change = async (asked: { on?: boolean; chosen?: string }) => {
     setFailed(null);
     try {
       await bridge.setPet(asked);
@@ -57,13 +57,7 @@ export function PetSettings() {
         </label>)}
       </div>}
     <p className="caption">{words.hint.pet.about}</p>
-    <div className="setting-row">
-      <label className="check">
-        <input type="checkbox" checked={choices.share} onChange={event => void change({ share: event.target.checked })} data-test="pet-share" />
-        {words.label.pet.share}
-      </label>
-    </div>
-    <p className="caption" data-test="pet-share-hint">{words.hint.pet.share(choices.stateFile)}</p>
+    <p className="caption" data-test="pet-state-file">{words.hint.pet.stateFile(choices.stateFile)}</p>
     <div className="setting-row">
       <button type="button" className="btn" onClick={() => void bridge.openPetsFolder().catch(problem => setFailed(saidOf(problem)))} data-test="pet-folder">
         <FolderOpen size={14} aria-hidden="true" />{words.label.pet.openFolder}

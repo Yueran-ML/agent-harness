@@ -1,12 +1,12 @@
 // The pets of the application: packages of a pet, as docs/pets.md in the repository describes them,
-// and the file in which the application says what its task is doing, for the pets of other programs.
+// and the file in which the service process says what its task is doing.
 //
 // A package is a folder with `pet.json` and a sheet of frames. The sheet is laid out as the pets of
 // Codex are: cells of 192 by 208 pixels, eight to a row, and at least nine rows, one for each way
 // of being. Anything else in the folder is left alone. A package that does not hold together is
 // not offered, and nothing of it reaches the window of the pet but its picture, as an address of
 // data, and the numbers of its rows.
-const { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } = require('node:fs');
+const { readFileSync, readdirSync, statSync } = require('node:fs');
 const path = require('node:path');
 
 const CELL_WIDTH = 192;
@@ -18,7 +18,7 @@ const ROWS = ['idle', 'runRight', 'runLeft', 'wave', 'jump', 'failed', 'waiting'
 const MANIFEST_MOST = 64 * 1024;
 const SHEET_MOST = 16 * 1024 * 1024;
 const PETS_MOST = 100;
-/** What the file of the state says a task is doing. */
+/** What the file of the state says a task is doing, as the plugin columbina.pets writes it. */
 const STATES = ['idle', 'thinking', 'review', 'waiting', 'failed', 'done'];
 const LABEL_MOST = 80;
 
@@ -132,36 +132,24 @@ function sheetOf(pet) {
 }
 
 /**
- * What the main window says the task does, as far as it may be passed on: a state that there is,
- * and a short label and a short bubble on one line. Null for anything else.
+ * What a task does, as the file of its state says it: a state that there is and a short label.
+ * No file is a task at rest, and so is one that a process wrote that is gone, as after a crash.
+ * Null where the file says nothing that can be read, such as one that is half written.
+ *
+ * Args:
+ *   text: What the file holds, or null where there is none.
+ *   alive: Whether a process is there, by its id.
  */
-function shownOf(given) {
-  if (given === null || typeof given !== 'object' || !STATES.includes(given.state)) return null;
-  return { state: given.state, label: textOf(given.label, LABEL_MOST) ?? '', bubble: textOf(given.bubble, 2 * LABEL_MOST) ?? '' };
-}
-
-/**
- * Write what the task does to the file that other programs read. It is written beside its place
- * and moved there, so that a reader never finds half of it. What cannot be written is let go.
- */
-function writeState(file, shown, pid, at) {
-  const document = { version: 1, state: shown.state, label: shown.label, at, pid };
-  try {
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(`${file}.tmp`, `${JSON.stringify(document)}\n`, 'utf8');
-    renameSync(`${file}.tmp`, file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Take the file away, so that its readers know that nobody tells them any more. */
-function forgetState(file) {
-  try { rmSync(file, { force: true }); } catch { /* It goes at the next start. */ }
+function stateOf(text, alive) {
+  if (text === null) return { state: 'idle', label: '' };
+  let told;
+  try { told = JSON.parse(text); } catch { return null; }
+  if (told === null || typeof told !== 'object' || told.version !== 1 || !STATES.includes(told.state)) return null;
+  if (!Number.isInteger(told.pid) || !alive(told.pid)) return { state: 'idle', label: '' };
+  return { state: told.state, label: textOf(told.label, LABEL_MOST) ?? '' };
 }
 
 module.exports = {
   CELL_WIDTH, CELL_HEIGHT, COLUMNS, ROWS, STATES, MANIFEST_MOST, SHEET_MOST,
-  sizeOf, animationsOf, readPet, listPets, sheetOf, shownOf, writeState, forgetState,
+  sizeOf, animationsOf, readPet, listPets, sheetOf, stateOf,
 };

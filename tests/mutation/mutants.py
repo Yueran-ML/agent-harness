@@ -28,6 +28,7 @@ no test can notice it, and ``mutate.py`` passes it over.
 from dataclasses import dataclass, replace
 
 LOOP = "src/columbina/agent_loop/loop.py"
+PETS = "src/columbina/pets/__init__.py"
 LOOP_PLUGIN = "src/columbina/agent_loop/__init__.py"
 REPLIES = "src/columbina/agent/replies.py"
 ASSEMBLER = "src/columbina/llm/assembler.py"
@@ -28705,6 +28706,148 @@ _STEER_NOW = (
 )
 
 
+_PETS = (
+    mutant(
+        "what a subagent does is told",
+        PETS,
+        "        if committed.session.delegation_depth != 0:\n            return\n",
+        "",
+    ),
+    mutant(
+        "a turn that begins rests",
+        PETS,
+        '        if isinstance(data, TurnStartEvent):\n            self._tell("thinking")',
+        '        if isinstance(data, TurnStartEvent):\n            self._tell("idle")',
+    ),
+    mutant(
+        "a tool that runs is not named",
+        PETS,
+        '            self._tell("review", data.name)',
+        '            self._tell("review")',
+    ),
+    mutant(
+        "the tool of a question is not kept",
+        PETS,
+        "            self._asked[data.call_id] = data.tool\n",
+        "",
+    ),
+    mutant(
+        "a question does not name its tool",
+        PETS,
+        '            self._tell("waiting", data.tool)',
+        '            self._tell("waiting")',
+    ),
+    mutant(
+        "a call that was let through is thought about",
+        PETS,
+        '            if data.outcome == "allowed-once":',
+        "            if False:",
+    ),
+    mutant(
+        "a call that was not let through runs",
+        PETS,
+        '            if data.outcome == "allowed-once":',
+        "            if True:",
+    ),
+    mutant(
+        "the result of a tool leaves the tool running",
+        PETS,
+        '        elif isinstance(data, ToolResultEvent):\n            self._tell("thinking")\n',
+        "",
+    ),
+    mutant(
+        "the questions of a turn outlive it",
+        PETS,
+        "            self._asked.clear()\n",
+        "",
+    ),
+    mutant(
+        "a turn that ended well rests at once",
+        PETS,
+        '                self._tell("done")',
+        '                self._tell("idle")',
+    ),
+    mutant(
+        "a failure has no code",
+        PETS,
+        '                self._tell("failed", data.code or "")',
+        '                self._tell("failed")',
+    ),
+    mutant(
+        "a turn that was blocked did not fail",
+        PETS,
+        '_FAILED = ("error", "blocked", "max-tokens")',
+        '_FAILED = ("error", "max-tokens")',
+    ),
+    mutant(
+        "a turn that was stopped failed",
+        PETS,
+        '            else:\n                self._tell("idle")',
+        '            else:\n                self._tell("failed")',
+    ),
+    mutant(
+        "a label is not put on one line",
+        PETS,
+        '        label = label.replace("\\n", " ")[:_LABEL_MOST]',
+        "        label = label[:_LABEL_MOST]",
+    ),
+    mutant(
+        "a label is not cut",
+        PETS,
+        '        label = label.replace("\\n", " ")[:_LABEL_MOST]',
+        '        label = label.replace("\\n", " ")',
+    ),
+    mutant(
+        "a state that did not change is written again",
+        PETS,
+        "        if (state, label) == self._said:\n            return\n",
+        "",
+    ),
+    mutant(
+        "a new state lets the old rest come",
+        PETS,
+        "            self._resting.cancel()\n",
+        "",
+    ),
+    mutant(
+        "a turn that has ended never rests",
+        PETS,
+        "            self._resting = asyncio.get_running_loop().call_later(self._rest_after, self.rest)",
+        "            self._resting = None",
+    ),
+    mutant(
+        "every state rests a while later",
+        PETS,
+        '        if state in ("done", "failed"):',
+        "        if True:",
+    ),
+    mutant(
+        "the file names no process",
+        PETS,
+        '            "pid": os.getpid(),',
+        '            "pid": 0,',
+    ),
+    mutant(
+        "the time is written in seconds",
+        PETS,
+        '            "at": int(time.time() * 1000),',
+        '            "at": int(time.time()),',
+    ),
+    mutant(
+        "a variable that names no file names the working directory",
+        PETS,
+        '        return None if value == "" else value',
+        "        return value",
+    ),
+    mutant(
+        "the program does not rest when it ends",
+        PETS,
+        "    ctx.effect(lambda: teller.rest)\n",
+        "",
+    ),
+)
+
+
 SETS: dict[str, MutantSet] = {
     "withheld": MutantSet(
         ("tests/test_withheld.py", "tests/mcp_client/test_server_plugin.py"), _WITHHELD
@@ -28921,6 +29064,7 @@ SETS: dict[str, MutantSet] = {
         ("tests/test_package.py", "tests/apps/test_launcher.py"), _CHAT_PROFILE
     ),
     "anthropic": MutantSet(("tests/llm/test_anthropic_messages.py",), _ANTHROPIC),
+    "pets": MutantSet(("tests/pets",), _PETS),
     "steer-now": MutantSet(
         (
             "tests/agent_loop",

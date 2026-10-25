@@ -189,37 +189,28 @@ describe('the picture of a pet', () => {
   });
 });
 
-describe('what the task does', () => {
-  it('is passed on as a state that there is, with a short label and bubble on one line', () => {
-    expect(pets.shownOf({ state: 'review', label: 'read\nfile', bubble: 'b', more: 1 })).toEqual({ state: 'review', label: 'read file', bubble: 'b' });
-    expect(pets.shownOf({ state: 'idle' })).toEqual({ state: 'idle', label: '', bubble: '' });
-    expect(pets.shownOf({ state: 'done', label: 'x'.repeat(100), bubble: 'y'.repeat(200) }))
-      .toEqual({ state: 'done', label: 'x'.repeat(80), bubble: 'y'.repeat(160) });
-    for (const given of [null, 'idle', [], { state: 'sleeping' }, {}]) expect(pets.shownOf(given)).toBeNull();
+describe('what the task does, as the service process wrote it', () => {
+  const alive = (pid: number) => pid === 42;
+  const told = (given: Record<string, unknown>) => JSON.stringify({ version: 1, at: 1, pid: 42, label: '', ...given });
+
+  it('is a state that there is, with a short label on one line', () => {
+    expect(pets.stateOf(told({ state: 'review', label: 'read\nfile' }), alive)).toEqual({ state: 'review', label: 'read file' });
+    expect(pets.stateOf(told({ state: 'waiting', label: 'x'.repeat(100) }), alive)).toEqual({ state: 'waiting', label: 'x'.repeat(80) });
+    expect(pets.stateOf(told({ state: 'done', label: 7 }), alive)).toEqual({ state: 'done', label: '' });
+    for (const state of pets.STATES) expect(pets.stateOf(told({ state }), alive)?.state).toBe(state);
   });
 
-  it('is written whole for other programs, and taken away again', () => {
-    const file = path.join(scratch(), 'deeper', 'pet-state.json');
-    expect(pets.writeState(file, { state: 'waiting', label: 'shell', bubble: 'never written' }, 42, 1000)).toBe(true);
-    expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ version: 1, state: 'waiting', label: 'shell', at: 1000, pid: 42 });
-    expect(existsSync(`${file}.tmp`)).toBe(false);
-    pets.forgetState(file);
-    expect(existsSync(file)).toBe(false);
-    // Taking away what is not there is nothing.
-    pets.forgetState(file);
+  it('is at rest where nothing was told, or where the process that told it is gone', () => {
+    const resting = { state: 'idle', label: '' };
+    expect(pets.stateOf(null, alive)).toEqual(resting);
+    expect(pets.stateOf(told({ state: 'thinking', pid: 7 }), alive)).toEqual(resting);
+    // A pid that is no number names no process, whatever is asked of it.
+    expect(pets.stateOf(told({ state: 'thinking', pid: '42' }), () => true)).toEqual(resting);
   });
 
-  it('leaves what was written before where it cannot be written whole', () => {
-    const file = path.join(scratch(), 'pet-state.json');
-    pets.writeState(file, { state: 'thinking', label: '', bubble: '' }, 1, 1);
-    mkdirSync(`${file}.tmp`);
-    expect(pets.writeState(file, { state: 'done', label: '', bubble: '' }, 1, 2)).toBe(false);
-    expect(JSON.parse(readFileSync(file, 'utf8')).state).toBe('thinking');
-  });
-
-  it('is let go where it cannot be written', () => {
-    const parent = scratch();
-    writeFileSync(path.join(parent, 'a file'), 'in the way');
-    expect(pets.writeState(path.join(parent, 'a file', 'pet-state.json'), { state: 'idle', label: '', bubble: '' }, 1, 1)).toBe(false);
+  it('is nothing where the file says nothing that can be read', () => {
+    for (const text of ['{', '[]', 'null', '7', told({ state: 'dancing' }), told({ state: 'thinking', version: 2 })]) {
+      expect(pets.stateOf(text, alive), text).toBeNull();
+    }
   });
 });

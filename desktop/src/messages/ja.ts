@@ -659,7 +659,6 @@ export const ja: Messages = {
       title: 'デスクトップペット',
       show: 'タスクに合わせて動くペットを表示する',
       choose: 'ペット',
-      share: 'ほかのペットのプログラムにタスクの状態を伝える',
       openFolder: '自作ペットのフォルダーを開く',
       builtin: { moon: 'ちいさな月', cat: 'ちいさな猫', star: 'ちいさな星' },
       mine: '自作',
@@ -765,12 +764,9 @@ export const ja: Messages = {
     },
     pet: {
       about: 'ペットはほかのウィンドウの上に表示されます。クリックすると Columbina に戻り、好きな場所へドラッグできます。',
-      share: (file: string) => `タスクの状態とツール名を、ほかのプログラム向けに ${file} に書き込みます。会話の内容は書き込みません。`,
+      stateFile: (file: string) => `Columbina がここで作業している間、タスクの状態とツール名を ${file} に書き込みます。自作のペットのプログラムがこれに合わせて動けます。会話の内容は書き込みません。`,
       own: '自作ペットは、pet.json とフレームを並べた画像を入れたフォルダーです。並べ方は Codex のペットと同じです。このフォルダーに入れると、ここで選べます。',
       none: '表示できるペットがありません。',
-      waiting: (tool: string) => (tool ? `${tool} の承認を待っています。` : '承認を待っています。'),
-      done: '終わりました。',
-      failed: 'うまくいきませんでした。',
     },
     openingUnavailable: 'オープニングを再生できません。',
 

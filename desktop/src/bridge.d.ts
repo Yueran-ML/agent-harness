@@ -212,16 +212,14 @@ export interface ColumbinaBridge {
    */
   qqThinking(asked: { model: string | null; effort: 'default' | 'off' | 'low' | 'high' | 'max' | null }): Promise<unknown>;
   /**
-   * The pets that can be chosen, the one that is, whether it shows, whether other programs are told
-   * what the task does, the folder for pets of the user's own, and the file that tells them.
+   * The pets that can be chosen, the one that is, whether it shows, the folder for pets of the
+   * user's own, and the file in which the service process tells what its task does.
    */
   pets(): Promise<PetChoices>;
-  /** Show or hide the pet, choose another one, or tell other programs what the task does, or stop. */
-  setPet(asked: { on?: boolean; chosen?: string; share?: boolean }): Promise<void>;
+  /** Show or hide the pet, or choose another one. */
+  setPet(asked: { on?: boolean; chosen?: string }): Promise<void>;
   /** Open the folder for pets of the user's own, made where it is not there. */
   openPetsFolder(): Promise<void>;
-  /** Say what the task does, for the pet, and for the programs that follow it. */
-  petState(shown: { state: string; label: string; bubble: string }): void;
   /** Hear that the pet was hidden from its own menu. */
   onPet(listener: (said: { on: boolean }) => void): () => void;
 }
@@ -237,7 +235,6 @@ export interface PetChoice {
 
 export interface PetChoices {
   on: boolean;
-  share: boolean;
   chosen: string | null;
   pets: PetChoice[];
   folder: string;

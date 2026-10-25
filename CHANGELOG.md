@@ -10,8 +10,13 @@ change what was there before.
   open: it thinks, reads while a tool runs, waits with the user for a yes, waves when a turn is
   done and shows a failure. A click brings the window back, and a drag moves it. Three pets of
   pixel art come with it, drawn by a script of the repository. A pet of the user's own is a
-  folder with `pet.json` and a sheet of frames in the layout of the pets of Codex, and other
-  programs can follow the task through a file of its state. docs/pets.md says how.
+  folder with `pet.json` and a sheet of frames in the layout of the pets of Codex. docs/pets.md
+  says how.
+- The plugin `columbina.pets` writes what a conversation is doing to a small file for a pet:
+  thinking, a tool that runs, a question for the user, done or failed, with the name of the tool
+  and nothing of the conversation. Every program loads it, and it writes only where
+  `COLUMBINA_PET_STATE` names the file, as the desktop application does for its service. The pet
+  of the desktop application reads that file, and so can a pet program of somebody else.
 - What the user says while a turn runs can be read at once, with Ctrl+Enter in the desktop
   application and with `now` in `session/steer`: the step that runs is cut short, and the turn
   goes on with what was said, its steps counted on. What had arrived of the reply is kept and

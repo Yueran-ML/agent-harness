@@ -33,7 +33,6 @@ import { effortStoredOf, keptLevel, type Effort } from './effort';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
 import { reasoningLanguage, rememberTold, storedReasoning, storeReasoning, toldReasoning, type ReasoningChoice } from './reasoning';
 import { storedOpening, storeOpening } from './opening';
-import { usePet } from './usePet';
 import { onMac, shortcut } from './system';
 import {
   anotherServiceChosen, folderName, goneWords, joined, retryText, skillLine, STILL_STARTING_MS, taskTitle, waitingWords,
@@ -102,8 +101,6 @@ export default function App() {
   const [language, setLanguage] = useState<LanguageChoice>(storedLanguage);
   const [reasoning, setReasoning] = useState<ReasoningChoice>(storedReasoning);
   const words = useMemo(() => wordsFor(language), [language]);
-  // The pet, where it shows, follows the task that is open.
-  usePet(workspace, words);
   // The opening plays at the first start. After that it plays where the user chose to see it
   // at every start, which is what the switch in the settings says.
   const [opening] = useState(storedOpening);

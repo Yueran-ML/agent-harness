@@ -718,7 +718,6 @@ export const en = {
       title: 'Desktop pet',
       show: 'Show a pet that follows the task',
       choose: 'Pet',
-      share: 'Tell other pet programs what the task is doing',
       openFolder: 'Open the folder for your own pets',
       builtin: { moon: 'Little Moon', cat: 'Little Cat', star: 'Little Star' },
       mine: 'yours',
@@ -831,12 +830,9 @@ export const en = {
     },
     pet: {
       about: 'The pet stands over the other windows. A click on it brings Columbina back, and it can be dragged where it suits you.',
-      share: (file: string) => `The state of the task, and the name of a tool, are written to ${file} for other programs. Nothing of the conversation is.`,
+      stateFile: (file: string) => `While Columbina works here, the state of the task and the name of a tool are written to ${file}, and a pet program of your own can follow it. Nothing of the conversation is written.`,
       own: 'A pet of your own is a folder with pet.json and a sheet of frames, in the layout of the pets of Codex. Put it in the folder, and it can be chosen here.',
       none: 'No pet can be shown.',
-      waiting: (tool: string) => (tool ? `Waiting for your yes to ${tool}.` : 'Waiting for your yes.'),
-      done: 'Done.',
-      failed: 'Something went wrong.',
     },
     openingUnavailable: 'The opening cannot be played.',
 

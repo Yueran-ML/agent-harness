@@ -104,3 +104,10 @@ patch:
         plugin: columbina.mcp
         config:
           log_dir: ${COLUMBINA_HOME}/logs
+      # What a conversation is doing, written to a file for a desktop pet, the one of the desktop
+      # application or a program of somebody else. COLUMBINA_PET_STATE names the file, and
+      # without it nothing is written. See docs/pets.md.
+      - id: pets
+        plugin: columbina.pets
+        config:
+          file: ${COLUMBINA_PET_STATE:-}

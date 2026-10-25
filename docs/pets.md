@@ -4,13 +4,18 @@ The desktop application can show a pet: a small figure in a window of its own, o
 windows, that follows the task that is open. It thinks while the model thinks, reads while a tool
 runs, waits with you while the agent asks for a yes, waves when a turn is done, and shows a
 failure when one went wrong. A click on it brings Columbina back, a drag moves it, and its menu
-hides it. The settings show it, choose it, and tell other programs what the task is doing.
+hides it. The settings show it and choose it.
+
+What the task is doing comes from a plugin of Columbina, `columbina.pets`. It follows the
+conversations of the program and writes what they do to a small file, the **state file**. The
+pet of the desktop application reads that file, and so can any program of yours.
 
 Three pets come with the application: Little Moon, Little Cat and Little Star. They are pixel art
 that `desktop/scripts/draw-pets.mjs` draws from shapes, so that they can be drawn again.
 
-Anybody can make a pet in two ways. A **package** is a pet that Columbina shows itself. The **state
-file** lets a program of your own, such as a desktop pet that you already have, follow the task.
+Anybody can make a pet in two ways. A **package** is a pet that the desktop application shows
+itself. The **state file** lets a program of your own, such as a desktop pet that you already
+have, follow the task.
 
 ## A package
 
@@ -76,9 +81,27 @@ that name a row the sheet does not have.
 
 ## The state file
 
-Turn on **Tell other pet programs what the task is doing** in the settings, and Columbina writes
-what the task that is open is doing to `pet-state.json` in the same folder as `pets`, whenever
-that changes:
+The plugin `columbina.pets` writes the file. It is loaded by every program of Columbina, and
+writes nothing until `COLUMBINA_PET_STATE` names the file:
+
+- The desktop application names `pet-state.json` in the same folder as `pets` for the service
+  that it runs, so the file is there whenever it works on a task.
+- At a terminal, name a file yourself, and `columbina` or `columbina run` tells it:
+
+  ```bash
+  COLUMBINA_PET_STATE=~/.columbina/pet-state.json columbina
+  ```
+
+- In a profile of your own, give the plugin its file in its config:
+
+  ```yaml
+  - id: pets
+    plugin: columbina.pets
+    config:
+      file: /home/me/.columbina/pet-state.json
+  ```
+
+The file is rewritten whenever what a conversation is doing changes:
 
 ```json
 { "version": 1, "state": "waiting", "label": "shell", "at": 1792917913946, "pid": 47860 }
@@ -90,14 +113,24 @@ that changes:
 | `state` | `idle`, `thinking`, `review`, `waiting`, `failed` or `done`. |
 | `label` | The tool that runs or waits for a yes, or the code of a failure. Often empty. |
 | `at` | When it was written, in milliseconds since 1970. |
-| `pid` | The process of the application. |
+| `pid` | The process of Columbina that wrote it. |
 
-`done` and `failed` are written when a turn ends, and `idle` 15 seconds later. Nothing of the
-conversation is written, and no file content. The file is written beside its place and moved
-there, so a reader never finds half of it. When the application ends it writes `idle`, and when
-the option is turned off the file is deleted.
+| State | When |
+|---|---|
+| `thinking` | a turn runs, and no tool does |
+| `review` | a tool runs |
+| `waiting` | the user is asked for a yes |
+| `done` | a turn ended well |
+| `failed` | a turn failed, was blocked, or was cut off by the length of a reply |
+| `idle` | at first, after a turn that was stopped, 15 seconds after `done` or `failed`, and when the program ends |
+
+Only what a person talks with is told: a subagent works inside a call of its parent, which shows
+as `review` of that call. Nothing of the conversation is written but the name of a tool and the
+code of a failure. The file is written beside its place and moved there, so a reader never finds
+half of it.
 
 The file is written when the state changes, and not otherwise: a model may think for minutes,
 and the file says `thinking` all that while. A reader should take the task as at rest where the
 process of `pid` is no longer there, as after a crash. Watch the file, and look at it every few
-seconds as well: a watch can miss a change.
+seconds as well: a watch can miss a change. The pet of the desktop application looks at it once
+a second.

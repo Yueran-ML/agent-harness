@@ -287,9 +287,21 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const pets = {
     listPets: vi.fn((_places: unknown) => petsFound),
     sheetOf: vi.fn((pet: { key: string }) => `data:image/png;base64,${pet.key}`),
-    shownOf: realPets.shownOf,
-    writeState: vi.fn((_file: string, _shown: unknown, _pid: number, _at: number) => true),
-    forgetState: vi.fn((_file: string) => undefined),
+    stateOf: realPets.stateOf,
+  };
+  // The processes that are there, by their ids: the shell, and whatever a test adds.
+  const running = new Set([4242]);
+  const kill = (pid: number, _signal: number) => {
+    // The first process of the system is there, and somebody else's.
+    if (pid === 1) throw Object.assign(new Error('EPERM: 1'), { code: 'EPERM' });
+    if (!running.has(pid)) throw Object.assign(new Error(`ESRCH: ${pid}`), { code: 'ESRCH' });
+  };
+  // What the shell does again and again, until it stops: each by its number, and how often.
+  const repeated = new Map<number, { act: () => void; ms: number }>();
+  let ticket = 0;
+  const clock = {
+    setInterval: (act: () => void, ms: number) => { ticket += 1; repeated.set(ticket, { act, ms }); return ticket; },
+    clearInterval: (id: number | null) => { if (id !== null) repeated.delete(id); },
   };
   // Where the pointer is on the screen.
   const pointer = { x: 0, y: 0 };
@@ -343,9 +355,9 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   runInNewContext(source, {
     require: (name: string) => { if (!(name in modules)) throw new Error(`Unexpected module: ${name}`); return modules[name]; },
     __dirname: path.dirname(mainPath),
-    process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources, argv: ['Columbina.exe', ...(system.argv ?? [])], pid: 4242 },
+    process: { platform, env, execPath: 'Columbina.exe', resourcesPath: resources, argv: ['Columbina.exe', ...(system.argv ?? [])], pid: 4242, kill },
     // The clock of the tests, so that a test that sets it sets it for the shell too.
-    URL, setTimeout, clearTimeout, Date, AbortSignal,
+    URL, setTimeout, clearTimeout, Date, AbortSignal, ...clock,
   }, { filename: mainPath });
   await Promise.resolve();
   // A second application of Columbina makes no window, and nothing calls it.
@@ -376,7 +388,9 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   // What the main window says without waiting, as it says it.
   const say = (channel: string, ...args: unknown[]) => listeners.get(channel)!(event, ...args);
   return {
-    petsFound, pets, pointer, screen, petWindow, asPetWindow, say, listeners,
+    petsFound, pets, pointer, screen, petWindow, asPetWindow, say, listeners, running, repeated,
+    // Do once what the shell does again and again every so many milliseconds.
+    again: (ms: number) => { for (const one of [...repeated.values()]) if (one.ms === ms) one.act(); },
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, mkdirSync, disk, drive, file, sent,
     dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
     partitions, trays, pictures,
@@ -662,6 +676,8 @@ describe('the service of a package', () => {
   // The PATH of an application that is opened from the Finder, and what is added to it where the login shell says nothing.
   const finder = '/usr/bin:/bin:/usr/sbin:/sbin';
   const added = `${finder}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin`;
+  // The service is told where to write what its task does, for the pet.
+  const pet = { COLUMBINA_PET_STATE: path.resolve('/columbina-test/userData/pet-state.json') };
 
   it('runs the Python that the package brings, and adds nothing for that Python to the environment', async () => {
     const env = { PATH: 'C:\\Windows', PYTHONPATH: 'C:\\elsewhere', USERPROFILE: 'C:\\Users\\a' };
@@ -672,7 +688,7 @@ describe('the service of a package', () => {
     expect(executable).toBe(windowsPython);
     expect(args).toEqual(['-I', '-B', '-m', 'columbina', 'serve']);
     // The commands of the agent inherit this environment. What keeps that Python to itself are its flags.
-    expect(options.env).toEqual(env);
+    expect(options.env).toEqual({ ...env, ...pet });
     expect(shell.logins).toEqual([]);
   });
 
@@ -718,7 +734,7 @@ describe('the service of a package', () => {
     const [executable, args, served] = shell.spawn.mock.calls[1];
     expect(executable).toBe(macPython);
     expect(args).toEqual(['-I', '-B', '-m', 'columbina', 'serve']);
-    expect(served.env).toEqual({ ...env, PATH: '/opt/homebrew/bin:/usr/bin:/bin' });
+    expect(served.env).toEqual({ ...env, PATH: '/opt/homebrew/bin:/usr/bin:/bin', ...pet });
     await shell.invoke('services');
     expect(shell.spawn.mock.calls[2][2].env.PATH).toBe('/opt/homebrew/bin:/usr/bin:/bin');
     expect(shell.logins).toHaveLength(1);
@@ -741,6 +757,7 @@ describe('the service of a package', () => {
       https_proxy: 'http://127.0.0.1:7890',
       ALL_PROXY: 'socks5://127.0.0.1:7891',
       NO_PROXY: 'localhost,127.0.0.1',
+      ...pet,
     });
     await shell.invoke('services');
     expect(shell.spawn.mock.calls.at(-1)![2].env.https_proxy).toBe('http://127.0.0.1:7890');
@@ -756,7 +773,7 @@ describe('the service of a package', () => {
     await shell.invoke('start', { cwd });
     // A variable that the application has empty is none: the shell fills it.
     expect(shell.spawn.mock.calls.at(-1)![2].env).toEqual({
-      PATH: '/usr/bin', https_proxy: 'http://given:1', HTTP_PROXY: '', http_proxy: 'http://shell:3',
+      PATH: '/usr/bin', https_proxy: 'http://given:1', HTTP_PROXY: '', http_proxy: 'http://shell:3', ...pet,
     });
   });
 
@@ -766,7 +783,7 @@ describe('the service of a package', () => {
     });
     const cwd = await shell.select('/selected-project');
     await shell.invoke('start', { cwd });
-    expect(shell.spawn.mock.calls.at(-1)![2].env).toEqual({ PATH: added, https_proxy: 'http://127.0.0.1:7890' });
+    expect(shell.spawn.mock.calls.at(-1)![2].env).toEqual({ PATH: added, https_proxy: 'http://127.0.0.1:7890', ...pet });
   });
 
   it('on macOS asks zsh where no shell of the user is named by its path', async () => {
@@ -1073,7 +1090,7 @@ describe('what the shell keeps from one start to the next', () => {
     expect(shell.preferences()).toEqual({
       theme: 'moonwhite', recent: [], githubSkipped: false, feishuOn: false, feishuLanguage: null,
       wecomOn: false, wecomLanguage: null, qqOn: false, qqLanguage: null, language: null,
-      petOn: false, pet: 'builtin/moon', petShare: false, petAt: null,
+      petOn: false, pet: 'builtin/moon', petAt: null,
     });
     expect(() => shell.invoke('set-theme', 'frostlight')).toThrow('Unknown application theme.');
     expect(shell.preferences().theme).toBe('moonwhite');
@@ -3321,13 +3338,16 @@ describe('the tray, the start with the system, and one application at a time', (
   });
 });
 
+
 describe('the pet', () => {
   const userData = path.resolve('/columbina-test/userData');
+  const stateFile = path.join(userData, 'pet-state.json');
   const builtIn = path.resolve(path.dirname(mainPath), '../dist/pets');
   const petPage = path.resolve(path.dirname(mainPath), '../dist/pet.html');
   const found = (key: string, origin = 'builtin') => ({
     key, id: key.split('/')[1], name: `The ${key}`, description: 'A pet.', origin, sheet: `/sheets/${key}.png`, animations: null,
   });
+  const told = (state: string, label = '', pid = 4242) => JSON.stringify({ version: 1, state, label, at: 1, pid });
 
   it('shows where it showed at the last start, where it stood then, over the other windows', async () => {
     const shell = await shellHarness(JSON.stringify({ petOn: true, petAt: { x: 5, y: 6 } }));
@@ -3346,12 +3366,12 @@ describe('the pet', () => {
   });
 
   it('keeps what was chosen of it as far as it can be, and nothing else', async () => {
-    const kept = await shellHarness(JSON.stringify({ petOn: true, pet: 'user/mine', petShare: true, petAt: { x: -40, y: 7 } }));
+    const kept = await shellHarness(JSON.stringify({ petOn: true, pet: 'user/mine', petAt: { x: -40, y: 7 } }));
     kept.invoke('set-theme', 'moonwhite');
-    expect(kept.preferences()).toMatchObject({ petOn: true, pet: 'user/mine', petShare: true, petAt: { x: -40, y: 7 } });
-    const refused = await shellHarness(JSON.stringify({ petOn: 'yes', pet: 'builtin/../../secret', petShare: 1, petAt: { x: 1.5, y: 2 } }));
+    expect(kept.preferences()).toMatchObject({ petOn: true, pet: 'user/mine', petAt: { x: -40, y: 7 } });
+    const refused = await shellHarness(JSON.stringify({ petOn: 'yes', pet: 'builtin/../../secret', petAt: { x: 1.5, y: 2 } }));
     refused.invoke('set-theme', 'moonwhite');
-    expect(refused.preferences()).toMatchObject({ petOn: false, pet: 'builtin/moon', petShare: false, petAt: null });
+    expect(refused.preferences()).toMatchObject({ petOn: false, pet: 'builtin/moon', petAt: null });
     for (const pet of ['elsewhere/moon', 'user/', 'builtin/a\\b', 7]) {
       const shell = await shellHarness(JSON.stringify({ pet }));
       shell.invoke('set-theme', 'moonwhite');
@@ -3360,15 +3380,15 @@ describe('the pet', () => {
   });
 
   it('tells the main window the pets that can be chosen, from the application and the user, and which one is', async () => {
-    const shell = await shellHarness(JSON.stringify({ pet: 'user/mochi', petShare: true }));
+    const shell = await shellHarness(JSON.stringify({ pet: 'user/mochi' }));
     shell.petsFound.push(found('builtin/moon'), found('user/mochi', 'user'));
     expect(await shell.invoke('pets')).toEqual({
-      on: false, share: true, chosen: 'user/mochi',
+      on: false, chosen: 'user/mochi',
       pets: [
         { key: 'builtin/moon', name: 'The builtin/moon', description: 'A pet.', origin: 'builtin' },
         { key: 'user/mochi', name: 'The user/mochi', description: 'A pet.', origin: 'user' },
       ],
-      folder: path.join(userData, 'pets'), stateFile: path.join(userData, 'pet-state.json'),
+      folder: path.join(userData, 'pets'), stateFile,
     });
     expect(shell.pets.listPets).toHaveBeenLastCalledWith([{ folder: builtIn, origin: 'builtin' }, { folder: path.join(userData, 'pets'), origin: 'user' }]);
     // The one that was chosen is gone: the first one stands in for it, and none where there is none.
@@ -3399,36 +3419,99 @@ describe('the pet', () => {
     expect(pet.destroy).toHaveBeenCalledTimes(1);
   });
 
-  it('tells other programs what the task does only where the user asked for it, and stops telling them', async () => {
-    const shell = await shellHarness();
-    shell.say('columbina:pet-state', { state: 'thinking', label: '', bubble: '' });
-    expect(shell.pets.writeState).not.toHaveBeenCalled();
-    await shell.invoke('set-pet', { share: true });
-    expect(shell.pets.writeState).toHaveBeenLastCalledWith(path.join(userData, 'pet-state.json'), { state: 'thinking', label: '', bubble: '' }, 4242, expect.any(Number));
-    shell.say('columbina:pet-state', { state: 'waiting', label: 'shell', bubble: 'Waiting for your yes to shell.' });
-    expect(shell.pets.writeState).toHaveBeenCalledTimes(2);
-    expect(shell.pets.writeState.mock.calls[1][1]).toEqual({ state: 'waiting', label: 'shell', bubble: 'Waiting for your yes to shell.' });
-    // Asked again, nothing changes.
-    await shell.invoke('set-pet', { share: true });
-    expect(shell.pets.writeState).toHaveBeenCalledTimes(2);
-    expect(shell.preferences().petShare).toBe(true);
-    await shell.invoke('set-pet', { share: false });
-    expect(shell.pets.forgetState).toHaveBeenCalledWith(path.join(userData, 'pet-state.json'));
-    shell.say('columbina:pet-state', { state: 'idle' });
-    expect(shell.pets.writeState).toHaveBeenCalledTimes(2);
+  it('has the service process write what its task does to the file that the pet reads', async () => {
+    const shell = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python });
+    const work = path.resolve('/work');
+    await shell.select(work);
+    await shell.invoke('start', { cwd: work });
+    expect(shell.children[0]).toBeDefined();
+    const started = shell.spawn.mock.calls.find(([, args]) => (args as string[]).includes('serve'))!;
+    expect(started[2].env.COLUMBINA_PET_STATE).toBe(stateFile);
   });
 
-  it('hands on to the pet what the main window says of the task, and nothing that is no state', async () => {
+  it('looks at the task while it shows, and tells its window what changed, in the words of the page', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true, language: 'zh-CN' }));
+    const shown = () => shell.sent.filter(([channel]) => channel === 'columbina-pet:shown').map(([, value]) => value);
+    // Nothing was told yet: the task rests, as the pet does already.
+    expect(shown()).toEqual([]);
+    shell.files.set(stateFile, told('thinking'));
+    shell.again(1000);
+    shell.again(1000);
+    expect(shown()).toEqual([{ state: 'thinking', label: '', bubble: '' }]);
+    shell.files.set(stateFile, told('waiting', 'powershell'));
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'waiting', label: 'powershell', bubble: '等你点头：powershell。' });
+    shell.files.set(stateFile, told('waiting'));
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'waiting', label: '', bubble: '等你点头。' });
+    shell.files.set(stateFile, told('failed', 'AUTH'));
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'failed', label: 'AUTH', bubble: '遇到点难题。' });
+    // Done is said where the window is not looked at.
+    shell.files.set(stateFile, told('done'));
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'done', label: '', bubble: '' });
+    shell.window.focused = false;
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'done', label: '', bubble: '做完了。' });
+    // A file that is half written changes nothing, and one of a process that is gone is at rest.
+    const before = shown().length;
+    shell.files.set(stateFile, '{"version": 1, "sta');
+    shell.again(1000);
+    expect(shown()).toHaveLength(before);
+    shell.files.set(stateFile, told('review', 'read', 99));
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'idle', label: '', bubble: '' });
+    shell.running.add(99);
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'review', label: 'read', bubble: '' });
+    // Another tool, and the same bubble: the pet is told.
+    shell.files.set(stateFile, told('review', 'grep', 99));
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'review', label: 'grep', bubble: '' });
+    // A process of somebody else is there, as the system says of it.
+    shell.files.set(stateFile, told('thinking', '', 1));
+    shell.again(1000);
+    expect(shown().at(-1)).toEqual({ state: 'thinking', label: '', bubble: '' });
+    // Its window is given what was told last when it is ready.
+    expect(await shell.asPetWindow('ready')).toMatchObject({ shown: { state: 'thinking', label: '', bubble: '' } });
+  });
+
+  it('says what the task does in English and in Japanese too', async () => {
+    for (const [language, bubble] of [['en', 'Waiting for your yes to shell.'], ['ja', 'shell の承認を待っています。']] as const) {
+      const shell = await shellHarness(JSON.stringify({ petOn: true, language }));
+      shell.files.set(stateFile, told('waiting', 'shell'));
+      shell.again(1000);
+      expect(shell.sent.at(-1), language).toEqual(['columbina-pet:shown', { state: 'waiting', label: 'shell', bubble }]);
+    }
+    const words = { en: ['Waiting for your yes.', 'Something went wrong.', 'Done.'], ja: ['承認を待っています。', 'うまくいきませんでした。', '終わりました。'] };
+    for (const [language, [waiting, failed, done]] of Object.entries(words)) {
+      const shell = await shellHarness(JSON.stringify({ petOn: true, language }));
+      shell.window.focused = false;
+      for (const [state, bubble] of [['waiting', waiting], ['failed', failed], ['done', done]]) {
+        shell.files.set(stateFile, told(state));
+        shell.again(1000);
+        expect(shell.sent.at(-1), `${language} ${state}`).toEqual(['columbina-pet:shown', { state, label: '', bubble }]);
+      }
+    }
+  });
+
+  it('looks at the task at once when it shows', async () => {
+    const shell = await shellHarness();
+    shell.files.set(stateFile, told('thinking'));
+    await shell.invoke('set-pet', { on: true });
+    expect(shell.sent.at(-1)).toEqual(['columbina-pet:shown', { state: 'thinking', label: '', bubble: '' }]);
+  });
+
+  it('stops looking at the task when it is hidden, and begins again when it shows', async () => {
     const shell = await shellHarness(JSON.stringify({ petOn: true }));
-    shell.say('columbina:pet-state', { state: 'review', label: 'read', bubble: '', more: 'never' });
-    expect(shell.sent.at(-1)).toEqual(['columbina-pet:shown', { state: 'review', label: 'read', bubble: '' }]);
-    const before = shell.sent.length;
-    shell.say('columbina:pet-state', { state: 'dancing' });
-    shell.say('columbina:pet-state', null);
-    // Another frame of the main window says nothing to the pet.
-    shell.listeners.get('columbina:pet-state')!(shell.unrelated, { state: 'idle' });
-    expect(shell.sent.length).toBe(before);
-    expect(await shell.asPetWindow('ready')).toMatchObject({ shown: { state: 'review', label: 'read', bubble: '' } });
+    expect([...shell.repeated.values()].map(one => one.ms)).toEqual([1000]);
+    await shell.invoke('set-pet', { on: false });
+    expect(shell.repeated.size).toBe(0);
+    await shell.invoke('set-pet', { on: true });
+    expect(shell.repeated.size).toBe(1);
+    shell.petWindow().emit('closed');
+    expect(shell.repeated.size).toBe(0);
   });
 
   it('gives its window the picture of the pet that is chosen, and nothing where it cannot', async () => {
@@ -3513,17 +3596,12 @@ describe('the pet', () => {
     }
   });
 
-  it('goes with the main window, and leaves the programs that follow the task at rest when the application ends', async () => {
-    const shell = await shellHarness(JSON.stringify({ petOn: true, petShare: true }));
+  it('goes with the main window', async () => {
+    const shell = await shellHarness(JSON.stringify({ petOn: true }));
     const pet = shell.petWindow();
-    shell.say('columbina:pet-state', { state: 'thinking', label: '', bubble: '' });
     shell.window.emit('closed');
     expect(pet.destroy).toHaveBeenCalledTimes(1);
-    shell.app.emit('will-quit');
-    expect(shell.pets.writeState).toHaveBeenLastCalledWith(path.join(userData, 'pet-state.json'), { state: 'idle', label: '', bubble: '' }, 4242, expect.any(Number));
-    const quiet = await shellHarness();
-    quiet.app.emit('will-quit');
-    expect(quiet.pets.writeState).not.toHaveBeenCalled();
+    expect(shell.repeated.size).toBe(0);
   });
 
   it('keeps the window that it opened last, where one that was put away says late that it closed', async () => {
@@ -3533,6 +3611,7 @@ describe('the pet', () => {
     await shell.invoke('set-pet', { on: true });
     first.emit('closed');
     expect(await shell.asPetWindow('ready')).toMatchObject({ shown: { state: 'idle' } });
+    expect(shell.repeated.size).toBe(1);
   });
 
   it('forgets its window where the window closed by itself, and makes another when it is asked', async () => {

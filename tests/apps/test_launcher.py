@@ -378,8 +378,14 @@ def test_the_composition_can_be_printed_instead_of_run(
         "subagent-spawn",
         "tool-subagent",
         "mcp",
+        "pets",
         "frontend",
     ]
+    assert entries["pets"] == {
+        "id": "pets",
+        "plugin": "columbina.pets",
+        "config": {"file": "${COLUMBINA_PET_STATE:-}"},
+    }
     assert entries["spill"] == {
         "id": "spill",
         "plugin": "columbina.spill.local",

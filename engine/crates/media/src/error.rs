@@ -26,6 +26,17 @@ pub enum MediaError {
     /// A frame of it cannot be decoded.
     #[error("a frame cannot be decoded: {0}")]
     Decode(String),
+    /// The graphics card failed: frames on it failed to decode, one after another, or a frame
+    /// cannot be copied from it. A [`crate::VideoDecoder`] goes on on the processor instead,
+    /// and gives this only from a [`crate::Converter`] of the caller's own.
+    #[error("the graphics card failed: {0}")]
+    Device(String),
+    /// The file cannot be read on, after it was opened.
+    #[error("{0}")]
+    Read(String),
+    /// A place in it cannot be sought.
+    #[error("{0}")]
+    Seek(String),
     /// There is no such frame: it is before the first frame or after the last one. `last` is the
     /// last frame, where it is known.
     #[error("there is no frame {frame}{}", last.map(|last| format!(": the last is {last}")).unwrap_or_default())]
@@ -39,7 +50,8 @@ pub enum MediaError {
 
 impl MediaError {
     /// What went wrong, for a program to read: `not_utf8`, `not_found`, `unreadable`,
-    /// `not_media`, `no_streams`, `no_video`, `unsupported`, `decode` or `out_of_range`.
+    /// `not_media`, `no_streams`, `no_video`, `unsupported`, `decode`, `device`, `read`, `seek`
+    /// or `out_of_range`.
     #[must_use]
     pub fn reason(&self) -> &'static str {
         match self {
@@ -51,6 +63,9 @@ impl MediaError {
             Self::NoVideo => "no_video",
             Self::Unsupported(_) => "unsupported",
             Self::Decode(_) => "decode",
+            Self::Device(_) => "device",
+            Self::Read(_) => "read",
+            Self::Seek(_) => "seek",
             Self::OutOfRange { .. } => "out_of_range",
         }
     }

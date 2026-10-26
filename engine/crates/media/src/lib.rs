@@ -21,9 +21,19 @@
 //! A frame of a picture is numbered by the rate of the picture ([`VideoFacts::rate`]): the
 //! frame whose timestamp is `t` is `round((t - start) / ticks_per_frame)`, where `start` is the
 //! start of the stream, or the timestamp of its first frame where the file does not say. The
-//! rate is the one that the timestamps are laid on (`r_frame_rate`), unless the frames come at
-//! times too far from it: then it is the standard rate nearest to their mean, as the editing of
-//! Python takes it.
+//! rate is the one that the timestamps are laid on (`r_frame_rate`), unless the mean rate of the
+//! frames (`avg_frame_rate`) is more than 1% from it: then it is the standard rate nearest to
+//! that mean, as the editing of Python takes it (with 100, 119.88, 120 and 240 a second beside
+//! its rates). Where frames come at changing times, a number may be had by none of them, and
+//! then the frame shown there is the one before; or by two, and then
+//! [`VideoDecoder::frame_at`] gives the first and [`VideoDecoder::next`] the second.
+//!
+//! # Rotation
+//!
+//! [`VideoFacts::rotation`] is how far a picture is turned **clockwise** to be shown upright,
+//! as the model has it. ffprobe, and so the editing of Python, give the turn counterclockwise:
+//! their 90 is 270 here, and a project of the editing of Python is moved over with
+//! `(360 - r) % 360`.
 //!
 //! # Linking
 //!
@@ -57,7 +67,7 @@ pub use columbina_model::{AudioFacts, Facts, Identity, Rate, Time, VideoFacts};
 pub use decode::{Converter, Decoded, Hardware, HardwarePath, Picture, VideoDecoder};
 pub use error::MediaError;
 pub use identity::identity;
-pub use probe::probe;
+pub use probe::{probe, DEMUXERS};
 
 /// Make libav ready to be used, once: its log is turned off.
 fn init() {

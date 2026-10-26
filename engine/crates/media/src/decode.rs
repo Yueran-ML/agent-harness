@@ -3,14 +3,14 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use columbina_model::Rate;
 use ff::format::context::Input;
 use ff::format::Pixel;
 use ffmpeg_next as ff;
 
-use crate::ffi::{self, Device, Scaler};
+use crate::ffi::{self, Device, Planes, Scaler};
 use crate::probe;
 use crate::timing::Timing;
 use crate::MediaError;
@@ -19,9 +19,9 @@ use crate::MediaError;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hardware {
     /// The graphics card where it can decode the file, else the processor. On Windows CUDA is
-    /// tried first (an NVIDIA card), then Direct3D 11; on macOS VideoToolbox; on Linux CUDA.
-    /// Direct3D 12 is never tried: it cannot decode HEVC Main 10 at 4K on the drivers of
-    /// NVIDIA of 2026.
+    /// tried first (an NVIDIA card), then Direct3D 11; on macOS VideoToolbox; on Linux CUDA
+    /// (an NVIDIA card), and no other device. Direct3D 12 is never tried: it cannot decode HEVC
+    /// Main 10 at 4K on the drivers of NVIDIA of 2026.
     Auto,
     /// The processor only.
     Off,
@@ -69,13 +69,22 @@ const TRIED: &[HardwarePath] = if cfg!(windows) {
 };
 
 /// The frames that are kept on the card beyond those that the decoder needs: one waiting to be
-/// given, and up to [`VideoDecoder::MOST_HELD`] held by whoever was given them.
-const EXTRA_FRAMES: i32 = 6;
+/// given, the last one given, up to [`VideoDecoder::MOST_HELD`] held by whoever was given them,
+/// and one to spare.
+const EXTRA_FRAMES: i32 = 7;
 
 /// How many frames on from the next one a decoder decodes its way to, rather than seek, in a
-/// file whose key frames were not all indexed when it was opened, where it has decoded no key
-/// frame between them: one that it has not decoded may lie between.
+/// file whose key frames are not indexed, where it has decoded no key frame between them: one
+/// that it has not decoded may lie between.
 const FORWARD_UNINDEXED: i64 = 30;
+
+/// How many frames or packets in a row may fail to decode, each passed over as ffmpeg passes
+/// them over, before decoding is given up.
+const MOST_FAILURES: u32 = 16;
+
+/// How many times a decoder seeks for one frame, each time from further back, before it
+/// decodes from the start of the file.
+const MOST_SEEKS: u32 = 8;
 
 /// A decoded frame in memory: 8 or 10 bit Y'CbCr 4:2:0, as NV12 (8 bits) or P010 (10 bits, in
 /// the high bits of 16), in two planes: luma, then Cb and Cr interleaved at half the width and
@@ -115,6 +124,41 @@ impl fmt::Debug for Picture {
     }
 }
 
+impl Picture {
+    /// Shape the picture for a frame of `width` × `height` in 8 or 10 bits, and give its planes
+    /// to be written. The memory that it holds is kept, and only grown.
+    fn shape(&mut self, frame: i64, width: u32, height: u32, ten: bool) -> Planes<'_> {
+        let bytes = if ten { 2 } else { 1 };
+        // A row of chroma holds Cb and Cr of half the pixels, rounded up: at least a row of
+        // luma. Rows start 64 bytes apart, as libav lays them.
+        let stride = (width as usize).div_ceil(2) * 2 * bytes;
+        let stride = stride.next_multiple_of(64);
+        let rows = height as usize;
+        self.frame = frame;
+        self.width = width;
+        self.height = height;
+        self.bits = if ten { 10 } else { 8 };
+        self.luma_stride = stride;
+        self.chroma_stride = stride;
+        // Memory of another size is asked for anew, already cleared by the system, rather than
+        // cleared here a byte at a time.
+        for (plane, length) in [
+            (&mut self.luma, stride * rows),
+            (&mut self.chroma, stride * rows.div_ceil(2)),
+        ] {
+            if plane.len() != length {
+                *plane = vec![0; length];
+            }
+        }
+        Planes {
+            luma: &mut self.luma,
+            luma_stride: stride,
+            chroma: &mut self.chroma,
+            chroma_stride: stride,
+        }
+    }
+}
+
 /// A frame as the decoder gave it, on the graphics card or in memory, before it is made a
 /// [`Picture`] by a [`Converter`]. It may be sent to another thread to be made one there while
 /// the decoder decodes the next: copying a frame of 4K from the card takes 5 to 12 ms.
@@ -135,17 +179,26 @@ impl Decoded {
     pub fn on_device(&self) -> bool {
         ffi::on_device(self.raw.format())
     }
+
+    /// Another of the same frame, which shares its memory.
+    fn again(&self) -> Result<Self, MediaError> {
+        Ok(Self {
+            frame: self.frame,
+            raw: ffi::reference(&self.raw).map_err(MediaError::Decode)?,
+        })
+    }
 }
 
 /// What makes [`Decoded`] frames into [`Picture`]s: it copies them from the graphics card, and
 /// converts those of other formats (4:2:2, 4:4:4, RGB, 12 bits) with swscale, to P010 if they
-/// have more than 8 bits and NV12 if not. It keeps what it made for the last frame, so that the
-/// next one of the same shape is made without starting again; one is used by one thread at a
-/// time, and each thread that makes pictures has its own.
+/// have more than 8 bits and NV12 if not, writing straight into the picture. It keeps what it
+/// made for the last frame, so that the next one of the same shape is made without starting
+/// again; it takes frames of any file, one after another. One is used by one thread at a time,
+/// and each thread that makes pictures has its own.
 #[derive(Default)]
 pub struct Converter {
+    /// A frame copied from the card in a format other than NV12 and P010, to be converted.
     copied: Option<ff::frame::Video>,
-    converted: Option<ff::frame::Video>,
     scaler: Option<Scaler>,
 }
 
@@ -159,7 +212,7 @@ impl Converter {
     /// Make a frame a picture.
     ///
     /// # Errors
-    /// It cannot be copied from the card, or converted.
+    /// It cannot be copied from the card ([`MediaError::Device`]), or converted.
     pub fn picture(&mut self, decoded: &Decoded) -> Result<Picture, MediaError> {
         let mut picture = Picture::default();
         self.picture_into(decoded, &mut picture)?;
@@ -171,85 +224,109 @@ impl Converter {
     /// is touched for each frame (a picture of 4K in P010 is 25 MB).
     ///
     /// # Errors
-    /// As [`Converter::picture`]; `into` is then as it was, or written over in part.
+    /// As [`Converter::picture`]; `into` is then written over in part.
     pub fn picture_into(
         &mut self,
         decoded: &Decoded,
         into: &mut Picture,
     ) -> Result<(), MediaError> {
-        let mut source = &decoded.raw;
-        if ffi::on_device(source.format()) {
-            let copied = self.copied.get_or_insert_with(ff::frame::Video::empty);
-            ffi::transfer(copied, source).map_err(MediaError::Decode)?;
-            source = &*copied;
+        let raw = &decoded.raw;
+        if !ffi::on_device(raw.format()) {
+            return convert(&mut self.scaler, raw, decoded.frame, into);
         }
-        let format = source.format();
-        if matches!(format, Pixel::NV12 | Pixel::P010LE) {
-            write_picture(decoded.frame, source, into);
-            return Ok(());
+        let memory = ffi::memory_format(raw)
+            .ok_or_else(|| MediaError::Device("a frame on the card has no format".into()))?;
+        if matches!(memory, Pixel::NV12 | Pixel::P010LE) {
+            let mut planes = into.shape(
+                decoded.frame,
+                raw.width(),
+                raw.height(),
+                memory == Pixel::P010LE,
+            );
+            return ffi::transfer_into(raw, &mut planes).map_err(MediaError::Device);
         }
-        let target = if ffi::depth(format).unwrap_or(8) > 8 {
-            Pixel::P010LE
-        } else {
-            Pixel::NV12
-        };
-        let (width, height) = (source.width(), source.height());
-        let scaler = match &mut self.scaler {
-            Some(scaler)
-                if {
-                    let input = scaler.0.input();
-                    (input.format, input.width, input.height) == (format, width, height)
-                } =>
-            {
-                scaler
-            }
-            slot => {
-                let made = ff::software::scaling::Context::get(
-                    format,
-                    width,
-                    height,
-                    target,
-                    width,
-                    height,
-                    ff::software::scaling::Flags::BILINEAR,
-                )
-                .map_err(|error| {
-                    MediaError::Decode(format!(
-                        "frames of {} cannot be converted: {error}",
-                        format
-                            .descriptor()
-                            .map_or("a format", |described| described.name())
-                    ))
-                })?;
-                self.converted = None;
-                slot.insert(Scaler(made))
-            }
-        };
-        let converted = self.converted.get_or_insert_with(ff::frame::Video::empty);
-        scaler.0.run(source, converted).map_err(|error| {
-            MediaError::Decode(format!("the frame cannot be converted: {error}"))
-        })?;
-        write_picture(decoded.frame, converted, into);
-        Ok(())
+        let copied = self.copied.get_or_insert_with(ff::frame::Video::empty);
+        ffi::transfer(copied, raw).map_err(MediaError::Device)?;
+        convert(&mut self.scaler, copied, decoded.frame, into)
     }
 }
 
-/// Write a frame of NV12 or P010 into a picture.
-fn write_picture(frame: i64, source: &ff::frame::Video, into: &mut Picture) {
-    into.frame = frame;
-    into.width = source.width();
-    into.height = source.height();
-    into.bits = if source.format() == Pixel::P010LE {
-        10
-    } else {
-        8
+/// Write a frame in memory into a picture: copied if it is NV12 or P010, else converted to the
+/// one of them with as many bits, with the scaler that was kept if it was made for frames of
+/// this format and size.
+fn convert(
+    scaler: &mut Option<Scaler>,
+    source: &ff::frame::Video,
+    frame: i64,
+    into: &mut Picture,
+) -> Result<(), MediaError> {
+    let format = source.format();
+    let (width, height) = (source.width(), source.height());
+    let ten = ffi::depth(format).unwrap_or(8) > 8;
+    if matches!(format, Pixel::NV12 | Pixel::P010LE) {
+        let planes = into.shape(frame, width, height, format == Pixel::P010LE);
+        copy_planes(source, planes);
+        return Ok(());
+    }
+    let scaler = match scaler {
+        Some(scaler)
+            if {
+                let input = scaler.0.input();
+                (input.format, input.width, input.height) == (format, width, height)
+            } =>
+        {
+            scaler
+        }
+        slot => {
+            let made = ff::software::scaling::Context::get(
+                format,
+                width,
+                height,
+                if ten { Pixel::P010LE } else { Pixel::NV12 },
+                width,
+                height,
+                ff::software::scaling::Flags::BILINEAR,
+            )
+            .map_err(|error| {
+                MediaError::Decode(format!(
+                    "frames of {} cannot be converted: {error}",
+                    format
+                        .descriptor()
+                        .map_or("a format", |described| described.name())
+                ))
+            })?;
+            slot.insert(Scaler(made))
+        }
     };
-    into.luma.clear();
-    into.luma.extend_from_slice(source.data(0));
-    into.chroma.clear();
-    into.chroma.extend_from_slice(source.data(1));
-    into.luma_stride = source.stride(0);
-    into.chroma_stride = source.stride(1);
+    let mut planes = into.shape(frame, width, height, ten);
+    ffi::scale_into(scaler, source, &mut planes).map_err(MediaError::Decode)
+}
+
+/// Copy the planes of a frame of NV12 or P010 into planes of the same shape, a row at a time.
+fn copy_planes(source: &ff::frame::Video, planes: Planes<'_>) {
+    let bytes = if source.format() == Pixel::P010LE {
+        2
+    } else {
+        1
+    };
+    let width = source.width() as usize;
+    let height = source.height() as usize;
+    for (plane, into, stride, rows, row) in [
+        (0, planes.luma, planes.luma_stride, height, width * bytes),
+        (
+            1,
+            planes.chroma,
+            planes.chroma_stride,
+            height.div_ceil(2),
+            width.div_ceil(2) * 2 * bytes,
+        ),
+    ] {
+        let (data, from_stride) = (source.data(plane), source.stride(plane));
+        for y in 0..rows {
+            into[y * stride..y * stride + row]
+                .copy_from_slice(&data[y * from_stride..y * from_stride + row]);
+        }
+    }
 }
 
 /// The decoder of the picture of a file.
@@ -258,14 +335,25 @@ fn write_picture(frame: i64, source: &ff::frame::Video, into: &mut Picture) {
 /// one it gave ([`VideoDecoder::next`]). To give a frame further on it decodes on from where it
 /// is, where the key frame at or before that frame is not after the frame it is at, since
 /// decoding from there is what seeking would do; else it seeks to that key frame and decodes on
-/// from it. It knows key frames from the index of the file where it has one, and from those it
-/// has decoded.
+/// from it. It knows key frames from the index of the file, where the file is of a format
+/// whose index holds them all when it is opened (MP4, Matroska, AVI), and from those it has
+/// decoded. A file of MPEG-TS or MPEG-PS is sought in by time, with no index of its key frames:
+/// it is sought from a key frame that was decoded, where one is known near enough, else from
+/// further and further back until the key frame found is not after the frame; its start is
+/// found by seeking to its first byte.
+///
+/// A frame or a packet that fails to decode is passed over, as ffmpeg passes it over, unless
+/// 16 fail in a row. A decoder on the graphics card that fails so, or whose
+/// frames cannot be copied from the card, is opened again on the processor where it was, and
+/// goes on there ([`VideoDecoder::fallbacks`] tells it): the card never breaks a caller.
 ///
 /// What it gives is decoded: it is a [`Decoded`] from [`VideoDecoder::decoded_at`] and
 /// [`VideoDecoder::next_decoded`], and a [`Picture`] from the others, which make it one with a
 /// [`Converter`] of the decoder. Making it one on another thread while the decoder goes on is
 /// left to whoever plays the file.
+#[allow(clippy::struct_excessive_bools)]
 pub struct VideoDecoder {
+    source: PathBuf,
     input: Input,
     stream: usize,
     decoder: ff::decoder::Video,
@@ -274,8 +362,16 @@ pub struct VideoDecoder {
     path: HardwarePath,
     fallbacks: Vec<(HardwarePath, String)>,
     timing: Timing,
+    /// Whether the index of the file holds every key frame from when it is opened.
+    indexed: bool,
+    /// Whether the start of the file is sought by its first byte.
+    start_by_byte: bool,
+    /// The number of the first frame of the file.
+    first_frame: i64,
     /// The last frame that was given.
     given: Option<i64>,
+    /// Another of the last frame that was given, to give it again without decoding.
+    shown: Option<Decoded>,
     /// A frame that was decoded and not given yet: the next to be given.
     waiting: Option<Decoded>,
     /// Whether the decoder has given every frame up to the end of the file.
@@ -286,20 +382,26 @@ pub struct VideoDecoder {
     last: Option<i64>,
     /// The key frames that were decoded.
     key_frames: BTreeSet<i64>,
-    /// Whether the file indexed its frames when it was opened, as MP4 and Matroska do, so that
-    /// the index knows every key frame.
-    indexed: bool,
+    /// The last key frame that came out since the decoder last sought.
+    last_key: Option<i64>,
+    /// The most frames from a key frame to the next one, of two that came out one after the
+    /// other.
+    longest_group: Option<i64>,
     /// How much later a key frame is shown than it is decoded, in ticks, as its packets say: an
-    /// index of MP4 holds the time a frame is decoded, a few frames before it is shown where
-    /// frames are reordered.
+    /// index of MP4, and the seeking of MPEG-TS, go by the time a frame is decoded, a few frames
+    /// before it is shown where frames are reordered.
     key_shift: i64,
-    /// The timestamps of the packets that were sent to the decoder since it was last emptied
-    /// and whose frames have not come out yet, so that a frame that is none of them, left from
-    /// before, is dropped. None after a packet without one.
-    sent: Option<BTreeSet<i64>>,
+    /// Until the first frame comes out after the decoder was emptied, the timestamps of the
+    /// packets sent to it since, so that a frame that is none of them, left from before, is
+    /// dropped. None once one came out, or after a packet without a timestamp.
+    checking: Option<BTreeSet<i64>>,
     /// The number of the last frame that came out, for a frame without a timestamp.
     previous: Option<i64>,
+    /// How many frames or packets in a row failed to decode.
+    failures: u32,
     seeks: u64,
+    /// Whether the decoder on the card is made to fail, by a test.
+    failing: bool,
     converter: Converter,
 }
 
@@ -349,20 +451,22 @@ impl VideoDecoder {
                 Err(Attempt::File(error)) => return Err(error),
             }
         }
-        match Self::open_on(path, None) {
-            Ok(mut decoder) => {
-                decoder.fallbacks = fallbacks;
-                Ok(decoder)
-            }
-            Err(Attempt::File(error)) => Err(error),
-            Err(Attempt::Hardware(why)) => Err(MediaError::Decode(why)),
-        }
+        let mut decoder = Self::open_on(path, None).map_err(Attempt::into_error)?;
+        decoder.fallbacks = fallbacks;
+        Ok(decoder)
+    }
+
+    /// Make the decoder on the graphics card fail from now on, as a card that is lost does, so
+    /// that the tests can see it go on on the processor. Nothing on the processor fails.
+    #[doc(hidden)]
+    pub fn fail_device(&mut self) {
+        self.failing = true;
     }
 
     /// Open the picture of a file on a device, or on the processor if there is none.
     fn open_on(path: &Path, device: Option<HardwarePath>) -> Result<Self, Attempt> {
         let mut input = probe::open(path)?;
-        let stream = probe::video_stream(&input).ok_or(MediaError::NoVideo)?;
+        let stream = probe::video_stream(&input)?.ok_or(MediaError::NoVideo)?;
         let (timing, start, mut context) = {
             let found = input.stream(stream).ok_or(MediaError::NoVideo)?;
             let base = probe::base(&found)?;
@@ -380,18 +484,24 @@ impl VideoDecoder {
             (timing, start, context)
         };
         let codec = context.id();
-        let decoder_of = ff::decoder::find(codec).ok_or_else(|| {
+        let unsupported = || {
             MediaError::Unsupported(format!(
                 "this build of libav cannot decode {}",
                 codec.name()
             ))
-        })?;
+        };
+        let mut decoder_of = ff::decoder::find(codec).ok_or_else(unsupported)?;
         let hardware = if let Some(device) = device {
+            // libdav1d, which libav prefers for AV1, decodes on no card; its own decoder does.
+            if codec == ff::codec::Id::AV1 {
+                decoder_of = ff::decoder::find_by_name("av1").unwrap_or(decoder_of);
+            }
             let made = Device::new(device.name()).map_err(Attempt::Hardware)?;
-            let format = made.format_of(codec).ok_or_else(|| {
+            let format = made.format_of(&decoder_of).ok_or_else(|| {
                 Attempt::Hardware(format!("{} is not decoded on {device}", codec.name()))
             })?;
-            made.attach(&mut context, format, EXTRA_FRAMES);
+            made.attach(&mut context, format, EXTRA_FRAMES)
+                .map_err(Attempt::Hardware)?;
             // A decoder on a card decodes one frame at a time; threads only wait on it.
             ffi::set_threads(&mut context, 1, false);
             Some((made, format))
@@ -412,9 +522,15 @@ impl VideoDecoder {
                 }
             })?;
         ffi::discard_others(&mut input, stream);
-        let indexed = ffi::index_entries(&input, stream) > 1;
+        let format_name = input.format().name().to_owned();
+        let indexed = ["mov", "matroska", "avi"]
+            .iter()
+            .any(|name| format_name.split(',').any(|part| part == *name))
+            && ffi::index_entries(&input, stream) > 1;
+        let start_by_byte = ["mpegts", "mpeg"].contains(&format_name.as_str());
         let (device_kept, format) = hardware.unzip();
         let mut decoder = Self {
+            source: path.to_owned(),
             input,
             stream,
             decoder: opened,
@@ -422,17 +538,24 @@ impl VideoDecoder {
             path: device.unwrap_or(HardwarePath::Software),
             fallbacks: Vec::new(),
             timing,
+            indexed,
+            start_by_byte,
+            first_frame: 0,
             given: None,
+            shown: None,
             waiting: None,
             at_end: false,
             sent_end: false,
             last: None,
             key_frames: BTreeSet::new(),
-            indexed,
+            last_key: None,
+            longest_group: None,
             key_shift: 0,
-            sent: Some(BTreeSet::new()),
+            checking: Some(BTreeSet::new()),
             previous: None,
+            failures: 0,
             seeks: 0,
+            failing: false,
             converter: Converter::new(),
         };
         decoder.decode_first(format, start.is_none())?;
@@ -471,8 +594,9 @@ impl VideoDecoder {
             // Frame 0 is the first frame.
             self.timing.origin = first.raw.timestamp().or(first.raw.pts()).unwrap_or(0);
             self.key_frames.clear();
+            self.last_key = None;
             if first.raw.is_key() {
-                self.key_frames.insert(0);
+                self.learn_key(0);
             }
             self.previous = Some(0);
             Decoded {
@@ -482,6 +606,7 @@ impl VideoDecoder {
         } else {
             first
         };
+        self.first_frame = first.frame;
         self.waiting = Some(first);
         Ok(())
     }
@@ -490,13 +615,19 @@ impl VideoDecoder {
     /// where none is (a file whose frames come at changing times), the last one before it.
     /// Before the first frame of a file that starts late, its first frame.
     ///
+    /// Where frames come at changing times, two frames may be numbered alike, by rounding: this
+    /// gives the first of them, and [`VideoDecoder::next`] after it the second, with the same
+    /// number.
+    ///
     /// # Errors
     /// `frame` is below 0 or after the last frame ([`MediaError::OutOfRange`]: a frame past the
     /// end is never given as the last one), or a frame cannot be decoded or copied. After an
     /// error, [`VideoDecoder::next`] gives nothing until a frame is asked for again.
     pub fn frame_at(&mut self, frame: i64) -> Result<Picture, MediaError> {
-        let decoded = self.decoded_at(frame)?;
-        self.converter.picture(&decoded)
+        self.or_software(false, |decoder| {
+            let found = decoder.find(frame)?;
+            decoder.converter.picture(&found)
+        })
     }
 
     /// The frame after the last one given, without seeking; the first frame of the file if
@@ -506,19 +637,21 @@ impl VideoDecoder {
     /// A frame cannot be decoded or copied.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<Picture>, MediaError> {
-        match self.next_decoded()? {
-            Some(decoded) => self.converter.picture(&decoded).map(Some),
+        self.or_software(true, |decoder| match decoder.advance()? {
+            Some(decoded) => decoder.converter.picture(&decoded).map(Some),
             None => Ok(None),
-        }
+        })
     }
 
-    /// What decodes, for the log.
+    /// What decodes, for the log: the device, or the processor where none was used or the one
+    /// that was used failed.
     #[must_use]
     pub fn path_used(&self) -> HardwarePath {
         self.path
     }
 
-    /// Each device that was tried before the one that is used, and why it was not used.
+    /// Each device that was tried before the one that is used, or that was used and failed, and
+    /// why it was not used.
     #[must_use]
     pub fn fallbacks(&self) -> &[(HardwarePath, String)] {
         &self.fallbacks
@@ -541,11 +674,75 @@ impl VideoDecoder {
     /// # Errors
     /// As [`VideoDecoder::frame_at`].
     pub fn decoded_at(&mut self, frame: i64) -> Result<Decoded, MediaError> {
+        self.or_software(false, |decoder| decoder.find(frame))
+    }
+
+    /// As [`VideoDecoder::next`], but the frame as it was decoded.
+    ///
+    /// # Errors
+    /// As [`VideoDecoder::next`].
+    pub fn next_decoded(&mut self) -> Result<Option<Decoded>, MediaError> {
+        self.or_software(true, Self::advance)
+    }
+
+    /// Do `work`, and, if the card failed at it, open the file again on the processor and do it
+    /// again there. Where `resume`, the decoder on the processor is first brought to where the
+    /// one on the card was before `work`, so that the next frame is the one that failed.
+    fn or_software<T>(
+        &mut self,
+        resume: bool,
+        mut work: impl FnMut(&mut Self) -> Result<T, MediaError>,
+    ) -> Result<T, MediaError> {
+        let before = self.given;
+        match work(self) {
+            Err(error @ (MediaError::Device(_) | MediaError::Decode(_)))
+                if self.path != HardwarePath::Software =>
+            {
+                self.fall_back(&error, resume, before)?;
+                work(self)
+            }
+            done => done,
+        }
+    }
+
+    /// Open the file again on the processor, in the place of this decoder on a card, which
+    /// failed with `error`. Where `resume`, bring it to the frame after `given`, or to the first
+    /// frame if that is none.
+    fn fall_back(
+        &mut self,
+        error: &MediaError,
+        resume: bool,
+        given: Option<i64>,
+    ) -> Result<(), MediaError> {
+        let mut software = Self::open_on(&self.source, None).map_err(Attempt::into_error)?;
+        let mut fallbacks = std::mem::take(&mut self.fallbacks);
+        fallbacks.push((self.path, error.to_string()));
+        software.fallbacks = fallbacks;
+        software.seeks = self.seeks;
+        software.last = self.last;
+        *self = software;
+        if let (true, Some(given)) = (resume, given) {
+            self.find(given)?;
+        }
+        Ok(())
+    }
+
+    /// The frame shown at `frame`, from the last one given, by decoding on, or by seeking.
+    fn find(&mut self, frame: i64) -> Result<Decoded, MediaError> {
         if frame < 0 || self.last.is_some_and(|last| frame > last) {
             return Err(MediaError::OutOfRange {
                 frame,
                 last: self.last,
             });
+        }
+        if let Some(shown) = &self.shown {
+            // The frame given last is shown up to the next one.
+            let up_to = self.waiting.as_ref().map(|waiting| waiting.frame - 1);
+            if self.given == Some(shown.frame)
+                && (shown.frame == frame || (shown.frame < frame && up_to >= Some(frame)))
+            {
+                return shown.again();
+            }
         }
         if self.forward_to(frame) {
             let current = match self.waiting.take() {
@@ -555,30 +752,46 @@ impl VideoDecoder {
                     None => return Err(self.ended(frame, None)),
                 },
             };
+            if current.frame > frame {
+                // No frame is numbered between the last one given and the next: the last one
+                // given is shown at the frame.
+                self.waiting = Some(current);
+                if let Some(shown) = self
+                    .shown
+                    .as_ref()
+                    .filter(|shown| self.given == Some(shown.frame))
+                {
+                    return shown.again();
+                }
+                return self.seek_to(frame);
+            }
             return self.settle(frame, current);
         }
         self.seek_to(frame)
     }
 
-    /// As [`VideoDecoder::next`], but the frame as it was decoded.
-    ///
-    /// # Errors
-    /// As [`VideoDecoder::next`].
-    pub fn next_decoded(&mut self) -> Result<Option<Decoded>, MediaError> {
+    /// The next frame after the last one given, without seeking.
+    fn advance(&mut self) -> Result<Option<Decoded>, MediaError> {
         let next = match self.waiting.take() {
             Some(waiting) => Some(waiting),
             None if self.at_end => None,
             None => self.receive()?,
         };
-        if let Some(decoded) = &next {
-            self.given = Some(decoded.frame);
-        } else {
-            self.at_end = true;
-            if let Some(given) = self.given {
-                self.last = Some(given);
-            }
+        if let Some(decoded) = next {
+            return self.give(decoded).map(Some);
         }
-        Ok(next)
+        self.at_end = true;
+        if let Some(given) = self.given {
+            self.last = Some(given);
+        }
+        Ok(None)
+    }
+
+    /// Give a frame: it is the last one given, kept to be given again.
+    fn give(&mut self, decoded: Decoded) -> Result<Decoded, MediaError> {
+        self.given = Some(decoded.frame);
+        self.shown = Some(decoded.again()?);
+        Ok(decoded)
     }
 
     /// Whether `frame` is best reached by decoding on from where the decoder is: it is not
@@ -596,61 +809,101 @@ impl VideoDecoder {
             return false;
         }
         let learned = self.key_frames.range(..=frame).next_back().copied();
-        // The last key frame shown at or before the frame is decoded at or before this.
-        let decoded_by = self
-            .timing
-            .timestamp_of(frame)
-            .saturating_sub(self.key_shift);
-        let indexed =
+        let indexed = if self.indexed {
+            // The last key frame shown at or before the frame is decoded at or before this.
+            let decoded_by = self
+                .timing
+                .timestamp_of(frame)
+                .saturating_sub(self.key_shift);
             ffi::key_frame_before(&self.input, self.stream, decoded_by).map(|timestamp| {
                 self.timing
                     .frame_of(timestamp.saturating_add(self.key_shift))
-            });
+            })
+        } else {
+            None
+        };
         let key_before = learned.max(indexed).is_none_or(|key| key <= next);
         key_before && (self.indexed || frame - next <= FORWARD_UNINDEXED)
     }
 
-    /// Seek to the key frame at or before `frame`, and decode on to it.
+    /// Seek to a key frame at or before `frame`, and decode on to it.
+    ///
+    /// It seeks from a key frame that was decoded where one is known within the longest group
+    /// of frames before `frame`, else from `frame` itself; where the first frame that comes out
+    /// is after `frame`, the key frame found was after it, and it seeks again from further
+    /// back. From the first frame back, or after [`MOST_SEEKS`], it seeks to the start.
     fn seek_to(&mut self, frame: i64) -> Result<Decoded, MediaError> {
-        let mut back = 0_i64;
-        loop {
-            let from = frame.saturating_sub(back);
-            let from_start = from <= 0;
-            self.seek(self.timing.timestamp_of(from.max(0)), from_start)?;
-            let Some(first) = self.receive()? else {
-                if from_start {
-                    return Err(self.ended(frame, None));
-                }
-                back = if back == 0 { 8 } else { back.saturating_mul(2) };
-                continue;
-            };
-            // The index may hold the time a key frame is decoded rather than shown: then the
-            // key frame found may be shown after the frame. Seek again from further back.
-            if first.frame > frame && !from_start {
-                back = if back == 0 { 8 } else { back.saturating_mul(2) };
-                continue;
+        let known = self
+            .key_frames
+            .range(..=frame)
+            .next_back()
+            .copied()
+            .filter(|&key| self.longest_group.is_some_and(|group| frame - key < group));
+        let mut from = known.unwrap_or(frame);
+        let mut step = 0_i64;
+        for _ in 0..MOST_SEEKS {
+            if from <= self.first_frame {
+                break;
             }
-            return self.settle(frame, first);
+            // Seeking in a file whose index is not trusted goes by the time a frame is decoded.
+            let shift = if self.indexed { 0 } else { self.key_shift };
+            let at = self.timing.timestamp_of(from).saturating_sub(shift);
+            self.seeks += 1;
+            if ffi::seek(&mut self.input, self.stream, at, true).is_err() {
+                break;
+            }
+            self.emptied();
+            if let Some(first) = self.receive()? {
+                if first.frame <= frame {
+                    return self.settle(frame, first);
+                }
+            }
+            step = step
+                .saturating_mul(2)
+                .max(8)
+                .max(self.longest_group.map_or(0, |group| group + 1));
+            from = from.saturating_sub(step);
         }
+        self.seek_start(frame)
     }
 
-    /// Seek to the key frame at or before `timestamp`, and empty the decoder.
-    fn seek(&mut self, timestamp: i64, from_start: bool) -> Result<(), MediaError> {
+    /// Seek to the start of the file, and decode on to `frame`: by its first byte, for MPEG-TS
+    /// and MPEG-PS, whose seeking by time finds no key frame; else to the key frame at or
+    /// before its first frame, or the first key frame after that.
+    fn seek_start(&mut self, frame: i64) -> Result<Decoded, MediaError> {
         self.seeks += 1;
-        let mut sought = ffi::seek(&mut self.input, self.stream, timestamp, true);
-        if sought.is_err() && from_start {
-            // Nothing is indexed at or before the start: take the first key frame after it.
-            sought = ffi::seek(&mut self.input, self.stream, timestamp, false);
+        let sought = if self.start_by_byte {
+            ffi::seek_to_byte(&mut self.input, 0)
+        } else {
+            let at = self.timing.timestamp_of(self.first_frame);
+            ffi::seek(&mut self.input, self.stream, at, true)
+                .or_else(|_| ffi::seek(&mut self.input, self.stream, at, false))
+        };
+        sought.map_err(MediaError::Seek)?;
+        self.emptied();
+        let Some(first) = self.receive()? else {
+            return Err(self.ended(frame, None));
+        };
+        if first.frame > frame.max(self.first_frame) {
+            return Err(MediaError::Seek(format!(
+                "seeking to the start of the file found frame {}, not {}",
+                first.frame, self.first_frame
+            )));
         }
-        sought.map_err(MediaError::Decode)?;
+        self.settle(frame, first)
+    }
+
+    /// Empty the decoder after a seek, and forget where it was.
+    fn emptied(&mut self) {
         self.decoder.flush();
         self.waiting = None;
         self.given = None;
         self.at_end = false;
         self.sent_end = false;
-        self.sent = Some(BTreeSet::new());
+        self.checking = Some(BTreeSet::new());
         self.previous = None;
-        Ok(())
+        self.last_key = None;
+        self.failures = 0;
     }
 
     /// Decode on from `current`, a frame at or before `frame` (or the first after a seek to the
@@ -666,8 +919,7 @@ impl VideoDecoder {
                 None => return Err(self.ended(frame, Some(current.frame))),
             }
         }
-        self.given = Some(current.frame);
-        Ok(current)
+        self.give(current)
     }
 
     /// The error of a frame after the end of the file, which the decoder has reached; `last` is
@@ -688,19 +940,26 @@ impl VideoDecoder {
     /// The next frame that comes out of the decoder, and its number; none at the end.
     fn receive(&mut self) -> Result<Option<Decoded>, MediaError> {
         loop {
+            if self.failing && self.path != HardwarePath::Software {
+                return Err(MediaError::Device(format!(
+                    "{} was made to fail",
+                    self.path
+                )));
+            }
             let mut raw = ff::frame::Video::empty();
             match self.decoder.receive_frame(&mut raw) {
                 Ok(()) => {
                     if !self.belongs(&raw) {
                         continue;
                     }
+                    self.failures = 0;
                     let frame = match raw.timestamp().or(raw.pts()) {
                         Some(timestamp) => self.timing.frame_of(timestamp),
                         None => self.previous.map_or(0, |previous| previous + 1),
                     };
                     self.previous = Some(frame);
                     if raw.is_key() {
-                        self.key_frames.insert(frame);
+                        self.learn_key(frame);
                     }
                     return Ok(Some(Decoded { frame, raw }));
                 }
@@ -708,22 +967,46 @@ impl VideoDecoder {
                     self.feed()?;
                 }
                 Err(ff::Error::Eof) => return Ok(None),
-                Err(error) => return Err(MediaError::Decode(error.to_string())),
+                Err(error) => self.failed(error)?,
             }
         }
     }
 
-    /// Whether a frame that came out was sent since the decoder was last emptied: a decoder on
-    /// a card may give a frame from before a seek after it. Forgets the timestamps up to it,
-    /// since frames come out in the order they are shown.
-    fn belongs(&mut self, raw: &ff::frame::Video) -> bool {
-        let (Some(sent), Some(pts)) = (&mut self.sent, raw.pts()) else {
-            return true;
-        };
-        if !sent.contains(&pts) {
-            return false;
+    /// Count a key frame that came out, and the group of frames that it ends.
+    fn learn_key(&mut self, frame: i64) {
+        self.key_frames.insert(frame);
+        if let Some(last) = self.last_key.filter(|&last| last < frame) {
+            let group = frame - last;
+            self.longest_group = Some(self.longest_group.map_or(group, |most| most.max(group)));
         }
-        *sent = sent.split_off(&pts.saturating_add(1));
+        self.last_key = Some(frame);
+    }
+
+    /// Pass over a frame or a packet that failed to decode, unless too many failed in a row.
+    fn failed(&mut self, error: ff::Error) -> Result<(), MediaError> {
+        self.failures += 1;
+        if self.failures <= MOST_FAILURES {
+            return Ok(());
+        }
+        let why = format!("{MOST_FAILURES} frames in a row failed, the last with: {error}");
+        Err(if self.path == HardwarePath::Software {
+            MediaError::Decode(why)
+        } else {
+            MediaError::Device(format!("{}: {why}", self.path))
+        })
+    }
+
+    /// Whether a frame that came out may be given: the first after the decoder was emptied must
+    /// be of a packet that was sent since, since a decoder on a card may give a frame from
+    /// before a seek after it. Those after it are all given, those with the timestamp of
+    /// another too, as a file may have.
+    fn belongs(&mut self, raw: &ff::frame::Video) -> bool {
+        if let (Some(sent), Some(pts)) = (&self.checking, raw.pts()) {
+            if !sent.contains(&pts) {
+                return false;
+            }
+        }
+        self.checking = None;
         true
     }
 
@@ -745,17 +1028,16 @@ impl VideoDecoder {
                     }
                     match packet.pts() {
                         Some(pts) => {
-                            if let Some(sent) = &mut self.sent {
+                            if let Some(sent) = &mut self.checking {
                                 sent.insert(pts);
                             }
                         }
-                        None => self.sent = None,
+                        None => self.checking = None,
                     }
                     match self.decoder.send_packet(&packet) {
                         Ok(()) => return Ok(()),
-                        // A broken packet is passed over, as ffmpeg does.
-                        Err(ff::Error::InvalidData) => {}
-                        Err(error) => return Err(MediaError::Decode(error.to_string())),
+                        // A packet that cannot be decoded is passed over, as ffmpeg does.
+                        Err(error) => self.failed(error)?,
                     }
                 }
                 Ok(()) => {}
@@ -767,7 +1049,7 @@ impl VideoDecoder {
                         .map_err(|error| MediaError::Decode(error.to_string()));
                 }
                 Err(error) => {
-                    return Err(MediaError::Decode(format!(
+                    return Err(MediaError::Read(format!(
                         "the file cannot be read on: {error}"
                     )))
                 }
@@ -781,6 +1063,16 @@ impl VideoDecoder {
 enum Attempt {
     Hardware(String),
     File(MediaError),
+}
+
+impl Attempt {
+    /// The error of an attempt on the processor, where no device was tried.
+    fn into_error(self) -> MediaError {
+        match self {
+            Self::Hardware(why) => MediaError::Decode(why),
+            Self::File(error) => error,
+        }
+    }
 }
 
 impl From<MediaError> for Attempt {

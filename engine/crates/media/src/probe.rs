@@ -13,40 +13,64 @@ use crate::{ffi, timing, MediaError};
 /// What a file holds, as libav finds it. This blocks.
 ///
 /// - The picture is the best stream of pictures that is not the cover of an album, and the
-///   sound the best stream of sound, as libav ranks them.
+///   sound the best stream of sound that libav can decode, as libav ranks them.
 /// - Its duration is that of the picture if it has one, else that of the sound, in the time
-///   base of that stream and from its start (see the crate's doc). Where the stream does not
-///   say, the duration of the whole file is taken.
+///   base of that stream, from the start of the stream (see the crate's doc). Where the file
+///   does not say how long the stream lasts, as Matroska does not, the end of the stream is
+///   read from its last packets: the end of the last of them, from the start of the stream.
 /// - The width and height of the picture are as they are stored, before it is turned; its rate
 ///   is as the crate's doc says; its bits are those of luma; its codec is named as ffprobe
 ///   names it (`h264`, `hevc`, `prores`); its rotation is how far it is turned clockwise to be
-///   shown upright, from its display matrix, to the nearest of 0, 90, 180 and 270.
+///   shown upright, from its display matrix, to the nearest of 0, 90, 180 and 270. A display
+///   matrix that mirrors the picture is read as a mirror left to right and a turn: the turn
+///   is kept, and the mirror is not, since the facts of a file hold none. (The editing of
+///   Python keeps the turn as ffprobe gives it, counterclockwise: its 90 is 270 here.)
 ///
 /// # Errors
-/// The path is not UTF-8; the file is not there, cannot be read, or is not media; it holds
-/// neither picture nor sound; or what it holds cannot be used: a picture or sound that this
-/// build of libav cannot decode, no duration, a picture without a size or a rate.
+/// The path is not UTF-8; the file is not there, cannot be read, or is not media of the formats
+/// of [`DEMUXERS`]; it holds neither picture nor sound; or what it holds cannot be used: a
+/// picture that this build of libav cannot decode, no duration, a picture without a size or a
+/// rate.
 pub fn probe(path: &Path) -> Result<Facts, MediaError> {
-    let input = open(path)?;
-    let video = video_stream(&input).and_then(|index| input.stream(index));
+    let mut input = open(path)?;
+    let video = video_stream(&input)?;
     let audio = input
         .streams()
         .best(Type::Audio)
-        .filter(|stream| ff::decoder::find(stream.parameters().id()).is_some());
-    let timed = match (&video, &audio) {
-        (Some(video), _) => video,
-        (None, Some(audio)) => audio,
-        (None, None) => return Err(MediaError::NoStreams),
-    };
-    let duration = duration(&input, timed)?;
-    let video = video.map(|stream| picture(&stream)).transpose()?;
-    let audio = audio.map(|stream| sound(&stream)).transpose()?;
+        .filter(|stream| ff::decoder::find(stream.parameters().id()).is_some())
+        .map(|stream| stream.index());
+    let timed = video.or(audio).ok_or(MediaError::NoStreams)?;
+    let stream_of = |index: usize| input.stream(index).ok_or(MediaError::NoStreams);
+    let video = video.map(|index| picture(&stream_of(index)?)).transpose()?;
+    let audio = audio.map(|index| sound(&stream_of(index)?)).transpose()?;
+    let duration = duration(&mut input, timed, video.as_ref().map(|video| video.rate))?;
     Ok(Facts {
         duration,
         video,
         audio,
     })
 }
+
+/// The demuxers of libav that a file may be read with: those of the editing of Python
+/// (`columbina.video.media.DEMUXERS`), and MPEG-PS (`mpeg`, of DVDs and cameras), which
+/// that list lacks. A list of other files, such as an HLS playlist or a list of `concat`, is of none of
+/// them, so that libav opens no file that such a list names; nor is text, which the demuxers of
+/// pictures drawn in text would take for one.
+pub const DEMUXERS: [&str; 13] = [
+    "mov",
+    "matroska",
+    "avi",
+    "mpegts",
+    "mpeg",
+    "wav",
+    "mp3",
+    "flac",
+    "ogg",
+    "aac",
+    "png_pipe",
+    "jpeg_pipe",
+    "webp_pipe",
+];
 
 /// Refuse a path that a project cannot hold, or that libav cannot be given.
 pub(crate) fn checked(path: &Path) -> Result<&str, MediaError> {
@@ -71,33 +95,38 @@ pub(crate) fn open(path: &Path) -> Result<Input, MediaError> {
     let url = format!("file:{}", checked(&full)?);
     let mut options = ff::Dictionary::new();
     options.set("protocol_whitelist", "file");
-    let input = ff::format::input_with_dictionary(&url, options)
-        .map_err(|error| MediaError::Open(error.to_string()))?;
-    // The demuxers of pictures drawn in text take any text for one.
-    if TEXT_ART.contains(&input.format().name()) {
-        return Err(MediaError::Open("it is text, not media".into()));
-    }
-    Ok(input)
+    options.set("format_whitelist", &DEMUXERS.join(","));
+    ff::format::input_with_dictionary(&url, options)
+        .map_err(|error| MediaError::Open(error.to_string()))
 }
 
-/// The demuxers of libav that read pictures drawn in text (ANSI art, Binary Text, `XBin`, `iCE`
-/// Draw, Artworx), which take any text for one.
-const TEXT_ART: [&str; 5] = ["tty", "bin", "xbin", "idf", "adf"];
-
-/// The index of the picture of a file: the best stream of pictures that libav can decode and
-/// that is not the cover of an album.
-pub(crate) fn video_stream(input: &Input) -> Option<usize> {
-    let usable = |stream: &Stream| {
+/// The index of the picture of a file, if it has one: the best stream of pictures that is not
+/// the cover of an album.
+///
+/// # Errors
+/// This build of libav cannot decode it: then the file cannot be used, rather than be taken
+/// for sound alone.
+pub(crate) fn video_stream(input: &Input) -> Result<Option<usize>, MediaError> {
+    let picture = |stream: &Stream| {
         stream.parameters().medium() == Type::Video
             && !stream.disposition().contains(Disposition::ATTACHED_PIC)
-            && ff::decoder::find(stream.parameters().id()).is_some()
     };
-    input
+    let Some(stream) = input
         .streams()
         .best(Type::Video)
-        .filter(usable)
-        .or_else(|| input.streams().find(usable))
-        .map(|stream| stream.index())
+        .filter(picture)
+        .or_else(|| input.streams().find(picture))
+    else {
+        return Ok(None);
+    };
+    let codec = stream.parameters().id();
+    if ff::decoder::find(codec).is_none() {
+        return Err(MediaError::Unsupported(format!(
+            "this build of libav cannot decode its picture, of {}",
+            codec.name()
+        )));
+    }
+    Ok(Some(stream.index()))
 }
 
 /// The rate of the frames of a picture (see the crate's doc).
@@ -119,25 +148,80 @@ pub(crate) fn base(stream: &Stream) -> Result<(i64, i64), MediaError> {
 }
 
 /// How long a stream lasts, in its time base written as the scale `den` (see the crate's doc).
-fn duration(input: &Input, stream: &Stream) -> Result<Time, MediaError> {
-    let (num, den) = base(stream)?;
+/// `rate` is the rate of its frames, if it is a picture.
+fn duration(input: &mut Input, index: usize, rate: Option<Rate>) -> Result<Time, MediaError> {
+    let stream = input.stream(index).ok_or(MediaError::NoStreams)?;
+    let (num, den) = base(&stream)?;
     let scale =
         u32::try_from(den).map_err(|_| MediaError::Unsupported("a time base too fine".into()))?;
-    let ticks = if stream.duration() > 0 {
-        i128::from(stream.duration()) * i128::from(num)
-    } else if input.duration() > 0 {
-        // Microseconds, rounded to the nearest tick.
-        let over = i128::from(input.duration()) * i128::from(den);
-        let under = i128::from(ff::ffi::AV_TIME_BASE);
-        (2 * over + under).div_euclid(2 * under)
+    let said = stream.duration();
+    let ticks = if said > 0 {
+        said
     } else {
-        return Err(MediaError::Unsupported(
-            "it does not say how long it lasts".into(),
-        ));
+        end_of(input, index, rate)?
     };
-    let ticks =
-        i64::try_from(ticks).map_err(|_| MediaError::Unsupported("it lasts too long".into()))?;
+    let ticks = i64::try_from(i128::from(ticks) * i128::from(num))
+        .map_err(|_| MediaError::Unsupported("it lasts too long".into()))?;
     Ok(Time { ticks, scale })
+}
+
+/// How far before the end of a file its last packets are read for, in microseconds.
+const END_READ: i64 = 10_000_000;
+
+/// Where a stream ends, from its start, in its time base: the end of its last packet, read
+/// from the packets of the last [`END_READ`] of the file (and its key frame before that). The
+/// end of a packet is its timestamp and its duration, or a frame of `rate` where it has none.
+fn end_of(input: &mut Input, index: usize, rate: Option<Rate>) -> Result<i64, MediaError> {
+    let unknown = || MediaError::Unsupported("it does not say how long it lasts".into());
+    let (start, (num, den)) = {
+        let stream = input.stream(index).ok_or(MediaError::NoStreams)?;
+        (
+            Some(stream.start_time()).filter(|&start| start != ff::ffi::AV_NOPTS_VALUE),
+            base(&stream)?,
+        )
+    };
+    let frame = rate.map_or(0, |rate| {
+        // The ticks of a frame, rounded down: `den * rate.den / (num * rate.num)`.
+        let ticks =
+            i128::from(den) * i128::from(rate.den) / (i128::from(num) * i128::from(rate.num));
+        i64::try_from(ticks).unwrap_or(0)
+    });
+    let total = input.duration();
+    if total > 0 {
+        // From the start of the file, which the stream's start is near, in the time base.
+        let near_end = i128::from(total - END_READ).max(0) * i128::from(den)
+            / (i128::from(num) * i128::from(ff::ffi::AV_TIME_BASE));
+        let near_end = start
+            .unwrap_or(0)
+            .saturating_add(i64::try_from(near_end).unwrap_or(0));
+        // Where it cannot seek, it reads from where it is: the start.
+        let _ = ffi::seek(input, index, near_end, true);
+    }
+    ffi::discard_others(input, index);
+    let mut first = None;
+    let mut end: Option<i64> = None;
+    loop {
+        let mut packet = ff::Packet::empty();
+        match packet.read(input) {
+            Ok(()) if packet.stream() == index => {
+                if let Some(pts) = packet.pts().or(packet.dts()) {
+                    let lasts = if packet.duration() > 0 {
+                        packet.duration()
+                    } else {
+                        frame
+                    };
+                    let ends = pts.saturating_add(lasts);
+                    end = Some(end.map_or(ends, |end| end.max(ends)));
+                    first = Some(first.map_or(pts, |first: i64| first.min(pts)));
+                }
+            }
+            Ok(()) => {}
+            Err(_) => break,
+        }
+    }
+    let end = end.ok_or_else(unknown)?;
+    let start = start.or(first).ok_or_else(unknown)?;
+    Ok(end.saturating_sub(start).max(0))
 }
 
 /// The picture of a file.
@@ -212,14 +296,20 @@ fn rotation(stream: &Stream) -> i16 {
 ///
 /// The matrix turns it counterclockwise by `av_display_rotation_get`, whose reckoning this is:
 /// `atan2(b / |(b, e)|, a / |(a, d)|)` of the matrix `[a b u; d e v; x y w]` is how far it turns
-/// it clockwise. None for a matrix that does not turn a picture.
+/// it clockwise. A matrix that mirrors the picture (whose determinant is below 0) is read as a
+/// mirror left to right, as `av_display_matrix_flip` makes it by turning the signs of `a` and
+/// `d`, and a turn: those signs are turned back, and the turn is given. None for a matrix that
+/// does not turn a picture.
 fn clockwise(matrix: &[i32]) -> Option<i16> {
-    let (a, b, d, e) = (
+    let (mut a, b, mut d, e) = (
         f64::from(matrix[0]),
         f64::from(matrix[1]),
         f64::from(matrix[3]),
         f64::from(matrix[4]),
     );
+    if a * e - b * d < 0.0 {
+        (a, d) = (-a, -d);
+    }
     let (across, down) = (a.hypot(d), b.hypot(e));
     if across == 0.0 || down == 0.0 {
         return None;
@@ -252,11 +342,15 @@ mod tests {
             clockwise(&[-ONE, 0, 0, 0, -ONE, 0, 0, 0, 1 << 30]),
             Some(180)
         );
-        // Mirrored and turned: the turn is still read.
+        // Mirrored left to right, and not turned: no turn, not a half turn.
+        assert_eq!(clockwise(&[-ONE, 0, 0, 0, ONE, 0, 0, 0, 1 << 30]), Some(0));
+        // Mirrored upside down: a mirror left to right and a half turn.
         assert_eq!(
-            clockwise(&[-ONE, 0, 0, 0, ONE, 0, 0, 0, 1 << 30]),
+            clockwise(&[ONE, 0, 0, 0, -ONE, 0, 0, 0, 1 << 30]),
             Some(180)
         );
+        // Turned a quarter clockwise, then mirrored left to right.
+        assert_eq!(clockwise(&[0, ONE, 0, ONE, 0, 0, 0, 0, 1 << 30]), Some(90));
         assert_eq!(clockwise(&[0; 9]), None);
     }
 }

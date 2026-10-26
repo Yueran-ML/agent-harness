@@ -6,7 +6,8 @@
 //! (put the directory of the DLLs of libav at the end of `PATH`, since the LGPL build that holds
 //! them has an `ffmpeg` without the encoders of x264 and x265). Where there is none, or it
 //! cannot make a file, a test that needs the file is skipped, unless `COLUMBINA_REQUIRE_FFMPEG`
-//! is `1`: then it fails, as the tests of Python do.
+//! is `1`: then it fails, as the tests of Python do. A few samples need an encoder that a full
+//! build has and others may not ([`Sample::optional`]); they are skipped without one, always.
 //!
 //! Every frame of a picture carries its number in its top left corner: three blocks of 64×64
 //! pixels, each a hexadecimal digit `d` of the number, the least significant leftmost, whose
@@ -36,27 +37,78 @@ pub enum Sample {
     Portrait,
     /// Sound only: WAV, 16 bits in stereo at 48 kHz, 2 s.
     Wav,
+    /// 1080p HEVC Main 10, 25 frames a second, 1 s (25 frames): the size of [`Sample::Fhd`] in
+    /// 10 bits.
+    Fhd10,
+    /// MPEG-TS of H.264: 640×360, 25 frames a second, 4 s (100 frames), a key frame every 25
+    /// and B-frames; its timestamps start at 1.4 s, as those of MPEG-TS do.
+    TsH264,
+    /// MPEG-TS of MPEG-2: as [`Sample::TsH264`], a key frame every 15.
+    TsMpeg2,
+    /// MPEG-PS (`.mpg`) of MPEG-2: as [`Sample::TsMpeg2`].
+    PsMpeg2,
+    /// M2TS, as AVCHD cameras write it, of H.264: as [`Sample::TsH264`].
+    M2ts,
+    /// Matroska: 4 s of picture (100 frames) and 6 s of sound; Matroska says how long the file
+    /// lasts, and not how long each stream does.
+    MkvLongSound,
+    /// Matroska: 4 s of picture (100 frames) from 1 s on, and 5 s of sound from 0.
+    MkvLateStart,
+    /// MP4 of H.264 whose frames come at changing times: frame `n` at `(n ± 0.3) / 25` s,
+    /// in a time base of milliseconds; 100 frames.
+    Vfr,
+    /// Matroska of H.264 whose every fourth frame has the timestamp of the one before it; 100
+    /// frames.
+    SameTimes,
+    /// MP4 of EVC (MPEG-5), which the LGPL build of libav cannot decode, with AAC sound.
+    Evc,
+    /// `WebM` of VP9 for 2 s, and Opus for 3 s.
+    Webm,
 }
 
 impl Sample {
-    /// Every sample.
-    pub const ALL: [Sample; 5] = [
+    /// The samples that every test machine can make.
+    pub const ALL: [Sample; 14] = [
         Sample::Fhd,
         Sample::Uhd,
         Sample::Prores,
         Sample::Portrait,
         Sample::Wav,
+        Sample::Fhd10,
+        Sample::TsH264,
+        Sample::TsMpeg2,
+        Sample::PsMpeg2,
+        Sample::M2ts,
+        Sample::MkvLongSound,
+        Sample::MkvLateStart,
+        Sample::Vfr,
+        Sample::SameTimes,
     ];
 
-    /// How many frames its picture has, if it has one.
+    /// How many frames its picture has, if it has one that is decoded.
     pub fn frames(self) -> Option<i64> {
         match self {
-            Sample::Fhd => Some(100),
+            Sample::Fhd
+            | Sample::TsH264
+            | Sample::TsMpeg2
+            | Sample::PsMpeg2
+            | Sample::M2ts
+            | Sample::MkvLongSound
+            | Sample::MkvLateStart
+            | Sample::Vfr
+            | Sample::SameTimes => Some(100),
             Sample::Uhd => Some(180),
-            Sample::Prores => Some(50),
+            Sample::Prores | Sample::Webm => Some(50),
             Sample::Portrait => Some(60),
-            Sample::Wav => None,
+            Sample::Fhd10 => Some(25),
+            Sample::Wav | Sample::Evc => None,
         }
+    }
+
+    /// Whether it needs an encoder that a full build of ffmpeg may not have, so that it is
+    /// skipped without one, even where ffmpeg is required.
+    pub fn optional(self) -> bool {
+        matches!(self, Sample::Evc | Sample::Webm)
     }
 
     fn file_name(self) -> &'static str {
@@ -66,6 +118,17 @@ impl Sample {
             Sample::Prores => "v1-fhd-prores-hq.mov",
             Sample::Portrait => "v1-portrait-h264-rotated.mp4",
             Sample::Wav => "v1-sound.wav",
+            Sample::Fhd10 => "v1-fhd-hevc-main10.mp4",
+            Sample::TsH264 => "v1-ts-h264.ts",
+            Sample::TsMpeg2 => "v1-ts-mpeg2.ts",
+            Sample::PsMpeg2 => "v1-ps-mpeg2.mpg",
+            Sample::M2ts => "v1-avchd-h264.m2ts",
+            Sample::MkvLongSound => "v1-mkv-sound-longer.mkv",
+            Sample::MkvLateStart => "v1-mkv-picture-from-1s.mkv",
+            Sample::Vfr => "v1-vfr-jitter.mp4",
+            Sample::SameTimes => "v1-same-timestamps.mkv",
+            Sample::Evc => "v1-evc-aac.mp4",
+            Sample::Webm => "v1-vp9-opus.webm",
         }
     }
 }
@@ -82,7 +145,8 @@ pub struct Made {
 /// it is not required: the test is then to be skipped.
 ///
 /// # Panics
-/// If ffmpeg is required (`COLUMBINA_REQUIRE_FFMPEG=1`) and the sample cannot be made.
+/// If ffmpeg is required (`COLUMBINA_REQUIRE_FFMPEG=1`) and a sample that is not optional
+/// cannot be made.
 pub fn media(sample: Sample) -> Option<Made> {
     static MAKING: Mutex<()> = Mutex::new(());
     let _one_at_a_time = MAKING
@@ -90,13 +154,13 @@ pub fn media(sample: Sample) -> Option<Made> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let directory = directory();
     let path = directory.join(sample.file_name());
-    let note = path.with_extension("encoder");
+    let note = directory.join(format!("{}.encoder", sample.file_name()));
     if path.is_file() {
         let encoder = std::fs::read_to_string(&note).unwrap_or_default();
         return Some(Made { path, encoder });
     }
     let Some(ffmpeg) = ffmpeg() else {
-        return skip("there is no ffmpeg on PATH or in COLUMBINA_FFMPEG");
+        return skip(sample, "there is no ffmpeg on PATH or in COLUMBINA_FFMPEG");
     };
     std::fs::create_dir_all(&directory).unwrap();
     let mut failures = Vec::new();
@@ -122,17 +186,24 @@ pub fn media(sample: Sample) -> Option<Made> {
             }
         }
     }
-    skip(&format!(
-        "{} cannot be made: {}",
-        sample.file_name(),
-        failures.join("; ")
-    ))
+    skip(
+        sample,
+        &format!(
+            "{} cannot be made: {}",
+            sample.file_name(),
+            if failures.is_empty() {
+                "ffmpeg has none of its encoders".to_owned()
+            } else {
+                failures.join("; ")
+            }
+        ),
+    )
 }
 
-/// Skip a test, or fail it where ffmpeg is required.
-fn skip<T>(why: &str) -> Option<T> {
+/// Skip a test, or fail it where ffmpeg is required and the sample is not optional.
+fn skip<T>(sample: Sample, why: &str) -> Option<T> {
     assert!(
-        std::env::var("COLUMBINA_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+        sample.optional() || std::env::var("COLUMBINA_REQUIRE_FFMPEG").as_deref() != Ok("1"),
         "COLUMBINA_REQUIRE_FFMPEG is 1, and {why}"
     );
     eprintln!("skipped: {why}");
@@ -206,28 +277,29 @@ impl Recipe {
     }
 }
 
-/// The filter graph of a picture with its number in each frame, as `[v]`.
-fn numbered(width: u32, height: u32, rate: u32, seconds: u32, bits: u8, chroma: &str) -> String {
-    let (base, step, middle, depth) = if bits > 8 {
-        (64, 56, 512, "10")
+/// The filter graph of a picture with its number in each frame, as `[v]`, with `then` (filters
+/// that begin with a comma) after the number is drawn.
+fn numbered(
+    width: u32,
+    height: u32,
+    rate: u32,
+    seconds: u32,
+    bits: u8,
+    chroma: &str,
+    then: &str,
+) -> String {
+    let (base, step, middle, deep) = if bits > 8 {
+        (64, 56, 512, true)
     } else {
-        (16, 14, 128, "")
+        (16, 14, 128, false)
     };
-    let suffix = if bits > 8 { "10le" } else { "" };
-    let format = format!("yuv{chroma}p{suffix}");
-    let overlay = format!(
-        "yuv{chroma}{}",
-        if bits > 8 {
-            format!("p{depth}")
-        } else {
-            String::new()
-        }
-    );
+    let format = format!("yuv{chroma}p{}", if deep { "10le" } else { "" });
+    let overlay = format!("yuv{chroma}{}", if deep { "p10" } else { "" });
     format!(
         "testsrc2=size={width}x{height}:rate={rate}:duration={seconds},format={format}[bg];\
          color=black:size=192x64:rate={rate}:duration={seconds},format={format},\
          geq=lum='{base}+{step}*mod(floor(N/pow(16,floor(X/64))),16)':cb={middle}:cr={middle}[digits];\
-         [bg][digits]overlay=0:0:format={overlay}[v]"
+         [bg][digits]overlay=0:0:format={overlay}{then}[v]"
     )
 }
 
@@ -277,107 +349,139 @@ fn h264(encoders: &str, gop: u32) -> Vec<(String, Vec<String>)> {
     found
 }
 
+/// The encoders of HEVC Main 10 that ffmpeg has, best first, each with its arguments.
+fn hevc10(encoders: &str, gop: u32) -> Vec<(String, Vec<String>)> {
+    let mut found = Vec::new();
+    if encoders.contains(" hevc_nvenc ") {
+        found.push((
+            "hevc_nvenc".to_owned(),
+            strings(&[
+                "-c:v",
+                "hevc_nvenc",
+                "-profile:v",
+                "main10",
+                "-pix_fmt",
+                "p010le",
+                "-g",
+                &gop.to_string(),
+                "-bf",
+                "3",
+                "-rc",
+                "constqp",
+                "-qp",
+                "24",
+            ]),
+        ));
+    }
+    if encoders.contains(" libx265 ") {
+        found.push((
+            "libx265".to_owned(),
+            strings(&[
+                "-c:v",
+                "libx265",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p10le",
+                "-x265-params",
+                &format!("keyint={gop}:min-keyint={gop}:scenecut=0:bframes=3:log-level=error"),
+            ]),
+        ));
+    }
+    found
+}
+
+/// A recipe of one step for each encoder: `graph` (whose picture is `[v]`, and whose sound, if
+/// it has any, `[a]`), the encoder's arguments, and `after` them.
+fn one_step(
+    encoders: Vec<(String, Vec<String>)>,
+    graph: &str,
+    sound: bool,
+    after: &[&str],
+) -> Vec<Recipe> {
+    encoders
+        .into_iter()
+        .map(|(encoder, codec)| {
+            let mut step = strings(&["-filter_complex", graph, "-map", "[v]"]);
+            if sound {
+                step.extend(strings(&["-map", "[a]"]));
+            }
+            step.extend(codec);
+            step.extend(strings(after));
+            step.push("{out}".into());
+            Recipe {
+                encoder,
+                steps: vec![step],
+            }
+        })
+        .collect()
+}
+
+/// The encoder of its own name, with its arguments, if ffmpeg has it.
+fn named(encoders: &str, name: &str, args: &[&str]) -> Vec<(String, Vec<String>)> {
+    if encoders.contains(&format!(" {name} ")) {
+        let mut codec = strings(&["-c:v", name]);
+        codec.extend(strings(args));
+        vec![(name.to_owned(), codec)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Stereo sound at 48 kHz for `seconds`, as `[a]`.
+fn sound(seconds: u32) -> String {
+    format!(
+        "sine=frequency=440:sample_rate=48000:duration={seconds},aformat=channel_layouts=stereo[a]"
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
+    let small = |then: &str| numbered(640, 360, 25, 4, 8, "420", then);
+    let mpeg2 = || {
+        named(
+            encoders,
+            "mpeg2video",
+            &["-g", "15", "-bf", "2", "-q:v", "2"],
+        )
+    };
     match sample {
-        Sample::Fhd => h264(encoders, 50)
-            .into_iter()
-            .map(|(encoder, codec)| {
-                let mut step = strings(&[
-                    "-filter_complex",
-                    &format!(
-                        "{};sine=frequency=440:sample_rate=48000:duration=4,\
-                         aformat=channel_layouts=stereo[a]",
-                        numbered(1920, 1080, 25, 4, 8, "420")
-                    ),
-                    "-map",
-                    "[v]",
-                    "-map",
-                    "[a]",
-                ]);
-                step.extend(codec);
-                step.extend(strings(&["-c:a", "aac", "-b:a", "128k", "{out}"]));
-                Recipe {
-                    encoder,
-                    steps: vec![step],
-                }
-            })
-            .collect(),
-        Sample::Uhd => {
-            let graph = numbered(3840, 2160, 60, 3, 10, "420");
-            let mut found = Vec::new();
-            if encoders.contains(" hevc_nvenc ") {
-                found.push(Recipe {
-                    encoder: "hevc_nvenc".into(),
-                    steps: vec![strings(&[
-                        "-filter_complex",
-                        &graph,
-                        "-map",
-                        "[v]",
-                        "-c:v",
-                        "hevc_nvenc",
-                        "-profile:v",
-                        "main10",
-                        "-pix_fmt",
-                        "p010le",
-                        "-g",
-                        "120",
-                        "-bf",
-                        "3",
-                        "-rc",
-                        "constqp",
-                        "-qp",
-                        "24",
-                        "{out}",
-                    ])],
-                });
-            }
-            if encoders.contains(" libx265 ") {
-                found.push(Recipe {
-                    encoder: "libx265".into(),
-                    steps: vec![strings(&[
-                        "-filter_complex",
-                        &graph,
-                        "-map",
-                        "[v]",
-                        "-c:v",
-                        "libx265",
-                        "-preset",
-                        "ultrafast",
-                        "-crf",
-                        "20",
-                        "-pix_fmt",
-                        "yuv420p10le",
-                        "-x265-params",
-                        "keyint=120:min-keyint=120:scenecut=0:bframes=3:log-level=error",
-                        "{out}",
-                    ])],
-                });
-            }
-            found
-        }
-        Sample::Prores => vec![Recipe {
-            encoder: "prores_ks".into(),
-            steps: vec![strings(&[
-                "-filter_complex",
-                &numbered(1920, 1080, 25, 2, 10, "422"),
-                "-map",
-                "[v]",
-                "-c:v",
+        Sample::Fhd => one_step(
+            h264(encoders, 50),
+            &format!("{};{}", numbered(1920, 1080, 25, 4, 8, "420", ""), sound(4)),
+            true,
+            &["-c:a", "aac", "-b:a", "128k"],
+        ),
+        Sample::Uhd => one_step(
+            hevc10(encoders, 120),
+            &numbered(3840, 2160, 60, 3, 10, "420", ""),
+            false,
+            &[],
+        ),
+        Sample::Fhd10 => one_step(
+            hevc10(encoders, 25),
+            &numbered(1920, 1080, 25, 1, 10, "420", ""),
+            false,
+            &[],
+        ),
+        Sample::Prores => one_step(
+            named(
+                encoders,
                 "prores_ks",
-                "-profile:v",
-                "3",
-                "-pix_fmt",
-                "yuv422p10le",
-                "{out}",
-            ])],
-        }],
+                &["-profile:v", "3", "-pix_fmt", "yuv422p10le"],
+            ),
+            &numbered(1920, 1080, 25, 2, 10, "422", ""),
+            false,
+            &[],
+        ),
         Sample::Portrait => h264(encoders, 30)
             .into_iter()
             .map(|(encoder, codec)| {
                 let mut first = strings(&[
                     "-filter_complex",
-                    &numbered(640, 360, 30, 2, 8, "420"),
+                    &numbered(640, 360, 30, 2, 8, "420", ""),
                     "-map",
                     "[v]",
                 ]);
@@ -412,6 +516,71 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 "{out}",
             ])],
         }],
+        Sample::TsH264 => one_step(h264(encoders, 25), &small(""), false, &["-f", "mpegts"]),
+        Sample::M2ts => one_step(
+            h264(encoders, 25),
+            &small(""),
+            false,
+            &["-f", "mpegts", "-mpegts_m2ts_mode", "1"],
+        ),
+        Sample::TsMpeg2 => one_step(mpeg2(), &small(""), false, &["-f", "mpegts"]),
+        Sample::PsMpeg2 => one_step(mpeg2(), &small(""), false, &["-f", "vob"]),
+        Sample::MkvLongSound => one_step(
+            h264(encoders, 25),
+            &format!("{};{}", small(""), sound(6)),
+            true,
+            &["-c:a", "aac"],
+        ),
+        Sample::MkvLateStart => one_step(
+            h264(encoders, 25),
+            &format!("{};{}", small(",setpts=PTS+1/TB"), sound(5)),
+            true,
+            &["-c:a", "aac"],
+        ),
+        Sample::Vfr => one_step(
+            h264(encoders, 25),
+            &small(",settb=1/1000,setpts='(N+0.3*(mod(N\\,3)-1)*gt(N\\,0))/(25*TB)'"),
+            false,
+            &[
+                "-fps_mode",
+                "passthrough",
+                "-enc_time_base:v",
+                "1/1000",
+                "-video_track_timescale",
+                "1000",
+            ],
+        ),
+        Sample::SameTimes => one_step(
+            h264(encoders, 25),
+            &small(",setpts='(N-eq(mod(N\\,4)\\,3))/(25*TB)'"),
+            false,
+            &["-fps_mode", "passthrough"],
+        ),
+        Sample::Evc => one_step(
+            named(encoders, "libxeve", &[]),
+            &format!("{};{}", small(""), sound(4)),
+            true,
+            &["-c:a", "aac"],
+        ),
+        Sample::Webm => one_step(
+            named(
+                encoders,
+                "libvpx-vp9",
+                &[
+                    "-deadline",
+                    "realtime",
+                    "-cpu-used",
+                    "8",
+                    "-crf",
+                    "20",
+                    "-b:v",
+                    "0",
+                ],
+            ),
+            &format!("{};{}", numbered(640, 360, 25, 2, 8, "420", ""), sound(3)),
+            true,
+            &["-c:a", "libopus"],
+        ),
     }
 }
 

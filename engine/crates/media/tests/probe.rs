@@ -289,3 +289,110 @@ fn every_sample_is_probed_twice_alike() {
         assert_eq!(identity(&made.path).unwrap(), identity(&made.path).unwrap());
     }
 }
+
+#[test]
+fn the_duration_of_mpeg_ts_and_ps_counts_from_the_start_of_the_picture() {
+    for sample in [
+        Sample::TsH264,
+        Sample::TsMpeg2,
+        Sample::PsMpeg2,
+        Sample::M2ts,
+    ] {
+        let Some(made) = media(sample) else {
+            return;
+        };
+        let facts = probe(&made.path).unwrap();
+        assert_eq!(facts.duration.scale, 90000, "{sample:?}");
+        assert!(
+            (seconds(&facts) - 4.0).abs() < 1e-9,
+            "{sample:?}: {:?}",
+            facts.duration
+        );
+        let video = facts.video.unwrap();
+        assert_eq!(video.rate, Rate { num: 25, den: 1 }, "{sample:?}");
+        let codec = if matches!(sample, Sample::TsMpeg2 | Sample::PsMpeg2) {
+            "mpeg2video"
+        } else {
+            "h264"
+        };
+        assert_eq!(video.codec, codec);
+    }
+}
+
+#[test]
+fn the_duration_of_matroska_is_that_of_its_picture_from_its_start() {
+    // 4 s of picture and 6 s of sound; then 4 s of picture from 1 s, and 5 s of sound from 0:
+    // Matroska says how long the whole file lasts, and not how long the picture does.
+    for sample in [Sample::MkvLongSound, Sample::MkvLateStart] {
+        let Some(made) = media(sample) else {
+            return;
+        };
+        let facts = probe(&made.path).unwrap();
+        assert_eq!(
+            facts.duration,
+            columbina_media::Time {
+                ticks: 4000,
+                scale: 1000
+            },
+            "{sample:?}"
+        );
+        assert!(facts.audio.is_some());
+    }
+}
+
+#[test]
+fn the_duration_of_webm_is_that_of_its_picture() {
+    let Some(made) = media(Sample::Webm) else {
+        return;
+    };
+    let facts = probe(&made.path).unwrap();
+    assert!((seconds(&facts) - 2.0).abs() < 1e-9, "{:?}", facts.duration);
+    assert_eq!(facts.video.unwrap().codec, "vp9");
+    assert_eq!(facts.audio.unwrap().codec, "opus");
+}
+
+#[test]
+fn a_file_whose_frames_come_at_changing_times_is_numbered_at_the_standard_rate_nearest() {
+    let Some(made) = media(Sample::Vfr) else {
+        return;
+    };
+    let facts = probe(&made.path).unwrap();
+    assert_eq!(facts.video.unwrap().rate, Rate { num: 25, den: 1 });
+}
+
+#[test]
+fn a_picture_that_cannot_be_decoded_is_refused_and_not_taken_for_sound_alone() {
+    let Some(made) = media(Sample::Evc) else {
+        return;
+    };
+    let error = probe(&made.path).unwrap_err();
+    assert_eq!(error.reason(), "unsupported", "{error}");
+    let error = VideoDecoder::open(&made.path, Hardware::Off).err().unwrap();
+    assert_eq!(error.reason(), "unsupported", "{error}");
+}
+
+#[test]
+fn a_list_of_other_files_is_not_media() {
+    let Some(made) = media(Sample::Fhd) else {
+        return;
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let target = made.path.to_str().unwrap().replace('\\', "/");
+    let lists = [
+        (
+            "list.m3u8",
+            format!(
+                "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\n{target}\n#EXT-X-ENDLIST\n"
+            ),
+        ),
+        ("list.ffconcat", format!("ffconcat version 1.0\nfile '{target}'\n")),
+        ("list.txt", format!("file '{target}'\n")),
+    ];
+    for (name, text) in lists {
+        let path = directory.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        let error = probe(&path).unwrap_err();
+        assert_eq!(error.reason(), "not_media", "{name}: {error}");
+        assert!(VideoDecoder::open(&path, Hardware::Off).is_err());
+    }
+}

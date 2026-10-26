@@ -41,6 +41,7 @@ OPENAI = {
     "api_key_file": KEYS,
     "reasoning_style": "openai",
     "max_tokens_field": "max_completion_tokens",
+    "pictures": True,
 }
 DEEPSEEK = {
     "provider": "deepseek",

@@ -329,7 +329,17 @@ class _Turns:
             )
             return {"type": "text", "text": f"{head}\n{text}"}
         result: dict[str, JsonValue] = {"type": "tool_result", "tool_use_id": waiting.popleft()}
-        if text.strip():
+        if message.pictures:
+            content: list[JsonValue] = [{"type": "text", "text": text}] if text.strip() else []
+            for picture in message.pictures:
+                source: dict[str, JsonValue] = {
+                    "type": "base64",
+                    "media_type": picture.media_type,
+                    "data": picture.data,
+                }
+                content.append({"type": "image", "source": source})
+            result["content"] = content
+        elif text.strip():
             result["content"] = text
         if message.is_error:
             result["is_error"] = True

@@ -13,7 +13,7 @@ from pydantic import BaseModel, JsonValue
 
 from columbina import cancellation
 from columbina.kernel import Context, EmitEvent, Registry, ServiceKey, WaterfallEvent
-from columbina.llm.types import TextBlock, ToolCallBlock, ToolMessage, ToolSchema
+from columbina.llm.types import Picture, TextBlock, ToolCallBlock, ToolMessage, ToolSchema
 from columbina.session.events import ToolError, ToolResultEvent
 from columbina.text import whole
 from columbina.tools.tool import Tool, ToolFailure, ToolRun
@@ -122,6 +122,8 @@ class ToolOutcome:
             it did not run.
         wrote: The file that a tool which writes changed, as the checks were
             told of it, if the call went through.
+        pictures: The pictures that the tool gave back beside its text, as the
+            ``pictures`` of what it returned, if the call went through.
     """
 
     call: ToolCallBlock
@@ -131,6 +133,7 @@ class ToolOutcome:
     concludes_turn: bool = False
     duration_ms: int | None = None
     wrote: str | None = None
+    pictures: tuple[Picture, ...] = ()
 
     def to_event(self) -> ToolResultEvent:
         """Return the event that records the outcome in a session log.
@@ -142,6 +145,7 @@ class ToolOutcome:
             call_id=self.call.call_id,
             content=(TextBlock(text=self.text),),
             is_error=self.error is not None,
+            pictures=self.pictures,
         )
         meta: dict[str, JsonValue] = {}
         if self.duration_ms is not None:
@@ -194,6 +198,16 @@ async def _accept(executed: Executed) -> Verdict:
 def _since(began: float) -> int:
     """Return how many milliseconds have gone by since a moment of the clock of the runs."""
     return round((_now() - began) * 1000)
+
+
+def _pictures_of(value: object) -> tuple[Picture, ...]:
+    """Return the pictures that what a tool returned holds, if it holds any."""
+    pictures: object = getattr(value, "pictures", ())
+    if isinstance(pictures, tuple) and all(
+        isinstance(picture, Picture) for picture in cast("tuple[object, ...]", pictures)
+    ):
+        return cast("tuple[Picture, ...]", pictures)
+    return ()
 
 
 def _gone_text(tool: Tool[Any, Any]) -> str:
@@ -453,6 +467,7 @@ class PendingCall:
                     concludes_turn=invocation.run.concludes_turn,
                     duration_ms=took,
                     wrote=invocation.run.target if tool.effect == "write" else None,
+                    pictures=_pictures_of(value),
                 )
             )
         if isinstance(verdict, Block):

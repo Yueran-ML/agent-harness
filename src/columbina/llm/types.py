@@ -77,13 +77,30 @@ class AssistantMessage(Data):
         return tuple(block for block in self.content if isinstance(block, ToolCallBlock))
 
 
+class Picture(Data):
+    """A picture that a model is shown.
+
+    Attributes:
+        media_type: What kind of picture it is, such as ``image/png``.
+        data: Its bytes, in base64.
+    """
+
+    media_type: Literal["image/png", "image/jpeg", "image/gif", "image/webp"]
+    data: str
+
+
 class ToolMessage(Data):
-    """The result of one tool call, as the model sees it."""
+    """The result of one tool call, as the model sees it.
+
+    ``pictures`` are what the call gave back beside its text, for a model that
+    takes pictures. A service that takes none is told so in their place.
+    """
 
     role: Literal["tool"] = "tool"
     call_id: str
     content: tuple[TextBlock, ...]
     is_error: bool = False
+    pictures: tuple[Picture, ...] = Field(default=(), exclude_if=lambda pictures: not pictures)
 
 
 Message = Annotated[

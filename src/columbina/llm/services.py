@@ -73,6 +73,8 @@ class Service:
             thinking that was bound to a beginning of the conversation that
             has changed since, as a summary changes it, rather than refuse
             the request.
+        pictures: Whether its models take pictures, over the protocol of
+            OpenAI. Those of Anthropic all do.
     """
 
     name: str
@@ -90,6 +92,7 @@ class Service:
     protocol: Literal["openai-chat", "anthropic"] = "openai-chat"
     balance: Literal["deepseek"] | None = None
     drops_unbound_thinking: bool = False
+    pictures: bool = False
 
 
 PRESETS: tuple[Service, ...] = (
@@ -114,6 +117,7 @@ PRESETS: tuple[Service, ...] = (
         # The models that reason refuse the older name, and the others take both.
         max_tokens_field="max_completion_tokens",
         key_page="https://platform.openai.com/api-keys",
+        pictures=True,
     ),
     Service(
         name="anthropic",
@@ -133,6 +137,7 @@ PRESETS: tuple[Service, ...] = (
         base_url="https://openrouter.ai/api/v1",
         key_env="OPENROUTER_API_KEY",
         key_page="https://openrouter.ai/keys",
+        pictures=True,
     ),
     Service(
         name="moonshot",
@@ -223,6 +228,8 @@ def adapter_config(service: Service, keys: str, env: Mapping[str, str]) -> dict[
         config["reasoning_style"] = service.reasoning_style
     if service.max_tokens_field != "max_tokens":
         config["max_tokens_field"] = service.max_tokens_field
+    if service.pictures:
+        config["pictures"] = True
     # What another address takes, such as one that answers as Anthropic does, is not known.
     if service.drops_unbound_thinking and base_url == service.base_url:
         config["drop_unbound_thinking"] = True

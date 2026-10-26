@@ -1,6 +1,7 @@
 """The read tool: text files of the working directory, with line numbers and limits."""
 
 import asyncio
+import base64
 import codecs
 import shutil
 import tempfile
@@ -16,10 +17,12 @@ from hypothesis import strategies as st
 
 import columbina.fs
 import columbina.tools
+from columbina import pictures
 from columbina.builtin_tools import read
+from columbina.builtin_tools import read as read_module
 from columbina.fs import FS, Access, Fingerprint, Fs, Permit, Refuse, locate
 from columbina.kernel import Context, Next
-from columbina.llm import ToolCallBlock
+from columbina.llm import Picture, ToolCallBlock
 from columbina.session import CORE_EVENTS, Session
 from columbina.spill import LIMIT
 from columbina.token_meter import estimate
@@ -309,13 +312,82 @@ async def test_output_of_exactly_the_size_limit_is_returned_in_full(
 
 
 async def test_a_file_that_is_not_text_is_not_read(ctx: Context, tools: Tools, work: Path) -> None:
-    (work / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+    (work / "data.bin").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
 
-    outcome = await call(ctx, tools, work, arguments("image.png"))
+    outcome = await call(ctx, tools, work, arguments("data.bin"))
 
     assert outcome.error is not None
     assert outcome.error.code == "NOT_TEXT"
-    assert outcome.text == "image.png does not look like a text file."
+    assert outcome.text == "data.bin does not look like a text file."
+
+
+PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x03\x20\x00\x00\x02\x58\x08\x02\x00\x00\x00"
+    + b"\x00" * 40
+)
+"""The beginning of a PNG of 800 by 600 pixels, which is all that is looked at."""
+
+
+async def test_a_picture_is_given_back_whole_beside_what_it_is(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "shot.png").write_bytes(PNG)
+
+    outcome = await call(ctx, tools, work, arguments("shot.png"))
+
+    assert outcome.error is None
+    assert (
+        outcome.text == "(A picture, image/png, 800x600, 69 bytes. It is shown beside this text.)"
+    )
+    assert outcome.pictures == (
+        Picture(media_type="image/png", data=base64.b64encode(PNG).decode("ascii")),
+    )
+    event = outcome.to_event()
+    assert event.message.pictures == outcome.pictures
+
+
+async def test_a_picture_is_known_by_its_bytes_and_not_by_its_name(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "notes.png").write_text("not a picture\n", encoding="utf-8")
+    (work / "odd.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 10)
+
+    told = await call(ctx, tools, work, arguments("notes.png"))
+    odd = await call(ctx, tools, work, arguments("odd.jpg"))
+
+    assert told.text == "     1\tnot a picture"
+    assert told.pictures == ()
+    assert odd.text == "(A picture, image/jpeg, 14 bytes. It is shown beside this text.)"
+
+
+async def test_a_picture_that_is_too_large_is_not_given_back(
+    ctx: Context, tools: Tools, work: Path
+) -> None:
+    (work / "huge.png").write_bytes(PNG + b"\x00" * pictures.MOST_BYTES)
+
+    outcome = await call(ctx, tools, work, arguments("huge.png"))
+
+    assert outcome.error is not None
+    assert outcome.error.code == "TOO_LARGE"
+    assert outcome.pictures == ()
+
+
+async def test_a_picture_that_is_not_there_or_cannot_be_read_is_said(
+    ctx: Context, tools: Tools, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    missing = await call(ctx, tools, work, arguments("none.png"))
+    (work / "locked.png").write_bytes(PNG)
+
+    def refused(permit: object) -> object:
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(read_module, "_picture", refused)
+    locked = await call(ctx, tools, work, arguments("locked.png"))
+
+    assert missing.error is not None
+    assert missing.error.code == "NOT_FOUND"
+    assert locked.error is not None
+    assert locked.text == "locked.png cannot be read: locked"
 
 
 async def test_bytes_that_are_not_utf8_are_shown_as_replacement_characters(

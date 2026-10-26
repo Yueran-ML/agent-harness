@@ -42,7 +42,7 @@ response as the service sent it.
 
 import os
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeVar
@@ -134,6 +134,10 @@ class Config(BaseModel):
         connect_timeout_seconds: How long connecting may take. Silence after
             that is the business of the model service, not of the adapter.
         headers: Further headers for every request. Do not put a key here.
+        pictures: Whether the model takes pictures. A tool can give back
+            no picture in this protocol, so the pictures of the results of a
+            reply go to the model in a message of the user after them. Where
+            the model takes none, it is told so in their place.
     """
 
     provider: str
@@ -146,6 +150,7 @@ class Config(BaseModel):
     max_tokens_field: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     connect_timeout_seconds: float = Field(default=10.0, gt=0)
     headers: dict[str, str] = Field(default_factory=dict[str, str])
+    pictures: bool = False
 
 
 class _Function(BaseModel):
@@ -290,6 +295,39 @@ def _wire(message: Message, adapter: str) -> dict[str, JsonValue]:
     return _wire_assistant(message, adapter)
 
 
+_NO_PICTURES = "(A picture was given back here, and this model takes no pictures.)"
+
+
+def _wired(messages: Sequence[Message], config: Config) -> list[JsonValue]:
+    """Return the messages in the shape of the protocol, with the pictures of results after them."""
+    wired: list[JsonValue] = []
+    shown: list[JsonValue] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage) and shown:
+            wired.append({"role": "user", "content": shown})
+            shown = []
+        one = _wire(message, config.provider)
+        if isinstance(message, ToolMessage) and message.pictures:
+            if config.pictures:
+                shown.append(
+                    {
+                        "type": "text",
+                        "text": f"The pictures that the call {message.call_id} gave back:",
+                    }
+                )
+                for picture in message.pictures:
+                    url: dict[str, JsonValue] = {
+                        "url": f"data:{picture.media_type};base64,{picture.data}"
+                    }
+                    shown.append({"type": "image_url", "image_url": url})
+            else:
+                one["content"] = f"{one['content']}\n{_NO_PICTURES}"
+        wired.append(one)
+    if shown:
+        wired.append({"role": "user", "content": shown})
+    return wired
+
+
 def _wire_assistant(message: AssistantMessage, adapter: str) -> dict[str, JsonValue]:
     # A reply without a tool call has its content, if only an empty one: one that was cut short
     # in its reasoning has no text.
@@ -327,7 +365,7 @@ def build_body(request: LlmRequest, config: Config) -> dict[str, JsonValue]:
     call = request.config
     body: dict[str, JsonValue] = {
         "model": call.model,
-        "messages": [_wire(message, config.provider) for message in request.messages],
+        "messages": _wired(request.messages, config),
         "stream": True,
     }
     if config.include_usage:

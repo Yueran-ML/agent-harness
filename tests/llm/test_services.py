@@ -176,6 +176,7 @@ def test_the_config_of_an_adapter_says_what_is_known_of_its_service() -> None:
         "api_key_file": KEYS,
         "reasoning_style": "openai",
         "max_tokens_field": "max_completion_tokens",
+        "pictures": True,
     }
     assert adapter_config(known("moonshot"), KEYS, {}) == {
         "provider": "moonshot",

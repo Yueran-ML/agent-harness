@@ -53,6 +53,7 @@ from columbina.session import (
 
 __all__ = [
     "PER_MESSAGE",
+    "PER_PICTURE",
     "RATES",
     "TOKEN_METER",
     "TOOLS_DECLARED",
@@ -90,6 +91,10 @@ DENSE_RUN = 24
 
 PER_MESSAGE = 3
 """What a message costs beside its content."""
+
+PER_PICTURE = 1600
+"""What a picture costs. Anthropic counts its pixels over 750, and makes a larger picture smaller
+until it comes to about this, and OpenAI comes to as much for a picture of that size."""
 
 TOOLS_DECLARED = 210
 """What it costs that tools are declared at all, beside what is written about each."""
@@ -169,7 +174,7 @@ def estimate_message(message: Message) -> int:
         else:
             total += _call(block)
     if isinstance(message, ToolMessage):
-        total += estimate(message.call_id)
+        total += estimate(message.call_id) + PER_PICTURE * len(message.pictures)
     return total
 
 

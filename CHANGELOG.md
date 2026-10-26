@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- The model sees pictures. The tool `read` gives a file of PNG, JPEG, GIF or WebP back whole, as
+  its bytes say and not as its name does, up to 3.75 MB, beside a line that says what it is and how
+  large. Anthropic is shown it in the result of the call, and a service over the protocol of
+  OpenAI whose models take pictures, as OpenAI and OpenRouter do, in a message after the results
+  of the reply. A model that takes none is told so in its place. A picture is written into the
+  log of the session with the result that gave it back.
 - The files of the working directory are kept before every turn of a conversation, with git, in
   a repository of their own in the home of the program, and the repository of the project is not
   touched. `/rewind` lists the turns, `/rewind N` puts the files back as they stood before turn N

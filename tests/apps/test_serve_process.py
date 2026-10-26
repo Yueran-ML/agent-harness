@@ -282,6 +282,7 @@ FIRST_TURN = [
     "session.event user/message",
     "session.event agent/inbox/spliced",
     "session.event user/message",
+    "session.event checkpoint",
     "session.event step/start",
     "session.event request/header",
     "session.stream",

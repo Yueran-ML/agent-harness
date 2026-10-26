@@ -2,6 +2,13 @@
 
 This module is a plugin. Loading it registers the tool ``read``.
 
+A picture, a file of PNG, JPEG, GIF or WebP by its first bytes, is not read as
+text: it is given back whole, beside a line that says what it is, and a model
+that takes pictures is shown it, see :mod:`columbina.pictures`. A picture
+that is larger than a model takes is not given back. A picture is nothing that
+the model can change, so reading one counts as no reading for the tools that
+write.
+
 A read is bounded however large the file is and however long its lines are.
 It holds little more in memory than it returns, it looks at no more than the
 first ``_SCAN_BYTES`` of the file, and it stops when its caller is cancelled.
@@ -19,6 +26,7 @@ checks spoke about another file.
 """
 
 import asyncio
+import base64
 import codecs
 import threading
 from collections.abc import Callable
@@ -26,8 +34,10 @@ from dataclasses import dataclass, replace
 
 from pydantic import BaseModel, Field
 
+from columbina import pictures
 from columbina.fs import FS, Access, Fingerprint, Fs, Permit
 from columbina.kernel import Context
+from columbina.llm import Picture
 from columbina.session import Session
 from columbina.spill import LIMIT
 from columbina.token_meter import estimate
@@ -45,6 +55,8 @@ _MIB = 1024 * 1024
 _SCAN_BYTES = 64 * _MIB
 _CHUNK_BYTES = 64 * 1024
 _SNIFF_BYTES = 8192
+_PICTURES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp"})
+"""The endings of the names of files that are looked at as pictures, if their bytes say so."""
 _Utf8 = codecs.getincrementaldecoder("utf-8")
 """Decodes a line that arrives in pieces. A piece may end in the middle of a character."""
 
@@ -290,12 +302,44 @@ class ReadResult:
         fingerprint: The state of the file when it was opened.
         shows: Whether the text shows the model something of the file: at
             least one of its lines, or that it has none.
+        pictures: The file, where it is a picture.
     """
 
     text: str
     permit: Permit
     fingerprint: Fingerprint
     shows: bool
+    pictures: tuple[Picture, ...] = ()
+
+
+def _picture(permit: Permit) -> tuple[bytes, Fingerprint]:
+    """Read a file whole, as far as one byte more than a picture may be."""
+    with permit.open() as opened:
+        return opened.file.read(pictures.MOST_BYTES + 1), opened.fingerprint
+
+
+async def _looked_at(permit: Permit, path: str) -> ReadResult | None:
+    """Return a picture with what is said of it, or ``None`` where the file is no picture."""
+    try:
+        data, fingerprint = await asyncio.to_thread(_picture, permit)
+    except FileNotFoundError:
+        raise ToolFailure(f"There is no file {path}.", code="NOT_FOUND") from None
+    except OSError as error:
+        raise ToolFailure(f"{path} cannot be read: {error}") from error
+    kind = pictures.kind_of(data)
+    if kind is None:
+        return None
+    if len(data) > pictures.MOST_BYTES:
+        raise ToolFailure(
+            f"{path} is a picture larger than {pictures.MOST_BYTES // 1_000_000} MB, which is "
+            "more than a model takes. Make it smaller first.",
+            code="TOO_LARGE",
+        )
+    size = pictures.size_of(data)
+    pixels = "" if size is None else f", {size[0]}x{size[1]}"
+    said = f"(A picture, {kind}{pixels}, {_amount(len(data))}. It is shown beside this text.)"
+    picture = Picture(media_type=kind, data=base64.b64encode(data).decode("ascii"))  # type: ignore[arg-type]
+    return ReadResult(said, permit, fingerprint, shows=False, pictures=(picture,))
 
 
 def _text(args: ReadArgs, result: ReadResult) -> str:
@@ -328,6 +372,10 @@ def read_tool(
         permit = fs.permit(Access(run.session, run.cwd, where, "read", "read", call_id=run.call_id))
         if where.path.is_dir():
             raise ToolFailure(f"{args.path} is a directory, not a file.", code="NOT_A_FILE")
+        if where.path.suffix.lower() in _PICTURES:
+            seen = await _looked_at(permit, args.path)
+            if seen is not None:
+                return seen
         stopped = threading.Event()
         tokens = None if room is None else room(run.session)
         try:
@@ -350,7 +398,7 @@ def read_tool(
         description=(
             "Read a text file of the working directory. The lines come back with their "
             f"numbers. At most {MAX_LINES} lines are returned at once: pass offset and limit "
-            "to read a long file in parts."
+            "to read a long file in parts. A picture (PNG, JPEG, GIF, WebP) is shown to you."
         ),
         parameters=ReadArgs,
         execute=read,

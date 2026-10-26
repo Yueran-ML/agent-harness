@@ -148,7 +148,8 @@ def test_a_file_that_cannot_be_read_is_said(tmp_path: Path, content: bytes, said
 def test_a_file_that_cannot_be_written_is_said(tmp_path: Path) -> None:
     (tmp_path / "not a directory").write_text("", encoding="utf-8")
 
-    with pytest.raises(SchedulesError, match="cannot be written"):
+    # Linux finds the file under what is no directory unreadable already; Windows, unwritable.
+    with pytest.raises(SchedulesError, match=r"cannot be (read|written)"):
         changed(tmp_path / "not a directory", lambda schedules: schedules)
 
 

@@ -386,12 +386,22 @@ def test_the_composition_can_be_printed_instead_of_run(
         "tool-subagent",
         "mcp",
         "pets",
+        "video",
         "frontend",
     ]
     assert entries["pets"] == {
         "id": "pets",
         "plugin": "columbina.pets",
         "config": {"file": "${COLUMBINA_PET_STATE:-}"},
+    }
+    # The tools that edit video are there where somebody asks for them.
+    assert entries["video"] == {
+        "id": "video",
+        "plugin": "columbina.video",
+        "config": {
+            "enabled": "${COLUMBINA_VIDEO:-0}",
+            "whisper_model": "${COLUMBINA_WHISPER_MODEL:-}",
+        },
     }
     assert entries["spill"] == {
         "id": "spill",

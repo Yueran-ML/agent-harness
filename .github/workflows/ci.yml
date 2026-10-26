@@ -49,12 +49,18 @@ jobs:
           docker pull -q busybox
           docker pull -q python:3.12-slim
 
+      - name: ffmpeg for the tests of the editing of video
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ffmpeg
+
       - name: Test
         run: uv run python -m coverage run -m pytest --junitxml=junit.xml
         env:
           # On Linux the tests with a real Docker engine have to run. A runner without an
           # engine or without the images fails; it does not pass them over.
           COLUMBINA_REQUIRE_DOCKER: ${{ runner.os == 'Linux' && '1' || '' }}
+          # So do the tests that make films with ffmpeg.
+          COLUMBINA_REQUIRE_FFMPEG: ${{ runner.os == 'Linux' && '1' || '' }}
 
       - name: Coverage
         run: uv run python -m coverage report

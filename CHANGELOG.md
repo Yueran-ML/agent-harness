@@ -6,6 +6,20 @@ change what was there before.
 
 ## Unreleased
 
+- The agent edits video by what is said in it, with the ffmpeg of the system, where
+  `COLUMBINA_VIDEO` is 1. Eight tools take sources into a project directory, transcribe a talk
+  with faster-whisper on this machine (`COLUMBINA_WHISPER_MODEL` names a model; nothing is
+  downloaded), and make the talk a story, `story.md`, which is cut with the tools for files:
+  a line taken away or struck through is a sentence cut, a word struck through is a word cut, a
+  line moved is a sentence moved, and `[pause 1.8s]` lines are the pauses. `video_apply` commits
+  it and says what was cut and how long the film lasts; a cut falls into the silence between two
+  words. `video_overlay` lays pictures over the film, sounds under it, made quieter while somebody
+  speaks, and titles on it, each at words of the talk, so that it moves with them; it crosses
+  sentences into each other and switches the captions. `video_render` makes a preview or the
+  film with captions burnt in and as a file of SubRip beside it; every commit can be undone.
+  `columbina video import|transcribe|apply|correct|overlay|render|undo|info` does the same by
+  hand. Every run of ffmpeg opens files alone, of the formats of film, sound and pictures. See
+  `docs/video.md`.
 - The desktop application shows what came with this release. The status line says about what
   the task cost, and that it is in plan mode, which a press there leaves; the bar above a task
   has the agent plan, and writes the conversation into a page with `/export`. Under a turn that

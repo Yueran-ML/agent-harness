@@ -11,6 +11,7 @@ from columbina.kernel import flatten, import_plugin
 from support.launch import bundle
 
 BUNDLES = [
+    "acp",
     "base",
     "chat",
     "cli",
@@ -59,8 +60,15 @@ def test_every_bundle_builds_on_the_one_before_it() -> None:
     assert ids["cli"][: len(ids["base"])] == ids["base"]
     assert ids["cli"][-1] == "frontend"
     # Whoever is served over a wire is given what a terminal is given, but for one command:
-    # nothing tells an interface yet that the conversation went over to a copy.
-    assert ids["serve"] == [entry for entry in ids["cli"] if entry != "command-fork"]
+    # nothing tells an interface yet that the conversation went over to a copy. The tasks that
+    # run at set times run while the service runs.
+    assert ids["serve"] == [
+        *[entry for entry in ids["cli"] if entry not in ("command-fork", "frontend")],
+        "schedules",
+        "frontend",
+    ]
+    # An editor that speaks the Agent Client Protocol holds the base program.
+    assert ids["acp"] == [*ids["base"], "frontend"]
     # The assistant in Feishu is the base program, with what it may not do switched off.
     assert ids["feishu"] == [*ids["base"], "frontend"]
     # So is the assistant in WeCom.

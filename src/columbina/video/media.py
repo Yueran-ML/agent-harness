@@ -34,6 +34,7 @@ from columbina.data import Data
 
 __all__ = [
     "DEMUXERS",
+    "GUARDS",
     "AudioFacts",
     "Facts",
     "MediaUnavailableError",
@@ -41,6 +42,7 @@ __all__ = [
     "Tools",
     "UnreadableMediaError",
     "VideoFacts",
+    "apart",
     "audio",
     "checked",
     "facts",
@@ -239,7 +241,7 @@ list, is none of them, so ffmpeg opens nothing that such a list names."""
 
 _PICTURES = ("png_pipe", "jpeg_pipe", "webp_pipe")
 
-_GUARDS = ("-protocol_whitelist", "file", "-format_whitelist", ",".join(DEMUXERS))
+GUARDS = ("-protocol_whitelist", "file", "-format_whitelist", ",".join(DEMUXERS))
 """What every run on a file from outside is given: files alone, of the formats above."""
 
 _STANDARD_RATES = (
@@ -275,7 +277,7 @@ def probe_argv(tools: Tools, path: Path) -> list[str]:
         "-hide_banner",
         "-loglevel",
         "error",
-        *_GUARDS,
+        *GUARDS,
         "-print_format",
         "json",
         "-show_format",
@@ -413,7 +415,7 @@ def facts(answer: dict[str, Any]) -> Facts:
 
 
 @contextlib.contextmanager
-def _apart(place: Path) -> Generator[Path]:
+def apart(place: Path) -> Generator[Path]:
     """Make a directory for one run of ffmpeg in ``place``, and take it away afterwards.
 
     ffmpeg is never run in the working directory: a program on Windows looks for its libraries
@@ -463,7 +465,7 @@ async def probed(tools: Tools, path: Path, *, place: Path) -> Facts:
         MediaUnavailableError: ffprobe cannot be run.
         UnreadableMediaError: The file is no source that can be edited.
     """
-    with _apart(place) as cwd:
+    with apart(place) as cwd:
         said = await ran(tools, probe_argv(tools, path), cwd=cwd)
     try:
         answer: object = json.loads(said)
@@ -482,7 +484,7 @@ def _ffmpeg(tools: Tools, path: Path) -> list[str]:
         "error",
         "-nostdin",
         "-y",
-        *_GUARDS,
+        *GUARDS,
         "-i",
         source(path),
     ]
@@ -497,7 +499,7 @@ async def audio(tools: Tools, path: Path, target: Path) -> None:
         MediaUnavailableError: ffmpeg cannot be run.
         UnreadableMediaError: The sound cannot be taken out.
     """
-    with _apart(target.parent) as cwd:
+    with apart(target.parent) as cwd:
         await ran(
             tools,
             [
@@ -573,7 +575,7 @@ async def silences(
         f"silencedetect=noise={noise_db:g}dB:d={shortest_us / 1_000_000:g},"
         "ametadata=mode=print:file=silences.txt"
     )
-    with _apart(place) as cwd:
+    with apart(place) as cwd:
         await ran(tools, [*_ffmpeg(tools, path), "-vn", "-af", detect, "-f", "null", "-"], cwd=cwd)
         written = (
             (cwd / "silences.txt").read_text(encoding="utf-8")

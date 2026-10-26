@@ -145,3 +145,11 @@ patch:
         plugin: columbina.pets
         config:
           file: ${COLUMBINA_PET_STATE:-}
+      # Tools that edit video by what is said in it, with the ffmpeg of the system: given where
+      # COLUMBINA_VIDEO is 1. COLUMBINA_WHISPER_MODEL names a directory with a model of
+      # faster-whisper to transcribe with. See docs/video.md.
+      - id: video
+        plugin: columbina.video
+        config:
+          enabled: ${COLUMBINA_VIDEO:-0}
+          whisper_model: ${COLUMBINA_WHISPER_MODEL:-}

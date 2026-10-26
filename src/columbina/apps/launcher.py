@@ -77,7 +77,7 @@ from pydantic import ValidationError
 
 import columbina
 from columbina import files
-from columbina.apps import FRONTEND, schedules_command, search_key, worktrees_command
+from columbina.apps import FRONTEND, schedules_command, search_key, video_command, worktrees_command
 from columbina.apps import doctor as health
 from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
@@ -2136,6 +2136,10 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="answer in one document of JSON, for another program",
     )
+    video = commands.add_parser(
+        video_command.VIDEO, help="edit a film by what is said in it, with the ffmpeg of the system"
+    )
+    video_command.arguments(video)
     apart = commands.add_parser(
         worktrees_command.WORKTREES,
         help="list, make, merge or remove the worktrees of git that tasks run in",
@@ -2265,6 +2269,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _schedules(args, home)
         if args.command == worktrees_command.WORKTREES:
             return _worktrees(args)
+        if args.command == video_command.VIDEO:
+            return video_command.run(args, lambda line: print(harmless(line)))
         if args.command == _FEISHU:
             return _feishu(args, home, env)
         if args.command == _WECOM:

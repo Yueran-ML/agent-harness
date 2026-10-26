@@ -491,6 +491,8 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                 config["task"] = args.task
                 if args.json is not None:
                     config["json_lines"] = args.json
+                if args.output_schema is not None:
+                    config["output_schema"] = str(Path(args.output_schema).resolve())
             elif args.command in (_FEISHU, _WECOM, _QQ):
                 if args.effort is not None:
                     # How hard the model of the assistant thinks, over what holds for all.
@@ -1704,6 +1706,11 @@ def _parser() -> argparse.ArgumentParser:
         "--json",
         action=argparse.BooleanOptionalAction,
         help="report the run as lines of JSON, or as the answer alone",
+    )
+    run.add_argument(
+        "--output-schema",
+        metavar="FILE",
+        help="a JSON Schema that the answer has to fit: the answer is printed as JSON",
     )
     serve = commands.add_parser(
         _SERVE,

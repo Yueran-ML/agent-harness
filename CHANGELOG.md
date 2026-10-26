@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- `columbina run --output-schema FILE` has the answer fit a JSON Schema, for a program that reads
+  it. The model is told the schema with the task; an answer that is no such JSON is sent back with
+  what is wrong, twice at most, and one that fits is printed as one line of JSON, and as `output`
+  in the last line of `--json`. A run whose answer never fits ends with 1, and one whose schema
+  cannot be used ends with 2 before it begins. `columbina.json_schema` checks the part of JSON
+  Schema that is used most, and takes no schema with a word that it does not check.
 - `/context` says what the conversation is made of: the instructions of the program, those of the
   project and the user, the tools that are declared, a summary, what was written, what the model
   wrote and what tools gave back, each with its tokens, how far the whole is from what the model

@@ -210,7 +210,7 @@ def test_other_events_change_nothing(session: Session) -> None:
 
 async def test_whatever_makes_conversations_shorter_is_found_by_one_key(ctx: Context) -> None:
     class Never:
-        async def compact(self, agent: Agent, why: Why) -> Outcome:
+        async def compact(self, agent: Agent, why: Why, focus: str | None = None) -> Outcome:
             return Outcome(before=0, after=0)
 
     provider: Compaction = Never()

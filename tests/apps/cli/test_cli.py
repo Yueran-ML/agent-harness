@@ -108,7 +108,7 @@ class Summing:
     def __init__(self) -> None:
         self.begun = asyncio.Event()
 
-    async def compact(self, agent: Agent, why: Why) -> Outcome:
+    async def compact(self, agent: Agent, why: Why, focus: str | None = None) -> Outcome:
         self.begun.set()
         await asyncio.Event().wait()
         raise AssertionError("it is stopped before it ends")

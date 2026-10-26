@@ -158,7 +158,9 @@ def test_the_program_that_is_shipped_has_its_commands(
 
     assert code == 0
     assert (
-        "/compact      Sum up the older part of the conversation to make room.\n"
+        "/compact      Sum up the older part of the conversation to make room: /compact [WHAT "
+        "TO KEEP].\n"
+        "/context      Say what the conversation is made of, and how much room is left.\n"
         "/effort       Show how hard the model thinks, or choose a level.\n"
         "/exit         Leave.\n"
         "/fork         Go on in a copy of this session, and leave the session as it is.\n"

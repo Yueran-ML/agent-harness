@@ -995,12 +995,13 @@ def test_the_program_of_a_conversation_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-10:] == [
+    assert list(entries)[-11:] == [
         "commands",
         "command-tools",
         "command-permissions",
         "command-sessions",
         "command-compact",
+        "command-context",
         "command-todos",
         "command-fork",
         "command-skills",
@@ -1136,12 +1137,13 @@ def test_the_program_that_serves_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-9:] == [
+    assert list(entries)[-10:] == [
         "commands",
         "command-tools",
         "command-permissions",
         "command-sessions",
         "command-compact",
+        "command-context",
         "command-todos",
         "command-skills",
         "command-mcp",
@@ -1206,6 +1208,7 @@ def test_the_program_that_serves_holds_a_conversation_over_the_wire_of_its_proce
     # The commands of the program that is shipped, without the one that copies a session.
     assert [command["name"] for command in hello["result"]["commands"]] == [
         "compact",
+        "context",
         "effort",
         "help",
         "mcp",

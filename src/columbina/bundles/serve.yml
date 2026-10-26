@@ -16,6 +16,8 @@ patch:
         plugin: columbina.commands.sessions
       - id: command-compact
         plugin: columbina.commands.compact
+      - id: command-context
+        plugin: columbina.commands.context
       - id: command-todos
         plugin: columbina.commands.todos
       - id: command-skills

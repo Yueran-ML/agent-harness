@@ -44,10 +44,12 @@ class Saying:
     def __init__(self, outcome: Outcome | None) -> None:
         self.outcome = outcome
         self.asked: list[tuple[Agent, Why]] = []
+        self.focus: list[str | None] = []
         self.begun = asyncio.Event()
 
-    async def compact(self, agent: Agent, why: Why) -> Outcome:
+    async def compact(self, agent: Agent, why: Why, focus: str | None = None) -> Outcome:
         self.asked.append((agent, why))
+        self.focus.append(focus)
         self.begun.set()
         if self.outcome is None:
             await asyncio.Event().wait()
@@ -94,7 +96,34 @@ async def test_the_command_is_listed_with_what_it_is_for(harness: Harness) -> No
 
     listed = await commands.run(agent, "/help")
 
-    assert "/compact  Sum up the older part of the conversation to make room." in listed
+    assert (
+        "/compact  Sum up the older part of the conversation to make room: /compact [WHAT TO KEEP]."
+    ) in listed
+
+
+async def test_words_after_the_command_say_what_the_summary_keeps(harness: Harness) -> None:
+    commands, service = await saying(harness, Outcome(before=300, after=300))
+    agent = await harness.agent()
+
+    await commands.run(agent, "/compact   the names of the files  ")
+    await commands.run(agent, "/compact")
+
+    assert service.focus == ["the names of the files", None]
+
+
+async def test_the_summary_is_asked_to_keep_what_the_person_said(harness: Harness) -> None:
+    commands = await loaded(harness)
+    agent = await harness.agent(Reply(text="One."), Reply(text="Two."), model=MODEL)
+    await turn(agent, words(4000))
+    await turn(agent, words(4000))
+    harness.model.add(Reply(text="They said words."))
+
+    await commands.run(agent, "/compact the numbers")
+
+    asked = harness.model.requests[-1].messages[-1]
+    assert asked.content[0].text.endswith(  # type: ignore[union-attr]
+        "\n\nThe user asked that the handover keep this above all, in their words:\nthe numbers"
+    )
 
 
 @pytest.mark.parametrize(

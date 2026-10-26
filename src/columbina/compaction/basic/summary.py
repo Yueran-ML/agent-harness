@@ -43,7 +43,7 @@ from columbina.llm import (
 from columbina.session import AsideEvent, Session
 from columbina.token_meter import estimate_message
 
-__all__ = ["INSTRUCTION", "Summary", "SummaryError", "carried", "summarise"]
+__all__ = ["FOCUS", "INSTRUCTION", "Summary", "SummaryError", "carried", "summarise"]
 
 INSTRUCTION = """\
 The conversation above has grown too long to be carried on whole. Write a handover of it for \
@@ -73,6 +73,9 @@ any tool: answer with the handover alone.
 - If an earlier summary stands above, work what still matters of it into yours. Do not copy it \
 whole."""
 """What the model is asked for after the part of the conversation that is to go."""
+
+FOCUS = "The user asked that the handover keep this above all, in their words:"
+"""What comes before the words of a person who said what a summary is to keep."""
 
 _OPENING = (
     "The conversation was too long to be kept whole. What follows is a summary of its earlier "
@@ -178,6 +181,7 @@ async def summarise(
     tools: tuple[ToolSchema, ...],
     size: Callable[[Message], int] = estimate_message,
     pause: Callable[[float], Awaitable[object]] = asyncio.sleep,
+    focus: str | None = None,
 ) -> Summary:
     """Have a model write the summary of a part of a conversation.
 
@@ -190,6 +194,8 @@ async def summarise(
         tools: The tools as they were declared in the requests before.
         size: Tells how many tokens a message comes to.
         pause: Waits so many seconds.
+        focus: What a person asked the summary to keep above all, if they
+            said. It is put after the request in their words.
 
     Raises:
         SummaryError: No summary came of it.
@@ -197,7 +203,8 @@ async def summarise(
     first = session.surface.index(region.seqs[0])
     before = session.messages[:first]
     shown: Sequence[Message] = session.messages[first : first + len(region.seqs)]
-    ask = UserMessage(content=(TextBlock(text=INSTRUCTION),))
+    asked = INSTRUCTION if not focus else f"{INSTRUCTION}\n\n{FOCUS}\n{focus.strip()}"
+    ask = UserMessage(content=(TextBlock(text=asked),))
     usage = Usage()
     waited = False
     while True:

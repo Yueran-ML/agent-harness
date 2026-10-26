@@ -348,9 +348,9 @@ class Basic:
         self._refused: WeakKeyDictionary[Session, tuple[int, int]] = WeakKeyDictionary()
         self._told = False
 
-    async def compact(self, agent: Agent, why: Why) -> Outcome:
+    async def compact(self, agent: Agent, why: Why, focus: str | None = None) -> Outcome:
         """Make the conversation of an agent shorter, and say how that ended."""
-        return await self._compact(agent, why, None, None)
+        return await self._compact(agent, why, None, None, focus)
 
     async def before_a_step(
         self, info: StepInfo, proceed: Next[StepInfo, StepDecision]
@@ -418,7 +418,12 @@ class Basic:
         return self._failures.get(session, 0) < _FAILURES_IN_A_ROW
 
     async def _compact(
-        self, agent: Agent, why: Why, said: Refusal | None, coming: _Coming | None
+        self,
+        agent: Agent,
+        why: Why,
+        said: Refusal | None,
+        coming: _Coming | None,
+        focus: str | None = None,
     ) -> Outcome:
         session = agent.session
         measured = self._meter.measure(session)
@@ -476,7 +481,7 @@ class Basic:
                 if region is not None and region.tokens > size(carried("")):
                     try:
                         summarised = await self._sum_up(
-                            agent.session, model, region, limits.headroom, size
+                            agent.session, model, region, limits.headroom, size, focus
                         )
                     except SummaryError as failed:
                         error = str(failed)
@@ -586,6 +591,7 @@ class Basic:
         region: Region,
         headroom: int,
         size: Callable[[Message], int],
+        focus: str | None,
     ) -> int:
         """Have the oldest part summed up and put the summary in its place.
 
@@ -607,6 +613,7 @@ class Basic:
             config=model.model_copy(update={"max_output_tokens": limit}),
             tools=tools,
             size=size,
+            focus=focus,
         )
         message = carried(summary.text, summary.dropped)
         session.append(

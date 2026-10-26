@@ -56,7 +56,7 @@ def apply(ctx: Context, config: object) -> None:
 
     async def run(agent: Agent, rest: str) -> str:
         async def work() -> Outcome:
-            return await service.compact(agent, "manual")
+            return await service.compact(agent, "manual", rest.strip() or None)
 
         try:
             outcome = await cancellation.guard(
@@ -70,5 +70,10 @@ def apply(ctx: Context, config: object) -> None:
         return told(outcome)
 
     ctx.use(COMMANDS).registry.add(
-        ctx, "compact", Command(run, "Sum up the older part of the conversation to make room.")
+        ctx,
+        "compact",
+        Command(
+            run,
+            "Sum up the older part of the conversation to make room: /compact [WHAT TO KEEP].",
+        ),
     )

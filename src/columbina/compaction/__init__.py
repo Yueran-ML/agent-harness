@@ -183,8 +183,11 @@ COMPACTIONS = Projection("compactions", Compactions(), _fold)
 class Compaction(Protocol):
     """Whatever makes conversations shorter."""
 
-    async def compact(self, agent: Agent, why: Why) -> Outcome:
+    async def compact(self, agent: Agent, why: Why, focus: str | None = None) -> Outcome:
         """Make the conversation of an agent shorter, and say how that ended.
+
+        A person who asks for it may say what the summary is to keep above
+        all: that is ``focus``.
 
         This reads and replaces messages, so it is for the two moments at
         which no step is under way: before a step begins, and while the agent

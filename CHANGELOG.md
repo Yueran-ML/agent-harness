@@ -6,6 +6,13 @@ change what was there before.
 
 ## Unreleased
 
+- `/context` says what the conversation is made of: the instructions of the program, those of the
+  project and the user, the tools that are declared, a summary, what was written, what the model
+  wrote and what tools gave back, each with its tokens, how far the whole is from what the model
+  takes, and which results of tools are the largest. It is there at the terminal and in the
+  service.
+- `/compact` takes words after it, which the summary is asked to keep above all:
+  `/compact the names of the files`. `Compaction.compact` takes them as `focus`.
 - The agent reads the web. `web_fetch` takes a page and gives the model what a reader sees of it,
   in the shape of Markdown, and plain text, JSON or XML as it stands. `web_search` searches the
   web and gives the titles, addresses and a few lines of the results: by DuckDuckGo, which needs

@@ -20,19 +20,25 @@
 //! - A track is given `V` if it holds picture and `A` if it holds sound, and a number one above
 //!   the highest number of the ids of that letter among the tracks of its timeline, whatever
 //!   they hold: beside `V1` and `V3`, a new track of picture is `V4`, and in a timeline with no
-//!   such id it is `V1`. Tracks do not use `next_id`, so a track that is taken away and added
-//!   again without an id may be given the id that it had.
+//!   such id it is `V1`. The id of a track names its place among the tracks of its kind, as an
+//!   editor shows it, and is not kept from reuse as the others are: tracks do not use
+//!   `next_id`, so a track that is taken away and added again without an id may be given the
+//!   id that it had, and so may a new track after `V2` is taken away.
 //! - The tracks and clips inside a timeline or a track that is added are given theirs after it,
 //!   in the order of their lists as they are given: the first track, then its clips, then the
 //!   next track. The clips of each track are then put in the order of their start.
 //!
 //! A thing that is added with an id keeps it, unless a thing of its kind holds it already: media
 //! and timelines among those of the project, a track among those of its timeline, and a clip
-//! among all the clips of the project. Then the operation is refused. An id that the engine could
-//! have made itself, one of the letters `m`, `t` and `c` and a number written without a leading
-//! 0, moves `next_id` past that number, so that the engine never makes that id for another thing.
+//! among all the clips of the project. Then the operation is refused. An id of the shape of those
+//! that the engine makes, one of the letters `m`, `t` and `c` and a number below [`LARGEST`]
+//! written without a leading 0, is refused too if its number is `next_id` or above: the engine
+//! may make it later. One with a lower number is an id that the engine made, as the inverse of
+//! an operation carries it, and is kept if no thing of its kind holds it.
 //!
 //! `next_id` never goes back: not when an operation is refused, and not when one is taken back.
+//! So an id that the engine makes for media, a timeline or a clip is never made again, and is
+//! never given to another thing, unless a client gives it to one itself.
 //!
 //! # What is checked
 //!
@@ -42,7 +48,16 @@
 //! `source_in`, for the ticks that its frames last at the rate of the timeline, and no further
 //! than the duration of the media. `source_in` counts ticks of the scale of that duration, which
 //! is never 0. A clip moves only between tracks of the same kind, within its timeline. A thing is
-//! not put past the end of its list, and a timeline that is added has no 0 in its rate.
+//! not put past the end of its list, and a timeline that is added has no 0 in its rate. Media
+//! does not last less than no time, and its picture has no 0 in its rate.
+//!
+//! The ticks that the frames of a clip last are rounded down, as [`Rate::ticks_of`] counts
+//! them. So at a rate whose frames do not last a whole number of ticks, the last frame of a clip
+//! that reaches the end of its media may end less than one tick past that end; whoever reads the
+//! media for it stops at the end.
+//!
+//! A project that is read is checked as the operations check what they add, by
+//! [`Project::validate`], so that the inverse of an operation on it is never refused.
 //!
 //! Every integer that an operation writes into a project is within [`LARGEST`] of 0, since
 //! JavaScript reads the project too. Media that clips use cannot be taken away; a track or a
@@ -202,11 +217,15 @@ pub enum OpError {
         /// What it holds.
         kind: TrackKind,
     },
-    /// A clip lasts no frame, or shows what is not in its media.
-    #[error("the clip lasts no frame, or shows what is not in media {media}")]
+    /// A clip lasts no frame, or shows what is not in its media. `why` is `length` if it lasts
+    /// no frame, `before_start` if it begins before the start of the media, and `past_end` if
+    /// it goes on past the end of the media.
+    #[error("{}", source_message(.media, .why))]
     OutOfSource {
         /// The media.
         media: Id,
+        /// Which way the clip is out of it.
+        why: &'static str,
     },
     /// A time counts ticks of a scale of 0, or not of the scale of its media.
     #[error("{}", scale_message(*.scale, *.media_scale))]
@@ -246,6 +265,39 @@ pub enum OpError {
     /// A rate of frames has a 0 in it.
     #[error("a rate of frames has a 0 in it")]
     ZeroRate,
+    /// Media lasts less than no time.
+    #[error("the media lasts {ticks} ticks, less than no time")]
+    NegativeDuration {
+        /// How many ticks it lasts.
+        ticks: i64,
+    },
+    /// An id that a thing is given is of the shape of the ids that the engine makes, with a
+    /// number that the engine has not made yet: the engine may make it later.
+    #[error("the id {id} is of the shape of the ids that the engine makes, with a number that it has not made yet")]
+    Reserved {
+        /// The id.
+        id: Id,
+    },
+    /// The engine has made every id that it can, since `next_id` cannot go past [`LARGEST`].
+    #[error("the engine has made all the ids it can")]
+    IdsExhausted,
+    /// A thing of a project that is read has an empty id. A thing that an operation adds with an
+    /// empty id is given one, so an operation never gives this.
+    #[error("the thing has no id")]
+    NoId,
+}
+
+/// Why a project that is read is not one that the operations can work on: the thing of it that
+/// is wrong, and what is wrong with it.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{} {}", thing_of(.what, .id), .error)]
+pub struct Invalid {
+    /// The kind of the thing: `project`, `media`, `timeline`, `track` or `clip`.
+    pub what: &'static str,
+    /// Its id, which is empty for the project.
+    pub id: Id,
+    /// What is wrong with it.
+    pub error: OpError,
 }
 
 impl Serialize for OpError {
@@ -269,13 +321,37 @@ enum Fields {
     OutOfList { at: usize, len: usize },
     NoStream { media: Id, kind: TrackKind },
     WrongKind { track: Id, kind: TrackKind },
-    OutOfSource { media: Id },
+    OutOfSource { media: Id, why: &'static str },
     Scale { scale: u32, media_scale: u32 },
     Overlap { with: Id },
     OutOfTimeline { start: i64 },
     InUse { id: Id, by: Id },
     TooLarge { what: &'static str },
     ZeroRate,
+    NegativeDuration { ticks: i64 },
+    Reserved { id: Id },
+    IdsExhausted,
+    NoId,
+}
+
+/// How [`Invalid`] names the thing that is wrong.
+fn thing_of(what: &str, id: &str) -> String {
+    if what == "project" {
+        "the project:".into()
+    } else if id.is_empty() {
+        format!("a {what} of the project:")
+    } else {
+        format!("{what} {id}:")
+    }
+}
+
+/// The message of [`OpError::OutOfSource`].
+fn source_message(media: &str, why: &str) -> String {
+    match why {
+        "length" => "the clip lasts no frame".into(),
+        "before_start" => format!("the clip begins before the start of media {media}"),
+        _ => format!("the clip goes on past the end of media {media}"),
+    }
 }
 
 /// What a track of a kind is called in a message.
@@ -338,15 +414,7 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
 
 fn add_media(project: &mut Project, mut media: Media, index: Option<usize>) -> Result<Op, OpError> {
     let at = place(index, project.media.len())?;
-    within("size", media.identity.size.into())?;
-    within("modified_us", media.identity.modified_us.into())?;
-    within("duration", media.facts.duration.ticks.into())?;
-    if media.facts.duration.scale == 0 {
-        return Err(OpError::Scale {
-            scale: 0,
-            media_scale: 0,
-        });
-    }
+    check_media(&media)?;
     let held = |id: &str| project.media.iter().any(|m| m.id == id);
     let mut counter = Counter::of(project);
     if media.id.is_empty() {
@@ -354,7 +422,7 @@ fn add_media(project: &mut Project, mut media: Media, index: Option<usize>) -> R
     } else if held(&media.id) {
         return Err(taken("media", &media.id));
     } else {
-        counter.saw(&media.id);
+        counter.check(&media.id)?;
     }
     let id = media.id.clone();
     project.media.insert(at, media);
@@ -394,9 +462,9 @@ fn add_timeline(
         if held(&timeline.id) {
             return Err(taken("timeline", &timeline.id));
         }
-        counter.saw(&timeline.id);
+        counter.check(&timeline.id)?;
     }
-    let mut clip_ids = claim(project, &mut counter, &[], &timeline.tracks)?;
+    let mut clip_ids = claim(project, &counter, &[], &timeline.tracks)?;
     if timeline.id.is_empty() {
         timeline.id = counter.make('t', held)?;
     }
@@ -428,7 +496,7 @@ fn add_track(
     let at = place(index, timeline.tracks.len())?;
     let mut counter = Counter::of(project);
     let mut added = [track];
-    let mut clip_ids = claim(project, &mut counter, &timeline.tracks, &added)?;
+    let mut clip_ids = claim(project, &counter, &timeline.tracks, &added)?;
     name(&mut counter, &mut clip_ids, &timeline.tracks, &mut added)?;
     check_tracks(project, timeline.rate, &mut added)?;
     let [track] = added;
@@ -473,7 +541,7 @@ fn insert_clip(
     } else if held(&clip.id) {
         return Err(taken("clip", &clip.id));
     } else {
-        counter.saw(&clip.id);
+        counter.check(&clip.id)?;
     }
     check_clip(project, timeline.rate, track.kind, &clip)?;
     check_room(&track.clips, &clip)?;
@@ -583,14 +651,12 @@ impl Counter {
         }
     }
 
-    /// Note an id that a thing is given, so that the engine never makes it.
-    fn saw(&mut self, id: &str) {
-        for letter in NUMBERED {
-            if let Some(number) = number_in(id, letter) {
-                if number < LARGEST_COUNT {
-                    self.next = self.next.max(number + 1);
-                }
-            }
+    /// Check an id that a thing is given: one of the shape of the ids that the engine makes is
+    /// refused if its number is one that the engine has not made yet.
+    fn check(&self, id: &str) -> Result<(), OpError> {
+        match engine_number(id) {
+            Some(number) if number >= self.next => Err(OpError::Reserved { id: id.into() }),
+            _ => Ok(()),
         }
     }
 
@@ -599,7 +665,7 @@ impl Counter {
         loop {
             let number = self.next;
             if number >= LARGEST_COUNT {
-                return Err(OpError::TooLarge { what: "next_id" });
+                return Err(OpError::IdsExhausted);
             }
             self.next = number + 1;
             let id = format!("{letter}{number}");
@@ -623,12 +689,21 @@ fn number_in(id: &str, letter: char) -> Option<u64> {
     }
 }
 
+/// The number of an id that the engine could make: one of the letters `m`, `t` and `c`, and a
+/// number below [`LARGEST`] written without a leading 0.
+fn engine_number(id: &str) -> Option<u64> {
+    NUMBERED
+        .iter()
+        .find_map(|&letter| number_in(id, letter))
+        .filter(|&number| number < LARGEST_COUNT)
+}
+
 /// Check the ids that tracks to be added to a timeline, which has `existing` tracks, are given,
-/// and those of their clips, and note them in `counter`. Gives the ids of the clips of the
-/// project with those of the clips of `tracks`.
+/// and those of their clips. Gives the ids of the clips of the project with those of the clips
+/// of `tracks`.
 fn claim(
     project: &Project,
-    counter: &mut Counter,
+    counter: &Counter,
     existing: &[Track],
     tracks: &[Track],
 ) -> Result<HashSet<Id>, OpError> {
@@ -639,14 +714,14 @@ fn claim(
             if !track_ids.insert(&track.id) {
                 return Err(taken("track", &track.id));
             }
-            counter.saw(&track.id);
+            counter.check(&track.id)?;
         }
         for clip in &track.clips {
             if !clip.id.is_empty() {
                 if !clip_ids.insert(clip.id.clone()) {
                     return Err(taken("clip", &clip.id));
                 }
-                counter.saw(&clip.id);
+                counter.check(&clip.id)?;
             }
         }
     }
@@ -688,9 +763,7 @@ fn track_id<'a>(kind: TrackKind, ids: impl Iterator<Item = &'a str>) -> Result<I
         .filter_map(|id| number_in(id, letter))
         .max()
         .unwrap_or(0);
-    let number = highest.checked_add(1).ok_or(OpError::TooLarge {
-        what: "number of the track",
-    })?;
+    let number = highest.checked_add(1).ok_or(OpError::IdsExhausted)?;
     Ok(format!("{letter}{number}"))
 }
 
@@ -734,12 +807,23 @@ fn check_clip(project: &Project, rate: Rate, kind: TrackKind, clip: &Clip) -> Re
             media_scale: duration.scale,
         });
     }
+    let out = |why| {
+        Err(OpError::OutOfSource {
+            media: media.id.clone(),
+            why,
+        })
+    };
+    if clip.length <= 0 {
+        return out("length");
+    }
+    if clip.source_in.ticks < 0 {
+        return out("before_start");
+    }
+    // Rounded down: see "What is checked" above.
     let source_end =
         i128::from(clip.source_in.ticks) + i128::from(rate.ticks_of(clip.length, scale));
-    if clip.length <= 0 || clip.source_in.ticks < 0 || source_end > i128::from(duration.ticks) {
-        return Err(OpError::OutOfSource {
-            media: media.id.clone(),
-        });
+    if source_end > i128::from(duration.ticks) {
+        return out("past_end");
     }
     let has = match kind {
         TrackKind::Video => media.facts.video.is_some(),
@@ -778,6 +862,29 @@ fn end_of(clip: &Clip) -> i128 {
 fn put(clips: &mut Vec<Clip>, clip: Clip) {
     let at = clips.partition_point(|c| c.start < clip.start);
     clips.insert(at, clip);
+}
+
+/// Check media as it would be in a project.
+fn check_media(media: &Media) -> Result<(), OpError> {
+    within("size", media.identity.size.into())?;
+    within("modified_us", media.identity.modified_us.into())?;
+    let duration = media.facts.duration;
+    within("duration", duration.ticks.into())?;
+    if duration.scale == 0 {
+        return Err(OpError::Scale {
+            scale: 0,
+            media_scale: 0,
+        });
+    }
+    if duration.ticks < 0 {
+        return Err(OpError::NegativeDuration {
+            ticks: duration.ticks,
+        });
+    }
+    if let Some(video) = &media.facts.video {
+        check_rate(video.rate)?;
+    }
+    Ok(())
 }
 
 fn check_rate(rate: Rate) -> Result<(), OpError> {
@@ -861,9 +968,109 @@ fn clips_of(project: &Project) -> impl Iterator<Item = &Clip> {
         .flat_map(|r| &r.clips)
 }
 
+impl Project {
+    /// Check that a project that was read is one that the operations could have made, so that
+    /// they can work on it: the inverse of an operation on it is never refused.
+    ///
+    /// Everything is checked that an operation checks of what it adds: each clip as
+    /// [`Op::InsertClip`] checks it, each media as [`Op::AddMedia`] does, the rate of each
+    /// timeline, and every integer against [`LARGEST`]. Every thing has an id, and no two
+    /// things of a kind share one: media and timelines in the project, tracks in their
+    /// timeline, and clips in the project.
+    ///
+    /// Two things are put right rather than refused. The clips of each track are put in the
+    /// order of their start. `next_id` is raised above the number of every id of the project
+    /// that the engine could have made, so that the engine never makes such an id again.
+    ///
+    /// # Errors
+    /// A thing of the project is not as an operation would have made it. The clips of the
+    /// tracks may have been put in order by then, and nothing else is changed.
+    pub fn validate(&mut self) -> Result<(), Invalid> {
+        for timeline in &mut self.timelines {
+            for track in &mut timeline.tracks {
+                track.clips.sort_by_key(|c| c.start);
+            }
+        }
+        self.check_all()?;
+        let media = self.media.iter().map(|m| &m.id);
+        let timelines = self.timelines.iter().map(|t| &t.id);
+        let tracks = self.timelines.iter().flat_map(|t| &t.tracks);
+        let track_ids = tracks.clone().map(|r| &r.id);
+        let clip_ids = tracks.flat_map(|r| &r.clips).map(|c| &c.id);
+        let highest = media
+            .chain(timelines)
+            .chain(track_ids)
+            .chain(clip_ids)
+            .filter_map(|id| engine_number(id))
+            .max();
+        if let Some(highest) = highest {
+            // Below LARGEST, so that the sum is no further from 0 than LARGEST.
+            self.next_id = self.next_id.max(highest + 1);
+        }
+        Ok(())
+    }
+
+    /// Check a project whose clips are in order. See [`Project::validate`].
+    fn check_all(&self) -> Result<(), Invalid> {
+        fn wrong<'a>(what: &'static str, id: &'a str) -> impl Fn(OpError) -> Invalid + 'a {
+            move |error| Invalid {
+                what,
+                id: id.into(),
+                error,
+            }
+        }
+        if self.next_id > LARGEST_COUNT {
+            return Err(wrong("project", "")(OpError::TooLarge { what: "next_id" }));
+        }
+        let mut media_ids = HashSet::new();
+        for media in &self.media {
+            named("media", &media.id, &mut media_ids)?;
+            check_media(media).map_err(wrong("media", &media.id))?;
+        }
+        let mut timeline_ids = HashSet::new();
+        let mut clip_ids = HashSet::new();
+        for timeline in &self.timelines {
+            named("timeline", &timeline.id, &mut timeline_ids)?;
+            check_rate(timeline.rate).map_err(wrong("timeline", &timeline.id))?;
+            let mut track_ids = HashSet::new();
+            for track in &timeline.tracks {
+                named("track", &track.id, &mut track_ids)?;
+                for clip in &track.clips {
+                    named("clip", &clip.id, &mut clip_ids)?;
+                    check_clip(self, timeline.rate, track.kind, clip)
+                        .map_err(wrong("clip", &clip.id))?;
+                }
+                if let Some(pair) = track.clips.windows(2).find(|p| overlap(&p[0], &p[1])) {
+                    let with = pair[0].id.clone();
+                    return Err(wrong("clip", &pair[1].id)(OpError::Overlap { with }));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Check that a thing of a project that is read has an id, and one that no thing among `ids`
+/// has; and add it to them.
+fn named<'a>(what: &'static str, id: &'a str, ids: &mut HashSet<&'a str>) -> Result<(), Invalid> {
+    let error = if id.is_empty() {
+        OpError::NoId
+    } else if !ids.insert(id) {
+        taken(what, id)
+    } else {
+        return Ok(());
+    };
+    Err(Invalid {
+        what,
+        id: id.into(),
+        error,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::project::ReadError;
 
     /// The scale of the media of the sample: m1 lasts 153600 ticks of it, 250 frames at 25/1.
     const SCALE: u32 = 15360;
@@ -1178,15 +1385,46 @@ mod tests {
     }
 
     #[test]
-    fn an_id_that_the_engine_could_make_moves_next_id_past_it() {
-        let mut project = sample_with(vec![insert("V1", clip("c9", "m1", 100, 10))]);
-        assert_eq!(project.next_id, 10);
-        apply(&mut project, insert("V1", clip("", "m1", 110, 10))).unwrap();
-        assert_eq!(project.timelines[0].tracks[0].clips[2].id, "c10");
-        // An id of another form leaves it be.
-        apply(&mut project, insert("V1", clip("c099", "m1", 120, 10))).unwrap();
-        apply(&mut project, insert("V1", clip("x500", "m1", 130, 10))).unwrap();
-        assert_eq!(project.next_id, 11);
+    fn an_id_that_the_engine_may_make_later_is_reserved() {
+        let reserved = |id: &str| OpError::Reserved { id: id.into() };
+        // next_id is 3: c3 is the next clip that the engine makes, and c9 one after it.
+        for id in ["c3", "c9", "c9007199254740990"] {
+            assert_eq!(refused(insert("V1", clip(id, "m1", 100, 10))), reserved(id));
+        }
+        let mut late = media("m3", true, true);
+        assert_eq!(
+            refused(Op::AddMedia {
+                media: late.clone(),
+                index: None
+            }),
+            reserved("m3")
+        );
+        late.id = "t3".into();
+        let error = refused(Op::AddMedia {
+            media: late,
+            index: None,
+        });
+        assert_eq!(error, reserved("t3"), "the letter of another kind too");
+        let nested = Op::AddTimeline {
+            timeline: timeline(
+                "",
+                vec![track("", TrackKind::Video, vec![clip("c4", "m1", 0, 10)])],
+            ),
+            index: None,
+        };
+        assert_eq!(refused(nested), reserved("c4"));
+
+        // An id that the engine made before, which its inverse carries, may be given again, and
+        // ids of other shapes, or with numbers that the engine never makes, are free.
+        let mut project = sample_with(vec![Op::RemoveClip {
+            timeline: "t1".into(),
+            id: "c1".into(),
+        }]);
+        for id in ["c1", "c099", "x500", "C7", "c9007199254740991"] {
+            let start = i64::try_from(project.timelines[0].tracks[0].clips.len()).unwrap() * 10;
+            apply(&mut project, insert("V1", clip(id, "m1", start, 10))).unwrap();
+        }
+        assert_eq!(project.next_id, 3);
     }
 
     #[test]
@@ -1311,7 +1549,14 @@ mod tests {
     fn a_clip_lasts_at_least_a_frame() {
         for length in [0, -1] {
             let error = refused(insert("V1", clip("", "m1", 100, length)));
-            assert!(matches!(error, OpError::OutOfSource { .. }), "{error}");
+            assert_eq!(
+                error,
+                OpError::OutOfSource {
+                    media: "m1".into(),
+                    why: "length"
+                }
+            );
+            assert_eq!(error.to_string(), "the clip lasts no frame");
         }
     }
 
@@ -1320,23 +1565,36 @@ mod tests {
         // m1 lasts 250 frames: all of them fit, and one more does not.
         let mut project = Project::sample();
         apply(&mut project, insert("V1", clip("", "m1", 100, 250))).unwrap();
+        let past_end = OpError::OutOfSource {
+            media: "m1".into(),
+            why: "past_end",
+        };
         let error = refused(insert("V1", clip("", "m1", 100, 251)));
-        assert_eq!(error, OpError::OutOfSource { media: "m1".into() });
+        assert_eq!(error, past_end);
+        assert_eq!(
+            error.to_string(),
+            "the clip goes on past the end of media m1"
+        );
         // From the last frame, one frame fits and two do not.
         let mut late = clip("", "m1", 100, 1);
         late.source_in.ticks = Rate { num: 25, den: 1 }.ticks_of(249, SCALE);
         apply(&mut Project::sample(), insert("V1", late.clone())).unwrap();
         late.length = 2;
-        assert!(matches!(
-            refused(insert("V1", late)),
-            OpError::OutOfSource { .. }
-        ));
+        assert_eq!(refused(insert("V1", late)), past_end);
         let mut early = clip("", "m1", 100, 10);
         early.source_in.ticks = -1;
-        assert!(matches!(
-            refused(insert("V1", early)),
-            OpError::OutOfSource { .. }
-        ));
+        let error = refused(insert("V1", early));
+        assert_eq!(
+            error,
+            OpError::OutOfSource {
+                media: "m1".into(),
+                why: "before_start"
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            "the clip begins before the start of media m1"
+        );
         // A trim is checked so too.
         let error = refused(Op::TrimClip {
             timeline: "t1".into(),
@@ -1348,7 +1606,7 @@ mod tests {
             start: 0,
             length: 226,
         });
-        assert!(matches!(error, OpError::OutOfSource { .. }), "{error}");
+        assert_eq!(error, past_end);
     }
 
     #[test]
@@ -1606,15 +1864,41 @@ mod tests {
         apply(&mut project, insert("V1", clip("", "m1", 100, 10))).unwrap();
         assert_eq!(project.next_id, LARGEST.unsigned_abs());
         let error = refused_in(project.clone(), insert("V1", clip("", "m1", 110, 10)));
-        assert_eq!(error, too_large("next_id"));
-        // An id of the engine's form that it could never make leaves next_id be.
-        let mut project = Project::sample();
-        apply(
-            &mut project,
-            insert("V1", clip("c9007199254740991", "m1", 100, 10)),
-        )
-        .unwrap();
-        assert_eq!(project.next_id, 3);
+        assert_eq!(error, OpError::IdsExhausted);
+        assert_eq!(error.to_string(), "the engine has made all the ids it can");
+    }
+
+    #[test]
+    fn media_lasts_no_less_than_no_time_and_its_picture_has_a_whole_rate() {
+        let mut backwards = media("", true, true);
+        backwards.facts.duration.ticks = -1;
+        let error = refused(Op::AddMedia {
+            media: backwards,
+            index: None,
+        });
+        assert_eq!(error, OpError::NegativeDuration { ticks: -1 });
+        let mut still = media("", true, true);
+        still.facts.video.as_mut().unwrap().rate.num = 0;
+        let error = refused(Op::AddMedia {
+            media: still,
+            index: None,
+        });
+        assert_eq!(error, OpError::ZeroRate);
+        // Media of no time at all may be taken in, though no clip can be cut from it.
+        let mut empty = media("", true, true);
+        empty.facts.duration.ticks = 0;
+        let mut project = sample_with(vec![Op::AddMedia {
+            media: empty,
+            index: None,
+        }]);
+        let error = apply(&mut project, insert("V1", clip("", "m3", 100, 1))).unwrap_err();
+        assert!(matches!(
+            error,
+            OpError::OutOfSource {
+                why: "past_end",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1731,6 +2015,64 @@ mod tests {
     }
 
     #[test]
+    fn an_addition_is_written_whole_and_an_index_of_none_as_null() {
+        let value = serde_json::to_value(Op::AddMedia {
+            media: media("m2", false, true),
+            index: None,
+        })
+        .unwrap();
+        let expected = serde_json::json!({
+            "op": "add_media",
+            "media": {
+                "id": "m2",
+                "path": "C:/media/talk.mp4",
+                "identity": {
+                    "size": 12_500_000,
+                    "modified_us": 1_790_000_000_000_000_i64,
+                    "digest": "0".repeat(64),
+                },
+                "facts": {
+                    "duration": { "ticks": 153_600, "scale": 15360 },
+                    "video": null,
+                    "audio": { "rate": 48000, "channels": 2, "codec": "aac" },
+                },
+            },
+            "index": null,
+        });
+        assert_eq!(value, expected);
+
+        let value = serde_json::to_value(Op::AddTimeline {
+            timeline: timeline(
+                "t2",
+                vec![track("V1", TrackKind::Video, vec![clip("c5", "m1", 0, 1)])],
+            ),
+            index: Some(1),
+        })
+        .unwrap();
+        let expected = serde_json::json!({
+            "op": "add_timeline",
+            "timeline": {
+                "id": "t2",
+                "name": "Timeline 2",
+                "rate": { "num": 25, "den": 1 },
+                "tracks": [{
+                    "id": "V1",
+                    "kind": "video",
+                    "clips": [{
+                        "id": "c5",
+                        "media": "m1",
+                        "source_in": { "ticks": 0, "scale": 15360 },
+                        "start": 0,
+                        "length": 1,
+                    }],
+                }],
+            },
+            "index": 1,
+        });
+        assert_eq!(value, expected);
+    }
+
+    #[test]
     fn an_index_that_is_left_out_is_none() {
         let value = serde_json::json!({
             "op": "add_track",
@@ -1806,7 +2148,17 @@ mod tests {
             (OpError::OutOfList { at: 1, len: 0 }, "out_of_list"),
             (OpError::NoStream { media: id(), kind }, "no_stream"),
             (OpError::WrongKind { track: id(), kind }, "wrong_kind"),
-            (OpError::OutOfSource { media: id() }, "out_of_source"),
+            (
+                OpError::OutOfSource {
+                    media: id(),
+                    why: "past_end",
+                },
+                "out_of_source",
+            ),
+            (OpError::NegativeDuration { ticks: -1 }, "negative_duration"),
+            (OpError::Reserved { id: id() }, "reserved"),
+            (OpError::IdsExhausted, "ids_exhausted"),
+            (OpError::NoId, "no_id"),
             (
                 OpError::Scale {
                     scale: 1,
@@ -1841,5 +2193,230 @@ mod tests {
         ]);
         apply(&mut project, insert("A1", clip("", "m3", 100, 10))).unwrap();
         apply(&mut project, insert("V1", clip("", "m4", 100, 10))).unwrap();
+    }
+
+    /// The sample as it is written, changed by `change`, and read back.
+    fn read(change: impl FnOnce(&mut serde_json::Value)) -> Result<Project, ReadError> {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        change(&mut value);
+        Project::from_value(value)
+    }
+
+    /// Why the sample, changed by `change`, is not valid.
+    fn invalid(change: impl FnOnce(&mut serde_json::Value)) -> Invalid {
+        match read(change) {
+            Err(ReadError::Invalid(invalid)) => invalid,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn wrong(what: &'static str, id: &str, error: OpError) -> Invalid {
+        Invalid {
+            what,
+            id: id.into(),
+            error,
+        }
+    }
+
+    /// The first clip of the sample, as it is written.
+    fn c1(value: &mut serde_json::Value) -> &mut serde_json::Value {
+        &mut value["timelines"][0]["tracks"][0]["clips"][0]
+    }
+
+    /// A project that is read in a mess that can be put right: the clips of V1 out of order,
+    /// media that no clip uses, and `next_id` below the numbers of its ids.
+    fn messy() -> Project {
+        read(|value| {
+            value["next_id"] = 1.into();
+            let mut later = c1(value).clone();
+            later["id"] = "c4".into();
+            later["start"] = 150.into();
+            let clips = value["timelines"][0]["tracks"][0]["clips"]
+                .as_array_mut()
+                .unwrap();
+            clips.insert(0, later);
+            let mut unused = value["media"][0].clone();
+            unused["id"] = "m5".into();
+            value["media"].as_array_mut().unwrap().push(unused);
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_valid_project_is_read_as_it_was() {
+        assert_eq!(read(|_| {}).unwrap(), Project::sample());
+        let mut project = Project::sample();
+        project.validate().unwrap();
+        assert_eq!(project, Project::sample());
+    }
+
+    #[test]
+    fn a_project_is_read_with_the_clips_of_each_track_in_order() {
+        let project = messy();
+        assert_eq!(starts(&project, 0), [0, 150]);
+        assert_eq!(project.timelines[0].tracks[0].clips[1].id, "c4");
+    }
+
+    #[test]
+    fn a_project_is_read_with_next_id_above_the_ids_that_the_engine_could_have_made() {
+        let mut project = messy();
+        assert_eq!(project.next_id, 6, "above m5");
+        apply(&mut project, insert("V1", clip("", "m1", 100, 10))).unwrap();
+        assert_eq!(project.timelines[0].tracks[0].clips[1].id, "c6");
+        // The id of a track counts too; one with a number that the engine never makes does not.
+        let project = read(|value| {
+            value["timelines"][0]["tracks"][1]["id"] = "c7".into();
+            value["media"][0]["id"] = "m9007199254740991".into();
+            c1(value)["media"] = "m9007199254740991".into();
+            value["timelines"][0]["tracks"][1]["clips"][0]["media"] = "m9007199254740991".into();
+        })
+        .unwrap();
+        assert_eq!(project.next_id, 8);
+    }
+
+    #[test]
+    fn every_removal_from_a_project_that_was_read_is_taken_back() {
+        let project = messy();
+        let mut removals = vec![
+            Op::RemoveTimeline { id: "t1".into() },
+            Op::RemoveMedia { id: "m5".into() },
+        ];
+        for track in &project.timelines[0].tracks {
+            removals.push(Op::RemoveTrack {
+                timeline: "t1".into(),
+                id: track.id.clone(),
+            });
+            for clip in &track.clips {
+                removals.push(Op::RemoveClip {
+                    timeline: "t1".into(),
+                    id: clip.id.clone(),
+                });
+                removals.push(Op::TrimClip {
+                    timeline: "t1".into(),
+                    id: clip.id.clone(),
+                    source_in: clip.source_in,
+                    start: clip.start + 300,
+                    length: 1,
+                });
+            }
+        }
+        for op in removals {
+            let mut changed = project.clone();
+            let inverse = apply(&mut changed, op.clone()).unwrap();
+            apply(&mut changed, inverse).unwrap_or_else(|e| panic!("{op:?}: {e}"));
+            assert_eq!(changed, project, "{op:?}");
+        }
+    }
+
+    #[test]
+    fn a_clip_that_is_read_is_checked_as_an_inserted_one_is() {
+        let past_end = OpError::OutOfSource {
+            media: "m1".into(),
+            why: "past_end",
+        };
+        let error = invalid(|value| c1(value)["length"] = 251.into());
+        assert_eq!(error, wrong("clip", "c1", past_end));
+        assert_eq!(
+            error.to_string(),
+            "clip c1: the clip goes on past the end of media m1"
+        );
+        let error = invalid(|value| c1(value)["source_in"]["scale"] = 90000.into());
+        let scale = OpError::Scale {
+            scale: 90000,
+            media_scale: SCALE,
+        };
+        assert_eq!(error, wrong("clip", "c1", scale));
+        let error = invalid(|value| c1(value)["start"] = (-1).into());
+        assert_eq!(
+            error,
+            wrong("clip", "c1", OpError::OutOfTimeline { start: -1 })
+        );
+        let error = invalid(|value| c1(value)["start"] = (LARGEST + 1).into());
+        let too_large = OpError::TooLarge { what: "start" };
+        assert_eq!(error, wrong("clip", "c1", too_large));
+        let error = invalid(|value| c1(value)["media"] = "m9".into());
+        assert_eq!(error, wrong("clip", "c1", missing("media", "m9")));
+        let error = invalid(|value| value["media"][0]["facts"]["video"] = serde_json::Value::Null);
+        let no_stream = OpError::NoStream {
+            media: "m1".into(),
+            kind: TrackKind::Video,
+        };
+        assert_eq!(error, wrong("clip", "c1", no_stream));
+        let error = invalid(|value| {
+            let mut second = c1(value).clone();
+            second["id"] = "c3".into();
+            second["start"] = 99.into();
+            value["timelines"][0]["tracks"][0]["clips"]
+                .as_array_mut()
+                .unwrap()
+                .push(second);
+        });
+        assert_eq!(
+            error,
+            wrong("clip", "c3", OpError::Overlap { with: "c1".into() })
+        );
+    }
+
+    #[test]
+    fn media_that_is_read_is_checked_as_added_media_is() {
+        let error = invalid(|value| value["media"][0]["facts"]["duration"]["scale"] = 0.into());
+        let scale = OpError::Scale {
+            scale: 0,
+            media_scale: 0,
+        };
+        assert_eq!(error, wrong("media", "m1", scale));
+        let error = invalid(|value| value["media"][0]["facts"]["duration"]["ticks"] = (-1).into());
+        assert_eq!(
+            error,
+            wrong("media", "m1", OpError::NegativeDuration { ticks: -1 })
+        );
+        let error = invalid(|value| value["media"][0]["identity"]["size"] = (1_u64 << 53).into());
+        assert_eq!(
+            error,
+            wrong("media", "m1", OpError::TooLarge { what: "size" })
+        );
+        // A rate with a 0 in it is refused as it is read; one made in code, by validate.
+        let mut project = Project::sample();
+        project.media[0].facts.video.as_mut().unwrap().rate.den = 0;
+        assert_eq!(
+            project.validate().unwrap_err(),
+            wrong("media", "m1", OpError::ZeroRate)
+        );
+        let mut project = Project::sample();
+        project.timelines[0].rate.num = 0;
+        assert_eq!(
+            project.validate().unwrap_err(),
+            wrong("timeline", "t1", OpError::ZeroRate)
+        );
+    }
+
+    #[test]
+    fn every_thing_that_is_read_has_an_id_of_its_own() {
+        let error = invalid(|value| c1(value)["id"] = "".into());
+        assert_eq!(error, wrong("clip", "", OpError::NoId));
+        assert_eq!(
+            error.to_string(),
+            "a clip of the project: the thing has no id"
+        );
+        let error = invalid(|value| value["timelines"][0]["id"] = "".into());
+        assert_eq!(error, wrong("timeline", "", OpError::NoId));
+        let error = invalid(|value| {
+            value["timelines"][0]["tracks"][1]["clips"][0]["id"] = "c1".into();
+        });
+        assert_eq!(error, wrong("clip", "c1", taken("clip", "c1")));
+        let error = invalid(|value| value["timelines"][0]["tracks"][1]["id"] = "V1".into());
+        assert_eq!(error, wrong("track", "V1", taken("track", "V1")));
+        let error = invalid(|value| {
+            let media = value["media"][0].clone();
+            value["media"].as_array_mut().unwrap().push(media);
+        });
+        assert_eq!(error, wrong("media", "m1", taken("media", "m1")));
+        let error = invalid(|value| value["next_id"] = (1_u64 << 53).into());
+        let too_large = OpError::TooLarge { what: "next_id" };
+        assert_eq!(error, wrong("project", "", too_large));
+        assert_eq!(
+            error.to_string(),
+            "the project: the next_id is further than 2^53 - 1 from 0"
+        );
     }
 }

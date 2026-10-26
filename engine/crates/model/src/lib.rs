@@ -7,7 +7,7 @@ pub mod ops;
 pub mod project;
 pub mod time;
 
-pub use ops::{apply, Op, OpError, LARGEST};
+pub use ops::{apply, Invalid, Op, OpError, LARGEST};
 pub use project::{
     AudioFacts, Clip, Facts, Id, Identity, Media, Project, ReadError, Timeline, Track, TrackKind,
     VideoFacts, SCHEMA,

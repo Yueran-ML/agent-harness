@@ -7,12 +7,18 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::ops::Invalid;
 use crate::time::{Rate, Time};
 
 /// The schema of a project that this engine reads and writes.
 pub const SCHEMA: u32 = 1;
 
-/// What a thing of a project is known by. It never changes, and is never given to another thing.
+/// What a thing of a project is known by. It never changes.
+///
+/// The id that the engine makes for media, a timeline or a clip is never made again, so it is
+/// never given to another thing by the engine. The id of a track is not kept so: it names the
+/// kind of the track and its place among the tracks of that kind (`V1`, `A2`), and a track that
+/// is added after `V2` was taken away may be `V2` again.
 pub type Id = String;
 
 /// A project of the studio.
@@ -21,11 +27,13 @@ pub type Id = String;
 pub struct Project {
     /// The schema that the project is written in.
     pub schema: u32,
-    /// The number that the next id that the engine makes ends in. Never goes back.
+    /// The number that the next id that the engine makes for media, a timeline or a clip ends in.
+    /// Never goes back. Tracks are named otherwise, and do not use it.
     ///
-    /// An undo does not take it back: an id is never made twice, so an id that a client has seen
-    /// is never given to another thing after an undo. Two projects compared across an undo are
-    /// the same if they differ only in this.
+    /// An undo does not take it back: such an id is never made twice, so one that a client has
+    /// seen is never given to another thing after an undo. Two projects compared across an undo
+    /// are the same if they differ only in this. When a project is read, it is raised above the
+    /// number of every id of the project that the engine could have made.
     pub next_id: u64,
     /// The files that the project is cut from.
     pub media: Vec<Media>,
@@ -145,6 +153,9 @@ pub struct Track {
 
 /// A stretch of a source on a track: from `source_in` in the source, at frame `start` of the
 /// timeline, for `length` frames. The clips of a track are kept in the order of their start.
+///
+/// The ticks that its frames last are counted rounded down, so its last frame may end less than
+/// one tick past the end of its source; whoever reads the source for it stops at the end.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Clip {
@@ -175,6 +186,9 @@ pub enum ReadError {
     /// It is not a project.
     #[error("the project cannot be read: {0}")]
     Json(#[from] serde_json::Error),
+    /// It is a project, but not one that the operations could have made.
+    #[error("the project is not valid: {0}")]
+    Invalid(#[from] Invalid),
 }
 
 impl Project {
@@ -189,10 +203,13 @@ impl Project {
         }
     }
 
-    /// Read a project, refusing one of another schema before anything else is looked at.
+    /// Read a project, refusing one of another schema before anything else is looked at, and
+    /// then one that the operations could not have made (see [`Project::validate`], which also
+    /// puts the clips of each track in order and raises `next_id` where it is too low).
     ///
     /// # Errors
-    /// It is not an object, it names no schema or another one, or it is not a project.
+    /// It is not an object, it names no schema or another one, it is not a project, or it is
+    /// not a valid one.
     pub fn from_value(value: serde_json::Value) -> Result<Self, ReadError> {
         let object = value.as_object().ok_or(ReadError::NotAnObject)?;
         let schema = object
@@ -202,7 +219,9 @@ impl Project {
         if schema != u64::from(SCHEMA) {
             return Err(ReadError::Schema(schema));
         }
-        Ok(serde_json::from_value(value)?)
+        let mut project: Self = serde_json::from_value(value)?;
+        project.validate()?;
+        Ok(project)
     }
 }
 

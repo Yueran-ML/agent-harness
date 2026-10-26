@@ -105,6 +105,15 @@ pub enum StoreError {
         /// What the system said.
         source: io::Error,
     },
+    /// A save of the project panicked, as only a fault of the engine could make it. The project
+    /// that was saved last is still there as it was.
+    #[error("the save of {} failed with a panic: {message}", path.display())]
+    Panicked {
+        /// The file of the project.
+        path: PathBuf,
+        /// What the panic said.
+        message: String,
+    },
     /// The project was written, but it cannot be put in the place of the one that was saved
     /// last, which is still there as it was.
     #[error("cannot replace {}: {source}", path.display())]

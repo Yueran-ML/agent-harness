@@ -27,6 +27,11 @@ const WAIT_FOR_HOLDER: Duration = Duration::from_secs(1);
 /// How long an engine waits between two looks at the guard and `engine.lock`.
 const LOOK_AGAIN: Duration = Duration::from_millis(20);
 
+/// How much earlier than the time of the guard the `started` of `engine.lock` may be, and still
+/// be taken as written by the engine that holds the guard. A file system of FAT keeps the time
+/// that a file was changed only to 2 seconds (see [`Lock`]).
+const TIME_SLACK: Duration = Duration::from_secs(2);
+
 /// What `engine.lock` says: which engine has the project open, and where it can be reached.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockInfo {
@@ -67,6 +72,20 @@ impl LockInfo {
 /// lock go, it takes `engine.lock` away if it still says what that engine wrote, and only then
 /// lets the guard go; nothing else ever takes `engine.lock` away.
 ///
+/// Until the engine that has just taken the guard has written `engine.lock`, what is there may
+/// have been left by an engine that crashed. So that it is not taken for the engine that holds
+/// the guard, the engine that takes the guard first sets the time at which the guard was changed
+/// to now, and only then writes `engine.lock`, with a `started` of after that. Another engine
+/// that finds the guard held reads that time (which a lock of the system does not keep it from
+/// reading) and takes `engine.lock` as written by the holder only if its `started` is no more
+/// than 2 seconds earlier. The 2 seconds are there because FAT keeps the time of a file only to
+/// 2 seconds, and they are allowed one way only: a lock that the holder has written is always
+/// taken as written, and a lock that was left is told apart unless its engine took it less than
+/// 2 seconds before the holder took the guard, which is rare. Both times come from the clock of
+/// this machine; were the clock set back by more than 2 seconds between the two, the holder would
+/// be taken as not having written `engine.lock` until the clock catches up, and the lock is
+/// refused as [`LockError::Contended`] meanwhile, which is safe.
+///
 /// The two are kept apart because a lock of Windows keeps other programs from reading the file
 /// that it is on. The other programs of the studio only read `engine.lock`, and never lock
 /// anything. What they read may have been left by an engine that has crashed; they find that out
@@ -85,6 +104,11 @@ pub struct Lock {
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
     /// Another engine has the project open.
+    ///
+    /// That engine may have died a moment ago: the system lets its lock go, but what it wrote to
+    /// `engine.lock` stays until another engine writes over it. A program that cannot reach the
+    /// engine at `address` should read `engine.lock` again after 50 to 100 ms, and try again
+    /// with what it says then, or start an engine of its own.
     #[error("the project is open in another engine, process {pid}, at {address}")]
     Held {
         /// The id of the process of that engine.
@@ -118,8 +142,9 @@ impl Lock {
     ///
     /// The guard is locked, and then `engine.lock` is written. Where another engine holds the
     /// guard, `engine.lock` is read, and the lock is refused with what it says. If it cannot be
-    /// read, as when that engine has only just taken the guard and is still writing it, the
-    /// engine looks again, at the guard as well, for up to a second before it gives up.
+    /// read, or was left by an engine that has ended (see [`Lock`]), as when the holder has only
+    /// just taken the guard and is still writing it, the engine looks again, at the guard as
+    /// well, for up to a second before it gives up.
     ///
     /// # Errors
     /// Another engine holds the lock ([`LockError::Held`], or [`LockError::Contended`] where it
@@ -154,8 +179,10 @@ impl Lock {
                 }
             }
             // Any error of reading counts as not written yet: on Windows a file that is being
-            // put in place is refused for a moment as `ERROR_ACCESS_DENIED`.
-            if let Some(holder) = read_at(&path) {
+            // put in place is refused for a moment as `ERROR_ACCESS_DENIED`. So does a lock
+            // that was left by an engine that has ended.
+            if let Some(holder) = read_at(&path).filter(|holder| written_by_holder(holder, &guard))
+            {
                 return Err(LockError::Held {
                     pid: holder.pid,
                     address: holder.address,
@@ -167,6 +194,11 @@ impl Lock {
             thread::sleep(LOOK_AGAIN);
         }
 
+        // So that other engines can tell what is in `engine.lock` now from what this engine
+        // writes there. A file system that cannot set the time leaves what an engine that has
+        // ended wrote to be read as this engine's for a moment, which is no worse than not
+        // setting it.
+        let _ = guard.set_modified(SystemTime::now());
         let info = LockInfo {
             pid: std::process::id(),
             address: address.to_owned(),
@@ -224,6 +256,19 @@ impl Drop for Lock {
         // Closing the guard, as dropping it does next, lets it go too.
         let _ = self.guard.unlock();
     }
+}
+
+/// Whether `holder`, read from `engine.lock` while another engine holds the guard, was written by
+/// that engine: whether it was started no more than [`TIME_SLACK`] before the guard was last
+/// changed. Where either time cannot be told, it is taken as written.
+fn written_by_holder(holder: &LockInfo, guard: &File) -> bool {
+    let (Some(started), Ok(touched)) = (
+        holder.started_at(),
+        guard.metadata().and_then(|meta| meta.modified()),
+    ) else {
+        return true;
+    };
+    started + TIME_SLACK >= touched
 }
 
 /// What the `engine.lock` at `path` says, if it is there and can be read.

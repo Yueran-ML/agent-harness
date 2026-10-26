@@ -1,6 +1,7 @@
 //! Saving a project after it changes: on a thread of its own, no more often than once in a
 //! while, and always the latest project.
 
+use std::any::Any;
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -42,10 +43,15 @@ pub struct Saver {
 /// What a saver and its thread share.
 struct Shared {
     store: Store,
+    /// What saves a project: [`Store::save`], or what a test puts in its place.
+    write: Box<Writer>,
     state: Mutex<State>,
     /// Told whenever the state changes.
     changed: Condvar,
 }
+
+/// What saves a project of a store.
+type Writer = dyn Fn(&Store, &Project) -> Result<(), StoreError> + Send + Sync;
 
 struct State {
     /// The latest project that has not yet been saved.
@@ -75,14 +81,23 @@ impl Shared {
     }
 
     /// Save `project`, which was taken from `pending` with `saving` set, and set the state by
-    /// what came of it (see [`Saving`]).
+    /// what came of it (see [`Saving`]). A panic of the save is caught and made an error, so
+    /// that it is reported as any other.
     fn save(&self, project: Project) -> Result<(), StoreError> {
         let mut saving = Saving {
             shared: self,
             project,
             saved: false,
         };
-        let result = self.store.save(&saving.project);
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            (self.write)(&self.store, &saving.project)
+        }))
+        .unwrap_or_else(|payload| {
+            Err(StoreError::Panicked {
+                path: self.store.project_path(),
+                message: panic_message(payload.as_ref()),
+            })
+        });
         saving.saved = result.is_ok();
         drop(saving);
         result
@@ -138,8 +153,20 @@ impl Saver {
         period: Duration,
         report: impl FnMut(StoreError) + Send + 'static,
     ) -> io::Result<Saver> {
+        Saver::with_write(store, period, report, Box::new(Store::save))
+    }
+
+    /// [`Saver::with_period`], with what saves a project given, so that the tests can make it
+    /// fail.
+    fn with_write(
+        store: Store,
+        period: Duration,
+        report: impl FnMut(StoreError) + Send + 'static,
+        write: Box<Writer>,
+    ) -> io::Result<Saver> {
         let shared = Arc::new(Shared {
             store,
+            write,
             state: Mutex::new(State {
                 pending: None,
                 saving: false,
@@ -238,12 +265,61 @@ fn run(shared: &Shared, period: Duration, mut report: impl FnMut(StoreError)) {
         state.saving = true;
         state.last = Some(Instant::now());
         drop(state);
-        // A panic of the save or of `report` must not end the thread, or what is left would not
-        // be saved when the saver is dropped. The hook of panics has already written it out; a
-        // project that a panic kept from being saved is kept to be saved again.
-        if let Ok(Err(error)) = panic::catch_unwind(AssertUnwindSafe(|| shared.save(project))) {
+        // A panic of `report` must not end the thread, or what is left would not be saved when
+        // the saver is dropped; the hook of panics has already written it out. A panic of the
+        // save is made an error by `save`.
+        if let Err(error) = shared.save(project) {
             let _ = panic::catch_unwind(AssertUnwindSafe(|| report(error)));
         }
         state = shared.lock();
+    }
+}
+
+/// What a panic said, where it said it as text.
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "the panic said nothing that can be read".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn a_panic_of_a_save_on_the_thread_is_reported_and_the_project_is_saved_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = Store::open(dir.path()).unwrap();
+        let panicked = AtomicBool::new(false);
+        let write = move |store: &Store, project: &Project| {
+            // The first save panics, and the ones after it do not.
+            assert!(panicked.swap(true, Ordering::SeqCst), "the disk is on fire");
+            store.save(project)
+        };
+        let (errors, reported) = mpsc::channel();
+        let saver = Saver::with_write(
+            store,
+            Duration::from_secs(3600),
+            move |error| {
+                let _ = errors.send(error);
+            },
+            Box::new(write),
+        )
+        .unwrap();
+
+        saver.changed(Project::sample());
+
+        let error = reported.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(matches!(error, StoreError::Panicked { .. }), "{error}");
+        let message = error.to_string();
+        assert!(message.contains("the disk is on fire"), "{message}");
+        assert!(message.contains(crate::PROJECT_FILE), "{message}");
+        drop(saver);
+        assert_eq!(Store::open(dir.path()).unwrap().1, Project::sample());
     }
 }

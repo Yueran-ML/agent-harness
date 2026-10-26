@@ -4,6 +4,7 @@
 //! it was, `next_id` too. One that is applied gives back its inverse, which carries every id that
 //! the engine gave and the place that each thing was taken from, so that applying the inverse of
 //! the inverse makes the same things again, with the same ids, in the same places.
+//! [`apply_done`] gives back that inverse of the inverse too, as the operation as it was done.
 //!
 //! An operation is written in JSON as an object that names it in `op`, such as
 //! `{"op": "remove_clip", "timeline": "t1", "id": "c1"}`, and is read and written so by the
@@ -33,8 +34,9 @@
 //! among all the clips of the project. Then the operation is refused. An id of the shape of those
 //! that the engine makes, one of the letters `m`, `t` and `c` and a number below [`LARGEST`]
 //! written without a leading 0, is refused too if its number is `next_id` or above: the engine
-//! may make it later. One with a lower number is an id that the engine made, as the inverse of
-//! an operation carries it, and is kept if no thing of its kind holds it.
+//! may make it later. One with a lower number is kept if no thing of its kind holds it: the
+//! engine never makes that number again, so the id is the thing's alone. It may be one that the
+//! engine made and the inverse of an operation carries back, or one that a client chose itself.
 //!
 //! `next_id` never goes back: not when an operation is refused, and not when one is taken back.
 //! So an id that the engine makes for media, a timeline or a clip is never made again, and is
@@ -409,6 +411,77 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             start,
             length,
         } => trim_clip(project, &timeline, &id, source_in, start, length),
+    }
+}
+
+/// Apply an operation to a project, and give back the operation as it was done and the one that
+/// takes it back, in that order.
+///
+/// The operation as it was done is the inverse of the inverse, read from the project rather
+/// than made by applying the inverse. An operation that adds a thing is given back with the
+/// thing as it was put in, with every id that the engine gave it, and with the place in its list
+/// that it was put at. An operation that only names things that are there already is given back
+/// as it is. Applied to the project as it was before, the operation as it was done makes the
+/// same things again, with the same ids, in the same places, and makes no id of its own.
+///
+/// # Errors
+/// The operation is refused, and the project is left exactly as it was.
+///
+/// # Panics
+/// Only if a thing that an operation added is not in the project after it, which would be a
+/// bug of this module.
+pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
+    // What an operation adds is read back from the project, so only the others are kept.
+    let kept = match op {
+        Op::AddMedia { .. }
+        | Op::AddTimeline { .. }
+        | Op::AddTrack { .. }
+        | Op::InsertClip { .. } => None,
+        _ => Some(op.clone()),
+    };
+    let inverse = apply(project, op)?;
+    let done = kept.unwrap_or_else(|| {
+        added(project, &inverse).expect("an operation that adds a thing leaves it in the project")
+    });
+    Ok((done, inverse))
+}
+
+/// The operation that adds back what `inverse` takes away, as the thing is in the project.
+fn added(project: &Project, inverse: &Op) -> Option<Op> {
+    match inverse {
+        Op::RemoveMedia { id } => {
+            let at = project.media.iter().position(|m| m.id == *id)?;
+            Some(Op::AddMedia {
+                media: project.media[at].clone(),
+                index: Some(at),
+            })
+        }
+        Op::RemoveTimeline { id } => {
+            let at = timeline_at(project, id).ok()?;
+            Some(Op::AddTimeline {
+                timeline: project.timelines[at].clone(),
+                index: Some(at),
+            })
+        }
+        Op::RemoveTrack { timeline, id } => {
+            let tracks = &project.timelines[timeline_at(project, timeline).ok()?].tracks;
+            let at = tracks.iter().position(|r| r.id == *id)?;
+            Some(Op::AddTrack {
+                timeline: timeline.clone(),
+                track: tracks[at].clone(),
+                index: Some(at),
+            })
+        }
+        Op::RemoveClip { timeline, id } => {
+            let t = &project.timelines[timeline_at(project, timeline).ok()?];
+            let (r, at) = clip_at(t, id).ok()?;
+            Some(Op::InsertClip {
+                timeline: timeline.clone(),
+                track: t.tracks[r].id.clone(),
+                clip: t.tracks[r].clips[at].clone(),
+            })
+        }
+        _ => None,
     }
 }
 

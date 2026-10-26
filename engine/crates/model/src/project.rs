@@ -22,8 +22,15 @@ pub const SCHEMA: u32 = 1;
 pub type Id = String;
 
 /// A project of the studio.
+///
+/// A project is read with [`Project::from_value`], which refuses one of another schema before
+/// anything else of it is looked at, and so names that schema rather than a field it does not
+/// know. A project that is deserialized directly, as inside a larger value, is checked too: it
+/// is refused if it is of another schema or if [`Project::validate`] refuses it, and is put
+/// right as `validate` puts it right. So no project is read that the operations could not have
+/// made.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawProject")]
 pub struct Project {
     /// The schema that the project is written in.
     pub schema: u32,
@@ -39,6 +46,34 @@ pub struct Project {
     pub media: Vec<Media>,
     /// The timelines of the project.
     pub timelines: Vec<Timeline>,
+}
+
+/// A project as it is written, before it is checked.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProject {
+    schema: u32,
+    next_id: u64,
+    media: Vec<Media>,
+    timelines: Vec<Timeline>,
+}
+
+impl TryFrom<RawProject> for Project {
+    type Error = ReadError;
+
+    fn try_from(raw: RawProject) -> Result<Self, Self::Error> {
+        if raw.schema != SCHEMA {
+            return Err(ReadError::Schema(raw.schema.into()));
+        }
+        let mut project = Self {
+            schema: raw.schema,
+            next_id: raw.next_id,
+            media: raw.media,
+            timelines: raw.timelines,
+        };
+        project.validate()?;
+        Ok(project)
+    }
 }
 
 /// A file that the project is cut from. It is listed by its path and never copied.
@@ -219,9 +254,8 @@ impl Project {
         if schema != u64::from(SCHEMA) {
             return Err(ReadError::Schema(schema));
         }
-        let mut project: Self = serde_json::from_value(value)?;
-        project.validate()?;
-        Ok(project)
+        let raw: RawProject = serde_json::from_value(value)?;
+        Self::try_from(raw)
     }
 }
 
@@ -401,6 +435,38 @@ mod tests {
         let error = Project::from_value(value).unwrap_err();
         assert!(matches!(error, ReadError::Json(_)), "{error}");
         assert!(error.to_string().contains("colour"), "{error}");
+    }
+
+    #[test]
+    fn a_project_that_is_deserialized_directly_is_checked_too() {
+        // One that validate refuses: c1 cut from media that is not there.
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["timelines"][0]["tracks"][0]["clips"][0]["media"] = "m9".into();
+        let error = serde_json::from_value::<Project>(value).unwrap_err();
+        assert!(
+            error.to_string().contains("there is no media m9"),
+            "{error}"
+        );
+
+        // One of another schema.
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["schema"] = 2.into();
+        let error = serde_json::from_value::<Project>(value).unwrap_err();
+        assert!(error.to_string().contains("schema 2"), "{error}");
+
+        // One that validate puts right.
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["next_id"] = 1.into();
+        let project: Project = serde_json::from_value(value).unwrap();
+        assert_eq!(project, Project::sample());
+    }
+
+    #[test]
+    fn a_project_that_validate_refuses_is_named_so_by_from_value() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["timelines"][0]["tracks"][0]["clips"][0]["media"] = "m9".into();
+        let error = Project::from_value(value).unwrap_err();
+        assert!(matches!(error, ReadError::Invalid(_)), "{error}");
     }
 
     #[test]

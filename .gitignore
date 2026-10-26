@@ -31,3 +31,6 @@ coverage.xml
 .vscode/
 .DS_Store
 Thumbs.db
+
+# The engine of the studio builds here.
+engine/target/

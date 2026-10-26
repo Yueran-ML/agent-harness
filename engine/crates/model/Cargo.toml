@@ -17,4 +17,6 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The crate itself with Project::sample, for the tests in tests/.
+columbina-model = { path = ".", features = ["sample"] }
 proptest.workspace = true

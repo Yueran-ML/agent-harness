@@ -90,6 +90,7 @@ dependencies = [
 name = "columbina-model"
 version = "0.1.0"
 dependencies = [
+ "columbina-model",
  "proptest",
  "serde",
  "serde_json",

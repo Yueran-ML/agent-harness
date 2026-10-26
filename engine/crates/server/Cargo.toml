@@ -1,0 +1,27 @@
+[package]
+name = "columbina-server"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "columbina-engine"
+path = "src/main.rs"
+
+[dependencies]
+columbina-model = { path = "../model" }
+columbina-store = { path = "../store" }
+interprocess.workspace = true
+memchr.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+sha2.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# Project::sample, for the tests of the names of a transaction.
+columbina-model = { path = "../model", features = ["sample"] }
+tempfile.workspace = true

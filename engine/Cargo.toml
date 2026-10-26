@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/model", "crates/store"]
+members = ["crates/model", "crates/store", "crates/server"]
 
 [workspace.package]
 edition = "2021"
@@ -15,6 +15,10 @@ proptest = "1"
 # Times in RFC 3339.
 humantime = "2"
 tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+interprocess = { version = "2", features = ["tokio"] }
+memchr = "2"
+sha2 = "0.10"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

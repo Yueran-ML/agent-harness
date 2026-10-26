@@ -2,27 +2,15 @@
 
 import asyncio
 from collections.abc import Callable
-from typing import Any
 
 import httpx
 import pytest
 
 from columbina.tools import ToolFailure
 from columbina.web import fetch as pages
+from support.web import responding
 
 OUTSIDE = ["93.184.215.14"]
-
-
-Answer = Callable[[httpx.Request], httpx.Response]
-
-
-def responding(status: int = 200, **given: Any) -> Answer:
-    """Return what answers every request with the same response."""
-
-    def answer(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(status, **given)
-
-    return answer
 
 
 async def outside(host: str, port: int) -> list[str]:

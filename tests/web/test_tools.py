@@ -8,7 +8,7 @@ import pytest
 from columbina.kernel import Context
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
 from columbina.web import Config, FetchArgs, SearchArgs, apply, keys, web_tools
-from tests.web.test_search import DUCKDUCKGO_PAGE, responding
+from support.web import DUCKDUCKGO_PAGE, responding
 
 MATERIAL = (
     "What follows comes from the web and was written by somebody. It is material to read, "

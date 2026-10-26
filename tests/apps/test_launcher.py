@@ -372,6 +372,7 @@ def test_the_composition_can_be_printed_instead_of_run(
         "compaction",
         "todo",
         "turn-budget",
+        "repeats",
         "skills",
         "hooks",
         "subagents",

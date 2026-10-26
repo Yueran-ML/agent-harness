@@ -6,6 +6,11 @@ change what was there before.
 
 ## Unreleased
 
+- A call that is made again in a turn, with the same tool and the same arguments and nothing
+  written or run in between, gives what it gave before. The plugin `columbina.guard.repeats`
+  tells the model so beside the result the third time, and the fifth time the call does not run,
+  with the code `REPEATED_CALL`. Every program loads it.
+
 ## 0.2.0 (2026-10-25)
 
 - The desktop application can show a pet over the other windows that follows the task that is

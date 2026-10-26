@@ -75,6 +75,10 @@ patch:
       # the steps of an agent whose spec says how many it has.
       - id: turn-budget
         plugin: columbina.guard.budget
+      # A call that is made again with nothing changed since: the model is told
+      # the third time, and the fifth time it does not run.
+      - id: repeats
+        plugin: columbina.guard.repeats
       # What a user adds to the program without changing it: skills that a
       # model loads when a task calls for one, commands that run at fixed
       # moments of a turn, tasks that are handed to an agent of their own, and

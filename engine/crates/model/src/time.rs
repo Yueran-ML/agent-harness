@@ -5,13 +5,40 @@
 use serde::{Deserialize, Serialize};
 
 /// A rate of frames, as a fraction: 24000/1001 is 23.976 frames a second.
+///
+/// Neither of its numbers may be 0. A rate with a 0 in it is refused when it is read, so every
+/// rate of a project that was read is whole; one that is made in code must be made so too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawRate")]
 pub struct Rate {
     /// The frames in `den` seconds.
     pub num: u32,
     /// The seconds that `num` frames last.
     pub den: u32,
+}
+
+/// A rate as it is written, before its numbers are looked at.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRate {
+    num: u32,
+    den: u32,
+}
+
+impl TryFrom<RawRate> for Rate {
+    type Error = String;
+
+    fn try_from(raw: RawRate) -> Result<Self, Self::Error> {
+        for (name, number) in [("num", raw.num), ("den", raw.den)] {
+            if number == 0 {
+                return Err(format!("a rate of frames has a `{name}` of 0"));
+            }
+        }
+        Ok(Self {
+            num: raw.num,
+            den: raw.den,
+        })
+    }
 }
 
 /// A place in a source: a count of ticks, each `1/scale` of a second.
@@ -34,11 +61,10 @@ impl Rate {
     /// A count too large for an `i64` is `i64::MAX`, and one too far below nought is `i64::MIN`.
     #[must_use]
     pub fn ticks_of(self, frames: i64, scale: u32) -> i64 {
+        // Below 2^127 in size, since |frames| <= 2^63 and den * scale < 2^64: it cannot overflow.
+        let whole = i128::from(frames) * i128::from(self.den) * i128::from(scale);
         let most = if frames < 0 { i64::MIN } else { i64::MAX };
-        i128::from(frames)
-            .checked_mul(i128::from(self.den) * i128::from(scale))
-            .and_then(|whole| i64::try_from(whole.div_euclid(i128::from(self.num))).ok())
-            .unwrap_or(most)
+        i64::try_from(whole.div_euclid(i128::from(self.num))).unwrap_or(most)
     }
 }
 

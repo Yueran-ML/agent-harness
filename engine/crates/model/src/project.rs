@@ -16,12 +16,16 @@ pub const SCHEMA: u32 = 1;
 pub type Id = String;
 
 /// A project of the studio.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Project {
     /// The schema that the project is written in.
     pub schema: u32,
     /// The number that the next id that the engine makes ends in. Never goes back.
+    ///
+    /// An undo does not take it back: an id is never made twice, so an id that a client has seen
+    /// is never given to another thing after an undo. Two projects compared across an undo are
+    /// the same if they differ only in this.
     pub next_id: u64,
     /// The files that the project is cut from.
     pub media: Vec<Media>,
@@ -30,12 +34,12 @@ pub struct Project {
 }
 
 /// A file that the project is cut from. It is listed by its path and never copied.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Media {
     /// What the clips name it by.
     pub id: Id,
-    /// Where the file is.
+    /// Where the file is. A path that is not UTF-8 is refused when the file is taken in.
     pub path: String,
     /// What the file was when it was taken in: its size, the time it was written, and a digest.
     pub identity: Identity,
@@ -49,14 +53,17 @@ pub struct Media {
 pub struct Identity {
     /// Its size in bytes.
     pub size: u64,
-    /// When it was written last, in nanoseconds since 1970.
-    pub modified_ns: i64,
-    /// A digest of it, in hexadecimal.
+    /// When it was written last, in microseconds since the start of 1970 (UTC).
+    pub modified_us: i64,
+    /// The SHA-256 of its first and its last MiB, in lowercase hexadecimal.
     pub digest: String,
 }
 
 /// What a file holds.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// A file without a picture has no `video`, and one without sound has no `audio`. Each may be
+/// written as `null` or left out; either is read as none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Facts {
     /// How long it lasts.
@@ -81,7 +88,7 @@ pub struct VideoFacts {
     pub codec: String,
     /// The bits of each sample of a pixel.
     pub bits: u8,
-    /// How far the picture is turned to be shown, in degrees.
+    /// How far the picture is turned clockwise to be shown upright, in degrees: 0, 90, 180 or 270.
     pub rotation: i16,
 }
 
@@ -98,7 +105,7 @@ pub struct AudioFacts {
 }
 
 /// A timeline: tracks of clips, laid on frames of one rate.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Timeline {
     /// What it is known by.
@@ -122,7 +129,7 @@ pub enum TrackKind {
 }
 
 /// A track of a timeline, and the clips on it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Track {
     /// What it is known by.
@@ -153,9 +160,15 @@ pub struct Clip {
 /// Why a project cannot be read.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
+    /// It is not an object of JSON.
+    #[error("the project is not an object")]
+    NotAnObject,
+    /// It names no schema, or one that is not a whole number of at least 0.
+    #[error("the project names no schema")]
+    NoSchema,
     /// It is of another schema.
     #[error("the project is of schema {0}, and this engine reads schema {SCHEMA}")]
-    Schema(u32),
+    Schema(u64),
     /// It is not a project.
     #[error("the project cannot be read: {0}")]
     Json(#[from] serde_json::Error),
@@ -176,14 +189,15 @@ impl Project {
     /// Read a project, refusing one of another schema before anything else is looked at.
     ///
     /// # Errors
-    /// The schema is another, or the project is not one.
+    /// It is not an object, it names no schema or another one, or it is not a project.
     pub fn from_value(value: serde_json::Value) -> Result<Self, ReadError> {
-        let schema = value
+        let object = value.as_object().ok_or(ReadError::NotAnObject)?;
+        let schema = object
             .get("schema")
             .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
+            .ok_or(ReadError::NoSchema)?;
         if schema != u64::from(SCHEMA) {
-            return Err(ReadError::Schema(u32::try_from(schema).unwrap_or(u32::MAX)));
+            return Err(ReadError::Schema(schema));
         }
         Ok(serde_json::from_value(value)?)
     }
@@ -226,7 +240,7 @@ impl Project {
                 path: "C:/media/talk.mp4".into(),
                 identity: Identity {
                     size: 12_500_000,
-                    modified_ns: 1_790_000_000_000_000_000,
+                    modified_us: 1_790_000_000_000_000,
                     digest: "0".repeat(64),
                 },
                 facts: Facts {
@@ -286,7 +300,7 @@ mod tests {
                 "path": "C:/media/talk.mp4",
                 "identity": {
                     "size": 12_500_000,
-                    "modified_ns": 1_790_000_000_000_000_000_i64,
+                    "modified_us": 1_790_000_000_000_000_i64,
                     "digest": "0".repeat(64),
                 },
                 "facts": {
@@ -354,6 +368,91 @@ mod tests {
     fn a_field_that_is_not_known_is_refused() {
         let mut value = serde_json::to_value(Project::sample()).unwrap();
         value["colour"] = "red".into();
+        let error = Project::from_value(value).unwrap_err();
+        assert!(matches!(error, ReadError::Json(_)), "{error}");
+    }
+
+    #[test]
+    fn a_field_that_is_not_known_is_refused_in_a_clip_too() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["timelines"][0]["tracks"][0]["clips"][0]["colour"] = "red".into();
+        let error = Project::from_value(value).unwrap_err();
+        assert!(matches!(error, ReadError::Json(_)), "{error}");
+        assert!(error.to_string().contains("colour"), "{error}");
+    }
+
+    #[test]
+    fn a_project_is_read_from_a_value_as_it_was() {
+        let value = serde_json::to_value(Project::sample()).unwrap();
+        assert_eq!(Project::from_value(value).unwrap(), Project::sample());
+    }
+
+    #[test]
+    fn a_new_project_holds_nothing_and_makes_its_first_id_with_1() {
+        let project = Project::new();
+        assert_eq!(project.schema, SCHEMA);
+        assert_eq!(project.next_id, 1);
+        assert_eq!(project.media, []);
+        assert_eq!(project.timelines, []);
+        assert_eq!(Project::default(), project);
+    }
+
+    #[test]
+    fn what_is_not_an_object_is_not_a_project() {
+        let error = Project::from_value(serde_json::json!([1])).unwrap_err();
+        assert!(matches!(error, ReadError::NotAnObject), "{error}");
+        assert_eq!(error.to_string(), "the project is not an object");
+    }
+
+    #[test]
+    fn a_project_that_names_no_schema_is_refused() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value.as_object_mut().unwrap().remove("schema");
+        let error = Project::from_value(value).unwrap_err();
+        assert!(matches!(error, ReadError::NoSchema), "{error}");
+        assert_eq!(error.to_string(), "the project names no schema");
+        for schema in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("1"),
+        ] {
+            let mut value = serde_json::to_value(Project::sample()).unwrap();
+            value["schema"] = schema;
+            let error = Project::from_value(value).unwrap_err();
+            assert!(matches!(error, ReadError::NoSchema), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_schema_too_large_for_the_field_is_named_as_it_is() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["schema"] = 5_000_000_000_u64.into();
+        let error = Project::from_value(value).unwrap_err();
+        assert!(error.to_string().contains("schema 5000000000"), "{error}");
+    }
+
+    #[test]
+    fn a_rate_of_no_frames_is_refused() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["timelines"][0]["rate"]["num"] = 0.into();
+        let error = Project::from_value(value).unwrap_err();
+        assert!(matches!(error, ReadError::Json(_)), "{error}");
+        assert!(error.to_string().contains("`num` of 0"), "{error}");
+    }
+
+    #[test]
+    fn a_rate_over_no_time_is_refused() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["timelines"][0]["rate"]["den"] = 0.into();
+        let error = Project::from_value(value).unwrap_err();
+        assert!(matches!(error, ReadError::Json(_)), "{error}");
+        assert!(error.to_string().contains("`den` of 0"), "{error}");
+    }
+
+    #[test]
+    fn a_rate_of_a_file_with_a_zero_in_it_is_refused_too() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["media"][0]["facts"]["video"]["rate"]["num"] = 0.into();
         assert!(Project::from_value(value).is_err());
     }
 }

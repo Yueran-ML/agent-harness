@@ -7,6 +7,10 @@ version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Project::sample, a small project for the tests of this crate and of the crates that use it.
+sample = []
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true

@@ -73,9 +73,11 @@ proptest! {
     ) {
         let start = if start_messy { messy() } else { tidy() };
         let mut history = History::with_most(start.clone(), most);
-        // The model: the projects that the transactions made, the place of the project among
-        // them, and how many steps can be undone and redone.
+        // The model: the projects that the transactions made and who made each, the place of
+        // the project among them, and how many steps can be undone and redone. `makers[k]`
+        // made `states[k]` of `states[k - 1]`; the start was made by no one.
         let mut states = vec![start.clone()];
+        let mut makers = vec![String::new()];
         let mut at = 0;
         let mut undoable = 0;
         let mut redoable = 0;
@@ -104,6 +106,8 @@ proptest! {
                             prop_assert_eq!(&applied.made_by, by);
                             states.truncate(at + 1);
                             states.push(expected);
+                            makers.truncate(at + 1);
+                            makers.push(by.into());
                             at += 1;
                             undoable = (undoable + 1).min(most);
                             redoable = 0;
@@ -117,7 +121,9 @@ proptest! {
                 Action::Undo => {
                     let result = history.undo(by);
                     prop_assert_eq!(result.is_some(), undoable > 0);
-                    if result.is_some() {
+                    if let Some(Ok(applied)) = &result {
+                        // It takes back the latest step, whoever made it.
+                        prop_assert_eq!(&applied.made_by, &makers[at]);
                         at -= 1;
                         undoable -= 1;
                         redoable += 1;
@@ -130,8 +136,9 @@ proptest! {
                 Action::Redo => {
                     let result = history.redo(by);
                     prop_assert_eq!(result.is_some(), redoable > 0);
-                    if result.is_some() {
+                    if let Some(Ok(applied)) = &result {
                         at += 1;
+                        prop_assert_eq!(&applied.made_by, &makers[at]);
                         undoable += 1;
                         redoable -= 1;
                         // Forward to the project after, with the same ids.
@@ -152,8 +159,10 @@ proptest! {
                     if !matches!(action, Action::Transaction(_)) {
                         prop_assert_eq!(history.project().next_id, before.next_id);
                     }
-                    // A client that is told next_id and applies what was done keeps up.
-                    client.next_id = history.project().next_id;
+                    // A client that takes next_id from what the engine sent and applies what
+                    // was done keeps up.
+                    prop_assert_eq!(applied.next_id, history.project().next_id);
+                    client.next_id = applied.next_id;
                     for op in applied.done {
                         apply(&mut client, op.clone())
                             .unwrap_or_else(|e| panic!("the client refused {op:?}: {e}"));

@@ -9,7 +9,9 @@
 
 use std::collections::VecDeque;
 
-use crate::ops::{apply, apply_done, Op, OpError};
+use serde::{Serialize, Serializer};
+
+use crate::ops::{apply_done, Op, OpError};
 use crate::project::Project;
 
 /// How many steps are kept to be undone. When one more is done, the oldest is let go.
@@ -58,19 +60,33 @@ pub struct Applied {
     /// Who made the transaction: for a new one, who asked for it; for an undo or a redo, who
     /// made the transaction that it takes back or does again.
     pub made_by: String,
+    /// The `next_id` of the project after it. A copy of the project that is given it before
+    /// `done` is applied takes the ids in `done` as ids that the engine made, and does not
+    /// refuse them as ids that it may make later.
+    pub next_id: u64,
 }
 
 /// Why a transaction, an undo or a redo was refused. The project and its revision are then
 /// exactly as they were.
+///
+/// It is written in JSON as [`OpError`] is, with the message of the whole error in `message`:
+/// `{"reason": "empty", "message": "the transaction has no operations"}`, or, for an operation
+/// that was refused, the place of the operation in `index` beside the reason and the fields of
+/// [`OpError`]: `{"index": 2, "reason": "overlap", "with": "c1", "message": "operation 2 of the
+/// transaction was refused: the clip covers frames that clip c1 covers"}`.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum TransactionError {
     /// The transaction has no operations. Nothing is done, and no revision is made: a
     /// transaction that changes nothing is taken for a mistake of the client.
     #[error("the transaction has no operations")]
     Empty,
-    /// An operation was refused, and those before it were taken back. `index` is its place in
-    /// the list that was applied. An undo or a redo is refused only through a bug of the
-    /// engine, since it applies what was applied to the same project before.
+    /// An operation was refused, and those before it were taken back.
+    ///
+    /// `index` is the place of the operation in the list that was applied: for a transaction,
+    /// the list that the client sent; for an undo, the inverses of the step, last first; for a
+    /// redo, the operations of the step as they were done. An undo or a redo is refused only
+    /// through a bug of the engine, since it applies what was applied to the same project
+    /// before.
     #[error("operation {index} of the transaction was refused: {error}")]
     Refused {
         /// The place of the operation in the list.
@@ -78,6 +94,25 @@ pub enum TransactionError {
         /// Why it was refused.
         error: OpError,
     },
+}
+
+impl Serialize for TransactionError {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut value = match self {
+            Self::Empty => serde_json::json!({ "reason": "empty" }),
+            Self::Refused { index, error } => {
+                let mut value = serde_json::to_value(error).map_err(serde::ser::Error::custom)?;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("index".into(), (*index).into());
+                }
+                value
+            }
+        };
+        if let Some(object) = value.as_object_mut() {
+            object.insert("message".into(), self.to_string().into());
+        }
+        value.serialize(serializer)
+    }
 }
 
 impl History {
@@ -89,7 +124,8 @@ impl History {
     }
 
     /// A history of `project` at revision 0, with nothing to undo or redo, that keeps `most`
-    /// steps to undo.
+    /// steps to undo. For tests, which let steps go without making a thousand of them.
+    #[doc(hidden)]
     #[must_use]
     pub fn with_most(project: Project, most: usize) -> Self {
         Self {
@@ -149,12 +185,7 @@ impl History {
         while self.undo.len() > self.most {
             self.undo.pop_front();
         }
-        Ok(Applied {
-            revision: self.revision,
-            done,
-            by: by.into(),
-            made_by: by.into(),
-        })
+        Ok(self.applied(done, by, by))
     }
 
     /// Take back the latest step, whoever made it, at the asking of `by`. Gives none if there
@@ -172,14 +203,9 @@ impl History {
         match run(&mut self.project, ops) {
             Ok((done, _)) => {
                 self.revision += 1;
-                let made_by = step.by.clone();
+                let applied = self.applied(done, by, &step.by);
                 self.redo.push(step);
-                Some(Ok(Applied {
-                    revision: self.revision,
-                    done,
-                    by: by.into(),
-                    made_by,
-                }))
+                Some(Ok(applied))
             }
             Err(error) => {
                 self.undo.push_back(step);
@@ -200,14 +226,9 @@ impl History {
         match run(&mut self.project, step.done.clone()) {
             Ok((done, _)) => {
                 self.revision += 1;
-                let made_by = step.by.clone();
+                let applied = self.applied(done, by, &step.by);
                 self.undo.push_back(step);
-                Some(Ok(Applied {
-                    revision: self.revision,
-                    done,
-                    by: by.into(),
-                    made_by,
-                }))
+                Some(Ok(applied))
             }
             Err(error) => {
                 self.redo.push(step);
@@ -215,24 +236,30 @@ impl History {
             }
         }
     }
+
+    /// What was done at the revision that the project is at now.
+    fn applied(&self, done: Vec<Op>, by: &str, made_by: &str) -> Applied {
+        Applied {
+            revision: self.revision,
+            done,
+            by: by.into(),
+            made_by: made_by.into(),
+            next_id: self.project.next_id,
+        }
+    }
 }
 
 /// Apply `ops` to a project in order, and give back each as it was done and the inverse of
-/// each, in the same order. If one is refused, those before it are taken back, last first, and
-/// the project is left exactly as it was.
+/// each, in the same order. If one is refused, the project is put back as it was before the
+/// first, from a copy that was kept.
 ///
-/// The inverses do not take `next_id` back, so it is set back to what it was. This is the one
-/// place where `next_id` goes back, and it is safe: the ids that the operations before the
-/// refused one made were in no revision of the project, so no client holds them as the ids of
-/// things. A refusal may name one of them, as the clip that a later clip of the same
-/// transaction overlaps, but that clip was never in the project that anyone was sent.
-///
-/// # Panics
-/// If the inverse of an operation that was just applied is refused on the project that the
-/// operation left. Every operation promises that it is not, so this is a bug; and the project
-/// would then be one that no client knows of, which is not to be written or sent.
+/// So `next_id` goes back too, which is the one place where it does, and it is safe: the ids
+/// that the operations before the refused one made were in no revision of the project, so no
+/// client holds them as the ids of things. A refusal may name one of them, as the clip that a
+/// later clip of the same transaction overlaps, but that clip was never in the project that
+/// anyone was sent.
 fn run(project: &mut Project, ops: Vec<Op>) -> Result<(Vec<Op>, Vec<Op>), TransactionError> {
-    let next_id = project.next_id;
+    let before = project.clone();
     let mut done = Vec::with_capacity(ops.len());
     let mut inverse = Vec::with_capacity(ops.len());
     for (index, op) in ops.into_iter().enumerate() {
@@ -242,15 +269,7 @@ fn run(project: &mut Project, ops: Vec<Op>) -> Result<(Vec<Op>, Vec<Op>), Transa
                 inverse.push(undoes);
             }
             Err(error) => {
-                for (at, op) in inverse.into_iter().enumerate().rev() {
-                    if let Err(refusal) = apply(project, op.clone()) {
-                        panic!(
-                            "the inverse {op:?} of operation {at}, which was just applied, was \
-                             refused as a transaction was taken back: {refusal}"
-                        );
-                    }
-                }
-                project.next_id = next_id;
+                *project = before;
                 return Err(TransactionError::Refused { index, error });
             }
         }
@@ -261,6 +280,7 @@ fn run(project: &mut Project, ops: Vec<Op>) -> Result<(Vec<Op>, Vec<Op>), Transa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::apply;
     use crate::project::{Clip, Timeline, Track, TrackKind};
     use crate::time::{Rate, Time};
 
@@ -374,6 +394,32 @@ mod tests {
     }
 
     #[test]
+    fn an_error_is_written_with_its_index_reason_message_and_fields() {
+        let empty = serde_json::to_value(TransactionError::Empty).unwrap();
+        assert_eq!(
+            empty,
+            serde_json::json!({
+                "reason": "empty",
+                "message": "the transaction has no operations",
+            })
+        );
+        let refused = TransactionError::Refused {
+            index: 2,
+            error: OpError::Overlap { with: "c1".into() },
+        };
+        assert_eq!(
+            serde_json::to_value(refused).unwrap(),
+            serde_json::json!({
+                "index": 2,
+                "reason": "overlap",
+                "with": "c1",
+                "message": "operation 2 of the transaction was refused: the clip covers frames \
+                            that clip c1 covers",
+            })
+        );
+    }
+
+    #[test]
     fn a_transaction_gives_back_what_it_did_with_the_ids_that_the_engine_gave() {
         let mut history = History::new(Project::sample());
         let applied = history
@@ -400,9 +446,16 @@ mod tests {
         // Given in the order of the list, and then put in the order of their start.
         assert_eq!(ids, ["c6", "c5"]);
 
-        // A client that applies what was done to its copy gets the same project.
+        // A client that is given next_id and applies what was done to its copy gets the same
+        // project. Without next_id, c3 would be refused as an id that the engine may make later.
+        assert_eq!(applied.next_id, 7);
+        let mut refused = Project::sample();
+        assert_eq!(
+            apply(&mut refused, applied.done[0].clone()),
+            Err(OpError::Reserved { id: "c3".into() })
+        );
         let mut copy = Project::sample();
-        copy.next_id = history.project().next_id;
+        copy.next_id = applied.next_id;
         for op in applied.done {
             apply(&mut copy, op).unwrap();
         }

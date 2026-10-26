@@ -48,7 +48,7 @@ import columbina.subagents
 import columbina.subagents.spawn
 import columbina.todo
 import columbina.token_meter
-from columbina import shells, verdicts
+from columbina import plan, shells, verdicts
 from columbina.agent import Agent, AgentSpec, ContextSource
 from columbina.approval import APPROVAL_ASK, ApprovalRequest, Outcome
 from columbina.apps.common import DEFAULT_PROMPT
@@ -234,6 +234,7 @@ async def toured(
     await ctx.plugin(columbina.subagents.spawn)
     await ctx.plugin(subagent)
     await ctx.plugin(verdicts)
+    await ctx.plugin(plan)
 
     # The files are kept before each turn. git is not run: what it would answer depends on
     # the moment, and the sample is the same at every moment.
@@ -350,6 +351,9 @@ async def toured(
     model.release()
     await idle(agent)
     verdicts.judge(agent.session, True, "The mean is right now.")
+    # The user looks before the next task: plan mode, on and off again.
+    plan.set_planning(agent.session, True)
+    plan.set_planning(agent.session, False)
 
     # 2. A command is refused, and the reply is stopped.
     known[0] += " The fix of mean() is in the working tree."
@@ -483,6 +487,7 @@ def test_everything_that_can_happen_happens_in_the_sample(tmp_path: Path) -> Non
         "context/project",
         "context/interruption",
         "context/todo",
+        "context/plan",
         "compaction",
     }
     shorter = [event.data.outcome for event in events if isinstance(event.data, CompactionEndEvent)]

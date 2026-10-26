@@ -363,7 +363,7 @@ def test_a_sandbox_whose_config_cannot_be_read_is_in_the_way(
     assert found(lines)["sandbox"] == (
         "fail",
         "the entry 'sandbox' has a config that cannot be read: docker.network: Input should be "
-        "'none' or 'bridge'",
+        "'none', 'bridge' or 'allowed'",
     )
 
 

@@ -19,6 +19,14 @@ profile:
     # program then began with, and they are in the log.
     - id: system-prompt-conduct
       disabled: true
+    # The files were not kept before each turn either: no checkpoint is in the log.
+    - id: checkpoints
+      disabled: true
+    # Nor were the tools of the web and of language servers offered.
+    - id: web
+      disabled: true
+    - id: lsp
+      disabled: true
     - id: permissions
       config:
         preset: workspace-write

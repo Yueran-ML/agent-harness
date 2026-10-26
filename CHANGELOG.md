@@ -6,6 +6,14 @@ change what was there before.
 
 ## Unreleased
 
+- `columbina acp` holds conversations for an editor such as Zed, over the Agent Client Protocol on
+  its standard input and output. The editor begins sessions in the directories it names, and
+  several may be open at once. The reply and the thinking are told as they are written, and so is
+  each call of a tool, with what it acts on and how it ended. A call that needs a yes is put to
+  the editor, which may allow it once, allow it for the rest of the session where the rules can
+  write that down, or reject it; anything else is a no. A prompt may hold text, links and
+  resources with their text; pictures and sound are not taken. The plugin is
+  `columbina.apps.acp`, and the profile `acp`.
 - Tasks run at set times while the desktop application is open: every so many minutes, every hour
   at a minute, every day at a time, or every week on a day at a time. `columbina schedules add`
   adds one with a name, a working directory and a prompt, and `list`, `remove`, `enable` and

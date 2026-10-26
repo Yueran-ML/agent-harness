@@ -1,0 +1,12 @@
+# What `columbina acp` loads: the base program, and the frontend that an editor
+# such as Zed holds conversations through, over the Agent Client Protocol.
+extends: base
+patch:
+  - insert:
+      - id: frontend
+        plugin: columbina.apps.acp
+        config:
+          model:
+            provider: deepseek
+            model: ${COLUMBINA_MODEL:-deepseek-flash}
+            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}

@@ -129,6 +129,7 @@ _INTERRUPTED = 130
 _CHAT = "chat"
 _RUN = "run"
 _SERVE = "serve"
+_ACP = "acp"
 _SESSIONS = "sessions"
 _KNOW_THE_LOG = ("session", "agent", "verdicts", "prices", "checkpoints")
 """The entries that are enough to read a stored session: its log, the events of the inbox, what
@@ -487,7 +488,7 @@ def _entries(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> li
                 config["cwd"] = str(Path(args.cwd).resolve())
             config.setdefault("cwd", str(Path().resolve()))
             # Whoever is served says over the wire which session is to be open.
-            if args.command != _SERVE and args.session_id is not None:
+            if args.command not in (_SERVE, _ACP) and args.session_id is not None:
                 config["session_id"] = args.session_id
             if args.model is not None:
                 config["model"] = {**_call_of(config), "model": args.model.replace("$", "$$")}
@@ -609,7 +610,7 @@ async def _run(entries: Sequence[Entry], env: Mapping[str, str], wire: Wire | No
     return await _loaded(entries, env, run, wire)
 
 
-async def _serve(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
+async def _serve(entries: Sequence[Entry], env: Mapping[str, str], command: str) -> int:
     """Take the standard input and output for the protocol, and then load and run.
 
     They are taken before a single plugin is loaded. A plugin that prints
@@ -620,8 +621,8 @@ async def _serve(entries: Sequence[Entry], env: Mapping[str, str]) -> int:
         wire = serve_wire.taken()
     except OSError as error:
         _tell(
-            "'columbina serve' talks over its standard input and output, and this process "
-            f"has none: {error}"
+            f"'columbina {command}' talks over its standard input and output, and this "
+            f"process has none: {error}"
         )
         return 2
     return await _run(entries, env, wire)
@@ -1824,6 +1825,11 @@ def _parser() -> argparse.ArgumentParser:
         help="hold a conversation for another program, over the standard input and output",
     )
     _shared(serve, "serve", session=False)
+    editor = commands.add_parser(
+        _ACP,
+        help="hold conversations for an editor such as Zed, over the Agent Client Protocol",
+    )
+    _shared(editor, "acp", session=False)
     stored = commands.add_parser(
         _SESSIONS, help="list, show or copy the sessions that are stored, without a conversation"
     )
@@ -2224,8 +2230,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             # A file or another program gets the entries as they are, to be read again.
             sys.stdout.write(harmless(dumped) if sys.stdout.isatty() else dumped)
             return 0
-        if args.command == _SERVE:
-            return asyncio.run(_serve(entries, env))
+        if args.command in (_SERVE, _ACP):
+            return asyncio.run(_serve(entries, env, args.command))
         return asyncio.run(_run(entries, env))
     except (_UsageError, CompositionError, chosen_service.SetupError) as error:
         _tell(str(error))

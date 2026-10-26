@@ -2,7 +2,8 @@
 
 It is run as a program, with the arguments that ``docker`` would get, and
 answers the few commands that the provider of the sandbox uses: ``info``,
-``image inspect``, ``run``, ``exec``, ``ps`` and ``rm``. A container is a process of this
+``image inspect``, ``run``, ``exec``, ``ps``, ``rm`` and ``network``. A container
+that is run detached, the proxy of a network that is allowed, is only noted. A container is a process of this
 program that reads its input to the end, as the real one does. A command in a
 container is run on this machine, in the directory that was mounted where
 the command is to run.
@@ -202,7 +203,22 @@ def image(argv: list[str], how: dict[str, Any]) -> int:
     return 0
 
 
+def detached(argv: list[str], how: dict[str, Any]) -> int:
+    if how.get("proxy") == "fails":
+        return fail(125, "docker: Error response from daemon: the proxy is out of sorts")
+    print("c0ffee", flush=True)
+    return 0
+
+
+def network(argv: list[str], how: dict[str, Any]) -> int:
+    if how.get("network") == argv[0]:
+        return fail(1, f"Error response from daemon: no network {argv[0]} today")
+    return 0
+
+
 def run(argv: list[str], how: dict[str, Any]) -> int:
+    if "--detach" in argv:
+        return detached(argv, how)
     name = argv[argv.index("--name") + 1]
     image = argv[argv.index("--entrypoint") + 2]
     mounted = [fields(argv[at + 1]) for at, word in enumerate(argv) if word == "--mount"]
@@ -397,6 +413,8 @@ def main(argv: list[str]) -> int:
         return listed(rest, how)
     if verb == "rm":
         return remove(rest, how)
+    if verb == "network":
+        return network(rest, how)
     return fail(2, f"the stand-in knows no command {verb!r}")
 
 

@@ -36,6 +36,14 @@ from moving it. Elsewhere the container is asked by which numbers it knows
 its working directory, :func:`given`, and is not used if they are those of
 another one.
 
+**Which hosts.** A container has no network, or the usual one of Docker, or
+one through which the hosts that the config names can be reached and no
+others: it then stands in a network of its own that has no way out, beside a
+container that is in that network and in the usual one and runs a proxy,
+:mod:`columbina.sandbox.proxy`. The commands are told of the proxy in the
+variables that programs look for. Both the network and the proxy are named
+after the container, are made before it and are removed with it.
+
 **Who a command is.** What keeps a container alive runs in it as root, and
 commands run as another user, :func:`user_of_commands`. With every
 capability dropped, that user cannot send the keeper a signal and cannot
@@ -63,10 +71,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from columbina import process, programs
 from columbina.process import Completed, Writable
+from columbina.sandbox import proxy
 from columbina.sandbox.base import (
     PROTECTED,
     Mode,
@@ -106,6 +122,14 @@ DEFAULT_IMAGE = "python:3.12"
 """The image of a container, unless the config names another."""
 
 PROBE = "/run/columbina-probe"
+
+_HOST = re.compile(
+    r"(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*"
+)
+"""A host that a network that is allowed may name."""
+
+PROXY_ALIAS = "columbina-proxy"
+"""The name by which the commands of a container reach its proxy."""
 """Where a container finds the token that shows it sees the files of this machine."""
 
 HOME = "/tmp/columbina-home"
@@ -444,9 +468,16 @@ class DockerConfig(BaseModel):
         image: The image of a container. It has to have bash, and it is not
             fetched: a command fails with a word about it if it is not on
             this machine.
-        network: ``none`` for a container without a network, or ``bridge``
-            for the usual network of Docker. With a network a command is
-            held in part only, since it can send away what it reads.
+        network: ``none`` for a container without a network, ``bridge``
+            for the usual network of Docker, or ``allowed`` for one through
+            which only the hosts of ``allowed_hosts`` can be reached. With a
+            network a command is held in part only, since it can send away
+            what it reads.
+        allowed_hosts: The hosts that a container whose network is
+            ``allowed`` can reach: ``pypi.org``, or ``*.pythonhosted.org``
+            for every host below that name.
+        proxy_image: The image of the container that runs the proxy for
+            them. It has to have ``python3``.
         env: Variables for the commands in a container.
         pids_limit: How many processes a container may have.
         memory: How much memory a container may have, as Docker writes it:
@@ -460,13 +491,24 @@ class DockerConfig(BaseModel):
 
     program: str | None = None
     image: str = Field(default=DEFAULT_IMAGE, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")
-    network: Literal["none", "bridge"] = "none"
+    network: Literal["none", "bridge", "allowed"] = "none"
+    allowed_hosts: tuple[str, ...] = ()
+    proxy_image: str = Field(default=DEFAULT_IMAGE, pattern=r"^[A-Za-z0-9][A-Za-z0-9._/:@-]*$")
     env: dict[str, str] = Field(default_factory=dict)
     pids_limit: int = Field(default=2048, ge=16)
     memory: str | None = Field(default=None, pattern=r"^[1-9][0-9]*[bkmg]?$")
     cpus: float | None = Field(default=None, gt=0)
     start_timeout_seconds: float = Field(default=60.0, gt=0)
     idle_seconds: float = Field(default=1800.0, gt=0)
+
+    @model_validator(mode="after")
+    def _hosts_where_allowed(self) -> "DockerConfig":
+        if self.network == "allowed" and not self.allowed_hosts:
+            raise ValueError("a network that is allowed names the hosts in allowed_hosts")
+        for host in self.allowed_hosts:
+            if not _HOST.fullmatch(host):
+                raise ValueError(f"{host!r} is no name of a host, nor *. and one")
+        return self
 
     @field_validator("program")
     @classmethod
@@ -586,7 +628,14 @@ def told(config: DockerConfig, platform: str) -> dict[str, str]:
             f"{_WORKSPACE}. The file tools take a path that begins with {_WORKSPACE} for the "
             "file of this machine"
         )
-    network = "no network" if config.network == "none" else "the network of Docker"
+    network = {
+        "none": "no network",
+        "bridge": "the network of Docker",
+        "allowed": (
+            "a network through a proxy, which lets commands reach these hosts and no others: "
+            + ", ".join(config.allowed_hosts)
+        ),
+    }[config.network]
     return {
         "commands run in": (
             f"a Linux container of the image {config.image}, as a user that is not root. Of "
@@ -1206,7 +1255,8 @@ def kept(
     argv = [program, "run", "--rm", "--interactive", "--pull", "never", "--init"]
     # What keeps the container is root whatever user the image names, and commands are not.
     argv += ["--user", "0:0", "--name", name, "--label", "columbina=1"]
-    argv += ["--network", config.network, "--cap-drop", "ALL"]
+    network = f"{name}-net" if config.network == "allowed" else config.network
+    argv += ["--network", network, "--cap-drop", "ALL"]
     argv += ["--security-opt", "no-new-privileges", "--pids-limit", str(config.pids_limit)]
     if config.memory is not None:
         argv += ["--memory", config.memory]
@@ -1235,9 +1285,46 @@ def called(
         argv: The command.
     """
     env = {"LANG": "C.UTF-8", "TERM": "dumb", **config.env, "HOME": HOME}
+    if config.network == "allowed":
+        address = f"http://{PROXY_ALIAS}:{proxy.PORT}"
+        for variable in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            env[variable] = address
+        env["NO_PROXY"] = env["no_proxy"] = "localhost,127.0.0.1"
     given = [word for key, value in env.items() for word in ("--env", f"{key}={value}")]
     start = [program, "exec", "--interactive", "--user", user, "--workdir", target, *given, name]
     return [*start, "sh", "-c", _CALL, "sh", *argv]
+
+
+def network_made(program: str, name: str) -> list[str]:
+    """Return the command that makes the network of a container, which has no way out."""
+    return [program, "network", "create", "--internal", "--label", "columbina=1", f"{name}-net"]
+
+
+def proxy_started(program: str, config: DockerConfig, name: str) -> list[str]:
+    """Return the command that starts the proxy of a container, in the usual network."""
+    argv = [program, "run", "--detach", "--rm", "--pull", "never", "--init"]
+    argv += ["--name", f"{name}-proxy", "--label", "columbina=1", "--network", "bridge"]
+    argv += ["--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64"]
+    program_text = Path(proxy.__file__).read_text(encoding="utf-8")
+    return [
+        *argv,
+        "--entrypoint",
+        "python3",
+        config.proxy_image,
+        "-c",
+        program_text,
+        *config.allowed_hosts,
+    ]
+
+
+def proxy_joined(program: str, name: str) -> list[str]:
+    """Return the command that puts the proxy of a container into the network of the container."""
+    return [program, "network", "connect", "--alias", PROXY_ALIAS, f"{name}-net", f"{name}-proxy"]
+
+
+def network_removed(program: str, name: str) -> list[str]:
+    """Return the command that removes the network of a container."""
+    return [program, "network", "rm", f"{name}-net"]
 
 
 def ended(program: str, name: str, user: str) -> list[str]:
@@ -1390,6 +1477,8 @@ class _Kept:
             without a word of the container, and said that it made none.
         leaving: The letting go of it, once that has begun. It gives whether
             the container was seen to be gone.
+        fenced: Whether a network and a proxy were begun for it, which go
+            with it.
     """
 
     session: Session
@@ -1408,6 +1497,7 @@ class _Kept:
     gone: bool = False
     never: bool = False
     leaving: asyncio.Future[bool] | None = None
+    fenced: bool = False
 
     def alive(self) -> bool:
         """Tell whether what keeps the container is still there."""
@@ -1709,6 +1799,8 @@ class Docker:
 
     async def _made(self, container: _Kept, layout: _Layout) -> None:
         """Start a container and see that commands can run in it as they are meant to."""
+        if self._config.network == "allowed":
+            await self._fenced(container)
         start = kept(container.program, self._config, container.name, layout.mounted, layout.probe)
         try:
             container.keeper = await asyncio.create_subprocess_exec(
@@ -1726,6 +1818,27 @@ class Docker:
             ) from error
         await self._ready(container, layout.token)
         await self._usable(container, layout)
+
+    async def _fenced(self, container: _Kept) -> None:
+        """Make the network of a container and start its proxy in it.
+
+        Raises:
+            SandboxUnavailableError: Either could not be made.
+        """
+        program, name = container.program, container.name
+        steps = (
+            ("its network", network_made(program, name)),
+            ("its proxy", proxy_started(program, self._config, name)),
+            ("the way of its proxy into its network", proxy_joined(program, name)),
+        )
+        container.fenced = True
+        for what, argv in steps:
+            done = await self._docker(argv, self._config.start_timeout_seconds)
+            if done.exit_code != 0:
+                raise SandboxUnavailableError(
+                    f"{what} could not be made for the container: "
+                    f"{_first(done.error_output or done.output)}"
+                )
 
     async def _ready(self, container: _Kept, token: str) -> None:
         """Wait for a container to say that commands can run in it.
@@ -2070,6 +2183,8 @@ class Docker:
             pass
         finally:
             await asyncio.to_thread(shutil.rmtree, container.probe, ignore_errors=True)
+            if container.fenced:
+                await self._unfenced(container)
         if not gone:
             logger.warning(
                 "the container %s may still be there. Remove it with: docker rm -f %s",
@@ -2077,6 +2192,19 @@ class Docker:
                 container.name,
             )
         return gone
+
+    async def _unfenced(self, container: _Kept) -> None:
+        """Remove the proxy of a container and its network, as far as the engine lets that be."""
+        program, name = container.program, container.name
+        for argv in (removed(program, f"{name}-proxy"), network_removed(program, name)):
+            with contextlib.suppress(SandboxUnavailableError):
+                done = await self._docker(argv, _REMOVE_SECONDS)
+                if done.exit_code != 0:
+                    logger.warning(
+                        "what Columbina made for the container %s may still be there: %s",
+                        name,
+                        _first(done.error_output or done.output),
+                    )
 
     async def _look(self) -> None:
         """Look through the containers every few seconds, and let go those that nobody needs."""

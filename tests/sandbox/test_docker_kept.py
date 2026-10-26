@@ -3169,3 +3169,86 @@ async def test_a_config_of_the_provider_that_makes_no_container_keeps_the_sandbo
 
     with pytest.raises(Exception, match="named by its whole path"):
         await ctx.plugin(columbina.sandbox, {"docker": {"program": "docker"}})
+
+
+# A network that is allowed
+
+
+def allowed(engine: Engine) -> Docker:
+    return Docker(
+        DockerConfig(
+            program=engine.program, network="allowed", allowed_hosts=("pypi.org", "*.example.org")
+        )
+    )
+
+
+async def test_a_container_whose_network_is_allowed_has_a_proxy_in_a_network_of_its_own(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    provider = allowed(engine)
+
+    done = await ran(provider, session, work, "import os; print(os.environ['HTTPS_PROXY'])")
+
+    assert done.output.strip() == f"http://{docker.PROXY_ALIAS}:3128"
+    assert engine.verbs() == [
+        "info",
+        "network",
+        "run",
+        "network",
+        "run",
+        "usable",
+        "command",
+        "stop",
+    ]
+    (name,) = engine.containers()
+    made, joined = engine.of("network")
+    assert made == ["network", "create", "--internal", "--label", "columbina=1", f"{name}-net"]
+    assert joined == [
+        "network", "connect", "--alias", docker.PROXY_ALIAS, f"{name}-net", f"{name}-proxy"
+    ]  # fmt: skip
+    proxy, keeper = engine.of("run")
+    assert proxy[proxy.index("--name") + 1] == f"{name}-proxy"
+    assert proxy[proxy.index("--network") + 1] == "bridge"
+    assert proxy[-2:] == ["pypi.org", "*.example.org"]
+    assert keeper[keeper.index("--network") + 1] == f"{name}-net"
+    assert provider.strength(session) == "partial"
+
+    await provider.close()
+
+    assert ["rm", "--force", f"{name}-proxy"] in engine.calls()
+    assert ["network", "rm", f"{name}-net"] in engine.calls()
+
+
+@pytest.mark.parametrize(
+    ("failing", "said"),
+    [
+        ({"network": "create"}, "its network could not be made for the container"),
+        ({"proxy": "fails"}, "its proxy could not be made for the container"),
+        ({"network": "connect"}, "the way of its proxy into its network could not be made"),
+    ],
+)
+async def test_a_network_that_cannot_be_made_keeps_commands_from_running(
+    engine: Engine, session: Session, work: Path, failing: dict[str, str], said: str
+) -> None:
+    engine.told(**failing)
+    provider = allowed(engine)
+
+    with pytest.raises(SandboxUnavailableError, match=said):
+        await ran(provider, session, work, "print('never')")
+
+    assert [call[0:2] for call in engine.calls() if call[0] == "network"][-1] == ["network", "rm"]
+    assert engine.containers() == {}
+
+
+async def test_what_cannot_be_removed_of_a_network_is_said(
+    engine: Engine, session: Session, work: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    provider = allowed(engine)
+    await ran(provider, session, work, "print('one')")
+    engine.told(network="rm")
+
+    with caplog.at_level(logging.WARNING, "columbina.sandbox"):
+        await provider.close()
+
+    assert "what Columbina made for the container" in caplog.text
+    assert "no network rm today" in caplog.text

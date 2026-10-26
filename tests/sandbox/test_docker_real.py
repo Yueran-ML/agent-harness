@@ -772,3 +772,37 @@ async def test_an_image_that_is_not_on_this_machine_would_keep_a_command_from_ru
         "the image columbina/no-such-image:1 is not on this machine, and no image is fetched "
         "for a command. Fetch it with: docker pull columbina/no-such-image:1"
     )
+
+
+PROXY_IMAGE = "python:3.12-slim"
+"""An image with Python, for the proxy of a network that is allowed."""
+
+ASKS_THE_PROXY = (
+    "exec 3<>/dev/tcp/{alias}/3128 && printf 'CONNECT {host}:443 HTTP/1.1\r\n\r\n' >&3 "
+    "&& head -1 <&3"
+)
+
+
+@pytest.fixture
+def proxy_image(program: str) -> str:
+    """The image of the proxy, if it is on this machine."""
+    if subprocess.run([program, "image", "inspect", PROXY_IMAGE], capture_output=True).returncode:
+        pytest.skip(f"the image {PROXY_IMAGE} is not on this machine")
+    return PROXY_IMAGE
+
+
+async def test_a_network_that_is_allowed_reaches_its_hosts_and_no_others(
+    make: Make, proxy_image: str, session: Session, work: Path
+) -> None:
+    provider = make(network="allowed", allowed_hosts=["pypi.org"], proxy_image=proxy_image)
+
+    def asking(host: str) -> str:
+        return ASKS_THE_PROXY.format(alias=docker.PROXY_ALIAS, host=host)
+
+    allowed = await said(provider, session, work, asking("pypi.org"), seconds=120)
+    refused = await said(provider, session, work, asking("example.com"))
+    straight = await said(provider, session, work, "(exec 3<>/dev/tcp/1.1.1.1/53) 2>&1; echo $?")
+
+    assert allowed.strip() == "HTTP/1.1 200 Connection established"
+    assert refused.strip() == "HTTP/1.1 403 Forbidden"
+    assert straight.splitlines()[-1] == "1"

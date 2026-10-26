@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- The sandbox of Docker has a third network, `allowed`: a container stands in a network of its own
+  that has no way out, beside a proxy that lets its commands reach the hosts of `allowed_hosts`
+  and no others, such as `pypi.org` and `*.pythonhosted.org`. The commands are told of the proxy in
+  `HTTP_PROXY` and `HTTPS_PROXY`, and the model is told which hosts it reaches. The network and the
+  proxy are made with the container and removed with it. The proxy runs in `proxy_image`, which
+  has to have Python.
 - Plan mode: `/plan` takes a conversation into it and out of it. In it nothing that writes or runs
   goes through, in the conversation or in its subagents, the model is told to find out what it
   needs, ask what is open and end with a plan of numbered steps, and the requests may go to

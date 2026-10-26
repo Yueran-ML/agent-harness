@@ -390,3 +390,51 @@ def test_a_bot_that_cannot_be_read_keeps_no_model_of_its_own(
 
     ((entries, _),) = runs
     assert model_of(entries)["reasoning"] == "off"
+
+
+# The groups
+
+
+def test_the_groups_are_listed_named_and_their_memory_shown_and_forgotten(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cwd = home / "assistant"
+    monkeypatch.setenv(store.ASSISTANT_HOME, str(cwd))
+    set_up(home, groups={"G1": "s-g1"}, names={"G2": "Old"})
+    (cwd / "groups" / "G1").mkdir(parents=True)
+    (cwd / "groups" / "G1" / "memory.md").write_text("cat\n", encoding="utf-8")
+
+    assert main(["qq", "--groups", "--json"]) == 0
+    assert answer_of(capsys) == {
+        "groups": [
+            {"id": "G1", "name": None, "memory": 4, "most": 4000},
+            {"id": "G2", "name": "Old", "memory": 0, "most": 4000},
+        ]
+    }
+    assert main(["qq", "--name-group", "G1", "家人群"]) == 0
+    assert main(["qq", "--groups"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "G1  家人群  memory 4 of 4000"
+    assert (cwd / "groups" / "家人群" / "memory.md").is_file()
+    assert main(["qq", "--memory", "G1"]) == 0
+    assert capsys.readouterr().out == "cat\n"
+    assert main(["qq", "--forget-memory", "G1"]) == 0
+    assert main(["qq", "--forget-memory", "G1"]) == 0
+    assert main(["qq", "--memory", "G1"]) == 0
+    assert capsys.readouterr().out == ""
+    assert main(["qq", "--name-group", "G1", " "]) == 0
+    kept = store.settings(home)
+    assert kept is not None
+    assert kept.names == {"G2": "Old"}
+
+
+def test_what_cannot_be_done_with_the_groups_is_said(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["qq", "--groups"]) == 0
+    assert capsys.readouterr().out == ""
+    assert main(["qq", "--name-group", "G1", "x", "--json"]) == 2
+    assert answer_of(capsys) == {"error": "no bot of QQ is set up"}
+    assert main(["qq", "--memory", "G1"]) == 0
+    set_up(home, names={"G2": "Home"})
+    assert main(["qq", "--name-group", "G1", "Home"]) == 2
+    assert "another group is called 'Home' already" in capsys.readouterr().err

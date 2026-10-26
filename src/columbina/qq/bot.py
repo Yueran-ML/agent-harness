@@ -12,8 +12,11 @@ new conversation, ``/stop`` stops the answer, ``/help`` says what there is.
 In a group the bot hears only what mentions it, and answers whoever wrote that, owner or not,
 before anybody is paired too. Each group has a conversation of its own, with a session that is
 taken up again after a new start, and a directory of its own in ``groups``. A group is for a
-chat: its agent is told who wrote each message, has no tool at all, and is given nothing that
-the owner keeps. The commands are the owner's, so in a group they are words like any others.
+chat: its agent is told who wrote each message, and is given nothing that the owner keeps. Its
+one tool writes down what it is asked to remember, in the memory of its group and nowhere else,
+see :mod:`columbina.qq.memory`, and it is told that memory when a turn begins. It is told the
+instructions of the assistant, ``AGENTS.md`` in the directory of the assistant, as the agent of
+the owner is. The commands are the owner's, so in a group they are words like any others.
 
 Each message is a turn of its own, and the answer of the turn answers that message. QQ takes
 such answers only for a while after the message, five minutes in a group and an hour in a chat
@@ -48,7 +51,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
-from columbina.agent import AGENTS, Agent, AgentError, Agents, AgentSpec, replies
+from columbina.agent import AGENTS, Agent, AgentError, Agents, AgentSpec, ContextSource, replies
 from columbina.apps import FRONTEND
 from columbina.apps.common import open_agent, when_the_input_closes
 from columbina.apps.terminal_text import harmless
@@ -56,7 +59,7 @@ from columbina.feishu.messages import parts
 from columbina.kernel import Context
 from columbina.llm import CallConfig
 from columbina.permissions import PERMISSIONS
-from columbina.qq import store
+from columbina.qq import memory, store
 from columbina.qq.app import Api, QqError, token_url
 from columbina.qq.link import GROUP, PRIVATE, Link
 from columbina.qq.words import Language, words_for
@@ -70,11 +73,12 @@ from columbina.session import (
     TurnStartEvent,
 )
 from columbina.session.lock import acquire
+from columbina.tools import TOOLS, ToolRun
 
 __all__ = ["GROUP_PROMPT", "PROMPT", "Assistant", "Config", "apply", "inject", "name"]
 
 name = "qq"
-inject = (AGENTS, SESSIONS)
+inject = (AGENTS, SESSIONS, TOOLS)
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +94,8 @@ GROUP_PROMPT = (
     "you by mentioning you, and you see nothing else that is written in the group. Each "
     "message says who wrote it, by an id that QQ gives. This is a chat: answer briefly and in "
     "a friendly way, in a sentence or a few. What you write is shown as plain text, so write no "
-    "Markdown."
+    "Markdown. When somebody asks you to remember something for this group, write it down with "
+    "the tool remember."
 )
 """The words that open the conversation in a group."""
 
@@ -99,6 +104,15 @@ GROUPS = "groups"
 
 OWNER_TOOLS = frozenset({"read", "glob", "grep"})
 """The tools of the agent of the owner: those that read, in the directory of the assistant."""
+
+GROUP_TOOLS = frozenset({"remember"})
+"""The tools of the agent of a group: the one that writes the memory of the group."""
+
+INSTRUCTIONS = "AGENTS.md"
+"""The instructions of the assistant, in its directory."""
+
+_INSTRUCTIONS_MOST = 16_000
+"""How many characters of the instructions a group is told."""
 
 SEEN = "seen.json"
 """The file that names the messages that were taken, in what the program keeps for the assistant."""
@@ -161,6 +175,15 @@ def _object(value: object) -> dict[str, Any]:
 
 def _text(value: object) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _instructions(path: Path) -> str:
+    """Return the instructions of the assistant, as far as a group is told them, or nothing."""
+    try:
+        with path.open(encoding="utf-8", errors="replace") as file:
+            return file.read(_INSTRUCTIONS_MOST).strip()
+    except (FileNotFoundError, NotADirectoryError):
+        return ""
 
 
 def _safe(name: str) -> str:
@@ -252,6 +275,41 @@ class _Talk:
 
 class Assistant:
     """Holds the conversations of the bot in QQ."""
+
+    def _group_of(self, session: object) -> str | None:
+        """Return the group whose conversation a session is, if it is that of a group."""
+        for group, talk in self._groups.items():
+            if talk.agent is not None and talk.agent.session is session:
+                return group
+        return None
+
+    def _names(self) -> dict[str, str]:
+        """Return the names of the groups as they are kept now: the user may change them."""
+        try:
+            kept = store.settings(self._config.home)
+        except QqError:
+            kept = self._settings
+        return {} if kept is None else dict(kept.names)
+
+    def memory_file(self, run: ToolRun) -> Path | None:
+        """Return the file of the memory of the group whose conversation a call belongs to."""
+        group = self._group_of(run.session)
+        if group is None:
+            return None
+        return memory.folder_of(self._config.cwd, group, self._names()) / memory.MEMORY
+
+    async def told_in_a_group(self, agent: Agent) -> str | None:
+        """Return what the agent of a group is told when a turn begins: instructions and memory."""
+        group = self._group_of(agent.session)
+        if group is None:
+            return None
+        cwd, names = self._config.cwd, self._names()
+        remembered = await asyncio.to_thread(memory.memory_of, cwd, group, names)
+        said = memory.told(remembered)
+        instructions = await asyncio.to_thread(_instructions, cwd / INSTRUCTIONS)
+        if instructions:
+            said = f"The instructions of the assistant:\n\n{instructions}\n\n{said}"
+        return said
 
     def __init__(self, ctx: Context, config: Config, agents: Agents, sessions: Sessions) -> None:
         self._ctx = ctx
@@ -447,7 +505,7 @@ class Assistant:
                 cwd=cwd,
                 model=config.model,
                 system_prompt=GROUP_PROMPT,
-                tools=frozenset(),
+                tools=GROUP_TOOLS,
                 strangers=True,
             )
         agent = await open_agent(self._ctx, self._agents, self._sessions, spec, session_id)
@@ -479,7 +537,8 @@ class Assistant:
             if kept is None or kept.app_id != settings.app_id:
                 logger.warning("the bot changed while the assistant ran, so it is left as it is")
                 return "the bot was changed while the assistant ran"
-            store.save(home, settings)
+            # The names of the groups are the user's, and may have been changed meanwhile.
+            store.save(home, settings.model_copy(update={"names": kept.names}))
         except QqError as error:
             logger.error("what changed of the bot cannot be written down: %s", error)
             return str(error)
@@ -792,5 +851,11 @@ class Assistant:
 
 
 def apply(ctx: Context, config: Config) -> None:
-    """Provide the assistant in QQ."""
-    ctx.provide(FRONTEND, Assistant(ctx, config, ctx.use(AGENTS), ctx.use(SESSIONS)))
+    """Provide the assistant in QQ, the memory of its groups, and what their agents are told."""
+    agents = ctx.use(AGENTS)
+    assistant = Assistant(ctx, config, agents, ctx.use(SESSIONS))
+    ctx.provide(FRONTEND, assistant)
+    ctx.use(TOOLS).add(ctx, memory.remember_tool(assistant.memory_file))
+    agents.context.add(
+        ctx, "qq-group", ContextSource(assistant.told_in_a_group, order=1, kind="replace")
+    )

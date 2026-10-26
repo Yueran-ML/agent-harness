@@ -80,6 +80,7 @@ class Settings(BaseModel):
             the id of the group.
         model: The model that the assistant asks, or ``None`` for the one that holds for all.
         effort: How hard that model thinks, or ``None`` for what holds for all.
+        names: The names that the user gave groups, by the id of the group.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -91,6 +92,7 @@ class Settings(BaseModel):
     groups: dict[str, str] = Field(default_factory=dict[str, str])
     model: str | None = None
     effort: Effort | None = None
+    names: dict[str, str] = Field(default_factory=dict[str, str])
 
 
 def directory(home: Path, env: Mapping[str, str]) -> Path:

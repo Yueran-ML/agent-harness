@@ -6,6 +6,14 @@ change what was there before.
 
 ## Unreleased
 
+- The assistant in QQ remembers for each group. Whoever writes in a group may ask it to remember
+  something, and it writes that down with the tool `remember`, in the memory of that group and no
+  other file, up to 4000 characters; when the memory is full it is written anew, shorter. The
+  agent of a group is told the memory of its group when a turn begins, as what its people said
+  and not as instructions, and the instructions of the assistant, `AGENTS.md` in its directory.
+  The user gives a group a name with `columbina qq --name-group ID NAME`, and its memory lies in
+  `groups/<name>/memory.md` and goes with it; `--groups` lists the groups, `--memory ID` prints
+  one memory and `--forget-memory ID` empties it.
 - `/export` writes the conversation into a page of HTML that stands alone, and `/export md` into
   one of Markdown, in `exports` in the home of the program. `columbina sessions export ID` does
   the same for a stored session, to the standard output or `--out FILE`. A page holds what was

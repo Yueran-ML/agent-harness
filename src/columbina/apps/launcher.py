@@ -109,6 +109,7 @@ from columbina.kernel import (
 )
 from columbina.llm.services import PRESETS, Service, adapter_config
 from columbina.permissions import Preset
+from columbina.qq import memory as qq_memory
 from columbina.qq import setup as qq_setup
 from columbina.qq import store as qq_store
 from columbina.qq.app import QqError
@@ -1642,8 +1643,48 @@ def _qq_status(said: Mapping[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _qq_groups(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int | None:
+    """Say or change what is kept of the groups of the assistant in QQ, if that is asked for.
+
+    Returns:
+        The exit code, or ``None`` where nothing of the groups was asked for.
+    """
+    cwd = qq_store.directory(home, env)
+    try:
+        if args.groups:
+            groups = qq_memory.listed(home, cwd)
+            if args.json:
+                _answer({"groups": groups})
+            for one in [] if args.json else groups:
+                name = one["name"] or "(no name)"
+                print(harmless(f"{one['id']}  {name}  memory {one['memory']} of {one['most']}"))
+            return 0
+        if args.name_group is not None:
+            group, name = args.name_group
+            qq_memory.renamed(home, cwd, group, name.strip() or None)
+            return 0
+        if args.memory is not None:
+            kept = qq_store.settings(home)
+            names = {} if kept is None else kept.names
+            print(harmless(qq_memory.memory_of(cwd, args.memory, names)), end="")
+            return 0
+        if args.forget_memory is not None:
+            qq_memory.forgotten(home, cwd, args.forget_memory)
+            return 0
+    except (QqError, ValueError, OSError) as error:
+        if args.json:
+            _answer({"error": str(error)})
+        else:
+            _tell(str(error))
+        return 2
+    return None
+
+
 def _qq(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
     """Run the assistant in QQ, or set it up, say how it is doing, or forget it."""
+    done = _qq_groups(args, home, env)
+    if done is not None:
+        return done
     if args.json and (args.setup or args.dump_config):
         raise _UsageError("--json goes with --status, --forget or a run of the assistant")
     if args.setup:
@@ -1976,6 +2017,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     acting.add_argument(
         "--forget", action="store_true", help="delete the bot, its AppSecret and its owner"
+    )
+    acting.add_argument(
+        "--groups",
+        action="store_true",
+        help="list the groups that the bot was asked in, with their names and memories",
+    )
+    acting.add_argument(
+        "--name-group",
+        nargs=2,
+        metavar=("ID", "NAME"),
+        help="give a group a name, which its memory goes under; an empty name takes it away",
+    )
+    acting.add_argument(
+        "--memory", metavar="ID", help="print what the assistant remembers of a group"
+    )
+    acting.add_argument(
+        "--forget-memory", metavar="ID", help="empty what the assistant remembers of a group"
     )
     qq.add_argument(
         "--json",

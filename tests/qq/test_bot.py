@@ -16,7 +16,7 @@ import columbina.permissions
 import columbina.sandbox
 from columbina.apps import FRONTEND
 from columbina.llm import LlmFailure, TextBlock, UserMessage
-from columbina.llm.adapters.scripted import Reply
+from columbina.llm.adapters.scripted import Call, Reply
 from columbina.permissions import PERMISSIONS
 from columbina.qq import bot as bot_module
 from columbina.qq import store
@@ -25,6 +25,7 @@ from columbina.qq.bot import GROUP_PROMPT, OWNER_TOOLS, PROMPT, SEEN, Assistant
 from columbina.qq.link import Link
 from columbina.session import SessionError
 from columbina.session.lock import acquire
+from columbina.tools import ToolRun
 from support.fake_qq import (
     APP_ID,
     OWNER,
@@ -641,10 +642,10 @@ async def test_whoever_mentions_the_bot_in_a_group_is_answered_in_the_conversati
     request = rig.harness.model.requests[0]
     assert request.messages[0].content[0].text == GROUP_PROMPT  # type: ignore[union-attr]
     assert asked_of(request) == f"[{STRANGER} wrote:]\n你好"
-    assert request.tools == ()
+    assert [tool.name for tool in request.tools] == ["remember"]
     group = assistant._groups["GROUP01"].agent  # pyright: ignore[reportPrivateUsage]
     assert group is not None
-    assert group.spec.tools == frozenset()
+    assert group.spec.tools == frozenset({"remember"})
     assert group.spec.strangers
     assert group.cwd == rig.cwd / "groups" / "GROUP01"
     kept = store.settings(rig.home)
@@ -1054,3 +1055,81 @@ async def test_a_message_is_answered_once(rig: Rig) -> None:
 
     assert rig.said() == [("m1", "first", 1)]
     await rig.stop()
+
+
+# The memory of a group
+
+
+async def test_a_group_remembers_what_it_is_asked_to_and_is_told_it_after(rig: Rig) -> None:
+    (rig.cwd).mkdir(parents=True, exist_ok=True)
+    (rig.cwd / "AGENTS.md").write_text("Call yourself 小月.", encoding="utf-8")
+    rig.harness.model.add(
+        Reply(calls=(Call(name="remember", arguments={"note": "周五聚餐在七点"}),)),
+        Reply(text="记住了"),
+        Reply(text="七点"),
+    )
+    await paired(rig)
+
+    rig.tell(in_group("记一下周五聚餐七点", "g1"))
+    await until(lambda: len(rig.said()) == 1)
+    rig.tell(in_group("聚餐几点？", "g2"))
+    await until(lambda: len(rig.said()) == 2)
+
+    memory_file = rig.cwd / "groups" / "GROUP01" / "memory.md"
+    assert memory_file.read_text(encoding="utf-8") == "周五聚餐在七点\n"
+    first, _, last = rig.harness.model.requests
+    assert any(
+        "This group has no memory yet." in "".join(block.text for block in message.content)
+        for message in first.messages
+        if isinstance(message, UserMessage)
+    )
+    context = [
+        "".join(block.text for block in message.content)
+        for message in last.messages
+        if isinstance(message, UserMessage)
+    ]
+    assert any("Call yourself 小月." in said and "周五聚餐在七点" in said for said in context)
+
+
+async def test_the_owner_is_told_nothing_of_the_groups(rig: Rig) -> None:
+    rig.harness.model.add(Reply(text="hi"))
+    assistant = await paired(rig)
+
+    rig.tell(private("你好", "m1"))
+    await until(lambda: len(rig.said()) == 1)
+
+    owner = assistant._owner.agent  # pyright: ignore[reportPrivateUsage]
+    assert owner is not None
+    assert await assistant.told_in_a_group(owner) is None
+    run = ToolRun("c", rig.cwd, owner.session)
+    assert assistant.memory_file(run) is None
+
+
+async def test_a_named_group_keeps_its_memory_under_its_name(rig: Rig) -> None:
+    rig.harness.model.add(
+        Reply(calls=(Call(name="remember", arguments={"note": "猫叫团子"}),)),
+        Reply(text="好"),
+    )
+    rig.set_up(owner=OWNER, names={"GROUP01": "家人群"})
+    await rig.start()
+
+    rig.tell(in_group("记住猫叫团子", "g1"))
+    await until(lambda: len(rig.said()) == 1)
+
+    assert (rig.cwd / "groups" / "家人群" / "memory.md").read_text(encoding="utf-8") == "猫叫团子\n"
+
+
+async def test_names_that_cannot_be_read_now_are_those_that_were_read(rig: Rig) -> None:
+    rig.harness.model.add(Reply(text="好"))
+    rig.set_up(owner=OWNER, names={"GROUP01": "家"})
+    assistant = await rig.start()
+    rig.tell(in_group("你好", "g1"))
+    await until(lambda: len(rig.said()) == 1)
+    (rig.home / store.SETTINGS).unlink()
+    (rig.home / store.SETTINGS).mkdir()
+
+    group = assistant._groups["GROUP01"].agent  # pyright: ignore[reportPrivateUsage]
+    assert group is not None
+    where = assistant.memory_file(ToolRun("c", rig.cwd, group.session))
+
+    assert where == rig.cwd / "groups" / "家" / "memory.md"

@@ -46,7 +46,7 @@ WINDOW = 15_000
 """How much the model of the first run takes: 11250 tokens may be filled.
 
 What the model is sent beside the conversation, its instructions and the
-tools, comes to some two thousand tokens. A window has to be several times
+tools, comes to some two thousand and five hundred tokens. A window has to be several times
 that for the numbers of a real model to hold in small: the part that is
 summed up is then more than half of what the model takes, as it is when a
 real conversation comes near a real limit.
@@ -175,7 +175,7 @@ def test_a_conversation_that_outgrows_its_model_is_summed_up_and_goes_on(
     assert begun.tokens > 11_250
     assert (over.outcome.trimmed, over.outcome.summarised, over.outcome.error) == (0, 9, None)
     assert over.outcome.before == begun.tokens
-    assert over.outcome.after < 11_250 // 2 + 1000
+    assert over.outcome.after < 11_250 // 2 + 1500
     steps = [event.seq for event in events if isinstance(event.data, StepStartEvent)]
     assert len(steps) == 8
     assert steps[5] < at["compaction/start"] < at["compaction/end"] < steps[6]

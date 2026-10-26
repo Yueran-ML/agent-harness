@@ -124,6 +124,8 @@ def test_the_model_is_offered_the_tools_of_the_base_program(program: Program) ->
     assert ran.code == 0
     assert ran.errors == ""
     assert program.offered() == [
+        "web_fetch",
+        "web_search",
         "read",
         "write",
         "edit",
@@ -367,6 +369,8 @@ def test_without_the_permissions_and_the_shell_tool_the_other_tools_are_there(
     assert ran.errors == ""
     assert [error for _, error in ran.results] == [None, "UNKNOWN_TOOL"]
     assert program.offered() == [
+        "web_fetch",
+        "web_search",
         "read",
         "write",
         "edit",

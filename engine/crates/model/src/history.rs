@@ -171,10 +171,31 @@ impl History {
     /// The transaction is empty, or one of its operations is refused. Then the project is
     /// exactly as it was, `next_id` too, and so is the revision.
     pub fn apply(&mut self, ops: Vec<Op>, by: &str) -> Result<Applied, TransactionError> {
+        self.apply_mapped(ops, by, |op, _| op)
+    }
+
+    /// Apply a transaction as [`History::apply`] does, with each operation passed through `map`
+    /// just before it is applied. `map` is given the operation and those of the transaction that
+    /// were applied before it, each as it was done, with the ids that the engine gave: so an
+    /// operation can be made to name a thing that an earlier operation of the same transaction
+    /// added, whose id was not known when the transaction was sent.
+    ///
+    /// The transaction is still applied whole or not at all, and what is undone and redone is
+    /// the operations as `map` made them and as they were done.
+    ///
+    /// # Errors
+    /// As [`History::apply`]: an operation as `map` made it is refused, and `index` is its place
+    /// in `ops`.
+    pub fn apply_mapped(
+        &mut self,
+        ops: Vec<Op>,
+        by: &str,
+        map: impl FnMut(Op, &[Op]) -> Op,
+    ) -> Result<Applied, TransactionError> {
         if ops.is_empty() {
             return Err(TransactionError::Empty);
         }
-        let (done, inverse) = run(&mut self.project, ops)?;
+        let (done, inverse) = run(&mut self.project, ops, map)?;
         self.revision += 1;
         self.redo.clear();
         self.undo.push_back(Step {
@@ -200,7 +221,7 @@ impl History {
     pub fn undo(&mut self, by: &str) -> Option<Result<Applied, TransactionError>> {
         let step = self.undo.pop_back()?;
         let ops = step.inverse.iter().rev().cloned().collect();
-        match run(&mut self.project, ops) {
+        match run(&mut self.project, ops, |op, _| op) {
             Ok((done, _)) => {
                 self.revision += 1;
                 let applied = self.applied(done, by, &step.by);
@@ -223,7 +244,7 @@ impl History {
     /// are as they were, and the step can still be redone.
     pub fn redo(&mut self, by: &str) -> Option<Result<Applied, TransactionError>> {
         let step = self.redo.pop()?;
-        match run(&mut self.project, step.done.clone()) {
+        match run(&mut self.project, step.done.clone(), |op, _| op) {
             Ok((done, _)) => {
                 self.revision += 1;
                 let applied = self.applied(done, by, &step.by);
@@ -249,20 +270,25 @@ impl History {
     }
 }
 
-/// Apply `ops` to a project in order, and give back each as it was done and the inverse of
-/// each, in the same order. If one is refused, the project is put back as it was before the
-/// first, from a copy that was kept.
+/// Apply `ops` to a project in order, each as `map` makes it from itself and those done before
+/// it, and give back each as it was done and the inverse of each, in the same order. If one is
+/// refused, the project is put back as it was before the first, from a copy that was kept.
 ///
 /// So `next_id` goes back too, which is the one place where it does, and it is safe: the ids
 /// that the operations before the refused one made were in no revision of the project, so no
 /// client holds them as the ids of things. A refusal may name one of them, as the clip that a
 /// later clip of the same transaction overlaps, but that clip was never in the project that
 /// anyone was sent.
-fn run(project: &mut Project, ops: Vec<Op>) -> Result<(Vec<Op>, Vec<Op>), TransactionError> {
+fn run(
+    project: &mut Project,
+    ops: Vec<Op>,
+    mut map: impl FnMut(Op, &[Op]) -> Op,
+) -> Result<(Vec<Op>, Vec<Op>), TransactionError> {
     let before = project.clone();
     let mut done = Vec::with_capacity(ops.len());
     let mut inverse = Vec::with_capacity(ops.len());
     for (index, op) in ops.into_iter().enumerate() {
+        let op = map(op, &done);
         match apply_done(project, op) {
             Ok((did, undoes)) => {
                 done.push(did);
@@ -506,6 +532,87 @@ mod tests {
         history.redo("agent").unwrap().unwrap();
         assert_eq!(history.project(), &after);
         assert_eq!(history.revision(), 5);
+    }
+
+    /// What a test's `map` is given: the operation, and the operations done before it.
+    type Seen = (Op, Vec<Op>);
+
+    #[test]
+    fn a_mapped_operation_can_name_what_an_earlier_one_of_its_transaction_added() {
+        let mut history = History::new(Project::sample());
+        let mut seen: Vec<Seen> = Vec::new();
+        // The second operation moves "the clip that the first one added", whose id the client
+        // could not know.
+        let ops = vec![insert("V1", 100, 50), move_to("?", "V1", 300)];
+        let applied = history
+            .apply_mapped(ops, "agent", |op, done| {
+                seen.push((op.clone(), done.to_vec()));
+                match op {
+                    Op::MoveClip {
+                        timeline,
+                        track,
+                        start,
+                        ..
+                    } => {
+                        let Op::InsertClip { clip, .. } = &done[0] else {
+                            panic!("{done:?}");
+                        };
+                        Op::MoveClip {
+                            timeline,
+                            id: clip.id.clone(),
+                            track,
+                            start,
+                        }
+                    }
+                    op => op,
+                }
+            })
+            .unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0], (insert("V1", 100, 50), vec![]));
+        assert_eq!(seen[1].1, applied.done[..1]);
+        assert_eq!(applied.done[1], move_to("c3", "V1", 300));
+        assert_eq!(history.project().timelines[0].tracks[0].clips[1].start, 300);
+
+        // What is undone and redone is the operations as they were mapped.
+        let undone = history.undo("agent").unwrap().unwrap();
+        assert_eq!(undone.done[0], move_to("c3", "V1", 100));
+        let redone = history.redo("agent").unwrap().unwrap();
+        assert_eq!(redone.done, applied.done);
+    }
+
+    #[test]
+    fn a_mapped_transaction_that_is_refused_changes_nothing() {
+        let mut history = History::new(Project::sample());
+        let before = history.project().clone();
+        let mut calls = 0;
+        // The mapping makes the second operation overlap c1, so it is refused after the first
+        // was applied.
+        let error = history
+            .apply_mapped(
+                vec![insert("V1", 100, 50), insert("V1", 300, 10)],
+                "agent",
+                |op, done| {
+                    calls += 1;
+                    if done.is_empty() {
+                        op
+                    } else {
+                        insert("V1", 20, 10)
+                    }
+                },
+            )
+            .unwrap_err();
+        assert_eq!(calls, 2);
+        assert_eq!(
+            error,
+            TransactionError::Refused {
+                index: 1,
+                error: OpError::Overlap { with: "c1".into() },
+            }
+        );
+        assert_eq!(history.project(), &before);
+        assert_eq!(history.revision(), 0);
+        assert!(!history.can_undo());
     }
 
     #[test]

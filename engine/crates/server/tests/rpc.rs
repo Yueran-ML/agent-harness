@@ -11,6 +11,10 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWrite
 use tokio::process::{Child, ChildStderr, Command};
 use tokio::task::JoinHandle;
 
+/// The media that the tests make, shared with the tests of `columbina-media`.
+#[path = "../../media/tests/support/mod.rs"]
+mod support;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -1233,4 +1237,117 @@ async fn a_client_whose_answers_wait_for_too_many_bytes_is_closed() {
     assert!(stderr.contains("\"kicked\""), "{stderr}");
     let mut other = engine.client("desktop").await;
     assert_eq!(project(&mut other).await["revision"], 1);
+}
+
+#[tokio::test]
+async fn files_are_taken_in_as_media_in_one_transaction() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let mut desktop = engine.client("desktop").await;
+    let path = made.path.to_str().unwrap();
+    // The same file twice is two media, as in an editor.
+    let result = agent
+        .result("media.import", Some(json!({ "paths": [path, path] })))
+        .await;
+    assert_eq!(
+        result,
+        json!({ "revision": 1, "added": ["m1", "m2"], "next_id": 3 })
+    );
+    let changed = agent.take_notifications();
+    assert_eq!(changed.len(), 1, "{changed:?}");
+    assert_eq!(changed[0]["method"], "project.changed");
+    assert_eq!(changed[0]["params"]["by"], "agent");
+    let done = changed[0]["params"]["done"].as_array().unwrap();
+    assert_eq!(done.len(), 2);
+    assert_eq!(done[0]["op"], "add_media");
+    assert_eq!(done[0]["media"]["id"], "m1");
+    assert_eq!(desktop.message().await, changed[0]);
+
+    let got = project(&mut desktop).await;
+    let media = &got["project"]["media"][0];
+    let full = std::path::absolute(&made.path).unwrap();
+    assert_eq!(media["path"], full.to_str().unwrap());
+    let size = std::fs::metadata(&made.path).unwrap().len();
+    assert_eq!(media["identity"]["size"], size);
+    assert_eq!(media["identity"]["digest"].as_str().unwrap().len(), 64);
+    let facts = &media["facts"];
+    assert_eq!(facts["video"]["width"], 1920);
+    assert_eq!(facts["video"]["codec"], "h264");
+    assert_eq!(facts["video"]["rate"], json!({ "num": 25, "den": 1 }));
+    assert_eq!(
+        facts["audio"],
+        json!({ "rate": 48000, "channels": 2, "codec": "aac" })
+    );
+    let duration = &facts["duration"];
+    assert_eq!(
+        duration["ticks"].as_i64().unwrap(),
+        4 * duration["scale"].as_i64().unwrap()
+    );
+    assert_eq!(got["project"]["media"][1]["identity"], media["identity"]);
+
+    // A clip is cut from it in the scale of its duration.
+    let clip = json!([{ "op": "add_timeline", "timeline": {
+        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 },
+        "tracks": [{ "id": "", "kind": "video", "clips": [{
+            "id": "", "media": "m1", "source_in": { "ticks": 0, "scale": duration["scale"] },
+            "start": 0, "length": 100,
+        }] }],
+    } }]);
+    agent.apply(clip).await;
+}
+
+#[tokio::test]
+async fn files_that_cannot_be_read_are_none_of_them_taken_in() {
+    let Some(made) = support::media(support::Sample::Wav) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let good = made.path.to_str().unwrap();
+    let gone = dir.path().join("gone.mp4");
+    let gone = gone.to_str().unwrap();
+    let text = dir.path().join("notes.txt");
+    std::fs::write(
+        &text,
+        "These are notes, and no picture or sound.
+",
+    )
+    .unwrap();
+    let text = text.to_str().unwrap();
+    for (paths, path, reason) in [
+        (json!([good, gone, text]), gone, "not_found"),
+        (json!([good, text, gone]), text, "not_media"),
+        (
+            json!([dir.path().to_str().unwrap()]),
+            dir.path().to_str().unwrap(),
+            "unreadable",
+        ),
+    ] {
+        let error = agent
+            .error("media.import", Some(json!({ "paths": paths })))
+            .await;
+        assert_eq!(error["code"], -32002, "{error}");
+        assert_eq!(error["data"]["path"], path, "{error}");
+        assert_eq!(error["data"]["reason"], reason, "{error}");
+        assert!(error["message"].as_str().unwrap().contains(path), "{error}");
+    }
+    let got = project(&mut agent).await;
+    assert_eq!(got["revision"], 0);
+    assert_eq!(got["project"]["media"], json!([]));
+    assert_eq!(agent.take_notifications(), Vec::<Value>::new());
+
+    for params in [json!({ "paths": [] }), json!({ "paths": "a" }), json!({})] {
+        let error = agent.error("media.import", Some(params)).await;
+        assert_eq!(error["code"], -32602, "{error}");
+    }
+    // The sound alone is taken in.
+    let result = agent
+        .result("media.import", Some(json!({ "paths": [good] })))
+        .await;
+    assert_eq!(result["added"], json!(["m1"]));
 }

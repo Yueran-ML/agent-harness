@@ -34,6 +34,8 @@ pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 /// A transaction, an undo or a redo was refused, and the project is as it was.
 pub const REFUSED: i64 = -32001;
+/// A file that was to be taken in cannot be read, and the project is as it was.
+pub const CANNOT_READ: i64 = -32002;
 
 /// An error that a request is answered with.
 #[derive(Clone, Debug, PartialEq, Serialize)]

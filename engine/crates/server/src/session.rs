@@ -9,15 +9,17 @@
 //! held, and nothing is logged: what is to be logged is kept and logged once it is let go.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use columbina_model::{Applied, History, Op, Project};
+use columbina_media::MediaError;
+use columbina_model::{Applied, History, Media, Op, Project};
 use columbina_store::Saver;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
-use tokio::sync::{watch, Mutex, MutexGuard};
+use tokio::sync::{watch, Mutex, MutexGuard, Semaphore};
 
 use crate::log::log;
 use crate::names;
@@ -365,6 +367,7 @@ async fn dispatch(
         "history.undo" | "history.redo" => {
             history_step(engine, connection, kind, id, method, params).await
         }
+        "media.import" => media_import(engine, connection, kind, id, params).await,
         _ => Err(Fault::new(
             rpc::METHOD_NOT_FOUND,
             format!("there is no method {method}"),
@@ -573,4 +576,131 @@ async fn history_step(
         },
     );
     Ok(engine.finish(state, connection, line))
+}
+
+/// How many files `media.import` reads at once.
+const READ_AT_ONCE: usize = 8;
+
+/// The params of `media.import`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Import {
+    paths: Vec<String>,
+}
+
+/// The answer to `media.import`.
+#[derive(Serialize)]
+struct Imported<'a> {
+    revision: u64,
+    added: &'a [String],
+    next_id: u64,
+}
+
+/// `media.import`: take files in as media, each as it is found to be, in one transaction; or,
+/// if one of them cannot be read, none of them.
+///
+/// The files are read on threads of their own, a few at once, before the state is locked: so
+/// that the engine goes on answering while they are read.
+async fn media_import(
+    engine: &Engine,
+    connection: &Connection,
+    kind: Kind,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let import: Import = rpc::params("media.import", r#"{"paths": ["<file>", ...]}"#, params)?;
+    if import.paths.is_empty() {
+        return Err(Fault::params("media.import takes at least one path").into());
+    }
+    let media = read_all(import.paths).await?;
+    let ops = media
+        .into_iter()
+        .map(|media| Op::AddMedia { media, index: None })
+        .collect();
+    let mut state = engine.state.lock().await;
+    let applied = state
+        .history
+        .apply(ops, kind.as_str())
+        .map_err(|error| Fault::refused(&error))?;
+    let added: Vec<String> = applied
+        .done
+        .iter()
+        .filter_map(|op| match op {
+            Op::AddMedia { media, .. } => Some(media.id.clone()),
+            _ => None,
+        })
+        .collect();
+    state.publish(&applied);
+    let line = rpc::result_line(
+        id,
+        &Imported {
+            revision: applied.revision,
+            added: &added,
+            next_id: applied.next_id,
+        },
+    );
+    Ok(engine.finish(state, connection, line))
+}
+
+/// Read each file as media, in the order given; the error of the first that cannot be read.
+async fn read_all(paths: Vec<String>) -> Result<Vec<Media>, Fault> {
+    let at_once = Arc::new(Semaphore::new(READ_AT_ONCE));
+    let mut reading = Vec::with_capacity(paths.len());
+    for path in paths {
+        let permit = Arc::clone(&at_once)
+            .acquire_owned()
+            .await
+            .expect("the semaphore is never closed");
+        reading.push(tokio::task::spawn_blocking(move || {
+            let read = read(&path);
+            drop(permit);
+            (path, read)
+        }));
+    }
+    let mut media = Vec::with_capacity(reading.len());
+    let mut failed = None;
+    for task in reading {
+        match task.await {
+            Ok((_, Ok(read))) => media.push(read),
+            Ok((path, Err(error))) => {
+                failed
+                    .get_or_insert_with(|| cannot_read(&path, error.reason(), &error.to_string()));
+            }
+            Err(error) => {
+                failed.get_or_insert_with(|| {
+                    cannot_read(
+                        "",
+                        "failed",
+                        &format!("the reading of a file failed: {error}"),
+                    )
+                });
+            }
+        }
+    }
+    match failed {
+        Some(fault) => Err(fault),
+        None => Ok(media),
+    }
+}
+
+/// The error of a file that cannot be read.
+fn cannot_read(path: &str, reason: &str, message: &str) -> Fault {
+    Fault::new(
+        rpc::CANNOT_READ,
+        format!("a file cannot be read: {path}: {message}"),
+    )
+    .with_data(json!({ "path": path, "reason": reason, "message": message }))
+}
+
+/// A file as media, with no id yet: its full path, its identity and what it holds. This blocks.
+fn read(path: &str) -> Result<Media, MediaError> {
+    let full = std::path::absolute(Path::new(path))?;
+    let identity = columbina_media::identity(&full)?;
+    let facts = columbina_media::probe(&full)?;
+    Ok(Media {
+        id: String::new(),
+        path: full.to_str().ok_or(MediaError::NotUtf8)?.to_owned(),
+        identity,
+        facts,
+    })
 }

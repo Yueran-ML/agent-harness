@@ -12,6 +12,7 @@ name = "columbina-engine"
 path = "src/main.rs"
 
 [dependencies]
+columbina-media = { path = "../media" }
 columbina-model = { path = "../model" }
 columbina-store = { path = "../store" }
 interprocess.workspace = true

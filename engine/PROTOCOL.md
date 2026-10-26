@@ -10,6 +10,10 @@ This is what a client is written against.
 columbina-engine --project <DIR> [--headless] [--idle-seconds <N>]
 ```
 
+- The engine reads media with libav (FFmpeg's libraries, an LGPL shared build), which it finds
+  beside itself or on `PATH`: on Windows `avcodec-62.dll`, `avformat-62.dll`, `avutil-60.dll`,
+  `swscale-9.dll` (and `swresample-6.dll`, which they may use). Without them it cannot start
+  (on Windows it ends at once with `0xc0000135`).
 - The directory is made if it is not there. The engine takes the lock of the project, opens
   `project.json` (a new, empty project if there is none), and listens.
 - Its first line on **stdout** is one JSON object, written once it listens:
@@ -108,6 +112,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `transaction.apply` | `{"ops": [op, ...]}` | `{"revision": n, "done": [op, ...], "next_id": k, "names": {"$a": "c7", ...}}` |
 | `history.undo` | none | `{"revision": n, "done": [op, ...], "next_id": k}`, or `{"revision": n, "done": null}` if there is nothing to undo |
 | `history.redo` | none | as `history.undo` |
+| `media.import` | `{"paths": ["<file>", ...]}` | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 1 is refused
@@ -116,6 +121,26 @@ Before `hello`, every other request is refused with `-32600`.
 - `transaction.apply` applies its operations in order, all or none; an empty list is refused.
   `done` is the operations as they were done (see below). `names` maps each `$name` of the
   transaction (see below) to the id the engine gave it; `{}` if there were none.
+- `media.import` reads each file (its identity, and what it holds, as below) and adds it to the
+  end of the media as **one transaction** of `add_media` operations, one for each path in order,
+  each given an id by the engine; `added` lists them in the same order. If any file cannot be
+  read, **nothing** is added, no revision is made, and the error (`-32002`) names the first
+  path in the list that could not be read. Other connections are answered while the files are
+  read (requests on the same connection are answered in order, after it). A file that is taken in twice is two media, as in an editor. A path is
+  stored in full (made absolute against the engine's directory if it is not), as the system
+  writes it (`C:\media\a.mp4` on Windows), and must be UTF-8.
+  - `identity`: `size`, `modified_us` (microseconds since 1970, UTC) and `digest`: the SHA-256 of
+    the size in decimal, the first 64 KiB, and the last 64 KiB from no earlier than byte 65536,
+    as the Python editing makes it.
+  - `facts.duration` is in the time base of the picture if there is one, else of the sound: a
+    time base of `num/den` seconds is the `scale` `den`, and the duration counts its ticks times
+    `num`, from the first frame. A `source_in` of a clip of the media is in this scale.
+  - `facts.video`: `width` and `height` as stored (before rotation); `rate` the rate of the
+    timestamps (`r_frame_rate`), or, where the mean rate is more than 1% from it, the standard
+    rate nearest to the mean; `codec` as ffprobe names it (`h264`, `hevc`, `prores`); `bits` of
+    luma; `rotation` how far the picture is turned **clockwise** to be shown upright (0, 90,
+    180, 270; a file made with `-display_rotation 90` has 270). No `video` for sound only, no
+    `audio` for a picture only; a file with neither cannot be read.
 - `history.undo` takes back the latest step **whoever made it** (desktop and agent share one
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
@@ -215,8 +240,16 @@ real ids. For example:
 | `-32601` | no such method | |
 | `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name` | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was | the refusal, below |
+| `-32002` | `media.import`: a file cannot be read; nothing was added | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 
 The connection stays usable after every error.
+
+**Files that cannot be read (`-32002`).** `reason` is one of `not_found` (no such file),
+`unreadable` (it may not be read, or it is a directory), `not_utf8` (its path is not UTF-8 or
+holds a NUL), `not_media` (libav cannot open it as media), `no_streams` (neither picture nor
+sound), `unsupported` (what it holds cannot be used: a codec that libav cannot decode, no
+duration, a picture with no size or rate), or `failed` (the engine failed to read it; `path` is
+then empty).
 
 **Refusals (`-32001`).** `data` is `{"reason": "...", "message": "...", ...fields}`, with
 `"index": i` (the place of the refused operation in `ops`) when an operation was refused, and

@@ -9,8 +9,12 @@
 //!
 //! An id that starts with `$` is always such a name, so no thing is ever given one. A name is
 //! given to one thing only, and may be named only after the operation that gives it.
+//!
+//! The id of a track names it only among the tracks of its timeline, so a name of a track is
+//! named only with its timeline: an operation that names it must name the timeline as the
+//! operation that gave it did, by the same name or the same id.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::fmt;
 
@@ -26,7 +30,8 @@ pub struct NameError {
     pub index: usize,
     /// The name, as it was written.
     pub name: String,
-    /// What is wrong with it: `invalid_name`, `unknown_name` or `duplicate_name`.
+    /// What is wrong with it: `invalid_name`, `unknown_name`, `duplicate_name` or
+    /// `name_elsewhere`.
     pub reason: &'static str,
 }
 
@@ -43,6 +48,11 @@ impl fmt::Display for NameError {
                 f,
                 "operation {index} names {name}, which no operation before it in the \
                  transaction gives to a thing"
+            ),
+            "name_elsewhere" => write!(
+                f,
+                "operation {index} names the track {name} in another timeline than the one that \
+                 it was given in"
             ),
             _ => write!(
                 f,
@@ -67,12 +77,17 @@ enum Place {
 }
 
 /// What an id of an operation is to it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Role {
-    /// It names a thing that is there.
+    /// It names a thing that is there, other than a track.
     Names,
-    /// It is the id of a thing that the operation adds.
+    /// It names a track of the timeline that the operation names, as it is written there.
+    NamesTrack(Id),
+    /// It is the id of a thing that the operation adds, other than a track.
     Gives(Place),
+    /// It is the id of a track that the operation adds, to the timeline written so; none for
+    /// a timeline that is added without an id, which no later operation can name.
+    GivesTrack(Place, Option<Id>),
 }
 
 /// The names of a transaction, and the ids that the engine gave them as it was applied.
@@ -93,6 +108,8 @@ pub struct Names {
 /// A name is not of the form of a name, is named before it is given, or is given twice.
 pub fn prepare(ops: &mut [Op]) -> Result<Names, NameError> {
     let mut known = HashSet::new();
+    // The timeline of each track that is given a name, as it is written.
+    let mut tracks: HashMap<String, Option<Id>> = HashMap::new();
     let mut given = Vec::with_capacity(ops.len());
     for (index, op) in ops.iter_mut().enumerate() {
         let mut here = Vec::new();
@@ -109,11 +126,27 @@ pub fn prepare(ops: &mut [Op]) -> Result<Names, NameError> {
                 return Err(error("invalid_name"));
             }
             match role {
-                Role::Names if known.contains(id.as_str()) => Ok(()),
-                Role::Names => Err(error("unknown_name")),
-                Role::Gives(_) if known.contains(id.as_str()) => Err(error("duplicate_name")),
+                Role::Names | Role::NamesTrack(_) if !known.contains(id.as_str()) => {
+                    Err(error("unknown_name"))
+                }
+                Role::NamesTrack(of) => match tracks.get(id.as_str()) {
+                    Some(given_in) if given_in.as_deref() != Some(of.as_str()) => {
+                        Err(error("name_elsewhere"))
+                    }
+                    _ => Ok(()),
+                },
+                Role::Names => Ok(()),
+                Role::Gives(_) | Role::GivesTrack(..) if known.contains(id.as_str()) => {
+                    Err(error("duplicate_name"))
+                }
                 Role::Gives(place) => {
                     known.insert(id.clone());
+                    here.push((std::mem::take(id), place));
+                    Ok(())
+                }
+                Role::GivesTrack(place, of) => {
+                    known.insert(id.clone());
+                    tracks.insert(id.clone(), of);
                     here.push((std::mem::take(id), place));
                     Ok(())
                 }
@@ -135,7 +168,7 @@ impl Names {
         self.learn(done);
         let ids = &self.ids;
         let _ = visit(&mut op, &mut |id, role| {
-            if let (Role::Names, Some(given)) = (role, ids.get(id.as_str())) {
+            if let (Role::Names | Role::NamesTrack(_), Some(given)) = (role, ids.get(id.as_str())) {
                 id.clone_from(given);
             }
             Ok::<(), Infallible>(())
@@ -206,9 +239,11 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             for clip in timeline.tracks.iter_mut().flat_map(|r| &mut r.clips) {
                 f(&mut clip.media, Role::Names)?;
             }
+            let of = Some(timeline.id.clone()).filter(|id| !id.is_empty());
             f(&mut timeline.id, Role::Gives(Place::Timeline))?;
             for (at, track) in timeline.tracks.iter_mut().enumerate() {
-                f(&mut track.id, Role::Gives(Place::Track(Some(at))))?;
+                let place = Place::Track(Some(at));
+                f(&mut track.id, Role::GivesTrack(place, of.clone()))?;
                 for clip in &mut track.clips {
                     let start = clip.start;
                     f(&mut clip.id, Role::Gives(Place::Clip(Some(at), start)))?;
@@ -219,20 +254,27 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
         Op::AddTrack {
             timeline, track, ..
         } => {
+            let of = timeline.clone();
             f(timeline, Role::Names)?;
             for clip in &mut track.clips {
                 f(&mut clip.media, Role::Names)?;
             }
-            f(&mut track.id, Role::Gives(Place::Track(None)))?;
+            f(
+                &mut track.id,
+                Role::GivesTrack(Place::Track(None), Some(of)),
+            )?;
             for clip in &mut track.clips {
                 let start = clip.start;
                 f(&mut clip.id, Role::Gives(Place::Clip(None, start)))?;
             }
             Ok(())
         }
-        Op::RemoveTrack { timeline, id }
-        | Op::RemoveClip { timeline, id }
-        | Op::TrimClip { timeline, id, .. } => {
+        Op::RemoveTrack { timeline, id } => {
+            let of = timeline.clone();
+            f(timeline, Role::Names)?;
+            f(id, Role::NamesTrack(of))
+        }
+        Op::RemoveClip { timeline, id } | Op::TrimClip { timeline, id, .. } => {
             f(timeline, Role::Names)?;
             f(id, Role::Names)
         }
@@ -241,8 +283,9 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             track,
             clip,
         } => {
+            let of = timeline.clone();
             f(timeline, Role::Names)?;
-            f(track, Role::Names)?;
+            f(track, Role::NamesTrack(of))?;
             f(&mut clip.media, Role::Names)?;
             let start = clip.start;
             f(&mut clip.id, Role::Gives(Place::Clip(None, start)))
@@ -253,9 +296,10 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             track,
             ..
         } => {
+            let of = timeline.clone();
             f(timeline, Role::Names)?;
             f(id, Role::Names)?;
-            f(track, Role::Names)
+            f(track, Role::NamesTrack(of))
         }
     }
 }
@@ -381,6 +425,99 @@ mod tests {
             "operation 1 names $n, which no operation before it in the transaction gives to a \
              thing"
         );
+    }
+
+    fn timeline(id: &str, tracks: &serde_json::Value) -> serde_json::Value {
+        json!({ "id": id, "name": "N", "rate": { "num": 25, "den": 1 }, "tracks": tracks })
+    }
+
+    #[test]
+    fn a_name_of_a_track_is_named_only_with_its_timeline() {
+        // $v is a track of the new timeline $t, and t1 has a V1 of its own.
+        let with_v = timeline("$t", &json!([{ "id": "$v", "kind": "video", "clips": [] }]));
+        let mut transaction = ops(json!([
+            { "op": "add_timeline", "timeline": with_v },
+            { "op": "insert_clip", "timeline": "t1", "track": "$v", "clip": clip("", "m1", 200) },
+        ]));
+        let error = prepare(&mut transaction).unwrap_err();
+        assert_eq!(
+            (error.index, error.name.as_str(), error.reason),
+            (1, "$v", "name_elsewhere")
+        );
+        assert_eq!(
+            error.to_string(),
+            "operation 1 names the track $v in another timeline than the one that it was given in"
+        );
+        // A track of a timeline that is added without an id cannot be named at all.
+        let anonymous = timeline("", &json!([{ "id": "$x", "kind": "video", "clips": [] }]));
+        let mut transaction = ops(json!([
+            { "op": "add_timeline", "timeline": anonymous },
+            { "op": "move_clip", "timeline": "t3", "id": "c1", "track": "$x", "start": 0 },
+        ]));
+        assert_eq!(
+            prepare(&mut transaction).unwrap_err().reason,
+            "name_elsewhere"
+        );
+
+        // With its timeline, by the name or the id that the timeline was named by, it is.
+        let mut history = History::new(Project::sample());
+        let transaction = ops(json!([
+            { "op": "add_timeline", "timeline": with_v },
+            { "op": "insert_clip", "timeline": "$t", "track": "$v", "clip": clip("$c", "m1", 0) },
+            { "op": "add_track", "timeline": "t1", "track": { "id": "$w", "kind": "video", "clips": [] } },
+            { "op": "move_clip", "timeline": "t1", "id": "c1", "track": "$w", "start": 0 },
+            { "op": "remove_track", "timeline": "$t", "id": "$v" },
+        ]));
+        let (done, ids) = apply(&mut history, transaction).unwrap();
+        assert_eq!(ids["$t"], "t3");
+        assert_eq!(ids["$v"], "V1");
+        assert_eq!(ids["$c"], "c4");
+        assert_eq!(ids["$w"], "V2");
+        assert_eq!(
+            done[3],
+            Op::MoveClip {
+                timeline: "t1".into(),
+                id: "c1".into(),
+                track: "V2".into(),
+                start: 0,
+            }
+        );
+        let tracks = &history.project().timelines[0].tracks;
+        assert_eq!(tracks[2].clips[0].id, "c1");
+        assert_eq!(history.project().timelines[1].tracks, []);
+    }
+
+    #[test]
+    fn clips_that_start_at_one_frame_on_two_tracks_keep_their_names() {
+        let mut history = History::new(Project::sample());
+        let tracks = json!([
+            { "id": "$pic", "kind": "video", "clips": [clip("$p2", "m1", 30), clip("$p1", "m1", 0)] },
+            { "id": "$snd", "kind": "audio", "clips": [clip("$s1", "m1", 0), clip("$s2", "m1", 30)] },
+        ]);
+        let transaction = ops(json!([
+            { "op": "add_timeline", "timeline": timeline("$t", &tracks) },
+            { "op": "trim_clip", "timeline": "$t", "id": "$s1", "source_in": {"ticks": 0, "scale": 15360},
+              "start": 0, "length": 5 },
+        ]));
+        let (done, ids) = apply(&mut history, transaction).unwrap();
+        // Given in the order of the lists: t3, V1, c4 ($p2), c5 ($p1), A1, c6 ($s1), c7 ($s2).
+        let expected: Vec<(&str, &str)> = vec![
+            ("$p1", "c5"),
+            ("$p2", "c4"),
+            ("$pic", "V1"),
+            ("$s1", "c6"),
+            ("$s2", "c7"),
+            ("$snd", "A1"),
+            ("$t", "t3"),
+        ];
+        let got: Vec<(&str, &str)> = ids.iter().map(|(n, i)| (n.as_str(), i.as_str())).collect();
+        assert_eq!(got, expected);
+        let Op::TrimClip { id, .. } = &done[1] else {
+            panic!("{done:?}")
+        };
+        assert_eq!(id, "c6");
+        let sound = &history.project().timelines[1].tracks[1].clips;
+        assert_eq!((sound[0].id.as_str(), sound[0].length), ("c6", 5));
     }
 
     #[test]

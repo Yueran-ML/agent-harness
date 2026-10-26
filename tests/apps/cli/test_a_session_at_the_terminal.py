@@ -169,6 +169,7 @@ def test_the_program_that_is_shipped_has_its_commands(
         "/model        Show the model, or name another.\n"
         "/new          End this session and begin another one.\n"
         "/permissions  Show what the session may do, or change it to a preset.\n"
+        "/plan         Go into plan mode, where nothing is changed, or out of it.\n"
         "/rewind       Go back to before a turn: /rewind [N [files|conversation]], /rewind back.\n"
         "/sessions     List the sessions of this directory.\n"
         "/skill        Hand a skill to the agent: /skill NAME [TASK].\n"

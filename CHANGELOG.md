@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- Plan mode: `/plan` takes a conversation into it and out of it. In it nothing that writes or runs
+  goes through, in the conversation or in its subagents, the model is told to find out what it
+  needs, ask what is open and end with a plan of numbered steps, and the requests may go to
+  another model of the service, as `COLUMBINA_PLAN_MODEL` names it. When it is left, the model is
+  told to carry out the plan. The status line of the terminal says `plan mode`, and the status of
+  the service says it as `plan`. The plugin is `columbina.plan`.
 - Language servers say what is wrong after a change. When a tool has changed a file of Python,
   TypeScript, JavaScript, Rust or Go, the server of its language is shown it, and what it says is
   wrong is put after the result: errors first, at most 20. The tool `lsp` asks the server where a

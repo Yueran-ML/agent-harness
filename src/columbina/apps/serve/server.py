@@ -92,6 +92,7 @@ from columbina.commands import Commands, is_command
 from columbina.kernel import Context, Next
 from columbina.llm import CallConfig
 from columbina.permissions import PERMISSIONS
+from columbina.plan import planning
 from columbina.prices import SPENDING
 from columbina.sandbox import SANDBOX
 from columbina.session import (
@@ -835,6 +836,7 @@ class Server:
                 "sandbox": held,
                 "approval": None if approval is None else policy or approval.policy(session),
                 "spent": self._spent(session),
+                "plan": planning(session),
             }
         )
 

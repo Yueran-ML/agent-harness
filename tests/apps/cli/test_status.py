@@ -17,6 +17,7 @@ from columbina.llm import (
     Usage,
     UserMessage,
 )
+from columbina.plan import PlanModeEvent
 from columbina.prices import Prices, Spending
 from columbina.sandbox import SANDBOX, Mode, Sandbox, Strength
 from columbina.session import (
@@ -232,3 +233,10 @@ async def test_what_the_requests_cost_is_shown_where_it_is_known(session: Sessio
     told = status(session, MODEL, None, busy=False, spending=spending)
 
     assert told.split(" | ")[-1] in ("~$0.60", "~$1.20")
+
+
+async def test_plan_mode_is_shown(ctx: Context, session: Session) -> None:
+    ctx.use(SESSIONS).declare(ctx, PlanModeEvent)
+    session.append(PlanModeEvent(on=True))
+
+    assert status(session, MODEL, None, busy=False) == "deepseek-flash | plan mode"

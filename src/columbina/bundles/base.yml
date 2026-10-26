@@ -92,6 +92,12 @@ patch:
         plugin: columbina.checkpoints
         config:
           home: ${COLUMBINA_HOME}/checkpoints
+      # Plan mode, which /plan goes into: nothing is written or run until the user says so.
+      # COLUMBINA_PLAN_MODEL names another model of the service for the plan.
+      - id: plan
+        plugin: columbina.plan
+        config:
+          model: ${COLUMBINA_PLAN_MODEL:-}
       # The list of things to do that a model keeps for itself.
       - id: todo
         plugin: columbina.todo

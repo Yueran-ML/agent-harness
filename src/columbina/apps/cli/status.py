@@ -13,6 +13,7 @@ one, what is shown is what the last request sent, as the service counted it.
 """
 
 from columbina.llm import CallConfig
+from columbina.plan import planning
 from columbina.prices import Spending
 from columbina.sandbox import Mode, Sandbox, Strength
 from columbina.session import (
@@ -83,6 +84,8 @@ def status(
         spending: What the requests of sessions cost, if the program knows.
     """
     parts = [model.model]
+    if planning(session):
+        parts.append("plan mode")
     if sandbox is not None:
         parts.append(f"{mode or sandbox.mode(session)}, {_HELD[sandbox.strength(session)]}")
     # An estimate is marked as one. What the service counted is not.

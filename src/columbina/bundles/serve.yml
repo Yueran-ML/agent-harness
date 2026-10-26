@@ -22,6 +22,8 @@ patch:
         plugin: columbina.commands.verdict
       - id: command-rewind
         plugin: columbina.commands.rewind
+      - id: command-plan
+        plugin: columbina.commands.plan
       - id: command-todos
         plugin: columbina.commands.todos
       - id: command-skills

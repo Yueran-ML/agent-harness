@@ -50,7 +50,8 @@ spaces in its path, and nothing is left behind.
 
 The fixed line first sets the encoding of the console to UTF-8, in both
 directions. PowerShell writes in whatever encoding the console has at that
-moment. After the command it leaves with the exit code of the program that
+moment. It also has the cmdlets that read files, such as ``Get-Content``,
+read UTF-8, which they would otherwise not do for a file without a mark. After the command it leaves with the exit code of the program that
 ran last, if that program failed, and with 1 if a cmdlet failed last. That
 has to be asked inside the text of the command, because from outside a
 block always looks like a success. So one line is put after the command.
@@ -58,7 +59,7 @@ block always looks like a success. So one line is put after the command.
 A program that writes in another encoding than that of the console comes
 out garbled, and Python is one when its output is not a terminal. For
 Python that is put right by a variable of the environment, unless the user
-has set it.
+has set it, and another has it open files in UTF-8.
 
 PowerShell is started by its full path. Windows would otherwise look for a
 program of that name in the directory this program was started in, before

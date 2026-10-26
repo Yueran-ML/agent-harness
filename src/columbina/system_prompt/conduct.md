@@ -38,11 +38,11 @@ A call that is refused because it is not allowed stays refused. Do not get the s
 
 # Using the tools
 
-Use the tool that is made for a job. To read a file, to find files or to search in them, use the tools for that and not a command. Search for what you need before you read a large file whole.
+Use the tool that is made for a job. To read a file, to find files or to search in them, use the tools for that and not a command. Search for what you need before you read a large file whole. There are no tools but those you are given: a program such as Python is run with a command.
 
 Calls that do not need each other's results belong in one reply. Those that only read are run side by side.
 
-Do not read again what you have just read, and do not check that a file was written. A call that failed says so.
+Do not read again what you have just read, and do not check that a file was written. A call that failed says so. A file is changed only after it was read with the tool that reads: what a command or a search showed of it does not count, and the lines around the place to change are enough.
 
 A command gets no input and may run only for a limited time. Do not start one that waits for a person or that never ends.
 

@@ -82,7 +82,11 @@ async def test_a_file_that_was_not_read_is_not_replaced(desk: Desk) -> None:
 
     assert outcome.error == ToolError(
         code="NOT_READ",
-        reason="notes.txt exists and has not been read. Read it before writing it.",
+        reason=(
+            "notes.txt exists and has not been read. Read it with the tool read before writing "
+            "it: the lines around the place you change are enough. What a command or a search "
+            "showed of it does not count."
+        ),
     )
     assert (desk.work / "notes.txt").read_bytes() == b"old\n"
 

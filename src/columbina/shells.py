@@ -23,9 +23,18 @@ if sys.platform == "win32":  # pragma: windows only
         "$ProgressPreference = 'SilentlyContinue'; "
         "[Console]::InputEncoding = New-Object System.Text.UTF8Encoding $false; "
         "[Console]::OutputEncoding = [Console]::InputEncoding; "
-        "$OutputEncoding = [Console]::InputEncoding"
+        "$OutputEncoding = [Console]::InputEncoding; "
+        "$PSDefaultParameterValues['Get-Content:Encoding'] = 'UTF8'; "
+        "$PSDefaultParameterValues['Select-String:Encoding'] = 'UTF8'; "
+        "$PSDefaultParameterValues['Import-Csv:Encoding'] = 'UTF8'"
     )
-    """What a script begins with, so that text goes in and comes out as UTF-8."""
+    """What a script begins with, so that text goes in and comes out as UTF-8.
+
+    Windows PowerShell reads a file without a mark of its encoding in the code
+    page of the system, and a file of UTF-8 in Chinese comes out garbled. So
+    the cmdlets that read text read UTF-8 unless they are told otherwise. What
+    writes is left as it is: in this PowerShell UTF-8 is written with a mark.
+    """
 
     AFTER = "\nif (-not $?) { if ($LASTEXITCODE) { exit $LASTEXITCODE } else { exit 1 } }\n"
     """What a script ends with, so that the shell ends with the exit code of its last command."""
@@ -39,8 +48,10 @@ if sys.platform == "win32":  # pragma: windows only
     def environment() -> dict[str, str]:
         """Return the environment of a command: this one, without what sounds like a secret."""
         cleaned = process.cleaned(os.environ)
-        # Python writes to a pipe in the code page of the system unless it is told otherwise.
+        # Python writes to a pipe in the code page of the system unless it is told otherwise,
+        # and opens a file in it too.
         cleaned.setdefault("PYTHONIOENCODING", "utf-8")
+        cleaned.setdefault("PYTHONUTF8", "1")
         return cleaned
 
 else:  # pragma: posix only

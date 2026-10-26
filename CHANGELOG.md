@@ -10,6 +10,13 @@ change what was there before.
   written or run in between, gives what it gave before. The plugin `columbina.guard.repeats`
   tells the model so beside the result the third time, and the fifth time the call does not run,
   with the code `REPEATED_CALL`. Every program loads it.
+- Fewer calls go wrong for reasons that can be avoided. The model is told that only the tools
+  it is given are there, and that a program such as Python is run with a command; and that a
+  file is changed only after it was read with the tool that reads, where the lines around the
+  place to change are enough. A write or an edit of a file that was not read says the same.
+- On Windows the cmdlets that read files, `Get-Content`, `Select-String` and `Import-Csv`, read
+  UTF-8 in the commands of the agent and of hooks, and Python opens files in UTF-8 there unless
+  `PYTHONUTF8` says otherwise. A file of UTF-8 in Chinese no longer comes out garbled.
 
 ## 0.2.0 (2026-10-25)
 

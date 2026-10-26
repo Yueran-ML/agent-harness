@@ -1206,6 +1206,26 @@ if WINDOWS:
 
         assert [run["env"]["PYTHONIOENCODING"] for run in runs] == ["utf-8", "gbk"]
 
+    async def test_python_opens_files_in_utf8_unless_the_user_said_otherwise(
+        bench: Bench, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runs = watched(monkeypatch)
+        monkeypatch.delenv("PYTHONUTF8", raising=False)
+
+        await bench.said("echo hi")
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        await bench.said("echo hi")
+
+        assert [run["env"]["PYTHONUTF8"] for run in runs] == ["1", "0"]
+
+    async def test_a_file_of_utf8_without_a_mark_is_read_as_utf8(bench: Bench) -> None:
+        (bench.work / "notes.txt").write_bytes("月の光\n".encode())
+
+        assert await bench.said("Get-Content notes.txt") == "月の光\n[exit code 0]"
+        assert await bench.said("(Select-String -Path notes.txt -Pattern '月').Line") == (
+            "月の光\n[exit code 0]"
+        )
+
     def test_powershell_is_looked_for_where_the_system_is(
         monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

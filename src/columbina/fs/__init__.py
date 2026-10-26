@@ -334,7 +334,9 @@ class Permit:
 
 def _not_read(where: Located) -> ToolFailure:
     return ToolFailure(
-        f"{where.written} exists and has not been read. Read it before writing it.",
+        f"{where.written} exists and has not been read. Read it with the tool read before "
+        "writing it: the lines around the place you change are enough. What a command or a "
+        "search showed of it does not count.",
         code="NOT_READ",
     )
 

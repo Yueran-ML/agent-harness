@@ -55,7 +55,10 @@ pub struct Identity {
     pub size: u64,
     /// When it was written last, in microseconds since the start of 1970 (UTC).
     pub modified_us: i64,
-    /// The SHA-256 of its first and its last MiB, in lowercase hexadecimal.
+    /// The SHA-256, in lowercase hexadecimal, of its size written in decimal, its first 64 KiB,
+    /// and its last 64 KiB where it is longer than that (from no earlier than byte 65536), as
+    /// `columbina.video.project.identity_of` makes it, so that a project of the earlier editing
+    /// keeps the identities of its sources.
     pub digest: String,
 }
 

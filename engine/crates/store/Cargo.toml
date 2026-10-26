@@ -12,7 +12,6 @@ columbina-model = { path = "../model" }
 humantime.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sysinfo.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

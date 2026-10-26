@@ -2,6 +2,7 @@
 //! while, and always the latest project.
 
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -29,7 +30,10 @@ const MOST_DOUBLINGS: u32 = 6;
 /// thread, and the project is kept to be saved again: at the next period, or later where saving
 /// keeps failing, or at once by [`Saver::flush`]. [`Saver::flush`] saves at once and waits, and
 /// gives its error to the caller. When the saver is dropped, it saves the project that it has
-/// not yet saved and waits for it, and gives an error to the function as well.
+/// not yet saved and waits for it, and gives an error to the function as well. A panic of the
+/// function, or of a save, is caught on the thread, so that the saver goes on.
+///
+/// While a saver of a store exists, the project of the store is saved only through it.
 pub struct Saver {
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
@@ -71,24 +75,46 @@ impl Shared {
     }
 
     /// Save `project`, which was taken from `pending` with `saving` set, and set the state by
-    /// what came of it. A project that could not be saved is kept to be saved again, unless a
-    /// later one has come since or the saver is being dropped.
+    /// what came of it (see [`Saving`]).
     fn save(&self, project: Project) -> Result<(), StoreError> {
-        let result = self.store.save(&project);
-        let mut state = self.lock();
+        let mut saving = Saving {
+            shared: self,
+            project,
+            saved: false,
+        };
+        let result = self.store.save(&saving.project);
+        saving.saved = result.is_ok();
+        drop(saving);
+        result
+    }
+}
+
+/// A save that is being made, with `saving` set.
+///
+/// When it ends, however it ends, even by a panic, `saving` is cleared and whoever waits for it
+/// is told, so that no flush waits for ever. A project that was not saved is kept to be saved
+/// again, unless a later one has come since or the saver is being dropped.
+struct Saving<'a> {
+    shared: &'a Shared,
+    project: Project,
+    saved: bool,
+}
+
+impl Drop for Saving<'_> {
+    fn drop(&mut self) {
+        let mut state = self.shared.lock();
         state.saving = false;
-        if result.is_ok() {
+        if self.saved {
             state.saves += 1;
             state.failures = 0;
         } else {
             state.failures = state.failures.saturating_add(1);
             if state.pending.is_none() && !state.stop {
-                state.pending = Some(project);
+                state.pending = Some(std::mem::take(&mut self.project));
             }
         }
         drop(state);
-        self.changed.notify_all();
-        result
+        self.shared.changed.notify_all();
     }
 }
 
@@ -212,8 +238,11 @@ fn run(shared: &Shared, period: Duration, mut report: impl FnMut(StoreError)) {
         state.saving = true;
         state.last = Some(Instant::now());
         drop(state);
-        if let Err(error) = shared.save(project) {
-            report(error);
+        // A panic of the save or of `report` must not end the thread, or what is left would not
+        // be saved when the saver is dropped. The hook of panics has already written it out; a
+        // project that a panic kept from being saved is kept to be saved again.
+        if let Ok(Err(error)) = panic::catch_unwind(AssertUnwindSafe(|| shared.save(project))) {
+            let _ = panic::catch_unwind(AssertUnwindSafe(|| report(error)));
         }
         state = shared.lock();
     }

@@ -1,19 +1,33 @@
-//! The lock of a project: the file that tells which engine has the project open, and where the
-//! other programs of the studio can reach it.
+//! The lock of a project: what keeps two engines from having it open at once, and the file that
+//! tells the other programs of the studio which engine has it open and where to reach it.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
-use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
 
-/// The name of the file of the lock, in the directory of the project.
+use crate::store::{replace, retrying, CACHE_DIR};
+
+/// The name of the file that says which engine has the project open, in its directory.
 pub const LOCK_FILE: &str = "engine.lock";
 
-/// What the lock of a project says: which engine has the project open, and where it can be
-/// reached.
+/// The name of the file that `engine.lock` is written to first.
+const LOCK_TMP: &str = "engine.lock.tmp";
+
+/// The name of the file whose lock of the system is the lock of the project, in `cache/`.
+pub const GUARD_FILE: &str = "engine.guard";
+
+/// How long an engine waits for the engine that holds the guard to say who it is, before it
+/// gives up.
+const WAIT_FOR_HOLDER: Duration = Duration::from_secs(1);
+
+/// How long an engine waits between two looks at the guard and `engine.lock`.
+const LOOK_AGAIN: Duration = Duration::from_millis(20);
+
+/// What `engine.lock` says: which engine has the project open, and where it can be reached.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockInfo {
     /// The id of the process of the engine.
@@ -22,14 +36,6 @@ pub struct LockInfo {
     pub address: String,
     /// When the engine took the lock, in RFC 3339, in UTC.
     pub started: String,
-    /// When the process of the engine began, in seconds since the start of 1970, as the system
-    /// tells it; none where the system does not tell it.
-    ///
-    /// The id of a process that has ended may be given to another one. A lock whose process is
-    /// running but began at another time was left by an engine that has ended, and is taken
-    /// over (see [`Lock::acquire`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub process_started: Option<u64>,
 }
 
 impl LockInfo {
@@ -40,18 +46,45 @@ impl LockInfo {
     }
 }
 
-/// The lock of a project, held by this engine. It is let go, and its file taken away, when it
-/// is dropped.
+/// The lock of a project, held by this engine for as long as it is kept. When it is dropped,
+/// `engine.lock` is taken away and the guard is let go.
+///
+/// # How it works
+///
+/// The lock itself is a lock of the system on a file of its own, `cache/engine.guard`, taken with
+/// [`File::try_lock`] (`flock` on Unix, `LockFileEx` on Windows). Only one open file can hold it
+/// at a time, and the system lets it go when the process that holds it ends, however it ends. So
+/// no engine has to judge whether another one is still running from the id of its process or
+/// the time that it began, and a lock left by an engine that has crashed is simply free.
+///
+/// The guard is never taken away. Were it deleted while it is held, another engine could make a
+/// new file of the same name and lock that one, and two engines would each hold a lock.
+///
+/// Who holds the lock, and where it can be reached, is written to `engine.lock` in the directory
+/// of the project, and only by the engine that holds the guard: to `engine.lock.tmp` first,
+/// which is then put in the place of `engine.lock` in one step, so that no one reads it half
+/// written. What an engine that has ended left there is written over. When an engine lets the
+/// lock go, it takes `engine.lock` away if it still says what that engine wrote, and only then
+/// lets the guard go; nothing else ever takes `engine.lock` away.
+///
+/// The two are kept apart because a lock of Windows keeps other programs from reading the file
+/// that it is on. The other programs of the studio only read `engine.lock`, and never lock
+/// anything. What they read may have been left by an engine that has crashed; they find that out
+/// when they cannot reach it.
 #[derive(Debug)]
 pub struct Lock {
+    /// The guard, locked.
+    guard: File,
+    /// `engine.lock`.
     path: PathBuf,
+    /// What this engine wrote to it.
     info: LockInfo,
 }
 
 /// Why the lock of a project cannot be taken.
 #[derive(Debug, thiserror::Error)]
 pub enum LockError {
-    /// Another engine that is still running has the project open.
+    /// Another engine has the project open.
     #[error("the project is open in another engine, process {pid}, at {address}")]
     Held {
         /// The id of the process of that engine.
@@ -59,16 +92,18 @@ pub enum LockError {
         /// Where that engine can be reached.
         address: String,
     },
-    /// The lock was left by an engine that has ended, but another engine was taking it at the
-    /// same time.
-    #[error("cannot take {}: another engine is taking it at the same time", path.display())]
+    /// Another engine holds the lock, but has not said who it is or where it can be reached.
+    #[error(
+        "the project is open in another engine, which has not written {} yet",
+        path.display()
+    )]
     Contended {
-        /// The file of the lock.
+        /// `engine.lock`.
         path: PathBuf,
     },
-    /// The file of the lock, or the directory of the project, cannot be made, written or taken
-    /// away.
-    #[error("cannot take {}: {source}", path.display())]
+    /// The guard or `engine.lock`, or the directory that they are in, cannot be made, locked or
+    /// written.
+    #[error("cannot take the lock of the project at {}: {source}", path.display())]
     Io {
         /// The file or directory.
         path: PathBuf,
@@ -79,99 +114,98 @@ pub enum LockError {
 
 impl Lock {
     /// Take the lock of the project in `dir` for this process, which can be reached at
-    /// `address`. The directory is made if it is not there.
+    /// `address`. The directory and its `cache/` are made if they are not there.
     ///
-    /// The file of the lock is made only if it is not there, so that two engines cannot both
-    /// make it. Where it is there, it is read. If the process that it names is running, and
-    /// began when the lock says (where both are known), another engine has the project open, and
-    /// the lock is refused. Otherwise it was left by an engine that has ended: its process is
-    /// gone, its id has been given to another process, or the file cannot be read or does not
-    /// say who holds it. Then it is taken away, if it has not changed since it was read, and
-    /// taken again, once.
+    /// The guard is locked, and then `engine.lock` is written. Where another engine holds the
+    /// guard, `engine.lock` is read, and the lock is refused with what it says. If it cannot be
+    /// read, as when that engine has only just taken the guard and is still writing it, the
+    /// engine looks again, at the guard as well, for up to a second before it gives up.
     ///
     /// # Errors
-    /// Another engine that is still running holds the lock; it was taken over by another engine
-    /// at the same time; or the file of the lock cannot be made, written or taken away.
+    /// Another engine holds the lock ([`LockError::Held`], or [`LockError::Contended`] where it
+    /// has not said who it is), or the guard or `engine.lock` cannot be made, locked or written.
     pub fn acquire(dir: &Path, address: &str) -> Result<Lock, LockError> {
-        fs::create_dir_all(dir).map_err(|source| LockError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        let path = dir.join(LOCK_FILE);
-        let pid = std::process::id();
-        let info = LockInfo {
-            pid,
-            address: address.to_owned(),
-            started: humantime::format_rfc3339_millis(SystemTime::now()).to_string(),
-            process_started: find(pid).and_then(|process| process.began),
+        let io_at = |path: &Path| {
+            let path = path.to_path_buf();
+            move |source| LockError::Io { path, source }
         };
-        let mut text = serde_json::to_vec_pretty(&info).map_err(|source| LockError::Io {
-            path: path.clone(),
-            source: source.into(),
-        })?;
-        text.push(b'\n');
+        let cache = dir.join(CACHE_DIR);
+        fs::create_dir_all(&cache).map_err(io_at(&cache))?;
+        let guard_path = cache.join(GUARD_FILE);
+        let guard = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&guard_path)
+            .map_err(io_at(&guard_path))?;
+        let path = dir.join(LOCK_FILE);
 
-        let mut taken_over = false;
+        let deadline = Instant::now() + WAIT_FOR_HOLDER;
         loop {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut file) => {
-                    if let Err(source) = file.write_all(&text).and_then(|()| file.sync_all()) {
-                        drop(file);
-                        let _ = fs::remove_file(&path);
-                        return Err(LockError::Io { path, source });
-                    }
-                    return Ok(Lock { path, info });
+            match guard.try_lock() {
+                Ok(()) => break,
+                Err(TryLockError::WouldBlock) => {}
+                Err(TryLockError::Error(source)) => {
+                    return Err(LockError::Io {
+                        path: guard_path,
+                        source,
+                    })
                 }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(source) => return Err(LockError::Io { path, source }),
             }
-            let seen = match fs::read(&path) {
-                Ok(bytes) => Some(bytes),
-                // It was taken away since: it is taken again below.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    if taken_over {
-                        return Err(LockError::Contended { path });
-                    }
-                    taken_over = true;
-                    continue;
-                }
-                Err(_) => None,
-            };
-            let holder = seen
-                .as_deref()
-                .and_then(|bytes| serde_json::from_slice::<LockInfo>(bytes).ok());
-            if let Some(holder) = holder.filter(is_running) {
+            // Any error of reading counts as not written yet: on Windows a file that is being
+            // put in place is refused for a moment as `ERROR_ACCESS_DENIED`.
+            if let Some(holder) = read_at(&path) {
                 return Err(LockError::Held {
                     pid: holder.pid,
                     address: holder.address,
                 });
             }
-            if taken_over {
+            if Instant::now() >= deadline {
                 return Err(LockError::Contended { path });
             }
-            taken_over = true;
-            remove_if_unchanged(&path, seen.as_deref()).map_err(|source| LockError::Io {
-                path: path.clone(),
-                source,
-            })?;
+            thread::sleep(LOOK_AGAIN);
         }
+
+        let info = LockInfo {
+            pid: std::process::id(),
+            address: address.to_owned(),
+            started: humantime::format_rfc3339_millis(SystemTime::now()).to_string(),
+        };
+        let tmp = dir.join(LOCK_TMP);
+        let written = serde_json::to_vec_pretty(&info)
+            .map_err(io::Error::from)
+            .and_then(|mut text| {
+                text.push(b'\n');
+                File::create(&tmp)?.write_all(&text)
+            });
+        if let Err(source) = written {
+            let _ = fs::remove_file(&tmp);
+            return Err(LockError::Io { path: tmp, source });
+        }
+        // A program of the studio that is reading `engine.lock` may keep it from being replaced
+        // for a moment on Windows; `replace` tries again.
+        if let Err(source) = replace(&tmp, &path) {
+            let _ = fs::remove_file(&tmp);
+            return Err(LockError::Io { path, source });
+        }
+        Ok(Lock { guard, path, info })
     }
 
-    /// What the lock of the project in `dir` says, if there is a lock and it can be read. The
-    /// engine that it names may have ended.
+    /// What `engine.lock` in `dir` says, if it is there and can be read. The engine that it
+    /// names may have ended.
     #[must_use]
     pub fn read(dir: &Path) -> Option<LockInfo> {
-        let bytes = fs::read(dir.join(LOCK_FILE)).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        read_at(&dir.join(LOCK_FILE))
     }
 
-    /// What this lock says.
+    /// What this engine wrote to `engine.lock`.
     #[must_use]
     pub fn info(&self) -> &LockInfo {
         &self.info
     }
 
-    /// The file of this lock.
+    /// `engine.lock`.
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -179,74 +213,21 @@ impl Lock {
 }
 
 impl Drop for Lock {
-    /// Take the file of the lock away, but only if it still says what this lock wrote: a lock
-    /// that another engine has taken since is left to it.
+    /// Take `engine.lock` away if it still says what this engine wrote, and then let the guard
+    /// go. The guard itself is kept.
     fn drop(&mut self) {
-        let ours = fs::read(&self.path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<LockInfo>(&bytes).ok())
-            .is_some_and(|info| info == self.info);
+        let ours = read_at(&self.path)
+            .is_some_and(|info| info.pid == self.info.pid && info.started == self.info.started);
         if ours {
-            let _ = fs::remove_file(&self.path);
+            let _ = retrying(|| fs::remove_file(&self.path));
         }
+        // Closing the guard, as dropping it does next, lets it go too.
+        let _ = self.guard.unlock();
     }
 }
 
-/// Take away the file of a lock that was judged to be left by an engine that has ended, if it
-/// still holds what was read when it was judged so (`seen`, where it could be read). If it holds
-/// something else, another engine has written it since, and it is left to be judged again.
-fn remove_if_unchanged(path: &Path, seen: Option<&[u8]>) -> io::Result<()> {
-    if let Some(seen) = seen {
-        match fs::read(path) {
-            Ok(now) if now != seen => return Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            _ => {}
-        }
-    }
-    match fs::remove_file(path) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
-    }
-}
-
-/// Whether the engine that a lock names is still running: its process is, and began when the
-/// lock says, where both the lock and the system tell when it began.
-///
-/// The system tells when a process began in whole seconds, so a second either way is allowed.
-fn is_running(info: &LockInfo) -> bool {
-    match find(info.pid) {
-        None => false,
-        Some(process) => match (info.process_started, process.began) {
-            (Some(said), Some(began)) => said.abs_diff(began) <= 1,
-            _ => true,
-        },
-    }
-}
-
-/// A process that is running.
-struct Running {
-    /// When it began, in seconds since the start of 1970, where the system tells it.
-    began: Option<u64>,
-}
-
-/// The process with this id, if one is running. One that has ended but has not yet been waited
-/// for by its parent is not running.
-fn find(pid: u32) -> Option<Running> {
-    let pid = Pid::from_u32(pid);
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        true,
-        ProcessRefreshKind::nothing(),
-    );
-    let process = system.process(pid)?;
-    if matches!(
-        process.status(),
-        ProcessStatus::Zombie | ProcessStatus::Dead
-    ) {
-        return None;
-    }
-    // The system says 0 where it cannot tell, as for a process of another user on Windows.
-    let began = Some(process.start_time()).filter(|&began| began > 0);
-    Some(Running { began })
+/// What the `engine.lock` at `path` says, if it is there and can be read.
+fn read_at(path: &Path) -> Option<LockInfo> {
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
 }

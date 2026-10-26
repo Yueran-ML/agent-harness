@@ -54,6 +54,22 @@ pub enum StoreError {
         /// What the system said.
         source: io::Error,
     },
+    /// The file is empty. A file of the project that this engine has written is never empty,
+    /// so the system may have lost what was written last, as it can when the power fails.
+    #[error(
+        "cannot open {}: it is empty{}",
+        path.display(),
+        tmp.as_ref().map_or_else(String::new, |tmp| format!(
+            "; {} may hold the last project that was saved",
+            tmp.display()
+        ))
+    )]
+    Empty {
+        /// The file.
+        path: PathBuf,
+        /// `project.json.tmp`, where there is such a file.
+        tmp: Option<PathBuf>,
+    },
     /// What the file holds is not JSON, or not text at all.
     #[error("cannot open {}: it is not JSON: {source}", path.display())]
     NotJson {
@@ -70,6 +86,16 @@ pub enum StoreError {
         path: PathBuf,
         /// What is wrong with it.
         source: ReadError,
+    },
+    /// The project cannot be written, because there is a directory where it is written first.
+    /// It has to be taken away by hand. The project that was saved last is still there as it was.
+    #[error(
+        "cannot write {}: there is a directory in its place, which has to be taken away",
+        path.display()
+    )]
+    Blocked {
+        /// `project.json.tmp`.
+        path: PathBuf,
     },
     /// The project cannot be written. The project that was saved last is still there as it was.
     #[error("cannot write {}: {source}", path.display())]
@@ -99,6 +125,11 @@ impl Store {
     /// [`Project::from_value`], which checks it; a file that is not a project that this engine
     /// can open is refused, and left as it is.
     ///
+    /// A `project.json.tmp` that a save left when the engine ended in the middle of it is taken
+    /// away once the project has been read, where it is a file; until then it is kept, as the
+    /// last project that was saved may be in it. A directory of that name is left alone, and
+    /// saves fail until it is taken away.
+    ///
     /// # Errors
     /// A directory cannot be made, the file cannot be read, or what it holds is not JSON or not
     /// a project that this engine can open. Each error names the file.
@@ -107,22 +138,33 @@ impl Store {
         for path in [store.dir.clone(), store.cache_dir()] {
             fs::create_dir_all(&path).map_err(|source| StoreError::CreateDir { path, source })?;
         }
-        let path = store.project_path();
+        let project = store.read()?;
+        let tmp = store.dir.join(PROJECT_TMP);
+        if fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_file()) {
+            // The next save writes over it anyway, so it does not matter if this fails.
+            let _ = fs::remove_file(&tmp);
+        }
+        Ok((store, project))
+    }
+
+    /// Read the project from its file, or make a new one where there is no file.
+    fn read(&self) -> Result<Project, StoreError> {
+        let path = self.project_path();
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok((store, Project::new()));
-            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Project::new()),
             Err(source) => return Err(StoreError::Read { path, source }),
         };
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            let tmp = self.dir.join(PROJECT_TMP);
+            let tmp = tmp.is_file().then_some(tmp);
+            return Err(StoreError::Empty { path, tmp });
+        }
         let value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
             Ok(value) => value,
             Err(source) => return Err(StoreError::NotJson { path, source }),
         };
-        match Project::from_value(value) {
-            Ok(project) => Ok((store, project)),
-            Err(source) => Err(StoreError::NotAProject { path, source }),
-        }
+        Project::from_value(value).map_err(|source| StoreError::NotAProject { path, source })
     }
 
     /// The directory of the project.
@@ -156,6 +198,10 @@ impl Store {
     /// replaced. Where the system refuses so, the engine tries again a few times, waiting a little
     /// longer each time, for a little more than a second in all.
     ///
+    /// Two saves of the same directory must not be made at once, as both write
+    /// `project.json.tmp`: while a [`Saver`](crate::Saver) of the directory exists, the project
+    /// is saved only through it.
+    ///
     /// # Errors
     /// The project cannot be written, or cannot be put in place. The project that was saved last
     /// is still there as it was.
@@ -180,7 +226,10 @@ impl Store {
                 file.sync_all()
             });
         if let Err(source) = written {
-            // It may not be there, or not be a file: either way there is nothing more to do.
+            if tmp.is_dir() {
+                return Err(StoreError::Blocked { path: tmp });
+            }
+            // It may not be there: either way there is nothing more to do.
             let _ = fs::remove_file(&tmp);
             return Err(StoreError::Write { path: tmp, source });
         }
@@ -205,10 +254,16 @@ impl Store {
 ///
 /// [`fs::rename`] replaces a file that is there on Windows as well as on Unix. Where Windows
 /// refuses because another program has `to` open for a moment, it is tried again.
-fn replace(from: &Path, to: &Path) -> io::Result<()> {
+pub(crate) fn replace(from: &Path, to: &Path) -> io::Result<()> {
+    retrying(|| fs::rename(from, to))
+}
+
+/// Do something to a file, and do it again a few times, waiting a little longer each time, while
+/// Windows refuses it because another program has the file open.
+pub(crate) fn retrying<T>(mut act: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let mut wait = REPLACE_FIRST_WAIT;
     for _ in 1..REPLACE_TRIES {
-        match fs::rename(from, to) {
+        match act() {
             Err(error) if refused_for_a_while(&error) => {
                 thread::sleep(wait);
                 wait *= 2;
@@ -216,7 +271,7 @@ fn replace(from: &Path, to: &Path) -> io::Result<()> {
             done => return done,
         }
     }
-    fs::rename(from, to)
+    act()
 }
 
 /// Whether the system refused to replace a file because another program has it open, which it

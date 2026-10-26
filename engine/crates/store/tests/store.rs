@@ -66,8 +66,9 @@ fn a_save_that_fails_leaves_the_project_that_was_saved_before_as_it_was() {
 
     let error = store.save(&Project::new()).unwrap_err();
 
-    assert!(matches!(error, StoreError::Write { .. }), "{error}");
+    assert!(matches!(error, StoreError::Blocked { .. }), "{error}");
     assert!(error.to_string().contains(PROJECT_TMP), "{error}");
+    assert!(error.to_string().contains("directory"), "{error}");
     assert_eq!(fs::read(dir.path().join(PROJECT_FILE)).unwrap(), before);
     // Nothing was written: what is there is the directory that was put there, and it is empty.
     assert!(dir.path().join(PROJECT_TMP).is_dir());
@@ -75,6 +76,52 @@ fn a_save_that_fails_leaves_the_project_that_was_saved_before_as_it_was() {
         fs::read_dir(dir.path().join(PROJECT_TMP)).unwrap().count(),
         0
     );
+}
+
+#[test]
+fn a_tmp_that_a_save_left_is_taken_away_when_the_project_is_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _) = Store::open(dir.path()).unwrap();
+    store.save(&Project::sample()).unwrap();
+    fs::write(dir.path().join(PROJECT_TMP), b"{\"schema\": 1,").unwrap();
+
+    let (_, project) = Store::open(dir.path()).unwrap();
+
+    assert_eq!(project, Project::sample());
+    assert!(!dir.path().join(PROJECT_TMP).exists());
+}
+
+#[test]
+fn a_directory_in_the_place_of_the_tmp_is_left_alone_when_the_project_is_opened() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join(PROJECT_TMP)).unwrap();
+
+    Store::open(dir.path()).unwrap();
+
+    assert!(dir.path().join(PROJECT_TMP).is_dir());
+}
+
+#[test]
+fn an_empty_project_is_refused_and_the_tmp_that_may_hold_the_last_save_is_named_and_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(PROJECT_FILE), b"").unwrap();
+    let tmp = dir.path().join(PROJECT_TMP);
+    fs::write(&tmp, pretty(&Project::sample())).unwrap();
+
+    let error = Store::open(dir.path()).unwrap_err();
+
+    assert!(matches!(error, StoreError::Empty { .. }), "{error}");
+    let message = error.to_string();
+    assert!(message.contains("it is empty"), "{message}");
+    assert!(message.contains(&tmp.display().to_string()), "{message}");
+    assert_eq!(
+        fs::read_to_string(&tmp).unwrap(),
+        pretty(&Project::sample())
+    );
+
+    fs::remove_file(&tmp).unwrap();
+    let error = Store::open(dir.path()).unwrap_err();
+    assert!(!error.to_string().contains(PROJECT_TMP), "{error}");
 }
 
 /// Write `bytes` as the project of a new directory, open it, and check that it is refused with

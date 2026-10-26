@@ -103,7 +103,7 @@ fn an_error_of_a_save_is_reported_and_the_project_is_saved_once_it_can_be() {
     let error = reported.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(error.contains(PROJECT_TMP), "{error}");
     let error = saver.flush().unwrap_err();
-    assert!(matches!(error, StoreError::Write { .. }), "{error}");
+    assert!(matches!(error, StoreError::Blocked { .. }), "{error}");
     assert_eq!(saved(dir.path()), version(0));
 
     fs::remove_dir(&blocker).unwrap();
@@ -130,4 +130,28 @@ fn an_error_of_the_last_save_of_a_saver_that_is_dropped_is_reported() {
 
     let error = reported.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(error.contains(PROJECT_TMP), "{error}");
+}
+
+#[test]
+fn a_panic_of_the_function_that_is_given_errors_does_not_keep_the_last_project_from_being_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _) = Store::open(dir.path()).unwrap();
+    let blocker = dir.path().join(PROJECT_TMP);
+    fs::create_dir(&blocker).unwrap();
+    let (errors, reported) = mpsc::channel();
+    let saver = Saver::with_period(store, Duration::from_secs(3600), move |error| {
+        let _ = errors.send(error.to_string());
+        panic!("the function that is given errors panics");
+    })
+    .unwrap();
+    saver.changed(version(1));
+    reported.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    // The thread goes on, and no flush waits for a save that a panic ended.
+    assert!(saver.flush().is_err());
+    fs::remove_dir(&blocker).unwrap();
+    saver.changed(version(2));
+    drop(saver);
+
+    assert_eq!(saved(dir.path()), version(2));
 }

@@ -21,6 +21,10 @@ serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 tokio.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# The id of the user, for the directory of its sockets.
+rustix = { version = "1", features = ["process"] }
+
 [dev-dependencies]
 # Project::sample, for the tests of the names of a transaction.
 columbina-model = { path = "../model", features = ["sample"] }

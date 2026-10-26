@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::{Child, ChildStderr, Command};
 use tokio::task::JoinHandle;
 
 /// How long anything that should happen soon is waited for before the test fails.
@@ -33,8 +33,21 @@ struct Engine {
     address: String,
     pid: u32,
     stderr: Arc<Mutex<String>>,
+    /// Its stderr, where it is not read.
+    _unread: Option<ChildStderr>,
     /// What it writes to stdout after its first line.
     stdout: JoinHandle<String>,
+}
+
+/// What becomes of the stderr of an engine that is started.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stderr {
+    /// It is read, a line at a time.
+    Read,
+    /// The pipe is closed at once, as when its owner has ended.
+    Closed,
+    /// It is never read, so that the pipe fills.
+    Unread,
 }
 
 /// What came of starting an engine.
@@ -45,6 +58,11 @@ enum Started {
 
 /// Start an engine on `dir`, and read its first line.
 async fn start(dir: &Path, args: &[&str]) -> Started {
+    start_with(dir, args, Stderr::Read).await
+}
+
+/// Start an engine on `dir` whose stderr is read or not, and read its first line.
+async fn start_with(dir: &Path, args: &[&str], mode: Stderr) -> Started {
     let mut child = Command::new(env!("CARGO_BIN_EXE_columbina-engine"))
         .arg("--project")
         .arg(dir)
@@ -56,17 +74,29 @@ async fn start(dir: &Path, args: &[&str]) -> Started {
         .spawn()
         .unwrap();
     let stderr = Arc::new(Mutex::new(String::new()));
-    let mut errors = BufReader::new(child.stderr.take().unwrap()).lines();
-    let reading_stderr = tokio::spawn({
-        let stderr = Arc::clone(&stderr);
-        async move {
-            while let Ok(Some(line)) = errors.next_line().await {
-                let mut stderr = stderr.lock().unwrap();
-                stderr.push_str(&line);
-                stderr.push('\n');
-            }
+    let pipe = child.stderr.take().unwrap();
+    let mut unread = None;
+    let reading_stderr = match mode {
+        Stderr::Read => {
+            let mut errors = BufReader::new(pipe).lines();
+            let stderr = Arc::clone(&stderr);
+            tokio::spawn(async move {
+                while let Ok(Some(line)) = errors.next_line().await {
+                    let mut stderr = stderr.lock().unwrap();
+                    stderr.push_str(&line);
+                    stderr.push('\n');
+                }
+            })
         }
-    });
+        Stderr::Closed => {
+            drop(pipe);
+            tokio::spawn(async {})
+        }
+        Stderr::Unread => {
+            unread = Some(pipe);
+            tokio::spawn(async {})
+        }
+    };
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
     let mut first = String::new();
     tokio::time::timeout(WAIT, stdout.read_line(&mut first))
@@ -104,6 +134,7 @@ async fn start(dir: &Path, args: &[&str]) -> Started {
         address: line["listening"].as_str().unwrap().to_owned(),
         pid,
         stderr,
+        _unread: unread,
         stdout: rest,
     }))
 }
@@ -343,18 +374,22 @@ fn saved(dir: &Path) -> Value {
 async fn the_engine_says_where_it_listens_and_answers_hello() {
     let dir = project_dir();
     let engine = engine(dir.path(), &["--headless", "--idle-seconds", "1"]).await;
-    if cfg!(windows) {
-        let hash = engine
+    let hash = if cfg!(windows) {
+        engine
             .address
             .strip_prefix(r"\\.\pipe\columbina-engine-")
-            .unwrap();
-        assert_eq!(hash.len(), 16);
-        assert!(hash
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+            .unwrap()
+            .to_owned()
     } else {
-        assert!(engine.address.ends_with("/cache/engine.sock"));
-    }
+        let path = Path::new(&engine.address);
+        assert!(!path.starts_with(dir.path()), "not in the project");
+        let name = path.file_name().unwrap().to_str().unwrap();
+        name.strip_suffix(".sock").unwrap().to_owned()
+    };
+    assert_eq!(hash.len(), 16);
+    assert!(hash
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
     let lock = std::fs::read_to_string(dir.path().join("engine.lock")).unwrap();
     let lock: Value = serde_json::from_str(&lock).unwrap();
     assert_eq!(lock["address"], engine.address.as_str());
@@ -405,6 +440,7 @@ async fn requests_that_cannot_be_answered_are_refused_with_their_codes() {
         json!({ "client": "agent", "protocol": 2 }),
         json!({ "client": "agent", "protocol": 1, "colour": "red" }),
         json!([1]),
+        json!(["agent", 1]),
     ] {
         let error = client.error("hello", Some(params.clone())).await;
         assert_eq!(error["code"], -32602, "{params}: {error}");
@@ -974,4 +1010,227 @@ async fn an_engine_whose_pipe_is_taken_asks_who_has_it() {
     assert_eq!(code, 2);
     assert!(line["error"].as_str().unwrap().contains(&address), "{line}");
     squatter.abort();
+}
+
+/// Start an engine on `dir` whose stderr is read or not, which must start.
+async fn engine_with(dir: &Path, args: &[&str], stderr: Stderr) -> Engine {
+    match start_with(dir, args, stderr).await {
+        Started::Listening(engine) => *engine,
+        Started::Ended { code, stderr } => panic!("the engine ended with {code}: {stderr}"),
+    }
+}
+
+#[tokio::test]
+async fn an_engine_whose_stderr_is_closed_still_ends_when_its_stdin_is_closed() {
+    let dir = project_dir();
+    let mut engine = engine_with(dir.path(), &[], Stderr::Closed).await;
+    let mut client = engine.client("desktop").await;
+    client.apply(add_media("a.mp4")).await;
+    let last = project(&mut client).await["project"].clone();
+    drop(client);
+    drop(engine.child.stdin.take());
+    assert_eq!(engine.ended().await, 0);
+    assert_eq!(saved(dir.path()), last);
+    assert!(!dir.path().join("engine.lock").exists());
+}
+
+#[tokio::test]
+async fn a_headless_engine_whose_stderr_is_closed_still_ends_when_no_one_is_connected() {
+    let dir = project_dir();
+    let args = [
+        "--headless",
+        "--idle-seconds",
+        "1",
+        "--queue-capacity",
+        "4",
+        "--queue-bytes",
+        "262144",
+    ];
+    let engine = engine_with(dir.path(), &args, Stderr::Closed).await;
+    // Clients that do not read, each of which is closed and logged to no one.
+    let mut slow = Vec::new();
+    for _ in 0..5 {
+        slow.push(engine.client("agent").await);
+    }
+    let mut client = engine.client("desktop").await;
+    let path = "p".repeat(64 * 1024);
+    for _ in 0..10 {
+        client.apply(add_media(&path)).await;
+        client.take_notifications();
+    }
+    for slow in slow {
+        slow.rest().await;
+    }
+    drop(client);
+    assert_eq!(engine.ended().await, 0);
+    assert!(!dir.path().join("engine.lock").exists());
+}
+
+#[tokio::test]
+async fn an_engine_whose_stderr_is_never_read_goes_on_however_much_it_logs() {
+    let dir = project_dir();
+    let args = [
+        "--headless",
+        "--idle-seconds",
+        "1",
+        "--queue-capacity",
+        "4",
+        "--queue-bytes",
+        "262144",
+    ];
+    let engine = engine_with(dir.path(), &args, Stderr::Unread).await;
+    // Clients that do not read, each of which is closed and logged: more than the pipe of
+    // stderr holds.
+    let mut slow = Vec::new();
+    for _ in 0..600 {
+        slow.push(engine.client("agent").await);
+    }
+    let mut fast = engine.client("desktop").await;
+    let path = "p".repeat(64 * 1024);
+    for _ in 0..20 {
+        fast.apply(add_media(&path)).await;
+        fast.take_notifications();
+    }
+    for client in slow {
+        client.rest().await;
+    }
+    assert_eq!(project(&mut fast).await["revision"], 20);
+    drop(fast);
+    assert_eq!(engine.ended().await, 0);
+}
+
+#[tokio::test]
+async fn an_engine_that_ends_lets_the_next_one_listen_at_once() {
+    let dir = project_dir();
+    let mut current = engine(dir.path(), &[]).await;
+    for cycle in 0..30 {
+        // A client is still connected as the engine ends.
+        let client = current.client("desktop").await;
+        drop(current.child.stdin.take());
+        let next = loop {
+            match start(dir.path(), &[]).await {
+                Started::Listening(next) => break *next,
+                // The last one still has the project open: try again.
+                Started::Ended { code: 3, .. } => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Started::Ended { code, stderr } => {
+                    panic!("cycle {cycle}: the engine ended with {code}: {stderr}")
+                }
+            }
+        };
+        assert_eq!(current.ended().await, 0);
+        drop(client);
+        current = next;
+    }
+}
+
+#[tokio::test]
+async fn a_name_of_a_track_is_named_only_with_its_timeline() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let timeline = |id: &str, track: &str| {
+        json!({
+            "id": id, "name": id, "rate": { "num": 25, "den": 1 },
+            "tracks": [{ "id": track, "kind": "video", "clips": [] }],
+        })
+    };
+    let ops = json!([
+        { "op": "add_media", "media": media("$m", "a.mp4") },
+        { "op": "add_timeline", "timeline": timeline("$one", "$v") },
+        { "op": "add_timeline", "timeline": timeline("$two", "$w") },
+        // $v is the V1 of $one, and $two has a V1 too.
+        { "op": "insert_clip", "timeline": "$two", "track": "$v", "clip": clip("", "$m", 0, 10) },
+    ]);
+    let error = agent
+        .error("transaction.apply", Some(json!({ "ops": ops })))
+        .await;
+    assert_eq!(error["code"], -32602);
+    assert_eq!(
+        error["data"],
+        json!({ "index": 3, "name": "$v", "reason": "name_elsewhere" })
+    );
+    assert_eq!(project(&mut agent).await["revision"], 0);
+}
+
+#[tokio::test]
+async fn clips_named_on_two_tracks_at_one_frame_are_told_apart() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let ops = json!([
+        { "op": "add_media", "media": media("$m", "a.mp4") },
+        { "op": "add_timeline", "timeline": {
+            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 },
+            "tracks": [
+                { "id": "$pic", "kind": "video", "clips": [clip("$p2", "$m", 40, 10), clip("$p1", "$m", 0, 10)] },
+                { "id": "$snd", "kind": "audio", "clips": [clip("$s1", "$m", 0, 20), clip("$s2", "$m", 40, 20)] },
+            ],
+        } },
+        { "op": "move_clip", "timeline": "$t", "id": "$s1", "track": "$snd", "start": 100 },
+        { "op": "remove_clip", "timeline": "$t", "id": "$p1" },
+    ]);
+    let applied = agent.apply(ops).await;
+    // m1; t2, then V1 and its clips in the order of the list, then A1 and its clips.
+    assert_eq!(
+        applied["names"],
+        json!({
+            "$m": "m1", "$t": "t2", "$pic": "V1", "$p2": "c3", "$p1": "c4",
+            "$snd": "A1", "$s1": "c5", "$s2": "c6",
+        })
+    );
+    let got = project(&mut agent).await;
+    let tracks = &got["project"]["timelines"][0]["tracks"];
+    assert_eq!(tracks[0]["clips"], json!([clip("c3", "m1", 40, 10)]));
+    assert_eq!(
+        tracks[1]["clips"],
+        json!([clip("c6", "m1", 40, 20), clip("c5", "m1", 100, 20)])
+    );
+}
+
+#[tokio::test]
+async fn an_id_that_is_too_long_or_not_a_string_or_a_whole_number_is_refused() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("cli").await;
+    for id in [json!("i".repeat(300)), json!(1.5), Value::Null, json!([1])] {
+        client
+            .send(&json!({ "jsonrpc": "2.0", "id": id, "method": "project.get" }))
+            .await;
+        let answer = client.message().await;
+        assert_eq!(answer["id"], Value::Null, "{id}");
+        assert_eq!(answer["error"]["code"], -32600, "{id}");
+    }
+    let id = "i".repeat(200);
+    client
+        .send(&json!({ "jsonrpc": "2.0", "id": id, "method": "project.get" }))
+        .await;
+    assert_eq!(client.message().await["id"], id.as_str());
+}
+
+#[tokio::test]
+async fn a_client_whose_answers_wait_for_too_many_bytes_is_closed() {
+    let dir = project_dir();
+    let args = ["--headless", "--queue-bytes", "1048576"];
+    let engine = engine(dir.path(), &args).await;
+    let mut slow = engine.client("agent").await;
+    slow.apply(add_media(&"p".repeat(256 * 1024))).await;
+    slow.take_notifications();
+    // A hundred requests for the whole project, sent at once and never read: far fewer messages
+    // than a queue holds, and far more bytes.
+    let mut requests = Vec::new();
+    for id in 0..100 {
+        let request = json!({ "jsonrpc": "2.0", "id": id, "method": "project.get" });
+        requests.extend(serde_json::to_vec(&request).unwrap());
+        requests.push(b'\n');
+    }
+    slow.send_raw(&requests).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let rest = slow.rest().await;
+    assert!(rest.len() < 100, "{}", rest.len());
+    let stderr = engine.stderr();
+    assert!(stderr.contains("\"kicked\""), "{stderr}");
+    let mut other = engine.client("desktop").await;
+    assert_eq!(project(&mut other).await["revision"], 1);
 }

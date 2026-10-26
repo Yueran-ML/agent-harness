@@ -6,15 +6,19 @@
 //!
 //! The engine takes the lock of the project, opens it, and listens on a local socket (see
 //! [`address`]). Its first line on stdout is `{"listening": "<address>", "pid": …,
-//! "protocol": 1}`, written once it listens; nothing else is ever written to stdout, and what it
-//! logs goes to stderr, a line of JSON at a time. The desktop and the agent connect to it and
-//! speak JSON-RPC 2.0 a line at a time, as `PROTOCOL.md` at the root of the workspace tells.
+//! "protocol": 1}`, written once it listens; nothing else is ever written to stdout. What it
+//! logs goes to stderr, a line of JSON at a time, from a thread of its own (see [`log`](mod@log)), so
+//! that the engine never waits for whoever reads stderr, or for no one to. The desktop and the
+//! agent connect to it and speak JSON-RPC 2.0 a line at a time, as `PROTOCOL.md` at the root of
+//! the workspace tells.
 //!
 //! An engine that is not `--headless` belongs to the program that started it, the desktop, and
-//! ends when its stdin is closed, as it is when that program ends, however it ends. A headless
-//! engine does not read stdin; it ends once no client has been connected for `--idle-seconds`
-//! (30 unless given), counted from when it starts and from when the last connection closes.
-//! Either ends on Ctrl+C too, and on SIGTERM on Unix. As it ends it stops taking connections,
+//! ends when its stdin is closed, as it is when that program ends, however it ends; one whose
+//! stdin is closed or empty from the start ends at once. A headless engine does not read stdin;
+//! it ends once no client has been connected for `--idle-seconds` (30 unless given), counted
+//! from when it starts and from when the last connection closes. Either ends on Ctrl+C too, on
+//! SIGTERM and SIGHUP on Unix, and on Windows when its console is closed or the user logs off or
+//! the system shuts down. As it ends it stops taking connections, closes those that are open,
 //! saves the project, and lets the lock go.
 //!
 //! It ends with 0 when it was asked to; 1 when it stopped because of an error after it started
@@ -25,7 +29,9 @@
 
 mod address;
 mod conn;
+mod log;
 mod names;
+mod queue;
 mod rpc;
 mod session;
 
@@ -33,7 +39,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use columbina_model::History;
 use columbina_store::{Lock, LockError, Saver, Store};
@@ -42,6 +48,8 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::sync::OwnedMutexGuard;
 
 use crate::address::Address;
+use crate::log::log;
+use crate::queue::Limits;
 use crate::session::{Engine, State};
 
 const USAGE: &str = "usage: columbina-engine --project <DIR> [--headless] [--idle-seconds <N>]";
@@ -49,9 +57,21 @@ const USAGE: &str = "usage: columbina-engine --project <DIR> [--headless] [--idl
 /// How long a headless engine waits with no one connected before it ends, unless it is told.
 const IDLE_SECONDS: u64 = 30;
 
-/// How many messages may wait to be sent on a connection before it is closed, unless the tests
-/// say otherwise.
-const QUEUE_CAPACITY: usize = 4096;
+/// How much may wait to be sent on a connection before it is closed, unless the tests say
+/// otherwise.
+const QUEUE_LIMITS: Limits = Limits {
+    messages: 4096,
+    bytes: 128 * 1024 * 1024,
+};
+
+/// How long the engine waits for its connections to close as it ends.
+const CLOSING: Duration = Duration::from_secs(2);
+
+/// How long an engine that finds its name taken, by no one who answers, tries again to listen.
+const NAME_TAKEN: Duration = Duration::from_secs(2);
+
+/// How long the log is waited for as the engine ends.
+const LAST_LOG: Duration = Duration::from_millis(500);
 
 /// The engine stopped because of an error after it started listening.
 const EXIT_FAILED: i32 = 1;
@@ -66,8 +86,9 @@ struct Options {
     project: PathBuf,
     headless: bool,
     idle: Duration,
-    /// Not in the usage: for the tests, which make a client that does not read fill its queue.
-    queue_capacity: usize,
+    /// Not in the usage (`--queue-capacity`, `--queue-bytes`): for the tests, which make a
+    /// client that does not read fill its queue.
+    limits: Limits,
 }
 
 impl Options {
@@ -75,7 +96,7 @@ impl Options {
         let mut project = None;
         let mut headless = false;
         let mut idle = IDLE_SECONDS;
-        let mut queue_capacity = QUEUE_CAPACITY;
+        let mut limits = QUEUE_LIMITS;
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--project") => {
@@ -85,10 +106,10 @@ impl Options {
                 Some("--headless") => headless = true,
                 Some("--idle-seconds") => idle = number(args.next().as_ref(), "--idle-seconds")?,
                 Some("--queue-capacity") => {
-                    queue_capacity = number(args.next().as_ref(), "--queue-capacity")?;
-                    if queue_capacity == 0 {
-                        return Err("--queue-capacity needs a number above 0".into());
-                    }
+                    limits.messages = above_0(args.next().as_ref(), "--queue-capacity")?;
+                }
+                Some("--queue-bytes") => {
+                    limits.bytes = above_0(args.next().as_ref(), "--queue-bytes")?;
                 }
                 _ => {
                     let arg = arg.to_string_lossy();
@@ -101,7 +122,7 @@ impl Options {
             project,
             headless,
             idle: Duration::from_secs(idle),
-            queue_capacity,
+            limits,
         })
     }
 }
@@ -114,20 +135,24 @@ fn number<T: std::str::FromStr>(value: Option<&OsString>, arg: &str) -> Result<T
         .ok_or_else(|| format!("{arg} needs a whole number"))
 }
 
-/// Write a line of JSON to stderr: what happened, and what more there is to say of it.
-pub(crate) fn log(event: &str, fields: &serde_json::Value) {
-    let mut line = serde_json::Map::new();
-    line.insert("event".into(), event.into());
-    if let Some(fields) = fields.as_object() {
-        line.extend(fields.clone());
+/// The number above 0 that follows an argument.
+fn above_0(value: Option<&OsString>, arg: &str) -> Result<usize, String> {
+    match number(value, arg)? {
+        0 => Err(format!("{arg} needs a number above 0")),
+        number => Ok(number),
     }
-    eprintln!("{}", serde_json::Value::Object(line));
 }
 
-/// Write a line of JSON to stderr and end the process. Nothing is dropped: whatever must be let
-/// go, as the lock, must be let go before.
+/// Write a line of JSON to stderr and end the process, waiting for stderr no more than a
+/// moment. Nothing is dropped: whatever must be let go, as the lock, must be let go before.
 fn fail(code: i32, line: &serde_json::Value) -> ! {
-    eprintln!("{line}");
+    log::line(line);
+    exit(code)
+}
+
+/// End the process, once what was logged is written or a moment has passed.
+fn exit(code: i32) -> ! {
+    log::flush(LAST_LOG);
     std::process::exit(code)
 }
 
@@ -163,9 +188,10 @@ fn main() {
                 }
                 drop(saver);
             }
-            drop(lock);
+            // While the lock is held: once it is let go, the socket may be the next engine's.
             address.remove();
-            std::process::exit(code)
+            drop(lock);
+            exit(code)
         }
         Ending::Held { pid, address } => {
             drop(lock);
@@ -221,13 +247,51 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         History::new(project),
         saver,
         dir.to_string_lossy().into_owned(),
-        options.queue_capacity,
+        options.limits,
     );
     let ending = runtime.block_on(serve(options, address, engine, save_errors));
     // The runtime is never shut down: the process ends with `exit`, and a shutdown would wait
     // for the thread that reads stdin, which may never end.
     std::mem::forget(runtime);
     ending
+}
+
+/// Listen at the address. Where the name is taken, ask who has it: an engine of this project
+/// that is ending may still have it, and one that has closed its connections lets it go in a
+/// moment, so the engine tries again for a while when no one answers.
+async fn listen(
+    address: &Address,
+    project: &str,
+) -> Result<interprocess::local_socket::tokio::Listener, Ending> {
+    let deadline = Instant::now() + NAME_TAKEN;
+    loop {
+        match address.listen() {
+            Ok(listener) => return Ok(listener),
+            Err(error) if address::taken(&error) => match address::ask(&address.text).await {
+                Some((other, pid)) if other == project => {
+                    return Err(Ending::Held {
+                        pid,
+                        address: address.text.clone(),
+                    });
+                }
+                None if Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                _ => {
+                    return Err(Ending::Failed(format!(
+                        "cannot listen at {}: another program listens there",
+                        address.text
+                    )));
+                }
+            },
+            Err(error) => {
+                return Err(Ending::Failed(format!(
+                    "cannot listen at {}: {error}",
+                    address.text
+                )));
+            }
+        }
+    }
 }
 
 /// Listen, say where, and serve the clients until the engine is stopped.
@@ -237,25 +301,9 @@ async fn serve(
     engine: Engine,
     mut save_errors: UnboundedReceiver<String>,
 ) -> Ending {
-    let listener = match address.listen() {
+    let listener = match listen(address, &engine.project).await {
         Ok(listener) => listener,
-        Err(error) if address::taken(&error) => {
-            // An engine of this project that is ending may still listen there; one of another
-            // project never does, since the name is made from the directory.
-            return match address::ask(&address.text).await {
-                Some((project, pid)) if project == engine.project => Ending::Held {
-                    pid,
-                    address: address.text.clone(),
-                },
-                _ => Ending::Failed(format!(
-                    "cannot listen at {}: another program listens there",
-                    address.text
-                )),
-            };
-        }
-        Err(error) => {
-            return Ending::Failed(format!("cannot listen at {}: {error}", address.text));
-        }
+        Err(ending) => return ending,
     };
     let engine = Arc::new(engine);
     let listening = json!({
@@ -274,12 +322,12 @@ async fn serve(
         let stop = stop.clone();
         async move {
             let error = conn::serve(listener, engine).await;
+            let _ = stop.send(EXIT_FAILED);
             let reason = "connections cannot be taken";
             log(
                 "stopping",
                 &json!({ "reason": reason, "message": error.to_string() }),
             );
-            let _ = stop.send(EXIT_FAILED);
         }
     });
     tokio::spawn({
@@ -298,41 +346,73 @@ async fn serve(
     }
 
     let code = stopping.recv().await.unwrap_or(0);
+    // No more connections, and those that are open are closed, so that the name is free
+    // before the lock is let go.
     server.abort();
     let _ = server.await;
+    engine.close_all();
+    let mut presence = engine.presence.subscribe();
+    let closed = presence.wait_for(|presence| presence.connected == 0);
+    let _ = tokio::time::timeout(CLOSING, closed).await;
     let state = Arc::clone(&engine.state).lock_owned().await;
     Ending::Stopped { code, state }
 }
 
-/// Stop the engine on Ctrl+C, or on SIGTERM on Unix.
+/// Stop the engine when it is interrupted or the system asks it to end.
 async fn interrupted(stop: UnboundedSender<i32>) {
     let ctrl_c = async {
         if tokio::signal::ctrl_c().await.is_err() {
             std::future::pending::<()>().await;
         }
     };
-    tokio::select! {
-        () = ctrl_c => {}
-        () = terminated() => {}
-    }
-    log("stopping", &json!({ "reason": "interrupted" }));
+    let why = tokio::select! {
+        () = ctrl_c => "interrupted",
+        why = asked_to_end() => why,
+    };
     let _ = stop.send(0);
+    log("stopping", &json!({ "reason": why }));
 }
 
 #[cfg(unix)]
-async fn terminated() {
+async fn asked_to_end() -> &'static str {
     use tokio::signal::unix::{signal, SignalKind};
-    match signal(SignalKind::terminate()) {
-        Ok(mut terminate) => {
-            terminate.recv().await;
+    let wait = |kind| async move {
+        match signal(kind) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(_) => std::future::pending().await,
         }
-        Err(_) => std::future::pending().await,
+    };
+    tokio::select! {
+        () = wait(SignalKind::terminate()) => "terminated",
+        () = wait(SignalKind::hangup()) => "hung up",
     }
 }
 
-#[cfg(not(unix))]
-async fn terminated() {
-    std::future::pending::<()>().await;
+/// On Windows, the console is closed, the user logs off or the system shuts down: the handler
+/// of tokio does not return, so that the process is not ended before the engine has saved.
+#[cfg(windows)]
+async fn asked_to_end() -> &'static str {
+    use tokio::signal::windows::{ctrl_break, ctrl_close, ctrl_logoff, ctrl_shutdown};
+    macro_rules! wait {
+        ($signal:expr) => {
+            async {
+                match $signal {
+                    Ok(mut signal) => {
+                        signal.recv().await;
+                    }
+                    Err(_) => std::future::pending::<()>().await,
+                }
+            }
+        };
+    }
+    tokio::select! {
+        () = wait!(ctrl_break()) => "interrupted",
+        () = wait!(ctrl_close()) => "the console was closed",
+        () = wait!(ctrl_logoff()) => "the user logs off",
+        () = wait!(ctrl_shutdown()) => "the system shuts down",
+    }
 }
 
 /// Stop an engine that is not headless when its stdin is closed: the program that started it
@@ -342,8 +422,8 @@ async fn orphaned(stop: UnboundedSender<i32>) {
     let mut stdin = tokio::io::stdin();
     let mut buffer = [0; 256];
     while let Ok(1..) = stdin.read(&mut buffer).await {}
-    log("stopping", &json!({ "reason": "stdin was closed" }));
     let _ = stop.send(0);
+    log("stopping", &json!({ "reason": "stdin was closed" }));
 }
 
 /// Stop a headless engine once no one has been connected for `idle`.
@@ -363,12 +443,12 @@ async fn idle(engine: Arc<Engine>, idle: Duration, stop: UnboundedSender<i32>) {
             _ = came => {}
         }
     }
+    let _ = stop.send(0);
     let seconds = idle.as_secs();
     log(
         "stopping",
         &json!({ "reason": "no one was connected", "seconds": seconds }),
     );
-    let _ = stop.send(0);
 }
 
 /// The directory of the project, made if it is not there, written in full.
@@ -414,7 +494,10 @@ mod tests {
                 project: "p".into(),
                 headless: false,
                 idle: Duration::from_secs(30),
-                queue_capacity: 4096,
+                limits: Limits {
+                    messages: 4096,
+                    bytes: 128 * 1024 * 1024,
+                },
             }
         );
         assert_eq!(
@@ -425,14 +508,19 @@ mod tests {
                 "--project",
                 "a b",
                 "--queue-capacity",
-                "8"
+                "8",
+                "--queue-bytes",
+                "1000",
             ])
             .unwrap(),
             Options {
                 project: "a b".into(),
                 headless: true,
                 idle: Duration::from_secs(2),
-                queue_capacity: 8,
+                limits: Limits {
+                    messages: 8,
+                    bytes: 1000,
+                },
             }
         );
     }
@@ -446,6 +534,7 @@ mod tests {
             &["--project", "p", "--idle-seconds", "x"],
             &["--project", "p", "--idle-seconds", "-1"],
             &["--project", "p", "--queue-capacity", "0"],
+            &["--project", "p", "--queue-bytes", "0"],
             &["--project", "p", "--colour"],
         ] {
             assert!(parse(args).is_err(), "{args:?}");

@@ -17,6 +17,9 @@ pub const PROTOCOL: u32 = 1;
 /// The longest line that the engine reads, without its newline.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
 
+/// The longest id of a request, as it is written, quotes and all.
+pub const LONGEST_ID: usize = 256;
+
 /// A message as it is sent: a JSON text and a newline. The same line is shared by every
 /// connection that it is sent to.
 pub type Line = Arc<[u8]>;
@@ -120,7 +123,12 @@ pub fn parse(line: &[u8]) -> Result<Request<'_>, (Option<&RawValue>, Fault)> {
     })?;
     if let Some(id) = envelope.id {
         if !is_id(id) {
-            let fault = Fault::new(INVALID_REQUEST, "an id is a string, a number or null");
+            let fault = Fault::new(
+                INVALID_REQUEST,
+                format!(
+                    "an id is a string or a whole number, written in at most {LONGEST_ID} bytes"
+                ),
+            );
             return Err((None, fault));
         }
     }
@@ -141,26 +149,27 @@ pub fn parse(line: &[u8]) -> Result<Request<'_>, (Option<&RawValue>, Fault)> {
     })
 }
 
-/// Whether a value may be the id of a request: a string, a number or null.
+/// Whether a value may be the id of a request: a string or a whole number, written in at most
+/// [`LONGEST_ID`] bytes. Every answer carries its id back, so a long one would be queued again
+/// and again.
 fn is_id(id: &RawValue) -> bool {
-    matches!(
-        id.get().as_bytes().first(),
-        Some(b'"' | b'-' | b'0'..=b'9' | b'n')
-    )
+    let text = id.get().as_bytes();
+    let whole = |digits: &[u8]| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit);
+    text.len() <= LONGEST_ID
+        && match text {
+            [b'"', ..] => true,
+            [b'-', digits @ ..] | digits => whole(digits),
+        }
 }
 
-/// Read the params of a method that takes none: they may be left out, or be `null`, `{}` or
-/// `[]`.
+/// Read the params of a method that takes none: they may be left out, or be `null` or `{}`.
 ///
 /// # Errors
 /// There are params.
 pub fn no_params(method: &str, params: Option<&RawValue>) -> Result<(), Fault> {
     let empty = params.is_none_or(|params| {
-        serde_json::from_str::<serde_json::Value>(params.get()).is_ok_and(|value| match value {
-            serde_json::Value::Object(map) => map.is_empty(),
-            serde_json::Value::Array(list) => list.is_empty(),
-            _ => false,
-        })
+        serde_json::from_str::<serde_json::Value>(params.get())
+            .is_ok_and(|value| value.as_object().is_some_and(serde_json::Map::is_empty))
     });
     if empty {
         Ok(())
@@ -172,13 +181,16 @@ pub fn no_params(method: &str, params: Option<&RawValue>) -> Result<(), Fault> {
 /// Read the params of a method into `T`.
 ///
 /// # Errors
-/// There are none, or they are not a `T`; the error names the method and what it takes.
+/// There are none, they are not an object, or they are not a `T`; the error names the method and
+/// what it takes.
 pub fn params<'a, T: Deserialize<'a>>(
     method: &str,
     takes: &str,
     params: Option<&'a RawValue>,
 ) -> Result<T, Fault> {
-    let params = params.ok_or_else(|| Fault::params(format!("{method} takes {takes}")))?;
+    let params = params
+        .filter(|params| params.get().starts_with('{'))
+        .ok_or_else(|| Fault::params(format!("{method} takes an object, {takes}")))?;
     serde_json::from_str(params.get())
         .map_err(|error| Fault::params(format!("the params of {method}, {takes}: {error}")))
 }
@@ -354,9 +366,14 @@ mod tests {
         assert_eq!(request.id.unwrap().get(), r#""a\"b""#);
         assert_eq!(request.method, "hello");
         assert_eq!(request.params.unwrap().get(), r#"{"x":1}"#);
-        let request = parse(br#"{"jsonrpc":"2.0","id":null,"method":"m"}"#).unwrap();
-        assert_eq!(request.id.unwrap().get(), "null");
+        let request = parse(br#"{"jsonrpc":"2.0","id":-12,"method":"m"}"#).unwrap();
+        assert_eq!(request.id.unwrap().get(), "-12");
         assert!(request.params.is_none());
+        let long = format!(
+            r#"{{"jsonrpc":"2.0","id":"{}","method":"m"}}"#,
+            "a".repeat(254)
+        );
+        assert_eq!(parse(long.as_bytes()).unwrap().id.unwrap().get().len(), 256);
         let notification = parse(br#"{"jsonrpc":"2.0","method":"m","params":null}"#).unwrap();
         assert!(notification.id.is_none());
         assert!(notification.params.is_none());
@@ -368,10 +385,21 @@ mod tests {
         assert_eq!(fault("nonsense"), (None, PARSE_ERROR));
         assert_eq!(fault("[1]"), (None, INVALID_REQUEST));
         assert_eq!(fault(r#"{"jsonrpc":2,"id":1}"#), (None, INVALID_REQUEST));
-        assert_eq!(
-            fault(r#"{"jsonrpc":"2.0","id":{},"method":"m"}"#),
-            (None, INVALID_REQUEST)
-        );
+        // An id that is not a string or a whole number, or is too long, is not read.
+        let long = format!(r#""{}""#, "a".repeat(255));
+        for id in [
+            "{}",
+            "[1]",
+            "null",
+            "true",
+            "1.5",
+            "1e3",
+            "-0.5",
+            long.as_str(),
+        ] {
+            let line = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"m"}}"#);
+            assert_eq!(fault(&line), (None, INVALID_REQUEST), "{id}");
+        }
         assert_eq!(
             fault(r#"{"jsonrpc":"1.0","id":7,"method":"m"}"#),
             (Some("7".into()), INVALID_REQUEST)
@@ -388,14 +416,18 @@ mod tests {
 
     #[test]
     fn empty_params_are_no_params() {
-        for params in [None, Some("{}"), Some("[]"), Some("{ }")] {
+        for params in [None, Some("{}"), Some("{ }")] {
             let raw = params.map(|p| RawValue::from_string(p.into()).unwrap());
             assert_eq!(no_params("m", raw.as_deref()), Ok(()), "{params:?}");
         }
-        for params in [r#"{"a":1}"#, "[1]", "3"] {
+        for params in [r#"{"a":1}"#, "[]", "[1]", "3"] {
             let raw = RawValue::from_string(params.into()).unwrap();
             assert_eq!(no_params("m", Some(&raw)).unwrap_err().code, INVALID_PARAMS);
         }
+        // Params are an object, never a list.
+        let list = RawValue::from_string(r#"["agent", 1]"#.into()).unwrap();
+        let read = params::<(String, u32)>("m", "{}", Some(&list));
+        assert_eq!(read.unwrap_err().code, INVALID_PARAMS);
     }
 
     #[test]

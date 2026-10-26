@@ -9,10 +9,11 @@ use interprocess::local_socket::tokio::{Listener, Stream};
 use interprocess::local_socket::traits::tokio::Listener as _;
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 
-use crate::log;
-use crate::rpc::{self, Fault, Frame, Line, Lines, MAX_LINE};
+use crate::log::log;
+use crate::queue::{self, Refused};
+use crate::rpc::{self, Fault, Frame, Lines, MAX_LINE};
 use crate::session::{self, Connection, Engine};
 
 /// How many failures to take a connection in a row make the engine give up.
@@ -62,7 +63,8 @@ pub async fn serve(listener: Listener, engine: Arc<Engine>) -> io::Error {
 enum End {
     /// The client closed it, or it failed.
     Closed,
-    /// It was stopped by the engine, as when its queue was full.
+    /// It was stopped by the engine: its queue was full when a notification was queued, or
+    /// the engine is ending.
     Stopped,
     /// Its queue was full when an answer was to be queued.
     Full,
@@ -70,22 +72,18 @@ enum End {
 
 /// Serve a connection until it ends.
 async fn connection(engine: Arc<Engine>, stream: Stream) {
-    let id = engine.arrive();
     let stream = Arc::new(stream);
-    let (queue, queued) = mpsc::channel::<Line>(engine.queue_capacity);
     let (stop, stopped) = watch::channel(false);
+    let Some(id) = engine.arrive(stop.clone()) else {
+        close(stream);
+        return;
+    };
+    let (queue, queued) = queue::queue(engine.limits);
     let writer = tokio::spawn(write(Arc::clone(&stream), queued, stopped.clone()));
     let mut connection = Connection::new(id, queue, stop.clone());
     let end = read(&engine, &mut connection, &stream, stopped).await;
     if let End::Full = end {
-        log(
-            "kicked",
-            &json!({
-                "connection": id,
-                "client": connection.kind(),
-                "reason": "the client does not read what it is sent, and its queue is full",
-            }),
-        );
+        session::log_kicked(id, connection.kind(), engine.limits);
     }
     // No more is queued for it: once what is queued is written, the writer ends.
     engine.leave(id).await;
@@ -102,7 +100,7 @@ async fn connection(engine: Arc<Engine>, stream: Stream) {
 fn close(stream: Arc<Stream>) {
     // Dropped with writes that the client has not read, a pipe of Windows is handed to a
     // thread that waits until the client reads them, which a client that has stopped reading
-    // never does, so that the pipe would never close.
+    // never does, so that the pipe would never close and its name never be free.
     #[cfg(windows)]
     #[allow(irrefutable_let_patterns)]
     if let Stream::NamedPipe(pipe) = &*stream {
@@ -134,19 +132,21 @@ async fn read(
         };
         lines.feed(&chunk[..count], &mut frames);
         for frame in frames.drain(..) {
-            let going_on = match frame {
+            if *stopped.borrow() {
+                return End::Stopped;
+            }
+            let handled = match frame {
                 Frame::Line(line) => session::handle(engine, connection, &line).await,
                 Frame::TooLong => connection.queue(rpc::error_line(
                     None,
                     &Fault::new(rpc::INVALID_REQUEST, "request line exceeds 16 MiB"),
                 )),
             };
-            if !going_on {
-                return if *stopped.borrow() {
-                    End::Stopped
-                } else {
-                    End::Full
-                };
+            match handled {
+                Ok(()) => {}
+                Err(_) if *stopped.borrow() => return End::Stopped,
+                Err(Refused::Full) => return End::Full,
+                Err(Refused::Closed) => return End::Closed,
             }
         }
     }
@@ -156,7 +156,7 @@ async fn read(
 /// ends or the connection is stopped.
 async fn write(
     stream: Arc<Stream>,
-    mut queued: mpsc::Receiver<Line>,
+    mut queued: queue::Receiver,
     mut stopped: watch::Receiver<bool>,
 ) {
     let mut writer = &*stream;
@@ -174,8 +174,8 @@ async fn write(
         batch.extend_from_slice(&first);
         while batch.len() < WRITE_BATCH {
             match queued.try_recv() {
-                Ok(line) => batch.extend_from_slice(&line),
-                Err(_) => break,
+                Some(line) => batch.extend_from_slice(&line),
+                None => break,
             }
         }
         let written = tokio::select! {

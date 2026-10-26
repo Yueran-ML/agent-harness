@@ -114,6 +114,7 @@ dependencies = [
  "columbina-store",
  "interprocess",
  "memchr",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

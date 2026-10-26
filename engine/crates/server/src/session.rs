@@ -6,22 +6,22 @@
 //! then the answer to whoever asked for it, all before the lock is let go. So each connection
 //! is sent the changes in the order of their revisions, and a client sees its own change as a
 //! notification before it sees the answer to its request. Nothing is awaited while the lock is
-//! held.
+//! held, and nothing is logged: what is to be logged is kept and logged once it is let go.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use columbina_model::{Applied, History, Op};
+use columbina_model::{Applied, History, Op, Project};
 use columbina_store::Saver;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{watch, Mutex, MutexGuard};
 
-use crate::log;
+use crate::log::log;
 use crate::names;
+use crate::queue::{self, Limits, Refused};
 use crate::rpc::{self, Fault, Line};
 
 /// The version of the engine that `hello` answers with.
@@ -66,11 +66,21 @@ pub struct Engine {
     pub project: String,
     /// The id of the process of the engine.
     pub pid: u32,
-    /// How many messages may wait to be sent on a connection before it is closed.
-    pub queue_capacity: usize,
+    /// How much may wait to be sent on a connection before it is closed.
+    pub limits: Limits,
     /// Who is connected.
     pub presence: watch::Sender<Presence>,
+    /// Every open connection, so that all can be closed as the engine ends.
+    connections: std::sync::Mutex<Connections>,
     next_connection: AtomicU64,
+}
+
+#[derive(Default)]
+struct Connections {
+    /// Whether the engine is ending, and takes no more.
+    closing: bool,
+    /// What stops each.
+    stops: HashMap<u64, watch::Sender<bool>>,
 }
 
 /// What is changed only while it is locked.
@@ -80,12 +90,15 @@ pub struct State {
     pub saver: Option<Saver>,
     /// The connections that said hello, each of which is sent every notification.
     peers: HashMap<u64, Peer>,
+    /// The connections that were closed because they did not read, to be logged once the
+    /// lock is let go.
+    kicked: Vec<(u64, Kind)>,
 }
 
 /// A connection that said hello.
 struct Peer {
     kind: Kind,
-    queue: mpsc::Sender<Line>,
+    queue: queue::Sender,
     stop: watch::Sender<bool>,
 }
 
@@ -96,13 +109,13 @@ pub struct Connection {
     /// What the client said it is, once it said hello.
     kind: Option<Kind>,
     /// The messages to be sent on it.
-    queue: mpsc::Sender<Line>,
+    queue: queue::Sender,
     /// Set to stop it.
     stop: watch::Sender<bool>,
 }
 
 impl Connection {
-    pub fn new(id: u64, queue: mpsc::Sender<Line>, stop: watch::Sender<bool>) -> Self {
+    pub fn new(id: u64, queue: queue::Sender, stop: watch::Sender<bool>) -> Self {
         Self {
             id,
             kind: None,
@@ -116,53 +129,124 @@ impl Connection {
         self.kind
     }
 
-    /// Queue a message to be sent. Gives false if the queue is full, or the connection is
-    /// being closed: then it is to be closed.
-    pub fn queue(&self, line: Line) -> bool {
-        self.queue.try_send(line).is_ok()
+    /// Queue a message to be sent, without waiting.
+    pub fn queue(&self, line: Line) -> Result<(), Refused> {
+        self.queue.push(line)
     }
 }
 
+/// Log that a connection was closed because its client does not read what it is sent.
+pub fn log_kicked(id: u64, kind: Option<Kind>, limits: Limits) {
+    log(
+        "kicked",
+        &json!({
+            "connection": id,
+            "client": kind,
+            "reason": format!(
+                "the client does not read what it is sent: {} messages or {} bytes wait for it",
+                limits.messages, limits.bytes,
+            ),
+        }),
+    );
+}
+
 impl Engine {
-    pub fn new(history: History, saver: Saver, project: String, queue_capacity: usize) -> Engine {
+    pub fn new(history: History, saver: Saver, project: String, limits: Limits) -> Engine {
         Engine {
             state: Arc::new(Mutex::new(State {
                 history,
                 saver: Some(saver),
                 peers: HashMap::new(),
+                kicked: Vec::new(),
             })),
             project,
             pid: std::process::id(),
-            queue_capacity,
+            limits,
             presence: watch::Sender::new(Presence::default()),
+            connections: std::sync::Mutex::default(),
             next_connection: AtomicU64::new(1),
         }
     }
 
-    /// A number for a new connection, and count it as connected.
-    pub fn arrive(&self) -> u64 {
+    fn connections(&self) -> std::sync::MutexGuard<'_, Connections> {
+        self.connections
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Count a new connection as connected, and give it a number; none if the engine is
+    /// ending, and the connection is to be closed at once.
+    pub fn arrive(&self, stop: watch::Sender<bool>) -> Option<u64> {
+        let mut connections = self.connections();
+        if connections.closing {
+            return None;
+        }
+        let id = self.next_connection.fetch_add(1, Ordering::Relaxed);
+        connections.stops.insert(id, stop);
         self.presence.send_modify(|presence| {
             presence.connected += 1;
             presence.arrivals += 1;
         });
-        self.next_connection.fetch_add(1, Ordering::Relaxed)
+        Some(id)
     }
 
     /// Forget a connection that has ended.
     pub async fn leave(&self, id: u64) {
         self.state.lock().await.peers.remove(&id);
+        self.connections().stops.remove(&id);
         self.presence
             .send_modify(|presence| presence.connected -= 1);
     }
 
+    /// Stop every connection, and take no more.
+    pub fn close_all(&self) {
+        let mut connections = self.connections();
+        connections.closing = true;
+        for stop in connections.stops.values() {
+            let _ = stop.send(true);
+        }
+    }
+
     /// Tell every client that the project could not be saved.
     pub async fn report_save_error(&self, message: &str) {
-        log("save_failed", &json!({ "message": message }));
         let line = rpc::notification_line(
             "engine.error",
             &json!({ "message": message, "kind": "save" }),
         );
-        self.state.lock().await.broadcast(&line);
+        let mut state = self.state.lock().await;
+        state.broadcast(&line);
+        let kicked = std::mem::take(&mut state.kicked);
+        drop(state);
+        log("save_failed", &json!({ "message": message }));
+        self.log_kicked(kicked);
+    }
+
+    fn log_kicked(&self, kicked: Vec<(u64, Kind)>) {
+        for (id, kind) in kicked {
+            log_kicked(id, Some(kind), self.limits);
+        }
+    }
+
+    /// Queue the answer to a request, let the state go, and then log what is to be logged. A
+    /// connection that was closed by the notification that went before it is not answered.
+    fn finish(
+        &self,
+        mut state: MutexGuard<'_, State>,
+        connection: &Connection,
+        line: Line,
+    ) -> Reply {
+        let reply = if state.peers.contains_key(&connection.id) {
+            match connection.queue(line) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            }
+        } else {
+            Reply::Refused(Refused::Closed)
+        };
+        let kicked = std::mem::take(&mut state.kicked);
+        drop(state);
+        self.log_kicked(kicked);
+        reply
     }
 }
 
@@ -170,26 +254,17 @@ impl State {
     /// Queue a line on every connection that said hello. A connection whose queue is full is
     /// closed, so that it never misses a single message and then goes on.
     fn broadcast(&mut self, line: &Line) {
-        let mut full = Vec::new();
+        let mut gone = Vec::new();
         for (id, peer) in &self.peers {
-            match peer.queue.try_send(line.clone()) {
-                Ok(()) => {}
-                Err(TrySendError::Full(_)) => full.push((*id, true)),
-                Err(TrySendError::Closed(_)) => full.push((*id, false)),
+            if let Err(refused) = peer.queue.push(line.clone()) {
+                gone.push((*id, refused));
             }
         }
-        for (id, was_full) in full {
+        for (id, refused) in gone {
             if let Some(peer) = self.peers.remove(&id) {
                 let _ = peer.stop.send(true);
-                if was_full {
-                    log(
-                        "kicked",
-                        &json!({
-                            "connection": id,
-                            "client": peer.kind,
-                            "reason": "the client does not read what it is sent, and its queue is full",
-                        }),
-                    );
+                if refused == Refused::Full {
+                    self.kicked.push((id, peer.kind));
                 }
             }
         }
@@ -213,11 +288,6 @@ impl State {
         self.broadcast(&rpc::notification_line("project.changed", &changed));
         done
     }
-
-    /// Whether a connection is still told of changes.
-    fn has(&self, connection: &Connection) -> bool {
-        self.peers.contains_key(&connection.id)
-    }
 }
 
 /// The params of `project.changed`.
@@ -237,7 +307,7 @@ pub enum Reply {
     /// Its answer was queued already, in its order among the notifications.
     Queued,
     /// Its answer could not be queued, and the connection is to be closed.
-    Closed,
+    Refused(Refused),
 }
 
 impl From<Fault> for Reply {
@@ -246,26 +316,15 @@ impl From<Fault> for Reply {
     }
 }
 
-/// Queue the answer to a request while the state is locked. A connection that was closed by
-/// the notification that went before it is not answered.
-fn answer<T: Serialize + ?Sized>(
-    state: &State,
-    connection: &Connection,
-    id: &RawValue,
-    result: &T,
-) -> Reply {
-    if state.has(connection) && connection.queue(rpc::result_line(id, result)) {
-        Reply::Queued
-    } else {
-        Reply::Closed
-    }
-}
-
-/// Answer one line that a client sent. Gives false if the connection is to be closed.
-pub async fn handle(engine: &Engine, connection: &mut Connection, line: &[u8]) -> bool {
+/// Answer one line that a client sent. Gives why the connection is to be closed, if it is.
+pub async fn handle(
+    engine: &Engine,
+    connection: &mut Connection,
+    line: &[u8],
+) -> Result<(), Refused> {
     let line = line.strip_suffix(b"\r").unwrap_or(line);
     if line.iter().all(u8::is_ascii_whitespace) {
-        return true;
+        return Ok(());
     }
     let request = match rpc::parse(line) {
         Ok(request) => request,
@@ -273,15 +332,15 @@ pub async fn handle(engine: &Engine, connection: &mut Connection, line: &[u8]) -
     };
     // The engine takes no notifications from clients.
     let Some(id) = request.id else {
-        return true;
+        return Ok(());
     };
     let reply = match dispatch(engine, connection, id, &request.method, request.params).await {
         Ok(reply) | Err(reply) => reply,
     };
     match reply {
         Reply::Error(fault) => connection.queue(rpc::error_line(Some(id), &fault)),
-        Reply::Queued => true,
-        Reply::Closed => false,
+        Reply::Queued => Ok(()),
+        Reply::Refused(refused) => Err(refused),
     }
 }
 
@@ -370,14 +429,25 @@ async fn hello(
         },
     );
     connection.kind = Some(hello.client);
-    let result = HelloResult {
-        engine: ENGINE_VERSION,
-        protocol: rpc::PROTOCOL,
-        revision: state.history.revision(),
-        project: &engine.project,
-        pid: engine.pid,
-    };
-    Ok(answer(&state, connection, id, &result))
+    let line = rpc::result_line(
+        id,
+        &HelloResult {
+            engine: ENGINE_VERSION,
+            protocol: rpc::PROTOCOL,
+            revision: state.history.revision(),
+            project: &engine.project,
+            pid: engine.pid,
+        },
+    );
+    Ok(engine.finish(state, connection, line))
+}
+
+/// The answer to `project.get`.
+#[derive(Serialize)]
+struct Got<'a> {
+    revision: u64,
+    next_id: u64,
+    project: &'a Project,
 }
 
 /// `project.get`: the whole project, at the revision that it is at.
@@ -390,12 +460,15 @@ async fn project_get(
     rpc::no_params("project.get", params)?;
     let state = engine.state.lock().await;
     let project = state.history.project();
-    let result = json!({
-        "revision": state.history.revision(),
-        "next_id": project.next_id,
-        "project": project,
-    });
-    Ok(answer(&state, connection, id, &result))
+    let line = rpc::result_line(
+        id,
+        &Got {
+            revision: state.history.revision(),
+            next_id: project.next_id,
+            project,
+        },
+    );
+    Ok(engine.finish(state, connection, line))
 }
 
 /// The params of `transaction.apply`.
@@ -447,13 +520,16 @@ async fn transaction_apply(
         .map_err(|error| Fault::refused(&error))?;
     let names = names.finish(&applied.done);
     let done = state.publish(&applied);
-    let result = TransactionResult {
-        revision: applied.revision,
-        done: &done,
-        next_id: applied.next_id,
-        names: &names,
-    };
-    Ok(answer(&state, connection, id, &result))
+    let line = rpc::result_line(
+        id,
+        &TransactionResult {
+            revision: applied.revision,
+            done: &done,
+            next_id: applied.next_id,
+            names: &names,
+        },
+    );
+    Ok(engine.finish(state, connection, line))
 }
 
 /// The answer to `history.undo` and `history.redo` that did something.
@@ -483,14 +559,18 @@ async fn history_step(
     };
     let Some(step) = step else {
         let result = json!({ "revision": state.history.revision(), "done": null });
-        return Ok(answer(&state, connection, id, &result));
+        let line = rpc::result_line(id, &result);
+        return Ok(engine.finish(state, connection, line));
     };
     let applied = step.map_err(|error| Fault::refused(&error))?;
     let done = state.publish(&applied);
-    let result = StepResult {
-        revision: applied.revision,
-        done: &done,
-        next_id: applied.next_id,
-    };
-    Ok(answer(&state, connection, id, &result))
+    let line = rpc::result_line(
+        id,
+        &StepResult {
+            revision: applied.revision,
+            done: &done,
+            next_id: applied.next_id,
+        },
+    );
+    Ok(engine.finish(state, connection, line))
 }

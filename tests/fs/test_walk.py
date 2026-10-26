@@ -85,7 +85,7 @@ async def test_a_file_is_handed_on_with_its_place_and_the_names_that_lead_to_it(
     assert (deep.size, deep.modified_ns) == (status.st_size, status.st_mtime_ns)
 
 
-async def test_the_history_of_a_repository_is_passed_over(
+async def test_the_history_of_a_repository_and_the_worktrees_of_tasks_are_passed_over(
     fs: Fs, session: Session, work: Path
 ) -> None:
     (work / ".git" / "objects").mkdir(parents=True)
@@ -93,11 +93,25 @@ async def test_the_history_of_a_repository_is_passed_over(
     (work / "sub" / ".git").mkdir()
     (work / "sub" / ".git" / "HEAD").write_text("ref")
     (work / ".gitignore").write_text("*.pyc")
+    (work / ".columbina" / "worktrees" / "task").mkdir(parents=True)
+    (work / ".columbina" / "worktrees" / "task" / "a.txt").write_text("a copy")
+    (work / ".columbina" / "notes.txt").write_text("kept")
+    (work / "lib" / "worktrees").mkdir()
+    (work / "lib" / "worktrees" / "e.txt").write_text("not a task")
 
     found, tally = await found_in(fs, session, work)
 
-    assert found == [".gitignore", "a.txt", "z.txt", "lib/d.txt", "sub/b.txt", "sub/deep/c.txt"]
-    assert tally.entries == 9
+    assert found == [
+        ".gitignore",
+        "a.txt",
+        "z.txt",
+        ".columbina/notes.txt",
+        "lib/d.txt",
+        "sub/b.txt",
+        "lib/worktrees/e.txt",
+        "sub/deep/c.txt",
+    ]
+    assert tally.entries == 13
 
 
 async def test_a_link_is_not_followed_wherever_it_leads(

@@ -77,7 +77,7 @@ from pydantic import ValidationError
 
 import columbina
 from columbina import files
-from columbina.apps import FRONTEND, schedules_command, search_key
+from columbina.apps import FRONTEND, schedules_command, search_key, worktrees_command
 from columbina.apps import doctor as health
 from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
@@ -900,6 +900,19 @@ def _reasoning_language(args: argparse.Namespace, home: Path) -> int:
     elif args.language is None:
         print(code or _NO_LANGUAGE)
     return 0
+
+
+def _worktrees(args: argparse.Namespace) -> int:
+    """List the worktrees of the tasks of a project, make one, or end one."""
+    return worktrees_command.run(
+        args.what,
+        getattr(args, "name", None),
+        cwd=Path(args.cwd or ".").resolve(),
+        force=getattr(args, "force", False),
+        as_json=args.json,
+        say=lambda line: print(harmless(line)),
+        answer=_answer,
+    )
 
 
 def _schedules(args: argparse.Namespace, home: Path) -> int:
@@ -2115,6 +2128,30 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="answer in one document of JSON, for another program",
     )
+    apart = commands.add_parser(
+        worktrees_command.WORKTREES,
+        help="list, make, merge or remove the worktrees of git that tasks run in",
+    )
+    apart_whats = apart.add_subparsers(dest="what", metavar="WHAT", required=True)
+    apart_whats.add_parser(worktrees_command.LIST, help="list the worktrees of the project")
+    for what, said in (
+        (worktrees_command.ADD, "make a worktree and a branch for a task"),
+        (worktrees_command.MERGE, "take the work of a task into the project, and end it"),
+        (worktrees_command.REMOVE, "end a task, and drop its work"),
+    ):
+        one = apart_whats.add_parser(what, help=said)
+        one.add_argument("name", metavar="NAME", help="the task")
+        if what == worktrees_command.REMOVE:
+            one.add_argument(
+                "--force", action="store_true", help="drop what was not committed as well"
+            )
+    for one in apart_whats.choices.values():
+        one.add_argument("--cwd", metavar="DIR", help="a directory of the project")
+        one.add_argument(
+            "--json",
+            action="store_true",
+            help="answer in one document of JSON, for another program",
+        )
     planned = commands.add_parser(
         schedules_command.SCHEDULES,
         help="list, add or change the tasks that run at set times while the desktop app is open",
@@ -2218,6 +2255,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _search_key(args, home, env)
         if args.command == schedules_command.SCHEDULES:
             return _schedules(args, home)
+        if args.command == worktrees_command.WORKTREES:
+            return _worktrees(args)
         if args.command == _FEISHU:
             return _feishu(args, home, env)
         if args.command == _WECOM:

@@ -11,7 +11,9 @@ the tool says how much it was not allowed to see.
 A directory is listed while it is held open and after the system has said
 that it is where the walk thinks it is, the same way a file is opened. Links
 are not followed, whatever they lead to: a tree is walked as it lies on the
-disk. Directories that hold the history of a repository are passed over.
+disk. Directories that hold the history of a repository are passed over, and
+so are the worktrees of tasks in ``.columbina/worktrees``: each is a copy of
+the project, see :mod:`columbina.worktrees`.
 
 The walk looks at one directory at a time, in a worker thread, and decides
 about what it found in the event loop. So it can be cancelled between two
@@ -135,7 +137,10 @@ async def walk(
         for entry in listed:
             if entry.kind not in ("file", "directory"):
                 continue
-            if entry.kind == "directory" and entry.name in SKIPPED:
+            if entry.kind == "directory" and (
+                entry.name in SKIPPED
+                or (entry.name == "worktrees" and directory.path.name == ".columbina")
+            ):
                 continue
             if tally.entries >= limit:
                 tally.cut_short = True

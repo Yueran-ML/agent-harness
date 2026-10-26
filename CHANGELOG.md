@@ -6,6 +6,14 @@ change what was there before.
 
 ## Unreleased
 
+- A task can run in a worktree of git of its own, so that it changes no file that the user works
+  on and two tasks change none of each other's. `columbina worktrees add NAME` makes one in
+  `.columbina/worktrees/NAME` of the project, on a branch `columbina/NAME`, and git is told to pass
+  the directory over. Of what git passes over, the worktree is given what the project lists in
+  `.worktreeinclude`, a pattern on each line, such as `.env` or `node_modules`. `merge NAME`
+  commits what is left, takes the work into the branch of the project and ends the worktree;
+  where it conflicts, nothing changes. `remove NAME` ends it with its work, and `list` lists them,
+  with `--json` for another program. The searches of the tools pass the worktrees over.
 - `columbina acp` holds conversations for an editor such as Zed, over the Agent Client Protocol on
   its standard input and output. The editor begins sessions in the directories it names, and
   several may be open at once. The reply and the thinking are told as they are written, and so is

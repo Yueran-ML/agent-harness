@@ -37,6 +37,8 @@
 //! may make it later. One with a lower number is kept if no thing of its kind holds it: the
 //! engine never makes that number again, so the id is the thing's alone. It may be one that the
 //! engine made and the inverse of an operation carries back, or one that a client chose itself.
+//! An id that starts with `$` is refused, in an operation and in a project that is read: such
+//! ids are the names that live for one transaction, which the engine puts real ids in place of.
 //!
 //! `next_id` never goes back: not when an operation is refused, and not when one is taken back.
 //! So an id that the engine makes for media, a timeline or a clip is never made again, and is
@@ -283,6 +285,14 @@ pub enum OpError {
     /// The engine has made every id that it can, since `next_id` cannot go past [`LARGEST`].
     #[error("the engine has made all the ids it can")]
     IdsExhausted,
+    /// An id that a thing is given starts with `$`. Only the names that live for one transaction
+    /// start so (see the engine's protocol): no thing keeps one, since no later transaction
+    /// could name it.
+    #[error("the id {id} starts with $, as only a name of a transaction does")]
+    Dollar {
+        /// The id.
+        id: Id,
+    },
     /// A thing of a project that is read has an empty id. A thing that an operation adds with an
     /// empty id is given one, so an operation never gives this.
     #[error("the thing has no id")]
@@ -333,6 +343,7 @@ enum Fields {
     NegativeDuration { ticks: i64 },
     Reserved { id: Id },
     IdsExhausted,
+    Dollar { id: Id },
     NoId,
 }
 
@@ -724,9 +735,13 @@ impl Counter {
         }
     }
 
-    /// Check an id that a thing is given: one of the shape of the ids that the engine makes is
-    /// refused if its number is one that the engine has not made yet.
+    /// Check an id that a thing is given: one that starts with `$` is refused, and one of the
+    /// shape of the ids that the engine makes is refused if its number is one that the engine
+    /// has not made yet.
     fn check(&self, id: &str) -> Result<(), OpError> {
+        if id.starts_with('$') {
+            return Err(OpError::Dollar { id: id.into() });
+        }
         match engine_number(id) {
             Some(number) if number >= self.next => Err(OpError::Reserved { id: id.into() }),
             _ => Ok(()),
@@ -1128,6 +1143,8 @@ impl Project {
 fn named<'a>(what: &'static str, id: &'a str, ids: &mut HashSet<&'a str>) -> Result<(), Invalid> {
     let error = if id.is_empty() {
         OpError::NoId
+    } else if id.starts_with('$') {
+        OpError::Dollar { id: id.into() }
     } else if !ids.insert(id) {
         taken(what, id)
     } else {
@@ -1498,6 +1515,68 @@ mod tests {
             apply(&mut project, insert("V1", clip(id, "m1", start, 10))).unwrap();
         }
         assert_eq!(project.next_id, 3);
+    }
+
+    #[test]
+    fn an_id_that_starts_with_a_dollar_is_never_given_nor_read() {
+        let dollar = |id: &str| OpError::Dollar { id: id.into() };
+        assert_eq!(
+            refused(insert("V1", clip("$c", "m1", 100, 10))),
+            dollar("$c")
+        );
+        assert_eq!(
+            refused(Op::AddMedia {
+                media: media("$m", true, true),
+                index: None,
+            }),
+            dollar("$m")
+        );
+        let nested = |timeline_id: &str, track_id: &str, clip_id: &str| Op::AddTimeline {
+            timeline: timeline(
+                timeline_id,
+                vec![track(
+                    track_id,
+                    TrackKind::Video,
+                    vec![clip(clip_id, "m1", 0, 10)],
+                )],
+            ),
+            index: None,
+        };
+        assert_eq!(refused(nested("$t", "", "")), dollar("$t"));
+        assert_eq!(refused(nested("", "$v", "")), dollar("$v"));
+        assert_eq!(refused(nested("", "", "$c")), dollar("$c"));
+        assert_eq!(
+            refused(Op::AddTrack {
+                timeline: "t1".into(),
+                track: track("$a", TrackKind::Audio, vec![]),
+                index: None,
+            }),
+            dollar("$a")
+        );
+        assert_eq!(
+            dollar("$x").to_string(),
+            "the id $x starts with $, as only a name of a transaction does"
+        );
+
+        // Nor is a project read that has one.
+        for (pointer, what) in [
+            ("/media/0/id", "media"),
+            ("/timelines/0/id", "timeline"),
+            ("/timelines/0/tracks/1/id", "track"),
+            ("/timelines/0/tracks/0/clips/0/id", "clip"),
+        ] {
+            let mut value = serde_json::to_value(Project::sample()).unwrap();
+            *value.pointer_mut(pointer).unwrap() = "$x".into();
+            let error = Project::from_value(value).unwrap_err();
+            let ReadError::Invalid(invalid) = error else {
+                panic!("{pointer}: {error}")
+            };
+            assert_eq!(
+                (invalid.what, invalid.error),
+                (what, dollar("$x")),
+                "{pointer}"
+            );
+        }
     }
 
     #[test]
@@ -2231,6 +2310,7 @@ mod tests {
             (OpError::NegativeDuration { ticks: -1 }, "negative_duration"),
             (OpError::Reserved { id: id() }, "reserved"),
             (OpError::IdsExhausted, "ids_exhausted"),
+            (OpError::Dollar { id: id() }, "dollar"),
             (OpError::NoId, "no_id"),
             (
                 OpError::Scale {

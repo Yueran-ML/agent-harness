@@ -3,8 +3,9 @@
 It is run as a program, with the arguments that ``docker`` would get, and
 answers the few commands that the provider of the sandbox uses: ``info``,
 ``image inspect``, ``run``, ``exec``, ``ps``, ``rm`` and ``network``. A container
-that is run detached, the proxy of a network that is allowed, is only noted. A container is a process of this
-program that reads its input to the end, as the real one does. A command in a
+that is run detached, the proxy of a network that is allowed, is only noted.
+A container is a process of this program that reads its input to the end, as
+the real one does. A command in a
 container is run on this machine, in the directory that was mounted where
 the command is to run.
 

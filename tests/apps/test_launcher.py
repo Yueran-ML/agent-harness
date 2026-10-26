@@ -1146,7 +1146,7 @@ def test_the_program_that_serves_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-14:] == [
+    assert list(entries)[-15:] == [
         "commands",
         "command-tools",
         "command-permissions",
@@ -1160,6 +1160,7 @@ def test_the_program_that_serves_can_be_printed_instead_of_run(
         "command-todos",
         "command-skills",
         "command-mcp",
+        "schedules",
         "frontend",
     ]
     assert entries["frontend"] == {

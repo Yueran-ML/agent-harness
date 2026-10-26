@@ -16,6 +16,7 @@ from columbina.apps.serve import server as server_module
 from columbina.apps.serve.rpc import CANNOT_OPEN, INVALID_PARAMS, NO_SESSION
 from columbina.llm import TextBlock, UserMessage
 from columbina.llm.adapters.scripted import Reply
+from columbina.schedules import SCHEDULE_DONE, Done
 from columbina.session import (
     EventData,
     Listed,
@@ -671,3 +672,14 @@ async def test_what_is_asked_of_a_session_is_refused_while_none_is_open(
     await served.greeted()
 
     assert await served.far.refusal(method, params) == NO_SESSION_OPEN
+
+
+async def test_a_task_that_ran_at_its_time_is_told(served: Served) -> None:
+    await served.greeted()
+
+    served.harness.ctx.emit(SCHEDULE_DONE, Done("t1", "news", "s-9", "completed"))
+    await asyncio.sleep(0)
+
+    assert served.far.told("schedule.done") == [
+        {"id": "t1", "name": "news", "session_id": "s-9", "end": "completed"}
+    ]

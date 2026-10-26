@@ -34,6 +34,15 @@ patch:
         plugin: columbina.commands.skills
       - id: command-mcp
         plugin: columbina.commands.mcp
+      # The tasks that run at set times, while the service runs: `columbina schedules`.
+      - id: schedules
+        plugin: columbina.schedules
+        config:
+          home: ${COLUMBINA_HOME}
+          model:
+            provider: deepseek
+            model: ${COLUMBINA_MODEL:-deepseek-flash}
+            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}
       - id: frontend
         plugin: columbina.apps.serve
         config:

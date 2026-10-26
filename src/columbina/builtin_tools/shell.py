@@ -51,7 +51,8 @@ spaces in its path, and nothing is left behind.
 The fixed line first sets the encoding of the console to UTF-8, in both
 directions. PowerShell writes in whatever encoding the console has at that
 moment. It also has the cmdlets that read files, such as ``Get-Content``,
-read UTF-8, which they would otherwise not do for a file without a mark. After the command it leaves with the exit code of the program that
+read UTF-8, which they would otherwise not do for a file without a mark.
+After the command it leaves with the exit code of the program that
 ran last, if that program failed, and with 1 if a cmdlet failed last. That
 has to be asked inside the text of the command, because from outside a
 block always looks like a success. So one line is put after the command.

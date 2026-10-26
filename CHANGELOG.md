@@ -6,6 +6,14 @@ change what was there before.
 
 ## Unreleased
 
+- Tasks run at set times while the desktop application is open: every so many minutes, every hour
+  at a minute, every day at a time, or every week on a day at a time. `columbina schedules add`
+  adds one with a name, a working directory and a prompt, and `list`, `remove`, `enable` and
+  `disable` do the rest, with `--json` for another program. A task runs in a session of its own,
+  in the mode of `workspace-write`, and nobody is asked anything: a call that needs a yes does not
+  run. A time that was missed while nothing ran is made up for once, or passed over where the
+  task says so. How each run ended is written beside the task, and the service tells the
+  interface with `schedule.done`. The plugin is `columbina.schedules`.
 - The assistant in QQ remembers for each group. Whoever writes in a group may ask it to remember
   something, and it writes that down with the tool `remember`, in the memory of that group and no
   other file, up to 4000 characters; when the memory is full it is written anew, shorter. The

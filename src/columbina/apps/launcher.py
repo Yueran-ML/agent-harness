@@ -77,7 +77,7 @@ from pydantic import ValidationError
 
 import columbina
 from columbina import files
-from columbina.apps import FRONTEND, search_key
+from columbina.apps import FRONTEND, schedules_command, search_key
 from columbina.apps import doctor as health
 from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
@@ -899,6 +899,25 @@ def _reasoning_language(args: argparse.Namespace, home: Path) -> int:
     elif args.language is None:
         print(code or _NO_LANGUAGE)
     return 0
+
+
+def _schedules(args: argparse.Namespace, home: Path) -> int:
+    """List, add or change the tasks that run at set times."""
+    given = {
+        key: getattr(args, key, None)
+        for key in ("id", "name", "cwd", "prompt", "every", "minutes", "at", "weekday", "missed")
+    }
+    if given["cwd"] is not None:
+        given["cwd"] = str(Path(str(given["cwd"])).resolve())
+    return schedules_command.run(
+        args.what,
+        given,
+        home=home,
+        as_json=args.json,
+        now_ms=round(time.time() * 1000),
+        say=lambda line: print(harmless(line)),
+        answer=_answer,
+    )
 
 
 def _unseen(question: str) -> str:
@@ -2090,6 +2109,40 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="answer in one document of JSON, for another program",
     )
+    planned = commands.add_parser(
+        schedules_command.SCHEDULES,
+        help="list, add or change the tasks that run at set times while the desktop app is open",
+    )
+    planned_whats = planned.add_subparsers(dest="what", metavar="WHAT", required=True)
+    planned_whats.add_parser(schedules_command.LIST, help="list the tasks")
+    adding = planned_whats.add_parser(schedules_command.ADD, help="add a task")
+    adding.add_argument("--name", required=True, help="what the task is called")
+    adding.add_argument("--cwd", required=True, metavar="DIR", help="where it runs")
+    adding.add_argument("--prompt", required=True, help="what the agent is asked")
+    adding.add_argument(
+        "--every", required=True, choices=["minutes", "hour", "day", "week"], help="how often"
+    )
+    adding.add_argument("--minutes", type=int, help="every how many minutes, 5 at least")
+    adding.add_argument("--at", help="HH:MM for a day or a week, :MM for an hour")
+    adding.add_argument("--weekday", choices=["mon", "tue", "wed", "thu", "fri", "sat", "sun"])
+    adding.add_argument(
+        "--missed",
+        choices=["run", "skip"],
+        help="run once a time that was missed, or pass it over; run by default",
+    )
+    for what, said in (
+        (schedules_command.REMOVE, "take a task away"),
+        (schedules_command.ENABLE, "have a task run"),
+        (schedules_command.DISABLE, "have a task not run"),
+    ):
+        changing = planned_whats.add_parser(what, help=said)
+        changing.add_argument("id", metavar="ID")
+    for one in planned_whats.choices.values():
+        one.add_argument(
+            "--json",
+            action="store_true",
+            help="answer in one document of JSON, for another program",
+        )
     searching = commands.add_parser(
         search_key.SEARCH_KEY,
         help="keep or delete the key of a service that searches the web, or say which are kept",
@@ -2157,6 +2210,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _reasoning_language(args, home)
         if args.command == search_key.SEARCH_KEY:
             return _search_key(args, home, env)
+        if args.command == schedules_command.SCHEDULES:
+            return _schedules(args, home)
         if args.command == _FEISHU:
             return _feishu(args, home, env)
         if args.command == _WECOM:

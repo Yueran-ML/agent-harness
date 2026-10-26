@@ -95,6 +95,7 @@ from columbina.permissions import PERMISSIONS
 from columbina.plan import planning
 from columbina.prices import SPENDING
 from columbina.sandbox import SANDBOX
+from columbina.schedules import SCHEDULE_DONE, Done
 from columbina.session import (
     SESSION_EVENT,
     TURN,
@@ -293,6 +294,7 @@ class Server:
             0 when the other side left, 1 if a session of this run could not
             be written to its end, and 2 if there is no wire to speak over.
         """
+        self._ctx.on(SCHEDULE_DONE, self._scheduled)
         wire = self._ctx.get(WIRE)
         if wire is None:
             try:
@@ -848,6 +850,22 @@ class Server:
         return {
             currency: round(amount, 6) for currency, amount in spending.of(session).money.items()
         }
+
+    def _scheduled(self, done: Done) -> None:
+        """Tell the interface that a task that runs at set times has run."""
+        self._send(
+            told(
+                "schedule.done",
+                text(
+                    {
+                        "id": done.id,
+                        "name": done.name,
+                        "session_id": done.session_id,
+                        "end": done.end,
+                    }
+                ),
+            )
+        )
 
     # Questions
 

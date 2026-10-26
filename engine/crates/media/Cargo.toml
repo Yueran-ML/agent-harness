@@ -1,0 +1,17 @@
+[package]
+name = "columbina-media"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+columbina-model = { path = "../model" }
+ffmpeg-next.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

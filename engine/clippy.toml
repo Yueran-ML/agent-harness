@@ -1,0 +1,2 @@
+# Names in the docs that are names, not code.
+doc-valid-idents = ["FFmpeg", "VideoToolbox", "CbCr", "ProRes", ".."]

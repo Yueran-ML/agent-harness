@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/model", "crates/store", "crates/server"]
+members = ["crates/model", "crates/store", "crates/server", "crates/media"]
 
 [workspace.package]
 edition = "2021"
@@ -19,6 +19,8 @@ tokio = { version = "1", features = ["full"] }
 interprocess = { version = "2", features = ["tokio"] }
 memchr = "2"
 sha2 = "0.10"
+# libav (FFmpeg's libraries), linked against an LGPL shared build: see crates/media.
+ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-scaling"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

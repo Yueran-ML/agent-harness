@@ -169,6 +169,20 @@ async def test_taking_a_source_in_again_changes_nothing_unless_it_is_another_fil
     assert [one.id for one in work.manifest().assets] == ["land"]
 
 
+async def test_the_frame_of_the_film_stays_when_its_first_source_changes(
+    tmp_path: Path, tools: Tools
+) -> None:
+    source = landscape(tmp_path)
+    work = Project(tmp_path / "film")
+    await work.imported([source], tools)
+
+    source.write_bytes(upright(tmp_path / "other").read_bytes())
+    changed = await work.imported([source], tools)
+
+    assert [one.id for one in changed.changed] == ["land"]
+    assert work.manifest().canvas == Canvas(width=320, height=180, rate="30/1")
+
+
 async def test_what_is_no_source_is_not_taken_in(tmp_path: Path, tools: Tools) -> None:
     text = tmp_path / "notes.txt"
     text.write_text("no film", encoding="utf-8")

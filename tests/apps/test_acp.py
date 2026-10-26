@@ -305,6 +305,28 @@ async def test_a_prompt_that_is_cancelled_is_answered_so(editor: Editor) -> None
     assert second == (INVALID_REQUEST, "The session answers a prompt already.")
 
 
+async def test_a_prompt_that_is_cancelled_as_its_turn_ends_is_answered_so(
+    editor: Editor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    editor.harness.model.add(Reply(text="done", hold=True))
+    session = await editor.session()
+    asked = editor.far.ask(
+        "session/prompt", {"sessionId": session, "prompt": [{"type": "text", "text": "Go."}]}
+    )
+    await asyncio.wait_for(editor.harness.model.held(), 5)
+
+    # The cancel comes too late to stop anything: the turn ends as it would have.
+    def too_late(why: str) -> None:
+        editor.harness.model.release()
+
+    monkeypatch.setattr(editor.agent(), "cancel", too_late)
+
+    editor.far.say({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}})
+
+    answer = await editor.far.answer(asked)
+    assert answer["result"] == {"stopReason": "cancelled"}
+
+
 async def test_a_prompt_whose_turn_fails_is_refused_with_why(editor: Editor) -> None:
     failure = LlmFailure(message="the key is not valid", code="AUTH", status=401)
     editor.harness.model.add(Reply(failure=failure))

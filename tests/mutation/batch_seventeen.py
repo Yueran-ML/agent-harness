@@ -1365,14 +1365,6 @@ _SHELLS_UTF8 = (
             "",
         )
     ),
-    on_windows(
-        mutant(
-            "select-string reads in the code page of the system",
-            SHELLS_UTF8,
-            "        \"$PSDefaultParameterValues['Select-String:Encoding'] = 'UTF8'; \"\n",
-            "",
-        )
-    ),
 )
 
 

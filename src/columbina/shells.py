@@ -25,14 +25,14 @@ if sys.platform == "win32":  # pragma: windows only
         "[Console]::OutputEncoding = [Console]::InputEncoding; "
         "$OutputEncoding = [Console]::InputEncoding; "
         "$PSDefaultParameterValues['Get-Content:Encoding'] = 'UTF8'; "
-        "$PSDefaultParameterValues['Select-String:Encoding'] = 'UTF8'; "
         "$PSDefaultParameterValues['Import-Csv:Encoding'] = 'UTF8'"
     )
     """What a script begins with, so that text goes in and comes out as UTF-8.
 
     Windows PowerShell reads a file without a mark of its encoding in the code
     page of the system, and a file of UTF-8 in Chinese comes out garbled. So
-    the cmdlets that read text read UTF-8 unless they are told otherwise. What
+    the cmdlets that read text read UTF-8 unless they are told otherwise
+    (Select-String does so already). What
     writes is left as it is: in this PowerShell UTF-8 is written with a mark.
     """
 

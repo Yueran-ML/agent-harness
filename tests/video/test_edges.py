@@ -129,6 +129,24 @@ async def test_a_word_that_was_corrected_in_a_story_that_was_changed_stays_as_it
     assert "one two." in story.read_text(encoding="utf-8")
 
 
+async def test_a_word_that_is_in_a_sentence_twice_is_not_corrected(
+    tmp_path: Path, tools: Tools, raw: Path
+) -> None:
+    twice = [
+        (200_000, 800_000, "one"),
+        (900_000, 1_600_000, "one."),
+        (2_400_000, 3_000_000, "two."),
+    ]
+    written = [{"start_us": start, "end_us": end, "text": text} for start, end, text in twice]
+    (raw / "twice.json").write_text(json.dumps(written), encoding="utf-8")
+    editor = Editor(tmp_path / "film", tools, Scripted(raw / "twice.json"))
+    await editor.imported([raw / "talk.mp4"])
+    await editor.transcribed("talk")
+
+    with pytest.raises(ProjectError, match=r'"one" is more than once a word of talk.0'):
+        await editor.corrected("talk.0", "one", "1")
+
+
 async def test_a_story_without_its_first_line_is_left_alone(
     tmp_path: Path, tools: Tools, raw: Path
 ) -> None:
@@ -209,7 +227,7 @@ async def test_a_film_that_is_not_the_plan_is_not_kept(
         )
 
     monkeypatch.setattr(media, "probed", short)
-    with pytest.raises(RenderError, match="It was not kept"):
+    with pytest.raises(RenderError, match=r"the film lasts 0\.000 s"):
         await rendered(editor.project, tools, timeline, transcripts, quiet, "preview", "x")
 
     async def silent(*args: object, **more: object) -> Facts:

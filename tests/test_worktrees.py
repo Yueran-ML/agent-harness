@@ -56,6 +56,16 @@ def test_a_worktree_is_made_for_a_task_with_what_the_project_lists(project: Path
     assert git(project, "status", "--porcelain") == "?? .worktreeinclude"
 
 
+def test_the_worktrees_are_not_copied_into_a_worktree(project: Path) -> None:
+    made(git_of(), project, "one")
+    (project / ".worktreeinclude").write_text(".columbina/*\n.env\n", encoding="utf-8")
+
+    two = made(git_of(), project, "two")
+
+    assert two.copied == (".env",)
+    assert not (two.path / ".columbina").exists()
+
+
 def test_git_is_told_once_to_pass_the_worktrees_over(project: Path) -> None:
     exclude = project / ".git" / "info" / "exclude"
     exclude.write_text("*.log", encoding="utf-8")

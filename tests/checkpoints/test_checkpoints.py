@@ -295,6 +295,7 @@ async def test_git_is_not_told_where_to_look_by_the_environment(
 
     assert len(checkpoints_of(agent.session)) == 3
     assert not project.exists()
+    assert not (tmp_path / "index").exists()
     assert os.environ["GIT_DIR"] == str(project)
 
 

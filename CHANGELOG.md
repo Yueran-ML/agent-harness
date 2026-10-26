@@ -6,6 +6,14 @@ change what was there before.
 
 ## Unreleased
 
+- The agent reads the web. `web_fetch` takes a page and gives the model what a reader sees of it,
+  in the shape of Markdown, and plain text, JSON or XML as it stands. `web_search` searches the
+  web and gives the titles, addresses and a few lines of the results: by DuckDuckGo, which needs
+  no key, or by Tavily or Brave, whose key is kept with `columbina search-key` or given in
+  `TAVILY_API_KEY` or `BRAVE_API_KEY`. Both only read and run without a question unless a rule
+  asks for one, and the model is told before every page that it is material and not
+  instructions. A place of this machine or of its own networks is not asked for a page, nor is
+  one that a page redirects to. Every program loads the plugin `columbina.web`.
 - A call that is made again in a turn, with the same tool and the same arguments and nothing
   written or run in between, gives what it gave before. The plugin `columbina.guard.repeats`
   tells the model so beside the result the third time, and the fifth time the call does not run,

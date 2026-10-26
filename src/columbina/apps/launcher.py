@@ -76,7 +76,7 @@ import yaml
 from pydantic import ValidationError
 
 import columbina
-from columbina.apps import FRONTEND
+from columbina.apps import FRONTEND, search_key
 from columbina.apps import doctor as health
 from columbina.apps import hooks as written_hooks
 from columbina.apps import sessions as stored_sessions
@@ -112,6 +112,7 @@ from columbina.qq import setup as qq_setup
 from columbina.qq import store as qq_store
 from columbina.qq.app import QqError
 from columbina.session import SESSIONS, SessionError
+from columbina.web import keys as web_keys
 from columbina.wecom import setup as wecom_setup
 from columbina.wecom import store as wecom_store
 from columbina.wecom.app import WecomError
@@ -871,6 +872,30 @@ def _reasoning_language(args: argparse.Namespace, home: Path) -> int:
     elif args.language is None:
         print(code or _NO_LANGUAGE)
     return 0
+
+
+def _unseen(question: str) -> str:
+    """Ask for something at the terminal without showing what is typed."""
+    return getpass.getpass(harmless(question))
+
+
+def _search_key(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
+    """Keep or delete the key of a service that searches the web, or say which are kept."""
+    if args.forget and args.service is None:
+        raise _UsageError("--forget names the service whose key is deleted")
+    at_a_terminal = sys.stdin.isatty()
+    return search_key.run(
+        args.service,
+        forget=args.forget,
+        as_json=args.json,
+        home=home,
+        env=env,
+        ask_unseen=_unseen if at_a_terminal else None,
+        read_input=sys.stdin.read,
+        say=lambda line: print(harmless(line)),
+        answer=_answer,
+        tell=_tell,
+    )
 
 
 def _doctor(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> int:
@@ -1953,6 +1978,24 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="answer in one document of JSON, for another program",
     )
+    searching = commands.add_parser(
+        search_key.SEARCH_KEY,
+        help="keep or delete the key of a service that searches the web, or say which are kept",
+    )
+    searching.add_argument(
+        "service",
+        nargs="?",
+        choices=list(web_keys.KEYED),
+        help="the service whose key is kept; without it, what is kept is said",
+    )
+    searching.add_argument(
+        "--forget", action="store_true", help="delete the key that is kept for the service"
+    )
+    searching.add_argument(
+        "--json",
+        action="store_true",
+        help="answer in one document of JSON, for another program",
+    )
     return parser
 
 
@@ -2000,6 +2043,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _balance(args, home, env)
         if args.command == _REASONING_LANGUAGE:
             return _reasoning_language(args, home)
+        if args.command == search_key.SEARCH_KEY:
+            return _search_key(args, home, env)
         if args.command == _FEISHU:
             return _feishu(args, home, env)
         if args.command == _WECOM:

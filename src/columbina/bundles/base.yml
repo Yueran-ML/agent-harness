@@ -28,6 +28,12 @@ patch:
         plugin: columbina.builtin_tools.grep
       - id: tool-shell
         plugin: columbina.builtin_tools.shell
+      # Pages of the web and searches of it. A key of Tavily or Brave, kept with
+      # `columbina search-key`, has the searches go there; without one DuckDuckGo is asked.
+      - id: web
+        plugin: columbina.web
+        config:
+          home: ${COLUMBINA_HOME}
       # The tools of GitHub, in the name of whoever signed in with `columbina login github`.
       - id: github
         plugin: columbina.github.tools

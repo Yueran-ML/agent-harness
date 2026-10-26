@@ -34,6 +34,10 @@ patch:
         plugin: columbina.web
         config:
           home: ${COLUMBINA_HOME}
+      # Language servers: what they say is wrong after a change of a file, and the tool lsp
+      # that asks where a name is defined or used. A server that is not installed is not used.
+      - id: lsp
+        plugin: columbina.lsp
       # The tools of GitHub, in the name of whoever signed in with `columbina login github`.
       - id: github
         plugin: columbina.github.tools

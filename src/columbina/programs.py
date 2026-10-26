@@ -123,7 +123,9 @@ def trusted(program: Path, outside: Sequence[Path]) -> bool:
     return True
 
 
-def found(name: str, search: str, outside: Sequence[Path] = ()) -> str | None:
+def found(
+    name: str, search: str, outside: Sequence[Path] = (), *, windows: Sequence[str] = (".exe",)
+) -> str | None:
     """Return the path of a program that a search path leads to, or ``None``.
 
     Args:
@@ -133,15 +135,19 @@ def found(name: str, search: str, outside: Sequence[Path] = ()) -> str | None:
         outside: Directories that the program must not come from, and that
             no link on the way to it may lie in: the directory that this
             program was started in, and the working directory of a session.
+        windows: The endings that the name of the program may have on
+            Windows, the one to look for first first. A program that npm
+            installs there is a ``.cmd``.
     """
-    file = f"{name}.exe" if sys.platform == "win32" else name
+    files = [f"{name}{ending}" for ending in windows] if sys.platform == "win32" else [name]
     apart = [Path(os.path.realpath(directory)) for directory in outside]
     for written in search.split(os.pathsep):
         entry = Path(written.strip('"'))
-        program = entry / file
         # An entry that is no whole path means a place below the current directory.
         if not entry.is_absolute():
             continue
-        if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):
-            return str(program)
+        for file in files:
+            program = entry / file
+            if program.is_file() and os.access(program, os.X_OK) and trusted(program, apart):
+                return str(program)
     return None

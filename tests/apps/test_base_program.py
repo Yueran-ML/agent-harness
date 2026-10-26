@@ -126,6 +126,7 @@ def test_the_model_is_offered_the_tools_of_the_base_program(program: Program) ->
     assert program.offered() == [
         "web_fetch",
         "web_search",
+        "lsp",
         "read",
         "write",
         "edit",
@@ -371,6 +372,7 @@ def test_without_the_permissions_and_the_shell_tool_the_other_tools_are_there(
     assert program.offered() == [
         "web_fetch",
         "web_search",
+        "lsp",
         "read",
         "write",
         "edit",

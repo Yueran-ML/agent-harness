@@ -6,6 +6,15 @@ change what was there before.
 
 ## Unreleased
 
+- Language servers say what is wrong after a change. When a tool has changed a file of Python,
+  TypeScript, JavaScript, Rust or Go, the server of its language is shown it, and what it says is
+  wrong is put after the result: errors first, at most 20. The tool `lsp` asks the server where a
+  name is defined or used, what it is, which names a file defines, or what is wrong in it. The
+  first server of a language that is on the search path is started when it is first needed:
+  basedpyright, Pyright or pylsp, typescript-language-server, rust-analyzer, gopls; the config may
+  name others. None is taken from the working directory. The plugin is `columbina.lsp`.
+- `programs.found` looks for other endings than `.exe` on Windows where it is asked to, such as the
+  `.cmd` that npm installs.
 - The model sees pictures. The tool `read` gives a file of PNG, JPEG, GIF or WebP back whole, as
   its bytes say and not as its name does, up to 3.75 MB, beside a line that says what it is and how
   large. Anthropic is shown it in the result of the call, and a service over the protocol of

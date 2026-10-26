@@ -1,0 +1,21 @@
+[package]
+name = "columbina-store"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+columbina-model = { path = "../model" }
+humantime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Project::sample, a small project to save and read back.
+columbina-model = { path = "../model", features = ["sample"] }
+tempfile.workspace = true

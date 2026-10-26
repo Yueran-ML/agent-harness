@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/model"]
+members = ["crates/model", "crates/store"]
 
 [workspace.package]
 edition = "2021"
@@ -12,6 +12,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 proptest = "1"
+# Whether a process is running, and when it began: for the lock of a project.
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+# Times in RFC 3339.
+humantime = "2"
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

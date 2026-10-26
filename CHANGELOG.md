@@ -6,6 +6,24 @@ change what was there before.
 
 ## Unreleased
 
+- The files of the working directory are kept before every turn of a conversation, with git, in
+  a repository of their own in the home of the program, and the repository of the project is not
+  touched. `/rewind` lists the turns, `/rewind N` puts the files back as they stood before turn N
+  and has the conversation go on in a copy of the session that ends before it, and `/rewind N
+  files` or `/rewind N conversation` does one of the two. `/rewind back` undoes putting the files
+  back. What the project ignores is not kept, nor what lies outside the working directory. The
+  plugin is `columbina.checkpoints`; without git nothing is kept.
+- What the requests cost in money is worked out by the price lists of DeepSeek and Anthropic, as
+  they were on 2026-10-26, and by the prices of the user in `prices.yml` in the home of the
+  program. DeepSeek costs twice as much at the hours of most use. The status line of the terminal
+  says what the conversation has cost, and the status of the service says it as `spent`.
+- `/verdict right` or `/verdict wrong`, with a note, says whether the last turn did what was asked,
+  and is written into the log.
+- `columbina sessions stats` counts how the tasks of the sessions of a directory went, or of all of
+  them with `--all`, over the last 30 days or `--days N`: how turns ended, what was said of them,
+  how the turns of subagents ended, what the requests cost, and what was wasted: calls that
+  failed, by their codes, calls made again with nothing changed, and files read again unchanged.
+  `--json` says it for a program.
 - `columbina run --output-schema FILE` has the answer fit a JSON Schema, for a program that reads
   it. The model is told the schema with the task; an answer that is no such JSON is sent back with
   what is wrong, twice at most, and one that fits is printed as one line of JSON, and as `output`

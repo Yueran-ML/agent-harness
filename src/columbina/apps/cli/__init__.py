@@ -65,6 +65,7 @@ from columbina.commands import COMMANDS, SWITCH, Command, Commands, Opener, is_c
 from columbina.kernel import Context, Next
 from columbina.llm import CallConfig
 from columbina.permissions import PERMISSIONS
+from columbina.prices import SPENDING
 from columbina.sandbox import SANDBOX
 from columbina.session import (
     SESSION_EVENT,
@@ -245,6 +246,7 @@ class Cli:
             busy=self._prompt.busy,
             mode=mode,
             meter=self._ctx.get(TOKEN_METER),
+            spending=self._ctx.get(SPENDING),
         )
 
     async def leave(self, agent: Agent, rest: str) -> str:

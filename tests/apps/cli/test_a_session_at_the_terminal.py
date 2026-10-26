@@ -169,11 +169,14 @@ def test_the_program_that_is_shipped_has_its_commands(
         "/model        Show the model, or name another.\n"
         "/new          End this session and begin another one.\n"
         "/permissions  Show what the session may do, or change it to a preset.\n"
+        "/rewind       Go back to before a turn: /rewind [N [files|conversation]], /rewind back.\n"
         "/sessions     List the sessions of this directory.\n"
         "/skill        Hand a skill to the agent: /skill NAME [TASK].\n"
         "/skills       List the skills, and what cannot be used as one.\n"
         "/todos        Show the list of things to do that the agent keeps.\n"
         "/tools        List the tools of the agent, and how their calls went.\n"
+        "/verdict      Say whether the last turn did what was asked: /verdict right|wrong "
+        "[NOTE].\n"
     ) in printed()
 
 

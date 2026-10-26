@@ -12,7 +12,8 @@ What happens, turn by turn:
 
 1. A mistake in a file is found and mended. The model writes down what it
    means to do, the user says something on the way, one request fails and is
-   made again, and a command is asked about and allowed.
+   made again, and a command is asked about and allowed. The user says that
+   the turn did what was asked.
 2. A command is asked about and refused, and the user stops the reply.
 3. The program is left and the session taken up again. A question is handed
    to a subagent. Two commands say a lot, and the conversation is made
@@ -36,6 +37,7 @@ import pytest
 from pydantic import BaseModel
 
 import columbina.approval
+import columbina.checkpoints
 import columbina.compaction.basic
 import columbina.fs
 import columbina.hooks
@@ -46,11 +48,12 @@ import columbina.subagents
 import columbina.subagents.spawn
 import columbina.todo
 import columbina.token_meter
-from columbina import shells
+from columbina import shells, verdicts
 from columbina.agent import Agent, AgentSpec, ContextSource
 from columbina.approval import APPROVAL_ASK, ApprovalRequest, Outcome
 from columbina.apps.common import DEFAULT_PROMPT
 from columbina.builtin_tools import edit, read, subagent
+from columbina.checkpoints import Checkpoints
 from columbina.compaction import COMPACTION, CompactionEndEvent
 from columbina.hooks.config import Hook
 from columbina.hooks.run import Result
@@ -230,6 +233,15 @@ async def toured(
     await ctx.plugin(columbina.subagents)
     await ctx.plugin(columbina.subagents.spawn)
     await ctx.plugin(subagent)
+    await ctx.plugin(verdicts)
+
+    # The files are kept before each turn. git is not run: what it would answer depends on
+    # the moment, and the sample is the same at every moment.
+    async def kept(checkpoints: Checkpoints, cwd: Path) -> str:
+        return "c0ffee" * 6 + "c0ff"
+
+    monkeypatch.setattr(Checkpoints, "keep", kept)
+    await ctx.plugin(columbina.checkpoints, {"home": str(harness.cwd.parent / "checkpoints")})
     # The session of a subagent gets an id that is made up. Here it is the same every time.
     monkeypatch.setattr("columbina.session.store.secrets.token_hex", made_up)
     # The user has one hook, the most common one: a formatter after every change to a file.
@@ -337,6 +349,7 @@ async def toured(
     agent.steer("Keep the change as small as you can.")
     model.release()
     await idle(agent)
+    verdicts.judge(agent.session, True, "The mean is right now.")
 
     # 2. A command is refused, and the reply is stopped.
     known[0] += " The fix of mean() is in the working tree."

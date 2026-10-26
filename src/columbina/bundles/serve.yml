@@ -18,6 +18,10 @@ patch:
         plugin: columbina.commands.compact
       - id: command-context
         plugin: columbina.commands.context
+      - id: command-verdict
+        plugin: columbina.commands.verdict
+      - id: command-rewind
+        plugin: columbina.commands.rewind
       - id: command-todos
         plugin: columbina.commands.todos
       - id: command-skills

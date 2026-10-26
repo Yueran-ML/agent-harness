@@ -112,6 +112,7 @@ from columbina.qq import setup as qq_setup
 from columbina.qq import store as qq_store
 from columbina.qq.app import QqError
 from columbina.session import SESSIONS, SessionError
+from columbina.stats import told as stats_told
 from columbina.web import keys as web_keys
 from columbina.wecom import setup as wecom_setup
 from columbina.wecom import store as wecom_store
@@ -127,8 +128,9 @@ _CHAT = "chat"
 _RUN = "run"
 _SERVE = "serve"
 _SESSIONS = "sessions"
-_KNOW_THE_LOG = ("session", "agent")
-"""The entries that are enough to read a stored session: its log, and the events of the inbox."""
+_KNOW_THE_LOG = ("session", "agent", "verdicts", "prices", "checkpoints")
+"""The entries that are enough to read a stored session: its log, the events of the inbox, what
+was said of its turns, and what its requests cost."""
 _HOOKS = "hooks"
 _RUNS_THE_HOOKS = "columbina.hooks"
 """The plugin whose config says where the hook files and the record of trust lie."""
@@ -636,9 +638,22 @@ async def _look(entries: Sequence[Entry], env: Mapping[str, str], args: argparse
             )
             return 2
         try:
-            told = await stored_sessions.run(
-                root, cwd.resolve(), args.what, getattr(args, "id", None), args.copy_id
-            )
+            if args.what == stored_sessions.STATS:
+                tally = stored_sessions.counted_sessions(
+                    root,
+                    cwd.resolve(),
+                    everywhere=args.all,
+                    days=args.days,
+                    now_ms=round(time.time() * 1000),
+                )
+                if args.json:
+                    _answer(tally.as_json())
+                    return 0
+                told = stats_told(tally)
+            else:
+                told = await stored_sessions.run(
+                    root, cwd.resolve(), args.what, getattr(args, "id", None), args.copy_id
+                )
         except (SessionError, ValueError) as error:
             _tell(str(error))
             return 2
@@ -1300,9 +1315,22 @@ def _stored(command: argparse.ArgumentParser) -> None:
         stored_sessions.FORK,
         help="copy a session up to its last whole turn, and print the id of the copy",
     )
+    counting = whats.add_parser(
+        stored_sessions.STATS,
+        help="count how the tasks went: how turns ended, what they cost, and what was wasted",
+    )
+    counting.add_argument(
+        "--all", action="store_true", help="count the sessions of every working directory"
+    )
+    counting.add_argument(
+        "--days", type=int, default=30, metavar="N", help="count the turns of the last N days"
+    )
+    counting.add_argument(
+        "--json", action="store_true", help="answer in one document of JSON, for another program"
+    )
     showing.add_argument("id", metavar="ID", help="the session to show")
     copying.add_argument("id", metavar="ID", help="the session to copy")
-    for what in (listing, showing, copying):
+    for what in (listing, showing, copying, counting):
         _from_the_profile(what, "cli")
         what.add_argument(
             "--cwd",

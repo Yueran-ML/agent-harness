@@ -1,4 +1,4 @@
-"""What ``columbina sessions`` does: the stored sessions of a directory, listed, shown and copied.
+"""What ``columbina sessions`` does: the stored sessions of a directory, listed, shown and counted.
 
 ``list`` names the sessions that are stored for a working directory. ``show``
 tells what happened in one of them, turn by turn: what the user said, the end
@@ -7,7 +7,9 @@ of what the model answered, and how the turn ended if it did not end well.
 copy. The copy is a session of its own, to be taken up with ``--session-id``.
 The one that it was made from is not changed, and may be open in a
 conversation while it is copied: what is copied ends where its last whole
-turn ends, whatever is being written after that.
+turn ends, whatever is being written after that. ``stats`` counts how the
+tasks of the sessions went, see :mod:`columbina.stats`: those of this
+directory, or those of all of them.
 
 None of this holds a conversation, so none of it needs a model. What it needs
 is what knows the log: the session service, and whatever declares events that
@@ -17,7 +19,9 @@ What comes back is text for a person. It holds what users and models wrote,
 so whoever prints it makes it fit for a terminal first.
 """
 
+import logging
 import time
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -26,6 +30,7 @@ from columbina.apps.common import how_it_ended
 from columbina.commands.sessions import listed
 from columbina.commands.tools import used
 from columbina.kernel import Context
+from columbina.prices import SPENDING, Prices
 from columbina.session import (
     SESSIONS,
     EventData,
@@ -38,14 +43,19 @@ from columbina.session import (
     UserMessageEvent,
     tools_used,
 )
+from columbina.session.store import SESSION_FILE, read_session, workspace_key
+from columbina.stats import Tally, counted
 
-__all__ = ["FORK", "LIST", "SHOW", "What", "copied", "run", "shown"]
+logger = logging.getLogger("columbina.session")
+
+__all__ = ["FORK", "LIST", "SHOW", "STATS", "What", "copied", "counted_sessions", "run", "shown"]
 
 LIST = "list"
 SHOW = "show"
 FORK = "fork"
+STATS = "stats"
 
-What = Literal["list", "show", "fork"]
+What = Literal["list", "show", "fork", "stats"]
 """What is to be done with the stored sessions."""
 
 _ANSWER_LINES = 12
@@ -153,3 +163,55 @@ async def run(
     if what == SHOW:
         return shown(sessions.read(cwd, source))
     return await copied(ctx, sessions, cwd, source, copy_id)
+
+
+_DAY_MS = 24 * 60 * 60 * 1000
+
+
+def _stored(
+    sessions: Sessions, places: Sequence[Path]
+) -> Iterator[tuple[int, Sequence[SessionEvent[EventData]]]]:
+    """Read the stored sessions of some directories of the store, but those that cannot be read."""
+    for place in places:
+        try:
+            entries = sorted(place.iterdir())
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        for entry in entries:
+            if not (entry / SESSION_FILE).is_file():
+                continue
+            try:
+                stored = read_session(entry, sessions.kinds)
+            except (SessionError, OSError) as error:
+                logger.warning("the session in %s is not counted: %s", entry, error)
+                continue
+            yield stored.header.delegation_depth, stored.events
+
+
+def counted_sessions(ctx: Context, cwd: Path, *, everywhere: bool, days: int, now_ms: int) -> Tally:
+    """Count how the tasks of the stored sessions went in the last few days.
+
+    Args:
+        ctx: A context in which the session service is there.
+        cwd: The working directory whose sessions are counted.
+        everywhere: Whether the sessions of every working directory are counted.
+        days: How many days back turns are counted.
+        now_ms: The moment from which the days are counted back.
+
+    Raises:
+        SessionError: The sessions are kept in memory.
+    """
+    sessions = ctx.use(SESSIONS)
+    if sessions.root is None:
+        raise SessionError("sessions are kept in memory, so there are none stored to count")
+    if everywhere:
+        try:
+            places = sorted(path for path in sessions.root.iterdir() if path.is_dir())
+        except FileNotFoundError:
+            places = []
+    else:
+        places = [sessions.root / workspace_key(cwd)]
+    spending = ctx.get(SPENDING)
+    prices = Prices() if spending is None else spending.prices
+    since = now_ms - days * _DAY_MS
+    return counted(_stored(sessions, places), since_ms=since, prices=prices)

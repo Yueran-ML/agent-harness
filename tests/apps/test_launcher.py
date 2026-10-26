@@ -371,6 +371,9 @@ def test_the_composition_can_be_printed_instead_of_run(
         "spill",
         "spill-policy",
         "compaction",
+        "prices",
+        "verdicts",
+        "checkpoints",
         "todo",
         "turn-budget",
         "repeats",
@@ -995,13 +998,15 @@ def test_the_program_of_a_conversation_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-11:] == [
+    assert list(entries)[-13:] == [
         "commands",
         "command-tools",
         "command-permissions",
         "command-sessions",
         "command-compact",
         "command-context",
+        "command-verdict",
+        "command-rewind",
         "command-todos",
         "command-fork",
         "command-skills",
@@ -1137,13 +1142,15 @@ def test_the_program_that_serves_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-10:] == [
+    assert list(entries)[-12:] == [
         "commands",
         "command-tools",
         "command-permissions",
         "command-sessions",
         "command-compact",
         "command-context",
+        "command-verdict",
+        "command-rewind",
         "command-todos",
         "command-skills",
         "command-mcp",
@@ -1214,11 +1221,13 @@ def test_the_program_that_serves_holds_a_conversation_over_the_wire_of_its_proce
         "mcp",
         "model",
         "permissions",
+        "rewind",
         "sessions",
         "skill",
         "skills",
         "todos",
         "tools",
+        "verdict",
     ]
     assert (opened["result"]["session_id"], opened["result"]["resumed"]) == ("s-1", False)
     assert status["params"] == {
@@ -1235,6 +1244,7 @@ def test_the_program_that_serves_holds_a_conversation_over_the_wire_of_its_proce
         },
         "sandbox": {"mode": "workspace-write", "strength": "none"},
         "approval": "ask",
+        "spent": {},
     }
     assert left == {"jsonrpc": "2.0", "id": 3, "result": {}}
     assert far.closed

@@ -13,6 +13,7 @@ one, what is shown is what the last request sent, as the service counted it.
 """
 
 from columbina.llm import CallConfig
+from columbina.prices import Spending
 from columbina.sandbox import Mode, Sandbox, Strength
 from columbina.session import (
     USAGE,
@@ -66,6 +67,7 @@ def status(
     busy: bool,
     mode: Mode | None = None,
     meter: TokenMeter | None = None,
+    spending: Spending | None = None,
 ) -> str:
     """Return the status line of a session.
 
@@ -78,6 +80,7 @@ def status(
             knows it better than the sandbox. Before the first turn the log
             names none, and the permissions know which one it will be.
         meter: The estimate of the size of sessions, if the program has one.
+        spending: What the requests of sessions cost, if the program knows.
     """
     parts = [model.model]
     if sandbox is not None:
@@ -93,6 +96,9 @@ def status(
     everything = total.input_tokens + total.cache_read_tokens + total.cache_write_tokens
     if everything:
         parts.append(f"cache {round(100 * total.cache_read_tokens / everything)}%")
+    money = "" if spending is None else spending.of(session).told()
+    if money:
+        parts.append(f"~{money}")
     if busy:
         parts.append("esc stops")
     return _BETWEEN.join(parts)

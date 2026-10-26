@@ -17,11 +17,13 @@ from columbina.llm import (
     Usage,
     UserMessage,
 )
+from columbina.prices import Prices, Spending
 from columbina.sandbox import SANDBOX, Mode, Sandbox, Strength
 from columbina.session import (
     SESSIONS,
     AssistantAttemptEvent,
     AssistantMessageEvent,
+    RequestHeaderEvent,
     Session,
     TurnStartEvent,
     UserMessageEvent,
@@ -219,3 +221,14 @@ async def test_an_estimate_of_nothing_is_not_shown(ctx: Context, session: Sessio
     meter = await meter_of(ctx)
 
     assert status(session, MODEL, None, busy=False, meter=meter) == "deepseek-flash"
+
+
+async def test_what_the_requests_cost_is_shown_where_it_is_known(session: Session) -> None:
+    spending = Spending(Prices())
+    session.append(RequestHeaderEvent(config=MODEL, tools=()))
+
+    assert status(session, MODEL, None, busy=False, spending=spending) == "deepseek-flash"
+    session.append(reply(output_tokens=1_000_000))
+    told = status(session, MODEL, None, busy=False, spending=spending)
+
+    assert told.split(" | ")[-1] in ("~$0.60", "~$1.20")

@@ -92,11 +92,13 @@ from columbina.commands import Commands, is_command
 from columbina.kernel import Context, Next
 from columbina.llm import CallConfig
 from columbina.permissions import PERMISSIONS
+from columbina.prices import SPENDING
 from columbina.sandbox import SANDBOX
 from columbina.session import (
     SESSION_EVENT,
     TURN,
     Committed,
+    Session,
     SessionError,
     Sessions,
     encode_event,
@@ -832,8 +834,18 @@ class Server:
                 },
                 "sandbox": held,
                 "approval": None if approval is None else policy or approval.policy(session),
+                "spent": self._spent(session),
             }
         )
+
+    def _spent(self, session: Session) -> dict[str, float] | None:
+        """Say what the requests of a session have cost, in each currency, if that is known."""
+        spending = self._ctx.get(SPENDING)
+        if spending is None:
+            return None
+        return {
+            currency: round(amount, 6) for currency, amount in spending.of(session).money.items()
+        }
 
     # Questions
 

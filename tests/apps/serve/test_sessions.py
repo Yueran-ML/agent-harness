@@ -170,6 +170,7 @@ async def test_a_session_is_opened_anew_and_where_its_agent_stands_is_told_after
                 },
                 "sandbox": None,
                 "approval": None,
+                "spent": None,
             },
         }
     ]

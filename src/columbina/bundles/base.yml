@@ -74,6 +74,20 @@ patch:
         plugin: columbina.spill.policy
       - id: compaction
         plugin: columbina.compaction.basic
+      # What the requests cost, by the price lists of the services and the user's prices.yml.
+      - id: prices
+        plugin: columbina.prices
+        config:
+          home: ${COLUMBINA_HOME}
+      # Whether a turn did what was asked, as the user says with /verdict.
+      - id: verdicts
+        plugin: columbina.verdicts
+      # The files of the working directory as they stood before each turn, kept with
+      # git in a repository of its own, for /rewind to go back to.
+      - id: checkpoints
+        plugin: columbina.checkpoints
+        config:
+          home: ${COLUMBINA_HOME}/checkpoints
       # The list of things to do that a model keeps for itself.
       - id: todo
         plugin: columbina.todo

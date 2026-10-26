@@ -24,6 +24,10 @@ patch:
         plugin: columbina.commands.rewind
       - id: command-plan
         plugin: columbina.commands.plan
+      - id: command-export
+        plugin: columbina.commands.export
+        config:
+          home: ${COLUMBINA_HOME}
       - id: command-todos
         plugin: columbina.commands.todos
       - id: command-skills

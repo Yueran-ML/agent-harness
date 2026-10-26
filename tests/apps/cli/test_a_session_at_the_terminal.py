@@ -163,6 +163,8 @@ def test_the_program_that_is_shipped_has_its_commands(
         "/context      Say what the conversation is made of, and how much room is left.\n"
         "/effort       Show how hard the model thinks, or choose a level.\n"
         "/exit         Leave.\n"
+        "/export       Write the conversation into a page of HTML, or of Markdown: /export "
+        "[md].\n"
         "/fork         Go on in a copy of this session, and leave the session as it is.\n"
         "/help         List the commands.\n"
         "/mcp          List the MCP servers: how each is connected, and how many tools it has.\n"

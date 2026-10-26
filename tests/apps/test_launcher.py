@@ -1000,7 +1000,7 @@ def test_the_program_of_a_conversation_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-14:] == [
+    assert list(entries)[-15:] == [
         "commands",
         "command-tools",
         "command-permissions",
@@ -1010,6 +1010,7 @@ def test_the_program_of_a_conversation_can_be_printed_instead_of_run(
         "command-verdict",
         "command-rewind",
         "command-plan",
+        "command-export",
         "command-todos",
         "command-fork",
         "command-skills",
@@ -1145,7 +1146,7 @@ def test_the_program_that_serves_can_be_printed_instead_of_run(
 
     entries = {entry["id"]: entry for entry in yaml.safe_load(capsys.readouterr().out)}
     assert code == 0
-    assert list(entries)[-13:] == [
+    assert list(entries)[-14:] == [
         "commands",
         "command-tools",
         "command-permissions",
@@ -1155,6 +1156,7 @@ def test_the_program_that_serves_can_be_printed_instead_of_run(
         "command-verdict",
         "command-rewind",
         "command-plan",
+        "command-export",
         "command-todos",
         "command-skills",
         "command-mcp",
@@ -1221,6 +1223,7 @@ def test_the_program_that_serves_holds_a_conversation_over_the_wire_of_its_proce
         "compact",
         "context",
         "effort",
+        "export",
         "help",
         "mcp",
         "model",

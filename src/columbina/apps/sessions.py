@@ -9,7 +9,8 @@ The one that it was made from is not changed, and may be open in a
 conversation while it is copied: what is copied ends where its last whole
 turn ends, whatever is being written after that. ``stats`` counts how the
 tasks of the sessions went, see :mod:`columbina.stats`: those of this
-directory, or those of all of them.
+directory, or those of all of them. ``export`` writes one as a page of HTML or
+of Markdown, see :mod:`columbina.export`.
 
 None of this holds a conversation, so none of it needs a model. What it needs
 is what knows the log: the session service, and whatever declares events that
@@ -29,6 +30,7 @@ from columbina.agent import replies
 from columbina.apps.common import how_it_ended
 from columbina.commands.sessions import listed
 from columbina.commands.tools import used
+from columbina.export import About, Format, exported
 from columbina.kernel import Context
 from columbina.prices import SPENDING, Prices
 from columbina.session import (
@@ -48,14 +50,27 @@ from columbina.stats import Tally, counted
 
 logger = logging.getLogger("columbina.session")
 
-__all__ = ["FORK", "LIST", "SHOW", "STATS", "What", "copied", "counted_sessions", "run", "shown"]
+__all__ = [
+    "EXPORT",
+    "FORK",
+    "LIST",
+    "SHOW",
+    "STATS",
+    "What",
+    "copied",
+    "counted_sessions",
+    "exported_session",
+    "run",
+    "shown",
+]
 
 LIST = "list"
 SHOW = "show"
 FORK = "fork"
 STATS = "stats"
+EXPORT = "export"
 
-What = Literal["list", "show", "fork", "stats"]
+What = Literal["list", "show", "fork", "stats", "export"]
 """What is to be done with the stored sessions."""
 
 _ANSWER_LINES = 12
@@ -215,3 +230,16 @@ def counted_sessions(ctx: Context, cwd: Path, *, everywhere: bool, days: int, no
     prices = Prices() if spending is None else spending.prices
     since = now_ms - days * _DAY_MS
     return counted(_stored(sessions, places), since_ms=since, prices=prices)
+
+
+def exported_session(ctx: Context, cwd: Path, session_id: str, form: Format) -> str:
+    """Return a stored session of a working directory as a page.
+
+    Raises:
+        SessionError: The sessions are kept in memory, or the one that is
+            named cannot be read.
+        ValueError: The id cannot name a session.
+    """
+    stored = ctx.use(SESSIONS).read(cwd, session_id)
+    header = stored.header
+    return exported(About(header.id, header.created_at, header.cwd), stored.events, form)

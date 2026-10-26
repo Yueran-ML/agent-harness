@@ -6,6 +6,12 @@ change what was there before.
 
 ## Unreleased
 
+- `/export` writes the conversation into a page of HTML that stands alone, and `/export md` into
+  one of Markdown, in `exports` in the home of the program. `columbina sessions export ID` does
+  the same for a stored session, to the standard output or `--out FILE`. A page holds what was
+  said, the calls of tools and the beginning of what they gave back, the summaries, and how turns
+  ended where they did not end well; the thinking of the model and what the program told it are
+  left out. Nothing of it leaves the machine.
 - The sandbox of Docker has a third network, `allowed`: a container stands in a network of its own
   that has no way out, beside a proxy that lets its commands reach the hosts of `allowed_hosts`
   and no others, such as `pypi.org` and `*.pythonhosted.org`. The commands are told of the proxy in

@@ -76,6 +76,7 @@ import yaml
 from pydantic import ValidationError
 
 import columbina
+from columbina import files
 from columbina.apps import FRONTEND, search_key
 from columbina.apps import doctor as health
 from columbina.apps import hooks as written_hooks
@@ -650,11 +651,19 @@ async def _look(entries: Sequence[Entry], env: Mapping[str, str], args: argparse
                     _answer(tally.as_json())
                     return 0
                 told = stats_told(tally)
+            elif args.what == stored_sessions.EXPORT:
+                page = stored_sessions.exported_session(root, cwd.resolve(), args.id, args.format)
+                if args.out is None:
+                    sys.stdout.write(harmless(page) if sys.stdout.isatty() else page)
+                else:
+                    await asyncio.to_thread(files.replaced, Path(args.out), page.encode("utf-8"))
+                    print(harmless(f"Written to {args.out}"))
+                return 0
             else:
                 told = await stored_sessions.run(
                     root, cwd.resolve(), args.what, getattr(args, "id", None), args.copy_id
                 )
-        except (SessionError, ValueError) as error:
+        except (SessionError, ValueError, OSError) as error:
             _tell(str(error))
             return 2
         # What a session holds was written by users and by models.
@@ -1328,9 +1337,19 @@ def _stored(command: argparse.ArgumentParser) -> None:
     counting.add_argument(
         "--json", action="store_true", help="answer in one document of JSON, for another program"
     )
+    exporting = whats.add_parser(
+        stored_sessions.EXPORT, help="write a session as a page of HTML or of Markdown"
+    )
+    exporting.add_argument("id", metavar="ID", help="the session to write")
+    exporting.add_argument(
+        "--format", choices=["html", "md"], default="html", help="HTML by default"
+    )
+    exporting.add_argument(
+        "--out", metavar="FILE", help="the file to write it to; the standard output by default"
+    )
     showing.add_argument("id", metavar="ID", help="the session to show")
     copying.add_argument("id", metavar="ID", help="the session to copy")
-    for what in (listing, showing, copying, counting):
+    for what in (listing, showing, copying, counting, exporting):
         _from_the_profile(what, "cli")
         what.add_argument(
             "--cwd",

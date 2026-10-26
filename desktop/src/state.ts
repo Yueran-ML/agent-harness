@@ -148,6 +148,10 @@ export interface Projection {
    * in the log, the two are one item, and this is null again.
    */
   goesOn: string | null;
+  /** What the user said of each turn, by its number: whether it did what was asked. */
+  verdicts: Record<number, boolean>;
+  /** The turns before which the files were kept, so that they can be put back as they were. */
+  kept: number[];
 }
 
 export const emptyUsage = (): Usage => ({
@@ -166,6 +170,8 @@ export const emptyProjection = (): Projection => ({
   turn: null,
   step: null,
   goesOn: null,
+  verdicts: {},
+  kept: [],
 });
 
 const record = (value: unknown): JsonRecord =>
@@ -515,6 +521,17 @@ export function projectEvents(events: readonly SessionEvent[], gone = false): Pr
             kind: 'compaction-failed', detail,
           });
         }
+        break;
+      }
+      case 'verdict': {
+        // What the user said of a turn last is what holds.
+        const turn = number(data.turn);
+        if (turn > 0 && typeof data.right === 'boolean') projection.verdicts[turn] = data.right;
+        break;
+      }
+      case 'checkpoint': {
+        const turn = number(data.turn);
+        if (turn > 0 && !projection.kept.includes(turn)) projection.kept.push(turn);
         break;
       }
       case 'session/end-seed':

@@ -13,7 +13,7 @@
  * - The user is 你.
  */
 import { splitDuration } from './duration';
-import type { Messages } from './en';
+import type { Messages, Weekday } from './en';
 import { afterWord, beforeWord, between } from './spacing';
 
 function duration(seconds: number): string {
@@ -25,6 +25,9 @@ function duration(seconds: number): string {
 
 // A turn that reached a limit stops between two steps, whichever limit it was.
 const afterLimit = '它停在了下一步之前。需要的话，可以让它接着做。';
+
+// The days of the week, for a task that runs on one of them.
+const weekdays = { mon: '周一', tue: '周二', wed: '周三', thu: '周四', fri: '周五', sat: '周六', sun: '周日' };
 
 export const zhCN: Messages = {
   duration,
@@ -212,6 +215,61 @@ export const zhCN: Messages = {
   },
 
   label: {
+    work: {
+      spent: (amount: string) => `约 ${amount}`,
+      plan: '计划',
+      planning: '计划模式',
+      exportTask: '导出',
+      right: '做到了要求的事',
+      wrong: '没做到要求的事',
+      rewind: '恢复文件',
+      rewindYes: '恢复',
+      keep: '保留现状',
+      schedules: {
+        title: '定时任务',
+        name: '名称',
+        folder: '文件夹',
+        chooseFolder: '选择',
+        prompt: '要交给智能体的任务',
+        every: '频率',
+        kinds: { minutes: '每隔几分钟', hour: '每小时', day: '每天', week: '每周' },
+        minutes: '分钟数，至少 5',
+        at: '时间',
+        minute: '分钟',
+        days: weekdays,
+        weekday: '星期',
+        missed: 'Columbina 关闭期间错过的时间',
+        missedKinds: { run: '打开后补跑一次', skip: '跳过' },
+        add: '添加任务',
+        remove: '删除',
+        on: '启用',
+        when: {
+          minutes: (count: number) => `每 ${count} 分钟`,
+          hour: (minute: string) => `每小时第 ${minute} 分`,
+          day: (time: string) => `每天 ${time}`,
+          week: (day: Weekday, time: string) => `每${weekdays[day]} ${time}`,
+        },
+        last: (when: string, end: string) => `上次运行 ${when}：${end}`,
+      },
+      worktrees: {
+        title: '工作树',
+        new: '在工作树里开任务',
+        name: '任务名称',
+        merge: '合并',
+        remove: '删除',
+      },
+      groups: {
+        title: '群聊',
+        unnamed: '未命名',
+        name: '群名称',
+        save: '保存名称',
+        memory: (used: number, most: number) => `记忆：${used} / ${most} 字`,
+        show: '查看记忆',
+        hide: '收起记忆',
+        forget: '清空记忆',
+      },
+    },
+
     newTask: '新任务',
     searchTasks: '搜索任务',
     tasks: '任务',
@@ -624,6 +682,32 @@ export const zhCN: Messages = {
   },
 
   hint: {
+    work: {
+      spent: '按 Columbina 知道的价格估算的本任务请求费用，实际以服务商账单为准。',
+      plan: '计划模式下，智能体只阅读和制定计划，不改文件、不运行命令。再按一次退出。',
+      exportTask: '把这段对话写成一个 HTML 页面，放在 Columbina 的导出文件夹里。',
+      rewindAsk: (turn: number) => `把项目文件恢复到第 ${turn} 轮之前的样子吗？之后可以用 /rewind back 撤销。`,
+      scheduled: (name: string) => `定时任务「${name}」已运行。`,
+      schedules: {
+        about: '定时任务在 Columbina 打开时运行，每次都是一个单独的对话，只改自己文件夹里的文件。'
+          + '运行时不会询问任何人，所以需要确认的操作不会执行。',
+        none: '还没有定时任务。',
+        failed: '定时任务没能修改。',
+      },
+      worktrees: {
+        about: '工作树是项目在独立分支上的一份副本。在里面运行的任务不会动你的文件，合并之后才进入项目。',
+        mergeAsk: (name: string) => `把「${name}」的工作合并进项目，并删除它的工作树吗？它改过的文件会随之改动。`,
+        removeAsk: (name: string) => `删除工作树「${name}」，并丢弃里面的工作吗？删除后无法找回。`,
+        failed: '工作树没能修改。',
+      },
+      groups: {
+        none: '机器人还没有在群里被提问过。',
+        empty: '记忆是空的。',
+        forgetAsk: (group: string) => `清空助手对「${group}」的记忆吗？清空后无法找回。`,
+        failed: '群聊设置没能修改。',
+      },
+    },
+
     keysIdle: '回车发送，Shift+回车换行，输入斜杠打开命令。',
     keysRunning: (key: string) => `${key}+回车发送的话马上被读到，回车发送的等下一步。连按两次 Esc 停下回合。`,
     escAgain: '再按一次 Esc 停下回合。',
@@ -802,7 +886,7 @@ export const zhCN: Messages = {
     },
 
     attachments: {
-      picture: '模型拿到的是这个文件，看不到图片里的内容。',
+      picture: '模型会用 read 工具查看图片（需要所用服务支持图片）。',
       refused: {
         gone: (name: string) => `${name} 已经不在了。`,
         notAFile: (name: string) => `${name} 是文件夹，只能附上文件。`,

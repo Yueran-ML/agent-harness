@@ -716,7 +716,7 @@ describe('files that go with a message', () => {
     expect(files()).toEqual(['notes.md1 KB', 'shot.png3.3 MB']);
     expect(one('attachments').getAttribute('aria-label')).toBe('Files that go with the message');
     // Of a picture the model has the file, and not what it shows.
-    expect(notes_()).toEqual(['The model gets the file, and does not see the picture.']);
+    expect(notes_()).toEqual(['The model looks at a picture with its tool read, where its service takes pictures.']);
     expect(document.activeElement).toBe(box());
     write('  Sum these up.  ');
     await enter();
@@ -858,6 +858,23 @@ describe('files that go with a message', () => {
     expect(fireEvent.dragEnter(form, words)).toBe(true);
     expect(fireEvent.drop(form, words)).toBe(true);
     expect(bridge.attachDropped).toHaveBeenCalledTimes(1);
+  });
+
+  it('are pasted as pictures, which the shell writes into files, and text is pasted as text', async () => {
+    const bridge = { ...shell(), attachPasted: vi.fn(async (_pictures: unknown): Promise<unknown> => ({ attached: [shot], refused: [] })) };
+    vi.stubGlobal('columbina', bridge);
+    page(first());
+    const picture = new File([new Uint8Array([1, 2, 3])], 'image.png', { type: 'image/png' });
+    const pasted = (files: File[], text = '') => ({ clipboardData: { files, getData: (kind: string) => (kind === 'text/plain' ? text : '') } });
+    await act(async () => { expect(fireEvent.paste(box(), pasted([picture]))).toBe(false); });
+    expect(bridge.attachPasted.mock.calls).toHaveLength(1);
+    const [[pictures]] = bridge.attachPasted.mock.calls as unknown as [[{ type: string; bytes: ArrayBuffer }[]]];
+    expect(pictures.map(each => [each.type, each.bytes.byteLength])).toEqual([['image/png', 3]]);
+    expect(files()).toEqual(['shot.png3.3 MB']);
+    // What comes with text is text, and a file that is no picture is left to the page.
+    expect(fireEvent.paste(box(), pasted([picture], 'cells'))).toBe(true);
+    expect(fireEvent.paste(box(), pasted([new File(['x'], 'notes.md', { type: 'text/markdown' })]))).toBe(true);
+    expect(bridge.attachPasted).toHaveBeenCalledTimes(1);
   });
 
   it('go alone only when the field could send a message', async () => {
@@ -1314,6 +1331,51 @@ describe('telling of what waits while the window is in the background', () => {
     expect(tell.checked).toBe(false);
     fireEvent.click(tell);
     expect(localStorage.getItem('columbina-tell-me')).toBe('true');
+  });
+
+  it('tells of a task that ran at a set time, once', () => {
+    const notify = bridge();
+    const task = first();
+    const { now } = page(task);
+    const done = { id: 't1', name: 'News', session_id: 's-9', end: 'completed', told: 1 };
+    now({ ...task, scheduled: done });
+    now({ ...task, scheduled: { ...done } });
+    expect(notify.mock.calls).toEqual([[{ title: 'The task News ran.', body: 'completed' }]]);
+  });
+});
+
+describe('the tools of a task in the bar above it', () => {
+  it('have the agent plan, and leave that again, without a line in the conversation', async () => {
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}) });
+    const task = first();
+    const { now } = page(task);
+    expect(one('plan').getAttribute('aria-pressed')).toBe('false');
+    await act(async () => { fireEvent.click(one('plan')); });
+    expect(called(task.send)).toEqual([['/plan on', true]]);
+    const planning = { ...task, status: statusOf({ plan: true }) };
+    now(planning);
+    expect(one('plan').getAttribute('aria-pressed')).toBe('true');
+    await act(async () => { fireEvent.click(one('plan')); });
+    await act(async () => { fireEvent.click(one('status-plan')); });
+    expect(called(task.send).slice(1)).toEqual([['/plan off', true], ['/plan off', true]]);
+  });
+
+  it('write the conversation into a page, and wait while the agent is at work', async () => {
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}) });
+    const task = first();
+    const { now } = page(task);
+    await act(async () => { fireEvent.click(one('export')); });
+    expect(called(task.send)).toEqual([['/export']]);
+    now(firstAtWork());
+    expect((one('export') as HTMLButtonElement).disabled).toBe(true);
+    expect((one('plan') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('offer no plan in a conversation of no project', () => {
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}) });
+    page(first({ chat: true }));
+    expect(marked('plan')).toEqual([]);
+    expect(marked('export')).toHaveLength(1);
   });
 });
 

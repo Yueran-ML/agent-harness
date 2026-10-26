@@ -14,7 +14,7 @@
  * - The terms are those of the Japanese guide: ターン, タスク, ステップ, 承認.
  */
 import { splitDuration } from './duration';
-import type { Messages } from './en';
+import type { Messages, Weekday } from './en';
 import { afterWord, beforeWord, between } from './spacing';
 
 function duration(seconds: number): string {
@@ -26,6 +26,9 @@ function duration(seconds: number): string {
 
 // A turn that reached a limit stops between two steps, whichever limit it was.
 const afterLimit = '次のステップの前で止まりました。続けさせる場合は、そう伝えてください。';
+
+// The days of the week, for a task that runs on one of them.
+const weekdays = { mon: '月曜日', tue: '火曜日', wed: '水曜日', thu: '木曜日', fri: '金曜日', sat: '土曜日', sun: '日曜日' };
 
 export const ja: Messages = {
   duration,
@@ -260,6 +263,61 @@ export const ja: Messages = {
   },
 
   label: {
+    work: {
+      spent: (amount: string) => `約 ${amount}`,
+      plan: '計画',
+      planning: '計画モード',
+      exportTask: 'エクスポート',
+      right: '頼んだことができた',
+      wrong: '頼んだことができなかった',
+      rewind: 'ファイルを戻す',
+      rewindYes: '戻す',
+      keep: 'そのままにする',
+      schedules: {
+        title: '定期タスク',
+        name: '名前',
+        folder: 'フォルダー',
+        chooseFolder: '選ぶ',
+        prompt: 'エージェントに頼むこと',
+        every: '頻度',
+        kinds: { minutes: '数分ごと', hour: '毎時', day: '毎日', week: '毎週' },
+        minutes: '分、5 以上',
+        at: '時刻',
+        minute: '分',
+        days: weekdays,
+        weekday: '曜日',
+        missed: 'Columbina が閉じている間に過ぎた時刻',
+        missedKinds: { run: '開いたときに一度実行する', skip: '飛ばす' },
+        add: 'タスクを追加',
+        remove: '削除',
+        on: '有効',
+        when: {
+          minutes: (count: number) => `${count} 分ごと`,
+          hour: (minute: string) => `毎時 ${minute} 分`,
+          day: (time: string) => `毎日 ${time}`,
+          week: (day: Weekday, time: string) => `毎週${weekdays[day]} ${time}`,
+        },
+        last: (when: string, end: string) => `前回 ${when}：${end}`,
+      },
+      worktrees: {
+        title: 'ワークツリー',
+        new: 'ワークツリーでタスク',
+        name: 'タスクの名前',
+        merge: 'マージ',
+        remove: '削除',
+      },
+      groups: {
+        title: 'グループ',
+        unnamed: '名前なし',
+        name: 'グループの名前',
+        save: '名前を保存',
+        memory: (used: number, most: number) => `記憶：${used} / ${most} 文字`,
+        show: '記憶を見る',
+        hide: '記憶を閉じる',
+        forget: '記憶を消す',
+      },
+    },
+
     newTask: '新しいタスク',
     searchTasks: 'タスクを検索',
     tasks: 'タスク',
@@ -673,6 +731,32 @@ export const ja: Messages = {
   },
 
   hint: {
+    work: {
+      spent: 'Columbina が知っている価格で見積もった、このタスクのリクエストの費用です。実際の金額はサービスの請求に従います。',
+      plan: '計画モードでは、エージェントは読んで計画を立てるだけで、ファイルを変えずコマンドも実行しません。もう一度押すと終わります。',
+      exportTask: 'この会話を HTML のページにして、Columbina のエクスポート用フォルダーに保存します。',
+      rewindAsk: (turn: number) => `プロジェクトのファイルを、ターン ${turn} の前の状態に戻しますか？/rewind back で元に戻せます。`,
+      scheduled: (name: string) => `タスク「${name}」を実行しました。`,
+      schedules: {
+        about: '定期タスクは Columbina が開いている間に、それぞれ別の会話で実行され、自分のフォルダーのファイルだけを変えます。'
+          + '実行中は誰にも確認しないので、確認が必要な操作は実行されません。',
+        none: 'まだタスクはありません。',
+        failed: 'タスクを変更できませんでした。',
+      },
+      worktrees: {
+        about: 'ワークツリーは、プロジェクトを専用のブランチに写したものです。そこでのタスクは、マージするまであなたのファイルを変えません。',
+        mergeAsk: (name: string) => `「${name}」の作業をプロジェクトにマージして、ワークツリーを削除しますか？作業で変わったファイルが変わります。`,
+        removeAsk: (name: string) => `ワークツリー「${name}」を削除して、作業を捨てますか？元には戻せません。`,
+        failed: 'ワークツリーを変更できませんでした。',
+      },
+      groups: {
+        none: 'ボットはまだグループで呼ばれていません。',
+        empty: '記憶は空です。',
+        forgetAsk: (group: string) => `アシスタントが「${group}」について覚えていることを消しますか？元には戻せません。`,
+        failed: 'グループを変更できませんでした。',
+      },
+    },
+
     keysIdle: 'Enter で送信、Shift+Enter で改行、スラッシュでコマンドを開きます。',
     keysRunning: (key: string) => `${key}+Enter で送った内容はすぐに、Enter で送った内容は次のステップで読まれます。Esc を 2 回押すと、ターンが止まります。`,
     escAgain: 'もう一度 Esc を押すと、ターンが止まります。',
@@ -855,7 +939,7 @@ export const ja: Messages = {
     },
 
     attachments: {
-      picture: 'モデルが受け取るのはファイルで、画像の中身は見えません。',
+      picture: 'モデルは read ツールで画像を見ます（使うサービスが画像に対応している場合）。',
       refused: {
         gone: (name: string) => `${name} は見つからなくなりました。`,
         notAFile: (name: string) => `${name} はフォルダーです。添付できるのはファイルだけです。`,

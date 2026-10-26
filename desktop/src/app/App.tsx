@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronRight, Download, FileDiff, FileText, ListTree, MessageSquare, PanelLeft, Settings2, SlidersHorizontal, X } from 'lucide-react';
+import {
+  ChevronRight, Download, FileDiff, FileOutput, FileText, ListTree, MessageSquare, NotebookPen, PanelLeft, Settings2,
+  SlidersHorizontal, X,
+} from 'lucide-react';
 import { MusicTitlebar, useBackgroundMusic } from '../BackgroundMusic';
 import { StartupVideo } from '../StartupVideo';
 import type { ActionKey } from '../outcomes';
@@ -328,6 +331,15 @@ export default function App() {
     }
     field.current?.focus();
   };
+  const pasteAttachments = async (files: File[]) => {
+    try {
+      const pictures = await Promise.all(files.map(async file => ({ type: file.type, bytes: await file.arrayBuffer() })));
+      takeAttached(await window.columbina!.attachPasted(pictures));
+    } catch (problem) {
+      workspace.fail(problem);
+    }
+    field.current?.focus();
+  };
   const removeAttachment = (file: Attachment) => {
     setAttached(current => current.filter(each => each.id !== file.id));
     setRefused([]);
@@ -481,6 +493,11 @@ export default function App() {
     void window.columbina?.notify({ title: well ? words.label.notice.finished : words.label.notice.stopped, body: title })
       .catch(() => {});
   }, [running]);
+  useEffect(() => {
+    const done = workspace.scheduled;
+    if (!done || !tellMe) return;
+    void window.columbina?.notify({ title: words.hint.work.scheduled(done.name), body: done.end }).catch(() => {});
+  }, [workspace.scheduled?.told]);
   useEffect(() => {
     if (workspace.closed === null || !tellMe || document.hasFocus()) return;
     void window.columbina?.notify({ title: words.label.notice.stopped, body: goneWords(words, workspace.hello !== null) })
@@ -642,6 +659,29 @@ export default function App() {
               <Settings2 size={16} />
             </button>}
             {!bare && !inspector && <div className="topbar-tools">
+              {/* A conversation in no project changes nothing anyway, and has nothing to plan. */}
+              {!workspace.chat && <button
+                type="button"
+                className="btn btn-quiet"
+                aria-pressed={status?.plan === true}
+                disabled={unavailable || running}
+                title={words.hint.work.plan}
+                onClick={() => void act(() => workspace.send(status?.plan ? '/plan off' : '/plan on', true))}
+                data-test="plan"
+              >
+                <NotebookPen size={15} aria-hidden="true" />{words.label.work.plan}
+              </button>}
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label={words.label.work.exportTask}
+                title={words.hint.work.exportTask}
+                disabled={unavailable || running}
+                onClick={() => void act(() => workspace.send('/export'))}
+                data-test="export"
+              >
+                <FileOutput size={16} />
+              </button>
               <button type="button" className="btn btn-quiet" aria-pressed={inspector === 'changes'} onClick={() => showInspector('changes')} data-test="show-changes">
                 <FileDiff size={15} aria-hidden="true" />{words.label.changes}
                 {changes > 0 && <span className="count">{changes}</span>}
@@ -755,6 +795,7 @@ export default function App() {
                 refused={refused}
                 onAttach={canAttach ? () => void chooseAttachments() : undefined}
                 onDropFiles={canAttach ? files => void dropAttachments(files) : undefined}
+                onPastePictures={canAttach ? files => void pasteAttachments(files) : undefined}
                 onRemoveAttachment={removeAttachment}
               />
             </div>
@@ -776,6 +817,7 @@ export default function App() {
             locale={shownLanguage(language)}
             onPermissions={() => setSettings('permissions')}
             onDetails={() => setInspector('details')}
+            onPlan={() => void act(() => workspace.send('/plan off', true))}
           />
         </main>
 

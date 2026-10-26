@@ -427,6 +427,23 @@ def test_the_groups_are_listed_named_and_their_memory_shown_and_forgotten(
     assert kept.names == {"G2": "Old"}
 
 
+def test_the_groups_are_changed_for_another_program(
+    home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cwd = home / "assistant"
+    monkeypatch.setenv(store.ASSISTANT_HOME, str(cwd))
+    set_up(home, groups={"G1": "s-g1"})
+    (cwd / "groups" / "G1").mkdir(parents=True)
+    (cwd / "groups" / "G1" / "memory.md").write_text("cat\n", encoding="utf-8")
+
+    assert main(["qq", "--name-group", "G1", " Home ", "--json"]) == 0
+    assert answer_of(capsys) == {"id": "G1", "name": "Home"}
+    assert main(["qq", "--memory", "G1", "--json"]) == 0
+    assert answer_of(capsys) == {"id": "G1", "memory": "cat\n"}
+    assert main(["qq", "--forget-memory", "G1", "--json"]) == 0
+    assert answer_of(capsys) == {"id": "G1", "forgotten": True}
+
+
 def test_what_cannot_be_done_with_the_groups_is_said(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

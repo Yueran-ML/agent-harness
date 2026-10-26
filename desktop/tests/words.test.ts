@@ -125,6 +125,18 @@ const samples: Record<string, unknown[][]> = {
   'hint.balance.none': [['DeepSeek']],
   'hint.balance.unsupported': [['OpenAI'], ['Claude']],
   'hint.balance.failed': [['DeepSeek']],
+  'label.work.spent': [['$0.012'], ['¥0.10 + $1.20']],
+  'hint.work.rewindAsk': [[1], [12]],
+  'hint.work.scheduled': [['Daily news'], ['每日新闻']],
+  'label.work.schedules.when.minutes': [[5], [30]],
+  'label.work.schedules.when.hour': [['05'], ['30']],
+  'label.work.schedules.when.day': [['09:00']],
+  'label.work.schedules.when.week': [['mon', '09:00'], ['sun', '18:30']],
+  'label.work.schedules.last': [['10/26/26, 9:00 AM', 'completed'], ['2026/10/26 09:00', 'passed over: its time was missed']],
+  'hint.work.worktrees.mergeAsk': [['fix-the-bug']],
+  'hint.work.worktrees.removeAsk': [['fix-the-bug']],
+  'label.work.groups.memory': [[0, 4000], [120, 4000]],
+  'hint.work.groups.forgetAsk': [['家人群'], ['Home']],
 };
 
 type Said = { path: string; text: string };

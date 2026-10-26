@@ -114,6 +114,21 @@ export interface SessionStatus {
   };
   sandbox: { mode: string; strength: string } | null;
   approval: string | null;
+  /**
+   * What the requests of the session have cost, in each currency, by the prices that the program
+   * knows; empty where none is known. An older program says nothing of it.
+   */
+  spent?: Record<string, number> | null;
+  /** Whether the session is in plan mode. An older program says nothing of it. */
+  plan?: boolean;
+}
+
+/** A task that runs at set times has run, or could not. */
+export interface ScheduleDone {
+  id: string;
+  name: string;
+  session_id: string | null;
+  end: string;
 }
 
 export interface ApprovalRequest {

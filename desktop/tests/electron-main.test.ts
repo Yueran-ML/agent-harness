@@ -187,7 +187,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       queueMicrotask(() => child.emit('spawn'));
       return child;
     }
-    if (args.includes('setup') || args.includes('--status') || args.includes('logout') || args.includes('balance') || args.includes('reasoning-language') || assistant) {
+    if (args.includes('setup') || args.includes('--status') || args.includes('logout') || args.includes('balance') || args.includes('reasoning-language') || args.includes('schedules') || args.includes('worktrees') || assistant) {
       const child = Object.assign(new EventEmitter(), {
         pid: 500 + setups.length, exitCode: null as number | null, signalCode: null,
         stdout: new EventEmitter(), stderr: new EventEmitter(),
@@ -1980,6 +1980,148 @@ describe('files that go with a message', () => {
     expect(shell.disk.copyFile).not.toHaveBeenCalled();
     // The file is still held: nothing that was asked from elsewhere let go of it.
     expect(await shell.invoke('keep-attachments', [told.attached[0].id])).toMatchObject({ kept: [expect.any(String)] });
+  });
+});
+
+describe('tasks at set times, worktrees, the groups of QQ and pasted pictures', () => {
+  const real = { COLUMBINA_SERVICE_EXECUTABLE: python };
+  const answering = async (out: unknown = {}) => {
+    const shell = await shellHarness(undefined, real);
+    shell.setup.answer = () => ({ out: `${JSON.stringify(out)}\n`, code: 0 });
+    return shell;
+  };
+  const program = (shell: Awaited<ReturnType<typeof shellHarness>>) => shell.setups.at(-1)!.args.slice(2);
+
+  it('has the program list, add and change the tasks, with every value in one word with its option', async () => {
+    const shell = await answering({ schedules: [] });
+    await expect(shell.invoke('schedules', { what: 'list' })).resolves.toEqual({ schedules: [] });
+    expect(program(shell)).toEqual(['schedules', 'list', '--json']);
+    const cwd = await shell.select('/work/project');
+    const task = {
+      name: '--every=x', cwd, prompt: '-p Sum up.', every: 'week', weekday: 'fri', at: '17:00', missed: 'skip', minutes: 30,
+    };
+    await shell.invoke('schedules', { what: 'add', task });
+    expect(program(shell)).toEqual([
+      'schedules', 'add', '--name=--every=x', `--cwd=${cwd}`, '--prompt=-p Sum up.', '--every=week', '--minutes=30',
+      '--at=17:00', '--weekday=fri', '--missed=skip', '--json',
+    ]);
+    await shell.invoke('schedules', { what: 'add', task: { name: 'n', cwd, prompt: 'p', every: 'day', at: 'noon', weekday: 'xyz' } });
+    expect(program(shell)).toEqual(['schedules', 'add', '--name=n', `--cwd=${cwd}`, '--prompt=p', '--every=day', '--json']);
+    await shell.invoke('schedules', { what: 'disable', id: 'a1b2' });
+    expect(program(shell)).toEqual(['schedules', 'disable', 'a1b2', '--json']);
+  });
+
+  it('adds no task in a folder that was not chosen, or that is no task at all', async () => {
+    const shell = await answering();
+    const cwd = await shell.select('/work/project');
+    const runs = shell.setups.length;
+    for (const asked of [
+      { what: 'add', task: { name: 'n', cwd: path.resolve('/elsewhere'), prompt: 'p', every: 'day' } },
+      { what: 'add', task: { name: ' ', cwd, prompt: 'p', every: 'day' } },
+      { what: 'add', task: { name: 'n', cwd, prompt: 'a\u0007b', every: 'day' } },
+      { what: 'add', task: { name: 'n', cwd, prompt: 'p', every: 'fortnight' } },
+      { what: 'remove', id: '--all' },
+      { what: 'run', id: 'a1' },
+      undefined,
+    ]) {
+      await expect((async () => shell.invoke('schedules', asked))(), JSON.stringify(asked)).rejects.toThrow();
+    }
+    expect(shell.setups).toHaveLength(runs);
+    shell.setup.answer = () => ({ out: '{"error": "there is no task a1"}\n', code: 2 });
+    await expect(shell.invoke('schedules', { what: 'remove', id: 'a1' })).rejects.toThrow('there is no task a1');
+    await expect((async () => shell.handlers.get('columbina:schedules')!(shell.unrelated, { what: 'list' }))()).rejects.toThrow('IPC sender');
+  });
+
+  it('has the program make, list and end worktrees in a project that was chosen, and opens what it made', async () => {
+    const shell = await answering();
+    const cwd = await shell.select('/work/project');
+    const made = path.join(cwd, '.columbina', 'worktrees', 'fix');
+    shell.setup.answer = () => ({ out: `${JSON.stringify({ name: 'fix', path: made, branch: 'columbina/fix', done: 'add' })}\n`, code: 0 });
+    await shell.invoke('worktrees', { what: 'add', cwd, name: ' -fix ' });
+    expect(program(shell)).toEqual(['worktrees', 'add', `--cwd=${cwd}`, '--json', '--', '-fix']);
+    // The worktree that was made may be started in, as a folder that was chosen is.
+    await expect(shell.invoke('start', { cwd: made })).resolves.toMatchObject({ cwd: made });
+    const listed = path.join(cwd, '.columbina', 'worktrees', 'other');
+    shell.setup.answer = () => ({ out: `${JSON.stringify({ worktrees: [{ name: 'other', path: listed }, 'nothing'] })}\n`, code: 0 });
+    await shell.invoke('worktrees', { what: 'list', cwd });
+    expect(program(shell)).toEqual(['worktrees', 'list', `--cwd=${cwd}`, '--json']);
+    await expect(shell.invoke('start', { cwd: listed })).resolves.toMatchObject({ cwd: listed });
+    shell.setup.answer = () => ({ out: '{"name": "fix", "done": "remove"}\n', code: 0 });
+    await shell.invoke('worktrees', { what: 'remove', cwd, name: 'fix', force: true });
+    expect(program(shell)).toEqual(['worktrees', 'remove', `--cwd=${cwd}`, '--json', '--force', '--', 'fix']);
+    await shell.invoke('worktrees', { what: 'merge', cwd, name: 'fix', force: true });
+    expect(program(shell)).toEqual(['worktrees', 'merge', `--cwd=${cwd}`, '--json', '--', 'fix']);
+  });
+
+  it('ends no worktree outside a project that was chosen, nor one without a name, and says what the program said', async () => {
+    const shell = await answering();
+    const cwd = await shell.select('/work/project');
+    const runs = shell.setups.length;
+    for (const asked of [
+      { what: 'list', cwd: path.resolve('/elsewhere') },
+      { what: 'prune', cwd },
+      { what: 'add', cwd, name: ' ' },
+      { what: 'add', cwd, name: 'a\nb' },
+      { what: 'add', cwd, name: 'x'.repeat(101) },
+    ]) {
+      await expect((async () => shell.invoke('worktrees', asked))(), JSON.stringify(asked)).rejects.toThrow();
+    }
+    expect(shell.setups).toHaveLength(runs);
+    shell.setup.answer = () => ({ out: '{"error": "there is no worktree x"}\n', code: 2 });
+    await expect(shell.invoke('worktrees', { what: 'merge', cwd, name: 'x' })).rejects.toThrow('there is no worktree x');
+    // A path that the program names and that is gone is passed over.
+    shell.setup.answer = () => ({ out: `${JSON.stringify({ name: 'gone', path: path.resolve('/gone') })}\n`, code: 0 });
+    shell.realpathSync.mockImplementation((value: string) => {
+      if (path.resolve(value) === path.resolve('/gone')) throw new Error('ENOENT');
+      return path.resolve(value);
+    });
+    await expect(shell.invoke('worktrees', { what: 'add', cwd, name: 'gone' })).resolves.toMatchObject({ name: 'gone' });
+  });
+
+  it('has the program list, name, show and forget the groups of QQ', async () => {
+    const shell = await answering({ groups: [] });
+    await shell.invoke('qq-groups', { what: 'list' });
+    expect(program(shell)).toEqual(['qq', '--groups', '--json']);
+    await shell.invoke('qq-groups', { what: 'name', id: 'G1', name: ' 家人群 ' });
+    expect(program(shell)).toEqual(['qq', '--name-group', 'G1', '家人群', '--json']);
+    await shell.invoke('qq-groups', { what: 'name', id: 'G1', name: '' });
+    expect(program(shell)).toEqual(['qq', '--name-group', 'G1', ' ', '--json']);
+    await shell.invoke('qq-groups', { what: 'memory', id: 'G1' });
+    expect(program(shell)).toEqual(['qq', '--memory=G1', '--json']);
+    await shell.invoke('qq-groups', { what: 'forget', id: 'G1' });
+    expect(program(shell)).toEqual(['qq', '--forget-memory=G1', '--json']);
+    const runs = shell.setups.length;
+    for (const asked of [
+      { what: 'name', id: '--all', name: 'x' },
+      { what: 'name', id: 'G1', name: '-x' },
+      { what: 'name', id: 'G1', name: 'x'.repeat(65) },
+      { what: 'name', id: 'G1', name: 7 },
+      { what: 'forget' },
+      { what: 'rename', id: 'G1' },
+    ]) {
+      await expect((async () => shell.invoke('qq-groups', asked))(), JSON.stringify(asked)).rejects.toThrow();
+    }
+    expect(shell.setups).toHaveLength(runs);
+    shell.setup.answer = () => ({ out: '{"error": "no bot of QQ is set up"}\n', code: 2 });
+    await expect(shell.invoke('qq-groups', { what: 'list' })).rejects.toThrow('no bot of QQ is set up');
+  });
+
+  it('writes pasted pictures into files of its own, and holds them as chosen files', async () => {
+    const shell = await shellHarness(undefined, real);
+    const bytes = new Uint8Array([137, 80, 78, 71]).buffer;
+    const told = await shell.invoke('attach-pasted', [{ type: 'image/png', bytes }, { type: 'image/jpeg', bytes }]) as {
+      attached: { name: string; size: number }[];
+    };
+    expect(told.attached.map(each => each.name)).toEqual([
+      expect.stringMatching(/^pasted-\d{8}-\d{6}-1\.png$/), expect.stringMatching(/^pasted-\d{8}-\d{6}-2\.jpg$/),
+    ]);
+    expect(shell.disk.mkdir).toHaveBeenCalledWith(path.resolve('/columbina-test/temp/columbina-pasted'), { recursive: true });
+    for (const given of [
+      undefined, [], [{ type: 'image/svg+xml', bytes }], [{ type: 'image/png', bytes: new ArrayBuffer(0) }],
+      [{ type: 'image/png', bytes: 'not bytes' }], Array(11).fill({ type: 'image/png', bytes }),
+    ]) {
+      await expect((async () => shell.invoke('attach-pasted', given))(), String(given)).rejects.toThrow();
+    }
   });
 });
 

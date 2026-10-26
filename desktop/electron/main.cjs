@@ -146,6 +146,9 @@ const ATTACHMENTS_MOST = 10;
 const ATTACHMENTS_HELD_MOST = 200;
 /** Where the files that go with messages are kept in a project, from its folder. */
 const ATTACHMENTS_FOLDER = ['.columbina', 'attachments'];
+/** The kinds of picture that may be pasted, with the ending of the file that each is written to. */
+const PASTED_KINDS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+let pastedNumber = 0;
 // Where a package asks which version of the application is the newest: the releases of its
 // repository on GitHub. The page of a release is named here as well, so that the page is never
 // told an address of GitHub's answer to open.
@@ -1102,6 +1105,95 @@ function installHandlers() {
     // The files are still held until the page lets go of them: a message that does not go is sent
     // again with them.
     return { kept };
+  });
+  ipcMain.handle('columbina:attach-pasted', async (event, pasted) => {
+    checkSender(event);
+    // Pictures that were pasted have no file. Each is written into a folder of the shell's own,
+    // and held from there as a chosen file is.
+    if (!Array.isArray(pasted) || pasted.length === 0 || pasted.length > ATTACHMENTS_MOST) throw new Error('Those are no pictures that were pasted.');
+    const folder = path.join(app.getPath('temp'), 'columbina-pasted');
+    await mkdir(folder, { recursive: true });
+    const paths = [];
+    for (const one of pasted) {
+      const ending = PASTED_KINDS[one?.type];
+      const bytes = one?.bytes;
+      // Bytes that came over a channel are an ArrayBuffer of another realm, which instanceof does not know.
+      const buffer = Object.prototype.toString.call(bytes) === '[object ArrayBuffer]' ? bytes : null;
+      if (ending === undefined || buffer === null || buffer.byteLength === 0
+        || buffer.byteLength > ATTACHMENT_MOST_BYTES) throw new Error('A pasted picture is of no kind that is taken, or of no size that is.');
+      const written = path.join(folder, `pasted-${sentAt(new Date())}-${++pastedNumber}.${ending}`);
+      await writeFile(written, new Uint8Array(buffer));
+      paths.push(written);
+    }
+    return attach(paths);
+  });
+  ipcMain.handle('columbina:schedules', async (event, asked) => {
+    checkSender(event);
+    const what = asked?.what;
+    const words = ['schedules'];
+    if (what === 'list') words.push('list');
+    else if (what === 'add') {
+      const task = asked?.task ?? {};
+      // A task runs in a folder that the user chose in the dialog, as a project does.
+      const cwd = approvedDirectory({ cwd: task.cwd });
+      const line = (value) => (typeof value === 'string' && value.trim() !== '' && !/[\u0000-\u0008\u000b-\u001f]/.test(value) ? value : null);
+      const name = line(task.name);
+      const prompt = line(task.prompt);
+      if (name === null || prompt === null || !['minutes', 'hour', 'day', 'week'].includes(task.every)) throw new Error('That is no task that can run at set times.');
+      // Every value is given with its option in one word, so that none is read as an option itself.
+      words.push('add', `--name=${name}`, `--cwd=${cwd}`, `--prompt=${prompt}`, `--every=${task.every}`);
+      if (Number.isInteger(task.minutes)) words.push(`--minutes=${task.minutes}`);
+      if (typeof task.at === 'string' && /^\d{0,2}:\d{2}$/.test(task.at)) words.push(`--at=${task.at}`);
+      if (['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].includes(task.weekday)) words.push(`--weekday=${task.weekday}`);
+      if (['run', 'skip'].includes(task.missed)) words.push(`--missed=${task.missed}`);
+    } else if (['remove', 'enable', 'disable'].includes(what) && typeof asked?.id === 'string' && /^[0-9a-z][\w-]{0,63}$/i.test(asked.id)) {
+      words.push(what, asked.id);
+    } else throw new Error('That is nothing that can be done with the tasks that run at set times.');
+    const said = await runProgram([...words, '--json']);
+    if (typeof said.error === 'string') throw new Error(said.error);
+    return said;
+  });
+  ipcMain.handle('columbina:worktrees', async (event, asked) => {
+    checkSender(event);
+    const cwd = approvedDirectory({ cwd: asked?.cwd });
+    const what = asked?.what;
+    const words = ['worktrees', what, `--cwd=${cwd}`, '--json'];
+    if (!['list', 'add', 'merge', 'remove'].includes(what)) throw new Error('That is nothing that can be done with worktrees.');
+    if (what !== 'list') {
+      const name = typeof asked?.name === 'string' ? asked.name.trim() : '';
+      if (name === '' || name.length > 100 || /[\u0000-\u001f]/.test(name)) throw new Error('That is no name of a task.');
+      if (what === 'remove' && asked?.force === true) words.push('--force');
+      words.push('--', name);
+    }
+    const said = await runProgram(words);
+    if (typeof said.error === 'string') throw new Error(said.error);
+    // A worktree lies in a project that the user chose, and may be opened as one.
+    const made = what === 'list' ? (Array.isArray(said.worktrees) ? said.worktrees : []) : what === 'add' ? [said] : [];
+    for (const one of made) {
+      if (typeof one?.path !== 'string') continue;
+      try { approvedDirectories.add(directoryKey(realpathSync(one.path))); } catch { /* It is gone already. */ }
+    }
+    return said;
+  });
+  ipcMain.handle('columbina:qq-groups', async (event, asked) => {
+    checkSender(event);
+    const what = asked?.what;
+    // An id begins with a letter or a digit, so that it is never read as an option.
+    const group = typeof asked?.id === 'string' && /^[0-9a-z][\w-]{0,127}$/i.test(asked.id) ? asked.id : null;
+    let words;
+    if (what === 'list') words = ['qq', '--groups'];
+    else if (group === null) throw new Error('That is no group of QQ.');
+    else if (what === 'name') {
+      const name = typeof asked?.name === 'string' && !/[\u0000-\u001f]/.test(asked.name) ? asked.name.trim() : null;
+      // A name that begins with a dash would be read as an option. No name is a blank, which takes it away.
+      if (name === null || name.length > 64 || name.startsWith('-')) throw new Error('That is no name of a group.');
+      words = ['qq', '--name-group', group, name === '' ? ' ' : name];
+    } else if (what === 'memory') words = ['qq', `--memory=${group}`];
+    else if (what === 'forget') words = ['qq', `--forget-memory=${group}`];
+    else throw new Error('That is nothing that can be done with the groups of QQ.');
+    const said = await runProgram([...words, '--json']);
+    if (typeof said.error === 'string') throw new Error(said.error);
+    return said;
   });
   ipcMain.handle('columbina:set-up-service', async (event, asked) => {
     checkSender(event);

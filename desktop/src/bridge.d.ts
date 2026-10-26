@@ -75,6 +75,37 @@ export interface ColumbinaBridge {
   chooseAttachments(asked: { language: string }): Promise<unknown>;
   /** Hold files that were dropped on the window, as `chooseAttachments` does those that are chosen. */
   attachDropped(files: File[]): Promise<unknown>;
+  /**
+   * Hold pictures that were pasted, as `attachDropped` does files: PNG, JPEG, GIF or WebP, by
+   * their kind and their bytes. They have no file, so the shell writes each into a folder of its
+   * own first.
+   */
+  attachPasted(pictures: { type: string; bytes: ArrayBuffer }[]): Promise<unknown>;
+  /**
+   * What `columbina schedules` answers with `--json`: the tasks that run at set times with
+   * `list`, the task that was added with `add`, and what was done with the others. A task runs in
+   * a folder that was chosen in the dialog of the system.
+   */
+  schedules(asked: {
+    what: 'list' | 'add' | 'remove' | 'enable' | 'disable';
+    id?: string;
+    task?: {
+      name: string; cwd: string; prompt: string; every: 'minutes' | 'hour' | 'day' | 'week';
+      minutes?: number; at?: string; weekday?: string; missed?: 'run' | 'skip';
+    };
+  }): Promise<unknown>;
+  /**
+   * What `columbina worktrees` answers with `--json`, in the project of a folder that was chosen:
+   * the worktrees of its tasks, or the one that was made, merged or removed. A worktree that is
+   * named so may be started in as a project.
+   */
+  worktrees(asked: { what: 'list' | 'add' | 'merge' | 'remove'; cwd: string; name?: string; force?: boolean }): Promise<unknown>;
+  /**
+   * What `columbina qq` answers with `--json` of the groups of the assistant in QQ: the groups,
+   * with their names and how full their memories are; or a group named, its memory, or its memory
+   * forgotten. An empty name takes the name away.
+   */
+  qqGroups(asked: { what: 'list' | 'name' | 'memory' | 'forget'; id?: string; name?: string }): Promise<unknown>;
   /** Let go of files that are held and are not to go with a message after all. */
   forgetAttachments(ids: string[]): Promise<void>;
   /**

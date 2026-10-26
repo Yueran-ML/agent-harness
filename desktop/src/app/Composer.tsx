@@ -18,6 +18,9 @@ const ESC_TWICE_MS = 2000;
 /** How high the field grows before it scrolls, in pixels. */
 const MOST_HEIGHT = 220;
 
+/** The kinds of picture that can be pasted to go with a message, as a screenshot is. */
+const PASTED_PICTURES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
 /**
  * The field where the user writes, with what belongs to it: the list of
  * commands, what still waits to be read, and the way to stop a turn.
@@ -40,11 +43,12 @@ const MOST_HEIGHT = 220;
  *   onAttach: Let the user choose files to go with the message. Without it, as in a replay, no
  *     file goes with a message.
  *   onDropFiles: Take files that were dropped on the field.
+ *   onPastePictures: Take pictures that were pasted into the field, where nothing else was pasted.
  *   onRemoveAttachment: Take a file out of the message.
  */
 export function Composer({
   workspace, draft, onDraft, onSend, field, returned, declined, commandsAsked, models, onChooseModel, onSwitchService,
-  onChooseEffort, onModelSettings, attachments, refused, onAttach, onDropFiles, onRemoveAttachment,
+  onChooseEffort, onModelSettings, attachments, refused, onAttach, onDropFiles, onPastePictures, onRemoveAttachment,
 }: {
   workspace: Workspace;
   draft: string;
@@ -63,6 +67,7 @@ export function Composer({
   refused: readonly Refused[];
   onAttach?: () => void;
   onDropFiles?: (files: File[]) => void;
+  onPastePictures?: (files: File[]) => void;
   onRemoveAttachment: (attachment: Attachment) => void;
 }) {
   const words = useWords();
@@ -297,6 +302,15 @@ export function Composer({
         aria-activedescendant={listOpen ? `command-${matching[active].name}` : undefined}
         onChange={event => { setClosedFor(null); onDraft(event.target.value); }}
         onKeyDown={onKeyDown}
+        onPaste={event => {
+          if (onPastePictures === undefined) return;
+          // What comes with text, such as cells of a table that come as a picture too, is pasted as text.
+          if (event.clipboardData.getData('text/plain') !== '') return;
+          const pictures = Array.from(event.clipboardData.files).filter(file => PASTED_PICTURES.includes(file.type));
+          if (pictures.length === 0) return;
+          event.preventDefault();
+          onPastePictures(pictures);
+        }}
       />
 
       <div className="composer-row">

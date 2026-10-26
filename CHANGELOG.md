@@ -6,6 +6,17 @@ change what was there before.
 
 ## Unreleased
 
+- The desktop application shows what came with this release. The status line says about what
+  the task cost, and that it is in plan mode, which a press there leaves; the bar above a task
+  has the agent plan, and writes the conversation into a page with `/export`. Under a turn that
+  has ended, the user says whether it did what was asked, and puts the files back as they were
+  before it, after a yes. The settings list the tasks that run at set times, switch them on and
+  off, remove them and add one in a folder that is chosen; and they name the groups of the
+  assistant in QQ, show their memories and forget them. The list of tasks makes a task in a
+  worktree of its own, opens it, and merges or removes the worktree of a task that is done. A
+  screenshot that is pasted into the field goes with the message, and the agent looks at it with
+  `read`; the application tells of a task that ran at a set time. `columbina qq --name-group`,
+  `--memory` and `--forget-memory` answer in JSON with `--json`.
 - A task can run in a worktree of git of its own, so that it changes no file that the user works
   on and two tasks change none of each other's. `columbina worktrees add NAME` makes one in
   `.columbina/worktrees/NAME` of the project, on a branch `columbina/NAME`, and git is told to pass

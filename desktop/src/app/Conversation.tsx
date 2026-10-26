@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowDown, ChevronRight, CornerDownRight, SquareTerminal } from 'lucide-react';
+import { ArrowDown, ChevronRight, CornerDownRight, RotateCcw, SquareTerminal, ThumbsDown, ThumbsUp } from 'lucide-react';
 import type { Listed } from '../key/form';
 import { classifyModelFailure, turnOutcome, type ActionKey, type TurnOutcome } from '../outcomes';
 import type { AssistantItem, ConversationItem, StreamPreview, UserItem } from '../state';
@@ -16,6 +16,62 @@ import { keyAtHand, serviceTitle, skillNamed } from './tell';
  * part names the service of a request or asks whether a key is there for the next one.
  */
 const Services = createContext<{ listed: Listed | null; inUse: string | null }>({ listed: null, inUse: null });
+
+/**
+ * What the user can do with a turn that has ended: say whether it did what was asked, and put
+ * the files back as they were before it. Null for each where it cannot be done now.
+ */
+interface TurnActs {
+  verdicts: Record<number, boolean>;
+  kept: readonly number[];
+  judge: ((turn: number, right: boolean) => void) | null;
+  rewind: ((turn: number) => void) | null;
+}
+const Acts = createContext<TurnActs>({ verdicts: {}, kept: [], judge: null, rewind: null });
+
+/** The tools under a turn that has ended. They show where the turn is pointed at, as the copy of an answer does. */
+function TurnTools({ number }: { number: number }) {
+  const words = useWords();
+  const { verdicts, kept, judge, rewind } = useContext(Acts);
+  const [asking, setAsking] = useState(false);
+  const said = verdicts[number];
+  const canRewind = rewind !== null && kept.includes(number);
+  if (judge === null && !canRewind && said === undefined) return null;
+  if (asking && canRewind) {
+    return <div className="turn-ask" role="group" data-test="rewind-ask">
+      <p className="caption">{words.hint.work.rewindAsk(number)}</p>
+      <button type="button" className="btn" onClick={() => { setAsking(false); rewind!(number); }} data-test="rewind-yes">
+        {words.label.work.rewindYes}
+      </button>
+      <button type="button" className="btn btn-quiet" onClick={() => setAsking(false)}>{words.label.work.keep}</button>
+    </div>;
+  }
+  return <div className="turn-tools" data-said={said === undefined ? undefined : ''} data-test="turn-tools">
+    {([true, false] as const).map(right => <button
+      key={String(right)}
+      type="button"
+      className="icon-btn"
+      aria-pressed={said === right}
+      aria-label={right ? words.label.work.right : words.label.work.wrong}
+      title={right ? words.label.work.right : words.label.work.wrong}
+      disabled={judge === null}
+      onClick={() => judge?.(number, right)}
+      data-test={right ? 'verdict-right' : 'verdict-wrong'}
+    >
+      {right ? <ThumbsUp size={14} /> : <ThumbsDown size={14} />}
+    </button>)}
+    {canRewind && <button
+      type="button"
+      className="icon-btn"
+      aria-label={words.label.work.rewind}
+      title={words.label.work.rewind}
+      onClick={() => setAsking(true)}
+      data-test="rewind"
+    >
+      <RotateCcw size={14} />
+    </button>}
+  </div>;
+}
 
 /** After this long, a wait says how long it has lasted. */
 const SAY_HOW_LONG_AFTER = 5;
@@ -271,10 +327,15 @@ function TurnView({ turn, preview, goesOn, waiting, onLink, onAction }: {
 
     {turn.answer && <div className="answer" data-test="answer">
       <Markdown text={turn.answer.text} onLink={onLink} />
-      <div className="answer-tools"><CopyButton text={turn.answer.text} /></div>
+      <div className="answer-tools">
+        <CopyButton text={turn.answer.text} />
+        {turn.end && <TurnTools number={turn.number} />}
+      </div>
     </div>}
 
     {outcome && <Ending turn={turn} outcome={outcome} onAction={onAction} />}
+    {/* A turn with an answer has them beside the copy of the answer. */}
+    {turn.end && !turn.answer && <TurnTools number={turn.number} />}
   </section>;
 }
 
@@ -303,6 +364,15 @@ export function Conversation({ workspace, onLink, onAction }: {
   const running = status?.status === 'running';
   const inUse = status?.model.provider ?? null;
   const services = useMemo(() => ({ listed: workspace.services, inUse }), [workspace.services, inUse]);
+  // What the user says of a turn, and going back, are commands: they wait until the agent is at rest.
+  const atRest = workspace.connected && !running && !workspace.sending;
+  const acts = useMemo<TurnActs>(() => ({
+    verdicts: projection.verdicts,
+    kept: projection.kept,
+    judge: atRest ? (turn, right) => void workspace.send(`/verdict ${right ? 'right' : 'wrong'} #${turn}`, true) : null,
+    // A conversation in no project has no files to put back.
+    rewind: atRest && !workspace.chat ? turn => void workspace.send(`/rewind ${turn} files`) : null,
+  }), [projection.verdicts, projection.kept, atRest, workspace.chat, workspace.send]);
   const last = entries.at(-1);
   const liveTurn = last?.kind === 'turn' && last.running ? last : null;
   const lastItem = projection.items.at(-1);
@@ -355,6 +425,7 @@ export function Conversation({ workspace, onLink, onAction }: {
     >
       <div className="talk" ref={content} data-test="talk">
         <Services.Provider value={services}>
+        <Acts.Provider value={acts}>
         {drawn.map(entry => entry.kind === 'beside'
           ? <div className="command-said" key={`said-${entry.said.id}`} data-test="command-said">
               <div className="caption"><SquareTerminal size={12} aria-hidden="true" /><code>{entry.said.line}</code></div>
@@ -375,6 +446,7 @@ export function Conversation({ workspace, onLink, onAction }: {
           : entry.item.type === 'compaction'
             ? <Summary key={entry.item.id} text={entry.item.text} />
             : <Step key={entry.item.id} item={entry.item} onLink={onLink} />)}
+        </Acts.Provider>
         </Services.Provider>
 
         {/* Between a task and the turn that takes it, the agent is at work and no turn shows it. */}

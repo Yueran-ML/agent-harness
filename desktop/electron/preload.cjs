@@ -44,6 +44,18 @@ contextBridge.exposeInMainWorld('columbina', {
       return '';
     }
   }).filter((found) => typeof found === 'string' && found !== '')),
+  // A picture that was pasted has no file: its bytes go over, with its kind.
+  attachPasted: (pictures) => ipcRenderer.invoke('columbina:attach-pasted', Array.from(
+    Array.isArray(pictures) ? pictures : [],
+    (picture) => ({ type: picture?.type, bytes: picture?.bytes }),
+  )),
+  schedules: (asked) => ipcRenderer.invoke('columbina:schedules', {
+    what: asked?.what, id: asked?.id, task: asked?.task === undefined ? undefined : { ...asked.task },
+  }),
+  worktrees: (asked) => ipcRenderer.invoke('columbina:worktrees', {
+    what: asked?.what, cwd: asked?.cwd, name: asked?.name, force: asked?.force === true,
+  }),
+  qqGroups: (asked) => ipcRenderer.invoke('columbina:qq-groups', { what: asked?.what, id: asked?.id, name: asked?.name }),
   forgetAttachments: (ids) => ipcRenderer.invoke('columbina:forget-attachments', idsOf(ids)),
   keepAttachments: (ids) => ipcRenderer.invoke('columbina:keep-attachments', idsOf(ids)),
   setUpService: (asked) => ipcRenderer.invoke('columbina:set-up-service', { service: asked?.service, language: asked?.language }),

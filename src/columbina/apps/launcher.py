@@ -1695,14 +1695,22 @@ def _qq_groups(args: argparse.Namespace, home: Path, env: Mapping[str, str]) -> 
         if args.name_group is not None:
             group, name = args.name_group
             qq_memory.renamed(home, cwd, group, name.strip() or None)
+            if args.json:
+                _answer({"id": group, "name": name.strip() or None})
             return 0
         if args.memory is not None:
             kept = qq_store.settings(home)
             names = {} if kept is None else kept.names
-            print(harmless(qq_memory.memory_of(cwd, args.memory, names)), end="")
+            memory = qq_memory.memory_of(cwd, args.memory, names)
+            if args.json:
+                _answer({"id": args.memory, "memory": memory})
+            else:
+                print(harmless(memory), end="")
             return 0
         if args.forget_memory is not None:
             qq_memory.forgotten(home, cwd, args.forget_memory)
+            if args.json:
+                _answer({"id": args.forget_memory, "forgotten": True})
             return 0
     except (QqError, ValueError, OSError) as error:
         if args.json:

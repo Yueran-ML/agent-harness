@@ -139,6 +139,16 @@ describe('the bridge of the main window', () => {
       .toEqual(['columbina:forget-attachments', ['attachment-1', 'attachment-2']]);
     expect(handed('keepAttachments', ['attachment-1', { then: 'more' }])).toEqual(['columbina:keep-attachments', ['attachment-1']]);
     expect(handed('keepAttachments', 'attachment-1')).toEqual(['columbina:keep-attachments', []]);
+    const bytes = new ArrayBuffer(4);
+    expect(handed('attachPasted', [{ type: 'image/png', bytes, name: 'more' }], more))
+      .toEqual(['columbina:attach-pasted', [{ type: 'image/png', bytes }]]);
+    expect(handed('attachPasted', 'not pictures')).toEqual(['columbina:attach-pasted', []]);
+    expect(handed('schedules', { what: 'add', id: 'x', task: { name: 'n', every: 'day' }, ...more }))
+      .toEqual(['columbina:schedules', { what: 'add', id: 'x', task: { name: 'n', every: 'day' } }]);
+    expect(handed('worktrees', { what: 'add', name: 'task', force: 'yes', ...more }))
+      .toEqual(['columbina:worktrees', { what: 'add', cwd: 'C:/work', name: 'task', force: false }]);
+    expect(handed('qqGroups', { what: 'name', id: 'G1', name: 'Home', ...more }))
+      .toEqual(['columbina:qq-groups', { what: 'name', id: 'G1', name: 'Home' }]);
     // Asked now only where the page says so in so many words.
     expect(handed('updates', { ...more, now: true })).toEqual(['columbina:updates', { now: true }]);
     for (const asked of [{ now: 'yes' }, { now: 1 }, {}, undefined]) expect(handed('updates', asked)).toEqual(['columbina:updates', { now: false }]);

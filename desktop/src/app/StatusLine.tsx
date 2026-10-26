@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Activity, Coins, ShieldAlert, ShieldCheck, TriangleAlert } from 'lucide-react';
+import { Activity, Coins, NotebookPen, ShieldAlert, ShieldCheck, TriangleAlert, Wallet } from 'lucide-react';
 import type { Workspace } from '../useWorkspace';
 import { sayConfinement, sayPermissions } from '../words';
 import { useWords } from './locale';
@@ -56,15 +56,35 @@ function Stats({ workspace, locale, onDetails }: { workspace: Workspace; locale:
 }
 
 /**
- * One line under the field: what the task may do, in a sentence, where
- * the agent stands, and how far the task has come.
+ * What the requests of a task cost, in each currency that a price is known in, or null where
+ * nothing is known or nothing was spent. A small amount is written to two digits that count.
  */
-export function StatusLine({ workspace, locale, onPermissions, onDetails }: {
+export function spentOf(spent: Record<string, number> | null | undefined, locale: string): string | null {
+  const amounts = Object.entries(spent ?? {}).filter(([, amount]) => Number.isFinite(amount) && amount > 0);
+  if (amounts.length === 0) return null;
+  return amounts.map(([currency, amount]) => {
+    const precision = amount >= 1 ? { maximumFractionDigits: 2 } : { maximumSignificantDigits: 2 };
+    try {
+      return Intl.NumberFormat(locale, { style: 'currency', currency, ...precision }).format(amount);
+    } catch {
+      // A currency that the page does not know is written by its code.
+      return `${Intl.NumberFormat(locale, precision).format(amount)} ${currency}`;
+    }
+  }).join(' + ');
+}
+
+/**
+ * One line under the field: what the task may do, in a sentence, where
+ * the agent stands, how far the task has come and what it cost, and whether it only plans.
+ */
+export function StatusLine({ workspace, locale, onPermissions, onDetails, onPlan }: {
   workspace: Workspace;
   /** The language of the page, for numbers. */
   locale: string;
   onPermissions: () => void;
   onDetails: () => void;
+  /** Leave plan mode. */
+  onPlan: () => void;
 }) {
   const words = useWords();
   const { status } = workspace;
@@ -74,6 +94,7 @@ export function StatusLine({ workspace, locale, onPermissions, onDetails }: {
   const confinement = status?.sandbox ? sayConfinement(words, status.sandbox.strength) : null;
   const loose = !chat && (status?.sandbox?.strength === 'none' || status?.sandbox?.strength === 'partial');
   const percent = contextPercent(workspace.projection.lastInputTokens, status?.model.context_window);
+  const spent = workspace.hasProject ? spentOf(status?.spent, locale) : null;
 
   const { words: stands, tone } = standingOf(words, {
     status: status?.status, cancelling: workspace.cancelling, loading: workspace.loading,
@@ -94,7 +115,19 @@ export function StatusLine({ workspace, locale, onPermissions, onDetails }: {
     {workspace.hasProject && <span className="status-stands" data-tone={tone} data-test="status-stands" role="status">
       <span className="dot" aria-hidden="true" />{stands}
     </span>}
+    {status?.plan === true && <button
+      type="button"
+      className="status-plan"
+      onClick={onPlan}
+      title={words.hint.work.plan}
+      data-test="status-plan"
+    >
+      <NotebookPen size={13} aria-hidden="true" />{words.label.work.planning}
+    </button>}
     {workspace.hasProject && <Stats workspace={workspace} locale={locale} onDetails={onDetails} />}
+    {spent !== null && <span className="status-money" title={words.hint.work.spent} data-test="status-money">
+      <Wallet size={13} aria-hidden="true" />{words.label.work.spent(spent)}
+    </span>}
     {percent !== null && <button
       type="button"
       className="status-context"

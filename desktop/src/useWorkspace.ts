@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { skillsOf } from './app/tell';
 import type {
-  ApprovalRequest, Hello, RpcMessage, SessionEvent, SessionStatus, SessionSummary, SkillSummary, StreamNotification,
+  ApprovalRequest, Hello, RpcMessage, ScheduleDone, SessionEvent, SessionStatus, SessionSummary, SkillSummary,
+  StreamNotification,
 } from './protocol';
 import { emptyPreview, projectEvents, reduceChunk } from './state';
 import { createElectronTransport, RpcClient } from './transport';
@@ -59,6 +60,8 @@ export function useWorkspace() {
   // How far the log of a long task is read. Null for a log of one page, and when none is read.
   const [reading, setReading] = useState<{ read: number; of: number } | null>(null);
   const [mode, setMode] = useState<'mock' | 'service'>('mock');
+  // The task that runs at set times that ran last, and when that was told.
+  const [scheduled, setScheduled] = useState<(ScheduleDone & { told: number }) | null>(null);
   const client = useRef<RpcClient | null>(null);
   const active = useRef<string | null>(null);
   const generation = useRef(0);
@@ -270,6 +273,10 @@ export function useWorkspace() {
           const reset = streamKey.current !== key;
           streamKey.current = key;
           setPreview(current => reduceChunk(reset ? emptyPreview() : current, stream.chunk));
+        } else if (message.method === 'schedule.done') {
+          // A task that runs at set times ran in a session of its own, whichever task is open.
+          const done = params as unknown as ScheduleDone;
+          if (typeof done.name === 'string' && typeof done.end === 'string') setScheduled({ ...done, told: Date.now() });
         } else if (message.method === 'approval/ask' && 'id' in message) {
           const pending = { ...params, requestId: message.id } as unknown as PendingApproval;
           approvalBuffer.current.set(id, pending);
@@ -506,6 +513,7 @@ export function useWorkspace() {
   return {
     hello, sessionId, sessions, events, status, preview, approval, outputs, connected, loading, hasProject, sending,
     cancelling, error, closed, lastWords, openedAt, folder, chat, recent, services, checkingServices, skills, mode, projection,
+    scheduled,
     reading, openSession, send, prompt, cancel, answer, command, pickFolder, pickRecent, openFolder, openChat, setUpService,
     refreshServices, cancelStart,
     reconnect: () => connect(selectedDirectory.current ?? undefined, sessionId ?? undefined),

@@ -398,6 +398,51 @@
   opacity: 1;
 }
 
+/* What the user says of a turn, and the way back to before it. What was said stays in view. */
+.turn-tools {
+  display: flex;
+  gap: 2px;
+  margin: 0 0 0 -6px;
+  opacity: 0;
+  transition: opacity var(--quick) var(--ease);
+}
+
+.turn:hover .turn-tools,
+.turn-tools:focus-within,
+.turn-tools[data-said] {
+  opacity: 1;
+}
+
+/* Beside the copy of an answer they are one row with it, which stays in view while it shows what was said or asks. */
+.answer-tools .turn-tools {
+  margin: 0;
+}
+
+.answer-tools:has(.turn-tools[data-said], .turn-ask) {
+  opacity: 1;
+}
+
+.answer-tools:has(.turn-ask) {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.turn-tools .icon-btn[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.turn-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.turn-ask .caption {
+  flex: 1 1 100%;
+}
+
 .ending {
   display: flex;
   align-items: flex-start;

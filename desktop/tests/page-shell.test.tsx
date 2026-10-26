@@ -51,7 +51,7 @@ const notConfined = 'Commands are not confined on this computer. A command that 
 
 describe('the status line', () => {
   const drawn = (workspace: Workspace, locale = 'en') => {
-    const calls = { onPermissions: vi.fn(), onDetails: vi.fn() };
+    const calls = { onPermissions: vi.fn(), onDetails: vi.fn(), onPlan: vi.fn() };
     render(<StatusLine workspace={workspace} locale={locale} {...calls} />);
     return calls;
   };
@@ -66,9 +66,9 @@ describe('the status line', () => {
     expect(sign()?.getAttribute('aria-label')).toBe(notConfined);
     expect(sign()?.getAttribute('title')).toBe(notConfined);
     fireEvent.click(one('status-may'));
-    expect(counted(calls)).toEqual({ onPermissions: 1, onDetails: 0 });
+    expect(counted(calls)).toEqual({ onPermissions: 1, onDetails: 0, onPlan: 0 });
     fireEvent.click(sign()!);
-    expect(counted(calls)).toEqual({ onPermissions: 2, onDetails: 0 });
+    expect(counted(calls)).toEqual({ onPermissions: 2, onDetails: 0, onPlan: 0 });
   });
 
   it('has the sign where commands are confined in part, and none where they are confined', () => {
@@ -89,7 +89,7 @@ describe('the status line', () => {
     expect(one('status-may').textContent).toBe('Changes no file and runs no command.');
     expect(sign()).toBeNull();
     fireEvent.click(one('status-may'));
-    expect(counted(calls)).toEqual({ onPermissions: 1, onDetails: 0 });
+    expect(counted(calls)).toEqual({ onPermissions: 1, onDetails: 0, onPlan: 0 });
     cleanup();
     drawn(workspaceWith({ chat: true, status: fullAccess }));
     expect(one('status-may').textContent).toBe('Changes no file and runs no command.');
@@ -165,7 +165,7 @@ describe('the status line', () => {
     const [filled, whole] = shown.querySelector('.ring-fill')!.getAttribute('stroke-dasharray')!.split(' ').map(Number);
     expect(filled / whole).toBeCloseTo(0.25, 10);
     fireEvent.click(shown);
-    expect(counted(calls)).toEqual({ onPermissions: 0, onDetails: 1 });
+    expect(counted(calls)).toEqual({ onPermissions: 0, onDetails: 1, onPlan: 0 });
   });
 
   describe('how far the task has come', () => {
@@ -197,7 +197,7 @@ describe('the status line', () => {
       );
       expect(stats().getAttribute('aria-label')).toBe(stats().getAttribute('title'));
       fireEvent.click(stats());
-      expect(counted(calls)).toEqual({ onPermissions: 0, onDetails: 1 });
+      expect(counted(calls)).toEqual({ onPermissions: 0, onDetails: 1, onPlan: 0 });
     });
 
     it('says the numbers as the language of the page writes them', () => {
@@ -229,8 +229,8 @@ describe('the status line', () => {
     it('says how fast the model wrote once, however often the line is drawn again', () => {
       // What the projection holds is read as it is: no turn is counted twice.
       const workspace = workspaceWith({ events: worked });
-      const { rerender } = render(<StatusLine workspace={workspace} locale="en" onPermissions={vi.fn()} onDetails={vi.fn()} />);
-      rerender(<StatusLine workspace={{ ...workspace }} locale="en" onPermissions={vi.fn()} onDetails={vi.fn()} />);
+      const { rerender } = render(<StatusLine workspace={workspace} locale="en" onPermissions={vi.fn()} onDetails={vi.fn()} onPlan={vi.fn()} />);
+      rerender(<StatusLine workspace={{ ...workspace }} locale="en" onPermissions={vi.fn()} onDetails={vi.fn()} onPlan={vi.fn()} />);
       expect(marked('status-stats').map(each => each.querySelector('.status-stats-run')!.textContent))
         .toEqual(['2 turns · 3 steps · 333 tok/s']);
     });

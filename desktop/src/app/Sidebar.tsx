@@ -4,6 +4,7 @@ import type { Workspace } from '../useWorkspace';
 import { useWords } from './locale';
 import { shortcut } from './system';
 import { agoOf, folderName, standingOf, taskTitle } from './tell';
+import { Worktrees } from './Worktrees';
 
 /** The time, told anew every minute. */
 export function useNow(): number {
@@ -103,6 +104,8 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
         {wanted ? words.hint.noMatch : words.hint.noTasks}
       </p>}
     </nav>
+
+    <Worktrees workspace={workspace} />
 
     <div className="sidebar-foot">
       {/* In a chat no project is open, and this is the way into one. */}

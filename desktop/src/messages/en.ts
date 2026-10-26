@@ -27,6 +27,10 @@ function duration(seconds: number): string {
 // A turn that reached a limit stops between two steps, whichever limit it was.
 const afterLimit = 'It stopped before its next step. Tell it to go on if it should.';
 
+type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+// The days of the week, for a task that runs on one of them.
+const weekdays: Record<Weekday, string> = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
+
 export const en = {
   /** A length of time, as short as a line of status needs it. */
   duration,
@@ -284,6 +288,65 @@ export const en = {
    * sentences. None ends with a full stop.
    */
   label: {
+    /**
+     * The tools of a task beside its conversation: what it cost, planning, export, what the user
+     * says of a turn, going back, tasks at set times, worktrees and the groups of the assistant in QQ.
+     */
+    work: {
+      spent: (amount: string) => `~${amount}`,
+      plan: 'Plan',
+      planning: 'Plan mode',
+      exportTask: 'Export',
+      right: 'It did what was asked',
+      wrong: 'It did not do what was asked',
+      rewind: 'Put the files back',
+      rewindYes: 'Put them back',
+      keep: 'Keep them',
+      schedules: {
+        title: 'Tasks at set times',
+        name: 'Name',
+        folder: 'Folder',
+        chooseFolder: 'Choose',
+        prompt: 'What the agent is asked',
+        every: 'How often',
+        kinds: { minutes: 'Every few minutes', hour: 'Every hour', day: 'Every day', week: 'Every week' },
+        minutes: 'Minutes, 5 at least',
+        at: 'At',
+        minute: 'Minute',
+        days: weekdays,
+        weekday: 'Day',
+        missed: 'A time that was missed while Columbina was closed',
+        missedKinds: { run: 'Runs once when it opens', skip: 'Is skipped' },
+        add: 'Add the task',
+        remove: 'Remove',
+        on: 'Runs',
+        when: {
+          minutes: (count: number) => `every ${count} minutes`,
+          hour: (minute: string) => `every hour at minute ${minute}`,
+          day: (time: string) => `every day at ${time}`,
+          week: (day: Weekday, time: string) => `every ${weekdays[day]} at ${time}`,
+        },
+        last: (when: string, end: string) => `Last run ${when}: ${end}`,
+      },
+      worktrees: {
+        title: 'Worktrees',
+        new: 'Task in a worktree',
+        name: 'Name of the task',
+        merge: 'Merge',
+        remove: 'Remove',
+      },
+      groups: {
+        title: 'Groups',
+        unnamed: 'No name',
+        name: 'Name of the group',
+        save: 'Keep the name',
+        memory: (used: number, most: number) => `Memory: ${used} of ${most} characters`,
+        show: 'Show the memory',
+        hide: 'Hide the memory',
+        forget: 'Forget the memory',
+      },
+    },
+
     newTask: 'New task',
     searchTasks: 'Search tasks',
     tasks: 'Tasks',
@@ -733,6 +796,33 @@ export const en = {
 
   /** Sentences that explain: under a field, in an empty place, while something is waited for. */
   hint: {
+    /** What is said of the tools of a task beside its conversation, as `label.work` names them. */
+    work: {
+      spent: 'About what the requests of this task cost, by the prices that Columbina knows. The bill of the service is what counts.',
+      plan: 'In plan mode the agent reads and plans, and changes no file and runs no command. Press again to leave it.',
+      exportTask: 'Write this conversation into a page of HTML, in the folder of exports of Columbina.',
+      rewindAsk: (turn: number) => `Put the files of the project back as they were before turn ${turn}? The command /rewind back undoes it.`,
+      scheduled: (name: string) => `The task ${name} ran.`,
+      schedules: {
+        about: 'A task runs while Columbina is open, in a conversation of its own, and changes the files of its folder only. '
+          + 'Nobody is asked anything while it runs, so a call that needs a yes does not run.',
+        none: 'There are no tasks yet.',
+        failed: 'The tasks could not be changed.',
+      },
+      worktrees: {
+        about: 'A worktree is a copy of the project on a branch of its own. A task there changes none of your files until it is merged.',
+        mergeAsk: (name: string) => `Merge the work of ${name} into the project, and remove its worktree? Your files change where its work changed them.`,
+        removeAsk: (name: string) => `Remove the worktree ${name}, and drop its work? What was done there cannot be had back.`,
+        failed: 'The worktree could not be changed.',
+      },
+      groups: {
+        none: 'The bot has not been asked in a group yet.',
+        empty: 'The memory is empty.',
+        forgetAsk: (group: string) => `Forget what the assistant remembers of ${group}? It cannot be had back.`,
+        failed: 'The groups could not be changed.',
+      },
+    },
+
     keysIdle: 'Enter sends. Shift+Enter starts a new line. A slash opens the commands.',
     keysRunning: (key: string) => `What you send with ${key}+Enter is read at once, and with Enter at the next step. Esc, pressed twice, stops the turn.`,
     escAgain: 'Press Esc once more to stop the turn.',
@@ -936,7 +1026,7 @@ export const en = {
 
     /** The files that go with a message. */
     attachments: {
-      picture: 'The model gets the file, and does not see the picture.',
+      picture: 'The model looks at a picture with its tool read, where its service takes pictures.',
       refused: {
         gone: (name: string) => `${name} is not there any more.`,
         notAFile: (name: string) => `${name} is a folder, and only files can be attached.`,
@@ -1202,3 +1292,4 @@ export const en = {
 };
 
 export type Messages = typeof en;
+export type { Weekday };

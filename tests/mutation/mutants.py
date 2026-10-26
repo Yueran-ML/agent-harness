@@ -3650,8 +3650,8 @@ _DOCKER = (
     mutant(
         "a model is told that a container with a network has none",
         DOCKER,
-        '    network = "no network" if config.network == "none" else "the network of Docker"\n',
-        '    network = "no network"\n',
+        '        "bridge": "the network of Docker",\n',
+        '        "bridge": "no network",\n',
     ),
     mutant(
         "a model is told of another image than the one of its container",
@@ -4083,8 +4083,8 @@ _DOCKER = (
     mutant(
         "nothing in a container takes over what a command left without a parent",
         DOCKER,
-        '"--pull", "never", "--init"]\n',
-        '"--pull", "never"]\n',
+        '"--interactive", "--pull", "never", "--init"]\n',
+        '"--interactive", "--pull", "never"]\n',
     ),
     mutant(
         "what keeps a container is the user that the image names",
@@ -4095,14 +4095,14 @@ _DOCKER = (
     mutant(
         "a container has a network whatever the config says",
         DOCKER,
-        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", network, "--cap-drop", "ALL"]\n',
         '    argv += ["--network", "bridge", "--cap-drop", "ALL"]\n',
     ),
     mutant(
         "a container keeps the capabilities that Docker gives it",
         DOCKER,
-        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
-        '    argv += ["--network", config.network]\n',
+        '    argv += ["--network", network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", network]\n',
     ),
     mutant(
         "a command can gain what a program with a set-user bit gives",
@@ -4371,14 +4371,14 @@ _DOCKER = (
     mutant(
         "a container may have the network of this machine",
         DOCKER,
-        '    network: Literal["none", "bridge"] = "none"\n',
-        '    network: Literal["none", "bridge", "host"] = "none"\n',
+        '    network: Literal["none", "bridge", "allowed"] = "none"\n',
+        '    network: Literal["none", "bridge", "allowed", "host"] = "none"\n',
     ),
     mutant(
         "a container has a network unless the config says otherwise",
         DOCKER,
-        '    network: Literal["none", "bridge"] = "none"\n',
-        '    network: Literal["none", "bridge"] = "bridge"\n',
+        '    network: Literal["none", "bridge", "allowed"] = "none"\n',
+        '    network: Literal["none", "bridge", "allowed"] = "bridge"\n',
     ),
     on_linux(
         mutant(
@@ -5767,14 +5767,14 @@ _DOCKER_REAL = (
     mutant(
         "with a real engine: a container has a network",
         DOCKER,
-        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", network, "--cap-drop", "ALL"]\n',
         '    argv += ["--network", "bridge", "--cap-drop", "ALL"]\n',
     ),
     mutant(
         "with a real engine: a container keeps the capabilities that Docker gives it",
         DOCKER,
-        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
-        '    argv += ["--network", config.network]\n',
+        '    argv += ["--network", network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", network]\n',
     ),
     mutant(
         "with a real engine: a command can gain what a program with a set-user bit gives",
@@ -5803,8 +5803,8 @@ _DOCKER_REAL = (
     mutant(
         "with a real engine: nothing in a container takes over what a command left without a parent",
         DOCKER,
-        '"--pull", "never", "--init"]\n',
-        '"--pull", "never"]\n',
+        '"--interactive", "--pull", "never", "--init"]\n',
+        '"--interactive", "--pull", "never"]\n',
     ),
     mutant(
         "with a real engine: an image is fetched for a command",
@@ -6133,8 +6133,8 @@ _SEARCH = (
     mutant(
         "the history of a repository is walked",
         WALK,
-        '            if entry.kind == "directory" and entry.name in SKIPPED:',
-        "            if False:",
+        "                entry.name in SKIPPED\n",
+        "                False\n",
     ),
     mutant(
         "a link is handed on like a file",
@@ -8196,14 +8196,14 @@ _BASE = (
     mutant(
         "the program that serves takes its wire after its plugins are loaded",
         LAUNCHER,
-        "            return asyncio.run(_serve(entries, env))\n",
+        "            return asyncio.run(_serve(entries, env, args.command))\n",
         "            return asyncio.run(_run(entries, env))\n",
     ),
     mutant(
         "a process without standard streams is loaded all the same",
         LAUNCHER,
-        '            f"has none: {error}"\n        )\n        return 2\n    return await _run(entries, env, wire)\n',
-        '            f"has none: {error}"\n        )\n    return await _run(entries, env, None)\n',
+        '            f"process has none: {error}"\n        )\n        return 2\n    return await _run(entries, env, wire)\n',
+        '            f"process has none: {error}"\n        )\n    return await _run(entries, env, None)\n',
     ),
     mutant(
         "the wire that was taken is not handed to the program",
@@ -8232,14 +8232,14 @@ _BASE = (
     mutant(
         "the program that serves talks to another model than the one that is the default",
         SERVE_BUNDLE,
-        "            model: ${COLUMBINA_MODEL:-deepseek-flash}\n",
-        "            model: ${COLUMBINA_MODEL:-deepseek-pro}\n",
+        "            model: ${COLUMBINA_MODEL:-deepseek-flash}\n            # How many tokens",
+        "            model: ${COLUMBINA_MODEL:-deepseek-pro}\n            # How many tokens",
     ),
     mutant(
         "the program that serves is not told how much its model takes",
         SERVE_BUNDLE,
-        "            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}\n",
-        "",
+        "            # it refuses a request as too long.\n            context_window: ${COLUMBINA_CONTEXT_WINDOW:-1048576}\n",
+        "            # it refuses a request as too long.\n",
     ),
 )
 
@@ -9756,7 +9756,7 @@ _CLI = (
     mutant(
         "the line below the prompt is empty",
         CLI_FRONTEND,
-        "        return status(\n            session,\n            self._model,\n            sandbox,\n            busy=self._prompt.busy,\n            mode=mode,\n            meter=self._ctx.get(TOKEN_METER),\n        )\n",
+        "        return status(\n            session,\n            self._model,\n            sandbox,\n            busy=self._prompt.busy,\n            mode=mode,\n            meter=self._ctx.get(TOKEN_METER),\n            spending=self._ctx.get(SPENDING),\n        )\n",
         '        return ""\n',
     ),
     mutant(
@@ -10161,8 +10161,8 @@ _SLASH = (
     mutant(
         "the command asks as if the conversation had come near what the model takes",
         COMMAND_COMPACT,
-        'return await service.compact(agent, "manual")',
-        'return await service.compact(agent, "pressure")',
+        'return await service.compact(agent, "manual", rest.strip() or None)',
+        'return await service.compact(agent, "pressure", rest.strip() or None)',
     ),
     mutant(
         "one message is counted like several",
@@ -11178,8 +11178,8 @@ _METER = (
     mutant(
         "the id of the call is not counted with a result",
         TOKEN_METER,
-        "    if isinstance(message, ToolMessage):\n        total += estimate(message.call_id)\n",
-        "",
+        "        total += estimate(message.call_id) + PER_PICTURE * len(message.pictures)\n",
+        "        total += PER_PICTURE * len(message.pictures)\n",
     ),
     mutant(
         "no tools cost what declaring tools costs",
@@ -11893,14 +11893,14 @@ _STORED_SESSIONS = (
     mutant(
         "an id that cannot name a session ends the program with a trace",
         LAUNCHER,
-        "        except (SessionError, ValueError) as error:\n",
-        "        except SessionError as error:\n",
+        "        except (SessionError, ValueError, OSError) as error:\n",
+        "        except (SessionError, OSError) as error:\n",
     ),
     mutant(
         "a session that cannot be read ends the program with a trace",
         LAUNCHER,
-        "        except (SessionError, ValueError) as error:\n",
-        "        except ValueError as error:\n",
+        "        except (SessionError, ValueError, OSError) as error:\n",
+        "        except (ValueError, OSError) as error:\n",
     ),
     mutant(
         "sessions that could not be looked at count as looked at",
@@ -23244,7 +23244,7 @@ _SANDBOX_RUN = (
     mutant(
         "through the command line: a container has a network whatever the config says",
         DOCKER,
-        '    argv += ["--network", config.network, "--cap-drop", "ALL"]\n',
+        '    argv += ["--network", network, "--cap-drop", "ALL"]\n',
         '    argv += ["--network", "bridge", "--cap-drop", "ALL"]\n',
     ),
     mutant(
@@ -26039,14 +26039,14 @@ _ANTHROPIC = (
     mutant(
         "a result without text goes with empty content",
         ANTHROPIC_MESSAGES,
-        '        if text.strip():\n            result["content"] = text\n',
-        '        result["content"] = text\n',
+        '        elif text.strip():\n            result["content"] = text\n',
+        '        else:\n            result["content"] = text\n',
     ),
     mutant(
         "a result with blank text goes with it",
         ANTHROPIC_MESSAGES,
-        '        if text.strip():\n            result["content"] = text\n',
-        '        if text:\n            result["content"] = text\n',
+        '        elif text.strip():\n            result["content"] = text\n',
+        '        elif text:\n            result["content"] = text\n',
     ),
     mutant(
         "a result that failed is not marked and one that did not is",
@@ -28297,8 +28297,8 @@ _QQ = (
     mutant(
         "the agent of a group may read",
         QQ_BOT,
-        "                tools=frozenset(),\n",
-        "                tools=OWNER_TOOLS,\n",
+        "                tools=GROUP_TOOLS,\n",
+        "                tools=GROUP_TOOLS | OWNER_TOOLS,\n",
     ),
     mutant(
         "the agent of a group is told it talks with its owner",
@@ -29102,3 +29102,9 @@ SETS: dict[str, MutantSet] = {
     ),
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""
+
+from mutation.batch_seventeen import LATER  # noqa: E402 - the sets there import this file
+from mutation.batch_video import VIDEO_SETS  # noqa: E402 - so do these
+
+SETS.update(LATER)
+SETS.update(VIDEO_SETS)

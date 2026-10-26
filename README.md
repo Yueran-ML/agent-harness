@@ -203,6 +203,36 @@ request and comments, and it asks you before every push, pull request and commen
 columbina login github
 ```
 
+### More that the agent does
+
+- **The web.** `web_fetch` reads a page as text, and `web_search` searches DuckDuckGo with no
+  key; `columbina search-key` keeps a key of Tavily or Brave instead. Addresses of this machine
+  and of its network are never fetched.
+- **Pictures.** `read` shows a picture to a model that takes pictures, and a screenshot pasted
+  into the desktop application goes with the message.
+- **Language servers.** After a file is changed, what its language server finds wrong is said
+  with the result, and the tool `lsp` asks for definitions, references and symbols.
+- **Going back.** The files are kept before every turn, apart from the repository of the project:
+  `/rewind` lists the turns, and `/rewind N` puts the files back as they were before turn N.
+- **Planning first.** In plan mode, `/plan`, the agent reads and thinks and changes nothing.
+- **What a conversation is made of.** `/context` says it, and `/compact WHAT TO KEEP` sums it up
+  with what to keep. The status line says about what a task cost; `columbina sessions stats`
+  sums the sessions up, with what you said of their turns with `/verdict`.
+- **A page of a conversation.** `/export` writes the conversation into a page of HTML, and
+  `/export md` into Markdown.
+- **An answer that fits a schema.** `columbina run --output-schema FILE` has the answer fit a JSON
+  Schema, and prints it as JSON.
+- **A network of a few hosts.** With Docker, the commands may reach the hosts that the profile
+  allows, and no others.
+- **Tasks at set times.** `columbina schedules add` has a task run every so many minutes, every
+  hour, day or week while the desktop application is open.
+- **A worktree for a task.** `columbina worktrees add NAME` gives a task a copy of the project on a
+  branch of its own, which is merged into the project, or dropped, when it is done.
+- **An editor holds the conversation.** `columbina acp` speaks the Agent Client Protocol, for an
+  editor such as Zed.
+- **Video.** With `COLUMBINA_VIDEO=1` the agent cuts a film by what is said in it, with ffmpeg,
+  and lays pictures, music and titles over it. See [Editing video](docs/video.md).
+
 ### An assistant in Feishu
 
 Columbina can also answer you in [Feishu](https://www.feishu.cn) or Lark, through a custom app
@@ -252,6 +282,8 @@ Each assistant may ask a model of its own, and think as hard as you choose for i
   DeepSeek, part by part, and what they cost.
 - [Pets](docs/pets.md) says how to make a pet for the desktop application, and how a program of
   your own can follow what the task is doing.
+- [Editing video](docs/video.md) says how the agent cuts a film by what is said in it, and
+  there is a Chinese and a Japanese one beside it.
 
 ## License
 

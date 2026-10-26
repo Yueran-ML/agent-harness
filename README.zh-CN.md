@@ -144,6 +144,22 @@ columbina run "What does this project do? Answer in three sentences."
 columbina login github
 ```
 
+### Agent 还能做的事
+
+- **上网。** `web_fetch` 把网页读成文字，`web_search` 免密钥搜 DuckDuckGo；`columbina search-key` 可以改用 Tavily 或 Brave 的密钥。本机和内网的地址一律不抓。
+- **看图。** `read` 把图片交给支持图片的模型；在桌面端输入框里粘贴截图，会随消息一起发出。
+- **语言服务器。** 改完文件后，语言服务器发现的问题会附在结果后面；`lsp` 工具可以查定义、引用和符号。
+- **回退。** 每轮开始前都会把文件存一份（不碰项目自己的 git 仓库）：`/rewind` 列出各轮，`/rewind N` 把文件恢复到第 N 轮之前。
+- **先计划。** 计划模式（`/plan`）下，Agent 只阅读和思考，不改任何东西。
+- **对话由什么组成。** `/context` 会说明；`/compact 要保留的内容` 按你的要求压缩。状态栏显示任务大约花了多少钱；`columbina sessions stats` 汇总各次会话，连同你用 `/verdict` 对各轮的评价。
+- **导出对话。** `/export` 把对话写成 HTML 页面，`/export md` 写成 Markdown。
+- **按 Schema 回答。** `columbina run --output-schema FILE` 让答案符合一个 JSON Schema，并以 JSON 输出。
+- **只放行几个网站。** 用 Docker 时，命令只能访问配置里允许的网站。
+- **定时任务。** `columbina schedules add` 让任务在桌面端打开期间每隔几分钟、每小时、每天或每周运行。
+- **每个任务一个工作树。** `columbina worktrees add 名称` 给任务一份在独立分支上的项目副本，做完后合并进项目或丢弃。
+- **由编辑器来对话。** `columbina acp` 支持 Agent Client Protocol，可以接 Zed 这类编辑器。
+- **剪视频。** 设 `COLUMBINA_VIDEO=1` 后，Agent 可以用 ffmpeg 按视频里说的话剪片子，并叠加画面、配乐和标题。见[剪辑视频](docs/video.zh-CN.md)。
+
 ### 飞书助手
 
 Columbina 也可以在[飞书](https://www.feishu.cn)或 Lark 里回复你：用你自己创建的企业自建应用，只有你能和它聊天。它能读分享给应用的文档和你发给它的文本文件，发给它一个 `SKILL.md` 就装上一个技能；它不运行命令，也不改动你的文件，你发给它的东西存在它自己的文件夹 `~/Columbina/feishu` 里；你也可以允许它修改这个文件夹里的文件。桌面应用里在“设置”的“飞书助手”一节设置，那里也列出了在飞书开发者后台要做的步骤；助手运行时关掉窗口，应用会留在托盘里，在 Windows 上还可以设成登录时启动到托盘。命令行里用 `columbina feishu --setup` 填入应用，用 `columbina feishu` 运行助手，长连接需要的包用 `pip install "columbina[feishu]"` 安装。
@@ -165,6 +181,7 @@ Columbina 也可以在 [QQ](https://q.qq.com) 里聊天：用你自己创建的�
 - [工程报告](docs/report.zh-CN.md)讲 Columbina 怎样组成、哪些选择决定了它的样子、怎样测试以及做得怎样（[英文版](docs/report.md)）。
 - [基准的表](docs/bench/README.md)给出 DeepSeek 两个模型上的结果、各部件的对比和花费。
 - [桌宠](docs/pets.md)讲怎样给桌面端做一只桌宠，以及你自己的程序怎样跟着任务的状态走（英文）。
+- [剪辑视频](docs/video.zh-CN.md)讲 Agent 怎样按视频里说的话剪片子。
 
 ## 许可证
 

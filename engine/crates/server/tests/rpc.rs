@@ -1345,9 +1345,46 @@ async fn files_that_cannot_be_read_are_none_of_them_taken_in() {
         let error = agent.error("media.import", Some(params)).await;
         assert_eq!(error["code"], -32602, "{error}");
     }
+    // A path that is not absolute means nothing to the engine.
+    for relative in ["a.mp4", "media/a.mp4"] {
+        let error = agent
+            .error("media.import", Some(json!({ "paths": [good, relative] })))
+            .await;
+        assert_eq!(error["code"], -32602, "{error}");
+        assert_eq!(
+            error["data"],
+            json!({ "index": 1, "path": relative, "reason": "relative" })
+        );
+    }
     // The sound alone is taken in.
     let result = agent
         .result("media.import", Some(json!({ "paths": [good] })))
         .await;
     assert_eq!(result["added"], json!(["m1"]));
+}
+
+#[tokio::test]
+async fn files_are_read_while_the_engine_goes_on_answering() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let mut desktop = engine.client("desktop").await;
+    // Hundreds of files, read eight at a time: long enough for a transaction of another client
+    // to be applied, and answered, while they are read.
+    let path = made.path.to_str().unwrap();
+    let paths = vec![path; 400];
+    let importing = agent
+        .request("media.import", Some(json!({ "paths": paths })))
+        .await;
+    let timeline = json!([{ "op": "add_timeline", "timeline": {
+        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 }, "tracks": [],
+    } }]);
+    let applied = desktop.apply(timeline).await;
+    assert_eq!(applied["revision"], 1);
+    let imported = agent.answer(importing).await;
+    assert_eq!(imported["result"]["revision"], 2, "{imported}");
+    assert_eq!(imported["result"]["added"].as_array().unwrap().len(), 400);
 }

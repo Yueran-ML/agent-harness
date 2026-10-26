@@ -123,24 +123,38 @@ Before `hello`, every other request is refused with `-32600`.
   transaction (see below) to the id the engine gave it; `{}` if there were none.
 - `media.import` reads each file (its identity, and what it holds, as below) and adds it to the
   end of the media as **one transaction** of `add_media` operations, one for each path in order,
-  each given an id by the engine; `added` lists them in the same order. If any file cannot be
-  read, **nothing** is added, no revision is made, and the error (`-32002`) names the first
-  path in the list that could not be read. Other connections are answered while the files are
-  read (requests on the same connection are answered in order, after it). A file that is taken in twice is two media, as in an editor. A path is
-  stored in full (made absolute against the engine's directory if it is not), as the system
-  writes it (`C:\media\a.mp4` on Windows), and must be UTF-8.
+  each given an id by the engine; `added` lists them in the same order. Every path must be
+  **absolute** and UTF-8; a relative one is refused (`-32602`, `data: {"index": i, "path":
+  "...", "reason": "relative"}`) before any file is read. If any file cannot be read, **nothing**
+  is added, no revision is made, and the error (`-32002`) names the first path in the list that
+  could not be read; once one cannot be read, no other is begun. If the media that was read is
+  refused as an operation (`-32001`, as `transaction.apply` is refused: `too_large` for a file
+  whose size or duration is beyond 2^53 − 1), nothing is added either. At most 8 files are read
+  at once, of all the calls together. Other connections are answered while the files are read
+  (requests on the same connection are answered in order, after it). A file that is taken in
+  twice is two media, as in an editor. A path is stored as the system writes it
+  (`C:\media\a.mp4` on Windows).
   - `identity`: `size`, `modified_us` (microseconds since 1970, UTC) and `digest`: the SHA-256 of
     the size in decimal, the first 64 KiB, and the last 64 KiB from no earlier than byte 65536,
     as the Python editing makes it.
+  - A file is read as one of the formats MP4/MOV, Matroska/WebM, AVI, MPEG-TS (and M2TS),
+    MPEG-PS, WAV, MP3, FLAC, Ogg, AAC, PNG, JPEG and WebP, and as a file only: a playlist (HLS)
+    or a list of `concat` is not media.
   - `facts.duration` is in the time base of the picture if there is one, else of the sound: a
     time base of `num/den` seconds is the `scale` `den`, and the duration counts its ticks times
-    `num`, from the first frame. A `source_in` of a clip of the media is in this scale.
+    `num`, from the start of that stream (its first frame, which need not be at 0 in the file)
+    to the end of its last frame. Where the file does not say how long the stream lasts (as
+    Matroska does not), its end is read from its last packets. A `source_in` of a clip of the
+    media is in this scale, from the same start.
   - `facts.video`: `width` and `height` as stored (before rotation); `rate` the rate of the
     timestamps (`r_frame_rate`), or, where the mean rate is more than 1% from it, the standard
     rate nearest to the mean; `codec` as ffprobe names it (`h264`, `hevc`, `prores`); `bits` of
     luma; `rotation` how far the picture is turned **clockwise** to be shown upright (0, 90,
-    180, 270; a file made with `-display_rotation 90` has 270). No `video` for sound only, no
-    `audio` for a picture only; a file with neither cannot be read.
+    180, 270; a file made with `-display_rotation 90` has 270, where ffprobe, and the Python
+    editing, say 90 counterclockwise: a project of it is moved over as `(360 − r) % 360`). A
+    mirrored picture keeps its turn, and its mirror is not told. No `video` for sound only, no
+    `audio` for a picture only; a file with neither cannot be read, and neither can one whose
+    picture libav cannot decode.
 - `history.undo` takes back the latest step **whoever made it** (desktop and agent share one
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
@@ -246,10 +260,10 @@ The connection stays usable after every error.
 
 **Files that cannot be read (`-32002`).** `reason` is one of `not_found` (no such file),
 `unreadable` (it may not be read, or it is a directory), `not_utf8` (its path is not UTF-8 or
-holds a NUL), `not_media` (libav cannot open it as media), `no_streams` (neither picture nor
-sound), `unsupported` (what it holds cannot be used: a codec that libav cannot decode, no
-duration, a picture with no size or rate), or `failed` (the engine failed to read it; `path` is
-then empty).
+holds a NUL), `not_media` (libav cannot open it as media of the formats above), `no_streams`
+(neither picture nor sound), `unsupported` (what it holds cannot be used: a picture that libav
+cannot decode, no duration, a picture with no size or rate), `read` (it cannot be read on, once
+opened), or `failed` (the engine failed to read it).
 
 **Refusals (`-32001`).** `data` is `{"reason": "...", "message": "...", ...fields}`, with
 `"index": i` (the place of the refused operation in `ops`) when an operation was refused, and

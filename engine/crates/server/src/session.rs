@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use columbina_media::MediaError;
@@ -75,6 +75,8 @@ pub struct Engine {
     /// Every open connection, so that all can be closed as the engine ends.
     connections: std::sync::Mutex<Connections>,
     next_connection: AtomicU64,
+    /// The files that `media.import` may read at once, of all its calls together.
+    reading: Arc<Semaphore>,
 }
 
 #[derive(Default)]
@@ -167,6 +169,7 @@ impl Engine {
             presence: watch::Sender::new(Presence::default()),
             connections: std::sync::Mutex::default(),
             next_connection: AtomicU64::new(1),
+            reading: Arc::new(Semaphore::new(READ_AT_ONCE)),
         }
     }
 
@@ -578,7 +581,7 @@ async fn history_step(
     Ok(engine.finish(state, connection, line))
 }
 
-/// How many files `media.import` reads at once.
+/// How many files `media.import` reads at once, of all its calls together.
 const READ_AT_ONCE: usize = 8;
 
 /// The params of `media.import`.
@@ -600,7 +603,8 @@ struct Imported<'a> {
 /// if one of them cannot be read, none of them.
 ///
 /// The files are read on threads of their own, a few at once, before the state is locked: so
-/// that the engine goes on answering while they are read.
+/// that the engine goes on answering while they are read. A path must be absolute: the engine's
+/// own directory means nothing to a client.
 async fn media_import(
     engine: &Engine,
     connection: &Connection,
@@ -612,7 +616,19 @@ async fn media_import(
     if import.paths.is_empty() {
         return Err(Fault::params("media.import takes at least one path").into());
     }
-    let media = read_all(import.paths).await?;
+    if let Some((index, path)) = import
+        .paths
+        .iter()
+        .enumerate()
+        .find(|(_, path)| !Path::new(path).is_absolute())
+    {
+        let fault = Fault::params(format!(
+            "media.import takes absolute paths, and {path} is not one"
+        ))
+        .with_data(json!({ "index": index, "path": path, "reason": "relative" }));
+        return Err(fault.into());
+    }
+    let media = read_all(&engine.reading, import.paths).await?;
     let ops = media
         .into_iter()
         .map(|media| Op::AddMedia { media, index: None })
@@ -642,36 +658,52 @@ async fn media_import(
     Ok(engine.finish(state, connection, line))
 }
 
-/// Read each file as media, in the order given; the error of the first that cannot be read.
-async fn read_all(paths: Vec<String>) -> Result<Vec<Media>, Fault> {
-    let at_once = Arc::new(Semaphore::new(READ_AT_ONCE));
-    let mut reading = Vec::with_capacity(paths.len());
+/// Read each file as media, in the order given, at most [`READ_AT_ONCE`] at once of all the
+/// calls; the error of the first in the order given that cannot be read. Once one cannot be
+/// read, no other is begun.
+async fn read_all(reading: &Arc<Semaphore>, paths: Vec<String>) -> Result<Vec<Media>, Fault> {
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut tasks = Vec::with_capacity(paths.len());
     for path in paths {
-        let permit = Arc::clone(&at_once)
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let permit = Arc::clone(reading)
             .acquire_owned()
             .await
             .expect("the semaphore is never closed");
-        reading.push(tokio::task::spawn_blocking(move || {
-            let read = read(&path);
-            drop(permit);
-            (path, read)
-        }));
+        let stopped = Arc::clone(&stop);
+        let read_path = path.clone();
+        let task = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            if stopped.load(Ordering::Relaxed) {
+                return None;
+            }
+            let read = read(&read_path);
+            if read.is_err() {
+                stopped.store(true, Ordering::Relaxed);
+            }
+            Some(read)
+        });
+        tasks.push((path, task));
     }
-    let mut media = Vec::with_capacity(reading.len());
+    let mut media = Vec::with_capacity(tasks.len());
     let mut failed = None;
-    for task in reading {
+    for (path, task) in tasks {
         match task.await {
-            Ok((_, Ok(read))) => media.push(read),
-            Ok((path, Err(error))) => {
+            Ok(Some(Ok(read))) => media.push(read),
+            // Not begun, since another could not be read.
+            Ok(None) => {}
+            Ok(Some(Err(error))) => {
                 failed
                     .get_or_insert_with(|| cannot_read(&path, error.reason(), &error.to_string()));
             }
             Err(error) => {
                 failed.get_or_insert_with(|| {
                     cannot_read(
-                        "",
+                        &path,
                         "failed",
-                        &format!("the reading of a file failed: {error}"),
+                        &format!("the engine failed to read it: {error}"),
                     )
                 });
             }
@@ -692,7 +724,8 @@ fn cannot_read(path: &str, reason: &str, message: &str) -> Fault {
     .with_data(json!({ "path": path, "reason": reason, "message": message }))
 }
 
-/// A file as media, with no id yet: its full path, its identity and what it holds. This blocks.
+/// A file as media, with no id yet: its path, which is absolute, written as the system writes
+/// it, its identity and what it holds. This blocks.
 fn read(path: &str) -> Result<Media, MediaError> {
     let full = std::path::absolute(Path::new(path))?;
     let identity = columbina_media::identity(&full)?;

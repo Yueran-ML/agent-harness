@@ -1,12 +1,17 @@
 """``columbina video``: a film cut by hand, with the same operations as the tools."""
 
+import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from columbina.apps.launcher import main
-from support.media import made, real
+from columbina.video import engine
+from columbina.video.engine import Engine
+from support import fake_engine
+from support.media import made, real, real_engine
 
 WORDS = [(200_000, 800_000, "one"), (900_000, 1_600_000, "two."), (2_400_000, 3_000_000, "three.")]
 
@@ -112,3 +117,70 @@ def test_what_cannot_be_done_by_hand_is_said(
     )
     assert main(["video", "render", "film", "--final"]) == 2
     assert "the main line is empty" in said(capsys).splitlines()[-1]
+
+
+def gone(lock: Path) -> None:
+    deadline = time.monotonic() + 15
+    while lock.exists():
+        assert time.monotonic() < deadline, "the engine did not end"
+        time.sleep(0.05)
+
+
+def test_the_engine_says_that_it_answers(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("COLUMBINA_ENGINE", fake_engine.__file__)
+    monkeypatch.setattr(engine, "_argv", fake_engine.argv_of(idle=0.3))
+
+    assert main(["video", "engine", "--project", "film"]) == 0
+    told = said(capsys)
+    assert main(["video", "engine", "--project", "film", "--json"]) == 0
+    answered = json.loads(said(capsys))
+    gone(tmp_path / "film" / "engine.lock")
+
+    assert told.startswith("The engine 0.1.0-fake answers in protocol 1, as process ")
+    assert told.endswith(f"for {tmp_path / 'film'}: revision 0, 0 media, 0 timelines.\n")
+    assert answered["revision"] == answered["media"] == answered["timelines"] == 0
+    assert answered["project"] == str(tmp_path / "film")
+
+
+def test_an_engine_that_is_missing_or_fails_is_said(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("COLUMBINA_ENGINE", raising=False)
+    monkeypatch.setenv("PATH", "")
+
+    assert main(["video", "engine"]) == 2
+    missing = said(capsys)
+    monkeypatch.setenv("COLUMBINA_ENGINE", fake_engine.__file__)
+    monkeypatch.setattr(engine, "_argv", fake_engine.argv_of("error"))
+    assert main(["video", "engine"]) == 2
+
+    assert missing.startswith("columbina: no columbina-engine program was found: build it with")
+    assert said(capsys) == "columbina: project.json cannot be read\n"
+
+
+def test_the_engine_itself_says_how_a_project_stands(
+    home: Path, talk: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    program = real_engine(monkeypatch)
+    monkeypatch.setenv("COLUMBINA_ENGINE", program)
+
+    async def edited() -> int:
+        async with await Engine.attach(talk / "film", program=program, idle_seconds=1) as one:
+            await one.imported([talk / "raw" / "talk.mp4"])
+            rate = {"num": 25, "den": 1}
+            timeline: dict[str, object] = {"id": "", "name": "Cut", "rate": rate, "tracks": []}
+            await one.apply([{"op": "add_timeline", "timeline": timeline}])
+            return int(one.hello["pid"])
+
+    pid = asyncio.run(edited())
+    assert main(["video", "engine", "--project", "film", "--json"]) == 0
+    answered = json.loads(said(capsys))
+    gone(talk / "film" / "engine.lock")
+
+    assert answered["engine"] == "0.1.0"
+    assert answered["pid"] == pid
+    assert (answered["revision"], answered["media"], answered["timelines"]) == (2, 1, 1)

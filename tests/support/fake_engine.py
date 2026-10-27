@@ -47,6 +47,24 @@ LIMIT = 16 * 1024 * 1024
 """The longest line that a client reads."""
 
 
+def argv_of(
+    *mode: str, idle: float | None = None
+) -> Callable[[str, Path, float | None], list[str]]:
+    """What the engine is started with, for this file to be started in its place.
+
+    It is a script, run by the Python of the test, in a mode (``listen`` if none is given), and
+    with ``idle`` for its idle time, if given, in place of the one that it is started with.
+    """
+
+    def argv(program: str, directory: Path, idle_seconds: float | None) -> list[str]:
+        seconds = idle if idle is not None else idle_seconds
+        idling = ["--idle-seconds", str(seconds)] if seconds is not None else []
+        return [sys.executable, __file__, "--project", str(directory), "--headless", *idling,
+                "--mode", *(mode or ("listen",))]  # fmt: skip
+
+    return argv
+
+
 def address_of() -> str:
     """A new address that nothing listens at yet."""
     if sys.platform == "win32":

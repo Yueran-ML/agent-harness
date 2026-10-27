@@ -16,8 +16,8 @@ nothing asks for ffmpeg. The profiles load it with ``COLUMBINA_VIDEO``.
 The parts: :mod:`.media` asks ffmpeg, :mod:`.project` keeps the directory, :mod:`.transcribe`
 writes down the words, :mod:`.timeline` and :mod:`.story` are the film as data and as text,
 :mod:`.render` compiles it for ffmpeg, and :mod:`.editing` is what the tools and the command
-line ``columbina video`` do. :mod:`.engine` reaches ``columbina-engine``, the program that has a
-project of the studio open, as one of its clients.
+line ``columbina video`` do. :mod:`.engine` reaches ``columbina-engine``, the program through
+which the desktop and the agent edit one project together.
 
 Every path goes through the file seam: the directory of the project is written as a file is,
 and a source is read as a file is. What is said in a source is something that a file says.
@@ -66,14 +66,17 @@ class Config(BaseModel):
         whisper_model: A directory with a model of faster-whisper, to transcribe with.
         whisper_python: The Python that has faster-whisper, if it is not this one.
         device: Where faster-whisper runs: ``auto``, ``cuda`` or ``cpu``.
+        engine: The engine program, ``columbina-engine``, by its whole path. Without it,
+            ``COLUMBINA_ENGINE`` names it, or it is looked for on the search path.
     """
 
     enabled: bool = False
     whisper_model: Path | None = None
     whisper_python: str | None = None
     device: Literal["auto", "cuda", "cpu"] = "auto"
+    engine: str | None = None
 
-    @field_validator("whisper_model", "whisper_python", mode="before")
+    @field_validator("whisper_model", "whisper_python", "engine", mode="before")
     @classmethod
     def _none_for_nothing(cls, value: object) -> object:
         """A variable that names nothing, as a profile writes one that is not set, is none."""

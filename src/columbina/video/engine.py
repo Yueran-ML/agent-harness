@@ -39,6 +39,7 @@ from typing import IO, Any, Literal, Self, cast
 from columbina import programs
 
 __all__ = [
+    "NOT_FOUND",
     "PROTOCOL",
     "UNEXPECTED",
     "UNREACHABLE",
@@ -66,6 +67,13 @@ UNEXPECTED = -3
 or has another project open."""
 
 _NAME = "columbina-engine"
+
+NOT_FOUND = (
+    "no columbina-engine program was found: build it with `cargo build --release -p "
+    "columbina-server` in engine/ of the repository, and name it with COLUMBINA_ENGINE or put "
+    "it on the search path. A program that lies in the working directory is not taken"
+)
+"""What is said where :func:`program_of` finds no engine."""
 
 _LINE_BYTES = 16 * 1024 * 1024
 """The longest line that is read from the engine, without its newline."""

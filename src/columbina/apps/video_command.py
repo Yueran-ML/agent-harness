@@ -10,25 +10,32 @@ The same operations as the tools of the model, :mod:`columbina.video.editing`, b
 
 A source is transcribed with faster-whisper and a model that ``--model`` or
 ``COLUMBINA_WHISPER_MODEL`` names, or with words that were written down beforehand, ``--words``.
+
+``columbina video engine`` is of another kind: it says whether ``columbina-engine`` answers for
+a project, and starts one without a window if none does, which ends by itself a while after.
 """
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from columbina.video.editing import Editor, Placing, Shape
+from columbina.video.engine import NOT_FOUND, Engine, EngineError, program_of
 from columbina.video.media import MediaUnavailableError, UnreadableMediaError, located
 from columbina.video.project import ProjectError
 from columbina.video.render import RenderError
 from columbina.video.story import StoryError
 from columbina.video.transcribe import Scripted, Transcriber, TranscriptionError, Whisper
 
-__all__ = ["VIDEO", "arguments", "run"]
+__all__ = ["ENGINE", "VIDEO", "arguments", "run"]
 
 VIDEO = "video"
+ENGINE = "engine"
 
 _FAILURES = (
     ProjectError,
@@ -94,6 +101,15 @@ def arguments(video: argparse.ArgumentParser) -> None:
     undoing = what("undo", "take the last commit back")
     undoing.add_argument("--redo", action="store_true", help="do again what was taken back")
     what("info", "say how the project stands")
+    engine = whats.add_parser(
+        ENGINE, help="say whether the engine answers for a project, starting one if none does"
+    )
+    engine.add_argument(
+        "--project", metavar="DIR", default=".", help="the directory of the project; this one"
+    )
+    engine.add_argument(
+        "--json", action="store_true", help="answer in one document of JSON, for another program"
+    )
 
 
 def _transcriber(args: argparse.Namespace) -> Transcriber | None:
@@ -156,8 +172,51 @@ async def _done(args: argparse.Namespace, cwd: Path, directory: Path) -> str:
     return await editor.info()
 
 
+async def _answered(directory: Path, program: str) -> dict[str, object]:
+    """Ask the engine of a project what it is, and how the project stands."""
+    async with await Engine.attach(directory, program=program, client="cli") as engine:
+        revision, project = await engine.project()
+    media, timelines = (
+        len(cast("list[object]", things)) if isinstance(things, list) else 0
+        for things in (project.get("media"), project.get("timelines"))
+    )
+    return {
+        "engine": engine.hello.get("engine"),
+        "protocol": engine.hello.get("protocol"),
+        "pid": engine.hello.get("pid"),
+        "project": engine.hello.get("project"),
+        "revision": revision,
+        "media": media,
+        "timelines": timelines,
+    }
+
+
+def _engine(args: argparse.Namespace, say: Callable[[str], None]) -> int:
+    program = program_of(None, os.environ.get("PATH", ""), [Path.cwd()])
+    if program is None:
+        say(f"columbina: {NOT_FOUND}")
+        return 2
+    try:
+        told = asyncio.run(_answered(Path(args.project).resolve(), program))
+    except EngineError as error:
+        say(f"columbina: {error}")
+        return 2
+    if args.json:
+        say(json.dumps(told, ensure_ascii=False))
+        return 0
+    timelines = told["timelines"]
+    say(
+        f"The engine {told['engine']} answers in protocol {told['protocol']}, as process "
+        f"{told['pid']}, for {told['project']}: revision {told['revision']}, "
+        f"{told['media']} media, {timelines} timeline{'' if timelines == 1 else 's'}."
+    )
+    return 0
+
+
 def run(args: argparse.Namespace, say: Callable[[str], None]) -> int:
     """Carry out ``columbina video``, and return its exit code."""
+    if args.what == ENGINE:
+        return _engine(args, say)
     try:
         said = asyncio.run(_done(args, Path.cwd(), Path(args.project).resolve()))
     except _FAILURES as error:

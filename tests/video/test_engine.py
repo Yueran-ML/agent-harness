@@ -32,14 +32,8 @@ TIMELINE: dict[str, Any] = {"id": "$t", "name": "Cut", "rate": {"num": 25, "den"
 
 
 def as_program(monkeypatch: pytest.MonkeyPatch, *mode: str) -> None:
-    """Start the fake engine as the program, in a mode: run by this Python, as it is a script."""
-
-    def argv(program: str, directory: Path, idle_seconds: float | None) -> list[str]:
-        idle = ["--idle-seconds", str(idle_seconds)] if idle_seconds is not None else []
-        return [sys.executable, str(FAKE), "--project", str(directory), "--headless", *idle,
-                "--mode", *(mode or ("listen",))]  # fmt: skip
-
-    monkeypatch.setattr(engine, "_argv", argv)
+    """Start the fake engine as the program, in a mode."""
+    monkeypatch.setattr(engine, "_argv", fake_engine.argv_of(*mode))
 
 
 async def attached(directory: Path, **more: Any) -> Engine:

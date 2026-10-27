@@ -29103,8 +29103,10 @@ SETS: dict[str, MutantSet] = {
 }
 """The sets of mutants, by the name that ``mutate.py`` takes."""
 
-from mutation.batch_seventeen import LATER  # noqa: E402 - the sets there import this file
-from mutation.batch_video import VIDEO_SETS  # noqa: E402 - so do these
+from mutation.batch_engine import ENGINE_SETS  # noqa: E402 - the sets there import this file
+from mutation.batch_seventeen import LATER  # noqa: E402 - so do these
+from mutation.batch_video import VIDEO_SETS  # noqa: E402 - and these
 
 SETS.update(LATER)
 SETS.update(VIDEO_SETS)
+SETS.update(ENGINE_SETS)

@@ -23,9 +23,11 @@ engine, listens at.
 **The program.** The engine is looked for the way :mod:`columbina.programs` looks for a
 program, :func:`program_of`: the path that the config gives, or ``COLUMBINA_ENGINE``, or the
 search path, and never in a working directory. It is run in its own directory, where it finds
-the libraries of FFmpeg that it reads media with, and not in the directory of the project. It
-logs into a file of its own in ``cache/`` of the project, ``engine-<time>-<digits>.log``, which
-it writes itself, also once this program has ended; the newest 20 are kept.
+the libraries of FFmpeg that it reads media with, and not in the directory of the project; a
+build for development is also given those of ``FFMPEG_DIR``, :func:`_environment`, while a
+packaged one has them beside it. It logs into a file of its own in ``cache/`` of the project,
+``engine-<time>-<digits>.log``, which it writes itself, also once this program has ended; the
+newest 20 are kept.
 """
 
 import asyncio
@@ -420,6 +422,32 @@ def _log_of(directory: Path) -> IO[bytes]:
         return tempfile.TemporaryFile()
 
 
+_LIBRARIES = {"win32": ("bin", "PATH"), "darwin": ("lib", "DYLD_FALLBACK_LIBRARY_PATH")}
+"""Where a build of FFmpeg keeps its shared libraries, and where a system looks for them, by
+system; elsewhere ``lib`` and ``LD_LIBRARY_PATH``."""
+
+
+def _environment() -> dict[str, str] | None:
+    """The environment that an engine is started with: this one's, with the libraries of FFmpeg.
+
+    A build of the engine for development reads media with the libraries of the build of FFmpeg
+    that ``FFMPEG_DIR`` names, which need not be on the search path of this program: the
+    directory that holds them is put at the end of where the engine looks for libraries. The
+    environment of this program is left as it is. A packaged engine has its libraries beside
+    it, where the system finds them, and needs nothing of this; ``None`` then, as also where
+    ``FFMPEG_DIR`` is not set or holds no such directory.
+    """
+    built = os.environ.get("FFMPEG_DIR")
+    where, variable = _LIBRARIES.get(sys.platform, ("lib", "LD_LIBRARY_PATH"))
+    libraries = Path(built) / where if built else None
+    if libraries is None or not libraries.is_dir():
+        return None
+    environment = dict(os.environ)
+    before = environment.get(variable)
+    environment[variable] = f"{before}{os.pathsep}{libraries}" if before else str(libraries)
+    return environment
+
+
 def _spawned(argv: list[str], cwd: Path, log: IO[bytes]) -> "subprocess.Popen[bytes]":
     """Start an engine apart from the console of this program, and from its job on Windows.
 
@@ -436,6 +464,7 @@ def _spawned(argv: list[str], cwd: Path, log: IO[bytes]) -> "subprocess.Popen[by
             stdout=subprocess.PIPE,
             stderr=log,
             cwd=cwd,
+            env=_environment(),
             creationflags=creationflags,
             start_new_session=start_new_session,
         )
@@ -616,6 +645,16 @@ class Engine:
     def next_id(self) -> int:
         """The ``next_id`` of the project at that revision."""
         return self._next_id
+
+    @property
+    def headless(self) -> bool | None:
+        """Whether the engine is one without a window, as ``hello`` says; ``None`` if it does not.
+
+        A headless engine may end to let the desktop's take the project over. The next call then
+        reaches the desktop's engine by ``engine.lock``, as it reaches any engine that took over.
+        """
+        said = self.hello.get("headless")
+        return said if isinstance(said, bool) else None
 
     async def project(self) -> tuple[int, dict[str, Any]]:
         """Return the project as it is now, and its revision."""
@@ -1074,6 +1113,7 @@ def _ended(
     if sys.platform == "win32" and code == _LIBRARIES_MISSING:  # pragma: windows only
         why += (
             ": the libraries of FFmpeg that it reads media with (avcodec, avformat, avutil, "
-            "swscale) are neither beside it nor on the search path"
+            "swscale) are neither beside it, nor on the search path, nor in the bin of "
+            "FFMPEG_DIR"
         )
     raise EngineError(why, code=UNSTARTED, data={"exit_code": code})

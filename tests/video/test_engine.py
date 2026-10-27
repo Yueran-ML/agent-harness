@@ -664,6 +664,77 @@ def test_the_engine_program_is_never_taken_from_a_working_directory(
     assert not_found(None).startswith("COLUMBINA_ENGINE names ")
 
 
+async def test_an_engine_that_yields_to_the_desktop_is_followed_to_the_desktops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Were an engine started here, it would say so.
+    as_program(monkeypatch, "error")
+    async with served(tmp_path / "film") as headless:
+        connected = await attached(tmp_path / "film")
+        changes = connected.changes()
+        assert (connected.headless, connected.hello["pid"]) == (True, os.getpid())
+    with pytest.raises(EngineError, match="closed the connection"):
+        await next_of(changes)
+    async with served(tmp_path / "film") as desktop:
+        desktop.headless = False
+        desktop.change_by("desktop")
+
+        revision, project = await connected.project()
+        fetched = await next_of(changes)
+        await connected.aclose()
+
+        assert connected.headless is False
+        assert (revision, fetched.method, fetched.revision) == (1, "project.fetched", 1)
+        assert [one["name"] for one in project["timelines"]] == ["Other"]
+        assert desktop.asked == ["hello", "project.get", "project.get"]
+        assert headless.address != desktop.address
+        desktop.headless = None
+        async with await attached(tmp_path / "film") as unsaid:
+            assert unsaid.headless is None
+
+
+def test_an_engine_is_given_the_libraries_of_ffmpeg_dir_and_this_program_is_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    where, variable = engine._LIBRARIES.get(sys.platform, ("lib", "LD_LIBRARY_PATH"))  # pyright: ignore[reportPrivateUsage]
+    (tmp_path / "built" / where).mkdir(parents=True)
+    monkeypatch.delenv("FFMPEG_DIR", raising=False)
+    assert engine._environment() is None  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setenv("FFMPEG_DIR", str(tmp_path / "nothing"))
+    assert engine._environment() is None  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setenv("FFMPEG_DIR", str(tmp_path / "built"))
+    monkeypatch.setenv(variable, "before")
+    given = engine._environment()  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.delenv(variable)
+    alone = engine._environment()  # pyright: ignore[reportPrivateUsage]
+
+    assert given is not None
+    assert alone is not None
+    assert given[variable] == f"before{os.pathsep}{tmp_path / 'built' / where}"
+    assert alone[variable] == str(tmp_path / "built" / where)
+    assert variable not in os.environ
+
+
+async def test_an_engine_that_is_started_finds_the_libraries_of_ffmpeg_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    where, variable = engine._LIBRARIES.get(sys.platform, ("lib", "LD_LIBRARY_PATH"))  # pyright: ignore[reportPrivateUsage]
+    libraries = tmp_path / "built" / where
+    libraries.mkdir(parents=True)
+    monkeypatch.setenv("FFMPEG_DIR", str(tmp_path / "built"))
+    before = os.environ.get(variable)
+    as_program(monkeypatch)
+
+    async with await attached(tmp_path / "film", idle_seconds=1):
+        pass
+    await until(lambda: not (tmp_path / "film" / "engine.lock").exists())
+
+    told = [json.loads(line) for line in logs(tmp_path / "film")[-1].read_text().splitlines()]
+    (seen,) = [one["environment"][variable] for one in told if "environment" in one]
+    assert seen.split(os.pathsep)[-1] == str(libraries)
+    assert os.environ.get(variable) == before
+
+
 # The engine itself
 
 
@@ -679,7 +750,7 @@ def clip(tmp_path: Path) -> Path:
 async def test_the_engine_edits_a_project_for_two_clients_and_ends_by_itself(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clip: Path
 ) -> None:
-    program = real_engine(monkeypatch)
+    program = real_engine()
     project = tmp_path / "film"
 
     first = await Engine.attach(project, program=program, idle_seconds=1)

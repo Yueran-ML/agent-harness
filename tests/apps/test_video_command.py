@@ -172,7 +172,7 @@ def test_an_engine_that_is_missing_or_fails_is_said(
 def test_the_engine_itself_says_how_a_project_stands(
     home: Path, talk: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    program = real_engine(monkeypatch)
+    program = real_engine()
     monkeypatch.setenv("COLUMBINA_ENGINE", program)
 
     async def edited() -> int:

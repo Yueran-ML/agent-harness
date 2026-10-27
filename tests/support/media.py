@@ -20,14 +20,14 @@ __all__ = ["made", "real", "real_engine"]
 _REPOSITORY = Path(__file__).resolve().parents[2]
 
 
-def real_engine(monkeypatch: pytest.MonkeyPatch) -> str:
+def real_engine() -> str:
     """Return the path of the engine program: ``COLUMBINA_ENGINE``, or a build of the repository.
 
     A build is looked for in ``CARGO_TARGET_DIR`` and in ``engine/target``, the newest of its
     debug and release builds. The libraries of FFmpeg that the engine reads media with are
-    found beside it or on the search path; the ``bin`` of ``FFMPEG_DIR``, the build that it was
-    made with, is put at the end of the search path. Without an engine the test that asks is
-    passed over, or fails where ``COLUMBINA_REQUIRE_ENGINE`` is ``1``.
+    found beside it, on the search path, or in ``FFMPEG_DIR``, the build that it was made with,
+    which the engine is started with. Without an engine the test that asks is passed over, or
+    fails where ``COLUMBINA_REQUIRE_ENGINE`` is ``1``.
     """
     named = os.environ.get("COLUMBINA_ENGINE")
     program = "columbina-engine.exe" if os.name == "nt" else "columbina-engine"
@@ -46,10 +46,6 @@ def real_engine(monkeypatch: pytest.MonkeyPatch) -> str:
         if os.environ.get("COLUMBINA_REQUIRE_ENGINE") == "1":
             pytest.fail(f"COLUMBINA_REQUIRE_ENGINE is set, and {why}")
         pytest.skip(why)
-    libraries = os.environ.get("FFMPEG_DIR")
-    if libraries:
-        search = os.environ.get("PATH", "")
-        monkeypatch.setenv("PATH", f"{search}{os.pathsep}{Path(libraries) / 'bin'}")
     return str(found)
 
 

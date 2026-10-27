@@ -117,6 +117,7 @@ class Fake:
         hold: How many of the next answers are held back, and sent the other way round.
         noise: Lines sent to a connection after its answer to hello.
         project_dir: The directory that hello names, if not the one of the project.
+        headless: Whether hello says that it is headless; nothing, if ``None``.
         asked: Every method that was asked, in order.
     """
 
@@ -139,6 +140,7 @@ class Fake:
         self.hold = 0
         self.noise: list[bytes] = []
         self.project_dir: str | None = None
+        self.headless: bool | None = True
         self.asked: list[str] = []
         self.last_left = time.monotonic()
         self.log: Callable[[dict[str, Any]], None] = lambda line: None
@@ -199,13 +201,16 @@ class Fake:
         if params.get("protocol") != 1:
             raise RefusedError(-32602, "protocol 1 is spoken", {"protocol": 1})
         asking.client = str(params.get("client"))
-        return {
+        said: dict[str, Any] = {
             "engine": "0.1.0-fake",
             "protocol": 1,
             "revision": self.revision,
             "project": self.project_dir or str(self.directory),
             "pid": os.getpid(),
         }
+        if self.headless is not None:
+            said["headless"] = self.headless
+        return said
 
     def project_get(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -555,7 +560,9 @@ async def _engine(directory: Path, idle_seconds: int) -> None:
     close = await _listening(fake)
     _locked(fake)
     _say({"listening": fake.address, "pid": os.getpid(), "protocol": 1}, to=sys.stdout)
-    _say({"event": "listening"})
+    # Where it would look for libraries, for a test to see.
+    looks = ("PATH", "LD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
+    _say({"event": "listening", "environment": {name: os.environ.get(name) for name in looks}})
     while fake.connections or time.monotonic() - fake.last_left < idle_seconds:  # noqa: ASYNC110
         await asyncio.sleep(0.02)
     close()

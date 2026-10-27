@@ -7,6 +7,10 @@ version.workspace = true
 [lints]
 workspace = true
 
+[features]
+# View::lose_device and View::stall_for, for the tests: the card made to fail on purpose.
+test-hooks = []
+
 [dependencies]
 columbina-media = { path = "../media" }
 pollster.workspace = true
@@ -20,10 +24,10 @@ wgpu = { workspace = true, features = ["dx12"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu = { workspace = true, features = ["metal"] }
-objc2 = "0.6.3"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSGeometry", "NSThread"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-foundation", "NSResponder", "NSView", "NSWindow"] }
-dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
+
+[dev-dependencies]
+# The crate itself with its hooks, for the tests in tests/.
+columbina-view = { path = ".", features = ["test-hooks"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # PrintWindow, for the shots of examples/view_file.rs.

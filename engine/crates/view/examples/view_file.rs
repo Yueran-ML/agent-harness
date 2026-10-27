@@ -237,7 +237,7 @@ mod windows_main {
         columbina_view::prepare_process();
         let facts = columbina_media::probe(&options.file).map_err(|error| error.to_string())?;
         let video = facts.video.ok_or("the file has no picture")?;
-        let rotation = u16::try_from(video.rotation.rem_euclid(360)).unwrap_or(0);
+        let rotation = video.rotation;
         let mut decoder = VideoDecoder::open(&options.file, options.hardware)
             .map_err(|error| error.to_string())?;
         let rate = decoder.rate();

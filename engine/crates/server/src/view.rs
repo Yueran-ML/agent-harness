@@ -197,10 +197,14 @@ fn fault(error: &ViewError) -> Fault {
 /// Log what happens to the view.
 fn report(event: Event) {
     match event {
-        Event::Ready { adapter, backend } => {
+        Event::Ready {
+            adapter,
+            backend,
+            dpi_awareness,
+        } => {
             log(
                 "view_ready",
-                &json!({ "adapter": adapter, "backend": backend }),
+                &json!({ "adapter": adapter, "backend": backend, "dpi_awareness": dpi_awareness }),
             );
         }
         Event::Stalled => log(

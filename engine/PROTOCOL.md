@@ -179,10 +179,7 @@ picture.
   no window: every `view.*` is answered `-32601`.
 - **`parent`** is the native handle of the window, written in **decimal**, as a string: on
   Windows the `HWND` of `BrowserWindow.getNativeWindowHandle()` (a Buffer of 8 bytes: read it
-  with `readBigUInt64LE()` and send its `toString()`; a signed reading is taken too). On macOS
-  it would be the `NSView *` of that call, but a view can only be put in an `NSView` of the
-  engine's own process, so `view.attach` cannot work across the processes on macOS as it is
-  (see below).
+  with `readBigUInt64LE()` and send its `toString()`; a signed reading is taken too).
 - **Rectangles** are in **device pixels** (physical pixels of the screen, not CSS pixels),
   relative to the top left corner of the parent's **client area** (the window without its frame
   and title bar). From the page: `getBoundingClientRect()` of the viewer's element, times
@@ -201,6 +198,11 @@ picture.
   same or another window. The view is the engine's, not the connection's: it stays when the
   connection that made it closes, until `view.detach`, another `view.attach`, or the end of the
   engine. A desktop that reconnects attaches again.
+- **A connection of its own.** `view.attach` takes about 100–300 ms, and up to some 20 s when
+  the graphics card is slow to answer (a driver that is resetting); requests on the same
+  connection are answered in order, so they wait behind it. The Electron main process should
+  send `view.*` on a **connection of its own**, so that nothing else of the desktop waits for
+  the view.
 - **`view.place`** moves and sizes the view, as the page's layout changes (the window resized,
   a panel dragged). It is answered at once; the window follows a moment later (it is moved by
   a thread of the engine that serves it, and drawn again at its new size). Send it whenever the
@@ -209,7 +211,11 @@ picture.
   page lies over its rectangle ("airspace"): an HTML menu, dialog or tooltip that opens over the
   viewer is hidden under it. So the page hides the view (`{"shown": false}`) as such an overlay
   opens and shows it again as the overlay closes; meanwhile the page beneath shows (it may draw
-  the last frame there, or nothing). A view that is hidden draws nothing.
+  the last frame there, or nothing). A view that is hidden draws nothing. The view is put on
+  top of the parent's other child windows each time it is moved, shown or hidden (`HWND_TOP`),
+  so a native window of the app's own over the viewer (another view of Electron, a
+  `WebContentsView` laid over it) is covered too: the app hides the view while such a window
+  lies over the viewer, as for an overlay of the page.
 - **Input** goes to the page: the view is a disabled window that never takes the focus, so the
   clicks, wheel and keys of the user over the viewer go to the page's own element there, as if
   the view were not there.
@@ -226,14 +232,18 @@ picture.
   picture, and shows itself again once the frame returns. A device that is lost is made again;
   so is a surface. These are logged on stderr (`view_ready`, `view_stalled`, `view_recovered`,
   `view_device_lost`, `view_surface_lost`, `view_error`), with `view_attached` and
-  `view_detached`.
+  `view_detached`. `view_ready` says the engine's `dpi_awareness`: `per_monitor_v2`, or why
+  not, in which case the rectangles will be off.
 - **Not tested yet** (phase 0): the border of the window dragged by the user (Windows' modal
   loop of sizing), the window moved to a monitor of another DPI, fullscreen, sleep and resume,
-  and a device lost for real (it is lost on purpose in a test). **macOS** is written (an
-  `NSView` added to the parent's, that takes no clicks, drawn with Metal) but never run, and it
-  needs the parent view in the engine's process: across processes, macOS needs another way (a
-  layer of the engine shown in Electron's window with `CALayerHost`, or the pictures handed
-  over as `IOSurface`s), to be settled before the desktop is built for macOS.
+  and a device lost for real (it is lost on purpose in a test).
+- **On macOS the view is not available yet**: `view.attach` is answered at once with `-32003`
+  and `reason: "unsupported"`, and the desktop must show the preview another way there. A view
+  made by the engine cannot be put in Electron's window as on Windows: the handle Electron gives
+  is an `NSView *` of Electron's process, and AppKit would have to be served by the engine's
+  main thread. Another way (a layer of the engine shown in Electron's window with
+  `CALayerHost`, or the pictures handed over as `IOSurface`s) is to be settled before the
+  desktop is built for macOS.
 
 | `-32003` `reason` | when |
 |---|---|
@@ -241,7 +251,7 @@ picture.
 | `gone` | the view's window was destroyed with its parent; the view is let go |
 | `window` | the window of the view could not be made |
 | `gpu` | no graphics card can draw in the window |
-| `unsupported` | views are not made on this system |
+| `unsupported` | views are not made on this system (macOS, for now) |
 | `failed` | the engine failed to make the view |
 
 A `parent` that is not a window, or not a handle in decimal, is refused with `-32602` and

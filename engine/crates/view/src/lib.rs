@@ -40,8 +40,9 @@
 //! A surface that is outdated (the window changed) is configured again; one that is lost is made
 //! again ([`Event::SurfaceLost`]). A device that is lost (a driver reset, the card removed) is
 //! made again, with all that was on it, from a new adapter, and the last picture is drawn again
-//! ([`Event::DeviceLost`]); if no device can be made, it is tried again a second later, while
-//! there is something to draw. A frame that is not shown because the window is covered or the
+//! ([`Event::DeviceLost`]); if no device can be made, it is tried again a second later, and
+//! then at most once a second while there is something to draw (pictures that come meanwhile
+//! only take the place of the last one), and reported at most every 30 s. A frame that is not shown because the window is covered or the
 //! card is slow to give an image is tried again a few times, 50 ms apart, then left until the
 //! next thing to draw. Nothing of this is an error of the caller's.
 //!
@@ -62,11 +63,10 @@
 //! thread, not the real input of the user. The process is made aware of the DPI of each monitor
 //! ([`prepare_process`]), as Electron is, so that rectangles are in device pixels on both sides.
 //!
-//! On **macOS** the view is an `NSView` added to the parent `NSView`, drawn with Metal, that
-//! answers no hit test, so that the page gets the input. It is **not tested**, and it works only
-//! where the parent view lives in the same process (see `native_macos.rs`).
-//!
-//! Elsewhere [`View::attach`] fails with [`ViewError::Unsupported`].
+//! On **macOS** the view is not available yet: [`View::attach`] fails at once with
+//! [`ViewError::Unsupported`], touching nothing of `AppKit` (why, and what it would take, is in
+//! `native_none.rs`). The pictures are still drawn offscreen there, with Metal. Elsewhere too,
+//! [`View::attach`] fails with [`ViewError::Unsupported`].
 //!
 //! Untested on Windows: the border of the parent dragged by the user (the modal loop of sizing),
 //! a change of DPI as the parent moves to another monitor, fullscreen, the loss of the device in
@@ -85,15 +85,9 @@ mod native_windows;
 #[cfg(windows)]
 use native_windows as native;
 
-#[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
-mod native_macos;
-#[cfg(target_os = "macos")]
-use native_macos as native;
-
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(windows))]
 mod native_none;
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(windows))]
 use native_none as native;
 
 pub use columbina_media::Picture;
@@ -208,8 +202,13 @@ impl ViewError {
 /// What happened to a view, as it is reported to whoever made it, for its log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// The graphics card is ready to draw: the name of its adapter and of the API.
-    Ready { adapter: String, backend: String },
+    /// The graphics card is ready to draw: the name of its adapter and of the API, and how the
+    /// process is aware of the DPI of monitors (`per_monitor_v2` on Windows, as it must be).
+    Ready {
+        adapter: String,
+        backend: String,
+        dpi_awareness: String,
+    },
     /// A frame took more than [`STALL`]: the window is hidden.
     Stalled,
     /// The frame that stalled returned, after so many milliseconds.
@@ -238,7 +237,7 @@ pub fn prepare_process() {
 /// A picture to draw, as the caller last asked.
 enum Pending {
     Nothing,
-    Picture(Arc<Picture>, u16),
+    Picture(Arc<Picture>, i16),
     Clear,
 }
 
@@ -276,6 +275,10 @@ pub(crate) struct State {
     gone: bool,
     /// Whether a test asked for the device to be lost.
     lose_device: bool,
+    /// How long a test asked the next frame to hang.
+    stall: Option<Duration>,
+    /// The last rotation that was not a quarter turn, as it was reported.
+    odd_rotation: Option<i16>,
     /// When the frame being drawn was begun.
     busy_since: Option<Instant>,
     /// How many frames were presented.
@@ -288,13 +291,13 @@ impl State {
         self.shown && !self.stalled
     }
 
-    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn rect(&self) -> Rect {
         self.rect
     }
 
     /// The window has been given the size of its rectangle by its thread.
-    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn sized(&mut self, size: (u32, u32)) {
         self.size = size;
         self.dirty = true;
@@ -314,6 +317,8 @@ impl Shared {
                 quit: false,
                 gone: false,
                 lose_device: false,
+                stall: None,
+                odd_rotation: None,
                 busy_since: None,
                 presented: 0,
             }),
@@ -343,7 +348,7 @@ impl Shared {
     }
 
     /// The window was destroyed, by its parent or by the view.
-    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn window_gone(&self) {
         self.change(|state| state.gone = true);
         self.watch.notify_all();
@@ -503,15 +508,40 @@ impl View {
         Ok(())
     }
 
-    /// Draw `picture`, turned `rotation` degrees clockwise (0, 90, 180 or 270), fitted into the
-    /// view. It returns at once: the picture is drawn by the view's drawer, and a picture that
-    /// comes before the last one was drawn takes its place. The view keeps the picture it drew
-    /// last, to draw it again as the window changes, until the next one or [`View::clear`].
-    pub fn present(&self, picture: Arc<Picture>, rotation: u16) {
+    /// Draw `picture`, turned `rotation` degrees clockwise, fitted into the view: `rotation` as
+    /// the media has it ([`columbina_media::VideoFacts::rotation`]), taken modulo 360, so that
+    /// -90 is 270. A rotation that is not a quarter turn is drawn as none, and reported once
+    /// ([`Event::Error`]). It returns at once: the picture is drawn by the view's drawer, and a
+    /// picture that comes before the last one was drawn takes its place. The view keeps the
+    /// picture it drew last, to draw it again as the window changes, until the next one or
+    /// [`View::clear`].
+    pub fn present(&self, picture: Arc<Picture>, rotation: i16) {
+        let mut odd = None;
         self.shared.change(|state| {
+            if rotation.rem_euclid(90) == 0 {
+                state.odd_rotation = None;
+            } else if state.odd_rotation != Some(rotation) {
+                state.odd_rotation = Some(rotation);
+                odd = Some(rotation);
+            }
             state.pending = Pending::Picture(picture, rotation);
             state.dirty = true;
         });
+        if let Some(rotation) = odd {
+            self.shared.report(Event::Error {
+                message: format!(
+                    "a picture turned {rotation} degrees, not a quarter turn, is drawn unturned"
+                ),
+            });
+        }
+    }
+
+    /// Whether the window of the view was destroyed, with its parent: then nothing more is
+    /// drawn, [`View::place`] and [`View::show`] fail with [`ViewError::Gone`], and the view is
+    /// to be let go and attached again.
+    #[must_use]
+    pub fn is_gone(&self) -> bool {
+        self.shared.lock().gone
     }
 
     /// Draw black, and let the last picture go.
@@ -548,10 +578,20 @@ impl View {
     }
 
     /// Lose the device, as a driver reset would: for the tests, which see it made again.
-    #[doc(hidden)]
+    #[cfg(feature = "test-hooks")]
     pub fn lose_device(&self) {
         self.shared.change(|state| {
             state.lose_device = true;
+            state.dirty = true;
+        });
+    }
+
+    /// Make the next frame hang for `hang` before it is drawn, as a card that hangs would: for
+    /// the tests, which see the watchdog hide the view and show it again.
+    #[cfg(feature = "test-hooks")]
+    pub fn stall_for(&self, hang: Duration) {
+        self.shared.change(|state| {
+            state.stall = Some(hang);
             state.dirty = true;
         });
     }

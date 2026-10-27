@@ -548,7 +548,24 @@ fn a_view_whose_parent_is_destroyed_is_gone() {
         width: 100,
         height: 100,
     };
-    let view = View::attach(RawParent::Windows(parent.hwnd), rect).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let report = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event: Event| events.lock().unwrap().push(event))
+    };
+    let view = View::attach_reporting(RawParent::Windows(parent.hwnd), rect, report).unwrap();
+    assert!(!view.is_gone());
+    // A turn that is not a quarter is drawn as none, and told once while it lasts.
+    for rotation in [45, 45, -90, 45] {
+        view.present(solid(16, 16, [16, 128, 128]).0, rotation);
+    }
+    let odd = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| matches!(event, Event::Error { message } if message.contains("45")))
+        .count();
+    assert_eq!(odd, 2);
     drop(parent);
     let deadline = Instant::now() + WAIT;
     while view.place(rect) != Err(ViewError::Gone) {
@@ -556,5 +573,78 @@ fn a_view_whose_parent_is_destroyed_is_gone() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(view.show(true), Err(ViewError::Gone));
+    assert!(view.is_gone());
+    drop(view);
+}
+
+#[test]
+#[ignore = "needs a desktop: run with --ignored"]
+fn a_frame_that_hangs_hides_the_view_until_it_returns() {
+    columbina_view::prepare_process();
+    let parent = Parent::open(1000, 160, 400, 300);
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let report = {
+        let events = Arc::clone(&events);
+        Arc::new(move |event: Event| events.lock().unwrap().push(event))
+    };
+    let rect = Rect {
+        x: 20,
+        y: 20,
+        width: 200,
+        height: 150,
+    };
+    let view = View::attach_reporting(RawParent::Windows(parent.hwnd), rect, report).unwrap();
+    let child = hwnd(isize::try_from(view.raw_handle()).unwrap());
+    let visible = || {
+        let style = unsafe { GetWindowLongW(child, GWL_STYLE) }.cast_unsigned();
+        style & WS_VISIBLE.0 != 0
+    };
+    let until_event = |what: &str| {
+        let deadline = Instant::now() + WAIT;
+        while !events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| format!("{event:?}").starts_with(what))
+        {
+            assert!(
+                Instant::now() < deadline,
+                "no {what}: {:?}",
+                events.lock().unwrap()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    let centre = (120, 95);
+    let (first, colour) = solid(64, 48, [120, 80, 190]);
+    view.present(first, 0);
+    parent.until("drawn", &[(centre, colour)]);
+
+    // The next frame hangs for 1.8 s: past 1 s the view is hidden, and the page shows.
+    let started = Instant::now();
+    view.stall_for(Duration::from_millis(1800));
+    let (second, other) = solid(64, 48, [180, 60, 140]);
+    view.present(second, 0);
+    until_event("Stalled");
+    assert!(started.elapsed() >= Duration::from_millis(900));
+    parent.until("hidden while it hangs", &[(centre, BACKGROUND)]);
+    assert!(!visible());
+    // Shown again, as the page would after an overlay, while it still hangs: it stays hidden.
+    view.show(false).unwrap();
+    view.show(true).unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!visible(), "shown while the frame still hangs");
+
+    // Once the frame returns, it is shown, with the picture of that frame.
+    until_event("Recovered");
+    parent.until("shown again once it returned", &[(centre, other)]);
+    assert!(visible());
+    let events = events.lock().unwrap();
+    let millis = events.iter().find_map(|event| match event {
+        Event::Recovered { millis } => Some(*millis),
+        _ => None,
+    });
+    assert!(millis.is_some_and(|millis| millis >= 1000), "{events:?}");
+    drop(events);
     drop(view);
 }

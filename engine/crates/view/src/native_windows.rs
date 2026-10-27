@@ -6,7 +6,7 @@
 
 use std::cell::RefCell;
 use std::num::NonZeroIsize;
-use std::sync::{mpsc, Arc, Once};
+use std::sync::{mpsc, Arc, Mutex, Once, OnceLock, PoisonError};
 use std::time::Duration;
 
 use raw_window_handle::{
@@ -17,7 +17,9 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{
-    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    AreDpiAwarenessContextsEqual, GetAwarenessFromDpiAwarenessContext,
+    GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext,
+    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, IsWindow,
@@ -50,13 +52,46 @@ thread_local! {
 }
 
 pub(crate) fn prepare_process() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
+    AWARENESS.get_or_init(|| {
         // SAFETY: it takes a constant and changes the process; it fails, harmlessly, where the
         // awareness was set already (by the manifest, or by a caller before).
-        let _ =
+        let set =
             unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+        // SAFETY: they read the awareness of this thread, which a new thread takes from the
+        // process.
+        let is_v2 = unsafe {
+            AreDpiAwarenessContextsEqual(
+                GetThreadDpiAwarenessContext(),
+                DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            )
+        }
+        .as_bool();
+        match (set, is_v2) {
+            (Ok(()), _) => "per_monitor_v2".into(),
+            (Err(_), true) => "per_monitor_v2 (set before)".into(),
+            (Err(error), false) => {
+                // SAFETY: as above.
+                let awareness =
+                    unsafe { GetAwarenessFromDpiAwarenessContext(GetThreadDpiAwarenessContext()) };
+                format!(
+                    "not per_monitor_v2 (awareness {}): SetProcessDpiAwarenessContext failed: \
+                     {error}; rectangles in device pixels will be off",
+                    awareness.0
+                )
+            }
+        }
     });
+}
+
+/// How the process is aware of the DPI of monitors, as [`prepare_process`] left it.
+static AWARENESS: OnceLock<String> = OnceLock::new();
+
+/// How the process is aware of the DPI of monitors, as it is reported.
+pub(crate) fn dpi_awareness() -> String {
+    AWARENESS
+        .get()
+        .cloned()
+        .unwrap_or_else(|| "not set: prepare_process was not called".into())
 }
 
 fn hwnd(value: isize) -> HWND {
@@ -100,20 +135,32 @@ impl Native {
             return Err(ViewError::Parent(format!("{parent} is not a window")));
         }
         let (made, making) = mpsc::channel();
+        // Taken away once the window is no longer waited for: the window's thread then destroys
+        // the window it makes, rather than leave it in the parent.
+        let made = Arc::new(Mutex::new(Some(made)));
         let pump = Worker::spawn("columbina-view-window", {
             let shared = Arc::clone(shared);
+            let made = Arc::clone(&made);
             move || serve(parent, rect, &shared, &made)
         })?;
-        match making.recv_timeout(MAKING) {
-            Ok(Ok(window)) => Ok(Native {
+        let answer = match making.recv_timeout(MAKING) {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Whatever was sent before this is taken; after it, nothing more is.
+                made.lock().unwrap_or_else(PoisonError::into_inner).take();
+                making.try_recv().ok()
+            }
+            answer => answer.ok(),
+        };
+        match answer {
+            Some(Ok(window)) => Ok(Native {
                 hwnd: window,
                 pump: Some(pump),
             }),
-            Ok(Err(message)) => {
+            Some(Err(message)) => {
                 pump.finish(MAKING);
                 Err(ViewError::Window(message))
             }
-            Err(_) => Err(ViewError::Window(format!(
+            None => Err(ViewError::Window(format!(
                 "it was not made within {} s",
                 MAKING.as_secs()
             ))),
@@ -143,19 +190,33 @@ fn serve(
     parent: isize,
     rect: Rect,
     shared: &Arc<Shared>,
-    made: &mpsc::Sender<Result<isize, String>>,
+    made: &Mutex<Option<mpsc::Sender<Result<isize, String>>>>,
 ) {
     SHARED.with(|slot| *slot.borrow_mut() = Some(Arc::clone(shared)));
-    match make(parent, rect) {
-        Ok(window) => {
-            shared.change(|state| state.sized((rect.width, rect.height)));
-            let _ = made.send(Ok(window.0 as isize));
+    let window = make(parent, rect);
+    // Said while the waiter cannot stop waiting, so that a window is either taken or destroyed.
+    let waited = {
+        let made = made.lock().unwrap_or_else(PoisonError::into_inner);
+        match (&*made, &window) {
+            (Some(made), Ok(window)) => {
+                shared.change(|state| state.sized((rect.width, rect.height)));
+                made.send(Ok(window.0 as isize)).is_ok()
+            }
+            (Some(made), Err(message)) => {
+                let _ = made.send(Err(message.clone()));
+                false
+            }
+            (None, _) => false,
         }
-        Err(message) => {
-            let _ = made.send(Err(message));
-            SHARED.with(|slot| slot.borrow_mut().take());
-            return;
+    };
+    if !waited {
+        if let Ok(window) = window {
+            // No one waits for it any more.
+            // SAFETY: the window is this thread's own.
+            let _ = unsafe { DestroyWindow(window) };
         }
+        SHARED.with(|slot| slot.borrow_mut().take());
+        return;
     }
     let mut message = MSG::default();
     // SAFETY: the message is this thread's own, and is handed back as it came.

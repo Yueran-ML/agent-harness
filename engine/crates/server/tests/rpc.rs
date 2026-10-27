@@ -1688,3 +1688,38 @@ async fn the_desktop_attaches_one_view_to_its_window_and_moves_shows_and_detache
     assert!(stderr.contains(r#""event":"view_attached""#), "{stderr}");
     assert!(stderr.contains(r#""event":"view_ready""#), "{stderr}");
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn a_view_whose_window_is_closed_is_gone_and_then_there_is_none() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let place = json!({ "x": 0, "y": 0, "width": 64, "height": 36 });
+    let mut attach = place.clone();
+    attach["parent"] = json!(parent.hwnd.to_string());
+    desktop.result("view.attach", Some(attach)).await;
+    // The desktop's window is closed, and the view's window with it.
+    drop(parent);
+    let deadline = Instant::now() + WAIT;
+    let error = loop {
+        let answer = desktop.call("view.place", Some(place.clone())).await;
+        if let Some(error) = answer.get("error") {
+            break error.clone();
+        }
+        assert!(Instant::now() < deadline, "the view still has its window");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(error["code"], -32003, "{error}");
+    assert_eq!(error["data"]["reason"], "gone", "{error}");
+    // The view was let go.
+    let error = desktop.error("view.place", Some(place)).await;
+    assert_eq!(error["data"]["reason"], "no_view", "{error}");
+    let error = desktop
+        .error("view.show", Some(json!({ "shown": true })))
+        .await;
+    assert_eq!(error["data"]["reason"], "no_view", "{error}");
+    let detached = desktop.result("view.detach", None).await;
+    assert_eq!(detached, json!({ "detached": false }));
+}

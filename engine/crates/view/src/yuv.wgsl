@@ -4,9 +4,10 @@
 //
 // The planes are read texel by texel and blended here, two by two, rather than sampled: so that
 // planes of 16-bit integers, where a card has no 16-bit normalized formats, are read the same
-// way, and so that chroma is sited as BT.709 sites it, with the first luma sample of its row
-// (left) and between two rows (centre). The line below is changed to `alias Texel = u32;` for
-// planes of integers.
+// way, and so that chroma is sited "left" (chroma location type 0, the default of MPEG-2 and
+// H.264/HEVC, whatever the colour primaries): on the first luma sample of its pair of columns,
+// and halfway between its two rows. Files that say another siting are drawn so too (phase 0).
+// The line below is changed to `alias Texel = u32;` for planes of integers.
 alias Texel = f32;
 
 struct Params {

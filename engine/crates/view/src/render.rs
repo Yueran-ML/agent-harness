@@ -18,11 +18,12 @@ pub struct Placement {
     pub height: u32,
 }
 
-/// The quarter turns clockwise of a rotation in degrees clockwise: 0 to 3. A rotation that is
-/// not a multiple of 90 is taken as none (the model has only 0, 90, 180 and 270).
+/// The quarter turns clockwise of a rotation in degrees clockwise, as the media has it: 0 to 3,
+/// taken modulo 360 (so that -90 is 3). A rotation that is not a multiple of 90 is taken as
+/// none (the model has only 0, 90, 180 and 270).
 #[must_use]
-pub fn quarter_turns(rotation: u16) -> u32 {
-    match rotation % 360 {
+pub fn quarter_turns(rotation: i16) -> u32 {
+    match rotation.rem_euclid(360) {
         90 => 1,
         180 => 2,
         270 => 3,
@@ -35,7 +36,7 @@ pub fn quarter_turns(rotation: u16) -> u32 {
 /// centred, with black bars on the two sides that it does not reach. Pixels are taken as square.
 /// None where the target or the picture has no pixels: then nothing is drawn.
 #[must_use]
-pub fn letterbox(target: (u32, u32), picture: (u32, u32), rotation: u16) -> Option<Placement> {
+pub fn letterbox(target: (u32, u32), picture: (u32, u32), rotation: i16) -> Option<Placement> {
     let (target_width, target_height) = target;
     let (mut width, mut height) = picture;
     if quarter_turns(rotation) % 2 == 1 {
@@ -291,7 +292,7 @@ impl Painter {
         &self,
         target: &wgpu::TextureView,
         size: (u32, u32),
-        rotation: u16,
+        rotation: i16,
     ) -> wgpu::CommandBuffer {
         let mut encoder = self
             .device
@@ -356,7 +357,7 @@ const PARAMS_SIZE: u64 = 64;
 
 /// The uniform of the shader (`Params` in `yuv.wgsl`), as bytes.
 #[allow(clippy::cast_precision_loss, reason = "sizes of at most 16384")]
-fn params(planes: &Planes, placement: Placement, rotation: u16) -> Vec<u8> {
+fn params(planes: &Planes, placement: Placement, rotation: i16) -> Vec<u8> {
     // What a texel is multiplied by to be a code: 8 bits as 0..=255; P010, whose 10 bits are
     // the high bits of 16, as 0..=65535 / 64 normalized, or as the integer / 64.
     let scale = match (planes.ten, planes.texel) {
@@ -647,8 +648,8 @@ mod tests {
     #[test]
     fn rotations_are_read_as_quarter_turns() {
         assert_eq!(
-            [0, 90, 180, 270, 360, 450, 45, 1000].map(quarter_turns),
-            [0, 1, 2, 3, 0, 1, 0, 0]
+            [0, 90, 180, 270, 360, 450, 45, 1000, -90, -180, -450, -1].map(quarter_turns),
+            [0, 1, 2, 3, 0, 1, 0, 0, 3, 2, 3, 0]
         );
     }
 
@@ -689,7 +690,7 @@ mod tests {
     }
 
     /// The pixels drawn into a target of `size`, as R'G'B', a row after another.
-    fn draw(painter: &Painter, gpu: &Gpu, size: (u32, u32), rotation: u16) -> Vec<[u8; 3]> {
+    fn draw(painter: &Painter, gpu: &Gpu, size: (u32, u32), rotation: i16) -> Vec<[u8; 3]> {
         let (width, height) = size;
         let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
             label: None,

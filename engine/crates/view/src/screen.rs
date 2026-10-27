@@ -20,8 +20,64 @@ const RETRIES: u32 = 10;
 /// How long the drawer waits before it tries again to make a device that it could not make.
 const REMAKE: Duration = Duration::from_secs(1);
 
+/// How often a device that still cannot be made is reported.
+const REPORT_REMAKING: Duration = Duration::from_secs(30);
+
 /// The name of the adapter and of its API, or why there is none.
 pub(crate) type Ready = Result<(String, String), String>;
+
+/// The device, once made, and when it is made again after it is lost.
+struct Card {
+    screen: Option<Screen>,
+    /// When a device that could not be made is tried again: pictures that come before only
+    /// take the place of the last one.
+    remake_at: Option<Instant>,
+    /// How many times in a row it could not be made, and when that was last reported.
+    failures: u32,
+    reported_at: Option<Instant>,
+}
+
+impl Card {
+    /// The device, made again if it was lost and it is time to; none until it can be.
+    fn ready(&mut self, shared: &Arc<Shared>, handle: usize) -> Option<&mut Screen> {
+        if self.screen.as_ref().is_some_and(Screen::is_lost) {
+            self.screen = None;
+        }
+        if self.screen.is_none() {
+            if self.remake_at.is_some_and(|at| Instant::now() < at) {
+                return None;
+            }
+            match Screen::new(shared, handle) {
+                Ok(made) => {
+                    shared.report(made.ready_event());
+                    self.screen = Some(made);
+                    self.remake_at = None;
+                    self.failures = 0;
+                    self.reported_at = None;
+                }
+                Err(message) => {
+                    self.failures += 1;
+                    self.remake_at = Some(Instant::now() + REMAKE);
+                    if self
+                        .reported_at
+                        .is_none_or(|at| at.elapsed() >= REPORT_REMAKING)
+                    {
+                        self.reported_at = Some(Instant::now());
+                        shared.report(Event::Error {
+                            message: format!(
+                                "the graphics card cannot be made ready again ({} tries, one a \
+                                 second): {message}",
+                                self.failures
+                            ),
+                        });
+                    }
+                    return None;
+                }
+            }
+        }
+        self.screen.as_mut()
+    }
+}
 
 /// Draw in the window of `handle` until the view ends or its window is destroyed. Says on
 /// `ready` once the card is ready, or why it cannot be.
@@ -31,14 +87,16 @@ pub(crate) fn run(
     handle: usize,
     ready: &mpsc::Sender<Ready>,
 ) {
-    let mut screen = match Screen::new(shared, handle) {
+    let mut card = match Screen::new(shared, handle) {
         Ok(screen) => {
             let _ = ready.send(Ok((screen.adapter.clone(), screen.backend.clone())));
-            shared.report(Event::Ready {
-                adapter: screen.adapter.clone(),
-                backend: screen.backend.clone(),
-            });
-            Some(screen)
+            shared.report(screen.ready_event());
+            Card {
+                screen: Some(screen),
+                remake_at: None,
+                failures: 0,
+                reported_at: None,
+            }
         }
         Err(message) => {
             let _ = ready.send(Err(message));
@@ -46,20 +104,15 @@ pub(crate) fn run(
         }
     };
     // The picture shown, how it is turned, and its number among the pictures given.
-    let mut shown: Option<(Arc<Picture>, u16, u64)> = None;
+    let mut shown: Option<(Arc<Picture>, i16, u64)> = None;
     let mut given = 0_u64;
     let mut retries = 0;
     let mut again_at: Option<Instant> = None;
     loop {
-        let Some(Job {
-            pending,
-            size,
-            lose,
-        }) = next(shared, &mut again_at)
-        else {
+        let Some(job) = next(shared, &mut again_at) else {
             return;
         };
-        match pending {
+        match job.pending {
             Pending::Nothing => {}
             Pending::Picture(picture, rotation) => {
                 given += 1;
@@ -67,43 +120,29 @@ pub(crate) fn run(
             }
             Pending::Clear => shown = None,
         }
-        if lose {
+        if job.lose {
             // As a driver reset would: the device is destroyed, and everything on it is made
             // again, as for a device that is lost.
-            if let Some(screen) = screen.take() {
+            if let Some(screen) = card.screen.take() {
                 screen.device.destroy();
                 shared.report(Event::DeviceLost {
                     message: "lost on purpose, by a test".into(),
                 });
             }
         }
-        if screen.as_ref().is_some_and(Screen::is_lost) {
-            screen = None;
-        }
-        if screen.is_none() {
-            match Screen::new(shared, handle) {
-                Ok(made) => {
-                    shared.report(Event::Ready {
-                        adapter: made.adapter.clone(),
-                        backend: made.backend.clone(),
-                    });
-                    screen = Some(made);
-                }
-                Err(message) => {
-                    shared.report(Event::Error {
-                        message: format!("the graphics card cannot be made ready again: {message}"),
-                    });
-                    again_at = Some(Instant::now() + REMAKE);
-                    continue;
-                }
-            }
-        }
-        let screen = screen.as_mut().expect("made above");
-        if size.0 == 0 || size.1 == 0 {
+        let Some(screen) = card.ready(shared, handle) else {
+            again_at = card.remake_at;
+            continue;
+        };
+        if job.size.0 == 0 || job.size.1 == 0 {
             continue;
         }
         frame_begun(shared);
-        let outcome = screen.frame(&mut shown, size);
+        if let Some(hang) = job.stall {
+            // As a card that hangs: for the tests of the watchdog.
+            std::thread::sleep(hang);
+        }
+        let outcome = screen.frame(&mut shown, job.size);
         frame_ended(shared, syncer, outcome == Outcome::Presented);
         if screen.is_lost() {
             // Lost in the frame: made again at once, and the frame drawn again.
@@ -132,6 +171,8 @@ struct Job {
     size: (u32, u32),
     /// Whether a test asked for the device to be lost.
     lose: bool,
+    /// How long a test asked this frame to hang.
+    stall: Option<Duration>,
 }
 
 /// Wait for something to draw in a window that is seen and has pixels, or, at `again_at`, to
@@ -150,6 +191,7 @@ fn next(shared: &Shared, again_at: &mut Option<Instant>) -> Option<Job> {
                 pending: std::mem::replace(&mut state.pending, Pending::Nothing),
                 size: state.size,
                 lose: std::mem::take(&mut state.lose_device),
+                stall: state.stall.take(),
             });
         }
         state = match *again_at {
@@ -289,6 +331,15 @@ impl Screen {
         })
     }
 
+    /// The event that says it is ready.
+    fn ready_event(&self) -> Event {
+        Event::Ready {
+            adapter: self.adapter.clone(),
+            backend: self.backend.clone(),
+            dpi_awareness: native::dpi_awareness(),
+        }
+    }
+
     fn is_lost(&self) -> bool {
         self.lost.load(Ordering::SeqCst)
     }
@@ -307,7 +358,7 @@ impl Screen {
 
     /// Draw `shown` into a window of `size`, and present it. A picture that cannot be uploaded
     /// is let go, and black is drawn.
-    fn frame(&mut self, shown: &mut Option<(Arc<Picture>, u16, u64)>, size: (u32, u32)) -> Outcome {
+    fn frame(&mut self, shown: &mut Option<(Arc<Picture>, i16, u64)>, size: (u32, u32)) -> Outcome {
         match shown {
             Some((picture, _, number)) => {
                 let number = *number;

@@ -74,3 +74,157 @@ jobs:
         run: |
           uv run --no-project python tests/support/failed.py junit.xml >> "$GITHUB_STEP_SUMMARY"
           uv run --no-project python tests/support/failed.py --annotations junit.xml
+
+  # The engine of video (engine/), in Rust, against FFmpeg 8.1: see .github/scripts/ffmpeg.sh for
+  # where each system gets it. cargo runs in engine/, so that its rust-toolchain.toml holds. There
+  # is no graphics card: the tests that draw with one pass themselves over without an adapter
+  # (COLUMBINA_REQUIRE_GPU is not set), and those that need a desktop or a device of sound are
+  # ignored, and not run.
+  engine:
+    name: Engine / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+        working-directory: engine
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: FFmpeg 8.1
+        run: bash ../.github/scripts/ffmpeg.sh
+
+      # bindgen, for the bindings of libav, needs libclang; cpal needs ALSA.
+      - name: libclang and ALSA
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libclang-dev libasound2-dev pkg-config
+
+      # LLVM is on the images of Windows; installed if it is not. On macOS the libclang of Xcode
+      # is found by itself.
+      - name: libclang
+        if: runner.os == 'Windows'
+        run: |
+          if [ ! -f "C:/Program Files/LLVM/bin/libclang.dll" ]; then
+            choco install llvm -y --no-progress
+          fi
+          echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      # The toolchain of rust-toolchain.toml, with clippy and rustfmt. A rustup older than 1.28
+      # installs it with `rustup show`.
+      - name: Rust
+        run: |
+          rustup toolchain install || rustup show
+          rustc --version
+          cargo clippy --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: engine -> target
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      # The media of the tests are made in target/test-media by the ffmpeg first on PATH, and
+      # every test that needs one has to run.
+      - name: Test
+        run: cargo test --workspace --locked --no-fail-fast
+        env:
+          COLUMBINA_REQUIRE_FFMPEG: "1"
+
+      - name: Documentation
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+      - name: Build for release
+        run: cargo build --release --locked --package columbina-server --bin columbina-engine
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: engine-${{ runner.os }}
+          path: engine/target/release/columbina-engine${{ runner.os == 'Windows' && '.exe' || '' }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # The tests of Python that start the engine itself, with the release build of the job above
+  # and the libraries of FFmpeg that it was built with.
+  engine-python:
+    name: Python with the engine / ${{ matrix.os }}
+    needs: engine
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: uv sync --locked
+
+      # FFMPEG_DIR, whose bin the tests put at the end of PATH on Windows, LD_LIBRARY_PATH on
+      # Linux, ffmpeg@8 of Homebrew on macOS, where the engine names its libraries by their
+      # paths; and a full ffmpeg first on PATH, with ffprobe beside it, to make the films.
+      - name: FFmpeg 8.1
+        run: bash .github/scripts/ffmpeg.sh
+
+      - name: ALSA, which the engine is linked with
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends libasound2-dev
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: engine-${{ runner.os }}
+          path: ${{ runner.temp }}/engine
+
+      # An artifact does not keep the mode of a file.
+      - name: The engine
+        run: |
+          program="$RUNNER_TEMP/engine/columbina-engine"
+          if [ "$RUNNER_OS" = Windows ]; then
+            program="$(cygpath -w "$program.exe")"
+          else
+            chmod +x "$program"
+          fi
+          case "$RUNNER_OS" in
+            Linux)
+              ldd "$program"
+              if ldd "$program" | grep -q "not found"; then exit 1; fi
+              ;;
+            macOS) otool -L "$program" ;;
+          esac
+          echo "COLUMBINA_ENGINE=$program" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: uv run pytest --junitxml=junit.xml tests/video/test_engine.py tests/apps/test_video_command.py
+        env:
+          COLUMBINA_REQUIRE_ENGINE: "1"
+          COLUMBINA_REQUIRE_FFMPEG: "1"
+
+      - name: What failed
+        if: failure()
+        run: |
+          uv run --no-project python tests/support/failed.py junit.xml >> "$GITHUB_STEP_SUMMARY"
+          uv run --no-project python tests/support/failed.py --annotations junit.xml

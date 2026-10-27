@@ -457,6 +457,10 @@ pub(crate) struct Parameters {
     pub sample_rate: i32,
     pub channels: i32,
     pub bits_per_raw_sample: i32,
+    /// Samples in each frame of sound, where every frame has as many; or 0.
+    pub frame_size: i32,
+    /// Samples of sound to be decoded and dropped after a seek, as Opus needs; or 0.
+    pub seek_preroll: i32,
 }
 
 /// What the parameters of a stream say.
@@ -471,6 +475,8 @@ pub(crate) fn parameters(stream: &ff::format::stream::Stream) -> Parameters {
             sample_rate: (*parameters).sample_rate,
             channels: (*parameters).ch_layout.nb_channels,
             bits_per_raw_sample: (*parameters).bits_per_raw_sample,
+            frame_size: (*parameters).frame_size,
+            seek_preroll: (*parameters).seek_preroll,
         }
     }
 }
@@ -638,22 +644,41 @@ impl Resampler {
         }
     }
 
-    /// Convert a frame, or, given none, what the converter holds back, and add the samples to
-    /// `out`, interleaved.
+    /// Convert a frame, passing over its first `skip` samples (fewer than it has), or, given
+    /// none, what the converter holds back, and add the samples to `out`, interleaved.
     pub fn convert(
         &mut self,
-        frame: Option<&ff::frame::Audio>,
+        frame: Option<(&ff::frame::Audio, usize)>,
         out: &mut Vec<f32>,
     ) -> Result<(), String> {
         let samples = match frame {
-            Some(frame) => {
-                c_int::try_from(frame.samples()).map_err(|_| "a frame too long".to_owned())?
-            }
+            Some((frame, skip)) => c_int::try_from(frame.samples().saturating_sub(skip))
+                .map_err(|_| "a frame too long".to_owned())?,
             None => 0,
         };
+        // The planes from the first sample taken: each plane of a planar format holds a
+        // channel, the one plane of a packed format all of them.
+        let mut planes_in: Vec<*const u8> = Vec::new();
+        if let Some((frame, skip)) = frame {
+            let format = frame.format();
+            let (count, step) = if format.is_planar() {
+                (usize::from(frame.channels()), format.bytes())
+            } else {
+                (1, format.bytes() * usize::from(frame.channels()))
+            };
+            // SAFETY: `extended_data` points to a pointer for each plane of the frame (one for
+            // each channel where it is planar, else one), each to `samples` samples of `step`
+            // bytes; `skip` is fewer than its samples, so the pointers stay within.
+            unsafe {
+                let data = (*frame.as_ptr()).extended_data;
+                for plane in 0..count {
+                    planes_in.push((*data.add(plane)).add(skip * step).cast_const());
+                }
+            }
+        }
         // SAFETY: the context is set up. The frame, if there is one, is of the format, rate
-        // and layout that it takes (`takes`), and its `extended_data` points to a plane of
-        // `samples` samples for each channel, or one plane of all of them interleaved. `out`
+        // and layout that it takes (`takes`), and `planes_in` points to a plane of `samples`
+        // samples for each channel, or one plane of all of them interleaved. `out`
         // is given room for as many samples as swr_get_out_samples says may come, each of
         // `channels` floats, and is cut to those that came.
         unsafe {
@@ -668,12 +693,10 @@ impl Resampler {
             let before = out.len();
             out.resize(before + room_samples * self.channels, 0.0);
             let planes = [out.as_mut_ptr().add(before).cast::<u8>()];
-            let input = match frame {
-                Some(frame) => (*frame.as_ptr())
-                    .extended_data
-                    .cast::<*const u8>()
-                    .cast_const(),
-                None => std::ptr::null(),
+            let input = if planes_in.is_empty() {
+                std::ptr::null()
+            } else {
+                planes_in.as_ptr()
             };
             let made = swr_convert(self.context, planes.as_ptr(), room, input, samples);
             if made < 0 {

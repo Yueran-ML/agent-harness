@@ -64,11 +64,14 @@ pub enum Sample {
     Evc,
     /// `WebM` of VP9 for 2 s, and Opus for 3 s.
     Webm,
+    /// Sound only: AAC in MP4 (`.m4a`), pink noise at 48 kHz in stereo, 3 s, coded without
+    /// perceptual noise substitution; noise, so that a sample is told from the samples near it.
+    Noise,
 }
 
 impl Sample {
     /// The samples that every test machine can make.
-    pub const ALL: [Sample; 14] = [
+    pub const ALL: [Sample; 15] = [
         Sample::Fhd,
         Sample::Uhd,
         Sample::Prores,
@@ -83,6 +86,7 @@ impl Sample {
         Sample::MkvLateStart,
         Sample::Vfr,
         Sample::SameTimes,
+        Sample::Noise,
     ];
 
     /// How many frames its picture has, if it has one that is decoded.
@@ -101,7 +105,7 @@ impl Sample {
             Sample::Prores | Sample::Webm => Some(50),
             Sample::Portrait => Some(60),
             Sample::Fhd10 => Some(25),
-            Sample::Wav | Sample::Evc => None,
+            Sample::Wav | Sample::Evc | Sample::Noise => None,
         }
     }
 
@@ -129,6 +133,7 @@ impl Sample {
             Sample::SameTimes => "v1-same-timestamps.mkv",
             Sample::Evc => "v1-evc-aac.mp4",
             Sample::Webm => "v1-vp9-opus.webm",
+            Sample::Noise => "v1-noise-aac.m4a",
         }
     }
 }
@@ -513,6 +518,25 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 "2",
                 "-c:a",
                 "pcm_s16le",
+                "{out}",
+            ])],
+        }],
+        Sample::Noise => vec![Recipe {
+            encoder: "aac".into(),
+            steps: vec![strings(&[
+                "-f",
+                "lavfi",
+                "-i",
+                "anoisesrc=color=pink:sample_rate=48000:amplitude=0.3:duration=3:seed=11",
+                "-ac",
+                "2",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                // No noise made up by the decoder (PNS), which is not the same after a seek.
+                "-aac_pns",
+                "0",
                 "{out}",
             ])],
         }],

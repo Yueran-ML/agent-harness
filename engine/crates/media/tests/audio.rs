@@ -130,35 +130,81 @@ fn best_place(whole: &[f32], run: &[f32], around: usize, reach: usize) -> (i64, 
         .unwrap()
 }
 
+/// The samples from where the decoder is to the end, of the first channel.
+fn left_from(decoder: &mut AudioDecoder) -> (i64, Vec<f32>) {
+    let channels = usize::from(decoder.format().channels);
+    let (start, data) = all(decoder);
+    (start, data.iter().step_by(channels).copied().collect())
+}
+
 #[test]
-fn a_seek_in_the_aac_sound_lands_within_a_frame_of_aac() {
-    let Some(made) = media(Sample::Fhd) else {
+fn a_seek_in_aac_gives_the_samples_sought_from_the_first_as_decoding_from_the_start_does() {
+    let (Some(noise), Some(fhd)) = (media(Sample::Noise), media(Sample::Fhd)) else {
         return;
     };
-    let mut decoder = AudioDecoder::open(&made.path, None).unwrap();
-    let (_, whole) = all(&mut decoder);
-    let left: Vec<f32> = whole.iter().step_by(2).copied().collect();
-    for sought in [100_000_usize, 48_000, 150_017, 5000] {
+    // The sine of the 1080p file was coded with perceptual noise substitution (PNS), whose noise
+    // the decoder makes up afresh after a seek: a little of it differs, by up to about 2e-4.
+    for (made, most) in [(&noise, 1e-6), (&fhd, 1e-3)] {
+        let mut decoder = AudioDecoder::open(&made.path, None).unwrap();
+        let (_, whole) = all(&mut decoder);
+        let length = i64::try_from(whole.len() / 2).unwrap();
+        // At a frame of AAC (1024 samples), within one, near the start and near the end.
+        for sought in [
+            100_000,
+            48_000,
+            1024,
+            5000,
+            1,
+            0,
+            2047,
+            length - 3000,
+            77_777,
+        ] {
+            decoder.seek(sought).unwrap();
+            let (start, data) = all(&mut decoder);
+            assert_eq!(start, sought, "{}", made.path.display());
+            let from = usize::try_from(sought).unwrap() * 2;
+            let apart = most_apart(&data, &whole[from..]);
+            assert_eq!(data.len(), whole.len() - from, "{sought}");
+            assert!(apart <= most, "{}: {sought}: {apart}", made.path.display());
+        }
+    }
+    // Noise tells a sample from those near it: a seek a sample off would be far off.
+    let mut decoder = AudioDecoder::open(&noise.path, None).unwrap();
+    assert_eq!(
+        decoder.start().ticks,
+        0,
+        "the sound starts at time 0 of the file"
+    );
+    let (_, whole) = left_from(&mut decoder);
+    decoder.seek(60_001).unwrap();
+    let (_, sought) = left_from(&mut decoder);
+    let (offset, apart) = best_place(&whole, &sought[..4800], 60_001, 8);
+    assert_eq!((offset, apart), (0, 0.0));
+    let (_, wrong) = best_place(&whole[1..], &sought[..4800], 60_001, 0);
+    assert!(wrong > 0.01, "{wrong}");
+}
+
+#[test]
+fn a_seek_in_aac_converted_to_another_rate_lands_on_the_sample_sought() {
+    let Some(noise) = media(Sample::Noise) else {
+        return;
+    };
+    let format = AudioFormat {
+        rate: 44100,
+        channels: 1,
+    };
+    let mut decoder = AudioDecoder::open(&noise.path, Some(format)).unwrap();
+    let (_, whole) = left_from(&mut decoder);
+    for sought in [44_100_usize, 3, 70_001] {
         decoder.seek(i64::try_from(sought).unwrap()).unwrap();
-        let first = decoder.next().unwrap().unwrap();
-        assert_eq!(first.start, i64::try_from(sought).unwrap());
-        let (_, rest) = all(&mut decoder);
-        let mut data = first.data;
-        data.extend(rest);
-        let run: Vec<f32> = data
-            .iter()
-            .step_by(2)
-            .skip(2048)
-            .take(4800)
-            .copied()
-            .collect();
-        // A frame after the seek, the samples are those of the whole at the same place: the
-        // first frame decoded after a seek lacks the frame before it, which AAC overlaps.
-        let (offset, apart) = best_place(&left, &run, sought + 2048, 1024);
-        eprintln!("sought {sought}: best {offset} samples off, {apart} apart");
-        assert!(offset.abs() <= 1024);
-        assert_eq!(offset, 0, "{apart}");
-        assert!(apart < 1e-3, "{apart}");
+        let (start, data) = left_from(&mut decoder);
+        assert_eq!(start, i64::try_from(sought).unwrap());
+        // The converter starts afresh on the same grid of samples, before the pre-roll.
+        let (offset, apart) = best_place(&whole, &data[..4410], sought, 8.min(sought));
+        eprintln!("44.1 kHz from {sought}: {offset} samples off, {apart} apart");
+        assert_eq!(offset, 0);
+        assert!(apart <= 1e-6, "{apart}");
     }
 }
 

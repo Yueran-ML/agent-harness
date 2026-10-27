@@ -14,6 +14,17 @@ use crate::{probe, MediaError};
 /// decoding is given up.
 const MOST_FAILURES: u32 = 16;
 
+/// The greatest common divisor of two numbers above 0.
+fn gcd(mut a: i128, mut b: i128) -> i128 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// The fewest samples of the stream that are decoded and dropped before the sample sought.
+const LEAST_PREROLL: i64 = 2048;
+
 /// The most silence that is put in a gap of the sound, or before its first sample after a
 /// seek, so that a broken timestamp does not make hours of it: 10 s.
 const MOST_SILENCE_SECONDS: i64 = 10;
@@ -59,7 +70,10 @@ impl Samples {
 /// [`crate::VideoDecoder::start`].
 ///
 /// After [`AudioDecoder::seek`] to a sample, the first sample given is that sample: those
-/// before it are dropped, and silence comes first if the sound starts after it.
+/// before it are dropped, and silence comes first if the sound starts after it. The decoder
+/// starts some way before it (a pre-roll of at least 2048 samples of the stream, two frames of
+/// AAC, or what the stream asks for), so that a codec whose frames overlap the ones before them
+/// (AAC, Opus, MP3) gives the samples sought as it would have decoding from the start.
 pub struct AudioDecoder {
     input: Input,
     stream: usize,
@@ -68,6 +82,8 @@ pub struct AudioDecoder {
     base: (i64, i64),
     /// The tick that the stream starts at, or 0 where the file does not say.
     first_tick: i64,
+    /// How many samples, at the rate given, are decoded and dropped before one sought.
+    preroll: i64,
     source: AudioFormat,
     format: AudioFormat,
     /// The converter of the frames that come, made for the first of them, and again for one of
@@ -99,7 +115,7 @@ impl AudioDecoder {
             .filter(|stream| ff::decoder::find(stream.parameters().id()).is_some())
             .map(|stream| stream.index())
             .ok_or(MediaError::NoStreams)?;
-        let (base, first_tick, decoder, source) = {
+        let (base, first_tick, preroll, decoder, source) = {
             let found = input.stream(stream).ok_or(MediaError::NoStreams)?;
             let base = probe::base(&found)?;
             let first_tick = Some(found.start_time())
@@ -116,6 +132,10 @@ impl AudioDecoder {
                     .filter(|&channels| channels > 0)
                     .ok_or_else(|| MediaError::Unsupported("its sound has no channels".into()))?,
             };
+            let preroll = i64::from(parameters.frame_size.max(0))
+                .saturating_mul(2)
+                .max(i64::from(parameters.seek_preroll.max(0)))
+                .max(LEAST_PREROLL);
             let context = ff::codec::Context::from_parameters(found.parameters())
                 .map_err(|error| MediaError::Open(error.to_string()))?;
             let decoder = context.decoder().audio().map_err(|error| {
@@ -123,7 +143,7 @@ impl AudioDecoder {
                     "the decoder of its sound cannot be opened: {error}"
                 ))
             })?;
-            (base, first_tick, decoder, source)
+            (base, first_tick, preroll, decoder, source)
         };
         ffi::discard_others(&mut input, stream);
         let format = format.unwrap_or(source);
@@ -132,12 +152,18 @@ impl AudioDecoder {
                 "sound is given at a rate and with channels above 0".into(),
             ));
         }
+        // The pre-roll at the rate given, rounded up.
+        let preroll = (u128::from(preroll.unsigned_abs()) * u128::from(format.rate))
+            .div_ceil(u128::from(source.rate))
+            .try_into()
+            .unwrap_or(i64::MAX);
         Ok(Self {
             input,
             stream,
             decoder,
             base,
             first_tick,
+            preroll,
             source,
             format,
             resampler: None,
@@ -161,14 +187,27 @@ impl AudioDecoder {
         self.source
     }
 
+    /// The time that the stream starts at, in the timestamps of the file, from time 0 of the
+    /// file: `ticks / scale` seconds (0 where the file does not say). The duration of media
+    /// that is sound alone counts from there.
+    #[must_use]
+    pub fn start(&self) -> columbina_model::Time {
+        let (num, den) = self.base;
+        columbina_model::Time {
+            ticks: self.first_tick.saturating_mul(num),
+            scale: u32::try_from(den).unwrap_or(u32::MAX),
+        }
+    }
+
     /// Go to sample `sample` (see [`AudioDecoder`]): the next samples given start there.
     ///
     /// # Errors
     /// The file cannot be sought in.
     pub fn seek(&mut self, sample: i64) -> Result<(), MediaError> {
         let (num, den) = self.base;
-        // The tick at or before the sample: sample / rate seconds, in ticks of num / den s.
-        let over = i128::from(sample) * i128::from(den);
+        // The tick at or before the pre-roll before the sample: in ticks of num / den s.
+        let from = sample.saturating_sub(self.preroll);
+        let over = i128::from(from) * i128::from(den);
         let under = i128::from(num) * i128::from(self.format.rate);
         let tick = i64::try_from(over.div_euclid(under)).unwrap_or(i64::MAX);
         if ffi::seek(&mut self.input, self.stream, tick, true).is_err() {
@@ -201,12 +240,21 @@ impl AudioDecoder {
             match self.decoder.receive_frame(&mut frame) {
                 Ok(()) => {
                     self.failures = 0;
-                    let at = frame
-                        .timestamp()
-                        .or(frame.pts())
-                        .map(|tick| self.sample_of(tick));
+                    let tick = frame.timestamp().or(frame.pts());
+                    let fresh = !self
+                        .resampler
+                        .as_ref()
+                        .is_some_and(|resampler| resampler.takes(&frame));
+                    let (skip, at) = match tick {
+                        Some(tick) if fresh => self.aligned(&frame, tick),
+                        Some(tick) => (0, Some(self.sample_of(tick))),
+                        None => (0, None),
+                    };
+                    if skip >= frame.samples() {
+                        continue;
+                    }
                     let mut data = Vec::new();
-                    self.convert(Some(&frame), &mut data)?;
+                    self.convert(Some((&frame, skip)), &mut data)?;
                     if let Some(samples) = self.place(at, data) {
                         return Ok(Some(samples));
                     }
@@ -236,13 +284,43 @@ impl AudioDecoder {
         i64::try_from(rounded).unwrap_or(if rounded < 0 { i64::MIN } else { i64::MAX })
     }
 
-    /// Convert a frame, or what the converter holds back, adding the samples to `data`.
+    /// Where a converter made afresh starts on a frame at `tick`: how many of its first samples
+    /// it passes over, and the sample given (at the rate given) of the first it takes.
+    ///
+    /// A converter to another rate lays the samples it makes on a grid that starts at its first
+    /// sample. So that the grid is the same whichever frame it starts on (after a seek, or from
+    /// the start of the file), it starts on a sample of the stream whose time is a whole number
+    /// of samples at both rates: one every `in / gcd(in, out)` samples, counted from time 0 of
+    /// the file. What it makes differs from what it would have made going on from before only
+    /// for the first few samples, which the pre-roll drops.
+    fn aligned(&self, frame: &ff::frame::Audio, tick: i64) -> (usize, Option<i64>) {
+        let (num, den) = self.base;
+        let input = i128::from(frame.rate());
+        let output = i128::from(self.format.rate);
+        if input <= 0 || input == output {
+            return (0, Some(self.sample_of(tick)));
+        }
+        // The sample of the stream at the tick, rounded to the nearest.
+        let over = i128::from(tick) * i128::from(num) * input;
+        let under = i128::from(den);
+        let first = (2 * over + under).div_euclid(2 * under);
+        let step = input / gcd(input, output);
+        let skip = (step - first.rem_euclid(step)) % step;
+        let at = (first + skip) * output / input;
+        (
+            usize::try_from(skip).unwrap_or(usize::MAX),
+            i64::try_from(at).ok(),
+        )
+    }
+
+    /// Convert a frame, passing over its first samples, or what the converter holds back,
+    /// adding the samples to `data`.
     fn convert(
         &mut self,
-        frame: Option<&ff::frame::Audio>,
+        frame: Option<(&ff::frame::Audio, usize)>,
         data: &mut Vec<f32>,
     ) -> Result<(), MediaError> {
-        if let Some(frame) = frame {
+        if let Some((frame, _)) = frame {
             if !self
                 .resampler
                 .as_ref()
@@ -276,7 +354,12 @@ impl AudioDecoder {
             (None, Some(at)) => at,
             (None, None) => self.sought.unwrap_or(0),
         };
-        let from = self.next.or(self.sought).unwrap_or(start);
+        // Where the samples given go on from: the sample sought, or the end of the last run.
+        let from = self.sought.or(self.next).unwrap_or(start);
+        // The run is where it is, whatever of it is given: so that the runs after a seek that
+        // are dropped (the pre-roll) are counted from the first, as the converter gives them.
+        let length = i64::try_from(data.len() / channels).unwrap_or(i64::MAX);
+        self.next = Some(start.saturating_add(length));
         let most = MOST_SILENCE_SECONDS * rate;
         let start = if start > from && start - from <= most {
             // A gap: silence up to `start`.
@@ -298,8 +381,6 @@ impl AudioDecoder {
             return None;
         }
         self.sought = None;
-        let given = i64::try_from(data.len() / channels).unwrap_or(i64::MAX);
-        self.next = Some(start + given);
         Some(Samples { start, data })
     }
 

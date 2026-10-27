@@ -360,7 +360,7 @@ describe('the skills of a task', () => {
     expect(skillNamed('Skill: first\n\nSkill: second')).toBe('first');
     expect(en.label.skillGiven('review')).toBe('Skill: review');
     expect(en.label.skillGiven(null)).toBe('A skill');
-    expect(zhCN.label.skillGiven('review')).toBe('技能：review');
+    expect(zhCN.label.skillGiven('review')).toBe('Skill：review');
     expect(ja.label.skillGiven('review')).toBe('スキル：review');
   });
 

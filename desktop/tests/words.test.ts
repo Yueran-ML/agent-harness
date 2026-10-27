@@ -149,6 +149,13 @@ type Said = { path: string; text: string };
 const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret']);
 // What is written with the units of an editor, as editors write them in every language: 29.97 fps, 10 bit.
 const UNITS = new Set(['label.studio.fps', 'label.studio.bits']);
+// What the Chinese one keeps in English, as the terms of the trade are said there: a label that is
+// only such a term, Context, Skills, Worktrees, Proxy, or such a term and a name (Skill：review),
+// is written so and has nothing Chinese in it.
+const KEPT_IN_ENGLISH = new Set([
+  'label.context', 'label.contextWindow', 'label.key.contextWindow', 'label.skills', 'label.skillGiven',
+  'label.work.worktrees.title', 'label.studio.source.proxy',
+]);
 
 // Every string that a catalogue can say, with the place where it stands.
 function everythingSaid(value: unknown, path = ''): Said[] {
@@ -296,7 +303,7 @@ describe('the catalogues', () => {
     expect(said.filter(({ text }) => text.includes('您'))).toEqual([]);
     // Every sentence is in Chinese: none was left as it is in English.
     const english = new Set(everythingSaid(en).map(({ text }) => text));
-    const translated = said.filter(({ path, text }) => !NAMES.has(text) && !UNITS.has(path));
+    const translated = said.filter(({ path, text }) => !NAMES.has(text) && !UNITS.has(path) && !KEPT_IN_ENGLISH.has(path));
     expect(translated.filter(({ text }) => english.has(text))).toEqual([]);
     expect(translated.filter(({ text }) => !new RegExp(chinese).test(text))).toEqual([]);
   });

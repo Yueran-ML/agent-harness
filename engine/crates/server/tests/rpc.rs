@@ -3324,8 +3324,14 @@ async fn a_proxy_is_set_and_taken_back_by_a_transaction_and_its_undo() {
     let dir = project_dir();
     let engine = engine(dir.path(), &["--headless"]).await;
     let mut agent = engine.client("agent").await;
+    let proxies = dir.path().join("cache").join("proxies");
+    std::fs::create_dir_all(&proxies).unwrap();
+    let path = Path::new(&written(dir.path()))
+        .join("cache")
+        .join("proxies")
+        .join("m1-000000000000.mov");
     let proxy = json!({
-        "path": "C:/cache/m1.mov", "width": 960, "height": 540, "codec": "hevc",
+        "path": path.to_str().unwrap(), "width": 960, "height": 540, "codec": "hevc",
         "digest_of_source": "0".repeat(64),
     });
     let mut added = add_media("C:/media/a.mp4");
@@ -3356,7 +3362,7 @@ async fn a_proxy_is_set_and_taken_back_by_a_transaction_and_its_undo() {
         project(&mut agent).await["project"]["media"][0]["proxy"],
         proxy
     );
-    // A path that is not absolute is refused.
+    // A path that is not where the engine keeps proxies is refused.
     let refused = agent
         .error(
             "transaction.apply",
@@ -3369,10 +3375,107 @@ async fn a_proxy_is_set_and_taken_back_by_a_transaction_and_its_undo() {
         )
         .await;
     assert_eq!(refused["code"], -32001);
-    assert_eq!(refused["data"]["reason"], "not_absolute", "{refused}");
+    assert_eq!(refused["data"]["reason"], "not_a_proxy_path", "{refused}");
     // A headless engine makes no proxies.
     drop(agent);
     assert_eq!(proxy_files(dir.path()), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_proxy_elsewhere_is_refused_and_taken_away_when_read_and_never_read_or_deleted() {
+    let dir = project_dir();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let Some(made) = support::media(support::Sample::Uhd) else {
+        return;
+    };
+    // A file elsewhere, of the name of a proxy, damaged as a proxy would be.
+    let victim = elsewhere.path().join("m1-0eb91568ee7d.mov");
+    std::fs::write(&victim, vec![0_u8; 4096]).unwrap();
+    {
+        let mut engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+        let mut agent = engine.client("agent").await;
+        agent
+            .result(
+                "media.import",
+                Some(json!({ "paths": [made.path.to_str().unwrap()] })),
+            )
+            .await;
+        std::fs::create_dir_all(dir.path().join("cache").join("proxies")).unwrap();
+        let inside = Path::new(&written(dir.path()))
+            .join("cache")
+            .join("proxies");
+        let proxy = |path: &Path| {
+            json!({
+                "path": path.to_str().unwrap(), "width": 1920, "height": 1080, "codec": "hevc",
+                "digest_of_source": "0".repeat(64),
+            })
+        };
+        let through = inside
+            .join("..")
+            .join("..")
+            .join("..")
+            .join(elsewhere.path().file_name().unwrap())
+            .join("m1-0eb91568ee7d.mov");
+        for path in [
+            victim.clone(),
+            through,
+            inside.join("notes.txt"),
+            inside.join("m1.mov"),
+        ] {
+            let refused = agent
+                .error(
+                    "transaction.apply",
+                    Some(json!({ "ops": [
+                        { "op": "set_proxy", "media": "m1", "proxy": proxy(&path) },
+                    ] })),
+                )
+                .await;
+            assert_eq!(refused["data"]["reason"], "not_a_proxy_path", "{refused}");
+            assert_eq!(refused["data"]["path"], path.to_str().unwrap());
+        }
+        let mut added = add_media("C:/media/b.mp4");
+        added[0]["media"]["proxy"] = proxy(&victim);
+        let refused = agent
+            .error("transaction.apply", Some(json!({ "ops": added })))
+            .await;
+        assert_eq!(refused["data"]["reason"], "not_a_proxy_path", "{refused}");
+        // Taking a proxy away is always taken.
+        agent
+            .apply(json!([{ "op": "set_proxy", "media": "m1", "proxy": null }]))
+            .await;
+        drop(agent);
+        drop(engine.child.stdin.take());
+        assert_eq!(engine.ended().await, 0);
+    }
+    // A project written elsewhere names it as the proxy of its media.
+    let mut saved_project = saved(dir.path());
+    saved_project["media"][0]["proxy"] = json!({
+        "path": victim.to_str().unwrap(), "width": 1920, "height": 1080, "codec": "hevc",
+        "digest_of_source": saved_project["media"][0]["identity"]["digest"],
+    });
+    std::fs::write(
+        dir.path().join("project.json"),
+        serde_json::to_string_pretty(&saved_project).unwrap(),
+    )
+    .unwrap();
+    let engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut agent = engine.client("agent").await;
+    // Read without it: the transport reads the media itself, and nothing is deleted.
+    assert_eq!(
+        project(&mut agent).await["project"]["media"][0].get("proxy"),
+        None
+    );
+    let loaded = agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    assert_eq!(loaded["source"], "original", "{loaded}");
+    agent
+        .result("transport.seek", Some(json!({ "frame": 90 })))
+        .await;
+    agent.until_state("90", |state| state["shown"] == 90).await;
+    let dropped = logged(&engine, "proxy_dropped");
+    assert_eq!(dropped.len(), 1, "{dropped:?}");
+    assert!(victim.exists(), "the file elsewhere is never deleted");
 }
 
 /// The time from each seek of a scrub to the first state that is told of its frame, and that

@@ -312,6 +312,14 @@ pub enum OpError {
         /// The path.
         path: String,
     },
+    /// The path of a proxy is not one where the engine keeps proxies: a file
+    /// `<id>-<12 hex digits>.mov` in the directory of the proxies of the project. Only the engine
+    /// gives this, which alone knows that directory; the operations do not.
+    #[error("the path {path} is not that of a proxy of the project")]
+    NotAProxyPath {
+        /// The path.
+        path: String,
+    },
 }
 
 /// Why a project that is read is not one that the operations can work on: the thing of it that
@@ -361,6 +369,7 @@ enum Fields {
     Dollar { id: Id },
     NoId,
     NotAbsolute { path: String },
+    NotAProxyPath { path: String },
 }
 
 /// How [`Invalid`] names the thing that is wrong.

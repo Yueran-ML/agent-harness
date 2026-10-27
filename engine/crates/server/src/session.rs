@@ -207,7 +207,13 @@ impl Engine {
         };
         let again = {
             let state = Arc::clone(&state);
-            Arc::new(move |media: &str| make_again(&state, media))
+            let dir = proxy::proxy_dir(Path::new(&project));
+            Arc::new(move |media: &str, damaged: Option<&Path>| {
+                if let Some(damaged) = damaged {
+                    proxy::delete(&dir, damaged);
+                }
+                make_again(&state, media);
+            })
         };
         let transport = Transport::new(headless, setup, viewer.slot(), notify, again);
         let project_now = {
@@ -224,7 +230,8 @@ impl Engine {
                 }),
                 made: Box::new({
                     let state = Arc::clone(&state);
-                    move |media: &str, proxy: &Proxy| proxy_made(&state, media, proxy, limits)
+                    let dir = proxy::proxy_dir(Path::new(&project));
+                    move |media: &str, proxy: &Proxy| proxy_made(&state, &dir, media, proxy, limits)
                 }),
                 twin: Box::new({
                     let state = Arc::clone(&state);
@@ -364,7 +371,13 @@ fn tell_proxy(state: &Mutex<State>, note: &Note, limits: Limits) {
 /// transport is given it, to read it again if it had given it up. The file of the proxy that
 /// the media had before, if it was another one beside it that no other media has, is deleted.
 /// This is called by the thread of the maker of proxies.
-fn proxy_made(state: &Mutex<State>, media: &str, proxy: &Proxy, limits: Limits) -> Made {
+fn proxy_made(
+    state: &Mutex<State>,
+    dir: &Path,
+    media: &str,
+    proxy: &Proxy,
+    limits: Limits,
+) -> Made {
     let mut locked = state.blocking_lock();
     let Some(found) = locked
         .history
@@ -421,7 +434,7 @@ fn proxy_made(state: &Mutex<State>, media: &str, proxy: &Proxy, limits: Limits) 
         log_kicked(id, Some(kind), limits);
     }
     if let (Some(before), Made::Set) = (before, made) {
-        let _ = std::fs::remove_file(&before.path);
+        proxy::delete(dir, Path::new(&before.path));
     }
     made
 }
@@ -776,6 +789,7 @@ async fn transaction_apply(
         })?;
         ops.push(op);
     }
+    check_proxies(&ops, &proxy::proxy_dir(Path::new(&engine.project)))?;
     let mut names = names::prepare(&mut ops).map_err(|error| {
         Fault::params(error.to_string()).with_data(json!({
             "index": error.index,
@@ -801,6 +815,29 @@ async fn transaction_apply(
         },
     );
     Ok(engine.finish(state, connection, line))
+}
+
+/// Refuse a transaction that sets a proxy (by `set_proxy`, or on media that it adds) that is not
+/// one where the engine keeps proxies (`dir`): the engine reads the proxies of media, and deletes
+/// those that are damaged or that it makes anew, so that a proxy elsewhere would have it read,
+/// and delete, any file. Taking a proxy away is always taken.
+fn check_proxies(ops: &[Op], dir: &Path) -> Result<(), Fault> {
+    for (index, op) in ops.iter().enumerate() {
+        let proxy = match op {
+            Op::SetProxy { proxy, .. } => proxy.as_ref(),
+            Op::AddMedia { media, .. } => media.proxy.as_ref(),
+            _ => None,
+        };
+        if let Some(proxy) = proxy.filter(|proxy| !proxy::owned(dir, Path::new(&proxy.path))) {
+            let error = columbina_model::OpError::NotAProxyPath {
+                path: proxy.path.clone(),
+            };
+            return Err(Fault::refused(
+                &columbina_model::TransactionError::Refused { index, error },
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The answer to `history.undo` and `history.redo` that did something.

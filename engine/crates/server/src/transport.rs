@@ -276,9 +276,10 @@ pub enum Sound {
 /// connection that said hello.
 pub type Notify = Arc<dyn Fn(&Status) + Send + Sync>;
 
-/// What the transport asks of the engine when the proxy of media cannot be opened: that it be
-/// made again.
-pub type Again = Arc<dyn Fn(&str) + Send + Sync>;
+/// What the transport asks of the engine when the proxy of media cannot be opened or decoded:
+/// that it be made again; and, for one that could not be decoded, that its file (given) be
+/// deleted, if it is one of the proxies of the project.
+pub type Again = Arc<dyn Fn(&str, Option<&Path>) + Send + Sync>;
 
 /// What comes to the transport's thread.
 enum Inbox {
@@ -1496,11 +1497,10 @@ impl Worker {
         let Some(loaded) = &mut self.loaded else {
             return;
         };
-        if loaded.reading != bad {
-            // The decoder of the proxy is let go: its file can be deleted.
-            let _ = std::fs::remove_file(&bad);
-        }
-        (self.again)(&media);
+        // The decoder of the proxy is let go: its file can be deleted, by the engine, which
+        // deletes only a file of the proxies of the project.
+        let damaged = (loaded.reading != bad).then_some(bad.as_path());
+        (self.again)(&media, damaged);
         if !matches!(loaded.mode, Mode::Scrubbing { .. }) {
             let target = loaded.playhead;
             if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
@@ -1539,7 +1539,7 @@ impl Worker {
                 if let (true, Some(proxy)) = (opened.proxy_failed, proxy) {
                     self.world.forget_proxy(&loaded.media, proxy);
                     loaded.proxy = None;
-                    (self.again)(&loaded.media);
+                    (self.again)(&loaded.media, None);
                 }
                 if opened.path == loaded.reading {
                     return false;
@@ -1598,7 +1598,7 @@ impl Worker {
             if let (true, Some(wanted)) = (opened.proxy_failed, wanted) {
                 self.world.forget_proxy(&media, wanted);
                 proxy = None;
-                (self.again)(&media);
+                (self.again)(&media, None);
             }
             let decoder = &opened.video.decoder;
             let fallbacks: Vec<_> = decoder

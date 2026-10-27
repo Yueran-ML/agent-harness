@@ -270,9 +270,12 @@ item may have `proxy`, which is left out when it has none:
           "codec": "hevc", "digest_of_source": "0eb91568ee7df39f…"}
 ```
 
-`path` is absolute; `width` and `height` as stored; `codec` as ffprobe names it (`hevc`,
-`prores`); `digest_of_source` the `identity.digest` of the media it was made from. A project
-written before proxies has none, and is read as it is.
+`path` is a file of the engine's own (see Security): `<id>-<12 hex digits>.mov` directly in
+`<project>/cache/proxies`; `width` and `height` as stored; `codec` as ffprobe names it
+(`hevc`, `prores`); `digest_of_source` the `identity.digest` of the media it was made from. A
+project written before proxies has none, and is read as it is. A proxy whose `path` is not of
+the engine's own is taken away as the project is read (logged `proxy_dropped`), and the rest of
+the project is read as it is.
 
 ## The view
 
@@ -510,7 +513,9 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   of other media of the same file), `proxy_recipe_failed` (an encoder that failed, before the next
   is tried), `proxy_failed`, `proxy_skipped` (media that could not be read to tell whether it
   needs one, or whose proxy failed before), `proxy_deleted` (a file of the cache that no media
-  names, as the engine starts).
+  names, as the engine starts), `proxy_dropped` (a proxy that is not the engine's own, taken
+  away as the project is read), `proxy_not_deleted` (a file that was not deleted, not being one
+  of the proxies of the project).
 
 | `-32004` `reason` | when |
 |---|---|
@@ -535,7 +540,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `remove_clip` | `timeline`, `id` |
 | `move_clip` | `timeline`, `id`, `track`, `start` |
 | `trim_clip` | `timeline`, `id`, `source_in`, `start`, `length` |
-| `set_proxy` | `media`, `proxy` (a proxy, or `null` to take it away; its inverse sets the one before) |
+| `set_proxy` | `media`, `proxy` (a proxy, or `null` to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
 
 A thing added with an empty `id` is given one by the engine (`m`/`t`/`c` + a number from
 `next_id`, never reused; tracks `V<n>`/`A<n>` by place). An id that starts with `$` is never
@@ -609,6 +614,28 @@ real ids. For example:
 - `engine.error` with `kind: "save"`: the project could not be saved; the engine keeps it and
   tries again, more slowly while it keeps failing (at least every 32 s).
 
+## Security
+
+`project.json` lives in the user's repository (`.columbina/studio`), and may come from anyone who
+commits to it; and any client may send transactions. So:
+
+- **Proxies are the engine's own.** The engine reads the file of a proxy, and deletes it when it
+  cannot be decoded, when it makes another in its place, and when no media names it as the
+  engine starts. A proxy is therefore only ever a file `<id>-<12 hex digits>.mov` (`<id>` of
+  `A–Z a–z 0–9 - _`, the id of the media it was made for, or of other media of the same file)
+  directly in `<project>/cache/proxies`, compared as the system finds the paths: no `..`, and
+  neither `cache` nor `cache/proxies` a link or a junction to elsewhere. `set_proxy` (or
+  `add_media`) with another path is refused (`not_a_proxy_path`); a `project.json` that names one
+  is read without it (logged `proxy_dropped`). Before each deletion the same is checked again,
+  and only a file (not a link) is deleted; anything else is left as it is (logged
+  `proxy_not_deleted`).
+- **Media paths are the user's sources**, and may be anywhere: `add_media` takes any absolute
+  path, and the engine reads (never writes or deletes) the file there when it is loaded,
+  scrubbed or made a proxy of. A `project.json` from elsewhere may name a path on another
+  computer (`\\server\share\…` on Windows), which the system may sign in to as the media is
+  read. This is left to the desktop (which does not let its page send `add_media`) and to a
+  later decision.
+
 ## Errors
 
 | code | when | `data` |
@@ -657,4 +684,5 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `ids_exhausted` | | the engine has made every id it can |
 | `no_id` | | (only for a project that is read, never from an operation) |
 | `not_absolute` | `path` | the `path` of a proxy is not absolute (`C:\…`, `\\server\…` or `/…`) |
+| `not_a_proxy_path` | `path` | the `path` of a proxy is not a file of the engine's own: `<id>-<12 hex digits>.mov` directly in `<project>/cache/proxies` (see Security) |
 | `empty` | | the transaction has no operations |

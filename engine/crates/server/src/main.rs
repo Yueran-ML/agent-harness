@@ -310,6 +310,9 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         Ok(opened) => opened,
         Err(error) => return Ending::Failed(error.to_string()),
     };
+    // A proxy that is not where the engine keeps them is not taken: the engine reads, and
+    // deletes, only its own.
+    let project = proxy::owned_only(project, &proxy::proxy_dir(dir));
     let (report, save_errors) = mpsc::unbounded_channel();
     let saver = Saver::new(store, move |error| {
         let _ = report.send(error.to_string());

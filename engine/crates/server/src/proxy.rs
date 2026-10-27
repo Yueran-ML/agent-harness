@@ -178,6 +178,118 @@ pub fn file_name(media: &str, digest: &str) -> String {
     format!("{id}-{digest}.mov")
 }
 
+/// The directory of the proxies of the project in `project_dir`.
+pub fn proxy_dir(project_dir: &Path) -> PathBuf {
+    project_dir.join("cache").join("proxies")
+}
+
+/// Whether a file name is that of a proxy: `<id>-<12 hex digits>.mov`, the id of the media
+/// that it was made for (of the letters, digits, `-` and `_` that [`file_name`] keeps), which
+/// may be other media of the same file.
+pub fn proxy_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".mov") else {
+        return false;
+    };
+    let Some((id, digest)) = stem.rsplit_once('-') else {
+        return false;
+    };
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && digest.len() == 12
+        && digest
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+}
+
+/// Whether `path` is in `dir` itself (`<project>/cache/proxies`), as the system finds them, so
+/// that no `..`, link or junction leads out of it: an absolute path without `.` or `..`, whose
+/// directory is `dir`, which is `cache/proxies` of the project itself, not a link or a junction
+/// to somewhere else.
+fn inside(dir: &Path, path: &Path) -> bool {
+    use std::path::Component;
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+    {
+        return false;
+    }
+    let canonical = |path: &Path| path.canonicalize().ok();
+    let project = dir.parent().and_then(Path::parent).and_then(canonical);
+    let (Some(parent), Some(dir), Some(project)) =
+        (path.parent().and_then(canonical), canonical(dir), project)
+    else {
+        return false;
+    };
+    dir == project.join("cache").join("proxies") && parent == dir
+}
+
+/// Whether `path` is one that the engine keeps a proxy at: a file named as a proxy is
+/// ([`proxy_name`]) directly in `dir`, the directory of the proxies of the project. A proxy that
+/// a client sets, or that a project that is read names, must be so; and nothing else is ever
+/// deleted as a proxy.
+pub fn owned(dir: &Path, path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(proxy_name)
+        && inside(dir, path)
+}
+
+/// Delete the file of a proxy, or a `.part` of one, at `path` in `dir`: only a file of the
+/// engine's own ([`owned`]), and only a file, not a link. Whether it was deleted.
+pub fn delete(dir: &Path, path: &Path) -> bool {
+    let named = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            proxy_name(name)
+                || name
+                    .strip_suffix(".part")
+                    .is_some_and(|name| proxy_name(name) || name == FAILED)
+        });
+    let file = match std::fs::symlink_metadata(path) {
+        Ok(found) => found.is_file(),
+        // Nothing to delete.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => false,
+    };
+    if !(named && file && inside(dir, path)) {
+        log(
+            "proxy_not_deleted",
+            &json!({
+                "path": path.to_string_lossy(),
+                "message": "it is not a file of the proxies of the project",
+            }),
+        );
+        return false;
+    }
+    std::fs::remove_file(path).is_ok()
+}
+
+/// A project as it is read, with every proxy that is not where the engine keeps proxies
+/// ([`owned`]) taken away, and logged: a project written by hand, or by another program, cannot
+/// have the engine read, or delete, a file elsewhere.
+pub fn owned_only(mut project: Project, dir: &Path) -> Project {
+    for media in &mut project.media {
+        if let Some(proxy) = media
+            .proxy
+            .take_if(|proxy| !owned(dir, Path::new(&proxy.path)))
+        {
+            log(
+                "proxy_dropped",
+                &json!({
+                    "media": media.id,
+                    "path": proxy.path,
+                    "message": "the proxy is not in the directory of the proxies of the project",
+                }),
+            );
+        }
+    }
+    project
+}
+
 /// The proxy of media that may be used: one made from the file of its identity. Whether its file
 /// is there and can be read is known only once it is opened.
 pub fn usable(media: &Media) -> Option<&Proxy> {
@@ -428,7 +540,7 @@ impl Proxies {
             "proxy_ffmpeg",
             &json!({ "path": ffmpeg.as_ref().map(|path| path.to_string_lossy()) }),
         );
-        let dir = project_dir.join("cache").join("proxies");
+        let dir = proxy_dir(project_dir);
         let failures = std::fs::read_to_string(dir.join(FAILED))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
@@ -471,9 +583,8 @@ impl Proxies {
                 let kept = path.file_name().is_some_and(|name| name == FAILED)
                     || !path.is_file()
                     || named(&path);
-                if !kept {
+                if !kept && delete(&inner.dir, &path) {
                     log("proxy_deleted", &json!({ "path": path.to_string_lossy() }));
-                    let _ = std::fs::remove_file(&path);
                 }
             }
         }
@@ -1094,7 +1205,7 @@ fn encode(
     let mut why = Vec::new();
     let mut progress = 0.0;
     for recipe in recipes {
-        let _ = std::fs::remove_file(&part);
+        let _ = delete(&inner.dir, &part);
         let args = arguments(recipe, job, stream, &part, inner.setup.readrate.as_deref());
         let ran = run_ffmpeg(
             inner,
@@ -1108,14 +1219,14 @@ fn encode(
             &mut progress,
         );
         if cancelled.load(Ordering::Acquire) {
-            let _ = std::fs::remove_file(&part);
+            let _ = delete(&inner.dir, &part);
             return Err(Failure::stopped(inner, progress));
         }
         let message = match ran {
             Ran::Wrote(frames) => match checked_proxy(&part, job) {
                 Ok((width, height, codec)) => {
                     std::fs::rename(&part, &path).map_err(|error| {
-                        let _ = std::fs::remove_file(&part);
+                        let _ = delete(&inner.dir, &part);
                         Failure {
                             progress,
                             message: format!("the proxy cannot be put in place: {error}"),
@@ -1143,7 +1254,7 @@ fn encode(
                 message
             }
             Ran::Stuck => {
-                let _ = std::fs::remove_file(&part);
+                let _ = delete(&inner.dir, &part);
                 return Err(Failure {
                     progress,
                     message: format!(
@@ -1159,7 +1270,7 @@ fn encode(
             &json!({ "media": job.media, "encoder": recipe.name(), "message": message }),
         );
         why.push(format!("{}: {message}", recipe.name()));
-        let _ = std::fs::remove_file(&part);
+        let _ = delete(&inner.dir, &part);
     }
     Err(Failure {
         progress,
@@ -1607,6 +1718,89 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_file_of_the_proxies_of_the_project_is_one_of_its_proxies_or_deleted() {
+        let root = std::env::temp_dir().join(format!("columbina-owned-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let project = root.join("project");
+        let dir = proxy_dir(&project);
+        std::fs::create_dir_all(&dir).unwrap();
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let name = "m1-0123456789ab.mov";
+        let write = |path: &Path| std::fs::write(path, b"x").unwrap();
+        // Its own: named so, in the directory.
+        let own = dir.join(name);
+        write(&own);
+        assert!(owned(&dir, &own));
+        assert!(delete(&dir, &own));
+        assert!(!own.exists());
+        let part = dir.join(format!("{name}.part"));
+        write(&part);
+        assert!(!owned(&dir, &part), "a .part is not a proxy");
+        assert!(delete(&dir, &part), "but it is deleted");
+        // A file of the same name elsewhere, through `..`, or of another name: never.
+        let elsewhere = outside.join(name);
+        write(&elsewhere);
+        let through = dir
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("outside")
+            .join(name);
+        for path in [&elsewhere, &through] {
+            assert!(!owned(&dir, path), "{}", path.display());
+            assert!(!delete(&dir, path), "{}", path.display());
+        }
+        assert!(elsewhere.exists());
+        for name in [
+            "notes.txt",
+            "m1-0123456789AB.mov",
+            "m1-0123456789a.mov",
+            "-0123456789ab.mov",
+            "m1.mov",
+            "m 1-0123456789ab.mov",
+        ] {
+            let path = dir.join(name);
+            write(&path);
+            assert!(!owned(&dir, &path), "{name}");
+            assert!(!delete(&dir, &path), "{name}");
+            assert!(path.exists(), "{name}");
+        }
+        assert!(!owned(&dir, Path::new(name)), "a relative path");
+        // The directory of the proxies a link or a junction to somewhere else: never.
+        let linked = root.join("linked");
+        std::fs::create_dir_all(linked.join("cache")).unwrap();
+        let link = proxy_dir(&linked);
+        #[cfg(windows)]
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .output()
+            .is_ok_and(|output| output.status.success());
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&outside, &link).is_ok();
+        assert!(made, "the link is made");
+        let through_link = link.join(name);
+        assert!(through_link.exists());
+        assert!(!owned(&link, &through_link));
+        assert!(!delete(&link, &through_link));
+        assert!(elsewhere.exists());
+        // A project read with a proxy elsewhere has it taken away.
+        let mut read = Project::sample();
+        read.media[0].proxy = Some(Proxy {
+            path: elsewhere.to_str().unwrap().to_owned(),
+            width: 1,
+            height: 1,
+            codec: "hevc".into(),
+            digest_of_source: "0".repeat(64),
+        });
+        assert_eq!(owned_only(read, &dir).media[0].proxy, None);
+        let _ = std::fs::remove_dir(&link);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

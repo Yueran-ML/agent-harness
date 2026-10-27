@@ -87,13 +87,15 @@ of objects with `start_us`, `end_us` and `text`.
 
 The desktop app and the agent edit one project through `columbina-engine`, a program of its own
 and the only one that writes the project; each of them sees every change that the other makes.
-Columbina takes the engine that the `engine` key of the config of the video plugin names, or
-`COLUMBINA_ENGINE`, or the first `columbina-engine` on the search path, never one in the working
-directory. Where no engine has the project open, one is started without a window, and it ends by
+Columbina takes the engine that `COLUMBINA_ENGINE` names by its whole path, or the first
+`columbina-engine` on the search path, never one in the working directory. (The `engine` key of
+the config of the video plugin will name it too, for the tools that use the engine in a later
+phase.) Where no engine has the project open, one is started without a window, and it ends by
 itself once no client has been connected for 30 seconds. It is built from `engine/` of the
 repository with `cargo build --release -p columbina-server`, and reads media with the shared
 libraries of FFmpeg (an LGPL build), beside it or on the search path. Its protocol is
-`engine/PROTOCOL.md`; what it logs is in `cache/engine-<pid>.log` of the project.
+`engine/PROTOCOL.md`; it logs into `cache/engine-<time>-<digits>.log` of the project, of which
+the newest 20 are kept.
 
 ```bash
 columbina video engine --project film          # starts one if none answers, and says how it stands

@@ -131,7 +131,7 @@ def test_the_engine_says_that_it_answers(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("COLUMBINA_ENGINE", fake_engine.__file__)
-    monkeypatch.setattr(engine, "_argv", fake_engine.argv_of(idle=0.3))
+    monkeypatch.setattr(engine, "_argv", fake_engine.argv_of(idle=1))
 
     assert main(["video", "engine", "--project", "film"]) == 0
     told = said(capsys)
@@ -152,13 +152,20 @@ def test_an_engine_that_is_missing_or_fails_is_said(
     monkeypatch.delenv("COLUMBINA_ENGINE", raising=False)
     monkeypatch.setenv("PATH", "")
 
-    assert main(["video", "engine"]) == 2
+    with pytest.raises(SystemExit):
+        main(["video", "engine"])
+    assert "--project" in capsys.readouterr().err
+    assert main(["video", "engine", "--project", "film"]) == 2
     missing = said(capsys)
+    monkeypatch.setenv("COLUMBINA_ENGINE", "engine")
+    assert main(["video", "engine", "--project", "film"]) == 2
+    refused = said(capsys)
     monkeypatch.setenv("COLUMBINA_ENGINE", fake_engine.__file__)
     monkeypatch.setattr(engine, "_argv", fake_engine.argv_of("error"))
-    assert main(["video", "engine"]) == 2
+    assert main(["video", "engine", "--project", "film"]) == 2
 
     assert missing.startswith("columbina: no columbina-engine program was found: build it with")
+    assert refused.startswith("columbina: COLUMBINA_ENGINE names engine as the columbina-engine")
     assert said(capsys) == "columbina: project.json cannot be read\n"
 
 
@@ -177,10 +184,19 @@ def test_the_engine_itself_says_how_a_project_stands(
             return int(one.hello["pid"])
 
     pid = asyncio.run(edited())
+    # The engine has ended before the command asks, which starts another: it reads the project
+    # that the first one saved, and counts its revisions from 0 again.
+    gone(talk / "film" / "engine.lock")
+    started = engine._argv  # pyright: ignore[reportPrivateUsage]
+
+    def briefly(program: str, directory: Path, idle_seconds: int | None) -> list[str]:
+        return started(program, directory, 1)
+
+    monkeypatch.setattr(engine, "_argv", briefly)
     assert main(["video", "engine", "--project", "film", "--json"]) == 0
     answered = json.loads(said(capsys))
     gone(talk / "film" / "engine.lock")
 
     assert answered["engine"] == "0.1.0"
-    assert answered["pid"] == pid
-    assert (answered["revision"], answered["media"], answered["timelines"]) == (2, 1, 1)
+    assert answered["pid"] != pid
+    assert (answered["revision"], answered["media"], answered["timelines"]) == (0, 1, 1)

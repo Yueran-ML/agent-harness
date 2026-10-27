@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import cast
 
 from columbina.video.editing import Editor, Placing, Shape
-from columbina.video.engine import NOT_FOUND, Engine, EngineError, program_of
+from columbina.video.engine import Engine, EngineError, not_found, program_of
 from columbina.video.media import MediaUnavailableError, UnreadableMediaError, located
 from columbina.video.project import ProjectError
 from columbina.video.render import RenderError
@@ -105,7 +105,10 @@ def arguments(video: argparse.ArgumentParser) -> None:
         ENGINE, help="say whether the engine answers for a project, starting one if none does"
     )
     engine.add_argument(
-        "--project", metavar="DIR", default=".", help="the directory of the project; this one"
+        "--project",
+        metavar="DIR",
+        required=True,
+        help="the directory of the project, where the engine keeps its lock and its logs",
     )
     engine.add_argument(
         "--json", action="store_true", help="answer in one document of JSON, for another program"
@@ -194,7 +197,7 @@ async def _answered(directory: Path, program: str) -> dict[str, object]:
 def _engine(args: argparse.Namespace, say: Callable[[str], None]) -> int:
     program = program_of(None, os.environ.get("PATH", ""), [Path.cwd()])
     if program is None:
-        say(f"columbina: {NOT_FOUND}")
+        say(f"columbina: {not_found(None)}")
         return 2
     try:
         told = asyncio.run(_answered(Path(args.project).resolve(), program))

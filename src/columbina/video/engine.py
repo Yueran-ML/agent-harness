@@ -13,11 +13,19 @@ belongs to nobody, and ends by itself once no client has been connected for a wh
 unless it is told otherwise). Two clients that start one at once are sorted out by the engine:
 the second is told where the first listens.
 
+**Addresses.** A project may come from anywhere, and so may its ``engine.lock``. An address is
+opened only if it is one where an engine listens: on Windows a pipe of this machine named
+``columbina-engine-`` and 16 hexadecimal digits, never a pipe of another machine, to which
+Windows would sign in; elsewhere a socket of that name in the directory of this user where the
+engine makes its sockets. The same holds for an address that an engine says it, or another
+engine, listens at.
+
 **The program.** The engine is looked for the way :mod:`columbina.programs` looks for a
 program, :func:`program_of`: the path that the config gives, or ``COLUMBINA_ENGINE``, or the
 search path, and never in a working directory. It is run in its own directory, where it finds
-the libraries of FFmpeg that it reads media with, and not in the directory of the project. What
-it logs is copied to ``cache/engine-<pid>.log`` of the project.
+the libraries of FFmpeg that it reads media with, and not in the directory of the project. It
+logs into a file of its own in ``cache/`` of the project, ``engine-<time>-<digits>.log``, which
+it writes itself, also once this program has ended; the newest 20 are kept.
 """
 
 import asyncio
@@ -26,13 +34,17 @@ import itertools
 import json
 import os
 import random
+import re
+import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import weakref
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO, Any, Literal, Self, cast
 
@@ -49,6 +61,7 @@ __all__ = [
     "Changes",
     "Engine",
     "EngineError",
+    "not_found",
     "program_of",
 ]
 
@@ -57,14 +70,14 @@ PROTOCOL = 1
 
 UNREACHABLE = -1
 """The code of an :class:`EngineError` when no engine could be reached, or the connection to it
-was lost or closed."""
+was lost or closed. A call that failed so may or may not have been done."""
 
 UNSTARTED = -2
 """The code of an :class:`EngineError` when the engine could not be started."""
 
 UNEXPECTED = -3
 """The code of an :class:`EngineError` when the engine answered what the protocol does not say,
-or has another project open."""
+or more than can be read, or has another project open."""
 
 _NAME = "columbina-engine"
 
@@ -73,10 +86,14 @@ NOT_FOUND = (
     "columbina-server` in engine/ of the repository, and name it with COLUMBINA_ENGINE or put "
     "it on the search path. A program that lies in the working directory is not taken"
 )
-"""What is said where :func:`program_of` finds no engine."""
+"""What is said where :func:`program_of` finds no engine, and none was named."""
 
-_LINE_BYTES = 16 * 1024 * 1024
-"""The longest line that is read from the engine, without its newline."""
+_READ_BYTES = 1 << 30
+"""The longest line that is read from the engine, without its newline: the engine sends a whole
+project in one line, transcripts and all."""
+
+_WRITE_BYTES = 16 * 1024 * 1024
+"""The longest request that the engine reads, without its newline."""
 
 _CONNECT_SECONDS = 5.0
 """How long connecting may take: a pipe of Windows that is busy is tried again for ever."""
@@ -90,8 +107,18 @@ _TRIES = 8
 _KEPT_LINES = 64
 """How many lines of its log an engine that ended before it listened is judged by."""
 
+_KEPT_LOGS = 20
+"""How many logs of engines are kept in the cache of a project."""
+
+_LISTENED = 1024
+"""How many things told a reader of :meth:`Engine.changes` may leave unread before the oldest
+are dropped."""
+
 _LIBRARIES_MISSING = 0xC0000135
 """How a program of Windows ends when a library that it needs is not found."""
+
+_PIPE = re.compile(r"\\\\\.\\pipe\\columbina-engine-[0-9a-f]{16}")
+_SOCKET = re.compile(r"[0-9a-f]{16}\.sock")
 
 
 class EngineError(Exception):
@@ -100,7 +127,9 @@ class EngineError(Exception):
     Attributes:
         code: The code of the error of JSON-RPC that the engine answered, such as ``-32001`` for
             a transaction that was refused, or :data:`UNREACHABLE`, :data:`UNSTARTED` or
-            :data:`UNEXPECTED` for what went wrong on this side.
+            :data:`UNEXPECTED` for what went wrong on this side. A request that cannot be sent
+            is refused here as the engine would refuse it: ``-32600`` when it is longer than the
+            engine reads, ``-32602`` when it cannot be written in JSON.
         data: What the engine said of it, as it said it: the ``index`` and ``reason`` of an
             operation that was refused, the ``path`` of a file that cannot be read.
     """
@@ -135,9 +164,13 @@ class Changed:
 
     Attributes:
         method: ``project.changed``, ``engine.error``, ``transport.state`` or ``media.proxy``, as
-            the engine sends them; or ``project.fetched`` when the whole project was asked for
-            anew, after a change was missed or the connection was made again. Its params are
-            the answer of ``project.get``, and the changes after it follow.
+            the engine sends them. Or ``project.fetched``: the whole project was asked for anew,
+            after a change was missed or the connection was made again, and its params are the
+            answer of ``project.get``; a copy of the project starts again from it, and the
+            changes after it follow. An engine that was started anew counts its revisions from
+            0 again. Or ``changes.missed``: the reader left so much unread that the oldest
+            things told were dropped, ``missed`` of them; a copy starts again from
+            :meth:`Engine.project`.
         params: What it said.
     """
 
@@ -167,7 +200,8 @@ def program_of(configured: str | None, search: str, outside: Sequence[Path]) -> 
             program was started in, and the working directory of a session.
 
     Returns:
-        The whole path of the program, or ``None`` if there is none that may be run.
+        The whole path of the program, or ``None`` if there is none that may be run. Then
+        :func:`not_found` says why.
     """
     named = configured or os.environ.get("COLUMBINA_ENGINE")
     if not named:
@@ -184,22 +218,65 @@ def program_of(configured: str | None, search: str, outside: Sequence[Path]) -> 
     return None
 
 
-def _argv(program: str, directory: Path, idle_seconds: float | None) -> list[str]:
+def not_found(configured: str | None) -> str:
+    """Say why :func:`program_of` found no engine, given what the config named."""
+    named = configured or os.environ.get("COLUMBINA_ENGINE")
+    if not named:
+        return NOT_FOUND
+    given = "the config of the video plugin" if configured else "COLUMBINA_ENGINE"
+    return (
+        f"{given} names {named} as the columbina-engine program, and it is not taken: it has to "
+        "be the whole path of a program, and the way to it may not lead through the working "
+        "directory"
+    )
+
+
+def _argv(program: str, directory: Path, idle_seconds: int | None) -> list[str]:
     """What the engine is started with: always headless, as an agent has no window to give it."""
     argv = [program, "--project", str(directory), "--headless"]
     if idle_seconds is not None:
-        argv += ["--idle-seconds", f"{idle_seconds:g}"]
+        argv += ["--idle-seconds", str(idle_seconds)]
     return argv
 
 
+if sys.platform == "win32":  # pragma: windows only
+
+    def _engine_at(address: str) -> bool:
+        return _PIPE.fullmatch(address) is not None
+
+else:  # pragma: posix only
+
+    def _engine_at(address: str) -> bool:
+        where = Path(address)
+        return _SOCKET.fullmatch(where.name) is not None and where.parent == _sockets()
+
+    def _sockets() -> Path:
+        """The directory where the engine makes its sockets, as it chooses it."""
+        runtime = os.environ.get("XDG_RUNTIME_DIR")
+        if runtime and Path(runtime).is_absolute():
+            return Path(runtime) / "columbina"
+        temporary = os.environ.get("TMPDIR")
+        base = Path(temporary) if temporary and Path(temporary).is_absolute() else Path("/tmp")
+        return base / f"columbina-{os.geteuid()}"
+
+
+def _address(said: object) -> str | None:
+    """Return what was said, if it is an address where an engine listens, and none other."""
+    return said if isinstance(said, str) and _engine_at(said) else None
+
+
 def _locked(directory: Path) -> str | None:
-    """Return the address that ``engine.lock`` of a project names, if it names one."""
+    """Return the address that ``engine.lock`` of a project names, if it names one.
+
+    This blocks.
+    """
     try:
         said: object = json.loads((directory / "engine.lock").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    address = cast("dict[str, object]", said).get("address") if isinstance(said, dict) else None
-    return address if isinstance(address, str) and address else None
+    return (
+        _address(cast("dict[str, object]", said).get("address")) if isinstance(said, dict) else None
+    )
 
 
 async def _moment() -> None:
@@ -214,8 +291,10 @@ class _Wire(asyncio.Protocol):
     """
 
     def __init__(
-        self, heard: Callable[["_Wire", bytes], None], lost: Callable[["_Wire", str], None]
-    ):
+        self,
+        heard: Callable[["_Wire", bytes], None],
+        lost: Callable[["_Wire", EngineError], None],
+    ) -> None:
         self._heard = heard
         self._lost = lost
         self._buffer = bytearray()
@@ -235,7 +314,7 @@ class _Wire(asyncio.Protocol):
             end = self._buffer.find(b"\n", max(start, self._looked))
             if end < 0:
                 break
-            if end - start > _LINE_BYTES:
+            if end - start > _READ_BYTES:
                 self._too_long()
                 return
             line = bytes(self._buffer[start:end])
@@ -243,35 +322,65 @@ class _Wire(asyncio.Protocol):
             self._heard(self, line)
         del self._buffer[:start]
         self._looked = len(self._buffer)
-        if self._looked > _LINE_BYTES:
+        if self._looked > _READ_BYTES:
             self._too_long()
 
     def _too_long(self) -> None:
-        self._end("the engine sent a line longer than 16 MiB")
-        cast("asyncio.Transport", self.transport).close()
+        self._end(
+            EngineError(
+                f"the engine sent a line longer than {_READ_BYTES / 2**20:g} MiB: the project is "
+                "too large to be read here",
+                code=UNEXPECTED,
+            )
+        )
+        self.close()
 
     def connection_lost(self, exc: Exception | None) -> None:
-        self._end("the engine closed the connection" + (f": {exc}" if exc else ""))
+        why = "the engine closed the connection" + (f": {exc}" if exc else "")
+        self._end(EngineError(why, code=UNREACHABLE))
 
-    def _end(self, why: str) -> None:
+    def _end(self, error: EngineError) -> None:
         if not self._ended:
             self._ended = True
             self._buffer.clear()
-            self._lost(self, why)
+            self._lost(self, error)
 
-    def send(self, message: Mapping[str, Any]) -> None:
-        """Send a message as a line."""
-        line = json.dumps(message, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-        cast("asyncio.Transport", self.transport).write(line.encode("utf-8") + b"\n")
+    @staticmethod
+    def encoded(message: Mapping[str, Any]) -> bytes:
+        """Write a message as a line, without its newline.
+
+        Raises:
+            EngineError: It cannot be written in JSON, or is longer than the engine reads.
+        """
+        try:
+            line = json.dumps(message, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        except (ValueError, TypeError) as error:
+            raise EngineError(
+                f"the request cannot be written in JSON: {error}", code=-32602
+            ) from None
+        written = line.encode("utf-8")
+        if len(written) > _WRITE_BYTES:
+            raise EngineError(
+                f"the request is {len(written)} bytes long, and the engine reads none longer "
+                "than 16 MiB",
+                code=-32600,
+                data={"bytes": len(written)},
+            )
+        return written
+
+    def write(self, line: bytes) -> None:
+        """Send a line."""
+        cast("asyncio.Transport", self.transport).write(line + b"\n")
 
     def close(self) -> None:
-        """Close the connection, and hear nothing more of it."""
-        self._ended = True
+        """Close the connection. Its loss is told as any other's."""
         cast("asyncio.Transport", self.transport).close()
 
 
 async def _connected(
-    address: str, heard: Callable[[_Wire, bytes], None], lost: Callable[[_Wire, str], None]
+    address: str,
+    heard: Callable[[_Wire, bytes], None],
+    lost: Callable[[_Wire, EngineError], None],
 ) -> _Wire | None:
     """Connect to an address, or return ``None`` where nothing answers there."""
     loop = asyncio.get_running_loop()
@@ -292,69 +401,54 @@ async def _connected(
     return wire
 
 
-class _Log:
-    """What an engine that was started writes on stderr, read as it comes so that it never waits.
+def _log_of(directory: Path) -> IO[bytes]:
+    """Make the file that an engine that is started logs into, and take old ones away.
 
-    Once the engine says where it listens, its log is copied to ``cache/engine-<pid>.log`` of the
-    project; before that, its last lines are kept, to tell why it ended if it did.
+    Where the cache of the project cannot hold it, a file of the system's that is gone once it
+    is closed. This blocks.
+    """
+    cache = directory / "cache"
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+        for old in sorted(cache.glob("engine-*.log"))[: 1 - _KEPT_LOGS]:
+            # One that an engine still writes is not taken away on Windows.
+            with contextlib.suppress(OSError):
+                old.unlink()
+        named = f"engine-{datetime.now(UTC):%Y%m%dT%H%M%S}-{secrets.token_hex(4)}.log"
+        return (cache / named).open("x+b")
+    except OSError:
+        return tempfile.TemporaryFile()
+
+
+def _spawned(argv: list[str], cwd: Path, log: IO[bytes]) -> "subprocess.Popen[bytes]":
+    """Start an engine apart from the console of this program, and from its job on Windows.
+
+    Its Ctrl+C or closing does not end the engine then, nor does a job of the system that ends
+    every process of this one: other clients may still use the engine. This blocks.
     """
 
-    def __init__(self, process: "subprocess.Popen[bytes]", directory: Path) -> None:
-        self._process = process
-        self._directory = directory
-        self._kept: deque[bytes] = deque(maxlen=_KEPT_LINES)
-        self._file: IO[bytes] | None = None
-        self._lock = threading.Lock()
-        self._thread = threading.Thread(target=self._drained, daemon=True, name="engine-log")
-        self._thread.start()
+    def started(
+        creationflags: int = 0, start_new_session: bool = False
+    ) -> "subprocess.Popen[bytes]":
+        return subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=log,
+            cwd=cwd,
+            creationflags=creationflags,
+            start_new_session=start_new_session,
+        )
 
-    def _drained(self) -> None:
-        stderr = cast("IO[bytes]", self._process.stderr)
+    if sys.platform == "win32":  # pragma: windows only
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         try:
-            for line in stderr:
-                with self._lock:
-                    if self._file is not None:
-                        self._file.write(line)
-                        self._file.flush()
-                    else:
-                        self._kept.append(line)
-        finally:
-            stderr.close()
-            with self._lock:
-                if self._file is not None:
-                    self._file.close()
-            self._process.wait()
-
-    def keep(self, pid: int) -> None:
-        """Copy the log to the cache of the project from now on, with what was written before.
-
-        Args:
-            pid: The engine's own, as it said where it listens.
-        """
-        with self._lock:
-            try:
-                cache = self._directory / "cache"
-                cache.mkdir(parents=True, exist_ok=True)
-                self._file = (cache / f"engine-{pid}.log").open("ab")
-                self._file.writelines(self._kept)
-                self._file.flush()
-            except OSError:
-                self._file = None
-            self._kept.clear()
-
-    def ended(self) -> tuple[int, list[dict[str, Any]]]:
-        """Wait for the engine to end, and return its exit code and the lines of JSON it logged.
-
-        This blocks.
-        """
-        self._thread.join()
-        said: list[dict[str, Any]] = []
-        for line in self._kept:
-            with contextlib.suppress(ValueError):
-                one: object = json.loads(line)
-                if isinstance(one, dict):
-                    said.append(cast("dict[str, Any]", one))
-        return cast("int", self._process.returncode), said
+            return started(creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB)
+        except PermissionError:
+            # A job that lets no process break away: the engine stays in it.
+            return started(creationflags=flags)
+    else:  # pragma: posix only
+        return started(start_new_session=True)
 
 
 def _first_line(process: "subprocess.Popen[bytes]") -> bytes:
@@ -369,59 +463,81 @@ def _first_line(process: "subprocess.Popen[bytes]") -> bytes:
         stdout.close()
 
 
-def _spawned(argv: list[str], cwd: Path) -> "subprocess.Popen[bytes]":
-    """Start an engine apart from the console of this program.
+def _ended_with(process: "subprocess.Popen[bytes]", log: IO[bytes]) -> tuple[int, list[bytes]]:
+    """Wait for an engine to end, and return its exit code and the last lines that it logged.
 
-    Its Ctrl+C or closing does not end the engine then: other clients may still use it.
-
-    This blocks.
+    An engine that ended before it listened leaves no log behind: what it said is told, and
+    several clients that start one at once would leave one each. This blocks.
     """
-    if sys.platform == "win32":  # pragma: windows only
-        return subprocess.Popen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
-        )
-    else:  # pragma: posix only
-        return subprocess.Popen(
-            argv,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=cwd,
-            start_new_session=True,
-        )
+    code = process.wait()
+    log.seek(0)
+    said = log.read().splitlines()[-_KEPT_LINES:]
+    log.close()
+    # A file of the system's has no name of a path on every system, and is gone already.
+    with contextlib.suppress(OSError, TypeError):
+        Path(log.name).unlink()
+    return code, said
 
 
 class Changes:
     """What the engine tells, from the moment :meth:`Engine.changes` was called, in its order.
 
     The connection lost is raised as an :class:`EngineError` once; the next call of the engine
-    connects again, and what is told goes on, beginning with ``project.fetched``. The changes end
-    when the engine is closed.
+    connects again, and what is told goes on, beginning with ``project.fetched``. A reader that
+    leaves more than 1024 things unread loses the oldest, and is told ``changes.missed`` in their
+    place. The changes end when the engine is closed, or when the reader closes them, with
+    :meth:`aclose` or as a context.
     """
 
-    def __init__(self) -> None:
-        self._told: asyncio.Queue[Changed | EngineError | None] = asyncio.Queue()
+    def __init__(self, readers: "weakref.WeakSet[Changes]") -> None:
+        self._readers = readers
+        self._told: deque[Changed | EngineError] = deque()
+        self._missed = 0
+        self._ended = False
+        self._ready = asyncio.Event()
 
-    def tell(self, told: Changed | EngineError | None) -> None:
+    def tell(self, told: Changed | EngineError) -> None:
         """Pass on something that was told."""
-        self._told.put_nowait(told)
+        if len(self._told) >= _LISTENED:
+            self._told.popleft()
+            self._missed += 1
+        self._told.append(told)
+        self._ready.set()
+
+    def end(self) -> None:
+        """Tell nothing more once what was told is read."""
+        self._ended = True
+        self._ready.set()
+
+    async def aclose(self) -> None:
+        """Hear nothing more."""
+        self._readers.discard(self)
+        self._told.clear()
+        self._missed = 0
+        self.end()
 
     def __aiter__(self) -> Self:
         return self
 
     async def __anext__(self) -> Changed:
-        told = await self._told.get()
-        if told is None:
-            self._told.put_nowait(None)
+        while not self._told and not self._ended:
+            self._ready.clear()
+            await self._ready.wait()
+        if self._missed:
+            missed, self._missed = self._missed, 0
+            return Changed("changes.missed", {"missed": missed})
+        if not self._told:
             raise StopAsyncIteration
+        told = self._told.popleft()
         if isinstance(told, EngineError):
             raise told
         return told
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
 
 @dataclass
@@ -438,7 +554,9 @@ class Engine:
 
     Made by :meth:`attach`. Every call is answered by the engine, or raises
     :class:`EngineError`. A connection that was lost is made again by the next call, to the same
-    engine or to one that is started anew.
+    engine or to one that is started anew, which counts the revisions of the project from 0
+    again. A call that failed with :data:`UNREACHABLE` may or may not have been done: what was
+    done is in the project, and is told as any change.
 
     Attributes:
         directory: The directory of the project, as a whole path.
@@ -447,7 +565,7 @@ class Engine:
     """
 
     def __init__(
-        self, directory: Path, program: str, client: str, idle_seconds: float | None
+        self, directory: Path, program: str, client: str, idle_seconds: int | None
     ) -> None:
         self.directory = directory
         self._program = program
@@ -457,7 +575,7 @@ class Engine:
         self._wire: _Wire | None = None
         self._asked: dict[int, _Asked] = {}
         self._ids = itertools.count(1)
-        self._listeners: weakref.WeakSet[Changes] = weakref.WeakSet()
+        self._readers: weakref.WeakSet[Changes] = weakref.WeakSet()
         self._revision = -1
         self._next_id = 0
         self._fetching = False
@@ -471,7 +589,7 @@ class Engine:
         *,
         program: str,
         client: str = "agent",
-        idle_seconds: float | None = None,
+        idle_seconds: int | None = None,
     ) -> "Engine":
         """Connect to the engine that has a project open, starting one if none has.
 
@@ -480,7 +598,7 @@ class Engine:
             program: The engine program, as :func:`program_of` found it.
             client: What this client is: ``agent`` or ``cli``.
             idle_seconds: How long an engine that is started here waits with no client before
-                it ends. The engine's own default, 30 seconds, unless it is given.
+                it ends, in whole seconds. The engine's own default, 30, unless it is given.
 
         Raises:
             EngineError: No engine could be reached or started, or the engine refused.
@@ -546,18 +664,20 @@ class Engine:
 
     def changes(self) -> Changes:
         """What the engine tells from now on: every change of the project, and its other news."""
-        listener = Changes()
-        self._listeners.add(listener)
-        return listener
+        reader = Changes(self._readers)
+        if self._closed:
+            reader.end()
+        else:
+            self._readers.add(reader)
+        return reader
 
     async def aclose(self) -> None:
         """Close the connection. An engine that was started here ends once it has no clients."""
         self._closed = True
-        wire, self._wire = self._wire, None
-        if wire is not None:
-            wire.close()
-        self._failed("the connection to the engine was closed")
-        self._tell(None)
+        self._drop()
+        self._failed(EngineError("the connection to the engine was closed", code=UNREACHABLE))
+        for reader in list(self._readers):
+            reader.end()
 
     async def __aenter__(self) -> Self:
         return self
@@ -568,7 +688,10 @@ class Engine:
     # Reaching the engine
 
     async def _reach(self) -> None:
-        """Connect to the engine of the project, or start one, and say hello to it."""
+        """Connect to the engine of the project, or start one, and say hello to it.
+
+        A connection that is made and not greeted, as when this is cancelled, is closed again.
+        """
         if sys.platform == "win32" and not isinstance(  # pragma: windows only
             asyncio.get_running_loop(), asyncio.ProactorEventLoop
         ):
@@ -577,8 +700,16 @@ class Engine:
                 "asyncio opens, and this one is another",
                 code=UNREACHABLE,
             )
+        try:
+            await self._greeted_somewhere()
+        except BaseException:
+            self._drop()
+            raise
+
+    async def _greeted_somewhere(self) -> None:
         why = "no engine answered"
         for _ in range(_TRIES):
+            self._open()
             wire = await self._locked_wire()
             if wire is None:
                 kind, address = await self._started()
@@ -587,9 +718,10 @@ class Engine:
                     await _moment()
                     wire = await self._locked_wire(again=False)
                 if wire is None:
+                    at = f" at {address}" if address else ""
                     why = {
-                        "listening": f"the engine that was started, at {address}, did not answer",
-                        "held": f"the engine that has it open, at {address}, did not answer",
+                        "listening": f"the engine that was started did not answer{at}",
+                        "held": f"the engine that has it open did not answer{at}",
                         "contended": "another engine is starting for it",
                     }[kind]
                     await _moment()
@@ -597,25 +729,30 @@ class Engine:
             try:
                 await self._greeted(wire)
             except EngineError as error:
-                if error.code != UNREACHABLE:
-                    wire.close()
-                    self._wire = None
+                if error.code != UNREACHABLE or self._closed:
                     raise
                 why = str(error)
                 continue
+            # It may have been closed while it was greeted.
+            self._open()
             return
         raise EngineError(
             f"no engine for the project {self.directory} could be reached: {why}",
             code=UNREACHABLE,
         )
 
+    def _open(self) -> None:
+        """Raise if the engine was closed."""
+        if self._closed:
+            raise EngineError("the connection to the engine was closed", code=UNREACHABLE)
+
     async def _locked_wire(self, *, again: bool = True) -> _Wire | None:
         """Connect to the address that ``engine.lock`` names, or to what it names a moment later."""
-        address = _locked(self.directory)
+        address = await asyncio.to_thread(_locked, self.directory)
         wire = None if address is None else await self._wire_at(address)
         if wire is None and again:
             await _moment()
-            address = _locked(self.directory)
+            address = await asyncio.to_thread(_locked, self.directory)
             wire = None if address is None else await self._wire_at(address)
         return wire
 
@@ -633,51 +770,63 @@ class Engine:
                 engine that has the project open.
         """
         argv = _argv(self._program, self.directory, self._idle_seconds)
+        log = await asyncio.to_thread(_log_of, self.directory)
         try:
-            process = await asyncio.to_thread(_spawned, argv, Path(self._program).parent)
-        except OSError as error:
-            raise EngineError(
-                f"the engine program {self._program} could not be started: {error}",
-                code=UNSTARTED,
-            ) from None
-        log = _Log(process, self.directory)
-        try:
-            first = await asyncio.wait_for(
-                asyncio.to_thread(_first_line, process), _LISTENING_SECONDS
-            )
-        except TimeoutError:
-            process.kill()
-            raise EngineError(
-                f"the engine program {self._program} did not say where it listens within "
-                f"{_LISTENING_SECONDS:g} seconds",
-                code=UNSTARTED,
-            ) from None
-        if first:
-            address, pid = _listening(first)
-            log.keep(pid if pid is not None else process.pid)
-            return "listening", address
-        code, said = await asyncio.to_thread(log.ended)
-        return _ended(self._program, code, said)
+            try:
+                process = await asyncio.to_thread(_spawned, argv, Path(self._program).parent, log)
+            except OSError as error:
+                raise EngineError(
+                    f"the engine program {self._program} could not be started: {error}",
+                    code=UNSTARTED,
+                ) from None
+            # Its end is waited for, so that it is not left unwaited for, whoever ends first.
+            threading.Thread(target=process.wait, daemon=True, name="engine-wait").start()
+            try:
+                first = await asyncio.wait_for(
+                    asyncio.to_thread(_first_line, process), _LISTENING_SECONDS
+                )
+            except TimeoutError:
+                process.kill()
+                raise EngineError(
+                    f"the engine program {self._program} did not say where it listens within "
+                    f"{_LISTENING_SECONDS:g} seconds",
+                    code=UNSTARTED,
+                ) from None
+            if not first:
+                code, said = await asyncio.to_thread(_ended_with, process, log)
+                return _ended(self._program, code, said)
+            try:
+                return "listening", _listening(first)
+            except EngineError:
+                process.kill()
+                raise
+        finally:
+            log.close()
 
     async def _greeted(self, wire: _Wire) -> None:
         """Say hello, check that the engine has this project open, and ask for the project.
 
+        What the engine tells before it answers with the project is in that answer, and is not
+        told again.
+
         Raises:
             EngineError: The engine refused, has another project open, or the connection was lost.
         """
+        self._fetching = True
         hello = await self._asked_on(wire, "hello", {"client": self._client, "protocol": PROTOCOL})
         project = hello.get("project")
-        if not isinstance(project, str) or not _same(Path(project), self.directory):
+        if not isinstance(project, str) or not await asyncio.to_thread(
+            _same, Path(project), self.directory
+        ):
             raise EngineError(
                 f"the engine at that address has another project open: {project}",
                 code=UNEXPECTED,
                 data=hello,
             )
+        # An engine that was started anew counts from 0 again.
         self._revision = _whole(hello, "revision")
         self.hello = hello
-        said = await self._asked_on(wire, "project.get", None)
-        if self._listeners:
-            self._tell(Changed("project.fetched", said))
+        await self._asked_on(wire, "project.get", None, fetching=True)
 
     async def _ensure(self) -> _Wire:
         """The connection, made again if it was lost.
@@ -686,11 +835,16 @@ class Engine:
             EngineError: The engine was closed, or cannot be reached again.
         """
         async with self._reaching:
-            if self._closed:
-                raise EngineError("the connection to the engine was closed", code=UNREACHABLE)
+            self._open()
             if self._wire is None:
                 await self._reach()
             return cast("_Wire", self._wire)
+
+    def _drop(self) -> None:
+        """Close the connection, if there is one."""
+        wire, self._wire = self._wire, None
+        if wire is not None:
+            wire.close()
 
     # Requests and what is heard
 
@@ -699,9 +853,14 @@ class Engine:
         return await self._asked_on(wire, method, params)
 
     async def _asked_on(
-        self, wire: _Wire, method: str, params: Mapping[str, Any] | None
+        self,
+        wire: _Wire,
+        method: str,
+        params: Mapping[str, Any] | None,
+        *,
+        fetching: bool = False,
     ) -> dict[str, Any]:
-        number, asked = self._sent(wire, method, params)
+        number, asked = self._sent(wire, method, params, fetching=fetching)
         try:
             said = await asked.answer
         finally:
@@ -713,13 +872,19 @@ class Engine:
     def _sent(
         self, wire: _Wire, method: str, params: Mapping[str, Any] | None, *, fetching: bool = False
     ) -> tuple[int, _Asked]:
+        """Send a request, once it can be written, and wait for its answer from then on.
+
+        Raises:
+            EngineError: It cannot be written, or is too long.
+        """
         number = next(self._ids)
-        asked = _Asked(method, asyncio.get_running_loop().create_future(), fetching)
-        self._asked[number] = asked
         message: dict[str, Any] = {"jsonrpc": "2.0", "id": number, "method": method}
         if params is not None:
             message["params"] = params
-        wire.send(message)
+        line = _Wire.encoded(message)
+        asked = _Asked(method, asyncio.get_running_loop().create_future(), fetching)
+        self._asked[number] = asked
+        wire.write(line)
         return number, asked
 
     def _heard(self, wire: _Wire, line: bytes) -> None:
@@ -730,8 +895,12 @@ class Engine:
         if not isinstance(message, dict):
             return
         said = cast("dict[str, Any]", message)
-        number = said.get("id")
-        if number is not None:
+        if "id" in said:
+            number = said["id"]
+            if number is None and "error" in said:
+                # An error that the engine could not tie to its request, as a line that it could
+                # not read. It answers in order, so it is the oldest request's.
+                number = next(iter(self._asked), None)
             asked = self._asked.pop(number, None) if type(number) is int else None
             # A request whose caller gave up on it is no longer waited for.
             if asked is not None and not asked.answer.done():
@@ -765,6 +934,7 @@ class Engine:
             if isinstance(next_id, int) and (revision == self._revision or asked.fetching):
                 self._next_id = next_id
             if asked.fetching:
+                # Told here, before what is heard after it.
                 self._tell(Changed("project.fetched", told))
         asked.answer.set_result(result)
 
@@ -786,24 +956,27 @@ class Engine:
         """Ask for the whole project anew, as a change was missed."""
         self._fetching = True
         _, asked = self._sent(cast("_Wire", self._wire), "project.get", None, fetching=True)
-        # Nobody waits for it: what it answers is told to the listeners.
+        # Nobody waits for it: what it answers is told to the readers.
         asked.answer.add_done_callback(lambda done: done.exception())
 
-    def _lost(self, wire: _Wire, why: str) -> None:
+    def _lost(self, wire: _Wire, error: EngineError) -> None:
+        if wire is not self._wire:
+            # One that was closed here: what waited on it was failed then.
+            return
         self._wire = None
         self._fetching = False
-        self._failed(why)
-        self._tell(EngineError(why, code=UNREACHABLE))
+        self._failed(error)
+        self._tell(error)
 
-    def _failed(self, why: str) -> None:
+    def _failed(self, error: EngineError) -> None:
         asked, self._asked = self._asked, {}
         for one in asked.values():
             if not one.answer.done():
-                one.answer.set_exception(EngineError(why, code=UNREACHABLE))
+                one.answer.set_exception(EngineError(str(error), code=error.code))
 
-    def _tell(self, told: Changed | EngineError | None) -> None:
-        for listener in self._listeners:
-            listener.tell(told)
+    def _tell(self, told: Changed | EngineError) -> None:
+        for reader in list(self._readers):
+            reader.tell(told)
 
 
 def _whole(said: dict[str, Any], key: str) -> int:
@@ -819,7 +992,7 @@ def _whole(said: dict[str, Any], key: str) -> int:
 
 
 def _same(written: Path, directory: Path) -> bool:
-    """Whether the directory that the engine names is the one of the project."""
+    """Whether the directory that the engine names is the one of the project. This blocks."""
     try:
         return written.samefile(directory)
     except OSError:
@@ -851,45 +1024,53 @@ def _stepped(said: dict[str, Any]) -> Applied | None:
     return _applied(said, {})
 
 
-def _listening(first: bytes) -> tuple[str, int | None]:
-    """Read the address, and the pid, from the first line of an engine.
+def _listening(first: bytes) -> str:
+    """Read the address from the first line of an engine.
 
     Raises:
-        EngineError: It is not such a line, or of another protocol.
+        EngineError: It is not such a line, of this protocol, at an address where an engine
+            listens.
     """
     try:
         said: object = json.loads(first)
     except ValueError:
         said = None
     told = cast("dict[str, Any]", said) if isinstance(said, dict) else {}
-    address, protocol = told.get("listening"), told.get("protocol")
-    if not isinstance(address, str) or protocol != PROTOCOL:
+    address = _address(told.get("listening"))
+    if address is None or told.get("protocol") != PROTOCOL:
         raise EngineError(
-            f"the engine did not say where it listens in protocol {PROTOCOL}: {first[:200]!r}",
+            f"the engine did not say where it listens in protocol {PROTOCOL}, at an address "
+            f"where an engine listens: {first[:200]!r}",
             code=UNSTARTED,
         )
-    pid = told.get("pid")
-    return address, pid if type(pid) is int else None
+    return address
 
 
 def _ended(
-    program: str, code: int, said: list[dict[str, Any]]
+    program: str, code: int, logged: list[bytes]
 ) -> tuple[Literal["held", "contended"], str | None]:
     """Tell what an engine that ended before it listened said.
 
     Raises:
         EngineError: It could not start, for another reason than another engine.
     """
-    for line in reversed(said):
-        held = line.get("held")
+    for line in reversed(logged):
+        try:
+            said: object = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(said, dict):
+            continue
+        told = cast("dict[str, Any]", said)
+        held = told.get("held")
         if code == 3 and isinstance(held, dict):
-            address = cast("dict[str, Any]", held).get("address")
-            return "held", address if isinstance(address, str) else None
-        if code == 3 and line.get("contended") is True:
+            return "held", _address(cast("dict[str, Any]", held).get("address"))
+        if code == 3 and told.get("contended") is True:
             return "contended", None
-        if code == 2 and isinstance(line.get("error"), str):
-            raise EngineError(str(line["error"]), code=UNSTARTED, data={"exit_code": code})
-    why = f"the engine program {program} ended with exit code {code} before it listened"
+        if code == 2 and isinstance(told.get("error"), str):
+            raise EngineError(str(told["error"]), code=UNSTARTED, data={"exit_code": code})
+    shown = f"0x{code:08X}" if code > 0xFFFF else str(code)
+    why = f"the engine program {program} ended with exit code {shown} before it listened"
     if sys.platform == "win32" and code == _LIBRARIES_MISSING:  # pragma: windows only
         why += (
             ": the libraries of FFmpeg that it reads media with (avcodec, avformat, avutil, "

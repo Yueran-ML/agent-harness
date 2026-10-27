@@ -20,8 +20,11 @@ the engine is run, ``python fake_engine.py --project DIR --headless [--idle-seco
 - ``error``: the project cannot be read (exit code 2).
 - ``exit``: it ends with exit code 5, logging lines that say nothing of why.
 - ``libraries``: it ends as a program of Windows ends whose libraries are not found.
-- ``babble``: its first line is not where it listens.
+- ``babble``: its first line is not where it listens, and it waits.
+- ``elsewhere``: it says that it listens at a pipe or a socket that is not an engine's, and waits.
 - ``silent``: it says nothing, and waits.
+
+As the engine, it refuses an idle time that is not a whole number of seconds.
 
 It imports nothing of Columbina.
 """
@@ -33,10 +36,9 @@ import copy
 import json
 import os
 import sys
-import tempfile
 import time
-import uuid
 from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -47,16 +49,14 @@ LIMIT = 16 * 1024 * 1024
 """The longest line that a client reads."""
 
 
-def argv_of(
-    *mode: str, idle: float | None = None
-) -> Callable[[str, Path, float | None], list[str]]:
+def argv_of(*mode: str, idle: int | None = None) -> Callable[[str, Path, int | None], list[str]]:
     """What the engine is started with, for this file to be started in its place.
 
     It is a script, run by the Python of the test, in a mode (``listen`` if none is given), and
     with ``idle`` for its idle time, if given, in place of the one that it is started with.
     """
 
-    def argv(program: str, directory: Path, idle_seconds: float | None) -> list[str]:
+    def argv(program: str, directory: Path, idle_seconds: int | None) -> list[str]:
         seconds = idle if idle is not None else idle_seconds
         idling = ["--idle-seconds", str(seconds)] if seconds is not None else []
         return [sys.executable, __file__, "--project", str(directory), "--headless", *idling,
@@ -66,11 +66,25 @@ def argv_of(
 
 
 def address_of() -> str:
-    """A new address that nothing listens at yet."""
+    """A new address of the form of an engine's, that nothing listens at yet."""
+    digits = os.urandom(8).hex()
     if sys.platform == "win32":
-        return rf"\\.\pipe\columbina-fake-{uuid.uuid4().hex}"
-    # A socket's path may be only about a hundred bytes long.
-    return str(Path(tempfile.gettempdir()) / f"cf-{uuid.uuid4().hex[:12]}.sock")
+        return rf"\\.\pipe\columbina-engine-{digits}"
+    return str(_sockets() / f"{digits}.sock")
+
+
+def _sockets() -> Path:
+    """The directory where the engine makes its sockets, made as the engine makes it."""
+    assert sys.platform != "win32"
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and Path(runtime).is_absolute():
+        made = Path(runtime) / "columbina"
+    else:
+        temporary = os.environ.get("TMPDIR")
+        base = Path(temporary) if temporary and Path(temporary).is_absolute() else Path("/tmp")
+        made = base / f"columbina-{os.geteuid()}"
+    made.mkdir(mode=0o700, exist_ok=True)
+    return made
 
 
 class RefusedError(Exception):
@@ -95,7 +109,10 @@ class Fake:
             written into the answer.
         results: The result that a method is answered with, instead of its own.
         drop: A method at which the connection is closed instead of answered, once.
-        huge: A method that is answered once with a line longer than 16 MiB.
+        huge: A method that is answered once with a line of ``huge_bytes``.
+        anonymous: A method that is answered once with an error whose id is null, as the
+            engine answers a line that it cannot read.
+        then: What is done once right after a method is answered.
         gap: Whether the next change is told as if a revision had been missed.
         hold: How many of the next answers are held back, and sent the other way round.
         noise: Lines sent to a connection after its answer to hello.
@@ -108,13 +125,16 @@ class Fake:
         self.address = address
         self.revision = 0
         self.project: dict[str, Any] = {"schema": 1, "next_id": 1, "media": [], "timelines": []}
-        self.steps: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]] = []
-        self.undone: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]] = []
+        self.steps: list[Step] = []
+        self.undone: list[Step] = []
         self.connections: list[Connection] = []
         self.refusals: dict[str, dict[str, Any]] = {}
         self.results: dict[str, Any] = {}
         self.drop: str | None = None
         self.huge: str | None = None
+        self.huge_bytes = LIMIT + 1
+        self.anonymous: str | None = None
+        self.then: dict[str, Callable[[], None]] = {}
         self.gap = False
         self.hold = 0
         self.noise: list[bytes] = []
@@ -143,17 +163,29 @@ class Fake:
         """Make a revision of a change, and tell it."""
         self.revision += 2 if self.gap else 1
         self.gap = False
-        self.steps.append((before, copy.deepcopy(self.project), done))
+        self.steps.append(Step(before, copy.deepcopy(self.project), done, by))
         self.undone.clear()
-        self._told(by, done)
+        self._told(by, by, done)
 
-    def _told(self, by: str, done: list[dict[str, Any]]) -> None:
+    def change_by(self, client: str) -> None:
+        """Add a timeline, as another client would."""
+        before = copy.deepcopy(self.project)
+        timeline: dict[str, Any] = {
+            "id": "",
+            "name": "Other",
+            "rate": {"num": 25, "den": 1},
+            "tracks": [],
+        }
+        done, _ = self._applied([{"op": "add_timeline", "timeline": timeline}])
+        self.changed(client, done, before)
+
+    def _told(self, by: str, made_by: str, done: list[dict[str, Any]]) -> None:
         self.tell(
             "project.changed",
             {
                 "revision": self.revision,
                 "by": by,
-                "made_by": by,
+                "made_by": made_by,
                 "done": done,
                 "next_id": self.project["next_id"],
             },
@@ -235,24 +267,18 @@ class Fake:
         }
 
     def _stepped(
-        self,
-        asking: "Connection",
-        taken: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]],
-        given: list[tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]],
-        *,
-        back: bool,
+        self, asking: "Connection", taken: list["Step"], given: list["Step"], *, back: bool
     ) -> dict[str, Any]:
         if not taken:
             return {"revision": self.revision, "done": None}
         step = taken.pop()
-        before, after, done = step
         given.append(step)
         next_id = self.project["next_id"]
-        self.project = copy.deepcopy(before if back else after)
+        self.project = copy.deepcopy(step.before if back else step.after)
         self.project["next_id"] = next_id
-        undone = [{"op": "undo", "of": one} for one in reversed(done)] if back else done
+        undone = [{"op": "undo", "of": one} for one in reversed(step.done)] if back else step.done
         self.revision += 1
-        self._told(str(asking.client), undone)
+        self._told(str(asking.client), step.made_by, undone)
         return {"revision": self.revision, "done": undone, "next_id": next_id}
 
     def _applied(self, ops: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, str]]:
@@ -327,6 +353,16 @@ class Fake:
             ]
 
 
+@dataclass
+class Step:
+    """A step of the history: the project before and after it, what was done, and by whom."""
+
+    before: dict[str, Any]
+    after: dict[str, Any]
+    done: list[dict[str, Any]]
+    made_by: str
+
+
 def _media(path: Path) -> dict[str, Any]:
     return {
         "id": "",
@@ -370,7 +406,27 @@ class Connection(asyncio.Protocol):
         while b"\n" in self.buffer:
             line, _, self.buffer = self.buffer.partition(b"\n")
             if line.strip() and self.transport is not None and not self.transport.is_closing():
-                self.handled(json.loads(line))
+                self.read(line.rstrip(b"\r"))
+
+    def read(self, line: bytes) -> None:
+        """Answer a line, or refuse it as the engine does, with an id of null."""
+        if len(line) > LIMIT:
+            return self.refused(-32600, "request line exceeds 16 MiB")
+        try:
+            request: object = json.loads(line)
+        except ValueError:
+            return self.refused(-32700, "the line is not JSON")
+        if not isinstance(request, dict):
+            return self.refused(-32600, "not a request object")
+        number = cast("dict[str, Any]", request).get("id")
+        if isinstance(number, bool) or not isinstance(number, (int, str)):
+            return self.refused(-32600, "a request has an id of a whole number or a string")
+        self.handled(cast("dict[str, Any]", request))
+        return None
+
+    def refused(self, code: int, message: str) -> None:
+        """Answer with an error that names no request."""
+        self.send({"jsonrpc": "2.0", "id": None, "error": {"code": code, "message": message}})
 
     def send(self, message: dict[str, Any]) -> None:
         """Send a message as a line."""
@@ -391,7 +447,11 @@ class Connection(asyncio.Protocol):
             return
         if method == fake.huge:
             fake.huge = None
-            self.transport.write(b'{"pad": "' + b"x" * (LIMIT + 1) + b'"}\n')
+            self.transport.write(b'{"pad": "' + b"x" * fake.huge_bytes + b'"}\n')
+            return
+        if method == fake.anonymous:
+            fake.anonymous = None
+            self.refused(-32600, "the line could not be read")
             return
         answer: dict[str, Any] = {"jsonrpc": "2.0", "id": number}
         try:
@@ -411,6 +471,9 @@ class Connection(asyncio.Protocol):
         if method == "hello" and "result" in answer:
             for line in fake.noise:
                 self.transport.write(line + b"\n")
+        then = fake.then.pop(method, None)
+        if then is not None:
+            then()
 
     def answered(self, answer: dict[str, Any]) -> None:
         if self.fake.hold:
@@ -426,10 +489,15 @@ class Connection(asyncio.Protocol):
 
 
 @contextlib.asynccontextmanager
-async def served(directory: Path, *, lock: bool = True) -> AsyncGenerator[Fake]:
-    """Serve a project in the loop of the test, and say in ``engine.lock`` where, if ``lock``."""
+async def served(
+    directory: Path, *, lock: bool = True, address: str | None = None
+) -> AsyncGenerator[Fake]:
+    """Serve a project in the loop of the test, and say in ``engine.lock`` where, if ``lock``.
+
+    It listens at an address of the form of an engine's, unless another is given.
+    """
     directory.mkdir(parents=True, exist_ok=True)
-    fake = Fake(directory, address_of())
+    fake = Fake(directory, address or address_of())
     close = await _listening(fake)
     if lock:
         _locked(fake)
@@ -480,7 +548,7 @@ def _say(line: dict[str, Any], *, to: Any = None) -> None:
     out.flush()
 
 
-async def _engine(directory: Path, idle_seconds: float) -> None:
+async def _engine(directory: Path, idle_seconds: int) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     fake = Fake(directory, address_of())
     fake.log = _say
@@ -499,11 +567,14 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--idle-seconds", type=float, default=30.0)
+    parser.add_argument("--idle-seconds", default="30")
     parser.add_argument("--mode", nargs="+", default=["listen"])
     args = parser.parse_args(argv)
     mode, *rest = args.mode
     directory: Path = args.project
+    if not args.idle_seconds.isdigit():
+        _say({"error": f"--idle-seconds takes whole seconds, not {args.idle_seconds}"})
+        return 2
     if mode == "held":
         _say({"held": {"pid": 1, "address": rest[0] if rest else 7}})
         return 3
@@ -527,13 +598,16 @@ def main(argv: list[str]) -> int:
     if mode == "libraries":
         sys.stderr.flush()
         os._exit(-1073741515)
-    if mode == "babble":
-        print("hello there", flush=True)
+    if mode in ("babble", "elsewhere"):
+        elsewhere = r"\\.\pipe\elsewhere" if sys.platform == "win32" else "/tmp/elsewhere.sock"
+        said = {"listening": elsewhere, "pid": os.getpid(), "protocol": 1}
+        print("hello there" if mode == "babble" else json.dumps(said), flush=True)
+        time.sleep(60)
         return 0
     if mode == "silent":
         time.sleep(60)
         return 0
-    asyncio.run(_engine(directory, args.idle_seconds))
+    asyncio.run(_engine(directory, int(args.idle_seconds)))
     return 0
 
 

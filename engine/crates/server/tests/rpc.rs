@@ -2373,6 +2373,95 @@ async fn a_source_plays_with_its_sound_on_the_output_device() {
     eprintln!("{}", engine.stderr());
 }
 
+/// Go to frame 0, a frame on, and play at speed 1 for half a second, then pause, again and again,
+/// as the keys Home, → and L, then K, do: each play starts at the playhead and goes by the clock
+/// (the playhead never runs ahead of it), and stops at once when it is paused, where it is.
+async fn played_again_and_again_from_the_start(args: &[&str]) {
+    let dir = project_dir();
+    let Some((engine, mut agent)) =
+        transport_engine_with(dir.path(), &[support::Sample::Fhd], args).await
+    else {
+        return;
+    };
+    agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    for round in 0..4 {
+        agent
+            .result("transport.seek", Some(json!({ "frame": 0 })))
+            .await;
+        agent
+            .until_state("at 0", |state| {
+                state["shown"] == 0 && state["playing"] == false
+            })
+            .await;
+        agent
+            .result("transport.step", Some(json!({ "frames": 1 })))
+            .await;
+        agent
+            .until_state("at 1", |state| {
+                state["shown"] == 1 && state["playing"] == false
+            })
+            .await;
+        agent.take_notifications();
+        let played = Instant::now();
+        agent
+            .result("transport.play", Some(json!({ "speed": 1 })))
+            .await;
+        let states = agent.states_for(Duration::from_millis(500)).await;
+        let mut moved = 1;
+        for (state, at) in &states {
+            assert_eq!(state["playing"], true, "round {round}: {states:?}");
+            let frame = state["frame"].as_i64().unwrap();
+            // 25 frames a second from frame 1, and a frame or two for the reading.
+            let most = 1.0 + at.duration_since(played).as_secs_f64() * 25.0 + 2.0;
+            #[allow(clippy::cast_precision_loss)]
+            let ahead = frame as f64 > most;
+            assert!(
+                !ahead,
+                "round {round}: frame {frame} at most {most}: {states:?}"
+            );
+            moved = moved.max(frame);
+        }
+        assert!(moved >= 6, "round {round}: it did not play: {states:?}");
+        let paused_at = Instant::now();
+        agent.result("transport.pause", None).await;
+        let (paused, at) = agent
+            .until_state("paused", |state| state["playing"] == false)
+            .await;
+        assert!(
+            at.duration_since(paused_at) < Duration::from_millis(250),
+            "round {round}: paused after {:?}",
+            at.duration_since(paused_at)
+        );
+        let frame = paused["frame"].as_i64().unwrap();
+        assert!(
+            (moved..=moved + 2).contains(&frame),
+            "round {round}: {paused} after {moved}"
+        );
+        // Paused, it stays.
+        let after = agent.states_for(Duration::from_millis(300)).await;
+        assert!(
+            after
+                .iter()
+                .all(|(state, _)| state["playing"] == false && state["frame"] == frame),
+            "round {round}: {after:?}"
+        );
+    }
+    drop(engine);
+}
+
+#[tokio::test]
+async fn played_again_and_again_from_the_start_by_the_sound_it_stops_where_it_is_paused() {
+    played_again_and_again_from_the_start(&["--sound", "null"]).await;
+}
+
+#[tokio::test]
+#[ignore = "plays on the real output device of the machine: run with --ignored"]
+async fn played_again_and_again_from_the_start_on_the_device_it_stops_where_it_is_paused() {
+    played_again_and_again_from_the_start(&["--mute"]).await;
+}
+
 /// Wait until the engine has logged `event`, and give its log.
 async fn until_logged(engine: &Engine, event: &str) -> String {
     let deadline = Instant::now() + WAIT;

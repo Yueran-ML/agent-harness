@@ -60,6 +60,11 @@ impl Clock {
         self.rate
     }
 
+    /// The time of the clock from which it moves.
+    pub fn since(&self) -> i128 {
+        self.since
+    }
+
     /// How long `frame` has been shown by time `now`, in nanoseconds of the media, if it was
     /// shown from its time on: how late it is when it is shown only then. 0 before its time.
     pub fn late(&self, frame: i64, now: i128) -> i128 {

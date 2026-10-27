@@ -96,9 +96,11 @@ struct Options {
     /// Not in the usage (`--read-gate <FILE>`): for the tests, which hold `media.import` before
     /// it reads each file until FILE is there, to see the engine answer meanwhile.
     read_gate: Option<PathBuf>,
-    /// Not in the usage (`--mute`): for the tests, which play sound that no one is to hear.
-    /// Silence is played in its place, and the device is the clock all the same.
-    mute: bool,
+    /// Not in the usage, for the tests: what plays the sound (`--sound
+    /// device|null|stall|fail-after=<ms>`, see `audio::Kind`; `--mute` plays silence on the
+    /// device, which is the clock all the same), and `--fail-card-at <frame>`, from which frame
+    /// on the first frame on the graphics card fails to be copied.
+    setup: transport::Setup,
 }
 
 impl Options {
@@ -108,7 +110,10 @@ impl Options {
         let mut idle = IDLE_SECONDS;
         let mut limits = QUEUE_LIMITS;
         let mut read_gate = None;
-        let mut mute = false;
+        let mut setup = transport::Setup {
+            sound: audio::Kind::Device { mute: false },
+            fail_card_at: None,
+        };
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--project") => {
@@ -127,7 +132,22 @@ impl Options {
                     let file = args.next().ok_or("--read-gate needs a file")?;
                     read_gate = Some(PathBuf::from(file));
                 }
-                Some("--mute") => mute = true,
+                Some("--mute") => {
+                    if let audio::Kind::Device { mute } = &mut setup.sound {
+                        *mute = true;
+                    }
+                }
+                Some("--sound") => {
+                    let kind = args.next().ok_or("--sound needs an output")?;
+                    let mute = setup.sound == audio::Kind::Device { mute: true };
+                    setup.sound = audio::Kind::parse(&kind.to_string_lossy())?;
+                    if let (audio::Kind::Device { mute: muted }, true) = (&mut setup.sound, mute) {
+                        *muted = true;
+                    }
+                }
+                Some("--fail-card-at") => {
+                    setup.fail_card_at = Some(number(args.next().as_ref(), "--fail-card-at")?);
+                }
                 _ => {
                     let arg = arg.to_string_lossy();
                     return Err(format!("{arg} is not an argument of the engine; {USAGE}"));
@@ -141,7 +161,7 @@ impl Options {
             idle: Duration::from_secs(idle),
             limits,
             read_gate,
-            mute,
+            setup,
         })
     }
 }
@@ -274,7 +294,7 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         options.limits,
         options.read_gate.clone(),
         options.headless,
-        options.mute,
+        options.setup,
     );
     let ending = runtime.block_on(serve(options, address, engine, save_errors));
     // The runtime is never shut down: the process ends with `exit`, and a shutdown would wait
@@ -526,7 +546,10 @@ mod tests {
                     bytes: 128 * 1024 * 1024,
                 },
                 read_gate: None,
-                mute: false,
+                setup: transport::Setup {
+                    sound: audio::Kind::Device { mute: false },
+                    fail_card_at: None,
+                },
             }
         );
         assert_eq!(
@@ -543,6 +566,8 @@ mod tests {
                 "--read-gate",
                 "g",
                 "--mute",
+                "--fail-card-at",
+                "30",
             ])
             .unwrap(),
             Options {
@@ -554,7 +579,10 @@ mod tests {
                     bytes: 1000,
                 },
                 read_gate: Some("g".into()),
-                mute: true,
+                setup: transport::Setup {
+                    sound: audio::Kind::Device { mute: true },
+                    fail_card_at: Some(30),
+                },
             }
         );
     }
@@ -570,9 +598,25 @@ mod tests {
             &["--project", "p", "--queue-capacity", "0"],
             &["--project", "p", "--queue-bytes", "0"],
             &["--project", "p", "--colour"],
+            &["--project", "p", "--sound"],
+            &["--project", "p", "--sound", "loud"],
+            &["--project", "p", "--fail-card-at", "x"],
         ] {
             assert!(parse(args).is_err(), "{args:?}");
         }
+        let sound = |args: &[&str]| parse(args).unwrap().setup.sound;
+        assert_eq!(
+            sound(&["--project", "p", "--sound", "null"]),
+            audio::Kind::Null
+        );
+        assert_eq!(
+            sound(&["--project", "p", "--mute", "--sound", "device"]),
+            audio::Kind::Device { mute: true }
+        );
+        assert_eq!(
+            sound(&["--project", "p", "--sound", "fail-after=250"]),
+            audio::Kind::FailAfter(Duration::from_millis(250))
+        );
     }
 
     #[test]

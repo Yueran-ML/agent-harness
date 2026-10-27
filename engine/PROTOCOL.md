@@ -271,9 +271,10 @@ device of the system. Timelines are played in phase 1.
 - **Answers and what is told.** `transport.load` is answered once the media is open and its frame
   0 is shown (about 100–300 ms; other connections are answered meanwhile), with the state, which
   is also told to everyone **before** the answer. Every other method is answered at once with `{}`
-  (or the state, for `transport.state`); what it did is told **after** the answer, in a
-  `transport.state` notification to every connection that said hello. So a page that sends seeks
-  as the playhead is dragged is never held up by them.
+  (or the state, for `transport.state`): the answer is queued before the transport is given the
+  command, so what it did is always told **after** the answer, in a `transport.state`
+  notification to every connection that said hello. So a page that sends seeks as the playhead
+  is dragged is never held up by them.
 
 | method | params | result |
 |---|---|---|
@@ -295,17 +296,26 @@ notification `transport.state`):
 - `media`: the media loaded, or `null` (then `frame`, `shown` and `last` are `null` too).
 - `frame`: the **playhead**: the frame shown while playing, the frame sought or stepped to
   otherwise. Frames are numbered at the rate of the media (`facts.video.rate`), from 0, its
-  first frame, as `media.import` describes.
+  first frame, as `media.import` describes; for sound alone, see below.
 - `playing`, and `speed`: the speed it plays at, or played at last (1 at first).
-- `exact`: whether the picture shown is the frame at the playhead. False only while scrubbing,
-  when a key frame stands in for it (below).
-- `shown`: the frame whose picture is shown (the key frame standing in, while scrubbing).
+- `exact`: whether the picture shown is the frame at the playhead. False while scrubbing, when
+  a key frame stands in for it (below), and when the frame sought could not be decoded (the
+  picture shown before stays; the engine logs `transport_error`).
+- `shown`: the frame whose picture is shown (the key frame standing in, while scrubbing);
+  `null` for sound alone.
 - `last`: the last frame: from the duration of the media (`round(duration × rate) − 1`), until
   the engine decodes to the end and finds where it truly is.
 - `sound`: `"none"` (the media has no sound), `"on"` (played, and the clock of the picture),
   `"off"` (not played now: paused, or a speed other than 1), or `"unavailable"` (there is no
   output device, or it failed: the picture plays alone, by the clock of the system; the engine
-  logs `sound_unavailable` or `sound_failed`).
+  logs `sound_unavailable` or `sound_failed`). A device fails when it says so (unplugged, turned
+  off), when it asks for no sound within 750 ms of being started (a Bluetooth headset takes some
+  300 ms to wake), or when it stops asking for 250 ms while it plays: playing goes on at once
+  from where it is, by the clock of the system, with `sound: "unavailable"` (logged
+  `transport_sound_lost`). The device is opened anew at the next `transport.load` or
+  `transport.play` that plays sound, and so is the default device of the system when it is
+  another than the one opened (a headset plugged in, or chosen in the settings of the system),
+  so that sound is `"on"` again as soon as it can be.
 
 **When it is told.** The notification `transport.state` is sent to every connection that said
 hello: at once after each method that does something (even one that changes nothing, so that its
@@ -317,9 +327,15 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   processor. Media that is not in the project is refused (`-32602`, `data: {"reason": "missing",
   "media": "m9"}`); a file that cannot be opened or decoded is refused as `media.import` refuses
   it (`-32002`, `data: {"path", "reason", "message"}`), and then nothing is loaded (the state says
-  `media: null`). In phase 0 media must have a picture: sound alone is refused with `reason:
-  "no_video"`. When the media loaded is **removed from the project** (by a transaction, an undo
-  or a redo), it is unloaded, and the state is told with `media: null`; the view is cleared.
+  `media: null`). When the media loaded, or being loaded, is **removed from the project** (by a
+  transaction, an undo or a redo), it is unloaded (once its load is done), and the state is told
+  with `media: null`; the view is cleared. While a load is being done, the other methods are
+  taken, and done after it (they are not refused as `not_loaded`).
+- **Sound alone** (music, a recording) plays as media with a picture does, with no picture: the
+  view is black, and `shown` is `null`. Its frames are on a grid of the rate of the **first
+  timeline of the project** when it is loaded, or 25 a second if the project has none, from
+  frame 0 at the start of its sound to `last` (from its duration). At speed 1 its sound is the
+  clock; at the other speeds and backward the playhead moves in silence.
 - **`transport.play`** plays from the playhead, or, if it plays already, changes speed from where
   it is (the playhead does not jump). Negative speeds play backward; at speed 1 the sound is
   played, at every other speed (2, 4, 8, and backward) none. It stops at the last frame playing
@@ -354,16 +370,18 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   a view attached later is drawn the picture shown. Without a view the transport plays all the
   same (the state is told as ever).
 - **Logs** (stderr): `transport_loaded` (`decoder`: `cuda`, `d3d11va`, `videotoolbox` or
-  `software`, and the devices that failed before it), `transport_played` (each time playing
-  stops: how many frames were shown, passed over or decoded too late, how late they were shown,
-  and how far the clock of the sound went from the system's), `transport_unloaded`,
-  `transport_error`, `transport_device_failed`, `sound_ready`, `sound_unavailable`,
+  `software`, and the devices that failed before it, or `null` and the `grid` for sound alone),
+  `transport_played` (each time playing stops: how many frames were shown, passed over or
+  decoded too late, how late they were shown against the clock of the transport, how far the
+  clock of the sound went from the system's, and the latency of the device and the length of
+  its runs), `transport_unloaded`, `transport_error`, `transport_device_failed`,
+  `transport_sound_lost`, `transport_failed`, `sound_ready`, `sound_unavailable`,
   `sound_failed`.
 
 | `-32004` `reason` | when |
 |---|---|
-| `not_loaded` | `transport.play`, `.pause`, `.seek` or `.step` with no media loaded |
-| `failed` | the transport of the engine has stopped (a bug of the engine) |
+| `not_loaded` | `transport.play`, `.pause`, `.seek` or `.step` with no media loaded, and none being loaded |
+| `failed` | the transport of the engine has stopped (a bug of the engine): it told the state with `media: null` as it stopped, and logged `transport_failed`; every `transport.*` is refused so from then on |
 
 ## Operations
 
@@ -473,7 +491,7 @@ holds a NUL), `not_media` (libav cannot open it as media of the formats above), 
 (neither picture nor sound), `unsupported` (what it holds cannot be used: a picture that libav
 cannot decode, no duration, a picture with no size or rate), `read` (it cannot be read on, once
 opened), or `failed` (the engine failed to read it). `transport.load` gives these too, and
-`no_video` (the media is sound alone), `decode` (its first frame cannot be decoded) and `seek`.
+`decode` (its first frame cannot be decoded) and `seek`.
 
 **Refusals (`-32001`).** `data` is `{"reason": "...", "message": "...", ...fields}`, with
 `"index": i` (the place of the refused operation in `ops`) when an operation was refused, and

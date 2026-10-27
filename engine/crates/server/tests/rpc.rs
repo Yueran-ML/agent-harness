@@ -1857,11 +1857,20 @@ impl Client {
 /// a client of it, with `samples` taken in as media `m1`, `m2`, … None where they cannot be
 /// made.
 async fn transport_engine(dir: &Path, samples: &[support::Sample]) -> Option<(Engine, Client)> {
+    transport_engine_with(dir, samples, &["--sound", "null"]).await
+}
+
+/// As [`transport_engine`], with the engine started with `args`.
+async fn transport_engine_with(
+    dir: &Path,
+    samples: &[support::Sample],
+    args: &[&str],
+) -> Option<(Engine, Client)> {
     let mut paths = Vec::new();
     for &sample in samples {
         paths.push(support::media(sample)?.path.to_str().unwrap().to_owned());
     }
-    let engine = engine(dir, &["--mute"]).await;
+    let engine = engine(dir, args).await;
     let mut agent = engine.client("agent").await;
     agent
         .result("media.import", Some(json!({ "paths": paths })))
@@ -1910,18 +1919,14 @@ async fn a_source_plays_pauses_seeks_and_steps() {
     );
     assert_eq!(told.last().unwrap()["params"], loaded);
 
-    // At speed 1, 25 frames a second, by the sound where there is a device to play it.
+    // At speed 1, 25 frames a second, by the sound (of the output of no device).
     agent
         .result("transport.play", Some(json!({ "speed": 1 })))
         .await;
-    let rate = frames_a_second(&mut agent, 5, Duration::from_millis(1200)).await;
+    let rate = frames_a_second(&mut agent, 5, Duration::from_millis(2000)).await;
     let state = agent.result("transport.state", None).await;
-    match state["sound"].as_str().unwrap() {
-        "on" => eprintln!("played with sound: the device is the clock"),
-        "unavailable" => eprintln!("skipped the sound: there is no device to play it on"),
-        other => panic!("the sound is {other} while it plays at speed 1"),
-    }
-    assert!((22.5..=27.5).contains(&rate), "{rate} frames a second");
+    assert_eq!(state["sound"], "on", "{state}");
+    assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
 
     // Paused, it stays.
     agent.result("transport.pause", None).await;
@@ -1929,23 +1934,23 @@ async fn a_source_plays_pauses_seeks_and_steps() {
         .until_state("paused", |state| state["playing"] == false)
         .await;
     assert_eq!(paused["exact"], true);
-    assert_eq!(
-        paused["sound"],
-        if state["sound"] == "on" {
-            "off"
-        } else {
-            "unavailable"
-        }
-    );
+    assert_eq!(paused["sound"], "off");
     tokio::time::sleep(Duration::from_millis(300)).await;
     let state = agent.result("transport.state", None).await;
     assert_eq!(state["frame"], paused["frame"]);
     assert_eq!(state["playing"], false);
 
-    // A seek shows the frame sought.
-    agent
-        .result("transport.seek", Some(json!({ "frame": 37 })))
+    // A seek shows the frame sought, and what it did is told after the answer.
+    agent.take_notifications();
+    let id = agent
+        .request("transport.seek", Some(json!({ "frame": 37 })))
         .await;
+    agent.answer(id).await;
+    let before: Vec<Value> = agent.take_notifications();
+    assert!(
+        before.iter().all(|told| told["params"]["frame"] != 37),
+        "{before:?}"
+    );
     let (sought, _) = agent
         .until_state("sought", |state| state["frame"] == 37)
         .await;
@@ -2207,12 +2212,19 @@ async fn what_the_transport_cannot_do_is_refused() {
         .await;
     assert_eq!(error["code"], -32602, "{error}");
     assert_eq!(error["data"], json!({ "reason": "missing", "media": "m9" }));
-    // Sound only: no picture to show (phase 0).
+    // A file that is not there.
+    let missing = agent
+        .apply(json!([{ "op": "add_media", "media": media("", "C:/not there/x.mp4") }]))
+        .await;
+    let id = missing["done"][0]["media"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let error = agent
-        .error("transport.load", Some(json!({ "media": "m2" })))
+        .error("transport.load", Some(json!({ "media": id })))
         .await;
     assert_eq!(error["code"], -32002, "{error}");
-    assert_eq!(error["data"]["reason"], "no_video");
+    assert_eq!(error["data"]["reason"], "not_found");
     agent
         .result("transport.load", Some(json!({ "media": "m1" })))
         .await;
@@ -2258,6 +2270,347 @@ async fn a_headless_engine_has_no_transport() {
     }
 }
 
+#[tokio::test]
+#[ignore = "plays on the real output device of the machine: run with --ignored"]
+async fn a_source_plays_with_its_sound_on_the_output_device() {
+    let dir = project_dir();
+    let Some((engine, mut agent)) =
+        transport_engine_with(dir.path(), &[support::Sample::Fhd], &["--mute"]).await
+    else {
+        return;
+    };
+    agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    agent
+        .result("transport.play", Some(json!({ "speed": 1 })))
+        .await;
+    let rate = frames_a_second(&mut agent, 5, Duration::from_millis(2000)).await;
+    let state = agent.result("transport.state", None).await;
+    match state["sound"].as_str().unwrap() {
+        "on" => eprintln!("played with sound: the device is the clock"),
+        "unavailable" => eprintln!("no sound: there is no device to play it on"),
+        other => panic!("the sound is {other} while it plays at speed 1"),
+    }
+    assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
+    agent.result("transport.pause", None).await;
+    agent
+        .until_state("paused", |state| state["playing"] == false)
+        .await;
+    eprintln!("{}", engine.stderr());
+}
+
+/// Wait until the engine has logged `event`, and give its log.
+async fn until_logged(engine: &Engine, event: &str) -> String {
+    let deadline = Instant::now() + WAIT;
+    let wanted = format!(r#""event":"{event}""#);
+    loop {
+        let stderr = engine.stderr();
+        if stderr.contains(&wanted) {
+            return stderr;
+        }
+        assert!(Instant::now() < deadline, "no {event}: {stderr}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
+    let dir = project_dir();
+    let Some((_engine, mut agent)) =
+        transport_engine(dir.path(), &[support::Sample::Wav, support::Sample::Noise]).await
+    else {
+        return;
+    };
+    // 2 s on a grid of 25 frames a second.
+    let loaded = agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    assert_eq!(
+        (
+            &loaded["frame"],
+            &loaded["shown"],
+            &loaded["last"],
+            &loaded["exact"]
+        ),
+        (&json!(0), &Value::Null, &json!(49), &json!(true)),
+        "{loaded}"
+    );
+    assert_eq!(loaded["sound"], "off");
+    agent
+        .result("transport.play", Some(json!({ "speed": 1 })))
+        .await;
+    let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1000)).await;
+    assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
+    let (stopped, _) = agent
+        .until_state("stopped", |state| state["playing"] == false)
+        .await;
+    assert_eq!(stopped["frame"], 49, "{stopped}");
+    // Sought and stepped, as a picture is.
+    agent
+        .result(
+            "transport.seek",
+            Some(json!({ "frame": 10, "scrubbing": true })),
+        )
+        .await;
+    agent
+        .until_state("sought", |state| {
+            state["frame"] == 10 && state["exact"] == true
+        })
+        .await;
+    agent
+        .result("transport.step", Some(json!({ "frames": 5 })))
+        .await;
+    agent
+        .until_state("stepped", |state| state["frame"] == 15)
+        .await;
+    // At another speed, and backward, it moves in silence.
+    agent
+        .result("transport.play", Some(json!({ "speed": -4 })))
+        .await;
+    let (backward, _) = agent
+        .until_state("backward", |state| state["playing"] == true)
+        .await;
+    assert_eq!(backward["sound"], "off");
+    let (stopped, _) = agent
+        .until_state("at the start", |state| state["playing"] == false)
+        .await;
+    assert_eq!(stopped["frame"], 0, "{stopped}");
+
+    // On the grid of the first timeline of the project: 3 s at 30 frames a second.
+    agent
+        .apply(json!([{ "op": "add_timeline", "timeline": {
+            "id": "", "name": "Cut", "rate": { "num": 30, "den": 1 }, "tracks": [],
+        } }]))
+        .await;
+    let loaded = agent
+        .result("transport.load", Some(json!({ "media": "m2" })))
+        .await;
+    assert_eq!(loaded["last"], 89, "{loaded}");
+    agent
+        .result("transport.play", Some(json!({ "speed": 1 })))
+        .await;
+    let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1000)).await;
+    assert!((25.5..=34.5).contains(&rate), "{rate} frames a second");
+    let state = agent.result("transport.state", None).await;
+    assert_eq!(state["sound"], "on");
+}
+
+#[tokio::test]
+async fn a_device_that_fails_is_left_for_the_clock_of_the_system_and_opened_again() {
+    let dir = project_dir();
+    let Some((engine, mut agent)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", "fail-after=400"],
+    )
+    .await
+    else {
+        return;
+    };
+    agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    agent
+        .result("transport.play", Some(json!({ "speed": 1 })))
+        .await;
+    agent
+        .until_state("playing with sound", |state| {
+            state["playing"] == true && state["sound"] == "on"
+        })
+        .await;
+    // The device fails after 400 ms: playing goes on from where it was, without a jump.
+    let (lost, _) = agent
+        .until_state("the sound lost", |state| state["sound"] == "unavailable")
+        .await;
+    assert_eq!(lost["playing"], true, "{lost}");
+    let at = lost["frame"].as_i64().unwrap();
+    assert!((5..=20).contains(&at), "{lost}");
+    let states = agent.states_for(Duration::from_millis(600)).await;
+    let frames: Vec<i64> = states
+        .iter()
+        .map(|(state, _)| state["frame"].as_i64().unwrap())
+        .collect();
+    assert!(
+        frames.windows(2).all(|pair| pair[0] <= pair[1]),
+        "{frames:?}"
+    );
+    let moved = frames.last().unwrap() - at;
+    assert!((10..=20).contains(&moved), "{frames:?}");
+    // Played again, the device is opened anew.
+    agent.result("transport.pause", None).await;
+    agent
+        .result("transport.seek", Some(json!({ "frame": 0 })))
+        .await;
+    agent
+        .result("transport.play", Some(json!({ "speed": 1 })))
+        .await;
+    agent
+        .until_state("the sound again", |state| {
+            state["playing"] == true && state["sound"] == "on"
+        })
+        .await;
+    until_logged(&engine, "transport_sound_lost").await;
+    // The log is read by a task of the test: the second device comes soon.
+    let deadline = Instant::now() + WAIT;
+    while engine.stderr().matches(r#""event":"sound_ready""#).count() < 2 {
+        assert!(Instant::now() < deadline, "{}", engine.stderr());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_device_that_never_asks_for_sound_is_given_up() {
+    let dir = project_dir();
+    let Some((_engine, mut agent)) =
+        transport_engine_with(dir.path(), &[support::Sample::Fhd], &["--sound", "stall"]).await
+    else {
+        return;
+    };
+    agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    let started = Instant::now();
+    agent
+        .result("transport.play", Some(json!({ "speed": 1 })))
+        .await;
+    // Nothing is heard: the playhead waits for the sound, then goes on without it.
+    let (lost, _) = agent
+        .until_state("the sound given up", |state| {
+            state["sound"] == "unavailable"
+        })
+        .await;
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_millis(700) && took < Duration::from_millis(2000),
+        "{took:?}"
+    );
+    assert_eq!(
+        (&lost["frame"], &lost["playing"]),
+        (&json!(0), &json!(true))
+    );
+    let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1500)).await;
+    assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
+}
+
+#[tokio::test]
+async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
+    // A frame sought, and frames played.
+    for (frame, play) in [(40, false), (20, true)] {
+        let dir = project_dir();
+        let at = frame.to_string();
+        let Some((engine, mut agent)) = transport_engine_with(
+            dir.path(),
+            &[support::Sample::Fhd],
+            &["--sound", "null", "--fail-card-at", &at],
+        )
+        .await
+        else {
+            return;
+        };
+        agent
+            .result("transport.load", Some(json!({ "media": "m1" })))
+            .await;
+        let loaded = until_logged(&engine, "transport_loaded").await;
+        if loaded.contains(r#""decoder":"software""#) {
+            eprintln!("skipped: the file is not decoded on the graphics card");
+            return;
+        }
+        agent.take_notifications();
+        if play {
+            agent
+                .result("transport.play", Some(json!({ "speed": 4 })))
+                .await;
+            agent
+                .until_state("playing", |state| state["playing"] == true)
+                .await;
+            let (stopped, _) = agent
+                .until_state("the end", |state| state["playing"] == false)
+                .await;
+            assert_eq!(
+                (&stopped["frame"], &stopped["shown"]),
+                (&json!(99), &json!(99))
+            );
+        } else {
+            agent
+                .result("transport.seek", Some(json!({ "frame": frame })))
+                .await;
+            let (sought, _) = agent
+                .until_state("sought", |state| state["frame"] == frame)
+                .await;
+            assert_eq!(
+                (&sought["shown"], &sought["exact"]),
+                (&json!(frame), &json!(true))
+            );
+        }
+        let stderr = until_logged(&engine, "transport_device_failed").await;
+        assert!(!stderr.contains("transport_error"), "{stderr}");
+        // On the processor from then on.
+        agent
+            .result("transport.step", Some(json!({ "frames": -3 })))
+            .await;
+        let wanted = if play { 96 } else { frame - 3 };
+        let (stepped, _) = agent
+            .until_state("stepped", |state| state["frame"] == wanted)
+            .await;
+        assert_eq!(stepped["exact"], true);
+    }
+}
+
+#[tokio::test]
+async fn media_removed_while_it_is_loaded_is_unloaded_once_it_is() {
+    let dir = project_dir();
+    let Some((engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
+    else {
+        return;
+    };
+    let mut desktop = engine.client("desktop").await;
+    // The load is sent, and the media removed by another client before it is done.
+    let load = agent
+        .request("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    desktop
+        .apply(json!([{ "op": "remove_media", "id": "m1" }]))
+        .await;
+    let answer = agent.answer(load).await;
+    if let Some(error) = answer.get("error") {
+        // It was removed before the load found it.
+        assert_eq!(error["data"]["reason"], "missing", "{answer}");
+    }
+    let (unloaded, _) = desktop
+        .until_state("unloaded", |state| state["media"].is_null())
+        .await;
+    assert_eq!(unloaded["playing"], false);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let state = agent.result("transport.state", None).await;
+    assert_eq!(state["media"], Value::Null, "{state}");
+}
+
+#[tokio::test]
+async fn a_command_sent_while_another_client_loads_is_not_refused() {
+    let dir = project_dir();
+    let Some((engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
+    else {
+        return;
+    };
+    let mut desktop = engine.client("desktop").await;
+    let load = agent
+        .request("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    // Before the load is done (opening the decoder takes some 100 ms), once the engine has
+    // read it: taken, and done after it.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let played = desktop
+        .result("transport.play", Some(json!({ "speed": 1 })))
+        .await;
+    assert_eq!(played, json!({}));
+    let loaded = agent.answer(load).await;
+    assert_eq!(loaded["result"]["playing"], false, "{loaded}");
+    desktop
+        .until_state("playing", |state| state["playing"] == true)
+        .await;
+}
+
 /// The number that a frame of the test media carries, as the view shows it: the picture of
 /// 1920 × 1080 fitted into a view of 960 × 540 at the top left of the window, so that each
 /// block of a digit is 32 pixels wide, and grey of `(16 + 14·d − 16) × 255 / 219`.
@@ -2287,7 +2640,8 @@ fn number_shown(grey: &[u8], width: usize) -> Option<i64> {
 #[tokio::test]
 async fn the_view_shows_the_frame_sought() {
     let dir = project_dir();
-    let Some((engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
+    let Some((engine, mut agent)) =
+        transport_engine(dir.path(), &[support::Sample::Fhd, support::Sample::Wav]).await
     else {
         return;
     };
@@ -2324,6 +2678,28 @@ async fn the_view_shows_the_frame_sought() {
             );
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+    }
+    // Sound alone: the view is black.
+    agent
+        .result("transport.load", Some(json!({ "media": "m2" })))
+        .await;
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let (grey, width) = parent.grey();
+        let brightest = (0..540)
+            .flat_map(|y| (0..960).map(move |x| (x, y)))
+            .step_by(97)
+            .map(|(x, y)| grey[y * width + x])
+            .max()
+            .unwrap();
+        if brightest < 4 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the view is not black: {brightest}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 

@@ -10,25 +10,35 @@
 //!   time (so that seeks that came while it decoded are taken together, and only the last is
 //!   decoded), decodes, and hands the pictures to the view, which returns at once. The state of
 //!   the engine is never locked while it decodes or waits: it is locked only to tell the
-//!   clients, a moment at a time.
+//!   clients, a moment at a time. If it panics, a guard tells everyone that nothing is loaded,
+//!   and the methods of the transport are refused from then on.
 //! - **The converter** (`columbina-convert`) makes the frames that the decoder gives
 //!   ([`Decoded`], on the graphics card or in memory) into [`Picture`]s, while the decoder
 //!   decodes the next: copying a frame of 4K from the card takes 5–12 ms, decoding it 7–11 ms.
-//!   It writes into a **pool** of up to [`POOL`] pictures, each used again once neither the
-//!   transport nor the view holds it (the view lets a picture go when the next one is drawn);
-//!   when every one is held, a new picture is made and let go after it is shown.
+//!   It writes into a **pool** of pictures, each used again once neither the transport nor the
+//!   view holds it (the view lets a picture go when the next one is drawn); when every one is
+//!   held, a new picture is made and let go after it is shown.
 //! - **The sound**: the feeder of [`crate::audio`] and the device's own thread.
+//!
+//! # Memory
+//!
+//! The pictures held at once while playing are those decoded ahead, the two that the view may
+//! hold (the one it drew and the one it is to draw), and the few last shown: [`Limits`] sizes
+//! them to the pictures of the media so that they take at most [`POOL_BYTES`] (12 pictures
+//! up to 4K, 4 of 8K), and the pool lets the pictures that no one holds go when media is
+//! unloaded.
 //!
 //! # Playing
 //!
-//! Forward, the decoder decodes frame after frame, at most [`IN_FLIGHT`] at the converter at
-//! once (a decoder on the card has only so many frames to give) and at most [`AHEAD`] decoded or
-//! ready before they are shown. The frame shown at a time is the one that the clock is at
-//! ([`clock::Clock`]): the newest ready frame at or before it; a frame is never shown before its
-//! time. A frame that the decoder gives after its time has passed is not converted (skipped),
-//! unless nothing was shown for [`STALE`]; where the decoder is so far behind that a key
-//! frame lies between it and the clock, it seeks to that key frame (as it does at 4× and 8× on
-//! media of long groups of frames, which it cannot decode at 8 times their rate).
+//! Forward, the decoder decodes frame after frame, a few at the converter at once (a decoder
+//! on the card has only so many frames to give) and a few more ready before they are shown.
+//! The frame shown at a time is the one that the clock is at ([`clock::Clock`]): the newest
+//! ready frame at or before it; a frame is never shown before its time. A frame that the
+//! decoder gives after its time has passed is not converted (skipped), unless nothing was shown
+//! for [`STALE`]; where the decoder is so far behind that a key frame lies between it and the
+//! clock, it seeks to that key frame (as it does at 4× and 8× on media of long groups of
+//! frames, which it cannot decode at 8 times their rate). A change of speed forward keeps
+//! what was decoded ahead.
 //!
 //! The clock: at speed 1 with sound, the sound that the device has played (its latency
 //! counted) is the clock, so that the picture follows what is heard; otherwise (no sound, the
@@ -36,36 +46,47 @@
 //! of the system. The device tells where it is a run at a time, each run told up to 10 ms early
 //! or late (WASAPI), so the clock is the monotonic clock plus how far the sound is ahead of it,
 //! smoothed over some 40 ms ([`smoothed`]); and while it plays, the timers of the system are
-//! made fine ([`crate::timer`]), so that the transport wakes for each frame in time. Backward,
+//! made fine ([`crate::timer`]), so that the transport wakes for each frame in time. Where the
+//! device fails or stops asking for sound ([`Output::failed`]), playing goes on from where it
+//! is by the monotonic clock, and the device is opened anew the next time it plays. Backward,
 //! the transport decodes the frame that the clock is at, seeking for each one: on media of long
 //! groups of frames only some are decoded in time, and those are shown (the all-intra proxies
 //! of Task 13b make it smooth). Playing stops at the last frame forward, and at frame 0
 //! backward.
+//!
+//! # Sound alone
+//!
+//! Media that is sound alone has no picture: the view is cleared, and its frames are those of
+//! a grid of the rate of the first timeline of the project when it is loaded, or 25 a second
+//! if there is none ([`GRID`]), from its duration. It plays at speed 1 by its sound; at other
+//! speeds and backward the playhead moves on the monotonic clock, in silence.
 //!
 //! # Seeking and scrubbing
 //!
 //! A seek decodes the frame sought (`exact`). A seek while **scrubbing** shows first the key
 //! frame at or before the frame ([`VideoDecoder::keyframe_at_or_before`]), which is decoded at
 //! once, and then, once no newer seek came for [`SETTLE`], the frame itself; meanwhile what is
-//! told says `exact: false`. A key frame already shown is not decoded again.
+//! told says `exact: false`, as it does when a frame sought cannot be decoded.
 //!
 //! # The source of the pictures
 //!
 //! Everything that decodes goes through [`Loaded::show`] (a frame sought, stepped to, played
 //! backward) and the forward loop of [`Worker::forward`], both on the one [`VideoDecoder`] of
-//! [`Loaded`]: a proxy of Task 13b takes its place there, opened by `open` where the media has
-//! one.
+//! [`Picture`]s of [`Loaded`] (`video`), while the sound is read from `sound_path`: a proxy of
+//! Task 13b takes the place of the decoder, opened by `open` where the media has one, and the
+//! sound stays the original's.
 
 mod clock;
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use columbina_media::{
-    Converter, Decoded, Facts, Hardware, MediaError, Picture, Rate, Time, VideoDecoder,
+    AudioDecoder, Converter, Decoded, Facts, Hardware, MediaError, Picture, Rate, Time,
+    VideoDecoder,
 };
 use columbina_model::Project;
 use serde::{Deserialize, Serialize};
@@ -73,21 +94,17 @@ use serde_json::json;
 use serde_json::value::RawValue;
 use tokio::sync::oneshot;
 
-use crate::audio::Output;
+use crate::audio::{self, Output};
 use crate::log::log;
 use crate::rpc::{self, Fault};
 use crate::view::ViewSlot;
 use clock::{Clock, First, NANOS};
 
-/// How many decoded frames may be at the converter at once.
-pub const IN_FLIGHT: usize = 3;
+/// The most that the pictures held at once while playing may take.
+pub const POOL_BYTES: u64 = 384 * 1024 * 1024;
 
-/// How many frames may be decoded ahead of the one shown, at the converter or ready.
-pub const AHEAD: usize = 8;
-
-/// How many pictures the converter keeps to write into again: as many as may be held at once
-/// while playing ([`AHEAD`], and four more: see [`RECENT_PLAYING`]).
-pub const POOL: usize = AHEAD + 4;
+/// The grid of frames of media that is sound alone, where the project has no timeline.
+pub const GRID: Rate = Rate { num: 25, den: 1 };
 
 /// How long a scrubbing seek waits for a newer one before the frame itself is decoded.
 pub const SETTLE: Duration = Duration::from_millis(150);
@@ -99,17 +116,58 @@ pub const TOLD_EVERY: Duration = Duration::from_millis(33);
 /// rather than dropped.
 pub const STALE: Duration = Duration::from_millis(100);
 
-/// How many recent pictures are kept to be shown again at once: those shown last, and those
-/// that were ready when playing stopped, so that a step after a pause takes no decoding.
-const RECENT: usize = 8;
-
-/// How many of the pictures shown last are kept while playing: the pool has a picture for each
-/// frame decoded ahead ([`AHEAD`]), the two that the view may hold (the one it drew and the one
-/// it is to draw), and these.
-const RECENT_PLAYING: usize = 2;
-
 /// The fastest the transport plays, forward or backward.
 pub const FASTEST: i32 = 8;
+
+/// How many pictures may be held at once, and what for, for pictures of some size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// Frames decoded ahead of the one shown, at the converter or ready.
+    pub ahead: usize,
+    /// Frames at the converter at once.
+    pub in_flight: usize,
+    /// Pictures shown last that are kept while playing.
+    pub recent_playing: usize,
+    /// Pictures kept after a pause, to be shown at once by a step.
+    pub recent_paused: usize,
+    /// Pictures that the converter keeps to write into again: the view holds two more.
+    pub pool: usize,
+}
+
+impl Limits {
+    /// The limits for pictures of `bytes` each: as many as fit in [`POOL_BYTES`], from 4 to
+    /// 12, two of them the view's.
+    pub fn of(bytes: u64) -> Limits {
+        let fit = usize::try_from(POOL_BYTES / bytes.max(1))
+            .unwrap_or(usize::MAX)
+            .clamp(4, 12);
+        let recent_playing = if fit >= 8 { 2 } else { 0 };
+        let ahead = fit - 2 - recent_playing;
+        Limits {
+            ahead,
+            in_flight: ahead.min(3),
+            recent_playing,
+            recent_paused: (fit - 3).min(8),
+            pool: fit,
+        }
+    }
+
+    /// The bytes of a picture of `width` × `height` of `bits`, as [`Picture`] lays it out.
+    pub fn picture_bytes(width: u32, height: u32, bits: u8) -> u64 {
+        let bytes = if bits > 8 { 2 } else { 1 };
+        let stride = (u64::from(width).div_ceil(2) * 2 * bytes).next_multiple_of(64);
+        stride * (u64::from(height) + u64::from(height).div_ceil(2))
+    }
+}
+
+/// How the transport is made, beside the engine: what plays its sound, and, for the tests, a
+/// frame from which on the first frame on the card that the converter is given fails to be
+/// copied (`--fail-card-at`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Setup {
+    pub sound: audio::Kind,
+    pub fail_card_at: Option<i64>,
+}
 
 /// The transport, as the engine's methods reach it. It is cheap to clone: the transport's own
 /// thread is the same.
@@ -117,7 +175,17 @@ pub const FASTEST: i32 = 8;
 pub struct Transport {
     /// None in a headless engine, which shows nothing and plays no sound.
     inbox: Option<mpsc::Sender<Inbox>>,
-    status: Arc<Mutex<Status>>,
+    shared: Arc<Mutex<Shared>>,
+}
+
+/// What the methods and the transport's thread share.
+struct Shared {
+    /// The state, as it was last told.
+    status: Status,
+    /// The media of the loads sent and not yet done, in order.
+    loading: Vec<String>,
+    /// Whether the transport's thread has stopped.
+    stopped: bool,
 }
 
 /// What the clients are told of the transport, in `transport.state`.
@@ -132,7 +200,7 @@ pub struct Status {
     pub speed: i32,
     /// Whether the picture shown is the frame at the playhead, not a key frame standing in.
     pub exact: bool,
-    /// The frame whose picture is shown.
+    /// The frame whose picture is shown; none for sound alone.
     pub shown: Option<i64>,
     /// The last frame of the media.
     pub last: Option<i64>,
@@ -176,6 +244,8 @@ pub type Notify = Arc<dyn Fn(&Status) + Send + Sync>;
 enum Inbox {
     Command(Command),
     Converted(Converted),
+    /// The converter's thread ended, as it does only when it panics.
+    ConverterGone,
 }
 
 /// What a client asked of the transport.
@@ -184,9 +254,11 @@ enum Command {
         media: String,
         path: PathBuf,
         facts: Facts,
+        /// The rate of the first timeline of the project, for media that is sound alone.
+        grid: Option<Rate>,
         reply: oneshot::Sender<Result<Status, Fault>>,
     },
-    /// Unload the media, if it is still the one loaded.
+    /// Unload the media, if it is the one loaded.
     Unload {
         media: String,
     },
@@ -204,6 +276,13 @@ enum Command {
     },
     /// Show the picture again, in a view that was attached since.
     Redraw,
+}
+
+/// What the converter is given.
+enum Work {
+    Convert(Job),
+    /// Let the pictures of the pool that no one holds go, beyond those it may keep.
+    Trim,
 }
 
 /// A frame for the converter.
@@ -258,54 +337,107 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The error of a transport whose thread has stopped.
+fn stopped() -> Fault {
+    Fault::new(rpc::TRANSPORT_FAILED, "the transport has stopped")
+        .with_data(json!({ "reason": "failed" }))
+}
+
+/// A command of a method, to be sent once its answer is queued, so that the state it makes is
+/// told after the answer.
+#[must_use]
+pub struct Order {
+    transport: Transport,
+    command: Option<Command>,
+}
+
+impl Order {
+    /// Send the command to the transport's thread.
+    pub fn send(self) {
+        if let Some(command) = self.command {
+            let _ = self.transport.send(command);
+        }
+    }
+}
+
+/// A load that was sent, to be waited for.
+pub struct Loading(oneshot::Receiver<Result<Status, Fault>>);
+
+impl Loading {
+    /// Wait for the load to be done, and give the state then.
+    ///
+    /// # Errors
+    /// The file cannot be opened or decoded (`-32002`), or the transport has stopped.
+    pub async fn done(self) -> Result<Status, Fault> {
+        self.0.await.map_err(|_| stopped())?
+    }
+}
+
 impl Transport {
-    /// The transport of an engine; with its threads, unless the engine is headless. `mute`
-    /// plays silence in the place of the sound (for the tests).
-    pub fn new(headless: bool, mute: bool, view: ViewSlot, notify: Notify) -> Transport {
-        let status = Arc::new(Mutex::new(Status::unloaded()));
+    /// The transport of an engine; with its threads, unless the engine is headless.
+    pub fn new(headless: bool, setup: Setup, view: ViewSlot, notify: Notify) -> Transport {
+        let shared = Arc::new(Mutex::new(Shared {
+            status: Status::unloaded(),
+            loading: Vec::new(),
+            stopped: false,
+        }));
         if headless {
             return Transport {
                 inbox: None,
-                status,
+                shared,
             };
         }
         let (inbox, received) = mpsc::channel();
-        let (jobs, taken) = mpsc::channel();
+        let (work, taken) = mpsc::channel();
         let generation = Arc::new(AtomicU64::new(0));
+        let pool = Arc::new(AtomicUsize::new(Limits::of(0).pool));
         let started = std::thread::Builder::new()
             .name("columbina-convert".into())
             .spawn({
                 let inbox = inbox.clone();
                 let generation = Arc::clone(&generation);
-                move || convert_all(&taken, &inbox, &generation)
+                let pool = Arc::clone(&pool);
+                move || {
+                    let _gone = ConverterGuard(inbox.clone());
+                    convert_all(&taken, &inbox, &generation, &pool, setup.fail_card_at);
+                }
             })
             .and_then(|_| {
-                let status = Arc::clone(&status);
+                let shared = Arc::clone(&shared);
                 std::thread::Builder::new()
                     .name("columbina-transport".into())
                     .spawn(move || {
+                        let _guard = Guard {
+                            shared: Arc::clone(&shared),
+                            notify: Arc::clone(&notify),
+                        };
                         Worker {
                             pipe: Pipe {
                                 inbox: received,
-                                jobs,
+                                work,
                                 generation,
+                                pool,
                                 waiting: VecDeque::new(),
+                                gone: false,
                             },
                             world: World {
-                                status,
+                                shared,
                                 notify,
                                 view,
                                 epoch: Instant::now(),
                                 told: None,
                             },
-                            output: None,
-                            mute,
+                            sound: SoundSlot {
+                                kind: setup.sound,
+                                output: None,
+                            },
                             loaded: None,
                         }
                         .run();
                     })
             });
         if let Err(error) = started {
+            lock(&shared).stopped = true;
             log(
                 "transport_failed",
                 &json!({ "message": format!("the transport cannot be started: {error}") }),
@@ -313,7 +445,7 @@ impl Transport {
         }
         Transport {
             inbox: Some(inbox),
-            status,
+            shared,
         }
     }
 
@@ -351,52 +483,76 @@ impl Transport {
 
     /// The state of the transport, as it was last told.
     pub fn status(&self) -> Status {
-        lock(&self.status).clone()
+        lock(&self.shared).status.clone()
     }
 
     fn send(&self, command: Command) -> Result<(), Fault> {
+        if lock(&self.shared).stopped {
+            return Err(stopped());
+        }
         self.inbox
             .as_ref()
             .and_then(|inbox| inbox.send(Inbox::Command(command)).ok())
-            .ok_or_else(|| {
-                Fault::new(rpc::TRANSPORT_FAILED, "the transport has stopped")
-                    .with_data(json!({ "reason": "failed" }))
-            })
+            .ok_or_else(stopped)
     }
 
-    /// `transport.load`: load a media item of the project, in the place of the one loaded, and
-    /// show its frame 0; answered once that is done, with the state.
+    /// `transport.load`: send the load of a media item of the project, in the place of the one
+    /// loaded. Called while the state of the engine is locked, after the media was found in the
+    /// project: so that a change that removes it, made after, unloads it after it is loaded
+    /// ([`Transport::project_changed`]).
     ///
     /// # Errors
-    /// Its file cannot be opened, or its first frame cannot be decoded (`-32002`).
-    pub async fn load(&self, media: String, path: PathBuf, facts: Facts) -> Result<Status, Fault> {
+    /// The transport has stopped.
+    pub fn begin_load(
+        &self,
+        media: &str,
+        path: PathBuf,
+        facts: Facts,
+        grid: Option<Rate>,
+    ) -> Result<Loading, Fault> {
         let (reply, replied) = oneshot::channel();
-        self.send(Command::Load {
-            media,
+        lock(&self.shared).loading.push(media.to_owned());
+        let sent = self.send(Command::Load {
+            media: media.to_owned(),
             path,
             facts,
+            grid,
             reply,
-        })?;
-        replied.await.map_err(|_| {
-            Fault::new(rpc::TRANSPORT_FAILED, "the transport has stopped")
-                .with_data(json!({ "reason": "failed" }))
-        })?
+        });
+        if let Err(fault) = sent {
+            let mut shared = lock(&self.shared);
+            if let Some(index) = shared
+                .loading
+                .iter()
+                .position(|loading| **loading == *media)
+            {
+                shared.loading.remove(index);
+            }
+            return Err(fault);
+        }
+        Ok(Loading(replied))
     }
 
     /// The methods of the transport other than `transport.load`, which are answered at once:
-    /// what they do is told in `transport.state`.
+    /// the result, and the command to send once the answer is queued, so that what it does is
+    /// told after the answer.
     ///
     /// # Errors
-    /// The params are not what the method takes, or no media is loaded.
-    pub fn call(
+    /// The params are not what the method takes, or no media is loaded or being loaded.
+    pub fn prepare(
         &self,
         method: &str,
         params: Option<&RawValue>,
-    ) -> Result<serde_json::Value, Fault> {
+    ) -> Result<(serde_json::Value, Order), Fault> {
         self.check(method)?;
         if method == "transport.state" {
             rpc::no_params(method, params)?;
-            return Ok(serde_json::to_value(self.status()).unwrap_or_default());
+            let status = serde_json::to_value(self.status()).unwrap_or_default();
+            let order = Order {
+                transport: self.clone(),
+                command: None,
+            };
+            return Ok((status, order));
         }
         let command = match method {
             "transport.play" => {
@@ -432,33 +588,90 @@ impl Transport {
             }
             _ => unreachable!("checked above"),
         };
-        if lock(&self.status).media.is_none() {
-            return Err(
-                Fault::new(rpc::TRANSPORT_FAILED, "no media is loaded in the transport")
-                    .with_data(json!({ "reason": "not_loaded" })),
-            );
+        {
+            let shared = lock(&self.shared);
+            if shared.stopped {
+                return Err(stopped());
+            }
+            if shared.status.media.is_none() && shared.loading.is_empty() {
+                return Err(Fault::new(
+                    rpc::TRANSPORT_FAILED,
+                    "no media is loaded in the transport",
+                )
+                .with_data(json!({ "reason": "not_loaded" })));
+            }
         }
-        self.send(command)?;
-        Ok(json!({}))
+        let order = Order {
+            transport: self.clone(),
+            command: Some(command),
+        };
+        Ok((json!({}), order))
     }
 
-    /// The project changed: the media loaded is unloaded if it was removed. This only reads the
-    /// state of the transport and sends to its thread: it may be called while the state of
-    /// the engine is locked.
+    /// The project changed: the media loaded, or being loaded, is unloaded if it was removed.
+    /// This only reads the state of the transport and sends to its thread: it is called while
+    /// the state of the engine is locked.
     pub fn project_changed(&self, project: &Project) {
-        let Some(media) = lock(&self.status).media.clone() else {
-            return;
+        let gone: Vec<String> = {
+            let shared = lock(&self.shared);
+            shared
+                .status
+                .media
+                .iter()
+                .chain(&shared.loading)
+                .filter(|media| !project.media.iter().any(|item| item.id == **media))
+                .cloned()
+                .collect()
         };
-        if !project.media.iter().any(|item| item.id == media) {
+        for media in gone {
             let _ = self.send(Command::Unload { media });
         }
     }
 
     /// A view was attached: show it the picture.
     pub fn redraw(&self) {
-        if lock(&self.status).media.is_some() {
+        if lock(&self.shared).status.media.is_some() {
             let _ = self.send(Command::Redraw);
         }
+    }
+}
+
+/// Tells everyone that nothing is loaded when the transport's thread ends, as it does only when
+/// it panics or its converter's thread does; the methods are refused from then on.
+struct Guard {
+    shared: Arc<Mutex<Shared>>,
+    notify: Notify,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        log(
+            "transport_failed",
+            &json!({
+                "message": if std::thread::panicking() {
+                    "the transport panicked; nothing is loaded, and it plays no more"
+                } else {
+                    "the transport ended; nothing is loaded, and it plays no more"
+                },
+            }),
+        );
+        let status = Status::unloaded();
+        {
+            let mut shared = lock(&self.shared);
+            shared.stopped = true;
+            shared.loading.clear();
+            shared.status = status.clone();
+        }
+        (self.notify)(&status);
+    }
+}
+
+/// Tells the transport that the converter's thread ended.
+struct ConverterGuard(mpsc::Sender<Inbox>);
+
+impl Drop for ConverterGuard {
+    fn drop(&mut self) {
+        let _ = self.0.send(Inbox::ConverterGone);
     }
 }
 
@@ -479,16 +692,43 @@ fn coalesce(commands: Vec<Command>) -> Vec<Command> {
 }
 
 /// Make each frame that comes a picture, in a picture of the pool where one is free, until the
-/// transport ends. A frame of a generation that has passed is let go unconverted.
-fn convert_all(jobs: &mpsc::Receiver<Job>, inbox: &mpsc::Sender<Inbox>, current: &AtomicU64) {
+/// transport ends. A frame of a generation that has passed is let go unconverted. With
+/// `fail_card_at`, the first frame on the card from that frame on fails to be copied, as when
+/// the card is lost.
+fn convert_all(
+    work: &mpsc::Receiver<Work>,
+    inbox: &mpsc::Sender<Inbox>,
+    current: &AtomicU64,
+    most: &AtomicUsize,
+    mut fail_card_at: Option<i64>,
+) {
     let mut converter = Converter::new();
     let mut pool: Vec<Arc<Picture>> = Vec::new();
-    for job in jobs {
+    for work in work {
+        let job = match work {
+            Work::Convert(job) => job,
+            Work::Trim => {
+                pool.retain(|kept| Arc::strong_count(kept) > 1);
+                continue;
+            }
+        };
         if job.generation != current.load(Ordering::Acquire) {
             continue;
         }
         let frame = job.decoded.frame();
-        let picture = make(&mut converter, &mut pool, &job.decoded);
+        let picture = if fail_card_at.is_some_and(|at| frame >= at) && job.decoded.on_device() {
+            fail_card_at = None;
+            Err(MediaError::Device(format!(
+                "frame {frame} was made to fail to be copied (--fail-card-at)"
+            )))
+        } else {
+            make(
+                &mut converter,
+                &mut pool,
+                most.load(Ordering::Acquire),
+                &job.decoded,
+            )
+        };
         drop(job.decoded);
         let made = Converted {
             generation: job.generation,
@@ -502,18 +742,28 @@ fn convert_all(jobs: &mpsc::Receiver<Job>, inbox: &mpsc::Sender<Inbox>, current:
 }
 
 /// A frame made a picture: in a picture of the pool that no one else holds, or a new one put
-/// in the pool, or, when the pool is full and all are held, a new one that is not kept.
+/// in the pool, or, when the pool has `most` and all are held, a new one that is not kept.
 fn make(
     converter: &mut Converter,
     pool: &mut Vec<Arc<Picture>>,
+    most: usize,
     decoded: &Decoded,
 ) -> Result<Arc<Picture>, MediaError> {
+    if pool.len() > most {
+        // The limits are lower than they were: the pictures that no one holds beyond them go.
+        let mut free = pool.len() - most;
+        pool.retain(|kept| {
+            let drop = free > 0 && Arc::strong_count(kept) == 1;
+            free -= usize::from(drop);
+            !drop
+        });
+    }
     let free = pool
         .iter_mut()
         .position(|kept| Arc::get_mut(kept).is_some());
     let index = match free {
         Some(index) => index,
-        None if pool.len() < POOL => {
+        None if pool.len() < most => {
             pool.push(Arc::new(Picture::default()));
             pool.len() - 1
         }
@@ -531,12 +781,16 @@ fn make(
 /// The way to the converter and back.
 struct Pipe {
     inbox: mpsc::Receiver<Inbox>,
-    jobs: mpsc::Sender<Job>,
+    work: mpsc::Sender<Work>,
     /// Raised to let go of what is at the converter: what it makes for an earlier generation
     /// is dropped.
     generation: Arc<AtomicU64>,
+    /// How many pictures the converter keeps.
+    pool: Arc<AtomicUsize>,
     /// Commands that came while a picture was waited for.
     waiting: VecDeque<Command>,
+    /// Whether the converter's thread ended.
+    gone: bool,
 }
 
 impl Pipe {
@@ -550,10 +804,16 @@ impl Pipe {
     }
 
     fn send(&self, decoded: Decoded) {
-        let _ = self.jobs.send(Job {
+        let _ = self.work.send(Work::Convert(Job {
             generation: self.generation(),
             decoded,
-        });
+        }));
+    }
+
+    /// Keep at most `pool` pictures from now on, and let those that no one holds go.
+    fn trim(&self, pool: usize) {
+        self.pool.store(pool, Ordering::Release);
+        let _ = self.work.send(Work::Trim);
     }
 
     /// A frame made a picture now, by the converter, while what is at it is let go. Commands
@@ -568,10 +828,11 @@ impl Pipe {
                 }
                 Ok(Inbox::Converted(_)) => {}
                 Ok(Inbox::Command(command)) => self.waiting.push_back(command),
-                Err(_) => {
+                Ok(Inbox::ConverterGone) | Err(_) => {
+                    self.gone = true;
                     return Err(MediaError::Decode(
                         "the converter of the transport does not answer".into(),
-                    ))
+                    ));
                 }
             }
         }
@@ -580,7 +841,7 @@ impl Pipe {
 
 /// What the transport's thread tells and shows.
 struct World {
-    status: Arc<Mutex<Status>>,
+    shared: Arc<Mutex<Shared>>,
     notify: Notify,
     view: ViewSlot,
     /// The start of the monotonic clock.
@@ -610,9 +871,17 @@ impl World {
 
     /// Keep the state for the clients, and tell it: at once if `now` (after a command, even
     /// one that changed nothing, so that whoever sent it hears back), else if it changed, no
-    /// more often than [`TOLD_EVERY`].
-    fn tell(&mut self, status: Status, now: bool) {
-        *lock(&self.status) = status.clone();
+    /// more often than [`TOLD_EVERY`]. `loaded` is a load that is done, in the same breath.
+    fn tell(&mut self, status: Status, now: bool, loaded: Option<&str>) {
+        {
+            let mut shared = lock(&self.shared);
+            shared.status = status.clone();
+            if let Some(media) = loaded {
+                if let Some(index) = shared.loading.iter().position(|loading| loading == media) {
+                    shared.loading.remove(index);
+                }
+            }
+        }
         if let Some((told, at)) = &self.told {
             if !now && (*told == status || at.elapsed() < TOLD_EVERY) {
                 return;
@@ -623,17 +892,77 @@ impl World {
     }
 }
 
+/// The output of the sound, opened when it is first needed and again after it failed.
+struct SoundSlot {
+    kind: audio::Kind,
+    /// The output, or why there is none.
+    output: Option<Result<Output, String>>,
+}
+
+impl SoundSlot {
+    /// The output to play on: the one opened, unless it failed or the default device of the
+    /// system is another now; then it is opened anew (and told in the log).
+    fn ready(&mut self) -> Option<&mut Output> {
+        let again = match &self.output {
+            None | Some(Err(_)) => true,
+            Some(Ok(output)) => output.failed().is_some() || !output.current(),
+        };
+        if again {
+            // The old one is closed before another is opened.
+            self.output = None;
+            let output = Output::open(self.kind);
+            match &output {
+                Ok(output) => log(
+                    "sound_ready",
+                    &json!({
+                        "device": output.name(),
+                        "rate": output.format().rate,
+                        "channels": output.format().channels,
+                    }),
+                ),
+                Err(message) => log("sound_unavailable", &json!({ "message": message })),
+            }
+            self.output = Some(output);
+        }
+        self.output.as_mut().and_then(|output| output.as_mut().ok())
+    }
+
+    /// The output, if one is open and has not failed.
+    fn working(&self) -> Option<&Output> {
+        match &self.output {
+            Some(Ok(output)) if output.failed().is_none() => Some(output),
+            _ => None,
+        }
+    }
+
+    /// Stop what plays, and end its feeder.
+    fn stop(&mut self) {
+        if let Some(Ok(output)) = &mut self.output {
+            output.stop();
+        }
+    }
+}
+
+/// The picture of the media loaded: its decoder, and how far it is turned.
+struct Video {
+    decoder: VideoDecoder,
+    rotation: i16,
+    limits: Limits,
+}
+
 /// The media loaded, and what the transport does with it.
 struct Loaded {
     media: String,
-    path: PathBuf,
-    rotation: i16,
+    /// The file whose sound is played.
+    sound_path: PathBuf,
+    /// Its picture; none for sound alone.
+    video: Option<Video>,
+    /// The rate of its frames: of its picture, or of the grid of sound alone.
     rate: Rate,
     /// The time of frame 0 in the file, for the sound.
     start: Time,
     /// The last frame: as the facts say, until the decoder finds the end.
     last: i64,
-    decoder: VideoDecoder,
     has_sound: bool,
     /// The picture shown, and so its frame.
     picture: Option<Arc<Picture>>,
@@ -661,7 +990,7 @@ struct Playing {
     /// Whether the sound is the clock.
     sound: bool,
     /// While the sound is the clock: how far its time is ahead of the monotonic clock, as it is
-    /// read, smoothed ([`smoothed`]); none until the sound is first heard.
+    /// read, smoothed ([`smoothed`]); none until the sound is first read.
     offset: Option<i128>,
     /// The latest time of the clock that was read, which it never goes back from.
     latest: std::cell::Cell<i128>,
@@ -678,6 +1007,34 @@ struct Playing {
     /// When a picture was last shown.
     shown_at: Instant,
     stats: Stats,
+}
+
+impl Playing {
+    fn new(clock: Clock, sound: bool, next: i64) -> Playing {
+        Playing {
+            latest: std::cell::Cell::new(clock.since()),
+            clock,
+            sound,
+            offset: None,
+            _fine: crate::timer::Fine::new(),
+            ready: VecDeque::new(),
+            in_flight: 0,
+            decoded_all: false,
+            next,
+            shown_at: Instant::now(),
+            stats: Stats::new(),
+        }
+    }
+
+    /// Go on from where it is now at `speed` by the monotonic clock, or by the sound (whose
+    /// time starts at 0).
+    fn reclock(&mut self, place: i128, speed: i32, sound: bool, world: &World) {
+        let since = if sound { 0 } else { world.now() };
+        self.clock = Clock::at(place, speed, self.clock.rate(), since);
+        self.latest.set(since);
+        self.sound = sound;
+        self.offset = None;
+    }
 }
 
 /// How playing went, for the log.
@@ -698,6 +1055,10 @@ struct Stats {
     /// The most that the sound moved more or less than the monotonic clock between two
     /// readings, in nanoseconds.
     jitter: i128,
+    /// The latency of the device and the length of its runs, as last read.
+    latency: Option<(Duration, Duration)>,
+    /// How many runs of the device had less sound than it asked for.
+    short_runs: u64,
 }
 
 impl Stats {
@@ -707,13 +1068,23 @@ impl Stats {
             presented: 0,
             skipped: 0,
             passed: 0,
-            jitter: 0,
             late: 0,
             worst_late: 0,
             total_late: 0,
             heard: None,
             sound_now: None,
+            jitter: 0,
+            latency: None,
+            short_runs: 0,
         }
+    }
+
+    /// Count a picture shown `late` nanoseconds after its time, behind the clock if `behind`.
+    fn shown(&mut self, late: i128, behind: bool) {
+        self.presented += 1;
+        self.worst_late = self.worst_late.max(late);
+        self.total_late += late;
+        self.late += u64::from(behind);
     }
 }
 
@@ -721,15 +1092,16 @@ impl Stats {
 struct Worker {
     pipe: Pipe,
     world: World,
-    /// The output device of the sound, once media with sound was loaded: or why there is none.
-    output: Option<Result<Output, String>>,
-    mute: bool,
+    sound: SoundSlot,
     loaded: Option<Loaded>,
 }
 
 impl Worker {
     fn run(mut self) {
         loop {
+            if self.pipe.gone {
+                return;
+            }
             let mut commands: Vec<Command> = self.pipe.waiting.drain(..).collect();
             let mut messages = Vec::new();
             if commands.is_empty() {
@@ -753,7 +1125,11 @@ impl Worker {
                 match message {
                     Inbox::Command(command) => commands.push(command),
                     Inbox::Converted(converted) => self.converted(converted),
+                    Inbox::ConverterGone => self.pipe.gone = true,
                 }
+            }
+            if self.pipe.gone {
+                return;
             }
             for command in coalesce(commands) {
                 self.apply(command);
@@ -778,24 +1154,34 @@ impl Worker {
                 };
                 let most =
                     TOLD_EVERY.min(Duration::from_millis(if playing.sound { 5 } else { 20 }));
-                let wait = if playing.clock.speed() < 0 {
-                    if loaded.picture.as_ref().map(|picture| picture.frame) == Some(target) {
-                        until(target - 1)
-                    } else {
-                        Duration::ZERO
+                let backward = playing.clock.speed() < 0;
+                let wait = match &loaded.video {
+                    None if backward => until(target - 1),
+                    None => until(target + 1),
+                    Some(_) if backward => {
+                        if loaded.picture.as_ref().map(|picture| picture.frame) == Some(target) {
+                            until(target - 1)
+                        } else {
+                            Duration::ZERO
+                        }
                     }
-                } else if !playing.decoded_all
-                    && playing.in_flight < IN_FLIGHT
-                    && playing.in_flight + playing.ready.len() < AHEAD
-                {
-                    Duration::ZERO
-                } else {
-                    match playing.ready.front() {
-                        Some(front) => until(front.frame),
-                        None if playing.in_flight > 0 => most,
-                        // Every frame decoded and shown: until the clock reaches the last.
-                        None if playing.decoded_all => until(loaded.last),
-                        None => Duration::ZERO,
+                    Some(video) => {
+                        let limits = video.limits;
+                        if !playing.decoded_all
+                            && playing.in_flight < limits.in_flight
+                            && playing.in_flight + playing.ready.len() < limits.ahead
+                        {
+                            Duration::ZERO
+                        } else {
+                            match playing.ready.front() {
+                                Some(front) => until(front.frame),
+                                None if playing.in_flight > 0 => most,
+                                // Every frame decoded and shown: until the clock reaches the
+                                // last.
+                                None if playing.decoded_all => until(loaded.last),
+                                None => Duration::ZERO,
+                            }
+                        }
                     }
                 };
                 Some(wait.min(most))
@@ -806,11 +1192,6 @@ impl Worker {
     fn status(&self) -> Status {
         let Some(loaded) = &self.loaded else {
             return Status::unloaded();
-        };
-        let output = self.output.as_ref();
-        let unavailable = match output {
-            Some(Ok(output)) => output.failed().is_some(),
-            Some(Err(_)) | None => true,
         };
         let (playing, sounding) = match &loaded.mode {
             Mode::Playing(playing) => (true, playing.sound),
@@ -833,7 +1214,7 @@ impl Worker {
                 Sound::None
             } else if sounding {
                 Sound::On
-            } else if unavailable {
+            } else if self.sound.working().is_none() {
                 Sound::Unavailable
             } else {
                 Sound::Off
@@ -843,7 +1224,7 @@ impl Worker {
 
     fn tell(&mut self, now: bool) {
         let status = self.status();
-        self.world.tell(status, now);
+        self.world.tell(status, now, None);
     }
 
     fn apply(&mut self, command: Command) {
@@ -852,15 +1233,17 @@ impl Worker {
                 media,
                 path,
                 facts,
+                grid,
                 reply,
             } => {
                 self.unload();
-                let opened = self.open(media, path, &facts);
+                let opened = self.open(media.clone(), path, &facts, grid);
                 if opened.is_err() {
                     self.world.clear();
                 }
-                self.tell(true);
-                let _ = reply.send(opened.map(|()| self.status()));
+                let status = self.status();
+                self.world.tell(status.clone(), true, Some(&media));
+                let _ = reply.send(opened.map(|()| status));
             }
             Command::Unload { media } => {
                 if self
@@ -885,64 +1268,93 @@ impl Worker {
                 at,
             } => self.seek(frame, scrubbing, at),
             Command::Step { frames } => self.step(frames),
-            Command::Redraw => {
-                if let Some(loaded) = &self.loaded {
-                    if let Some(picture) = &loaded.picture {
-                        self.world.present(picture, loaded.rotation);
-                    }
-                }
-            }
+            Command::Redraw => match &self.loaded {
+                Some(Loaded {
+                    picture: Some(picture),
+                    video: Some(video),
+                    ..
+                }) => self.world.present(picture, video.rotation),
+                Some(_) => self.world.clear(),
+                None => {}
+            },
         }
     }
 
-    /// Let the media go, and stop its sound.
+    /// Let the media go, stop its sound, and let the pictures of the pool go.
     fn unload(&mut self) {
         self.pause();
+        self.sound.stop();
         self.pipe.flush();
         self.loaded = None;
+        self.pipe.trim(Limits::of(0).pool);
     }
 
     /// Open the media and show its frame 0.
-    fn open(&mut self, media: String, path: PathBuf, facts: &Facts) -> Result<(), Fault> {
+    fn open(
+        &mut self,
+        media: String,
+        path: PathBuf,
+        facts: &Facts,
+        grid: Option<Rate>,
+    ) -> Result<(), Fault> {
         let text = path.to_string_lossy().into_owned();
         let cannot = |error: &MediaError| {
             crate::session::cannot_read(&text, error.reason(), &error.to_string())
         };
-        let decoder = VideoDecoder::open(&path, Hardware::Auto).map_err(|error| cannot(&error))?;
-        let fallbacks: Vec<_> = decoder
-            .fallbacks()
-            .iter()
-            .map(|(device, why)| json!({ "device": device.name(), "why": why }))
-            .collect();
-        log(
-            "transport_loaded",
-            &json!({ "media": media, "decoder": decoder.path_used().name(), "fallbacks": fallbacks }),
-        );
-        let rate = decoder.rate();
         let has_sound = facts.audio.is_some();
-        if has_sound && !matches!(self.output, Some(Ok(_))) {
-            let output = Output::open(self.mute);
-            match &output {
-                Ok(output) => log(
-                    "sound_ready",
-                    &json!({
-                        "device": output.name(),
-                        "rate": output.format().rate,
-                        "channels": output.format().channels,
-                    }),
-                ),
-                Err(message) => log("sound_unavailable", &json!({ "message": message })),
-            }
-            self.output = Some(output);
+        let (video, rate, start) = if let Some(facts_video) = &facts.video {
+            let decoder =
+                VideoDecoder::open(&path, Hardware::Auto).map_err(|error| cannot(&error))?;
+            let fallbacks: Vec<_> = decoder
+                .fallbacks()
+                .iter()
+                .map(|(device, why)| json!({ "device": device.name(), "why": why }))
+                .collect();
+            log(
+                "transport_loaded",
+                &json!({
+                    "media": media,
+                    "decoder": decoder.path_used().name(),
+                    "fallbacks": fallbacks,
+                }),
+            );
+            let limits = Limits::of(Limits::picture_bytes(
+                facts_video.width,
+                facts_video.height,
+                facts_video.bits,
+            ));
+            let (rate, start) = (decoder.rate(), decoder.start());
+            let video = Video {
+                decoder,
+                rotation: facts_video.rotation,
+                limits,
+            };
+            (Some(video), rate, start)
+        } else {
+            // Sound alone: its frames are on a grid, from the start of its sound.
+            let sound = AudioDecoder::open(&path, None).map_err(|error| cannot(&error))?;
+            let rate = grid.unwrap_or(GRID);
+            log(
+                "transport_loaded",
+                &json!({ "media": media, "decoder": null, "grid": rate }),
+            );
+            (None, rate, sound.start())
+        };
+        self.pipe.trim(
+            video
+                .as_ref()
+                .map_or(Limits::of(0).pool, |video| video.limits.pool),
+        );
+        if has_sound {
+            self.sound.ready();
         }
         let mut loaded = Loaded {
             media,
-            path,
-            rotation: facts.video.as_ref().map_or(0, |video| video.rotation),
+            sound_path: path,
+            video,
             rate,
-            start: decoder.start(),
+            start,
             last: clock::last_frame(facts.duration, rate),
-            decoder,
             has_sound,
             picture: None,
             recent: VecDeque::new(),
@@ -951,6 +1363,9 @@ impl Worker {
             speed: 1,
             mode: Mode::Paused,
         };
+        if loaded.video.is_none() {
+            self.world.clear();
+        }
         loaded
             .show_exact(0, &mut self.pipe, &self.world)
             .map_err(|error| cannot(&error))?;
@@ -961,31 +1376,41 @@ impl Worker {
     /// Play at `speed`, from the playhead, or, if it plays already, from where it is.
     fn play(&mut self, speed: i32) {
         let Some(loaded) = &mut self.loaded else {
+            self.tell(true);
             return;
         };
-        let has_sound = loaded.has_sound;
-        let then = match &mut loaded.mode {
+        let restart = match &mut loaded.mode {
             Mode::Playing(playing) if playing.clock.speed() == speed => None,
             Mode::Playing(playing) => {
                 let now = clock_time(playing, &self.world);
-                // Faster or slower forward, without the sound before or after: the frames
-                // decoded ahead are still the ones to show, and the clock goes on.
-                let keep = playing.clock.speed() > 0
-                    && speed > 0
-                    && !playing.sound
-                    && !(speed == 1 && has_sound);
-                if keep {
-                    playing.clock = playing.clock.with_speed(speed, now);
+                // Where it is, at the new speed: the place does not jump.
+                let place = playing.clock.with_speed(speed, now).place(now);
+                if (playing.clock.speed() > 0) == (speed > 0) {
+                    // On the same way: what was decoded ahead is still to be shown, and the
+                    // clock goes on from where it is, by the sound at speed 1.
+                    if playing.sound {
+                        self.sound.stop();
+                    }
+                    let sound = speed == 1
+                        && loaded.has_sound
+                        && start_sound(
+                            &mut self.sound,
+                            &loaded.sound_path,
+                            loaded.start,
+                            place,
+                            loaded.rate,
+                        );
+                    playing.reclock(place, speed, sound, &self.world);
                     loaded.speed = speed;
                     None
                 } else {
-                    Some(Some(playing.clock.with_speed(speed, now).place(now)))
+                    Some(Some(place))
                 }
             }
             Mode::Scrubbing { .. } | Mode::Paused => Some(None),
         };
-        if let Some(place) = then {
-            // From where it is, at the new speed: the place does not jump.
+        if let Some(place) = restart {
+            // From where it is, the other way: the place does not jump.
             self.pause();
             self.start(speed, place);
         }
@@ -1013,13 +1438,13 @@ impl Worker {
         }
         let shown = loaded.picture.as_ref().map(|picture| picture.frame);
         let mut ready = Ok(());
-        if shown != Some(frame) || !loaded.exact {
+        if loaded.video.is_some() && (shown != Some(frame) || !loaded.exact) {
             ready = loaded.show_exact(frame, &mut self.pipe, &self.world);
         }
-        if speed > 0 && ready.is_ok() {
+        if let (Some(video), true, true) = (&mut loaded.video, speed > 0, ready.is_ok()) {
             // The decoder is to give the frames after it next: it gives the frame it gave
             // last again without decoding.
-            ready = loaded.decoder.decoded_at(frame).map(drop);
+            ready = video.decoder.decoded_at(frame).map(drop);
         }
         if let Err(error) = ready {
             failed(&loaded.media, &error);
@@ -1030,99 +1455,64 @@ impl Worker {
         let place = clock::clamped_place(place, frame, speed, rate);
         // What was kept for steps is let go, for the pool to use again.
         loaded.recent.clear();
-        let mut sound = false;
-        if speed == 1 && loaded.has_sound {
-            if let Some(Ok(output)) = &mut self.output {
-                let media = Clock::at(place, 1, rate, 0).media_nanos(0);
-                let from = clock::sample_at(loaded.start, media, output.format().rate);
-                match output.start(&loaded.path, from) {
-                    Ok(()) => sound = true,
-                    Err(message) => {
-                        log("sound_failed", &json!({ "message": message }));
-                    }
-                }
-            }
-        }
+        let sound = speed == 1
+            && loaded.has_sound
+            && start_sound(
+                &mut self.sound,
+                &loaded.sound_path,
+                loaded.start,
+                place,
+                rate,
+            );
         let since = if sound { 0 } else { self.world.now() };
-        loaded.mode = Mode::Playing(Box::new(Playing {
-            clock: Clock::at(place, speed, rate, since),
+        loaded.mode = Mode::Playing(Box::new(Playing::new(
+            Clock::at(place, speed, rate, since),
             sound,
-            offset: None,
-            latest: std::cell::Cell::new(since),
-            _fine: crate::timer::Fine::new(),
-            ready: VecDeque::new(),
-            in_flight: 0,
-            decoded_all: false,
-            next: frame + 1,
-            shown_at: Instant::now(),
-            stats: Stats::new(),
-        }));
+            frame + 1,
+        )));
     }
 
-    /// Stop playing where it is, with the frame shown as the playhead; keep the pictures that
-    /// were ready, to be shown at once by a step.
+    /// Stop playing where it is, with the frame shown as the playhead (for sound alone, the
+    /// frame of the clock); keep the pictures that were ready, to be shown at once by a step.
     fn pause(&mut self) {
+        self.sound.stop();
         let Some(loaded) = &mut self.loaded else {
             return;
         };
+        if !matches!(loaded.mode, Mode::Playing(_)) {
+            return;
+        }
         let Mode::Playing(playing) = std::mem::replace(&mut loaded.mode, Mode::Paused) else {
             return;
         };
-        let playing = *playing;
-        if playing.sound {
-            if let Some(Ok(output)) = &mut self.output {
-                output.stop();
-            }
-        }
+        let mut playing = *playing;
         self.pipe.flush();
-        if let Some(picture) = &loaded.picture {
-            loaded.playhead = picture.frame;
+        match &loaded.picture {
+            Some(picture) => loaded.playhead = picture.frame,
+            None if loaded.video.is_none() => {
+                let now = clock_time(&playing, &self.world);
+                loaded.playhead = clock::clamped(playing.clock.frame(now), loaded.last);
+            }
+            None => {}
         }
         loaded.exact = true;
-        for picture in playing.ready {
-            loaded.remember(picture);
-        }
-        let stats = &playing.stats;
-        let seconds = stats.started.elapsed().as_secs_f64();
-        #[allow(clippy::cast_precision_loss, reason = "a few frames, for the log")]
-        let mean_late = if stats.presented > 0 {
-            stats.total_late as f64 / stats.presented as f64 / 1e6
-        } else {
-            0.0
-        };
-        #[allow(clippy::cast_precision_loss, reason = "milliseconds, for the log")]
-        let drift = match (stats.heard, stats.sound_now) {
-            (Some((first, heard)), Some((last, now))) => {
-                let sound = (now - heard) as f64 / 1e6;
-                let system = last.duration_since(first).as_secs_f64() * 1e3;
-                Some(sound - system)
+        // The pictures just shown are kept; those ready after them as there is room.
+        let room = loaded
+            .video
+            .as_ref()
+            .map_or(0, |video| video.limits.recent_paused);
+        for picture in std::mem::take(&mut playing.ready) {
+            if loaded.recent.len() >= room {
+                break;
             }
-            _ => None,
-        };
-        #[allow(clippy::cast_precision_loss, reason = "milliseconds, for the log")]
-        let (worst, jitter) = (stats.worst_late as f64 / 1e6, stats.jitter as f64 / 1e6);
-        log(
-            "transport_played",
-            &json!({
-                "media": loaded.media,
-                "speed": playing.clock.speed(),
-                "clock": if playing.sound { "sound" } else { "system" },
-                "decoder": loaded.decoder.path_used().name(),
-                "seconds": seconds,
-                "presented": stats.presented,
-                "skipped": stats.skipped,
-                "passed": stats.passed,
-                "sound_jitter_ms": jitter,
-                "late": stats.late,
-                "late_worst_ms": worst,
-                "late_mean_ms": mean_late,
-                "sound_minus_system_ms": drift,
-            }),
-        );
+            loaded.recent.push_back(picture);
+        }
+        log_played(loaded, &playing);
     }
 
     fn seek(&mut self, frame: i64, scrubbing: bool, at: Instant) {
         let Some(loaded) = &mut self.loaded else {
+            self.tell(true);
             return;
         };
         let target = clock::clamped(frame, loaded.last);
@@ -1132,11 +1522,11 @@ impl Worker {
         };
         if let (Some(speed), false) = (playing, scrubbing) {
             // A seek while playing plays on from there.
+            let rate = loaded.rate;
             self.pause();
             if let Some(loaded) = &mut self.loaded {
                 loaded.playhead = target;
             }
-            let rate = loaded_rate(self.loaded.as_ref());
             self.start(
                 speed,
                 Some(Clock::starting(target, speed, rate, 0).place(0)),
@@ -1151,22 +1541,28 @@ impl Worker {
         loaded.playhead = target;
         let shown = loaded.picture.as_ref().map(|picture| picture.frame);
         let first = if scrubbing {
-            clock::scrub_first(target, loaded.decoder.keyframe_at_or_before(target), shown)
+            let key = loaded
+                .video
+                .as_ref()
+                .and_then(|video| video.decoder.keyframe_at_or_before(target));
+            clock::scrub_first(target, key, shown)
         } else {
             First::Exact
         };
         match first {
             First::Exact => {
                 loaded.mode = Mode::Paused;
-                match loaded.show_exact(target, &mut self.pipe, &self.world) {
-                    Ok(()) => loaded.exact = true,
-                    Err(error) => failed(&loaded.media, &error),
+                if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
+                    failed(&loaded.media, &error);
                 }
             }
             First::Key(key) => {
                 match loaded.show(key, &mut self.pipe, &self.world) {
                     Ok(()) => loaded.exact = key == target,
-                    Err(error) => failed(&loaded.media, &error),
+                    Err(error) => {
+                        loaded.exact = false;
+                        failed(&loaded.media, &error);
+                    }
                 }
                 loaded.mode = Mode::Scrubbing {
                     target,
@@ -1187,6 +1583,7 @@ impl Worker {
     fn step(&mut self, frames: i64) {
         self.pause();
         let Some(loaded) = &mut self.loaded else {
+            self.tell(true);
             return;
         };
         let target = clock::stepped(loaded.playhead, frames, loaded.last);
@@ -1207,7 +1604,7 @@ impl Worker {
         let Some(loaded) = &mut self.loaded else {
             return;
         };
-        let Mode::Playing(playing) = &mut loaded.mode else {
+        let (Mode::Playing(playing), Some(video)) = (&mut loaded.mode, &mut loaded.video) else {
             return;
         };
         playing.in_flight = playing.in_flight.saturating_sub(1);
@@ -1219,10 +1616,10 @@ impl Worker {
                     "transport_device_failed",
                     &json!({ "media": loaded.media, "frame": converted.frame, "message": why }),
                 );
-                loaded.decoder.device_failed(&why);
+                video.decoder.device_failed(&why);
                 self.pipe.flush();
                 playing.in_flight = 0;
-                match loaded.decoder.decoded_at(converted.frame) {
+                match video.decoder.decoded_at(converted.frame) {
                     Ok(decoded) => {
                         playing.next = decoded.frame() + 1;
                         playing.in_flight = 1;
@@ -1247,17 +1644,20 @@ impl Worker {
             Mode::Scrubbing { target, due } if Instant::now() >= *due => {
                 let target = *target;
                 loaded.mode = Mode::Paused;
-                match loaded.show_exact(target, &mut self.pipe, &self.world) {
-                    Ok(()) => loaded.exact = true,
-                    Err(error) => failed(&loaded.media, &error),
+                if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
+                    failed(&loaded.media, &error);
                 }
                 self.tell(true);
             }
             Mode::Playing(playing) => {
-                let ended = if playing.clock.speed() > 0 {
-                    self.forward()
-                } else {
-                    self.backward()
+                let forward = playing.clock.speed() > 0;
+                if playing.sound {
+                    self.check_sound();
+                }
+                let ended = match (forward, self.loaded.as_ref().map(|l| l.video.is_some())) {
+                    (_, Some(false)) => self.sound_alone(),
+                    (true, _) => self.forward(),
+                    (false, _) => self.backward(),
                 };
                 if ended {
                     self.pause();
@@ -1270,18 +1670,72 @@ impl Worker {
         }
     }
 
-    /// Play forward a step: show what is due, and decode one more frame if there is room.
-    /// Whether it reached the end.
-    fn forward(&mut self) -> bool {
+    /// While the sound is the clock: read it, for the smoothed clock and the log; where the
+    /// device failed or stopped asking for sound, go on from where it is by the monotonic
+    /// clock, in silence, and stop the device.
+    fn check_sound(&mut self) {
+        let Some(Loaded {
+            mode: Mode::Playing(playing),
+            ..
+        }) = &mut self.loaded
+        else {
+            return;
+        };
+        let output = self.sound.working();
+        let now = Instant::now();
+        if let Some(heard) = output.and_then(|output| sound_nanos(output, now)) {
+            playing.offset = Some(smoothed(playing.offset, heard - self.world.now()));
+            let stats = &mut playing.stats;
+            if heard > 0 {
+                stats.heard.get_or_insert((now, heard));
+                if let Some((then, before)) = stats.sound_now {
+                    let system = i128::try_from(now.duration_since(then).as_nanos()).unwrap_or(0);
+                    stats.jitter = stats.jitter.max((heard - before - system).abs());
+                }
+                stats.sound_now = Some((now, heard));
+            }
+            stats.latency = output.and_then(Output::latency).or(stats.latency);
+            stats.short_runs = output.map_or(stats.short_runs, Output::short_runs);
+        }
+        if output.is_none() {
+            let place = playing.clock.place(clock_time(playing, &self.world));
+            let speed = playing.clock.speed();
+            playing.reclock(place, speed, false, &self.world);
+            log(
+                "transport_sound_lost",
+                &json!({ "message": "the sound cannot be played; the picture plays on alone" }),
+            );
+            self.sound.stop();
+        }
+    }
+
+    /// Play sound alone a step: the playhead is where the clock is. Whether it reached an end.
+    fn sound_alone(&mut self) -> bool {
         let Some(loaded) = &mut self.loaded else {
             return true;
         };
         let Mode::Playing(playing) = &mut loaded.mode else {
             return true;
         };
-        if playing.sound {
-            sound_check(playing, self.output.as_ref(), &self.world);
+        let now = clock_time(playing, &self.world);
+        let frame = playing.clock.frame(now);
+        loaded.playhead = clock::clamped(frame, loaded.last);
+        if playing.clock.speed() > 0 {
+            frame >= loaded.last
+        } else {
+            frame <= 0
         }
+    }
+
+    /// Play forward a step: show what is due, and decode one more frame if there is room.
+    /// Whether it reached the end.
+    fn forward(&mut self) -> bool {
+        let Some(loaded) = &mut self.loaded else {
+            return true;
+        };
+        let (Mode::Playing(playing), Some(video)) = (&mut loaded.mode, &mut loaded.video) else {
+            return true;
+        };
         let now = clock_time(playing, &self.world);
         let target = playing.clock.frame(now);
         // The newest ready frame at or before the clock; those before it are dropped.
@@ -1299,28 +1753,18 @@ impl Worker {
         }
         if let Some(picture) = chosen {
             let late = playing.clock.late(picture.frame, now);
-            let stats = &mut playing.stats;
-            stats.presented += 1;
-            stats.worst_late = stats.worst_late.max(late);
-            stats.total_late += late;
-            if picture.frame < target {
-                stats.late += 1;
-            }
+            playing.stats.shown(late, picture.frame < target);
             playing.shown_at = Instant::now();
-            self.world.present(&picture, loaded.rotation);
+            self.world.present(&picture, video.rotation);
             loaded.exact = true;
             loaded.playhead = picture.frame;
-            let old = loaded.picture.replace(picture);
-            if let Some(old) = old {
+            if let Some(old) = loaded.picture.replace(picture) {
                 loaded.recent.push_back(old);
-                if loaded.recent.len() > RECENT_PLAYING {
+                while loaded.recent.len() > video.limits.recent_playing {
                     loaded.recent.pop_front();
                 }
             }
         }
-        let Mode::Playing(playing) = &mut loaded.mode else {
-            return true;
-        };
         if target >= loaded.last && playing.in_flight == 0 && playing.ready.is_empty() {
             let shown = loaded.picture.as_ref().map(|picture| picture.frame);
             if shown != Some(loaded.last) {
@@ -1331,9 +1775,10 @@ impl Worker {
             }
             return true;
         }
+        let limits = video.limits;
         if playing.decoded_all
-            || playing.in_flight >= IN_FLIGHT
-            || playing.in_flight + playing.ready.len() >= AHEAD
+            || playing.in_flight >= limits.in_flight
+            || playing.in_flight + playing.ready.len() >= limits.ahead
         {
             return false;
         }
@@ -1342,13 +1787,13 @@ impl Worker {
         let speed = i64::from(playing.clock.speed());
         let ahead = (speed * i64::from(loaded.rate.num) / i64::from(loaded.rate.den.max(1))) / 10;
         let aim = clock::clamped(target + ahead, loaded.last);
-        let jump = loaded
+        let jump = video
             .decoder
             .keyframe_at_or_before(aim)
             .filter(|&key| target - playing.next > 4 && key > playing.next + 4);
         let decoded = match jump {
-            Some(key) => loaded.decoder.decoded_at(key).map(Some),
-            None => loaded.decoder.next_decoded(),
+            Some(key) => video.decoder.decoded_at(key).map(Some),
+            None => video.decoder.next_decoded(),
         };
         match decoded {
             Ok(Some(decoded)) => {
@@ -1365,7 +1810,7 @@ impl Worker {
             }
             Ok(None) => {
                 playing.decoded_all = true;
-                if let Some(last) = loaded.decoder.last_frame() {
+                if let Some(last) = video.decoder.last_frame() {
                     loaded.last = last;
                 }
             }
@@ -1391,9 +1836,7 @@ impl Worker {
         let late = playing.clock.late(target, now);
         let shown = loaded.picture.as_ref().map(|picture| picture.frame);
         if shown != Some(target) {
-            playing.stats.presented += 1;
-            playing.stats.worst_late = playing.stats.worst_late.max(late);
-            playing.stats.total_late += late;
+            playing.stats.shown(late, false);
             if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
                 failed(&loaded.media, &error);
                 return true;
@@ -1404,8 +1847,74 @@ impl Worker {
     }
 }
 
+/// Start the sound at `place` of media whose frame 0 is at `start` in its file, on the output,
+/// opened anew if it failed or the default device changed. Whether it plays.
+fn start_sound(
+    slot: &mut SoundSlot,
+    path: &std::path::Path,
+    start: Time,
+    place: i128,
+    rate: Rate,
+) -> bool {
+    let Some(output) = slot.ready() else {
+        return false;
+    };
+    let media = Clock::at(place, 1, rate, 0).media_nanos(0);
+    let from = clock::sample_at(start, media, output.format().rate);
+    match output.start(path, from) {
+        Ok(()) => true,
+        Err(message) => {
+            log("sound_failed", &json!({ "message": message }));
+            false
+        }
+    }
+}
+
+/// Log how playing went.
+fn log_played(loaded: &Loaded, playing: &Playing) {
+    let stats = &playing.stats;
+    let seconds = stats.started.elapsed().as_secs_f64();
+    #[allow(clippy::cast_precision_loss, reason = "milliseconds, for the log")]
+    let millis = |nanos: i128| nanos as f64 / 1e6;
+    #[allow(clippy::cast_precision_loss, reason = "a count of frames, for the log")]
+    let mean_late = if stats.presented > 0 {
+        millis(stats.total_late) / stats.presented as f64
+    } else {
+        0.0
+    };
+    let drift = match (stats.heard, stats.sound_now) {
+        (Some((first, heard)), Some((last, now))) => {
+            let system = i128::try_from(last.duration_since(first).as_nanos()).unwrap_or(0);
+            Some(millis(now - heard - system))
+        }
+        _ => None,
+    };
+    let duration = |time: Duration| time.as_secs_f64() * 1e3;
+    log(
+        "transport_played",
+        &json!({
+            "media": loaded.media,
+            "speed": playing.clock.speed(),
+            "clock": if playing.sound { "sound" } else { "system" },
+            "decoder": loaded.video.as_ref().map(|video| video.decoder.path_used().name()),
+            "seconds": seconds,
+            "presented": stats.presented,
+            "skipped": stats.skipped,
+            "passed": stats.passed,
+            "late": stats.late,
+            "late_worst_ms": millis(stats.worst_late),
+            "late_mean_ms": mean_late,
+            "sound_jitter_ms": millis(stats.jitter),
+            "sound_minus_system_ms": drift,
+            "sound_latency_ms": stats.latency.map(|(latency, _)| duration(latency)),
+            "sound_run_ms": stats.latency.map(|(_, run)| duration(run)),
+            "sound_short_runs": stats.short_runs,
+        }),
+    );
+}
+
 /// The time of the clock that `playing` goes by, in nanoseconds, never going back: the time of
-/// the sound heard, smoothed, or 0 until it is first heard; or the monotonic clock.
+/// the sound heard, smoothed, or 0 until it is first read; or the monotonic clock.
 fn clock_time(playing: &Playing, world: &World) -> i128 {
     let now = if playing.sound {
         playing.offset.map_or(0, |offset| world.now() + offset)
@@ -1415,6 +1924,13 @@ fn clock_time(playing: &Playing, world: &World) -> i128 {
     let now = now.max(playing.latest.get());
     playing.latest.set(now);
     now
+}
+
+/// How much of the sound started last has been heard, in nanoseconds of it: fewer than none
+/// before its first sample is heard.
+fn sound_nanos(output: &Output, now: Instant) -> Option<i128> {
+    let played = output.played(now)?;
+    Some(i128::from(played) * NANOS / i128::from(output.format().rate.max(1)))
 }
 
 /// How far the time of the sound is ahead of the monotonic clock, smoothed: a reading of the
@@ -1431,51 +1947,6 @@ fn smoothed(offset: Option<i128>, read: i128) -> i128 {
 /// How far a reading of the sound may be from the time smoothed before it is taken as it is.
 const SNAP: i128 = 40_000_000;
 
-/// How much of the sound started last has been heard, in nanoseconds of it.
-fn sound_nanos(output: Option<&Result<Output, String>>, now: Instant) -> Option<i128> {
-    let Some(Ok(output)) = output else {
-        return None;
-    };
-    let played = output.played(now)?;
-    Some(i128::from(played) * NANOS / i128::from(output.format().rate.max(1)))
-}
-
-/// Keep how the sound goes against the monotonic clock, for the log; where the device failed,
-/// go on with the monotonic clock from where the sound was.
-fn sound_check(playing: &mut Playing, output: Option<&Result<Output, String>>, world: &World) {
-    let now = Instant::now();
-    let heard = sound_nanos(output, now);
-    if let Some(heard) = heard {
-        if heard > 0 {
-            playing.offset = Some(smoothed(playing.offset, heard - world.now()));
-            let stats = &mut playing.stats;
-            stats.heard.get_or_insert((now, heard));
-            if let Some((then, before)) = stats.sound_now {
-                let system = i128::try_from(now.duration_since(then).as_nanos()).unwrap_or(0);
-                stats.jitter = stats.jitter.max((heard - before - system).abs());
-            }
-            stats.sound_now = Some((now, heard));
-        }
-    }
-    let failed = match output {
-        Some(Ok(output)) => output.failed().is_some(),
-        _ => true,
-    };
-    if failed {
-        let place = playing.clock.place(clock_time(playing, world));
-        let speed = playing.clock.speed();
-        let rate = playing.clock.rate();
-        let now = world.now();
-        playing.clock = Clock::at(place, speed, rate, now);
-        playing.latest.set(now);
-        playing.sound = false;
-    }
-}
-
-fn loaded_rate(loaded: Option<&Loaded>) -> Rate {
-    loaded.map_or(Rate { num: 25, den: 1 }, |loaded| loaded.rate)
-}
-
 /// Log what failed while the transport decoded.
 fn failed(media: &str, error: &MediaError) {
     log(
@@ -1485,25 +1956,45 @@ fn failed(media: &str, error: &MediaError) {
 }
 
 impl Loaded {
-    /// Keep a picture to be shown again at once.
+    /// Keep a picture to be shown again at once; past the most that is kept, the one furthest
+    /// from the playhead goes, so that those just shown stay.
     fn remember(&mut self, picture: Arc<Picture>) {
+        let most = self
+            .video
+            .as_ref()
+            .map_or(0, |video| video.limits.recent_paused);
         self.recent.retain(|kept| kept.frame != picture.frame);
         self.recent.push_back(picture);
-        while self.recent.len() > RECENT {
-            self.recent.pop_front();
+        while self.recent.len() > most {
+            let playhead = self.playhead;
+            let furthest = self
+                .recent
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, kept)| (kept.frame - playhead).abs())
+                .map(|(index, _)| index);
+            match furthest {
+                Some(index) => drop(self.recent.remove(index)),
+                None => break,
+            }
         }
     }
 
-    /// Show `frame` as it is, and say it is the frame at the playhead.
+    /// Show `frame` as it is, and say whether it is the frame at the playhead: not if it
+    /// could not be decoded.
     fn show_exact(&mut self, frame: i64, pipe: &mut Pipe, world: &World) -> Result<(), MediaError> {
-        self.show(frame, pipe, world)?;
-        self.exact = true;
-        Ok(())
+        let shown = self.show(frame, pipe, world);
+        self.exact = shown.is_ok();
+        shown
     }
 
-    /// Show `frame`: from the recent pictures, or decoded and made a picture now. A frame past
-    /// the end, which the facts of the media promised, is the last that is there.
+    /// Show `frame`: the picture shown already, one of the recent pictures, or decoded and
+    /// made a picture now. A frame past the end, which the facts of the media promised, is the
+    /// last that is there. Sound alone shows nothing.
     fn show(&mut self, frame: i64, pipe: &mut Pipe, world: &World) -> Result<(), MediaError> {
+        let Some(video) = &mut self.video else {
+            return Ok(());
+        };
         if self
             .picture
             .as_ref()
@@ -1516,13 +2007,13 @@ impl Loaded {
             self.present(picture, world);
             return Ok(());
         }
-        let decoded = match self.decoder.decoded_at(frame) {
+        let decoded = match video.decoder.decoded_at(frame) {
             Err(MediaError::OutOfRange {
                 last: Some(last), ..
             }) if frame > last => {
                 self.last = last;
                 self.playhead = self.playhead.min(last);
-                self.decoder.decoded_at(last)?
+                video.decoder.decoded_at(last)?
             }
             other => other?,
         };
@@ -1535,8 +2026,8 @@ impl Loaded {
                     "transport_device_failed",
                     &json!({ "media": self.media, "frame": frame, "message": why }),
                 );
-                self.decoder.device_failed(&why);
-                let decoded = self.decoder.decoded_at(frame)?;
+                video.decoder.device_failed(&why);
+                let decoded = video.decoder.decoded_at(frame)?;
                 pipe.convert_now(decoded)?
             }
             other => other?,
@@ -1546,7 +2037,9 @@ impl Loaded {
     }
 
     fn present(&mut self, picture: Arc<Picture>, world: &World) {
-        world.present(&picture, self.rotation);
+        if let Some(video) = &self.video {
+            world.present(&picture, video.rotation);
+        }
         if let Some(old) = self.picture.replace(picture) {
             self.remember(old);
         }
@@ -1632,6 +2125,42 @@ mod tests {
             offset = Some(smoothed(offset, read * MS));
             assert!(offset.unwrap().abs() <= 2 * MS, "{offset:?}");
         }
+    }
+
+    #[test]
+    fn the_pictures_held_take_at_most_384_mib() {
+        let mib = |bytes: u64| bytes / (1024 * 1024);
+        for (width, height, bits, pool, ahead) in [
+            (1920, 1080, 8, 12, 8),
+            (3840, 2160, 10, 12, 8),
+            (5760, 3240, 10, 7, 5),
+            (7680, 4320, 10, 4, 2),
+            (15360, 8640, 10, 4, 2),
+        ] {
+            let bytes = Limits::picture_bytes(width, height, bits);
+            let limits = Limits::of(bytes);
+            assert_eq!(
+                (limits.pool, limits.ahead),
+                (pool, ahead),
+                "{width}×{height}"
+            );
+            assert_eq!(
+                limits.pool,
+                limits.ahead + limits.recent_playing + 2,
+                "{width}×{height}"
+            );
+            assert!(limits.in_flight <= limits.ahead && limits.in_flight > 0);
+            assert!(limits.recent_paused + 3 <= limits.pool);
+            if pool > 4 {
+                assert!(
+                    mib(bytes * u64::try_from(pool).unwrap()) <= 384,
+                    "{width}×{height}"
+                );
+            }
+        }
+        // 4K in P010: rows of 7680 bytes, a plane and a half of them.
+        assert_eq!(Limits::picture_bytes(3840, 2160, 10), 7680 * 3240);
+        assert_eq!(Limits::picture_bytes(1921, 1081, 8), 1984 * (1081 + 541));
     }
 
     #[test]

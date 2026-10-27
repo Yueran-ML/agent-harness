@@ -173,7 +173,7 @@ impl Engine {
         limits: Limits,
         read_gate: Option<PathBuf>,
         headless: bool,
-        mute: bool,
+        setup: transport::Setup,
     ) -> Engine {
         let state = Arc::new(Mutex::new(State {
             history,
@@ -183,7 +183,7 @@ impl Engine {
             transport: None,
         }));
         let viewer = Viewer::new(headless);
-        let transport = Transport::new(headless, mute, viewer.slot(), {
+        let transport = Transport::new(headless, setup, viewer.slot(), {
             let state = Arc::clone(&state);
             Arc::new(move |status: &Status| tell(&state, status, limits))
         });
@@ -431,12 +431,23 @@ async fn dispatch(
                 Err(refused) => Reply::Refused(refused),
             })
         }
-        _ if method.starts_with("transport.") => {
-            let result = transport_call(engine, method, params).await?;
+        "transport.load" => {
+            let result = transport_load(engine, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),
             })
+        }
+        _ if method.starts_with("transport.") => {
+            // The answer is queued before the command is sent, so that the state that it makes
+            // is told after the answer.
+            let (result, order) = engine.transport.prepare(method, params)?;
+            let reply = match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            };
+            order.send();
+            Ok(reply)
         }
         _ => Err(Fault::new(
             rpc::METHOD_NOT_FOUND,
@@ -446,38 +457,34 @@ async fn dispatch(
     }
 }
 
-/// The methods `transport.*`, of any client: `transport.load` finds the media in the project,
-/// and waits for the transport to open it; the others are answered at once.
-async fn transport_call(
+/// `transport.load`, of any client: the media is found in the project, and its load is sent
+/// while the state is locked, so that a change that removes it, made after, unloads it after it
+/// is loaded; then the load is waited for, with the state let go.
+async fn transport_load(
     engine: &Engine,
-    method: &str,
     params: Option<&RawValue>,
 ) -> Result<serde_json::Value, Fault> {
-    if method != "transport.load" {
-        return engine.transport.call(method, params);
-    }
+    let method = "transport.load";
     engine.transport.check(method)?;
     let load: transport::Load = rpc::params(method, r#"{"media": "m1"}"#, params)?;
-    let found = {
+    let loading = {
         let state = engine.state.lock().await;
-        state
-            .history
-            .project()
-            .media
-            .iter()
-            .find(|media| media.id == load.media)
-            .map(|media| (media.path.clone(), media.facts.clone()))
+        let project = state.history.project();
+        let Some(media) = project.media.iter().find(|media| media.id == load.media) else {
+            return Err(
+                Fault::params(format!("there is no media {} in the project", load.media))
+                    .with_data(json!({ "reason": "missing", "media": load.media })),
+            );
+        };
+        let grid = project.timelines.first().map(|timeline| timeline.rate);
+        engine.transport.begin_load(
+            &load.media,
+            PathBuf::from(&media.path),
+            media.facts.clone(),
+            grid,
+        )?
     };
-    let Some((path, facts)) = found else {
-        return Err(
-            Fault::params(format!("there is no media {} in the project", load.media))
-                .with_data(json!({ "reason": "missing", "media": load.media })),
-        );
-    };
-    let status = engine
-        .transport
-        .load(load.media, PathBuf::from(path), facts)
-        .await?;
+    let status = loading.done().await?;
     Ok(serde_json::to_value(status).unwrap_or_default())
 }
 

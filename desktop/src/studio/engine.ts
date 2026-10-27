@@ -419,7 +419,10 @@ export interface StudioSnapshot {
   session: number | null;
   /** The revision of the copy, or null before it was fetched. */
   revision: number | null;
-  /** The copy of the project, kept (as it was last) while disconnected; null before it was fetched. */
+  /**
+   * The copy of the project, kept (as it was last) while disconnected; null before it was fetched,
+   * and from the moment another engine is opened until its project is.
+   */
   project: Project | null;
   /** What the transport told last, or null before it told anything. */
   transport: TransportState | null;
@@ -568,7 +571,11 @@ export class ProjectCopy {
         this.open = true;
         this.failures = 0;
         if (event.session !== session) {
-          this.set({ session: event.session, transport: null, proxies: {}, view: { state: 'none' }, takingOver: false });
+          // Another engine, maybe of another project: nothing of the one before is shown of it.
+          this.set({
+            session: event.session, status: 'disconnected', revision: null, project: null, transport: null, proxies: {},
+            view: { state: 'none' }, error: null, takingOver: false,
+          });
         } else if (this.snapshot.takingOver) this.set({ takingOver: false });
         void this.refetch();
         return;

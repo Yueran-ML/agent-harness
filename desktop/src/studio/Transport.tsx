@@ -8,24 +8,45 @@ import { timecode } from './timecode';
 /** How often a seek is sent while the playhead is dragged: at most every 1/30 s. */
 export const SCRUB_EVERY_MS = 1000 / 30;
 
+/** How long the frame that the playhead was let go at is shown, at most, before the transport tells it. */
+export const LET_GO_HOLD_MS = 1000;
+
 /**
  * The bar that the playhead is dragged along. While it is dragged, a seek that scrubs is sent at
  * most every 1/30 s, the last place always; as it is let go, a seek to where it was let go that
- * does not scrub, so that the frame itself is shown.
+ * does not scrub, so that the frame itself is shown. A drag that the bar can no longer take (the
+ * media was unloaded, the engine ended) sends nothing more.
  */
-export function Scrubber({ frame, last, disabled, onSeek, onDrag }: {
+export function Scrubber({ frame, last, disabled, valueText, onSeek, onDrag }: {
+  /** The frame that the bar shows: where the playhead is, or is being dragged to. */
   frame: number;
   last: number;
   disabled: boolean;
+  /** The frame as it is said: its timecode. */
+  valueText: string;
   onSeek: (frame: number, scrubbing: boolean) => void;
-  /** Where the playhead is being dragged to, or null once it is let go. */
-  onDrag: (frame: number | null) => void;
+  /** Where the playhead is being dragged to, or was let go at; null where the drag was given up. */
+  onDrag: (frame: number | null, dragging: boolean) => void;
 }) {
   const words = useWords();
   const bar = useRef<HTMLDivElement>(null);
-  const [dragged, setDragged] = useState<number | null>(null);
+  const [dragging, setDragging] = useState(false);
   const sending = useRef<{ at: number; timer: ReturnType<typeof setTimeout> | null; waiting: number | null }>({ at: -Infinity, timer: null, waiting: null });
-  useEffect(() => () => { if (sending.current.timer !== null) clearTimeout(sending.current.timer); }, []);
+  const stopSending = () => {
+    const held = sending.current;
+    if (held.timer !== null) clearTimeout(held.timer);
+    held.timer = null;
+    held.waiting = null;
+    held.at = -Infinity;
+  };
+  useEffect(() => stopSending, []);
+  // The bar can no longer be dragged: the drag ends, and nothing more is sent.
+  useEffect(() => {
+    if (!disabled || !dragging) return;
+    stopSending();
+    setDragging(false);
+    onDrag(null, false);
+  }, [disabled, dragging]);
 
   const frameAt = (x: number) => {
     const box = bar.current!.getBoundingClientRect();
@@ -37,8 +58,7 @@ export function Scrubber({ frame, last, disabled, onSeek, onDrag }: {
     onSeek(to, true);
   };
   const dragTo = (to: number) => {
-    setDragged(to);
-    onDrag(to);
+    onDrag(to, true);
     const held = sending.current;
     const since = Date.now() - held.at;
     if (since >= SCRUB_EVERY_MS && held.timer === null) {
@@ -55,13 +75,9 @@ export function Scrubber({ frame, last, disabled, onSeek, onDrag }: {
     }, Math.max(0, SCRUB_EVERY_MS - since));
   };
   const letGo = (to: number) => {
-    const held = sending.current;
-    if (held.timer !== null) clearTimeout(held.timer);
-    held.timer = null;
-    held.waiting = null;
-    held.at = -Infinity;
-    setDragged(null);
-    onDrag(null);
+    stopSending();
+    setDragging(false);
+    onDrag(to, false);
     onSeek(to, false);
   };
 
@@ -69,31 +85,33 @@ export function Scrubber({ frame, last, disabled, onSeek, onDrag }: {
     if (disabled || event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture?.(event.pointerId);
+    setDragging(true);
     dragTo(frameAt(event.clientX));
   };
   const move = (event: PointerEvent<HTMLDivElement>) => {
-    if (dragged !== null) dragTo(frameAt(event.clientX));
+    if (dragging && !disabled) dragTo(frameAt(event.clientX));
   };
   const up = (event: PointerEvent<HTMLDivElement>) => {
-    if (dragged === null) return;
+    if (!dragging) return;
     event.currentTarget.releasePointerCapture?.(event.pointerId);
+    if (disabled) return;
     letGo(frameAt(event.clientX));
   };
-  const cancel = () => { if (dragged !== null) letGo(dragged); };
+  const cancel = () => { if (dragging && !disabled) letGo(frame); };
 
-  const at = dragged ?? frame;
-  const share = last > 0 ? Math.max(0, Math.min(1, at / last)) : 0;
+  const share = last > 0 ? Math.max(0, Math.min(1, frame / last)) : 0;
   return <div
     ref={bar}
     className="scrubber"
     role="slider"
-    tabIndex={-1}
+    tabIndex={disabled ? -1 : 0}
     aria-label={words.label.studio.position}
     aria-valuemin={0}
     aria-valuemax={last}
-    aria-valuenow={at}
+    aria-valuenow={frame}
+    aria-valuetext={valueText}
     aria-disabled={disabled || undefined}
-    data-dragging={dragged !== null ? '' : undefined}
+    data-dragging={dragging ? '' : undefined}
     onPointerDown={down}
     onPointerMove={move}
     onPointerUp={up}
@@ -106,15 +124,17 @@ export function Scrubber({ frame, last, disabled, onSeek, onDrag }: {
 }
 
 /** The sign of how the sound stands, which says it in full when it is pointed at. */
-function Sound({ sound }: { sound: TransportState['sound'] }) {
+function Sound({ sound, playing, speed }: { sound: TransportState['sound']; playing: boolean; speed: number }) {
   const words = useWords();
   const Icon = sound === 'on' ? Volume2 : sound === 'off' ? VolumeX : VolumeOff;
+  // Sound is off while paused, and while it plays at another speed than 1: which, is said.
+  const why = sound === 'off' && playing && speed !== 1 ? 'offSpeed' : sound;
   return <span
     className="transport-sound"
     role="img"
     data-tone={sound === 'unavailable' ? 'warn' : sound === 'on' ? 'ok' : undefined}
     aria-label={words.label.studio.sound[sound]}
-    title={words.hint.studio.sound[sound]}
+    title={words.hint.studio.sound[why]}
     data-test="sound"
     data-sound={sound}
   >
@@ -125,7 +145,9 @@ function Sound({ sound }: { sound: TransportState['sound'] }) {
 /**
  * The controls of the source monitor: back a frame, play or pause, forward a frame, the timecode
  * of the playhead, the bar that it is dragged along, whether proxies are used and what the picture
- * is read from, and how the sound stands. What is shown follows what the transport tells.
+ * is read from, and how the sound stands. What is shown follows what the transport tells; the
+ * frame the playhead is dragged to is shown at once, and, once it is let go, until the transport
+ * tells it (or a second has passed), so that the playhead does not jump back meanwhile.
  */
 export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
   state: TransportState | null;
@@ -137,17 +159,28 @@ export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
   onProxies: (on: boolean) => void;
 }) {
   const words = useWords();
-  const [dragged, setDragged] = useState<number | null>(null);
+  const [held, setHeld] = useState<{ frame: number; dragging: boolean; media: string | null } | null>(null);
   const loaded = state !== null && state.media !== null;
-  const frame = dragged ?? state?.frame ?? 0;
+  // The frame let go at is shown until the transport is there, or has gone elsewhere.
+  useEffect(() => {
+    if (held === null || held.dragging) return;
+    if (!loaded || state.media !== held.media || state.frame === held.frame || state.playing) setHeld(null);
+  }, [held, state, loaded]);
+  useEffect(() => {
+    if (held === null || held.dragging) return undefined;
+    const timer = setTimeout(() => setHeld(null), LET_GO_HOLD_MS);
+    return () => clearTimeout(timer);
+  }, [held]);
+  const frame = held?.frame ?? state?.frame ?? 0;
   const playing = loaded && state.playing;
   const speed = state?.speed ?? 1;
+  const space = words.label.studio.space;
   return <div className="transport" data-test="transport">
     <div className="transport-row">
       <span
         className="timecode mono"
-        data-exact={!loaded || state.exact ? undefined : 'no'}
-        title={loaded && !state.exact ? words.hint.studio.inexact : undefined}
+        data-exact={!loaded || state.exact || held !== null ? undefined : 'no'}
+        title={loaded && !state.exact && held === null ? words.hint.studio.inexact : undefined}
         data-test="timecode"
       >
         {timecode(frame, rate)}
@@ -159,7 +192,7 @@ export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
         </button>
         <button type="button" className="icon-btn transport-play" disabled={!loaded}
           aria-label={playing ? words.label.studio.pause : words.label.studio.play}
-          title={`${playing ? words.label.studio.pause : words.label.studio.play} (Space)`}
+          title={`${playing ? words.label.studio.pause : words.label.studio.play} (${space})`}
           onClick={() => onCommand(playing ? { method: 'transport.pause' } : { method: 'transport.play', params: { speed: 1 } })}
           data-test="play">
           {playing ? <Pause size={18} /> : <Play size={18} />}
@@ -184,10 +217,17 @@ export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
         >
           {words.label.studio.useProxies}
         </button>
-        {loaded && <Sound sound={state.sound} />}
+        {loaded && <Sound sound={state.sound} playing={state.playing} speed={state.speed} />}
         <span className="timecode timecode-last mono" aria-hidden="true">{last === null ? '' : timecode(last, rate)}</span>
       </div>
     </div>
-    <Scrubber frame={state?.frame ?? 0} last={last ?? 0} disabled={!loaded || last === null} onSeek={onSeek} onDrag={setDragged} />
+    <Scrubber
+      frame={frame}
+      last={last ?? 0}
+      disabled={!loaded || last === null}
+      valueText={timecode(frame, rate)}
+      onSeek={onSeek}
+      onDrag={(to, dragging) => setHeld(to === null ? null : { frame: to, dragging, media: state?.media ?? null })}
+    />
   </div>;
 }

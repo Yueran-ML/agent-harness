@@ -45,6 +45,18 @@ import {
 import { storeChecking, storedChecking, storedSkipped, storeSkipped, toldOf } from './updates';
 
 const tellingKey = 'columbina-tell-me';
+/** Whether the conversation beside the studio was put away, as the user left it. */
+export const conversationKey = 'columbina-studio-conversation';
+/** A window narrower than this puts the conversation away as the studio opens: the viewer would have no room. */
+export const STUDIO_ROOMY_PX = 1280;
+
+function storedConversationHidden(): boolean {
+  try {
+    return localStorage.getItem(conversationKey) === 'hidden';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The line that stands while the page waits for the service. A start that takes long says
@@ -145,11 +157,43 @@ export default function App() {
   const running = status?.status === 'running';
   const stopped = status?.status === 'stopped';
   const unavailable = workspace.loading || !workspace.connected || stopped || !workspace.hasProject;
-  // The studio edits the project of the folder that the conversation works in. A chat has none.
-  const studioFolder = workspace.hasProject && !workspace.chat ? workspace.hello?.cwd ?? null : null;
-  const studioShown = studioFolder !== null && studioFor === studioFolder;
-  // The studio of another folder is left: the shell closes its engine as the folder changes.
-  useEffect(() => { setStudioFor(shown => (shown === studioFolder ? shown : null)); }, [studioFolder]);
+  // The studio edits the project of the folder that the conversation works in. A chat has none,
+  // and while the service starts again (another model, a restart) none is said: the studio stays.
+  const projectFolder = workspace.chat ? null : workspace.hello?.cwd ?? null;
+  const studioFolder = workspace.chat || !workspace.hasProject ? null : projectFolder ?? studioFor;
+  const studioShown = studioFor !== null && !workspace.chat && workspace.hasProject;
+  // The folder whose project the engine of the studio has open, since the studio was opened on it.
+  const engineFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (workspace.chat) {
+      setStudioFor(null);
+      return;
+    }
+    if (projectFolder === null) return;
+    // Another folder: its studio is left, and the engine of the one before is closed, which would
+    // otherwise keep its project, and go on making its proxies.
+    setStudioFor(shown => (shown === null || shown === projectFolder ? shown : null));
+    if (engineFor.current !== null && engineFor.current !== projectFolder) {
+      engineFor.current = null;
+      void Promise.resolve().then(() => studioEngine().bridge.close()).catch(() => {});
+    }
+  }, [projectFolder, workspace.chat]);
+  // Whether the conversation beside the studio is put away.
+  const [conversationHidden, setConversationHidden] = useState(false);
+  const openStudio = (folder: string) => {
+    engineFor.current = folder;
+    setConversationHidden(window.innerWidth < STUDIO_ROOMY_PX || storedConversationHidden());
+    setStudioFor(folder);
+  };
+  const toggleConversation = () => {
+    const hidden = !conversationHidden;
+    setConversationHidden(hidden);
+    try {
+      localStorage.setItem(conversationKey, hidden ? 'hidden' : 'shown');
+    } catch {
+      // Without storage the choice holds for this window.
+    }
+  };
 
   // --- What the window looks like, and the language it speaks.
   useEffect(() => {
@@ -517,6 +561,13 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (showOpening || document.querySelector('dialog[open]')) return;
+      // The conversation beside the studio is put away, or brought back.
+      if (studioShown && (event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && !event.repeat
+        && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        toggleConversation();
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || event.repeat) return;
       const key = event.key.toLowerCase();
       if (key === 'b') {
@@ -549,6 +600,13 @@ export default function App() {
     // The field cannot be used and has let go of the keyboard. What is done next is a new start.
     else if (workspace.closed !== null || stopped) restartButton.current?.focus();
   }, [showOpening, unavailable, workspace.hasProject, workspace.sessionId, workspace.closed, stopped, studioShown]);
+  // The studio is left: the field has the keyboard again, wherever it was.
+  const studioWasShown = useRef(false);
+  useEffect(() => {
+    const left = studioWasShown.current && !studioShown;
+    studioWasShown.current = studioShown;
+    if (left && !unavailable && !showOpening && !document.querySelector('dialog[open]')) field.current?.focus();
+  }, [studioShown]);
 
   // --- What is shown.
   // A conversation in no project is called a chat, and not by the name of its folder.
@@ -632,6 +690,7 @@ export default function App() {
         data-sidebar={noSidebar ? 'hidden' : undefined}
         data-inspector={inspector ? '' : undefined}
         data-studio={studioShown ? '' : undefined}
+        data-conversation={studioShown && conversationHidden ? 'hidden' : undefined}
       >
         <a href="#composer" className="skip">{words.label.skipToInput}</a>
 
@@ -646,13 +705,15 @@ export default function App() {
           onHide={() => setSidebarHidden(true)}
           studio={studioFolder === null ? undefined : {
             open: studioShown,
-            onToggle: () => setStudioFor(studioShown ? null : studioFolder),
+            onToggle: () => (studioShown ? setStudioFor(null) : openStudio(studioFolder)),
           }}
         />}
 
         {studioShown && <Studio
-          cwd={studioFolder}
+          cwd={studioFor}
           engine={studioEngine()}
+          conversationHidden={conversationHidden}
+          onToggleConversation={toggleConversation}
           language={shownLanguage(language)}
           onClose={() => setStudioFor(null)}
         />}

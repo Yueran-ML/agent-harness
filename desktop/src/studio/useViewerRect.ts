@@ -61,10 +61,11 @@ export function useViewerRect(viewer: RefObject<HTMLElement | null>, bridge: Vie
       const rect = deviceRect(element.getBoundingClientRect(), ratio());
       const asked = again;
       again = false;
+      // Watched again from where it lies now, whether or not that is another pixel.
+      watchMoves();
       if (!asked && told !== null && same(told, rect)) return;
       told = rect;
       quietly(() => bridge.viewRect(rect));
-      watchMoves();
       if (!measured) {
         measured = true;
         showAsItIs();

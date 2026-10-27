@@ -6,7 +6,7 @@
  */
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import App from '../src/app/App';
+import App, { conversationKey, STUDIO_ROOMY_PX } from '../src/app/App';
 import { openingStorageKey } from '../src/app/opening';
 import type { EngineAnswer, EngineEvent } from '../src/studio/engine';
 import type { Updates } from '../src/useUpdates';
@@ -30,6 +30,13 @@ vi.mock('../src/BackgroundMusic', () => ({
 let frames: FrameRequestCallback[] = [];
 const drawFrame = () => act(() => { const now = frames; frames = []; for (const callback of now) callback(0); });
 
+const film = {
+  id: 'm1', path: 'F:/work/film.mp4', identity: { size: 1, modified_us: 0, digest: '0'.repeat(64) },
+  facts: { duration: { ticks: 10, scale: 1 }, video: { width: 1920, height: 1080, rate: { num: 25, den: 1 }, codec: 'h264', bits: 8, rotation: 0 }, audio: null },
+};
+/** What the page asked the transport, but for what it fetches by itself. */
+const asked = () => engine.call.mock.calls.map(([method]) => method).filter(method => method !== 'project.get' && method !== 'transport.state');
+
 /** The engine of the studio, as the shell lets the page reach it. */
 function shellEngine() {
   const listeners = new Set<(event: EngineEvent) => void>();
@@ -40,8 +47,10 @@ function shellEngine() {
       return opened;
     }),
     call: vi.fn(async (method: string): Promise<EngineAnswer> => (method === 'project.get'
-      ? { ok: true, result: { revision: 0, next_id: 1, project: { schema: 1, next_id: 1, media: [], timelines: [] } } }
-      : { ok: true, result: { media: null, frame: null, playing: false, speed: 1, exact: true, shown: null, last: null, sound: 'none', source: null, proxies: true } })),
+      ? { ok: true, result: { revision: 0, next_id: 2, project: { schema: 1, next_id: 2, media: [film], timelines: [] } } }
+      : method === 'transport.state'
+        ? { ok: true, result: { media: 'm1', frame: 0, playing: false, speed: 1, exact: true, shown: 0, last: 249, sound: 'off', source: 'original', proxies: true } }
+        : { ok: true, result: {} })),
     importFiles: vi.fn(async () => ({ ok: true, result: null })),
     viewRect: vi.fn(async () => {}),
     viewShow: vi.fn(async () => {}),
@@ -62,6 +71,8 @@ beforeEach(() => {
   localStorage.setItem(openingStorageKey, 'seen');
   engine = shellEngine();
   vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), engine });
+  // A window with room for the conversation beside the studio.
+  vi.stubGlobal('innerWidth', 1440);
 });
 afterEach(() => {
   cleanup();
@@ -158,14 +169,134 @@ describe('the studio in the page', () => {
     expect(last()).toEqual([true]);
   });
 
-  it('is left as the app goes to another folder, and is not offered in a chat', async () => {
+  it('is left, and its engine closed, as the app goes to another folder', async () => {
     const drawn = page(task());
     fireEvent.click(one('open-studio'));
     await settle();
-    drawn.now(task({ hello: { protocol: 1, server: { name: 'columbina', version: '0.1.0' }, cwd: 'F:\\other', commands: [] }, folder: 'F:\\other' }));
+    const other = { protocol: 1, server: { name: 'columbina', version: '0.1.0' }, cwd: 'F:\\other', commands: [] };
+    // The service of the other folder starts: for a moment it has said nothing.
+    drawn.now(task({ hello: null, folder: 'F:\\other', loading: true, connected: false }));
+    drawn.now(task({ hello: other, folder: 'F:\\other' }));
+    await settle();
     expect(marked('studio')).toEqual([]);
     expect(one('open-studio').getAttribute('aria-pressed')).toBe('false');
-    drawn.now(task({ chat: true }));
+    expect(engine.close).toHaveBeenCalledOnce();
+    // The studio of the other folder opens its project in an engine of its own.
+    fireEvent.click(one('open-studio'));
+    await settle();
+    expect(engine.open.mock.calls.map(([cwd]) => cwd)).toEqual(['F:\\work', 'F:\\other']);
+    drawn.now(task({ hello: other, folder: 'F:\\other' }));
+    await settle();
+    expect(engine.close).toHaveBeenCalledOnce();
+  });
+
+  it('stays while the service starts again in the same folder', async () => {
+    const drawn = page(task());
+    fireEvent.click(one('open-studio'));
+    await settle();
+    // Another model of another service, or a restart: the service is started again.
+    drawn.now(task({ hello: null, loading: true, connected: false }));
+    expect(marked('studio')).toHaveLength(1);
+    expect(one('open-studio').getAttribute('aria-pressed')).toBe('true');
+    drawn.now(task());
+    await settle();
+    expect(marked('studio')).toHaveLength(1);
+    expect(engine.open).toHaveBeenCalledOnce();
+    expect(engine.close).not.toHaveBeenCalled();
+  });
+
+  it('is left in a chat, which offers none, and its engine is kept for the folder', async () => {
+    const drawn = page(task());
+    fireEvent.click(one('open-studio'));
+    await settle();
+    drawn.now(task({ chat: true, hello: null }));
+    expect(marked('studio')).toEqual([]);
     expect(marked('open-studio')).toEqual([]);
+    drawn.now(task());
+    await settle();
+    expect(marked('studio')).toEqual([]);
+    expect(engine.close).not.toHaveBeenCalled();
+  });
+
+  it('puts the conversation away and brings it back, by its button and by Ctrl+Shift+B, and remembers it', async () => {
+    page(task());
+    fireEvent.click(one('open-studio'));
+    await settle();
+    expect(shell().dataset.conversation).toBeUndefined();
+    expect(one('toggle-conversation').getAttribute('aria-label')).toBe('Hide the conversation');
+    expect(one('toggle-conversation').title).toBe('Hide the conversation (Ctrl+Shift+B)');
+    fireEvent.click(one('toggle-conversation'));
+    expect(shell().dataset.conversation).toBe('hidden');
+    expect(localStorage.getItem(conversationKey)).toBe('hidden');
+    expect(one('toggle-conversation').getAttribute('aria-label')).toBe('Show the conversation');
+    expect(fireEvent.keyDown(document.body, { key: 'B', ctrlKey: true, shiftKey: true })).toBe(false);
+    expect(shell().dataset.conversation).toBeUndefined();
+    expect(localStorage.getItem(conversationKey)).toBe('shown');
+    // Ctrl+B still puts the tasks away.
+    fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true });
+    expect(marked('sidebar')).toEqual([]);
+    expect(shell().dataset.conversation).toBeUndefined();
+    fireEvent.keyDown(document.body, { key: 'b', ctrlKey: true });
+    // Put away, the choice holds the next time the studio opens.
+    fireEvent.click(one('toggle-conversation'));
+    fireEvent.click(one('close-studio'));
+    expect(shell().dataset.conversation).toBeUndefined();
+    fireEvent.click(one('open-studio'));
+    await settle();
+    expect(shell().dataset.conversation).toBe('hidden');
+  });
+
+  it('puts the conversation away as it opens in a narrow window, whatever was chosen', async () => {
+    vi.stubGlobal('innerWidth', STUDIO_ROOMY_PX - 1);
+    localStorage.setItem(conversationKey, 'shown');
+    page(task());
+    fireEvent.click(one('open-studio'));
+    await settle();
+    expect(shell().dataset.conversation).toBe('hidden');
+    // Ctrl+Shift+B does nothing where the studio is not shown.
+    fireEvent.click(one('close-studio'));
+    expect(fireEvent.keyDown(document.body, { key: 'B', ctrlKey: true, shiftKey: true })).toBe(true);
+  });
+
+  it('gives the field the keyboard again as the studio is left', async () => {
+    page(task());
+    fireEvent.click(one('open-studio'));
+    await settle();
+    expect(document.activeElement).toBe(one('studio'));
+    // Left from among the tasks, where the button keeps the keyboard otherwise.
+    one('open-studio').focus();
+    fireEvent.click(one('open-studio'));
+    expect(document.activeElement).toBe(one('composer'));
+  });
+
+  it('takes its keys while the panel over the page in a narrow window is closed, and none while it is open', async () => {
+    vi.stubGlobal('matchMedia', (media: string) => ({ matches: media === '(max-width: 1120px)', media, addEventListener() {}, removeEventListener() {} }));
+    page(task());
+    fireEvent.click(one('open-studio'));
+    await settle();
+    fireEvent.keyDown(document.body, { key: 'l' });
+    await settle();
+    expect(asked()).toEqual(['transport.play']);
+    fireEvent.click(one('show-details'));
+    expect(document.body.dataset.overlay).toBe('1');
+    fireEvent.keyDown(document.body, { key: 'k' });
+    fireEvent.click(one('inspector').querySelector('[aria-label="Close"]')!);
+    expect(document.body.dataset.overlay).toBeUndefined();
+    fireEvent.keyDown(document.body, { key: 'k' });
+    await settle();
+    expect(asked()).toEqual(['transport.play', 'transport.pause']);
+  });
+
+  it('leaves the keys of the conversation to it', async () => {
+    page(task({ sessions: [{ id: 's-1', modified_ms: Date.now(), first_input: 'Cut the film.' }, { id: 's-2', modified_ms: Date.now(), first_input: 'Other.' }] }));
+    fireEvent.click(one('open-studio'));
+    await settle();
+    const [, other] = marked('task');
+    other.focus();
+    fireEvent.keyDown(other, { key: ' ' });
+    fireEvent.keyDown(one('show-details'), { key: 'End' });
+    fireEvent.keyDown(one('composer'), { key: 'l' });
+    await settle();
+    expect(asked()).toEqual([]);
   });
 });

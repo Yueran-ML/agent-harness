@@ -4019,6 +4019,29 @@ describe('the engine of the studio', () => {
     expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, adapter: 'NVIDIA GeForce RTX 4080', backend: 'Dx12' });
   });
 
+  it('makes no view while the page keeps it hidden, and hides one made meanwhile before it says so', async () => {
+    const shell = await shellHarness();
+    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await openIn(shell);
+    const [, view] = connections(shell);
+    await settledAll();
+    // A view is made shown: none is made while something lies over the viewer.
+    expect(view.methods().filter(method => method?.startsWith('view.'))).toEqual([]);
+    const server = shell.engines.servers.get(view.address)!;
+    server.answers.set('view.attach', () => 'hold');
+    await shell.invoke('engine-view-show', { shown: true });
+    expect(view.methods().filter(method => method === 'view.attach')).toHaveLength(1);
+    // Something comes to lie over it while it is made: it is hidden before the page is told of it.
+    await shell.invoke('engine-view-show', { shown: false });
+    const toldBefore = told(shell).length;
+    server.answerHeld('view.attach', { result: { adapter: null, backend: null } });
+    await settledAll();
+    expect(view.methods().slice(-2)).toEqual(['view.attach', 'view.show']);
+    expect(view.written.at(-1)).toMatchObject({ params: { shown: false } });
+    expect(told(shell).slice(toldBefore)).toEqual([{ kind: 'attached', session: 1, adapter: null, backend: null }]);
+  });
+
   it('makes the view again for an engine that is opened anew, and where its window was let go', async () => {
     const shell = await shellHarness();
     await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });

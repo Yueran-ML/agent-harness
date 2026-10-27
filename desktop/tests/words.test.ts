@@ -147,6 +147,8 @@ type Said = { path: string; text: string };
 // What is written in every language as it is: the names of the platforms, and the names of the
 // fields of an app or a bot, as their consoles write them.
 const NAMES = new Set(['Feishu', 'Lark', 'WeCom', 'QQ', 'App ID', 'App Secret', 'Bot ID', 'Secret', 'AppID', 'AppSecret']);
+// What is written with the units of an editor, as editors write them in every language: 29.97 fps, 10 bit.
+const UNITS = new Set(['label.studio.fps', 'label.studio.bits']);
 
 // Every string that a catalogue can say, with the place where it stands.
 function everythingSaid(value: unknown, path = ''): Said[] {
@@ -294,7 +296,7 @@ describe('the catalogues', () => {
     expect(said.filter(({ text }) => text.includes('您'))).toEqual([]);
     // Every sentence is in Chinese: none was left as it is in English.
     const english = new Set(everythingSaid(en).map(({ text }) => text));
-    const translated = said.filter(({ text }) => !NAMES.has(text));
+    const translated = said.filter(({ path, text }) => !NAMES.has(text) && !UNITS.has(path));
     expect(translated.filter(({ text }) => english.has(text))).toEqual([]);
     expect(translated.filter(({ text }) => !new RegExp(chinese).test(text))).toEqual([]);
   });
@@ -314,7 +316,7 @@ describe('the catalogues', () => {
     expect(said.filter(({ text }) => touching.test(text))).toEqual([]);
     // Every line is in Japanese: none was left as it is in English.
     const english = new Set(everythingSaid(en).map(({ text }) => text));
-    const translated = said.filter(({ text }) => !NAMES.has(text));
+    const translated = said.filter(({ path, text }) => !NAMES.has(text) && !UNITS.has(path));
     expect(translated.filter(({ text }) => english.has(text))).toEqual([]);
     expect(translated.filter(({ text }) => !new RegExp(japanese).test(text))).toEqual([]);
     // And none was left as it is in Chinese, which has no kana. A sentence of Japanese has some.

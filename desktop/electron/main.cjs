@@ -737,11 +737,13 @@ function viewRefused(open, error, generation) {
 }
 /**
  * Make the view of the engine in the window, over the viewer, where the page has said where it is.
- * Only the shell sends this: it holds the handle of the window.
+ * Only the shell sends this: it holds the handle of the window. A view is made shown, so none is
+ * made while the page wants it hidden (something lies over the viewer, or the studio is left):
+ * it is made once the page wants it shown.
  */
 async function attachView() {
   const open = studio;
-  if (!open || viewer.rect === null || viewer.state !== 'none' || !window || window.isDestroyed()) return;
+  if (!open || viewer.rect === null || viewer.state !== 'none' || !viewer.shown || viewer.blank || !window || window.isDestroyed()) return;
   viewer.state = 'attaching';
   viewer.generation += 1;
   const generation = viewer.generation;
@@ -755,12 +757,12 @@ async function attachView() {
   }
   if (studio !== open) return;
   viewer.state = 'attached';
-  // A view is made shown.
+  // A view is made shown. What the page said while it was being made is done at once, before
+  // anything else: hidden, if something came to lie over the viewer meanwhile.
   viewer.sent = true;
-  tellView(open, { kind: 'attached', adapter: attached?.adapter ?? null, backend: attached?.backend ?? null });
-  // What the page said while the view was being made.
   showView();
   if (viewer.rect !== rect) placeView();
+  tellView(open, { kind: 'attached', adapter: attached?.adapter ?? null, backend: attached?.backend ?? null });
 }
 /** Move the view where the page keeps the viewer now. */
 function placeView() {
@@ -813,7 +815,8 @@ function takeViewRect(given) {
 function takeViewShown(shown) {
   if (typeof shown !== 'boolean') throw new Error('The view is shown or not.');
   viewer.shown = shown;
-  showView();
+  if (viewer.state === 'none') void attachView();
+  else showView();
 }
 /**
  * Look through a transaction of the page: it may name no file. Media is added only from files that

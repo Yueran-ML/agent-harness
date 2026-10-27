@@ -19,6 +19,15 @@
   --studio-inspector: 372px;
 }
 
+/* The conversation put away: the studio takes its room. */
+.shell[data-studio][data-conversation='hidden'] {
+  --studio-agent: 0px;
+}
+
+.shell[data-studio][data-conversation='hidden'] > .main {
+  display: none;
+}
+
 .shell[data-studio] > .sidebar {
   grid-area: tasks;
 }
@@ -97,10 +106,16 @@
   background: var(--warn-wash);
 }
 
-.studio-problem p {
+.studio-problem-words {
   flex: 1;
   min-width: 0;
   color: var(--text);
+}
+
+.studio-problem-words .caption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .studio-body {
@@ -145,23 +160,21 @@
   list-style: none;
 }
 
-.pool-row {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 2px 0;
-}
-
 .pool-item {
-  width: 100%;
   display: flex;
   align-items: flex-start;
   gap: var(--s2);
+  margin: 2px 0;
   padding: var(--s2);
   border-radius: var(--r1);
-  text-align: left;
   color: var(--moon-1);
+  cursor: default;
   user-select: none;
+}
+
+.pool-item:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
 }
 
 .pool-item svg {
@@ -174,7 +187,7 @@
   background: var(--hover);
 }
 
-.pool-item[aria-pressed='true'] {
+.pool-item[aria-selected='true'] {
   background: var(--accent-soft);
 }
 
@@ -207,7 +220,6 @@
   display: flex;
   align-items: center;
   gap: var(--s2);
-  padding: 0 var(--s2) 0 calc(var(--s2) + 15px + var(--s2));
   font-size: var(--text-caption);
   color: var(--moon-2);
 }
@@ -245,6 +257,12 @@
 
 .pool-again:hover {
   background: var(--accent-soft);
+}
+
+.pool-foot {
+  flex: none;
+  padding: var(--s2);
+  border-top: 1px solid var(--line);
 }
 
 /* --- The source monitor. */
@@ -288,6 +306,10 @@
   padding: var(--s4);
   text-align: center;
   color: #e6e4ee;
+}
+
+.viewer-install {
+  color: #d6d3e0;
 }
 
 .viewer-detail {

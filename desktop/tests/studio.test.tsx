@@ -18,7 +18,7 @@ import { createMockEngine } from '../src/mock';
 import {
   ProjectCopy, type EngineAnswer, type EngineEvent, type Media, type Project, type ProxyEvent, type TransportState,
 } from '../src/studio/engine';
-import { commandOf, faster } from '../src/studio/keys';
+import { AWAIT_MS, commandOf, faster, Intent } from '../src/studio/keys';
 import { Studio } from '../src/studio/Studio';
 import { nominalFps, rateText, timecode } from '../src/studio/timecode';
 import { SCRUB_EVERY_MS } from '../src/studio/Transport';
@@ -199,33 +199,84 @@ describe('the media pool', () => {
     expect(marked('studio-problem')).toEqual([]);
     engine.bridge.importFiles.mockResolvedValueOnce({ ok: false, error: { code: -32002, message: 'C:\\a.txt is not media', data: null } } as never);
     await act(async () => { fireEvent.click(one('import')); });
-    expect(one('studio-problem').textContent).toBe('The media could not be imported. C:\\a.txt is not media.');
+    // What the page says, and beneath it what the engine said, in its own words.
+    expect(one('problem-said').textContent).toBe('The media could not be imported.');
+    expect(one('problem-detail').textContent).toBe('C:\\a.txt is not media.');
+    fireEvent.click(one('problem-close'));
+    expect(marked('studio-problem')).toEqual([]);
   });
 
-  it('shows media in the viewer at a double click, and at Enter', async () => {
-    const engine = engineWith(projectOf(mediaOf('m1'), mediaOf('m2')));
-    await studio(engine);
-    const button = (id: string) => item(id).querySelector('button')!;
-    fireEvent.click(button('m2'));
-    expect(engine.asked()).toEqual([]);
-    expect(button('m2').getAttribute('aria-pressed')).toBe('true');
-    fireEvent.doubleClick(button('m2'));
-    fireEvent.keyDown(button('m1'), { key: 'Enter' });
+  it('says what failed in the language of the page, with what the engine said beneath', async () => {
+    const engine = engineWith(projectOf(mediaOf('m1')));
+    engine.answers.set('transport.load', () => ({ ok: false, error: { code: -32002, message: 'the first frame cannot be decoded', data: { reason: 'decode' } } }));
+    await studio(engine, true, zhCN);
+    fireEvent.doubleClick(item('m1'));
     await settle();
+    expect(one('problem-said').textContent).toBe('这个素材打不开。');
+    expect(one('problem-detail').textContent).toBe('The first frame cannot be decoded.');
+    expect(one('problem-detail').lang).toBe('en');
+  });
+
+  it('says what the engine said by itself until it is put away, and again when it says something else', async () => {
+    const engine = engineWith(projectOf(mediaOf('m1')));
+    await studio(engine);
+    engine.notify('engine.error', { message: 'the project could not be saved', kind: 'save' });
+    expect(one('problem-said').textContent).toBe('The engine of the studio reported a problem.');
+    expect(one('problem-detail').textContent).toBe('The project could not be saved.');
+    fireEvent.click(one('problem-close'));
+    expect(marked('studio-problem')).toEqual([]);
+    engine.notify('engine.error', { message: 'the disk is full', kind: 'save' });
+    expect(one('problem-detail').textContent).toBe('The disk is full.');
+  });
+
+  it('shows media in the viewer at a double click, and at Enter; the arrows go through the list', async () => {
+    const engine = engineWith(projectOf(mediaOf('m1'), mediaOf('m2'), mediaOf('m3')));
+    await studio(engine);
+    expect(one('pool-list').getAttribute('role')).toBe('listbox');
+    expect(marked('pool-item').map(row => [row.getAttribute('role'), row.tabIndex])).toEqual([['option', 0], ['option', -1], ['option', -1]]);
+    fireEvent.click(item('m2'));
+    expect(engine.asked()).toEqual([]);
+    expect(item('m2').getAttribute('aria-selected')).toBe('true');
+    expect(item('m1').getAttribute('aria-selected')).toBe('false');
+    fireEvent.doubleClick(item('m2'));
+    item('m2').focus();
+    fireEvent.keyDown(item('m2'), { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(item('m1'));
+    expect(item('m1').getAttribute('aria-selected')).toBe('true');
+    expect(item('m1').tabIndex).toBe(0);
+    fireEvent.keyDown(item('m1'), { key: 'Enter' });
+    fireEvent.keyDown(item('m1'), { key: 'ArrowDown' });
+    fireEvent.keyDown(item('m2'), { key: 'ArrowDown' });
+    fireEvent.keyDown(item('m3'), { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(item('m3'));
+    await settle();
+    // The arrows of the list are not steps of the transport.
     expect(engine.asked()).toEqual([['transport.load', { media: 'm2' }], ['transport.load', { media: 'm1' }]]);
     // The viewer follows what the transport tells.
     engine.notify('transport.state', stateOf({ media: 'm1' }));
     expect(one('loaded').textContent).toBe('m1.mp4');
-    expect(button('m1').getAttribute('aria-current')).toBe('true');
+    expect(item('m1').getAttribute('aria-current')).toBe('true');
   });
 
   it('says why media could not be loaded', async () => {
     const engine = engineWith(projectOf(mediaOf('m1')));
     engine.answers.set('transport.load', () => ({ ok: false, error: { code: -32002, message: 'the first frame cannot be decoded', data: { reason: 'decode' } } }));
     await studio(engine);
-    fireEvent.doubleClick(item('m1').querySelector('button')!);
+    fireEvent.doubleClick(item('m1'));
     await settle();
-    expect(one('studio-problem').textContent).toBe('This media could not be opened. The first frame cannot be decoded.');
+    expect(one('problem-said').textContent).toBe('This media could not be opened.');
+    expect(one('problem-detail').textContent).toBe('The first frame cannot be decoded.');
+  });
+
+  it('shows nothing of the project of another engine while that of the new one is fetched', async () => {
+    const engine = engineWith(projectOf(mediaOf('m1')));
+    await studio(engine);
+    expect(names()).toEqual(['m1.mp4']);
+    // The app went to another folder: the engine of its project is opened, and its project takes a while.
+    engine.answers.set('project.get', () => new Promise<EngineAnswer>(() => {}) as unknown as EngineAnswer);
+    engine.tell({ kind: 'opened', session: engine.session + 1, project: 'F:\\other\\.columbina\\studio', owned: true, pid: 601, revision: 0 });
+    expect(names()).toEqual([]);
+    expect(marked('pool-none')).toEqual([]);
   });
 
   it('is on the Media page only', async () => {
@@ -261,12 +312,53 @@ describe('the keys of the studio', () => {
   it('go on from what the transport tells: L while it plays at 2× asks for 4×', async () => {
     const { engine } = await loaded({ playing: true, speed: 2 });
     press('l');
-    engine.notify('transport.state', stateOf({ playing: true, speed: -4 }));
-    press('j');
-    engine.notify('transport.state', stateOf({ playing: false, speed: -8 }));
-    press('j');
+    // A move of the playhead told before the command was done says nothing of it.
+    engine.notify('transport.state', stateOf({ playing: true, speed: 2, frame: 40 }));
+    press('l');
+    // Done; then it stops at the end by itself.
+    engine.notify('transport.state', stateOf({ playing: true, speed: 8 }));
+    engine.notify('transport.state', stateOf({ playing: false, speed: 8, frame: 249 }));
+    press('l');
     await settle();
-    expect(played(engine)).toEqual([4, -8, -1]);
+    expect(played(engine)).toEqual([4, 8, 1]);
+  });
+
+  it('take what the transport tells once a command was not done for a while', () => {
+    const intent = new Intent();
+    intent.sent({ method: 'transport.play', params: { speed: 4 } }, 1000);
+    intent.told({ playing: false, speed: 1 }, 1000 + AWAIT_MS - 1);
+    expect([intent.playing, intent.speed]).toEqual([true, 4]);
+    intent.told({ playing: false, speed: 1 }, 1000 + AWAIT_MS);
+    expect([intent.playing, intent.speed]).toEqual([false, 1]);
+    // A pause is done whatever the speed it played at.
+    intent.sent({ method: 'transport.pause' }, 2000);
+    intent.told({ playing: false, speed: 2 }, 2001);
+    intent.told({ playing: true, speed: 2 }, 2002);
+    expect([intent.playing, intent.speed]).toEqual([true, 2]);
+  });
+
+  it('are taken in the studio and on the page itself, and not by a button, a list or a part that scrolls elsewhere', async () => {
+    const { engine } = await loaded();
+    const outside = document.createElement('button');
+    const scrolled = document.createElement('div');
+    scrolled.tabIndex = 0;
+    document.body.append(outside, scrolled);
+    press(' ', {}, outside);
+    press('ArrowDown', {}, scrolled);
+    press('ArrowLeft', {}, scrolled);
+    press('End', {}, scrolled);
+    // An input method that puts characters together.
+    press('l', { isComposing: true });
+    press('k', { keyCode: 229 });
+    await settle();
+    expect(engine.asked()).toEqual([]);
+    // A button of the studio, and the studio itself.
+    press(' ', {}, one('step-forward'));
+    press('ArrowRight', {}, one('studio'));
+    await settle();
+    expect(engine.asked()).toEqual([['transport.play', { speed: 1 }], ['transport.step', { frames: 1 }]]);
+    outside.remove();
+    scrolled.remove();
   });
 
   it('play and stop at Space, and are taken once while a key is held', async () => {
@@ -504,7 +596,7 @@ describe('the viewer', () => {
     press('l');
     await settle();
     expect(one('speed').textContent).toBe('2×');
-    fireEvent.doubleClick(item('m4').querySelector('button')!);
+    fireEvent.doubleClick(item('m4'));
     await settle();
     expect(one('loaded').textContent).toBe('theme.wav');
     expect(one('sound').dataset.sound).toBe('off');
@@ -669,5 +761,118 @@ describe('the timecode', () => {
       .toEqual(['25', '29.97', '59.94', '23.976', '60', '50']);
     expect(nominalFps({ num: 30000, den: 1001 })).toBe(30);
     expect(nominalFps({ num: 0, den: 1 })).toBe(25);
+  });
+});
+
+describe('the studio as a keyboard and a reader know it', () => {
+  it('goes from page to page with the arrows, one tab taking the Tab key', async () => {
+    const engine = engineWith(projectOf(mediaOf('m1')));
+    await studio(engine);
+    const tabs = () => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].map(tab => [tab.textContent, tab.tabIndex]);
+    expect(tabs()).toEqual([['Media', 0], ['Edit', -1]]);
+    one('page-media').focus();
+    fireEvent.keyDown(one('page-media'), { key: 'ArrowRight' });
+    expect(tabs()).toEqual([['Media', -1], ['Edit', 0]]);
+    expect(document.activeElement).toBe(one('page-edit'));
+    expect(marked('pool')).toEqual([]);
+    fireEvent.keyDown(one('page-edit'), { key: 'ArrowRight' });
+    expect(document.activeElement).toBe(one('page-media'));
+    fireEvent.keyDown(one('page-media'), { key: 'ArrowLeft' });
+    expect(document.activeElement).toBe(one('page-edit'));
+    await settle();
+    // The arrows of the tabs are not steps of the transport.
+    expect(engine.asked()).toEqual([]);
+  });
+
+  it('says where the playhead is in timecode, on a bar that the keyboard reaches', async () => {
+    const engine = engineWith(projectOf(mediaOf('m1')), { state: stateOf({ frame: 60, last: 249 }) });
+    await studio(engine);
+    const bar = one('scrubber');
+    expect(bar.tabIndex).toBe(0);
+    expect(bar.getAttribute('aria-valuetext')).toBe('00:00:02:10');
+    expect(bar.getAttribute('aria-valuenow')).toBe('60');
+    expect(bar.getAttribute('aria-valuemax')).toBe('249');
+    // Its arrows step the transport, as everywhere in the studio.
+    press('ArrowRight', {}, bar);
+    await settle();
+    expect(engine.asked()).toEqual([['transport.step', { frames: 1 }]]);
+  });
+
+  it('offers a failed proxy to be made again under the list, for the media chosen', async () => {
+    const engine = engineWith(projectOf(mediaOf('m1'), mediaOf('m2')));
+    await studio(engine);
+    engine.notify('media.proxy', { media: 'm2', state: 'failed', message: 'the encoder failed' });
+    expect(marked('make-proxy-again')).toEqual([]);
+    // The button in the row is for the mouse alone.
+    expect((item('m2').querySelector('[data-test="make-again"]') as HTMLElement).tabIndex).toBe(-1);
+    fireEvent.click(item('m2'));
+    fireEvent.click(one('make-proxy-again'));
+    await settle();
+    expect(engine.asked()).toEqual([['media.make_proxy', { media: 'm2' }]]);
+  });
+
+  it('says why the sound is off: paused, or at another speed', async () => {
+    const engine = engineWith(projectOf(mediaOf('m1')), { state: stateOf({ sound: 'off', playing: false }) });
+    await studio(engine);
+    expect(one('sound').title).toBe('No sound is played while paused.');
+    engine.notify('transport.state', stateOf({ sound: 'off', playing: true, speed: 2 }));
+    expect(one('sound').title).toBe('The sound plays at normal speed only.');
+    expect(one('play').title).toBe('Pause (Space)');
+    cleanup();
+    await studio(engineWith(projectOf(mediaOf('m1')), { state: stateOf() }), true, zhCN);
+    expect(one('play').title).toBe('播放 (空格)');
+  });
+
+  it('says how to install the engine in the language of the page, with what the shell said beneath', async () => {
+    const engine = engineWith(projectOf(), { open: async () => { throw new Error('This package has no engine of its own. Download it again from the releases of Columbina.'); } });
+    await studio(engine, true, zhCN);
+    expect(one('viewer-words').textContent).toBe('还没有安装工作室的引擎。');
+    expect(one('viewer-install').textContent).toBe('重新下载 Columbina 就会带上引擎。如果用的是源代码，请先构建引擎。');
+    expect(one('viewer-detail').textContent).toBe('This package has no engine of its own. Download it again from the releases of Columbina.');
+    expect(one('viewer-detail').lang).toBe('en');
+  });
+});
+
+describe('the playhead that is dragged', () => {
+  async function dragged(last = 1000) {
+    const engine = engineWith(projectOf(mediaOf('m1')), { state: stateOf({ frame: 0, last }) });
+    await studio(engine);
+    const bar = one('scrubber');
+    bar.getBoundingClientRect = () => ({ left: 0, right: 1000, top: 0, bottom: 18, width: 1000, height: 18, x: 0, y: 0, toJSON() {} }) as DOMRect;
+    const seeks = () => engine.asked().filter(([method]) => method === 'transport.seek').map(([, params]) => params);
+    return { engine, bar, seeks };
+  }
+
+  it('stays where it was let go until the transport is there, without going back meanwhile', async () => {
+    const { engine, bar } = await dragged();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    act(() => { fireEvent.pointerDown(bar, { clientX: 500, button: 0, pointerId: 1 }); });
+    act(() => { fireEvent.pointerUp(bar, { clientX: 600, pointerId: 1 }); });
+    expect(one('timecode').textContent).toBe('00:00:24:00');
+    // What the transport tells of a seek before is not where the playhead was let go.
+    engine.notify('transport.state', stateOf({ frame: 500, exact: false, last: 1000 }));
+    expect(one('timecode').textContent).toBe('00:00:24:00');
+    expect(one('scrubber').getAttribute('aria-valuenow')).toBe('600');
+    engine.notify('transport.state', stateOf({ frame: 600, last: 1000 }));
+    expect(one('timecode').textContent).toBe('00:00:24:00');
+    engine.notify('transport.state', stateOf({ frame: 601, last: 1000 }));
+    expect(one('timecode').textContent).toBe('00:00:24:01');
+    // A transport that never tells is followed again after a while.
+    act(() => { fireEvent.pointerDown(bar, { clientX: 100, button: 0, pointerId: 1 }); });
+    act(() => { fireEvent.pointerUp(bar, { clientX: 100, pointerId: 1 }); });
+    expect(one('timecode').textContent).toBe('00:00:04:00');
+    act(() => { vi.advanceTimersByTime(1000); });
+    expect(one('timecode').textContent).toBe('00:00:24:01');
+  });
+
+  it('sends nothing more once the media is unloaded, or the engine ends, while it is dragged', async () => {
+    const { engine, bar, seeks } = await dragged();
+    act(() => { fireEvent.pointerDown(bar, { clientX: 200, button: 0, pointerId: 1 }); });
+    expect(seeks()).toHaveLength(1);
+    engine.notify('transport.state', stateOf({ media: null, frame: null, shown: null, last: null, source: null }));
+    act(() => { fireEvent.pointerMove(bar, { clientX: 300, pointerId: 1 }); fireEvent.pointerUp(bar, { clientX: 300, pointerId: 1 }); });
+    await settle();
+    expect(seeks()).toHaveLength(1);
+    expect(one('scrubber').dataset.dragging).toBeUndefined();
   });
 });

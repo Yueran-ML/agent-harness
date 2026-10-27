@@ -153,7 +153,9 @@ describe('the size of type', () => {
     // Every choice that the window keeps has a name of its own. Two under one name would undo each other.
     const sources = ['src/app/App.tsx', 'src/app/locale.ts', 'src/app/opening.ts', 'src/BackgroundMusic.tsx', 'src/size.ts', 'src/themes.ts'];
     const names = sources.flatMap(file => [...read(file).matchAll(/[kK]ey = '(columbina-[^']+)';/g)].map(found => found[1]));
-    expect(names).toHaveLength(6);
+    // One of them keeps whether the conversation beside the studio is put away.
+    expect(names).toHaveLength(7);
+    expect(names).toContain('columbina-studio-conversation');
     expect(new Set(names).size).toBe(names.length);
     expect(names).toContain(sizeStorageKey);
     expect(names).toContain(themeStorageKey);

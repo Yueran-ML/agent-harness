@@ -7,10 +7,13 @@
  * - ← and → go a frame back and forward; with Shift, a second.
  * - Home and End go to the first frame and the last.
  *
- * They are taken while the studio shows, and not while the keyboard writes into a field or
- * something lies over the page.
+ * They are taken while the studio shows, where the keyboard is in the studio or nowhere in
+ * particular (the page itself), and not while it writes into a field, while an input method puts
+ * characters together, or while something lies over the page. A key that goes to a button or a
+ * list of the conversation does what it does there.
  */
 import { useEffect, useRef } from 'react';
+import { keyOf } from '../app/keys';
 import { overlayOpen } from '../app/overlay';
 
 /** What a key asks of the transport: a method of the engine and its params. */
@@ -91,6 +94,47 @@ export function afterCommand(context: Pick<KeyContext, 'playing' | 'speed'>, com
   return { playing: context.playing, speed: context.speed };
 }
 
+/** How long a command waits for the transport to tell that it is done, before what it tells is taken as it is. */
+export const AWAIT_MS = 500;
+
+/**
+ * What the transport does as the keys know it: what they asked for last, until the transport
+ * tells that it does it; then what it tells. A state that comes meanwhile was on its way before
+ * the command (a playhead that moved, at 30 a second) and is passed over, for a while.
+ */
+export class Intent {
+  playing = false;
+  speed = 1;
+  private awaited: { playing: boolean; speed: number; at: number } | null = null;
+
+  /** A command was sent. */
+  sent(command: TransportCommand, now = Date.now()): void {
+    const next = afterCommand(this, command);
+    this.playing = next.playing;
+    this.speed = next.speed;
+    // A seek changes nothing of what the keys know.
+    if (command.method !== 'transport.seek') this.awaited = { ...next, at: now };
+  }
+
+  /** The transport told how it stands. */
+  told(state: { playing: boolean; speed: number }, now = Date.now()): void {
+    const awaited = this.awaited;
+    if (awaited !== null) {
+      const done = state.playing === awaited.playing && (!awaited.playing || state.speed === awaited.speed);
+      if (!done && now - awaited.at < AWAIT_MS) return;
+      this.awaited = null;
+    }
+    this.playing = state.playing;
+    this.speed = state.speed;
+  }
+}
+
+/** Whether a key goes to the studio: the keyboard is in it, or on the page itself. */
+export function inStudio(target: EventTarget | null): boolean {
+  if (target === null || target === document.body || target === document.documentElement || target === document) return true;
+  return target instanceof Element && target.closest('.studio') !== null;
+}
+
 /** Whether the keyboard writes into something: a field, a list to choose from, or text that can be edited. */
 export function writing(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -110,7 +154,8 @@ export function useStudioKeys(enabled: boolean, context: () => KeyContext, onCom
     // Whether K is held down, for a step with J or L.
     let held = false;
     const down = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || writing(event.target) || overlayOpen() || document.querySelector('dialog[open]')) return;
+      if (event.defaultPrevented || keyOf(event).composing || !inStudio(event.target) || writing(event.target)
+        || overlayOpen() || document.querySelector('dialog[open]')) return;
       const command = commandOf(event, now.current.context(), held);
       if (event.key.toLowerCase() === 'k' && !event.ctrlKey && !event.metaKey && !event.altKey) held = true;
       if (command === null) return;

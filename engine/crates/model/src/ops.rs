@@ -53,7 +53,8 @@
 //! than the duration of the media. `source_in` counts ticks of the scale of that duration, which
 //! is never 0. A clip moves only between tracks of the same kind, within its timeline. A thing is
 //! not put past the end of its list, and a timeline that is added has no 0 in its rate. Media
-//! does not last less than no time, and its picture has no 0 in its rate.
+//! does not last less than no time, and its picture has no 0 in its rate. The path of a proxy is
+//! absolute, on Windows or on Unix, and the media it is set on is there.
 //!
 //! The ticks that the frames of a clip last are rounded down, as [`Rate::ticks_of`] counts
 //! them. So at a rate whose frames do not last a whole number of ticks, the last frame of a clip
@@ -71,7 +72,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::project::{Clip, Id, Media, Project, Timeline, Track, TrackKind};
+use crate::project::{Clip, Id, Media, Project, Proxy, Timeline, Track, TrackKind};
 use crate::time::{Rate, Time};
 
 /// The largest integer that JavaScript holds exactly, 2^53 - 1. No integer that an operation
@@ -170,6 +171,14 @@ pub enum Op {
         start: i64,
         /// How many frames it lasts.
         length: i64,
+    },
+    /// Set the proxy of media, or take it away (`None`). The engine sets it once it has made
+    /// one; a client may too.
+    SetProxy {
+        /// The media.
+        media: Id,
+        /// Its proxy, or none.
+        proxy: Option<Proxy>,
     },
 }
 
@@ -297,6 +306,12 @@ pub enum OpError {
     /// empty id is given one, so an operation never gives this.
     #[error("the thing has no id")]
     NoId,
+    /// The path of a proxy is not absolute (`C:\…`, `\\server\…` or `/…`), or holds a NUL.
+    #[error("the path {path} of a proxy is not absolute")]
+    NotAbsolute {
+        /// The path.
+        path: String,
+    },
 }
 
 /// Why a project that is read is not one that the operations can work on: the thing of it that
@@ -345,6 +360,7 @@ enum Fields {
     IdsExhausted,
     Dollar { id: Id },
     NoId,
+    NotAbsolute { path: String },
 }
 
 /// How [`Invalid`] names the thing that is wrong.
@@ -422,6 +438,7 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             start,
             length,
         } => trim_clip(project, &timeline, &id, source_in, start, length),
+        Op::SetProxy { media, proxy } => set_proxy(project, &media, proxy),
     }
 }
 
@@ -512,6 +529,22 @@ fn add_media(project: &mut Project, mut media: Media, index: Option<usize>) -> R
     project.media.insert(at, media);
     project.next_id = counter.next;
     Ok(Op::RemoveMedia { id })
+}
+
+fn set_proxy(project: &mut Project, id: &str, proxy: Option<Proxy>) -> Result<Op, OpError> {
+    let media = project
+        .media
+        .iter_mut()
+        .find(|m| m.id == id)
+        .ok_or_else(|| missing("media", id))?;
+    if let Some(proxy) = &proxy {
+        check_proxy(proxy)?;
+    }
+    let before = std::mem::replace(&mut media.proxy, proxy);
+    Ok(Op::SetProxy {
+        media: id.into(),
+        proxy: before,
+    })
 }
 
 fn remove_media(project: &mut Project, id: &str) -> Result<Op, OpError> {
@@ -972,7 +1005,34 @@ fn check_media(media: &Media) -> Result<(), OpError> {
     if let Some(video) = &media.facts.video {
         check_rate(video.rate)?;
     }
+    if let Some(proxy) = &media.proxy {
+        check_proxy(proxy)?;
+    }
     Ok(())
+}
+
+/// Check a proxy as it would be in a project: its path is absolute, on any system, so that a
+/// project written on one is read on another.
+fn check_proxy(proxy: &Proxy) -> Result<(), OpError> {
+    if absolute(&proxy.path) {
+        Ok(())
+    } else {
+        Err(OpError::NotAbsolute {
+            path: proxy.path.clone(),
+        })
+    }
+}
+
+/// Whether a path is absolute on Windows or on Unix, whichever this is: `C:\…` or `C:/…`,
+/// `\\server\…`, or `/…`; and holds no NUL, which no system takes.
+fn absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/');
+    let rooted = path.starts_with('/') || path.starts_with(r"\\");
+    !path.contains('\0') && (drive || rooted)
 }
 
 fn check_rate(rate: Rate) -> Result<(), OpError> {
@@ -2141,6 +2201,13 @@ mod tests {
                 },
                 "trim_clip",
             ),
+            (
+                Op::SetProxy {
+                    media: "m1".into(),
+                    proxy: Some(proxy("C:/cache/m1.mov")),
+                },
+                "set_proxy",
+            ),
         ];
         for (op, tag) in ops {
             let value = serde_json::to_value(&op).unwrap();
@@ -2571,5 +2638,120 @@ mod tests {
             error.to_string(),
             "the project: the next_id is further than 2^53 - 1 from 0"
         );
+    }
+
+    fn proxy(path: &str) -> Proxy {
+        Proxy {
+            path: path.into(),
+            width: 1920,
+            height: 1080,
+            codec: "hevc".into(),
+            digest_of_source: "0".repeat(64),
+        }
+    }
+
+    #[test]
+    fn a_proxy_that_is_set_is_taken_back_by_its_inverse() {
+        let mut project = Project::sample();
+        let set = Op::SetProxy {
+            media: "m1".into(),
+            proxy: Some(proxy(r"C:\cache\m1.mov")),
+        };
+        let (done, inverse) = apply_done(&mut project, set.clone()).unwrap();
+        assert_eq!(done, set);
+        assert_eq!(
+            inverse,
+            Op::SetProxy {
+                media: "m1".into(),
+                proxy: None,
+            }
+        );
+        assert_eq!(project.media[0].proxy, Some(proxy(r"C:\cache\m1.mov")));
+        // Another in its place: the inverse brings back the first.
+        let other = Op::SetProxy {
+            media: "m1".into(),
+            proxy: Some(proxy("/cache/m1-b.mov")),
+        };
+        let back = apply(&mut project, other).unwrap();
+        assert_eq!(
+            back,
+            Op::SetProxy {
+                media: "m1".into(),
+                proxy: Some(proxy(r"C:\cache\m1.mov")),
+            }
+        );
+        apply(&mut project, back).unwrap();
+        apply(&mut project, inverse).unwrap();
+        assert_eq!(project, Project::sample());
+    }
+
+    #[test]
+    fn a_proxy_is_set_on_media_that_is_there_with_an_absolute_path() {
+        let error = refused(Op::SetProxy {
+            media: "m9".into(),
+            proxy: None,
+        });
+        assert_eq!(error, missing("media", "m9"));
+        for path in ["cache/m1.mov", "m1.mov", "C:m1.mov", "", r"\cache\m1.mov", "C:/a\0b"] {
+            let error = refused(Op::SetProxy {
+                media: "m1".into(),
+                proxy: Some(proxy(path)),
+            });
+            assert_eq!(error, OpError::NotAbsolute { path: path.into() }, "{path:?}");
+        }
+        for path in [r"C:\a\m1.mov", "c:/a/m1.mov", r"\\server\share\m1.mov", "/a/m1.mov"] {
+            let mut project = Project::sample();
+            let set = Op::SetProxy {
+                media: "m1".into(),
+                proxy: Some(proxy(path)),
+            };
+            apply(&mut project, set).unwrap();
+        }
+        // Media that is added with a proxy is checked as one that is set.
+        let mut media = media("m2", true, true);
+        media.proxy = Some(proxy("m2.mov"));
+        let error = refused(Op::AddMedia { media, index: None });
+        assert_eq!(error.to_string(), "the path m2.mov of a proxy is not absolute");
+        let value = serde_json::to_value(&error).unwrap();
+        assert_eq!(value["reason"], "not_absolute");
+        assert_eq!(value["path"], "m2.mov");
+    }
+
+    #[test]
+    fn a_proxy_is_written_where_there_is_one_and_read_where_there_is_none() {
+        let value = serde_json::to_value(Op::SetProxy {
+            media: "m1".into(),
+            proxy: Some(proxy("/p/m1.mov")),
+        })
+        .unwrap();
+        let expected = serde_json::json!({
+            "op": "set_proxy",
+            "media": "m1",
+            "proxy": {
+                "path": "/p/m1.mov", "width": 1920, "height": 1080, "codec": "hevc",
+                "digest_of_source": "0".repeat(64),
+            },
+        });
+        assert_eq!(value, expected);
+        let none = serde_json::json!({ "op": "set_proxy", "media": "m1", "proxy": null });
+        assert_eq!(
+            serde_json::from_value::<Op>(none).unwrap(),
+            Op::SetProxy {
+                media: "m1".into(),
+                proxy: None,
+            }
+        );
+        // A project read with a proxy whose path is not absolute is refused.
+        let error = invalid(|value| {
+            value["media"][0]["proxy"] = serde_json::to_value(proxy("p.mov")).unwrap();
+        });
+        let not_absolute = OpError::NotAbsolute {
+            path: "p.mov".into(),
+        };
+        assert_eq!(error, wrong("media", "m1", not_absolute));
+        // A field of a proxy that is not known is refused.
+        let mut value = serde_json::to_value(proxy("/p.mov")).unwrap();
+        value["colour"] = "red".into();
+        assert!(serde_json::from_value::<Proxy>(value).is_err());
     }
 }

@@ -209,6 +209,26 @@ impl History {
         Ok(self.applied(done, by, by))
     }
 
+    /// Apply a transaction that is no step of the history, as the engine does when it sets the
+    /// proxy that it made: it makes a new revision, as every change does, but nothing to undo,
+    /// and the steps that could be redone are kept. So a change that no one asked for is never
+    /// the step that an undo takes back, and never lets go of what a client could redo.
+    ///
+    /// Only an operation that the steps of the history cannot depend on may be applied so: one
+    /// that changes no thing that a later operation names, nor adds or takes away a thing, as
+    /// [`Op::SetProxy`]. The steps are then undone and redone as they would be without it.
+    ///
+    /// # Errors
+    /// As [`History::apply`].
+    pub fn apply_unrecorded(&mut self, ops: Vec<Op>, by: &str) -> Result<Applied, TransactionError> {
+        if ops.is_empty() {
+            return Err(TransactionError::Empty);
+        }
+        let (done, _) = run(&mut self.project, ops, |op, _| op)?;
+        self.revision += 1;
+        Ok(self.applied(done, by, by))
+    }
+
     /// Take back the latest step, whoever made it, at the asking of `by`. Gives none if there
     /// is nothing to undo.
     ///
@@ -724,5 +744,40 @@ mod tests {
         let redone = history.redo("agent").unwrap().unwrap();
         assert_eq!(redone.made_by, "agent");
         assert_eq!(history.revision(), 7);
+    }
+
+    #[test]
+    fn a_change_of_the_engine_is_no_step_and_lets_go_of_nothing_to_redo() {
+        let mut history = History::new(Project::sample());
+        history.apply(vec![insert("V1", 100, 10)], "agent").unwrap();
+        history.apply(vec![move_to("c1", "V1", 200)], "desktop").unwrap();
+        history.undo("desktop").unwrap().unwrap();
+        let proxy = crate::project::Proxy {
+            path: "/cache/m1.mov".into(),
+            width: 960,
+            height: 540,
+            codec: "hevc".into(),
+            digest_of_source: "0".repeat(64),
+        };
+        let set = Op::SetProxy {
+            media: "m1".into(),
+            proxy: Some(proxy.clone()),
+        };
+        let applied = history.apply_unrecorded(vec![set.clone()], "engine").unwrap();
+        assert_eq!(applied.revision, 4);
+        assert_eq!(applied.done, [set]);
+        assert_eq!((applied.by.as_str(), applied.made_by.as_str()), ("engine", "engine"));
+        // The move can still be redone, and the undo takes back the agent's clip, not the proxy.
+        assert!(history.can_redo());
+        history.redo("desktop").unwrap().unwrap();
+        assert_eq!(history.project().timelines[0].tracks[0].clips[1].start, 200);
+        history.undo("desktop").unwrap().unwrap();
+        history.undo("desktop").unwrap().unwrap();
+        assert!(!history.can_undo());
+        assert_eq!(history.project().media[0].proxy, Some(proxy));
+        assert_eq!(
+            history.apply_unrecorded(vec![], "engine"),
+            Err(TransactionError::Empty)
+        );
     }
 }

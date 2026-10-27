@@ -11,7 +11,7 @@ pub mod time;
 pub use history::{Applied, History, Step, TransactionError, HISTORY_MOST};
 pub use ops::{apply, apply_done, Invalid, Op, OpError, LARGEST};
 pub use project::{
-    AudioFacts, Clip, Facts, Id, Identity, Media, Project, ReadError, Timeline, Track, TrackKind,
+    AudioFacts, Clip, Facts, Id, Identity, Media, Project, Proxy, ReadError, Timeline, Track, TrackKind,
     VideoFacts, SCHEMA,
 };
 pub use time::{Rate, Time};

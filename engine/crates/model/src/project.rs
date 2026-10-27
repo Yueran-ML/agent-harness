@@ -88,6 +88,31 @@ pub struct Media {
     pub identity: Identity,
     /// What was found in the file when it was taken in.
     pub facts: Facts,
+    /// A copy of its picture that is quick to seek in, made by the engine, if one was made. It
+    /// may be left out, and is not written when there is none, so that a project written
+    /// before proxies were made is read as one without them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<Proxy>,
+}
+
+/// A copy of the picture of media whose every frame is a key frame, smaller where the picture is
+/// larger than 1920 pixels on its long edge, made by the engine so that its frames are sought,
+/// scrubbed and played backward at once. It has the frames of the media, at the same rate,
+/// numbered alike; the sound is still read from the media itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proxy {
+    /// Where the file of the copy is: an absolute path.
+    pub path: String,
+    /// Its width in pixels, as it is stored.
+    pub width: u32,
+    /// Its height in pixels, as it is stored.
+    pub height: u32,
+    /// The name of its codec, as ffprobe names it (`hevc`, `prores`).
+    pub codec: String,
+    /// The digest of the identity of the media that it was made from (see [`Identity`]): a
+    /// copy whose digest is not that of its media is of another file, and is made again.
+    pub digest_of_source: String,
 }
 
 /// What tells a file from another one at the same path.
@@ -318,6 +343,7 @@ impl Project {
                         codec: "aac".into(),
                     }),
                 },
+                proxy: None,
             }],
             timelines: vec![Timeline {
                 id: "t1".into(),

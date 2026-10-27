@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use columbina_model::{
-    apply, Clip, Media, Op, Project, Rate, Time, Timeline, Track, TrackKind, LARGEST,
+    apply, Clip, Media, Op, Project, Proxy, Rate, Time, Timeline, Track, TrackKind, LARGEST,
 };
 use proptest::prelude::*;
 
@@ -24,8 +24,8 @@ const RATES: [Rate; 3] = [
 
 /// The kinds of operation, as `op_of` numbers them, each as often as it is wanted: clips are
 /// put in, moved and trimmed most often, and timelines are taken away least.
-const KINDS: [u8; 24] = [
-    0, 0, 1, 2, 3, 4, 4, 5, 6, 6, 6, 6, 6, 6, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9,
+const KINDS: [u8; 26] = [
+    0, 0, 1, 2, 3, 4, 4, 5, 6, 6, 6, 6, 6, 6, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10,
 ];
 
 /// The makings of an operation, which are turned into one against the project as it is then.
@@ -198,6 +198,8 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
     let clips = placed(project);
     let no_tracks = project.timelines.iter().all(|t| t.tracks.is_empty());
     let kind = match KINDS[spec.kind] {
+        // A proxy is set on media, or on none, whatever else there is.
+        10 => 10,
         // With no timeline left, most operations could only be refused.
         kind if kind >= 3 && project.timelines.is_empty() => 2,
         // With no track left, there is nowhere to put a clip.
@@ -254,6 +256,18 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
             timeline: clip_timeline,
             id: clip_id,
         },
+        10 => {
+            let ids: Vec<String> = project.media.iter().map(|m| m.id.clone()).collect();
+            Op::SetProxy {
+                media: pick(&ids, spec.b, "m99"),
+                proxy: match spec.c % 4 {
+                    0 => None,
+                    // Now and then one that is refused.
+                    1 => Some(proxy_of("cache/m.mov", spec)),
+                    _ => Some(proxy_of("/cache/m.mov", spec)),
+                },
+            }
+        }
         8 => Op::MoveClip {
             timeline: clip_timeline,
             id: clip_id,
@@ -281,6 +295,17 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
                 length,
             }
         }
+    }
+}
+
+/// A proxy at `path`, of a size of `spec`.
+fn proxy_of(path: &str, spec: &Spec) -> Proxy {
+    Proxy {
+        path: path.into(),
+        width: u32::try_from(spec.a % 4000).unwrap_or(1) + 1,
+        height: 1080,
+        codec: "hevc".into(),
+        digest_of_source: "0".repeat(64),
     }
 }
 

@@ -74,7 +74,7 @@ pub use columbina_model::{AudioFacts, Facts, Identity, Rate, Time, VideoFacts};
 pub use decode::{video_start, Converter, Decoded, Hardware, HardwarePath, Picture, VideoDecoder};
 pub use error::MediaError;
 pub use identity::identity;
-pub use probe::{gop, probe, Gop, DEMUXERS};
+pub use probe::{frame_numbers, gop, probe, Gop, DEMUXERS};
 
 /// Make libav ready to be used, once: its log is turned off.
 fn init() {

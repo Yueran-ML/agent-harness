@@ -667,3 +667,28 @@ fn the_start_of_the_picture_is_read_as_the_decoder_has_it() {
         );
     }
 }
+
+#[test]
+fn the_numbers_of_the_first_and_last_frames_are_read_from_the_packets() {
+    for sample in [
+        Sample::Fhd,
+        Sample::TsH264,
+        Sample::Collide,
+        Sample::EditList,
+    ] {
+        let Some(made) = media(sample) else {
+            return;
+        };
+        let decoder = VideoDecoder::open(&made.path, Hardware::Off).unwrap();
+        let rate = decoder.rate();
+        let (first, last) = columbina_media::frame_numbers(&made.path, rate, 8).unwrap();
+        // As the decoder numbers them, decoding every frame.
+        let mut decoder = decoder;
+        let mut numbers = Vec::new();
+        while let Some(picture) = decoder.next().unwrap() {
+            numbers.push(picture.frame);
+        }
+        assert_eq!(first, numbers[..8], "{sample:?}");
+        assert_eq!(last, numbers[numbers.len() - 8..], "{sample:?}");
+    }
+}

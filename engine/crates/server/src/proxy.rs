@@ -21,16 +21,23 @@
 //! frames only by NVENC (decoded and scaled on the card where CUDA can, else on the processor),
 //! or in `ProRes` 422 Proxy where NVENC is not there or fails. Its frames are those of the media,
 //! with their timestamps (`-fps_mode passthrough`, the time base of the media), so that frame `n`
-//! of the proxy is frame `n` of the media; it has no sound, which is read from the media. It is
-//! written to `<project>/cache/proxies/<media>-<12 digits of the digest>.mov`, as a `.part`
-//! first, and set on the media by a change of the engine that is no step of the history to undo
-//! ([`columbina_model::History::apply_unrecorded`]).
+//! of the proxy is frame `n` of the media, numbered at the media's rate; it has no sound, which is
+//! read from the media. A proxy is checked before it is used: its first and last frames are
+//! numbered as the media's ([`columbina_media::frame_numbers`]), and its frames are all key
+//! frames. It is written to `<project>/cache/proxies/<media>-<12 digits of the digest>.mov`, as a
+//! `.part` first, and set on the media by a change of the engine that is no step of the history to
+//! undo ([`columbina_model::History::apply_unrecorded`]). Media whose file is that of other media
+//! (the same digest) is given that media's proxy.
 //!
 //! What it is at is told to every client in `media.proxy`: `queued`, `running` (with how far it
 //! is, at most once a second), `done` or `failed`. A proxy being made of media that is removed
-//! is stopped and its `.part` deleted, and so is one being made when the engine ends.
+//! is stopped and its `.part` deleted, and so is one being made when the engine ends; so is one
+//! whose `ffmpeg` makes no progress for [`WATCHDOG`]. A proxy that cannot be made of a file by any
+//! encoder is remembered as such in `cache/proxies/failed.json`, by the digest of the file, and
+//! not tried again until a client asks for it (`media.make_proxy`). As the engine starts, the files
+//! of `cache/proxies` that no media of the project names are deleted.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -56,6 +63,16 @@ pub const LONG_EDGE: u32 = 1920;
 /// How often how far a proxy is is told, at most.
 pub const TOLD_EVERY: Duration = Duration::from_secs(1);
 
+/// How long an `ffmpeg` may go without writing a frame before it is taken for stuck, and killed.
+pub const WATCHDOG: Duration = Duration::from_secs(60);
+
+/// How many frames at the start and at the end of a proxy are checked to be numbered as those of
+/// its media.
+const CHECKED_FRAMES: usize = 8;
+
+/// The file of the proxies that could not be made, by the digest of their media.
+const FAILED: &str = "failed.json";
+
 /// How long the engine waits, as it ends, for the proxy being made to stop.
 const STOPPING: Duration = Duration::from_secs(3);
 
@@ -64,11 +81,52 @@ const STOPPING: Duration = Duration::from_secs(3);
 pub struct Setup {
     /// Whether proxies are made: not in a headless engine, nor with `--no-proxies`.
     pub make: bool,
-    /// The `ffmpeg` to make them with (`--proxy-ffmpeg`), before `COLUMBINA_PROXY_FFMPEG`.
+    /// The `ffmpeg` to make them with (`--proxy-ffmpeg`, an absolute path), before
+    /// `COLUMBINA_PROXY_FFMPEG`.
     pub ffmpeg: Option<PathBuf>,
-    /// For the tests (`--proxy-realtime`): the media is read no faster than it plays, so that a
-    /// proxy takes as long to make as the media lasts.
-    pub realtime: bool,
+    /// For the tests (`--proxy-readrate <R>`): the media is read no faster than R times as it
+    /// plays (`-readrate`), so that a proxy takes long to make, or makes no progress.
+    pub readrate: Option<String>,
+    /// For the tests (`--proxy-encoder nvenc|prores`): only the recipes of this encoder.
+    pub encoder: Option<Encoder>,
+    /// How long an `ffmpeg` may go without writing a frame (`--proxy-watchdog <S>`, for the
+    /// tests; [`WATCHDOG`] unless given).
+    pub watchdog: Duration,
+}
+
+impl Default for Setup {
+    fn default() -> Setup {
+        Setup {
+            make: true,
+            ffmpeg: None,
+            readrate: None,
+            encoder: None,
+            watchdog: WATCHDOG,
+        }
+    }
+}
+
+/// The encoders that a proxy is made by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Encoder {
+    /// HEVC by NVENC.
+    Nvenc,
+    /// `ProRes` 422 Proxy.
+    Prores,
+}
+
+impl Encoder {
+    /// The encoder that `--proxy-encoder` names: `nvenc` or `prores`.
+    ///
+    /// # Errors
+    /// It names none.
+    pub fn parse(text: &str) -> Result<Encoder, String> {
+        match text {
+            "nvenc" => Ok(Encoder::Nvenc),
+            "prores" => Ok(Encoder::Prores),
+            _ => Err(format!("--proxy-encoder takes nvenc or prores, not {text}")),
+        }
+    }
 }
 
 /// Whether media needs a proxy: its picture has long groups of frames, and more than 1080 rows,
@@ -128,10 +186,11 @@ pub fn usable(media: &Media) -> Option<&Proxy> {
         .filter(|proxy| proxy.digest_of_source == media.identity.digest)
 }
 
-/// The `ffmpeg` that proxies are made with: `given` (`--proxy-ffmpeg`), else
-/// `COLUMBINA_PROXY_FFMPEG`, else the one beside the engine, else, in a build for development,
-/// the one of the LGPL build of FFmpeg that it was built with (`FFMPEG_DIR` as it was built).
-/// Never one found on `PATH`.
+/// The `ffmpeg` that proxies are made with: `given` (`--proxy-ffmpeg`, which is absolute), else
+/// `COLUMBINA_PROXY_FFMPEG` if it is an absolute path, else the one beside the engine, else, in a
+/// build for development only, the one of the LGPL build of FFmpeg that it was built with
+/// (`FFMPEG_DIR` as it was built). Never one found on `PATH`: a name that is not an absolute path
+/// would be looked for there, and is not taken.
 pub fn find_ffmpeg(given: Option<&Path>) -> Option<PathBuf> {
     let name = if cfg!(windows) {
         "ffmpeg.exe"
@@ -144,17 +203,31 @@ pub fn find_ffmpeg(given: Option<&Path>) -> Option<PathBuf> {
     if let Some(named) =
         std::env::var_os("COLUMBINA_PROXY_FFMPEG").filter(|named| !named.is_empty())
     {
-        return Some(PathBuf::from(named));
+        let named = PathBuf::from(named);
+        if named.is_absolute() {
+            return Some(named);
+        }
+        log(
+            "proxy_ffmpeg",
+            &json!({
+                "message": format!(
+                    "COLUMBINA_PROXY_FFMPEG is not an absolute path, and is not taken: {}",
+                    named.display()
+                ),
+            }),
+        );
     }
     let beside = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
         .filter(|path| path.is_file());
-    beside.or_else(|| {
-        option_env!("FFMPEG_DIR")
-            .map(|dir| Path::new(dir).join("bin").join(name))
-            .filter(|path| path.is_file())
-    })
+    #[cfg(debug_assertions)]
+    let built = option_env!("FFMPEG_DIR")
+        .map(|dir| Path::new(dir).join("bin").join(name))
+        .filter(|path| path.is_file());
+    #[cfg(not(debug_assertions))]
+    let built = None;
+    beside.or(built)
 }
 
 /// What is told of a proxy, in `media.proxy`.
@@ -192,7 +265,8 @@ impl Note {
 pub enum Made {
     /// It is set on the media.
     Set,
-    /// The media is gone, or is of another file: the proxy is deleted.
+    /// The media is gone, or is of another file: the proxy is deleted, unless other media
+    /// has it.
     Gone,
 }
 
@@ -219,17 +293,28 @@ struct Job {
     duration: Time,
     /// Whether it is known to need a proxy; if not, that is found first.
     checked: bool,
+    /// The proxy of other media of the same file, to be set on it rather than made again.
+    reuse: Option<Proxy>,
 }
 
 impl Job {
-    fn of(media: &Media, checked: bool) -> Option<Job> {
+    /// The job of media of `project`, if it has a picture: the proxy of other media of the same
+    /// file is taken, where there is one.
+    fn of(media: &Media, project: &Project) -> Option<Job> {
+        let reuse = project
+            .media
+            .iter()
+            .filter(|other| other.id != media.id && other.identity.digest == media.identity.digest)
+            .find_map(|other| usable(other).filter(|proxy| Path::new(&proxy.path).is_file()))
+            .cloned();
         Some(Job {
             media: media.id.clone(),
             source: PathBuf::from(&media.path),
             digest: media.identity.digest.clone(),
             video: media.facts.video.clone()?,
             duration: media.facts.duration,
-            checked,
+            checked: reuse.is_some(),
+            reuse,
         })
     }
 
@@ -258,14 +343,52 @@ struct Inner {
     /// `<project>/cache/proxies`.
     dir: PathBuf,
     ffmpeg: Option<PathBuf>,
-    realtime: bool,
+    setup: Setup,
     jobs: Mutex<Jobs>,
     wake: Condvar,
     thread: Mutex<Option<JoinHandle<()>>>,
     /// What `ffmpeg -encoders` said, once it was asked.
     encoders: Mutex<Option<String>>,
-    /// Whether NVENC failed where `ProRes` did not: it is not tried again.
+    /// Whether NVENC itself failed: it is not tried again.
     nvenc_failed: AtomicBool,
+    /// Why the proxy of each file (by its digest) could not be made, as `failed.json` keeps it.
+    failures: Mutex<BTreeMap<String, String>>,
+}
+
+impl Inner {
+    /// Why the proxy of a file could not be made before, if it could not.
+    fn failure(&self, digest: &str) -> Option<String> {
+        lock(&self.failures).get(digest).cloned()
+    }
+
+    /// Remember, or forget, that the proxy of a file cannot be made, and write it down.
+    fn set_failure(&self, digest: &str, why: Option<&str>) {
+        let mut failures = lock(&self.failures);
+        let changed = match why {
+            Some(why) => {
+                failures
+                    .insert(digest.to_owned(), why.to_owned())
+                    .as_deref()
+                    != Some(why)
+            }
+            None => failures.remove(digest).is_some(),
+        };
+        if !changed {
+            return;
+        }
+        let path = self.dir.join(FAILED);
+        let written = std::fs::create_dir_all(&self.dir).and_then(|()| {
+            let part = self.dir.join(format!("{FAILED}.part"));
+            let text = serde_json::to_string_pretty(&*failures).unwrap_or_default();
+            std::fs::write(&part, text).and_then(|()| std::fs::rename(&part, &path))
+        });
+        if let Err(error) = written {
+            log(
+                "proxy_failed",
+                &json!({ "message": format!("{} cannot be written: {error}", path.display()) }),
+            );
+        }
+    }
 }
 
 /// The maker of proxies of an engine. It is cheap to clone. One that makes none does nothing.
@@ -290,34 +413,51 @@ impl Proxies {
             "proxy_ffmpeg",
             &json!({ "path": ffmpeg.as_ref().map(|path| path.to_string_lossy()) }),
         );
+        let dir = project_dir.join("cache").join("proxies");
+        let failures = std::fs::read_to_string(dir.join(FAILED))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
         Proxies {
             inner: Some(Arc::new(Inner {
-                dir: project_dir.join("cache").join("proxies"),
+                dir,
                 ffmpeg,
-                realtime: setup.realtime,
+                setup: setup.clone(),
                 jobs: Mutex::default(),
                 wake: Condvar::new(),
                 thread: Mutex::new(None),
                 encoders: Mutex::new(None),
                 nvenc_failed: AtomicBool::new(false),
+                failures: Mutex::new(failures),
             })),
         }
     }
 
     /// Start making proxies: of the media of `project` that has no proxy that can be used (none,
     /// one made from another file, or one whose file is not there), each once it is found to
-    /// need one. The `.part` files that an engine that ended left are deleted first.
+    /// need one. The `.part` files that an engine that ended left are deleted first, and so are
+    /// the proxies that no media of the project names (the history of a project is not kept
+    /// from one engine to the next, so that nothing could name them again).
     pub fn start(&self, project: &Project, hooks: Hooks) {
         let Some(inner) = &self.inner else {
             return;
         };
         if let Ok(entries) = std::fs::read_dir(&inner.dir) {
+            let named = |path: &Path| {
+                project.media.iter().any(|media| {
+                    media
+                        .proxy
+                        .as_ref()
+                        .is_some_and(|proxy| Path::new(&proxy.path) == path)
+                })
+            };
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path
-                    .extension()
-                    .is_some_and(|extension| extension == "part")
-                {
+                let kept = path.file_name().is_some_and(|name| name == FAILED)
+                    || !path.is_file()
+                    || named(&path);
+                if !kept {
+                    log("proxy_deleted", &json!({ "path": path.to_string_lossy() }));
                     let _ = std::fs::remove_file(&path);
                 }
             }
@@ -327,7 +467,7 @@ impl Proxies {
             for media in &project.media {
                 let made = usable(media).is_some_and(|proxy| Path::new(&proxy.path).is_file());
                 if !made {
-                    jobs.queue.extend(Job::of(media, false));
+                    jobs.queue.extend(Job::of(media, project));
                 }
             }
         }
@@ -344,21 +484,21 @@ impl Proxies {
         }
     }
 
-    /// Make the proxy of media that was taken in, once it is found to need one.
-    pub fn imported(&self, media: &[&Media]) {
+    /// Make the proxy of media of `project` that was taken in, once it is found to need one.
+    pub fn imported(&self, project: &Project, media: &[String]) {
         let Some(inner) = &self.inner else {
             return;
         };
         let mut jobs = lock(&inner.jobs);
-        for media in media {
-            jobs.queue.extend(Job::of(media, false));
+        for media in project.media.iter().filter(|item| media.contains(&item.id)) {
+            jobs.queue.extend(Job::of(media, project));
         }
         inner.wake.notify_all();
     }
 
-    /// Make the proxy of media again, as when its file could not be opened; unless it is being
-    /// made, or waits to be.
-    pub fn again(&self, media: &Media) {
+    /// Make the proxy of media of `project` again, as when its file could not be opened or
+    /// decoded; unless it is being made, or waits to be.
+    pub fn again(&self, project: &Project, media: &Media) {
         let Some(inner) = &self.inner else {
             return;
         };
@@ -369,9 +509,21 @@ impl Proxies {
                 .as_ref()
                 .is_some_and(|running| running.media == media.id);
         if !waiting {
-            jobs.queue.extend(Job::of(media, false));
+            jobs.queue.extend(Job::of(media, project));
             inner.wake.notify_all();
         }
+    }
+
+    /// Make the proxy of media of `project` again, at the asking of a client
+    /// (`media.make_proxy`): what is remembered of a proxy of its file that could not be made is
+    /// forgotten. Whether proxies are made at all.
+    pub fn retry(&self, project: &Project, media: &Media) -> bool {
+        let Some(inner) = &self.inner else {
+            return false;
+        };
+        inner.set_failure(&media.identity.digest, None);
+        self.again(project, media);
+        true
     }
 
     /// The project changed: the proxies of media that is no longer in it are not made, and the
@@ -486,14 +638,27 @@ fn run(inner: &Inner, hooks: &Hooks) {
             }
         } else {
             let needed = check(&job);
+            let failed_before = needed.then(|| inner.failure(&job.digest)).flatten();
             let mut jobs = lock(&inner.jobs);
             jobs.running = None;
             if needed && !cancelled.load(Ordering::Acquire) && !jobs.closing {
-                jobs.queue.push_back(Job {
+                drop(jobs);
+                if let Some(why) = failed_before {
+                    let message = format!(
+                        "it could not be made before, and is not tried again until \
+                         media.make_proxy asks for it: {why}"
+                    );
+                    log(
+                        "proxy_skipped",
+                        &json!({ "media": job.media, "message": message }),
+                    );
+                    (hooks.notify)(&Note::failed(&job.media, 0.0, message));
+                    continue;
+                }
+                lock(&inner.jobs).queue.push_back(Job {
                     checked: true,
                     ..job.clone()
                 });
-                drop(jobs);
                 log("proxy_queued", &json!({ "media": job.media }));
                 (hooks.notify)(&Note::new(&job.media, "queued", 0.0));
             }
@@ -537,8 +702,15 @@ impl Recipe {
 }
 
 /// The arguments of `ffmpeg` that make the proxy of a job by a recipe, from `source` (the stream
-/// `stream` of it) into `part`.
-fn arguments(recipe: Recipe, job: &Job, stream: usize, part: &Path, realtime: bool) -> Vec<String> {
+/// `stream` of it) into `part`; the media read at most `readrate` times as fast as it plays, and,
+/// where the frames are made on the processor, written so too.
+fn arguments(
+    recipe: Recipe,
+    job: &Job,
+    stream: usize,
+    part: &Path,
+    readrate: Option<&str>,
+) -> Vec<String> {
     let (width, height) = proxy_size(job.video.width, job.video.height);
     let ten = job.video.bits > 8;
     let mut args: Vec<String> = [
@@ -561,8 +733,8 @@ fn arguments(recipe: Recipe, job: &Job, stream: usize, part: &Path, realtime: bo
     .iter()
     .map(|&arg| arg.to_owned())
     .collect();
-    if realtime {
-        args.extend(["-readrate".into(), "1".into()]);
+    if let Some(rate) = readrate {
+        args.extend(["-readrate".into(), rate.to_owned()]);
     }
     if recipe == Recipe::Cuda {
         args.extend(
@@ -597,9 +769,18 @@ fn arguments(recipe: Recipe, job: &Job, stream: usize, part: &Path, realtime: bo
             args.push(format!("scale_cuda={width}:{height}:format={nvenc_format}"));
         }
         Recipe::Nvenc | Recipe::Prores => {
+            let mut filters = Vec::new();
             if !same {
+                filters.push(format!("scale={width}:{height}:flags=bicubic"));
+            }
+            if let Some(rate) = readrate {
+                // Frames as slow as the media is read, for the tests: `-readrate` alone lets
+                // frames through at some rate however slow it is asked to be.
+                filters.push(format!("realtime=speed={rate}:limit=3600"));
+            }
+            if !filters.is_empty() {
                 args.push("-vf".into());
-                args.push(format!("scale={width}:{height}:flags=bicubic"));
+                args.push(filters.join(","));
             }
             args.push("-pix_fmt".into());
             args.push(
@@ -612,13 +793,40 @@ fn arguments(recipe: Recipe, job: &Job, stream: usize, part: &Path, realtime: bo
             );
         }
     }
-    let codec: &[&str] = match recipe {
+    args.extend(codec(recipe, ten).iter().map(|&arg| arg.to_owned()));
+    args.extend(
+        ["-protocol_whitelist", "file", "-f", "mov"]
+            .iter()
+            .map(|&arg| arg.to_owned()),
+    );
+    args.push(format!("file:{}", part.to_string_lossy()));
+    args
+}
+
+/// The arguments of `ffmpeg` that choose the encoder of a recipe, for a picture of more than 8
+/// bits (`ten`) or not.
+fn codec(recipe: Recipe, ten: bool) -> &'static [&'static str] {
+    match recipe {
         // `-g 0` is intra frames only (NVENC refuses `-g 1`).
+        Recipe::Cuda | Recipe::Nvenc if ten => &[
+            "-c:v",
+            "hevc_nvenc",
+            "-profile:v",
+            "main10",
+            "-g",
+            "0",
+            "-bf",
+            "0",
+            "-rc",
+            "vbr",
+            "-cq",
+            "22",
+        ],
         Recipe::Cuda | Recipe::Nvenc => &[
             "-c:v",
             "hevc_nvenc",
             "-profile:v",
-            if ten { "main10" } else { "main" },
+            "main",
             "-g",
             "0",
             "-bf",
@@ -629,27 +837,22 @@ fn arguments(recipe: Recipe, job: &Job, stream: usize, part: &Path, realtime: bo
             "22",
         ],
         Recipe::Prores => &["-c:v", "prores_ks", "-profile:v", "0"],
-    };
-    args.extend(codec.iter().map(|&arg| arg.to_owned()));
-    args.extend(
-        ["-protocol_whitelist", "file", "-f", "mov"]
-            .iter()
-            .map(|&arg| arg.to_owned()),
-    );
-    args.push(format!("file:{}", part.to_string_lossy()));
-    args
+    }
 }
 
-/// The recipes to try, in order, with what `ffmpeg -encoders` says.
-fn recipes(encoders: &str, nvenc_failed: bool) -> Vec<Recipe> {
+/// The recipes to try, in order, with what `ffmpeg -encoders` says; only those of `only`, where
+/// it is given.
+fn recipes(encoders: &str, nvenc_failed: bool, only: Option<Encoder>) -> Vec<Recipe> {
     let mut recipes = Vec::new();
-    if encoders.contains(" hevc_nvenc ") && !nvenc_failed {
+    let nvenc = only.is_none_or(|only| only == Encoder::Nvenc);
+    let prores = only.is_none_or(|only| only == Encoder::Prores);
+    if nvenc && encoders.contains(" hevc_nvenc ") && !nvenc_failed {
         if cfg!(any(windows, target_os = "linux")) {
             recipes.push(Recipe::Cuda);
         }
         recipes.push(Recipe::Nvenc);
     }
-    if encoders.contains(" prores_ks ") {
+    if prores && encoders.contains(" prores_ks ") {
         recipes.push(Recipe::Prores);
     }
     recipes
@@ -688,23 +891,35 @@ fn encoders(inner: &Inner, ffmpeg: &Path) -> String {
     said
 }
 
-/// Make the proxy of a job that is known to need one, set it on its media, and give what is to
-/// be told of it.
+/// Make the proxy of a job that is known to need one (or set the proxy of other media of the
+/// same file on it), set it on its media, and give what is to be told of it.
 fn make(
     inner: &Inner,
     hooks: &Hooks,
     job: &Job,
     cancelled: &AtomicBool,
-    child: &Mutex<Option<Child>>,
+    child: &Arc<Mutex<Option<Child>>>,
 ) -> Note {
+    let reuse = job.reuse.clone().or_else(|| sibling(inner, job));
+    if let Some(proxy) = &reuse {
+        return match (hooks.made)(&job.media, proxy) {
+            Made::Set => {
+                log(
+                    "proxy_made",
+                    &json!({ "media": job.media, "path": proxy.path, "encoder": null }),
+                );
+                Note::new(&job.media, "done", 1.0)
+            }
+            Made::Gone => failed(job, 0.0, removed()),
+        };
+    }
     let started = Instant::now();
     log(
         "proxy_started",
         &json!({ "media": job.media, "source": job.source.to_string_lossy() }),
     );
     (hooks.notify)(&Note::new(&job.media, "running", 0.0));
-    let made = encode(inner, hooks, job, cancelled, child);
-    match made {
+    match encode(inner, hooks, job, cancelled, child) {
         Ok((proxy, recipe, frames)) => match (hooks.made)(&job.media, &proxy) {
             Made::Set => {
                 log(
@@ -722,13 +937,40 @@ fn make(
                 );
                 Note::new(&job.media, "done", 1.0)
             }
-            Made::Gone => {
-                let _ = std::fs::remove_file(&proxy.path);
-                failed(job, 1.0, removed())
-            }
+            Made::Gone => failed(job, 1.0, removed()),
         },
-        Err((progress, message)) => failed(job, progress, message),
+        Err(failure) => {
+            if failure.remember {
+                inner.set_failure(&job.digest, Some(&failure.message));
+            }
+            failed(job, failure.progress, failure.message)
+        }
     }
+}
+
+/// A proxy of the file of a job in the directory of the proxies, made before for other media
+/// of the same file: one whose name ends in the digest of the file, and that is checked as one
+/// that is made.
+fn sibling(inner: &Inner, job: &Job) -> Option<Proxy> {
+    let suffix = file_name("", &job.digest);
+    let own = file_name(&job.media, &job.digest);
+    let entries = std::fs::read_dir(&inner.dir).ok()?;
+    entries.flatten().find_map(|entry| {
+        let path = entry.path();
+        let name = path.file_name()?.to_str()?;
+        // Not its own, which is made again because it could not be read.
+        if !name.ends_with(&suffix) || name == own || !path.is_file() {
+            return None;
+        }
+        let (width, height, codec) = checked_proxy(&path, job).ok()?;
+        Some(Proxy {
+            path: path.to_str()?.to_owned(),
+            width,
+            height,
+            codec,
+            digest_of_source: job.digest.clone(),
+        })
+    })
 }
 
 /// What is told of a job that failed, once it is logged.
@@ -738,6 +980,40 @@ fn failed(job: &Job, progress: f64, message: String) -> Note {
         &json!({ "media": job.media, "message": message }),
     );
     Note::failed(&job.media, progress, message)
+}
+
+/// Why a proxy was not made.
+struct Failure {
+    /// How far it came.
+    progress: f64,
+    message: String,
+    /// Whether the file itself is why: every encoder failed, or made a proxy that is not
+    /// right. It is not tried again until a client asks for it.
+    remember: bool,
+}
+
+impl Failure {
+    /// The failure of a job that was stopped: its media was removed, or the engine ends.
+    fn stopped(inner: &Inner, progress: f64) -> Failure {
+        let message = if lock(&inner.jobs).closing {
+            "the engine ended".into()
+        } else {
+            removed()
+        };
+        Failure {
+            progress,
+            message,
+            remember: false,
+        }
+    }
+
+    fn now(message: impl Into<String>) -> Failure {
+        Failure {
+            progress: 0.0,
+            message: message.into(),
+            remember: false,
+        }
+    }
 }
 
 /// The index of the stream of the picture of the media of a job, once its file is found to be
@@ -753,135 +1029,140 @@ fn picture_of(job: &Job) -> Result<usize, String> {
     Ok(gop.stream)
 }
 
+/// What came of one run of `ffmpeg`.
+enum Ran {
+    /// It ended well, having written this many frames.
+    Wrote(i64),
+    /// It failed, saying this.
+    Failed(String),
+    /// It wrote no frame for the time of the watchdog, and was killed.
+    Stuck,
+}
+
+/// Where the proxy of a job is to be, as a path and as text, and its `.part`; the directory is
+/// made.
+fn destination(inner: &Inner, job: &Job) -> Result<(PathBuf, String, PathBuf), String> {
+    std::fs::create_dir_all(&inner.dir)
+        .map_err(|error| format!("{} cannot be made: {error}", inner.dir.display()))?;
+    let path = inner.dir.join(file_name(&job.media, &job.digest));
+    let text = path
+        .to_str()
+        .map(str::to_owned)
+        .ok_or("the directory of the project is not UTF-8")?;
+    let part = PathBuf::from(format!("{text}.part"));
+    Ok((path, text, part))
+}
+
 /// Encode the proxy of a job by the first recipe that makes it, check it, and give it where it
-/// is to be; or how far it came and why it failed. A proxy that is cancelled is deleted.
+/// is to be; or why it failed. A proxy that is cancelled is deleted.
 fn encode(
     inner: &Inner,
     hooks: &Hooks,
     job: &Job,
     cancelled: &AtomicBool,
-    child: &Mutex<Option<Child>>,
-) -> Result<(Proxy, Recipe, i64), (f64, String)> {
+    child: &Arc<Mutex<Option<Child>>>,
+) -> Result<(Proxy, Recipe, i64), Failure> {
     let Some(ffmpeg) = &inner.ffmpeg else {
-        return Err((
-            0.0,
+        return Err(Failure::now(
             "there is no ffmpeg to make proxies with: none beside the engine, and \
-             COLUMBINA_PROXY_FFMPEG is not set"
-                .into(),
+             COLUMBINA_PROXY_FFMPEG names none",
         ));
     };
-    let stream = picture_of(job).map_err(|message| (0.0, message))?;
-    std::fs::create_dir_all(&inner.dir).map_err(|error| {
-        (
-            0.0,
-            format!("{} cannot be made: {error}", inner.dir.display()),
-        )
-    })?;
-    let path = inner.dir.join(file_name(&job.media, &job.digest));
-    let Some(text) = path.to_str().map(str::to_owned) else {
-        return Err((0.0, "the directory of the project is not UTF-8".into()));
-    };
-    let part = PathBuf::from(format!("{text}.part"));
+    let stream = picture_of(job).map_err(Failure::now)?;
+    let (path, text, part) = destination(inner, job).map_err(Failure::now)?;
     let encoders = encoders(inner, ffmpeg);
-    let recipes = recipes(&encoders, inner.nvenc_failed.load(Ordering::Acquire));
+    let recipes = recipes(
+        &encoders,
+        inner.nvenc_failed.load(Ordering::Acquire),
+        inner.setup.encoder,
+    );
     if recipes.is_empty() {
-        return Err((
-            0.0,
-            format!(
-                "{} has neither hevc_nvenc nor prores_ks to make proxies with",
-                ffmpeg.display()
-            ),
-        ));
+        return Err(Failure::now(format!(
+            "{} has neither hevc_nvenc nor prores_ks to make proxies with",
+            ffmpeg.display()
+        )));
     }
     let mut why = Vec::new();
     let mut progress = 0.0;
     for recipe in recipes {
         let _ = std::fs::remove_file(&part);
-        let args = arguments(recipe, job, stream, &part, inner.realtime);
-        let ran = run_ffmpeg(ffmpeg, &args, job, hooks, cancelled, child, &mut progress);
+        let args = arguments(recipe, job, stream, &part, inner.setup.readrate.as_deref());
+        let ran = run_ffmpeg(
+            inner,
+            ffmpeg,
+            &args,
+            recipe,
+            job,
+            hooks,
+            cancelled,
+            child,
+            &mut progress,
+        );
         if cancelled.load(Ordering::Acquire) {
             let _ = std::fs::remove_file(&part);
-            let why = if lock(&inner.jobs).closing {
-                "the engine ended".into()
-            } else {
-                removed()
-            };
-            return Err((progress, why));
+            return Err(Failure::stopped(inner, progress));
         }
-        let checked = ran.and_then(|frames| {
-            checked_proxy(&part, job).map(|(width, height, codec)| (frames, width, height, codec))
-        });
-        match checked {
-            Ok((frames, width, height, codec)) => {
-                if recipe == Recipe::Prores && why.iter().any(|(tried, _)| *tried != Recipe::Prores)
-                {
+        let message = match ran {
+            Ran::Wrote(frames) => match checked_proxy(&part, job) {
+                Ok((width, height, codec)) => {
+                    std::fs::rename(&part, &path).map_err(|error| {
+                        let _ = std::fs::remove_file(&part);
+                        Failure {
+                            progress,
+                            message: format!("the proxy cannot be put in place: {error}"),
+                            remember: false,
+                        }
+                    })?;
+                    let proxy = Proxy {
+                        path: text,
+                        width,
+                        height,
+                        codec,
+                        digest_of_source: job.digest.clone(),
+                    };
+                    return Ok((proxy, recipe, frames));
+                }
+                Err(message) => message,
+            },
+            Ran::Failed(message) => {
+                // NVENC itself failed (no card, no session): it is not tried again. A proxy
+                // that is not right, or a failure of decoding, is the file's.
+                let lower = message.to_lowercase();
+                if recipe == Recipe::Nvenc && lower.contains("nvenc") {
                     inner.nvenc_failed.store(true, Ordering::Release);
                 }
-                std::fs::rename(&part, &path).map_err(|error| {
-                    let _ = std::fs::remove_file(&part);
-                    (
-                        progress,
-                        format!("the proxy cannot be put in place: {error}"),
-                    )
-                })?;
-                let proxy = Proxy {
-                    path: text,
-                    width,
-                    height,
-                    codec,
-                    digest_of_source: job.digest.clone(),
-                };
-                return Ok((proxy, recipe, frames));
+                message
             }
-            Err(message) => {
-                log(
-                    "proxy_recipe_failed",
-                    &json!({ "media": job.media, "encoder": recipe.name(), "message": message }),
-                );
-                why.push((recipe, message));
+            Ran::Stuck => {
                 let _ = std::fs::remove_file(&part);
+                return Err(Failure {
+                    progress,
+                    message: format!(
+                        "ffmpeg wrote no frame for {} s, and was stopped",
+                        inner.setup.watchdog.as_secs()
+                    ),
+                    remember: false,
+                });
             }
-        }
+        };
+        log(
+            "proxy_recipe_failed",
+            &json!({ "media": job.media, "encoder": recipe.name(), "message": message }),
+        );
+        why.push(format!("{}: {message}", recipe.name()));
+        let _ = std::fs::remove_file(&part);
     }
-    let message = why
-        .iter()
-        .map(|(recipe, message)| format!("{}: {message}", recipe.name()))
-        .collect::<Vec<_>>()
-        .join("; ");
-    Err((progress, format!("the proxy cannot be made: {message}")))
+    Err(Failure {
+        progress,
+        message: format!("the proxy cannot be made: {}", why.join("; ")),
+        remember: true,
+    })
 }
 
-/// Run `ffmpeg`, telling how far it is at most once a [`TOLD_EVERY`], until it ends or is
-/// killed; the frames that it wrote, or why it failed.
-fn run_ffmpeg(
-    ffmpeg: &Path,
-    args: &[String],
-    job: &Job,
-    hooks: &Hooks,
-    cancelled: &AtomicBool,
-    slot: &Mutex<Option<Child>>,
-    progress: &mut f64,
-) -> Result<i64, String> {
-    let mut spawned = command(ffmpeg)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("{} cannot be started: {error}", ffmpeg.display()))?;
-    contain(&spawned);
-    let stdout = spawned.stdout.take();
-    let stderr = spawned.stderr.take();
-    {
-        let mut slot = lock(slot);
-        if cancelled.load(Ordering::Acquire) {
-            let _ = spawned.kill();
-        }
-        *slot = Some(spawned);
-    }
-    // What it says on stderr is read on a thread of its own, so that it never waits to write
-    // it; the last of it is kept, to say why it failed.
-    let errors = std::thread::Builder::new()
+/// Read what a child says on stderr on a thread of its own, so that it never waits to write it,
+/// keeping the last of it, to say why it failed.
+fn drain(stderr: Option<std::process::ChildStderr>) -> Option<JoinHandle<String>> {
+    std::thread::Builder::new()
         .name("columbina-proxy-stderr".into())
         .spawn(move || {
             let mut said = String::new();
@@ -900,7 +1181,111 @@ fn run_ffmpeg(
             }
             said
         })
-        .ok();
+        .ok()
+}
+
+/// What kills an `ffmpeg` that wrote no frame for its time.
+struct Watchdog {
+    moved: Arc<Mutex<Instant>>,
+    done: Arc<AtomicBool>,
+    stuck: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Watchdog {
+    /// Watch the `ffmpeg` in `slot`, which may write no frame for `most`.
+    fn start(slot: &Arc<Mutex<Option<Child>>>, most: Duration) -> Watchdog {
+        let moved = Arc::new(Mutex::new(Instant::now()));
+        let done = Arc::new(AtomicBool::new(false));
+        let stuck = Arc::new(AtomicBool::new(false));
+        let thread = std::thread::Builder::new()
+            .name("columbina-proxy-watchdog".into())
+            .spawn({
+                let (moved, done, stuck) =
+                    (Arc::clone(&moved), Arc::clone(&done), Arc::clone(&stuck));
+                let slot = Arc::clone(slot);
+                move || {
+                    while !done.load(Ordering::Acquire) {
+                        std::thread::sleep(Duration::from_millis(100));
+                        if lock(&moved).elapsed() > most {
+                            stuck.store(true, Ordering::Release);
+                            if let Some(child) = lock(&slot).as_mut() {
+                                let _ = child.kill();
+                            }
+                            return;
+                        }
+                    }
+                }
+            })
+            .ok();
+        Watchdog {
+            moved,
+            done,
+            stuck,
+            thread,
+        }
+    }
+
+    /// A frame was written.
+    fn moved(&self) {
+        *lock(&self.moved) = Instant::now();
+    }
+
+    /// Stop watching; whether it killed the `ffmpeg`.
+    fn stop(self) -> bool {
+        self.done.store(true, Ordering::Release);
+        if let Some(thread) = self.thread {
+            let _ = thread.join();
+        }
+        self.stuck.load(Ordering::Acquire)
+    }
+}
+
+/// Run `ffmpeg`, telling how far it is at most once a [`TOLD_EVERY`], until it ends, is killed,
+/// or writes no frame for the time of the watchdog (then it is killed).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one run, and all it needs to tell of it"
+)]
+fn run_ffmpeg(
+    inner: &Inner,
+    ffmpeg: &Path,
+    args: &[String],
+    recipe: Recipe,
+    job: &Job,
+    hooks: &Hooks,
+    cancelled: &AtomicBool,
+    slot: &Arc<Mutex<Option<Child>>>,
+    progress: &mut f64,
+) -> Ran {
+    let spawned = command(ffmpeg)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut spawned = match spawned {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            return Ran::Failed(format!("{} cannot be started: {error}", ffmpeg.display()))
+        }
+    };
+    contain(&spawned);
+    log(
+        "proxy_encoding",
+        &json!({ "media": job.media, "encoder": recipe.name(), "pid": spawned.id() }),
+    );
+    let stdout = spawned.stdout.take();
+    let stderr = spawned.stderr.take();
+    {
+        let mut slot = lock(slot);
+        if cancelled.load(Ordering::Acquire) {
+            let _ = spawned.kill();
+        }
+        *slot = Some(spawned);
+    }
+    let errors = drain(stderr);
+    let watchdog = Watchdog::start(slot, inner.setup.watchdog);
     let total = job.frames().max(1);
     let mut frames = 0_i64;
     let mut told = Instant::now();
@@ -910,7 +1295,11 @@ fn run_ffmpeg(
                 break;
             };
             if let Some(count) = line.strip_prefix("frame=") {
-                frames = count.trim().parse().unwrap_or(frames);
+                let count = count.trim().parse().unwrap_or(frames);
+                if count != frames {
+                    watchdog.moved();
+                }
+                frames = count;
                 #[allow(clippy::cast_precision_loss, reason = "a fraction, for the clients")]
                 let fraction = (frames as f64 / total as f64).clamp(0.0, 1.0);
                 *progress = fraction;
@@ -922,34 +1311,45 @@ fn run_ffmpeg(
         }
     }
     let status = lock(slot).take().map(|mut child| child.wait());
+    let stuck = watchdog.stop();
     let said = errors
         .and_then(|thread| thread.join().ok())
         .unwrap_or_default();
+    if stuck {
+        return Ran::Stuck;
+    }
     match status {
-        Some(Ok(status)) if status.success() => Ok(frames),
+        Some(Ok(status)) if status.success() => Ran::Wrote(frames),
         Some(Ok(status)) => {
             let last = said
                 .lines()
                 .rev()
                 .find(|line| !line.trim().is_empty())
                 .unwrap_or("it said nothing");
-            Err(format!("ffmpeg ended with {status}: {last}"))
+            Ran::Failed(format!("ffmpeg ended with {status}: {last}"))
         }
-        Some(Err(error)) => Err(format!("ffmpeg cannot be waited for: {error}")),
-        None => Err("ffmpeg was lost".into()),
+        Some(Err(error)) => Ran::Failed(format!("ffmpeg cannot be waited for: {error}")),
+        None => Ran::Failed("ffmpeg was lost".into()),
     }
 }
 
-/// Check a proxy that was made: its picture is at the rate of the media's, and every frame of
-/// its start is a key frame. Gives its width, height and codec.
+/// Check a proxy that was made: its first and last frames are numbered as those of the media,
+/// at the rate of the media, and every frame of its start is a key frame. Gives its width,
+/// height and codec.
 fn checked_proxy(part: &Path, job: &Job) -> Result<(u32, u32, String), String> {
     let facts = columbina_media::probe(part)
         .map_err(|error| format!("the proxy cannot be read: {error}"))?;
     let video = facts.video.ok_or("the proxy has no picture")?;
-    if video.rate != job.video.rate {
+    let rate = job.video.rate;
+    let media = columbina_media::frame_numbers(&job.source, rate, CHECKED_FRAMES)
+        .map_err(|error| format!("the media cannot be read: {error}"))?;
+    let proxy = columbina_media::frame_numbers(part, rate, CHECKED_FRAMES)
+        .map_err(|error| format!("the proxy cannot be read: {error}"))?;
+    if media != proxy {
         return Err(format!(
-            "the proxy has {}/{} frames a second, and the media {}/{}",
-            video.rate.num, video.rate.den, job.video.rate.num, job.video.rate.den
+            "the frames of the proxy are not numbered as those of the media: the first are \
+             {:?} and {:?}, the last {:?} and {:?}",
+            proxy.0, media.0, proxy.1, media.1
         ));
     }
     let gop = columbina_media::gop(part, GOP_PACKETS)
@@ -1113,13 +1513,23 @@ mod tests {
         } else {
             &[Recipe::Nvenc, Recipe::Prores]
         };
-        assert_eq!(recipes(both, false), cuda);
-        assert_eq!(recipes(both, true), [Recipe::Prores]);
+        assert_eq!(recipes(both, false, None), cuda);
+        assert_eq!(recipes(both, true, None), [Recipe::Prores]);
         assert_eq!(
-            recipes(" VFS... prores_ks  Apple\n", false),
+            recipes(both, false, Some(Encoder::Prores)),
             [Recipe::Prores]
         );
-        assert_eq!(recipes("", false), []);
+        assert_eq!(
+            recipes(both, false, Some(Encoder::Nvenc)),
+            cuda[..cuda.len() - 1]
+        );
+        assert_eq!(
+            recipes(" VFS... prores_ks  Apple\n", false, None),
+            [Recipe::Prores]
+        );
+        assert_eq!(recipes("", false, None), []);
+        assert_eq!(Encoder::parse("prores"), Ok(Encoder::Prores));
+        assert!(Encoder::parse("x264").is_err());
     }
 
     #[test]
@@ -1134,8 +1544,9 @@ mod tests {
                 scale: 1,
             },
             checked: true,
+            reuse: None,
         };
-        let args = arguments(Recipe::Cuda, &job, 2, Path::new("/p/m1.mov.part"), false);
+        let args = arguments(Recipe::Cuda, &job, 2, Path::new("/p/m1.mov.part"), None);
         let text = args.join(" ");
         for wanted in [
             "-protocol_whitelist file",
@@ -1154,17 +1565,39 @@ mod tests {
             video: video(640, 360, 8, "h264"),
             ..job
         };
-        let text = arguments(Recipe::Nvenc, &eight, 0, Path::new("/p.part"), true).join(" ");
+        let text = arguments(Recipe::Nvenc, &eight, 0, Path::new("/p.part"), Some("1")).join(" ");
         assert!(text.contains("-readrate 1"), "{text}");
+        assert!(text.contains("-vf realtime=speed=1:limit=3600"), "{text}");
+        let text = arguments(Recipe::Nvenc, &eight, 0, Path::new("/p.part"), None).join(" ");
         assert!(!text.contains("-vf"), "{text}");
         assert!(
             text.contains("-pix_fmt nv12 -c:v hevc_nvenc -profile:v main"),
             "{text}"
         );
-        let text = arguments(Recipe::Prores, &eight, 0, Path::new("/p.part"), false).join(" ");
+        let text = arguments(Recipe::Prores, &eight, 0, Path::new("/p.part"), None).join(" ");
         assert!(
             text.contains("-pix_fmt yuv422p10le -c:v prores_ks -profile:v 0"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_failure_is_remembered_by_the_digest_of_the_file_and_forgotten_when_asked() {
+        let dir = std::env::temp_dir().join(format!("columbina-proxy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let setup = Setup::default();
+        let proxies = Proxies::new(&setup, &dir);
+        let inner = proxies.inner.as_ref().unwrap();
+        assert_eq!(inner.failure("abc"), None);
+        inner.set_failure("abc", Some("no encoder made it"));
+        let again = Proxies::new(&setup, &dir);
+        let inner = again.inner.as_ref().unwrap();
+        assert_eq!(inner.failure("abc").as_deref(), Some("no encoder made it"));
+        inner.set_failure("abc", None);
+        assert_eq!(
+            Proxies::new(&setup, &dir).inner.unwrap().failure("abc"),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

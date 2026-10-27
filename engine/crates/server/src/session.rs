@@ -342,9 +342,10 @@ fn tell_proxy(state: &Mutex<State>, note: &Note, limits: Limits) {
 
 /// Set a proxy that was made on its media, by a change of the engine that is no step to undo,
 /// unless the media is gone or is of another file. A proxy that the media has already (made
-/// again after its file could not be opened) is given to the transport again. The file of the
-/// proxy that the media had before, if it was another one beside it, is deleted. This is called
-/// by the thread of the maker of proxies.
+/// again after its file could not be opened or decoded) is not set again. Either way the
+/// transport is given it, to read it again if it had given it up. The file of the proxy that
+/// the media had before, if it was another one beside it that no other media has, is deleted.
+/// This is called by the thread of the maker of proxies.
 fn proxy_made(state: &Mutex<State>, media: &str, proxy: &Proxy, limits: Limits) -> Made {
     let mut locked = state.blocking_lock();
     let Some(found) = locked
@@ -366,6 +367,16 @@ fn proxy_made(state: &Mutex<State>, media: &str, proxy: &Proxy, limits: Limits) 
         }
         return Made::Set;
     }
+    let other_has = |path: &str| {
+        locked.history.project().media.iter().any(|other| {
+            other.id != media && other.proxy.as_ref().is_some_and(|proxy| proxy.path == path)
+        })
+    };
+    let before = before.filter(|before| {
+        before.path != proxy.path
+            && Path::new(&before.path).parent() == Path::new(&proxy.path).parent()
+            && !other_has(&before.path)
+    });
     let set = Op::SetProxy {
         media: media.to_owned(),
         proxy: Some(proxy.clone()),
@@ -373,6 +384,9 @@ fn proxy_made(state: &Mutex<State>, media: &str, proxy: &Proxy, limits: Limits) 
     let made = match locked.history.apply_unrecorded(vec![set], "engine") {
         Ok(applied) => {
             locked.publish(&applied);
+            if let Some(transport) = &locked.transport {
+                transport.proxy_ready(media, PathBuf::from(&proxy.path));
+            }
             Made::Set
         }
         Err(error) => {
@@ -388,27 +402,19 @@ fn proxy_made(state: &Mutex<State>, media: &str, proxy: &Proxy, limits: Limits) 
     for (id, kind) in kicked {
         log_kicked(id, Some(kind), limits);
     }
-    if let Some(before) = before.filter(|before| before.path != proxy.path) {
-        let beside = Path::new(&before.path).parent() == Path::new(&proxy.path).parent();
-        if made == Made::Set && beside {
-            let _ = std::fs::remove_file(&before.path);
-        }
+    if let (Some(before), Made::Set) = (before, made) {
+        let _ = std::fs::remove_file(&before.path);
     }
     made
 }
 
-/// Make the proxy of media again, as the transport asks when its file cannot be opened. This is
-/// called by the transport's own thread.
+/// Make the proxy of media again, as the transport asks when its file cannot be opened or
+/// decoded. This is called by the transport's own thread.
 fn make_again(state: &Mutex<State>, media: &str) {
     let state = state.blocking_lock();
-    if let Some(found) = state
-        .history
-        .project()
-        .media
-        .iter()
-        .find(|found| found.id == media)
-    {
-        state.proxies.again(found);
+    let project = state.history.project();
+    if let Some(found) = project.media.iter().find(|found| found.id == media) {
+        state.proxies.again(project, found);
     }
 }
 
@@ -548,6 +554,7 @@ async fn dispatch(
             history_step(engine, connection, kind, id, method, params).await
         }
         "media.import" => media_import(engine, connection, kind, id, params).await,
+        "media.make_proxy" => make_proxy(engine, connection, id, params).await,
         "view.attach" | "view.place" | "view.show" | "view.detach" => {
             let result = engine.viewer.call(kind, method, params).await?;
             if method == "view.attach" {
@@ -818,6 +825,43 @@ async fn history_step(
     Ok(engine.finish(state, connection, line))
 }
 
+/// The params of `media.make_proxy`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MakeProxy {
+    media: String,
+}
+
+/// `media.make_proxy`: make the proxy of media again, if it needs one, though it could not be
+/// made before.
+async fn make_proxy(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let method = "media.make_proxy";
+    let asked: MakeProxy = rpc::params(method, r#"{"media": "m1"}"#, params)?;
+    let state = engine.state.lock().await;
+    let project = state.history.project();
+    let Some(media) = project.media.iter().find(|media| media.id == asked.media) else {
+        let fault = Fault::params(format!("there is no media {} in the project", asked.media))
+            .with_data(json!({ "reason": "missing", "media": asked.media }));
+        return Err(fault.into());
+    };
+    if !state.proxies.retry(project, media) {
+        let fault = Fault::new(
+            rpc::METHOD_NOT_FOUND,
+            format!(
+                "there is no method {method} in an engine that makes no proxies (a headless                  one, or one started with --no-proxies)"
+            ),
+        );
+        return Err(fault.into());
+    }
+    let line = rpc::result_line(id, &json!({}));
+    Ok(engine.finish(state, connection, line))
+}
+
 /// How many files `media.import` reads at once, of all its calls together.
 const READ_AT_ONCE: usize = 8;
 
@@ -884,15 +928,7 @@ async fn media_import(
         })
         .collect();
     state.publish(&applied);
-    {
-        let project = state.history.project();
-        let taken: Vec<&Media> = project
-            .media
-            .iter()
-            .filter(|media| added.contains(&media.id))
-            .collect();
-        state.proxies.imported(&taken);
-    }
+    state.proxies.imported(state.history.project(), &added);
     let line = rpc::result_line(
         id,
         &Imported {

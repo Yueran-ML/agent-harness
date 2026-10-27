@@ -67,6 +67,14 @@ pub enum Sample {
     /// Sound only: AAC in MP4 (`.m4a`), pink noise at 48 kHz in stereo, 3 s, coded without
     /// perceptual noise substitution; noise, so that a sample is told from the samples near it.
     Noise,
+    /// MP4 of H.264 at 30 frames a second in a time base of 1/90000, 4 s (120 frames), a key
+    /// frame every 30 and B-frames, whose frame `10k + 4` comes 0.55 of a frame late: it is
+    /// numbered `10k + 5`, as the frame after it is, and no frame is numbered `10k + 4`.
+    Collide,
+    /// MP4 of H.264 cut from 1.3 s of a file of 6 s (25 frames a second, a key frame every 50,
+    /// B-frames) without coding it again (`-ss 1.3 -c copy`): an edit list starts it after its
+    /// first key frame, whose frames before 1.3 s are decoded and dropped.
+    EditList,
 }
 
 impl Sample {
@@ -102,10 +110,11 @@ impl Sample {
             | Sample::Vfr
             | Sample::SameTimes => Some(100),
             Sample::Uhd => Some(180),
+            Sample::Collide => Some(120),
             Sample::Prores | Sample::Webm => Some(50),
             Sample::Portrait => Some(60),
             Sample::Fhd10 => Some(25),
-            Sample::Wav | Sample::Evc | Sample::Noise => None,
+            Sample::Wav | Sample::Evc | Sample::Noise | Sample::EditList => None,
         }
     }
 
@@ -134,6 +143,8 @@ impl Sample {
             Sample::Evc => "v1-evc-aac.mp4",
             Sample::Webm => "v1-vp9-opus.webm",
             Sample::Noise => "v1-noise-aac.m4a",
+            Sample::Collide => "v1-collide-h264.mp4",
+            Sample::EditList => "v1-editlist-h264.mp4",
         }
     }
 }
@@ -586,6 +597,45 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
             true,
             &["-c:a", "aac"],
         ),
+        Sample::Collide => one_step(
+            h264(encoders, 30),
+            &numbered(
+                640,
+                360,
+                30,
+                4,
+                8,
+                "420",
+                ",settb=1/90000,setpts='(N+0.55*eq(mod(N\\,10)\\,4))/(30*TB)'",
+            ),
+            false,
+            &[
+                "-fps_mode",
+                "passthrough",
+                "-enc_time_base:v",
+                "1/90000",
+                "-video_track_timescale",
+                "90000",
+            ],
+        ),
+        Sample::EditList => h264(encoders, 50)
+            .into_iter()
+            .map(|(encoder, codec)| {
+                let mut first = strings(&[
+                    "-filter_complex",
+                    &numbered(640, 360, 25, 6, 8, "420", ""),
+                    "-map",
+                    "[v]",
+                ]);
+                first.extend(codec);
+                first.push("{tmp}".into());
+                let second = strings(&["-ss", "1.3", "-i", "{tmp}", "-c", "copy", "{out}"]);
+                Recipe {
+                    encoder,
+                    steps: vec![first, second],
+                }
+            })
+            .collect(),
         Sample::Webm => one_step(
             named(
                 encoders,

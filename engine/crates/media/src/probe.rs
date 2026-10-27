@@ -114,6 +114,77 @@ pub fn gop(path: &Path, most: u64) -> Result<Gop, MediaError> {
     Ok(gop)
 }
 
+/// How far before the end of a file [`frame_numbers`] reads its last packets, in microseconds.
+const FRAME_NUMBERS_TAIL: i64 = 3_000_000;
+
+/// The numbers of the first `count` frames of the picture of a file and of its last `count`, at
+/// `rate`, as a decoder that numbers its frames at that rate numbers them (see the crate's doc):
+/// from the timestamps of its packets, without decoding. Packets that are dropped once decoded
+/// (before the start of an edit list) are not counted. So two files whose frames are numbered
+/// alike, as a proxy's are its media's, give the same numbers. This blocks, and reads the start
+/// and the last few seconds of the file.
+///
+/// # Errors
+/// The file cannot be opened (as [`probe`]), or it has no picture.
+pub fn frame_numbers(
+    path: &Path,
+    rate: Rate,
+    count: usize,
+) -> Result<(Vec<i64>, Vec<i64>), MediaError> {
+    let mut input = open(path)?;
+    let index = video_stream(&input)?.ok_or(MediaError::NoVideo)?;
+    let (base, start, total) = {
+        let stream = input.stream(index).ok_or(MediaError::NoVideo)?;
+        let start = Some(stream.start_time()).filter(|&start| start != ff::ffi::AV_NOPTS_VALUE);
+        (base(&stream)?, start, input.duration())
+    };
+    ffi::discard_others(&mut input, index);
+    // The timestamps of the packets shown, from where the demuxer is to the end, or until
+    // `most` were read.
+    let read = |input: &mut Input, most: usize| {
+        let mut times = Vec::new();
+        let mut packets = 0;
+        while packets < most {
+            let mut packet = ff::Packet::empty();
+            match packet.read(input) {
+                Ok(()) if packet.stream() == index => {
+                    packets += 1;
+                    if let Some(pts) = packet.pts().filter(|_| !ffi::discarded(&packet)) {
+                        times.push(pts);
+                    }
+                }
+                Ok(()) => {}
+                Err(_) => break,
+            }
+        }
+        times.sort_unstable();
+        times
+    };
+    let mut first = read(&mut input, 4 * count + 16);
+    let origin = start.or_else(|| first.first().copied()).unwrap_or(0);
+    let timing = timing::Timing { base, rate, origin };
+    first.truncate(count);
+    // The last packets: from a few seconds before the end, or from where it is where it cannot
+    // seek.
+    if total > 0 {
+        let (num, den) = base;
+        let near_end = i128::from(total - FRAME_NUMBERS_TAIL).max(0) * i128::from(den)
+            / (i128::from(num) * i128::from(ff::ffi::AV_TIME_BASE));
+        let near_end = origin.saturating_add(i64::try_from(near_end).unwrap_or(0));
+        let _ = ffi::seek(&mut input, index, near_end, true);
+    }
+    let mut last = read(&mut input, usize::MAX);
+    let keep = last.len().saturating_sub(count);
+    last.drain(..keep);
+    let number = |times: Vec<i64>| {
+        times
+            .into_iter()
+            .map(|time| timing.frame_of(time))
+            .collect()
+    };
+    Ok((number(first), number(last)))
+}
+
 /// The demuxers of libav that a file may be read with: those of the editing of Python
 /// (`columbina.video.media.DEMUXERS`), and MPEG-PS (`mpeg`, of DVDs and cameras), which
 /// that list lacks. A list of other files, such as an HLS playlist or a list of `concat`, is of none of

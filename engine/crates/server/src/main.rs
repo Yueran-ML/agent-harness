@@ -104,7 +104,8 @@ struct Options {
     setup: transport::Setup,
     /// Whether proxies are made (not by a headless engine, nor with `--no-proxies`, which the
     /// tests give where they would get in the way), and, not in the usage, the `ffmpeg` that
-    /// makes them (`--proxy-ffmpeg <FILE>`) and, for the tests, `--proxy-realtime`.
+    /// makes them (`--proxy-ffmpeg <FILE>`, an absolute path) and, for the tests,
+    /// `--proxy-readrate <R>`, `--proxy-encoder nvenc|prores` and `--proxy-watchdog <S>`.
     proxies: proxy::Setup,
 }
 
@@ -119,11 +120,7 @@ impl Options {
             sound: audio::Kind::Device { mute: false },
             fail_card_at: None,
         };
-        let mut proxies = proxy::Setup {
-            make: true,
-            ffmpeg: None,
-            realtime: false,
-        };
+        let mut proxies = proxy::Setup::default();
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--project") => {
@@ -160,10 +157,31 @@ impl Options {
                 }
                 Some("--no-proxies") => proxies.make = false,
                 Some("--proxy-ffmpeg") => {
-                    let file = args.next().ok_or("--proxy-ffmpeg needs a file")?;
-                    proxies.ffmpeg = Some(PathBuf::from(file));
+                    let file = PathBuf::from(args.next().ok_or("--proxy-ffmpeg needs a file")?);
+                    if !file.is_absolute() {
+                        return Err(format!(
+                            "--proxy-ffmpeg takes an absolute path, and {} is not one",
+                            file.display()
+                        ));
+                    }
+                    proxies.ffmpeg = Some(file);
                 }
-                Some("--proxy-realtime") => proxies.realtime = true,
+                Some("--proxy-readrate") => {
+                    let rate = args.next().ok_or("--proxy-readrate needs a rate")?;
+                    let rate = rate.to_string_lossy().into_owned();
+                    if !rate.parse::<f64>().is_ok_and(|rate| rate > 0.0) {
+                        return Err(format!("--proxy-readrate takes a rate above 0, not {rate}"));
+                    }
+                    proxies.readrate = Some(rate);
+                }
+                Some("--proxy-encoder") => {
+                    let encoder = args.next().ok_or("--proxy-encoder needs an encoder")?;
+                    proxies.encoder = Some(proxy::Encoder::parse(&encoder.to_string_lossy())?);
+                }
+                Some("--proxy-watchdog") => {
+                    let seconds: u64 = number(args.next().as_ref(), "--proxy-watchdog")?;
+                    proxies.watchdog = Duration::from_secs(seconds.max(1));
+                }
                 _ => {
                     let arg = arg.to_string_lossy();
                     return Err(format!("{arg} is not an argument of the engine; {USAGE}"));
@@ -552,6 +570,13 @@ fn plain(path: PathBuf) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// An absolute path, on this system.
+    const FFMPEG: &str = if cfg!(windows) {
+        r"C:\ff\ffmpeg.exe"
+    } else {
+        "/ff/ffmpeg"
+    };
+
     fn parse(args: &[&str]) -> Result<Options, String> {
         Options::parse(args.iter().map(OsString::from))
     }
@@ -573,11 +598,7 @@ mod tests {
                     sound: audio::Kind::Device { mute: false },
                     fail_card_at: None,
                 },
-                proxies: proxy::Setup {
-                    make: true,
-                    ffmpeg: None,
-                    realtime: false,
-                },
+                proxies: proxy::Setup::default(),
             }
         );
         assert_eq!(
@@ -597,8 +618,13 @@ mod tests {
                 "--fail-card-at",
                 "30",
                 "--proxy-ffmpeg",
-                "f",
-                "--proxy-realtime",
+                FFMPEG,
+                "--proxy-readrate",
+                "0.5",
+                "--proxy-encoder",
+                "prores",
+                "--proxy-watchdog",
+                "2",
             ])
             .unwrap(),
             Options {
@@ -617,8 +643,10 @@ mod tests {
                 // A headless engine makes none.
                 proxies: proxy::Setup {
                     make: false,
-                    ffmpeg: Some("f".into()),
-                    realtime: true,
+                    ffmpeg: Some(FFMPEG.into()),
+                    readrate: Some("0.5".into()),
+                    encoder: Some(proxy::Encoder::Prores),
+                    watchdog: Duration::from_secs(2),
                 },
             }
         );
@@ -645,6 +673,10 @@ mod tests {
             &["--project", "p", "--sound", "loud"],
             &["--project", "p", "--fail-card-at", "x"],
             &["--project", "p", "--proxy-ffmpeg"],
+            &["--project", "p", "--proxy-ffmpeg", "ffmpeg"],
+            &["--project", "p", "--proxy-readrate", "0"],
+            &["--project", "p", "--proxy-encoder", "x264"],
+            &["--project", "p", "--proxy-watchdog", "x"],
         ] {
             assert!(parse(args).is_err(), "{args:?}");
         }

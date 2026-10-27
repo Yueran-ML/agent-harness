@@ -401,6 +401,12 @@ pub(crate) fn key_frame_before(
     }
 }
 
+/// Whether a packet is to be dropped once decoded: before the start of an edit list.
+pub(crate) fn discarded(packet: &ff::Packet) -> bool {
+    // SAFETY: the packet is valid for as long as it is borrowed; only its flags are read.
+    unsafe { (*ff::packet::Ref::as_ptr(packet)).flags & ff::ffi::AV_PKT_FLAG_DISCARD != 0 }
+}
+
 /// How many entries the index of a stream has.
 pub(crate) fn index_entries(input: &ff::format::context::Input, stream: usize) -> i32 {
     let Some(stream) = input.stream(stream) else {

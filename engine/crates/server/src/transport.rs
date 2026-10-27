@@ -84,7 +84,7 @@
 
 pub(crate) mod clock;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
@@ -194,6 +194,8 @@ struct Shared {
     stopped: bool,
     /// The media of the load sent last, and the proxy that was sent with it, or since.
     proxy_sent: Option<(String, Option<PathBuf>)>,
+    /// The proxies that could not be opened or decoded, and were not made again since.
+    failed: HashSet<PathBuf>,
 }
 
 /// What the clients are told of the transport, in `transport.state`.
@@ -443,6 +445,7 @@ impl Transport {
             loading: Vec::new(),
             stopped: false,
             proxy_sent: None,
+            failed: HashSet::new(),
         }));
         if headless {
             return Transport {
@@ -712,13 +715,18 @@ impl Transport {
         // A proxy made, made again or taken away while its media is loaded.
         let changed = {
             let mut shared = lock(&self.shared);
-            let Some((media, sent)) = &mut shared.proxy_sent else {
+            let Some((media, _)) = &shared.proxy_sent else {
                 return;
             };
             let Some(found) = project.media.iter().find(|item| item.id == *media) else {
                 return;
             };
-            let now = crate::proxy::usable(found).map(|proxy| PathBuf::from(&proxy.path));
+            let now = crate::proxy::usable(found)
+                .map(|proxy| PathBuf::from(&proxy.path))
+                .filter(|path| !shared.failed.contains(path));
+            let Some((media, sent)) = &mut shared.proxy_sent else {
+                return;
+            };
             if now == *sent {
                 return;
             }
@@ -731,11 +739,13 @@ impl Transport {
         });
     }
 
-    /// The proxy of media was made again where it was: if the media is loaded, its picture is
-    /// read from it again. This only sends to the transport's thread.
+    /// The proxy of media was made, or made again: if the media is loaded, its picture is read
+    /// from it, even where a proxy at the same path could not be read before. This only sends to
+    /// the transport's thread.
     pub fn proxy_ready(&self, media: &str, path: PathBuf) {
         {
             let mut shared = lock(&self.shared);
+            shared.failed.remove(&path);
             match &mut shared.proxy_sent {
                 Some((sent, proxy)) if sent == media => *proxy = Some(path.clone()),
                 _ => return,
@@ -988,15 +998,21 @@ impl World {
         }
     }
 
-    /// The proxy of media could not be read: it has none now, as far as what is sent to the
-    /// transport goes, so that the proxy that is made again in its place is sent, whatever its
-    /// path.
-    fn forget_proxy(&self, media: &str) {
-        if let Some((sent, proxy)) = &mut lock(&self.shared).proxy_sent {
+    /// The proxy of media at `path` could not be read: it is not read again, nor sent again by
+    /// a change of the project, until it is made again ([`Transport::proxy_ready`]).
+    fn forget_proxy(&self, media: &str, path: &Path) {
+        let mut shared = lock(&self.shared);
+        shared.failed.insert(path.to_owned());
+        if let Some((sent, proxy)) = &mut shared.proxy_sent {
             if sent == media {
                 *proxy = None;
             }
         }
+    }
+
+    /// Whether the proxy at `path` could not be read, and was not made again since.
+    fn failed(&self, path: &Path) -> bool {
+        lock(&self.shared).failed.contains(path)
     }
 
     /// Keep the state for the clients, and tell it: at once if `now` (after a command, even
@@ -1093,6 +1109,8 @@ struct Loaded {
     source: Source,
     /// The file that the picture is read from: the media's, or its proxy's.
     reading: PathBuf,
+    /// Whether the proxy read from failed to decode, and is to be let go for the media itself.
+    broken: bool,
     /// Its picture; none for sound alone.
     video: Option<Video>,
     /// The rate of its frames: of its picture, or of the grid of sound alone.
@@ -1437,35 +1455,94 @@ impl Worker {
                 self.tell(true);
             }
         }
+        if self.settle() {
+            self.tell(true);
+        }
+        self.recover();
+    }
+
+    /// Let go of a proxy that failed to decode: the picture is read from the media itself from
+    /// the frame at the playhead on, playing on if it played, the file of the proxy is deleted,
+    /// and it is made again.
+    fn recover(&mut self) {
+        let Some(loaded) = &mut self.loaded else {
+            return;
+        };
+        if !std::mem::take(&mut loaded.broken) || loaded.source != Source::Proxy {
+            return;
+        }
+        let bad = loaded.reading.clone();
+        let media = loaded.media.clone();
+        log(
+            "transport_proxy_failed",
+            &json!({
+                "media": media,
+                "path": bad.to_string_lossy(),
+                "reason": "decode",
+                "message": "the proxy cannot be decoded: the media itself is read, and the \
+                            proxy is made again",
+            }),
+        );
+        self.world.forget_proxy(&media, &bad);
+        loaded.proxy = None;
+        let speed = match &loaded.mode {
+            Mode::Playing(playing) => Some(playing.clock.speed()),
+            _ => None,
+        };
+        if speed.is_some() {
+            self.pause();
+        }
         self.settle();
+        let Some(loaded) = &mut self.loaded else {
+            return;
+        };
+        if loaded.reading != bad {
+            // The decoder of the proxy is let go: its file can be deleted.
+            let _ = std::fs::remove_file(&bad);
+        }
+        (self.again)(&media);
+        if !matches!(loaded.mode, Mode::Scrubbing { .. }) {
+            let target = loaded.playhead;
+            if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
+                failed(&loaded.media, &error);
+            }
+        }
+        if let Some(speed) = speed {
+            self.start(speed, None);
+        }
+        self.tell(true);
     }
 
     /// Read the picture from the proxy or from the media itself, as it is to be now, unless it
     /// plays: then this is done when it stops or is sought. The frame shown stays, and is the
-    /// same frame; what is decoded from now on is decoded from the new source.
-    fn settle(&mut self) {
+    /// same frame; what is decoded from now on is decoded from the new source. Whether the
+    /// source changed, to be told by the caller.
+    fn settle(&mut self) -> bool {
         let Some(loaded) = &mut self.loaded else {
-            return;
+            return false;
         };
         let Some(facts) = loaded.facts_video.clone() else {
-            return;
+            return false;
         };
         if matches!(loaded.mode, Mode::Playing(_)) {
-            return;
+            return false;
         }
-        let proxy = loaded.proxy.as_deref().filter(|_| self.proxies);
+        let proxy = loaded
+            .proxy
+            .as_deref()
+            .filter(|proxy| self.proxies && !self.world.failed(proxy));
         if proxy.unwrap_or(&loaded.sound_path) == loaded.reading {
-            return;
+            return false;
         }
         match open_picture(&loaded.media, &loaded.sound_path, proxy, &facts) {
             Ok(opened) => {
-                if opened.proxy_failed {
+                if let (true, Some(proxy)) = (opened.proxy_failed, proxy) {
+                    self.world.forget_proxy(&loaded.media, proxy);
                     loaded.proxy = None;
-                    self.world.forget_proxy(&loaded.media);
                     (self.again)(&loaded.media);
                 }
                 if opened.path == loaded.reading {
-                    return;
+                    return false;
                 }
                 self.pipe.flush();
                 loaded.recent.clear();
@@ -1477,9 +1554,12 @@ impl Worker {
                     "transport_source",
                     &json!({ "media": loaded.media, "source": opened.source.name() }),
                 );
-                self.tell(true);
+                true
             }
-            Err(error) => failed(&loaded.media, &error),
+            Err(error) => {
+                failed(&loaded.media, &error);
+                false
+            }
         }
     }
 
@@ -1510,12 +1590,14 @@ impl Worker {
         let mut proxy = proxy;
         let mut reading = path.clone();
         let (video, rate, start, source) = if let Some(facts_video) = &facts.video {
-            let wanted = proxy.as_deref().filter(|_| self.proxies);
+            let wanted = proxy
+                .as_deref()
+                .filter(|proxy| self.proxies && !self.world.failed(proxy));
             let opened =
                 open_picture(&media, &path, wanted, facts_video).map_err(|error| cannot(&error))?;
-            if opened.proxy_failed {
+            if let (true, Some(wanted)) = (opened.proxy_failed, wanted) {
+                self.world.forget_proxy(&media, wanted);
                 proxy = None;
-                self.world.forget_proxy(&media);
                 (self.again)(&media);
             }
             let decoder = &opened.video.decoder;
@@ -1561,6 +1643,7 @@ impl Worker {
             facts_video: facts.video.clone(),
             source,
             reading,
+            broken: false,
             video,
             rate,
             start,
@@ -1642,7 +1725,7 @@ impl Worker {
         if (speed > 0 && frame >= loaded.last) || (speed < 0 && frame <= 0) {
             // At the end it goes no further.
             if let Err(error) = loaded.show_exact(frame, &mut self.pipe, &self.world) {
-                failed(&loaded.media, &error);
+                loaded.failed(&error);
             }
             loaded.mode = Mode::Paused;
             return;
@@ -1658,7 +1741,7 @@ impl Worker {
             ready = video.decoder.decoded_at(frame).map(drop);
         }
         if let Err(error) = ready {
-            failed(&loaded.media, &error);
+            loaded.failed(&error);
             loaded.mode = Mode::Paused;
             return;
         }
@@ -1765,7 +1848,7 @@ impl Worker {
             First::Exact => {
                 loaded.mode = Mode::Paused;
                 if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
-                    failed(&loaded.media, &error);
+                    loaded.failed(&error);
                 }
             }
             First::Key(key) => {
@@ -1773,7 +1856,7 @@ impl Worker {
                     Ok(()) => loaded.exact = key == target,
                     Err(error) => {
                         loaded.exact = false;
-                        failed(&loaded.media, &error);
+                        loaded.failed(&error);
                     }
                 }
                 loaded.mode = Mode::Scrubbing {
@@ -1802,7 +1885,7 @@ impl Worker {
         loaded.playhead = target;
         loaded.mode = Mode::Paused;
         if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
-            failed(&loaded.media, &error);
+            loaded.failed(&error);
         }
         self.tell(true);
     }
@@ -1837,12 +1920,12 @@ impl Worker {
                         playing.in_flight = 1;
                         self.pipe.send(decoded);
                     }
-                    Err(error) => failed(&loaded.media, &error),
+                    Err(error) => loaded.failed(&error),
                 }
             }
             Err(error) => {
                 playing.stats.passed += 1;
-                failed(&loaded.media, &error);
+                loaded.failed(&error);
             }
         }
     }
@@ -1857,7 +1940,7 @@ impl Worker {
                 let target = *target;
                 loaded.mode = Mode::Paused;
                 if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
-                    failed(&loaded.media, &error);
+                    loaded.failed(&error);
                 }
                 self.tell(true);
             }
@@ -1881,6 +1964,7 @@ impl Worker {
             }
             Mode::Scrubbing { .. } | Mode::Paused => {}
         }
+        self.recover();
     }
 
     /// While the sound is the clock: read it, for the smoothed clock and the log; where the
@@ -1983,7 +2067,7 @@ impl Worker {
             if shown != Some(loaded.last) {
                 let last = loaded.last;
                 if let Err(error) = loaded.show_exact(last, &mut self.pipe, &self.world) {
-                    failed(&loaded.media, &error);
+                    loaded.failed(&error);
                 }
             }
             return true;
@@ -2028,8 +2112,8 @@ impl Worker {
                 }
             }
             Err(error) => {
-                failed(&loaded.media, &error);
                 playing.decoded_all = true;
+                loaded.failed(&error);
             }
         }
         false
@@ -2051,8 +2135,9 @@ impl Worker {
         if shown != Some(target) {
             playing.stats.shown(late, false);
             if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
-                failed(&loaded.media, &error);
-                return true;
+                loaded.failed(&error);
+                // A proxy that failed is let go, and playing goes on from the media itself.
+                return !loaded.broken;
             }
             loaded.playhead = target;
         }
@@ -2073,8 +2158,8 @@ struct Opened {
     proxy_failed: bool,
 }
 
-/// Open the picture of media: from `proxy`, if it is given, can be opened and is at the rate of
-/// the media, else from the media itself (`original`). The pictures held at once are as many
+/// Open the picture of media: from `proxy`, if it is given and can be opened, its frames
+/// numbered at the rate of the media, else from the media itself (`original`). The pictures held at once are as many
 /// as fit of those of the source opened.
 fn open_picture(
     media: &str,
@@ -2097,18 +2182,9 @@ fn open_picture(
     };
     let mut proxy_failed = false;
     if let Some(proxy) = proxy {
-        let opened = VideoDecoder::open(proxy, Hardware::Auto).and_then(|decoder| {
-            if decoder.rate() == facts.rate {
-                Ok(decoder)
-            } else {
-                let rate = decoder.rate();
-                Err(MediaError::Unsupported(format!(
-                    "the proxy has {}/{} frames a second, and the media {}/{}",
-                    rate.num, rate.den, facts.rate.num, facts.rate.den
-                )))
-            }
-        });
-        match opened {
+        // Its frames are numbered at the rate of the media, whatever rate its container is
+        // found to have.
+        match VideoDecoder::open_at_rate(proxy, Hardware::Auto, facts.rate) {
             Ok(decoder) => {
                 // The sound is laid by the picture of the media; where the media cannot be read
                 // (a drive that is not there), by that of the proxy, which plays all the same.
@@ -2261,6 +2337,21 @@ fn failed(media: &str, error: &MediaError) {
 }
 
 impl Loaded {
+    /// Log what failed while the picture was decoded; a proxy that cannot be decoded (a frame of
+    /// it, a seek in it, or reading it, as a file that was damaged) is to be let go
+    /// ([`Worker::recover`]).
+    fn failed(&mut self, error: &MediaError) {
+        failed(&self.media, error);
+        if self.source == Source::Proxy
+            && matches!(
+                error,
+                MediaError::Decode(_) | MediaError::Read(_) | MediaError::Seek(_)
+            )
+        {
+            self.broken = true;
+        }
+    }
+
     /// Keep a picture to be shown again at once; past the most that is kept, the one furthest
     /// from the playhead goes, so that those just shown stay.
     fn remember(&mut self, picture: Arc<Picture>) {

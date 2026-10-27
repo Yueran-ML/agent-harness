@@ -2889,6 +2889,10 @@ async fn proxy_engine(
         paths.push(support::media(sample)?.path.to_str().unwrap().to_owned());
     }
     let mut all = vec!["--sound", "null"];
+    let ffmpeg = build_ffmpeg();
+    if let Some(ffmpeg) = &ffmpeg {
+        all.extend(["--proxy-ffmpeg", ffmpeg.as_str()]);
+    }
     all.extend(args);
     let engine = engine(dir, &all).await;
     let mut agent = engine.client("agent").await;
@@ -2896,6 +2900,20 @@ async fn proxy_engine(
         .result("media.import", Some(json!({ "paths": paths })))
         .await;
     Some((engine, agent))
+}
+
+/// The `ffmpeg` of the LGPL build that the engine was built with, which makes proxies: an engine
+/// of a release build finds none but the one beside it, which the tests do not put there.
+fn build_ffmpeg() -> Option<String> {
+    let name = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+    option_env!("FFMPEG_DIR")
+        .map(|dir| Path::new(dir).join("bin").join(name))
+        .filter(|path| path.is_file())
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 /// The files in the directory of the proxies of a project.
@@ -2923,102 +2941,179 @@ fn numbers(seed: u64, count: usize, below: i64) -> Vec<i64> {
         .collect()
 }
 
-#[tokio::test]
-#[allow(clippy::too_many_lines)]
-async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as_the_media() {
-    use columbina_media::{Hardware, VideoDecoder};
-    use support::Sample;
-    let dir = project_dir();
-    let samples = [Sample::Uhd, Sample::TsH264, Sample::Fhd];
-    let Some((_engine, mut agent)) = proxy_engine(dir.path(), &samples, &[]).await else {
-        return;
-    };
-    let notes = agent.proxies_of(&["m1", "m2", "m3"]).await;
-    // Each is queued, then made, then done; and only one is made at a time.
+/// Check that only one proxy is made at a time, each queued, made and done.
+fn one_at_a_time(notes: &[Value], media: &[&str]) {
     let mut making: Option<String> = None;
-    for note in &notes {
-        let media = note["media"].as_str().unwrap().to_owned();
+    for note in notes {
+        let id = note["media"].as_str().unwrap().to_owned();
         match note["state"].as_str().unwrap() {
             "queued" => assert_eq!(note["progress"], 0.0, "{notes:?}"),
             "running" => {
                 if let Some(other) = &making {
-                    assert_eq!(*other, media, "two at once: {notes:?}");
+                    assert_eq!(*other, id, "two at once: {notes:?}");
                 }
-                making = Some(media);
+                making = Some(id);
                 let progress = note["progress"].as_f64().unwrap();
                 assert!((0.0..=1.0).contains(&progress), "{note}");
             }
             "done" => {
-                assert_eq!(making.as_deref(), Some(media.as_str()), "{notes:?}");
+                assert_eq!(making.as_deref(), Some(id.as_str()), "{notes:?}");
                 assert_eq!(note["progress"], 1.0);
                 making = None;
             }
             other => panic!("{other}: {notes:?}"),
         }
     }
-    for media in ["m1", "m2", "m3"] {
+    for media in media {
         let states: Vec<&str> = notes
             .iter()
-            .filter(|note| note["media"] == media)
+            .filter(|note| note["media"] == *media)
             .map(|note| note["state"].as_str().unwrap())
             .collect();
         assert_eq!(states.first(), Some(&"queued"), "{media}: {states:?}");
         assert_eq!(states.get(1), Some(&"running"), "{media}: {states:?}");
         assert_eq!(states.last(), Some(&"done"), "{media}: {states:?}");
     }
-    let got = project(&mut agent).await;
-    let sizes = [
-        (Sample::Uhd, (1920, 1080)),
-        (Sample::TsH264, (640, 360)),
-        (Sample::Fhd, (1920, 1080)),
-    ];
-    for (index, (sample, size)) in sizes.into_iter().enumerate() {
-        let media = &got["project"]["media"][index];
-        let proxy = &media["proxy"];
+}
+
+/// Check that the proxy of media of a project is of every frame of the media, each a key frame,
+/// and that the frame shown at each number is the frame of the media shown at it: decoding the
+/// media on, frame after frame, as the rule of the numbers of frames has it, and seeking in the
+/// proxy, number after number in an order of their own, and the key frame at or before each
+/// number is the frame shown there, so that scrubbing shows it at once.
+fn aligned(media: &Value, seed: u64) {
+    use columbina_media::{Hardware, VideoDecoder};
+    let proxy = &media["proxy"];
+    assert_eq!(
+        proxy["digest_of_source"], media["identity"]["digest"],
+        "{media}"
+    );
+    let path = Path::new(proxy["path"].as_str().unwrap());
+    assert!(path.is_file(), "{proxy}");
+    let source = Path::new(media["path"].as_str().unwrap());
+    let rate = serde_json::from_value(media["facts"]["video"]["rate"].clone()).unwrap();
+    let width = media["facts"]["video"]["width"].as_u64().unwrap();
+    let blocks = usize::try_from(64 * proxy["width"].as_u64().unwrap() / width).unwrap();
+    let carried = |picture: &columbina_media::Picture, size: usize| {
+        support::number_in_blocks(&picture.luma, picture.luma_stride, picture.bits, size)
+    };
+    // The media, decoded on: the frame shown at each number, and how many frames it has.
+    let mut original = VideoDecoder::open(source, Hardware::Auto).unwrap();
+    let mut frames = 0;
+    let mut last = 0;
+    while let Some(picture) = original.next().unwrap() {
+        frames += 1;
+        last = picture.frame;
+    }
+    let mut original = VideoDecoder::open(source, Hardware::Auto).unwrap();
+    let shown: Vec<Option<i64>> = (0..=last)
+        .map(|frame| carried(&original.frame_at(frame).unwrap(), 64))
+        .collect();
+    // Every frame a key frame, as many as the media has.
+    let gop = columbina_media::gop(path, u64::MAX).unwrap();
+    assert!(gop.all_intra(), "{proxy}: {gop:?}");
+    assert!(!gop.b_frames, "{proxy}: {gop:?}");
+    assert_eq!(gop.packets, frames, "{proxy}");
+    let mut decoder = VideoDecoder::open_at_rate(path, Hardware::Auto, rate).unwrap();
+    let mut sought = numbers(seed, usize::try_from(last + 1).unwrap(), last + 1);
+    sought.extend([0, last, last / 2]);
+    sought.extend(0..=last);
+    for frame in sought {
+        let picture = decoder.frame_at(frame).unwrap();
+        let at = usize::try_from(frame).unwrap();
         assert_eq!(
-            proxy["digest_of_source"], media["identity"]["digest"],
-            "{media}"
+            carried(&picture, blocks),
+            shown[at],
+            "{} frame {frame}",
+            source.display()
         );
-        let shape = (
-            proxy["width"].as_u64().unwrap(),
-            proxy["height"].as_u64().unwrap(),
+        assert_eq!(
+            decoder.keyframe_at_or_before(frame),
+            Some(picture.frame),
+            "{} frame {frame}",
+            source.display()
         );
-        assert_eq!(shape, size, "{media}");
-        eprintln!("{sample:?}: {proxy}");
-        let path = Path::new(proxy["path"].as_str().unwrap());
-        assert!(path.starts_with(dir.path().join("cache").join("proxies")) || path.is_file());
-        assert!(path.is_file(), "{proxy}");
-        // Every frame a key frame, as many as the media has.
-        let gop = columbina_media::gop(path, u64::MAX).unwrap();
-        assert!(gop.all_intra(), "{sample:?}: {gop:?}");
-        assert!(!gop.b_frames, "{sample:?}: {gop:?}");
-        let frames = sample.frames().unwrap();
-        assert_eq!(i64::try_from(gop.packets).unwrap(), frames, "{sample:?}");
-        // Frame n of the proxy carries the number n, as frame n of the media does.
-        let width = media["facts"]["video"]["width"].as_u64().unwrap();
-        let blocks = usize::try_from(64 * size.0 / width).unwrap();
-        let mut decoder = VideoDecoder::open(path, Hardware::Auto).unwrap();
-        let mut sought = numbers(17 + index as u64, 16, frames);
-        sought.extend([0, frames - 1, frames / 2]);
-        for frame in sought {
-            assert_eq!(
-                decoder.keyframe_at_or_before(frame),
-                Some(frame),
-                "{sample:?}"
-            );
-            let picture = decoder.frame_at(frame).unwrap();
-            let carried =
-                support::number_in_blocks(&picture.luma, picture.luma_stride, picture.bits, blocks);
-            assert_eq!(carried, Some(frame), "{sample:?} frame {frame}");
-        }
+    }
+}
+
+#[tokio::test]
+async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as_the_media() {
+    use support::Sample;
+    let dir = project_dir();
+    let samples = [
+        Sample::Uhd,
+        Sample::TsH264,
+        Sample::Fhd,
+        Sample::Collide,
+        Sample::Vfr,
+        Sample::SameTimes,
+        Sample::MkvLateStart,
+        Sample::Portrait,
+        Sample::EditList,
+    ];
+    let Some((_engine, mut agent)) = proxy_engine(dir.path(), &samples, &[]).await else {
+        return;
+    };
+    let ids: Vec<String> = (1..=samples.len()).map(|n| format!("m{n}")).collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let notes = agent.proxies_of(&ids).await;
+    one_at_a_time(&notes, &ids);
+    let got = project(&mut agent).await;
+    for (index, sample) in samples.into_iter().enumerate() {
+        let media = &got["project"]["media"][index];
+        eprintln!("{sample:?}: {}", media["proxy"]);
+        assert_eq!(media["proxy"]["codec"], "hevc", "{media}");
+        aligned(media, 17 + index as u64);
+    }
+    // The 4K picture is made 1920 wide, the others kept as they are.
+    let size = |index: usize| {
+        let proxy = &got["project"]["media"][index]["proxy"];
+        (proxy["width"].clone(), proxy["height"].clone())
+    };
+    assert_eq!(size(0), (json!(1920), json!(1080)));
+    assert_eq!(size(1), (json!(640), json!(360)));
+    assert_eq!(size(7), (json!(640), json!(360)));
+}
+
+#[tokio::test]
+async fn a_proxy_made_in_prores_where_nvenc_is_not_is_numbered_as_the_media() {
+    use support::Sample;
+    let dir = project_dir();
+    let samples = [Sample::Uhd, Sample::Collide];
+    let Some((_engine, mut agent)) =
+        proxy_engine(dir.path(), &samples, &["--proxy-encoder", "prores"]).await
+    else {
+        return;
+    };
+    agent.proxies_of(&["m1", "m2"]).await;
+    let got = project(&mut agent).await;
+    for index in 0..2 {
+        let media = &got["project"]["media"][index];
+        assert_eq!(media["proxy"]["codec"], "prores", "{media}");
+        aligned(media, 3 + index as u64);
+    }
+    // And the transport reads it, every frame at once.
+    let loaded = agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    assert_eq!(loaded["source"], "proxy");
+    for (_, state) in scrub(&mut agent, &numbers(8, 10, 180)).await {
+        assert_eq!(
+            (&state["exact"], &state["shown"]),
+            (&json!(true), &state["frame"])
+        );
     }
 }
 
 #[tokio::test]
 async fn a_proxy_of_media_that_is_removed_is_stopped_and_its_part_deleted() {
     let dir = project_dir();
-    let Some((_engine, mut agent)) =
-        proxy_engine(dir.path(), &[support::Sample::Uhd], &["--proxy-realtime"]).await
+    let Some((_engine, mut agent)) = proxy_engine(
+        dir.path(),
+        &[support::Sample::Uhd],
+        &["--proxy-readrate", "1"],
+    )
+    .await
     else {
         return;
     };
@@ -3075,8 +3170,12 @@ async fn until_proxy_set(client: &mut Client, index: usize) -> Value {
 #[tokio::test]
 async fn a_proxy_cut_short_by_the_end_of_the_engine_is_made_by_the_next() {
     let dir = project_dir();
-    let Some((mut engine, mut agent)) =
-        proxy_engine(dir.path(), &[support::Sample::Uhd], &["--proxy-realtime"]).await
+    let Some((mut engine, mut agent)) = proxy_engine(
+        dir.path(),
+        &[support::Sample::Uhd],
+        &["--proxy-readrate", "1"],
+    )
+    .await
     else {
         return;
     };
@@ -3380,6 +3479,276 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     );
 }
 
+#[tokio::test]
+async fn a_proxy_damaged_inside_is_let_go_for_the_media_and_made_again() {
+    let dir = project_dir();
+    let Some((engine, mut agent)) = proxy_engine(
+        dir.path(),
+        &[support::Sample::Uhd],
+        &["--proxy-readrate", "1"],
+    )
+    .await
+    else {
+        return;
+    };
+    agent.proxies_of(&["m1"]).await;
+    let got = project(&mut agent).await;
+    let path = got["project"]["media"][0]["proxy"]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Its middle third zeroed: it opens, and the frames there cannot be decoded.
+    let mut bytes = std::fs::read(&path).unwrap();
+    let third = bytes.len() / 3;
+    bytes[third..2 * third].fill(0);
+    std::fs::write(&path, &bytes).unwrap();
+    let loaded = agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    assert_eq!(loaded["source"], "proxy", "{loaded}");
+    agent.take_notifications();
+    agent
+        .result("transport.seek", Some(json!({ "frame": 90 })))
+        .await;
+    // The media itself shows the frame, and the proxy is made again (slowly: as the media plays).
+    let (sought, _) = agent
+        .until_state("90 of the media", |state| {
+            state["shown"] == 90 && state["source"] == "original"
+        })
+        .await;
+    assert_eq!(sought["exact"], true, "{sought}");
+    // Changes of the project meanwhile do not have it read again.
+    for name in ["a", "b", "c", "d", "e"] {
+        agent
+            .apply(json!([{ "op": "add_timeline", "timeline": {
+                "id": "", "name": name, "rate": { "num": 25, "den": 1 }, "tracks": [],
+            } }]))
+            .await;
+    }
+    let notes = agent.proxies_of(&["m1"]).await;
+    assert_eq!(notes.last().unwrap()["state"], "done", "{notes:?}");
+    agent
+        .until_state("the proxy again", |state| state["source"] == "proxy")
+        .await;
+    let failures = logged(&engine, "transport_proxy_failed");
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures[0]["reason"], "decode");
+    let opened = logged(&engine, "transport_source");
+    assert_eq!(opened.len(), 2, "to the media, and back: {opened:?}");
+    // The new one is whole.
+    agent
+        .result(
+            "transport.seek",
+            Some(json!({ "frame": 100, "scrubbing": true })),
+        )
+        .await;
+    let (sought, _) = agent
+        .until_state("100", |state| state["frame"] == 100)
+        .await;
+    assert_eq!(
+        (&sought["exact"], &sought["shown"]),
+        (&json!(true), &json!(100))
+    );
+}
+
+#[tokio::test]
+async fn an_ffmpeg_that_writes_no_frame_is_stopped() {
+    let dir = project_dir();
+    let Some((_engine, mut agent)) = proxy_engine(
+        dir.path(),
+        &[support::Sample::Uhd],
+        &[
+            "--proxy-readrate",
+            "0.001",
+            "--proxy-watchdog",
+            "2",
+            "--proxy-encoder",
+            "prores",
+        ],
+    )
+    .await
+    else {
+        return;
+    };
+    let started = Instant::now();
+    let notes = agent.proxies_of(&["m1"]).await;
+    let failed = notes.last().unwrap();
+    assert_eq!(failed["state"], "failed", "{notes:?}");
+    assert!(
+        failed["message"]
+            .as_str()
+            .unwrap()
+            .contains("wrote no frame for 2 s"),
+        "{failed}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(20));
+    // Not taken for a failure of the file: nothing is remembered, and no .part is left.
+    assert_eq!(proxy_files(dir.path()), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_proxy_that_could_not_be_made_is_not_tried_again_until_asked() {
+    let dir = project_dir();
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let path = made.path.to_str().unwrap();
+    let digest = {
+        let mut engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+        let mut agent = engine.client("agent").await;
+        agent
+            .result("media.import", Some(json!({ "paths": [path, path] })))
+            .await;
+        let got = project(&mut agent).await;
+        drop(agent);
+        drop(engine.child.stdin.take());
+        assert_eq!(engine.ended().await, 0);
+        got["project"]["media"][0]["identity"]["digest"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    // Remembered as a failure, beside a file that no media names.
+    let proxies = dir.path().join("cache").join("proxies");
+    std::fs::create_dir_all(&proxies).unwrap();
+    std::fs::write(
+        proxies.join("failed.json"),
+        serde_json::to_string(&json!({ digest.clone(): "no encoder made it" })).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(proxies.join("m7-0123456789ab.mov"), b"of media long gone").unwrap();
+    let mut args = vec!["--sound", "null"];
+    let ffmpeg = build_ffmpeg();
+    if let Some(ffmpeg) = &ffmpeg {
+        args.extend(["--proxy-ffmpeg", ffmpeg.as_str()]);
+    }
+    let engine = engine(dir.path(), &args).await;
+    let deadline = Instant::now() + WAIT;
+    while logged(&engine, "proxy_skipped").len() < 2 {
+        assert!(Instant::now() < deadline, "{}", engine.stderr());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // The file that no media names is deleted; what failed is kept.
+    assert_eq!(proxy_files(dir.path()), ["failed.json"]);
+    let mut agent = engine.client("agent").await;
+    let got = project(&mut agent).await;
+    assert_eq!(got["project"]["media"][0].get("proxy"), None);
+    // Asked for, it is made; the other media of the same file is given the same proxy.
+    agent
+        .result("media.make_proxy", Some(json!({ "media": "m1" })))
+        .await;
+    agent.proxies_of(&["m1"]).await;
+    agent
+        .result("media.make_proxy", Some(json!({ "media": "m2" })))
+        .await;
+    let notes = agent.proxies_of(&["m2"]).await;
+    assert_eq!(notes.last().unwrap()["state"], "done", "{notes:?}");
+    let got = project(&mut agent).await;
+    let media = &got["project"]["media"];
+    assert_eq!(media[0]["proxy"], media[1]["proxy"], "{media}");
+    let failed = std::fs::read_to_string(proxies.join("failed.json")).unwrap();
+    assert!(!failed.contains(&digest), "{failed}");
+    let error = agent
+        .error("media.make_proxy", Some(json!({ "media": "m9" })))
+        .await;
+    assert_eq!(error["data"]["reason"], "missing");
+    let mut files = proxy_files(dir.path());
+    files.sort();
+    assert_eq!(files.len(), 2, "one proxy for the two: {files:?}");
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn the_ffmpeg_of_an_engine_that_is_killed_ends_with_it() {
+    let dir = project_dir();
+    let Some((mut engine, mut agent)) = proxy_engine(
+        dir.path(),
+        &[support::Sample::Uhd],
+        &["--proxy-readrate", "0.5"],
+    )
+    .await
+    else {
+        return;
+    };
+    agent
+        .proxies_until(|notes| notes.iter().any(|note| note["state"] == "running"))
+        .await;
+    let deadline = Instant::now() + WAIT;
+    let pid = loop {
+        if let Some(started) = logged(&engine, "proxy_encoding").pop() {
+            break started["pid"].as_u64().unwrap();
+        }
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let running = |pid: u64| {
+        let output = std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+    };
+    assert!(running(pid), "ffmpeg {pid} runs");
+    // Killed, as by the task manager: it has no time to stop its ffmpeg.
+    engine.child.start_kill().unwrap();
+    let _ = engine.child.wait().await;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while running(pid) {
+        assert!(Instant::now() < deadline, "ffmpeg {pid} goes on");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn proxies_turned_off_while_playing_take_effect_at_the_next_seek() {
+    let dir = project_dir();
+    let Some((_engine, mut agent)) = proxy_engine(dir.path(), &[support::Sample::Uhd], &[]).await
+    else {
+        return;
+    };
+    agent.proxies_of(&["m1"]).await;
+    agent
+        .result("transport.load", Some(json!({ "media": "m1" })))
+        .await;
+    agent
+        .result("transport.play", Some(json!({ "speed": 1 })))
+        .await;
+    agent
+        .until_state("playing", |state| state["playing"] == true)
+        .await;
+    agent
+        .result("transport.proxies", Some(json!({ "on": false })))
+        .await;
+    let (told, _) = agent
+        .until_state("told", |state| state["proxies"] == false)
+        .await;
+    assert_eq!(
+        (&told["playing"], &told["source"]),
+        (&json!(true), &json!("proxy"))
+    );
+    agent
+        .result("transport.seek", Some(json!({ "frame": 30 })))
+        .await;
+    // Told once it plays on from there, from the media itself: never paused meanwhile.
+    let (sought, _) = agent
+        .until_state("the media", |state| state["source"] == "original")
+        .await;
+    assert_eq!(sought["playing"], true, "{sought}");
+    agent
+        .until_state("on from 30", |state| {
+            state["playing"] == true && state["frame"].as_i64().unwrap() > 35
+        })
+        .await;
+    agent.result("transport.pause", None).await;
+    agent
+        .result("transport.proxies", Some(json!({ "on": true })))
+        .await;
+    let (on, _) = agent
+        .until_state("the proxy", |state| state["source"] == "proxy")
+        .await;
+    assert_eq!(on["playing"], false);
+}
+
 /// The memory that a process holds (its working set on Windows, its resident set elsewhere), in
 /// MiB, as the system tells it; none where it cannot be read.
 fn memory_of(pid: u32) -> Option<f64> {
@@ -3427,7 +3796,8 @@ async fn measure_proxies() {
         },
     };
     let dir = project_dir();
-    let engine = engine(dir.path(), &["--mute"]).await;
+    let ffmpeg = build_ffmpeg().expect("the ffmpeg of the build");
+    let engine = engine(dir.path(), &["--mute", "--proxy-ffmpeg", &ffmpeg]).await;
     let mut agent = engine.client("agent").await;
     let started = Instant::now();
     agent

@@ -452,12 +452,37 @@ impl VideoDecoder {
     /// As [`VideoDecoder::open`].
     #[doc(hidden)]
     pub fn open_trying(path: &Path, devices: &[HardwarePath]) -> Result<Self, MediaError> {
+        Self::open_with(path, devices, None)
+    }
+
+    /// As [`VideoDecoder::open`], with the frames numbered at `rate` rather than the rate of
+    /// the file: so that the frames of a proxy are numbered as those of its media are, whatever
+    /// rate the container of the proxy is found to have (a picture whose frames come at changing
+    /// times has its rate guessed from them, and the guess of the proxy may be another).
+    ///
+    /// # Errors
+    /// As [`VideoDecoder::open`].
+    pub fn open_at_rate(path: &Path, hardware: Hardware, rate: Rate) -> Result<Self, MediaError> {
+        let devices = match hardware {
+            Hardware::Auto => TRIED,
+            Hardware::Off => &[],
+        };
+        Self::open_with(path, devices, Some(rate))
+    }
+
+    /// Open the picture of a file, trying `devices` in turn before the processor, its frames
+    /// numbered at `forced` where it is given.
+    fn open_with(
+        path: &Path,
+        devices: &[HardwarePath],
+        forced: Option<Rate>,
+    ) -> Result<Self, MediaError> {
         let mut fallbacks = Vec::new();
         for &device in devices {
             if device == HardwarePath::Software {
                 break;
             }
-            match Self::open_on(path, Some(device)) {
+            match Self::open_on(path, Some(device), forced) {
                 Ok(mut decoder) => {
                     decoder.fallbacks = fallbacks;
                     return Ok(decoder);
@@ -466,7 +491,7 @@ impl VideoDecoder {
                 Err(Attempt::File(error)) => return Err(error),
             }
         }
-        let mut decoder = Self::open_on(path, None).map_err(Attempt::into_error)?;
+        let mut decoder = Self::open_on(path, None, forced).map_err(Attempt::into_error)?;
         decoder.fallbacks = fallbacks;
         Ok(decoder)
     }
@@ -489,15 +514,20 @@ impl VideoDecoder {
         self.failing = true;
     }
 
-    /// Open the picture of a file on a device, or on the processor if there is none.
-    fn open_on(path: &Path, device: Option<HardwarePath>) -> Result<Self, Attempt> {
+    /// Open the picture of a file on a device, or on the processor if there is none; its frames
+    /// numbered at `forced` where it is given.
+    fn open_on(
+        path: &Path,
+        device: Option<HardwarePath>,
+        forced: Option<Rate>,
+    ) -> Result<Self, Attempt> {
         let mut input = probe::open(path)?;
         let stream = probe::video_stream(&input)?.ok_or(MediaError::NoVideo)?;
         let (timing, start, mut context, shape) = {
             let found = input.stream(stream).ok_or(MediaError::NoVideo)?;
             let shape = shape_of(&found);
             let base = probe::base(&found)?;
-            let rate = probe::rate(&found).ok_or_else(|| {
+            let rate = forced.or_else(|| probe::rate(&found)).ok_or_else(|| {
                 MediaError::Unsupported("its picture has no rate of frames".into())
             })?;
             let start = Some(found.start_time()).filter(|&start| start != ff::ffi::AV_NOPTS_VALUE);
@@ -759,7 +789,9 @@ impl VideoDecoder {
         resume: bool,
         given: Option<i64>,
     ) -> Result<(), MediaError> {
-        let mut software = Self::open_on(&self.source, None).map_err(Attempt::into_error)?;
+        let forced = Some(self.timing.rate);
+        let mut software =
+            Self::open_on(&self.source, None, forced).map_err(Attempt::into_error)?;
         let mut fallbacks = std::mem::take(&mut self.fallbacks);
         fallbacks.push((self.path, error.to_string()));
         software.fallbacks = fallbacks;
@@ -934,7 +966,9 @@ impl VideoDecoder {
             }
             // Seeking in a file whose index is not trusted goes by the time a frame is decoded.
             let shift = if self.indexed { 0 } else { self.key_shift };
-            let at = self.timing.timestamp_of(from).saturating_sub(shift);
+            let at = self
+                .earliest_key_of(from)
+                .unwrap_or_else(|| self.timing.timestamp_of(from).saturating_sub(shift));
             self.seeks += 1;
             if ffi::seek(&mut self.input, self.stream, at, true).is_err() {
                 break;
@@ -952,6 +986,36 @@ impl VideoDecoder {
             from = from.saturating_sub(step);
         }
         self.seek_start(frame)
+    }
+
+    /// Where to seek for `frame` in a file whose index holds every key frame, where two key
+    /// frames or more are numbered `frame` (a picture whose frames come at changing times, every
+    /// frame of which is a key frame, as a proxy's): the time that the first of them is shown
+    /// at, so that the frame given is the first of those numbered alike, as decoding on gives
+    /// it. None where the key frame at or before the frame is the only one numbered so: seeking
+    /// by the frame's own timestamp finds it, and no earlier key frame is decoded.
+    fn earliest_key_of(&self, frame: i64) -> Option<i64> {
+        if !self.indexed {
+            return None;
+        }
+        let lowest = self.timing.lowest_of(frame);
+        let shown = |timestamp: i64| timestamp.saturating_add(self.key_shift);
+        let found = ffi::key_frame_before(
+            &self.input,
+            self.stream,
+            self.timing
+                .timestamp_of(frame)
+                .saturating_sub(self.key_shift),
+        )?;
+        let mut earliest = found;
+        while let Some(before) = earliest
+            .checked_sub(1)
+            .and_then(|timestamp| ffi::key_frame_before(&self.input, self.stream, timestamp))
+            .filter(|&before| before < earliest && shown(before) >= lowest)
+        {
+            earliest = before;
+        }
+        (earliest != found).then(|| shown(earliest))
     }
 
     /// Seek to the start of the file, and decode on to `frame`: by its first byte, for MPEG-TS

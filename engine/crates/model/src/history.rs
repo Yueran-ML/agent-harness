@@ -214,9 +214,14 @@ impl History {
     /// and the steps that could be redone are kept. So a change that no one asked for is never
     /// the step that an undo takes back, and never lets go of what a client could redo.
     ///
-    /// Only an operation that the steps of the history cannot depend on may be applied so: one
-    /// that changes no thing that a later operation names, nor adds or takes away a thing, as
-    /// [`Op::SetProxy`]. The steps are then undone and redone as they would be without it.
+    /// Only an operation that no step of the history can be refused for may be applied so: one
+    /// that adds or takes away no thing and changes nothing that an operation checks, as
+    /// [`Op::SetProxy`]. The steps are then never refused for it. They are not quite as they
+    /// would be without it, though: a step that adds media back, or sets a proxy, carries the
+    /// media or the proxy as it was when the step was done, so that undoing the removal of media
+    /// (or a client's `set_proxy`) brings back the proxy that it had then, which may be older
+    /// than one the engine set since. The engine then finds the proxy stale or missing at its
+    /// next start, or when it is read, and makes it again.
     ///
     /// # Errors
     /// As [`History::apply`].

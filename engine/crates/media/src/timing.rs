@@ -85,6 +85,16 @@ impl Timing {
         saturate(rounded(over, under))
     }
 
+    /// The smallest timestamp that is of frame `frame`: that of `frame - 1/2`, rounded up, as
+    /// [`Timing::frame_of`] rounds half up.
+    pub fn lowest_of(&self, frame: i64) -> i64 {
+        let (num, den) = self.base;
+        // origin + ceil((2 frame - 1) den rate.den / (2 num rate.num)).
+        let over = (2 * i128::from(frame) - 1) * i128::from(den) * i128::from(self.rate.den);
+        let under = 2 * i128::from(num) * i128::from(self.rate.num);
+        saturate(i128::from(self.origin) - (-over).div_euclid(under))
+    }
+
     /// The timestamp of frame `frame`, rounded to the nearest tick, half up.
     pub fn timestamp_of(&self, frame: i64) -> i64 {
         let (num, den) = self.base;
@@ -167,6 +177,37 @@ mod tests {
         };
         for frame in [-3, 0, 1, 2, 1000, 1_000_001] {
             assert_eq!(timing.frame_of(timing.timestamp_of(frame)), frame);
+        }
+    }
+
+    #[test]
+    fn the_lowest_timestamp_of_a_frame_is_the_first_that_rounds_to_it() {
+        for (base, rate, origin) in [
+            ((1, 90000), Rate { num: 30, den: 1 }, 0),
+            (
+                (1, 1000),
+                Rate {
+                    num: 30000,
+                    den: 1001,
+                },
+                7,
+            ),
+            ((1, 15360), Rate { num: 25, den: 1 }, -512),
+            (
+                (1001, 30000),
+                Rate {
+                    num: 30000,
+                    den: 1001,
+                },
+                0,
+            ),
+        ] {
+            let timing = Timing { base, rate, origin };
+            for frame in -3..200 {
+                let lowest = timing.lowest_of(frame);
+                assert_eq!(timing.frame_of(lowest), frame, "{timing:?} {frame}");
+                assert_eq!(timing.frame_of(lowest - 1), frame - 1, "{timing:?} {frame}");
+            }
         }
     }
 }

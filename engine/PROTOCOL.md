@@ -15,9 +15,12 @@ columbina-engine --project <DIR> [--headless] [--idle-seconds <N>]
   `swscale-9.dll` (and `swresample-6.dll`, which they may use). Without them it cannot start
   (on Windows it ends at once with `0xc0000135`).
 - To make proxies (below), an engine that is not `--headless` runs the `ffmpeg` of the same LGPL
-  build: `ffmpeg.exe` (`ffmpeg` elsewhere) **beside the engine**, or the file that
-  `COLUMBINA_PROXY_FFMPEG` names. It never runs an `ffmpeg` found on `PATH`, which may be of the
-  GPL. Without one, the engine works all the same, and each proxy that it would make fails.
+  build, the first of: the file that `COLUMBINA_PROXY_FFMPEG` names, if it is an **absolute**
+  path (one that is not is not taken, and is logged); `ffmpeg.exe` (`ffmpeg` elsewhere) **beside
+  the engine**; and, in a debug build only, the `bin` of the `FFMPEG_DIR` it was built with. It
+  never runs an `ffmpeg` found on `PATH`, which may be of the GPL. Without one, the engine works
+  all the same, and each proxy that it would make fails. The `ffmpeg` found is logged
+  (`proxy_ffmpeg`).
 - The directory is made if it is not there. The engine takes the lock of the project, opens
   `project.json` (a new, empty project if there is none), and listens.
 - Its first line on **stdout** is one JSON object, written once it listens:
@@ -117,6 +120,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `history.undo` | none | `{"revision": n, "done": [op, ...], "next_id": k}`, or `{"revision": n, "done": null}` if there is nothing to undo |
 | `history.redo` | none | as `history.undo` |
 | `media.import` | `{"paths": ["<file>", ...]}` | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
+| `media.make_proxy` | `{"media": "m1"}` | `{}` (see Proxies) |
 | `view.attach` | `{"parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12"}` |
 | `view.place` | `{"x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.show` | `{"shown": true \| false}` | `{}` |
@@ -184,34 +188,59 @@ itself; a client only sees them, and may turn their use off (`transport.proxies`
   from the first 64 packets of the picture.
 - **When.** After each `media.import`, for the media it added, and when the engine starts, for
   every media item of the project that has no proxy, has one made from another file
-  (`digest_of_source` is not the digest of its `identity`), or has one whose file is gone. One is
-  made at a time, at a low priority of the system. Only an engine that is not `--headless` makes
-  them (it has the transport that reads them): media taken in by a headless engine gets its proxy
-  when the desktop's engine opens the project.
+  (`digest_of_source` is not the digest of its `identity`), or has one whose file is gone (so a
+  proxy that a client took away with `set_proxy` comes back at the next start). One is made at a
+  time, at a low priority of the system. Only an engine that is not `--headless` makes them (it
+  has the transport that reads them): media taken in by a headless engine gets its proxy when
+  the desktop's engine opens the project. Media of the same file as other media (the same
+  digest) is given that media's proxy, which is not made twice.
 - **What.** HEVC of intra frames only, made by NVENC (on an NVIDIA card; else ProRes 422 Proxy),
   at most 1920 pixels on its long edge, its shape kept; every frame of the media, with its
-  timestamp, so that frame `n` of the proxy is frame `n` of the media; no sound (the sound is
-  always read from the media). It is written to
+  timestamp, so that frame `n` of the proxy is frame `n` of the media (the frames of the proxy
+  are numbered at the rate of the media, whatever its container says); no sound (the sound is
+  always read from the media). Before it is set, it is checked: its first and last 8 frames are
+  numbered as those of the media, and its frames are key frames. It is written to
   `<project>/cache/proxies/<media id>-<12 hex digits of the digest>.mov`, as `….mov.part` until
   it is whole. Making a proxy takes a fraction of the time the media lasts (some 2 s for 10 s of
   4K HEVC on an RTX 4080).
 - **Set on the media** as `proxy` (`project.json`, below) by a change of the **engine** itself: a
   `project.changed` with `by` and `made_by` `"engine"`, and `done` one `set_proxy` (the file of a
-  proxy that it takes the place of, beside it in `cache/proxies`, is deleted). It is **no
-  step of the history**: an undo never takes it back, and it never lets go of what could be
-  redone. A client may set or take away a proxy too, with `set_proxy` in a transaction, which is
-  undone as any other.
+  proxy that it takes the place of, beside it in `cache/proxies` and had by no other media, is
+  deleted). It is **no step of the history**: an undo never takes it back, and it never lets go of
+  what could be redone. A client may set or take away a proxy too, with `set_proxy` in a
+  transaction, which is undone as any other.
 - **What it is at** is told to every connection that said hello in `media.proxy` (below):
   `queued` once the media is found to need one, `running` as it is made (with `progress` from 0 to
   1, at most once a second), then `done`, or `failed` with a `message`. The proxy of media that is
   **removed** is not made: the one being made is stopped, its `.part` deleted, and it is told
   `failed` with the message that the media was removed; and so is the one being made when the
-  engine ends (without a notification), to be made again by the next engine. On Windows the
-  `ffmpeg` of an engine that is killed ends with it (a job object of the system); elsewhere it
-  ends once it is done. A `.part` left by an engine that was killed is deleted by the next.
+  engine ends (without a notification), to be made again by the next engine. An `ffmpeg` that
+  writes no frame for 60 s is stopped, and its proxy `failed`. On Windows the `ffmpeg` of an
+  engine that is killed ends with it (a job object of the system); elsewhere it ends once it is
+  done.
+- **What could not be made** by any encoder (each failed, or made a proxy that is not numbered as
+  the media) is remembered by the digest of the file in `cache/proxies/failed.json`, and not tried
+  again, at an import or a start (it is told `failed`, with the message that it failed before),
+  until a client asks for it with **`media.make_proxy`** `{"media": "m1"}`: that forgets the
+  failure and makes the proxy again if the media needs one (answered `{}` at once; what comes of
+  it is told in `media.proxy`). Media not in the project is refused (`-32602`, `reason:
+  "missing"`); an engine that makes no proxies answers `-32601`. Deleting `failed.json` forgets
+  every failure, at the next start. A failure that is not the file's (the engine ended, the media
+  was removed, no `ffmpeg`, a file that cannot be read, an `ffmpeg` that wrote nothing for 60 s)
+  is not remembered.
+- **The cache.** When the engine starts, the files of `cache/proxies` that no media of the project
+  names (the proxies of media removed since; the history is not kept from one engine to the next,
+  so nothing could bring them back) are deleted, and so are `.part` files that an engine that was
+  killed left. A media item that is removed keeps its proxy file until then, so that an undo has
+  it back.
 - **The file of the media.** A proxy is made only from a file whose identity is still that of
   the media; one that was changed since it was taken in fails ("the file of the media is not the
   one that was taken in").
+- **A proxy that cannot be read**: one whose file is gone, or that cannot be opened, is let go for
+  the media itself when it is loaded; one whose frames cannot be decoded (a damaged file) is let
+  go for the media itself at once, from the frame at the playhead, playing on if it played, and
+  its file is deleted. Either is made again, and read as soon as it is made (see The transport).
+  A proxy that could not be read is not read again until it is made again.
 
 ## The project as it is written
 
@@ -440,9 +469,9 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   from the proxy (`source: "proxy"`), and its sound from the media; the frames, `last` and the
   clock are the media's. **`transport.proxies`** turns their use off (`{"on": false}`: the media
   itself is read, as DaVinci's "Use proxy media" unticked) and on again, for every client, and is
-  told in `proxies`. It is taken whether media is loaded or not. A proxy whose file is gone or
-  cannot be read is let go for the media itself (logged `transport_proxy_failed`), and made
-  again. When the source changes while media is loaded (proxies turned on or off, a proxy made
+  told in `proxies`. It is taken whether media is loaded or not. A proxy whose file is gone, or
+  cannot be opened or decoded, is let go for the media itself (logged `transport_proxy_failed`,
+  with `reason: "decode"` for one that could not be decoded), and made again. When the source changes while media is loaded (proxies turned on or off, a proxy made
   or made again while its media is loaded, or one set or taken away by a transaction), the
   picture is read from the new source **at once while it does not play**, and while it plays as
   soon as it stops or is sought: the frame shown stays, and what is decoded next is decoded from
@@ -458,9 +487,12 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   its runs), `transport_unloaded`, `transport_error`, `transport_device_failed`,
   `transport_sound_lost`, `transport_failed`, `transport_source`, `transport_proxy_failed`,
   `sound_ready`, `sound_unavailable`, `sound_failed`. Of proxies: `proxy_ffmpeg` (the `ffmpeg`
-  found, or `null`), `proxy_queued`, `proxy_started`, `proxy_made` (its `encoder`, size, frames
-  and seconds), `proxy_recipe_failed` (an encoder that failed, before the next is tried),
-  `proxy_failed`, `proxy_skipped` (media that could not be read to tell whether it needs one).
+  found, or `null`), `proxy_queued`, `proxy_started`, `proxy_encoding` (the `pid` of each
+  `ffmpeg`), `proxy_made` (its `encoder`, size, frames and seconds; `encoder: null` for the proxy
+  of other media of the same file), `proxy_recipe_failed` (an encoder that failed, before the next
+  is tried), `proxy_failed`, `proxy_skipped` (media that could not be read to tell whether it
+  needs one, or whose proxy failed before), `proxy_deleted` (a file of the cache that no media
+  names, as the engine starts).
 
 | `-32004` `reason` | when |
 |---|---|
@@ -564,7 +596,7 @@ real ids. For example:
 |---|---|---|
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB, `view.*` from a client that is not the desktop | |
-| `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine | |
+| `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies | |
 | `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media not in the project | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"reason": "missing", "media": "..."}` |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was | the refusal, below |
 | `-32002` | `media.import`: a file cannot be read; nothing was added. `transport.load`: the file of the media cannot be opened or decoded | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |

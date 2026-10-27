@@ -1,19 +1,22 @@
 //! Every unsafe call of the crate: the devices of the graphics card and the decoders that use
 //! them, the copying of a frame from the card into memory of a picture, converting a frame into
-//! it, references to frames, seeking, the index of a stream, and the fields of libav that
-//! `ffmpeg-next` has no safe way to reach.
+//! it, converting sound, references to frames, seeking, the index of a stream, and the fields of
+//! libav that `ffmpeg-next` has no safe way to reach.
 
 use std::ffi::{c_int, c_void, CStr, CString};
 
 use ff::ffi::{
-    av_buffer_create, av_buffer_ref, av_buffer_unref, av_frame_alloc, av_frame_free, av_frame_ref,
-    av_frame_unref, av_hwdevice_ctx_create, av_hwdevice_find_type_by_name,
-    av_hwframe_transfer_data, av_pix_fmt_desc_get, av_seek_frame, av_strerror,
-    avcodec_default_get_format, avcodec_get_hw_config, avformat_index_get_entries_count,
-    avformat_index_get_entry_from_timestamp, sws_scale, AVBufferRef, AVCodecContext, AVDiscard,
-    AVHWDeviceType, AVHWFramesContext, AVPixelFormat, AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE,
-    AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX, AV_PIX_FMT_FLAG_HWACCEL, FF_THREAD_FRAME,
-    FF_THREAD_SLICE,
+    av_buffer_create, av_buffer_ref, av_buffer_unref, av_channel_layout_check,
+    av_channel_layout_compare, av_channel_layout_copy, av_channel_layout_default,
+    av_channel_layout_uninit, av_frame_alloc, av_frame_free, av_frame_ref, av_frame_unref,
+    av_hwdevice_ctx_create, av_hwdevice_find_type_by_name, av_hwframe_transfer_data,
+    av_pix_fmt_desc_get, av_seek_frame, av_strerror, avcodec_default_get_format,
+    avcodec_get_hw_config, avformat_index_get_entries_count,
+    avformat_index_get_entry_from_timestamp, swr_alloc_set_opts2, swr_convert, swr_free,
+    swr_get_out_samples, swr_init, sws_scale, AVBufferRef, AVChannelLayout, AVChannelOrder,
+    AVCodecContext, AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat, AVSampleFormat,
+    SwrContext, AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE, AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX,
+    AV_PIX_FMT_FLAG_HWACCEL, FF_THREAD_FRAME, FF_THREAD_SLICE,
 };
 use ffmpeg_next as ff;
 
@@ -508,3 +511,180 @@ pub(crate) struct Scaler(pub ff::software::scaling::Context);
 // SAFETY: a context of swscale is used by one thread at a time, which `&mut` sees to; it holds
 // nothing of the thread that made it.
 unsafe impl Send for Scaler {}
+
+/// A converter of sound, of swresample: from the format, rate and channels of the frames of a
+/// decoder to 32-bit floats at another rate, interleaved, in the default layout of another
+/// number of channels (stereo for 2), mixing the channels down or up as swresample does.
+pub(crate) struct Resampler {
+    context: *mut SwrContext,
+    /// What it takes: the format of a sample, the rate, and the layout of the channels.
+    format: ff::format::Sample,
+    rate: i32,
+    layout: AVChannelLayout,
+    channels: usize,
+}
+
+// SAFETY: the context and the layout are used by one thread at a time, which `&mut` sees to;
+// they hold nothing of the thread that made them.
+unsafe impl Send for Resampler {}
+
+impl Drop for Resampler {
+    fn drop(&mut self) {
+        // SAFETY: the context was made by swr_alloc_set_opts2, the layout by
+        // av_channel_layout_copy or av_channel_layout_default, and each is let go only here.
+        unsafe {
+            swr_free(&raw mut self.context);
+            av_channel_layout_uninit(&raw mut self.layout);
+        }
+    }
+}
+
+/// The layout of the channels of a frame, or the default layout of as many channels where the
+/// frame's says only how many there are, or is not valid.
+///
+/// # Safety
+/// `frame` is a frame of sound of libav.
+unsafe fn layout_of(frame: *const ff::ffi::AVFrame) -> Result<AVChannelLayout, String> {
+    // SAFETY: as the caller says; a layout that is zeroed is an empty one, which
+    // av_channel_layout_copy and av_channel_layout_default write over.
+    unsafe {
+        let given = &raw const (*frame).ch_layout;
+        let mut layout: AVChannelLayout = std::mem::zeroed();
+        let count = (*given).nb_channels;
+        if count <= 0 {
+            return Err("its sound has no channels".to_owned());
+        }
+        if (*given).order == AVChannelOrder::AV_CHANNEL_ORDER_UNSPEC
+            || av_channel_layout_check(given) == 0
+        {
+            av_channel_layout_default(&raw mut layout, count);
+        } else if av_channel_layout_copy(&raw mut layout, given) < 0 {
+            return Err("the layout of its channels cannot be copied".to_owned());
+        }
+        Ok(layout)
+    }
+}
+
+impl Resampler {
+    /// A converter of frames of the format, rate and layout of `frame` to `rate` and
+    /// `channels`.
+    pub fn new(frame: &ff::frame::Audio, rate: u32, channels: u16) -> Result<Resampler, String> {
+        let format = frame.format();
+        if matches!(format, ff::format::Sample::None) {
+            return Err("its sound has no format of samples".to_owned());
+        }
+        let out_rate = c_int::try_from(rate).map_err(|_| "a rate too high".to_owned())?;
+        // SAFETY: the frame is a frame of sound of libav. The layouts are made by libav, and
+        // swr_alloc_set_opts2 copies them; the context it gives is set up by swr_init, or
+        // freed.
+        unsafe {
+            let raw = frame.as_ptr();
+            let in_rate = (*raw).sample_rate;
+            if in_rate <= 0 {
+                return Err("its sound has no rate".to_owned());
+            }
+            let mut layout = layout_of(raw)?;
+            let mut out_layout: AVChannelLayout = std::mem::zeroed();
+            av_channel_layout_default(&raw mut out_layout, c_int::from(channels));
+            let mut context = std::ptr::null_mut();
+            let code = swr_alloc_set_opts2(
+                &raw mut context,
+                &raw const out_layout,
+                AVSampleFormat::AV_SAMPLE_FMT_FLT,
+                out_rate,
+                &raw const layout,
+                format.into(),
+                in_rate,
+                0,
+                std::ptr::null_mut(),
+            );
+            av_channel_layout_uninit(&raw mut out_layout);
+            let code = if code < 0 { code } else { swr_init(context) };
+            if code < 0 {
+                swr_free(&raw mut context);
+                av_channel_layout_uninit(&raw mut layout);
+                return Err(format!(
+                    "its sound cannot be converted: {}",
+                    error_text(code)
+                ));
+            }
+            Ok(Resampler {
+                context,
+                format,
+                rate: in_rate,
+                layout,
+                channels: usize::from(channels),
+            })
+        }
+    }
+
+    /// Whether frames of the format, rate and layout of `frame` are what it takes.
+    pub fn takes(&self, frame: &ff::frame::Audio) -> bool {
+        // SAFETY: the frame is a frame of sound of libav, and the layouts are valid.
+        unsafe {
+            let raw = frame.as_ptr();
+            if frame.format() != self.format || (*raw).sample_rate != self.rate {
+                return false;
+            }
+            match layout_of(raw) {
+                Ok(mut layout) => {
+                    let same =
+                        av_channel_layout_compare(&raw const layout, &raw const self.layout) == 0;
+                    av_channel_layout_uninit(&raw mut layout);
+                    same
+                }
+                Err(_) => false,
+            }
+        }
+    }
+
+    /// Convert a frame, or, given none, what the converter holds back, and add the samples to
+    /// `out`, interleaved.
+    pub fn convert(
+        &mut self,
+        frame: Option<&ff::frame::Audio>,
+        out: &mut Vec<f32>,
+    ) -> Result<(), String> {
+        let samples = match frame {
+            Some(frame) => {
+                c_int::try_from(frame.samples()).map_err(|_| "a frame too long".to_owned())?
+            }
+            None => 0,
+        };
+        // SAFETY: the context is set up. The frame, if there is one, is of the format, rate
+        // and layout that it takes (`takes`), and its `extended_data` points to a plane of
+        // `samples` samples for each channel, or one plane of all of them interleaved. `out`
+        // is given room for as many samples as swr_get_out_samples says may come, each of
+        // `channels` floats, and is cut to those that came.
+        unsafe {
+            let room = swr_get_out_samples(self.context, samples);
+            if room < 0 {
+                return Err(format!(
+                    "the sound cannot be converted: {}",
+                    error_text(room)
+                ));
+            }
+            let room_samples = usize::try_from(room).unwrap_or(0);
+            let before = out.len();
+            out.resize(before + room_samples * self.channels, 0.0);
+            let planes = [out.as_mut_ptr().add(before).cast::<u8>()];
+            let input = match frame {
+                Some(frame) => (*frame.as_ptr())
+                    .extended_data
+                    .cast::<*const u8>()
+                    .cast_const(),
+                None => std::ptr::null(),
+            };
+            let made = swr_convert(self.context, planes.as_ptr(), room, input, samples);
+            if made < 0 {
+                out.truncate(before);
+                return Err(format!(
+                    "the sound cannot be converted: {}",
+                    error_text(made)
+                ));
+            }
+            out.truncate(before + usize::try_from(made).unwrap_or(0) * self.channels);
+        }
+        Ok(())
+    }
+}

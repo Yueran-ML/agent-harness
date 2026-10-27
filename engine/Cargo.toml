@@ -20,7 +20,9 @@ interprocess = { version = "2", features = ["tokio"] }
 memchr = "2"
 sha2 = "0.10"
 # libav (FFmpeg's libraries), linked against an LGPL shared build: see crates/media.
-ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-scaling"] }
+ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
+# The sound of the transport (crates/server): WASAPI on Windows, Core Audio on macOS, ALSA on Linux.
+cpal = "=0.18.2"
 # The picture, drawn on the graphics card (crates/view): Direct3D 12 on Windows, Metal on macOS,
 # each turned on where it is used, and no other backend.
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl"] }

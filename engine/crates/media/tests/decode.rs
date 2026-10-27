@@ -363,6 +363,74 @@ fn frames_further_on_in_the_same_group_are_decoded_on_without_seeking() {
 }
 
 #[test]
+fn the_key_frame_at_or_before_a_frame_is_known_from_the_index_and_shown_at_once() {
+    let (Some(fhd), Some(uhd)) = (media(Sample::Fhd), media(Sample::Uhd)) else {
+        return;
+    };
+    // Key frames every 50 frames of the 1080p file, every 120 of the 4K file, both MP4.
+    for (made, keys) in [
+        (
+            &fhd,
+            &[(0, 0), (1, 0), (49, 0), (50, 50), (77, 50), (99, 50)][..],
+        ),
+        (
+            &uhd,
+            &[(0, 0), (119, 0), (120, 120), (150, 120), (179, 120)][..],
+        ),
+    ] {
+        for mut decoder in decoders(made) {
+            let path = decoder.path_used();
+            assert_eq!(decoder.keyframe_at_or_before(-1), None);
+            // Asked of a decoder that has decoded only its first frame, the index knows them.
+            for &(frame, key) in keys {
+                assert_eq!(
+                    decoder.keyframe_at_or_before(frame),
+                    Some(key),
+                    "{path}: {frame}"
+                );
+            }
+            // A key frame is shown with one seek, wherever the decoder is.
+            for &(frame, key) in keys.iter().rev() {
+                let seeks = decoder.seeks();
+                let picture = decoder.frame_at(key).unwrap();
+                check(&picture, key);
+                assert!(decoder.seeks() - seeks <= 1, "{path}: {frame}");
+                // From there, the frame itself is decoded on, without seeking again.
+                let seeks = decoder.seeks();
+                check(&decoder.frame_at(frame).unwrap(), frame);
+                assert_eq!(decoder.seeks(), seeks, "{path}: {frame}");
+            }
+            assert_eq!(decoder.start().ticks, 0);
+        }
+    }
+}
+
+#[test]
+fn the_key_frames_of_mpeg_ts_are_known_once_they_are_decoded() {
+    let Some(made) = media(Sample::TsH264) else {
+        return;
+    };
+    // Key frames every 25 frames, and no index.
+    let mut decoder = open(&made, Hardware::Auto);
+    assert_eq!(decoder.keyframe_at_or_before(0), Some(0));
+    assert_eq!(
+        decoder.keyframe_at_or_before(60),
+        Some(0),
+        "only frame 0 is known"
+    );
+    while decoder.next().unwrap().is_some() {}
+    assert_eq!(decoder.last_frame(), Some(99));
+    for (frame, key) in [(24, 0), (25, 25), (60, 50), (99, 75)] {
+        assert_eq!(decoder.keyframe_at_or_before(frame), Some(key), "{frame}");
+    }
+    // Its timestamps start at about 1.4 s: frame 0 is there.
+    let start = decoder.start();
+    #[allow(clippy::cast_precision_loss)]
+    let seconds = start.ticks as f64 / f64::from(start.scale);
+    assert!((1.3..1.6).contains(&seconds), "{start:?}");
+}
+
+#[test]
 fn the_next_frames_after_opening_start_at_the_first() {
     let Some(made) = media(Sample::Prores) else {
         return;

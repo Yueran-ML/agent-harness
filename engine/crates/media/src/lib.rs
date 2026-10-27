@@ -4,7 +4,10 @@
 //! - [`identity`] tells a file from another one at the same path, as the editing of Python
 //!   does.
 //! - [`probe`] says what a file holds: how long it lasts, its picture and its sound.
-//! - [`VideoDecoder`] gives any frame of its picture, and the frames after it one at a time.
+//! - [`VideoDecoder`] gives any frame of its picture, and the frames after it one at a time,
+//!   and the key frame at or before a frame, to be shown first while a frame is sought.
+//! - [`AudioDecoder`] gives the samples of its sound from any place, converted to the rate and
+//!   the channels that they are played with.
 //!
 //! # Times
 //!
@@ -37,9 +40,10 @@
 //!
 //! # Linking
 //!
-//! libav is linked dynamically: an LGPL shared build of FFmpeg 8.1 (avformat, avcodec, avutil
-//! and swscale). To build, `FFMPEG_DIR` names the build on Windows (its `include` and `lib`),
-//! and pkg-config finds it elsewhere; `LIBCLANG_PATH` names libclang for the bindings. To run,
+//! libav is linked dynamically: an LGPL shared build of FFmpeg 8.1 (avformat, avcodec, avutil,
+//! swscale and swresample). To build, `FFMPEG_DIR` names the build on Windows (its `include`
+//! and `lib`), and pkg-config finds it elsewhere; `LIBCLANG_PATH` names libclang for the
+//! bindings. To run,
 //! the libraries must be found by the system: on Windows the DLLs of `<FFMPEG_DIR>\bin` lie
 //! beside the program, as they will once it is packaged, or that directory is on `PATH`. A test
 //! of this workspace that cannot find them ends at once with `STATUS_DLL_NOT_FOUND`
@@ -55,6 +59,7 @@
 //! libav writes nothing: its log is turned off before it is first used, since the engine's
 //! stderr carries lines of JSON only.
 
+mod audio;
 mod decode;
 mod error;
 #[allow(unsafe_code)]
@@ -63,6 +68,7 @@ mod identity;
 mod probe;
 mod timing;
 
+pub use audio::{AudioDecoder, AudioFormat, Samples};
 pub use columbina_model::{AudioFacts, Facts, Identity, Rate, Time, VideoFacts};
 pub use decode::{Converter, Decoded, Hardware, HardwarePath, Picture, VideoDecoder};
 pub use error::MediaError;

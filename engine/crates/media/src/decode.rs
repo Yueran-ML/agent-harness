@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use columbina_model::Rate;
+use columbina_model::{Rate, Time};
 use ff::format::context::Input;
 use ff::format::Pixel;
 use ffmpeg_next as ff;
@@ -843,6 +843,13 @@ impl VideoDecoder {
         if frame < next {
             return false;
         }
+        let key_before = self.key_before(frame).is_none_or(|key| key <= next);
+        key_before && (self.indexed || frame - next <= FORWARD_UNINDEXED)
+    }
+
+    /// The last key frame at or before `frame` that the decoder knows: from the index of the
+    /// file, where it is trusted, and from those it has decoded.
+    fn key_before(&self, frame: i64) -> Option<i64> {
         let learned = self.key_frames.range(..=frame).next_back().copied();
         let indexed = if self.indexed {
             // The last key frame shown at or before the frame is decoded at or before this.
@@ -857,8 +864,41 @@ impl VideoDecoder {
         } else {
             None
         };
-        let key_before = learned.max(indexed).is_none_or(|key| key <= next);
-        key_before && (self.indexed || frame - next <= FORWARD_UNINDEXED)
+        learned.max(indexed)
+    }
+
+    /// The last key frame at or before `frame`, where the decoder knows one: from the index of
+    /// a file whose index holds every key frame (MP4, Matroska, AVI), and from the key frames
+    /// that it has decoded (of MPEG-TS and MPEG-PS, where it knows only these). None where it
+    /// knows none: then only `frame` itself is known to be decoded in good time, by
+    /// [`VideoDecoder::decoded_at`]. A key frame is the cheapest frame near `frame` to show:
+    /// [`VideoDecoder::decoded_at`] of it seeks to it and decodes it, and no frame before it.
+    #[must_use]
+    pub fn keyframe_at_or_before(&self, frame: i64) -> Option<i64> {
+        if frame < self.first_frame {
+            return None;
+        }
+        self.key_before(frame)
+            .map(|key| key.max(self.first_frame))
+            .filter(|&key| key <= frame)
+    }
+
+    /// The time of frame 0 in the timestamps of the file, from time 0 of the file (which the
+    /// streams of a file share): `ticks / scale` seconds. The sound of frame `n` is at that
+    /// time plus `n` frames (see [`crate::AudioDecoder`]).
+    #[must_use]
+    pub fn start(&self) -> Time {
+        let (num, den) = self.timing.base;
+        Time {
+            ticks: self.timing.origin.saturating_mul(num),
+            scale: u32::try_from(den).unwrap_or(u32::MAX),
+        }
+    }
+
+    /// The number of the last frame, once the decoder has reached the end of the file.
+    #[must_use]
+    pub fn last_frame(&self) -> Option<i64> {
+        self.last
     }
 
     /// Seek to a key frame at or before `frame`, and decode on to it.

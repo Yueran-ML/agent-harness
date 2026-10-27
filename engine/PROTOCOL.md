@@ -117,6 +117,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.place` | `{"x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.show` | `{"shown": true \| false}` | `{}` |
 | `view.detach` | none | `{"detached": true \| false}` |
+| `transport.*` | see The transport | |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 1 is refused
@@ -162,7 +163,7 @@ Before `hello`, every other request is refused with `-32600`.
 - `history.undo` takes back the latest step **whoever made it** (desktop and agent share one
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
-- `view.*`: the viewer, below.
+- `view.*`: the viewer, below; `transport.*`: playing a source, below.
 
 ## The view
 
@@ -219,8 +220,8 @@ picture.
 - **Input** goes to the page: the view is a disabled window that never takes the focus, so the
   clicks, wheel and keys of the user over the viewer go to the page's own element there, as if
   the view were not there.
-- **What is drawn.** Black, until a picture is given to the view: in phase 0 by playback and
-  scrubbing (Task 13), not by a method of the protocol. A picture is fitted into the view, its
+- **What is drawn.** Black, until a picture is given to the view: in phase 0 by the transport
+  (below), not by a method of the view. A picture is fitted into the view, its
   shape kept and centred, with black bars, turned as its media says, its colours taken as
   BT.709. The engine draws only when there is something new to draw (a picture, a new size, the
   window shown or uncovered), never on a clock, and with v-sync.
@@ -256,6 +257,113 @@ picture.
 
 A `parent` that is not a window, or not a handle in decimal, is refused with `-32602` and
 `data: {"reason": "parent"}`; a rectangle wider or higher than 16384 with `{"reason": "rect"}`.
+
+## The transport
+
+The transport is the **source monitor** of phase 0: one media item of the project at a time is
+loaded, played forward and backward, sought, scrubbed and stepped a frame at a time. Its picture
+is drawn in the view (above), if one is attached, and its sound is played on the default output
+device of the system. Timelines are played in phase 1.
+
+- **Who sends them.** Any client (`desktop`, `agent`, `cli`); there is one transport, which every
+  client sees and moves. A `--headless` engine has nothing to show and nowhere to play sound:
+  every `transport.*` is answered `-32601`.
+- **Answers and what is told.** `transport.load` is answered once the media is open and its frame
+  0 is shown (about 100–300 ms; other connections are answered meanwhile), with the state, which
+  is also told to everyone **before** the answer. Every other method is answered at once with `{}`
+  (or the state, for `transport.state`); what it did is told **after** the answer, in a
+  `transport.state` notification to every connection that said hello. So a page that sends seeks
+  as the playhead is dragged is never held up by them.
+
+| method | params | result |
+|---|---|---|
+| `transport.load` | `{"media": "m1"}` | the state |
+| `transport.play` | `{"speed": s}`: a whole number from −8 to 8, not 0; 1 if left out | `{}` |
+| `transport.pause` | none | `{}` |
+| `transport.seek` | `{"frame": n, "scrubbing": false}` (`scrubbing` false if left out) | `{}` |
+| `transport.step` | `{"frames": n}` | `{}` |
+| `transport.state` | none | the state |
+
+**The state** (the result of `transport.load` and `transport.state`, and the params of the
+notification `transport.state`):
+
+```json
+{"media": "m1", "frame": 37, "playing": false, "speed": 1, "exact": true,
+ "shown": 37, "last": 99, "sound": "off"}
+```
+
+- `media`: the media loaded, or `null` (then `frame`, `shown` and `last` are `null` too).
+- `frame`: the **playhead**: the frame shown while playing, the frame sought or stepped to
+  otherwise. Frames are numbered at the rate of the media (`facts.video.rate`), from 0, its
+  first frame, as `media.import` describes.
+- `playing`, and `speed`: the speed it plays at, or played at last (1 at first).
+- `exact`: whether the picture shown is the frame at the playhead. False only while scrubbing,
+  when a key frame stands in for it (below).
+- `shown`: the frame whose picture is shown (the key frame standing in, while scrubbing).
+- `last`: the last frame: from the duration of the media (`round(duration × rate) − 1`), until
+  the engine decodes to the end and finds where it truly is.
+- `sound`: `"none"` (the media has no sound), `"on"` (played, and the clock of the picture),
+  `"off"` (not played now: paused, or a speed other than 1), or `"unavailable"` (there is no
+  output device, or it failed: the picture plays alone, by the clock of the system; the engine
+  logs `sound_unavailable` or `sound_failed`).
+
+**When it is told.** The notification `transport.state` is sent to every connection that said
+hello: at once after each method that does something (even one that changes nothing, so that its
+sender hears back), when playing stops (at an end, or paused), when a scrub settles, and when the
+media is unloaded; while playing, as the playhead moves, **at most 30 times a second**.
+
+- **`transport.load`** loads the media in place of the one loaded (which stops playing) and shows
+  its frame 0, paused. The picture is decoded on the graphics card where it can, else on the
+  processor. Media that is not in the project is refused (`-32602`, `data: {"reason": "missing",
+  "media": "m9"}`); a file that cannot be opened or decoded is refused as `media.import` refuses
+  it (`-32002`, `data: {"path", "reason", "message"}`), and then nothing is loaded (the state says
+  `media: null`). In phase 0 media must have a picture: sound alone is refused with `reason:
+  "no_video"`. When the media loaded is **removed from the project** (by a transaction, an undo
+  or a redo), it is unloaded, and the state is told with `media: null`; the view is cleared.
+- **`transport.play`** plays from the playhead, or, if it plays already, changes speed from where
+  it is (the playhead does not jump). Negative speeds play backward; at speed 1 the sound is
+  played, at every other speed (2, 4, 8, and backward) none. It stops at the last frame playing
+  forward and at frame 0 playing backward, and the state is told (`playing: false`); playing
+  forward from the last frame (or backward from frame 0) stops at once. At 2×, 4× and 8× frames
+  are decoded as fast as they can be and those that come too late are passed over (on media of
+  long groups of frames, the transport goes on from a key frame when it falls far behind).
+  Backward, each frame is sought: on media of long groups of frames (most from cameras) only
+  some are decoded in time, and those are shown.
+- **The clock.** At speed 1 with sound, the sound that the device has played (its latency
+  counted) is the clock, so that the picture follows what is heard; otherwise the monotonic
+  clock of the system. The frame shown at a time is the frame that the clock is at, rounded
+  down: `floor(t × rate × speed)` frames from where playing started (playing forward from frame
+  `n` starts at the start of `n`, backward at its end, so that `n` is shown for a whole frame
+  either way). A frame is never shown before its time; one that comes too late is not shown.
+- **`transport.pause`** stops where it is: the playhead is the frame shown, and the sound stops at
+  once.
+- **`transport.seek`** shows `frame`, clamped to the media (0 to `last`). While playing, it plays
+  on from there (unless `scrubbing`). Seeks that come while the engine decodes are taken
+  together: only the last is decoded.
+- **Scrubbing** (`"scrubbing": true`, while the playhead is dragged; it pauses playing). Send a
+  seek at most every 1/30 s while dragging. The engine shows at once the **key frame** at or
+  before the frame (`exact: false`, `shown` the key frame; a key frame already shown is not
+  decoded again), and once no newer seek has come for **150 ms**, the frame itself (`exact:
+  true`). A frame of media whose key frames are not known (MPEG-TS and MPEG-PS where it has not
+  been decoded yet) is decoded at once. Showing a frame that is not a key frame takes up to a few
+  hundred milliseconds on long groups of frames (4K HEVC from a camera); proxies (Task 13b) will
+  make it quick.
+- **`transport.step`** pauses, then moves exactly `frames` frames (negative is back), clamped to
+  the media, and shows that frame. Steps sent faster than they are done are added up.
+- **The view.** The picture is drawn in the view if one is attached, turned as the media says;
+  a view attached later is drawn the picture shown. Without a view the transport plays all the
+  same (the state is told as ever).
+- **Logs** (stderr): `transport_loaded` (`decoder`: `cuda`, `d3d11va`, `videotoolbox` or
+  `software`, and the devices that failed before it), `transport_played` (each time playing
+  stops: how many frames were shown, passed over or decoded too late, how late they were shown,
+  and how far the clock of the sound went from the system's), `transport_unloaded`,
+  `transport_error`, `transport_device_failed`, `sound_ready`, `sound_unavailable`,
+  `sound_failed`.
+
+| `-32004` `reason` | when |
+|---|---|
+| `not_loaded` | `transport.play`, `.pause`, `.seek` or `.step` with no media loaded |
+| `failed` | the transport of the engine has stopped (a bug of the engine) |
 
 ## Operations
 
@@ -332,6 +440,7 @@ real ids. For example:
 |---|---|
 | `project.changed` | `{"revision": n, "by": "<kind>", "made_by": "<kind>", "done": [op, ...], "next_id": k}` |
 | `engine.error` | `{"message": "...", "kind": "save"}` |
+| `transport.state` | the state of the transport (see The transport) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,
@@ -349,11 +458,12 @@ real ids. For example:
 |---|---|---|
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB, `view.*` from a client that is not the desktop | |
-| `-32601` | no such method; `view.*` in a `--headless` engine | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name` | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above |
+| `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine | |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media not in the project | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"reason": "missing", "media": "..."}` |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was | the refusal, below |
-| `-32002` | `media.import`: a file cannot be read; nothing was added | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
+| `-32002` | `media.import`: a file cannot be read; nothing was added. `transport.load`: the file of the media cannot be opened or decoded | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
+| `-32004` | `transport.*`: no media is loaded | `{"reason": "..."}`, see The transport |
 
 The connection stays usable after every error.
 
@@ -362,7 +472,8 @@ The connection stays usable after every error.
 holds a NUL), `not_media` (libav cannot open it as media of the formats above), `no_streams`
 (neither picture nor sound), `unsupported` (what it holds cannot be used: a picture that libav
 cannot decode, no duration, a picture with no size or rate), `read` (it cannot be read on, once
-opened), or `failed` (the engine failed to read it).
+opened), or `failed` (the engine failed to read it). `transport.load` gives these too, and
+`no_video` (the media is sound alone), `decode` (its first frame cannot be decoded) and `seek`.
 
 **Refusals (`-32001`).** `data` is `{"reason": "...", "message": "...", ...fields}`, with
 `"index": i` (the place of the refused operation in `ops`) when an operation was refused, and

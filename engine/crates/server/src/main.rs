@@ -28,12 +28,15 @@
 //! listens.
 
 mod address;
+mod audio;
 mod conn;
 mod log;
 mod names;
 mod queue;
 mod rpc;
 mod session;
+mod timer;
+mod transport;
 mod view;
 
 use std::ffi::OsString;
@@ -93,6 +96,9 @@ struct Options {
     /// Not in the usage (`--read-gate <FILE>`): for the tests, which hold `media.import` before
     /// it reads each file until FILE is there, to see the engine answer meanwhile.
     read_gate: Option<PathBuf>,
+    /// Not in the usage (`--mute`): for the tests, which play sound that no one is to hear.
+    /// Silence is played in its place, and the device is the clock all the same.
+    mute: bool,
 }
 
 impl Options {
@@ -102,6 +108,7 @@ impl Options {
         let mut idle = IDLE_SECONDS;
         let mut limits = QUEUE_LIMITS;
         let mut read_gate = None;
+        let mut mute = false;
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--project") => {
@@ -120,6 +127,7 @@ impl Options {
                     let file = args.next().ok_or("--read-gate needs a file")?;
                     read_gate = Some(PathBuf::from(file));
                 }
+                Some("--mute") => mute = true,
                 _ => {
                     let arg = arg.to_string_lossy();
                     return Err(format!("{arg} is not an argument of the engine; {USAGE}"));
@@ -133,6 +141,7 @@ impl Options {
             idle: Duration::from_secs(idle),
             limits,
             read_gate,
+            mute,
         })
     }
 }
@@ -265,6 +274,7 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         options.limits,
         options.read_gate.clone(),
         options.headless,
+        options.mute,
     );
     let ending = runtime.block_on(serve(options, address, engine, save_errors));
     // The runtime is never shut down: the process ends with `exit`, and a shutdown would wait
@@ -516,6 +526,7 @@ mod tests {
                     bytes: 128 * 1024 * 1024,
                 },
                 read_gate: None,
+                mute: false,
             }
         );
         assert_eq!(
@@ -531,6 +542,7 @@ mod tests {
                 "1000",
                 "--read-gate",
                 "g",
+                "--mute",
             ])
             .unwrap(),
             Options {
@@ -542,6 +554,7 @@ mod tests {
                     bytes: 1000,
                 },
                 read_gate: Some("g".into()),
+                mute: true,
             }
         );
     }

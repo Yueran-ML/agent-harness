@@ -25,6 +25,7 @@ use crate::log::log;
 use crate::names;
 use crate::queue::{self, Limits, Refused};
 use crate::rpc::{self, Fault, Line};
+use crate::transport::{self, Status, Transport};
 use crate::view::Viewer;
 
 /// The version of the engine that `hello` answers with.
@@ -82,6 +83,8 @@ pub struct Engine {
     read_gate: Option<PathBuf>,
     /// The view that the picture is drawn in, if one is attached.
     viewer: Viewer,
+    /// The transport of the source monitor.
+    transport: Transport,
 }
 
 #[derive(Default)]
@@ -102,6 +105,9 @@ pub struct State {
     /// The connections that were closed because they did not read, to be logged once the
     /// lock is let go.
     kicked: Vec<(u64, Kind)>,
+    /// The transport, told when the project changes, so that it lets go of media that was
+    /// removed.
+    transport: Option<Transport>,
 }
 
 /// A connection that said hello.
@@ -167,14 +173,26 @@ impl Engine {
         limits: Limits,
         read_gate: Option<PathBuf>,
         headless: bool,
+        mute: bool,
     ) -> Engine {
+        let state = Arc::new(Mutex::new(State {
+            history,
+            saver: Some(saver),
+            peers: HashMap::new(),
+            kicked: Vec::new(),
+            transport: None,
+        }));
+        let viewer = Viewer::new(headless);
+        let transport = Transport::new(headless, mute, viewer.slot(), {
+            let state = Arc::clone(&state);
+            Arc::new(move |status: &Status| tell(&state, status, limits))
+        });
+        state
+            .try_lock()
+            .expect("no one has the state yet")
+            .transport = Some(transport.clone());
         Engine {
-            state: Arc::new(Mutex::new(State {
-                history,
-                saver: Some(saver),
-                peers: HashMap::new(),
-                kicked: Vec::new(),
-            })),
+            state,
             project,
             pid: std::process::id(),
             limits,
@@ -183,7 +201,8 @@ impl Engine {
             next_connection: AtomicU64::new(1),
             reading: Arc::new(Semaphore::new(READ_AT_ONCE)),
             read_gate,
-            viewer: Viewer::new(headless),
+            viewer,
+            transport,
         }
     }
 
@@ -269,6 +288,20 @@ impl Engine {
     }
 }
 
+/// Tell every connection that said hello the state of the transport. This is called by the
+/// transport's own thread, never by a task of the runtime: it waits for the state of the
+/// engine, which is held only for moments.
+fn tell(state: &Mutex<State>, status: &Status, limits: Limits) {
+    let line = rpc::notification_line("transport.state", status);
+    let mut state = state.blocking_lock();
+    state.broadcast(&line);
+    let kicked = std::mem::take(&mut state.kicked);
+    drop(state);
+    for (id, kind) in kicked {
+        log_kicked(id, Some(kind), limits);
+    }
+}
+
 impl State {
     /// Queue a line on every connection that said hello. A connection whose queue is full is
     /// closed, so that it never misses a single message and then goes on.
@@ -305,6 +338,9 @@ impl State {
             next_id: applied.next_id,
         };
         self.broadcast(&rpc::notification_line("project.changed", &changed));
+        if let Some(transport) = &self.transport {
+            transport.project_changed(self.history.project());
+        }
         done
     }
 }
@@ -387,6 +423,16 @@ async fn dispatch(
         "media.import" => media_import(engine, connection, kind, id, params).await,
         "view.attach" | "view.place" | "view.show" | "view.detach" => {
             let result = engine.viewer.call(kind, method, params).await?;
+            if method == "view.attach" {
+                engine.transport.redraw();
+            }
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
+        _ if method.starts_with("transport.") => {
+            let result = transport_call(engine, method, params).await?;
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),
@@ -398,6 +444,41 @@ async fn dispatch(
         )
         .into()),
     }
+}
+
+/// The methods `transport.*`, of any client: `transport.load` finds the media in the project,
+/// and waits for the transport to open it; the others are answered at once.
+async fn transport_call(
+    engine: &Engine,
+    method: &str,
+    params: Option<&RawValue>,
+) -> Result<serde_json::Value, Fault> {
+    if method != "transport.load" {
+        return engine.transport.call(method, params);
+    }
+    engine.transport.check(method)?;
+    let load: transport::Load = rpc::params(method, r#"{"media": "m1"}"#, params)?;
+    let found = {
+        let state = engine.state.lock().await;
+        state
+            .history
+            .project()
+            .media
+            .iter()
+            .find(|media| media.id == load.media)
+            .map(|media| (media.path.clone(), media.facts.clone()))
+    };
+    let Some((path, facts)) = found else {
+        return Err(
+            Fault::params(format!("there is no media {} in the project", load.media))
+                .with_data(json!({ "reason": "missing", "media": load.media })),
+        );
+    };
+    let status = engine
+        .transport
+        .load(load.media, PathBuf::from(path), facts)
+        .await?;
+    Ok(serde_json::to_value(status).unwrap_or_default())
 }
 
 /// The params of `hello`.
@@ -745,7 +826,7 @@ async fn read_all(
 }
 
 /// The error of a file that cannot be read.
-fn cannot_read(path: &str, reason: &str, message: &str) -> Fault {
+pub fn cannot_read(path: &str, reason: &str, message: &str) -> Fault {
     Fault::new(
         rpc::CANNOT_READ,
         format!("a file cannot be read: {path}: {message}"),

@@ -38,6 +38,8 @@ pub const REFUSED: i64 = -32001;
 pub const CANNOT_READ: i64 = -32002;
 /// The view cannot be made, or there is none, or its window is gone.
 pub const VIEW_FAILED: i64 = -32003;
+/// The transport has no media loaded, or it has stopped.
+pub const TRANSPORT_FAILED: i64 = -32004;
 
 /// An error that a request is answered with.
 #[derive(Clone, Debug, PartialEq, Serialize)]

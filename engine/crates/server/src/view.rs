@@ -5,8 +5,12 @@
 //! it: it stays when that connection closes, and goes when it is detached, when another is
 //! attached, or when the engine ends. A view is made and destroyed on threads where blocking is
 //! allowed: its own threads make and serve the window, and the card is made ready on one of them.
+//!
+//! The transport hands the view its pictures ([`ViewSlot`]): the slot is locked only for a
+//! moment, to hand a picture over or to put a view in or take it out, never while a view is made
+//! or destroyed.
 
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use columbina_view::{Event, RawParent, Rect, View, ViewError};
 use serde::Deserialize;
@@ -18,11 +22,17 @@ use crate::log::log;
 use crate::rpc::{self, Fault};
 use crate::session::Kind;
 
+/// Where the view of the engine is, if one is attached: shared with the transport, which hands
+/// it pictures.
+pub type ViewSlot = Arc<std::sync::Mutex<Option<View>>>;
+
 /// The view of the engine, if one is attached.
 pub struct Viewer {
     /// Whether the engine is headless, and so draws in no window.
     headless: bool,
-    view: Mutex<Option<View>>,
+    slot: ViewSlot,
+    /// Held while a method changes the view, so that one is done before the next begins.
+    busy: Mutex<()>,
 }
 
 /// The params of `view.attach`.
@@ -62,8 +72,22 @@ impl Viewer {
     pub fn new(headless: bool) -> Self {
         Self {
             headless,
-            view: Mutex::new(None),
+            slot: Arc::new(std::sync::Mutex::new(None)),
+            busy: Mutex::new(()),
         }
+    }
+
+    /// Where the view is, for the transport.
+    pub fn slot(&self) -> ViewSlot {
+        Arc::clone(&self.slot)
+    }
+
+    /// Take the view out of its slot.
+    fn take(&self) -> Option<View> {
+        self.slot
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
     }
 
     /// Call a method `view.*` for a client of `kind`, and give its result.
@@ -103,7 +127,8 @@ impl Viewer {
             }
             "view.detach" => {
                 rpc::no_params(method, params)?;
-                let old = self.view.lock().await.take();
+                let _busy = self.busy.lock().await;
+                let old = self.take();
                 let detached = old.is_some();
                 drop_view(old).await;
                 if detached {
@@ -134,8 +159,8 @@ impl Viewer {
             width: attach.width,
             height: attach.height,
         };
-        let mut slot = self.view.lock().await;
-        let old = slot.take();
+        let _busy = self.busy.lock().await;
+        let old = self.take();
         let made = tokio::task::spawn_blocking(move || {
             drop(old);
             View::attach_reporting(parent, rect, Arc::new(report))
@@ -151,7 +176,7 @@ impl Viewer {
         let view = made.map_err(|error| fault(&error))?;
         let result = json!({ "adapter": view.adapter(), "backend": view.backend() });
         log("view_attached", &result);
-        *slot = Some(view);
+        *self.slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(view);
         Ok(result)
     }
 
@@ -161,16 +186,20 @@ impl Viewer {
         &self,
         work: impl FnOnce(&View) -> Result<(), ViewError>,
     ) -> Result<serde_json::Value, Fault> {
-        let mut slot = self.view.lock().await;
-        let Some(view) = slot.as_ref() else {
-            return Err(Fault::new(rpc::VIEW_FAILED, "no view is attached")
-                .with_data(json!({ "reason": "no_view" })));
+        let _busy = self.busy.lock().await;
+        let done = {
+            let slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+            let Some(view) = slot.as_ref() else {
+                return Err(Fault::new(rpc::VIEW_FAILED, "no view is attached")
+                    .with_data(json!({ "reason": "no_view" })));
+            };
+            work(view)
         };
-        match work(view) {
+        match done {
             Ok(()) => Ok(json!({})),
             Err(error) => {
                 if error == ViewError::Gone {
-                    drop_view(slot.take()).await;
+                    drop_view(self.take()).await;
                 }
                 Err(fault(&error))
             }

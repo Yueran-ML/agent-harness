@@ -1,6 +1,7 @@
 /**
  * The engine of the studio as the page sees it: the project as `project.get` gives it, the
- * operations that change it, and what the engine tells. See engine/PROTOCOL.md.
+ * operations that change it, what the engine tells, and the page's own copy of the project,
+ * kept as the engine tells of every change. See engine/PROTOCOL.md.
  *
  * The page reaches the engine only through the shell (`window.columbina.engine`): it names no
  * path to it, and holds no handle of the window.
@@ -276,4 +277,303 @@ export function deviceRect(box: { left: number; top: number; right: number; bott
   const right = Math.max(x, Math.round(box.right * ratio));
   const bottom = Math.max(y, Math.round(box.bottom * ratio));
   return { x, y, width: right - x, height: bottom - y };
+}
+
+/** A copy that does not hold what the engine says it changed: it is fetched anew. */
+export class CopyMismatch extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CopyMismatch';
+  }
+}
+
+function placeOf<T extends { id: string }>(list: readonly T[], id: string, what: string): number {
+  const at = list.findIndex(thing => thing.id === id);
+  if (at < 0) throw new CopyMismatch(`there is no ${what} ${id} in the copy`);
+  return at;
+}
+
+function inserted<T>(list: readonly T[], thing: T, index: number | null | undefined): T[] {
+  const at = index ?? list.length;
+  if (!Number.isInteger(at) || at < 0 || at > list.length) throw new CopyMismatch(`index ${at} is past the end of a list of ${list.length}`);
+  return [...list.slice(0, at), thing, ...list.slice(at)];
+}
+
+function without<T>(list: readonly T[], at: number): T[] {
+  return [...list.slice(0, at), ...list.slice(at + 1)];
+}
+
+function replaced<T>(list: readonly T[], at: number, thing: T): T[] {
+  return list.map((each, index) => (index === at ? thing : each));
+}
+
+/** Put a clip among the clips of a track, in the order of their start: before the first that starts no earlier. */
+function put(clips: readonly Clip[], clip: Clip): Clip[] {
+  const at = clips.findIndex(each => !(each.start < clip.start));
+  return inserted(clips, clip, at < 0 ? clips.length : at);
+}
+
+/** A track whose clips are in the order of their start, as the engine keeps them. */
+function ordered(track: Track): Track {
+  return { ...track, clips: [...track.clips].sort((one, other) => one.start - other.start) };
+}
+
+/** Where a clip is in a timeline: its track, and its place on it. */
+function clipAt(timeline: Timeline, id: string): [number, number] {
+  for (let track = 0; track < timeline.tracks.length; track += 1) {
+    const at = timeline.tracks[track].clips.findIndex(clip => clip.id === id);
+    if (at >= 0) return [track, at];
+  }
+  throw new CopyMismatch(`there is no clip ${id} in the copy`);
+}
+
+function inTimeline(project: Project, id: string, change: (timeline: Timeline) => Timeline): Project {
+  const at = placeOf(project.timelines, id, 'timeline');
+  return { ...project, timelines: replaced(project.timelines, at, change(project.timelines[at])) };
+}
+
+function inTrack(timeline: Timeline, at: number, change: (clips: Clip[]) => Clip[]): Timeline {
+  const track = timeline.tracks[at];
+  return { ...timeline, tracks: replaced(timeline.tracks, at, { ...track, clips: change(track.clips) }) };
+}
+
+/**
+ * Apply an operation as the engine did it (from `done`, with every id and place filled in) to a
+ * copy of the project, as `crates/model/src/ops.rs` applies it. The project given is not changed:
+ * what changed is new, and what did not is shared. Throws `CopyMismatch` where the copy does not
+ * hold what the operation names.
+ */
+export function applyOp(project: Project, op: Op): Project {
+  switch (op.op) {
+    case 'add_media':
+      return { ...project, media: inserted(project.media, op.media, op.index) };
+    case 'remove_media':
+      return { ...project, media: without(project.media, placeOf(project.media, op.id, 'media')) };
+    case 'set_proxy': {
+      const at = placeOf(project.media, op.media, 'media');
+      const { proxy: _before, ...media } = project.media[at];
+      return { ...project, media: replaced(project.media, at, op.proxy === null ? media : { ...media, proxy: op.proxy }) };
+    }
+    case 'add_timeline':
+      return { ...project, timelines: inserted(project.timelines, { ...op.timeline, tracks: op.timeline.tracks.map(ordered) }, op.index) };
+    case 'remove_timeline':
+      return { ...project, timelines: without(project.timelines, placeOf(project.timelines, op.id, 'timeline')) };
+    case 'add_track':
+      return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: inserted(timeline.tracks, ordered(op.track), op.index) }));
+    case 'remove_track':
+      return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: without(timeline.tracks, placeOf(timeline.tracks, op.id, 'track')) }));
+    case 'insert_clip':
+      return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), clips => put(clips, op.clip)));
+    case 'remove_clip':
+      return inTimeline(project, op.timeline, (timeline) => {
+        const [track, at] = clipAt(timeline, op.id);
+        return inTrack(timeline, track, clips => without(clips, at));
+      });
+    case 'move_clip':
+      return inTimeline(project, op.timeline, (timeline) => {
+        const [from, at] = clipAt(timeline, op.id);
+        const to = placeOf(timeline.tracks, op.track, 'track');
+        const moved = { ...timeline.tracks[from].clips[at], start: op.start };
+        const taken = inTrack(timeline, from, clips => without(clips, at));
+        return inTrack(taken, to, clips => put(clips, moved));
+      });
+    case 'trim_clip':
+      return inTimeline(project, op.timeline, (timeline) => {
+        const [track, at] = clipAt(timeline, op.id);
+        const trimmed = { ...timeline.tracks[track].clips[at], source_in: op.source_in, start: op.start, length: op.length };
+        return inTrack(timeline, track, clips => put(without(clips, at), trimmed));
+      });
+    default:
+      throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);
+  }
+}
+
+/** Apply a change that the engine told of: its `next_id` first, then each of its operations in order. */
+export function applyChange(project: Project, change: Pick<ProjectChanged, 'done' | 'next_id'>): Project {
+  let changed: Project = { ...project, next_id: change.next_id };
+  for (const op of change.done) changed = applyOp(changed, op);
+  return changed;
+}
+
+/** Whether the copy is kept by an engine that answers. */
+export type CopyStatus = 'connected' | 'disconnected';
+
+/** How the view of the engine stands in the window. */
+export type ViewState =
+  | { state: 'none' }
+  | { state: 'attached'; adapter: string | null; backend: string | null }
+  | { state: 'unsupported'; reason: 'unsupported' | 'headless' };
+
+/** What the page knows of the engine at one moment. A new object whenever anything in it changed. */
+export interface StudioSnapshot {
+  status: CopyStatus;
+  /** The session of the engine that the copy was fetched from, or null before any was opened. */
+  session: number | null;
+  /** The revision of the copy, or null before it was fetched. */
+  revision: number | null;
+  /** The copy of the project, kept (as it was last) while disconnected; null before it was fetched. */
+  project: Project | null;
+  /** What the transport told last, or null before it told anything. */
+  transport: TransportState | null;
+  /** How the proxy of each media item is being made, as the engine told last, by the media. */
+  proxies: Readonly<Record<string, ProxyEvent>>;
+  view: ViewState;
+  /** What went wrong last: an error of the engine, or a fetch that failed. Null where nothing did. */
+  error: string | null;
+}
+
+const NOTHING: StudioSnapshot = {
+  status: 'disconnected', session: null, revision: null, project: null, transport: null, proxies: {}, view: { state: 'none' }, error: null,
+};
+
+/**
+ * The page's copy of the project, kept as the engine tells it.
+ *
+ * It fetches the project with `project.get` whenever an engine is opened (also again, as after the
+ * page was loaded again), and then applies each `project.changed` whose revision is one above its
+ * own. One at or below its own is passed over; one that skips a revision, or that the copy cannot
+ * apply, makes it fetch the project again. What is told while it fetches is applied after the
+ * fetch, from the revision that the fetch answered. It also keeps what the transport, the proxies
+ * and the view told last.
+ *
+ * It is a store for `useSyncExternalStore(copy.subscribe, copy.getSnapshot)`.
+ */
+export class ProjectCopy {
+  private snapshot: StudioSnapshot = NOTHING;
+  private readonly listeners = new Set<() => void>();
+  private fetching: Promise<void> | null = null;
+  private fetchAgain = false;
+  /** What was told while the project was being fetched. */
+  private held: ProjectChanged[] = [];
+  /** Counted up whenever an engine is opened or ends, so that a fetch of an earlier one is let go. */
+  private epoch = 0;
+  private readonly unsubscribe: () => void;
+
+  constructor(private readonly bridge: Pick<EngineBridge, 'call' | 'onEvent'>) {
+    this.unsubscribe = bridge.onEvent(event => this.heard(event));
+  }
+
+  readonly subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  };
+
+  readonly getSnapshot = (): StudioSnapshot => this.snapshot;
+
+  /** Stop listening to the engine. The snapshot stays as it is. */
+  dispose(): void {
+    this.unsubscribe();
+    this.listeners.clear();
+  }
+
+  /** Fetch the project anew. A fetch asked for while one is under way is made after it. */
+  refetch(): Promise<void> {
+    if (this.fetching) {
+      this.fetchAgain = true;
+      return this.fetching;
+    }
+    this.held = [];
+    const epoch = this.epoch;
+    this.fetching = (async () => {
+      try {
+        const got = await callEngine(this.bridge, 'project.get');
+        if (epoch !== this.epoch) return;
+        let revision = got.revision;
+        let project: Project = { ...got.project, next_id: got.next_id };
+        for (const change of this.held) {
+          if (change.revision <= revision) continue;
+          if (change.revision !== revision + 1) {
+            this.fetchAgain = true;
+            break;
+          }
+          try {
+            project = applyChange(project, change);
+          } catch {
+            this.fetchAgain = true;
+            break;
+          }
+          revision = change.revision;
+        }
+        this.set({ status: 'connected', revision, project, error: null });
+      } catch (error) {
+        if (epoch !== this.epoch) return;
+        this.set({ status: 'disconnected', error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        this.fetching = null;
+        this.held = [];
+        if (this.fetchAgain) {
+          this.fetchAgain = false;
+          void this.refetch();
+        }
+      }
+    })();
+    return this.fetching;
+  }
+
+  private set(changed: Partial<StudioSnapshot>): void {
+    this.snapshot = { ...this.snapshot, ...changed };
+    for (const listener of [...this.listeners]) listener();
+  }
+
+  private heard(event: EngineEvent): void {
+    // What an engine that is no longer the one open told is passed over.
+    if (event.kind !== 'opened' && this.snapshot.session !== null && event.session !== this.snapshot.session) return;
+    switch (event.kind) {
+      case 'opened':
+        this.epoch += 1;
+        if (event.session !== this.snapshot.session) {
+          this.set({ session: event.session, transport: null, proxies: {}, view: { state: 'none' } });
+        }
+        void this.refetch();
+        return;
+      case 'exited':
+        this.epoch += 1;
+        this.fetchAgain = false;
+        this.set({ status: 'disconnected', transport: null, view: { state: 'none' } });
+        return;
+      case 'error':
+        this.set({ error: event.message });
+        return;
+      case 'attached':
+        this.set({ view: { state: 'attached', adapter: event.adapter, backend: event.backend } });
+        return;
+      case 'unsupported':
+        this.set({ view: { state: 'unsupported', reason: event.reason } });
+        return;
+      case 'notification':
+        this.told(event.method, event.params);
+        return;
+      default:
+    }
+  }
+
+  private told(method: string, params: unknown): void {
+    if (params === null || typeof params !== 'object') return;
+    if (method === 'project.changed') this.changed(params as ProjectChanged);
+    else if (method === 'transport.state') this.set({ transport: params as TransportState });
+    else if (method === 'media.proxy') {
+      const told = params as ProxyEvent;
+      this.set({ proxies: { ...this.snapshot.proxies, [told.media]: told } });
+    } else if (method === 'engine.error') this.set({ error: (params as EngineErrorNotice).message });
+  }
+
+  private changed(change: ProjectChanged): void {
+    if (this.fetching) {
+      this.held.push(change);
+      return;
+    }
+    const { status, revision, project } = this.snapshot;
+    // Before the copy was fetched, or once its engine ended, a fetch to come takes it in.
+    if (status !== 'connected' || revision === null || project === null) return;
+    if (change.revision <= revision) return;
+    if (change.revision !== revision + 1) {
+      void this.refetch();
+      return;
+    }
+    try {
+      this.set({ revision: change.revision, project: applyChange(project, change) });
+    } catch {
+      void this.refetch();
+    }
+  }
 }

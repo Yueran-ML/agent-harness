@@ -2,8 +2,10 @@
 // a table of each crate with its version and license, and the license files that each crate brings,
 // copied into a folder of its own. The crates are those that `cargo metadata` resolves for the target
 // from the package of the engine (columbina-server), following normal dependencies only: what is
-// only built for the build (bindgen, cc) or only for the tests is not in the program. The crates of
-// the workspace are Columbina's own, under its MIT license, and are not listed.
+// only built for the build (bindgen, cc) or only for the tests is not in the program, and neither
+// is a procedural macro (serde_derive, thiserror-impl), which runs in the compiler: it and what only
+// it depends on (syn, quote) are left out. The crates of the workspace are Columbina's own, under
+// its MIT license, and are not listed.
 //
 //   node scripts/engine-notices.mjs --out <folder> [--engine <engine/>] [--target <triple>]
 //
@@ -54,13 +56,15 @@ export async function rustCrates({ engine, target }) {
   const root = metadata.packages.find((one) => one.name === ENGINE_PACKAGE && members.has(one.id));
   if (!root) throw new Error(`The workspace of ${engine} has no package ${ENGINE_PACKAGE}.`);
 
-  // Normal dependencies only, for the target that the metadata was filtered for.
+  // Normal dependencies only, for the target that the metadata was filtered for, and no
+  // procedural macro, nor what is reached only through one.
+  const isMacro = (id) => packages.get(id).targets.some((target) => target.kind.includes('proc-macro'));
   const reached = new Set([root.id]);
   const waiting = [root.id];
   while (waiting.length > 0) {
     for (const dependency of nodes.get(waiting.pop()).deps) {
       if (!dependency.dep_kinds.some((kind) => kind.kind === null)) continue;
-      if (reached.has(dependency.pkg)) continue;
+      if (reached.has(dependency.pkg) || isMacro(dependency.pkg)) continue;
       reached.add(dependency.pkg);
       waiting.push(dependency.pkg);
     }

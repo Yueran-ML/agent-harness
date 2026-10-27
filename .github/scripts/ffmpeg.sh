@@ -13,6 +13,10 @@
 #     libraries that could be loaded in place of those of the LGPL build.
 # macOS: ffmpeg@8 of Homebrew, which pkg-config finds for the build and whose ffmpeg makes both
 # the media of the tests and the proxies.
+#
+# With FFMPEG_SH_PATH=none (the packaging of the desktop, Linux and Windows), neither build is put on
+# PATH or LD_LIBRARY_PATH: FFMPEG_DIR names the LGPL build, and COLUMBINA_TEST_FFMPEG the ffmpeg of
+# the GPL build, for what makes the media of a test, and for nothing else.
 set -euo pipefail
 
 base="${COLUMBINA_BTBN_URL:-https://github.com/BtbN/FFmpeg-Builds/releases/download/latest}"
@@ -75,13 +79,17 @@ case "$RUNNER_OS" in
     include="$root/lgpl-shared/include"
     making="$root/gpl/bin/ffmpeg$exe"
     echo "FFMPEG_DIR=$(native "$root/lgpl-shared")" >> "$GITHUB_ENV"
-    if [ "$RUNNER_OS" = Linux ]; then
+    if [ "${FFMPEG_SH_PATH:-}" = none ]; then
+      echo "COLUMBINA_TEST_FFMPEG=$(native "$making")" >> "$GITHUB_ENV"
+    elif [ "$RUNNER_OS" = Linux ]; then
       echo "LD_LIBRARY_PATH=$root/lgpl-shared/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
     else
       native "$root/lgpl-shared/bin" >> "$GITHUB_PATH"
     fi
     # Each line of GITHUB_PATH goes before those written earlier.
-    native "$root/gpl/bin" >> "$GITHUB_PATH"
+    if [ "${FFMPEG_SH_PATH:-}" != none ]; then
+      native "$root/gpl/bin" >> "$GITHUB_PATH"
+    fi
     ;;
   macOS)
     # pkgconf is there already on the images of GitHub; asked for so that it is sure to be.

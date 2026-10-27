@@ -1,5 +1,12 @@
 # Third-party software in the engine of the studio
 
+<!--
+For maintainers (this comment is not shipped: electron/engine-bundle.mjs drops it).
+Do not tag desktop-v* for public release until FFmpeg is built from pinned sources with complete
+notices (see plans): the BtbN build that is bundled now is the latest of its day, and the
+libraries that it links into the DLLs have no notices of their own here yet.
+-->
+
 The engine of the studio, `columbina-engine.exe`, is part of Columbina and is under its MIT
 license. The package brings it in `resources/engine/`, together with software of others that it
 needs, each under its own license. This file is copied there as well, followed by what only the
@@ -35,16 +42,12 @@ copyright (c) 2000-2026 the FFmpeg developers. FFmpeg is a trademark of Fabrice 
   that the build links into the DLLs, one for each `--enable-lib…` option of its configuration.
   These libraries are under their own licenses.
 
-## The C runtime of Microsoft
-
-`vcruntime140.dll` is the Microsoft Visual C++ runtime, which the engine is linked with. It is
-redistributed unmodified, as permitted for the Distributable Code of Microsoft Visual Studio.
-
 ## Rust crates
 
 The engine is compiled from crates of crates.io. Most of them are under the MIT license or the
 Apache License 2.0, or both. The list below is generated from `engine/Cargo.lock` by
 `desktop/scripts/engine-notices.mjs` when the package is made. It covers the crates that the
-engine is compiled from on this system, and leaves out those used only for building or testing it.
+engine is compiled from on this system. It leaves out those used only for building or testing it,
+and the procedural macros, which run in the compiler and are not part of the program.
 The license files of each crate (its copyright notice and license text) are copied unchanged into
 `licenses/crates/<name>-<version>/`.

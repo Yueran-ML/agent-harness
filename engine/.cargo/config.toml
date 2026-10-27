@@ -1,0 +1,6 @@
+# The engine of Windows is linked with the C runtime of Microsoft statically, so that it needs no
+# vcruntime140.dll, which Windows does not bring: the package of the desktop brings the engine with
+# the libraries of FFmpeg alone (desktop/electron/engine-bundle.mjs refuses an engine that imports
+# a VC runtime). The same for every build of it: cargo in engine/, CI, and desktop.yml.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

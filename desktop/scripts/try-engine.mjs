@@ -1,16 +1,16 @@
 // Try the engine of the studio in the package that electron/package.mjs made on Windows, as on a
 // system with nothing else installed: with Windows alone on PATH, and no FFMPEG_DIR,
 // COLUMBINA_ENGINE or COLUMBINA_PROXY_FFMPEG.
-//   - resources/engine holds exactly the engine, the libraries of FFmpeg, its ffmpeg, the C runtime
-//     and the notices;
-//   - that ffmpeg starts, and is an LGPL build;
+//   - resources/engine holds exactly the engine, the libraries of FFmpeg, its ffmpeg and the notices;
+//   - the engine needs no C runtime beside it (it is linked with it statically);
+//   - each library says that it is of the LGPL, and that ffmpeg starts and is an LGPL build;
 //   - a headless engine starts with the libraries beside it, says where it listens, and ends by
 //     itself once it has been idle;
 //   - an engine of the desktop's kind takes in a film of 4K HEVC of 10 bits, finds the ffmpeg
 //     beside it, and makes the film's proxy with it.
 // The film is made by an ffmpeg with libx265: COLUMBINA_TEST_FFMPEG by its whole path, else the
-// first on PATH (on CI the GPL build that .github/scripts/ffmpeg.sh puts there; it is not in the
-// package). Nothing is written into the package but what the engine writes in a project of its own.
+// first on PATH (on CI the GPL build of .github/scripts/ffmpeg.sh, named by COLUMBINA_TEST_FFMPEG;
+// it is not in the package). Nothing is written into the package but what the engine writes in a project of its own.
 //
 //   node scripts/try-engine.mjs
 import { spawn, spawnSync } from 'node:child_process';
@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { cleanEnvironment, lgplConfiguration } from '../electron/engine-bundle.mjs';
+import { cleanEnvironment, lgplConfiguration, libraryLicense, runtimeImports } from '../electron/engine-bundle.mjs';
 
 if (process.platform !== 'win32') {
   console.log('Packages bring an engine only on Windows, for now: there is nothing to try here.');
@@ -40,7 +40,7 @@ function fail(why) {
 // What the folder holds: no more, no less.
 const expected = [
   'THIRD_PARTY_ENGINE.md', 'avcodec-62.dll', 'avdevice-62.dll', 'avfilter-11.dll', 'avformat-62.dll', 'avutil-60.dll',
-  'columbina-engine.exe', 'ffmpeg.exe', 'licenses', 'swresample-6.dll', 'swscale-9.dll', 'vcruntime140.dll',
+  'columbina-engine.exe', 'ffmpeg.exe', 'licenses', 'swresample-6.dll', 'swscale-9.dll',
 ];
 const found = (await readdir(folder).catch(() => fail(`there is no ${folder}`))).sort();
 if (JSON.stringify(found) !== JSON.stringify(expected)) fail(`it holds ${found.join(', ')}, and not ${expected.join(', ')}`);
@@ -51,7 +51,10 @@ const crates = await readdir(path.join(folder, 'licenses', 'crates'));
 const listed = (await readFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), 'utf8')).match(/^\| \S+ \| \d\S* \|/gm) ?? [];
 if (crates.length === 0 || listed.length !== crates.length) fail(`THIRD_PARTY_ENGINE.md lists ${listed.length} crates, and licenses/crates holds ${crates.length}`);
 
-// The ffmpeg of the package, with nothing but Windows on PATH.
+const runtime = runtimeImports(engine);
+if (runtime.length > 0) fail(`the engine imports ${runtime.join(', ')}, and is to have the C runtime in itself`);
+// The libraries, and the ffmpeg of the package with nothing but Windows on PATH, are of the LGPL.
+for (const name of found.filter((one) => one.endsWith('.dll'))) libraryLicense(path.join(folder, name));
 lgplConfiguration(path.join(folder, 'ffmpeg.exe'));
 const env = cleanEnvironment();
 for (const name of Object.keys(env)) if (/^(FFMPEG_DIR|COLUMBINA_)/i.test(name)) delete env[name];

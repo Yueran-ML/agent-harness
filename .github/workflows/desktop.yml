@@ -66,11 +66,13 @@ jobs:
 
       # The LGPL shared build that the engine is built with and that goes into the package
       # (FFMPEG_DIR), checked against the checksums of its release as for the engine of CI; and a
-      # GPL build first on PATH, which only makes the film that the engine of the package is tried
-      # with, and is not packaged.
+      # GPL build, which only makes the film that the engine of the package is tried with
+      # (COLUMBINA_TEST_FFMPEG) and is not packaged. Neither is put on PATH.
       - name: FFmpeg 8.1
         if: runner.os == 'Windows'
         run: bash ../.github/scripts/ffmpeg.sh
+        env:
+          FFMPEG_SH_PATH: none
 
       # bindgen, for the bindings of libav, needs libclang: LLVM is on the images of Windows, and
       # installed if it is not.
@@ -112,7 +114,8 @@ jobs:
         run: npm run package:try
 
       # With nothing but Windows on PATH: the engine starts with the libraries beside it, and makes
-      # the proxy of a film of 4K HEVC of 10 bits with the ffmpeg beside it.
+      # the proxy of a film of 4K HEVC of 10 bits (made by COLUMBINA_TEST_FFMPEG) with the ffmpeg
+      # beside it.
       - name: Try the engine of the package
         if: runner.os == 'Windows'
         run: node scripts/try-engine.mjs
@@ -126,6 +129,11 @@ jobs:
           # A zip is compressed already.
           compression-level: 0
 
+  # ##########################################################################################
+  # DO NOT TAG desktop-v* FOR PUBLIC RELEASE until FFmpeg is built from pinned sources with
+  # complete notices (see plans). The package of Windows brings the BtbN build of the day, and
+  # the libraries that it links into the DLLs of FFmpeg have no notices of their own in it yet.
+  # ##########################################################################################
   release:
     name: Publish the release
     if: startsWith(github.ref, 'refs/tags/desktop-v')

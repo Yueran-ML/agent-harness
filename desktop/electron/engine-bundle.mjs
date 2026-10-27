@@ -1,20 +1,23 @@
 // The engine of the studio in the package: `resources/engine` gets the engine, the libraries of
-// FFmpeg (an LGPL shared build) that it and the ffmpeg of its proxies load, that ffmpeg, the C
-// runtime of Microsoft that the engine is linked with, and the notices and licenses of all of them.
-// electron/package.mjs runs it once the application is packaged.
+// FFmpeg (an LGPL shared build) that it and the ffmpeg of its proxies load, that ffmpeg, and the
+// notices and licenses of all of them. electron/package.mjs runs it once the application is packaged.
 //
 // Where they are taken from, each named by an argument of package.mjs or else by a variable:
 //   --engine-build=<dir>  COLUMBINA_ENGINE_BUILD  the build of engine/, by default engine/target/release
 //   --ffmpeg=<dir>        COLUMBINA_FFMPEG_LGPL   the LGPL shared build of FFmpeg 8.1 (with bin/ and
 //                                                 LICENSE.txt, as BtbN's), by default FFMPEG_DIR
-//   COLUMBINA_VC_REDIST   the folder with vcruntime140.dll, by default the VC\Redist of the newest
-//                         Visual Studio that vswhere finds
 // What is missing ends the packaging, saying what.
 //
 // Which libraries: those that the engine and ffmpeg.exe import (the import tables of their PE
 // files, read here, delay-loaded ones too), and what those import in turn, as long as it is a
-// file of the FFmpeg build or the C runtime of Microsoft. Everything else they import must be a
-// library of Windows: an api-ms-win-* set, or a file of System32 that is not the C runtime.
+// file of the FFmpeg build. Everything else they import must be a library that every Windows 10
+// and 11 has (WINDOWS_LIBRARIES, and the api-ms-win-* sets). The engine is linked with the C
+// runtime statically (engine/.cargo/config.toml): an engine that imports a VC runtime is refused.
+//
+// Which license: every library of FFmpeg says its own in a string that configure builds into it,
+// `libavcodec license: LGPL version 3 or later`; a library without one, or with any other license
+// (`GPL version …`, `nonfree and unredistributable`) is refused, and so is an ffmpeg whose
+// `-buildconf` has --enable-gpl or --enable-nonfree, or whose `-L` is not the LGPL's.
 //
 // macOS and Linux. The engine of macOS is built in CI against ffmpeg@8 of Homebrew, which is
 // configured with --enable-gpl, and is not to be shipped: the engine is left out of the package of
@@ -28,7 +31,7 @@
 // is made yet) the same names end in .so.<major>, found with `readelf -d`, with an RPATH of $ORIGIN.
 import { spawnSync } from 'node:child_process';
 import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { hostTarget, rustCrates, writeCrateNotices } from '../scripts/engine-notices.mjs';
 
@@ -39,11 +42,26 @@ export const LAYOUT = {
   linux: { engine: 'columbina-engine', ffmpeg: 'ffmpeg', libraries: 'lib', todo: 'Linux' },
 };
 
-/** The C runtime of Microsoft: not a part of Windows, and redistributable beside a program. */
-const VC_RUNTIME = new Set([
-  'vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
-  'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll', 'concrt140.dll', 'vccorlib140.dll',
+/** The C runtime of Microsoft: not a part of Windows. The engine is not to need it. */
+const VC_RUNTIME = /^(vcruntime|msvcp|concrt|vccorlib|vcomp)\d|^ucrtbased\.dll$/;
+
+/**
+ * The libraries of Windows that the engine and ffmpeg may import: each is in every Windows 10 and
+ * 11 on x64. A new one is added here once it is known to be so, not because the machine that
+ * packages has it in System32 (where a VC runtime or a driver may have put anything).
+ */
+const WINDOWS_LIBRARIES = new Set([
+  'advapi32.dll', 'avicap32.dll', 'avrt.dll', 'bcrypt.dll', 'bcryptprimitives.dll', 'cfgmgr32.dll', 'combase.dll',
+  'crypt32.dll', 'd2d1.dll', 'd3d11.dll', 'd3d12.dll', 'd3dcompiler_47.dll', 'dnsapi.dll', 'dwmapi.dll', 'dwrite.dll',
+  'dxgi.dll', 'gdi32.dll', 'imm32.dll', 'iphlpapi.dll', 'kernel32.dll', 'kernelbase.dll', 'mf.dll', 'mfplat.dll',
+  'mfreadwrite.dll', 'mmdevapi.dll', 'msimg32.dll', 'ncrypt.dll', 'ntdll.dll', 'ole32.dll', 'oleaut32.dll',
+  'propsys.dll', 'psapi.dll', 'rpcrt4.dll', 'secur32.dll', 'setupapi.dll', 'shcore.dll', 'shell32.dll',
+  'shlwapi.dll', 'user32.dll', 'userenv.dll', 'usp10.dll', 'uxtheme.dll', 'version.dll', 'winmm.dll', 'ws2_32.dll',
 ]);
+
+/** The libraries of FFmpeg, each of which says its license: libavcodec of avcodec-62.dll. */
+const FFMPEG_LIBRARY = /^(avcodec|avformat|avutil|avfilter|avdevice|swscale|swresample|postproc)-\d+\.dll$/i;
+const LGPL = new Set(['LGPL version 2.1 or later', 'LGPL version 3 or later']);
 
 /** The value of --name=value among the arguments, or of the variable. */
 function named(args, flag, variable) {
@@ -99,62 +117,58 @@ export function peImports(buffer, file = 'the file') {
   return names;
 }
 
-/** The folder of the C runtime of the newest Visual Studio with the tools of C++, or null. */
-async function vcRuntimeFolder() {
-  if (process.env.COLUMBINA_VC_REDIST) return process.env.COLUMBINA_VC_REDIST;
-  const vswhere = path.join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
-  if (!existsSync(vswhere)) return null;
-  const found = spawnSync(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], { encoding: 'utf8' });
-  const installation = found.stdout?.trim().split(/\r?\n/)[0];
-  if (!installation) return null;
-  const redist = path.join(installation, 'VC', 'Redist', 'MSVC');
-  const versions = (await readdir(redist).catch(() => []))
-    .filter((name) => /^\d+(\.\d+)+$/.test(name))
-    .sort((one, other) => other.localeCompare(one, undefined, { numeric: true }));
-  for (const version of versions) {
-    const x64 = path.join(redist, version, 'x64');
-    for (const crt of (await readdir(x64).catch(() => [])).filter((name) => /^Microsoft\.VC\d+\.CRT$/.test(name))) {
-      if (existsSync(path.join(x64, crt, 'vcruntime140.dll'))) return path.join(x64, crt);
-    }
+/**
+ * The license that a library of FFmpeg says it is under, which must be the LGPL: the string
+ * `lib<name> license: …` that configure builds into it. Answers it, or ends the packaging.
+ */
+export function libraryLicense(file) {
+  const library = `lib${FFMPEG_LIBRARY.exec(path.basename(file))?.[1]?.toLowerCase() ?? '?'}`;
+  const said = [...readFileSync(file).toString('latin1').matchAll(/\b(lib\w+) license: ([\x20-\x7e]{1,80})/g)]
+    .map((match) => ({ library: match[1], license: match[2] }));
+  const others = said.filter((one) => !LGPL.has(one.license));
+  if (others.length > 0) {
+    throw new Error(`${file} is not of the LGPL, and is not to be shipped: it says ${others.map((one) => `"${one.library} license: ${one.license}"`).join(', ')}.`);
   }
-  return null;
+  const own = said.find((one) => one.library === library);
+  if (!own) throw new Error(`${file} does not say its license ("${library} license: …"), and is not shipped without it.`);
+  return own.license;
 }
 
 /**
  * The libraries to bring beside the engine and ffmpeg.exe: name (as the folder has it) to the file
- * it is copied from. What is not found ends the packaging.
+ * it is copied from. What is not found, or not allowed, ends the packaging.
  */
 async function windowsLibraries(programs, ffmpegBin) {
-  const system32 = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32');
   const inBuild = new Map((await readdir(ffmpegBin)).filter((name) => /\.dll$/i.test(name)).map((name) => [name.toLowerCase(), path.join(ffmpegBin, name)]));
   const brought = new Map();
   const ofWindows = new Set();
-  let vcFolder;
   const waiting = [...programs];
   while (waiting.length > 0) {
     const file = waiting.pop();
     for (const imported of peImports(await readFile(file), file)) {
       const name = imported.toLowerCase();
       if (brought.has(name) || ofWindows.has(name)) continue;
+      if (VC_RUNTIME.test(name)) {
+        throw new Error(`${file} imports ${imported}, a VC runtime that Windows does not bring. The engine is to be linked with the C runtime statically (engine/.cargo/config.toml: target-feature=+crt-static); a RUSTFLAGS in the environment takes the place of that file.`);
+      }
       if (inBuild.has(name)) {
+        if (!FFMPEG_LIBRARY.test(name)) throw new Error(`${path.basename(file)} imports ${imported} of the FFmpeg build, which is not one of the libraries of FFmpeg whose license is checked.`);
+        libraryLicense(inBuild.get(name));
         brought.set(name, inBuild.get(name));
         waiting.push(inBuild.get(name));
-      } else if (VC_RUNTIME.has(name)) {
-        if (vcFolder === undefined) vcFolder = await vcRuntimeFolder();
-        const from = vcFolder && path.join(vcFolder, name);
-        if (!from || !existsSync(from)) {
-          throw new Error(`${path.basename(file)} needs ${imported}, the C runtime of Microsoft, and it was not found: name the folder that has it with COLUMBINA_VC_REDIST (VC\\Redist\\MSVC\\<version>\\x64\\Microsoft.VC143.CRT of Visual Studio).`);
-        }
-        brought.set(name, from);
-        waiting.push(from);
-      } else if (/^(api|ext)-ms-win-/.test(name) || existsSync(path.join(system32, name))) {
+      } else if (name.startsWith('api-ms-win-') || WINDOWS_LIBRARIES.has(name)) {
         ofWindows.add(name);
       } else {
-        throw new Error(`${path.basename(file)} needs ${imported}, which is neither in ${ffmpegBin} nor a library of Windows.`);
+        throw new Error(`${path.basename(file)} imports ${imported}, which is neither in ${ffmpegBin} nor a library that every Windows has (WINDOWS_LIBRARIES of electron/engine-bundle.mjs).`);
       }
     }
   }
   return { brought, ofWindows };
+}
+
+/** The libraries of the C runtime that a program imports, which the engine of the package may not. */
+export function runtimeImports(file) {
+  return peImports(readFileSync(file), file).filter((name) => VC_RUNTIME.test(name.toLowerCase()) || /^api-ms-win-crt-/i.test(name));
 }
 
 /** The environment of a program of the package as a user without any toolchain has it: Windows, and nothing else, on PATH. */
@@ -184,6 +198,11 @@ export function lgplConfiguration(ffmpeg) {
   if (options.length === 0) throw new Error(`${ffmpeg} -buildconf names no options:\n${said}`);
   const forbidden = options.filter((option) => option === '--enable-gpl' || option === '--enable-nonfree');
   if (forbidden.length > 0) throw new Error(`${ffmpeg} is not an LGPL build: it is configured with ${forbidden.join(' and ')}, and is not to be shipped.`);
+  // What the program says of its own license (fftools of a GPL build say the GPL's).
+  const license = ffmpegSays(ffmpeg, '-L');
+  if (!/GNU Lesser General Public License/.test(license) || /nonfree|unredistributable/i.test(license)) {
+    throw new Error(`${ffmpeg} -L does not say that it is under the GNU Lesser General Public License, and it is not to be shipped:\n${license}`);
+  }
   return options;
 }
 
@@ -246,8 +265,16 @@ export function locateEngine({ desktop, args = process.argv.slice(2), platform =
   for (const file of [ffmpeg, ffmpegLicense]) {
     if (!existsSync(file)) throw new Error(`The FFmpeg of ${root} has no ${path.relative(root, file)}: it is to be an LGPL shared build of BtbN.`);
   }
-  // Not even copied if it is not an LGPL build.
+  // Not even copied if it is not an LGPL build: the program, and each of its libraries.
   lgplConfiguration(ffmpeg);
+  const libraries = readdirSync(ffmpegBin).filter((name) => FFMPEG_LIBRARY.test(name));
+  if (libraries.length === 0) throw new Error(`${ffmpegBin} has no libraries of FFmpeg: it is to be a shared build.`);
+  for (const name of libraries) libraryLicense(path.join(ffmpegBin, name));
+  // Nor is an engine that needs a VC runtime, or the C runtime of Windows, which it is to have in itself.
+  const runtime = runtimeImports(engine);
+  if (runtime.length > 0) {
+    throw new Error(`${engine} imports ${runtime.join(', ')}: it is to be linked with the C runtime statically (engine/.cargo/config.toml: target-feature=+crt-static); a RUSTFLAGS in the environment takes the place of that file.`);
+  }
   return { platform, layout, repository, engine, ffmpegBin, ffmpeg, ffmpegLicense };
 }
 
@@ -281,7 +308,8 @@ export async function bundleEngine({ resources, desktop, located }) {
   await copyFile(path.join(desktop, 'licenses', 'GPL-3.0.txt'), path.join(licenses, 'FFmpeg', 'GPL-3.0.txt'));
   const crates = await rustCrates({ engine: path.join(repository, 'engine'), target: hostTarget(platform) });
   const crateList = await writeCrateNotices({ crates, out: folder });
-  const notice = await readFile(path.join(desktop, 'THIRD_PARTY_ENGINE.md'), 'utf8');
+  // What is written for those who keep the repository (in <!-- -->) is not shipped.
+  const notice = (await readFile(path.join(desktop, 'THIRD_PARTY_ENGINE.md'), 'utf8')).replace(/<!--[\s\S]*?-->\s*/g, '');
   await writeFile(path.join(folder, 'THIRD_PARTY_ENGINE.md'), [
     notice.trimEnd(), '',
     ffmpegNotice(versionLine, options),

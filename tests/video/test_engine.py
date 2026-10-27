@@ -181,6 +181,10 @@ async def test_a_request_that_the_engine_cannot_read_is_not_sent(tmp_path: Path)
         fake.anonymous = "history.undo"
         with pytest.raises(EngineError, match="could not be read") as unread:
             await connected.undo()
+        fake.anonymous = "project.get"
+        oldest, newest = await asyncio.wait_for(
+            asyncio.gather(connected.project(), connected.undo(), return_exceptions=True), 5
+        )
         revision, _ = await connected.project()
         await connected.aclose()
 
@@ -189,6 +193,10 @@ async def test_a_request_that_the_engine_cannot_read_is_not_sent(tmp_path: Path)
         assert long.value.data["bytes"] > LIMIT
         assert nan.value.code == -32602
         assert unread.value.code == -32600
+        # An error that names no request is the oldest one's.
+        assert isinstance(oldest, EngineError)
+        assert oldest.code == -32600
+        assert newest is None
         assert revision == 0
         assert "transaction.apply" not in fake.asked
 
@@ -416,9 +424,12 @@ def test_a_line_too_long_is_not_read_and_nothing_is_heard_after_the_end(
     wire.data_received(b'{"a": 1}\n')
     for part in parts:
         wire.data_received(part)
+    # It is given up as soon as it is too long, whether it has ended or not.
+    given_up = [one.code for one in lost]
     wire.data_received(b"{}\n")
 
     assert heard == [b'{"a": 1}']
+    assert given_up == [UNEXPECTED]
     assert [one.code for one in lost] == [UNEXPECTED]
     assert "the project is too large to be read here" in str(lost[0])
 
@@ -480,6 +491,8 @@ async def test_why_an_engine_did_not_start_is_read_where_its_log_cannot_be_kept(
 async def test_an_engine_that_finds_the_project_held_leads_to_the_one_that_holds_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Within one try: no other engine is started after the one that found it held.
+    monkeypatch.setattr(engine, "_TRIES", 1)
     async with served(tmp_path / "film", lock=False) as fake:
         as_program(monkeypatch, "held", fake.address)
         directly = await attached(tmp_path / "film")
@@ -626,15 +639,22 @@ def test_a_loop_that_cannot_open_a_named_pipe_is_said(tmp_path: Path) -> None:
 def test_what_the_engine_is_started_with_and_where_it_listens(tmp_path: Path) -> None:
     lock = tmp_path / "engine.lock"
     good = fake_engine.address_of()
+    # The name of an engine's, on another machine or in another directory.
+    remote = (
+        good.replace("\\\\.\\", "\\\\evil\\", 1)
+        if sys.platform == "win32"
+        else f"/{Path(good).name}"
+    )
     found: list[str | None] = []
-    for address in ("", 7, r"\\evil\pipe\x", not_an_engines(), good):
+    for address in ("", 7, r"\\evil\pipe\x", not_an_engines(), remote, f"{good}0", good):
         lock.write_text(json.dumps({"address": address}), encoding="utf-8")
         found.append(engine._locked(tmp_path))  # pyright: ignore[reportPrivateUsage]
     for written in ("{", "[1]"):
         lock.write_text(written, encoding="utf-8")
         found.append(engine._locked(tmp_path))  # pyright: ignore[reportPrivateUsage]
 
-    assert found == [None, None, None, None, good, None, None]
+    assert remote != good
+    assert found == [None, None, None, None, None, None, good, None, None]
     assert engine._argv("e", tmp_path, None) == ["e", "--project", str(tmp_path), "--headless"]  # pyright: ignore[reportPrivateUsage]
     assert engine._argv("e", tmp_path, 2)[-2:] == ["--idle-seconds", "2"]  # pyright: ignore[reportPrivateUsage]
 
@@ -656,12 +676,15 @@ def test_the_engine_program_is_never_taken_from_a_working_directory(
     assert not_found(None) == NOT_FOUND
     assert program_of(str(trusted / name), "", [work]) == str(trusted / name)
     assert program_of(str(work / name), "", [work]) is None
+    monkeypatch.chdir(trusted)
     assert program_of(name, "", []) is None
     assert not_found(name).startswith(f"the config of the video plugin names {name} as the")
     assert program_of(str(trusted / "none"), search, []) is None
     monkeypatch.setenv("COLUMBINA_ENGINE", str(trusted / name))
     assert program_of(None, "", [work]) == str(trusted / name)
     assert program_of("", str(work), []) == str(trusted / name)
+    # What the config names goes first, and is not given up for COLUMBINA_ENGINE.
+    assert program_of(str(work / name), "", [work]) is None
     assert not_found(None).startswith("COLUMBINA_ENGINE names ")
 
 
@@ -672,8 +695,11 @@ async def test_an_engine_that_yields_to_the_desktop_is_followed_to_the_desktops(
     as_program(monkeypatch, "error")
     async with served(tmp_path / "film") as headless:
         connected = await attached(tmp_path / "film")
+        await connected.apply([ADD])
+        await connected.apply([ADD])
         changes = connected.changes()
         assert (connected.headless, connected.hello["pid"]) == (True, os.getpid())
+        assert connected.revision == 2
     with pytest.raises(EngineError, match="closed the connection"):
         await next_of(changes)
     async with served(tmp_path / "film") as desktop:
@@ -684,7 +710,8 @@ async def test_an_engine_that_yields_to_the_desktop_is_followed_to_the_desktops(
         fetched = await next_of(changes)
         await connected.aclose()
 
-        assert connected.headless is False
+        # The desktop's engine counts its revisions anew, from below those of the other.
+        assert (connected.headless, connected.revision) == (False, 1)
         assert (revision, fetched.method, fetched.revision) == (1, "project.fetched", 1)
         assert [one["name"] for one in project["timelines"]] == ["Other"]
         assert desktop.asked == ["hello", "project.get", "project.get"]
@@ -747,7 +774,7 @@ async def test_an_engine_that_yielded_to_none_that_comes_is_replaced_after_a_whi
     await connected.aclose()
     await until(lambda: not (tmp_path / "film" / "engine.lock").exists())
 
-    assert waited >= 1
+    assert 1 <= waited < 5
     assert connected.hello["pid"] != os.getpid()
 
 

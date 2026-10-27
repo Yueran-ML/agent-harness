@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -150,7 +151,11 @@ def test_an_engine_that_is_missing_or_fails_is_said(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("COLUMBINA_ENGINE", raising=False)
-    monkeypatch.setenv("PATH", "")
+    # One in the working directory is not taken, though the search path leads there.
+    lying = tmp_path / ("columbina-engine.exe" if sys.platform == "win32" else "columbina-engine")
+    lying.write_bytes(b"")
+    lying.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
 
     with pytest.raises(SystemExit):
         main(["video", "engine"])

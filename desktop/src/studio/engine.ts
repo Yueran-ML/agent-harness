@@ -233,7 +233,14 @@ export type EngineEvent =
   | { kind: 'exited'; session: number; expected: boolean; code: number | null; signal: string | null }
   | { kind: 'error'; session: number; message: string; code?: number | null; data?: unknown }
   | { kind: 'attached'; session: number; adapter: string | null; backend: string | null }
-  | { kind: 'unsupported'; session: number; reason: 'unsupported' | 'headless'; message: string };
+  | { kind: 'unsupported'; session: number; reason: 'unsupported' | 'headless'; message: string }
+  /** A headless engine (an agent's) had the project, and was asked to yield it; `opened` follows. */
+  | { kind: 'taking-over'; session: number; pid: number | null }
+  /**
+   * The pixels of the screen that the viewer covers changed (the page was zoomed): the page
+   * measures the viewer again and says where it is. Told with no session where none is open.
+   */
+  | { kind: 'measure'; session: number | null };
 
 /** A failure as the engine gave it, or one of the shell's own (code null). */
 export interface EngineFailure {
@@ -352,7 +359,8 @@ export function applyOp(project: Project, op: Op): Project {
     case 'set_proxy': {
       const at = placeOf(project.media, op.media, 'media');
       const { proxy: _before, ...media } = project.media[at];
-      return { ...project, media: replaced(project.media, at, op.proxy === null ? media : { ...media, proxy: op.proxy }) };
+      // A proxy taken away is left out, as the engine writes it; one left out of the operation is taken away.
+      return { ...project, media: replaced(project.media, at, op.proxy == null ? media : { ...media, proxy: op.proxy }) };
     }
     case 'add_timeline':
       return { ...project, timelines: inserted(project.timelines, { ...op.timeline, tracks: op.timeline.tracks.map(ordered) }, op.index) };
@@ -420,11 +428,18 @@ export interface StudioSnapshot {
   view: ViewState;
   /** What went wrong last: an error of the engine, or a fetch that failed. Null where nothing did. */
   error: string | null;
+  /** Whether the headless engine of an agent is being asked to yield the project, until it is opened. */
+  takingOver: boolean;
 }
 
 const NOTHING: StudioSnapshot = {
-  status: 'disconnected', session: null, revision: null, project: null, transport: null, proxies: {}, view: { state: 'none' }, error: null,
+  status: 'disconnected', session: null, revision: null, project: null, transport: null, proxies: {}, view: { state: 'none' },
+  error: null, takingOver: false,
 };
+
+/** How long the copy waits before it fetches the project again after a fetch failed: twice as long each time, up to 5 s. */
+const RETRY_FIRST_MS = 250;
+const RETRY_MOST_MS = 5_000;
 
 /**
  * The page's copy of the project, kept as the engine tells it.
@@ -433,8 +448,9 @@ const NOTHING: StudioSnapshot = {
  * page was loaded again), and then applies each `project.changed` whose revision is one above its
  * own. One at or below its own is passed over; one that skips a revision, or that the copy cannot
  * apply, makes it fetch the project again. What is told while it fetches is applied after the
- * fetch, from the revision that the fetch answered. It also keeps what the transport, the proxies
- * and the view told last.
+ * fetch, from the revision that the fetch answered. A fetch that fails is tried again, a little
+ * later each time, while the engine is open. It also keeps what the transport, the proxies and the
+ * view told last.
  *
  * It is a store for `useSyncExternalStore(copy.subscribe, copy.getSnapshot)`.
  */
@@ -447,6 +463,11 @@ export class ProjectCopy {
   private held: ProjectChanged[] = [];
   /** Counted up whenever an engine is opened or ends, so that a fetch of an earlier one is let go. */
   private epoch = 0;
+  /** Whether an engine is open, as the shell told: one was opened, and has not ended. */
+  private open = false;
+  /** How often a fetch failed in a row, and the fetch that is waited for after it. */
+  private failures = 0;
+  private retry: ReturnType<typeof setTimeout> | null = null;
   private readonly unsubscribe: () => void;
 
   constructor(private readonly bridge: Pick<EngineBridge, 'call' | 'onEvent'>) {
@@ -464,6 +485,8 @@ export class ProjectCopy {
   dispose(): void {
     this.unsubscribe();
     this.listeners.clear();
+    this.open = false;
+    this.cancelRetry();
   }
 
   /** Fetch the project anew. A fetch asked for while one is under way is made after it. */
@@ -472,6 +495,7 @@ export class ProjectCopy {
       this.fetchAgain = true;
       return this.fetching;
     }
+    this.cancelRetry();
     this.held = [];
     const epoch = this.epoch;
     this.fetching = (async () => {
@@ -494,10 +518,21 @@ export class ProjectCopy {
           }
           revision = change.revision;
         }
+        this.failures = 0;
         this.set({ status: 'connected', revision, project, error: null });
       } catch (error) {
         if (epoch !== this.epoch) return;
         this.set({ status: 'disconnected', error: error instanceof Error ? error.message : String(error) });
+        // The engine is open, and answers again in a moment: a project that is long to read, or a
+        // connection that is made again.
+        if (this.open && !this.fetchAgain) {
+          const wait = Math.min(RETRY_MOST_MS, RETRY_FIRST_MS * 2 ** this.failures);
+          this.failures += 1;
+          this.retry = setTimeout(() => {
+            this.retry = null;
+            if (epoch === this.epoch) void this.refetch();
+          }, wait);
+        }
       } finally {
         this.fetching = null;
         this.held = [];
@@ -510,29 +545,46 @@ export class ProjectCopy {
     return this.fetching;
   }
 
+  private cancelRetry(): void {
+    if (this.retry !== null) clearTimeout(this.retry);
+    this.retry = null;
+  }
+
   private set(changed: Partial<StudioSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...changed };
     for (const listener of [...this.listeners]) listener();
   }
 
   private heard(event: EngineEvent): void {
-    // What an engine that is no longer the one open told is passed over.
-    if (event.kind !== 'opened' && this.snapshot.session !== null && event.session !== this.snapshot.session) return;
+    // What an engine that was open before the one that is told of last is passed over. A session
+    // that comes after it is heard: one that is being opened, or could not be.
+    const { session } = this.snapshot;
+    if (typeof event.session === 'number' && session !== null && event.session < session) return;
+    if (event.kind !== 'opened' && event.kind !== 'taking-over' && event.kind !== 'error'
+      && typeof event.session === 'number' && session !== null && event.session !== session) return;
     switch (event.kind) {
       case 'opened':
         this.epoch += 1;
-        if (event.session !== this.snapshot.session) {
-          this.set({ session: event.session, transport: null, proxies: {}, view: { state: 'none' } });
-        }
+        this.open = true;
+        this.failures = 0;
+        if (event.session !== session) {
+          this.set({ session: event.session, transport: null, proxies: {}, view: { state: 'none' }, takingOver: false });
+        } else if (this.snapshot.takingOver) this.set({ takingOver: false });
         void this.refetch();
         return;
       case 'exited':
         this.epoch += 1;
+        this.open = false;
         this.fetchAgain = false;
+        this.cancelRetry();
         this.set({ status: 'disconnected', transport: null, view: { state: 'none' } });
         return;
+      case 'taking-over':
+        this.set({ takingOver: true });
+        return;
       case 'error':
-        this.set({ error: event.message });
+        // An engine that could not be opened is taken over no more.
+        this.set({ error: event.message, takingOver: false });
         return;
       case 'attached':
         this.set({ view: { state: 'attached', adapter: event.adapter, backend: event.backend } });

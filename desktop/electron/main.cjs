@@ -137,8 +137,9 @@ const WORDS = {
 };
 /**
  * The methods of the engine that the page may call. The view is attached and detached by the
- * shell alone, which holds the handle of the window; media is imported from files that the user
- * chose in the dialog of the system, so the page never names a path to the engine.
+ * shell alone, which holds the handle of the window. Media is imported from files that the user
+ * chose in the dialog of the system; a transaction of the page may name no file (see
+ * `transactionOfThePage`), and undo and redo go through the history of the engine.
  */
 const PAGE_METHODS = new Set([
   'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy',
@@ -230,9 +231,12 @@ let studio = null;
 let studioNumber = 0;
 let studioOperation = Promise.resolve();
 // The viewer of the studio: where the page keeps it, in pixels of the screen from the corner of
-// the client area, whether it is to be shown, and how the view of the engine stands there:
-// `none`, `attaching`, `attached`, `unsupported` (macOS, or an engine without a window) or `failed`.
-const viewer = { rect: null, shown: true, state: 'none' };
+// the client area; whether the page wants it shown; whether it is blank, hidden because the page
+// is being loaded again until it says where the viewer is; whether the engine shows it now; how
+// the view of the engine stands there: `none`, `attaching`, `attached`, `unsupported` (macOS, or
+// an engine without a window) or `failed`; the number of the view that was made last, and what
+// the page was told of it last.
+const viewer = { rect: null, shown: true, blank: false, sent: true, state: 'none', generation: 0, told: null };
 
 app.setName('Columbina');
 if (process.platform === 'win32') app.setAppUserModelId('dev.columbina.desktop');
@@ -356,9 +360,9 @@ function tell(channel, value) {
 function directoryKey(directory) {
   return process.platform === 'win32' ? directory.toLowerCase() : directory;
 }
-function approvedDirectory(options) {
+function approvedDirectory(options, purpose = 'starting the service') {
   if (typeof options?.cwd !== 'string' || !options.cwd || !path.isAbsolute(options.cwd)) {
-    throw new Error('Choose a project folder before starting the service.');
+    throw new Error(`Choose a project folder before ${purpose}.`);
   }
   const cwd = realpathSync(options.cwd);
   if (!approvedDirectories.has(directoryKey(cwd))) {
@@ -584,14 +588,17 @@ function engineLibraries(program) {
   if (app.isPackaged) return path.dirname(program);
   return process.env.FFMPEG_DIR ? path.join(process.env.FFMPEG_DIR, 'bin') : null;
 }
-/** The environment of the engine: that of the application, with the folder of its libraries at the end of the PATH. */
+/**
+ * The environment of the engine: that of the application, with the folder of its libraries first
+ * on the PATH, so that no other build of libav that lies earlier on it is loaded.
+ */
 function engineEnvironment(program) {
   const env = process.platform === 'darwin' && app.isPackaged ? bundledEnvironment() : { ...process.env };
   const libraries = engineLibraries(program);
   if (libraries) {
     // Windows writes it Path, and reads it in any case.
     const key = Object.keys(env).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH';
-    env[key] = env[key] ? `${env[key]}${path.delimiter}${libraries}` : libraries;
+    env[key] = env[key] ? `${libraries}${path.delimiter}${env[key]}` : libraries;
   }
   return env;
 }
@@ -622,15 +629,26 @@ async function openStudio(cwd) {
   if (exiting) throw new Error('The application is closing.');
   const project = path.join(cwd, ...STUDIO_FOLDER);
   if (studio?.session.alive && directoryKey(studio.project) === directoryKey(project)) {
-    // A page that was loaded again finds its engine as it was, and fetches the project anew.
+    // A page that was loaded again finds its engine as it was, and fetches the project anew; it
+    // is told how the view stands, which it knew before it was loaded again.
     tellStudio(studio.number, { kind: 'opened', ...studio.opened });
+    if (viewer.told) tellStudio(studio.number, viewer.told);
     return studio.opened;
   }
   await closeStudio();
   if (exiting) throw new Error('The application is closing.');
+  const named = process.env.COLUMBINA_ENGINE;
+  if (!app.isPackaged && named && !path.isAbsolute(named)) {
+    throw new Error(`COLUMBINA_ENGINE names the engine program by a path that is not whole, which is not taken: ${named}`);
+  }
   const program = engineProgram();
-  if (!program) throw new Error('There is no engine program. Build engine/ of the repository, or name the program with COLUMBINA_ENGINE.');
+  if (!program) {
+    throw new Error(app.isPackaged
+      ? 'This package has no engine of its own. Download it again from the releases of Columbina.'
+      : 'There is no engine program. Build engine/ of the repository, or name the program with COLUMBINA_ENGINE by its whole path.');
+  }
   mkdirSync(project, { recursive: true });
+  keepOutOfHistory(project);
   studioNumber += 1;
   const number = studioNumber;
   let session;
@@ -640,7 +658,7 @@ async function openStudio(cwd) {
       onEvent: (what) => {
         if (what.kind === 'exited' && studio?.number === number) {
           studio = null;
-          viewer.state = 'none';
+          forgetView();
         }
         tellStudio(number, what);
       },
@@ -657,38 +675,64 @@ async function openStudio(cwd) {
   studio = { number, project, session, opened };
   tellStudio(number, { kind: 'opened', ...opened });
   // A view is made anew for every engine, where the page has said where the viewer is.
-  viewer.state = 'none';
+  forgetView();
   void attachView();
   return opened;
+}
+/**
+ * Write a file into the project of the studio that keeps what the engine makes there of its own,
+ * its proxies and its lock, out of the history of the folder, where there is none. The project
+ * itself is kept.
+ */
+function keepOutOfHistory(project) {
+  try {
+    writeFileSync(path.join(project, '.gitignore'), 'cache/\nengine.lock\n', { flag: 'wx' });
+  } catch { /* There is one, which is the user's, or none can be written: the studio works all the same. */ }
 }
 /** Close the engine of the studio, if one is open: the engine of the application ends with it. */
 async function closeStudio() {
   const open = studio;
   if (!open) return;
   studio = null;
-  viewer.state = 'none';
+  forgetView();
   await open.session.close();
+}
+/** Forget the view of an engine that is gone: one is made anew for the next. */
+function forgetView() {
+  viewer.state = 'none';
+  viewer.told = null;
+  viewer.sent = true;
+}
+/** Tell the page how the view stands, and remember it for a page that is loaded again. */
+function tellView(open, what) {
+  viewer.told = what;
+  tellStudio(open.number, what);
 }
 /** The handle of the window as the engine reads it: a number written in decimal. */
 function windowHandle() {
   const handle = window.getNativeWindowHandle();
   return (handle.length >= 8 ? handle.readBigUInt64LE(0) : BigInt(handle.readUInt32LE(0))).toString();
 }
-/** What the page is told of a view that could not be made, or moved: none on this system, or why not. */
-function viewRefused(open, error) {
+/**
+ * What the page is told of a view that could not be made, or moved: none on this system, or why
+ * not. `generation` is the number of the view that the request was about.
+ */
+function viewRefused(open, error, generation) {
   if (studio !== open) return;
   const reason = error?.data?.reason;
   if ((error?.code === -32003 && reason === 'unsupported') || error?.code === -32601) {
     viewer.state = 'unsupported';
     // An engine without a window, such as an agent's that had the project open, has no view.
-    tellStudio(open.number, { kind: 'unsupported', reason: error.code === -32601 ? 'headless' : 'unsupported', message: error.message });
+    tellView(open, { kind: 'unsupported', reason: error.code === -32601 ? 'headless' : 'unsupported', message: error.message });
   } else if (error?.code === -32003 && (reason === 'gone' || reason === 'no_view')) {
-    // The view was let go with the window it was in, or never made: it is made again.
+    // The view was let go with the window it was in, or never made: it is made again. What is
+    // said late of a view that was made before the last one is of no view that there is.
+    if (generation !== viewer.generation || viewer.state !== 'attached') return;
     viewer.state = 'none';
     void attachView();
   } else {
     viewer.state = 'failed';
-    tellStudio(open.number, { kind: 'error', message: error?.message ?? String(error), code: error?.code ?? null, data: error?.data });
+    tellView(open, { kind: 'error', message: error?.message ?? String(error), code: error?.code ?? null, data: error?.data });
   }
 }
 /**
@@ -699,32 +743,52 @@ async function attachView() {
   const open = studio;
   if (!open || viewer.rect === null || viewer.state !== 'none' || !window || window.isDestroyed()) return;
   viewer.state = 'attaching';
+  viewer.generation += 1;
+  const generation = viewer.generation;
   const rect = viewer.rect;
   let attached;
   try {
     attached = await open.session.view('view.attach', { parent: windowHandle(), ...rect });
   } catch (error) {
-    viewRefused(open, error);
+    viewRefused(open, error, generation);
     return;
   }
   if (studio !== open) return;
   viewer.state = 'attached';
-  tellStudio(open.number, { kind: 'attached', adapter: attached?.adapter ?? null, backend: attached?.backend ?? null });
+  // A view is made shown.
+  viewer.sent = true;
+  tellView(open, { kind: 'attached', adapter: attached?.adapter ?? null, backend: attached?.backend ?? null });
   // What the page said while the view was being made.
-  if (!viewer.shown) showView();
+  showView();
   if (viewer.rect !== rect) placeView();
 }
 /** Move the view where the page keeps the viewer now. */
 function placeView() {
   const open = studio;
   if (!open || viewer.state !== 'attached') return;
-  open.session.view('view.place', viewer.rect).catch((error) => viewRefused(open, error));
+  const { generation } = viewer;
+  open.session.view('view.place', viewer.rect).catch((error) => viewRefused(open, error, generation));
 }
-/** Show the view, or hide it while something of the page lies over the viewer. */
+/**
+ * Show the view, or hide it: while something of the page lies over the viewer, and while the page
+ * is loaded again, until it says where the viewer is.
+ */
 function showView() {
   const open = studio;
-  if (!open || viewer.state !== 'attached') return;
-  open.session.view('view.show', { shown: viewer.shown }).catch((error) => viewRefused(open, error));
+  const shown = viewer.shown && !viewer.blank;
+  if (!open || viewer.state !== 'attached' || viewer.sent === shown) return;
+  viewer.sent = shown;
+  const { generation } = viewer;
+  open.session.view('view.show', { shown }).catch((error) => viewRefused(open, error, generation));
+}
+/**
+ * Hide the view while the page is gone or being loaded again: the native window would stay over
+ * whatever the page shows meanwhile. The new page wants it shown once it says where the viewer is.
+ */
+function blankView() {
+  viewer.blank = true;
+  viewer.shown = true;
+  showView();
 }
 /** A rectangle of the viewer as the page gives it: whole pixels of the screen, from the corner of the client area. */
 function viewRectOf(given) {
@@ -738,15 +802,34 @@ function viewRectOf(given) {
 /** Take where the page keeps the viewer now: the view is made there, or moved there. */
 function takeViewRect(given) {
   viewer.rect = viewRectOf(given);
+  viewer.blank = false;
   if (viewer.state === 'none') void attachView();
-  else placeView();
+  else {
+    placeView();
+    showView();
+  }
 }
 /** Take whether the view is to be shown. */
 function takeViewShown(shown) {
   if (typeof shown !== 'boolean') throw new Error('The view is shown or not.');
-  if (viewer.shown === shown) return;
   viewer.shown = shown;
   showView();
+}
+/**
+ * Look through a transaction of the page: it may name no file. Media is added only from files that
+ * the user chose in the dialog (`media.import`), and a proxy is set only by the engine, which makes
+ * it: the engine opens the file that a path names, and deletes a proxy that it cannot read.
+ */
+function transactionOfThePage(params) {
+  const ops = params?.ops;
+  if (!Array.isArray(ops)) throw new Error('A transaction of the page is a list of operations.');
+  for (const op of ops) {
+    if (op === null || typeof op !== 'object' || Array.isArray(op)) throw new Error('An operation is an object.');
+    if (op.op === 'add_media') throw new Error('The page adds no media itself: media is imported from files that are chosen in the dialog.');
+    if (op.op === 'set_proxy' && op.proxy !== null && op.proxy !== undefined) {
+      throw new Error('The page sets no proxy: the engine makes them. It may only take one away.');
+    }
+  }
 }
 /**
  * What the page is answered of a request to the engine: the result, or the error as the engine
@@ -1607,8 +1690,8 @@ function installHandlers() {
     checkSender(event);
     // A project of the studio lies in a folder that the user chose in the dialog, as a project does.
     // Checked before its turn, so that a request that is refused closes nothing that is open.
-    approvedDirectory(asked);
-    return inStudioTurn(() => openStudio(approvedDirectory(asked)));
+    approvedDirectory(asked, 'opening it in the studio');
+    return inStudioTurn(() => openStudio(approvedDirectory(asked, 'opening it in the studio')));
   });
   ipcMain.handle('columbina:engine-call', async (event, asked) => {
     checkSender(event);
@@ -1616,6 +1699,7 @@ function installHandlers() {
     if (typeof method !== 'string' || !PAGE_METHODS.has(method)) throw new Error('That is no method of the engine that the page may call.');
     const params = asked?.params ?? null;
     if (params !== null && (typeof params !== 'object' || Array.isArray(params))) throw new Error('What a method of the engine is given is an object.');
+    if (method === 'transaction.apply') transactionOfThePage(params);
     const open = studio;
     if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
     // The viewer goes through the shell, which remembers it for the next view that it makes.
@@ -1969,6 +2053,42 @@ function quitFromTray() {
   quitting = true;
   window.close();
 }
+/** How far one step of zoom goes, as the menu of Electron zooms. */
+const ZOOM_STEP = 0.5;
+/**
+ * Do what a key did through the menu that the window no longer has, where it is such a key:
+ * Ctrl with plus, minus or 0 zooms the page, F11 puts the window in full screen and out of it;
+ * and from source, Ctrl+R loads the page again and Ctrl+Shift+I or F12 shows its tools. Whether it was.
+ */
+function pressed(input) {
+  if (input?.type !== 'keyDown' || input.alt || input.meta) return false;
+  const page = window.webContents;
+  const key = input.key;
+  const code = input.code;
+  const zoom = (level) => {
+    page.setZoomLevel(level);
+    // The pixels of the screen that the viewer covers change with the zoom: the page measures it again.
+    tell('columbina:engine-event', { kind: 'measure', session: studio?.number ?? null });
+    return true;
+  };
+  if (input.control && !input.shift && (key === '0' || code === 'Numpad0')) return zoom(0);
+  if (input.control && (key === '+' || key === '=' || code === 'NumpadAdd')) return zoom(page.getZoomLevel() + ZOOM_STEP);
+  if (input.control && !input.shift && (key === '-' || code === 'NumpadSubtract')) return zoom(page.getZoomLevel() - ZOOM_STEP);
+  if (!input.control && !input.shift && key === 'F11') {
+    window.setFullScreen(!window.isFullScreen());
+    return true;
+  }
+  if (app.isPackaged) return false;
+  if (input.control && !input.shift && (key === 'r' || key === 'R')) {
+    page.reload();
+    return true;
+  }
+  if ((input.control && input.shift && (key === 'i' || key === 'I')) || (!input.control && !input.shift && key === 'F12')) {
+    page.toggleDevTools();
+    return true;
+  }
+  return false;
+}
 /** Stop what runs and quit, without the page: the window has gone, or the system ends the session. */
 function endAll() {
   exiting = true;
@@ -2026,7 +2146,11 @@ app.whenReady().then(() => {
   // The engine draws the viewer in a window of its own at the rectangle that the page gives, from
   // the corner of the client area. A menu, which Alt would bring back, would take the top of it.
   // On macOS the menu is the application's, at the top of the screen, and stays.
-  if (process.platform !== 'darwin') window.removeMenu();
+  if (process.platform !== 'darwin') {
+    window.removeMenu();
+    // What the menu gave by its keys, given again without it.
+    window.webContents.on('before-input-event', (event, input) => { if (pressed(input)) event.preventDefault(); });
+  }
   if (process.platform === 'darwin') {
     // A sheet, such as the dialog for a folder or the window for the key, comes down from under the
     // bar that the page draws, and not over it.
@@ -2077,7 +2201,13 @@ app.whenReady().then(() => {
   if (preferences.petOn) openPet();
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
-  window.webContents.on('render-process-gone', () => { stopSigningIn(); void enqueueService(stopService); });
+  window.webContents.on('render-process-gone', () => { blankView(); stopSigningIn(); void enqueueService(stopService); });
+  // The view of the engine is hidden while the page is loaded again, until the new page says where the viewer is.
+  window.webContents.on('did-start-navigation', (details, _url, inPlace, mainFrame) => {
+    const main = details?.isMainFrame ?? mainFrame;
+    const same = details?.isSameDocument ?? inPlace;
+    if (main === true && same !== true) blankView();
+  });
   void window.loadFile(indexPath);
   // An assistant runs again where it ran when the application was left.
   for (const one of Object.values(assistants)) {

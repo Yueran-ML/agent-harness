@@ -19,8 +19,14 @@ const CONNECT_MS = 5_000;
 /** How long an engine is given to end once its stdin is closed, and once it was killed. */
 const CLOSE_MS = 5_000;
 const KILL_MS = 2_000;
-/** How often an engine is started, or the one that holds the project looked for, before giving up. */
-const TRIES = 5;
+/**
+ * How long an engine is started again, or the one that holds the project looked for, before
+ * giving up, in milliseconds: another engine may be starting for the project, or ending.
+ */
+const OPEN_MS = 10_000;
+/** How long a headless engine that yields the project is given to end, and how often it is looked for. */
+const YIELD_MS = 10_000;
+const YIELD_LOOK_MS = 100;
 /** The longest request line that an engine takes, without its newline. */
 const LINE_MOST = 16 * 1024 * 1024;
 /** How much is kept of what an engine wrote on stderr before it listened: so many lines, of so many characters. */
@@ -148,29 +154,37 @@ function wireOf(socket, { notified, gone }) {
     }
   };
   socket.on('data', (chunk) => {
-    // Only what came now is looked through for the end of a line: a project may be a long one.
-    const text = decoder.write(chunk);
-    let from = 0;
-    let at = text.indexOf('\n');
-    while (at >= 0) {
-      pieces.push(text.slice(from, at));
-      const line = pieces.join('');
+    if (over) return;
+    try {
+      // Only what came now is looked through for the end of a line: a project may be a long one.
+      const text = decoder.write(chunk);
+      let from = 0;
+      let at = text.indexOf('\n');
+      while (at >= 0) {
+        pieces.push(text.slice(from, at));
+        const line = pieces.join('');
+        pieces = [];
+        heard(line);
+        from = at + 1;
+        at = text.indexOf('\n', from);
+      }
+      if (from < text.length) pieces.push(text.slice(from));
+    } catch (error) {
+      // A line longer than JavaScript holds as a string: the connection cannot go on.
       pieces = [];
-      heard(line);
-      from = at + 1;
-      at = text.indexOf('\n', from);
+      lost(failure(`A line from the engine could not be read: ${error?.message ?? error}`));
+      socket.destroy();
     }
-    if (from < text.length) pieces.push(text.slice(from));
   });
-  const lost = () => {
+  function lost(why = failure('The connection to the engine was closed.')) {
     if (over) return;
     over = true;
-    for (const asked of pending.values()) asked.reject(failure('The connection to the engine was closed.'));
+    for (const asked of pending.values()) asked.reject(why);
     pending.clear();
     gone();
-  };
-  socket.on('error', lost);
-  socket.on('close', lost);
+  }
+  socket.on('error', () => lost());
+  socket.on('close', () => lost());
   return {
     call(method, params) {
       if (over) return Promise.reject(failure('The connection to the engine was closed.'));
@@ -258,7 +272,9 @@ function start(options, rules) {
     };
     mkdirSync(path.dirname(logFile), { recursive: true });
     const log = createWriteStream(logFile, { flags: 'a' });
-    log.on('error', () => {});
+    // A log that cannot be written is let go: what the engine writes is still read.
+    let logging = true;
+    log.on('error', () => { logging = false; });
     let child;
     try {
       child = spawn(program, ['--project', project], {
@@ -278,11 +294,13 @@ function start(options, rules) {
         ended({ code, signal });
       });
     });
-    // What it logs is never left unread: the engine drops what it cannot write, and says so.
+    // What it logs is never left unread, also where it cannot be written down: the engine drops
+    // what it cannot write, and says so. It is appended to the log as it comes.
     const tail = [];
     const errors = new StringDecoder('utf8');
     let rest = '';
     child.stderr.on('data', (chunk) => {
+      if (logging) log.write(chunk);
       const parts = (rest + errors.write(chunk)).split('\n');
       rest = parts.pop().slice(0, TAIL_LINE_CHARS);
       for (const part of parts) {
@@ -291,7 +309,6 @@ function start(options, rules) {
       }
       if (tail.length > TAIL_LINES) tail.splice(0, tail.length - TAIL_LINES);
     });
-    child.stderr.pipe(log);
     // An engine that ended before it read is told of by how it ended.
     child.stdin.on('error', () => {});
     const output = new StringDecoder('utf8');
@@ -341,11 +358,37 @@ function start(options, rules) {
   });
 }
 
+/** Whether a process is there: one that is somebody else's is there too. */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+/** Wait until a process has ended, for so long at most. Whether it has. */
+async function ended(pid, most) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  const until = Date.now() + most;
+  while (alive(pid)) {
+    if (Date.now() >= until) return false;
+    await new Promise((resolve) => { setTimeout(resolve, YIELD_LOOK_MS); });
+  }
+  return true;
+}
+
 /**
  * Reach the engine at an address on two connections, and say hello on each. `started` is the
  * program that this process started, which it owns, or null for an engine that is somebody else's.
+ *
+ * Where `takeOver` is true and that engine is headless (an agent's, with no view and no
+ * transport), it is asked to yield the project instead: it tells its clients, ends, and the answer
+ * is null once its process is gone (or after a while), for the desktop to start its own engine.
+ * One that does not yield is reached as it is.
  */
-async function sessionAt(socket, address, started, options, rules) {
+async function sessionAt(socket, address, started, options, rules, takeOver = false) {
   const { project, onEvent, kill } = options;
   let ready = false;
   let ending = null;
@@ -367,6 +410,19 @@ async function sessionAt(socket, address, started, options, rules) {
   let hello;
   try {
     hello = await greet(main, project, rules.platform);
+    if (!started && takeOver && hello.headless === true) {
+      onEvent({ kind: 'taking-over', pid: Number.isSafeInteger(hello.pid) ? hello.pid : null });
+      let yielded = false;
+      try {
+        await main.call('engine.yield');
+        yielded = true;
+      } catch { /* An engine that does not yield is used as it is. */ }
+      if (yielded) {
+        main.close();
+        await ended(hello.pid, YIELD_MS);
+        return null;
+      }
+    }
     const other = await connectTo(address);
     if (!other) throw failure(`The engine did not answer a second connection at ${address}.`);
     // Every connection that said hello is told of every change: the main one hands them on.
@@ -413,14 +469,18 @@ async function sessionAt(socket, address, started, options, rules) {
  * where what it logs is appended; `kill`, how a program and what it started are ended; and
  * `onEvent`, which is told `{kind: 'notification', method, params}` for every notification, in
  * the order they came, and once `{kind: 'exited', expected, code, signal}` when the engine is
- * gone or was closed.
+ * gone or was closed. Before it opens, it is told `{kind: 'taking-over', pid}` where a headless
+ * engine had the project and is asked to yield it.
  *
  * Throws where no engine could be started or reached, with what the engine said where it said why.
  */
 async function openEngine(options) {
   const rules = { platform: process.platform, env: options.env ?? {}, uid: typeof process.getuid === 'function' ? process.getuid() : 0 };
   let why = 'no engine answered';
-  for (let tries = 0; tries < TRIES; tries += 1) {
+  let until = Date.now() + OPEN_MS;
+  // A headless engine is asked once to yield the project to an engine of this application.
+  let tookOver = false;
+  do {
     const started = await start(options, rules);
     if (started.kind === 'listening') {
       const socket = await connectTo(started.address);
@@ -442,7 +502,13 @@ async function openEngine(options) {
     }
     if (socket) {
       try {
-        return await sessionAt(socket, address, null, options, rules);
+        const session = await sessionAt(socket, address, null, options, rules, !tookOver);
+        if (session) return session;
+        // It yielded, and has ended: an engine of this application is started at once, and
+        // given its time from now.
+        tookOver = true;
+        until = Date.now() + OPEN_MS;
+        continue;
       } catch (error) {
         why = error.message;
         await moment();
@@ -451,7 +517,7 @@ async function openEngine(options) {
     }
     why = started.kind === 'held' ? `the engine that has it open did not answer${address ? ` at ${address}` : ''}` : 'another engine is starting for it';
     await moment();
-  }
+  } while (Date.now() < until);
   throw failure(`No engine for the project ${options.project} could be reached: ${why}.`);
 }
 

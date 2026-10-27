@@ -257,6 +257,68 @@ describe('the copy of the project', () => {
     expect(engine.listeners.size).toBe(0);
   });
 
+  it('takes a proxy away where the operation leaves it out', () => {
+    const project: Project = { ...empty(), media: [{ ...media('m1'), proxy }] };
+    const changed = applyOp(project, { op: 'set_proxy', media: 'm1' } as Op);
+    expect(changed.media[0]).toStrictEqual(media('m1'));
+    expect('proxy' in changed.media[0]).toBe(false);
+  });
+
+  it('tries a fetch that failed again, a little later each time, while the engine is open', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const engine = engineOf({ revision: 2, project: empty() });
+      const busy = { ok: false as const, error: { code: null, message: 'The connection to the engine was closed.', data: null } };
+      engine.call.mockResolvedValueOnce(busy).mockResolvedValueOnce(busy).mockResolvedValueOnce(busy);
+      const copy = new ProjectCopy(engine.bridge);
+      engine.opened();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(copy.getSnapshot()).toMatchObject({ status: 'disconnected', error: 'The connection to the engine was closed.' });
+      expect(engine.call).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(engine.call).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(engine.call).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(engine.call).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(copy.getSnapshot()).toMatchObject({ status: 'connected', revision: 2, error: null });
+      expect(engine.call).toHaveBeenCalledTimes(4);
+      // Once the engine has ended, nothing more is tried.
+      engine.call.mockResolvedValue(busy);
+      engine.changed(change(5, 1));
+      await vi.advanceTimersByTimeAsync(0);
+      engine.tell({ kind: 'exited', session: 1, expected: false, code: 1, signal: null });
+      const asked = engine.call.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(engine.call.mock.calls.length).toBe(asked);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hears why an engine of a later session could not be opened, and that one is being taken over', async () => {
+    const engine = engineOf({ revision: 0, project: empty() });
+    const copy = new ProjectCopy(engine.bridge);
+    engine.opened();
+    await settle();
+    engine.tell({ kind: 'taking-over', session: 2, pid: 31 });
+    expect(copy.getSnapshot()).toMatchObject({ session: 1, takingOver: true });
+    // What the agent's engine tells as it yields is passed over.
+    engine.tell({ kind: 'notification', session: 2, method: 'engine.yielding', params: { to: 'desktop' } });
+    engine.tell({ kind: 'error', session: 2, message: 'No engine for the project could be reached.' });
+    expect(copy.getSnapshot()).toMatchObject({ session: 1, takingOver: false, error: 'No engine for the project could be reached.' });
+    engine.tell({ kind: 'taking-over', session: 3, pid: 31 });
+    engine.opened(3);
+    await settle();
+    expect(copy.getSnapshot()).toMatchObject({ session: 3, status: 'connected', takingOver: false });
+    // And no longer what the sessions before it tell.
+    engine.tell({ kind: 'error', session: 2, message: 'late' });
+    expect(copy.getSnapshot().error).toBeNull();
+    engine.tell({ kind: 'measure', session: null });
+    expect(copy.getSnapshot()).toMatchObject({ session: 3, status: 'connected' });
+  });
+
   it('says why the project could not be fetched', async () => {
     const engine = engineOf({ revision: 0, project: empty() });
     engine.call.mockResolvedValueOnce({ ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } });

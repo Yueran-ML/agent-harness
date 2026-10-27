@@ -12,14 +12,16 @@ const LOG = path.resolve('/logs/columbina-engine.log');
  * The module of the engine of the shell, with everything around it made up: the programs that it
  * starts, the network, the files, and the system.
  */
-function engineHarness(system: { platform?: string; env?: Record<string, string>; uid?: number; starts?: EngineStart[] } = {}) {
+function engineHarness(system: {
+  platform?: string; env?: Record<string, string>; uid?: number; starts?: EngineStart[]; decoder?: typeof StringDecoder;
+} = {}) {
   const world = new EngineWorld();
   world.starts.push(...(system.starts ?? []));
   const files = new Map<string, string>();
-  const logs: { file: string; options: unknown; stream: EventEmitter & { end: ReturnType<typeof vi.fn> } }[] = [];
+  const logs: { file: string; options: unknown; stream: EventEmitter & { end: ReturnType<typeof vi.fn>; write: ReturnType<typeof vi.fn> } }[] = [];
   const fs = {
     createWriteStream: vi.fn((file: string, options: unknown) => {
-      const stream = Object.assign(new EventEmitter(), { end: vi.fn() });
+      const stream = Object.assign(new EventEmitter(), { end: vi.fn(), write: vi.fn() });
       logs.push({ file, options, stream });
       return stream;
     }),
@@ -33,9 +35,17 @@ function engineHarness(system: { platform?: string; env?: Record<string, string>
   };
   const spawn = vi.fn((program: string, args: string[], options: unknown) => world.spawn(program, args, options));
   const kill = vi.fn((child: { pid: number }) => world.kill(child.pid));
+  // The processes that are there, by their ids.
+  const running = new Set<number>();
+  const processKill = (pid: number, _signal: number) => {
+    if (!running.has(pid)) throw Object.assign(new Error(`ESRCH: ${pid}`), { code: 'ESRCH' });
+  };
   const module = loadEngine(
-    { 'node:child_process': { spawn }, 'node:net': world.net, 'node:fs': fs, 'node:path': path, 'node:string_decoder': { StringDecoder } },
-    { process: { platform: system.platform ?? 'win32', getuid: () => system.uid ?? 1000 }, setTimeout, clearTimeout },
+    {
+      'node:child_process': { spawn }, 'node:net': world.net, 'node:fs': fs, 'node:path': path,
+      'node:string_decoder': { StringDecoder: system.decoder ?? StringDecoder },
+    },
+    { process: { platform: system.platform ?? 'win32', getuid: () => system.uid ?? 1000, kill: processKill }, setTimeout, clearTimeout, Date },
   );
   const events: any[] = [];
   const env = system.env ?? { PATH: 'C:\\Windows' };
@@ -43,7 +53,7 @@ function engineHarness(system: { platform?: string; env?: Record<string, string>
   const lock = (address: unknown) => files.set(path.join(PROJECT, 'engine.lock'), JSON.stringify({ pid: 9, address, started: '2026-10-27T00:00:00Z' }));
   /** The connections that reached an engine, the main one first. */
   const reached = () => world.sockets.filter(socket => socket.server !== null);
-  return { world, files, logs, fs, spawn, kill, module, events, env, open, lock, reached };
+  return { world, files, logs, fs, spawn, kill, module, events, env, open, lock, reached, running };
 }
 
 afterEach(() => { vi.useRealTimers(); });
@@ -76,8 +86,13 @@ describe('starting the engine of a project', () => {
     expect(engine.logs).toHaveLength(1);
     expect(engine.logs[0]).toMatchObject({ file: LOG, options: { flags: 'a' } });
     const [child] = engine.world.children;
-    expect(child.stderr.pipe).toHaveBeenCalledWith(engine.logs[0].stream);
-    expect(child.stderr.listenerCount('data')).toBeGreaterThan(0);
+    const [{ stream }] = engine.logs;
+    expect(stream.write).toHaveBeenCalledWith(Buffer.from('{"event": "proxy_ffmpeg", "path": null}\n', 'utf8'));
+    // A log that fails is let go of, and what the engine writes is still read.
+    stream.emit('error', new Error('ENOSPC'));
+    child.stderr.emit('data', Buffer.from('{"event": "view_ready"}\n', 'utf8'));
+    expect(stream.write).toHaveBeenCalledOnce();
+    expect(child.stderr.listenerCount('data')).toBe(1);
     // What it writes on stdout after its first line, which is nothing, would not hold it up either.
     expect(child.stdout.listenerCount('data')).toBe(1);
   });
@@ -156,11 +171,19 @@ describe('starting the engine of a project', () => {
     expect(engine.world.net.connect.mock.calls.map(([address]) => address)).toEqual([PIPE_A, PIPE_B, PIPE_B]);
   });
 
-  it('starts it again where neither answers, and gives up after five tries', async () => {
-    const engine = engineHarness({ starts: [{ contended: true }, { held: PIPE_B }, { held: PIPE_B }, { held: PIPE_B }, { held: PIPE_B }] });
+  it('starts it again where neither answers, for 10 seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const engine = engineHarness({ starts: [{ contended: true }, ...Array.from({ length: 400 }, () => ({ held: PIPE_B }))] });
     engine.lock('\\\\other\\pipe\\columbina-engine-0123456789abcdef');
-    await expect(engine.open()).rejects.toThrow(`No engine for the project ${PROJECT} could be reached: the engine that has it open did not answer.`);
-    expect(engine.spawn).toHaveBeenCalledTimes(5);
+    const opening = engine.open();
+    const failed = expect(opening).rejects.toThrow(`No engine for the project ${PROJECT} could be reached: the engine that has it open did not answer.`);
+    await vi.advanceTimersByTimeAsync(9_000);
+    const started = engine.spawn.mock.calls.length;
+    expect(started).toBeGreaterThan(40);
+    await vi.advanceTimersByTimeAsync(1_300);
+    await failed;
+    expect(engine.spawn.mock.calls.length).toBeLessThan(started + 15);
+    vi.useRealTimers();
     // An engine that was still starting is found once it has.
     const later = engineHarness({ starts: [{ contended: true }] });
     later.world.serve(PIPE_A, PROJECT);
@@ -169,9 +192,52 @@ describe('starting the engine of a project', () => {
   });
 
   it('refuses an engine that has another project open', async () => {
-    const engine = engineHarness({ starts: [{ held: PIPE_B }, { held: PIPE_B }, { held: PIPE_B }, { held: PIPE_B }, { held: PIPE_B }] });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const engine = engineHarness({ starts: Array.from({ length: 400 }, () => ({ held: PIPE_B })) });
     engine.world.serve(PIPE_B, path.resolve('/another/.columbina/studio'));
-    await expect(engine.open()).rejects.toThrow('has another project open');
+    const failed = expect(engine.open()).rejects.toThrow('has another project open');
+    await vi.advanceTimersByTimeAsync(10_500);
+    await failed;
+  });
+
+  it('has a headless engine that holds the project yield it, waits until it has ended, and starts its own', async () => {
+    const engine = engineHarness({ starts: [{ held: PIPE_B }] });
+    const agents = engine.world.headless(PIPE_B, PROJECT, 31, engine.running);
+    const session = await engine.open();
+    expect(agents.sockets[0].methods()).toEqual(['hello', 'engine.yield']);
+    expect(engine.events[0]).toEqual({ kind: 'taking-over', pid: 31 });
+    // Its own, with a window, started once that one was gone.
+    expect(session.owned).toBe(true);
+    expect(session.address).toBe(PIPE_A);
+    expect(engine.spawn).toHaveBeenCalledTimes(2);
+    expect(engine.running.has(31)).toBe(false);
+  });
+
+  it('waits ten seconds at most for a headless engine to end, and asks once', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const engine = engineHarness({ starts: [{ held: PIPE_B }, { held: PIPE_B }] });
+    const agents = engine.world.headless(PIPE_B, PROJECT, 31, engine.running);
+    // It answers, and does not end.
+    agents.answers.set('engine.yield', () => ({ result: {} }));
+    const opening = engine.open();
+    await vi.advanceTimersByTimeAsync(9_900);
+    expect(engine.spawn).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(300);
+    const session = await opening;
+    // Then it is reached as it is, without a view.
+    expect(session.owned).toBe(false);
+    expect(engine.spawn).toHaveBeenCalledTimes(2);
+    expect(agents.sockets.flatMap(socket => socket.methods()).filter(method => method === 'engine.yield')).toHaveLength(1);
+  });
+
+  it('reaches an engine that does not yield as it is', async () => {
+    const engine = engineHarness({ starts: [{ held: PIPE_B }] });
+    const agents = engine.world.headless(PIPE_B, PROJECT, 31, engine.running);
+    agents.answers.set('engine.yield', () => ({ error: { code: -32601, message: 'no such method' } }));
+    const session = await engine.open();
+    expect(session.owned).toBe(false);
+    expect(session.hello.headless).toBe(true);
+    expect(engine.spawn).toHaveBeenCalledOnce();
   });
 
   it('takes on Unix only a socket of the engine\'s name in the directory where this user\'s engines make them', () => {
@@ -308,6 +374,25 @@ describe('a session with the engine', () => {
     // Closed twice is closed once.
     await session.close();
     expect(engine.events).toHaveLength(1);
+  });
+
+  it('ends the session where a line from the engine cannot be held as a string', async () => {
+    // A decoder that fails as V8 does with a string longer than it holds.
+    class Overlong extends StringDecoder {
+      write(chunk: Buffer) {
+        if (chunk.toString('utf8') === 'TOO LONG') throw new RangeError('Invalid string length');
+        return super.write(chunk);
+      }
+    }
+    const engine = engineHarness({ decoder: Overlong as unknown as typeof StringDecoder });
+    const session = await engine.open();
+    engine.world.servers.get(PIPE_A)!.answers.set('project.get', () => 'hold');
+    const asking = session.call('project.get');
+    engine.reached()[0].emit('data', Buffer.from('TOO LONG', 'utf8'));
+    await expect(asking).rejects.toThrow('A line from the engine could not be read: Invalid string length');
+    await settle();
+    expect(engine.events.at(-1)).toMatchObject({ kind: 'exited', expected: false });
+    expect(engine.world.children[0].stdin.end).toHaveBeenCalled();
   });
 
   it('lets go of everything at once where the application ends', async () => {

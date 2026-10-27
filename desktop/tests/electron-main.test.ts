@@ -111,6 +111,11 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       session: { webRequest: { onBeforeRequest: vi.fn(), onHeadersReceived: vi.fn() } },
       setWindowOpenHandler: vi.fn(),
       setAudioMuted: vi.fn(),
+      zoom: 0,
+      setZoomLevel: vi.fn((level: number) => { this.webContents.zoom = level; }),
+      getZoomLevel: () => this.webContents.zoom,
+      reload: vi.fn(),
+      toggleDevTools: vi.fn(),
     });
     options: any;
     constructor(options: unknown) { super(); this.options = options; windows.push(this); window ??= this; }
@@ -136,6 +141,9 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     getPosition = () => this.position;
     setPosition = vi.fn((x: number, y: number) => { this.position = [x, y]; });
     removeMenu = vi.fn();
+    fullScreen = false;
+    isFullScreen = () => this.fullScreen;
+    setFullScreen = vi.fn((full: boolean) => { this.fullScreen = full; });
     /** The handle of the window, as Electron gives it: 8 bytes, of a number larger than JavaScript counts exactly. */
     handle = (() => { const bytes = Buffer.alloc(8); bytes.writeBigUInt64LE(0xFFFF_FFFF_0000_1234n); return bytes; })();
     getNativeWindowHandle = vi.fn(() => this.handle);
@@ -356,7 +364,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
         files.delete(path.resolve(from));
         files.set(path.resolve(to), text);
       },
-      createWriteStream: () => Object.assign(new EventEmitter(), { end: vi.fn() }),
+      createWriteStream: () => Object.assign(new EventEmitter(), { end: vi.fn(), write: vi.fn() }),
     },
     'node:fs/promises': disk,
     'node:path': path,
@@ -3821,10 +3829,13 @@ describe('the engine of the studio', () => {
   it('opens only a folder that was chosen, in a project of its own there, with an engine that it starts', async () => {
     const shell = await shellHarness();
     await expect(shell.invoke('engine-open', { cwd: path.resolve('/unchosen') })).rejects.toThrow('native folder dialog');
-    await expect(shell.invoke('engine-open', {})).rejects.toThrow('Choose a project folder');
+    await expect(shell.invoke('engine-open', {})).rejects.toThrow('Choose a project folder before opening it in the studio.');
     expect(shell.engines.children).toEqual([]);
     const { answer, studio } = await openIn(shell);
     expect(shell.mkdirSync).toHaveBeenCalledWith(studio, { recursive: true });
+    // What the engine makes of its own there is kept out of the history of the folder, and the
+    // project is not; a file that is there already is the user's, and stays.
+    expect(shell.writeFileSync).toHaveBeenCalledWith(path.join(studio, '.gitignore'), 'cache/\nengine.lock\n', { flag: 'wx' });
     const [child] = shell.engines.children;
     // Not headless: the engine is the application's, and ends when its stdin is closed.
     expect(child.program).toBe(builtEngine());
@@ -3832,8 +3843,8 @@ describe('the engine of the studio', () => {
     expect(child.options).toMatchObject({ cwd: path.dirname(builtEngine()), windowsHide: true, detached: false, stdio: ['pipe', 'pipe', 'pipe'] });
     expect(answer).toEqual({ session: 1, project: studio, owned: true, pid: child.pid, revision: 0 });
     expect(told(shell)).toEqual([{ kind: 'opened', session: 1, project: studio, owned: true, pid: child.pid, revision: 0 }]);
-    // What it logs goes to a log of its own, and is never left unread.
-    expect(child.stderr.pipe).toHaveBeenCalledOnce();
+    // What it logs is read as it comes, into a log of its own.
+    expect(child.stderr.listenerCount('data')).toBe(1);
     // Two connections, each of which said hello as the desktop.
     const [main, view] = connections(shell);
     for (const socket of [main, view]) expect(socket.written[0]).toMatchObject({ method: 'hello', params: { client: 'desktop', protocol: 1 } });
@@ -3866,8 +3877,9 @@ describe('the engine of the studio', () => {
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
     ];
     for (const method of allowed) {
-      expect(await shell.invoke('engine-call', { method, params: { frame: 3 } })).toEqual({ ok: true, result: {} });
-      expect(main.written.at(-1)).toMatchObject({ method, params: { frame: 3 } });
+      const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3 };
+      expect(await shell.invoke('engine-call', { method, params })).toEqual({ ok: true, result: {} });
+      expect(main.written.at(-1)).toMatchObject({ method, params });
     }
     const sent = main.written.length + view.written.length;
     for (const method of ['view.attach', 'view.detach', 'media.import', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
@@ -3884,6 +3896,31 @@ describe('the engine of the studio', () => {
     expect(await shell.invoke('engine-call', { method: 'transaction.apply', params: { ops: [] } })).toEqual({
       ok: false, error: { code: -32001, message: 'the clip covers frames that clip c1 covers', data: { reason: 'overlap', with: 'c1', index: 0 } },
     });
+  });
+
+  it('lets a transaction of the page name no file: no media that it adds, and no proxy that it sets', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const sent = main.written.length;
+    const media = { id: '', path: '\\\\127.0.0.1\\share\\x.mp4', identity: { size: 1, modified_us: 0, digest: '0'.repeat(64) }, facts: { duration: { ticks: 1, scale: 1 } } };
+    const proxy = { path: 'C:\\Users\\me\\precious.mp4', width: 1, height: 1, codec: 'hevc', digest_of_source: '0'.repeat(64) };
+    for (const ops of [
+      [{ op: 'add_media', media }],
+      [{ op: 'remove_clip', timeline: 't1', id: 'c1' }, { op: 'add_media', media, index: 0 }],
+      [{ op: 'set_proxy', media: 'm1', proxy }],
+    ]) {
+      await expect(shell.invoke('engine-call', { method: 'transaction.apply', params: { ops } })).rejects.toThrow(/adds no media|sets no proxy/);
+    }
+    for (const params of [{}, { ops: 'all' }, { ops: [null] }, { ops: [[]] }, null]) {
+      await expect(shell.invoke('engine-call', { method: 'transaction.apply', params })).rejects.toThrow(/list of operations|is an object/);
+    }
+    expect(main.written.length).toBe(sent);
+    // A proxy may be taken away: the engine makes it again at its next start.
+    for (const op of [{ op: 'set_proxy', media: 'm1', proxy: null }, { op: 'set_proxy', media: 'm1' }]) {
+      expect(await shell.invoke('engine-call', { method: 'transaction.apply', params: { ops: [op] } })).toMatchObject({ ok: true });
+      expect(main.written.at(-1)).toMatchObject({ method: 'transaction.apply', params: { ops: [op] } });
+    }
   });
 
   it('hands the page what the engine tells, in order, once', async () => {
@@ -4051,7 +4088,12 @@ describe('the engine of the studio', () => {
     expect(told(shell)).toEqual([{ kind: 'error', session: 1, message: 'project.json cannot be read: expected value at line 1' }]);
     // A COLUMBINA_ENGINE that is no whole path is no engine.
     const relative = await shellHarness(undefined, { COLUMBINA_ENGINE: 'columbina-engine.exe' });
-    await expect(relative.invoke('engine-open', { cwd: await relative.select('/film') })).rejects.toThrow('There is no engine program');
+    await expect(relative.invoke('engine-open', { cwd: await relative.select('/film') }))
+      .rejects.toThrow('COLUMBINA_ENGINE names the engine program by a path that is not whole, which is not taken: columbina-engine.exe');
+    const none = await shellHarness();
+    none.absent.add(builtEngine());
+    none.absent.add(builtEngine().replace(`${path.sep}release${path.sep}`, `${path.sep}debug${path.sep}`));
+    await expect(none.invoke('engine-open', { cwd: await none.select('/film') })).rejects.toThrow('There is no engine program');
     expect(relative.engines.children).toEqual([]);
   });
 
@@ -4123,8 +4165,8 @@ describe('the engine of the studio', () => {
     await openIn(shell);
     const [child] = shell.engines.children;
     expect(child.program).toBe(named);
-    // Windows writes it Path, and the libraries go at its end.
-    expect(child.options.env.Path).toBe(`C:\\Windows${path.delimiter}${path.join(ffmpeg, 'bin')}`);
+    // Windows writes it Path, and the libraries go first, before any other build of libav on it.
+    expect(child.options.env.Path).toBe(`${path.join(ffmpeg, 'bin')}${path.delimiter}C:\\Windows`);
     expect(child.options.env).not.toHaveProperty('PATH');
     // Without a name, the newest build of the repository.
     const built = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python });
@@ -4135,7 +4177,105 @@ describe('the engine of the studio', () => {
     await openIn(packaged);
     const brought = path.join(resources, 'engine', 'columbina-engine.exe');
     expect(packaged.engines.children[0].program).toBe(brought);
-    expect(packaged.engines.children[0].options.env.PATH).toBe(`C:\\Windows${path.delimiter}${path.dirname(brought)}`);
+    expect(packaged.engines.children[0].options.env.PATH).toBe(`${path.dirname(brought)}${path.delimiter}C:\\Windows`);
+  });
+
+  it('tells a page that was loaded again how the view stands, and hides the view until it says where the viewer is', async () => {
+    const shell = await shellHarness();
+    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    const { cwd } = await openIn(shell);
+    const [, view] = connections(shell);
+    await shell.invoke('engine-view-show', { shown: false });
+    // The page is loaded again: the native view would stay over it.
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    // Hidden already; nothing more is sent.
+    expect(view.methods().filter(method => method === 'view.show')).toHaveLength(1);
+    await shell.invoke('engine-view-show', { shown: true });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+    expect(view.methods().filter(method => method === 'view.show')).toHaveLength(1);
+    // The new page opens its project again, and hears how the view stands.
+    await shell.invoke('engine-open', { cwd });
+    expect(told(shell).slice(-2)).toEqual([
+      expect.objectContaining({ kind: 'opened', session: 1 }), { kind: 'attached', session: 1, adapter: null, backend: null },
+    ]);
+    // Shown again only once it says where the viewer is.
+    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 330, height: 180 });
+    expect(view.methods().slice(-2)).toEqual(['view.place', 'view.show']);
+    expect(view.written.at(-1)).toMatchObject({ params: { shown: true } });
+    // A page that crashed is the same.
+    shell.window.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { shown: false } });
+  });
+
+  it('takes no late word of a view that was made before for the one there is', async () => {
+    const shell = await shellHarness();
+    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await openIn(shell);
+    const [, view] = connections(shell);
+    const server = shell.engines.servers.get(view.address)!;
+    // Two moves go out; the first is answered that the view is gone, which makes it again.
+    server.answers.set('view.place', () => 'hold');
+    await shell.invoke('engine-view-rect', { x: 1, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { x: 2, y: 0, width: 320, height: 180 });
+    const gone = { error: { code: -32003, message: 'the view is gone', data: { reason: 'gone' } } };
+    server.answerHeld('view.place', gone);
+    await settledAll();
+    expect(view.methods().filter(method => method === 'view.attach')).toHaveLength(2);
+    // The second, about the view before, says so late: no third view is made for it.
+    server.answerHeld('view.place', gone);
+    await settledAll();
+    expect(view.methods().filter(method => method === 'view.attach')).toHaveLength(2);
+  });
+
+  it('takes the project over from the headless engine of an agent, and tells the page', async () => {
+    const shell = await shellHarness();
+    const cwd = await shell.select('/film');
+    const agents = shell.engines.headless('\\\\.\\pipe\\columbina-engine-fedcba9876543210', studioOf(cwd), 31, shell.running);
+    shell.engines.starts.push({ held: agents.address });
+    await expect(shell.invoke('engine-open', { cwd })).resolves.toMatchObject({ session: 1, owned: true });
+    expect(agents.sockets[0].methods()).toEqual(['hello', 'engine.yield']);
+    // What that engine tells its clients as it yields comes too, before the project is opened.
+    expect(told(shell).map(event => event.method ?? event.kind)).toEqual(['taking-over', 'engine.yielding', 'opened']);
+    expect(told(shell)[0]).toEqual({ kind: 'taking-over', session: 1, pid: 31 });
+  });
+
+  it('gives back the keys that the menu gave: zoom and full screen, and from source the tools of the page', async () => {
+    const press = (shell: Shell, input: Record<string, unknown>) => {
+      const event = { preventDefault: vi.fn() };
+      shell.window.webContents.emit('before-input-event', event, { type: 'keyDown', control: false, shift: false, alt: false, meta: false, ...input });
+      return event.preventDefault.mock.calls.length === 1;
+    };
+    const shell = await shellHarness();
+    const page = shell.window.webContents;
+    expect(press(shell, { control: true, key: '=' })).toBe(true);
+    expect(press(shell, { control: true, shift: true, key: '+' })).toBe(true);
+    expect(page.setZoomLevel.mock.calls).toEqual([[0.5], [1]]);
+    // The page measures the viewer again: the pixels of the screen that it covers changed.
+    expect(told(shell).at(-1)).toEqual({ kind: 'measure', session: null });
+    expect(press(shell, { control: true, key: '-' })).toBe(true);
+    expect(press(shell, { control: true, code: 'Numpad0', key: 'Insert' })).toBe(true);
+    expect(page.setZoomLevel.mock.calls.slice(2)).toEqual([[0.5], [0]]);
+    expect(press(shell, { key: 'F11' })).toBe(true);
+    expect(shell.window.setFullScreen).toHaveBeenCalledWith(true);
+    expect(press(shell, { control: true, key: 'r' })).toBe(true);
+    expect(page.reload).toHaveBeenCalledOnce();
+    expect(press(shell, { control: true, shift: true, key: 'I' })).toBe(true);
+    expect(press(shell, { key: 'F12' })).toBe(true);
+    expect(page.toggleDevTools).toHaveBeenCalledTimes(2);
+    // Other keys are the page's, and so is a key let go.
+    for (const input of [{ key: 'a', control: true }, { key: '=', control: true, alt: true }, { key: 'F11', type: 'keyUp' }, { key: '0' }]) {
+      expect(press(shell, input)).toBe(false);
+    }
+    // A package does not load its page again, nor show its tools.
+    const packaged = await shellHarness(undefined, {}, { packaged: true });
+    expect(press(packaged, { control: true, key: 'r' })).toBe(false);
+    expect(press(packaged, { key: 'F12' })).toBe(false);
+    expect(press(packaged, { control: true, key: '=' })).toBe(true);
+    // macOS keeps its menu, and the keys are its own.
+    const mac = await shellHarness(undefined, {}, { platform: 'darwin' });
+    expect(mac.window.webContents.listenerCount('before-input-event')).toBe(0);
   });
 
   it('answers only its own window', async () => {

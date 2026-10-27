@@ -75,6 +75,8 @@ export class FakeServer {
   answers = new Map<string, (params: any, socket: FakeSocket) => Answer>();
   /** Requests that were held, to be answered by the test. */
   held: { socket: FakeSocket; message: Said }[] = [];
+  /** Whether it was started without a window, as an agent's is. */
+  headless = false;
   constructor(public address: string, public project: string, public pid = 4321) {}
   accept(socket: FakeSocket) {
     socket.server = this;
@@ -84,7 +86,7 @@ export class FakeServer {
     let answer: Answer;
     if (message.method === 'hello') {
       this.clients.add(socket);
-      answer = { result: { engine: '0.1.0', protocol: 1, revision: this.revision, project: this.project, pid: this.pid } };
+      answer = { result: { engine: '0.1.0', protocol: 1, revision: this.revision, project: this.project, pid: this.pid, headless: this.headless } };
     } else {
       answer = this.answers.get(message.method!)?.(message.params, socket) ?? { result: {} };
     }
@@ -226,6 +228,27 @@ export class EngineWorld {
   /** The engine that a program of the tests started, by the program's process. */
   serverOf(child: FakeChild) {
     return [...this.servers.values()].find(server => server.pid === child.pid) ?? null;
+  }
+
+  /**
+   * An engine of an agent, without a window, that has the project open, and yields it when it is
+   * asked: it tells its clients, answers, closes every connection and ends. `running` holds the
+   * processes that are there, and loses this one as it ends.
+   */
+  headless(address: string, project: string, pid: number, running: Set<number>) {
+    const server = this.serve(address, project, pid);
+    server.headless = true;
+    running.add(pid);
+    server.answers.set('engine.yield', () => {
+      server.notify('engine.yielding', { to: 'desktop' });
+      queueMicrotask(() => {
+        this.servers.delete(address);
+        server.close();
+        running.delete(pid);
+      });
+      return { result: {} };
+    });
+    return server;
   }
 
   /** End a program as `taskkill` or a signal ends it. */

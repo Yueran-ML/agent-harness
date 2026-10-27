@@ -3,12 +3,17 @@
 // system that it was put together on, so each package is made on its own system.
 //
 // Before this: `npm run build`, and `node scripts/prepare-python.mjs`. `npm run package` does all three.
+// On Windows the engine of the studio comes along too, with the LGPL FFmpeg that it is built with
+// (see engine-bundle.mjs): its build is engine/target/release, or --engine-build=<dir>, and the
+// FFmpeg is --ffmpeg=<dir>, else COLUMBINA_FFMPEG_LGPL, else FFMPEG_DIR, as in
+// `npm run package -- --ffmpeg=F:\toolchain\ffmpeg-lgpl-8.1`. On macOS it is left out, for now.
 import { packager } from '@electron/packager';
 import { spawnSync } from 'node:child_process';
 import { cp, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkPackageAssets } from '../scripts/check-package-assets.mjs';
+import { bundleEngine, locateEngine } from './engine-bundle.mjs';
 
 const systems = {
   win32: { arch: 'x64', named: 'windows-x64', icon: 'icon.ico', python: ['python.exe'] },
@@ -37,6 +42,8 @@ try {
 } catch {
   throw new Error('There is no Python to bring along in build/python. Run node scripts/prepare-python.mjs first.');
 }
+// The engine and its FFmpeg are looked for before anything is packaged.
+const engine = locateEngine({ desktop });
 
 /** Run a program to its end, and stop here if it does not end well. */
 function run(program, args, options = {}) {
@@ -77,6 +84,8 @@ await packager({
 const application = process.platform === 'darwin' ? path.join(folder, 'Columbina.app') : folder;
 const resources = process.platform === 'darwin' ? path.join(application, 'Contents', 'Resources') : path.join(folder, 'resources');
 await cp(python, path.join(resources, 'python'), { recursive: true, verbatimSymlinks: true });
+// The engine of the studio, its libraries and their notices, in resources/engine.
+await bundleEngine({ resources, desktop, located: engine });
 
 const zipped = path.join(output, `Columbina-${manifest.version}-${system.named}.zip`);
 await rm(zipped, { force: true });

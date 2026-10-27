@@ -4,6 +4,11 @@ name: Desktop
 # Apple silicon, each on its own system and with a Python of its own, tries both packages, and
 # publishes them as a release of that tag. Started by hand, it packages and tries them and keeps
 # the packages with the run for a week, without a release. The package on PyPI is not touched.
+#
+# The package of Windows brings the engine of the studio, built here, with the LGPL shared build of
+# FFmpeg 8.1 of BtbN that it is built with (see desktop/electron/engine-bundle.mjs). The package
+# of macOS brings none for now: the engine of macOS is built against ffmpeg@8 of Homebrew, a GPL
+# build, which is not to be shipped, and the view of the studio is not supported there yet.
 on:
   push:
     tags: ["desktop-v*"]
@@ -16,7 +21,8 @@ jobs:
   package:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    # The engine is built for release on Windows, which takes a while without a cache.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -58,13 +64,58 @@ jobs:
       - name: Test
         run: npm test
 
+      # The LGPL shared build that the engine is built with and that goes into the package
+      # (FFMPEG_DIR), checked against the checksums of its release as for the engine of CI; and a
+      # GPL build first on PATH, which only makes the film that the engine of the package is tried
+      # with, and is not packaged.
+      - name: FFmpeg 8.1
+        if: runner.os == 'Windows'
+        run: bash ../.github/scripts/ffmpeg.sh
+
+      # bindgen, for the bindings of libav, needs libclang: LLVM is on the images of Windows, and
+      # installed if it is not.
+      - name: libclang
+        if: runner.os == 'Windows'
+        run: |
+          if [ ! -f "C:/Program Files/LLVM/bin/libclang.dll" ]; then
+            choco install llvm -y --no-progress
+          fi
+          echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
+
+      # The toolchain of engine/rust-toolchain.toml. A rustup older than 1.28 installs it with
+      # `rustup show`.
+      - name: Rust
+        if: runner.os == 'Windows'
+        working-directory: engine
+        run: |
+          rustup toolchain install || rustup show
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        if: runner.os == 'Windows'
+        with:
+          workspaces: engine -> target
+
+      - name: Build the engine
+        if: runner.os == 'Windows'
+        working-directory: engine
+        run: cargo build --release --locked --package columbina-server --bin columbina-engine
+
       # The page, the Python with Columbina built from this commit, the icon of the system, the
-      # application around them, and a zip of it.
+      # application around them, and a zip of it. On Windows also the engine, the libraries of
+      # FFmpeg and its ffmpeg (checked to be of the LGPL), and their notices, in resources/engine:
+      # the engine of engine/target/release, and the FFmpeg of FFMPEG_DIR.
       - name: Package
         run: npm run package
 
       - name: Try the package
         run: npm run package:try
+
+      # With nothing but Windows on PATH: the engine starts with the libraries beside it, and makes
+      # the proxy of a film of 4K HEVC of 10 bits with the ffmpeg beside it.
+      - name: Try the engine of the package
+        if: runner.os == 'Windows'
+        run: node scripts/try-engine.mjs
 
       - uses: actions/upload-artifact@v7
         with:
@@ -103,6 +154,10 @@ jobs:
             `Columbina.app` into *Applications*, and let it open once in a terminal, since it is
             not signed with a certificate of Apple:
             `xattr -dr com.apple.quarantine /Applications/Columbina.app`
+
+          The engine of the studio in the package of Windows (`resources/engine`) brings the
+          libraries of FFmpeg, under the LGPL, and Rust crates under their own licenses: see
+          `resources/engine/THIRD_PARTY_ENGINE.md` there. The package of macOS has no engine yet.
 
           The first start asks for the service of a model and its key. How to set up, and what
           the application can do: [README](https://github.com/Yueran-ML/agent-harness#the-desktop-application).

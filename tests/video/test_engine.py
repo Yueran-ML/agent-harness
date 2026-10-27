@@ -768,7 +768,7 @@ def test_an_engine_is_given_the_libraries_of_ffmpeg_dir_and_this_program_is_not(
 
     assert given is not None
     assert alone is not None
-    assert given[variable] == f"before{os.pathsep}{tmp_path / 'built' / where}"
+    assert given[variable] == f"{tmp_path / 'built' / where}{os.pathsep}before"
     assert alone[variable] == str(tmp_path / "built" / where)
     assert variable not in os.environ
 
@@ -789,7 +789,7 @@ async def test_an_engine_that_is_started_finds_the_libraries_of_ffmpeg_dir(
 
     told = [json.loads(line) for line in logs(tmp_path / "film")[-1].read_text().splitlines()]
     (seen,) = [one["environment"][variable] for one in told if "environment" in one]
-    assert seen.split(os.pathsep)[-1] == str(libraries)
+    assert seen.split(os.pathsep)[0] == str(libraries)
     assert os.environ.get(variable) == before
 
 

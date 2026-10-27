@@ -440,7 +440,8 @@ def _environment() -> dict[str, str] | None:
 
     A build of the engine for development reads media with the libraries of the build of FFmpeg
     that ``FFMPEG_DIR`` names, which need not be on the search path of this program: the
-    directory that holds them is put at the end of where the engine looks for libraries. The
+    directory that holds them is put first where the engine looks for libraries, so that no
+    other build of libav found earlier, of the GPL perhaps, is loaded in their place. The
     environment of this program is left as it is. A packaged engine has its libraries beside
     it, where the system finds them, and needs nothing of this; ``None`` then, as also where
     ``FFMPEG_DIR`` is not set or holds no such directory.
@@ -452,7 +453,7 @@ def _environment() -> dict[str, str] | None:
         return None
     environment = dict(os.environ)
     before = environment.get(variable)
-    environment[variable] = f"{before}{os.pathsep}{libraries}" if before else str(libraries)
+    environment[variable] = f"{libraries}{os.pathsep}{before}" if before else str(libraries)
     return environment
 
 

@@ -33,7 +33,7 @@ describe('the window for the key', () => {
       './KeyApp', './form', './key.css',
     ]);
     const packages = new Set([
-      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/inter', '@fontsource-variable/jetbrains-mono',
+      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/figtree', '@fontsource-variable/jetbrains-mono',
     ]);
     for (const file of files) {
       const named = importsOf(read(`src/key/${file}`));
@@ -101,7 +101,7 @@ describe('the window for the app of Feishu', () => {
       '../key/key.css', '../key/steps.css', '../key/form', './FeishuApp', './form',
     ]);
     const packages = new Set([
-      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/inter', '@fontsource-variable/jetbrains-mono',
+      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/figtree', '@fontsource-variable/jetbrains-mono',
     ]);
     for (const file of files.filter(name => !name.endsWith('.css'))) {
       const named = importsOf(read(`src/feishu/${file}`));
@@ -156,7 +156,7 @@ describe('the window for the bot of WeCom', () => {
       '../key/key.css', '../key/steps.css', '../key/form', './WecomApp', './form',
     ]);
     const packages = new Set([
-      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/inter', '@fontsource-variable/jetbrains-mono',
+      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/figtree', '@fontsource-variable/jetbrains-mono',
     ]);
     for (const file of files) {
       const named = importsOf(read(`src/wecom/${file}`));
@@ -209,7 +209,7 @@ describe('the window for the bot of QQ', () => {
       '../key/key.css', '../key/steps.css', '../key/form', './QqApp', './form',
     ]);
     const packages = new Set([
-      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/inter', '@fontsource-variable/jetbrains-mono',
+      'react', 'react-dom/client', 'lucide-react', '@fontsource-variable/figtree', '@fontsource-variable/jetbrains-mono',
     ]);
     for (const file of files) {
       const named = importsOf(read(`src/qq/${file}`));

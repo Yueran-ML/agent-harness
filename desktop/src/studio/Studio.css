@@ -1,0 +1,473 @@
+/*
+ * The studio: a column of its own between the tasks and the conversation, which goes to the
+ * right of it. Its pages are at its foot, as in DaVinci Resolve.
+ */
+/* Laid out after the stylesheet of the shell, and over each of its ways of laying out the columns. */
+.window .shell[data-studio] {
+  --studio-tasks: 264px;
+  --studio-agent: clamp(340px, 30vw, 480px);
+  --studio-inspector: 0px;
+  grid-template-columns: var(--studio-tasks) minmax(0, 1fr) var(--studio-agent) var(--studio-inspector);
+  grid-template-areas: "tasks studio agent inspector";
+}
+
+.shell[data-studio][data-sidebar='hidden'] {
+  --studio-tasks: 0px;
+}
+
+.shell[data-studio][data-inspector] {
+  --studio-inspector: 372px;
+}
+
+.shell[data-studio] > .sidebar {
+  grid-area: tasks;
+}
+
+.shell[data-studio] > .studio {
+  grid-area: studio;
+}
+
+.shell[data-studio] > .main {
+  grid-area: agent;
+  border-left: 1px solid var(--line);
+}
+
+.shell[data-studio] > .inspector {
+  grid-area: inspector;
+}
+
+/* In a narrow window the panel beside the conversation lies over the page, as it does without the studio. */
+@media (max-width: 1120px) {
+  .shell[data-studio][data-inspector] {
+    --studio-inspector: 0px;
+  }
+
+  .shell[data-studio] > .inspector {
+    grid-area: auto;
+  }
+}
+
+.studio {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--ink-0);
+  outline: none;
+}
+
+.shell[data-sidebar='hidden'] .studio {
+  border-left: 0;
+}
+
+.studio-head {
+  flex: none;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 0 var(--s3) 0 var(--s4);
+}
+
+.studio-title {
+  font-size: var(--text-ui);
+  font-weight: 600;
+  color: var(--moon-0);
+}
+
+.studio-media {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.studio-problem {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin: 0 var(--s3) var(--s2);
+  padding: var(--s1) var(--s1) var(--s1) var(--s3);
+  border-radius: var(--r1);
+  background: var(--warn-wash);
+}
+
+.studio-problem p {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+}
+
+.studio-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 1px;
+  background: var(--line);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+/* --- The media pool. */
+.pool {
+  flex: none;
+  width: clamp(220px, 30%, 340px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-1);
+}
+
+.pool-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s2) var(--s2) var(--s2) var(--s3);
+}
+
+.pool-none {
+  padding: var(--s3);
+}
+
+.pool-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0 var(--s2) var(--s2);
+  list-style: none;
+}
+
+.pool-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+}
+
+.pool-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: var(--s2);
+  border-radius: var(--r1);
+  text-align: left;
+  color: var(--moon-1);
+  user-select: none;
+}
+
+.pool-item svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--moon-2);
+}
+
+.pool-item:hover {
+  background: var(--hover);
+}
+
+.pool-item[aria-pressed='true'] {
+  background: var(--accent-soft);
+}
+
+.pool-item[aria-current] .pool-name {
+  color: var(--accent);
+}
+
+.pool-words {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pool-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-ui);
+  color: var(--moon-0);
+}
+
+.pool-facts {
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.pool-proxy {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 0 var(--s2) 0 calc(var(--s2) + 15px + var(--s2));
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.pool-proxy[data-tone='ok'] {
+  color: var(--ok);
+}
+
+.pool-proxy[data-tone='bad'] {
+  color: var(--bad);
+}
+
+.pool-meter {
+  width: 48px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--ink-3);
+}
+
+.pool-meter span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.pool-again {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: var(--r1);
+  color: var(--accent);
+}
+
+.pool-again:hover {
+  background: var(--accent-soft);
+}
+
+/* --- The source monitor. */
+.monitor {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ink-0);
+}
+
+.viewer {
+  flex: 1;
+  min-height: 120px;
+  position: relative;
+  padding: var(--s2);
+}
+
+/* The engine lays its view over this box; until it does, and where it cannot, the box is black. */
+.viewer-box {
+  position: absolute;
+  inset: var(--s2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
+/* In a browser no view is laid over it. */
+.viewer[data-browser] .viewer-box {
+  background: #3a3a3f;
+}
+
+.viewer-notice {
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s4);
+  text-align: center;
+  color: #e6e4ee;
+}
+
+.viewer-detail {
+  color: #b9b6c6;
+  overflow-wrap: anywhere;
+}
+
+.monitor-hint {
+  flex: none;
+  padding: 0 var(--s4);
+  text-align: center;
+}
+
+.transport {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s2) var(--s3) var(--s3);
+}
+
+.transport-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2) var(--s3);
+}
+
+.timecode {
+  font-size: calc(15px * var(--type));
+  font-variant-numeric: tabular-nums;
+  color: var(--moon-0);
+}
+
+.timecode[data-exact='no'] {
+  color: var(--moon-2);
+}
+
+.timecode-last {
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.transport-buttons {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.transport-play svg {
+  color: var(--moon-0);
+}
+
+.transport-speed {
+  min-width: 3ch;
+  font-size: var(--text-caption);
+  color: var(--accent);
+}
+
+.transport-ends {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--s2);
+}
+
+.transport-proxies {
+  white-space: nowrap;
+}
+
+.transport-proxies[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+.source-badge {
+  white-space: nowrap;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-1);
+}
+
+.source-badge[data-source='proxy'] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.transport-sound {
+  display: inline-flex;
+  color: var(--moon-2);
+}
+
+.transport-sound[data-tone='ok'] {
+  color: var(--moon-0);
+}
+
+.transport-sound[data-tone='warn'] {
+  color: var(--warn);
+}
+
+.scrubber {
+  position: relative;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.scrubber[aria-disabled='true'] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.scrubber-track {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--ink-3);
+}
+
+.scrubber-done {
+  display: block;
+  height: 100%;
+  background: var(--accent-soft);
+}
+
+.scrubber-head {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+/* --- The pages, at the foot. */
+.studio-pages {
+  flex: none;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s5);
+}
+
+.studio-pages button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 var(--s3);
+  border-radius: var(--r1);
+  font-size: var(--text-caption);
+  color: var(--moon-2);
+}
+
+.studio-pages button:hover {
+  color: var(--moon-0);
+}
+
+.studio-pages button[aria-selected='true'] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* --- Its way in, among the tasks. */
+.foot-row[aria-pressed='true'] {
+  color: var(--accent);
+}
+
+/* The line of status of the conversation beside the studio is narrow: its short parts keep to one line. */
+.shell[data-studio] .status-replay,
+.shell[data-studio] .status-stands,
+.shell[data-studio] .status-context {
+  white-space: nowrap;
+}

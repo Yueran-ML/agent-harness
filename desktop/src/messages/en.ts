@@ -786,6 +786,38 @@ export const en = {
       mine: 'yours',
     },
 
+    /** The studio: a workspace for editing the media of the project. */
+    studio: {
+      /** Its way in, beside the tasks, and its name. */
+      open: 'Studio',
+      close: 'Close the studio',
+      pages: 'Pages of the studio',
+      page: { media: 'Media', edit: 'Edit' },
+      pool: 'Media pool',
+      import: 'Import',
+      /** A rate of frames as an editor writes it: 25, 29.97. */
+      fps: (rate: string) => `${rate} fps`,
+      bits: (bits: number) => `${bits}-bit`,
+      audioOnly: 'Audio only',
+      proxy: {
+        queued: 'Proxy queued',
+        making: (percent: number) => `Making proxy ${percent}%`,
+        ready: 'Proxy ready',
+        failed: 'Proxy failed',
+      },
+      makeAgain: 'Make again',
+      nothingLoaded: 'Nothing loaded',
+      play: 'Play',
+      pause: 'Pause',
+      back: 'Previous frame',
+      forward: 'Next frame',
+      position: 'Position',
+      useProxies: 'Use proxies',
+      source: { proxy: 'Proxy', original: 'Original' },
+      sound: { on: 'Sound on', off: 'Sound off', unavailable: 'Sound unavailable', none: 'No sound' },
+      retry: 'Try again',
+    },
+
     confirmFullAccess: 'Allow full access?',
     confirmWrite: 'Let Columbina change files?',
     allowFullAccess: 'Allow full access',
@@ -1286,6 +1318,36 @@ export const en = {
         notCleared: 'The music was removed from this window. The kept copy could not be cleared, '
           + 'and may be back after the next start.',
         choiceNotKept: 'The music of the application folder plays in this window. The choice could not be kept.',
+      },
+    },
+
+    /** What the studio says: in its viewer, under its tools, and when something did not work. */
+    studio: {
+      browser: 'The preview appears in the desktop app.',
+      opening: 'The project is being opened in the studio.',
+      takingOver: 'The project is being taken over from the agent.',
+      stopped: 'The engine of the studio has stopped.',
+      missing: 'The engine of the studio is not installed.',
+      notOpened: 'The studio could not be opened.',
+      unsupported: 'The preview cannot be shown on this system yet.',
+      headless: 'The project is open in an engine without a window, so the preview cannot be shown.',
+      noMedia: 'There is no media yet. Import some to begin.',
+      load: 'Double-click media on the Media page to see it here.',
+      inexact: 'A frame near the playhead is shown until the frame itself is ready.',
+      importFailed: 'The media could not be imported.',
+      loadFailed: 'This media could not be opened.',
+      failed: 'The engine did not do what was asked.',
+      proxyFailed: 'The proxy could not be made.',
+      useProxies: 'Proxies are copies of the media that are quick to scrub. They are made by themselves.',
+      source: {
+        proxy: 'The picture is read from the proxy.',
+        original: 'The picture is read from the media itself.',
+      },
+      sound: {
+        on: 'The sound plays.',
+        off: 'The sound plays only at normal speed.',
+        unavailable: 'No sound device can be used, so the picture plays alone.',
+        none: 'This media has no sound.',
       },
     },
   },

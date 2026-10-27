@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { useWords } from './locale';
+import { useOverlay } from './overlay';
 
 /**
  * A window above the window, for something that has to be settled before
@@ -16,6 +17,8 @@ export function Sheet({ title, children, foot, onClose, wide = false }: {
 }) {
   const words = useWords();
   const dialog = useRef<HTMLDialogElement>(null);
+  // It lies over the whole window, and over the viewer of the studio too.
+  useOverlay();
 
   useEffect(() => {
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;

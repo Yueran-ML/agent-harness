@@ -1,9 +1,11 @@
+import { useEffect, useState } from 'react';
 import { ChevronRight, X } from 'lucide-react';
 import type { ToolItem } from '../state';
 import type { Workspace } from '../useWorkspace';
 import { CopyButton } from './Markdown';
 import { ToolRow } from './ToolRow';
 import { useWords } from './locale';
+import { useOverlay } from './overlay';
 import { contextPercent, countOf, serviceTitle, stepped } from './tell';
 
 export type InspectorTab = 'changes' | 'details';
@@ -69,6 +71,20 @@ function Details({ workspace, locale }: { workspace: Workspace; locale: string }
 }
 
 /** A panel beside the conversation: what the task changed, and the figures of the task. */
+/** Whether the window is so narrow that the panel lies over the page, as the stylesheet lays it out then. */
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => matchMedia(NARROW).matches);
+  useEffect(() => {
+    const query = matchMedia(NARROW);
+    const heard = () => setNarrow(query.matches);
+    heard();
+    query.addEventListener('change', heard);
+    return () => query.removeEventListener('change', heard);
+  }, []);
+  return narrow;
+}
+const NARROW = '(max-width: 1120px)';
+
 export function Inspector({ workspace, tab, onTab, onClose, locale }: {
   workspace: Workspace;
   tab: InspectorTab;
@@ -77,6 +93,8 @@ export function Inspector({ workspace, tab, onTab, onClose, locale }: {
   locale: string;
 }) {
   const words = useWords();
+  // In a narrow window the panel lies over what is beside it.
+  useOverlay(useNarrow());
   const changes = changesOf(workspace);
   const names = { changes: words.label.changes, details: words.label.details };
   return <aside className="inspector" aria-label={names[tab]} data-test="inspector">

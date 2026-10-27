@@ -5,6 +5,7 @@ import type { Messages } from '../messages/en';
 import type { Models } from '../useModels';
 import { keyOf, pickerKey } from './keys';
 import { useWords } from './locale';
+import { useOverlay } from './overlay';
 import { filtered, typedModel } from './models';
 import { useRoom } from './room';
 
@@ -96,6 +97,8 @@ export function ModelPicker({
 }) {
   const words = useWords();
   const [open, setOpen] = useState(false);
+  // Its panel may reach over the viewer of the studio.
+  useOverlay(open);
   // The service whose models are shown. Where it is none of those offered, they are those of the service in use.
   const [looked, setLooked] = useState(provider);
   const [query, setQuery] = useState('');

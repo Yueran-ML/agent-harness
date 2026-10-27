@@ -137,6 +137,9 @@ const samples: Record<string, unknown[][]> = {
   'hint.work.worktrees.removeAsk': [['fix-the-bug']],
   'label.work.groups.memory': [[0, 4000], [120, 4000]],
   'hint.work.groups.forgetAsk': [['家人群'], ['Home']],
+  'label.studio.fps': [['25'], ['29.97'], ['23.976']],
+  'label.studio.bits': [[8], [10]],
+  'label.studio.proxy.making': [[0], [42], [100]],
 };
 
 type Said = { path: string; text: string };

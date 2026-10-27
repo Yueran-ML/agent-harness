@@ -3,6 +3,7 @@ import { ArrowRight, LoaderCircle, Moon, Play, RotateCcw, Volume2, VolumeX } fro
 import { keyOf } from './app/keys';
 import { useWords } from './app/locale';
 import { openingKey } from './app/opening';
+import { useOverlay } from './app/overlay';
 import './StartupVideo.css';
 
 type Playback = 'loading' | 'ready' | 'playing' | 'revealing' | 'finished' | 'failed';
@@ -14,6 +15,8 @@ export function StartupVideo({ onComplete, hasBackgroundMusic, muted, onMutedCha
   onMutedChange: (muted: boolean) => void;
 }) {
   const words = useWords();
+  // The film lies over the whole window.
+  useOverlay();
   const sound = muted ? words.label.unmute : words.label.mute;
   const container = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);

@@ -10,6 +10,7 @@ import { isPicture, sizeOf, type Attachment, type Refused } from './attachments'
 import { effortOf, type Effort } from './effort';
 import { composerKey, keyOf } from './keys';
 import { useWords } from './locale';
+import { useOverlay } from './overlay';
 import { modifier } from './system';
 import { goneWords, servicesToSwitchTo } from './tell';
 
@@ -102,6 +103,8 @@ export function Composer({
   const matching = typed === null ? [] : (hello?.commands ?? []).filter(command => command.name.startsWith(typed));
   const listOpen = matching.length > 0 && closedFor !== draft && !unavailable;
   const active = Math.min(chosen, matching.length - 1);
+  // The list opens above the field, and may reach over the viewer of the studio.
+  useOverlay(listOpen);
   useEffect(() => setChosen(0), [typed]);
   // Asked for from outside: the list opens again if it was closed, and on an empty field it
   // opens with every command. Whatever else is written stays as it is.

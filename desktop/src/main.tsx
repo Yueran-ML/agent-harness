@@ -10,6 +10,7 @@ import './ui/shell.css';
 import './ui/conversation.css';
 import './ui/composer.css';
 import './ui/trace.css';
+import './studio/Studio.css';
 
 // The theme and the size of type are on the page before anything is drawn on it.
 document.documentElement.dataset.theme = initialTheme();

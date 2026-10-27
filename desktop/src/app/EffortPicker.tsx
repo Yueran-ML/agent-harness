@@ -3,6 +3,7 @@ import { Brain, Check, ChevronDown } from 'lucide-react';
 import type { Effort } from './effort';
 import { keyOf, pickerKey } from './keys';
 import { useWords } from './locale';
+import { useOverlay } from './overlay';
 import type { ModelChoice } from './ModelPicker';
 import { useRoom } from './room';
 
@@ -33,6 +34,8 @@ export function EffortPicker({ effort, efforts, choice, placement, onOpen, onCho
 }) {
   const words = useWords();
   const [open, setOpen] = useState(false);
+  // Its panel may reach over the viewer of the studio.
+  useOverlay(open);
   // The level that the keyboard is on.
   const [marked, setMarked] = useState<Effort>(effort);
   const whole = useRef<HTMLDivElement>(null);

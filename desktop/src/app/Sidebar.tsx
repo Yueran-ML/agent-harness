@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Folder, MessageCircle, PanelLeftClose, Search, Settings2, SquarePen } from 'lucide-react';
+import { Clapperboard, Folder, MessageCircle, PanelLeftClose, Search, Settings2, SquarePen } from 'lucide-react';
 import type { Workspace } from '../useWorkspace';
 import { useWords } from './locale';
 import { shortcut } from './system';
@@ -20,7 +20,7 @@ export function useNow(): number {
  * The tasks of the project, or of the chat, and the ways to a new task, another project, the
  * chat and the settings.
  */
-export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject, onOpenChat, onSettings, onHide }: {
+export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject, onOpenChat, onSettings, onHide, studio }: {
   workspace: Workspace;
   /** What the task that is open is called. */
   title: string;
@@ -31,6 +31,8 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
   onOpenChat: () => void;
   onSettings: () => void;
   onHide: () => void;
+  /** The way into the studio of the project, and out of it, where the project has one. */
+  studio?: { open: boolean; onToggle: () => void };
 }) {
   const words = useWords();
   const now = useNow();
@@ -108,6 +110,10 @@ export function Sidebar({ workspace, title, onNewTask, onOpenTask, onOpenProject
     <Worktrees workspace={workspace} />
 
     <div className="sidebar-foot">
+      {studio && <button type="button" className="foot-row" aria-pressed={studio.open} onClick={studio.onToggle} data-test="open-studio">
+        <Clapperboard size={15} aria-hidden="true" />
+        <span>{words.label.studio.open}</span>
+      </button>}
       {/* In a chat no project is open, and this is the way into one. */}
       <button type="button" className="foot-row" onClick={onOpenProject} title={workspace.chat ? words.label.openProject : hello?.cwd ?? words.label.otherProject} aria-label={workspace.chat ? words.label.openProject : words.label.otherProject} data-test="open-project">
         <Folder size={15} aria-hidden="true" />

@@ -18,6 +18,8 @@ import { useGitHub } from '../useGitHub';
 import { useModels } from '../useModels';
 import { useUpdates } from '../useUpdates';
 import { useWorkspace, type Workspace } from '../useWorkspace';
+import { studioEngine } from '../studio/connection';
+import { Studio } from '../studio/Studio';
 import { ApprovalCard } from './ApprovalCard';
 import { Composer } from './Composer';
 import { Conversation } from './Conversation';
@@ -133,6 +135,8 @@ export default function App() {
   const [pendingLeave, setPendingLeave] = useState<(() => void) | null>(null);
   // How often the list of commands was asked for with the keyboard.
   const [commandsAsked, setCommandsAsked] = useState(0);
+  // The folder whose project the studio shows, while it shows; the conversation goes beside it.
+  const [studioFor, setStudioFor] = useState<string | null>(null);
 
   const field = useRef<HTMLTextAreaElement>(null);
   const firstButton = useRef<HTMLButtonElement>(null);
@@ -141,6 +145,11 @@ export default function App() {
   const running = status?.status === 'running';
   const stopped = status?.status === 'stopped';
   const unavailable = workspace.loading || !workspace.connected || stopped || !workspace.hasProject;
+  // The studio edits the project of the folder that the conversation works in. A chat has none.
+  const studioFolder = workspace.hasProject && !workspace.chat ? workspace.hello?.cwd ?? null : null;
+  const studioShown = studioFolder !== null && studioFor === studioFolder;
+  // The studio of another folder is left: the shell closes its engine as the folder changes.
+  useEffect(() => { setStudioFor(shown => (shown === studioFolder ? shown : null)); }, [studioFolder]);
 
   // --- What the window looks like, and the language it speaks.
   useEffect(() => {
@@ -535,10 +544,11 @@ export default function App() {
     if (showOpening || document.querySelector('dialog[open]')) return;
     if (document.activeElement !== document.body && document.activeElement !== document.documentElement) return;
     if (!workspace.hasProject) firstButton.current?.focus();
-    else if (!unavailable) field.current?.focus();
+    // The studio keeps the keyboard for its keys, until the field is chosen.
+    else if (!unavailable && !studioShown) field.current?.focus();
     // The field cannot be used and has let go of the keyboard. What is done next is a new start.
     else if (workspace.closed !== null || stopped) restartButton.current?.focus();
-  }, [showOpening, unavailable, workspace.hasProject, workspace.sessionId, workspace.closed, stopped]);
+  }, [showOpening, unavailable, workspace.hasProject, workspace.sessionId, workspace.closed, stopped, studioShown]);
 
   // --- What is shown.
   // A conversation in no project is called a chat, and not by the name of its folder.
@@ -621,6 +631,7 @@ export default function App() {
         aria-hidden={showOpening || undefined}
         data-sidebar={noSidebar ? 'hidden' : undefined}
         data-inspector={inspector ? '' : undefined}
+        data-studio={studioShown ? '' : undefined}
       >
         <a href="#composer" className="skip">{words.label.skipToInput}</a>
 
@@ -633,6 +644,17 @@ export default function App() {
           onOpenChat={openChat}
           onSettings={() => setSettings('appearance')}
           onHide={() => setSidebarHidden(true)}
+          studio={studioFolder === null ? undefined : {
+            open: studioShown,
+            onToggle: () => setStudioFor(studioShown ? null : studioFolder),
+          }}
+        />}
+
+        {studioShown && <Studio
+          cwd={studioFolder}
+          engine={studioEngine()}
+          language={shownLanguage(language)}
+          onClose={() => setStudioFor(null)}
         />}
 
         <main className="main">

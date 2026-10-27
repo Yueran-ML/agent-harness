@@ -62,9 +62,10 @@ WHAT_THE_USER_DOES: tuple[dict[str, Any], ...] = (
     {"sees": f"    {WAIT}\n", "asked": True, "keys": "y"},
     # It is stopped.
     {"sees": "(allowed, this once)\n", "keys": ESCAPE},
-    # A third task, and the end.
+    # A third task, and the end once that turn is over too. The line under the answer comes a
+    # moment after the answer, and a line that is typed before it would stand above it.
     {"sees": "(stopped)\n", "keys": "Are you there?" + ENTER},
-    {"sees": "Here I am.\n", "keys": "/exit" + ENTER},
+    {"sees": "Here I am.\n\n", "keys": "/exit" + ENTER},
 )
 
 
@@ -194,7 +195,8 @@ def test_what_is_logged_in_a_conversation_stands_above_the_prompt_and_nowhere_el
     # the line off, and the log says so.
     first = (
         {"sees": "/help lists the commands.", "keys": "Hello?" + ENTER},
-        {"sees": "Hi.\n", "keys": "/exit" + ENTER},
+        # A command waits until the turn is over: the line under the answer says so.
+        {"sees": "Hi.\n\n", "keys": "/exit" + ENTER},
     )
     arguments = ["--cwd", str(repository), "--session-id", "s-1"]
     held = profile(tmp_path, {"text": "Hi."}, extends="cli", extra=[somebody(*first)])
@@ -220,7 +222,7 @@ def test_a_no_keeps_the_command_from_running(home: Path, repository: Path, tmp_p
     steps = (
         {"sees": "/help lists the commands.", "keys": "Run the check." + ENTER},
         {"sees": f"    {CHECK}\n", "asked": True, "keys": "n"},
-        {"sees": "I was not allowed to run it.\n", "keys": "/exit" + ENTER},
+        {"sees": "I was not allowed to run it.\n\n", "keys": "/exit" + ENTER},
     )
     chosen = profile(tmp_path, *replies, extends="cli", extra=[somebody(*steps)])
 

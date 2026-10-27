@@ -44,7 +44,8 @@ def test_a_yes_for_the_session_is_asked_for_once_however_often_the_tool_is_calle
         {"sees": "/help lists the commands.", "keys": TASK + ENTER},
         # The tool runs what a server likes, so it needs a yes. One is given for the session.
         {"sees": ASKED, "asked": True, "keys": "a"},
-        {"sees": "5 and 42.\n", "keys": "/exit" + ENTER},
+        # The end, once the turn is over: the line under the answer says so.
+        {"sees": "5 and 42.\n\n", "keys": "/exit" + ENTER},
     ]
     # The window is wide, so that no line is broken at a place that depends on the machine.
     user = {"id": "user", "plugin": "support.user", "config": {"script": steps, "columns": 400}}

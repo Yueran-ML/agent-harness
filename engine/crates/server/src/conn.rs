@@ -172,9 +172,13 @@ async fn write(
         };
         batch.clear();
         batch.extend_from_slice(&first);
+        let mut lines = 1;
         while batch.len() < WRITE_BATCH {
             match queued.try_recv() {
-                Some(line) => batch.extend_from_slice(&line),
+                Some(line) => {
+                    batch.extend_from_slice(&line);
+                    lines += 1;
+                }
                 None => break,
             }
         }
@@ -186,6 +190,7 @@ async fn write(
         if written.is_err() {
             return;
         }
+        queued.wrote(lines);
         if batch.capacity() > 4 * WRITE_BATCH {
             // Let go of what a long message took.
             batch = Vec::new();

@@ -16,7 +16,8 @@
 //! ends when its stdin is closed, as it is when that program ends, however it ends; one whose
 //! stdin is closed or empty from the start ends at once. A headless engine does not read stdin;
 //! it ends once no client has been connected for `--idle-seconds` (30 unless given), counted
-//! from when it starts and from when the last connection closes. Either ends on Ctrl+C too, on
+//! from when it starts and from when the last connection closes, or when the desktop asks it
+//! to yield the project (`engine.yield`). Either ends on Ctrl+C too, on
 //! SIGTERM and SIGHUP on Unix, and on Windows when its console is closed or the user logs off or
 //! the system shuts down. As it ends it stops taking connections, closes those that are open,
 //! saves the project, and lets the lock go.
@@ -424,6 +425,18 @@ async fn serve(
         }
     });
     tokio::spawn(interrupted(stop.clone()));
+    tokio::spawn({
+        let yielded = Arc::clone(&engine.yielded);
+        let stop = stop.clone();
+        async move {
+            yielded.notified().await;
+            let _ = stop.send(0);
+            log(
+                "stopping",
+                &json!({ "reason": "the project was yielded to the desktop" }),
+            );
+        }
+    });
     if options.headless {
         tokio::spawn(idle(Arc::clone(&engine), options.idle, stop));
     } else {

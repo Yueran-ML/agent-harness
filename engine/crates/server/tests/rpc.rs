@@ -409,6 +409,7 @@ async fn the_engine_says_where_it_listens_and_answers_hello() {
             "revision": 0,
             "project": written(dir.path()),
             "pid": engine.pid,
+            "headless": true,
         })
     );
     let got = project(&mut client).await;
@@ -421,6 +422,76 @@ async fn the_engine_says_where_it_listens_and_answers_hello() {
     drop(client);
     assert_eq!(engine.ended().await, 0);
     assert!(!dir.path().join("engine.lock").exists());
+}
+
+#[tokio::test]
+async fn a_headless_engine_yields_its_project_to_the_desktop_and_ends() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    agent.apply(add_media("C:/media/a.mp4")).await;
+    let last = project(&mut agent).await["project"].clone();
+    let mut desktop = Client::connect(&engine.address).await;
+    let hello = desktop.hello("desktop").await;
+    assert_eq!(
+        (&hello["headless"], &hello["pid"]),
+        (&json!(true), &json!(engine.pid))
+    );
+    // Answered before the engine ends, and nothing is answered after it.
+    let answer = desktop.call("engine.yield", None).await;
+    assert_eq!(answer["result"], json!({}), "{answer}");
+    let yielding = json!({
+        "jsonrpc": "2.0", "method": "engine.yielding", "params": { "to": "desktop" },
+    });
+    // Told to everyone, the desktop too, before the answer.
+    assert_eq!(
+        desktop.take_notifications(),
+        std::slice::from_ref(&yielding)
+    );
+    let rest = desktop.rest().await;
+    assert!(rest.is_empty(), "{rest:?}");
+    // The agent is told, and its connection closed: it waits for the desktop's engine to name
+    // itself in engine.lock.
+    let rest = agent.rest().await;
+    assert_eq!(rest, [yielding]);
+    assert_eq!(engine.ended().await, 0);
+    assert!(!dir.path().join("engine.lock").exists());
+    assert_eq!(saved(dir.path()), last);
+    // The lock is let go: the desktop's own engine takes the project.
+    let next = self::engine(dir.path(), &["--headless", "--idle-seconds", "1"]).await;
+    let mut client = next.client("desktop").await;
+    assert_eq!(project(&mut client).await["project"], last);
+}
+
+#[tokio::test]
+async fn only_the_desktop_may_ask_and_only_a_headless_engine_yields() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let error = agent.error("engine.yield", None).await;
+    assert_eq!(error["code"], -32600, "{error}");
+    let mut cli = engine.client("cli").await;
+    assert_eq!(cli.error("engine.yield", None).await["code"], -32600);
+    let mut desktop = engine.client("desktop").await;
+    let error = desktop
+        .error("engine.yield", Some(json!({ "now": true })))
+        .await;
+    assert_eq!(error["code"], -32602, "{error}");
+    // Still there.
+    assert_eq!(project(&mut agent).await["revision"], 0);
+    drop((agent, cli, desktop));
+
+    // The desktop's own engine does not yield: it ends when its stdin is closed.
+    let dir = project_dir();
+    let mut own = self::engine(dir.path(), &[]).await;
+    let mut desktop = Client::connect(&own.address).await;
+    assert_eq!(desktop.hello("desktop").await["headless"], false);
+    let error = desktop.error("engine.yield", None).await;
+    assert_eq!(error["code"], -32601, "{error}");
+    assert!(own.running());
+    drop(desktop);
+    drop(own.child.stdin.take());
+    assert_eq!(own.ended().await, 0);
 }
 
 #[tokio::test]

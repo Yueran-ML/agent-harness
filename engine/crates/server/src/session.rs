@@ -19,7 +19,7 @@ use columbina_store::Saver;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
-use tokio::sync::{watch, Mutex, MutexGuard, Semaphore};
+use tokio::sync::{watch, Mutex, MutexGuard, Notify, Semaphore};
 
 use crate::log::log;
 use crate::names;
@@ -88,6 +88,11 @@ pub struct Engine {
     transport: Transport,
     /// The maker of proxies.
     proxies: Proxies,
+    /// Whether the engine is headless, as `hello` answers it.
+    headless: bool,
+    /// Told when the engine is to end, having yielded the project to the desktop
+    /// (`engine.yield`).
+    pub yielded: Arc<Notify>,
 }
 
 #[derive(Default)]
@@ -242,7 +247,14 @@ impl Engine {
             viewer,
             transport,
             proxies,
+            headless,
+            yielded: Arc::new(Notify::new()),
         }
+    }
+
+    /// What is told when the engine is to end, having yielded the project.
+    fn ending(&self) -> Arc<Notify> {
+        Arc::clone(&self.yielded)
     }
 
     /// Stop the proxy being made, and delete what it wrote: the engine ends. This blocks for a
@@ -561,6 +573,7 @@ async fn dispatch(
         }
         "media.import" => media_import(engine, connection, kind, id, params).await,
         "media.make_proxy" => make_proxy(engine, connection, id, params).await,
+        "engine.yield" => engine_yield(engine, connection, kind, id, params).await,
         "view.attach" | "view.place" | "view.show" | "view.detach" => {
             let result = engine.viewer.call(kind, method, params).await?;
             if method == "view.attach" {
@@ -645,6 +658,7 @@ struct HelloResult<'a> {
     revision: u64,
     project: &'a str,
     pid: u32,
+    headless: bool,
 }
 
 /// `hello`: say what the client is. From then on the connection is sent every notification.
@@ -693,6 +707,7 @@ async fn hello(
             revision: state.history.revision(),
             project: &engine.project,
             pid: engine.pid,
+            headless: engine.headless,
         },
     );
     Ok(engine.finish(state, connection, line))
@@ -831,6 +846,70 @@ async fn history_step(
     Ok(engine.finish(state, connection, line))
 }
 
+/// `engine.yield`, of the desktop, to a headless engine (an agent's) that holds the project it
+/// opens: the engine tells every client that it yields (`engine.yielding`), answers, and once
+/// these are written ends as it ends when it is stopped: it takes no more connections, closes
+/// those it has, saves the project and lets the lock go, so that the desktop starts its own
+/// engine on the project.
+async fn engine_yield(
+    engine: &Engine,
+    connection: &Connection,
+    kind: Kind,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let method = "engine.yield";
+    if kind != Kind::Desktop {
+        let fault = Fault::new(
+            rpc::INVALID_REQUEST,
+            "only the desktop may ask an engine to yield its project",
+        );
+        return Err(fault.into());
+    }
+    if !engine.headless {
+        let fault = Fault::new(
+            rpc::METHOD_NOT_FOUND,
+            format!(
+                "there is no method {method} in an engine that is not headless: it is the \
+                 desktop's own, and ends when its stdin is closed"
+            ),
+        );
+        return Err(fault.into());
+    }
+    rpc::no_params(method, params)?;
+    let mut state = engine.state.lock().await;
+    state.broadcast(&rpc::notification_line(
+        "engine.yielding",
+        &json!({ "to": "desktop" }),
+    ));
+    let senders: Vec<queue::Sender> = state
+        .peers
+        .values()
+        .map(|peer| peer.queue.clone())
+        .collect();
+    let line = rpc::result_line(id, &json!({}));
+    let reply = engine.finish(state, connection, line);
+    let ending = engine.ending();
+    tokio::spawn(async move {
+        // What was told and answered is written before the connections are closed; a client
+        // that does not read it is not waited for long.
+        let written = futures_all(senders.iter().map(queue::Sender::written));
+        let _ = tokio::time::timeout(YIELD_WRITTEN, written).await;
+        ending.notify_one();
+    });
+    Ok(reply)
+}
+
+/// Wait for every one of some futures, one after another.
+async fn futures_all<F: std::future::Future<Output = ()>>(futures: impl Iterator<Item = F>) {
+    for future in futures {
+        future.await;
+    }
+}
+
+/// How long the answer to `engine.yield` is waited for to be written before the engine ends.
+const YIELD_WRITTEN: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The params of `media.make_proxy`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -859,7 +938,8 @@ async fn make_proxy(
         let fault = Fault::new(
             rpc::METHOD_NOT_FOUND,
             format!(
-                "there is no method {method} in an engine that makes no proxies (a headless                  one, or one started with --no-proxies)"
+                "there is no method {method} in an engine that makes no proxies (a headless \
+                 one, or one started with --no-proxies)"
             ),
         );
         return Err(fault.into());

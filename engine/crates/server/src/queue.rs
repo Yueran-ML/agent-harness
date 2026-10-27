@@ -1,10 +1,11 @@
 //! The queue of what is to be sent on a connection, held to a number of messages and a number
 //! of bytes.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::watch;
 
 use crate::rpc::Line;
 
@@ -32,6 +33,10 @@ pub struct Sender {
     queue: mpsc::Sender<Line>,
     bytes: Arc<AtomicUsize>,
     most_bytes: usize,
+    /// How many messages were queued.
+    pushed: Arc<AtomicU64>,
+    /// How many messages the writer has written.
+    written: watch::Receiver<u64>,
 }
 
 /// Where the writer of the connection takes them from.
@@ -39,21 +44,26 @@ pub struct Sender {
 pub struct Receiver {
     queue: mpsc::Receiver<Line>,
     bytes: Arc<AtomicUsize>,
+    written: watch::Sender<u64>,
 }
 
 /// A queue held to `limits`.
 pub fn queue(limits: Limits) -> (Sender, Receiver) {
     let (sender, receiver) = mpsc::channel(limits.messages);
     let bytes = Arc::new(AtomicUsize::new(0));
+    let (written, written_seen) = watch::channel(0);
     (
         Sender {
             queue: sender,
             bytes: Arc::clone(&bytes),
             most_bytes: limits.bytes,
+            pushed: Arc::new(AtomicU64::new(0)),
+            written: written_seen,
         },
         Receiver {
             queue: receiver,
             bytes,
+            written,
         },
     )
 }
@@ -68,7 +78,10 @@ impl Sender {
             return Err(Refused::Full);
         }
         match self.queue.try_send(line) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.pushed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
             Err(error) => {
                 self.bytes.fetch_sub(length, Ordering::SeqCst);
                 Err(match error {
@@ -80,7 +93,21 @@ impl Sender {
     }
 }
 
+impl Sender {
+    /// Wait until every message queued so far has been written, or the writer has ended.
+    pub async fn written(&self) {
+        let pushed = self.pushed.load(Ordering::SeqCst);
+        let mut written = self.written.clone();
+        let _ = written.wait_for(|&written| written >= pushed).await;
+    }
+}
+
 impl Receiver {
+    /// Say that `count` more messages were written.
+    pub fn wrote(&self, count: u64) {
+        self.written.send_modify(|written| *written += count);
+    }
+
     /// The next message, waiting for it; none once no one can queue any more.
     pub async fn recv(&mut self) -> Option<Line> {
         let line = self.queue.recv().await?;
@@ -123,5 +150,31 @@ mod tests {
         assert_eq!(sender.push(line(1)), Err(Refused::Full), "three messages");
         drop(receiver);
         assert_eq!(sender.push(line(1)), Err(Refused::Closed));
+    }
+
+    #[tokio::test]
+    async fn what_was_queued_is_waited_for_until_it_is_written() {
+        let (sender, mut receiver) = queue(Limits {
+            messages: 8,
+            bytes: 100,
+        });
+        sender.push(line(1)).unwrap();
+        sender.push(line(1)).unwrap();
+        let waited = tokio::spawn({
+            let sender = sender.clone();
+            async move { sender.written().await }
+        });
+        receiver.recv().await.unwrap();
+        receiver.wrote(1);
+        tokio::task::yield_now().await;
+        assert!(!waited.is_finished(), "one of two written");
+        // Queued after the wait began: not waited for.
+        sender.push(line(1)).unwrap();
+        receiver.recv().await.unwrap();
+        receiver.wrote(1);
+        waited.await.unwrap();
+        // A writer that ends is not waited for.
+        drop(receiver);
+        sender.written().await;
     }
 }

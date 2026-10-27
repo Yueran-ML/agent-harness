@@ -57,7 +57,7 @@ columbina-engine --project <DIR> [--headless] [--idle-seconds <N>]
 
   | code | meaning | stderr |
   |---|---|---|
-  | 0 | ended as asked (idle, stdin closed, a signal) | |
+  | 0 | ended as asked (idle, stdin closed, a signal, `engine.yield`) | |
   | 1 | stopped by an error after it listened (taking connections failed 20 times in a row, or the last save failed) | `{"event": ...}` lines |
   | 2 | could not start: bad arguments, a `project.json` that cannot be read, no directory for the socket, or the address held by another program for more than about 2 s | `{"error": "..."}` |
   | 3 | the project is open in another engine: connect to it instead | `{"held": {"pid": 1234, "address": "..."}}`, or `{"contended": true}` when that engine has not yet said where it listens (try again shortly) |
@@ -114,7 +114,8 @@ Before `hello`, every other request is refused with `-32600`.
 
 | method | params | result |
 |---|---|---|
-| `hello` | `{"client": "desktop" \| "agent" \| "cli", "protocol": 1}` | `{"engine": "0.1.0", "protocol": 1, "revision": n, "project": "<dir>", "pid": 1234}` |
+| `hello` | `{"client": "desktop" \| "agent" \| "cli", "protocol": 1}` | `{"engine": "0.1.0", "protocol": 1, "revision": n, "project": "<dir>", "pid": 1234, "headless": false}` |
+| `engine.yield` | none | `{}` (desktop only, to a `--headless` engine; see below) |
 | `project.get` | none | `{"revision": n, "next_id": k, "project": {...}}` |
 | `transaction.apply` | `{"ops": [op, ...]}` | `{"revision": n, "done": [op, ...], "next_id": k, "names": {"$a": "c7", ...}}` |
 | `history.undo` | none | `{"revision": n, "done": [op, ...], "next_id": k}`, or `{"revision": n, "done": null}` if there is nothing to undo |
@@ -130,7 +131,21 @@ Before `hello`, every other request is refused with `-32600`.
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 1 is refused
   (`-32602`, `data: {"protocol": 1}`). `project` is the directory as the engine writes it (see
-  Address); `pid` is the engine's.
+  Address); `pid` is the engine's; `headless` whether it was started `--headless` (an agent's or a
+  command's engine, with no view, no transport and no proxies) or is the desktop's own.
+- `engine.yield` hands the project over from a headless engine to the desktop. When the desktop
+  opens a project and finds it held by an engine whose `hello` says `"headless": true` (an
+  agent's), it calls `engine.yield` on it, waits for that engine's process (`pid` of `hello`, or
+  of `engine.lock`) to end, and starts its own engine on the project. The headless engine tells
+  every connection that said hello `engine.yielding` `{"to": "desktop"}` (below), answers `{}`,
+  and, once these are written (or after 2 s at most), ends as it does when it is asked to: it
+  takes no more connections, closes every one it has (the agent's too), saves the project, lets
+  the lock go and ends with 0 (logged `stopping`, with the reason). **A client told
+  `engine.yielding`** does not start an engine of its own at once: it waits, up to about 5 s, for
+  `engine.lock` to name a new engine (the desktop's, which it then connects to), and only then
+  starts one itself; so that it does not take the project in the moment before the desktop's
+  engine writes `engine.lock`. Only the desktop may call it (`-32600` from another client); an engine that is
+  not headless (the desktop's own) answers `-32601`: it ends when its stdin is closed.
 - `transaction.apply` applies its operations in order, all or none; an empty list is refused.
   `done` is the operations as they were done (see below). `names` maps each `$name` of the
   transaction (see below) to the id the engine gave it; `{}` if there were none.
@@ -580,6 +595,7 @@ real ids. For example:
 | `project.changed` | `{"revision": n, "by": "<kind>", "made_by": "<kind>", "done": [op, ...], "next_id": k}` |
 | `engine.error` | `{"message": "...", "kind": "save"}` |
 | `transport.state` | the state of the transport (see The transport) |
+| `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
@@ -598,8 +614,8 @@ real ids. For example:
 | code | when | `data` |
 |---|---|---|
 | `-32700` | the line is not JSON (id `null`) | |
-| `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB, `view.*` from a client that is not the desktop | |
-| `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies | |
+| `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | |
+| `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
 | `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media not in the project | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"reason": "missing", "media": "..."}` |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was | the refusal, below |
 | `-32002` | `media.import`: a file cannot be read; nothing was added. `transport.load`: the file of the media cannot be opened or decoded | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |

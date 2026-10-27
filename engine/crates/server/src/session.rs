@@ -221,6 +221,12 @@ impl Engine {
                     let state = Arc::clone(&state);
                     move |media: &str, proxy: &Proxy| proxy_made(&state, media, proxy, limits)
                 }),
+                twin: Box::new({
+                    let state = Arc::clone(&state);
+                    move |media: &str| {
+                        proxy::twin_of(state.blocking_lock().history.project(), media)
+                    }
+                }),
             },
         );
         Engine {
@@ -414,7 +420,7 @@ fn make_again(state: &Mutex<State>, media: &str) {
     let state = state.blocking_lock();
     let project = state.history.project();
     if let Some(found) = project.media.iter().find(|found| found.id == media) {
-        state.proxies.again(project, found);
+        state.proxies.again(found);
     }
 }
 
@@ -849,7 +855,7 @@ async fn make_proxy(
             .with_data(json!({ "reason": "missing", "media": asked.media }));
         return Err(fault.into());
     };
-    if !state.proxies.retry(project, media) {
+    if !state.proxies.retry(media) {
         let fault = Fault::new(
             rpc::METHOD_NOT_FOUND,
             format!(

@@ -27,13 +27,14 @@
 //! frames. It is written to `<project>/cache/proxies/<media>-<12 digits of the digest>.mov`, as a
 //! `.part` first, and set on the media by a change of the engine that is no step of the history to
 //! undo ([`columbina_model::History::apply_unrecorded`]). Media whose file is that of other media
-//! (the same digest) is given that media's proxy.
+//! (the same digest and the same facts) is given that media's proxy ([`twin_of`]).
 //!
 //! What it is at is told to every client in `media.proxy`: `queued`, `running` (with how far it
 //! is, at most once a second), `done` or `failed`. A proxy being made of media that is removed
 //! is stopped and its `.part` deleted, and so is one being made when the engine ends; so is one
 //! whose `ffmpeg` makes no progress for [`WATCHDOG`]. A proxy that cannot be made of a file by any
-//! encoder is remembered as such in `cache/proxies/failed.json`, by the digest of the file, and
+//! encoder (but for a full disk or a directory that may not be written, which may pass) is
+//! remembered as such in `cache/proxies/failed.json`, by the digest of the file, and
 //! not tried again until a client asks for it (`media.make_proxy`). As the engine starts, the files
 //! of `cache/proxies` that no media of the project names are deleted.
 
@@ -275,6 +276,30 @@ pub enum Made {
 pub struct Hooks {
     pub notify: Tell,
     pub made: SetMade,
+    pub twin: Twin,
+}
+
+/// The proxy of another media item of the same file as media, if one has a proxy that may be
+/// used (see [`twin_of`]).
+pub type Twin = Box<dyn Fn(&str) -> Option<Proxy> + Send + Sync>;
+
+/// The proxy of other media of `project` that is of the same file as media `id`, to be set on
+/// it rather than made again: other media whose digest and facts are those of the media (the
+/// digest reads only the size and the first and last 64 KiB of a file, which two recordings
+/// written into files laid out ahead may share), with a proxy made from its file whose file is
+/// there.
+pub fn twin_of(project: &Project, id: &str) -> Option<Proxy> {
+    let media = project.media.iter().find(|media| media.id == id)?;
+    project
+        .media
+        .iter()
+        .filter(|other| {
+            other.id != media.id
+                && other.identity.digest == media.identity.digest
+                && other.facts == media.facts
+        })
+        .find_map(|other| usable(other).filter(|proxy| Path::new(&proxy.path).is_file()))
+        .cloned()
 }
 
 /// How what a proxy is at is told.
@@ -293,28 +318,18 @@ struct Job {
     duration: Time,
     /// Whether it is known to need a proxy; if not, that is found first.
     checked: bool,
-    /// The proxy of other media of the same file, to be set on it rather than made again.
-    reuse: Option<Proxy>,
 }
 
 impl Job {
-    /// The job of media of `project`, if it has a picture: the proxy of other media of the same
-    /// file is taken, where there is one.
-    fn of(media: &Media, project: &Project) -> Option<Job> {
-        let reuse = project
-            .media
-            .iter()
-            .filter(|other| other.id != media.id && other.identity.digest == media.identity.digest)
-            .find_map(|other| usable(other).filter(|proxy| Path::new(&proxy.path).is_file()))
-            .cloned();
+    /// The job of media, if it has a picture.
+    fn of(media: &Media) -> Option<Job> {
         Some(Job {
             media: media.id.clone(),
             source: PathBuf::from(&media.path),
             digest: media.identity.digest.clone(),
             video: media.facts.video.clone()?,
             duration: media.facts.duration,
-            checked: reuse.is_some(),
-            reuse,
+            checked: false,
         })
     }
 
@@ -467,7 +482,7 @@ impl Proxies {
             for media in &project.media {
                 let made = usable(media).is_some_and(|proxy| Path::new(&proxy.path).is_file());
                 if !made {
-                    jobs.queue.extend(Job::of(media, project));
+                    jobs.queue.extend(Job::of(media));
                 }
             }
         }
@@ -491,14 +506,14 @@ impl Proxies {
         };
         let mut jobs = lock(&inner.jobs);
         for media in project.media.iter().filter(|item| media.contains(&item.id)) {
-            jobs.queue.extend(Job::of(media, project));
+            jobs.queue.extend(Job::of(media));
         }
         inner.wake.notify_all();
     }
 
-    /// Make the proxy of media of `project` again, as when its file could not be opened or
+    /// Make the proxy of media again, as when its file could not be opened or
     /// decoded; unless it is being made, or waits to be.
-    pub fn again(&self, project: &Project, media: &Media) {
+    pub fn again(&self, media: &Media) {
         let Some(inner) = &self.inner else {
             return;
         };
@@ -509,20 +524,20 @@ impl Proxies {
                 .as_ref()
                 .is_some_and(|running| running.media == media.id);
         if !waiting {
-            jobs.queue.extend(Job::of(media, project));
+            jobs.queue.extend(Job::of(media));
             inner.wake.notify_all();
         }
     }
 
-    /// Make the proxy of media of `project` again, at the asking of a client
+    /// Make the proxy of media again, at the asking of a client
     /// (`media.make_proxy`): what is remembered of a proxy of its file that could not be made is
     /// forgotten. Whether proxies are made at all.
-    pub fn retry(&self, project: &Project, media: &Media) -> bool {
+    pub fn retry(&self, media: &Media) -> bool {
         let Some(inner) = &self.inner else {
             return false;
         };
         inner.set_failure(&media.identity.digest, None);
-        self.again(project, media);
+        self.again(media);
         true
     }
 
@@ -900,8 +915,7 @@ fn make(
     cancelled: &AtomicBool,
     child: &Arc<Mutex<Option<Child>>>,
 ) -> Note {
-    let reuse = job.reuse.clone().or_else(|| sibling(inner, job));
-    if let Some(proxy) = &reuse {
+    if let Some(proxy) = &(hooks.twin)(&job.media) {
         return match (hooks.made)(&job.media, proxy) {
             Made::Set => {
                 log(
@@ -948,29 +962,24 @@ fn make(
     }
 }
 
-/// A proxy of the file of a job in the directory of the proxies, made before for other media
-/// of the same file: one whose name ends in the digest of the file, and that is checked as one
-/// that is made.
-fn sibling(inner: &Inner, job: &Job) -> Option<Proxy> {
-    let suffix = file_name("", &job.digest);
-    let own = file_name(&job.media, &job.digest);
-    let entries = std::fs::read_dir(&inner.dir).ok()?;
-    entries.flatten().find_map(|entry| {
-        let path = entry.path();
-        let name = path.file_name()?.to_str()?;
-        // Not its own, which is made again because it could not be read.
-        if !name.ends_with(&suffix) || name == own || !path.is_file() {
-            return None;
-        }
-        let (width, height, codec) = checked_proxy(&path, job).ok()?;
-        Some(Proxy {
-            path: path.to_str()?.to_owned(),
-            width,
-            height,
-            codec,
-            digest_of_source: job.digest.clone(),
-        })
-    })
+/// Whether a failure of `ffmpeg` is of the computer rather than of the file, and may pass: a
+/// disk that is full, or a directory that may not be written. Such a failure is not remembered
+/// in `failed.json`.
+fn transient(message: &str) -> bool {
+    let message = message.to_lowercase();
+    [
+        "no space left",
+        "not enough space",
+        "disk full",
+        "disk quota",
+        "permission denied",
+        "access is denied",
+        "read-only file system",
+        "error opening output",
+        "could not open file",
+    ]
+    .iter()
+    .any(|said| message.contains(said))
 }
 
 /// What is told of a job that failed, once it is logged.
@@ -1154,8 +1163,8 @@ fn encode(
     }
     Err(Failure {
         progress,
+        remember: !why.iter().any(|why| transient(why)),
         message: format!("the proxy cannot be made: {}", why.join("; ")),
-        remember: true,
     })
 }
 
@@ -1544,7 +1553,6 @@ mod tests {
                 scale: 1,
             },
             checked: true,
-            reuse: None,
         };
         let args = arguments(Recipe::Cuda, &job, 2, Path::new("/p/m1.mov.part"), None);
         let text = args.join(" ");
@@ -1599,5 +1607,65 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_proxy_is_shared_only_by_media_of_the_same_digest_and_facts() {
+        let dir = std::env::temp_dir().join(format!("columbina-twin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("m1-000000000000.mov");
+        std::fs::write(&file, b"a proxy").unwrap();
+        let mut project = Project::sample();
+        project.media[0].proxy = Some(Proxy {
+            path: file.to_str().unwrap().to_owned(),
+            width: 1920,
+            height: 1080,
+            codec: "hevc".into(),
+            digest_of_source: project.media[0].identity.digest.clone(),
+        });
+        let mut twin = project.media[0].clone();
+        twin.id = "m2".into();
+        twin.proxy = None;
+        project.media.push(twin);
+        assert_eq!(twin_of(&project, "m2"), project.media[0].proxy);
+        // The same digest, and another picture: a file laid out ahead, recorded otherwise.
+        for change in [
+            |media: &mut Media| media.facts.duration.ticks += 1,
+            |media: &mut Media| media.facts.video.as_mut().unwrap().width = 1280,
+            |media: &mut Media| media.facts.video.as_mut().unwrap().bits = 10,
+            |media: &mut Media| media.facts.video.as_mut().unwrap().codec = "hevc".into(),
+            |media: &mut Media| media.facts.video.as_mut().unwrap().rate.num = 50,
+        ] {
+            let mut other = project.clone();
+            change(&mut other.media[1]);
+            assert_eq!(twin_of(&other, "m2"), None);
+        }
+        let mut other = project.clone();
+        other.media[1].identity.digest = "f".repeat(64);
+        assert_eq!(twin_of(&other, "m2"), None);
+        // Nor one whose file is gone.
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(twin_of(&project, "m2"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_full_disk_or_a_directory_that_may_not_be_written_is_not_a_failure_of_the_file() {
+        for said in [
+            "ffmpeg ended with exit code: 1: [out#0/mov] Error writing trailer: No space left on device",
+            "ffmpeg ended with exit code: 1: av_interleaved_write_frame(): There is not enough space on the disk.",
+            "ffmpeg ended with exit code: 1: [out#0/mov] Error opening output file:/p.part: Permission denied",
+            "ffmpeg ended with exit code: 1: Error opening output files: Access is denied.",
+            "ffmpeg ended with exit code: 1: Read-only file system",
+        ] {
+            assert!(transient(said), "{said}");
+        }
+        for said in [
+            "ffmpeg ended with exit code: 1: Nothing was written into output file",
+            "the frames of the proxy are not numbered as those of the media",
+            "ffmpeg ended with exit code: 1: [hevc_nvenc] OpenEncodeSessionEx failed",
+        ] {
+            assert!(!transient(said), "{said}");
+        }
     }
 }

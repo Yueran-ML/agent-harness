@@ -193,7 +193,8 @@ itself; a client only sees them, and may turn their use off (`transport.proxies`
   time, at a low priority of the system. Only an engine that is not `--headless` makes them (it
   has the transport that reads them): media taken in by a headless engine gets its proxy when
   the desktop's engine opens the project. Media of the same file as other media (the same
-  digest) is given that media's proxy, which is not made twice.
+  digest, and the same facts: the digest reads only the size and the first and last 64 KiB) is
+  given that media's proxy, which is not made twice.
 - **What.** HEVC of intra frames only, made by NVENC (on an NVIDIA card; else ProRes 422 Proxy),
   at most 1920 pixels on its long edge, its shape kept; every frame of the media, with its
   timestamp, so that frame `n` of the proxy is frame `n` of the media (the frames of the proxy
@@ -226,8 +227,10 @@ itself; a client only sees them, and may turn their use off (`transport.proxies`
   it is told in `media.proxy`). Media not in the project is refused (`-32602`, `reason:
   "missing"`); an engine that makes no proxies answers `-32601`. Deleting `failed.json` forgets
   every failure, at the next start. A failure that is not the file's (the engine ended, the media
-  was removed, no `ffmpeg`, a file that cannot be read, an `ffmpeg` that wrote nothing for 60 s)
-  is not remembered.
+  was removed, no `ffmpeg`, a file that cannot be read, an `ffmpeg` that wrote nothing for 60 s,
+  or one whose `ffmpeg` said that the disk is full or that a file may not be written: "no space
+  left", "not enough space", "disk full", "disk quota", "permission denied", "access is denied",
+  "read-only file system", "error opening output", "could not open file") is not remembered.
 - **The cache.** When the engine starts, the files of `cache/proxies` that no media of the project
   names (the proxies of media removed since; the history is not kept from one engine to the next,
   so nothing could bring them back) are deleted, and so are `.part` files that an engine that was

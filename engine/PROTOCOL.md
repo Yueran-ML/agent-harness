@@ -14,6 +14,10 @@ columbina-engine --project <DIR> [--headless] [--idle-seconds <N>]
   beside itself or on `PATH`: on Windows `avcodec-62.dll`, `avformat-62.dll`, `avutil-60.dll`,
   `swscale-9.dll` (and `swresample-6.dll`, which they may use). Without them it cannot start
   (on Windows it ends at once with `0xc0000135`).
+- To make proxies (below), an engine that is not `--headless` runs the `ffmpeg` of the same LGPL
+  build: `ffmpeg.exe` (`ffmpeg` elsewhere) **beside the engine**, or the file that
+  `COLUMBINA_PROXY_FFMPEG` names. It never runs an `ffmpeg` found on `PATH`, which may be of the
+  GPL. Without one, the engine works all the same, and each proxy that it would make fails.
 - The directory is made if it is not there. The engine takes the lock of the project, opens
   `project.json` (a new, empty project if there is none), and listens.
 - Its first line on **stdout** is one JSON object, written once it listens:
@@ -138,7 +142,8 @@ Before `hello`, every other request is refused with `-32600`.
   at once, of all the calls together. Other connections are answered while the files are read
   (requests on the same connection are answered in order, after it). A file that is taken in
   twice is two media, as in an editor. A path is stored as the system writes it
-  (`C:\media\a.mp4` on Windows).
+  (`C:\media\a.mp4` on Windows). Once they are added, the engine makes a **proxy** of each that
+  needs one (see Proxies).
   - `identity`: `size`, `modified_us` (microseconds since 1970, UTC) and `digest`: the SHA-256 of
     the size in decimal, the first 64 KiB, and the last 64 KiB from no earlier than byte 65536,
     as the Python editing makes it.
@@ -164,6 +169,63 @@ Before `hello`, every other request is refused with `-32600`.
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
 - `view.*`: the viewer, below; `transport.*`: playing a source, below.
+
+## Proxies
+
+Media whose picture is slow to seek in gets a **proxy**: a copy of its picture whose every frame
+is a key frame, so that any frame is decoded alone, in a few milliseconds. Scrubbing it shows the
+frame itself at once, and playing it backward shows every frame. The engine makes proxies by
+itself; a client only sees them, and may turn their use off (`transport.proxies`).
+
+- **Which media.** A picture of long groups of frames (a key frame, then frames decoded from it)
+  that also has more than 1080 rows, more than 8 bits, HEVC or AV1, or B-frames: what cameras and
+  phones record. Not media whose every frame is a key frame (ProRes, DNxHR, MJPEG, H.264 or HEVC
+  of intra frames only), and not H.264 of 8 bits up to 1080p without B-frames. The engine tells
+  from the first 64 packets of the picture.
+- **When.** After each `media.import`, for the media it added, and when the engine starts, for
+  every media item of the project that has no proxy, has one made from another file
+  (`digest_of_source` is not the digest of its `identity`), or has one whose file is gone. One is
+  made at a time, at a low priority of the system. Only an engine that is not `--headless` makes
+  them (it has the transport that reads them): media taken in by a headless engine gets its proxy
+  when the desktop's engine opens the project.
+- **What.** HEVC of intra frames only, made by NVENC (on an NVIDIA card; else ProRes 422 Proxy),
+  at most 1920 pixels on its long edge, its shape kept; every frame of the media, with its
+  timestamp, so that frame `n` of the proxy is frame `n` of the media; no sound (the sound is
+  always read from the media). It is written to
+  `<project>/cache/proxies/<media id>-<12 hex digits of the digest>.mov`, as `….mov.part` until
+  it is whole. Making a proxy takes a fraction of the time the media lasts (some 2 s for 10 s of
+  4K HEVC on an RTX 4080).
+- **Set on the media** as `proxy` (`project.json`, below) by a change of the **engine** itself: a
+  `project.changed` with `by` and `made_by` `"engine"`, and `done` one `set_proxy` (the file of a
+  proxy that it takes the place of, beside it in `cache/proxies`, is deleted). It is **no
+  step of the history**: an undo never takes it back, and it never lets go of what could be
+  redone. A client may set or take away a proxy too, with `set_proxy` in a transaction, which is
+  undone as any other.
+- **What it is at** is told to every connection that said hello in `media.proxy` (below):
+  `queued` once the media is found to need one, `running` as it is made (with `progress` from 0 to
+  1, at most once a second), then `done`, or `failed` with a `message`. The proxy of media that is
+  **removed** is not made: the one being made is stopped, its `.part` deleted, and it is told
+  `failed` with the message that the media was removed; and so is the one being made when the
+  engine ends (without a notification), to be made again by the next engine. On Windows the
+  `ffmpeg` of an engine that is killed ends with it (a job object of the system); elsewhere it
+  ends once it is done. A `.part` left by an engine that was killed is deleted by the next.
+- **The file of the media.** A proxy is made only from a file whose identity is still that of
+  the media; one that was changed since it was taken in fails ("the file of the media is not the
+  one that was taken in").
+
+## The project as it is written
+
+`project.json` is the project as `project.get` gives it (`crates/model/src/project.rs`). A media
+item may have `proxy`, which is left out when it has none:
+
+```json
+"proxy": {"path": "C:\\p\\cache\\proxies\\m1-0eb91568ee7d.mov", "width": 1920, "height": 1080,
+          "codec": "hevc", "digest_of_source": "0eb91568ee7df39f…"}
+```
+
+`path` is absolute; `width` and `height` as stored; `codec` as ffprobe names it (`hevc`,
+`prores`); `digest_of_source` the `identity.digest` of the media it was made from. A project
+written before proxies has none, and is read as it is.
 
 ## The view
 
@@ -284,16 +346,18 @@ device of the system. Timelines are played in phase 1.
 | `transport.seek` | `{"frame": n, "scrubbing": false}` (`scrubbing` false if left out) | `{}` |
 | `transport.step` | `{"frames": n}` | `{}` |
 | `transport.state` | none | the state |
+| `transport.proxies` | `{"on": true \| false}` | `{}` |
 
 **The state** (the result of `transport.load` and `transport.state`, and the params of the
 notification `transport.state`):
 
 ```json
 {"media": "m1", "frame": 37, "playing": false, "speed": 1, "exact": true,
- "shown": 37, "last": 99, "sound": "off"}
+ "shown": 37, "last": 99, "sound": "off", "source": "proxy", "proxies": true}
 ```
 
-- `media`: the media loaded, or `null` (then `frame`, `shown` and `last` are `null` too).
+- `media`: the media loaded, or `null` (then `frame`, `shown`, `last` and `source` are `null`
+  too).
 - `frame`: the **playhead**: the frame shown while playing, the frame sought or stepped to
   otherwise. Frames are numbered at the rate of the media (`facts.video.rate`), from 0, its
   first frame, as `media.import` describes; for sound alone, see below.
@@ -310,12 +374,16 @@ notification `transport.state`):
   output device, or it failed: the picture plays alone, by the clock of the system; the engine
   logs `sound_unavailable` or `sound_failed`). A device fails when it says so (unplugged, turned
   off), when it asks for no sound within 750 ms of being started (a Bluetooth headset takes some
-  300 ms to wake), or when it stops asking for 250 ms while it plays: playing goes on at once
-  from where it is, by the clock of the system, with `sound: "unavailable"` (logged
+  300 ms to wake), when it stops asking for 500 ms once its sound has started to be heard, or
+  when it goes on asking and lets no sound be heard within 2 s of being started: playing goes on
+  at once from where it is, by the clock of the system, with `sound: "unavailable"` (logged
   `transport_sound_lost`). The device is opened anew at the next `transport.load` or
   `transport.play` that plays sound, and so is the default device of the system when it is
   another than the one opened (a headset plugged in, or chosen in the settings of the system),
   so that sound is `"on"` again as soon as it can be.
+- `source`: where the picture is read from: `"proxy"`, the proxy of the media (see Proxies), or
+  `"original"`, the media itself (as is sound alone).
+- `proxies`: whether proxies are used (`transport.proxies`; `true` at first).
 
 **When it is told.** The notification `transport.state` is sent to every connection that said
 hello: at once after each method that does something (even one that changes nothing, so that its
@@ -343,8 +411,9 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   forward from the last frame (or backward from frame 0) stops at once. At 2×, 4× and 8× frames
   are decoded as fast as they can be and those that come too late are passed over (on media of
   long groups of frames, the transport goes on from a key frame when it falls far behind).
-  Backward, each frame is sought: on media of long groups of frames (most from cameras) only
-  some are decoded in time, and those are shown.
+  Backward, each frame is sought: on a proxy, and on media whose every frame is a key frame,
+  every frame is shown (60 a second of a proxy of 4K at 60); on media of long groups of frames
+  read without a proxy, only some are decoded in time, and those are shown.
 - **The clock.** At speed 1 with sound, the sound that the device has played (its latency
   counted) is the clock, so that the picture follows what is heard; otherwise the monotonic
   clock of the system. The frame shown at a time is the frame that the clock is at, rounded
@@ -361,11 +430,23 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   before the frame (`exact: false`, `shown` the key frame; a key frame already shown is not
   decoded again), and once no newer seek has come for **150 ms**, the frame itself (`exact:
   true`). A frame of media whose key frames are not known (MPEG-TS and MPEG-PS where it has not
-  been decoded yet) is decoded at once. Showing a frame that is not a key frame takes up to a few
-  hundred milliseconds on long groups of frames (4K HEVC from a camera); proxies (Task 13b) will
-  make it quick.
+  been decoded yet) is decoded at once, and so is every frame of a **proxy**, every one of which
+  is a key frame: then the first state told of each seek is `exact: true` (some 3–15 ms after the
+  seek). Showing a frame that is not a key frame takes up to a few hundred milliseconds on long
+  groups of frames (4K HEVC from a camera read without a proxy).
 - **`transport.step`** pauses, then moves exactly `frames` frames (negative is back), clamped to
   the media, and shows that frame. Steps sent faster than they are done are added up.
+- **Proxies.** Where the media has a proxy (see Proxies) and proxies are used, its picture is read
+  from the proxy (`source: "proxy"`), and its sound from the media; the frames, `last` and the
+  clock are the media's. **`transport.proxies`** turns their use off (`{"on": false}`: the media
+  itself is read, as DaVinci's "Use proxy media" unticked) and on again, for every client, and is
+  told in `proxies`. It is taken whether media is loaded or not. A proxy whose file is gone or
+  cannot be read is let go for the media itself (logged `transport_proxy_failed`), and made
+  again. When the source changes while media is loaded (proxies turned on or off, a proxy made
+  or made again while its media is loaded, or one set or taken away by a transaction), the
+  picture is read from the new source **at once while it does not play**, and while it plays as
+  soon as it stops or is sought: the frame shown stays, and what is decoded next is decoded from
+  the new source (told with `source`).
 - **The view.** The picture is drawn in the view if one is attached, turned as the media says;
   a view attached later is drawn the picture shown. Without a view the transport plays all the
   same (the state is told as ever).
@@ -375,13 +456,16 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
   decoded too late, how late they were shown against the clock of the transport, how far the
   clock of the sound went from the system's, and the latency of the device and the length of
   its runs), `transport_unloaded`, `transport_error`, `transport_device_failed`,
-  `transport_sound_lost`, `transport_failed`, `sound_ready`, `sound_unavailable`,
-  `sound_failed`.
+  `transport_sound_lost`, `transport_failed`, `transport_source`, `transport_proxy_failed`,
+  `sound_ready`, `sound_unavailable`, `sound_failed`. Of proxies: `proxy_ffmpeg` (the `ffmpeg`
+  found, or `null`), `proxy_queued`, `proxy_started`, `proxy_made` (its `encoder`, size, frames
+  and seconds), `proxy_recipe_failed` (an encoder that failed, before the next is tried),
+  `proxy_failed`, `proxy_skipped` (media that could not be read to tell whether it needs one).
 
 | `-32004` `reason` | when |
 |---|---|
 | `not_loaded` | `transport.play`, `.pause`, `.seek` or `.step` with no media loaded, and none being loaded |
-| `failed` | the transport of the engine has stopped (a bug of the engine): it told the state with `media: null` as it stopped, and logged `transport_failed`; every `transport.*` is refused so from then on |
+| `failed` | the transport of the engine has stopped (a bug of the engine): it told the state with `media: null` as it stopped, and logged `transport_failed`; from then on every `transport.*` is refused so, but `transport.state`, which still answers with that state |
 
 ## Operations
 
@@ -401,6 +485,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `remove_clip` | `timeline`, `id` |
 | `move_clip` | `timeline`, `id`, `track`, `start` |
 | `trim_clip` | `timeline`, `id`, `source_in`, `start`, `length` |
+| `set_proxy` | `media`, `proxy` (a proxy, or `null` to take it away; its inverse sets the one before) |
 
 A thing added with an empty `id` is given one by the engine (`m`/`t`/`c` + a number from
 `next_id`, never reused; tracks `V<n>`/`A<n>` by place). An id that starts with `$` is never
@@ -417,7 +502,8 @@ engine's new ids as `reserved`.
 Within one `transaction.apply`, a thing that an operation adds may be given an id of the form
 `$name`: `$` and 1–32 of `A–Z a–z 0–9 _`. The thing is added as if its id were empty, and given
 one by the engine. Every **later** operation of the **same** transaction that names `$name` where
-it names a thing (its `timeline`, `track` or `id`, and the `media` of a clip) is made to name that
+it names a thing (its `timeline`, `track` or `id`, the `media` of a clip, and the `media` of
+`set_proxy`) is made to name that
 id before it is applied. The ids are answered in `names`; `done` and `project.changed` carry only
 real ids. For example:
 
@@ -459,10 +545,12 @@ real ids. For example:
 | `project.changed` | `{"revision": n, "by": "<kind>", "made_by": "<kind>", "done": [op, ...], "next_id": k}` |
 | `engine.error` | `{"message": "...", "kind": "save"}` |
 | `transport.state` | the state of the transport (see The transport) |
+| `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,
-  the one that made the step taken back or done again).
+  the one that made the step taken back or done again). Both are `"engine"` for a change that
+  the engine made itself (a proxy set on its media), which is no step of the history.
 - **Keeping a copy.** Call `project.get` after `hello`; then for each `project.changed`: ignore
   it if `revision` is not above yours; if it is yours + 1, set your `next_id` to its `next_id`
   and apply `done` in order; if it skips a revision (which the engine never does on one
@@ -517,4 +605,5 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `negative_duration` | `ticks` | media lasting less than no time |
 | `ids_exhausted` | | the engine has made every id it can |
 | `no_id` | | (only for a project that is read, never from an operation) |
+| `not_absolute` | `path` | the `path` of a proxy is not absolute (`C:\…`, `\\server\…` or `/…`) |
 | `empty` | | the transaction has no operations |

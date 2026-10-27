@@ -3,7 +3,8 @@
 //!
 //! - [`identity`] tells a file from another one at the same path, as the editing of Python
 //!   does.
-//! - [`probe`] says what a file holds: how long it lasts, its picture and its sound.
+//! - [`probe`] says what a file holds: how long it lasts, its picture and its sound; [`gop`]
+//!   how the frames of its picture are coded (key frames, B-frames).
 //! - [`VideoDecoder`] gives any frame of its picture, and the frames after it one at a time,
 //!   and the key frame at or before a frame, to be shown first while a frame is sought.
 //! - [`AudioDecoder`] gives the samples of its sound from any place, converted to the rate and
@@ -70,10 +71,10 @@ mod timing;
 
 pub use audio::{AudioDecoder, AudioFormat, Samples};
 pub use columbina_model::{AudioFacts, Facts, Identity, Rate, Time, VideoFacts};
-pub use decode::{Converter, Decoded, Hardware, HardwarePath, Picture, VideoDecoder};
+pub use decode::{video_start, Converter, Decoded, Hardware, HardwarePath, Picture, VideoDecoder};
 pub use error::MediaError;
 pub use identity::identity;
-pub use probe::{probe, DEMUXERS};
+pub use probe::{gop, probe, Gop, DEMUXERS};
 
 /// Make libav ready to be used, once: its log is turned off.
 fn init() {

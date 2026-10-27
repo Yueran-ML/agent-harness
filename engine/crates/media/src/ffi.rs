@@ -461,6 +461,9 @@ pub(crate) struct Parameters {
     pub frame_size: i32,
     /// Samples of sound to be decoded and dropped after a seek, as Opus needs; or 0.
     pub seek_preroll: i32,
+    /// How many frames a picture is shown after it is decoded, where frames are reordered (as
+    /// B-frames are); or 0.
+    pub video_delay: i32,
 }
 
 /// What the parameters of a stream say.
@@ -477,6 +480,7 @@ pub(crate) fn parameters(stream: &ff::format::stream::Stream) -> Parameters {
             bits_per_raw_sample: (*parameters).bits_per_raw_sample,
             frame_size: (*parameters).frame_size,
             seek_preroll: (*parameters).seek_preroll,
+            video_delay: (*parameters).video_delay,
         }
     }
 }

@@ -220,7 +220,11 @@ impl History {
     ///
     /// # Errors
     /// As [`History::apply`].
-    pub fn apply_unrecorded(&mut self, ops: Vec<Op>, by: &str) -> Result<Applied, TransactionError> {
+    pub fn apply_unrecorded(
+        &mut self,
+        ops: Vec<Op>,
+        by: &str,
+    ) -> Result<Applied, TransactionError> {
         if ops.is_empty() {
             return Err(TransactionError::Empty);
         }
@@ -750,7 +754,9 @@ mod tests {
     fn a_change_of_the_engine_is_no_step_and_lets_go_of_nothing_to_redo() {
         let mut history = History::new(Project::sample());
         history.apply(vec![insert("V1", 100, 10)], "agent").unwrap();
-        history.apply(vec![move_to("c1", "V1", 200)], "desktop").unwrap();
+        history
+            .apply(vec![move_to("c1", "V1", 200)], "desktop")
+            .unwrap();
         history.undo("desktop").unwrap().unwrap();
         let proxy = crate::project::Proxy {
             path: "/cache/m1.mov".into(),
@@ -763,10 +769,15 @@ mod tests {
             media: "m1".into(),
             proxy: Some(proxy.clone()),
         };
-        let applied = history.apply_unrecorded(vec![set.clone()], "engine").unwrap();
+        let applied = history
+            .apply_unrecorded(vec![set.clone()], "engine")
+            .unwrap();
         assert_eq!(applied.revision, 4);
         assert_eq!(applied.done, [set]);
-        assert_eq!((applied.by.as_str(), applied.made_by.as_str()), ("engine", "engine"));
+        assert_eq!(
+            (applied.by.as_str(), applied.made_by.as_str()),
+            ("engine", "engine")
+        );
         // The move can still be redone, and the undo takes back the agent's clip, not the proxy.
         assert!(history.can_redo());
         history.redo("desktop").unwrap().unwrap();

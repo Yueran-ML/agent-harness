@@ -13,11 +13,18 @@
 //! silence, which is not counted, so that the clock waits for the sound. After the end of the
 //! sound, silence is counted, so that a picture that lasts longer than its sound goes on.
 //!
+//! The first run that a device asks for once it is started is filled with silence, which is not
+//! counted: WASAPI says that it is heard at once (a latency of 0) while it is in fact laid
+//! ahead of what plays, some 20 ms, so that sound in it would be counted as heard that much too
+//! early, and the clock and `sound_minus_system_ms` would be off by as much.
+//!
 //! A device that fails is never used again: [`Output::failed`] says so, and the transport opens
 //! the default device anew the next time it plays, as it does when the default device of the
 //! system changed ([`Output::current`]). A device that asks for no sound within [`FIRST_RUN`]
-//! of being started (a Bluetooth headset waking takes some 300 ms), or stops asking for
-//! [`SILENT_RUN`] while it plays, has failed too ([`Output::failed`]).
+//! of being started (a Bluetooth headset waking takes some 300 ms), that stops asking for
+//! [`SILENT_RUN`] once its sound has started to be heard, or that has let none of it be heard
+//! [`NO_SOUND`] after it was started though it goes on asking, has failed too
+//! ([`Output::failed`]): the picture then plays by the clock of the system.
 //!
 //! Besides the device, [`Kind`] has outputs of no device, for the tests and for machines with
 //! no sound (`--sound null|stall|fail-after=<ms>`): one that takes the sound in runs of 10 ms
@@ -50,8 +57,11 @@ const FEEDER_NAP: Duration = Duration::from_millis(5);
 /// How long a device that was started may take to ask for its first run of sound.
 pub const FIRST_RUN: Duration = Duration::from_millis(750);
 
-/// How long a device that plays may go without asking for sound.
-pub const SILENT_RUN: Duration = Duration::from_millis(250);
+/// How long a device whose sound has started to be heard may go without asking for more.
+pub const SILENT_RUN: Duration = Duration::from_millis(500);
+
+/// How long after it was started a device may go on asking for sound and let none be heard.
+pub const NO_SOUND: Duration = Duration::from_secs(2);
 
 /// How long a feeder that is stopped is waited for.
 const FEEDER_END: Duration = Duration::from_secs(1);
@@ -135,6 +145,8 @@ struct Shared {
     rate: u32,
     /// Whether silence is played in the place of the sound.
     mute: bool,
+    /// Whether the first run after each start is silence, not counted (a device of WASAPI).
+    prime: bool,
 }
 
 /// The samples waiting to be played.
@@ -149,6 +161,8 @@ struct Queue {
     /// How many runs since the start had less sound than they asked for, after the first
     /// sound: the feeder fell behind.
     short: u64,
+    /// Whether the first run since the start was asked for.
+    primed: bool,
 }
 
 /// What the device was given in its last run: the instants of sound before it, how many of its
@@ -163,6 +177,27 @@ struct Mark {
     asked: Instant,
     /// How long the run lasts.
     run: Duration,
+}
+
+impl Mark {
+    /// How many instants of sound have been heard by `now`, at `rate` instants a second, by
+    /// this run: those before it, plus (or less) the time from when its first is heard to
+    /// `now`, up to its sound and, where it was sound and nothing but, [`RUN_AHEAD`] more.
+    fn played(&self, rate: u32, now: Instant) -> i128 {
+        let rate = i128::from(rate);
+        let since = match now.checked_duration_since(self.heard) {
+            Some(after) => i128::try_from(after.as_nanos()).unwrap_or(i128::MAX),
+            None => -i128::try_from(self.heard.duration_since(now).as_nanos()).unwrap_or(0),
+        };
+        let into = since.saturating_mul(rate) / 1_000_000_000;
+        let most = if self.full {
+            i128::from(self.sound)
+                + i128::try_from(RUN_AHEAD.as_nanos()).unwrap_or(0) * rate / 1_000_000_000
+        } else {
+            i128::from(self.sound)
+        };
+        i128::from(self.before) + into.min(most)
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -188,7 +223,7 @@ impl Output {
         }
     }
 
-    fn shared(format: AudioFormat, mute: bool) -> Arc<Shared> {
+    fn shared(format: AudioFormat, mute: bool, prime: bool) -> Arc<Shared> {
         Arc::new(Shared {
             queue: Mutex::new(Queue::default()),
             mark: Mutex::new(None),
@@ -196,6 +231,7 @@ impl Output {
             channels: usize::from(format.channels),
             rate: format.rate,
             mute,
+            prime,
         })
     }
 
@@ -217,7 +253,7 @@ impl Output {
         if format.rate == 0 || format.channels == 0 {
             return Err(format!("the output device {name} has no format"));
         }
-        let shared = Self::shared(format, mute);
+        let shared = Self::shared(format, mute, true);
         let stream = match supported.sample_format() {
             SampleFormat::F32 => build::<f32>(&device, config, &shared),
             SampleFormat::F64 => build::<f64>(&device, config, &shared),
@@ -250,7 +286,7 @@ impl Output {
             rate: 48000,
             channels: 2,
         };
-        let shared = Self::shared(format, false);
+        let shared = Self::shared(format, false, false);
         let playing = Arc::new(AtomicBool::new(false));
         let quit = Arc::new(AtomicBool::new(false));
         let thread = if kind == Kind::Stall {
@@ -329,6 +365,7 @@ impl Output {
             queue.samples.clear();
             queue.played = 0;
             queue.short = 0;
+            queue.primed = false;
             queue.generation
         };
         *lock(&self.shared.mark) = None;
@@ -407,20 +444,7 @@ impl Output {
         if mark.before == 0 && mark.sound == 0 {
             return None;
         }
-        let rate = i128::from(self.format.rate);
-        let since = match now.checked_duration_since(mark.heard) {
-            Some(after) => i128::try_from(after.as_nanos()).unwrap_or(i128::MAX),
-            None => -i128::try_from(mark.heard.duration_since(now).as_nanos()).unwrap_or(0),
-        };
-        let into = since.saturating_mul(rate) / 1_000_000_000;
-        let most = if mark.full {
-            i128::from(mark.sound)
-                + i128::try_from(RUN_AHEAD.as_nanos()).unwrap_or(0) * rate / 1_000_000_000
-        } else {
-            i128::from(mark.sound)
-        };
-        let played = i128::from(mark.before) + into.min(most);
-        let played = i64::try_from(played).unwrap_or(i64::MAX);
+        let played = i64::try_from(mark.played(self.format.rate, now)).unwrap_or(i64::MAX);
         let mut told = lock(&self.told);
         *told = (*told).max(played);
         Some(*told)
@@ -440,8 +464,9 @@ impl Output {
     }
 
     /// Why the device failed, if it did: it said so, or, while it plays, it asked for no sound
-    /// within [`FIRST_RUN`] of being started, or for none for [`SILENT_RUN`]. Then it plays no
-    /// more, and is to be opened anew.
+    /// within [`FIRST_RUN`] of being started, asked for none for [`SILENT_RUN`] once its sound
+    /// had started to be heard, or let none be heard within [`NO_SOUND`] of being started. Then
+    /// it plays no more, and is to be opened anew.
     pub fn failed(&self) -> Option<String> {
         let mut failed = lock(&self.shared.failed);
         if failed.is_some() {
@@ -449,17 +474,27 @@ impl Output {
         }
         let started = self.started?;
         let now = Instant::now();
-        let asked = (*lock(&self.shared.mark)).map(|mark| mark.asked);
-        let why = match asked {
-            None if now.duration_since(started) > FIRST_RUN => format!(
+        let mark = *lock(&self.shared.mark);
+        let moving = mark.is_some_and(|mark| mark.before > 0 || mark.sound > 0);
+        let heard = mark.is_some_and(|mark| mark.played(self.format.rate, now) > 0);
+        let since_start = now.duration_since(started);
+        let why = match mark {
+            None if since_start > FIRST_RUN => format!(
                 "the output device {} asked for no sound within {} ms of being started",
                 self.name,
                 FIRST_RUN.as_millis()
             ),
-            Some(asked) if now.saturating_duration_since(asked) > SILENT_RUN => format!(
-                "the output device {} asked for no sound for {} ms",
+            Some(mark) if moving && now.saturating_duration_since(mark.asked) > SILENT_RUN => {
+                format!(
+                    "the output device {} asked for no sound for {} ms",
+                    self.name,
+                    SILENT_RUN.as_millis()
+                )
+            }
+            Some(_) if !heard && since_start > NO_SOUND => format!(
+                "the output device {} let no sound be heard within {} ms of being started",
                 self.name,
-                SILENT_RUN.as_millis()
+                NO_SOUND.as_millis()
             ),
             _ => return None,
         };
@@ -523,6 +558,26 @@ impl Shared {
     ) {
         let mut queue = lock(&self.queue);
         let instants = data.len() / self.channels;
+        let run = Duration::from_nanos(
+            u64::try_from(instants).unwrap_or(0) * 1_000_000_000 / u64::from(self.rate.max(1)),
+        );
+        if self.prime && !queue.primed {
+            // The first run: silence, not counted, since it is told as heard too early.
+            queue.primed = true;
+            drop(queue);
+            for slot in data.iter_mut() {
+                *slot = T::EQUILIBRIUM;
+            }
+            *lock(&self.mark) = Some(Mark {
+                before: 0,
+                sound: 0,
+                full: false,
+                heard,
+                asked,
+                run,
+            });
+            return;
+        }
         let available = queue.samples.len() / self.channels;
         let sound = instants.min(available);
         let floats = sound * self.channels;
@@ -539,9 +594,6 @@ impl Shared {
         }
         queue.played += sound;
         drop(queue);
-        let run = Duration::from_nanos(
-            u64::try_from(instants).unwrap_or(0) * 1_000_000_000 / u64::from(self.rate.max(1)),
-        );
         *lock(&self.mark) = Some(Mark {
             before,
             sound,
@@ -703,5 +755,65 @@ mod tests {
         // Stopped, it stays failed.
         failing.stop();
         assert!(failing.failed().is_some());
+    }
+
+    #[test]
+    fn the_first_run_of_a_device_is_silence_that_is_not_counted() {
+        let format = AudioFormat {
+            rate: 1000,
+            channels: 1,
+        };
+        let shared = Output::shared(format, false, true);
+        lock(&shared.queue).samples.extend([0.5_f32; 30]);
+        let now = Instant::now();
+        let mut run = [1.0_f32; 10];
+        shared.fill(&mut run, now, now);
+        assert_eq!(run, [0.0; 10]);
+        let mark = lock(&shared.mark).unwrap();
+        assert_eq!((mark.before, mark.sound), (0, 0));
+        assert_eq!(lock(&shared.queue).samples.len(), 30);
+        shared.fill(&mut run, now, now);
+        assert_eq!(run, [0.5; 10]);
+        let mark = lock(&shared.mark).unwrap();
+        assert_eq!((mark.before, mark.sound, mark.full), (0, 10, true));
+        // An output of no device has no such first run.
+        let fake = Output::shared(format, false, false);
+        lock(&fake.queue).samples.extend([0.5_f32; 10]);
+        fake.fill(&mut run, now, now);
+        assert_eq!(lock(&fake.mark).unwrap().sound, 10);
+    }
+
+    #[test]
+    fn a_device_that_stops_once_heard_or_lets_nothing_be_heard_has_failed() {
+        let now = Instant::now();
+        let mark = |sound: u64, asked: Duration| Mark {
+            before: 0,
+            sound,
+            full: sound > 0,
+            heard: now.checked_sub(asked).unwrap(),
+            asked: now.checked_sub(asked).unwrap(),
+            run: Duration::from_millis(10),
+        };
+        let failed = |mark: Mark, started: Duration| {
+            let mut output = Output::open(Kind::Stall).unwrap();
+            output.started = now.checked_sub(started);
+            *lock(&output.shared.mark) = Some(mark);
+            output.failed()
+        };
+        // Its sound heard, then no run asked for 600 ms.
+        let why = failed(mark(10, Duration::from_millis(600)), Duration::from_secs(1));
+        assert!(why.unwrap().contains("asked for no sound for 500 ms"));
+        // 300 ms is not long enough.
+        assert!(failed(mark(10, Duration::from_millis(300)), Duration::from_secs(1)).is_none());
+        // Before any sound was heard, a pause in its runs is not counted...
+        assert!(failed(mark(0, Duration::from_millis(600)), Duration::from_secs(1)).is_none());
+        // ...but nothing heard 2 s after it was started is.
+        let why = failed(
+            mark(0, Duration::from_millis(5)),
+            Duration::from_millis(2100),
+        );
+        assert!(why
+            .unwrap()
+            .contains("let no sound be heard within 2000 ms"));
     }
 }

@@ -51,6 +51,69 @@ pub fn probe(path: &Path) -> Result<Facts, MediaError> {
     })
 }
 
+/// How the frames of a picture are coded, as its first packets show: whether each is a key frame,
+/// and whether frames are reordered (B-frames).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gop {
+    /// The index of the stream of the picture in the file, as libav and the `ffmpeg` of the
+    /// command line number it.
+    pub stream: usize,
+    /// How many packets of the picture were read.
+    pub packets: u64,
+    /// How many of them are key frames.
+    pub keys: u64,
+    /// Whether frames are reordered: the stream says that a frame is shown after one decoded
+    /// later (`video_delay`), or a packet is shown before one that was decoded before it.
+    pub b_frames: bool,
+}
+
+impl Gop {
+    /// Whether every packet read is a key frame: any frame is decoded alone.
+    #[must_use]
+    pub fn all_intra(&self) -> bool {
+        self.packets > 0 && self.keys == self.packets
+    }
+}
+
+/// How the frames of the picture of a file are coded, from its first `most` packets (all of them
+/// where it has fewer). This blocks, and reads only as much of the file as those packets take.
+///
+/// # Errors
+/// The file cannot be opened (as [`probe`]), or it has no picture.
+pub fn gop(path: &Path, most: u64) -> Result<Gop, MediaError> {
+    let mut input = open(path)?;
+    let stream = video_stream(&input)?.ok_or(MediaError::NoVideo)?;
+    let delay = {
+        let found = input.stream(stream).ok_or(MediaError::NoVideo)?;
+        ffi::parameters(&found).video_delay > 0
+    };
+    ffi::discard_others(&mut input, stream);
+    let mut gop = Gop {
+        stream,
+        packets: 0,
+        keys: 0,
+        b_frames: delay,
+    };
+    let mut latest: Option<i64> = None;
+    while gop.packets < most {
+        let mut packet = ff::Packet::empty();
+        match packet.read(&mut input) {
+            Ok(()) if packet.stream() == stream => {
+                gop.packets += 1;
+                gop.keys += u64::from(packet.is_key());
+                if let Some(pts) = packet.pts() {
+                    gop.b_frames |= latest.is_some_and(|latest| pts < latest);
+                    latest = Some(latest.map_or(pts, |latest| latest.max(pts)));
+                }
+            }
+            Ok(()) => {}
+            Err(ff::Error::Eof) => break,
+            Err(error) => return Err(MediaError::Read(error.to_string())),
+        }
+    }
+    Ok(gop)
+}
+
 /// The demuxers of libav that a file may be read with: those of the editing of Python
 /// (`columbina.video.media.DEMUXERS`), and MPEG-PS (`mpeg`, of DVDs and cameras), which
 /// that list lacks. A list of other files, such as an HLS playlist or a list of `concat`, is of none of

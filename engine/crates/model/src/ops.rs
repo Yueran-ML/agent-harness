@@ -2692,14 +2692,30 @@ mod tests {
             proxy: None,
         });
         assert_eq!(error, missing("media", "m9"));
-        for path in ["cache/m1.mov", "m1.mov", "C:m1.mov", "", r"\cache\m1.mov", "C:/a\0b"] {
+        for path in [
+            "cache/m1.mov",
+            "m1.mov",
+            "C:m1.mov",
+            "",
+            r"\cache\m1.mov",
+            "C:/a\0b",
+        ] {
             let error = refused(Op::SetProxy {
                 media: "m1".into(),
                 proxy: Some(proxy(path)),
             });
-            assert_eq!(error, OpError::NotAbsolute { path: path.into() }, "{path:?}");
+            assert_eq!(
+                error,
+                OpError::NotAbsolute { path: path.into() },
+                "{path:?}"
+            );
         }
-        for path in [r"C:\a\m1.mov", "c:/a/m1.mov", r"\\server\share\m1.mov", "/a/m1.mov"] {
+        for path in [
+            r"C:\a\m1.mov",
+            "c:/a/m1.mov",
+            r"\\server\share\m1.mov",
+            "/a/m1.mov",
+        ] {
             let mut project = Project::sample();
             let set = Op::SetProxy {
                 media: "m1".into(),
@@ -2711,7 +2727,10 @@ mod tests {
         let mut media = media("m2", true, true);
         media.proxy = Some(proxy("m2.mov"));
         let error = refused(Op::AddMedia { media, index: None });
-        assert_eq!(error.to_string(), "the path m2.mov of a proxy is not absolute");
+        assert_eq!(
+            error.to_string(),
+            "the path m2.mov of a proxy is not absolute"
+        );
         let value = serde_json::to_value(&error).unwrap();
         assert_eq!(value["reason"], "not_absolute");
         assert_eq!(value["path"], "m2.mov");

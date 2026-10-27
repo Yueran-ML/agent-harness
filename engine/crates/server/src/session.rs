@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use columbina_media::MediaError;
-use columbina_model::{Applied, History, Media, Op, Project};
+use columbina_model::{Applied, History, Media, Op, Project, Proxy};
 use columbina_store::Saver;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -23,6 +23,7 @@ use tokio::sync::{watch, Mutex, MutexGuard, Semaphore};
 
 use crate::log::log;
 use crate::names;
+use crate::proxy::{self, Made, Note, Proxies};
 use crate::queue::{self, Limits, Refused};
 use crate::rpc::{self, Fault, Line};
 use crate::transport::{self, Status, Transport};
@@ -85,6 +86,8 @@ pub struct Engine {
     viewer: Viewer,
     /// The transport of the source monitor.
     transport: Transport,
+    /// The maker of proxies.
+    proxies: Proxies,
 }
 
 #[derive(Default)]
@@ -108,6 +111,9 @@ pub struct State {
     /// The transport, told when the project changes, so that it lets go of media that was
     /// removed.
     transport: Option<Transport>,
+    /// The maker of proxies, told when the project changes, so that it makes none of media that
+    /// was removed.
+    proxies: Proxies,
 }
 
 /// A connection that said hello.
@@ -166,6 +172,10 @@ pub fn log_kicked(id: u64, kind: Option<Kind>, limits: Limits) {
 }
 
 impl Engine {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "what the engine is made of, each from the command line or `main`"
+    )]
     pub fn new(
         history: History,
         saver: Saver,
@@ -174,23 +184,45 @@ impl Engine {
         read_gate: Option<PathBuf>,
         headless: bool,
         setup: transport::Setup,
+        proxy_setup: &proxy::Setup,
     ) -> Engine {
+        let proxies = Proxies::new(proxy_setup, Path::new(&project));
         let state = Arc::new(Mutex::new(State {
             history,
             saver: Some(saver),
             peers: HashMap::new(),
             kicked: Vec::new(),
             transport: None,
+            proxies: proxies.clone(),
         }));
         let viewer = Viewer::new(headless);
-        let transport = Transport::new(headless, setup, viewer.slot(), {
+        let notify = {
             let state = Arc::clone(&state);
             Arc::new(move |status: &Status| tell(&state, status, limits))
-        });
-        state
-            .try_lock()
-            .expect("no one has the state yet")
-            .transport = Some(transport.clone());
+        };
+        let again = {
+            let state = Arc::clone(&state);
+            Arc::new(move |media: &str| make_again(&state, media))
+        };
+        let transport = Transport::new(headless, setup, viewer.slot(), notify, again);
+        let project_now = {
+            let mut locked = state.try_lock().expect("no one has the state yet");
+            locked.transport = Some(transport.clone());
+            locked.history.project().clone()
+        };
+        proxies.start(
+            &project_now,
+            proxy::Hooks {
+                notify: Box::new({
+                    let state = Arc::clone(&state);
+                    move |note: &Note| tell_proxy(&state, note, limits)
+                }),
+                made: Box::new({
+                    let state = Arc::clone(&state);
+                    move |media: &str, proxy: &Proxy| proxy_made(&state, media, proxy, limits)
+                }),
+            },
+        );
         Engine {
             state,
             project,
@@ -203,7 +235,14 @@ impl Engine {
             read_gate,
             viewer,
             transport,
+            proxies,
         }
+    }
+
+    /// Stop the proxy being made, and delete what it wrote: the engine ends. This blocks for a
+    /// few seconds at most; the state must not be locked meanwhile.
+    pub fn stop_proxies(&self) {
+        self.proxies.stop();
     }
 
     fn connections(&self) -> std::sync::MutexGuard<'_, Connections> {
@@ -288,6 +327,91 @@ impl Engine {
     }
 }
 
+/// Tell every connection that said hello what a proxy is at. This is called by the thread of the
+/// maker of proxies, never by a task of the runtime.
+fn tell_proxy(state: &Mutex<State>, note: &Note, limits: Limits) {
+    let line = rpc::notification_line("media.proxy", note);
+    let mut state = state.blocking_lock();
+    state.broadcast(&line);
+    let kicked = std::mem::take(&mut state.kicked);
+    drop(state);
+    for (id, kind) in kicked {
+        log_kicked(id, Some(kind), limits);
+    }
+}
+
+/// Set a proxy that was made on its media, by a change of the engine that is no step to undo,
+/// unless the media is gone or is of another file. A proxy that the media has already (made
+/// again after its file could not be opened) is given to the transport again. The file of the
+/// proxy that the media had before, if it was another one beside it, is deleted. This is called
+/// by the thread of the maker of proxies.
+fn proxy_made(state: &Mutex<State>, media: &str, proxy: &Proxy, limits: Limits) -> Made {
+    let mut locked = state.blocking_lock();
+    let Some(found) = locked
+        .history
+        .project()
+        .media
+        .iter()
+        .find(|found| found.id == media)
+    else {
+        return Made::Gone;
+    };
+    if found.identity.digest != proxy.digest_of_source {
+        return Made::Gone;
+    }
+    let before = found.proxy.clone();
+    if before.as_ref() == Some(proxy) {
+        if let Some(transport) = &locked.transport {
+            transport.proxy_ready(media, PathBuf::from(&proxy.path));
+        }
+        return Made::Set;
+    }
+    let set = Op::SetProxy {
+        media: media.to_owned(),
+        proxy: Some(proxy.clone()),
+    };
+    let made = match locked.history.apply_unrecorded(vec![set], "engine") {
+        Ok(applied) => {
+            locked.publish(&applied);
+            Made::Set
+        }
+        Err(error) => {
+            log(
+                "proxy_failed",
+                &json!({ "media": media, "message": error.to_string() }),
+            );
+            Made::Gone
+        }
+    };
+    let kicked = std::mem::take(&mut locked.kicked);
+    drop(locked);
+    for (id, kind) in kicked {
+        log_kicked(id, Some(kind), limits);
+    }
+    if let Some(before) = before.filter(|before| before.path != proxy.path) {
+        let beside = Path::new(&before.path).parent() == Path::new(&proxy.path).parent();
+        if made == Made::Set && beside {
+            let _ = std::fs::remove_file(&before.path);
+        }
+    }
+    made
+}
+
+/// Make the proxy of media again, as the transport asks when its file cannot be opened. This is
+/// called by the transport's own thread.
+fn make_again(state: &Mutex<State>, media: &str) {
+    let state = state.blocking_lock();
+    if let Some(found) = state
+        .history
+        .project()
+        .media
+        .iter()
+        .find(|found| found.id == media)
+    {
+        state.proxies.again(found);
+    }
+}
+
 /// Tell every connection that said hello the state of the transport. This is called by the
 /// transport's own thread, never by a task of the runtime: it waits for the state of the
 /// engine, which is held only for moments.
@@ -340,6 +464,9 @@ impl State {
         self.broadcast(&rpc::notification_line("project.changed", &changed));
         if let Some(transport) = &self.transport {
             transport.project_changed(self.history.project());
+        }
+        for note in self.proxies.project_changed(self.history.project()) {
+            self.broadcast(&rpc::notification_line("media.proxy", &note));
         }
         done
     }
@@ -480,6 +607,7 @@ async fn transport_load(
         engine.transport.begin_load(
             &load.media,
             PathBuf::from(&media.path),
+            proxy::usable(media).map(|proxy| PathBuf::from(&proxy.path)),
             media.facts.clone(),
             grid,
         )?
@@ -756,6 +884,15 @@ async fn media_import(
         })
         .collect();
     state.publish(&applied);
+    {
+        let project = state.history.project();
+        let taken: Vec<&Media> = project
+            .media
+            .iter()
+            .filter(|media| added.contains(&media.id))
+            .collect();
+        state.proxies.imported(&taken);
+    }
     let line = rpc::result_line(
         id,
         &Imported {
@@ -861,5 +998,6 @@ fn read(path: &str) -> Result<Media, MediaError> {
         path: full.to_str().ok_or(MediaError::NotUtf8)?.to_owned(),
         identity,
         facts,
+        proxy: None,
     })
 }

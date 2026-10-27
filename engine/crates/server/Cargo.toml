@@ -25,8 +25,14 @@ sha2.workspace = true
 tokio.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-# timeBeginPeriod, for timers fine enough to show each frame in time while playing.
-windows = { workspace = true, features = ["Win32_Media"] }
+# timeBeginPeriod, for timers fine enough to show each frame in time while playing; and a job
+# of the system, which ends the ffmpeg that makes proxies with the engine.
+windows = { workspace = true, features = [
+    "Win32_Media",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [target.'cfg(unix)'.dependencies]
 # The id of the user, for the directory of its sockets.

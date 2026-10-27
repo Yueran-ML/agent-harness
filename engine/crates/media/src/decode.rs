@@ -363,6 +363,9 @@ fn copy_planes(source: &ff::frame::Video, planes: Planes<'_>) {
 #[allow(clippy::struct_excessive_bools)]
 pub struct VideoDecoder {
     source: PathBuf,
+    /// The width and height of the picture as it is stored, and the bits of its luma, as the
+    /// stream says.
+    shape: (u32, u32, u8),
     input: Input,
     stream: usize,
     decoder: ff::decoder::Video,
@@ -490,8 +493,9 @@ impl VideoDecoder {
     fn open_on(path: &Path, device: Option<HardwarePath>) -> Result<Self, Attempt> {
         let mut input = probe::open(path)?;
         let stream = probe::video_stream(&input)?.ok_or(MediaError::NoVideo)?;
-        let (timing, start, mut context) = {
+        let (timing, start, mut context, shape) = {
             let found = input.stream(stream).ok_or(MediaError::NoVideo)?;
+            let shape = shape_of(&found);
             let base = probe::base(&found)?;
             let rate = probe::rate(&found).ok_or_else(|| {
                 MediaError::Unsupported("its picture has no rate of frames".into())
@@ -504,7 +508,7 @@ impl VideoDecoder {
             };
             let context = ff::codec::Context::from_parameters(found.parameters())
                 .map_err(|error| MediaError::Open(error.to_string()))?;
-            (timing, start, context)
+            (timing, start, context, shape)
         };
         let codec = context.id();
         let unsupported = || {
@@ -554,6 +558,7 @@ impl VideoDecoder {
         let (device_kept, format) = hardware.unzip();
         let mut decoder = Self {
             source: path.to_owned(),
+            shape,
             input,
             stream,
             decoder: opened,
@@ -680,6 +685,13 @@ impl VideoDecoder {
     #[must_use]
     pub fn fallbacks(&self) -> &[(HardwarePath, String)] {
         &self.fallbacks
+    }
+
+    /// The width and height of the picture as it is stored, and the bits of its luma, as the
+    /// file says: so that the pictures given are known in size before one is decoded.
+    #[must_use]
+    pub fn shape(&self) -> (u32, u32, u8) {
+        self.shape
     }
 
     /// The rate that the frames are numbered at.
@@ -1132,6 +1144,39 @@ impl VideoDecoder {
             }
         }
     }
+}
+
+/// The width and height of the picture of a stream as it is stored, and the bits of its luma.
+fn shape_of(stream: &ff::format::stream::Stream) -> (u32, u32, u8) {
+    let parameters = ffi::parameters(stream);
+    (
+        u32::try_from(parameters.width).unwrap_or(0),
+        u32::try_from(parameters.height).unwrap_or(0),
+        ffi::depth_of_number(parameters.format).unwrap_or(8),
+    )
+}
+
+/// The time of frame 0 of the picture of a file in its timestamps, as [`VideoDecoder::start`]
+/// gives it, without opening a decoder where the file says where its picture starts (as nearly
+/// every file does): so that the sound of media whose picture is read from a proxy is laid as
+/// that of the media itself.
+///
+/// # Errors
+/// As [`VideoDecoder::open`].
+pub fn video_start(path: &Path) -> Result<Time, MediaError> {
+    let input = probe::open(path)?;
+    let stream = probe::video_stream(&input)?.ok_or(MediaError::NoVideo)?;
+    let found = input.stream(stream).ok_or(MediaError::NoVideo)?;
+    let (num, den) = probe::base(&found)?;
+    let start = found.start_time();
+    if start == ff::ffi::AV_NOPTS_VALUE {
+        drop(input);
+        return Ok(VideoDecoder::open(path, Hardware::Off)?.start());
+    }
+    Ok(Time {
+        ticks: start.saturating_mul(num),
+        scale: u32::try_from(den).unwrap_or(u32::MAX),
+    })
 }
 
 /// Why a decoder could not be opened on a device: the device, so that the next is tried, or

@@ -619,3 +619,51 @@ fn measure_the_4k_file() {
         );
     }
 }
+
+#[test]
+fn the_coding_of_frames_is_read_from_the_first_packets() {
+    // (sample, every frame a key frame, B-frames)
+    for (sample, intra, b_frames) in [
+        (Sample::Uhd, false, true),
+        (Sample::Fhd, false, true),
+        (Sample::TsH264, false, true),
+        (Sample::Prores, true, false),
+    ] {
+        let Some(made) = media(sample) else {
+            return;
+        };
+        let gop = columbina_media::gop(&made.path, 64).unwrap();
+        assert_eq!(gop.all_intra(), intra, "{sample:?}: {gop:?}");
+        assert_eq!(gop.b_frames, b_frames, "{sample:?}: {gop:?}");
+        assert!(gop.packets > 0 && gop.packets <= 64, "{gop:?}");
+        assert_eq!(gop.stream, 0, "{sample:?}");
+        // Every packet, at most.
+        let all = columbina_media::gop(&made.path, u64::MAX).unwrap();
+        assert_eq!(Some(i64::try_from(all.packets).unwrap()), sample.frames());
+    }
+    let Some(sound) = media(Sample::Wav) else {
+        return;
+    };
+    assert!(matches!(
+        columbina_media::gop(&sound.path, 64),
+        Err(MediaError::NoVideo)
+    ));
+}
+
+#[test]
+fn the_start_of_the_picture_is_read_as_the_decoder_has_it() {
+    for sample in Sample::ALL {
+        if sample.frames().is_none() {
+            continue;
+        }
+        let Some(made) = media(sample) else {
+            return;
+        };
+        let decoder = VideoDecoder::open(&made.path, Hardware::Off).unwrap();
+        assert_eq!(
+            columbina_media::video_start(&made.path).unwrap(),
+            decoder.start(),
+            "{sample:?}"
+        );
+    }
+}

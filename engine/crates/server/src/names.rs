@@ -235,6 +235,7 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
     match op {
         Op::AddMedia { media, .. } => f(&mut media.id, Role::Gives(Place::Media)),
         Op::RemoveMedia { id } | Op::RemoveTimeline { id } => f(id, Role::Names),
+        Op::SetProxy { media, .. } => f(media, Role::Names),
         Op::AddTimeline { timeline, .. } => {
             for clip in timeline.tracks.iter_mut().flat_map(|r| &mut r.clips) {
                 f(&mut clip.media, Role::Names)?;

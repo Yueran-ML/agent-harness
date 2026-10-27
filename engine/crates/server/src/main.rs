@@ -32,6 +32,7 @@ mod audio;
 mod conn;
 mod log;
 mod names;
+mod proxy;
 mod queue;
 mod rpc;
 mod session;
@@ -101,6 +102,10 @@ struct Options {
     /// device, which is the clock all the same), and `--fail-card-at <frame>`, from which frame
     /// on the first frame on the graphics card fails to be copied.
     setup: transport::Setup,
+    /// Whether proxies are made (not by a headless engine, nor with `--no-proxies`, which the
+    /// tests give where they would get in the way), and, not in the usage, the `ffmpeg` that
+    /// makes them (`--proxy-ffmpeg <FILE>`) and, for the tests, `--proxy-realtime`.
+    proxies: proxy::Setup,
 }
 
 impl Options {
@@ -113,6 +118,11 @@ impl Options {
         let mut setup = transport::Setup {
             sound: audio::Kind::Device { mute: false },
             fail_card_at: None,
+        };
+        let mut proxies = proxy::Setup {
+            make: true,
+            ffmpeg: None,
+            realtime: false,
         };
         while let Some(arg) = args.next() {
             match arg.to_str() {
@@ -148,6 +158,12 @@ impl Options {
                 Some("--fail-card-at") => {
                     setup.fail_card_at = Some(number(args.next().as_ref(), "--fail-card-at")?);
                 }
+                Some("--no-proxies") => proxies.make = false,
+                Some("--proxy-ffmpeg") => {
+                    let file = args.next().ok_or("--proxy-ffmpeg needs a file")?;
+                    proxies.ffmpeg = Some(PathBuf::from(file));
+                }
+                Some("--proxy-realtime") => proxies.realtime = true,
                 _ => {
                     let arg = arg.to_string_lossy();
                     return Err(format!("{arg} is not an argument of the engine; {USAGE}"));
@@ -155,6 +171,8 @@ impl Options {
             }
         }
         let project = project.ok_or_else(|| format!("--project is needed; {USAGE}"))?;
+        // A headless engine has no transport to use them.
+        proxies.make &= !headless;
         Ok(Options {
             project,
             headless,
@@ -162,6 +180,7 @@ impl Options {
             limits,
             read_gate,
             setup,
+            proxies,
         })
     }
 }
@@ -295,6 +314,7 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         options.read_gate.clone(),
         options.headless,
         options.setup,
+        &options.proxies,
     );
     let ending = runtime.block_on(serve(options, address, engine, save_errors));
     // The runtime is never shut down: the process ends with `exit`, and a shutdown would wait
@@ -401,6 +421,9 @@ async fn serve(
     let mut presence = engine.presence.subscribe();
     let closed = presence.wait_for(|presence| presence.connected == 0);
     let _ = tokio::time::timeout(CLOSING, closed).await;
+    // Before the state is locked for good: the maker of proxies tells what it did with it.
+    let proxies = Arc::clone(&engine);
+    let _ = tokio::task::spawn_blocking(move || proxies.stop_proxies()).await;
     let state = Arc::clone(&engine.state).lock_owned().await;
     Ending::Stopped { code, state }
 }
@@ -550,6 +573,11 @@ mod tests {
                     sound: audio::Kind::Device { mute: false },
                     fail_card_at: None,
                 },
+                proxies: proxy::Setup {
+                    make: true,
+                    ffmpeg: None,
+                    realtime: false,
+                },
             }
         );
         assert_eq!(
@@ -568,6 +596,9 @@ mod tests {
                 "--mute",
                 "--fail-card-at",
                 "30",
+                "--proxy-ffmpeg",
+                "f",
+                "--proxy-realtime",
             ])
             .unwrap(),
             Options {
@@ -583,7 +614,19 @@ mod tests {
                     sound: audio::Kind::Device { mute: true },
                     fail_card_at: Some(30),
                 },
+                // A headless engine makes none.
+                proxies: proxy::Setup {
+                    make: false,
+                    ffmpeg: Some("f".into()),
+                    realtime: true,
+                },
             }
+        );
+        assert!(
+            !parse(&["--project", "p", "--no-proxies"])
+                .unwrap()
+                .proxies
+                .make
         );
     }
 
@@ -601,6 +644,7 @@ mod tests {
             &["--project", "p", "--sound"],
             &["--project", "p", "--sound", "loud"],
             &["--project", "p", "--fail-card-at", "x"],
+            &["--project", "p", "--proxy-ffmpeg"],
         ] {
             assert!(parse(args).is_err(), "{args:?}");
         }

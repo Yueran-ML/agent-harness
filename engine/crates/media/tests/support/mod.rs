@@ -612,12 +612,19 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
 /// a sample, or 16 with the value in the high 10 bits, as P010 has it): the mean of the middle
 /// 48×48 pixels of each block is taken as its digit. None if a block is far from any digit.
 pub fn number_in(luma: &[u8], stride: usize, bits: u8) -> Option<i64> {
+    number_in_blocks(luma, stride, bits, 64)
+}
+
+/// As [`number_in`], of a picture scaled so that its blocks are `size` pixels wide and high (32
+/// in a picture of 4K made 1920 wide): the middle three quarters of each block are read.
+pub fn number_in_blocks(luma: &[u8], stride: usize, bits: u8, size: usize) -> Option<i64> {
+    let (from, to) = (size / 8, size - size / 8);
     let mut number = 0;
     for block in 0..3 {
         let mut sum = 0_u64;
-        for y in 8..56 {
+        for y in from..to {
             let row = &luma[y * stride..];
-            for x in (block * 64 + 8)..(block * 64 + 56) {
+            for x in (block * size + from)..(block * size + to) {
                 sum += if bits > 8 {
                     u64::from(u16::from_le_bytes([row[2 * x], row[2 * x + 1]]) >> 6)
                 } else {
@@ -626,7 +633,7 @@ pub fn number_in(luma: &[u8], stride: usize, bits: u8) -> Option<i64> {
             }
         }
         #[allow(clippy::cast_precision_loss)]
-        let mean = sum as f64 / (48.0 * 48.0);
+        let mean = sum as f64 / ((to - from) * (to - from)) as f64;
         let (base, step) = if bits > 8 { (64.0, 56.0) } else { (16.0, 14.0) };
         let digit = (mean - base) / step;
         if !(-0.3..=15.3).contains(&digit) || (digit - digit.round()).abs() > 0.3 {

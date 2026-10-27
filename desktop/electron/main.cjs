@@ -71,7 +71,7 @@ const assistants = {
 };
 // The bar of the window in each theme: the furthest surface of `src/ui/tokens.css`, and its text.
 const titleBarThemes = {
-  moonveil: { color: '#090b12', symbolColor: '#eef0f8', height: 40 },
+  moonveil: { color: '#17161a', symbolColor: '#eceae4', height: 40 },
   moonwhite: { color: '#f5f4f0', symbolColor: '#1b1c24', height: 40 },
 };
 

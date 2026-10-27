@@ -294,7 +294,7 @@
 
 /* In a browser no view is laid over it. */
 .viewer[data-browser] .viewer-box {
-  background: #3a3a3f;
+  background: #38363d;
 }
 
 .viewer-notice {
@@ -305,15 +305,15 @@
   gap: var(--s2);
   padding: var(--s4);
   text-align: center;
-  color: #e6e4ee;
+  color: #eceae4;
 }
 
 .viewer-install {
-  color: #d6d3e0;
+  color: #d6d3cb;
 }
 
 .viewer-detail {
-  color: #b9b6c6;
+  color: #bab7ae;
   overflow-wrap: anywhere;
 }
 

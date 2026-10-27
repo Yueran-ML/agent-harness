@@ -1,10 +1,11 @@
 /*
  * The palette, the type and the measures of the interface.
  *
- * The look is a night with a moon in it: surfaces of deep ink, text in the
- * white of moonlight, and one accent, the pale blue that moonlight has on
- * water. The light theme is the same moon by day, on paper. Both themes have
- * the same names, and only the values differ.
+ * The look is a night with a moon in it, seen from a room: surfaces of warm
+ * ink, text in the white of paper that the moon falls on, and one accent, the
+ * indigo of the day made pale, as moonlight makes it. The light theme is the
+ * same room by day, on paper. Both themes have the same names, and only the
+ * values differ.
  *
  * Every text colour is measured against the surface it stands on: 7 to 1 or
  * more for what is read, 4.5 to 1 or more for what explains.
@@ -13,47 +14,45 @@
   color-scheme: dark;
 
   /* Surfaces, from the furthest to the nearest. */
-  --ink-0: #090b12;
-  --ink-1: #0e111b;
-  --ink-2: #151927;
-  --ink-3: #1d2233;
-  --ink-4: #272d42;
+  --ink-0: #17161a;
+  --ink-1: #1d1c21;
+  --ink-2: #232228;
+  --ink-3: #2c2b31;
+  --ink-4: #38363d;
 
   /* Text. The last one is for marks and for what cannot be used, not for words to read. */
-  --moon-0: #eef0f8;
-  --moon-1: #b3b9cd;
-  --moon-2: #8088a0;
-  --moon-3: #565d73;
+  --moon-0: #eceae4;
+  --moon-1: #c0bdb4;
+  --moon-2: #9a978f;
+  --moon-3: #625f5a;
 
-  --line: rgb(205 214 255 / 0.09);
-  --line-strong: rgb(205 214 255 / 0.18);
+  --line: rgb(255 250 240 / 0.08);
+  --line-strong: rgb(255 250 240 / 0.16);
 
   /* The one accent. */
-  --accent: #c5cfff;
-  --accent-strong: #e1e6ff;
-  --accent-ink: #0c0f1c;
-  --accent-wash: rgb(170 186 255 / 0.1);
-  --focus: rgb(197 207 255 / 0.6);
+  --accent: #a3acff;
+  --accent-strong: #c3c9ff;
+  --accent-ink: #16172a;
+  --accent-wash: rgb(163 172 255 / 0.12);
+  --focus: rgb(163 172 255 / 0.6);
 
   /* Meanings: it went well, look here, it went wrong. */
-  --ok: #8fd6b9;
-  --ok-wash: rgb(143 214 185 / 0.1);
-  --warn: #e9c98b;
-  --warn-wash: rgb(233 201 139 / 0.1);
-  --bad: #f29aa7;
-  --bad-wash: rgb(242 154 167 / 0.1);
+  --ok: #7fc8a6;
+  --ok-wash: rgb(127 200 166 / 0.1);
+  --warn: #e3c07e;
+  --warn-wash: rgb(227 192 126 / 0.1);
+  --bad: #ec9aa2;
+  --bad-wash: rgb(236 154 162 / 0.1);
 
-  /* The main button is the moon itself: light on the night. */
-  --button: #eef0f8;
-  --button-ink: #0c0f1c;
-  --button-hover: #ffffff;
+  /* The main button is the paper itself: light on the night. */
+  --button: #eceae4;
+  --button-ink: #17161a;
+  --button-hover: #faf8f3;
 
-  --shadow: 0 24px 80px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.35);
-  /* Moonlight that falls in from above the window, and a little of it from below. */
-  --glow:
-    radial-gradient(1100px 520px at 82% -12%, rgb(140 160 255 / 0.2), transparent 62%),
-    radial-gradient(700px 420px at 6% 112%, rgb(120 140 230 / 0.08), transparent 60%);
-  --scrim: rgb(4 5 10 / 0.62);
+  --shadow: 0 24px 80px rgb(0 0 0 / 0.6), 0 2px 8px rgb(0 0 0 / 0.4);
+  /* A little light that falls in from above the window, of no colour of its own. */
+  --glow: radial-gradient(1100px 520px at 82% -12%, rgb(255 244 228 / 0.035), transparent 62%);
+  --scrim: rgb(8 7 6 / 0.66);
 
   /* Type. The display face is for the few places where the application speaks for itself. */
   --font-ui: "Inter Variable", "Segoe UI Variable Text", "Segoe UI", "PingFang SC",

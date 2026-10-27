@@ -288,10 +288,10 @@ describe('the status line under full access', () => {
     expect(contrast([255, 255, 255], [0, 0, 0])).toBeCloseTo(21, 5);
     expect(contrast([119, 119, 119], [255, 255, 255])).toBeCloseTo(4.48, 2);
     expect(contrast([10, 20, 30], [10, 20, 30])).toBe(1);
-    expect(rgbOf('#e9c98b')).toEqual([233, 201, 139]);
+    expect(rgbOf('#e3c07e')).toEqual([227, 192, 126]);
     // Half of white over black is the grey between them.
     expect(over({ rgb: [255, 255, 255], alpha: 0.5 }, [0, 0, 0])).toEqual([127.5, 127.5, 127.5]);
-    expect(washOf(themes[0], 'warn-wash')).toEqual({ rgb: [233, 201, 139], alpha: 0.1 });
+    expect(washOf(themes[0], 'warn-wash')).toEqual({ rgb: [227, 192, 126], alpha: 0.1 });
   });
 });
 

@@ -89,6 +89,9 @@ struct Options {
     /// Not in the usage (`--queue-capacity`, `--queue-bytes`): for the tests, which make a
     /// client that does not read fill its queue.
     limits: Limits,
+    /// Not in the usage (`--read-gate <FILE>`): for the tests, which hold `media.import` before
+    /// it reads each file until FILE is there, to see the engine answer meanwhile.
+    read_gate: Option<PathBuf>,
 }
 
 impl Options {
@@ -97,6 +100,7 @@ impl Options {
         let mut headless = false;
         let mut idle = IDLE_SECONDS;
         let mut limits = QUEUE_LIMITS;
+        let mut read_gate = None;
         while let Some(arg) = args.next() {
             match arg.to_str() {
                 Some("--project") => {
@@ -111,6 +115,10 @@ impl Options {
                 Some("--queue-bytes") => {
                     limits.bytes = above_0(args.next().as_ref(), "--queue-bytes")?;
                 }
+                Some("--read-gate") => {
+                    let file = args.next().ok_or("--read-gate needs a file")?;
+                    read_gate = Some(PathBuf::from(file));
+                }
                 _ => {
                     let arg = arg.to_string_lossy();
                     return Err(format!("{arg} is not an argument of the engine; {USAGE}"));
@@ -123,6 +131,7 @@ impl Options {
             headless,
             idle: Duration::from_secs(idle),
             limits,
+            read_gate,
         })
     }
 }
@@ -248,6 +257,7 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         saver,
         dir.to_string_lossy().into_owned(),
         options.limits,
+        options.read_gate.clone(),
     );
     let ending = runtime.block_on(serve(options, address, engine, save_errors));
     // The runtime is never shut down: the process ends with `exit`, and a shutdown would wait
@@ -498,6 +508,7 @@ mod tests {
                     messages: 4096,
                     bytes: 128 * 1024 * 1024,
                 },
+                read_gate: None,
             }
         );
         assert_eq!(
@@ -511,6 +522,8 @@ mod tests {
                 "8",
                 "--queue-bytes",
                 "1000",
+                "--read-gate",
+                "g",
             ])
             .unwrap(),
             Options {
@@ -521,6 +534,7 @@ mod tests {
                     messages: 8,
                     bytes: 1000,
                 },
+                read_gate: Some("g".into()),
             }
         );
     }

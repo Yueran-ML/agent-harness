@@ -1369,22 +1369,31 @@ async fn files_are_read_while_the_engine_goes_on_answering() {
         return;
     };
     let dir = project_dir();
-    let engine = engine(dir.path(), &["--headless"]).await;
+    // The import waits before it reads each file until the gate is there.
+    let gate = dir.path().join("gate");
+    let engine = engine(
+        dir.path(),
+        &["--headless", "--read-gate", gate.to_str().unwrap()],
+    )
+    .await;
     let mut agent = engine.client("agent").await;
     let mut desktop = engine.client("desktop").await;
-    // Hundreds of files, read eight at a time: long enough for a transaction of another client
-    // to be applied, and answered, while they are read.
     let path = made.path.to_str().unwrap();
-    let paths = vec![path; 400];
     let importing = agent
-        .request("media.import", Some(json!({ "paths": paths })))
+        .request("media.import", Some(json!({ "paths": [path, path] })))
         .await;
+    // While the import is held, another client's transaction is applied and answered.
     let timeline = json!([{ "op": "add_timeline", "timeline": {
         "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 }, "tracks": [],
     } }]);
     let applied = desktop.apply(timeline).await;
     assert_eq!(applied["revision"], 1);
+    assert_eq!(project(&mut desktop).await["project"]["media"], json!([]));
+    std::fs::write(&gate, b"").unwrap();
     let imported = agent.answer(importing).await;
-    assert_eq!(imported["result"]["revision"], 2, "{imported}");
-    assert_eq!(imported["result"]["added"].as_array().unwrap().len(), 400);
+    assert_eq!(
+        imported["result"],
+        json!({ "revision": 2, "added": ["m2", "m3"], "next_id": 4 }),
+        "{imported}"
+    );
 }

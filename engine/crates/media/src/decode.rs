@@ -165,6 +165,9 @@ impl Picture {
 pub struct Decoded {
     frame: i64,
     raw: ff::frame::Video,
+    /// Whether the frame that came out before it has the same number, so that it is not the
+    /// frame shown at its number.
+    repeat: bool,
 }
 
 impl Decoded {
@@ -185,6 +188,7 @@ impl Decoded {
         Ok(Self {
             frame: self.frame,
             raw: ffi::reference(&self.raw).map_err(MediaError::Decode)?,
+            repeat: self.repeat,
         })
     }
 }
@@ -195,6 +199,11 @@ impl Decoded {
 /// made for the last frame, so that the next one of the same shape is made without starting
 /// again; it takes frames of any file, one after another. One is used by one thread at a time,
 /// and each thread that makes pictures has its own.
+///
+/// A converter that is not a decoder's own cannot tell the decoder that the card failed: where
+/// it gives [`MediaError::Device`], the caller tells the decoder with
+/// [`VideoDecoder::device_failed`] and asks it for the frame again with
+/// [`VideoDecoder::decoded_at`], and the decoder goes on on the processor.
 #[derive(Default)]
 pub struct Converter {
     /// A frame copied from the card in a format other than NV12 and P010, to be converted.
@@ -402,6 +411,9 @@ pub struct VideoDecoder {
     seeks: u64,
     /// Whether the decoder on the card is made to fail, by a test.
     failing: bool,
+    /// A failure of the card that a caller saw elsewhere, as when a [`Converter`] of its own
+    /// could not copy a frame: the next call goes on on the processor.
+    failed_elsewhere: Option<String>,
     converter: Converter,
 }
 
@@ -454,6 +466,17 @@ impl VideoDecoder {
         let mut decoder = Self::open_on(path, None).map_err(Attempt::into_error)?;
         decoder.fallbacks = fallbacks;
         Ok(decoder)
+    }
+
+    /// Tell the decoder that its card failed where it could not see it: a [`Converter`] of the
+    /// caller's own, on another thread, gave [`MediaError::Device`] for a frame of it. The next
+    /// call opens the file again on the processor, where it was, and goes on there; ask it for
+    /// the frame that failed again with [`VideoDecoder::decoded_at`]. Nothing is done if it
+    /// decodes on the processor already.
+    pub fn device_failed(&mut self, why: &str) {
+        if self.path != HardwarePath::Software {
+            self.failed_elsewhere = Some(why.to_owned());
+        }
     }
 
     /// Make the decoder on the graphics card fail from now on, as a card that is lost does, so
@@ -556,6 +579,7 @@ impl VideoDecoder {
             failures: 0,
             seeks: 0,
             failing: false,
+            failed_elsewhere: None,
             converter: Converter::new(),
         };
         decoder.decode_first(format, start.is_none())?;
@@ -602,6 +626,7 @@ impl VideoDecoder {
             Decoded {
                 frame: 0,
                 raw: first.raw,
+                repeat: false,
             }
         } else {
             first
@@ -669,7 +694,10 @@ impl VideoDecoder {
         self.seeks
     }
 
-    /// As [`VideoDecoder::frame_at`], but the frame as it was decoded.
+    /// As [`VideoDecoder::frame_at`], but the frame as it was decoded, to be made a picture by
+    /// a [`Converter`] of the caller's own. If that converter fails with [`MediaError::Device`],
+    /// the decoder does not know: tell it with [`VideoDecoder::device_failed`], and ask for the
+    /// frame again here, and it is decoded on the processor.
     ///
     /// # Errors
     /// As [`VideoDecoder::frame_at`].
@@ -694,6 +722,11 @@ impl VideoDecoder {
         mut work: impl FnMut(&mut Self) -> Result<T, MediaError>,
     ) -> Result<T, MediaError> {
         let before = self.given;
+        if let Some(why) = self.failed_elsewhere.take() {
+            if self.path != HardwarePath::Software {
+                self.fall_back(&MediaError::Device(why), resume, before)?;
+            }
+        }
         match work(self) {
             Err(error @ (MediaError::Device(_) | MediaError::Decode(_)))
                 if self.path != HardwarePath::Software =>
@@ -736,10 +769,12 @@ impl VideoDecoder {
             });
         }
         if let Some(shown) = &self.shown {
-            // The frame given last is shown up to the next one.
+            // The frame given last is shown up to the next one: at its own number unless it is
+            // the second of two numbered alike, and at the numbers after it that no frame has.
             let up_to = self.waiting.as_ref().map(|waiting| waiting.frame - 1);
             if self.given == Some(shown.frame)
-                && (shown.frame == frame || (shown.frame < frame && up_to >= Some(frame)))
+                && ((shown.frame == frame && !shown.repeat)
+                    || (shown.frame < frame && up_to >= Some(frame)))
             {
                 return shown.again();
             }
@@ -957,11 +992,12 @@ impl VideoDecoder {
                         Some(timestamp) => self.timing.frame_of(timestamp),
                         None => self.previous.map_or(0, |previous| previous + 1),
                     };
+                    let repeat = self.previous == Some(frame);
                     self.previous = Some(frame);
                     if raw.is_key() {
                         self.learn_key(frame);
                     }
-                    return Ok(Some(Decoded { frame, raw }));
+                    return Ok(Some(Decoded { frame, raw, repeat }));
                 }
                 Err(ff::Error::Other { errno }) if errno == ff::util::error::EAGAIN => {
                     self.feed()?;

@@ -241,11 +241,24 @@ fn frames_with_the_same_timestamp_are_all_given() {
         assert_eq!((picture.frame, carried(&picture)), (6, Some(6)));
         let picture = decoder.next().unwrap().unwrap();
         assert_eq!((picture.frame, carried(&picture)), (6, Some(7)));
+        // The same number again, after the second was given: the first again, as from the
+        // start, and then the second again.
+        let picture = decoder.frame_at(6).unwrap();
+        assert_eq!((picture.frame, carried(&picture)), (6, Some(6)));
+        let picture = decoder.next().unwrap().unwrap();
+        assert_eq!((picture.frame, carried(&picture)), (6, Some(7)));
         // A number that no frame has: the last before it, the second of the two.
         let picture = decoder.frame_at(7).unwrap();
         assert_eq!((picture.frame, carried(&picture)), (6, Some(7)));
         let picture = decoder.next().unwrap().unwrap();
         assert_eq!((picture.frame, carried(&picture)), (8, Some(8)));
+        // From a decoder that has given nothing, the same frames.
+        let mut fresh = VideoDecoder::open_trying(&made.path, &[decoder.path_used()]).unwrap();
+        let picture = fresh.frame_at(6).unwrap();
+        assert_eq!((picture.frame, carried(&picture)), (6, Some(6)));
+        let mut fresh = VideoDecoder::open_trying(&made.path, &[decoder.path_used()]).unwrap();
+        let picture = fresh.frame_at(7).unwrap();
+        assert_eq!((picture.frame, carried(&picture)), (6, Some(7)));
     }
 }
 
@@ -413,6 +426,28 @@ fn a_decoder_whose_card_fails_goes_on_on_the_processor() {
         assert_eq!(decoder.path_used(), HardwarePath::Software);
         let given = decoder.next_decoded().unwrap().unwrap();
         assert_eq!(given.frame(), 6);
+
+        // One whose frame a converter of the caller's own could not copy from the card is
+        // told so, and gives the frame again from the processor.
+        let mut decoder = VideoDecoder::open_trying(&made.path, devices).unwrap();
+        let mut converter = Converter::new();
+        for frame in 0..3 {
+            let given = decoder.next_decoded().unwrap().unwrap();
+            check(&converter.picture(&given).unwrap(), frame);
+        }
+        decoder.device_failed("the copy of frame 2 failed");
+        let again = decoder.decoded_at(2).unwrap();
+        assert!(!again.on_device());
+        check(&converter.picture(&again).unwrap(), 2);
+        assert_eq!(decoder.path_used(), HardwarePath::Software);
+        assert_eq!(
+            decoder.fallbacks().last().unwrap(),
+            &(
+                path,
+                "the graphics card failed: the copy of frame 2 failed".to_owned()
+            )
+        );
+        check(&decoder.next().unwrap().unwrap(), 3);
     }
 }
 

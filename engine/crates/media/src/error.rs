@@ -28,7 +28,9 @@ pub enum MediaError {
     Decode(String),
     /// The graphics card failed: frames on it failed to decode, one after another, or a frame
     /// cannot be copied from it. A [`crate::VideoDecoder`] goes on on the processor instead,
-    /// and gives this only from a [`crate::Converter`] of the caller's own.
+    /// and this comes only from a [`crate::Converter`] of the caller's own, which the decoder
+    /// does not see: the caller then calls [`crate::VideoDecoder::device_failed`] and asks for
+    /// the frame again with [`crate::VideoDecoder::decoded_at`].
     #[error("the graphics card failed: {0}")]
     Device(String),
     /// The file cannot be read on, after it was opened.

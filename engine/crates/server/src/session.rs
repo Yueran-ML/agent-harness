@@ -9,7 +9,7 @@
 //! held, and nothing is logged: what is to be logged is kept and logged once it is let go.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -77,6 +77,8 @@ pub struct Engine {
     next_connection: AtomicU64,
     /// The files that `media.import` may read at once, of all its calls together.
     reading: Arc<Semaphore>,
+    /// For the tests: a file that `media.import` waits for before it reads each file.
+    read_gate: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -155,7 +157,13 @@ pub fn log_kicked(id: u64, kind: Option<Kind>, limits: Limits) {
 }
 
 impl Engine {
-    pub fn new(history: History, saver: Saver, project: String, limits: Limits) -> Engine {
+    pub fn new(
+        history: History,
+        saver: Saver,
+        project: String,
+        limits: Limits,
+        read_gate: Option<PathBuf>,
+    ) -> Engine {
         Engine {
             state: Arc::new(Mutex::new(State {
                 history,
@@ -170,6 +178,7 @@ impl Engine {
             connections: std::sync::Mutex::default(),
             next_connection: AtomicU64::new(1),
             reading: Arc::new(Semaphore::new(READ_AT_ONCE)),
+            read_gate,
         }
     }
 
@@ -628,7 +637,7 @@ async fn media_import(
         .with_data(json!({ "index": index, "path": path, "reason": "relative" }));
         return Err(fault.into());
     }
-    let media = read_all(&engine.reading, import.paths).await?;
+    let media = read_all(&engine.reading, engine.read_gate.as_ref(), import.paths).await?;
     let ops = media
         .into_iter()
         .map(|media| Op::AddMedia { media, index: None })
@@ -661,7 +670,11 @@ async fn media_import(
 /// Read each file as media, in the order given, at most [`READ_AT_ONCE`] at once of all the
 /// calls; the error of the first in the order given that cannot be read. Once one cannot be
 /// read, no other is begun.
-async fn read_all(reading: &Arc<Semaphore>, paths: Vec<String>) -> Result<Vec<Media>, Fault> {
+async fn read_all(
+    reading: &Arc<Semaphore>,
+    gate: Option<&PathBuf>,
+    paths: Vec<String>,
+) -> Result<Vec<Media>, Fault> {
     let stop = Arc::new(AtomicBool::new(false));
     let mut tasks = Vec::with_capacity(paths.len());
     for path in paths {
@@ -674,8 +687,12 @@ async fn read_all(reading: &Arc<Semaphore>, paths: Vec<String>) -> Result<Vec<Me
             .expect("the semaphore is never closed");
         let stopped = Arc::clone(&stop);
         let read_path = path.clone();
+        let gate = gate.cloned();
         let task = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            if let Some(gate) = gate {
+                wait_for(&gate);
+            }
             if stopped.load(Ordering::Relaxed) {
                 return None;
             }
@@ -722,6 +739,15 @@ fn cannot_read(path: &str, reason: &str, message: &str) -> Fault {
         format!("a file cannot be read: {path}: {message}"),
     )
     .with_data(json!({ "path": path, "reason": reason, "message": message }))
+}
+
+/// Wait until a file is there, or a minute has passed: the gate of `--read-gate`, which only
+/// the tests give.
+fn wait_for(gate: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !gate.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// A file as media, with no id yet: its path, which is absolute, written as the system writes

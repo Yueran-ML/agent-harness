@@ -288,11 +288,13 @@ impl State {
         self.shown && !self.stalled
     }
 
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub(crate) fn rect(&self) -> Rect {
         self.rect
     }
 
     /// The window has been given the size of its rectangle by its thread.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub(crate) fn sized(&mut self, size: (u32, u32)) {
         self.size = size;
         self.dirty = true;
@@ -332,11 +334,16 @@ impl Shared {
     }
 
     /// The window must be drawn again: it was uncovered, or shown.
+    #[cfg_attr(
+        not(windows),
+        allow(dead_code, reason = "told by WM_PAINT, on Windows")
+    )]
     pub(crate) fn expose(&self) {
         self.change(|state| state.dirty = true);
     }
 
     /// The window was destroyed, by its parent or by the view.
+    #[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
     pub(crate) fn window_gone(&self) {
         self.change(|state| state.gone = true);
         self.watch.notify_all();
@@ -440,11 +447,16 @@ impl View {
                 view.backend = backend;
             }
             Ok(Err(message)) => return Err(ViewError::Gpu(message)),
-            Err(_) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
                 return Err(ViewError::Gpu(format!(
                     "the graphics card was not ready within {} s",
                     READY.as_secs()
                 )))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(ViewError::Gpu(
+                    "the drawer ended before the graphics card was ready".into(),
+                ))
             }
         }
         view.watchdog = Some(Worker::spawn("columbina-view-watchdog", {

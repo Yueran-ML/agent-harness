@@ -113,6 +113,10 @@ Before `hello`, every other request is refused with `-32600`.
 | `history.undo` | none | `{"revision": n, "done": [op, ...], "next_id": k}`, or `{"revision": n, "done": null}` if there is nothing to undo |
 | `history.redo` | none | as `history.undo` |
 | `media.import` | `{"paths": ["<file>", ...]}` | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
+| `view.attach` | `{"parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12"}` |
+| `view.place` | `{"x": x, "y": y, "width": w, "height": h}` | `{}` |
+| `view.show` | `{"shown": true \| false}` | `{}` |
+| `view.detach` | none | `{"detached": true \| false}` |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
   From then on the connection is sent every notification. `protocol` other than 1 is refused
@@ -158,6 +162,90 @@ Before `hello`, every other request is refused with `-32600`.
 - `history.undo` takes back the latest step **whoever made it** (desktop and agent share one
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
+- `view.*`: the viewer, below.
+
+## The view
+
+The engine draws the picture of the viewer itself, with the graphics card, into a native child
+window that it makes inside the desktop's window, over the rectangle that the page keeps for
+the viewer (`crates/view`). No frame crosses between the processes; the page never sees the
+picture.
+
+- **Who sends them.** Only the desktop (`hello` with `"client": "desktop"`) may call `view.*`;
+  another client is refused with `-32600`. Within the desktop, only the **Electron main
+  process** sends them: it owns the window and its handle. The page (the renderer) never gets
+  the handle and never calls the engine for the view: it tells the main process where the
+  viewer is (over IPC), and the main process sends `view.place`. A `--headless` engine draws in
+  no window: every `view.*` is answered `-32601`.
+- **`parent`** is the native handle of the window, written in **decimal**, as a string: on
+  Windows the `HWND` of `BrowserWindow.getNativeWindowHandle()` (a Buffer of 8 bytes: read it
+  with `readBigUInt64LE()` and send its `toString()`; a signed reading is taken too). On macOS
+  it would be the `NSView *` of that call, but a view can only be put in an `NSView` of the
+  engine's own process, so `view.attach` cannot work across the processes on macOS as it is
+  (see below).
+- **Rectangles** are in **device pixels** (physical pixels of the screen, not CSS pixels),
+  relative to the top left corner of the parent's **client area** (the window without its frame
+  and title bar). From the page: `getBoundingClientRect()` of the viewer's element, times
+  `devicePixelRatio`, rounded (the left and top rounded, then the right and bottom rounded, and
+  the width and height taken between them, so that neighbours share their edges). The engine
+  is aware of the DPI of each monitor (`PER_MONITOR_AWARE_V2`), as Electron is, so that these
+  are its pixels too. **The window must have no menu bar**: a menu takes the top of the client
+  area, and the page's rectangles would be off by its height. The app calls
+  `setMenuBarVisibility(false)`; it must also never show the menu (no `autoHideMenuBar` that
+  Alt brings back; `Menu.setApplicationMenu(null)` or `removeMenu()` is surest). Width and
+  height are 0 to 16384; a view of no pixels draws nothing.
+- **`view.attach`** makes the view in `parent` at the rectangle, shown and **black**, and makes
+  the graphics card ready to draw in it; it is answered once both are done (about 100–300 ms;
+  other connections are answered meanwhile). `adapter` and `backend` say what draws. There is
+  **one view at a time**: a second `view.attach` destroys the first and makes another, in the
+  same or another window. The view is the engine's, not the connection's: it stays when the
+  connection that made it closes, until `view.detach`, another `view.attach`, or the end of the
+  engine. A desktop that reconnects attaches again.
+- **`view.place`** moves and sizes the view, as the page's layout changes (the window resized,
+  a panel dragged). It is answered at once; the window follows a moment later (it is moved by
+  a thread of the engine that serves it, and drawn again at its new size). Send it whenever the
+  viewer's rectangle changes, and after the parent's DPI changes.
+- **`view.show`** hides the view, and shows it again. A native window covers whatever of the
+  page lies over its rectangle ("airspace"): an HTML menu, dialog or tooltip that opens over the
+  viewer is hidden under it. So the page hides the view (`{"shown": false}`) as such an overlay
+  opens and shows it again as the overlay closes; meanwhile the page beneath shows (it may draw
+  the last frame there, or nothing). A view that is hidden draws nothing.
+- **Input** goes to the page: the view is a disabled window that never takes the focus, so the
+  clicks, wheel and keys of the user over the viewer go to the page's own element there, as if
+  the view were not there.
+- **What is drawn.** Black, until a picture is given to the view: in phase 0 by playback and
+  scrubbing (Task 13), not by a method of the protocol. A picture is fitted into the view, its
+  shape kept and centred, with black bars, turned as its media says, its colours taken as
+  BT.709. The engine draws only when there is something new to draw (a picture, a new size, the
+  window shown or uncovered), never on a clock, and with v-sync.
+- **`view.detach`** destroys the view; `detached` says whether there was one.
+- **Failures.** A view whose window was destroyed with its parent (the window closed) is let
+  go: `view.place` and `view.show` are then answered `-32003` with `reason: "gone"`, and the
+  desktop attaches again to its new window. If drawing a frame takes more than 1 s (the card
+  hangs, a driver resets), the view hides itself, so that the page is seen rather than a frozen
+  picture, and shows itself again once the frame returns. A device that is lost is made again;
+  so is a surface. These are logged on stderr (`view_ready`, `view_stalled`, `view_recovered`,
+  `view_device_lost`, `view_surface_lost`, `view_error`), with `view_attached` and
+  `view_detached`.
+- **Not tested yet** (phase 0): the border of the window dragged by the user (Windows' modal
+  loop of sizing), the window moved to a monitor of another DPI, fullscreen, sleep and resume,
+  and a device lost for real (it is lost on purpose in a test). **macOS** is written (an
+  `NSView` added to the parent's, that takes no clicks, drawn with Metal) but never run, and it
+  needs the parent view in the engine's process: across processes, macOS needs another way (a
+  layer of the engine shown in Electron's window with `CALayerHost`, or the pictures handed
+  over as `IOSurface`s), to be settled before the desktop is built for macOS.
+
+| `-32003` `reason` | when |
+|---|---|
+| `no_view` | `view.place` or `view.show` with no view attached |
+| `gone` | the view's window was destroyed with its parent; the view is let go |
+| `window` | the window of the view could not be made |
+| `gpu` | no graphics card can draw in the window |
+| `unsupported` | views are not made on this system |
+| `failed` | the engine failed to make the view |
+
+A `parent` that is not a window, or not a handle in decimal, is refused with `-32602` and
+`data: {"reason": "parent"}`; a rectangle wider or higher than 16384 with `{"reason": "rect"}`.
 
 ## Operations
 
@@ -250,11 +338,12 @@ real ids. For example:
 | code | when | `data` |
 |---|---|---|
 | `-32700` | the line is not JSON (id `null`) | |
-| `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB | |
-| `-32601` | no such method | |
+| `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB, `view.*` from a client that is not the desktop | |
+| `-32601` | no such method; `view.*` in a `--headless` engine | |
 | `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name` | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above |
 | `-32001` | a transaction, undo or redo was refused; the project is exactly as it was | the refusal, below |
 | `-32002` | `media.import`: a file cannot be read; nothing was added | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
+| `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
 
 The connection stays usable after every error.
 

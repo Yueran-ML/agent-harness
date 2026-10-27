@@ -1,5 +1,11 @@
 //! No views on this platform: [`crate::View::attach`] fails with
 //! [`crate::ViewError::Unsupported`].
+#![allow(
+    clippy::unused_self,
+    clippy::unnecessary_wraps,
+    clippy::needless_pass_by_ref_mut,
+    reason = "the shape of the other platforms' modules"
+)]
 
 use std::sync::Arc;
 use std::time::Duration;

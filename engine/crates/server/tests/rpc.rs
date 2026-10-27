@@ -1397,3 +1397,294 @@ async fn files_are_read_while_the_engine_goes_on_answering() {
         "{imported}"
     );
 }
+
+#[tokio::test]
+async fn a_headless_engine_has_no_view() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut desktop = engine.client("desktop").await;
+    for method in ["view.attach", "view.place", "view.show", "view.detach"] {
+        let error = desktop.error(method, None).await;
+        assert_eq!(error["code"], -32601, "{method}: {error}");
+        assert!(
+            error["message"].as_str().unwrap().contains("headless"),
+            "{error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_view_is_the_desktops_and_its_params_are_checked() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let mut agent = engine.client("agent").await;
+    let rect = json!({ "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36 });
+    let error = agent.error("view.attach", Some(rect)).await;
+    assert_eq!(error["code"], -32600, "{error}");
+
+    let mut desktop = engine.client("desktop").await;
+    let error = desktop
+        .error(
+            "view.place",
+            Some(json!({ "x": 0, "y": 0, "width": 64, "height": 36 })),
+        )
+        .await;
+    assert_eq!(error["code"], -32003, "{error}");
+    assert_eq!(error["data"]["reason"], "no_view");
+    let error = desktop
+        .error("view.show", Some(json!({ "shown": true })))
+        .await;
+    assert_eq!(error["data"]["reason"], "no_view", "{error}");
+    let detached = desktop.result("view.detach", None).await;
+    assert_eq!(detached, json!({ "detached": false }));
+    for parent in ["", "abc", "0", "1.5"] {
+        let params = json!({ "parent": parent, "x": 0, "y": 0, "width": 64, "height": 36 });
+        let error = desktop.error("view.attach", Some(params)).await;
+        assert_eq!(error["code"], -32602, "{parent}: {error}");
+        assert_eq!(error["data"]["reason"], "parent", "{parent}: {error}");
+    }
+    for params in [
+        json!({ "parent": 1, "x": 0, "y": 0, "width": 64, "height": 36 }),
+        json!({ "parent": "1", "x": 0, "y": 0, "width": -1, "height": 36 }),
+        json!({ "parent": "1", "x": 0, "y": 0, "width": 64 }),
+        json!({ "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36, "z": 1 }),
+    ] {
+        let error = desktop.error("view.attach", Some(params.clone())).await;
+        assert_eq!(error["code"], -32602, "{params}: {error}");
+    }
+    let error = desktop
+        .error("view.show", Some(json!({ "shown": "yes" })))
+        .await;
+    assert_eq!(error["code"], -32602, "{error}");
+    let error = desktop.error("view.detach", Some(json!({ "x": 1 }))).await;
+    assert_eq!(error["code"], -32602, "{error}");
+    if cfg!(windows) {
+        // A handle that is no window.
+        let params = json!({ "parent": "2147418113", "x": 0, "y": 0, "width": 64, "height": 36 });
+        let error = desktop.error("view.attach", Some(params)).await;
+        assert_eq!(error["code"], -32602, "{error}");
+        assert_eq!(error["data"]["reason"], "parent", "{error}");
+        let params = json!({ "parent": "1", "x": 0, "y": 0, "width": 20000, "height": 36 });
+        let error = desktop.error("view.attach", Some(params)).await;
+        assert_eq!(error["data"]["reason"], "rect", "{error}");
+    }
+}
+
+/// A window of the test's own, hidden, that the engine's view is made in, as it is made in the
+/// desktop's: in another process.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod parent {
+    use std::sync::mpsc;
+    use std::thread::JoinHandle;
+
+    use windows::core::w;
+    use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowExW, GetMessageW,
+        GetWindowLongW, GetWindowRect, GetWindowThreadProcessId, PostMessageW, RegisterClassExW,
+        TranslateMessage, GWL_STYLE, MSG, WINDOW_EX_STYLE, WM_CLOSE, WNDCLASSEXW, WS_POPUP,
+        WS_VISIBLE,
+    };
+
+    pub struct Parent {
+        pub hwnd: isize,
+        thread: Option<JoinHandle<()>>,
+    }
+
+    fn hwnd(value: isize) -> HWND {
+        HWND(value as *mut core::ffi::c_void)
+    }
+
+    unsafe extern "system" fn procedure(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        if message == windows::Win32::UI::WindowsAndMessaging::WM_DESTROY {
+            unsafe { windows::Win32::UI::WindowsAndMessaging::PostQuitMessage(0) };
+        }
+        unsafe { DefWindowProcW(window, message, wparam, lparam) }
+    }
+
+    impl Parent {
+        /// A top-level window that is not shown, served by a thread of its own.
+        pub fn open() -> Parent {
+            let (made, making) = mpsc::channel();
+            let thread = std::thread::spawn(move || unsafe {
+                let class = WNDCLASSEXW {
+                    cbSize: u32::try_from(std::mem::size_of::<WNDCLASSEXW>()).unwrap(),
+                    lpfnWndProc: Some(procedure),
+                    lpszClassName: w!("ColumbinaTestDesktop"),
+                    ..WNDCLASSEXW::default()
+                };
+                RegisterClassExW(&raw const class);
+                let window = CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    w!("ColumbinaTestDesktop"),
+                    w!("columbina-engine test"),
+                    WS_POPUP,
+                    0,
+                    0,
+                    800,
+                    600,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+                made.send(window.0 as isize).unwrap();
+                let mut message = MSG::default();
+                while GetMessageW(&raw mut message, None, 0, 0).0 > 0 {
+                    let _ = TranslateMessage(&raw const message);
+                    DispatchMessageW(&raw const message);
+                }
+            });
+            Parent {
+                hwnd: making.recv().unwrap(),
+                thread: Some(thread),
+            }
+        }
+
+        /// The views in it: their handles, the processes they belong to, their rectangles in
+        /// its client area, and whether they are shown.
+        pub fn views(&self) -> Vec<(isize, u32, [i32; 4], bool)> {
+            let mut views = Vec::new();
+            let mut after = None;
+            loop {
+                let found = unsafe {
+                    FindWindowExW(Some(hwnd(self.hwnd)), after, w!("ColumbinaView"), None)
+                };
+                let Ok(found) = found else { break };
+                let mut process = 0;
+                unsafe { GetWindowThreadProcessId(found, Some(&raw mut process)) };
+                let mut rect = RECT::default();
+                unsafe { GetWindowRect(found, &raw mut rect) }.unwrap();
+                let mut corners = [
+                    POINT {
+                        x: rect.left,
+                        y: rect.top,
+                    },
+                    POINT {
+                        x: rect.right,
+                        y: rect.bottom,
+                    },
+                ];
+                for corner in &mut corners {
+                    let _ = unsafe { ScreenToClient(hwnd(self.hwnd), corner) };
+                }
+                let style = unsafe { GetWindowLongW(found, GWL_STYLE) }.cast_unsigned();
+                views.push((
+                    found.0 as isize,
+                    process,
+                    [
+                        corners[0].x,
+                        corners[0].y,
+                        corners[1].x - corners[0].x,
+                        corners[1].y - corners[0].y,
+                    ],
+                    style & WS_VISIBLE.0 != 0,
+                ));
+                after = Some(found);
+            }
+            views
+        }
+    }
+
+    impl Drop for Parent {
+        fn drop(&mut self) {
+            let _ = unsafe { PostMessageW(Some(hwnd(self.hwnd)), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+            if let Some(thread) = self.thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
+}
+
+/// Wait until the views in a parent are as `wanted` says.
+#[cfg(windows)]
+async fn until_views(
+    parent: &parent::Parent,
+    what: &str,
+    wanted: impl Fn(&[(isize, u32, [i32; 4], bool)]) -> bool,
+) -> Vec<(isize, u32, [i32; 4], bool)> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let views = parent.views();
+        if wanted(&views) {
+            return views;
+        }
+        assert!(Instant::now() < deadline, "{what}: {views:?}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn the_desktop_attaches_one_view_to_its_window_and_moves_shows_and_detaches_it() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let rect = |x: i32, y: i32, width: u32, height: u32| json!({ "x": x, "y": y, "width": width, "height": height });
+    let mut attach = rect(10, 20, 320, 180);
+    attach["parent"] = json!(parent.hwnd.to_string());
+    let attached = desktop.result("view.attach", Some(attach.clone())).await;
+    assert!(attached["adapter"].as_str().is_some(), "{attached}");
+    assert!(attached["backend"].as_str().is_some(), "{attached}");
+    // A window of the engine's, in the test's window.
+    let views = until_views(&parent, "attached", |views| views.len() == 1).await;
+    let (first, process, place, shown) = views[0];
+    assert_eq!(process, engine.pid);
+    assert_eq!(place, [10, 20, 320, 180]);
+    assert!(shown);
+
+    assert_eq!(
+        desktop
+            .result("view.place", Some(rect(-5, 40, 200, 100)))
+            .await,
+        json!({})
+    );
+    until_views(&parent, "moved", |views| {
+        views.len() == 1 && views[0].2 == [-5, 40, 200, 100]
+    })
+    .await;
+    desktop
+        .result("view.show", Some(json!({ "shown": false })))
+        .await;
+    until_views(&parent, "hidden", |views| views.len() == 1 && !views[0].3).await;
+    desktop
+        .result("view.show", Some(json!({ "shown": true })))
+        .await;
+    until_views(&parent, "shown", |views| views.len() == 1 && views[0].3).await;
+
+    // A second attach takes the place of the first.
+    let mut again = rect(0, 0, 64, 36);
+    again["parent"] = json!(parent.hwnd.to_string());
+    desktop.result("view.attach", Some(again)).await;
+    until_views(&parent, "attached again", |views| {
+        views.len() == 1 && views[0].0 != first && views[0].2 == [0, 0, 64, 36]
+    })
+    .await;
+
+    // The view is the engine's: it stays when the desktop's connection closes.
+    drop(desktop);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(parent.views().len(), 1);
+    let mut desktop = engine.client("desktop").await;
+    let detached = desktop.result("view.detach", None).await;
+    assert_eq!(detached, json!({ "detached": true }));
+    assert_eq!(parent.views(), []);
+    // The log is written by a thread of its own, and read here by a task: it comes soon.
+    let deadline = Instant::now() + WAIT;
+    while !engine.stderr().contains(r#""event":"view_detached""#) {
+        assert!(Instant::now() < deadline, "{}", engine.stderr());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let stderr = engine.stderr();
+    assert!(stderr.contains(r#""event":"view_attached""#), "{stderr}");
+    assert!(stderr.contains(r#""event":"view_ready""#), "{stderr}");
+}

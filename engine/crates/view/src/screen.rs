@@ -45,8 +45,9 @@ pub(crate) fn run(
             return;
         }
     };
-    // The picture shown, and how it is turned.
-    let mut shown: Option<(Arc<Picture>, u16)> = None;
+    // The picture shown, how it is turned, and its number among the pictures given.
+    let mut shown: Option<(Arc<Picture>, u16, u64)> = None;
+    let mut given = 0_u64;
     let mut retries = 0;
     let mut again_at: Option<Instant> = None;
     loop {
@@ -60,7 +61,10 @@ pub(crate) fn run(
         };
         match pending {
             Pending::Nothing => {}
-            Pending::Picture(picture, rotation) => shown = Some((picture, rotation)),
+            Pending::Picture(picture, rotation) => {
+                given += 1;
+                shown = Some((picture, rotation, given));
+            }
             Pending::Clear => shown = None,
         }
         if lose {
@@ -193,8 +197,8 @@ struct Screen {
     configured: bool,
     /// Set when the device is lost.
     lost: Arc<AtomicBool>,
-    /// The picture whose planes the painter holds.
-    uploaded: Option<*const Picture>,
+    /// The number of the picture whose planes the painter holds.
+    uploaded: Option<u64>,
     adapter: String,
     backend: String,
 }
@@ -303,18 +307,18 @@ impl Screen {
 
     /// Draw `shown` into a window of `size`, and present it. A picture that cannot be uploaded
     /// is let go, and black is drawn.
-    fn frame(&mut self, shown: &mut Option<(Arc<Picture>, u16)>, size: (u32, u32)) -> Outcome {
+    fn frame(&mut self, shown: &mut Option<(Arc<Picture>, u16, u64)>, size: (u32, u32)) -> Outcome {
         match shown {
-            Some((picture, _)) => {
-                let pointer = Arc::as_ptr(picture);
-                if self.uploaded != Some(pointer) {
+            Some((picture, _, number)) => {
+                let number = *number;
+                if self.uploaded != Some(number) {
                     if let Err(message) = self.painter.upload(picture) {
                         self.shared.report(Event::Error { message });
                         self.painter.forget();
                         *shown = None;
                         self.uploaded = None;
                     } else {
-                        self.uploaded = Some(pointer);
+                        self.uploaded = Some(number);
                     }
                 }
             }
@@ -324,7 +328,7 @@ impl Screen {
                 }
             }
         }
-        let rotation = shown.as_ref().map_or(0, |(_, rotation)| *rotation);
+        let rotation = shown.as_ref().map_or(0, |(_, rotation, _)| *rotation);
         if !self.configured || (self.config.width, self.config.height) != size {
             self.config.width = size.0;
             self.config.height = size.1;

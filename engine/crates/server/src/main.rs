@@ -34,6 +34,7 @@ mod names;
 mod queue;
 mod rpc;
 mod session;
+mod view;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -168,6 +169,11 @@ fn exit(code: i32) -> ! {
 fn main() {
     let options = Options::parse(std::env::args_os().skip(1))
         .unwrap_or_else(|message| fail(EXIT_CANNOT_START, &json!({ "error": message })));
+    if !options.headless {
+        // Before any window is made: rectangles of the desktop are in device pixels, as they
+        // are for a process aware of the DPI of each monitor.
+        columbina_view::prepare_process();
+    }
     let dir = project_dir(&options.project)
         .unwrap_or_else(|message| fail(EXIT_CANNOT_START, &json!({ "error": message })));
     let address = Address::of(&dir).unwrap_or_else(|error| {
@@ -258,6 +264,7 @@ fn start(options: &Options, dir: &Path, address: &Address) -> Ending {
         dir.to_string_lossy().into_owned(),
         options.limits,
         options.read_gate.clone(),
+        options.headless,
     );
     let ending = runtime.block_on(serve(options, address, engine, save_errors));
     // The runtime is never shut down: the process ends with `exit`, and a shutdown would wait

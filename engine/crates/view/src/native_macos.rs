@@ -7,9 +7,9 @@
 //! memory of its process, and the handle that Electron gives (`getNativeWindowHandle()`) is one
 //! of Electron's. A view of the engine, in a process of its own, inside a window of Electron's
 //! needs another way on macOS (a layer of another process shown with `CALayerHost`, or the
-//! pictures handed over as `IOSurface`s): see the notes for Task 17 in `PROTOCOL.md`.
+//! pictures handed over as `IOSurface`s): see "The view" in `PROTOCOL.md`.
 //!
-//! AppKit is used on the main thread only: the view is made, moved and removed there, through
+//! `AppKit` is used on the main thread only: the view is made, moved and removed there, through
 //! the main queue of dispatch, which the main thread of the process must serve (as the run loop
 //! of an `NSApplication` does). Drawing is done by the drawer's thread, as Metal allows.
 
@@ -93,7 +93,9 @@ fn sync(view: &PassingView, shared: &Shared) {
         let state = shared.lock();
         (state.rect(), state.visible())
     };
-    if let Some(parent) = view.superview() {
+    // SAFETY: on the main thread (the view is `MainThreadOnly`); the superview is retained for
+    // as long as it is used here.
+    if let Some(parent) = unsafe { view.superview() } {
         view.setFrame(frame(&parent, rect));
     }
     view.setHidden(!visible);

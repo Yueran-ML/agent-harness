@@ -127,7 +127,7 @@ mod windows_main {
                     );
                 }
                 Some("--shot") => {
-                    shot = Some(PathBuf::from(args.next().ok_or("--shot needs a file")?))
+                    shot = Some(PathBuf::from(args.next().ok_or("--shot needs a file")?));
                 }
                 Some("--software") => hardware = Hardware::Off,
                 _ => file = Some(PathBuf::from(arg)),

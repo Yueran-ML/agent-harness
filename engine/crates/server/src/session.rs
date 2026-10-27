@@ -25,6 +25,7 @@ use crate::log::log;
 use crate::names;
 use crate::queue::{self, Limits, Refused};
 use crate::rpc::{self, Fault, Line};
+use crate::view::Viewer;
 
 /// The version of the engine that `hello` answers with.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -79,6 +80,8 @@ pub struct Engine {
     reading: Arc<Semaphore>,
     /// For the tests: a file that `media.import` waits for before it reads each file.
     read_gate: Option<PathBuf>,
+    /// The view that the picture is drawn in, if one is attached.
+    viewer: Viewer,
 }
 
 #[derive(Default)]
@@ -163,6 +166,7 @@ impl Engine {
         project: String,
         limits: Limits,
         read_gate: Option<PathBuf>,
+        headless: bool,
     ) -> Engine {
         Engine {
             state: Arc::new(Mutex::new(State {
@@ -179,6 +183,7 @@ impl Engine {
             next_connection: AtomicU64::new(1),
             reading: Arc::new(Semaphore::new(READ_AT_ONCE)),
             read_gate,
+            viewer: Viewer::new(headless),
         }
     }
 
@@ -380,6 +385,13 @@ async fn dispatch(
             history_step(engine, connection, kind, id, method, params).await
         }
         "media.import" => media_import(engine, connection, kind, id, params).await,
+        "view.attach" | "view.place" | "view.show" | "view.detach" => {
+            let result = engine.viewer.call(kind, method, params).await?;
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
         _ => Err(Fault::new(
             rpc::METHOD_NOT_FOUND,
             format!("there is no method {method}"),

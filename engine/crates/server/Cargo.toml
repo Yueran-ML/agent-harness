@@ -15,6 +15,7 @@ path = "src/main.rs"
 columbina-media = { path = "../media" }
 columbina-model = { path = "../model" }
 columbina-store = { path = "../store" }
+columbina-view = { path = "../view" }
 interprocess.workspace = true
 memchr.workspace = true
 serde.workspace = true
@@ -30,3 +31,7 @@ rustix = { version = "1", features = ["process"] }
 # Project::sample, for the tests of the names of a transaction.
 columbina-model = { path = "../model", features = ["sample"] }
 tempfile.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+# A window of the test's own, for view.attach.
+windows.workspace = true

@@ -16,7 +16,8 @@ nothing asks for ffmpeg. The profiles load it with ``COLUMBINA_VIDEO``.
 The parts: :mod:`.media` asks ffmpeg, :mod:`.project` keeps the directory, :mod:`.transcribe`
 writes down the words, :mod:`.timeline` and :mod:`.story` are the film as data and as text,
 :mod:`.render` compiles it for ffmpeg, and :mod:`.editing` is what the tools and the command
-line ``columbina video`` do.
+line ``columbina video`` do. :mod:`.engine` reaches ``columbina-engine``, the program that has a
+project of the studio open, as one of its clients.
 
 Every path goes through the file seam: the directory of the project is written as a file is,
 and a source is read as a file is. What is said in a source is something that a file says.

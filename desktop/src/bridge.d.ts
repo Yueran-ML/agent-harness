@@ -1,3 +1,5 @@
+import type { EngineAnswer, EngineEvent, EngineOpened, Imported, PageMethod, ViewRect } from './studio/engine';
+
 export interface ColumbinaBridge {
   /** The system that the application runs on, as Node names it: `win32`, `darwin` or `linux`. */
   platform: string;
@@ -253,6 +255,44 @@ export interface ColumbinaBridge {
   openPetsFolder(): Promise<void>;
   /** Hear that the pet was hidden from its own menu. */
   onPet(listener: (said: { on: boolean }) => void): () => void;
+  /** The engine of the studio, which edits the project of a folder and draws its viewer. */
+  engine: EngineBridge;
+}
+
+/**
+ * The engine of the studio, as the shell lets the page reach it. The page names no path to the
+ * engine (media comes from the dialog of the system) and never attaches the view itself: it says
+ * where the viewer lies, and the shell, which holds the handle of the window, makes the view there.
+ */
+export interface EngineBridge {
+  /**
+   * Open a folder that was chosen in the dialog in the studio: its project is `.columbina/studio`
+   * there. The engine is started, or the one that has the project open (an agent's) is reached;
+   * one of another folder is closed first, and one of this folder is kept. `opened` is told of
+   * each time, also when it was kept.
+   */
+  open(cwd: string): Promise<EngineOpened>;
+  /**
+   * Call a method of the engine that the page may call (not `view.attach`, `view.detach` or
+   * `media.import`). The answer holds the result, or the error as the engine gave it.
+   */
+  call(method: PageMethod, params?: Record<string, unknown>): Promise<EngineAnswer>;
+  /**
+   * Let the user choose media in the dialog of the system, titled in the language that is named,
+   * and import it into the project. The result is null where nothing was chosen.
+   */
+  importFiles(asked?: { language: string }): Promise<EngineAnswer<Imported | null>>;
+  /**
+   * Say where the viewer lies, in device pixels from the corner of the client area. The view is
+   * made there once an engine is open, and moved there as it changes.
+   */
+  viewRect(rect: ViewRect): Promise<void>;
+  /** Hide the view while something of the page lies over the viewer, and show it again after. */
+  viewShow(shown: boolean): Promise<void>;
+  /** Close the engine of the studio. One that this application started ends. */
+  close(): Promise<void>;
+  /** Hear what the engine tells, and how it stands, in order. */
+  onEvent(listener: (event: EngineEvent) => void): () => void;
 }
 
 /** A pet that can be chosen. */

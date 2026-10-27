@@ -101,4 +101,17 @@ contextBridge.exposeInMainWorld('columbina', {
   setPet: (asked) => ipcRenderer.invoke('columbina:set-pet', { on: asked?.on, chosen: asked?.chosen }),
   openPetsFolder: () => ipcRenderer.invoke('columbina:open-pets-folder'),
   onPet: (callback) => subscribe('columbina:pet', callback),
+  // The engine of the studio. The page names no path to it and holds no handle of the window:
+  // media comes from the dialog of the system, and the view is made by the shell.
+  engine: {
+    open: (cwd) => ipcRenderer.invoke('columbina:engine-open', { cwd }),
+    call: (method, params) => ipcRenderer.invoke('columbina:engine-call', { method, params }),
+    importFiles: (asked) => ipcRenderer.invoke('columbina:engine-import', { language: asked?.language }),
+    viewRect: (rect) => ipcRenderer.invoke('columbina:engine-view-rect', {
+      x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,
+    }),
+    viewShow: (shown) => ipcRenderer.invoke('columbina:engine-view-show', { shown: shown === true }),
+    close: () => ipcRenderer.invoke('columbina:engine-close'),
+    onEvent: (callback) => subscribe('columbina:engine-event', callback),
+  },
 });

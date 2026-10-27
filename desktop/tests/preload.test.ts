@@ -62,10 +62,15 @@ const told = [...new Set([...shell.matchAll(/\btell\((['`])([^'`]+)\1/g)].flatMa
 /** Every call of a bridge made once, and the channels that this reached. */
 function reached(file: string, name: string) {
   const bridge = bridgeOf(file);
-  for (const [call, make] of Object.entries(bridge.exposed[name])) {
-    // A value, such as the system, is there to be read, and is not called.
-    if (typeof make === 'function') make(call.startsWith('on') ? () => undefined : {});
-  }
+  const touch = (calls: Record<string, unknown>) => {
+    for (const [call, make] of Object.entries(calls)) {
+      // A value, such as the system, is there to be read, and is not called. A group of calls,
+      // such as those of the engine, is gone through as the bridge is.
+      if (typeof make === 'function') make(call.startsWith('on') ? () => undefined : {});
+      else if (make !== null && typeof make === 'object') touch(make as Record<string, unknown>);
+    }
+  };
+  touch(bridge.exposed[name]);
   return {
     asked: bridge.invoked.map(given => given[0] as string),
     said: bridge.sent.map(given => given[0] as string),
@@ -106,7 +111,7 @@ describe('the bridge of the main window', () => {
     expect(taken).toEqual(['columbina:send']);
     // And it listens to everything that the shell tells of.
     expect([...heard].sort()).toEqual([...told].sort());
-    expect(told.length).toBe(9);
+    expect(told.length).toBe(10);
   });
 
   it('hands on what a call names, and nothing else that came with it', () => {
@@ -184,6 +189,45 @@ describe('the bridge of the main window', () => {
     ]) {
       expect(handed(call, more), call).toHaveLength(1);
     }
+  });
+
+  it('offers the calls of the engine that the page is told of, and no other', () => {
+    const { exposed } = bridgeOf('electron/preload.cjs');
+    const engine = exposed.columbina.engine as unknown as Record<string, Call>;
+    expect(Object.keys(engine).sort()).toEqual(declared('src/bridge.d.ts', 'EngineBridge').sort());
+    expect(Object.keys(engine)).toHaveLength(7);
+  });
+
+  it('hands the engine what a call names, and nothing else that came with it', () => {
+    const { exposed, invoked } = bridgeOf('electron/preload.cjs');
+    const engine = exposed.columbina.engine as unknown as Record<string, Call>;
+    const handed = (call: string, ...given: unknown[]) => {
+      engine[call](...given);
+      return invoked.at(-1);
+    };
+    const more = { language: 'ja', cwd: 'C:/work', parent: '123', then: 'more' };
+    expect(handed('open', 'C:/work', more)).toEqual(['columbina:engine-open', { cwd: 'C:/work' }]);
+    expect(handed('call', 'transaction.apply', { ops: [] }, more))
+      .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] } }]);
+    expect(handed('importFiles', more)).toEqual(['columbina:engine-import', { language: 'ja' }]);
+    expect(handed('importFiles')).toEqual(['columbina:engine-import', { language: undefined }]);
+    expect(handed('viewRect', { x: 1, y: 2, width: 3, height: 4, ...more }))
+      .toEqual(['columbina:engine-view-rect', { x: 1, y: 2, width: 3, height: 4 }]);
+    // Shown only where the page says so in so many words.
+    expect(handed('viewShow', true)).toEqual(['columbina:engine-view-show', { shown: true }]);
+    for (const asked of ['true', 1, {}, undefined]) expect(handed('viewShow', asked)).toEqual(['columbina:engine-view-show', { shown: false }]);
+    expect(handed('close', more)).toEqual(['columbina:engine-close']);
+  });
+
+  it('lets the page hear the engine, and stop hearing it', () => {
+    const { exposed, listening } = bridgeOf('electron/preload.cjs');
+    const engine = exposed.columbina.engine as unknown as Record<string, Call>;
+    const heard: unknown[] = [];
+    const stop = engine.onEvent((event: unknown) => heard.push(event));
+    for (const listener of listening.get('columbina:engine-event')!) listener({ sender: 'the shell' }, { kind: 'exited', session: 1 });
+    expect(heard).toEqual([{ kind: 'exited', session: 1 }]);
+    stop();
+    expect(listening.get('columbina:engine-event')!.size).toBe(0);
   });
 
   it('names a file that was dropped by where Electron says it lies, and nothing that the page wrote', () => {

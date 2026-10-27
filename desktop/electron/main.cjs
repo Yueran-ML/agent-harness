@@ -9,6 +9,7 @@ const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const { pathToFileURL, fileURLToPath } = require('node:url');
 const pets = require('./pets.cjs');
+const engine = require('./engine.cjs');
 
 let window;
 let service = null;
@@ -125,12 +126,35 @@ function windowBar(theme) {
 // name that a page gives it. Everything else that is said is said by a page.
 const WORDS = {
   en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach', open: 'Open Columbina', quit: 'Quit Columbina', hidePet: 'Hide the pet',
-    petWaiting: (tool) => (tool ? `Waiting for your yes to ${tool}.` : 'Waiting for your yes.'), petDone: 'Done.', petFailed: 'Something went wrong.' },
+    petWaiting: (tool) => (tool ? `Waiting for your yes to ${tool}.` : 'Waiting for your yes.'), petDone: 'Done.', petFailed: 'Something went wrong.',
+    chooseMedia: 'Choose media to import', media: 'Video, audio and pictures', allFiles: 'All files' },
   ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択', open: 'Columbina を開く', quit: 'Columbina を終了', hidePet: 'ペットをしまう',
-    petWaiting: (tool) => (tool ? `${tool} の承認を待っています。` : '承認を待っています。'), petDone: '終わりました。', petFailed: 'うまくいきませんでした。' },
+    petWaiting: (tool) => (tool ? `${tool} の承認を待っています。` : '承認を待っています。'), petDone: '終わりました。', petFailed: 'うまくいきませんでした。',
+    chooseMedia: '読み込むメディアを選択', media: '動画・音声・画像', allFiles: 'すべてのファイル' },
   'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件', open: '打开 Columbina', quit: '退出 Columbina', hidePet: '收起桌宠',
-    petWaiting: (tool) => (tool ? `等你点头：${tool}。` : '等你点头。'), petDone: '做完了。', petFailed: '遇到点难题。' },
+    petWaiting: (tool) => (tool ? `等你点头：${tool}。` : '等你点头。'), petDone: '做完了。', petFailed: '遇到点难题。',
+    chooseMedia: '选择要导入的媒体', media: '视频、音频和图片', allFiles: '所有文件' },
 };
+/**
+ * The methods of the engine that the page may call. The view is attached and detached by the
+ * shell alone, which holds the handle of the window; media is imported from files that the user
+ * chose in the dialog of the system, so the page never names a path to the engine.
+ */
+const PAGE_METHODS = new Set([
+  'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy',
+  'transport.load', 'transport.play', 'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
+  'view.place', 'view.show',
+]);
+/** The endings of the files that the engine reads as media, offered first in the dialog. */
+const MEDIA_ENDINGS = [
+  'mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'ts', 'm2ts', 'mts', 'mpg', 'mpeg', 'vob',
+  'wav', 'mp3', 'flac', 'ogg', 'oga', 'ogv', 'opus', 'aac', 'm4a', 'png', 'jpg', 'jpeg', 'webp',
+];
+/** Where the studio keeps its project in a project folder. */
+const STUDIO_FOLDER = ['.columbina', 'studio'];
+/** How far from the corner of the window a viewer may lie, and how large it may be, in pixels of the screen. */
+const VIEW_PLACE_MOST = 32_768;
+const VIEW_SIZE_MOST = 16_384;
 // What the start at login gives the application, which then waits in the tray with its window put away.
 const HIDDEN = '--hidden';
 // The project that the service of the moment works in: the process, its folder, and whether it is a replay.
@@ -199,11 +223,22 @@ let loginShell = null;
 let askingLoginShell = null;
 // The program that signs in to GitHub while it waits for the user. There is one at most.
 let signingIn = null;
+// The engine of the studio while a project is open in it: its number, which every event to the
+// page carries, the directory of its project, and the session with it. Opened and closed one
+// after the other.
+let studio = null;
+let studioNumber = 0;
+let studioOperation = Promise.resolve();
+// The viewer of the studio: where the page keeps it, in pixels of the screen from the corner of
+// the client area, whether it is to be shown, and how the view of the engine stands there:
+// `none`, `attaching`, `attached`, `unsupported` (macOS, or an engine without a window) or `failed`.
+const viewer = { rect: null, shown: true, state: 'none' };
 
 app.setName('Columbina');
 if (process.platform === 'win32') app.setAppUserModelId('dev.columbina.desktop');
 
 const logPath = () => path.join(app.getPath('logs'), 'columbina-service.log');
+const engineLogPath = () => path.join(app.getPath('logs'), 'columbina-engine.log');
 const assistantLogPath = (one) => path.join(app.getPath('logs'), `columbina-${one.kind}.log`);
 /** Whether the application runs an assistant: in Feishu, in WeCom, or in both. */
 const anyAssistant = () => Object.values(assistants).some((one) => one.child !== null);
@@ -395,7 +430,8 @@ async function startServiceIn(where, words) {
   const child = spawn(config.executable, args, {
     // The service writes what its task does to the file that the pet reads, as the plugin
     // columbina.pets does where it is named. See docs/pets.md.
-    cwd, env: { ...config.env, COLUMBINA_PET_STATE: petStateFile() }, windowsHide: true,
+    // Its agent reaches the studio's project through the same engine as the window.
+    cwd, env: { ...config.env, COLUMBINA_PET_STATE: petStateFile(), ...engineOfTheService() }, windowsHide: true,
     detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
   });
   service = child;
@@ -517,6 +553,210 @@ function serviceCommand() {
   const args = process.env.COLUMBINA_SERVICE_ARGS ? JSON.parse(process.env.COLUMBINA_SERVICE_ARGS) : ['-m', 'columbina', 'serve'];
   if (!Array.isArray(args) || args.some((value) => typeof value !== 'string')) throw new Error('COLUMBINA_SERVICE_ARGS must be a JSON array of strings.');
   return { executable, args, mode: 'service', env: { ...process.env } };
+}
+/**
+ * The program of the engine of the studio, or null where there is none: in a package the one
+ * that it brings in `resources/engine`; in development the one that COLUMBINA_ENGINE names by
+ * its whole path, else the newest build of `engine/` of the repository.
+ */
+function engineProgram() {
+  const name = process.platform === 'win32' ? 'columbina-engine.exe' : 'columbina-engine';
+  if (app.isPackaged) {
+    const brought = path.join(process.resourcesPath, 'engine', name);
+    return existsSync(brought) ? brought : null;
+  }
+  const named = process.env.COLUMBINA_ENGINE;
+  if (named) return path.isAbsolute(named) ? named : null;
+  const built = ['release', 'debug']
+    .map((kind) => path.resolve(__dirname, '../../engine/target', kind, name))
+    .filter((file) => existsSync(file))
+    .map((file) => {
+      let at = 0;
+      try { at = statSync(file).mtimeMs ?? 0; } catch { /* It is gone. */ }
+      return { file, at };
+    });
+  // The newest; of two as new, the release.
+  built.sort((one, other) => other.at - one.at);
+  return built[0]?.file ?? null;
+}
+/** The folder of the libraries of FFmpeg that the engine reads media with, where it is not beside it in a package. */
+function engineLibraries(program) {
+  if (app.isPackaged) return path.dirname(program);
+  return process.env.FFMPEG_DIR ? path.join(process.env.FFMPEG_DIR, 'bin') : null;
+}
+/** The environment of the engine: that of the application, with the folder of its libraries at the end of the PATH. */
+function engineEnvironment(program) {
+  const env = process.platform === 'darwin' && app.isPackaged ? bundledEnvironment() : { ...process.env };
+  const libraries = engineLibraries(program);
+  if (libraries) {
+    // Windows writes it Path, and reads it in any case.
+    const key = Object.keys(env).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH';
+    env[key] = env[key] ? `${env[key]}${path.delimiter}${libraries}` : libraries;
+  }
+  return env;
+}
+/** What the service is told of the engine: the program of the window's, and in development the FFmpeg it is built with. */
+function engineOfTheService() {
+  const program = engineProgram();
+  const told = program ? { COLUMBINA_ENGINE: program } : {};
+  if (!app.isPackaged && process.env.FFMPEG_DIR) told.FFMPEG_DIR = process.env.FFMPEG_DIR;
+  return told;
+}
+/** Do something with the engine of the studio once all that was asked before is done. */
+function inStudioTurn(operation) {
+  const turn = studioOperation.then(operation);
+  studioOperation = turn.then(() => undefined, () => undefined);
+  return turn;
+}
+/** Tell the page of the engine of a session: only of the one that is open, or of its end. */
+function tellStudio(number, what) {
+  tell('columbina:engine-event', { ...what, session: number });
+}
+/**
+ * Open a project folder in the studio: its project is `.columbina/studio` there, made where it
+ * is not. The engine of a project that is open already is kept; one of another is closed first.
+ * Answers the session: its number, its project, whether this application started its engine,
+ * the process of the engine, and the revision that the engine said hello with.
+ */
+async function openStudio(cwd) {
+  if (exiting) throw new Error('The application is closing.');
+  const project = path.join(cwd, ...STUDIO_FOLDER);
+  if (studio?.session.alive && directoryKey(studio.project) === directoryKey(project)) {
+    // A page that was loaded again finds its engine as it was, and fetches the project anew.
+    tellStudio(studio.number, { kind: 'opened', ...studio.opened });
+    return studio.opened;
+  }
+  await closeStudio();
+  if (exiting) throw new Error('The application is closing.');
+  const program = engineProgram();
+  if (!program) throw new Error('There is no engine program. Build engine/ of the repository, or name the program with COLUMBINA_ENGINE.');
+  mkdirSync(project, { recursive: true });
+  studioNumber += 1;
+  const number = studioNumber;
+  let session;
+  try {
+    session = await engine.openEngine({
+      program, project, env: engineEnvironment(program), logFile: engineLogPath(), kill: killTree,
+      onEvent: (what) => {
+        if (what.kind === 'exited' && studio?.number === number) {
+          studio = null;
+          viewer.state = 'none';
+        }
+        tellStudio(number, what);
+      },
+    });
+  } catch (error) {
+    tellStudio(number, { kind: 'error', message: error.message });
+    throw error;
+  }
+  if (exiting) {
+    session.abandon();
+    throw new Error('The application is closing.');
+  }
+  const opened = { session: number, project, owned: session.owned, pid: session.pid, revision: session.hello.revision };
+  studio = { number, project, session, opened };
+  tellStudio(number, { kind: 'opened', ...opened });
+  // A view is made anew for every engine, where the page has said where the viewer is.
+  viewer.state = 'none';
+  void attachView();
+  return opened;
+}
+/** Close the engine of the studio, if one is open: the engine of the application ends with it. */
+async function closeStudio() {
+  const open = studio;
+  if (!open) return;
+  studio = null;
+  viewer.state = 'none';
+  await open.session.close();
+}
+/** The handle of the window as the engine reads it: a number written in decimal. */
+function windowHandle() {
+  const handle = window.getNativeWindowHandle();
+  return (handle.length >= 8 ? handle.readBigUInt64LE(0) : BigInt(handle.readUInt32LE(0))).toString();
+}
+/** What the page is told of a view that could not be made, or moved: none on this system, or why not. */
+function viewRefused(open, error) {
+  if (studio !== open) return;
+  const reason = error?.data?.reason;
+  if ((error?.code === -32003 && reason === 'unsupported') || error?.code === -32601) {
+    viewer.state = 'unsupported';
+    // An engine without a window, such as an agent's that had the project open, has no view.
+    tellStudio(open.number, { kind: 'unsupported', reason: error.code === -32601 ? 'headless' : 'unsupported', message: error.message });
+  } else if (error?.code === -32003 && (reason === 'gone' || reason === 'no_view')) {
+    // The view was let go with the window it was in, or never made: it is made again.
+    viewer.state = 'none';
+    void attachView();
+  } else {
+    viewer.state = 'failed';
+    tellStudio(open.number, { kind: 'error', message: error?.message ?? String(error), code: error?.code ?? null, data: error?.data });
+  }
+}
+/**
+ * Make the view of the engine in the window, over the viewer, where the page has said where it is.
+ * Only the shell sends this: it holds the handle of the window.
+ */
+async function attachView() {
+  const open = studio;
+  if (!open || viewer.rect === null || viewer.state !== 'none' || !window || window.isDestroyed()) return;
+  viewer.state = 'attaching';
+  const rect = viewer.rect;
+  let attached;
+  try {
+    attached = await open.session.view('view.attach', { parent: windowHandle(), ...rect });
+  } catch (error) {
+    viewRefused(open, error);
+    return;
+  }
+  if (studio !== open) return;
+  viewer.state = 'attached';
+  tellStudio(open.number, { kind: 'attached', adapter: attached?.adapter ?? null, backend: attached?.backend ?? null });
+  // What the page said while the view was being made.
+  if (!viewer.shown) showView();
+  if (viewer.rect !== rect) placeView();
+}
+/** Move the view where the page keeps the viewer now. */
+function placeView() {
+  const open = studio;
+  if (!open || viewer.state !== 'attached') return;
+  open.session.view('view.place', viewer.rect).catch((error) => viewRefused(open, error));
+}
+/** Show the view, or hide it while something of the page lies over the viewer. */
+function showView() {
+  const open = studio;
+  if (!open || viewer.state !== 'attached') return;
+  open.session.view('view.show', { shown: viewer.shown }).catch((error) => viewRefused(open, error));
+}
+/** A rectangle of the viewer as the page gives it: whole pixels of the screen, from the corner of the client area. */
+function viewRectOf(given) {
+  const whole = (value, most) => Number.isSafeInteger(value) && value >= 0 && value <= most;
+  if (given === null || typeof given !== 'object' || !whole(given.x, VIEW_PLACE_MOST) || !whole(given.y, VIEW_PLACE_MOST)
+    || !whole(given.width, VIEW_SIZE_MOST) || !whole(given.height, VIEW_SIZE_MOST)) {
+    throw new Error('The viewer lies at whole pixels of the screen, from the corner of the window, and is at most 16384 pixels wide and high.');
+  }
+  return { x: given.x, y: given.y, width: given.width, height: given.height };
+}
+/** Take where the page keeps the viewer now: the view is made there, or moved there. */
+function takeViewRect(given) {
+  viewer.rect = viewRectOf(given);
+  if (viewer.state === 'none') void attachView();
+  else placeView();
+}
+/** Take whether the view is to be shown. */
+function takeViewShown(shown) {
+  if (typeof shown !== 'boolean') throw new Error('The view is shown or not.');
+  if (viewer.shown === shown) return;
+  viewer.shown = shown;
+  showView();
+}
+/**
+ * What the page is answered of a request to the engine: the result, or the error as the engine
+ * gave it, with its code and data, which an error thrown to the page would lose.
+ */
+function answered(asking) {
+  return asking.then(
+    (result) => ({ ok: true, result }),
+    (error) => ({ ok: false, error: { code: error?.code ?? null, message: error?.message ?? String(error), data: error?.data ?? null } }),
+  );
 }
 /**
  * Another command of the program, such as `setup --list`, made from the command of the service
@@ -1363,6 +1603,53 @@ function installHandlers() {
     preferences.githubSkipped = skipped === true;
     keepPreferences();
   });
+  ipcMain.handle('columbina:engine-open', async (event, asked) => {
+    checkSender(event);
+    // A project of the studio lies in a folder that the user chose in the dialog, as a project does.
+    // Checked before its turn, so that a request that is refused closes nothing that is open.
+    approvedDirectory(asked);
+    return inStudioTurn(() => openStudio(approvedDirectory(asked)));
+  });
+  ipcMain.handle('columbina:engine-call', async (event, asked) => {
+    checkSender(event);
+    const method = asked?.method;
+    if (typeof method !== 'string' || !PAGE_METHODS.has(method)) throw new Error('That is no method of the engine that the page may call.');
+    const params = asked?.params ?? null;
+    if (params !== null && (typeof params !== 'object' || Array.isArray(params))) throw new Error('What a method of the engine is given is an object.');
+    const open = studio;
+    if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    // The viewer goes through the shell, which remembers it for the next view that it makes.
+    if (method === 'view.place') return answered(Promise.resolve().then(() => { takeViewRect(params); return {}; }));
+    if (method === 'view.show') return answered(Promise.resolve().then(() => { takeViewShown(params?.shown); return {}; }));
+    return answered(open.session.call(method, params));
+  });
+  ipcMain.handle('columbina:engine-import', async (event, asked) => {
+    checkSender(event);
+    const open = studio;
+    if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    // The engine is given only files that the user chose in the dialog of the system.
+    const words = WORDS[spoken(asked?.language)];
+    const result = await dialog.showOpenDialog(window, {
+      title: words.chooseMedia, properties: ['openFile', 'multiSelections'],
+      filters: [{ name: words.media, extensions: MEDIA_ENDINGS }, { name: words.allFiles, extensions: ['*'] }],
+    });
+    const paths = result.canceled ? [] : result.filePaths.filter((chosen) => typeof chosen === 'string' && path.isAbsolute(chosen));
+    if (paths.length === 0) return { ok: true, result: null };
+    if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
+    return answered(open.session.call('media.import', { paths }));
+  });
+  ipcMain.handle('columbina:engine-view-rect', (event, rect) => {
+    checkSender(event);
+    takeViewRect(rect);
+  });
+  ipcMain.handle('columbina:engine-view-show', (event, asked) => {
+    checkSender(event);
+    takeViewShown(asked?.shown);
+  });
+  ipcMain.handle('columbina:engine-close', async (event) => {
+    checkSender(event);
+    await inStudioTurn(closeStudio);
+  });
   for (const one of Object.values(assistants)) installAssistant(one);
 }
 /** Answer the main window about an assistant, and the window in which it is set up. */
@@ -1686,13 +1973,14 @@ function quitFromTray() {
 function endAll() {
   exiting = true;
   stopSigningIn();
-  void Promise.allSettled([enqueueService(stopService), stopAssistants()]).then(() => app.quit());
+  void Promise.allSettled([enqueueService(stopService), stopAssistants(), inStudioTurn(closeStudio)]).then(() => app.quit());
 }
 function finishWindowClose() {
   clearTimeout(closeTimer);
   if (window && !window.isDestroyed()) window.destroy();
-  // An assistant is given its time to stop showing that it writes an answer.
-  if (anyAssistant()) void stopAssistants().then(() => app.quit());
+  // An assistant is given its time to stop showing that it writes an answer, and the engine its
+  // time to save the project.
+  if (anyAssistant() || studio) void Promise.allSettled([stopAssistants(), inStudioTurn(closeStudio)]).then(() => app.quit());
   else app.quit();
 }
 function requestWindowClose() {
@@ -1735,6 +2023,10 @@ app.whenReady().then(() => {
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, autoplayPolicy: 'no-user-gesture-required' },
   });
   window.setMenuBarVisibility(false);
+  // The engine draws the viewer in a window of its own at the rectangle that the page gives, from
+  // the corner of the client area. A menu, which Alt would bring back, would take the top of it.
+  // On macOS the menu is the application's, at the top of the screen, and stays.
+  if (process.platform !== 'darwin') window.removeMenu();
   if (process.platform === 'darwin') {
     // A sheet, such as the dialog for a folder or the window for the key, comes down from under the
     // bar that the page draws, and not over it.
@@ -1780,6 +2072,8 @@ app.whenReady().then(() => {
   window.on('session-end', endAll);
   // The pet goes with the window: the application is not kept open by the pet alone.
   window.on('closed', closePet);
+  // The view of the engine went with the window: the engine of the studio is closed with it.
+  window.on('closed', () => { void inStudioTurn(closeStudio); });
   if (preferences.petOn) openPet();
   if (hidden && wanted) showWindow();
   else if (hidden) toTray();
@@ -1792,5 +2086,8 @@ app.whenReady().then(() => {
 });
 app.on('before-quit', (event) => { if ((service || anyAssistant() || pendingServiceOperations) && !exiting) { event.preventDefault(); requestWindowClose(); } });
 app.on('window-all-closed', endAll);
+// However the application ends, the stdin of its engine is closed, so that the engine saves the
+// project and ends rather than be left behind.
+app.on('will-quit', () => { studio?.session.abandon(); });
 // On macOS a click on the icon in the Dock shows the window that was put away.
 app.on('activate', showWindow);

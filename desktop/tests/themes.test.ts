@@ -295,6 +295,67 @@ describe('the status line under full access', () => {
   });
 });
 
+/** The rules that a stylesheet gives at each width that it asks a container about, by that width, in the order it says them. */
+function narrowerThan(stylesheet: string, container = ''): Map<number, string> {
+  const widths = new Map<number, string>();
+  const named = container ? `${container} ` : '';
+  const asked = new RegExp(`^@container ${named}\\(max-width: (\\d+)px\\) \\{\\n([\\s\\S]*?)\\n\\}$`, 'gm');
+  for (const [, width, rules] of stylesheet.matchAll(asked)) {
+    widths.set(Number(width), `${widths.get(Number(width)) ?? ''}${rules}\n`);
+  }
+  return widths;
+}
+
+describe('the status line where it is narrow', () => {
+  const shell = read('src/ui/shell.css');
+
+  it('says each part on one line, and cuts the sentence of what the task may do short instead', () => {
+    // A part that was let shrink was pressed into a column of single letters: "Context 0%" one to a line.
+    expect(blockOf(shell, '.status > *')).toContain('  flex: none;\n  white-space: nowrap;');
+    const may = blockOf(shell, '.status > .status-may');
+    expect(may).toContain('  flex: 0 1 auto;');
+    expect(may).toContain('  min-width: 0;');
+    expect(blockOf(shell, '.status-may span')).toContain('  text-overflow: ellipsis;');
+  });
+
+  it('lets the parts that are not needed give way: the replay, then the tokens, then how far the task has come', () => {
+    const widths = narrowerThan(shell);
+    expect(widths.get(820)).toContain('.status-money {');
+    // Said as narrowly as `.status-stats > span`, which shows it, or it is never hidden.
+    expect(widths.get(820)).toContain('.status-stats > .status-stats-spent {');
+    expect(widths.get(640)).toContain('.status-stats {');
+    expect(widths.get(560)).toContain('.status-replay {');
+  });
+});
+
+describe('the transport of the studio where it is narrow', () => {
+  const studio = read('src/studio/Studio.css');
+
+  it('is one row, with the timecode of the playhead whole on it', () => {
+    expect(blockOf(studio, '.transport-row')).toContain('  flex-wrap: nowrap;');
+    expect(blockOf(studio, '.transport-ends')).toContain('  flex-wrap: nowrap;');
+    const timecode = blockOf(studio, '.timecode');
+    expect(timecode).toContain('  flex: none;\n  white-space: nowrap;');
+    expect(timecode).toContain('  font-variant-numeric: tabular-nums;');
+    expect(blockOf(studio, '.transport-buttons')).toContain('  flex: none;');
+  });
+
+  it('gives way at its end, the least needed first, and never the timecode or the buttons', () => {
+    const widths = narrowerThan(studio, 'transport');
+    expect([...widths.keys()]).toEqual([540, 460, 380, 300]);
+    expect(widths.get(540)).toContain('.timecode-last {\n    display: none;');
+    expect(widths.get(460)).toContain('.transport-proxies-words {\n    display: none;');
+    expect(widths.get(460)).toContain('.transport-proxies-sign {\n    display: block;');
+    expect(widths.get(380)).toContain('.source-badge {\n    display: none;');
+    expect(widths.get(300)).toContain('.transport-ends {\n    display: none;');
+    for (const rules of widths.values()) expect(rules).not.toMatch(/\.(timecode|transport-buttons|transport-row) \{[^}]*display: none/);
+  });
+
+  it('keeps the monitor wide, with the pool above it, where the studio is narrow', () => {
+    expect(narrowerThan(studio, 'studio').get(560)).toContain('.studio-body {\n    flex-direction: column;');
+  });
+});
+
 describe('the language', () => {
   it('is that of the system until one is chosen', () => {
     vi.stubGlobal('localStorage', storage());

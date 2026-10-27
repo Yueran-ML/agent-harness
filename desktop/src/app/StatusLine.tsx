@@ -101,11 +101,14 @@ export function StatusLine({ workspace, locale, onPermissions, onDetails, onPlan
     greeted: workspace.hello !== null, connected: workspace.connected,
   });
 
+  // What the task may do, in a sentence that a narrow line cuts short: it is said whole when it is pointed at.
+  const may = status ? (chat ? words.permissions.chat : sayPermissions(words, status.sandbox?.mode ?? null, status.approval)) : null;
+
   // Under full access the whole line is in the colour of a warning, not its sentence alone.
   return <footer className="status" data-tone={full ? 'warn' : undefined} data-test="status">
-    {status && <button type="button" className="status-may" onClick={onPermissions} data-test="status-may">
+    {may !== null && <button type="button" className="status-may" onClick={onPermissions} title={may} data-test="status-may">
       {full ? <ShieldAlert size={13} aria-hidden="true" /> : <ShieldCheck size={13} aria-hidden="true" />}
-      <span>{chat ? words.permissions.chat : sayPermissions(words, status.sandbox?.mode ?? null, status.approval)}</span>
+      <span>{may}</span>
     </button>}
     {confinement && loose && !full && <button type="button" className="status-loose" onClick={onPermissions} title={confinement} aria-label={confinement}>
       <TriangleAlert size={13} />

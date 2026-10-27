@@ -619,6 +619,16 @@ button.task:hover:not(:disabled) {
   container-type: inline-size;
 }
 
+/*
+ * Each part of the line is said on one line of its own: where the line is narrow, the sentence of
+ * what the task may do is cut short, and the parts that are not needed give way (see the widths
+ * below), instead of a part being pressed into a column of single letters.
+ */
+.status > * {
+  flex: none;
+  white-space: nowrap;
+}
+
 /* How far the task has come, in two groups that give way one after the other where the line is narrow. */
 .status-stats {
   display: inline-flex;
@@ -645,8 +655,9 @@ button.task:hover:not(:disabled) {
   color: var(--moon-0);
 }
 
+/* `.status-stats > span` shows the groups: what hides one must say as much. */
 @container (max-width: 820px) {
-  .status-stats-spent {
+  .status-stats > .status-stats-spent {
     display: none;
   }
 }
@@ -692,8 +703,14 @@ button.task:hover:not(:disabled) {
   transition: background var(--quick) var(--ease), color var(--quick) var(--ease);
 }
 
-.status-may {
+.status > .status-may {
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+}
+
+.status-may svg {
+  flex: none;
 }
 
 .status-may span {
@@ -725,8 +742,8 @@ button.task:hover:not(:disabled) {
   margin: 0;
 }
 
-.status-gap {
-  flex: 1;
+.status > .status-gap {
+  flex: 1 1 0;
 }
 
 .status-replay {
@@ -734,6 +751,13 @@ button.task:hover:not(:disabled) {
   border-radius: 999px;
   border: 1px solid var(--line-strong);
   color: var(--moon-1);
+}
+
+/* That the session is a replay is the least needed of what is left on a narrow line: it gives way first. */
+@container (max-width: 560px) {
+  .status-replay {
+    display: none;
+  }
 }
 
 .status-stands {

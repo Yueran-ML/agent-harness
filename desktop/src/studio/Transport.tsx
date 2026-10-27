@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
-import { Pause, Play, StepBack, StepForward, Volume2, VolumeOff, VolumeX } from 'lucide-react';
+import { Layers, Pause, Play, StepBack, StepForward, Volume2, VolumeOff, VolumeX } from 'lucide-react';
 import { useWords } from '../app/locale';
 import type { Rate, TransportState } from './engine';
 import type { TransportCommand } from './keys';
@@ -211,11 +211,14 @@ export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
           type="button"
           className="btn btn-quiet transport-proxies"
           aria-pressed={state?.proxies ?? true}
+          aria-label={words.label.studio.useProxies}
           title={words.hint.studio.useProxies}
           onClick={() => onProxies(!(state?.proxies ?? true))}
           data-test="use-proxies"
         >
-          {words.label.studio.useProxies}
+          {/* Where the bar is narrow the button is its sign alone, and its name stays with it for a reader. */}
+          <Layers size={15} className="transport-proxies-sign" aria-hidden="true" />
+          <span className="transport-proxies-words">{words.label.studio.useProxies}</span>
         </button>
         {loaded && <Sound sound={state.sound} playing={state.playing} speed={state.speed} />}
         <span className="timecode timecode-last mono" aria-hidden="true">{last === null ? '' : timecode(last, rate)}</span>

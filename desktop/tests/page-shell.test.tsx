@@ -62,6 +62,8 @@ describe('the status line', () => {
     const calls = drawn(workspaceWith());
     expect(one('status').dataset.tone).toBeUndefined();
     expect(one('status-may').textContent).toBe('Can change the files of this project, and asks before it runs a command.');
+    // A narrow line cuts the sentence short: it is said whole when it is pointed at.
+    expect(one('status-may').title).toBe('Can change the files of this project, and asks before it runs a command.');
     // This computer holds no command to the project. A sign beside the sentence says so to whoever asks.
     expect(sign()?.getAttribute('aria-label')).toBe(notConfined);
     expect(sign()?.getAttribute('title')).toBe(notConfined);

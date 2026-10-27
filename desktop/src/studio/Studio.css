@@ -64,6 +64,8 @@
   border-left: 1px solid var(--line);
   background: var(--ink-0);
   outline: none;
+  /* What its body holds goes by how wide the studio is, beside the conversation or without it. */
+  container: studio / inline-size;
 }
 
 .shell[data-sidebar='hidden'] .studio {
@@ -136,6 +138,18 @@
   display: flex;
   flex-direction: column;
   background: var(--ink-1);
+}
+
+/* A studio too narrow for the pool beside the monitor has it above the monitor, so that the monitor keeps the width. */
+@container studio (max-width: 560px) {
+  .studio-body {
+    flex-direction: column;
+  }
+
+  .pool {
+    width: auto;
+    max-height: 45%;
+  }
 }
 
 .pool-head {
@@ -329,17 +343,25 @@
   flex-direction: column;
   gap: var(--s1);
   padding: var(--s2) var(--s3) var(--s3);
+  /* What the row holds goes by how wide the monitor is. */
+  container: transport / inline-size;
 }
 
+/*
+ * One row at every width: the timecode of the playhead and the buttons stay whole, and what is at
+ * the end gives way as the row narrows (see the widths below), instead of the row breaking in two.
+ */
 .transport-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--s2) var(--s3);
+  gap: var(--s3);
 }
 
 .timecode {
+  flex: none;
+  white-space: nowrap;
   font-size: calc(15px * var(--type));
   font-variant-numeric: tabular-nums;
   color: var(--moon-0);
@@ -355,6 +377,7 @@
 }
 
 .transport-buttons {
+  flex: none;
   display: flex;
   align-items: center;
   gap: var(--s1);
@@ -371,15 +394,24 @@
 }
 
 .transport-ends {
+  min-width: 0;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--s2);
 }
 
+.transport-ends > * {
+  flex: none;
+}
+
 .transport-proxies {
   white-space: nowrap;
+}
+
+.transport-proxies-sign {
+  display: none;
 }
 
 .transport-proxies[aria-pressed='true'] {
@@ -411,6 +443,49 @@
 
 .transport-sound[data-tone='warn'] {
   color: var(--warn);
+}
+
+/*
+ * What gives way where the monitor is narrow, the least needed first: the timecode of the last
+ * frame, then the name of the button for proxies (its sign stays), then what the picture is read
+ * from, and last the sound and the button for proxies. The timecode of the playhead and the buttons stay.
+ */
+@container transport (max-width: 540px) {
+  .timecode-last {
+    display: none;
+  }
+}
+
+@container transport (max-width: 460px) {
+  .transport-proxies {
+    width: 28px;
+    min-height: 28px;
+    padding: 0;
+  }
+
+  .transport-proxies-sign {
+    display: block;
+  }
+
+  .transport-proxies-words {
+    display: none;
+  }
+}
+
+@container transport (max-width: 380px) {
+  .source-badge {
+    display: none;
+  }
+}
+
+@container transport (max-width: 300px) {
+  .transport-row {
+    gap: var(--s2);
+  }
+
+  .transport-ends {
+    display: none;
+  }
 }
 
 .scrubber {

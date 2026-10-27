@@ -476,6 +476,9 @@ describe('the transport', () => {
     fireEvent.click(one('step-back'));
     fireEvent.click(one('play'));
     fireEvent.click(one('step-forward'));
+    // Where the transport is narrow the button for proxies is its sign alone: its name stays with it.
+    expect(one('use-proxies').getAttribute('aria-label')).toBe('Use proxies');
+    expect(one('use-proxies').querySelector('.transport-proxies-words')?.textContent).toBe('Use proxies');
     fireEvent.click(one('use-proxies'));
     await settle();
     expect(engine.asked()).toEqual([

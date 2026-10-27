@@ -3473,7 +3473,7 @@ async fn a_proxy_elsewhere_is_refused_and_taken_away_when_read_and_never_read_or
         .result("transport.seek", Some(json!({ "frame": 90 })))
         .await;
     agent.until_state("90", |state| state["shown"] == 90).await;
-    let dropped = logged(&engine, "proxy_dropped");
+    let dropped = logged_at_least(&engine, "proxy_dropped", 1).await;
     assert_eq!(dropped.len(), 1, "{dropped:?}");
     assert!(victim.exists(), "the file elsewhere is never deleted");
 }
@@ -3508,7 +3508,23 @@ fn median_and_most(times: &[Duration]) -> (Duration, Duration) {
     (sorted[sorted.len() / 2], *sorted.last().unwrap())
 }
 
-/// What the engine logged of `event`, each line read as JSON.
+/// What the engine logged of `event`, once it has logged `count` of them or [`WAIT`] has
+/// passed, each line read as JSON. The log is written by a thread of the engine's own, to its
+/// stderr, which a task of the test reads: a line logged before a notification was sent may come
+/// after it, so that a test that reads the log once, as soon as the notification comes, may not
+/// find the line yet (as when the machine is busy).
+async fn logged_at_least(engine: &Engine, event: &str, count: usize) -> Vec<Value> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let lines = logged(engine, event);
+        if lines.len() >= count || Instant::now() >= deadline {
+            return lines;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// What the engine logged of `event` so far, each line read as JSON.
 fn logged(engine: &Engine, event: &str) -> Vec<Value> {
     let wanted = format!(r#""event":"{event}""#);
     engine
@@ -3648,7 +3664,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
         (&json!(true), &json!(97))
     );
     assert_ne!(
-        logged(&engine, "transport_proxy_failed"),
+        logged_at_least(&engine, "transport_proxy_failed", 1).await,
         Vec::<Value>::new()
     );
 }
@@ -3704,10 +3720,18 @@ async fn a_proxy_damaged_inside_is_let_go_for_the_media_and_made_again() {
     agent
         .until_state("the proxy again", |state| state["source"] == "proxy")
         .await;
+    let failures = logged_at_least(&engine, "transport_proxy_failed", 1).await;
+    assert_eq!(failures[0]["reason"], "decode");
+    let opened = logged_at_least(&engine, "transport_source", 2).await;
+    // Once what came before has been written: no more of either.
+    tokio::time::sleep(Duration::from_millis(200)).await;
     let failures = logged(&engine, "transport_proxy_failed");
     assert_eq!(failures.len(), 1, "{failures:?}");
-    assert_eq!(failures[0]["reason"], "decode");
-    let opened = logged(&engine, "transport_source");
+    assert_eq!(
+        logged(&engine, "transport_source"),
+        opened,
+        "to the media, and back"
+    );
     assert_eq!(opened.len(), 2, "to the media, and back: {opened:?}");
     // The new one is whole.
     agent

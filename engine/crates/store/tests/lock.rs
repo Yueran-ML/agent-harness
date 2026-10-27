@@ -327,6 +327,32 @@ fn a_lock_that_is_dropped_leaves_what_it_did_not_write() {
     drop(lock);
 
     assert_eq!(Lock::read(dir.path()), Some(other));
+
+    // Nor what has only its process, as an engine before it of the same id may have left, or
+    // only its time, as another engine that took the lock in the same moment would write.
+    let others: [fn(&LockInfo) -> LockInfo; 2] = [
+        |ours| LockInfo {
+            started: "2026-10-26T12:00:00.000Z".into(),
+            ..ours.clone()
+        },
+        |ours| LockInfo {
+            pid: ours.pid.wrapping_add(1),
+            ..ours.clone()
+        },
+    ];
+    for other in others {
+        let lock = Lock::acquire(dir.path(), "ws://127.0.0.1:4000").unwrap();
+        let other = other(lock.info());
+        fs::write(
+            dir.path().join(LOCK_FILE),
+            serde_json::to_vec_pretty(&other).unwrap(),
+        )
+        .unwrap();
+
+        drop(lock);
+
+        assert_eq!(Lock::read(dir.path()), Some(other));
+    }
 }
 
 #[test]

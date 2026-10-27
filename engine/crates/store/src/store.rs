@@ -341,4 +341,16 @@ mod tests {
         let sharing = io::Error::from_raw_os_error(32);
         assert_eq!(refused_for_a_while(&sharing), cfg!(windows));
     }
+
+    #[test]
+    fn an_error_that_will_not_pass_is_given_back_at_once() {
+        let mut tries = 0;
+        let error = retrying(|| -> io::Result<()> {
+            tries += 1;
+            Err(io::Error::from(io::ErrorKind::NotFound))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert_eq!(tries, 1);
+    }
 }

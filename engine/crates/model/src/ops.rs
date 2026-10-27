@@ -2077,6 +2077,17 @@ mod tests {
             }),
             too_large("duration")
         );
+        // 2^53 - 1 itself is read exactly.
+        let mut largest = media("", true, true);
+        largest.identity.size = LARGEST.unsigned_abs();
+        apply(
+            &mut Project::sample(),
+            Op::AddMedia {
+                media: largest,
+                index: None,
+            },
+        )
+        .unwrap();
 
         // The last number that next_id can be is 2^53 - 1, so the last id it makes ends in one
         // below that.
@@ -2087,6 +2098,10 @@ mod tests {
         let error = refused_in(project.clone(), insert("V1", clip("", "m1", 110, 10)));
         assert_eq!(error, OpError::IdsExhausted);
         assert_eq!(error.to_string(), "the engine has made all the ids it can");
+        // A project in which the engine has made its last id is read back as it was.
+        let made = project.clone();
+        project.validate().unwrap();
+        assert_eq!(project, made);
     }
 
     #[test]

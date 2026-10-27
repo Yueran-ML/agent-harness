@@ -124,6 +124,18 @@ fn an_empty_project_is_refused_and_the_tmp_that_may_hold_the_last_save_is_named_
     assert!(!error.to_string().contains(PROJECT_TMP), "{error}");
 }
 
+#[test]
+fn a_project_that_is_there_but_cannot_be_read_is_refused_rather_than_made_new() {
+    let dir = tempfile::tempdir().unwrap();
+    // A directory in the place of the project, which no system reads as a file.
+    fs::create_dir(dir.path().join(PROJECT_FILE)).unwrap();
+
+    let error = Store::open(dir.path()).unwrap_err();
+
+    assert!(matches!(error, StoreError::Read { .. }), "{error}");
+    assert!(dir.path().join(PROJECT_FILE).is_dir());
+}
+
 /// Write `bytes` as the project of a new directory, open it, and check that it is refused with
 /// an error that names the file and says `reason`, and that the file is left as it was.
 fn refused(bytes: &[u8], reason: &str) -> StoreError {

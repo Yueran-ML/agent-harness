@@ -58,16 +58,17 @@ fn a_flush_saves_the_latest_project_at_once() {
     saver.changed(version(1));
     saver.flush().unwrap();
     assert_eq!(saved(dir.path()), version(1));
+    assert_eq!(saver.saves(), 1);
 
     saver.changed(version(2));
     saver.changed(version(3));
     saver.flush().unwrap();
     assert_eq!(saved(dir.path()), version(3));
+    assert_eq!(saver.saves(), 2);
 
     // There is nothing more to save.
-    let made = saver.saves();
     saver.flush().unwrap();
-    assert_eq!(saver.saves(), made);
+    assert_eq!(saver.saves(), 2);
 }
 
 #[test]
@@ -109,6 +110,28 @@ fn an_error_of_a_save_is_reported_and_the_project_is_saved_once_it_can_be() {
     fs::remove_dir(&blocker).unwrap();
     saver.flush().unwrap();
     assert_eq!(saved(dir.path()), version(1));
+}
+
+#[test]
+fn a_save_that_fails_on_the_thread_is_not_tried_again_within_the_period() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _) = Store::open(dir.path()).unwrap();
+    fs::create_dir(dir.path().join(PROJECT_TMP)).unwrap();
+    let (errors, reported) = mpsc::channel();
+    let saver = Saver::with_period(store, Duration::from_secs(3600), move |error| {
+        let _ = errors.send(error.to_string());
+    })
+    .unwrap();
+
+    saver.changed(version(1));
+    reported.recv_timeout(Duration::from_secs(10)).unwrap();
+
+    // The thread tries again only two periods later, long after this test is over.
+    assert_eq!(
+        reported.recv_timeout(Duration::from_millis(200)),
+        Err(mpsc::RecvTimeoutError::Timeout)
+    );
+    assert_eq!(saver.saves(), 0);
 }
 
 #[test]

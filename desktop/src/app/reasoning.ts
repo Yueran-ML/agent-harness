@@ -57,3 +57,8 @@ export function toldReasoning(): string | null {
 export function rememberTold(language: ReasoningLanguage): void {
   write(toldKey, language);
 }
+
+/** Whether the shell said that it told no program (it has none): then nothing is remembered as told. */
+export function shellSkipped(said: unknown): boolean {
+  return typeof said === 'object' && said !== null && (said as { skipped?: unknown }).skipped === true;
+}

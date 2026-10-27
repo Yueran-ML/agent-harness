@@ -36,7 +36,7 @@ import {
 import { Drafts, samePlace, Unread, type Place } from './drafts';
 import { effortStoredOf, keptLevel, type Effort } from './effort';
 import { shownLanguage, storedLanguage, storeLanguage, useWords, Words, wordsFor, type LanguageChoice } from './locale';
-import { reasoningLanguage, rememberTold, storedReasoning, storeReasoning, toldReasoning, type ReasoningChoice } from './reasoning';
+import { reasoningLanguage, rememberTold, shellSkipped, storedReasoning, storeReasoning, toldReasoning, type ReasoningChoice } from './reasoning';
 import { storedOpening, storeOpening } from './opening';
 import { onMac, shortcut } from './system';
 import {
@@ -219,7 +219,10 @@ export default function App() {
     // A replay has no program to tell.
     const bridge = window.columbina;
     if (typeof bridge?.setReasoningLanguage !== 'function' || toldReasoning() === reasoningIn) return;
-    void bridge.setReasoningLanguage(reasoningIn).then(() => rememberTold(reasoningIn), workspace.fail);
+    // A shell without a program to tell skips it: it is told at a later start, once there is one.
+    void bridge.setReasoningLanguage(reasoningIn).then((said) => {
+      if (!shellSkipped(said)) rememberTold(reasoningIn);
+    }, workspace.fail);
   }, [reasoning, reasoningIn, workspace.fail]);
   useEffect(() => {
     try {

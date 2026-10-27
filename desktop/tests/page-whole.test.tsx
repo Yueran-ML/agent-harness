@@ -498,6 +498,26 @@ describe('the language that the model reasons in, as the program is told of it',
     expect(setReasoningLanguage).toHaveBeenCalledTimes(2);
   });
 
+  it('is skipped without a word where the shell has no program, and told at a later start', async () => {
+    const setReasoningLanguage = vi.fn(async (_language: string): Promise<unknown> => ({ skipped: true }));
+    vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}), setReasoningLanguage });
+    const task = first();
+    page(task);
+    await act(async () => {});
+    expect(setReasoningLanguage.mock.calls).toEqual([['none']]);
+    expect(task.fail).not.toHaveBeenCalled();
+    // Nothing was remembered as told: a shell that has a program by then is told.
+    cleanup();
+    setReasoningLanguage.mockImplementation(async () => ({ language: 'none' }));
+    page(first());
+    await act(async () => {});
+    expect(setReasoningLanguage).toHaveBeenCalledTimes(2);
+    cleanup();
+    page(first());
+    await act(async () => {});
+    expect(setReasoningLanguage).toHaveBeenCalledTimes(2);
+  });
+
   it('is nothing to a page without a program to tell', async () => {
     vi.stubGlobal('columbina', { setTheme: vi.fn(async () => {}) });
     const task = first();

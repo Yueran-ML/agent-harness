@@ -1702,6 +1702,14 @@ describe('the models of a service, for the main window', () => {
       .rejects.toThrow('IPC sender');
   });
 
+  it('skips the language of reasoning quietly where there is no program to tell', async () => {
+    const replay = await shellHarness();
+    await expect(replay.invoke('reasoning-language', 'zh')).resolves.toEqual({ skipped: true });
+    expect(replay.setups).toEqual([]);
+    // A language it does not know is refused all the same.
+    await expect((async () => replay.invoke('reasoning-language', 'fr'))()).rejects.toThrow('Unknown language of reasoning.');
+  });
+
   it('lists nothing for a service that the window was not told of', async () => {
     const before = await shellHarness(undefined, real);
     await expect((async () => before.invoke('models', 'deepseek'))()).rejects.toThrow('not among those that are set up');
@@ -4191,6 +4199,14 @@ describe('the engine of the studio', () => {
     // Windows writes it Path, and the libraries go first, before any other build of libav on it.
     expect(child.options.env.Path).toBe(`${path.join(ffmpeg, 'bin')}${path.delimiter}C:\\Windows`);
     expect(child.options.env).not.toHaveProperty('PATH');
+    // In development the ffmpeg of that build makes the proxies (a release engine looks only beside itself)...
+    const ffmpegProgram = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
+    expect(child.options.env.COLUMBINA_PROXY_FFMPEG).toBe(path.join(ffmpeg, 'bin', ffmpegProgram));
+    // ...unless another is named.
+    const other = path.resolve('/tools/ffmpeg.exe');
+    const named2 = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python, COLUMBINA_ENGINE: named, FFMPEG_DIR: ffmpeg, COLUMBINA_PROXY_FFMPEG: other });
+    await openIn(named2);
+    expect(named2.engines.children[0].options.env.COLUMBINA_PROXY_FFMPEG).toBe(other);
     // Without a name, the newest build of the repository.
     const built = await shellHarness(undefined, { COLUMBINA_SERVICE_EXECUTABLE: python });
     await built.invoke('start', { cwd: await built.select('/film') });
@@ -4201,6 +4217,8 @@ describe('the engine of the studio', () => {
     const brought = path.join(resources, 'engine', 'columbina-engine.exe');
     expect(packaged.engines.children[0].program).toBe(brought);
     expect(packaged.engines.children[0].options.env.PATH).toBe(`${path.dirname(brought)}${path.delimiter}C:\\Windows`);
+    // A package's engine finds the ffmpeg beside itself, and is told of none.
+    expect(packaged.engines.children[0].options.env).not.toHaveProperty('COLUMBINA_PROXY_FFMPEG');
   });
 
   it('tells a page that was loaded again how the view stands, and hides the view until it says where the viewer is', async () => {

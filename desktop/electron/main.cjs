@@ -590,7 +590,9 @@ function engineLibraries(program) {
 }
 /**
  * The environment of the engine: that of the application, with the folder of its libraries first
- * on the PATH, so that no other build of libav that lies earlier on it is loaded.
+ * on the PATH, so that no other build of libav that lies earlier on it is loaded. In development,
+ * the `ffmpeg` of that build makes the proxies, where nothing else is named: a release build of the
+ * engine looks for one only beside itself.
  */
 function engineEnvironment(program) {
   const env = process.platform === 'darwin' && app.isPackaged ? bundledEnvironment() : { ...process.env };
@@ -599,6 +601,9 @@ function engineEnvironment(program) {
     // Windows writes it Path, and reads it in any case.
     const key = Object.keys(env).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH';
     env[key] = env[key] ? `${libraries}${path.delimiter}${env[key]}` : libraries;
+    if (!app.isPackaged && !env.COLUMBINA_PROXY_FFMPEG) {
+      env.COLUMBINA_PROXY_FFMPEG = path.join(libraries, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+    }
   }
   return env;
 }
@@ -1355,6 +1360,10 @@ function installHandlers() {
   ipcMain.handle('columbina:reasoning-language', async (event, language) => {
     checkSender(event);
     if (!['zh', 'en', 'ja', 'none'].includes(language)) throw new Error('Unknown language of reasoning.');
+    // A preference that the page keeps in step by itself: without a program (a replay, or
+    // development without a service), there is nothing to tell, and nothing went wrong. The page
+    // tells it again once there is a program.
+    if (!programCommand([])) return { skipped: true };
     const said = await runProgram(['reasoning-language', language, '--json']);
     if (typeof said.error === 'string') throw new Error(said.error);
     return said;

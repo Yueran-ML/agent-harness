@@ -112,6 +112,13 @@ _KEPT_LINES = 64
 _KEPT_LOGS = 20
 """How many logs of engines are kept in the cache of a project."""
 
+_YIELD_SECONDS = 5.0
+"""How long an engine that yielded the project may take to be followed by the one it yielded to,
+before one is started here."""
+
+_YIELD_LOOK_SECONDS = 0.1
+"""How often ``engine.lock`` is read meanwhile."""
+
 _LISTENED = 1024
 """How many things told a reader of :meth:`Engine.changes` may leave unread before the oldest
 are dropped."""
@@ -166,12 +173,13 @@ class Changed:
 
     Attributes:
         method: ``project.changed``, ``engine.error``, ``transport.state`` or ``media.proxy``, as
-            the engine sends them. Or ``project.fetched``: the whole project was asked for anew,
-            after a change was missed or the connection was made again, and its params are the
-            answer of ``project.get``; a copy of the project starts again from it, and the
-            changes after it follow. An engine that was started anew counts its revisions from
-            0 again. Or ``changes.missed``: the reader left so much unread that the oldest
-            things told were dropped, ``missed`` of them; a copy starts again from
+            the engine sends them, or ``engine.yielding``, which an engine tells before it ends
+            for the desktop's to take the project over. Or ``project.fetched``: the whole project
+            was asked for anew, after a change was missed or the connection was made again, and
+            its params are the answer of ``project.get``; a copy of the project starts again from
+            it, and the changes after it follow. An engine that was started anew counts its
+            revisions from 0 again. Or ``changes.missed``: the reader left so much unread that
+            the oldest things told were dropped, ``missed`` of them; a copy starts again from
             :meth:`Engine.project`.
         params: What it said.
     """
@@ -609,6 +617,7 @@ class Engine:
         self._next_id = 0
         self._fetching = False
         self._closed = False
+        self._yielded = False
         self._reaching = asyncio.Lock()
 
     @classmethod
@@ -750,6 +759,8 @@ class Engine:
         for _ in range(_TRIES):
             self._open()
             wire = await self._locked_wire()
+            if wire is None and self._yielded:
+                wire = await self._handed_over()
             if wire is None:
                 kind, address = await self._started()
                 wire = None if address is None else await self._wire_at(address)
@@ -794,6 +805,24 @@ class Engine:
             address = await asyncio.to_thread(_locked, self.directory)
             wire = None if address is None else await self._wire_at(address)
         return wire
+
+    async def _handed_over(self) -> _Wire | None:
+        """Connect to the engine that the last one yielded the project to, once it says where.
+
+        An engine that yields, so that the desktop's may take the project over, ends before the
+        other has taken its lock: ``engine.lock`` is read again for a while, and no engine is
+        started here meanwhile, which would take the lock first.
+        """
+        self._yielded = False
+        loop = asyncio.get_running_loop()
+        until = loop.time() + _YIELD_SECONDS
+        while loop.time() < until:
+            await asyncio.sleep(_YIELD_LOOK_SECONDS)
+            address = await asyncio.to_thread(_locked, self.directory)
+            wire = None if address is None else await self._wire_at(address)
+            if wire is not None:
+                return wire
+        return None
 
     async def _wire_at(self, address: str) -> _Wire | None:
         wire = await _connected(address, self._heard, self._lost)
@@ -978,7 +1007,10 @@ class Engine:
         asked.answer.set_result(result)
 
     def _told(self, method: str, params: dict[str, Any]) -> None:
-        if method == "project.changed":
+        if method == "engine.yielding":
+            # It ends next, for another engine to take the project over.
+            self._yielded = True
+        elif method == "project.changed":
             revision, next_id = params.get("revision"), params.get("next_id")
             if not isinstance(revision, int) or self._fetching or revision <= self._revision:
                 # What it tells is in the project that is being asked for, or was told before.

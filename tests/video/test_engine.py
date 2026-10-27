@@ -1,6 +1,7 @@
 """The agent reaches the engine that has a project open, as one client among others."""
 
 import asyncio
+import contextlib
 import json
 import os
 import subprocess
@@ -691,6 +692,63 @@ async def test_an_engine_that_yields_to_the_desktop_is_followed_to_the_desktops(
         desktop.headless = None
         async with await attached(tmp_path / "film") as unsaid:
             assert unsaid.headless is None
+
+
+async def test_an_engine_that_yielded_is_followed_to_the_one_that_takes_over_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Were an engine started here, it would say so.
+    as_program(monkeypatch, "error")
+    async with served(tmp_path / "film") as first:
+        connected = await attached(tmp_path / "film")
+        changes = connected.changes()
+        first.tell("engine.yielding", {"to": "desktop"})
+        yielding = await next_of(changes)
+    with pytest.raises(EngineError, match="closed the connection"):
+        await next_of(changes)
+    async with contextlib.AsyncExitStack() as later:
+
+        async def taking_over() -> fake_engine.Fake:
+            await asyncio.sleep(1)
+            desktop = await later.enter_async_context(served(tmp_path / "film"))
+            desktop.headless = False
+            return desktop
+
+        started = time.monotonic()
+        coming = asyncio.create_task(taking_over())
+        revision, _ = await connected.project()
+        waited = time.monotonic() - started
+        desktop = await coming
+        fetched = await next_of(changes)
+        await connected.aclose()
+
+        assert yielding == Changed("engine.yielding", {"to": "desktop"})
+        assert 1 <= waited < 5
+        assert (revision, connected.headless, fetched.method) == (0, False, "project.fetched")
+        assert desktop.asked == ["hello", "project.get", "project.get"]
+
+
+async def test_an_engine_that_yielded_to_none_that_comes_is_replaced_after_a_while(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(engine, "_YIELD_SECONDS", 1.0)
+    as_program(monkeypatch)
+    async with served(tmp_path / "film") as first:
+        connected = await attached(tmp_path / "film", idle_seconds=1)
+        changes = connected.changes()
+        first.tell("engine.yielding", {"to": "desktop"})
+        await next_of(changes)
+    with pytest.raises(EngineError, match="closed the connection"):
+        await next_of(changes)
+
+    started = time.monotonic()
+    await connected.project()
+    waited = time.monotonic() - started
+    await connected.aclose()
+    await until(lambda: not (tmp_path / "film" / "engine.lock").exists())
+
+    assert waited >= 1
+    assert connected.hello["pid"] != os.getpid()
 
 
 def test_an_engine_is_given_the_libraries_of_ffmpeg_dir_and_this_program_is_not(

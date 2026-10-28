@@ -342,11 +342,14 @@ picture.
   go: `view.place` and `view.show` are then answered `-32003` with `reason: "gone"`, and the
   desktop attaches again to its new window. If drawing a frame takes more than 1 s (the card
   hangs, a driver resets), the view hides itself, so that the page is seen rather than a frozen
-  picture, and shows itself again once the frame returns. A device that is lost is made again;
-  so is a surface. These are logged on stderr (`view_ready`, `view_stalled`, `view_recovered`,
-  `view_device_lost`, `view_surface_lost`, `view_error`), with `view_attached` and
-  `view_detached`. `view_ready` says the engine's `dpi_awareness`: `per_monitor_v2`, or why
-  not, in which case the rectangles will be off.
+  picture, and shows itself again once the frame returns. The engine has one graphics card,
+  made when the first view is attached (`gpu_ready`: its adapter, its API, and whether it is the
+  system's in software), which the view draws with; a device that is lost is made again, a
+  second apart until it can be (`gpu_remaking`), and the view draws again on it; a surface that
+  is lost is made again. These are logged on stderr (`view_ready`, `view_stalled`,
+  `view_recovered`, `view_device_lost`, `view_surface_lost`, `view_error`, `gpu_error`), with
+  `view_attached` and `view_detached`. `view_ready` says the engine's `dpi_awareness`:
+  `per_monitor_v2`, or why not, in which case the rectangles will be off.
 - **Not tested yet** (phase 0): the border of the window dragged by the user (Windows' modal
   loop of sizing), the window moved to a monitor of another DPI, fullscreen, sleep and resume,
   and a device lost for real (it is lost on purpose in a test).

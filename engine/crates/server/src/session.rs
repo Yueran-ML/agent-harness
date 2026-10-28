@@ -21,6 +21,7 @@ use serde_json::json;
 use serde_json::value::RawValue;
 use tokio::sync::{watch, Mutex, MutexGuard, Notify, Semaphore};
 
+use crate::gpu::Graphics;
 use crate::log::log;
 use crate::names;
 use crate::proxy::{self, Made, Note, Proxies};
@@ -200,7 +201,7 @@ impl Engine {
             transport: None,
             proxies: proxies.clone(),
         }));
-        let viewer = Viewer::new(headless);
+        let viewer = Viewer::new(headless, Graphics::new());
         let notify = {
             let state = Arc::clone(&state);
             Arc::new(move |status: &Status| tell(&state, status, limits))

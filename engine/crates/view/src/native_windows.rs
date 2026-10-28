@@ -43,9 +43,6 @@ const WM_END: u32 = WM_APP + 2;
 /// How long the window's thread is waited for to make the window.
 const MAKING: Duration = Duration::from_secs(10);
 
-/// The backends that the view draws with on Windows.
-pub(crate) const BACKENDS: wgpu::Backends = wgpu::Backends::DX12;
-
 thread_local! {
     /// The state of the view whose window this thread serves.
     static SHARED: RefCell<Option<Arc<Shared>>> = const { RefCell::new(None) };

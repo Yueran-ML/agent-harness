@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/model", "crates/store", "crates/server", "crates/media", "crates/view"]
+members = ["crates/model", "crates/store", "crates/server", "crates/media", "crates/view", "crates/compose"]
 
 [workspace.package]
 edition = "2021"
@@ -23,8 +23,8 @@ sha2 = "0.10"
 ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-resampling", "software-scaling"] }
 # The sound of the transport (crates/server): WASAPI on Windows, Core Audio on macOS, ALSA on Linux.
 cpal = "=0.18.2"
-# The picture, drawn on the graphics card (crates/view): Direct3D 12 on Windows, Metal on macOS,
-# each turned on where it is used, and no other backend.
+# The picture, put together and drawn on the graphics card (crates/compose, crates/view): Direct3D 12
+# on Windows, Metal on macOS, each turned on where it is used, and no other backend.
 wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl"] }
 raw-window-handle = "=0.6.2"
 pollster = "=0.4.0"

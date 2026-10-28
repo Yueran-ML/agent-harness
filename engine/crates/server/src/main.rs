@@ -31,6 +31,7 @@
 mod address;
 mod audio;
 mod conn;
+mod gpu;
 mod log;
 mod names;
 mod proxy;

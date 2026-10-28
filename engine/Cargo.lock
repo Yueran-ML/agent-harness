@@ -246,6 +246,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "columbina-compose"
+version = "0.1.0"
+dependencies = [
+ "pollster",
+ "thiserror 2.0.21",
+ "wgpu",
+]
+
+[[package]]
 name = "columbina-media"
 version = "0.1.0"
 dependencies = [
@@ -271,6 +280,7 @@ dependencies = [
 name = "columbina-server"
 version = "0.1.0"
 dependencies = [
+ "columbina-compose",
  "columbina-media",
  "columbina-model",
  "columbina-store",
@@ -303,6 +313,7 @@ dependencies = [
 name = "columbina-view"
 version = "0.1.0"
 dependencies = [
+ "columbina-compose",
  "columbina-media",
  "columbina-view",
  "pollster",

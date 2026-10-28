@@ -9,6 +9,9 @@
 //! The transport hands the view its pictures ([`ViewSlot`]): the slot is locked only for a
 //! moment, to hand a picture over or to put a view in or take it out, never while a view is made
 //! or destroyed.
+//!
+//! The view draws with the engine's card ([`Graphics`]), made when the first view is attached.
+//! When its device is lost, the view reports it, and another card is made and given to it.
 
 use std::sync::{Arc, PoisonError};
 
@@ -18,6 +21,7 @@ use serde_json::json;
 use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 
+use crate::gpu::Graphics;
 use crate::log::log;
 use crate::rpc::{self, Fault};
 use crate::session::Kind;
@@ -31,6 +35,8 @@ pub struct Viewer {
     /// Whether the engine is headless, and so draws in no window.
     headless: bool,
     slot: ViewSlot,
+    /// The card that the view draws with.
+    graphics: Arc<Graphics>,
     /// Held while a method changes the view, so that one is done before the next begins.
     busy: Mutex<()>,
 }
@@ -69,10 +75,11 @@ const PLACE: &str = r#"{"x": 0, "y": 0, "width": 640, "height": 360}"#;
 const SHOW: &str = r#"{"shown": true | false}"#;
 
 impl Viewer {
-    pub fn new(headless: bool) -> Self {
+    pub fn new(headless: bool, graphics: Arc<Graphics>) -> Self {
         Self {
             headless,
             slot: Arc::new(std::sync::Mutex::new(None)),
+            graphics,
             busy: Mutex::new(()),
         }
     }
@@ -161,9 +168,14 @@ impl Viewer {
         };
         let _busy = self.busy.lock().await;
         let old = self.take();
+        let graphics = Arc::clone(&self.graphics);
+        let reporter = reporter(&graphics, &self.slot);
         let made = tokio::task::spawn_blocking(move || {
             drop(old);
-            View::attach_reporting(parent, rect, Arc::new(report))
+            let gpu = graphics
+                .gpu()
+                .map_err(|error| ViewError::Gpu(error.to_string()))?;
+            View::attach_reporting(parent, rect, gpu, reporter)
         })
         .await
         .map_err(|error| {
@@ -221,6 +233,38 @@ fn fault(error: &ViewError) -> Fault {
         _ => rpc::VIEW_FAILED,
     };
     Fault::new(code, error.to_string()).with_data(json!({ "reason": error.reason() }))
+}
+
+/// What a view reports to: the log, and, once the device of its card is lost, the making of
+/// another card, which is given to the view that is in the slot then.
+fn reporter(graphics: &Arc<Graphics>, slot: &ViewSlot) -> columbina_view::Report {
+    let graphics = Arc::downgrade(graphics);
+    let slot = Arc::downgrade(slot);
+    Arc::new(move |event: Event| {
+        let lost = matches!(event, Event::DeviceLost { .. });
+        report(event);
+        let (Some(graphics), true) = (graphics.upgrade(), lost) else {
+            return;
+        };
+        let wanted = {
+            let slot = slot.clone();
+            move || {
+                slot.upgrade().is_some_and(|slot| {
+                    slot.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .is_some()
+                })
+            }
+        };
+        let slot = slot.clone();
+        graphics.remake(wanted, move |gpu| {
+            if let Some(slot) = slot.upgrade() {
+                if let Some(view) = slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                    view.use_gpu(gpu);
+                }
+            }
+        });
+    })
 }
 
 /// Log what happens to the view.

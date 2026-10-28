@@ -21,6 +21,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use columbina_compose::{Gpu, Preference};
 use columbina_view::{Event, Picture, RawParent, Rect, View, ViewError};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, WPARAM};
@@ -390,8 +391,16 @@ fn solid(width: u32, height: u32, codes: [u8; 3]) -> (Arc<Picture>, [u8; 3]) {
     (Arc::new(picture), rgb)
 }
 
+/// The engine's card, as the server makes it: a real one, or WARP.
+fn gpu() -> Arc<Gpu> {
+    Gpu::new(Preference::HighPerformance).expect("a graphics card, or the software one")
+}
+
 #[test]
 fn a_parent_that_is_not_a_window_is_refused() {
+    let Some(gpu) = columbina_compose::gpu_for_tests() else {
+        return;
+    };
     let rect = Rect {
         x: 0,
         y: 0,
@@ -399,9 +408,9 @@ fn a_parent_that_is_not_a_window_is_refused() {
         height: 10,
     };
     // A handle that names no window.
-    let error = View::attach(RawParent::Windows(0x7FFF_0001), rect).err();
+    let error = View::attach(RawParent::Windows(0x7FFF_0001), rect, Arc::clone(&gpu)).err();
     assert!(matches!(error, Some(ViewError::Parent(_))), "{error:?}");
-    let error = View::attach(RawParent::MacOS(1), rect).err();
+    let error = View::attach(RawParent::MacOS(1), rect, gpu).err();
     assert!(
         matches!(error, Some(ViewError::Unsupported(_))),
         "{error:?}"
@@ -425,7 +434,8 @@ fn a_view_draws_in_its_parent_follows_it_and_lets_the_input_through() {
         width: 320,
         height: 180,
     };
-    let view = View::attach_reporting(RawParent::Windows(parent.hwnd), rect, report).unwrap();
+    let view =
+        View::attach_reporting(RawParent::Windows(parent.hwnd), rect, gpu(), report).unwrap();
     eprintln!("drawn by {} with {}", view.adapter(), view.backend());
     let child = hwnd(isize::try_from(view.raw_handle()).unwrap());
     unsafe {
@@ -500,10 +510,23 @@ fn a_view_draws_in_its_parent_follows_it_and_lets_the_input_through() {
         ],
     );
 
-    // The device lost, as in a driver reset: it is made again, and draws the next picture.
+    // The device lost, as in a driver reset: it is reported, the card is made again, as the
+    // server makes it, and given to the view, which draws the next picture.
     view.lose_device();
     let (picture, other) = solid(64, 36, [180, 60, 140]);
     view.present(picture, 0);
+    let deadline = Instant::now() + WAIT;
+    while !events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| matches!(event, Event::DeviceLost { .. }))
+    {
+        assert!(Instant::now() < deadline, "the loss was not reported");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(view.gpu().is_lost());
+    view.use_gpu(gpu());
     parent.until("drawn after the device was lost", &[((560, 300), other)]);
     {
         let events = events.lock().unwrap();
@@ -553,7 +576,8 @@ fn a_view_whose_parent_is_destroyed_is_gone() {
         let events = Arc::clone(&events);
         Arc::new(move |event: Event| events.lock().unwrap().push(event))
     };
-    let view = View::attach_reporting(RawParent::Windows(parent.hwnd), rect, report).unwrap();
+    let view =
+        View::attach_reporting(RawParent::Windows(parent.hwnd), rect, gpu(), report).unwrap();
     assert!(!view.is_gone());
     // A turn that is not a quarter is drawn as none, and told once while it lasts.
     for rotation in [45, 45, -90, 45] {
@@ -593,7 +617,8 @@ fn a_frame_that_hangs_hides_the_view_until_it_returns() {
         width: 200,
         height: 150,
     };
-    let view = View::attach_reporting(RawParent::Windows(parent.hwnd), rect, report).unwrap();
+    let view =
+        View::attach_reporting(RawParent::Windows(parent.hwnd), rect, gpu(), report).unwrap();
     let child = hwnd(isize::try_from(view.raw_handle()).unwrap());
     let visible = || {
         let style = unsafe { GetWindowLongW(child, GWL_STYLE) }.cast_unsigned();
@@ -647,4 +672,51 @@ fn a_frame_that_hangs_hides_the_view_until_it_returns() {
     assert!(millis.is_some_and(|millis| millis >= 1000), "{events:?}");
     drop(events);
     drop(view);
+}
+
+#[test]
+#[ignore = "needs a desktop that can be seen: run with --ignored"]
+fn two_views_on_one_card_each_draw_their_own_picture() {
+    columbina_view::prepare_process();
+    let parent = Parent::open(160, 700, 600, 260);
+    let gpu = gpu();
+    let rect = |x: i32| Rect {
+        x,
+        y: 20,
+        width: 240,
+        height: 180,
+    };
+    let left = View::attach(RawParent::Windows(parent.hwnd), rect(20), Arc::clone(&gpu)).unwrap();
+    let right = View::attach(RawParent::Windows(parent.hwnd), rect(320), Arc::clone(&gpu)).unwrap();
+    assert!(Arc::ptr_eq(&left.gpu(), &right.gpu()));
+    let (a, left_colour) = solid(64, 48, [120, 80, 190]);
+    let (b, right_colour) = solid(64, 48, [180, 60, 140]);
+    left.present(a, 0);
+    right.present(b, 0);
+    let (in_left, in_right) = ((140, 110), (440, 110));
+    parent.until(
+        "each its own",
+        &[(in_left, left_colour), (in_right, right_colour)],
+    );
+    // A new picture in one, and the other is drawn as it was.
+    let (c, other) = solid(64, 48, [60, 200, 100]);
+    left.present(c, 0);
+    parent.until(
+        "the left one changed",
+        &[(in_left, other), (in_right, right_colour)],
+    );
+    right.clear();
+    parent.until(
+        "the right one cleared",
+        &[(in_left, other), (in_right, [0, 0, 0])],
+    );
+    // One dropped, the other still draws on the card that they shared.
+    drop(right);
+    let (d, last) = solid(64, 48, [100, 100, 220]);
+    left.present(d, 0);
+    parent.until(
+        "the left one, alone",
+        &[(in_left, last), (in_right, BACKGROUND)],
+    );
+    assert!(!gpu.is_lost());
 }

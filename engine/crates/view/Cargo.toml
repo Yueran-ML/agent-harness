@@ -12,6 +12,7 @@ workspace = true
 test-hooks = []
 
 [dependencies]
+columbina-compose = { path = "../compose" }
 columbina-media = { path = "../media" }
 pollster.workspace = true
 raw-window-handle.workspace = true

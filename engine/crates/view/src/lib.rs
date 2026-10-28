@@ -22,8 +22,8 @@
 //!   thread that stopped taking messages would stop the app's input: this one only ever takes
 //!   them. It moves, shows and hides the window when the other threads ask it to with a posted
 //!   message; no other thread touches the window, and no one waits for this one.
-//! - **the drawer's**, which owns the graphics card (an `Instance`, `Adapter`, `Device` and the
-//!   `Surface` of the window) and draws when there is something new to draw: a picture, a new
+//! - **the drawer's**, which owns the `Surface` of the window, made on the engine's one graphics
+//!   card ([`Gpu`], shared with the compositor), and draws when there is something new to draw: a picture, a new
 //!   size, the window shown again or uncovered (`WM_PAINT`). It never draws on a clock, so an idle
 //!   view takes no time at all, and a playing one is drawn as often as pictures come, at the rate
 //!   of the media (pictures that come faster than it draws are skipped: the newest wins). It
@@ -38,11 +38,14 @@
 //! # The card failing
 //!
 //! A surface that is outdated (the window changed) is configured again; one that is lost is made
-//! again ([`Event::SurfaceLost`]). A device that is lost (a driver reset, the card removed) is
-//! made again, with all that was on it, from a new adapter, and the last picture is drawn again
-//! ([`Event::DeviceLost`]); if no device can be made, it is tried again a second later, and
-//! then at most once a second while there is something to draw (pictures that come meanwhile
-//! only take the place of the last one), and reported at most every 30 s. A frame that is not shown because the window is covered or the
+//! again ([`Event::SurfaceLost`]). The card is the engine's, not the view's: a device that is
+//! lost (a driver reset, the card removed) is reported ([`Event::DeviceLost`]), and the view
+//! draws nothing until its owner, who makes the engine's [`Gpu`] again, gives it the new one
+//! ([`View::use_gpu`]); then the surface is made again on it, with all that was on the old one,
+//! and the last picture is drawn again ([`Event::Ready`]). If the new card cannot draw in the
+//! window, it is tried again a second later, and then at most once a second while there is
+//! something to draw (pictures that come meanwhile only take the place of the last one), and
+//! reported at most every 30 s. A frame that is not shown because the window is covered or the
 //! card is slow to give an image is tried again a few times, 50 ms apart, then left until the
 //! next thing to draw. Nothing of this is an error of the caller's.
 //!
@@ -90,6 +93,7 @@ mod native_none;
 #[cfg(not(windows))]
 use native_none as native;
 
+pub use columbina_compose::Gpu;
 pub use columbina_media::Picture;
 pub use render::{letterbox, quarter_turns, Placement};
 
@@ -202,8 +206,9 @@ impl ViewError {
 /// What happened to a view, as it is reported to whoever made it, for its log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// The graphics card is ready to draw: the name of its adapter and of the API, and how the
-    /// process is aware of the DPI of monitors (`per_monitor_v2` on Windows, as it must be).
+    /// The graphics card is ready to draw in the window, at first and on each card given since:
+    /// the name of its adapter and of the API, and how the process is aware of the DPI of
+    /// monitors (`per_monitor_v2` on Windows, as it must be).
     Ready {
         adapter: String,
         backend: String,
@@ -213,7 +218,8 @@ pub enum Event {
     Stalled,
     /// The frame that stalled returned, after so many milliseconds.
     Recovered { millis: u64 },
-    /// The device was lost, and is made again.
+    /// The device of the card that the view draws with was lost: the view draws again once it
+    /// is given another ([`View::use_gpu`]).
     DeviceLost { message: String },
     /// The surface of the window was lost, and is made again.
     SurfaceLost,
@@ -283,6 +289,8 @@ pub(crate) struct State {
     busy_since: Option<Instant>,
     /// How many frames were presented.
     presented: u64,
+    /// The card to draw with, the last one given.
+    gpu: Arc<Gpu>,
 }
 
 impl State {
@@ -305,7 +313,7 @@ impl State {
 }
 
 impl Shared {
-    fn new(rect: Rect, report: Report) -> Self {
+    fn new(rect: Rect, gpu: Arc<Gpu>, report: Report) -> Self {
         Self {
             state: Mutex::new(State {
                 pending: Pending::Nothing,
@@ -321,6 +329,7 @@ impl Shared {
                 odd_rotation: None,
                 busy_since: None,
                 presented: 0,
+                gpu,
             }),
             wake: Condvar::new(),
             watch: Condvar::new(),
@@ -403,16 +412,16 @@ pub struct View {
 }
 
 impl View {
-    /// Make a view in `parent`, at `rect` of its client area, and make the graphics card ready
-    /// to draw in it; it is shown, black. This waits for the window to be made, by a thread of
-    /// the view, and for the card, which takes some 100 ms: call it where blocking is allowed.
+    /// Make a view in `parent`, at `rect` of its client area, and make `gpu`, the engine's
+    /// graphics card, ready to draw in it; it is shown, black. This waits for the window to be
+    /// made, by a thread of the view, and for its surface: call it where blocking is allowed.
     ///
     /// # Errors
     /// The parent is not a window of this platform ([`ViewError::Parent`],
-    /// [`ViewError::Unsupported`]), the rectangle is too large, the window cannot be made, or no
-    /// graphics card can draw in it ([`ViewError::Gpu`]).
-    pub fn attach(parent: RawParent, rect: Rect) -> Result<View, ViewError> {
-        Self::attach_reporting(parent, rect, Arc::new(|_| {}))
+    /// [`ViewError::Unsupported`]), the rectangle is too large, the window cannot be made, or the
+    /// card cannot draw in it ([`ViewError::Gpu`]).
+    pub fn attach(parent: RawParent, rect: Rect, gpu: Arc<Gpu>) -> Result<View, ViewError> {
+        Self::attach_reporting(parent, rect, gpu, Arc::new(|_| {}))
     }
 
     /// As [`View::attach`], reporting what happens to the view to `report`.
@@ -422,11 +431,12 @@ impl View {
     pub fn attach_reporting(
         parent: RawParent,
         rect: Rect,
+        gpu: Arc<Gpu>,
         report: Report,
     ) -> Result<View, ViewError> {
         let rect = rect.checked()?;
         prepare_process();
-        let shared = Arc::new(Shared::new(rect, report));
+        let shared = Arc::new(Shared::new(rect, gpu, report));
         let native = native::Native::open(parent, rect, &shared)?;
         let syncer = native.syncer();
         let (ready, readied) = mpsc::channel();
@@ -544,6 +554,25 @@ impl View {
         self.shared.lock().gone
     }
 
+    /// Draw with `gpu` from now on: the card that the engine made in place of one that was
+    /// lost ([`Event::DeviceLost`]). The surface is made again on it, and the last picture drawn
+    /// again, as the view is next drawn. It returns at once; a card that is the one the view
+    /// draws with already changes nothing.
+    pub fn use_gpu(&self, gpu: Arc<Gpu>) {
+        self.shared.change(|state| {
+            if !Arc::ptr_eq(&state.gpu, &gpu) {
+                state.gpu = gpu;
+                state.dirty = true;
+            }
+        });
+    }
+
+    /// The card that the view draws with, the last one given.
+    #[must_use]
+    pub fn gpu(&self) -> Arc<Gpu> {
+        Arc::clone(&self.shared.lock().gpu)
+    }
+
     /// Draw black, and let the last picture go.
     pub fn clear(&self) {
         self.shared.change(|state| {
@@ -552,7 +581,7 @@ impl View {
         });
     }
 
-    /// The name of the graphics adapter that draws.
+    /// The name of the graphics adapter that the view was made with.
     #[must_use]
     pub fn adapter(&self) -> &str {
         &self.adapter
@@ -577,7 +606,8 @@ impl View {
         self.shared.lock().presented
     }
 
-    /// Lose the device, as a driver reset would: for the tests, which see it made again.
+    /// Lose the device of the card that the view draws with, as a driver reset would: for the
+    /// tests, which see it reported, give the view another card, and see it draw again.
     #[cfg(feature = "test-hooks")]
     pub fn lose_device(&self) {
         self.shared.change(|state| {

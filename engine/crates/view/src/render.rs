@@ -105,20 +105,6 @@ pub(crate) struct Painter {
     planes: Option<Planes>,
 }
 
-/// The features that a painter uses where the adapter has them.
-pub(crate) fn wanted_features(adapter: &wgpu::Adapter) -> wgpu::Features {
-    adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-}
-
-/// The limits that a painter asks for: the defaults, with textures as large as the adapter
-/// takes, for pictures beyond 8K.
-pub(crate) fn wanted_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
-    wgpu::Limits {
-        max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
-        ..wgpu::Limits::default()
-    }
-}
-
 impl Painter {
     /// A painter for targets of `format`, which is not sRGB: the picture is gamma-encoded
     /// already, and is written as it is.
@@ -662,31 +648,11 @@ mod tests {
     }
 
     fn gpu() -> Option<Gpu> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let adapter = match pollster::block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        ) {
-            Ok(adapter) => adapter,
-            Err(error) => {
-                assert!(
-                    std::env::var("COLUMBINA_REQUIRE_GPU").as_deref() != Ok("1"),
-                    "COLUMBINA_REQUIRE_GPU is 1, and there is no graphics adapter: {error}"
-                );
-                eprintln!("skipped: no graphics adapter: {error}");
-                return None;
-            }
-        };
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: None,
-            required_features: wanted_features(&adapter),
-            required_limits: wanted_limits(&adapter),
-            ..wgpu::DeviceDescriptor::default()
-        }))
-        .unwrap();
-        Some(Gpu { device, queue })
+        let gpu = columbina_compose::gpu_for_tests()?;
+        Some(Gpu {
+            device: gpu.device().clone(),
+            queue: gpu.queue().clone(),
+        })
     }
 
     /// The pixels drawn into a target of `size`, as R'G'B', a row after another.

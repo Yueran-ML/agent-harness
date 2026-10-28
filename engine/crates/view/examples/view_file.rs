@@ -247,9 +247,12 @@ mod windows_main {
         TELL.set(Mutex::new(told)).ok();
         let window = open_window();
         let (width, height) = client_size(window);
+        let gpu = columbina_compose::Gpu::new(columbina_compose::Preference::HighPerformance)
+            .map_err(|error| error.to_string())?;
         let view = View::attach_reporting(
             RawParent::Windows(window),
             view_rect(width, height),
+            gpu,
             Arc::new(|event| eprintln!("view: {event:?}")),
         )
         .map_err(|error| error.to_string())?;

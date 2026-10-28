@@ -1,14 +1,14 @@
-//! The drawer: the thread of a view that owns the graphics card and draws into the window when
+//! The drawer: the thread of a view that owns the surface of its window and draws into it when
 //! there is something new to draw (see the crate's docs).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, PoisonError};
 use std::time::{Duration, Instant};
 
+use columbina_compose::{Gpu, Watch};
 use columbina_media::Picture;
 
 use crate::native::{self, Syncer};
-use crate::render::{self, Painter};
+use crate::render::Painter;
 use crate::{frame_begun, frame_ended, Event, Pending, Shared};
 
 /// How long a frame that was not shown waits before it is tried again.
@@ -17,37 +17,51 @@ const RETRY: Duration = Duration::from_millis(50);
 /// How many times in a row a frame that was not shown is tried again.
 const RETRIES: u32 = 10;
 
-/// How long the drawer waits before it tries again to make a device that it could not make.
+/// How long the drawer waits before it tries again to draw with a card that it could not draw
+/// in the window with.
 const REMAKE: Duration = Duration::from_secs(1);
 
-/// How often a device that still cannot be made is reported.
+/// How often a card that still cannot draw in the window is reported.
 const REPORT_REMAKING: Duration = Duration::from_secs(30);
 
 /// The name of the adapter and of its API, or why there is none.
 pub(crate) type Ready = Result<(String, String), String>;
 
-/// The device, once made, and when it is made again after it is lost.
+/// The surface and what draws in it, on the card that the view was given; made again on the
+/// next card that it is given, once that one is lost.
 struct Card {
     screen: Option<Screen>,
-    /// When a device that could not be made is tried again: pictures that come before only
-    /// take the place of the last one.
+    /// When a card that could not draw in the window is tried again: pictures that come before
+    /// only take the place of the last one.
     remake_at: Option<Instant>,
-    /// How many times in a row it could not be made, and when that was last reported.
+    /// How many times in a row it could not draw, and when that was last reported.
     failures: u32,
     reported_at: Option<Instant>,
 }
 
 impl Card {
-    /// The device, made again if it was lost and it is time to; none until it can be.
-    fn ready(&mut self, shared: &Arc<Shared>, handle: usize) -> Option<&mut Screen> {
-        if self.screen.as_ref().is_some_and(Screen::is_lost) {
+    /// What draws with `gpu`, made again if it was made on another card or on one that was
+    /// lost; none while `gpu` is lost (until the view is given another), or until it can draw
+    /// in the window.
+    fn ready(
+        &mut self,
+        shared: &Arc<Shared>,
+        handle: usize,
+        gpu: &Arc<Gpu>,
+    ) -> Option<&mut Screen> {
+        if self
+            .screen
+            .as_ref()
+            .is_some_and(|screen| screen.is_lost() || !Arc::ptr_eq(&screen.gpu, gpu))
+        {
             self.screen = None;
+            self.remake_at = None;
         }
         if self.screen.is_none() {
-            if self.remake_at.is_some_and(|at| Instant::now() < at) {
+            if gpu.is_lost() || self.remake_at.is_some_and(|at| Instant::now() < at) {
                 return None;
             }
-            match Screen::new(shared, handle) {
+            match Screen::new(shared, handle, gpu) {
                 Ok(made) => {
                     shared.report(made.ready_event());
                     self.screen = Some(made);
@@ -65,7 +79,7 @@ impl Card {
                         self.reported_at = Some(Instant::now());
                         shared.report(Event::Error {
                             message: format!(
-                                "the graphics card cannot be made ready again ({} tries, one a \
+                                "the graphics card cannot draw in the window ({} tries, one a \
                                  second): {message}",
                                 self.failures
                             ),
@@ -79,15 +93,23 @@ impl Card {
     }
 }
 
-/// Draw in the window of `handle` until the view ends or its window is destroyed. Says on
-/// `ready` once the card is ready, or why it cannot be.
+/// Draw in the window of `handle` with the card that the view was given, and then with each one
+/// that it is given, until the view ends or its window is destroyed. Says on `ready` once the
+/// card is ready to draw in the window, or why it cannot be.
+///
+/// A card is held only by the state and by what draws with it, so that one that was lost is let
+/// go, with the swap chain of the window, as soon as another takes its place: a window has one
+/// swap chain at a time.
 pub(crate) fn run(
     shared: &Arc<Shared>,
     syncer: &Syncer,
     handle: usize,
     ready: &mpsc::Sender<Ready>,
 ) {
-    let mut card = match Screen::new(shared, handle) {
+    let first = Arc::clone(&shared.lock().gpu);
+    let made = Screen::new(shared, handle, &first);
+    drop(first);
+    let mut card = match made {
         Ok(screen) => {
             let _ = ready.send(Ok((screen.adapter.clone(), screen.backend.clone())));
             shared.report(screen.ready_event());
@@ -121,16 +143,14 @@ pub(crate) fn run(
             Pending::Clear => shown = None,
         }
         if job.lose {
-            // As a driver reset would: the device is destroyed, and everything on it is made
-            // again, as for a device that is lost.
+            // As a driver reset would: the device is destroyed, and the view waits for another
+            // card, as for a device that is lost.
             if let Some(screen) = card.screen.take() {
-                screen.device.destroy();
-                shared.report(Event::DeviceLost {
-                    message: "lost on purpose, by a test".into(),
-                });
+                screen.gpu.device().destroy();
+                screen.gpu.mark_lost("lost on purpose, by a test");
             }
         }
-        let Some(screen) = card.ready(shared, handle) else {
+        let Some(screen) = card.ready(shared, handle, &job.gpu) else {
             again_at = card.remake_at;
             continue;
         };
@@ -145,8 +165,7 @@ pub(crate) fn run(
         let outcome = screen.frame(&mut shown, job.size);
         frame_ended(shared, syncer, outcome == Outcome::Presented);
         if screen.is_lost() {
-            // Lost in the frame: made again at once, and the frame drawn again.
-            again_at = Some(Instant::now() + RETRY);
+            // Lost in the frame: drawn again once the view is given another card.
             continue;
         }
         match outcome {
@@ -173,6 +192,8 @@ struct Job {
     lose: bool,
     /// How long a test asked this frame to hang.
     stall: Option<Duration>,
+    /// The card to draw with.
+    gpu: Arc<Gpu>,
 }
 
 /// Wait for something to draw in a window that is seen and has pixels, or, at `again_at`, to
@@ -192,6 +213,7 @@ fn next(shared: &Shared, again_at: &mut Option<Instant>) -> Option<Job> {
                 size: state.size,
                 lose: std::mem::take(&mut state.lose_device),
                 stall: state.stall.take(),
+                gpu: Arc::clone(&state.gpu),
             });
         }
         state = match *again_at {
@@ -225,20 +247,18 @@ enum Outcome {
     Failed,
 }
 
-/// The graphics card, ready to draw in a window.
+/// The surface of a window, and what draws in it, on a card.
 struct Screen {
     shared: Arc<Shared>,
     handle: usize,
-    instance: wgpu::Instance,
+    gpu: Arc<Gpu>,
     surface: wgpu::Surface<'static>,
-    adapter_handle: wgpu::Adapter,
-    device: wgpu::Device,
     painter: Painter,
     config: wgpu::SurfaceConfiguration,
     /// Whether the surface is configured as `config` says.
     configured: bool,
-    /// Set when the device is lost.
-    lost: Arc<AtomicBool>,
+    /// Tells the view when the card is lost.
+    _watch: Watch,
     /// The number of the picture whose planes the painter holds.
     uploaded: Option<u64>,
     adapter: String,
@@ -246,48 +266,19 @@ struct Screen {
 }
 
 impl Screen {
-    fn new(shared: &Arc<Shared>, handle: usize) -> Result<Screen, String> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: native::BACKENDS,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
-        let surface = native::create_surface(&instance, handle)?;
-        let adapter_handle =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface: Some(&surface),
-                apply_limit_buckets: false,
-            }))
-            .map_err(|error| format!("no graphics adapter draws in the window: {error}"))?;
-        let (device, queue) =
-            pollster::block_on(adapter_handle.request_device(&wgpu::DeviceDescriptor {
-                label: Some("columbina-view"),
-                required_features: render::wanted_features(&adapter_handle),
-                required_limits: render::wanted_limits(&adapter_handle),
-                ..wgpu::DeviceDescriptor::default()
-            }))
-            .map_err(|error| format!("the graphics device cannot be made: {error}"))?;
-        let lost = Arc::new(AtomicBool::new(false));
-        device.set_device_lost_callback({
-            let lost = Arc::clone(&lost);
-            let shared = Arc::clone(shared);
-            move |reason, message| {
-                lost.store(true, Ordering::SeqCst);
-                shared.report(Event::DeviceLost {
-                    message: format!("{reason:?}: {message}"),
-                });
-            }
-        });
-        device.on_uncaptured_error(Arc::new({
-            let shared = Arc::clone(shared);
-            move |error: wgpu::Error| {
-                shared.report(Event::Error {
-                    message: error.to_string(),
-                });
-            }
-        }));
-        let capabilities = surface.get_capabilities(&adapter_handle);
+    fn new(shared: &Arc<Shared>, handle: usize, gpu: &Arc<Gpu>) -> Result<Screen, String> {
+        if let Some(why) = gpu.lost_reason() {
+            return Err(format!("the graphics card was lost: {why}"));
+        }
+        let surface = native::create_surface(gpu.instance(), handle)?;
+        let adapter = gpu.adapter();
+        if !adapter.is_surface_supported(&surface) {
+            return Err(format!(
+                "the graphics adapter {} does not draw in the window",
+                gpu.name()
+            ));
+        }
+        let capabilities = surface.get_capabilities(adapter);
         let format = surface_format(&capabilities.formats)
             .ok_or("the window takes no format that the view draws")?;
         let alpha_mode = if capabilities
@@ -313,21 +304,30 @@ impl Screen {
             alpha_mode,
             view_formats: vec![],
         };
-        let info = adapter_handle.get_info();
+        let watch = gpu.when_lost({
+            let shared = Arc::downgrade(shared);
+            move |why: &str| {
+                if let Some(shared) = shared.upgrade() {
+                    shared.report(Event::DeviceLost {
+                        message: why.to_owned(),
+                    });
+                    // Woken, to let the surface go.
+                    shared.change(|state| state.dirty = true);
+                }
+            }
+        });
         Ok(Screen {
             shared: Arc::clone(shared),
             handle,
-            painter: Painter::new(&device, &queue, format),
-            instance,
+            painter: Painter::new(gpu.device(), gpu.queue(), format),
+            gpu: Arc::clone(gpu),
             surface,
-            adapter_handle,
-            device,
             config,
             configured: false,
-            lost,
+            _watch: watch,
             uploaded: None,
-            adapter: info.name,
-            backend: format!("{:?}", info.backend),
+            adapter: gpu.name().to_owned(),
+            backend: gpu.backend().to_owned(),
         })
     }
 
@@ -341,13 +341,16 @@ impl Screen {
     }
 
     fn is_lost(&self) -> bool {
-        self.lost.load(Ordering::SeqCst)
+        self.gpu.is_lost()
     }
 
     /// Configure the surface as `config` says, catching what the card refuses.
     fn configure(&mut self) -> Result<(), String> {
-        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        self.surface.configure(&self.device, &self.config);
+        let scope = self
+            .gpu
+            .device()
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+        self.surface.configure(self.gpu.device(), &self.config);
         let error = pollster::block_on(scope.pop());
         self.configured = error.is_none();
         if let Some(error) = error {
@@ -437,10 +440,12 @@ impl Screen {
     /// Make the surface of the window again, on the same device.
     fn remake_surface(&mut self) -> Result<(), String> {
         self.configured = false;
-        let surface = native::create_surface(&self.instance, self.handle)?;
-        if !self.adapter_handle.is_surface_supported(&surface) {
-            // The adapter no longer draws in the window: the device is made again.
-            self.lost.store(true, Ordering::SeqCst);
+        let surface = native::create_surface(self.gpu.instance(), self.handle)?;
+        if !self.gpu.adapter().is_surface_supported(&surface) {
+            // The adapter no longer draws in the window: the card is taken as lost, and the
+            // owner of the engine's makes another.
+            self.gpu
+                .mark_lost("the adapter no longer draws in the window");
             return Err("the adapter no longer draws in the window".into());
         }
         self.surface = surface;

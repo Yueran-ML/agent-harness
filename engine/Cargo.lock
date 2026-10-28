@@ -278,8 +278,6 @@ dependencies = [
  "cpal",
  "interprocess",
  "memchr",
- "objc2",
- "objc2-foundation",
  "rustix",
  "serde",
  "serde_json",

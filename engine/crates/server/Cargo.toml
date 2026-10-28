@@ -38,11 +38,6 @@ windows = { workspace = true, features = [
 # The id of the user, for the directory of its sockets.
 rustix = { version = "1", features = ["process"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# Tell macOS that playback needs precise timers, only for as long as it plays.
-objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
-
 [dev-dependencies]
 # Project::sample, for the tests of the names of a transaction.
 columbina-model = { path = "../model", features = ["sample"] }

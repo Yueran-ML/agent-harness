@@ -228,7 +228,10 @@ fn skip<T>(sample: Sample, why: &str) -> Option<T> {
 
 /// `target/test-media`.
 fn directory() -> PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR"))
+    // Cargo defines this for integration tests, but not for the server's unit tests.
+    let temporary = option_env!("CARGO_TARGET_TMPDIR")
+        .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/tmp"));
+    Path::new(temporary)
         .parent()
         .expect("the target directory")
         .join("test-media")

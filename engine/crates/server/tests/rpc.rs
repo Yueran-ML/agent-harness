@@ -4007,17 +4007,6 @@ async fn the_ffmpeg_of_an_engine_that_is_killed_ends_with_it() {
     else {
         return;
     };
-    agent
-        .proxies_until(|notes| notes.iter().any(|note| note["state"] == "running"))
-        .await;
-    let deadline = Instant::now() + WAIT;
-    let pid = loop {
-        if let Some(started) = logged(&engine, "proxy_encoding").pop() {
-            break started["pid"].as_u64().unwrap();
-        }
-        assert!(Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
     let running = |pid: u64| {
         let output = std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
@@ -4025,13 +4014,37 @@ async fn the_ffmpeg_of_an_engine_that_is_killed_ends_with_it() {
             .unwrap();
         String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
     };
-    assert!(running(pid), "ffmpeg {pid} runs");
+    // The ffmpeg that makes the proxy, once it has made a frame. Others may have been started
+    // before it and have failed at once: those of NVENC, where there is no card of NVIDIA (as on
+    // the CI), whose pids are logged first.
+    agent
+        .proxies_until(|notes| {
+            notes
+                .iter()
+                .any(|note| note["state"] == "running" && note["progress"].as_f64() > Some(0.0))
+        })
+        .await;
+    let deadline = Instant::now() + WAIT;
+    let pid = loop {
+        if let Some(started) = logged(&engine, "proxy_encoding").pop() {
+            let pid = started["pid"].as_u64().unwrap();
+            if running(pid) {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline, "no ffmpeg runs: {}", engine.stderr());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     // Killed, as by the task manager: it has no time to stop its ffmpeg.
     engine.child.start_kill().unwrap();
     let _ = engine.child.wait().await;
     let deadline = Instant::now() + Duration::from_secs(5);
     while running(pid) {
-        assert!(Instant::now() < deadline, "ffmpeg {pid} goes on");
+        assert!(
+            Instant::now() < deadline,
+            "ffmpeg {pid} goes on: {:?}",
+            logged(&engine, "proxy_job_object")
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

@@ -26,4 +26,6 @@ mod store;
 
 pub use lock::{Lock, LockError, LockInfo, GUARD_FILE, LOCK_FILE};
 pub use saver::{Saver, SAVE_PERIOD};
-pub use store::{Store, StoreError, CACHE_DIR, PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE};
+pub use store::{
+    schema_1_file_of, Store, StoreError, CACHE_DIR, PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE,
+};

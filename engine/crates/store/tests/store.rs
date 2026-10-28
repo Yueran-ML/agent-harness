@@ -3,7 +3,9 @@
 use std::fs;
 
 use columbina_model::Project;
-use columbina_store::{Store, StoreError, CACHE_DIR, PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE};
+use columbina_store::{
+    schema_1_file_of, Store, StoreError, CACHE_DIR, PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE,
+};
 
 fn pretty(project: &Project) -> String {
     serde_json::to_string_pretty(project).unwrap() + "\n"
@@ -284,13 +286,50 @@ fn a_project_of_schema_1_that_was_kept_before_is_not_kept_again() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join(PROJECT_FILE), SCHEMA_1).unwrap();
     let kept = dir.path().join(SCHEMA_1_FILE);
-    fs::write(&kept, "the first").unwrap();
+    fs::write(&kept, SCHEMA_1).unwrap();
 
     // An engine that opened it before ended without saving it.
     let (_, project) = Store::open(dir.path()).unwrap();
 
     assert_eq!(project.schema, 2);
+    assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_1);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3, "and cache/");
+}
+
+#[test]
+fn another_project_of_schema_1_is_kept_beside_the_one_kept_before() {
+    let dir = tempfile::tempdir().unwrap();
+    // One project of schema 1 was kept, and another was put in its place.
+    let kept = dir.path().join(SCHEMA_1_FILE);
+    fs::write(&kept, "the first").unwrap();
+    let other = SCHEMA_1.replace("\"Phone\"", "\"Phone 2\"");
+    fs::write(dir.path().join(PROJECT_FILE), &other).unwrap();
+
+    let (_, project) = Store::open(dir.path()).unwrap();
+
+    assert_eq!(project.timelines[1].name, "Phone 2");
     assert_eq!(fs::read_to_string(&kept).unwrap(), "the first");
+    let name = schema_1_file_of(other.as_bytes());
+    let digits = name
+        .strip_prefix("project.schema1-")
+        .and_then(|rest| rest.strip_suffix(".json"))
+        .unwrap();
+    assert!(
+        digits.len() == 12 && digits.bytes().all(|b| b.is_ascii_hexdigit()),
+        "{name}"
+    );
+    let beside = dir.path().join(&name);
+    assert_eq!(fs::read_to_string(&beside).unwrap(), other);
+
+    // Opened again before it is saved, it is not kept a third time.
+    fs::write(&beside, "kept").unwrap();
+    Store::open(dir.path()).unwrap();
+    assert_eq!(fs::read_to_string(&beside).unwrap(), "kept");
+    let names: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 4, "{names:?}");
 }
 
 #[test]

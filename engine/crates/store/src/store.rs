@@ -149,9 +149,11 @@ impl Store {
     ///
     /// A project of schema 1 is read into schema 2 (see `columbina_model::upgrade`), and is
     /// written in schema 2 when it is first saved. Before that, the first time that it is
-    /// opened, its file is copied as it is to `project.schema1.json`, written whole or not at all;
-    /// where there is such a file already, it is left as it is. A project that cannot be kept so
-    /// is not opened.
+    /// opened, its file is copied as it is to `project.schema1.json`, written whole or not at all.
+    /// Where that file holds another project of schema 1, as when one was put in the place of
+    /// another, the file is copied to `project.schema1-<digest>.json` instead (see
+    /// [`schema_1_file_of`]); a file that is kept already is never written again. A project that
+    /// cannot be kept so is not opened.
     ///
     /// A `project.json.tmp` that a save left when the engine ended in the middle of it is taken
     /// away once the project has been read, where it is a file; until then it is kept, as the
@@ -208,13 +210,27 @@ impl Store {
         }
     }
 
-    /// Keep the file of a project of schema 1 as it was, unless it was kept before.
+    /// Keep the file of a project of schema 1 as it was, unless it was kept before: in
+    /// `project.schema1.json`, or where that holds another project of schema 1, in
+    /// `project.schema1-<digest>.json`.
     fn keep_schema_1(&self, bytes: &[u8]) -> Result<(), StoreError> {
-        let path = self.dir.join(SCHEMA_1_FILE);
-        if fs::symlink_metadata(&path).is_ok() {
-            return Ok(());
-        }
-        let tmp = self.dir.join(format!("{SCHEMA_1_FILE}.tmp"));
+        let first = self.dir.join(SCHEMA_1_FILE);
+        let path = match fs::read(&first) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => first,
+            Ok(kept) if kept == bytes => return Ok(()),
+            // Another project, or what cannot be read and so is not written over either.
+            _ => {
+                let other = self.dir.join(schema_1_file_of(bytes));
+                if fs::symlink_metadata(&other).is_ok() {
+                    return Ok(());
+                }
+                other
+            }
+        };
+        let tmp = self.dir.join(format!(
+            "{}.tmp",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
         let kept = File::create(&tmp)
             .and_then(|mut file| {
                 file.write_all(bytes)?;
@@ -310,6 +326,21 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// The name of the file that a project of schema 1 is kept in where `project.schema1.json` holds
+/// another: `project.schema1-<digest>.json`, where the digest is the first 12 hexadecimal digits
+/// of the SHA-256 of the file.
+#[must_use]
+pub fn schema_1_file_of(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    use sha2::{Digest, Sha256};
+    let mut name = String::from("project.schema1-");
+    for byte in &Sha256::digest(bytes)[..6] {
+        let _ = write!(name, "{byte:02x}");
+    }
+    name + ".json"
 }
 
 /// Put the file `from` in the place of the file `to`, in one step.

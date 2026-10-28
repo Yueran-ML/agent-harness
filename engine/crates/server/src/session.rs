@@ -1152,11 +1152,21 @@ fn read(path: &str) -> Result<Media, MediaError> {
     let full = std::path::absolute(Path::new(path))?;
     let identity = columbina_media::identity(&full)?;
     let facts = columbina_media::probe(&full)?;
+    let name = full
+        .file_name()
+        .map(|name| name.to_str().ok_or(MediaError::NotUtf8))
+        .transpose()?
+        .unwrap_or_default()
+        .to_owned();
     Ok(Media {
         id: String::new(),
         path: full.to_str().ok_or(MediaError::NotUtf8)?.to_owned(),
         identity,
         facts,
         proxy: None,
+        name,
+        bin: None,
+        mark_in: None,
+        mark_out: None,
     })
 }

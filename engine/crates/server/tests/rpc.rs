@@ -349,13 +349,17 @@ fn media(id: &str, path: &str) -> Value {
             },
             "audio": { "rate": 48000, "channels": 2, "codec": "aac" },
         },
+        "name": "a.mp4", "bin": null, "mark_in": null, "mark_out": null,
     })
 }
 
 fn clip(id: &str, media: &str, start: i64, length: i64) -> Value {
     json!({
-        "id": id, "media": media, "source_in": { "ticks": 0, "scale": 15360 },
-        "start": start, "length": length,
+        "id": id, "start": start, "length": length,
+        "source": { "kind": "media", "media": media, "in": { "ticks": 0, "scale": 15360 } },
+        "enabled": true, "speed": { "num": 1, "den": 1 }, "reverse": false, "link": null,
+        "transform": { "x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0 },
+        "gain_db": 0.0, "pan": 0.0, "fade_in": 0, "fade_out": 0,
     })
 }
 
@@ -417,7 +421,7 @@ async fn the_engine_says_where_it_listens_and_answers_hello() {
     assert_eq!(got["next_id"], 1);
     assert_eq!(
         got["project"],
-        json!({ "schema": 1, "next_id": 1, "media": [], "timelines": [] })
+        json!({ "schema": 2, "next_id": 1, "bins": [], "media": [], "timelines": [] })
     );
     drop(client);
     assert_eq!(engine.ended().await, 0);
@@ -625,9 +629,9 @@ async fn every_client_is_told_of_a_change_and_the_one_that_made_it_first() {
     let ops = json!([
         { "op": "add_media", "media": media("$m", "C:/media/a.mp4") },
         { "op": "add_timeline", "timeline": {
-            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 }, "tracks": [],
+            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": [],
         } },
-        { "op": "add_track", "timeline": "$t", "track": { "id": "$v", "kind": "video", "clips": [] } },
+        { "op": "add_track", "timeline": "$t", "track": { "id": "$v", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [] } },
         { "op": "insert_clip", "timeline": "$t", "track": "$v", "clip": clip("$c", "$m", 0, 50) },
         { "op": "move_clip", "timeline": "$t", "id": "$c", "track": "$v", "start": 10 },
     ]);
@@ -1207,8 +1211,8 @@ async fn a_name_of_a_track_is_named_only_with_its_timeline() {
     let mut agent = engine.client("agent").await;
     let timeline = |id: &str, track: &str| {
         json!({
-            "id": id, "name": id, "rate": { "num": 25, "den": 1 },
-            "tracks": [{ "id": track, "kind": "video", "clips": [] }],
+            "id": id, "name": id, "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000,
+            "tracks": [{ "id": track, "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [] }],
         })
     };
     let ops = json!([
@@ -1237,10 +1241,10 @@ async fn clips_named_on_two_tracks_at_one_frame_are_told_apart() {
     let ops = json!([
         { "op": "add_media", "media": media("$m", "a.mp4") },
         { "op": "add_timeline", "timeline": {
-            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 },
+            "id": "$t", "name": "Cut", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000,
             "tracks": [
-                { "id": "$pic", "kind": "video", "clips": [clip("$p2", "$m", 40, 10), clip("$p1", "$m", 0, 10)] },
-                { "id": "$snd", "kind": "audio", "clips": [clip("$s1", "$m", 0, 20), clip("$s2", "$m", 40, 20)] },
+                { "id": "$pic", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [clip("$p2", "$m", 40, 10), clip("$p1", "$m", 0, 10)] },
+                { "id": "$snd", "kind": "audio", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [clip("$s1", "$m", 0, 20), clip("$s2", "$m", 40, 20)] },
             ],
         } },
         { "op": "move_clip", "timeline": "$t", "id": "$s1", "track": "$snd", "start": 100 },
@@ -1362,10 +1366,13 @@ async fn files_are_taken_in_as_media_in_one_transaction() {
 
     // A clip is cut from it in the scale of its duration.
     let clip = json!([{ "op": "add_timeline", "timeline": {
-        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 },
-        "tracks": [{ "id": "", "kind": "video", "clips": [{
-            "id": "", "media": "m1", "source_in": { "ticks": 0, "scale": duration["scale"] },
-            "start": 0, "length": 100,
+        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000,
+        "tracks": [{ "id": "", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [{
+            "id": "", "start": 0, "length": 100,
+            "source": { "kind": "media", "media": "m1", "in": { "ticks": 0, "scale": duration["scale"] } },
+            "enabled": true, "speed": { "num": 1, "den": 1 }, "reverse": false, "link": null,
+        "transform": { "x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0 },
+        "gain_db": 0.0, "pan": 0.0, "fade_in": 0, "fade_out": 0,
         }] }],
     } }]);
     agent.apply(clip).await;
@@ -1455,7 +1462,7 @@ async fn files_are_read_while_the_engine_goes_on_answering() {
         .await;
     // While the import is held, another client's transaction is applied and answered.
     let timeline = json!([{ "op": "add_timeline", "timeline": {
-        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 }, "tracks": [],
+        "id": "", "name": "Cut", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": [],
     } }]);
     let applied = desktop.apply(timeline).await;
     assert_eq!(applied["revision"], 1);
@@ -2542,7 +2549,7 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
     // On the grid of the first timeline of the project: 3 s at 30 frames a second.
     agent
         .apply(json!([{ "op": "add_timeline", "timeline": {
-            "id": "", "name": "Cut", "rate": { "num": 30, "den": 1 }, "tracks": [],
+            "id": "", "name": "Cut", "rate": { "num": 30, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": [],
         } }]))
         .await;
     let loaded = agent
@@ -3800,7 +3807,7 @@ async fn a_proxy_damaged_inside_is_let_go_for_the_media_and_made_again() {
     for name in ["a", "b", "c", "d", "e"] {
         agent
             .apply(json!([{ "op": "add_timeline", "timeline": {
-                "id": "", "name": name, "rate": { "num": 25, "den": 1 }, "tracks": [],
+                "id": "", "name": name, "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": [],
             } }]))
             .await;
     }

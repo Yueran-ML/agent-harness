@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Neither of its numbers may be 0. A rate with a 0 in it is refused when it is read, so every
 /// rate of a project that was read is whole; one that is made in code must be made so too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "RawRate")]
+#[serde(try_from = "RawFraction")]
 pub struct Rate {
     /// The frames in `den` seconds.
     pub num: u32,
@@ -17,27 +17,66 @@ pub struct Rate {
     pub den: u32,
 }
 
-/// A rate as it is written, before its numbers are looked at.
+/// A rate or a speed as it is written, before its numbers are looked at.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RawRate {
+struct RawFraction {
     num: u32,
     den: u32,
 }
 
-impl TryFrom<RawRate> for Rate {
-    type Error = String;
-
-    fn try_from(raw: RawRate) -> Result<Self, Self::Error> {
-        for (name, number) in [("num", raw.num), ("den", raw.den)] {
+impl RawFraction {
+    /// The numbers, unless one of them is 0: `what` names the fraction in the error.
+    fn whole(self, what: &str) -> Result<(u32, u32), String> {
+        for (name, number) in [("num", self.num), ("den", self.den)] {
             if number == 0 {
-                return Err(format!("a rate of frames has a `{name}` of 0"));
+                return Err(format!("{what} has a `{name}` of 0"));
             }
         }
-        Ok(Self {
-            num: raw.num,
-            den: raw.den,
-        })
+        Ok((self.num, self.den))
+    }
+}
+
+impl TryFrom<RawFraction> for Rate {
+    type Error = String;
+
+    fn try_from(raw: RawFraction) -> Result<Self, Self::Error> {
+        let (num, den) = raw.whole("a rate of frames")?;
+        Ok(Self { num, den })
+    }
+}
+
+/// How fast a clip plays its source, as a fraction: 2/1 plays it twice as fast, and 1/2 at half
+/// its speed. A clip at 2/1 shows two seconds of its source in each second of its timeline.
+///
+/// Neither of its numbers may be 0, as for a [`Rate`]. How fast a clip may play is checked with
+/// the clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "RawFraction")]
+pub struct Speed {
+    /// The seconds of the source that are played in `den` seconds.
+    pub num: u32,
+    /// The seconds that `num` seconds of the source are played in.
+    pub den: u32,
+}
+
+impl Speed {
+    /// As the source is.
+    pub const ONE: Speed = Speed { num: 1, den: 1 };
+}
+
+impl Default for Speed {
+    fn default() -> Self {
+        Self::ONE
+    }
+}
+
+impl TryFrom<RawFraction> for Speed {
+    type Error = String;
+
+    fn try_from(raw: RawFraction) -> Result<Self, Self::Error> {
+        let (num, den) = raw.whole("a speed")?;
+        Ok(Self { num, den })
     }
 }
 

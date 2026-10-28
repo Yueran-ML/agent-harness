@@ -159,13 +159,7 @@ fn clip_of(project: &Project, rate: Rate, spec: &Spec, names: &[&str]) -> Clip {
     let ids: Vec<String> = project.media.iter().map(|m| m.id.clone()).collect();
     let media = pick(&ids, spec.b, "m99");
     let (source_in, length) = source_of(project, &media, rate, spec);
-    Clip {
-        id: id_of(spec, names),
-        media,
-        source_in,
-        start: spec.start,
-        length,
-    }
+    Clip::of_media(id_of(spec, names), media, source_in, spec.start, length)
 }
 
 /// Media of the sample, or of another length or scale, with picture, sound or both.
@@ -235,15 +229,13 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
         2 => timeline_of(project, spec),
         3 => Op::RemoveTimeline { id: timeline_id },
         4 => Op::AddTrack {
-            track: Track {
-                id: id_of(spec, &["V1", "V2", "A1", "A4"]),
-                kind: kind_of(spec.b),
-                clips: if spec.b.is_multiple_of(3) {
+            track: Track::new(id_of(spec, &["V1", "V2", "A1", "A4"]), kind_of(spec.b)).with_clips(
+                if spec.b.is_multiple_of(3) {
                     vec![]
                 } else {
                     vec![clip_of(project, rate, spec, &["c3", "c40", "y"])]
                 },
-            },
+            ),
             index: index_of(spec.c, track_ids.len()),
             timeline: timeline_id,
         },
@@ -283,14 +275,15 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
                     } else {
                         p.clip.start
                     };
-                    (p.clip.media.clone(), p.timeline.rate, start)
+                    let media = p.clip.media().cloned().unwrap_or_default();
+                    (media, p.timeline.rate, start)
                 },
             );
             let (source_in, length) = source_of(project, &media, rate, spec);
             Op::TrimClip {
                 timeline: clip_timeline,
                 id: clip_id,
-                source_in,
+                source_in: Some(source_in),
                 start,
                 length,
             }
@@ -314,37 +307,28 @@ fn timeline_of(project: &Project, spec: &Spec) -> Op {
     let rate = RATES[spec.a % RATES.len()];
     let tracks = match spec.b % 3 {
         0 => vec![],
-        1 => vec![Track {
-            id: String::new(),
-            kind: kind_of(spec.a),
-            clips: vec![clip_of(project, rate, spec, &["c1", "x1"])],
-        }],
+        1 => vec![Track::new("", kind_of(spec.a)).with_clips(vec![clip_of(
+            project,
+            rate,
+            spec,
+            &["c1", "x1"],
+        )])],
         _ => vec![
-            Track {
-                id: "V1".into(),
-                kind: TrackKind::Video,
-                clips: vec![
-                    clip_of(project, rate, spec, &["c2", "x2"]),
-                    Clip {
-                        id: String::new(),
-                        start: spec.start + 200,
-                        ..clip_of(project, rate, spec, &["x3"])
-                    },
-                ],
-            },
-            Track {
-                id: String::new(),
-                kind: kind_of(spec.b / 3),
-                clips: vec![],
-            },
+            Track::new("V1", TrackKind::Video).with_clips(vec![
+                clip_of(project, rate, spec, &["c2", "x2"]),
+                Clip {
+                    id: String::new(),
+                    start: spec.start + 200,
+                    ..clip_of(project, rate, spec, &["x3"])
+                },
+            ]),
+            Track::new("", kind_of(spec.b / 3)),
         ],
     };
     Op::AddTimeline {
         timeline: Timeline {
-            id: id_of(spec, &["t1", "t2", "t70", "x"]),
-            name: "Timeline".into(),
-            rate,
             tracks,
+            ..Timeline::new(id_of(spec, &["t1", "t2", "t70", "x"]), "Timeline", rate)
         },
         index: index_of(spec.c, project.timelines.len()),
     }
@@ -405,11 +389,7 @@ pub fn tidy() -> Project {
     for (id, kind) in [("V2", TrackKind::Video), ("A2", TrackKind::Audio)] {
         let op = Op::AddTrack {
             timeline: "t1".into(),
-            track: Track {
-                id: id.into(),
-                kind,
-                clips: vec![],
-            },
+            track: Track::new(id, kind),
             index: None,
         };
         apply(&mut project, op).unwrap();
@@ -432,7 +412,7 @@ pub fn messy() -> Project {
     middle["id"] = "c5".into();
     middle["start"] = 130.into();
     middle["length"] = 50.into();
-    middle["source_in"]["ticks"] = 30720.into();
+    middle["source"]["in"]["ticks"] = 30720.into();
     value["timelines"][0]["tracks"][0]["clips"] = serde_json::json!([later, first, middle]);
     let mut other = value["timelines"][0].clone();
     other["id"] = "t6".into();
@@ -480,22 +460,26 @@ pub fn check(project: &Project) {
             for clip in &track.clips {
                 note(&clip.id);
                 assert!(ids.insert(clip.id.clone()), "clip {} twice", clip.id);
-                let media = project.media.iter().find(|m| m.id == clip.media).unwrap();
+                let (Some(media), Some(source_in)) = (clip.media(), clip.source_in()) else {
+                    continue;
+                };
+                let media = project.media.iter().find(|m| m.id == *media).unwrap();
                 let has = match track.kind {
                     TrackKind::Video => media.facts.video.is_some(),
                     TrackKind::Audio => media.facts.audio.is_some(),
+                    TrackKind::Subtitle => false,
                 };
                 assert!(has, "{clip:?} on {}", track.id);
                 let duration = media.facts.duration;
-                assert_eq!(clip.source_in.scale, duration.scale);
-                assert!(clip.length > 0 && clip.start >= 0 && clip.source_in.ticks >= 0);
+                assert_eq!(source_in.scale, duration.scale);
+                assert!(clip.length > 0 && clip.start >= 0 && source_in.ticks >= 0);
                 assert!(clip.start + clip.length <= LARGEST);
                 let rate = timeline.rate;
                 let ticks =
                     i128::from(clip.length) * i128::from(rate.den) * i128::from(duration.scale)
                         / i128::from(rate.num);
                 assert!(
-                    i128::from(clip.source_in.ticks) + ticks <= i128::from(duration.ticks),
+                    i128::from(source_in.ticks) + ticks <= i128::from(duration.ticks),
                     "{clip:?} past the end of {}",
                     media.id
                 );

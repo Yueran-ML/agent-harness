@@ -1,24 +1,27 @@
-//! A project of the studio: the media that it is cut from, and its timelines, each a stack of
-//! tracks of clips.
+//! A project of the studio: the media that it is cut from, kept in bins, and its timelines,
+//! each a stack of tracks of clips, transitions and subtitles.
 //!
 //! This is the form in which a project is written and read, by the engine and by every client
 //! of it, so the names of the fields are kept as they are. A field that is not known is refused,
-//! and so is a project of another schema.
+//! and so is one that is left out, but for the proxy of media; and so is a project of another
+//! schema. A project of schema 1 is read into this one by [`crate::upgrade`].
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::ops::Invalid;
-use crate::time::{Rate, Time};
+use crate::time::{Rate, Speed, Time};
 
 /// The schema of a project that this engine reads and writes.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 /// What a thing of a project is known by. It never changes.
 ///
-/// The id that the engine makes for media, a timeline or a clip is never made again, so it is
-/// never given to another thing by the engine. The id of a track is not kept so: it names the
-/// kind of the track and its place among the tracks of that kind (`V1`, `A2`), and a track that
-/// is added after `V2` was taken away may be `V2` again.
+/// The id that the engine makes for a bin, media, a timeline, a clip, a transition, a subtitle
+/// or a group of linked clips is never made again, so it is never given to another thing by the
+/// engine. The id of a track is not kept so: it names the kind of the track and its place among
+/// the tracks of that kind (`V1`, `A2`, `S1`), and a track that is added after `V2` was taken
+/// away may be `V2` again.
 pub type Id = String;
 
 /// A project of the studio.
@@ -29,19 +32,22 @@ pub type Id = String;
 /// is refused if it is of another schema or if [`Project::validate`] refuses it, and is put
 /// right as `validate` puts it right. So no project is read that the operations could not have
 /// made.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawProject")]
 pub struct Project {
     /// The schema that the project is written in.
     pub schema: u32,
-    /// The number that the next id that the engine makes for media, a timeline or a clip ends in.
-    /// Never goes back. Tracks are named otherwise, and do not use it.
+    /// The number that the next id that the engine makes ends in, for a bin, media, a timeline,
+    /// a clip, a transition, a subtitle or a group of linked clips. Never goes back. Tracks are
+    /// named otherwise, and do not use it.
     ///
     /// An undo does not take it back: such an id is never made twice, so one that a client has
     /// seen is never given to another thing after an undo. Two projects compared across an undo
     /// are the same if they differ only in this. When a project is read, it is raised above the
     /// number of every id of the project that the engine could have made.
     pub next_id: u64,
+    /// The bins that the media is kept in, each in another one or at the root.
+    pub bins: Vec<Bin>,
     /// The files that the project is cut from.
     pub media: Vec<Media>,
     /// The timelines of the project.
@@ -54,6 +60,7 @@ pub struct Project {
 struct RawProject {
     schema: u32,
     next_id: u64,
+    bins: Vec<Bin>,
     media: Vec<Media>,
     timelines: Vec<Timeline>,
 }
@@ -68,12 +75,35 @@ impl TryFrom<RawProject> for Project {
         let mut project = Self {
             schema: raw.schema,
             next_id: raw.next_id,
+            bins: raw.bins,
             media: raw.media,
             timelines: raw.timelines,
         };
         project.validate()?;
         Ok(project)
     }
+}
+
+/// Read a field that may be `null` but may not be left out, as serde would read an `Option`
+/// that is left out as none.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Option::<T>::deserialize(deserializer)
+}
+
+/// A bin of the media pool, as an editor shows it: a folder that media and other bins are kept
+/// in. It is only a name; the files stay where they are.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bin {
+    /// What it is known by.
+    pub id: Id,
+    /// The name that it is shown by.
+    pub name: String,
+    /// The bin that it is in, or none if it is at the root.
+    #[serde(deserialize_with = "present")]
+    pub parent: Option<Id>,
 }
 
 /// A file that the project is cut from. It is listed by its path and never copied.
@@ -93,6 +123,18 @@ pub struct Media {
     /// before proxies were made is read as one without them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<Proxy>,
+    /// The name that it is shown by: the name of its file when it is taken in.
+    pub name: String,
+    /// The bin that it is kept in, or none if it is at the root.
+    #[serde(deserialize_with = "present")]
+    pub bin: Option<Id>,
+    /// Where it is marked to begin, for an edit of three points, in ticks of the scale of its
+    /// duration.
+    #[serde(deserialize_with = "present")]
+    pub mark_in: Option<Time>,
+    /// Where it is marked to end, in ticks of the scale of its duration; after `mark_in`.
+    #[serde(deserialize_with = "present")]
+    pub mark_out: Option<Time>,
 }
 
 /// A copy of the picture of media whose every frame is a key frame, smaller where the picture is
@@ -175,8 +217,9 @@ pub struct AudioFacts {
     pub codec: String,
 }
 
-/// A timeline: tracks of clips, laid on frames of one rate.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A timeline: tracks of clips and subtitles, laid on frames of one rate, and the picture and
+/// the sound that it is played and rendered in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Timeline {
     /// What it is known by.
@@ -185,50 +228,371 @@ pub struct Timeline {
     pub name: String,
     /// The rate of its frames.
     pub rate: Rate,
-    /// Its tracks.
+    /// The width of its picture in pixels: an even number from 16 to 16384.
+    pub width: u32,
+    /// The height of its picture in pixels: an even number from 16 to 16384.
+    pub height: u32,
+    /// The samples a second of its sound: 44100, 48000 or 96000.
+    pub sample_rate: u32,
+    /// Its tracks. Those of picture are stacked in their order, the first at the bottom.
     pub tracks: Vec<Track>,
 }
 
-/// What a track holds: picture or sound.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// What a track holds: picture, sound or subtitles.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackKind {
     /// Picture.
     Video,
     /// Sound.
     Audio,
+    /// Subtitles.
+    Subtitle,
 }
 
-/// A track of a timeline, and the clips on it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A track of a timeline, and what is on it.
+///
+/// A track of picture or of sound holds clips and the transitions between them, and is written
+/// with `clips` and `transitions`; a track of subtitles holds subtitles in a language, and is
+/// written with `language` and `cues`. A track is written with the fields of its kind only, and
+/// one that is read with the fields of another kind is refused. The fields of the other kinds
+/// are empty here.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(try_from = "RawTrack")]
 pub struct Track {
     /// What it is known by.
     pub id: Id,
-    /// Whether it holds picture or sound.
+    /// Whether it holds picture, sound or subtitles.
     pub kind: TrackKind,
+    /// The name that it is shown by.
+    pub name: String,
+    /// Whether it is seen or heard. A track that is not is left out when the timeline is
+    /// played or rendered.
+    pub enabled: bool,
+    /// Whether it is locked, so that no edit changes it. An operation changes it all the same,
+    /// so that every change can be undone.
+    pub locked: bool,
     /// Its clips, in the order of their start.
     pub clips: Vec<Clip>,
+    /// The transitions between its clips, in the order of the cuts that they are at.
+    pub transitions: Vec<Transition>,
+    /// The language of its subtitles, as a short tag of BCP 47 (`zh`, `en-GB`), or empty.
+    pub language: String,
+    /// Its subtitles, in the order of their start.
+    pub cues: Vec<Cue>,
 }
 
-/// A stretch of a source on a track: from `source_in` in the source, at frame `start` of the
-/// timeline, for `length` frames. The clips of a track are kept in the order of their start.
+/// A track as it is written, before the fields of its kind are looked at.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTrack {
+    id: Id,
+    kind: TrackKind,
+    name: String,
+    enabled: bool,
+    locked: bool,
+    clips: Option<Vec<Clip>>,
+    transitions: Option<Vec<Transition>>,
+    language: Option<String>,
+    cues: Option<Vec<Cue>>,
+}
+
+impl TryFrom<RawTrack> for Track {
+    type Error = String;
+
+    fn try_from(raw: RawTrack) -> Result<Self, Self::Error> {
+        let kind = raw.kind;
+        let name = match kind {
+            TrackKind::Video => "video",
+            TrackKind::Audio => "audio",
+            TrackKind::Subtitle => "subtitle",
+        };
+        let subtitles = kind == TrackKind::Subtitle;
+        let fields = [
+            ("clips", raw.clips.is_some(), !subtitles),
+            ("transitions", raw.transitions.is_some(), !subtitles),
+            ("language", raw.language.is_some(), subtitles),
+            ("cues", raw.cues.is_some(), subtitles),
+        ];
+        for (field, there, wanted) in fields {
+            if there && !wanted {
+                return Err(format!("a {name} track has no `{field}`"));
+            }
+            if wanted && !there {
+                return Err(format!("missing field `{field}` of a {name} track"));
+            }
+        }
+        Ok(Self {
+            id: raw.id,
+            kind,
+            name: raw.name,
+            enabled: raw.enabled,
+            locked: raw.locked,
+            clips: raw.clips.unwrap_or_default(),
+            transitions: raw.transitions.unwrap_or_default(),
+            language: raw.language.unwrap_or_default(),
+            cues: raw.cues.unwrap_or_default(),
+        })
+    }
+}
+
+impl Serialize for Track {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut track = serializer.serialize_struct("Track", 7)?;
+        track.serialize_field("id", &self.id)?;
+        track.serialize_field("kind", &self.kind)?;
+        track.serialize_field("name", &self.name)?;
+        track.serialize_field("enabled", &self.enabled)?;
+        track.serialize_field("locked", &self.locked)?;
+        if self.kind == TrackKind::Subtitle {
+            track.serialize_field("language", &self.language)?;
+            track.serialize_field("cues", &self.cues)?;
+        } else {
+            track.serialize_field("clips", &self.clips)?;
+            track.serialize_field("transitions", &self.transitions)?;
+        }
+        track.end()
+    }
+}
+
+/// A stretch of a source on a track: at frame `start` of the timeline, for `length` frames. The
+/// clips of a track are kept in the order of their start.
+///
+/// The source is media, from a place in it, or a title or a colour that the engine makes, which
+/// go on tracks of picture only. A clip of media shows its frames at its speed, forward or
+/// backward (see [`crate::span`]). Its transform is used on a track of picture, and its gain and
+/// pan on a track of sound; they are kept on the other kind too, as they were set.
 ///
 /// The ticks that its frames last are counted rounded down, so its last frame may end less than
 /// one tick past the end of its source; whoever reads the source for it stops at the end.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Clip {
     /// What it is known by.
     pub id: Id,
-    /// The media that it is cut from.
-    pub media: Id,
-    /// Where it begins in the media.
-    pub source_in: Time,
     /// The frame of the timeline that it begins at.
     pub start: i64,
     /// How many frames it lasts.
     pub length: i64,
+    /// What it shows or plays.
+    pub source: Source,
+    /// Whether it is seen or heard.
+    pub enabled: bool,
+    /// How fast it plays its source.
+    pub speed: Speed,
+    /// Whether it plays its source backward.
+    pub reverse: bool,
+    /// The group of linked clips that it is in, if any: the clips of a group, picture and sound
+    /// of one source, are selected and moved together.
+    #[serde(deserialize_with = "present")]
+    pub link: Option<Id>,
+    /// Where its picture is put on the picture of the timeline.
+    pub transform: Transform,
+    /// How much louder its sound is played, in decibels: from -96 to 24.
+    pub gain_db: f64,
+    /// Where its sound is put between the left and the right: from -1, left, to 1, right.
+    pub pan: f64,
+    /// How many frames its picture fades in over, or its sound rises over, from its start.
+    pub fade_in: i64,
+    /// How many frames its picture fades out over, or its sound falls over, to its end.
+    pub fade_out: i64,
+}
+
+/// What a clip shows or plays.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Source {
+    /// Media, from a place in it.
+    Media {
+        /// The media.
+        media: Id,
+        /// Where the clip begins in it, in ticks of the scale of its duration.
+        #[serde(rename = "in")]
+        source_in: Time,
+    },
+    /// A title: text that the engine lays out and draws.
+    Title {
+        /// What it says.
+        text: String,
+        /// How it is drawn.
+        style: TitleStyle,
+    },
+    /// A colour that fills the picture.
+    Color {
+        /// The colour.
+        color: Rgba,
+    },
+}
+
+/// How the text of a title is drawn.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TitleStyle {
+    /// The family of the font, or empty for the one that the engine chooses.
+    pub font: String,
+    /// The height of its letters in pixels of the timeline: from 1 to 4096.
+    pub size: u32,
+    /// The colour of its letters.
+    pub color: Rgba,
+    /// Where its anchor is across the picture: 0 at the left edge, 1 at the right.
+    pub x: f64,
+    /// Where its anchor is down the picture: 0 at the top edge, 1 at the bottom.
+    pub y: f64,
+    /// Which side of the text the anchor is on.
+    pub align: TextAlign,
+}
+
+/// Which side of a text its anchor is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlign {
+    /// The left.
+    Left,
+    /// The middle.
+    Center,
+    /// The right.
+    Right,
+}
+
+/// A colour and how opaque it is, each from 0 to 255: red, green, blue and alpha. It is written
+/// as `#rrggbbaa`, in hexadecimal, lowercase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Rgba(pub [u8; 4]);
+
+impl TryFrom<String> for Rgba {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        let wrong = || format!("the colour {text:?} is not of the form #rrggbbaa");
+        let digits = text.strip_prefix('#').ok_or_else(wrong)?;
+        if digits.len() != 8 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(wrong());
+        }
+        let mut rgba = [0; 4];
+        for (at, channel) in rgba.iter_mut().enumerate() {
+            *channel = u8::from_str_radix(&digits[at * 2..at * 2 + 2], 16).map_err(|_| wrong())?;
+        }
+        Ok(Self(rgba))
+    }
+}
+
+impl From<Rgba> for String {
+    fn from(colour: Rgba) -> Self {
+        let [r, g, b, a] = colour.0;
+        format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+    }
+}
+
+/// Where the picture of a clip is put on the picture of its timeline, once it is fitted to it.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Transform {
+    /// How far it is moved right, as a share of the width of the timeline.
+    pub x: f64,
+    /// How far it is moved down, as a share of the height of the timeline.
+    pub y: f64,
+    /// How much larger it is made, about the middle of the picture: above 0, and at most 16.
+    pub scale: f64,
+    /// How far it is turned clockwise, in degrees.
+    pub rotation: f64,
+    /// How opaque it is: from 0, not seen, to 1.
+    pub opacity: f64,
+}
+
+impl Transform {
+    /// The picture as it is fitted to the timeline: not moved, not made larger, not turned, and
+    /// opaque.
+    pub const NONE: Transform = Transform {
+        x: 0.0,
+        y: 0.0,
+        scale: 1.0,
+        rotation: 0.0,
+        opacity: 1.0,
+    };
+}
+
+impl Default for Transform {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// A transition between two clips of a track that meet, the one that ends where the other
+/// starts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Transition {
+    /// What it is known by.
+    pub id: Id,
+    /// How the one clip gives way to the other.
+    pub kind: TransitionKind,
+    /// The clip that ends at the cut.
+    pub left: Id,
+    /// The clip that starts at the cut.
+    pub right: Id,
+    /// How many frames it lasts.
+    pub length: i64,
+    /// Where it lies about the cut.
+    pub align: Alignment,
+}
+
+impl Transition {
+    /// The frames that it shows of its left clip after the cut, and of its right clip before
+    /// the cut: of one whose middle is at the cut, `ceil(length / 2)` and `floor(length / 2)`;
+    /// of one that starts at the cut, all of them of the left clip, and of one that ends at it,
+    /// all of them of the right clip. It lies over the frames from the first of those of the
+    /// right clip to the last of those of the left.
+    #[must_use]
+    pub fn handles(&self) -> (i64, i64) {
+        let length = self.length;
+        match self.align {
+            Alignment::Center => (length - length / 2, length / 2),
+            Alignment::Start => (length, 0),
+            Alignment::End => (0, length),
+        }
+    }
+}
+
+/// How one clip gives way to another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransitionKind {
+    /// The pictures are mixed, the one fading as the other comes up. On tracks of picture.
+    Dissolve,
+    /// The picture fades to black and up from it. On tracks of picture.
+    DipBlack,
+    /// The picture fades to white and up from it. On tracks of picture.
+    DipWhite,
+    /// The sounds are mixed at equal power, the one falling as the other rises. On tracks of
+    /// sound.
+    Crossfade,
+}
+
+/// Where a transition lies about the cut that it is at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Alignment {
+    /// It starts at the cut.
+    Start,
+    /// Its middle is at the cut.
+    Center,
+    /// It ends at the cut.
+    End,
+}
+
+/// A subtitle: text shown on frames `start` to `start + length` of the timeline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cue {
+    /// What it is known by.
+    pub id: Id,
+    /// The frame of the timeline that it is first shown at.
+    pub start: i64,
+    /// How many frames it is shown for.
+    pub length: i64,
+    /// What it says: from 1 to 1000 characters.
+    pub text: String,
 }
 
 /// Why a project cannot be read.
@@ -258,6 +622,7 @@ impl Project {
         Self {
             schema: SCHEMA,
             next_id: 1,
+            bins: vec![],
             media: vec![],
             timelines: vec![],
         }
@@ -265,28 +630,162 @@ impl Project {
 
     /// Read a project, refusing one of another schema before anything else is looked at, and
     /// then one that the operations could not have made (see [`Project::validate`], which also
-    /// puts the clips of each track in order and raises `next_id` where it is too low).
+    /// puts the things of each track in order and raises `next_id` where it is too low).
     ///
     /// # Errors
     /// It is not an object, it names no schema or another one, it is not a project, or it is
     /// not a valid one.
     pub fn from_value(value: serde_json::Value) -> Result<Self, ReadError> {
-        let object = value.as_object().ok_or(ReadError::NotAnObject)?;
-        let schema = object
-            .get("schema")
-            .and_then(serde_json::Value::as_u64)
-            .ok_or(ReadError::NoSchema)?;
+        let schema = schema_of(&value)?;
         if schema != u64::from(SCHEMA) {
             return Err(ReadError::Schema(schema));
         }
         let raw: RawProject = serde_json::from_value(value)?;
         Self::try_from(raw)
     }
+
+    /// Read a project of this schema, as [`Project::from_value`] does, or one of schema 1, as
+    /// [`crate::upgrade::from_schema_1`] does. Gives back whether it was of schema 1.
+    ///
+    /// # Errors
+    /// It is not an object, it names no schema or one that is neither, it is not a project of
+    /// its schema, or it is not a valid one.
+    pub fn from_value_upgrading(value: serde_json::Value) -> Result<(Self, bool), ReadError> {
+        if schema_of(&value)? == 1 {
+            Ok((crate::upgrade::from_schema_1(value)?, true))
+        } else {
+            Ok((Self::from_value(value)?, false))
+        }
+    }
+}
+
+/// The schema that a project names.
+pub(crate) fn schema_of(value: &serde_json::Value) -> Result<u64, ReadError> {
+    value
+        .as_object()
+        .ok_or(ReadError::NotAnObject)?
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or(ReadError::NoSchema)
 }
 
 impl Default for Project {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Timeline {
+    /// A timeline with no tracks, at `rate`, of 1920 by 1080 pixels and 48000 samples a second.
+    #[must_use]
+    pub fn new(id: impl Into<Id>, name: impl Into<String>, rate: Rate) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            rate,
+            width: 1920,
+            height: 1080,
+            sample_rate: 48000,
+            tracks: vec![],
+        }
+    }
+}
+
+impl Track {
+    /// A track of `kind` with nothing on it, named by its id, seen or heard, and not locked;
+    /// with no language if it is a track of subtitles.
+    #[must_use]
+    pub fn new(id: impl Into<Id>, kind: TrackKind) -> Self {
+        let id = id.into();
+        Self {
+            name: id.clone(),
+            id,
+            kind,
+            enabled: true,
+            locked: false,
+            clips: vec![],
+            transitions: vec![],
+            language: String::new(),
+            cues: vec![],
+        }
+    }
+
+    /// The track with `clips` on it.
+    #[must_use]
+    pub fn with_clips(mut self, clips: Vec<Clip>) -> Self {
+        self.clips = clips;
+        self
+    }
+}
+
+impl Clip {
+    /// A clip of `source` at `start` for `length` frames, played as it is: seen and heard, at its
+    /// speed, forward, in no group, not moved, at its loudness, in the middle, and not faded.
+    #[must_use]
+    pub fn new(id: impl Into<Id>, source: Source, start: i64, length: i64) -> Self {
+        Self {
+            id: id.into(),
+            start,
+            length,
+            source,
+            enabled: true,
+            speed: Speed::ONE,
+            reverse: false,
+            link: None,
+            transform: Transform::NONE,
+            gain_db: 0.0,
+            pan: 0.0,
+            fade_in: 0,
+            fade_out: 0,
+        }
+    }
+
+    /// A clip of `media` from `source_in`, as [`Clip::new`] makes it.
+    #[must_use]
+    pub fn of_media(
+        id: impl Into<Id>,
+        media: impl Into<Id>,
+        source_in: Time,
+        start: i64,
+        length: i64,
+    ) -> Self {
+        let source = Source::Media {
+            media: media.into(),
+            source_in,
+        };
+        Self::new(id, source, start, length)
+    }
+
+    /// The media that it is cut from, if it is.
+    #[must_use]
+    pub fn media(&self) -> Option<&Id> {
+        match &self.source {
+            Source::Media { media, .. } => Some(media),
+            _ => None,
+        }
+    }
+
+    /// Where it begins in its media, if it is cut from media.
+    #[must_use]
+    pub fn source_in(&self) -> Option<Time> {
+        match &self.source {
+            Source::Media { source_in, .. } => Some(*source_in),
+            _ => None,
+        }
+    }
+
+    /// Where it begins in its media, to be changed, if it is cut from media.
+    pub fn source_in_mut(&mut self) -> Option<&mut Time> {
+        match &mut self.source {
+            Source::Media { source_in, .. } => Some(source_in),
+            _ => None,
+        }
+    }
+
+    /// The frame after its last one.
+    #[must_use]
+    pub fn end(&self) -> i64 {
+        self.start.saturating_add(self.length)
     }
 }
 
@@ -303,19 +802,22 @@ impl Project {
     #[must_use]
     pub fn sample() -> Self {
         const SCALE: u32 = 15360;
-        let clip = |id: &str| Clip {
-            id: id.into(),
-            media: "m1".into(),
-            source_in: Time {
+        let clip = |id: &str| {
+            let start = Time {
                 ticks: 0,
                 scale: SCALE,
-            },
-            start: 0,
-            length: 100,
+            };
+            Clip::of_media(id, "m1", start, 0, 100)
         };
+        let mut timeline = Timeline::new("t1", "Timeline 1", Rate { num: 25, den: 1 });
+        timeline.tracks = vec![
+            Track::new("V1", TrackKind::Video).with_clips(vec![clip("c1")]),
+            Track::new("A1", TrackKind::Audio).with_clips(vec![clip("c2")]),
+        ];
         Self {
             schema: SCHEMA,
             next_id: 3,
+            bins: vec![],
             media: vec![Media {
                 id: "m1".into(),
                 path: "C:/media/talk.mp4".into(),
@@ -344,24 +846,12 @@ impl Project {
                     }),
                 },
                 proxy: None,
+                name: "talk.mp4".into(),
+                bin: None,
+                mark_in: None,
+                mark_out: None,
             }],
-            timelines: vec![Timeline {
-                id: "t1".into(),
-                name: "Timeline 1".into(),
-                rate: Rate { num: 25, den: 1 },
-                tracks: vec![
-                    Track {
-                        id: "V1".into(),
-                        kind: TrackKind::Video,
-                        clips: vec![clip("c1")],
-                    },
-                    Track {
-                        id: "A1".into(),
-                        kind: TrackKind::Audio,
-                        clips: vec![clip("c2")],
-                    },
-                ],
-            }],
+            timelines: vec![timeline],
         }
     }
 }
@@ -374,9 +864,27 @@ mod tests {
     fn a_project_is_written_with_the_names_that_other_languages_read() {
         let text = serde_json::to_string_pretty(&Project::sample()).unwrap();
         let written: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let clip = |id: &str| {
+            serde_json::json!({
+                "id": id,
+                "start": 0,
+                "length": 100,
+                "source": { "kind": "media", "media": "m1", "in": { "ticks": 0, "scale": 15360 } },
+                "enabled": true,
+                "speed": { "num": 1, "den": 1 },
+                "reverse": false,
+                "link": null,
+                "transform": { "x": 0.0, "y": 0.0, "scale": 1.0, "rotation": 0.0, "opacity": 1.0 },
+                "gain_db": 0.0,
+                "pan": 0.0,
+                "fade_in": 0,
+                "fade_out": 0,
+            })
+        };
         let expected = serde_json::json!({
-            "schema": 1,
+            "schema": 2,
             "next_id": 3,
+            "bins": [],
             "media": [{
                 "id": "m1",
                 "path": "C:/media/talk.mp4",
@@ -397,33 +905,36 @@ mod tests {
                     },
                     "audio": { "rate": 48000, "channels": 2, "codec": "aac" },
                 },
+                "name": "talk.mp4",
+                "bin": null,
+                "mark_in": null,
+                "mark_out": null,
             }],
             "timelines": [{
                 "id": "t1",
                 "name": "Timeline 1",
                 "rate": { "num": 25, "den": 1 },
+                "width": 1920,
+                "height": 1080,
+                "sample_rate": 48000,
                 "tracks": [
                     {
                         "id": "V1",
                         "kind": "video",
-                        "clips": [{
-                            "id": "c1",
-                            "media": "m1",
-                            "source_in": { "ticks": 0, "scale": 15360 },
-                            "start": 0,
-                            "length": 100,
-                        }],
+                        "name": "V1",
+                        "enabled": true,
+                        "locked": false,
+                        "clips": [clip("c1")],
+                        "transitions": [],
                     },
                     {
                         "id": "A1",
                         "kind": "audio",
-                        "clips": [{
-                            "id": "c2",
-                            "media": "m1",
-                            "source_in": { "ticks": 0, "scale": 15360 },
-                            "start": 0,
-                            "length": 100,
-                        }],
+                        "name": "A1",
+                        "enabled": true,
+                        "locked": false,
+                        "clips": [clip("c2")],
+                        "transitions": [],
                     },
                 ],
             }],
@@ -467,7 +978,7 @@ mod tests {
     fn a_project_that_is_deserialized_directly_is_checked_too() {
         // One that validate refuses: c1 cut from media that is not there.
         let mut value = serde_json::to_value(Project::sample()).unwrap();
-        value["timelines"][0]["tracks"][0]["clips"][0]["media"] = "m9".into();
+        value["timelines"][0]["tracks"][0]["clips"][0]["source"]["media"] = "m9".into();
         let error = serde_json::from_value::<Project>(value).unwrap_err();
         assert!(
             error.to_string().contains("there is no media m9"),
@@ -476,9 +987,9 @@ mod tests {
 
         // One of another schema.
         let mut value = serde_json::to_value(Project::sample()).unwrap();
-        value["schema"] = 2.into();
+        value["schema"] = 3.into();
         let error = serde_json::from_value::<Project>(value).unwrap_err();
-        assert!(error.to_string().contains("schema 2"), "{error}");
+        assert!(error.to_string().contains("schema 3"), "{error}");
 
         // One that validate puts right.
         let mut value = serde_json::to_value(Project::sample()).unwrap();
@@ -490,7 +1001,7 @@ mod tests {
     #[test]
     fn a_project_that_validate_refuses_is_named_so_by_from_value() {
         let mut value = serde_json::to_value(Project::sample()).unwrap();
-        value["timelines"][0]["tracks"][0]["clips"][0]["media"] = "m9".into();
+        value["timelines"][0]["tracks"][0]["clips"][0]["source"]["media"] = "m9".into();
         let error = Project::from_value(value).unwrap_err();
         assert!(matches!(error, ReadError::Invalid(_)), "{error}");
     }
@@ -568,5 +1079,128 @@ mod tests {
         let mut value = serde_json::to_value(Project::sample()).unwrap();
         value["media"][0]["facts"]["video"]["rate"]["num"] = 0.into();
         assert!(Project::from_value(value).is_err());
+    }
+
+    #[test]
+    fn a_track_is_written_and_read_with_the_fields_of_its_kind_only() {
+        let mut subtitles = Track::new("S1", TrackKind::Subtitle);
+        subtitles.language = "zh".into();
+        subtitles.cues = vec![Cue {
+            id: "q9".into(),
+            start: 100,
+            length: 50,
+            text: "你好".into(),
+        }];
+        let written = serde_json::to_value(&subtitles).unwrap();
+        assert_eq!(
+            written,
+            serde_json::json!({
+                "id": "S1", "kind": "subtitle", "name": "S1", "enabled": true, "locked": false,
+                "language": "zh", "cues": [{ "id": "q9", "start": 100, "length": 50, "text": "你好" }],
+            })
+        );
+        assert_eq!(serde_json::from_value::<Track>(written).unwrap(), subtitles);
+
+        let read = |value: serde_json::Value| serde_json::from_value::<Track>(value);
+        let video = serde_json::to_value(Track::new("V1", TrackKind::Video)).unwrap();
+        let mut with_cues = video.clone();
+        with_cues["cues"] = serde_json::json!([]);
+        let error = read(with_cues).unwrap_err().to_string();
+        assert!(error.contains("a video track has no `cues`"), "{error}");
+        let mut without_transitions = video;
+        without_transitions
+            .as_object_mut()
+            .unwrap()
+            .remove("transitions");
+        let error = read(without_transitions).unwrap_err().to_string();
+        assert!(error.contains("missing field `transitions`"), "{error}");
+        let error = read(serde_json::json!({
+            "id": "S1", "kind": "subtitle", "name": "S1", "enabled": true, "locked": false,
+            "language": "", "cues": [], "clips": [],
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("a subtitle track has no `clips`"), "{error}");
+    }
+
+    #[test]
+    fn a_field_that_may_be_null_may_not_be_left_out() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["media"][0].as_object_mut().unwrap().remove("bin");
+        let error = Project::from_value(value).unwrap_err();
+        assert!(error.to_string().contains("missing field `bin`"), "{error}");
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["timelines"][0]["tracks"][0]["clips"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("link");
+        let error = Project::from_value(value).unwrap_err();
+        assert!(
+            error.to_string().contains("missing field `link`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_clip_names_its_media_in_its_source_only() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["timelines"][0]["tracks"][0]["clips"][0]["media"] = "m1".into();
+        let error = Project::from_value(value).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `media`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_title_and_a_colour_are_written_as_their_kinds() {
+        let title = Source::Title {
+            text: "标题".into(),
+            style: TitleStyle {
+                font: String::new(),
+                size: 96,
+                color: Rgba([255, 255, 255, 255]),
+                x: 0.5,
+                y: 0.5,
+                align: TextAlign::Center,
+            },
+        };
+        let written = serde_json::to_value(&title).unwrap();
+        assert_eq!(
+            written,
+            serde_json::json!({
+                "kind": "title", "text": "标题",
+                "style": { "font": "", "size": 96, "color": "#ffffffff", "x": 0.5, "y": 0.5, "align": "center" },
+            })
+        );
+        assert_eq!(serde_json::from_value::<Source>(written).unwrap(), title);
+        let colour = serde_json::json!({ "kind": "color", "color": "#0A0b0C80" });
+        let read: Source = serde_json::from_value(colour).unwrap();
+        assert_eq!(
+            read,
+            Source::Color {
+                color: Rgba([10, 11, 12, 128])
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&read).unwrap()["color"],
+            serde_json::json!("#0a0b0c80")
+        );
+        for wrong in ["#fff", "0a0b0c80", "#0a0b0c8g", "#0a0b0c80ff"] {
+            let value = serde_json::json!({ "kind": "color", "color": wrong });
+            let error = serde_json::from_value::<Source>(value).unwrap_err();
+            assert!(error.to_string().contains("#rrggbbaa"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_speed_with_a_zero_in_it_is_refused() {
+        let mut value = serde_json::to_value(Project::sample()).unwrap();
+        value["timelines"][0]["tracks"][0]["clips"][0]["speed"]["den"] = 0.into();
+        let error = Project::from_value(value).unwrap_err();
+        assert!(
+            error.to_string().contains("a speed has a `den` of 0"),
+            "{error}"
+        );
     }
 }

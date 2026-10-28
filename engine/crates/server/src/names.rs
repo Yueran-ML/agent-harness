@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::convert::Infallible;
 use std::fmt;
 
-use columbina_model::{Id, Op, Track};
+use columbina_model::{Id, Op, Source, Track};
 
 /// The most characters of a name after its `$`.
 const LONGEST: usize = 32;
@@ -238,7 +238,9 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
         Op::SetProxy { media, .. } => f(media, Role::Names),
         Op::AddTimeline { timeline, .. } => {
             for clip in timeline.tracks.iter_mut().flat_map(|r| &mut r.clips) {
-                f(&mut clip.media, Role::Names)?;
+                if let Source::Media { media, .. } = &mut clip.source {
+                    f(media, Role::Names)?;
+                }
             }
             let of = Some(timeline.id.clone()).filter(|id| !id.is_empty());
             f(&mut timeline.id, Role::Gives(Place::Timeline))?;
@@ -258,7 +260,9 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             let of = timeline.clone();
             f(timeline, Role::Names)?;
             for clip in &mut track.clips {
-                f(&mut clip.media, Role::Names)?;
+                if let Source::Media { media, .. } = &mut clip.source {
+                    f(media, Role::Names)?;
+                }
             }
             f(
                 &mut track.id,
@@ -287,7 +291,9 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             let of = timeline.clone();
             f(timeline, Role::Names)?;
             f(track, Role::NamesTrack(of))?;
-            f(&mut clip.media, Role::Names)?;
+            if let Source::Media { media, .. } = &mut clip.source {
+                f(media, Role::Names)?;
+            }
             let start = clip.start;
             f(&mut clip.id, Role::Gives(Place::Clip(None, start)))
         }
@@ -323,10 +329,13 @@ mod tests {
     }
 
     fn clip(id: &str, media: &str, start: i64) -> serde_json::Value {
-        json!({
-            "id": id, "media": media, "source_in": {"ticks": 0, "scale": 15360},
-            "start": start, "length": 10,
-        })
+        let mut clip =
+            serde_json::to_value(&Project::sample().timelines[0].tracks[0].clips[0]).unwrap();
+        clip["id"] = id.into();
+        clip["source"]["media"] = media.into();
+        clip["start"] = start.into();
+        clip["length"] = 10.into();
+        clip
     }
 
     /// Apply a transaction with names to the sample, and give back what was done and the ids
@@ -347,16 +356,16 @@ mod tests {
         let transaction = ops(json!([
             {"op": "add_media", "media": media("$m")},
             {"op": "add_timeline", "timeline": {
-                "id": "$t", "name": "Second", "rate": {"num": 25, "den": 1},
+                "id": "$t", "name": "Second", "rate": {"num": 25, "den": 1}, "width": 1920, "height": 1080, "sample_rate": 48000,
                 "tracks": [
-                    {"id": "$v", "kind": "video", "clips": [
+                    {"id": "$v", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [
                         clip("$late", "$m", 50), clip("$early", "m1", 0),
                     ]},
-                    {"id": "", "kind": "audio", "clips": []},
+                    {"id": "", "kind": "audio", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": []},
                 ],
             }},
             {"op": "add_track", "timeline": "$t", "track": {
-                "id": "$a", "kind": "audio", "clips": [clip("$sound", "$m", 5)],
+                "id": "$a", "kind": "audio", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [clip("$sound", "$m", 5)],
             }},
             {"op": "insert_clip", "timeline": "$t", "track": "$v", "clip": clip("$c", "$m", 100)},
             {"op": "move_clip", "timeline": "$t", "id": "$late", "track": "$v", "start": 200},
@@ -429,13 +438,16 @@ mod tests {
     }
 
     fn timeline(id: &str, tracks: &serde_json::Value) -> serde_json::Value {
-        json!({ "id": id, "name": "N", "rate": { "num": 25, "den": 1 }, "tracks": tracks })
+        json!({ "id": id, "name": "N", "rate": { "num": 25, "den": 1 }, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": tracks })
     }
 
     #[test]
     fn a_name_of_a_track_is_named_only_with_its_timeline() {
         // $v is a track of the new timeline $t, and t1 has a V1 of its own.
-        let with_v = timeline("$t", &json!([{ "id": "$v", "kind": "video", "clips": [] }]));
+        let with_v = timeline(
+            "$t",
+            &json!([{ "id": "$v", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [] }]),
+        );
         let mut transaction = ops(json!([
             { "op": "add_timeline", "timeline": with_v },
             { "op": "insert_clip", "timeline": "t1", "track": "$v", "clip": clip("", "m1", 200) },
@@ -450,7 +462,10 @@ mod tests {
             "operation 1 names the track $v in another timeline than the one that it was given in"
         );
         // A track of a timeline that is added without an id cannot be named at all.
-        let anonymous = timeline("", &json!([{ "id": "$x", "kind": "video", "clips": [] }]));
+        let anonymous = timeline(
+            "",
+            &json!([{ "id": "$x", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [] }]),
+        );
         let mut transaction = ops(json!([
             { "op": "add_timeline", "timeline": anonymous },
             { "op": "move_clip", "timeline": "t3", "id": "c1", "track": "$x", "start": 0 },
@@ -465,7 +480,7 @@ mod tests {
         let transaction = ops(json!([
             { "op": "add_timeline", "timeline": with_v },
             { "op": "insert_clip", "timeline": "$t", "track": "$v", "clip": clip("$c", "m1", 0) },
-            { "op": "add_track", "timeline": "t1", "track": { "id": "$w", "kind": "video", "clips": [] } },
+            { "op": "add_track", "timeline": "t1", "track": { "id": "$w", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [] } },
             { "op": "move_clip", "timeline": "t1", "id": "c1", "track": "$w", "start": 0 },
             { "op": "remove_track", "timeline": "$t", "id": "$v" },
         ]));
@@ -492,8 +507,8 @@ mod tests {
     fn clips_that_start_at_one_frame_on_two_tracks_keep_their_names() {
         let mut history = History::new(Project::sample());
         let tracks = json!([
-            { "id": "$pic", "kind": "video", "clips": [clip("$p2", "m1", 30), clip("$p1", "m1", 0)] },
-            { "id": "$snd", "kind": "audio", "clips": [clip("$s1", "m1", 0), clip("$s2", "m1", 30)] },
+            { "id": "$pic", "kind": "video", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [clip("$p2", "m1", 30), clip("$p1", "m1", 0)] },
+            { "id": "$snd", "kind": "audio", "name": "", "enabled": true, "locked": false, "transitions": [], "clips": [clip("$s1", "m1", 0), clip("$s2", "m1", 30)] },
         ]);
         let transaction = ops(json!([
             { "op": "add_timeline", "timeline": timeline("$t", &tracks) },

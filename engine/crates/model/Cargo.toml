@@ -13,7 +13,8 @@ sample = []
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
+# Exact doubles, so that a transform or a gain is read back as it was written.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
 
 [dev-dependencies]

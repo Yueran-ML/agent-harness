@@ -3,7 +3,7 @@
 use std::fs;
 
 use columbina_model::Project;
-use columbina_store::{Store, StoreError, CACHE_DIR, PROJECT_FILE, PROJECT_TMP};
+use columbina_store::{Store, StoreError, CACHE_DIR, PROJECT_FILE, PROJECT_TMP, SCHEMA_1_FILE};
 
 fn pretty(project: &Project) -> String {
     serde_json::to_string_pretty(project).unwrap() + "\n"
@@ -167,10 +167,10 @@ fn a_file_that_is_not_text_is_refused_and_left_as_it_was() {
 #[test]
 fn a_project_of_another_schema_is_refused_and_left_as_it_was() {
     let mut value = serde_json::to_value(Project::sample()).unwrap();
-    value["schema"] = 2.into();
+    value["schema"] = 3.into();
     let error = refused(
         &serde_json::to_vec_pretty(&value).unwrap(),
-        "the project is of schema 2",
+        "the project is of schema 3",
     );
     assert!(matches!(error, StoreError::NotAProject { .. }), "{error}");
 }
@@ -178,7 +178,7 @@ fn a_project_of_another_schema_is_refused_and_left_as_it_was() {
 #[test]
 fn a_project_that_is_not_valid_is_refused_and_left_as_it_was() {
     let mut value = serde_json::to_value(Project::sample()).unwrap();
-    value["timelines"][0]["tracks"][0]["clips"][0]["media"] = "m9".into();
+    value["timelines"][0]["tracks"][0]["clips"][0]["source"]["media"] = "m9".into();
     let error = refused(
         &serde_json::to_vec_pretty(&value).unwrap(),
         "there is no media m9",
@@ -247,4 +247,63 @@ mod held_open {
         assert_eq!(fs::read(dir.path().join(PROJECT_FILE)).unwrap(), before);
         assert!(!dir.path().join(PROJECT_TMP).exists());
     }
+}
+
+/// A project as the first engine wrote it, of schema 1.
+const SCHEMA_1: &str = include_str!("../../model/tests/data/schema1.json");
+
+#[test]
+fn a_project_of_schema_1_is_upgraded_and_its_file_is_kept_once_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(PROJECT_FILE), SCHEMA_1).unwrap();
+
+    let (store, project) = Store::open(dir.path()).unwrap();
+
+    assert_eq!(project.schema, 2);
+    let kept = dir.path().join(SCHEMA_1_FILE);
+    assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_1);
+    // The project is written in schema 2 only when it is saved.
+    assert_eq!(
+        fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap(),
+        SCHEMA_1
+    );
+    store.save(&project).unwrap();
+    let text = fs::read_to_string(dir.path().join(PROJECT_FILE)).unwrap();
+    assert_eq!(text, pretty(&project));
+    assert_eq!(fs::read_to_string(&kept).unwrap(), SCHEMA_1);
+
+    // Opened again, it is of schema 2, and what was kept is left as it is.
+    fs::write(&kept, "kept").unwrap();
+    let (_, again) = Store::open(dir.path()).unwrap();
+    assert_eq!(again, project);
+    assert_eq!(fs::read_to_string(&kept).unwrap(), "kept");
+}
+
+#[test]
+fn a_project_of_schema_1_that_was_kept_before_is_not_kept_again() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(PROJECT_FILE), SCHEMA_1).unwrap();
+    let kept = dir.path().join(SCHEMA_1_FILE);
+    fs::write(&kept, "the first").unwrap();
+
+    // An engine that opened it before ended without saving it.
+    let (_, project) = Store::open(dir.path()).unwrap();
+
+    assert_eq!(project.schema, 2);
+    assert_eq!(fs::read_to_string(&kept).unwrap(), "the first");
+}
+
+#[test]
+fn a_project_of_schema_1_is_not_opened_where_it_cannot_be_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(PROJECT_FILE), SCHEMA_1).unwrap();
+    // A directory in the place of the file that it is kept in, with a file in it.
+    let kept = dir.path().join(format!("{SCHEMA_1_FILE}.tmp"));
+    fs::create_dir(&kept).unwrap();
+    fs::write(kept.join("x"), "x").unwrap();
+
+    let error = Store::open(dir.path()).unwrap_err();
+
+    assert!(matches!(error, StoreError::Keep { .. }), "{error}");
+    assert!(!dir.path().join(SCHEMA_1_FILE).exists());
 }

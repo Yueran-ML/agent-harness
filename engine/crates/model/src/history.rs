@@ -32,7 +32,7 @@ pub struct History {
 
 /// A transaction that was done: what was done, with the ids that the engine gave, and what
 /// takes it back.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Step {
     /// The operations as they were done, in order: each carries every id that the engine gave
     /// and the place that each thing was put at, so that doing them again makes the same things
@@ -47,7 +47,7 @@ pub struct Step {
 
 /// What a transaction, an undo or a redo did: all that a client needs to bring its copy of the
 /// project up to the new revision, and to tell whose change it was.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Applied {
     /// The revision of the project that it made.
     pub revision: u64,
@@ -344,16 +344,11 @@ mod tests {
 
     /// A clip with no id, cut from m1 from its start, at `start` for `length` frames.
     fn clip(start: i64, length: i64) -> Clip {
-        Clip {
-            id: String::new(),
-            media: "m1".into(),
-            source_in: Time {
-                ticks: 0,
-                scale: 15360,
-            },
-            start,
-            length,
-        }
+        let source_in = Time {
+            ticks: 0,
+            scale: 15360,
+        };
+        Clip::of_media("", "m1", source_in, start, length)
     }
 
     /// Put a clip with no id on `track` of t1.
@@ -379,14 +374,10 @@ mod tests {
     fn timeline() -> Op {
         Op::AddTimeline {
             timeline: Timeline {
-                id: String::new(),
-                name: "Second".into(),
-                rate: Rate { num: 25, den: 1 },
-                tracks: vec![Track {
-                    id: String::new(),
-                    kind: TrackKind::Video,
-                    clips: vec![clip(50, 10), clip(0, 10)],
-                }],
+                tracks: vec![
+                    Track::new("", TrackKind::Video).with_clips(vec![clip(50, 10), clip(0, 10)])
+                ],
+                ..Timeline::new("", "Second", Rate { num: 25, den: 1 })
             },
             index: None,
         }

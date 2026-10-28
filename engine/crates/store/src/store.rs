@@ -14,6 +14,10 @@ pub const PROJECT_FILE: &str = "project.json";
 /// The name of the file that a project is written to before it takes the place of the last one.
 pub const PROJECT_TMP: &str = "project.json.tmp";
 
+/// The name of the file that a project of schema 1 is kept in, as it was, when it is first
+/// opened by an engine that writes schema 2.
+pub const SCHEMA_1_FILE: &str = "project.schema1.json";
+
 /// The name of the directory that holds what the engine has found out about the media.
 pub const CACHE_DIR: &str = "cache";
 
@@ -85,7 +89,7 @@ pub enum StoreError {
         /// The file.
         path: PathBuf,
         /// What is wrong with it.
-        source: ReadError,
+        source: Box<ReadError>,
     },
     /// The project cannot be written, because there is a directory where it is written first.
     /// It has to be taken away by hand. The project that was saved last is still there as it was.
@@ -96,6 +100,15 @@ pub enum StoreError {
     Blocked {
         /// `project.json.tmp`.
         path: PathBuf,
+    },
+    /// A project of schema 1 cannot be kept as it was before it is upgraded, and so is not
+    /// opened. It is left as it was.
+    #[error("cannot keep the project of schema 1 in {}: {source}", path.display())]
+    Keep {
+        /// The file that it is to be kept in.
+        path: PathBuf,
+        /// What the system said.
+        source: io::Error,
     },
     /// The project cannot be written. The project that was saved last is still there as it was.
     #[error("cannot write {}: {source}", path.display())]
@@ -131,8 +144,14 @@ impl Store {
     /// The directory and its `cache/` are made if they are not there. Where there is no
     /// `project.json`, the project is a new one with nothing in it, which is not written until it
     /// is first saved. Otherwise the file is read as JSON and then as a project by
-    /// [`Project::from_value`], which checks it; a file that is not a project that this engine
+    /// [`Project::from_value_upgrading`], which checks it; a file that is not a project that this engine
     /// can open is refused, and left as it is.
+    ///
+    /// A project of schema 1 is read into schema 2 (see `columbina_model::upgrade`), and is
+    /// written in schema 2 when it is first saved. Before that, the first time that it is
+    /// opened, its file is copied as it is to `project.schema1.json`, written whole or not at all;
+    /// where there is such a file already, it is left as it is. A project that cannot be kept so
+    /// is not opened.
     ///
     /// A `project.json.tmp` that a save left when the engine ended in the middle of it is taken
     /// away once the project has been read, where it is a file; until then it is kept, as the
@@ -141,13 +160,17 @@ impl Store {
     ///
     /// # Errors
     /// A directory cannot be made, the file cannot be read, or what it holds is not JSON or not
-    /// a project that this engine can open. Each error names the file.
+    /// a project that this engine can open, or a project of schema 1 cannot be kept. Each error
+    /// names the file.
     pub fn open(dir: impl Into<PathBuf>) -> Result<(Store, Project), StoreError> {
         let store = Store { dir: dir.into() };
         for path in [store.dir.clone(), store.cache_dir()] {
             fs::create_dir_all(&path).map_err(|source| StoreError::CreateDir { path, source })?;
         }
-        let project = store.read()?;
+        let (project, schema_1) = store.read()?;
+        if let Some(bytes) = schema_1 {
+            store.keep_schema_1(&bytes)?;
+        }
         let tmp = store.dir.join(PROJECT_TMP);
         if fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_file()) {
             // The next save writes over it anyway, so it does not matter if this fails.
@@ -156,12 +179,15 @@ impl Store {
         Ok((store, project))
     }
 
-    /// Read the project from its file, or make a new one where there is no file.
-    fn read(&self) -> Result<Project, StoreError> {
+    /// Read the project from its file, or make a new one where there is no file. Gives back the
+    /// file too where the project was of schema 1.
+    fn read(&self) -> Result<(Project, Option<Vec<u8>>), StoreError> {
         let path = self.project_path();
         let bytes = match fs::read(&path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Project::new()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok((Project::new(), None))
+            }
             Err(source) => return Err(StoreError::Read { path, source }),
         };
         if bytes.iter().all(u8::is_ascii_whitespace) {
@@ -173,7 +199,34 @@ impl Store {
             Ok(value) => value,
             Err(source) => return Err(StoreError::NotJson { path, source }),
         };
-        Project::from_value(value).map_err(|source| StoreError::NotAProject { path, source })
+        match Project::from_value_upgrading(value) {
+            Ok((project, upgraded)) => Ok((project, upgraded.then_some(bytes))),
+            Err(source) => Err(StoreError::NotAProject {
+                path,
+                source: Box::new(source),
+            }),
+        }
+    }
+
+    /// Keep the file of a project of schema 1 as it was, unless it was kept before.
+    fn keep_schema_1(&self, bytes: &[u8]) -> Result<(), StoreError> {
+        let path = self.dir.join(SCHEMA_1_FILE);
+        if fs::symlink_metadata(&path).is_ok() {
+            return Ok(());
+        }
+        let tmp = self.dir.join(format!("{SCHEMA_1_FILE}.tmp"));
+        let kept = File::create(&tmp)
+            .and_then(|mut file| {
+                file.write_all(bytes)?;
+                file.sync_all()
+            })
+            .and_then(|()| replace(&tmp, &path));
+        kept.map_err(|source| {
+            if fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.is_file()) {
+                let _ = fs::remove_file(&tmp);
+            }
+            StoreError::Keep { path, source }
+        })
     }
 
     /// The directory of the project.

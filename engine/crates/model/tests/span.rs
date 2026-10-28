@@ -83,7 +83,13 @@ proptest! {
         prop_assert_eq!(source_span(&backward, rate, scale), span);
         for clip in [&forward, &backward] {
             let at = source_tick(clip, k, rate, scale);
-            prop_assert!(at >= ticks && at <= ticks + span, "{at} of [{ticks}, {ticks} + {span}]");
+            // Before the end of what it shows, or at it only where a frame lasts less than a
+            // tick: which is why a clip is checked to read before the end of its media.
+            let short = ticks_of_scaled(1, speed, rate, scale) == 0;
+            prop_assert!(
+                at >= ticks && (at < ticks + span || short && at == ticks + span),
+                "{at} of [{ticks}, {ticks} + {span})"
+            );
         }
         if k + 1 < length {
             let (now, next) = (source_tick(&forward, k, rate, scale), source_tick(&forward, k + 1, rate, scale));
@@ -96,12 +102,6 @@ proptest! {
             source_tick(&backward, k, rate, scale),
             source_tick(&forward, length - 1 - k, rate, scale)
         );
-        // Its last frame starts before the end of what it shows, where a frame lasts a tick or
-        // more.
-        let last = source_tick(&forward, length - 1, rate, scale);
-        if ticks_of_scaled(1, speed, rate, scale) >= 1 {
-            prop_assert!(last < ticks + span);
-        }
     }
 
     #[test]
@@ -161,6 +161,15 @@ proptest! {
             prop_assert_eq!(start_of_clip, begins);
         }
         prop_assert!(read(at) >= begins);
+        // And before the end of the seconds of its source that its frames show.
+        let shown = i128::from(length) * i128::from(rate.den) * i128::from(speed.num)
+            * i128::from(media_rate);
+        let per = i128::from(rate.num) * i128::from(speed.den);
+        let ends = i128::from(begins) + (shown + per - 1) / per;
+        for sample in [first, at, end - 1] {
+            let read = read(sample);
+            prop_assert!(i128::from(read) < ends, "{read} of [{begins}, {ends})");
+        }
         if at + 1 < end {
             if reverse {
                 prop_assert!(read(at) >= read(at + 1));
@@ -180,4 +189,15 @@ proptest! {
 /// The sample of the timeline that frame `frame` starts at, rounded down.
 fn samples(frame: i64, rate: Rate, sample_rate: u32) -> i64 {
     frame * i64::from(sample_rate) * i64::from(rate.den) / i64::from(rate.num)
+}
+
+#[test]
+fn a_clip_much_slower_than_its_media_shows_the_end_of_what_it_shows() {
+    // Two frames at 25 a second and 1/100 of the speed are 0.8 of a tick of 1/1000: the span is
+    // nought, and the last frame is read at its end. So a clip that begins at the end of its
+    // media is refused (see the checks of the operations).
+    let slow = clip(10_000, 1000, 2, Speed { num: 1, den: 100 }, false);
+    let rate = Rate { num: 25, den: 1 };
+    assert_eq!(source_span(&slow, rate, 1000), 0);
+    assert_eq!(source_tick(&slow, 1, rate, 1000), 10_000);
 }

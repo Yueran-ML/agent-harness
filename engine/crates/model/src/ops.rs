@@ -65,14 +65,18 @@
 //! names media that is in the project and has a stream for the kind of its track, which is not
 //! one of subtitles. What it shows of its media lies inside the media: from where it begins in
 //! it, for the ticks that its frames last at the rate of the timeline and its speed (see
-//! [`crate::span`]), and no further than the duration of the media. Where it begins counts ticks
+//! [`crate::span`]), and no further than the duration of the media; and the place that its last
+//! frame shows is before the end of the media, as is that of the last frame that a transition
+//! shows of it beyond its end, so that a clip much slower than its media, whose frames last less
+//! than a tick, never reads at the end. Where it begins counts ticks
 //! of the scale of that duration, which is never 0. A clip moves only between tracks of the same
 //! kind, within its timeline.
 //!
 //! A transition is between two clips of its track that meet, the one ending where the other
 //! starts, and a cut has at most one. It lasts at least a frame, and is a crossfade on a track of
 //! sound and one of the others on a track of picture. It covers no more of a clip than the clip
-//! has beside the transition at its other end. The frames that it shows of its clips beyond their
+//! has beside the transition at its other end, and a clip does not fade at an end that a
+//! transition is at: the transition does what a fade would. The frames that it shows of its clips beyond their
 //! ends are in their media: of a transition of `length` frames whose middle is at the cut, the
 //! left clip goes on for `ceil(length / 2)` frames after its end and the right one begins
 //! `floor(length / 2)` frames before its start; one that starts or ends at the cut takes them all
@@ -649,6 +653,15 @@ pub enum OpError {
         /// The bin.
         bin: Id,
     },
+    /// A clip fades at an end that a transition is at: in at its start, or out at its end. The
+    /// transition mixes the clips there, and a fade beside it would be seen as a dip.
+    #[error("clip {clip} fades {edge} at a cut that a transition is at")]
+    FadeAtTransition {
+        /// The clip.
+        clip: Id,
+        /// Its end: `in` or `out`.
+        edge: &'static str,
+    },
     /// A bin that holds a bin or media is to be taken away.
     #[error("bin {bin} holds {holds}")]
     NotEmpty {
@@ -717,6 +730,7 @@ enum Fields {
     TooLong { transition: Id, clip: Id },
     Source { clip: Id },
     Cycle { bin: Id },
+    FadeAtTransition { clip: Id, edge: &'static str },
     NotEmpty { bin: Id, holds: Id },
 }
 
@@ -2224,11 +2238,14 @@ fn in_source(
     } else {
         (before, after)
     };
+    let frames = clip.length.saturating_add(after);
     let first = i128::from(source_in.ticks) + offset(-before);
-    let end = i128::from(source_in.ticks) + offset(clip.length.saturating_add(after));
+    let end = i128::from(source_in.ticks) + offset(frames);
+    let last = i128::from(source_in.ticks) + offset(frames - 1);
+    let duration = i128::from(media.facts.duration.ticks);
     if first < 0 {
         Err("before_start")
-    } else if end > i128::from(media.facts.duration.ticks) {
+    } else if end > duration || last >= duration {
         Err("past_end")
     } else {
         Ok(())
@@ -2274,6 +2291,16 @@ fn check_transitions(project: &Project, rate: Rate, track: &Track) -> Result<(),
         }
         if let Some(with) = cuts.insert(&left.id, &transition.id) {
             return Err(OpError::CutTaken { with: with.into() });
+        }
+        let fades = |clip: &Clip, edge| OpError::FadeAtTransition {
+            clip: clip.id.clone(),
+            edge,
+        };
+        if left.fade_out != 0 {
+            return Err(fades(left, "out"));
+        }
+        if right.fade_in != 0 {
+            return Err(fades(right, "in"));
         }
         let (after_left, before_right) = transition.handles();
         beyond.entry(&left.id).or_default().1 = after_left;
@@ -3356,6 +3383,37 @@ mod tests {
             length: 226,
         });
         assert_eq!(error, past_end);
+    }
+
+    #[test]
+    fn a_clip_much_slower_than_its_media_never_reads_at_its_end() {
+        // m2 lasts 10000 ticks of 1/1000: at 1/100 of its speed, a frame of 25 a second is 0.4
+        // of a tick, and two frames from its end show nothing but its end.
+        let mut project = Project::sample();
+        let mut coarse = media("m2", true, true);
+        coarse.facts.duration = Time {
+            ticks: 10_000,
+            scale: 1000,
+        };
+        apply(
+            &mut project,
+            Op::AddMedia {
+                media: coarse,
+                index: None,
+            },
+        )
+        .unwrap();
+        let slow = |ticks| {
+            let mut clip = Clip::of_media("", "m2", Time { ticks, scale: 1000 }, 150, 2);
+            clip.speed = Speed { num: 1, den: 100 };
+            insert("V1", clip)
+        };
+        let past_end = OpError::OutOfSource {
+            media: "m2".into(),
+            why: "past_end",
+        };
+        assert_eq!(refused_in(project.clone(), slow(10_000)), past_end);
+        apply(&mut project, slow(9_999)).unwrap();
     }
 
     #[test]
@@ -5354,6 +5412,64 @@ mod tests {
             length: 10,
         };
         round_trip(&project, trim);
+    }
+
+    #[test]
+    fn a_clip_does_not_fade_at_an_end_that_a_transition_is_at() {
+        let fades = |clip: &str, edge| OpError::FadeAtTransition {
+            clip: clip.into(),
+            edge,
+        };
+        let at = vec![dissolve("x5", "c1", "c3", 10, Alignment::Center)];
+        let error = refused_read(
+            with_transitions(|_| {}, at.clone())
+                .map(|mut project| {
+                    project.timelines[0].tracks[0].clips[0].fade_out = 5;
+                    project
+                })
+                .and_then(|project| Project::from_value(serde_json::to_value(project).unwrap())),
+        );
+        assert_eq!(error, wrong("track", "V1", fades("c1", "out")));
+        assert_eq!(
+            error.error.to_string(),
+            "clip c1 fades out at a cut that a transition is at"
+        );
+        let error = refused_read(with_transitions(|c| c.fade_in = 1, at.clone()));
+        assert_eq!(error, wrong("track", "V1", fades("c3", "in")));
+        // At its other end it fades as it will.
+        let project = with_transitions(
+            |c| c.fade_out = 20,
+            vec![dissolve("x5", "c1", "c3", 10, Alignment::Center)],
+        )
+        .unwrap();
+        let fade = |id: &str, fade_in: Option<i64>, fade_out: Option<i64>| {
+            setting(id, move |op| {
+                if let Op::SetClip {
+                    fade_in: i,
+                    fade_out: o,
+                    ..
+                } = op
+                {
+                    (*i, *o) = (fade_in, fade_out);
+                }
+            })
+        };
+        round_trip(&project, fade("c1", Some(10), None));
+        assert_eq!(
+            refused_in(project.clone(), fade("c1", None, Some(1))),
+            fades("c1", "out")
+        );
+        assert_eq!(
+            refused_in(project.clone(), fade("c3", Some(3), None)),
+            fades("c3", "in")
+        );
+        // A transition is not put where a clip fades.
+        let mut fading = with_c3();
+        apply(&mut fading, fade("c1", None, Some(4))).unwrap();
+        assert_eq!(
+            refused_in(fading, add_transition("c1", "c3", 10)),
+            fades("c1", "out")
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use columbina_model::span::source_span;
+use columbina_model::span::{source_span, source_tick};
 use columbina_model::{
     apply, Alignment, Bin, Clip, Cue, Media, Op, Project, Proxy, Rate, Rgba, Source, Speed,
     TextAlign, Time, Timeline, TitleStyle, Track, TrackKind, Transform, Transition, TransitionKind,
@@ -1016,6 +1016,10 @@ pub fn check(project: &Project) {
                 assert!(clip.length > 0 && clip.start >= 0 && source_in.ticks >= 0);
                 assert!(clip.start + clip.length <= LARGEST);
                 let ticks = source_span(clip, timeline.rate, duration.scale);
+                for k in [0, clip.length - 1] {
+                    let at = source_tick(clip, k, timeline.rate, duration.scale);
+                    assert!((0..duration.ticks).contains(&at), "{clip:?} reads at {at}");
+                }
                 assert!(
                     i128::from(source_in.ticks) + i128::from(ticks) <= i128::from(duration.ticks),
                     "{clip:?} past the end of {}",

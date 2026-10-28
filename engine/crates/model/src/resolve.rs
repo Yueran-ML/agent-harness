@@ -103,7 +103,7 @@ fn track_at(t: &Timeline, project: &Project, track: &Track, frame: i64, layers: 
         if !(start..end).contains(&frame) {
             continue;
         }
-        let through = ratio(frame - start + 1, transition.length + 1);
+        let through = ratio(apart(frame, start) + 1, i128::from(transition.length) + 1);
         let colour = match transition.kind {
             TransitionKind::DipBlack => Rgba([0, 0, 0, 255]),
             TransitionKind::DipWhite => Rgba([255, 255, 255, 255]),
@@ -179,7 +179,7 @@ fn layer(
 fn faded(clip: &Clip, k: i64) -> f64 {
     let rise = |frames: i64, over: i64| {
         if over > 0 {
-            ratio(frames, over).clamp(0.0, 1.0)
+            ratio(frames.into(), over.into()).clamp(0.0, 1.0)
         } else {
             1.0
         }
@@ -192,11 +192,15 @@ fn unit(share: f64) -> f32 {
     single(share.clamp(0.0, 1.0))
 }
 
-/// A number of frames or samples over another, which are within 2^53 of 0 and so are doubles
-/// exactly.
-#[allow(clippy::cast_precision_loss, reason = "counts within 2^53")]
-fn ratio(part: i64, whole: i64) -> f64 {
+/// A number of frames or samples over another, as near as doubles hold them.
+#[allow(clippy::cast_precision_loss, reason = "a share, which needs no more")]
+fn ratio(part: i128, whole: i128) -> f64 {
     part as f64 / whole as f64
+}
+
+/// How far `b` is before `a`, which an `i64` may not hold.
+fn apart(a: i64, b: i64) -> i128 {
+    i128::from(a) - i128::from(b)
 }
 
 /// An opacity, a gain or a pan as the compositor and the mixer take it.
@@ -240,7 +244,7 @@ impl Envelope {
         for pair in self.points.windows(2) {
             let ((a, from), (b, to)) = (pair[0], pair[1]);
             if sample <= b {
-                let along = ratio(sample - a, b - a);
+                let along = ratio(apart(sample, a), apart(b, a));
                 return single(f64::from(from) + (f64::from(to) - f64::from(from)) * along);
             }
         }
@@ -365,23 +369,27 @@ fn envelope(t: &Timeline, track: &Track, clip: &Clip, from: i64, to: i64) -> Env
         })
         .collect();
     let gain = |sample: i64| {
-        let share = |part: i64, whole: i64| ratio(part, whole.max(1)).clamp(0.0, 1.0);
+        let share = |part: i128, whole: i128| ratio(part, whole.max(1)).clamp(0.0, 1.0);
         let mut gain = loudness;
         if clip.fade_in > 0 {
-            gain *= share(sample - first, risen - first);
+            gain *= share(apart(sample, first), apart(risen, first));
         }
         if clip.fade_out > 0 {
-            gain *= share(end - sample, end - falling);
+            gain *= share(apart(end, sample), apart(end, falling));
         }
         for &(start, end, falls) in &crossfades {
-            let turn = share(sample - start, end - start) * FRAC_PI_2;
+            let turn = share(apart(sample, start), apart(end, start)) * FRAC_PI_2;
             gain *= if falls { turn.cos() } else { turn.sin() };
         }
         single(gain.max(0.0))
     };
     let mut at = vec![from, to, first, risen, falling, end];
     for &(start, end, _) in &crossfades {
-        at.extend((0..=8).map(|eighth| start + (end - start) * eighth / 8));
+        at.extend((0..=8).map(|eighth| {
+            let along = i128::from(start) + apart(end, start) * eighth / 8;
+            // Between start and end, so an i64 holds it.
+            i64::try_from(along).unwrap_or(end)
+        }));
     }
     at.retain(|sample| (from..=to).contains(sample));
     at.sort_unstable();
@@ -445,14 +453,14 @@ mod tests {
 
     /// The sample, with timeline t1 at 25 a second: on V1, c1 on [0, 50), c2 on [50, 100) from
     /// 4 seconds into m1 with a dissolve x4 of 10 frames between them, and c3 on [100, 150) that
-    /// fades out over 10; on V2, which is off, c5 on [0, 150); on A1, c6 on [0, 50) at -6 dB that
+    /// fades in and out over 10; on V2, which is off, c5 on [0, 150); on A1, c6 on [0, 50) at -6 dB that
     /// fades in over 10, and c7 on [50, 100) from 2 seconds in with a crossfade x8 of 10 frames
     /// between them; and subtitles on S1, and on S2, which is off.
     fn project() -> Project {
         let mut project = Project::sample();
         let timeline = &mut project.timelines[0];
         let mut c3 = Clip::of_media("c3", "m1", at(0), 100, 50);
-        c3.fade_out = 10;
+        (c3.fade_in, c3.fade_out) = (10, 10);
         let mut v1 = Track::new("V1", TrackKind::Video).with_clips(vec![
             Clip::of_media("c1", "m1", at(0), 0, 50),
             Clip::of_media("c2", "m1", at(61440), 50, 50),
@@ -526,12 +534,83 @@ mod tests {
             [layer("c1", 33177, 1.0), layer("c2", 63897, 10.0 / 11.0)]
         );
         assert_eq!(seen(&project, 55), [layer("c2", 64512, 1.0)]);
-        // c3 fades out to nothing at its last frame.
+        // c3 fades in from nothing at its first frame, and out to nothing at its last.
+        assert_eq!(seen(&project, 100), [layer("c3", 0, 0.0)]);
+        assert_eq!(seen(&project, 105), [layer("c3", 3072, 0.5)]);
+        assert_eq!(seen(&project, 110), [layer("c3", 6144, 1.0)]);
         assert_eq!(seen(&project, 140), [layer("c3", 24576, 0.9)]);
         assert_eq!(seen(&project, 149), [layer("c3", 30105, 0.0)]);
         assert_eq!(seen(&project, 150), []);
         assert_eq!(seen(&project, -1), []);
         assert_eq!(duration(&project.timelines[0]), 150);
+    }
+
+    #[test]
+    fn a_transition_of_an_odd_length_lies_after_its_cut_or_before_it_as_it_is_aligned() {
+        let mut project = project();
+        let set = |project: &mut Project, align| {
+            for track in [0, 2] {
+                let x = &mut project.timelines[0].tracks[track].transitions[0];
+                (x.length, x.align) = (5, align);
+            }
+            project.validate().unwrap();
+        };
+        // Starting at the cut, it lies over [50, 55): c1 goes on beyond its end.
+        set(&mut project, Alignment::Start);
+        assert_eq!(seen(&project, 49), [layer("c1", 30105, 1.0)]);
+        assert_eq!(
+            seen(&project, 50),
+            [layer("c1", 30720, 1.0), layer("c2", 61440, 1.0 / 6.0)]
+        );
+        assert_eq!(
+            seen(&project, 54),
+            [layer("c1", 33177, 1.0), layer("c2", 63897, 5.0 / 6.0)]
+        );
+        assert_eq!(seen(&project, 55), [layer("c2", 64512, 1.0)]);
+        // Sound: c6 sounds to the end of frame 54, and c7 rises from frame 50.
+        let timeline = &project.timelines[0];
+        let pieces = audio_between(timeline, &project, 0, 192_000);
+        let spans: Vec<(&str, i64, i64, i64)> = pieces
+            .iter()
+            .map(|p| (&*p.clip, p.from, p.to, p.source_start))
+            .collect();
+        assert_eq!(
+            spans,
+            [("c6", 0, 105_600, 0), ("c7", 96_000, 192_000, 96_000)]
+        );
+        let half = 10f32.powf(-6.0 / 20.0);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        let root = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(near(pieces[0].gain.at(96_000), half));
+        assert!(near(pieces[0].gain.at(100_800), half * root));
+        assert!(near(pieces[1].gain.at(96_000), 0.0));
+        assert!(near(pieces[1].gain.at(100_800), root));
+
+        // Ending at the cut, it lies over [45, 50): c2 begins before its start.
+        set(&mut project, Alignment::End);
+        assert_eq!(seen(&project, 44), [layer("c1", 27033, 1.0)]);
+        assert_eq!(
+            seen(&project, 45),
+            [layer("c1", 27648, 1.0), layer("c2", 58368, 1.0 / 6.0)]
+        );
+        assert_eq!(
+            seen(&project, 49),
+            [layer("c1", 30105, 1.0), layer("c2", 60825, 5.0 / 6.0)]
+        );
+        assert_eq!(seen(&project, 50), [layer("c2", 61440, 1.0)]);
+        let timeline = &project.timelines[0];
+        let pieces = audio_between(timeline, &project, 0, 192_000);
+        let spans: Vec<(&str, i64, i64, i64)> = pieces
+            .iter()
+            .map(|p| (&*p.clip, p.from, p.to, p.source_start))
+            .collect();
+        assert_eq!(
+            spans,
+            [("c6", 0, 96_000, 0), ("c7", 86_400, 192_000, 86_400)]
+        );
+        assert!(near(pieces[0].gain.at(91_200), half * root));
+        assert!(near(pieces[1].gain.at(91_200), root));
+        assert!(near(pieces[1].gain.at(96_000), 1.0));
     }
 
     #[test]
@@ -638,6 +717,45 @@ mod tests {
         assert_eq!(spans, [("c6", 100_000, 100_010), ("c7", 100_000, 100_010)]);
         assert_eq!(window[1].source_start, 100_000);
         assert_eq!(audio_between(timeline, &project, 192_000, 200_000), []);
+    }
+
+    #[test]
+    fn the_sound_of_clips_as_long_as_a_project_holds_is_worked_out_without_overflowing() {
+        // A frame is a tick of media that lasts 2^48 ticks, and two clips of 2^46 frames meet
+        // with a crossfade of 2^45: eight times its samples are past what an i64 holds.
+        let mut project = Project::sample();
+        let media = &mut project.media[0];
+        media.facts.duration = Time {
+            ticks: 1 << 48,
+            scale: 1,
+        };
+        media.facts.video = None;
+        let long = 1_i64 << 46;
+        let mut timeline = Timeline::new("t1", "Long", Rate { num: 1, den: 1 });
+        let from = Time {
+            ticks: long,
+            scale: 1,
+        };
+        let mut a1 = Track::new("A1", TrackKind::Audio).with_clips(vec![
+            Clip::of_media("c1", "m1", from, 0, long),
+            Clip::of_media("c2", "m1", from, long, long),
+        ]);
+        a1.transitions = vec![Transition {
+            length: long / 2,
+            ..transition("x3", TransitionKind::Crossfade, "c1", "c2")
+        }];
+        timeline.tracks = vec![a1];
+        project.timelines = vec![timeline];
+        project.validate().unwrap();
+        let timeline = &project.timelines[0];
+        let pieces = audio_between(timeline, &project, 0, i64::MAX / 2);
+        assert_eq!(pieces.len(), 2);
+        for piece in &pieces {
+            for sample in [piece.from, piece.from / 2 + piece.to / 2, piece.to - 1] {
+                let gain = piece.gain.at(sample);
+                assert!(gain.is_finite() && (0.0..=1.0).contains(&gain), "{gain}");
+            }
+        }
     }
 
     #[test]

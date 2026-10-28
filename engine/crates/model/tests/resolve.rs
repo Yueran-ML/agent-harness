@@ -3,7 +3,7 @@
 //! 1 times the gain of the clip; the pieces of sound of a track one after another, overlapping
 //! only at a crossfade, and covering the samples that the clips of the timeline sound on.
 
-use columbina_model::resolve::{audio_between, cues_at, duration, video_at};
+use columbina_model::resolve::{audio_between, cues_at, duration, video_at, Content};
 use columbina_model::{
     apply, Alignment, Clip, Cue, Op, Project, Rate, Rgba, Source, Speed, Time, Timeline, Track,
     TrackKind, Transition, TransitionKind,
@@ -192,6 +192,23 @@ fn project_of(plan: &Plan) -> Project {
                 TransitionKind::Dissolve,
             ][usize::from(which)]
         };
+        for (id, fade_in, fade_out) in [(&left, None, Some(0)), (&right, Some(0), None)] {
+            let op = Op::SetClip {
+                timeline: "t2".into(),
+                id: id.clone(),
+                enabled: None,
+                speed: None,
+                reverse: None,
+                link: None,
+                transform: None,
+                gain_db: None,
+                pan: None,
+                fade_in,
+                fade_out,
+                source: None,
+            };
+            apply(&mut project, op).unwrap();
+        }
         let op = Op::AddTransition {
             timeline: "t2".into(),
             track,
@@ -241,19 +258,23 @@ fn sounding(timeline: &Timeline, from: i64, to: i64) -> Vec<(i64, i64)> {
             continue;
         }
         for clip in track.clips.iter().filter(|c| c.enabled) {
-            let mut before = 0;
-            let mut after = 0;
+            // The frames of the timeline that it sounds on: its own, and those of a crossfade
+            // at either end, which lies over the cut as it is aligned.
+            let (mut first, mut end) = (clip.start, clip.end());
             for x in &track.transitions {
-                let (after_left, before_right) = x.handles();
-                if x.left == clip.id {
-                    after = after_left;
-                }
-                if x.right == clip.id {
-                    before = before_right;
-                }
+                let cut = if x.left == clip.id {
+                    clip.end()
+                } else if x.right == clip.id {
+                    clip.start
+                } else {
+                    continue;
+                };
+                let (lies_from, lies_to) = lies_over(x, cut);
+                first = first.min(lies_from);
+                end = end.max(lies_to);
             }
-            let start = sample_of(clip.start - before, timeline.rate, timeline.sample_rate);
-            let end = sample_of(clip.end() + after, timeline.rate, timeline.sample_rate);
+            let start = sample_of(first, timeline.rate, timeline.sample_rate);
+            let end = sample_of(end, timeline.rate, timeline.sample_rate);
             let (start, end) = (start.max(from), end.min(to));
             if start < end {
                 spans.push((start, end));
@@ -261,6 +282,17 @@ fn sounding(timeline: &Timeline, from: i64, to: i64) -> Vec<(i64, i64)> {
         }
     }
     spans
+}
+
+/// The frames that a transition lies over about its cut, counted from its alignment: from the
+/// cut, to it, or half before it, the frame left over being after it.
+fn lies_over(transition: &Transition, cut: i64) -> (i64, i64) {
+    let length = transition.length;
+    match transition.align {
+        Alignment::Start => (cut, cut + length),
+        Alignment::End => (cut - length, cut),
+        Alignment::Center => (cut - length / 2, cut - length / 2 + length),
+    }
 }
 
 /// How many samples a list of spans covers, once each.
@@ -297,10 +329,24 @@ proptest! {
                 last = at;
                 let track = &timeline.tracks[at];
                 prop_assert!(track.enabled && track.kind == TrackKind::Video);
+                // A frame of media is within the media.
+                if let Content::Media { media, tick } = &layer.content {
+                    let duration = project.media.iter().find(|m| m.id == *media).unwrap().facts.duration;
+                    prop_assert!((0..duration.ticks).contains(tick), "{layer:?} of {}", duration.ticks);
+                }
             }
-            for track in &order {
-                let of_track = layers.iter().filter(|l| l.track == *track).count();
-                prop_assert!(of_track <= 2, "{of_track} layers of {track} at {frame}");
+            for track in &timeline.tracks {
+                let of_track = layers.iter().filter(|l| l.track == track.id).count();
+                prop_assert!(of_track <= 2, "{of_track} layers of {} at {frame}", track.id);
+                // Two layers of a track only where a transition of it lies.
+                if of_track == 2 {
+                    let at_transition = track.transitions.iter().any(|x| {
+                        let cut = track.clips.iter().find(|c| c.id == x.right).unwrap().start;
+                        let (from, to) = lies_over(x, cut);
+                        (from..to).contains(&frame)
+                    });
+                    prop_assert!(at_transition, "two layers of {} at {frame}: {layers:?}", track.id);
+                }
             }
             if frame < 0 || frame >= end {
                 prop_assert!(layers.is_empty(), "{layers:?} at {frame}");

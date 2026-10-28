@@ -25,6 +25,9 @@ pub enum Preference {
     /// (WARP on Windows) where there is no card at all.
     #[default]
     HighPerformance,
+    /// A card only, never the software adapter: while a card that was lost may come back (a
+    /// driver that resets), and to go back to a card from the software adapter.
+    Hardware,
     /// The software adapter of the system only: slow, but there wherever the system draws.
     Software,
 }
@@ -176,9 +179,17 @@ impl Gpu {
         };
         let adapter = match preference {
             Preference::HighPerformance => ask(false).or_else(|_| ask(true)),
+            Preference::Hardware => ask(false),
             Preference::Software => ask(true),
         }
         .map_err(|error| GpuError::NoAdapter(error.to_string()))?;
+        if preference == Preference::Hardware
+            && adapter.get_info().device_type == wgpu::DeviceType::Cpu
+        {
+            return Err(GpuError::NoAdapter(
+                "there is no graphics card, only the software adapter".into(),
+            ));
+        }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("columbina"),
             required_features: wanted_features(&adapter),

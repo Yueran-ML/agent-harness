@@ -11,17 +11,19 @@
 //! or destroyed.
 //!
 //! The view draws with the engine's card ([`Graphics`]), made when the first view is attached.
-//! When its device is lost, the view reports it, and another card is made and given to it.
+//! The viewer subscribes to it: each card made in place of one that was lost is given to the view
+//! there is then; and a view that reports its card lost is given the card that is there, made
+//! anew if need be.
 
 use std::sync::{Arc, PoisonError};
 
-use columbina_view::{Event, RawParent, Rect, View, ViewError};
+use columbina_view::{Event, Gpu, RawParent, Rect, View, ViewError};
 use serde::Deserialize;
 use serde_json::json;
 use serde_json::value::RawValue;
 use tokio::sync::Mutex;
 
-use crate::gpu::Graphics;
+use crate::gpu::{Graphics, Subscription};
 use crate::log::log;
 use crate::rpc::{self, Fault};
 use crate::session::Kind;
@@ -37,6 +39,8 @@ pub struct Viewer {
     slot: ViewSlot,
     /// The card that the view draws with.
     graphics: Arc<Graphics>,
+    /// Gives the view each card made in place of one that was lost.
+    _subscription: Subscription,
     /// Held while a method changes the view, so that one is done before the next begins.
     busy: Mutex<()>,
 }
@@ -76,10 +80,16 @@ const SHOW: &str = r#"{"shown": true | false}"#;
 
 impl Viewer {
     pub fn new(headless: bool, graphics: Arc<Graphics>) -> Self {
+        let slot: ViewSlot = Arc::new(std::sync::Mutex::new(None));
+        let subscription = graphics.subscribe({
+            let slot = Arc::downgrade(&slot);
+            move |gpu| give(&slot, gpu)
+        });
         Self {
             headless,
-            slot: Arc::new(std::sync::Mutex::new(None)),
+            slot,
             graphics,
+            _subscription: subscription,
             busy: Mutex::new(()),
         }
     }
@@ -235,8 +245,18 @@ fn fault(error: &ViewError) -> Fault {
     Fault::new(code, error.to_string()).with_data(json!({ "reason": error.reason() }))
 }
 
-/// What a view reports to: the log, and, once the device of its card is lost, the making of
-/// another card, which is given to the view that is in the slot then.
+/// Give the view in the slot, if any, the card `gpu`.
+fn give(slot: &std::sync::Weak<std::sync::Mutex<Option<View>>>, gpu: Arc<Gpu>) {
+    if let Some(slot) = slot.upgrade() {
+        if let Some(view) = slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+            view.use_gpu(gpu);
+        }
+    }
+}
+
+/// What a view reports to: the log; and, once the card that it draws with is lost, the card of
+/// the engine, given to it on a thread of its own: the one made in its place already, if the
+/// view was given one that was lost, or else one made now (and given to every subscriber too).
 fn reporter(graphics: &Arc<Graphics>, slot: &ViewSlot) -> columbina_view::Report {
     let graphics = Arc::downgrade(graphics);
     let slot = Arc::downgrade(slot);
@@ -246,24 +266,13 @@ fn reporter(graphics: &Arc<Graphics>, slot: &ViewSlot) -> columbina_view::Report
         let (Some(graphics), true) = (graphics.upgrade(), lost) else {
             return;
         };
-        let wanted = {
-            let slot = slot.clone();
-            move || {
-                slot.upgrade().is_some_and(|slot| {
-                    slot.lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .is_some()
-                })
-            }
-        };
         let slot = slot.clone();
-        graphics.remake(wanted, move |gpu| {
-            if let Some(slot) = slot.upgrade() {
-                if let Some(view) = slot.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-                    view.use_gpu(gpu);
-                }
-            }
-        });
+        let _ = std::thread::Builder::new()
+            .name("columbina-view-gpu".into())
+            .spawn(move || match graphics.gpu() {
+                Ok(gpu) => give(&slot, gpu),
+                Err(_) => graphics.remake(),
+            });
     })
 }
 

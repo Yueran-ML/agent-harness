@@ -344,10 +344,13 @@ picture.
   hangs, a driver resets), the view hides itself, so that the page is seen rather than a frozen
   picture, and shows itself again once the frame returns. The engine has one graphics card,
   made when the first view is attached (`gpu_ready`: its adapter, its API, and whether it is the
-  system's in software), which the view draws with; a device that is lost is made again, a
-  second apart until it can be (`gpu_remaking`), and the view draws again on it; a surface that
-  is lost is made again. These are logged on stderr (`view_ready`, `view_stalled`,
-  `view_recovered`, `view_device_lost`, `view_surface_lost`, `view_error`, `gpu_error`), with
+  system's in software), which the view draws with; a device that is lost (`gpu_lost`) is made
+  again, a second apart until it can be (`gpu_remaking`), and the view draws again on it. For
+  10 s after a card was lost only a card is taken, since a driver that resets brings it back; then
+  the software adapter is taken if there is no card, and a card is looked for every 30 s while the
+  engine draws in software (`gpu_upgraded` once one is taken). A surface that is lost is made
+  again. These are logged on stderr (`view_ready`, `view_stalled`, `view_recovered`,
+  `view_device_lost`, `view_surface_lost`, `view_error`, `gpu_error`), with
   `view_attached` and `view_detached`. `view_ready` says the engine's `dpi_awareness`:
   `per_monitor_v2`, or why not, in which case the rectangles will be off.
 - **Not tested yet** (phase 0): the border of the window dragged by the user (Windows' modal

@@ -94,6 +94,7 @@ mod native_none;
 use native_none as native;
 
 pub use columbina_compose::Gpu;
+use columbina_compose::Watch;
 pub use columbina_media::Picture;
 pub use render::{letterbox, quarter_turns, Placement};
 
@@ -291,6 +292,8 @@ pub(crate) struct State {
     presented: u64,
     /// The card to draw with, the last one given.
     gpu: Arc<Gpu>,
+    /// Tells the view when that card is lost.
+    gpu_watch: Option<Watch>,
 }
 
 impl State {
@@ -330,6 +333,7 @@ impl Shared {
                 busy_since: None,
                 presented: 0,
                 gpu,
+                gpu_watch: None,
             }),
             wake: Condvar::new(),
             watch: Condvar::new(),
@@ -436,7 +440,10 @@ impl View {
     ) -> Result<View, ViewError> {
         let rect = rect.checked()?;
         prepare_process();
-        let shared = Arc::new(Shared::new(rect, gpu, report));
+        let shared = Arc::new(Shared::new(rect, Arc::clone(&gpu), report));
+        let watch = watch_gpu(&shared, &gpu);
+        shared.lock().gpu_watch = Some(watch);
+        drop(gpu);
         let native = native::Native::open(parent, rect, &shared)?;
         let syncer = native.syncer();
         let (ready, readied) = mpsc::channel();
@@ -559,12 +566,19 @@ impl View {
     /// again, as the view is next drawn. It returns at once; a card that is the one the view
     /// draws with already changes nothing.
     pub fn use_gpu(&self, gpu: Arc<Gpu>) {
-        self.shared.change(|state| {
-            if !Arc::ptr_eq(&state.gpu, &gpu) {
-                state.gpu = gpu;
-                state.dirty = true;
-            }
-        });
+        if Arc::ptr_eq(&self.shared.lock().gpu, &gpu) {
+            return;
+        }
+        // Watched before it is given, unlocked: one that is lost already is reported at once.
+        let watch = watch_gpu(&self.shared, &gpu);
+        let old = {
+            let mut state = self.shared.lock();
+            state.gpu = gpu;
+            state.dirty = true;
+            state.gpu_watch.replace(watch)
+        };
+        drop(old);
+        self.shared.wake.notify_all();
     }
 
     /// The card that the view draws with, the last one given.
@@ -675,6 +689,20 @@ fn watchdog(shared: &Shared, syncer: &native::Syncer) {
         syncer.sync();
         state = shared.lock();
     }
+}
+
+/// Report [`Event::DeviceLost`] once `gpu`, given to the view, is lost (at once, if it is lost
+/// already), and wake the drawer, to let the surface on it go.
+fn watch_gpu(shared: &Arc<Shared>, gpu: &Gpu) -> Watch {
+    let shared = Arc::downgrade(shared);
+    gpu.when_lost(move |why: &str| {
+        if let Some(shared) = shared.upgrade() {
+            shared.report(Event::DeviceLost {
+                message: why.to_owned(),
+            });
+            shared.change(|state| state.dirty = true);
+        }
+    })
 }
 
 /// A frame is begun: the watchdog watches it.

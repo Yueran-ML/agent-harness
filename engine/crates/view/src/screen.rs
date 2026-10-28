@@ -4,7 +4,7 @@
 use std::sync::{mpsc, Arc, PoisonError};
 use std::time::{Duration, Instant};
 
-use columbina_compose::{Gpu, Watch};
+use columbina_compose::Gpu;
 use columbina_media::Picture;
 
 use crate::native::{self, Syncer};
@@ -169,7 +169,12 @@ pub(crate) fn run(
             continue;
         }
         match outcome {
-            Outcome::Presented | Outcome::Failed => retries = 0,
+            Outcome::Presented => retries = 0,
+            Outcome::Failed => {
+                // Tried again at its own pace, not only when there is something new to draw.
+                retries = 0;
+                again_at = Some(Instant::now() + REMAKE);
+            }
             Outcome::NotShown => {
                 if retries < RETRIES {
                     retries += 1;
@@ -257,8 +262,6 @@ struct Screen {
     config: wgpu::SurfaceConfiguration,
     /// Whether the surface is configured as `config` says.
     configured: bool,
-    /// Tells the view when the card is lost.
-    _watch: Watch,
     /// The number of the picture whose planes the painter holds.
     uploaded: Option<u64>,
     adapter: String,
@@ -304,18 +307,6 @@ impl Screen {
             alpha_mode,
             view_formats: vec![],
         };
-        let watch = gpu.when_lost({
-            let shared = Arc::downgrade(shared);
-            move |why: &str| {
-                if let Some(shared) = shared.upgrade() {
-                    shared.report(Event::DeviceLost {
-                        message: why.to_owned(),
-                    });
-                    // Woken, to let the surface go.
-                    shared.change(|state| state.dirty = true);
-                }
-            }
-        });
         Ok(Screen {
             shared: Arc::clone(shared),
             handle,
@@ -324,7 +315,6 @@ impl Screen {
             surface,
             config,
             configured: false,
-            _watch: watch,
             uploaded: None,
             adapter: gpu.name().to_owned(),
             backend: gpu.backend().to_owned(),

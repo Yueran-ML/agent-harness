@@ -526,6 +526,19 @@ fn a_view_draws_in_its_parent_follows_it_and_lets_the_input_through() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(view.gpu().is_lost());
+    // Given a card that was lost already: that is reported too, at once.
+    let stale = gpu();
+    stale.mark_lost("given lost");
+    view.use_gpu(stale);
+    assert!(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, Event::DeviceLost { message } if message == "given lost")),
+        "{:?}",
+        events.lock().unwrap()
+    );
     view.use_gpu(gpu());
     parent.until("drawn after the device was lost", &[((560, 300), other)]);
     {

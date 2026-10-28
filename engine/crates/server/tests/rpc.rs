@@ -2736,13 +2736,15 @@ async fn media_removed_while_it_is_loaded_is_unloaded_once_it_is() {
         .await;
     let answer = agent.answer(load).await;
     if let Some(error) = answer.get("error") {
-        // It was removed before the load found it.
+        // It was removed before the load found it: nothing was loaded, and nothing is unloaded
+        // (as happens where every core is busy, as on the CI).
         assert_eq!(error["data"]["reason"], "missing", "{answer}");
+    } else {
+        let (unloaded, _) = desktop
+            .until_state("unloaded", |state| state["media"].is_null())
+            .await;
+        assert_eq!(unloaded["playing"], false);
     }
-    let (unloaded, _) = desktop
-        .until_state("unloaded", |state| state["media"].is_null())
-        .await;
-    assert_eq!(unloaded["playing"], false);
     tokio::time::sleep(Duration::from_millis(200)).await;
     let state = agent.result("transport.state", None).await;
     assert_eq!(state["media"], Value::Null, "{state}");

@@ -3698,10 +3698,12 @@ fn logged(engine: &Engine, event: &str) -> Vec<Value> {
 #[allow(clippy::too_many_lines)]
 async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_media() {
     let dir = project_dir();
+    // Exercise the software-decoded proxy used on runners without NVIDIA hardware, even
+    // when this computer can make and decode a HEVC proxy on the card.
     let Some((engine, mut agent)) = proxy_engine(
         dir.path(),
         &[support::Sample::Uhd, support::Sample::Fhd],
-        &[],
+        &["--proxy-encoder", "prores"],
     )
     .await
     else {

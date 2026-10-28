@@ -1,7 +1,8 @@
 """The proxy that lets the commands of a container reach some hosts, and the config of it."""
 
 import asyncio
-from collections.abc import AsyncIterator
+import socket
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from pydantic import ValidationError
@@ -55,12 +56,25 @@ async def through() -> AsyncIterator[int]:
         yield server.sockets[0].getsockname()[1]
 
 
+@pytest.fixture
+def closed() -> Iterator[int]:
+    """A port of this machine where nothing listens, nor will while the test runs.
+
+    No well-known port is taken to be one where nothing listens: on a runner of CI, something
+    answers at port 80 of localhost.
+    """
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        yield held.getsockname()[1]
+
+
 async def asked(port: int, request: bytes) -> bytes:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(request)
     await writer.drain()
     writer.write_eof()
-    answer = await asyncio.wait_for(reader.read(), timeout=5)
+    # Windows takes 2 seconds to be refused at each address of localhost, ::1 and 127.0.0.1.
+    answer = await asyncio.wait_for(reader.read(), timeout=20)
     writer.close()
     return answer
 
@@ -109,15 +123,15 @@ async def test_a_plain_request_to_an_allowed_host_is_passed_on(
             b"400",
             "The request is too long.",
         ),
-        (b"CONNECT localhost:1 HTTP/1.1\r\n\r\n", b"502", "localhost cannot be reached"),
-        (b"GET http://localhost HTTP/1.1\r\n\r\n", b"502", "localhost cannot be reached"),
+        (b"CONNECT localhost:{closed} HTTP/1.1\r\n\r\n", b"502", "localhost cannot be reached"),
+        (b"GET http://localhost:{closed}/ HTTP/1.1\r\n\r\n", b"502", "localhost cannot be reached"),
     ],
     ids=["elsewhere", "an-address", "no-proxy", "nonsense", "too-long", "unreachable", "plain"],
 )
 async def test_what_is_not_passed_on_is_refused_in_words(
-    through: int, request_line: bytes, status: bytes, said: str
+    through: int, closed: int, request_line: bytes, status: bytes, said: str
 ) -> None:
-    answer = await asked(through, request_line)
+    answer = await asked(through, request_line.replace(b"{closed}", str(closed).encode()))
 
     assert answer.split(b" ")[1] == status
     assert said in answer.decode()

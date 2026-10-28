@@ -1,13 +1,14 @@
 //! The picture drawn on the graphics card: its planes of Y'CbCr uploaded as they are, turned
-//! into R'G'B' as they are drawn (`yuv.wgsl`), and fitted into the target with black around it.
+//! into R'G'B' as they are drawn (`yuv.wgsl` of `columbina-compose`, which composes the layers
+//! of a timeline with the same shader), and fitted into the target with black around it.
 //!
 //! Nothing here knows of windows: [`Painter`] draws into any texture of the format it was made
 //! for, a window's or one that the tests read back.
 
+use columbina_compose::yuv::{self, Texel};
 use columbina_media::Picture;
 
-/// The shader, for planes of floats (8-bit and 16-bit normalized textures).
-const SHADER: &str = include_str!("yuv.wgsl");
+pub use columbina_compose::quarter_turns;
 
 /// Where a picture is drawn in a target: in pixels, from the top left corner of the target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,19 +17,6 @@ pub struct Placement {
     pub y: u32,
     pub width: u32,
     pub height: u32,
-}
-
-/// The quarter turns clockwise of a rotation in degrees clockwise, as the media has it: 0 to 3,
-/// taken modulo 360 (so that -90 is 3). A rotation that is not a multiple of 90 is taken as
-/// none (the model has only 0, 90, 180 and 270).
-#[must_use]
-pub fn quarter_turns(rotation: i16) -> u32 {
-    match rotation.rem_euclid(360) {
-        90 => 1,
-        180 => 2,
-        270 => 3,
-        _ => 0,
-    }
 }
 
 /// Where a picture of `picture` pixels as it is stored, turned `rotation` degrees clockwise to
@@ -63,15 +51,6 @@ pub fn letterbox(target: (u32, u32), picture: (u32, u32), rotation: i16) -> Opti
         width,
         height,
     })
-}
-
-/// How the texels of a plane are read in the shader.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Texel {
-    /// Normalized, as floats from 0 to 1.
-    Float,
-    /// 16-bit integers, where the card has no 16-bit normalized formats.
-    Uint,
 }
 
 /// A pipeline for planes of one kind of texel.
@@ -115,7 +94,7 @@ impl Painter {
     ) -> Self {
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("columbina-view params"),
-            size: PARAMS_SIZE,
+            size: yuv::PARAMS_SIZE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -140,7 +119,7 @@ impl Painter {
     /// The picture is not one that can be drawn: no pixels, planes shorter than it says, or
     /// larger than the card takes. Nothing is uploaded, and the last picture is kept.
     pub(crate) fn upload(&mut self, picture: &Picture) -> Result<(), String> {
-        let shape = Shape::of(picture)?;
+        let ten = yuv::check(picture)?;
         let most = self.device.limits().max_texture_dimension_2d;
         if picture.width > most || picture.height > most {
             return Err(format!(
@@ -148,85 +127,21 @@ impl Painter {
                 picture.width, picture.height
             ));
         }
-        let texel = if !shape.ten || self.sixteen_norm {
-            Texel::Float
-        } else {
-            Texel::Uint
-        };
+        let texel = Texel::for_picture(ten, self.sixteen_norm);
         let reuse = self.planes.as_ref().is_some_and(|planes| {
             (planes.width, planes.height, planes.ten, planes.texel)
-                == (picture.width, picture.height, shape.ten, texel)
+                == (picture.width, picture.height, ten, texel)
         });
         if !reuse {
-            self.planes = Some(self.planes_for(picture.width, picture.height, shape.ten, texel));
+            self.planes = Some(self.planes_for(picture.width, picture.height, ten, texel));
         }
         let planes = self.planes.as_ref().expect("made above");
-        for (texture, data, stride, size) in [
-            (
-                &planes.luma,
-                &picture.luma,
-                picture.luma_stride,
-                planes.luma.size(),
-            ),
-            (
-                &planes.chroma,
-                &picture.chroma,
-                picture.chroma_stride,
-                planes.chroma.size(),
-            ),
-        ] {
-            self.queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(u32::try_from(stride).map_err(|_| "a stride too long")?),
-                    rows_per_image: Some(size.height),
-                },
-                size,
-            );
-        }
-        Ok(())
+        yuv::upload(&self.queue, &planes.luma, &planes.chroma, picture)
     }
 
     /// Textures, and what binds them, for planes of a shape.
     fn planes_for(&mut self, width: u32, height: u32, ten: bool, texel: Texel) -> Planes {
-        let (luma_format, chroma_format) = match (ten, texel) {
-            (false, _) => (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm),
-            (true, Texel::Float) => (
-                wgpu::TextureFormat::R16Unorm,
-                wgpu::TextureFormat::Rg16Unorm,
-            ),
-            (true, Texel::Uint) => (wgpu::TextureFormat::R16Uint, wgpu::TextureFormat::Rg16Uint),
-        };
-        let texture = |label, width, height, format| {
-            self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            })
-        };
-        let luma = texture("columbina-view luma", width, height, luma_format);
-        let chroma = texture(
-            "columbina-view chroma",
-            width.div_ceil(2),
-            height.div_ceil(2),
-            chroma_format,
-        );
+        let (luma, chroma) = yuv::plane_textures(&self.device, width, height, ten, texel);
         let pipeline = match texel {
             Texel::Float => &self.float,
             Texel::Uint => self
@@ -338,118 +253,45 @@ impl Painter {
     }
 }
 
-/// The bytes of the uniform of the shader.
-const PARAMS_SIZE: u64 = 64;
-
-/// The uniform of the shader (`Params` in `yuv.wgsl`), as bytes.
+/// The uniform of the shader (`Params` in `yuv.wgsl`), as bytes: the half of it that the view
+/// uses, and nothing in the half that the compositor uses.
 #[allow(clippy::cast_precision_loss, reason = "sizes of at most 16384")]
 fn params(planes: &Planes, placement: Placement, rotation: i16) -> Vec<u8> {
-    // What a texel is multiplied by to be a code: 8 bits as 0..=255; P010, whose 10 bits are
-    // the high bits of 16, as 0..=65535 / 64 normalized, or as the integer / 64.
-    let scale = match (planes.ten, planes.texel) {
-        (false, _) => 255.0,
-        (true, Texel::Float) => 65535.0 / 64.0,
-        (true, Texel::Uint) => 1.0 / 64.0,
-    };
-    let (black, luma_range, middle, chroma_range) = if planes.ten {
-        (64.0, 876.0, 512.0, 896.0)
-    } else {
-        (16.0, 219.0, 128.0, 224.0)
-    };
-    let values: [f32; 16] = [
+    let dest = [
         placement.x as f32,
         placement.y as f32,
         placement.width as f32,
         placement.height as f32,
-        planes.width as f32,
-        planes.height as f32,
-        planes.width.div_ceil(2) as f32,
-        planes.height.div_ceil(2) as f32,
-        scale,
-        black,
-        luma_range,
-        quarter_turns(rotation) as f32,
-        middle,
-        chroma_range,
-        0.0,
-        0.0,
     ];
-    values
+    let values = yuv::picture_params(
+        dest,
+        (planes.width, planes.height),
+        planes.ten,
+        planes.texel,
+        rotation,
+    );
+    let mut bytes: Vec<u8> = values
         .iter()
         .flat_map(|value| value.to_le_bytes())
-        .collect()
-}
-
-/// What a picture holds, once it is checked that its planes hold it.
-struct Shape {
-    ten: bool,
-}
-
-impl Shape {
-    fn of(picture: &Picture) -> Result<Shape, String> {
-        let (width, height) = (picture.width as usize, picture.height as usize);
-        if width == 0 || height == 0 {
-            return Err(format!(
-                "a picture of {}×{} has no pixels",
-                picture.width, picture.height
-            ));
-        }
-        let ten = picture.bits > 8;
-        let bytes = if ten { 2 } else { 1 };
-        for (name, plane, stride, row, rows) in [
-            (
-                "luma",
-                &picture.luma,
-                picture.luma_stride,
-                width * bytes,
-                height,
-            ),
-            (
-                "chroma",
-                &picture.chroma,
-                picture.chroma_stride,
-                width.div_ceil(2) * 2 * bytes,
-                height.div_ceil(2),
-            ),
-        ] {
-            let needed = stride
-                .checked_mul(rows - 1)
-                .and_then(|before| before.checked_add(row));
-            if stride < row || needed.is_none_or(|needed| plane.len() < needed) {
-                return Err(format!(
-                    "the {name} plane of a picture of {}×{} in {} bits is {} bytes in rows of {stride}",
-                    picture.width,
-                    picture.height,
-                    picture.bits,
-                    plane.len()
-                ));
-            }
-        }
-        Ok(Shape { ten })
-    }
+        .collect();
+    bytes.resize(
+        usize::try_from(yuv::PARAMS_SIZE).expect("a small uniform"),
+        0,
+    );
+    bytes
 }
 
 /// The pipeline for planes of a kind of texel, drawing into targets of `format`.
 fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, texel: Texel) -> Pipeline {
-    let (source, sample_type) = match texel {
-        Texel::Float => (
-            SHADER.to_owned(),
-            wgpu::TextureSampleType::Float { filterable: false },
-        ),
-        Texel::Uint => (
-            SHADER.replacen("alias Texel = f32;", "alias Texel = u32;", 1),
-            wgpu::TextureSampleType::Uint,
-        ),
-    };
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("columbina-view yuv"),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
+        source: wgpu::ShaderSource::Wgsl(texel.shader().into()),
     });
     let plane = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
         ty: wgpu::BindingType::Texture {
-            sample_type,
+            sample_type: texel.sample_type(),
             view_dimension: wgpu::TextureViewDimension::D2,
             multisampled: false,
         },
@@ -464,7 +306,7 @@ fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, texel: Texel) ->
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(PARAMS_SIZE),
+                    min_binding_size: wgpu::BufferSize::new(yuv::PARAMS_SIZE),
                 },
                 count: None,
             },

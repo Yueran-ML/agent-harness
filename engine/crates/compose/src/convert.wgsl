@@ -1,0 +1,117 @@
+// The composed picture, R'G'B' of BT.709, made Y'CbCr 4:2:0 of limited range for an encoder:
+// NV12 (8 bits) or P010 (10 bits in the high bits of 16), each plane written into a buffer of
+// words laid out as `columbina_media::Picture` lays its planes out, rows `stride` bytes apart, so
+// that it is read back as it is.
+//
+// Chroma is sited as the decoder and the view take it ("left", chroma location type 0): a sample
+// of Cb and Cr lies on the first luma column of its pair and halfway between its two rows, so it
+// is made of the pixels of three columns, weighed 1, 2, 1, over the two rows.
+
+struct Convert {
+    // The width and height of the picture.
+    size: vec2<u32>,
+    // The words of a row of luma, and of chroma.
+    words: vec2<u32>,
+    // 1 for P010, 0 for NV12; and the rows of chroma.
+    ten: u32,
+    chroma_rows: u32,
+    pad0: u32,
+    pad1: u32,
+};
+
+@group(0) @binding(0) var canvas: texture_2d<f32>;
+@group(0) @binding(1) var<storage, read_write> luma: array<u32>;
+@group(0) @binding(2) var<storage, read_write> chroma: array<u32>;
+@group(0) @binding(3) var<uniform> params: Convert;
+
+fn pixel(x: i32, y: i32) -> vec3<f32> {
+    let last = vec2<i32>(params.size) - vec2<i32>(1, 1);
+    let at = clamp(vec2<i32>(x, y), vec2<i32>(0, 0), last);
+    return clamp(textureLoad(canvas, at, 0).rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// BT.709: Kr = 0.2126, Kb = 0.0722.
+fn luma_of(rgb: vec3<f32>) -> f32 {
+    return dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// A code of `bits`, black at 16 or 64, white at 235 or 940.
+fn luma_code(rgb: vec3<f32>) -> u32 {
+    if params.ten == 1u {
+        return u32(clamp(round(64.0 + 876.0 * luma_of(rgb)), 0.0, 1023.0));
+    }
+    return u32(clamp(round(16.0 + 219.0 * luma_of(rgb)), 0.0, 255.0));
+}
+
+// The codes of Cb and Cr: no colour at 128 or 512.
+fn chroma_codes(rgb: vec3<f32>) -> vec2<u32> {
+    let y = luma_of(rgb);
+    let c = vec2<f32>((rgb.b - y) / 1.8556, (rgb.r - y) / 1.5748);
+    if params.ten == 1u {
+        return vec2<u32>(clamp(round(vec2<f32>(512.0) + 896.0 * c), vec2<f32>(0.0), vec2<f32>(1023.0)));
+    }
+    return vec2<u32>(clamp(round(vec2<f32>(128.0) + 224.0 * c), vec2<f32>(0.0), vec2<f32>(255.0)));
+}
+
+// A word of luma: four pixels of NV12, or two of P010, the first in the low bits (little-endian).
+@compute @workgroup_size(64, 1, 1)
+fn luma_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let word = id.x;
+    let row = id.y;
+    if word >= params.words.x || row >= params.size.y {
+        return;
+    }
+    var packed = 0u;
+    if params.ten == 1u {
+        for (var k = 0u; k < 2u; k++) {
+            let x = word * 2u + k;
+            if x < params.size.x {
+                packed |= (luma_code(pixel(i32(x), i32(row))) << 6u) << (16u * k);
+            }
+        }
+    } else {
+        for (var k = 0u; k < 4u; k++) {
+            let x = word * 4u + k;
+            if x < params.size.x {
+                packed |= luma_code(pixel(i32(x), i32(row))) << (8u * k);
+            }
+        }
+    }
+    luma[row * params.words.x + word] = packed;
+}
+
+// The colour of the chroma sample `i` of row `j`.
+fn chroma_rgb(i: u32, j: u32) -> vec3<f32> {
+    let x = i32(i * 2u);
+    let y = i32(j * 2u);
+    let top = pixel(x - 1, y) + 2.0 * pixel(x, y) + pixel(x + 1, y);
+    let bottom = pixel(x - 1, y + 1) + 2.0 * pixel(x, y + 1) + pixel(x + 1, y + 1);
+    return (top + bottom) / 8.0;
+}
+
+// A word of chroma: two samples of NV12 (Cb, Cr, Cb, Cr), or one of P010 (Cb, Cr).
+@compute @workgroup_size(64, 1, 1)
+fn chroma_main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let word = id.x;
+    let row = id.y;
+    if word >= params.words.y || row >= params.chroma_rows {
+        return;
+    }
+    let samples = (params.size.x + 1u) / 2u;
+    var packed = 0u;
+    if params.ten == 1u {
+        if word < samples {
+            let codes = chroma_codes(chroma_rgb(word, row));
+            packed = (codes.x << 6u) | ((codes.y << 6u) << 16u);
+        }
+    } else {
+        for (var k = 0u; k < 2u; k++) {
+            let i = word * 2u + k;
+            if i < samples {
+                let codes = chroma_codes(chroma_rgb(i, row));
+                packed |= (codes.x | (codes.y << 8u)) << (16u * k);
+            }
+        }
+    }
+    chroma[row * params.words.y + word] = packed;
+}

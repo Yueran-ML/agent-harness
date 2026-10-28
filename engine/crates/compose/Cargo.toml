@@ -8,6 +8,9 @@ version.workspace = true
 workspace = true
 
 [dependencies]
+columbina-media = { path = "../media" }
+columbina-model = { path = "../model" }
+cosmic-text.workspace = true
 pollster.workspace = true
 thiserror.workspace = true
 wgpu.workspace = true

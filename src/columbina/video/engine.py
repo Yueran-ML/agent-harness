@@ -790,6 +790,8 @@ class Engine:
                 if error.code != UNREACHABLE or self._closed:
                     raise
                 why = str(error)
+                # Lost, or refused in the words of no engine and still open.
+                self._drop()
                 continue
             # It may have been closed while it was greeted.
             self._open()

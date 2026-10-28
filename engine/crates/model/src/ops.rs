@@ -64,7 +64,8 @@
 //! title has at most 1000 characters, a size from 1 to 4096 and a finite place. A clip of media
 //! names media that is in the project and has a stream for the kind of its track, which is not
 //! one of subtitles. What it shows of its media lies inside the media: from where it begins in
-//! it, for the ticks that its frames last at the rate of the timeline and its speed, and no further than the duration of the media. Where it begins counts ticks
+//! it, for the ticks that its frames last at the rate of the timeline and its speed (see
+//! [`crate::span`]), and no further than the duration of the media. Where it begins counts ticks
 //! of the scale of that duration, which is never 0. A clip moves only between tracks of the same
 //! kind, within its timeline.
 //!
@@ -108,6 +109,7 @@ use crate::project::{
     Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track, TrackKind, Transition,
     TransitionKind,
 };
+use crate::span;
 use crate::time::{Rate, Time};
 
 /// The largest integer that JavaScript holds exactly, 2^53 - 1. No integer that an operation
@@ -1357,7 +1359,14 @@ fn in_source(
     let Some(source_in) = clip.source_in() else {
         return Ok(());
     };
-    let offset = |frames: i64| offset(frames, clip.speed, rate, source_in.scale);
+    let offset = |frames: i64| {
+        i128::from(span::ticks_of_scaled(
+            frames,
+            clip.speed,
+            rate,
+            source_in.scale,
+        ))
+    };
     // A clip that plays backward shows what is before its start at its end.
     let (before, after) = if clip.reverse {
         (after, before)
@@ -1373,18 +1382,6 @@ fn in_source(
     } else {
         Ok(())
     }
-}
-
-/// The ticks of `scale` from the start of a clip of `speed` on a timeline of `rate` to its frame
-/// `frames`, rounded down: `frames * speed * rate.den * scale / rate.num`.
-fn offset(frames: i64, speed: crate::time::Speed, rate: Rate, scale: u32) -> i128 {
-    // Below 2^117 in size: it cannot overflow.
-    let whole = i128::from(frames) * i128::from(rate.den) * i128::from(scale);
-    let num = i128::from(speed.num);
-    let den = i128::from(speed.den) * i128::from(rate.num);
-    // whole * num / den, without the product, which may not fit: (q * den + r) * num / den.
-    let (q, r) = (whole.div_euclid(den), whole.rem_euclid(den));
-    q.saturating_mul(num).saturating_add(r * num / den)
 }
 
 /// Check the transitions of a track whose clips are in order and checked, on a timeline of

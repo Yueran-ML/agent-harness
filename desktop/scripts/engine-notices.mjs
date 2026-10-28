@@ -9,7 +9,9 @@
 //
 //   node scripts/engine-notices.mjs --out <folder> [--engine <engine/>] [--target <triple>]
 //
-// writes <folder>/RUST-CRATES.md and <folder>/licenses/crates/<name>-<version>/. electron/package.mjs
+// writes <folder>/RUST-CRATES.md and <folder>/licenses/crates/<name>-<version>/ (a few crates as
+// OVERRIDES below says: one published without a license file, from crate-licenses/; one under a
+// choice of licenses, with the files of the one it is used under). electron/package.mjs
 // runs the same through rustCrates() and writeCrateNotices(). cargo is taken from CARGO, else PATH;
 // it runs in the engine's folder, so that its rust-toolchain.toml holds.
 import { spawnSync } from 'node:child_process';
@@ -19,6 +21,24 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** The package whose binary is the engine. */
 const ENGINE_PACKAGE = 'columbina-server';
+
+/** The folder of the license files that are shipped in place of those that a crate publishes. */
+const CRATE_LICENSES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'crate-licenses');
+
+/**
+ * Crates whose license files are not shipped as they are published:
+ * - `files`: files of crate-licenses/<name>/, shipped in place of the crate's, for a crate that is
+ *   published without any; `source` says where they were taken from.
+ * - `only` and `under`: of a crate under a choice of licenses, the files of the one that it is
+ *   used under, and that license.
+ */
+const OVERRIDES = new Map([
+  ['harfrust', {
+    files: ['LICENSE'],
+    source: 'the LICENSE of its repository, https://github.com/harfbuzz/harfrust, at the commit that 0.5.2 was published from (efdae3142ab76a2f1524d72cff9e3dfdc5afd7ca)',
+  }],
+  ['self_cell', { only: ['LICENSE-APACHE'], under: 'Apache-2.0' }],
+]);
 
 /** The target of a package made on this system. */
 export function hostTarget(platform = process.platform, arch = process.arch) {
@@ -124,7 +144,22 @@ export async function writeCrateNotices({ crates, out }) {
     const folder = path.join(root, named);
     await mkdir(folder, { recursive: true });
     let shipped = one.files;
-    if (one.files.length > 0) {
+    let license = one.license ?? 'not stated';
+    const override = OVERRIDES.get(one.name);
+    if (override?.files) {
+      if (one.files.length > 0) throw new Error(`${one.name} ${one.version} now brings license files of its own (${one.files.join(', ')}): take it out of the overrides of scripts/engine-notices.mjs.`);
+      for (const file of override.files) {
+        await copyFile(path.join(CRATE_LICENSES, one.name, file), path.join(folder, file));
+      }
+      await writeFile(path.join(folder, 'SOURCE.txt'), `${one.name} ${one.version} is published without a license file. Shipped here: ${override.source}.\n`);
+      shipped = [...override.files, 'SOURCE.txt'];
+    } else if (override?.only) {
+      const missing = override.only.filter((file) => !one.files.includes(file));
+      if (missing.length > 0) throw new Error(`${one.name} ${one.version} brings no ${missing.join(', ')}: see the overrides of scripts/engine-notices.mjs.`);
+      for (const file of override.only) await copyFile(path.join(one.folder, file), path.join(folder, file));
+      shipped = override.only;
+      license = `${one.license}, used here under ${override.under}`;
+    } else if (one.files.length > 0) {
       for (const file of one.files) {
         await mkdir(path.dirname(path.join(folder, file)), { recursive: true });
         await copyFile(path.join(one.folder, file), path.join(folder, file));
@@ -147,7 +182,7 @@ export async function writeCrateNotices({ crates, out }) {
       shipped = [`LICENSE-${chosen}.txt`];
     }
     const source = one.repository ?? `https://crates.io/crates/${one.name}`;
-    rows.push(`| ${one.name} | ${one.version} | ${one.license ?? 'not stated'} | ${source} | ${shipped.map((file) => `\`licenses/crates/${named}/${file}\``).join(', ')} |`);
+    rows.push(`| ${one.name} | ${one.version} | ${license} | ${source} | ${shipped.map((file) => `\`licenses/crates/${named}/${file}\``).join(', ')} |`);
   }
   return [
     `The engine is compiled from ${crates.length} crates of crates.io besides Columbina's own (MIT), and with`,

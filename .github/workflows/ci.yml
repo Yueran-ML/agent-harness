@@ -142,7 +142,7 @@ jobs:
       # time so that other test engines and proxy encoders do not compete for the runner's
       # CPU and decoder sessions. Keep the same timing and frame-count assertions.
       - name: Test
-        run: cargo test -p columbina-server --locked --test rpc the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_media -- --exact --test-threads=1 --show-output
+        run: cargo test --workspace --locked --no-fail-fast -- --test-threads=1
         env:
           COLUMBINA_REQUIRE_FFMPEG: "1"
 

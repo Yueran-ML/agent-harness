@@ -6,10 +6,12 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{EditError, Expansion};
-use crate::ops::{apply_done, in_source, Op, OpError};
+use crate::ops::{apply_done, in_source, Op, OpError, LARGEST};
 use crate::project::{Clip, Id, Project, Source, Timeline, Track, TrackKind, Transition};
 use crate::span::ticks_of_scaled;
 use crate::time::{Rate, Time};
+
+use super::Edge;
 
 /// A project that an edit of one of its timelines is being worked out on, and what was done.
 pub(super) struct Work<'a> {
@@ -229,6 +231,18 @@ impl<'a> Work<'a> {
             Op::InsertClip { clip, .. } => Ok(clip),
             _ => unreachable!("an insert is done as an insert"),
         }
+    }
+
+    /// Move a clip to `start` on `track`.
+    pub fn move_to(&mut self, clip: &str, track: &str, start: i64) -> Result<(), EditError> {
+        self.detach(clip)?;
+        self.op(Op::MoveClip {
+            timeline: self.timeline_id(),
+            id: clip.into(),
+            track: track.into(),
+            start,
+        })?;
+        Ok(())
     }
 
     /// Make a clip as `new` is: where it starts, how long it lasts, where it begins in its
@@ -486,6 +500,15 @@ pub(super) fn ends<'t>(
     (start, end)
 }
 
+/// The frames of a clip of a track that the transitions at its start and end cover.
+pub(super) fn covered(track: &Track, clip: &str) -> (i64, i64) {
+    let (start, end) = ends(track, clip);
+    (
+        start.map_or(0, |x| x.handles().0),
+        end.map_or(0, |x| x.handles().1),
+    )
+}
+
 /// The frames of its media that the transitions at its start and end show of a clip of a track
 /// beyond its ends.
 pub(super) fn beyond(track: &Track, clip: &str) -> (i64, i64) {
@@ -531,6 +554,58 @@ pub(super) fn halves_of(clip: &Clip, at: i64, rate: Rate) -> (Clip, Clip) {
     (first, second)
 }
 
+/// A clip with one edge moved `delta` frames later: its start, so that it is `delta` frames
+/// shorter, or its end, so that it is `delta` frames longer. What it shows of its media stays
+/// where it was on the timeline, but for a tick at speeds whose frames do not last whole ticks.
+/// With `keep_start`, the clip still starts where it did, as in a ripple, and so does what it
+/// shows.
+pub(super) fn edged(clip: &Clip, edge: Edge, delta: i64, keep_start: bool, rate: Rate) -> Clip {
+    let mut new = clip.clone();
+    let scale = clip.source_in().map_or(1, |t| t.scale);
+    let ticks = |frames| ticks_of_scaled(frames, clip.speed, rate, scale);
+    // Forward, the start of a clip shows where it begins in its media; backward, its end does.
+    let moves_begin = (edge == Edge::In) != clip.reverse;
+    let shift = match edge {
+        Edge::In => ticks(delta),
+        Edge::Out => -ticks(delta),
+    };
+    match edge {
+        Edge::In => {
+            new.length = clip.length - delta;
+            if !keep_start {
+                new.start = clip.start + delta;
+            }
+        }
+        Edge::Out => new.length = clip.length + delta,
+    }
+    if let (true, Some(begins)) = (moves_begin, clip.source_in()) {
+        set_source_in(
+            &mut new,
+            Time {
+                ticks: begins.ticks.saturating_add(shift),
+                scale,
+            },
+        );
+    }
+    fit_fades(&mut new, edge);
+    new
+}
+
+/// Shorten the fades of a clip that would last longer than it does: the one at `edge` first.
+pub(super) fn fit_fades(clip: &mut Clip, edge: Edge) {
+    let over = clip.fade_in + clip.fade_out - clip.length.max(0);
+    if over <= 0 {
+        return;
+    }
+    let (first, second) = match edge {
+        Edge::In => (&mut clip.fade_in, &mut clip.fade_out),
+        Edge::Out => (&mut clip.fade_out, &mut clip.fade_in),
+    };
+    let cut = over.min(*first);
+    *first -= cut;
+    *second -= (over - cut).min(*second);
+}
+
 pub(super) fn set_source_in(clip: &mut Clip, time: Time) {
     if let Source::Media { source_in, .. } = &mut clip.source {
         *source_in = time;
@@ -553,6 +628,96 @@ pub(super) fn set_fades(timeline: &str, clip: &str, fade_in: i64, fade_out: i64)
         fade_out: Some(fade_out),
         source: None,
     }
+}
+
+/// The delta from 0 toward `want`, as far as `ok` allows, which it allows of 0 and of fewer
+/// frames than one that it allows.
+pub(super) fn most(want: i64, ok: impl Fn(i64) -> bool) -> i64 {
+    if ok(want) {
+        return want;
+    }
+    let sign = want.signum();
+    let (mut good, mut bad) = (0, want.abs());
+    while bad - good > 1 {
+        let middle = good + (bad - good) / 2;
+        if ok(sign * middle) {
+            good = middle;
+        } else {
+            bad = middle;
+        }
+    }
+    sign * good
+}
+
+/// The deltas that an edit can go by, and the error to give where it can go nowhere.
+pub(super) struct Limit {
+    lo: i64,
+    hi: i64,
+    below: Option<EditError>,
+    above: Option<EditError>,
+}
+
+impl Limit {
+    pub fn new() -> Self {
+        Self {
+            lo: -LARGEST,
+            hi: LARGEST,
+            below: None,
+            above: None,
+        }
+    }
+
+    pub fn at_least(&mut self, lo: i64, why: impl FnOnce() -> EditError) {
+        if lo > self.lo {
+            self.lo = lo.min(0);
+            self.below = Some(why());
+        }
+    }
+
+    pub fn at_most(&mut self, hi: i64, why: impl FnOnce() -> EditError) {
+        if hi < self.hi {
+            self.hi = hi.max(0);
+            self.above = Some(why());
+        }
+    }
+
+    /// The delta as near `want` as the limit lets it be, and why it is no nearer if it is not.
+    pub fn clamp(&self, want: i64) -> (i64, Option<EditError>) {
+        if want < self.lo {
+            (self.lo, self.below.clone())
+        } else if want > self.hi {
+            (self.hi, self.above.clone())
+        } else {
+            (want, None)
+        }
+    }
+}
+
+/// Go by `want`, or as near it as `limit` and then `fits` let, and say whether that is less;
+/// refuse if it is nothing. `fits` tells whether a delta keeps every clip within its media, and
+/// names a clip that it does not keep.
+pub(super) fn reach(
+    want: i64,
+    limit: &Limit,
+    fits: impl Fn(i64) -> Result<(), Id>,
+) -> Result<(i64, bool), EditError> {
+    if want == 0 {
+        return Err(EditError::EmptyRange);
+    }
+    let (near, mut why) = limit.clamp(want);
+    let far = most(near, |d| fits(d).is_ok());
+    if far != near {
+        why = Some(EditError::NoHandles {
+            clip: fits(near).err().unwrap_or_default(),
+            need: want.abs(),
+            have: far.abs(),
+            longest: None,
+        });
+    }
+    if far == 0 {
+        return Err(why.unwrap_or(EditError::EmptyRange));
+    }
+    Ok((far, far != want))
 }
 
 pub(super) fn missing(what: &'static str, id: &str) -> EditError {

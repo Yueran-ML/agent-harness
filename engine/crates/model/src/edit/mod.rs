@@ -37,13 +37,14 @@
 mod cut;
 mod misc;
 mod place;
+mod trim;
 mod work;
 
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::ops::{apply_done, Op, OpError};
-use crate::project::{Id, Project, Rgba, TitleStyle, TrackKind};
-use crate::time::Time;
+use crate::project::{Alignment, Id, Project, Rgba, TitleStyle, TrackKind, TransitionKind};
+use crate::time::{Speed, Time};
 
 use work::Work;
 
@@ -291,6 +292,124 @@ pub enum Edit {
         #[serde(default = "yes")]
         linked: bool,
     },
+    /// Move an edge of a clip by `delta` frames, later if it is above 0. Without `ripple`, the
+    /// clip's start or end moves and nothing else does; with it, the clip's start stays where
+    /// it is and what is after the clip moves on every track that is not locked.
+    Trim {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The edge.
+        edge: Edge,
+        /// How many frames later the edge goes.
+        delta: i64,
+        /// Whether what follows moves with it.
+        #[serde(default)]
+        ripple: bool,
+        /// Whether the clips linked to it are trimmed too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Move the cut between two clips that meet by `delta` frames: the end of the one and the
+    /// start of the other.
+    Roll {
+        /// The timeline.
+        timeline: Id,
+        /// The clip that ends at the cut.
+        left: Id,
+        /// The clip that starts at it.
+        right: Id,
+        /// How many frames later the cut goes.
+        delta: i64,
+        /// Whether the cuts between the clips linked to them roll too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Show `delta` frames later of the source of a clip, which stays where it is.
+    Slip {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// How many frames later in its source it begins.
+        delta: i64,
+        /// Whether the clips linked to it slip too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Move a clip by `delta` frames between its neighbours, which give and take the frames.
+    Slide {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// How many frames later it goes.
+        delta: i64,
+        /// Whether the clips linked to it slide too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Put a transition at the cut between two clips that meet.
+    AddTransition {
+        /// The timeline.
+        timeline: Id,
+        /// The clip that ends at the cut.
+        left: Id,
+        /// The clip that starts at it.
+        right: Id,
+        /// How the one gives way to the other: a dissolve on a track of picture and a crossfade
+        /// on one of sound if it is left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<TransitionKind>,
+        /// How many frames it lasts.
+        length: i64,
+        /// Where it lies about the cut.
+        #[serde(default = "center")]
+        align: Alignment,
+    },
+    /// Take a transition away.
+    RemoveTransition {
+        /// The timeline.
+        timeline: Id,
+        /// The transition.
+        id: Id,
+    },
+    /// Set what is given of a transition.
+    SetTransition {
+        /// The timeline.
+        timeline: Id,
+        /// The transition.
+        id: Id,
+        /// How the one clip gives way to the other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<TransitionKind>,
+        /// How many frames it lasts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        length: Option<i64>,
+        /// Where it lies about the cut.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        align: Option<Alignment>,
+    },
+    /// Play a clip at another speed, showing the same stretch of its source: so it lasts more or
+    /// fewer frames. With `ripple`, what is after it moves with its end.
+    SetSpeed {
+        /// The timeline.
+        timeline: Id,
+        /// The clip.
+        clip: Id,
+        /// The speed.
+        speed: Speed,
+        /// Whether it plays backward, or as it does if this is left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reverse: Option<bool>,
+        /// Whether what follows moves with its end.
+        #[serde(default)]
+        ripple: bool,
+        /// Whether the clips linked to it change speed too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
     /// Put a subtitle on a track of subtitles.
     AddCue {
         /// The timeline.
@@ -405,6 +524,16 @@ pub enum Material {
     },
 }
 
+/// An edge of a clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Edge {
+    /// Its start.
+    In,
+    /// Its end.
+    Out,
+}
+
 /// A subtitle of [`Edit::CuesFrom`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -419,6 +548,10 @@ pub struct CueItem {
 
 fn yes() -> bool {
     true
+}
+
+fn center() -> Alignment {
+    Alignment::Center
 }
 
 /// Read a field that may be `null` as well as left out: one that is there is read as `Some`.
@@ -634,6 +767,57 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
         Edit::InsertMove {
             clips, at, linked, ..
         } => cut::insert_move(&mut work, &clips, at, linked),
+        Edit::Trim {
+            clip,
+            edge,
+            delta,
+            ripple,
+            linked,
+            ..
+        } => trim::trim(&mut work, &clip, edge, delta, ripple, linked),
+        Edit::Roll {
+            left,
+            right,
+            delta,
+            linked,
+            ..
+        } => trim::roll(&mut work, &left, &right, delta, linked),
+        Edit::Slip {
+            clip,
+            delta,
+            linked,
+            ..
+        } => trim::slip(&mut work, &clip, delta, linked),
+        Edit::Slide {
+            clip,
+            delta,
+            linked,
+            ..
+        } => trim::slide(&mut work, &clip, delta, linked),
+        Edit::AddTransition {
+            left,
+            right,
+            kind,
+            length,
+            align,
+            ..
+        } => misc::add_transition(&mut work, &left, &right, kind, length, align),
+        Edit::RemoveTransition { id, .. } => misc::remove_transition(&mut work, &id),
+        Edit::SetTransition {
+            id,
+            kind,
+            length,
+            align,
+            ..
+        } => misc::set_transition(&mut work, &id, kind, length, align),
+        Edit::SetSpeed {
+            clip,
+            speed,
+            reverse,
+            ripple,
+            linked,
+            ..
+        } => misc::set_speed(&mut work, &clip, speed, reverse, ripple, linked),
         Edit::AddCue {
             track,
             start,
@@ -680,6 +864,14 @@ pub fn timeline_of(edit: &Edit) -> &Id {
         | Edit::Blade { timeline, .. }
         | Edit::Move { timeline, .. }
         | Edit::InsertMove { timeline, .. }
+        | Edit::Trim { timeline, .. }
+        | Edit::Roll { timeline, .. }
+        | Edit::Slip { timeline, .. }
+        | Edit::Slide { timeline, .. }
+        | Edit::AddTransition { timeline, .. }
+        | Edit::RemoveTransition { timeline, .. }
+        | Edit::SetTransition { timeline, .. }
+        | Edit::SetSpeed { timeline, .. }
         | Edit::AddCue { timeline, .. }
         | Edit::SetCue { timeline, .. }
         | Edit::RemoveCue { timeline, .. }

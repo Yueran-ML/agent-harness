@@ -1013,4 +1013,107 @@ mod tests {
             assert_eq!(history.edit(vec![], "agent"), Err(TransactionError::Empty));
         }
     }
+
+    mod ripples {
+        use super::super::*;
+        use super::with_next_id_of;
+        use crate::edit::fixture::{self, clips, lock, with};
+        use crate::edit::{Change, Edge, Edit, EditError};
+
+        fn ripple_delete(clip: &str) -> Edit {
+            Edit::RippleDelete {
+                timeline: "t1".into(),
+                clips: vec![clip.into()],
+                linked: true,
+            }
+        }
+
+        fn trim(clip: &str, delta: i64) -> Edit {
+            Edit::Trim {
+                timeline: "t1".into(),
+                clip: clip.into(),
+                edge: Edge::Out,
+                delta,
+                ripple: false,
+                linked: false,
+            }
+        }
+
+        #[test]
+        fn a_transaction_of_edits_is_one_step_of_operations_that_is_undone_and_redone() {
+            let start = with(fixture::project(), vec![lock("V2"), lock("S1")]);
+            let mut history = History::new(start.clone());
+            let changed = history
+                .edit(vec![ripple_delete("c1"), ripple_delete("c3")], "agent")
+                .unwrap();
+            let after = history.project().clone();
+            assert_eq!(clips(&after, "V1"), []);
+            // Two removals and two moves for the first edit, two removals for the second.
+            assert_eq!(changed.parts, [0..4, 4..6]);
+            assert_eq!(changed.applied.done.len(), 6);
+            assert_eq!(changed.clamped, Vec::<usize>::new());
+            assert_eq!(history.revision(), 1);
+            history.undo("desktop").unwrap().unwrap();
+            assert_eq!(history.project(), &with_next_id_of(&start, &after));
+            assert!(!history.can_undo());
+            history.redo("desktop").unwrap().unwrap();
+            assert_eq!(history.project(), &after);
+        }
+
+        #[test]
+        fn a_later_edit_is_worked_out_against_what_the_earlier_ones_left() {
+            let mut history = History::new(fixture::project());
+            // The first trim takes c3 to 170; the second goes from there to the end of m1.
+            let changed = history
+                .edit(vec![trim("c3", 20), trim("c3", 50)], "agent")
+                .unwrap();
+            assert_eq!(
+                clips(history.project(), "V1")[1],
+                ("c3".into(), 100, 100, 150)
+            );
+            assert_eq!(changed.clamped, [1]);
+        }
+
+        #[test]
+        fn operations_and_edits_are_applied_in_one_transaction() {
+            let mut history = History::new(fixture::project());
+            let locks = [lock("V2"), lock("S1")].map(Change::Op);
+            let delete = Change::Edit(ripple_delete("c3"));
+            // c3 would be blocked by c5 on V2 and q7 on S1, but they are locked first.
+            let all = [locks.to_vec(), vec![delete]].concat();
+            let changed = history.change(all, "desktop", |change, _| change).unwrap();
+            assert_eq!(changed.parts[..2], [0..1, 1..2]);
+            assert!(matches!(changed.applied.done[0], Op::SetTrack { .. }));
+        }
+
+        #[test]
+        fn a_refused_edit_takes_back_the_whole_transaction_and_names_its_place() {
+            let start = fixture::project();
+            let mut history = History::new(start.clone());
+            let error = history
+                .edit(vec![trim("c3", 20), ripple_delete("c3")], "agent")
+                .unwrap_err();
+            assert_eq!(
+                error,
+                TransactionError::Edit {
+                    index: 1,
+                    error: EditError::RippleBlocked {
+                        track: "V2".into(),
+                        clip: "c5".into(),
+                    },
+                }
+            );
+            let written = serde_json::to_value(&error).unwrap();
+            assert_eq!(written["index"], 1);
+            assert_eq!(written["reason"], "ripple_blocked");
+            assert_eq!(
+                written["message"],
+                "operation 1 of the transaction was refused: c5 on track V2 is in the way of the \
+                 ripple"
+            );
+            assert_eq!(history.project(), &start);
+            assert_eq!(history.revision(), 0);
+            assert_eq!(history.edit(vec![], "agent"), Err(TransactionError::Empty));
+        }
+    }
 }

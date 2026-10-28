@@ -23,10 +23,13 @@ import contextlib
 import sys
 from collections.abc import Sequence
 
-__all__ = ["PORT", "REFUSED", "allows", "main", "serve"]
+__all__ = ["LISTENING", "PORT", "REFUSED", "allows", "main", "serve"]
 
 PORT = 3128
 """Where the proxy listens."""
+
+LISTENING = "The proxy listens."
+"""What the proxy says on its output once it listens, and not before."""
 
 REFUSED = "The sandbox of Columbina does not let commands reach {host}."
 
@@ -149,6 +152,7 @@ def main(argv: Sequence[str]) -> None:  # pragma: no cover - it runs in a contai
 
     async def forever() -> None:
         server = await serve("0.0.0.0", PORT, argv)
+        print(LISTENING, flush=True)
         async with server:
             await server.serve_forever()
 

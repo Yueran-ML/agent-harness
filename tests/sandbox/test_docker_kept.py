@@ -3174,10 +3174,13 @@ async def test_a_config_of_the_provider_that_makes_no_container_keeps_the_sandbo
 # A network that is allowed
 
 
-def allowed(engine: Engine) -> Docker:
+def allowed(engine: Engine, **more: Any) -> Docker:
     return Docker(
         DockerConfig(
-            program=engine.program, network="allowed", allowed_hosts=("pypi.org", "*.example.org")
+            program=engine.program,
+            network="allowed",
+            allowed_hosts=("pypi.org", "*.example.org"),
+            **more,
         )
     )
 
@@ -3195,6 +3198,7 @@ async def test_a_container_whose_network_is_allowed_has_a_proxy_in_a_network_of_
         "network",
         "run",
         "network",
+        "logs",
         "run",
         "usable",
         "command",
@@ -3225,6 +3229,7 @@ async def test_a_container_whose_network_is_allowed_has_a_proxy_in_a_network_of_
         ({"network": "create"}, "its network could not be made for the container"),
         ({"proxy": "fails"}, "its proxy could not be made for the container"),
         ({"network": "connect"}, "the way of its proxy into its network could not be made"),
+        ({"proxy": "ended"}, "the proxy of the container ended before it listened: .*No such"),
     ],
 )
 async def test_a_network_that_cannot_be_made_keeps_commands_from_running(
@@ -3238,6 +3243,33 @@ async def test_a_network_that_cannot_be_made_keeps_commands_from_running(
 
     assert [call[0:2] for call in engine.calls() if call[0] == "network"][-1] == ["network", "rm"]
     assert engine.containers() == {}
+
+
+async def test_a_container_is_started_once_its_proxy_listens(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    engine.told(proxy="late")
+    provider = allowed(engine)
+
+    await ran(provider, session, work, "print('one')")
+    await provider.close()
+
+    assert engine.verbs()[1:7] == ["network", "run", "network", "logs", "logs", "logs"]
+    assert engine.verbs()[7] == "run"
+
+
+async def test_a_proxy_that_does_not_listen_in_time_keeps_commands_from_running(
+    engine: Engine, session: Session, work: Path
+) -> None:
+    engine.told(proxy="silent")
+    provider = allowed(engine, start_timeout_seconds=5)
+
+    with pytest.raises(SandboxUnavailableError, match="did not listen within 5 seconds"):
+        await ran(provider, session, work, "print('never')")
+
+    assert engine.verbs().count("logs") > 1
+    assert engine.containers() == {}
+    assert [call[0:2] for call in engine.calls() if call[0] == "network"][-1] == ["network", "rm"]
 
 
 async def test_what_cannot_be_removed_of_a_network_is_said(

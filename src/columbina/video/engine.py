@@ -406,15 +406,16 @@ async def _connected(
             if sys.platform == "win32":  # pragma: windows only
                 proactor = cast("asyncio.ProactorEventLoop", loop)
                 # Any protocol is taken, whatever the stubs of typeshed say.
-                transport, _ = await proactor.create_pipe_connection(
+                pipe, _ = await proactor.create_pipe_connection(
                     lambda: wire,  # pyright: ignore[reportArgumentType]
                     address,
                 )
+                transport = cast("asyncio.Transport", pipe)
             else:  # pragma: posix only
                 transport, _ = await loop.create_unix_connection(lambda: wire, address)
     except (OSError, TimeoutError):
         return None
-    wire.transport = cast("asyncio.Transport", transport)
+    wire.transport = transport
     return wire
 
 

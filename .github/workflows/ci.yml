@@ -138,8 +138,11 @@ jobs:
 
       # The media of the tests are made in target/test-media by the ffmpeg first on PATH, and
       # every test that needs one has to run.
+      # These tests also measure playback and exercise hardware decoders. Run them one at a
+      # time so that other test engines and proxy encoders do not compete for the runner's
+      # CPU and decoder sessions. Keep the same timing and frame-count assertions.
       - name: Test
-        run: cargo test --workspace --locked --no-fail-fast
+        run: cargo test --workspace --locked --no-fail-fast -- --test-threads=1
         env:
           COLUMBINA_REQUIRE_FFMPEG: "1"
 

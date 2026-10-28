@@ -3758,6 +3758,9 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
         "backward at -1 on the proxy of 4K: {presented} frames in {seconds:.2} s, {:.1} a second",
         presented / seconds
     );
+    for trace in logged(&engine, "transport_probe") {
+        eprintln!("{trace}");
+    }
     assert!(presented >= 0.75 * 179.0, "{played}");
     // Proxies turned off: the media itself, at once while it does not play; and on again.
     agent

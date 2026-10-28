@@ -2388,6 +2388,9 @@ impl Loaded {
     /// made a picture now. A frame past the end, which the facts of the media promised, is the
     /// last that is there. Sound alone shows nothing.
     fn show(&mut self, frame: i64, pipe: &mut Pipe, world: &World) -> Result<(), MediaError> {
+        let probe = matches!(&self.mode, Mode::Playing(playing) if playing.clock.speed() < 0);
+        let begun = Instant::now();
+        let at = world.now();
         let Some(video) = &mut self.video else {
             return Ok(());
         };
@@ -2414,6 +2417,7 @@ impl Loaded {
             other => other?,
         };
         let frame = decoded.frame();
+        let decoded_at = Instant::now();
         let picture = match pipe.convert_now(decoded) {
             Err(MediaError::Device(why)) => {
                 // The card failed as the frame was copied: the decoder decodes it again on the
@@ -2429,6 +2433,17 @@ impl Loaded {
             other => other?,
         };
         self.present(picture, world);
+        if probe {
+            log(
+                "transport_probe",
+                &json!({
+                    "frame": frame,
+                    "at_ns": at,
+                    "decode_us": decoded_at.duration_since(begun).as_micros(),
+                    "convert_us": decoded_at.elapsed().as_micros(),
+                }),
+            );
+        }
         Ok(())
     }
 

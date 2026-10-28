@@ -57,6 +57,11 @@ impl<'a> Work<'a> {
         self.timeline().rate
     }
 
+    /// Say that the edit went less far than it was asked to.
+    pub fn clamp(&mut self) {
+        self.clamped = true;
+    }
+
     pub fn track(&self, id: &str) -> Result<&Track, EditError> {
         self.timeline()
             .tracks
@@ -98,6 +103,39 @@ impl<'a> Work<'a> {
     /// The ids of every track that is not locked.
     pub fn all_unlocked(&self) -> Vec<Id> {
         self.unlocked(&[TrackKind::Video, TrackKind::Audio, TrackKind::Subtitle])
+    }
+
+    /// The clips that an edit of `clips` works on: those, which must be on tracks that are not
+    /// locked, and with `linked` the clips in their groups on tracks that are not locked. Each
+    /// once, the ones given first.
+    pub fn group(&self, clips: &[Id], linked: bool) -> Result<Vec<Id>, EditError> {
+        let mut all: Vec<Id> = vec![];
+        for id in clips {
+            let (track, _) = self.clip(id)?;
+            if track.locked {
+                return Err(EditError::Locked {
+                    track: track.id.clone(),
+                });
+            }
+            if !all.contains(id) {
+                all.push(id.clone());
+            }
+        }
+        if linked {
+            let groups: HashSet<&Id> = all
+                .iter()
+                .filter_map(|id| self.clip(id).ok()?.1.link.as_ref())
+                .collect();
+            for track in self.timeline().tracks.iter().filter(|r| !r.locked) {
+                for clip in &track.clips {
+                    let linked = clip.link.as_ref().is_some_and(|g| groups.contains(g));
+                    if linked && !all.contains(&clip.id) {
+                        all.push(clip.id.clone());
+                    }
+                }
+            }
+        }
+        Ok(all)
     }
 
     /// Whether `clip` would show what is in its media, with `before` and `after` frames more
@@ -390,6 +428,30 @@ impl Work<'_> {
         let tracks = self.all_unlocked();
         self.shift(&tracks, at, length, &HashSet::new())
     }
+
+    /// Close the gaps from the start to the end of each of `spans` on every track that is not
+    /// locked, the last first.
+    pub fn close(&mut self, spans: &[(i64, i64)]) -> Result<(), EditError> {
+        let tracks = self.all_unlocked();
+        for &(from, to) in union(spans).iter().rev() {
+            self.shift(&tracks, to, from - to, &HashSet::new())?;
+        }
+        Ok(())
+    }
+}
+
+/// The stretches of frames that `spans` cover, in order, those that meet or overlap made one.
+pub(super) fn union(spans: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    let mut spans = spans.to_vec();
+    spans.sort_unstable();
+    let mut all: Vec<(i64, i64)> = vec![];
+    for (from, to) in spans {
+        match all.last_mut() {
+            Some(last) if from <= last.1 => last.1 = last.1.max(to),
+            _ => all.push((from, to)),
+        }
+    }
+    all
 }
 
 /// A clip of a timeline, and the track that it is on.

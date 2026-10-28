@@ -34,6 +34,7 @@
 //! the media, a clip in the way or a clip that would be left with no frame, goes as far as it can
 //! and says that it was clamped. One that cannot go at all is refused, and so is a `delta` of 0.
 
+mod cut;
 mod misc;
 mod place;
 mod work;
@@ -200,6 +201,96 @@ pub enum Edit {
         )]
         audio_track: Option<Option<Id>>,
     },
+    /// Take clips away, leaving gaps.
+    Lift {
+        /// The timeline.
+        timeline: Id,
+        /// The clips.
+        clips: Vec<Id>,
+        /// Whether the clips linked to them go too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Take clips away and close the gaps that they leave, on every track that is not locked.
+    RippleDelete {
+        /// The timeline.
+        timeline: Id,
+        /// The clips.
+        clips: Vec<Id>,
+        /// Whether the clips linked to them go too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Cut frames `from` to `to` out of every track that is not locked, or of the tracks given,
+    /// and close the gap.
+    RippleDeleteRange {
+        /// The timeline.
+        timeline: Id,
+        /// The first frame cut out.
+        from: i64,
+        /// The frame after the last cut out.
+        to: i64,
+        /// The tracks to cut, or all those that are not locked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tracks: Option<Vec<Id>>,
+    },
+    /// Close the gap that `at` is in on `track`, moving what is after it on every track that is
+    /// not locked.
+    CloseGap {
+        /// The timeline.
+        timeline: Id,
+        /// The track of the gap.
+        track: Id,
+        /// A frame of the gap.
+        at: i64,
+    },
+    /// Cut the clips across `at` in two, on the tracks given or on every track that is not
+    /// locked, and the clips linked to them.
+    Blade {
+        /// The timeline.
+        timeline: Id,
+        /// The frame that the second halves start at.
+        at: i64,
+        /// The tracks to cut, or all those that are not locked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tracks: Option<Vec<Id>>,
+        /// Whether the clips linked to those cut are cut too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Move clips by `delta` frames, and those of the kind of `to_track` to tracks as far from
+    /// theirs as `to_track` is from the track of the first clip. Refused with `no_room` where
+    /// there is something in the way, unless `overwrite`, which overwrites it.
+    Move {
+        /// The timeline.
+        timeline: Id,
+        /// The clips.
+        clips: Vec<Id>,
+        /// How many frames later they go.
+        delta: i64,
+        /// The track that the first clip goes to.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_track: Option<Id>,
+        /// Whether the clips overwrite what is in their way.
+        #[serde(default)]
+        overwrite: bool,
+        /// Whether the clips linked to them move too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
+    /// Take clips away, close the gaps, and insert them at `at`, a frame of the timeline as it
+    /// was before.
+    InsertMove {
+        /// The timeline.
+        timeline: Id,
+        /// The clips.
+        clips: Vec<Id>,
+        /// Where the first of them goes in.
+        at: i64,
+        /// Whether the clips linked to them move too.
+        #[serde(default = "yes")]
+        linked: bool,
+    },
     /// Put a subtitle on a track of subtitles.
     AddCue {
         /// The timeline.
@@ -324,6 +415,10 @@ pub struct CueItem {
     pub length: i64,
     /// What it says.
     pub text: String,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Read a field that may be `null` as well as left out: one that is there is read as `Some`.
@@ -512,6 +607,33 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
             audio_track,
             ..
         } => place::ripple_overwrite(&mut work, &source, at, &[video_track, audio_track]),
+        Edit::Lift { clips, linked, .. } => cut::lift(&mut work, &clips, linked),
+        Edit::RippleDelete { clips, linked, .. } => cut::ripple_delete(&mut work, &clips, linked),
+        Edit::RippleDeleteRange {
+            from, to, tracks, ..
+        } => cut::ripple_delete_range(&mut work, from, to, tracks.as_deref()),
+        Edit::CloseGap { track, at, .. } => cut::close_gap(&mut work, &track, at),
+        Edit::Blade {
+            at, tracks, linked, ..
+        } => cut::blade(&mut work, at, tracks.as_deref(), linked),
+        Edit::Move {
+            clips,
+            delta,
+            to_track,
+            overwrite,
+            linked,
+            ..
+        } => cut::move_clips(
+            &mut work,
+            &clips,
+            delta,
+            to_track.as_deref(),
+            overwrite,
+            linked,
+        ),
+        Edit::InsertMove {
+            clips, at, linked, ..
+        } => cut::insert_move(&mut work, &clips, at, linked),
         Edit::AddCue {
             track,
             start,
@@ -551,6 +673,13 @@ pub fn timeline_of(edit: &Edit) -> &Id {
         | Edit::Append { timeline, .. }
         | Edit::SmartInsert { timeline, .. }
         | Edit::RippleOverwrite { timeline, .. }
+        | Edit::Lift { timeline, .. }
+        | Edit::RippleDelete { timeline, .. }
+        | Edit::RippleDeleteRange { timeline, .. }
+        | Edit::CloseGap { timeline, .. }
+        | Edit::Blade { timeline, .. }
+        | Edit::Move { timeline, .. }
+        | Edit::InsertMove { timeline, .. }
         | Edit::AddCue { timeline, .. }
         | Edit::SetCue { timeline, .. }
         | Edit::RemoveCue { timeline, .. }

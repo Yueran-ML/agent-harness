@@ -35,12 +35,14 @@
 //! and says that it was clamped. One that cannot go at all is refused, and so is a `delta` of 0.
 
 mod misc;
+mod place;
 mod work;
 
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::ops::{apply_done, Op, OpError};
-use crate::project::{Id, Project, TrackKind};
+use crate::project::{Id, Project, Rgba, TitleStyle, TrackKind};
+use crate::time::Time;
 
 use work::Work;
 
@@ -48,6 +50,156 @@ use work::Work;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "edit", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Edit {
+    /// Put a source in at `at`: every track that is not locked is cut at `at`, and what is
+    /// after it moves on by the length of the source.
+    Insert {
+        /// The timeline.
+        timeline: Id,
+        /// What is put in.
+        source: Material,
+        /// The frame that it goes in at.
+        at: i64,
+        /// The track that its picture goes on (see [`Material`]).
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        video_track: Option<Option<Id>>,
+        /// The track that its sound goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        audio_track: Option<Option<Id>>,
+    },
+    /// Put a source on its tracks at `at`, over what is there; other tracks are left as they are.
+    Overwrite {
+        /// The timeline.
+        timeline: Id,
+        /// What is put on.
+        source: Material,
+        /// The frame that it starts at.
+        at: i64,
+        /// The track that its picture goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        video_track: Option<Option<Id>>,
+        /// The track that its sound goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        audio_track: Option<Option<Id>>,
+    },
+    /// Show a source in place of the clip at `at` on each of its tracks, keeping where the clip
+    /// is, how long it lasts and how it is set. The source begins at the clip's start from its
+    /// mark in, or from its start; or, if `from` is given, `from` is shown at `at`.
+    Replace {
+        /// The timeline.
+        timeline: Id,
+        /// What is shown instead.
+        source: Material,
+        /// A frame of the clips to replace.
+        at: i64,
+        /// The track of picture to replace on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        video_track: Option<Option<Id>>,
+        /// The track of sound to replace on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        audio_track: Option<Option<Id>>,
+    },
+    /// Put a source at `at` above everything there: on the first track of its kind, above the
+    /// highest that has something in its frames, that is not locked, or on a new one.
+    PlaceOnTop {
+        /// The timeline.
+        timeline: Id,
+        /// What is put on.
+        source: Material,
+        /// The frame that it starts at.
+        at: i64,
+    },
+    /// Put a source after the last clip of its tracks.
+    Append {
+        /// The timeline.
+        timeline: Id,
+        /// What is put on.
+        source: Material,
+        /// The track that its picture goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        video_track: Option<Option<Id>>,
+        /// The track that its sound goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        audio_track: Option<Option<Id>>,
+    },
+    /// Insert at the cut nearest to `at`, on the tracks that are not locked.
+    SmartInsert {
+        /// The timeline.
+        timeline: Id,
+        /// What is put in.
+        source: Material,
+        /// A frame near the cut.
+        at: i64,
+        /// The track that its picture goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        video_track: Option<Option<Id>>,
+        /// The track that its sound goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        audio_track: Option<Option<Id>>,
+    },
+    /// Put a source in place of the clip at `at`, for as long as the source lasts, and ripple
+    /// what follows by the difference.
+    RippleOverwrite {
+        /// The timeline.
+        timeline: Id,
+        /// What is put on.
+        source: Material,
+        /// A frame of the clip to replace.
+        at: i64,
+        /// The track that its picture goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        video_track: Option<Option<Id>>,
+        /// The track that its sound goes on.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        audio_track: Option<Option<Id>>,
+    },
     /// Put a subtitle on a track of subtitles.
     AddCue {
         /// The timeline.
@@ -119,6 +271,49 @@ pub enum Edit {
     },
 }
 
+/// What an edit puts on a timeline.
+///
+/// Media is put from `from` to `to`, in ticks of the scale of its duration: from its mark in, or
+/// its start, to its mark out, or its end, where they are left out; or for `length` frames from
+/// `from`, as for an edit of three points that takes its length from the timeline. Its picture
+/// goes on `video_track` and its sound on `audio_track`, linked to each other if both go: a
+/// track that is left out is the first track of its kind, and one that is `null` is not used. A
+/// title or a colour lasts `length` frames, and goes on a track of picture.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Material {
+    /// Media.
+    Media {
+        /// The media.
+        media: Id,
+        /// Where in it the clip begins.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<Time>,
+        /// Where in it the clip ends.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<Time>,
+        /// How many frames the clip lasts, if not as far as `to`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        length: Option<i64>,
+    },
+    /// A title.
+    Title {
+        /// What it says.
+        text: String,
+        /// How it is drawn.
+        style: TitleStyle,
+        /// How many frames it lasts.
+        length: i64,
+    },
+    /// A colour.
+    Color {
+        /// The colour.
+        color: Rgba,
+        /// How many frames it lasts.
+        length: i64,
+    },
+}
+
 /// A subtitle of [`Edit::CuesFrom`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -129,6 +324,14 @@ pub struct CueItem {
     pub length: i64,
     /// What it says.
     pub text: String,
+}
+
+/// Read a field that may be `null` as well as left out: one that is there is read as `Some`.
+#[allow(clippy::option_option, reason = "left out and null are told apart")]
+fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Why an edit is refused.
@@ -267,6 +470,48 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
     let timeline = timeline_of(&edit).clone();
     let mut work = Work::new(project, &timeline)?;
     match edit {
+        Edit::Insert {
+            source,
+            at,
+            video_track,
+            audio_track,
+            ..
+        } => place::insert(&mut work, &source, at, &[video_track, audio_track]),
+        Edit::Overwrite {
+            source,
+            at,
+            video_track,
+            audio_track,
+            ..
+        } => place::overwrite(&mut work, &source, at, &[video_track, audio_track]),
+        Edit::Replace {
+            source,
+            at,
+            video_track,
+            audio_track,
+            ..
+        } => place::replace(&mut work, &source, at, &[video_track, audio_track]),
+        Edit::PlaceOnTop { source, at, .. } => place::place_on_top(&mut work, &source, at),
+        Edit::Append {
+            source,
+            video_track,
+            audio_track,
+            ..
+        } => place::append(&mut work, &source, &[video_track, audio_track]),
+        Edit::SmartInsert {
+            source,
+            at,
+            video_track,
+            audio_track,
+            ..
+        } => place::smart_insert(&mut work, &source, at, &[video_track, audio_track]),
+        Edit::RippleOverwrite {
+            source,
+            at,
+            video_track,
+            audio_track,
+            ..
+        } => place::ripple_overwrite(&mut work, &source, at, &[video_track, audio_track]),
         Edit::AddCue {
             track,
             start,
@@ -299,7 +544,14 @@ pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditEr
 #[must_use]
 pub fn timeline_of(edit: &Edit) -> &Id {
     match edit {
-        Edit::AddCue { timeline, .. }
+        Edit::Insert { timeline, .. }
+        | Edit::Overwrite { timeline, .. }
+        | Edit::Replace { timeline, .. }
+        | Edit::PlaceOnTop { timeline, .. }
+        | Edit::Append { timeline, .. }
+        | Edit::SmartInsert { timeline, .. }
+        | Edit::RippleOverwrite { timeline, .. }
+        | Edit::AddCue { timeline, .. }
         | Edit::SetCue { timeline, .. }
         | Edit::RemoveCue { timeline, .. }
         | Edit::CuesFrom { timeline, .. }

@@ -2214,7 +2214,7 @@ fn check_settings_of(clip: &Clip) -> Result<(), OpError> {
 /// Check that what a clip of `media` shows lies inside the media, with `before` frames more
 /// before its start and `after` more after its end, as a transition shows them; or say which
 /// way it is out of it, as [`OpError::OutOfSource`] does.
-fn in_source(
+pub(crate) fn in_source(
     media: &Media,
     rate: Rate,
     clip: &Clip,

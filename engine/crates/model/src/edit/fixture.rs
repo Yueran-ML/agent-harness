@@ -14,12 +14,14 @@
 //! m1 has picture and sound and lasts 250 frames; m2 has sound only and lasts 200. `next_id` is
 //! 10.
 
-use super::{expand, Edit, EditError, Expansion};
+use super::{expand, Edit, EditError, Expansion, Material};
 use crate::ops::{apply, Op};
 use crate::project::{
-    AudioFacts, Clip, Cue, Facts, Identity, Media, Project, Timeline, Track, TrackKind, VideoFacts,
+    AudioFacts, Clip, Cue, Facts, Identity, Media, Project, Timeline, Track, TrackKind, Transition,
+    TransitionKind, VideoFacts,
 };
 use crate::time::{Rate, Time};
+use crate::Alignment;
 
 pub const RATE: Rate = Rate { num: 25, den: 1 };
 
@@ -110,6 +112,27 @@ pub fn with(mut project: Project, ops: Vec<Op>) -> Project {
     project
 }
 
+/// A transition with no id between two clips of t1.
+pub fn transition(track: &str, left: &str, right: &str, length: i64, align: Alignment) -> Op {
+    let kind = if track.starts_with('A') {
+        TransitionKind::Crossfade
+    } else {
+        TransitionKind::Dissolve
+    };
+    Op::AddTransition {
+        timeline: "t1".into(),
+        track: track.into(),
+        transition: Transition {
+            id: String::new(),
+            kind,
+            left: left.into(),
+            right: right.into(),
+            length,
+            align,
+        },
+    }
+}
+
 /// Lock a track of t1.
 pub fn lock(track: &str) -> Op {
     Op::SetTrack {
@@ -141,6 +164,22 @@ pub fn refused(mut project: Project, edit: Edit) -> EditError {
     error
 }
 
+/// The clips of a track of t1: id, start, length and where each begins in its media.
+pub fn clips(project: &Project, track: &str) -> Vec<(String, i64, i64, i64)> {
+    project.timelines[0]
+        .tracks
+        .iter()
+        .find(|r| r.id == track)
+        .unwrap()
+        .clips
+        .iter()
+        .map(|c| {
+            let from = c.source_in().map_or(-1, |t| t.ticks);
+            (c.id.clone(), c.start, c.length, from)
+        })
+        .collect()
+}
+
 /// The subtitles of a track of t1: id, start and length.
 pub fn cues(project: &Project, track: &str) -> Vec<(String, i64, i64)> {
     project.timelines[0]
@@ -151,5 +190,46 @@ pub fn cues(project: &Project, track: &str) -> Vec<(String, i64, i64)> {
         .cues
         .iter()
         .map(|q| (q.id.clone(), q.start, q.length))
+        .collect()
+}
+
+/// A clip of t1.
+pub fn the(project: &Project, id: &str) -> Clip {
+    project.timelines[0]
+        .tracks
+        .iter()
+        .flat_map(|r| &r.clips)
+        .find(|c| c.id == id)
+        .unwrap()
+        .clone()
+}
+
+/// The transitions of a track of t1: left, right, length.
+pub fn transitions(project: &Project, track: &str) -> Vec<(String, String, i64)> {
+    project.timelines[0]
+        .tracks
+        .iter()
+        .find(|r| r.id == track)
+        .unwrap()
+        .transitions
+        .iter()
+        .map(|x| (x.left.clone(), x.right.clone(), x.length))
+        .collect()
+}
+
+/// m1 from `from` to `to`, in frames.
+pub fn m1(from: Option<i64>, to: Option<i64>) -> Material {
+    Material::Media {
+        media: "m1".into(),
+        from: from.map(at),
+        to: to.map(at),
+        length: None,
+    }
+}
+
+/// Owned rows, to compare with `clips`.
+pub fn rows(rows: &[(&str, i64, i64, i64)]) -> Vec<(String, i64, i64, i64)> {
+    rows.iter()
+        .map(|&(id, start, length, from)| (id.to_string(), start, length, from))
         .collect()
 }

@@ -3003,22 +3003,29 @@ async fn measure_playing_and_scrubbing() {
 
 impl Client {
     /// Every `media.proxy` that comes, of those that came or come, until `done` takes those
-    /// told so far; the other messages are let go.
+    /// told so far; the other messages are let go. The engine tells how far the proxy being
+    /// made has come every second: it fails if nothing is told of proxies for `2 * WAIT`, and
+    /// after `10 * WAIT` in all. A proxy made on the processor, in `ProRes`, by a computer whose
+    /// every core is busy with the other tests (as on the CI) takes a minute or more for the
+    /// media of a test, and NVENC a few seconds.
     async fn proxies_until(&mut self, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
-        let deadline = Instant::now() + 2 * WAIT;
+        let end = Instant::now() + 10 * WAIT;
+        let mut deadline = Instant::now() + 2 * WAIT;
         let mut notes = Vec::new();
         loop {
             if done(&notes) {
                 return notes;
             }
             let message = if self.notifications.is_empty() {
-                assert!(Instant::now() < deadline, "{notes:?}");
+                let now = Instant::now();
+                assert!(now < deadline && now < end, "{notes:?}");
                 self.message().await
             } else {
                 self.notifications.remove(0)
             };
             if message["method"] == "media.proxy" {
                 notes.push(message["params"].clone());
+                deadline = Instant::now() + 2 * WAIT;
             }
         }
     }
@@ -3196,6 +3203,40 @@ fn aligned(media: &Value, seed: u64) {
     }
 }
 
+/// The encoder that made the proxy of each of `media`, as the engine logs it: NVENC where it
+/// can use a card of NVIDIA, else ProRes, which is all that a computer without one (as those of
+/// the CI) has. The log is written on a thread of its own, and may come a little after the
+/// proxy is told done.
+async fn made_by(engine: &Engine, media: &[&str]) -> Vec<String> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let made = logged(engine, "proxy_made");
+        let found: Option<Vec<String>> = media
+            .iter()
+            .map(|id| {
+                made.iter()
+                    .find(|line| line["media"] == *id)
+                    .and_then(|line| line["encoder"].as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        if let Some(found) = found {
+            return found;
+        }
+        assert!(Instant::now() < deadline, "{made:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The codec of a proxy that an encoder of the engine makes.
+fn codec_of(encoder: &str) -> &'static str {
+    match encoder {
+        "hevc_nvenc" | "hevc_nvenc (cuda)" => "hevc",
+        "prores_ks" => "prores",
+        other => panic!("no proxy is made by {other}"),
+    }
+}
+
 #[tokio::test]
 async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as_the_media() {
     use support::Sample;
@@ -3211,7 +3252,7 @@ async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as
         Sample::Portrait,
         Sample::EditList,
     ];
-    let Some((_engine, mut agent)) = proxy_engine(dir.path(), &samples, &[]).await else {
+    let Some((engine, mut agent)) = proxy_engine(dir.path(), &samples, &[]).await else {
         return;
     };
     let ids: Vec<String> = (1..=samples.len()).map(|n| format!("m{n}")).collect();
@@ -3219,10 +3260,15 @@ async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as
     let notes = agent.proxies_of(&ids).await;
     one_at_a_time(&notes, &ids);
     let got = project(&mut agent).await;
+    let encoders = made_by(&engine, &ids).await;
     for (index, sample) in samples.into_iter().enumerate() {
         let media = &got["project"]["media"][index];
-        eprintln!("{sample:?}: {}", media["proxy"]);
-        assert_eq!(media["proxy"]["codec"], "hevc", "{media}");
+        eprintln!("{sample:?}, by {}: {}", encoders[index], media["proxy"]);
+        assert_eq!(
+            media["proxy"]["codec"],
+            codec_of(&encoders[index]),
+            "{media}"
+        );
         aligned(media, 17 + index as u64);
     }
     // The 4K picture is made 1920 wide, the others kept as they are.

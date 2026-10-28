@@ -106,11 +106,11 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::project::{
-    Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track, TrackKind, Transition,
-    TransitionKind,
+    Alignment, Bin, Clip, Cue, Id, Media, Project, Proxy, Source, Timeline, Track, TrackKind,
+    Transform, Transition, TransitionKind,
 };
 use crate::span;
-use crate::time::{Rate, Time};
+use crate::time::{Rate, Speed, Time};
 
 /// The largest integer that JavaScript holds exactly, 2^53 - 1. No integer that an operation
 /// writes into a project is further than this from 0.
@@ -223,6 +223,219 @@ pub enum Op {
         /// Its proxy, or none.
         proxy: Option<Proxy>,
     },
+    /// Set the settings of a timeline that are given. At another rate its clips keep their
+    /// frames, and show more or less of their media.
+    SetTimeline {
+        /// The timeline.
+        id: Id,
+        /// Its name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// The rate of its frames.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rate: Option<Rate>,
+        /// The width of its picture.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        /// The height of its picture.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+        /// The samples a second of its sound.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sample_rate: Option<u32>,
+    },
+    /// Set the settings of a track that are given.
+    SetTrack {
+        /// The timeline.
+        timeline: Id,
+        /// The track.
+        id: Id,
+        /// Its name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Whether it is seen or heard.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        /// Whether it is locked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        locked: Option<bool>,
+        /// The language of its subtitles.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        language: Option<String>,
+    },
+    /// Set the settings of a clip that are given.
+    SetClip {
+        /// The timeline of the clip.
+        timeline: Id,
+        /// The clip.
+        id: Id,
+        /// Whether it is seen or heard.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        /// How fast it plays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        speed: Option<Speed>,
+        /// Whether it plays backward.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reverse: Option<bool>,
+        /// Its group: `null` to take it out of the one that it is in, and an empty id for the
+        /// engine to put it in a new one.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        link: Option<Option<Id>>,
+        /// Its transform, whole.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transform: Option<Transform>,
+        /// Its gain.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gain_db: Option<f64>,
+        /// Its pan.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pan: Option<f64>,
+        /// The frames that it fades in over.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fade_in: Option<i64>,
+        /// The frames that it fades out over.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fade_out: Option<i64>,
+        /// Its source: a title for a clip of a title, a colour for a clip of a colour. A clip of
+        /// media is given other media by taking it away and putting a new one in its place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<Source>,
+    },
+    /// Add a bin, at `index` in the list of bins, or at the end if there is none.
+    AddBin {
+        /// The bin, with an empty id for the engine to give it one.
+        bin: Bin,
+        /// Where it goes in the list of bins.
+        #[serde(default)]
+        index: Option<usize>,
+    },
+    /// Take away a bin that holds no bin and no media.
+    RemoveBin {
+        /// The bin.
+        id: Id,
+    },
+    /// Set the settings of a bin that are given.
+    SetBin {
+        /// The bin.
+        id: Id,
+        /// Its name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// The bin that it is in, or `null` for the root.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        parent: Option<Option<Id>>,
+    },
+    /// Set the settings of media that are given.
+    SetMedia {
+        /// The media.
+        id: Id,
+        /// Its name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// The bin that it is kept in, or `null` for the root.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        bin: Option<Option<Id>>,
+        /// Its mark in, or `null` for none.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        mark_in: Option<Option<Time>>,
+        /// Its mark out, or `null` for none.
+        #[serde(
+            default,
+            deserialize_with = "nullable",
+            skip_serializing_if = "Option::is_none"
+        )]
+        mark_out: Option<Option<Time>>,
+    },
+    /// Put a transition at the cut between two clips of a track, in the order of the cuts there.
+    AddTransition {
+        /// The timeline.
+        timeline: Id,
+        /// The track.
+        track: Id,
+        /// The transition, with an empty id for the engine to give it one.
+        transition: Transition,
+    },
+    /// Take a transition away from a timeline.
+    RemoveTransition {
+        /// The timeline.
+        timeline: Id,
+        /// The transition.
+        id: Id,
+    },
+    /// Set the settings of a transition that are given.
+    SetTransition {
+        /// The timeline of the transition.
+        timeline: Id,
+        /// The transition.
+        id: Id,
+        /// How the one clip gives way to the other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<TransitionKind>,
+        /// How many frames it lasts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        length: Option<i64>,
+        /// Where it lies about the cut.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        align: Option<Alignment>,
+    },
+    /// Put a subtitle on a track of subtitles, in the order of the starts of those there.
+    AddCue {
+        /// The timeline.
+        timeline: Id,
+        /// The track.
+        track: Id,
+        /// The subtitle, with an empty id for the engine to give it one.
+        cue: Cue,
+    },
+    /// Take a subtitle away from a timeline.
+    RemoveCue {
+        /// The timeline.
+        timeline: Id,
+        /// The subtitle.
+        id: Id,
+    },
+    /// Set the settings of a subtitle that are given.
+    SetCue {
+        /// The timeline of the subtitle.
+        timeline: Id,
+        /// The subtitle.
+        id: Id,
+        /// The frame that it is first shown at.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start: Option<i64>,
+        /// How many frames it is shown for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        length: Option<i64>,
+        /// What it says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    },
+}
+
+/// Read a field of a change that may be `null`, to take a thing away, as well as left out, to
+/// leave it as it is: one that is there is read as `Some`, and its value may be none.
+#[allow(clippy::option_option, reason = "left out and null are told apart")]
+fn nullable<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Why an operation is refused.
@@ -436,6 +649,14 @@ pub enum OpError {
         /// The bin.
         bin: Id,
     },
+    /// A bin that holds a bin or media is to be taken away.
+    #[error("bin {bin} holds {holds}")]
+    NotEmpty {
+        /// The bin.
+        bin: Id,
+        /// A bin or media that it holds.
+        holds: Id,
+    },
 }
 
 /// Why a project that is read is not one that the operations can work on: the thing of it that
@@ -496,6 +717,7 @@ enum Fields {
     TooLong { transition: Id, clip: Id },
     Source { clip: Id },
     Cycle { bin: Id },
+    NotEmpty { bin: Id, holds: Id },
 }
 
 /// How [`Invalid`] names the thing that is wrong.
@@ -571,6 +793,7 @@ fn scale_message(scale: u32, media_scale: u32) -> String {
 ///
 /// # Errors
 /// The operation is refused, and the project is left exactly as it was.
+#[allow(clippy::too_many_lines, reason = "an arm for each operation")]
 pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
     match op {
         Op::AddMedia { media, index } => add_media(project, media, index),
@@ -603,6 +826,108 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             length,
         } => trim_clip(project, &timeline, &id, source_in, start, length),
         Op::SetProxy { media, proxy } => set_proxy(project, &media, proxy),
+        Op::SetTimeline {
+            id,
+            name,
+            rate,
+            width,
+            height,
+            sample_rate,
+        } => set_timeline(
+            project,
+            &id,
+            TimelineSettings {
+                name,
+                rate,
+                width,
+                height,
+                sample_rate,
+            },
+        ),
+        Op::SetTrack {
+            timeline,
+            id,
+            name,
+            enabled,
+            locked,
+            language,
+        } => set_track(
+            project,
+            &timeline,
+            &id,
+            TrackSettings {
+                name,
+                enabled,
+                locked,
+                language,
+            },
+        ),
+        Op::SetClip {
+            timeline,
+            id,
+            enabled,
+            speed,
+            reverse,
+            link,
+            transform,
+            gain_db,
+            pan,
+            fade_in,
+            fade_out,
+            source,
+        } => set_clip(
+            project,
+            &timeline,
+            &id,
+            ClipSettings {
+                enabled,
+                speed,
+                reverse,
+                link,
+                transform,
+                gain_db,
+                pan,
+                fade_in,
+                fade_out,
+                source,
+            },
+        ),
+        Op::AddBin { bin, index } => add_bin(project, bin, index),
+        Op::RemoveBin { id } => remove_bin(project, &id),
+        Op::SetBin { id, name, parent } => set_bin(project, &id, name, parent),
+        Op::SetMedia {
+            id,
+            name,
+            bin,
+            mark_in,
+            mark_out,
+        } => set_media(project, &id, name, bin, (mark_in, mark_out)),
+        Op::AddTransition {
+            timeline,
+            track,
+            transition,
+        } => add_transition(project, &timeline, &track, transition),
+        Op::RemoveTransition { timeline, id } => remove_transition(project, &timeline, &id),
+        Op::SetTransition {
+            timeline,
+            id,
+            kind,
+            length,
+            align,
+        } => set_transition(project, &timeline, &id, kind, length, align),
+        Op::AddCue {
+            timeline,
+            track,
+            cue,
+        } => add_cue(project, &timeline, &track, cue),
+        Op::RemoveCue { timeline, id } => remove_cue(project, &timeline, &id),
+        Op::SetCue {
+            timeline,
+            id,
+            start,
+            length,
+            text,
+        } => set_cue(project, &timeline, &id, start, length, text),
     }
 }
 
@@ -628,13 +953,52 @@ pub fn apply_done(project: &mut Project, op: Op) -> Result<(Op, Op), OpError> {
         Op::AddMedia { .. }
         | Op::AddTimeline { .. }
         | Op::AddTrack { .. }
-        | Op::InsertClip { .. } => None,
+        | Op::InsertClip { .. }
+        | Op::AddBin { .. }
+        | Op::AddTransition { .. }
+        | Op::AddCue { .. } => None,
         _ => Some(op.clone()),
     };
     let inverse = apply(project, op)?;
-    let done = kept.unwrap_or_else(|| {
-        added(project, &inverse).expect("an operation that adds a thing leaves it in the project")
-    });
+    let done = match kept {
+        // A group that the engine made is named as it was made.
+        Some(Op::SetClip {
+            timeline,
+            id,
+            link: Some(Some(group)),
+            enabled,
+            speed,
+            reverse,
+            transform,
+            gain_db,
+            pan,
+            fade_in,
+            fade_out,
+            source,
+        }) if group.is_empty() => {
+            let t = &project.timelines
+                [timeline_at(project, &timeline).expect("a clip that was set is in its timeline")];
+            let (r, at) = clip_at(t, &id).expect("a clip that was set is in its timeline");
+            let link = Some(t.tracks[r].clips[at].link.clone());
+            Op::SetClip {
+                timeline,
+                id,
+                enabled,
+                speed,
+                reverse,
+                link,
+                transform,
+                gain_db,
+                pan,
+                fade_in,
+                fade_out,
+                source,
+            }
+        }
+        Some(op) => op,
+        None => added(project, &inverse)
+            .expect("an operation that adds a thing leaves it in the project"),
+    };
     Ok((done, inverse))
 }
 
@@ -671,6 +1035,31 @@ fn added(project: &Project, inverse: &Op) -> Option<Op> {
                 timeline: timeline.clone(),
                 track: t.tracks[r].id.clone(),
                 clip: t.tracks[r].clips[at].clone(),
+            })
+        }
+        Op::RemoveBin { id } => {
+            let at = bin_at(project, id).ok()?;
+            Some(Op::AddBin {
+                bin: project.bins[at].clone(),
+                index: Some(at),
+            })
+        }
+        Op::RemoveTransition { timeline, id } => {
+            let t = &project.timelines[timeline_at(project, timeline).ok()?];
+            let (r, at) = transition_at(t, id).ok()?;
+            Some(Op::AddTransition {
+                timeline: timeline.clone(),
+                track: t.tracks[r].id.clone(),
+                transition: t.tracks[r].transitions[at].clone(),
+            })
+        }
+        Op::RemoveCue { timeline, id } => {
+            let t = &project.timelines[timeline_at(project, timeline).ok()?];
+            let (r, at) = cue_at(t, id).ok()?;
+            Some(Op::AddCue {
+                timeline: timeline.clone(),
+                track: t.tracks[r].id.clone(),
+                cue: t.tracks[r].cues[at].clone(),
             })
         }
         _ => None,
@@ -927,6 +1316,475 @@ fn trim_clip(
     Ok(inverse)
 }
 
+/// The settings of a timeline that a [`Op::SetTimeline`] sets.
+struct TimelineSettings {
+    name: Option<String>,
+    rate: Option<Rate>,
+    width: Option<u32>,
+    height: Option<u32>,
+    sample_rate: Option<u32>,
+}
+
+fn set_timeline(project: &mut Project, id: &str, set: TimelineSettings) -> Result<Op, OpError> {
+    let t = timeline_at(project, id)?;
+    let old = &project.timelines[t];
+    let mut new = Timeline {
+        tracks: vec![],
+        ..old.clone()
+    };
+    swap(&mut new.name, set.name.clone());
+    swap(&mut new.rate, set.rate);
+    swap(&mut new.width, set.width);
+    swap(&mut new.height, set.height);
+    swap(&mut new.sample_rate, set.sample_rate);
+    check_settings(&new)?;
+    if new.rate != old.rate {
+        for track in &old.tracks {
+            check_track(project, new.rate, track)?;
+        }
+    }
+    let inverse = Op::SetTimeline {
+        id: id.into(),
+        name: set.name.map(|_| old.name.clone()),
+        rate: set.rate.map(|_| old.rate),
+        width: set.width.map(|_| old.width),
+        height: set.height.map(|_| old.height),
+        sample_rate: set.sample_rate.map(|_| old.sample_rate),
+    };
+    let timeline = &mut project.timelines[t];
+    new.tracks = std::mem::take(&mut timeline.tracks);
+    *timeline = new;
+    Ok(inverse)
+}
+
+/// The settings of a track that a [`Op::SetTrack`] sets.
+struct TrackSettings {
+    name: Option<String>,
+    enabled: Option<bool>,
+    locked: Option<bool>,
+    language: Option<String>,
+}
+
+fn set_track(
+    project: &mut Project,
+    timeline_id: &str,
+    id: &str,
+    set: TrackSettings,
+) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let r = track_at(&project.timelines[t], id)?;
+    let track = &project.timelines[t].tracks[r];
+    if let Some(language) = &set.language {
+        check_language(track.kind, language)?;
+    }
+    let inverse = Op::SetTrack {
+        timeline: timeline_id.into(),
+        id: id.into(),
+        name: set.name.as_ref().map(|_| track.name.clone()),
+        enabled: set.enabled.map(|_| track.enabled),
+        locked: set.locked.map(|_| track.locked),
+        language: set.language.as_ref().map(|_| track.language.clone()),
+    };
+    let track = &mut project.timelines[t].tracks[r];
+    swap(&mut track.name, set.name);
+    swap(&mut track.enabled, set.enabled);
+    swap(&mut track.locked, set.locked);
+    swap(&mut track.language, set.language);
+    Ok(inverse)
+}
+
+/// The settings of a clip that a [`Op::SetClip`] sets.
+#[allow(clippy::option_option, reason = "left out and null are told apart")]
+struct ClipSettings {
+    enabled: Option<bool>,
+    speed: Option<Speed>,
+    reverse: Option<bool>,
+    link: Option<Option<Id>>,
+    transform: Option<Transform>,
+    gain_db: Option<f64>,
+    pan: Option<f64>,
+    fade_in: Option<i64>,
+    fade_out: Option<i64>,
+    source: Option<Source>,
+}
+
+fn set_clip(
+    project: &mut Project,
+    timeline_id: &str,
+    id: &str,
+    set: ClipSettings,
+) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let timeline = &project.timelines[t];
+    let (r, at) = clip_at(timeline, id)?;
+    let track = &timeline.tracks[r];
+    let old = &track.clips[at];
+    let mut new = old.clone();
+    swap(&mut new.enabled, set.enabled);
+    swap(&mut new.speed, set.speed);
+    swap(&mut new.reverse, set.reverse);
+    swap(&mut new.transform, set.transform);
+    swap(&mut new.gain_db, set.gain_db);
+    swap(&mut new.pan, set.pan);
+    swap(&mut new.fade_in, set.fade_in);
+    swap(&mut new.fade_out, set.fade_out);
+    if let Some(source) = &set.source {
+        let alike = matches!(
+            (&old.source, source),
+            (Source::Title { .. }, Source::Title { .. })
+                | (Source::Color { .. }, Source::Color { .. })
+        );
+        if !alike {
+            return Err(OpError::Source { clip: id.into() });
+        }
+        new.source = source.clone();
+    }
+    let mut counter = Counter::of(project);
+    if let Some(link) = &set.link {
+        new.link.clone_from(link);
+        self::link(&mut counter, &mut new.link, &links_of(project))?;
+    }
+    check_clip(project, timeline.rate, track.kind, &new)?;
+    if unattached(track, id).is_err() {
+        let mut beside = track.clone();
+        beside.clips[at] = new.clone();
+        check_transitions(project, timeline.rate, &beside)?;
+    }
+    let inverse = Op::SetClip {
+        timeline: timeline_id.into(),
+        id: id.into(),
+        enabled: set.enabled.map(|_| old.enabled),
+        speed: set.speed.map(|_| old.speed),
+        reverse: set.reverse.map(|_| old.reverse),
+        link: set.link.map(|_| old.link.clone()),
+        transform: set.transform.map(|_| old.transform),
+        gain_db: set.gain_db.map(|_| old.gain_db),
+        pan: set.pan.map(|_| old.pan),
+        fade_in: set.fade_in.map(|_| old.fade_in),
+        fade_out: set.fade_out.map(|_| old.fade_out),
+        source: set.source.map(|_| old.source.clone()),
+    };
+    project.timelines[t].tracks[r].clips[at] = new;
+    project.next_id = counter.next;
+    Ok(inverse)
+}
+
+/// Put `value` in `field` where there is one.
+fn swap<T>(field: &mut T, value: Option<T>) {
+    if let Some(value) = value {
+        *field = value;
+    }
+}
+
+fn add_bin(project: &mut Project, mut bin: Bin, index: Option<usize>) -> Result<Op, OpError> {
+    let at = place(index, project.bins.len())?;
+    let held = |id: &str| project.bins.iter().any(|b| b.id == id);
+    let mut counter = Counter::of(project);
+    if bin.id.is_empty() {
+        bin.id = counter.make('b', held)?;
+    } else if held(&bin.id) {
+        return Err(taken("bin", &bin.id));
+    } else {
+        counter.check(&bin.id)?;
+    }
+    if let Some(parent) = &bin.parent {
+        bin_at(project, parent)?;
+    }
+    let id = bin.id.clone();
+    project.bins.insert(at, bin);
+    project.next_id = counter.next;
+    Ok(Op::RemoveBin { id })
+}
+
+fn remove_bin(project: &mut Project, id: &str) -> Result<Op, OpError> {
+    let at = bin_at(project, id)?;
+    let child = project
+        .bins
+        .iter()
+        .find(|b| b.parent.as_deref() == Some(id))
+        .map(|b| &b.id);
+    let media = project
+        .media
+        .iter()
+        .find(|m| m.bin.as_deref() == Some(id))
+        .map(|m| &m.id);
+    if let Some(holds) = child.or(media) {
+        return Err(OpError::NotEmpty {
+            bin: id.into(),
+            holds: holds.clone(),
+        });
+    }
+    let bin = project.bins.remove(at);
+    Ok(Op::AddBin {
+        bin,
+        index: Some(at),
+    })
+}
+
+#[allow(clippy::option_option, reason = "left out and null are told apart")]
+fn set_bin(
+    project: &mut Project,
+    id: &str,
+    name: Option<String>,
+    parent: Option<Option<Id>>,
+) -> Result<Op, OpError> {
+    let at = bin_at(project, id)?;
+    if let Some(Some(parent)) = &parent {
+        // The bin is not to be put in itself, nor in a bin that is inside it.
+        let mut inside = Some(parent);
+        while let Some(bin) = inside {
+            if bin == id {
+                return Err(OpError::Cycle { bin: id.into() });
+            }
+            inside = project.bins[bin_at(project, bin)?].parent.as_ref();
+        }
+    }
+    let bin = &mut project.bins[at];
+    let inverse = Op::SetBin {
+        id: id.into(),
+        name: name.as_ref().map(|_| bin.name.clone()),
+        parent: parent.as_ref().map(|_| bin.parent.clone()),
+    };
+    swap(&mut bin.name, name);
+    swap(&mut bin.parent, parent);
+    Ok(inverse)
+}
+
+#[allow(clippy::option_option, reason = "left out and null are told apart")]
+fn set_media(
+    project: &mut Project,
+    id: &str,
+    name: Option<String>,
+    bin: Option<Option<Id>>,
+    (mark_in, mark_out): (Option<Option<Time>>, Option<Option<Time>>),
+) -> Result<Op, OpError> {
+    let at = project
+        .media
+        .iter()
+        .position(|m| m.id == id)
+        .ok_or_else(|| missing("media", id))?;
+    let old = &project.media[at];
+    let mut new = old.clone();
+    swap(&mut new.name, name.clone());
+    swap(&mut new.bin, bin.clone());
+    swap(&mut new.mark_in, mark_in);
+    swap(&mut new.mark_out, mark_out);
+    if let Some(bin) = &new.bin {
+        bin_at(project, bin)?;
+    }
+    check_marks(&new)?;
+    let inverse = Op::SetMedia {
+        id: id.into(),
+        name: name.map(|_| old.name.clone()),
+        bin: bin.map(|_| old.bin.clone()),
+        mark_in: mark_in.map(|_| old.mark_in),
+        mark_out: mark_out.map(|_| old.mark_out),
+    };
+    project.media[at] = new;
+    Ok(inverse)
+}
+
+fn add_transition(
+    project: &mut Project,
+    timeline_id: &str,
+    track_id: &str,
+    mut transition: Transition,
+) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let timeline = &project.timelines[t];
+    let r = track_at(timeline, track_id)?;
+    let track = &timeline.tracks[r];
+    let held = |id: &str| {
+        tracks_of(project)
+            .flat_map(|r| &r.transitions)
+            .any(|x| x.id == id)
+    };
+    let mut counter = Counter::of(project);
+    if transition.id.is_empty() {
+        transition.id = counter.make('x', held)?;
+    } else if held(&transition.id) {
+        return Err(taken("transition", &transition.id));
+    } else {
+        counter.check(&transition.id)?;
+    }
+    if track.kind == TrackKind::Subtitle {
+        return Err(OpError::WrongTrack {
+            what: "transition",
+            kind: track.kind,
+        });
+    }
+    let mut beside = track.clone();
+    beside.transitions.push(transition.clone());
+    order(&mut beside);
+    check_transitions(project, timeline.rate, &beside)?;
+    let id = transition.id.clone();
+    project.timelines[t].tracks[r].transitions = beside.transitions;
+    project.next_id = counter.next;
+    Ok(Op::RemoveTransition {
+        timeline: timeline_id.into(),
+        id,
+    })
+}
+
+fn remove_transition(project: &mut Project, timeline_id: &str, id: &str) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let (r, at) = transition_at(&project.timelines[t], id)?;
+    let track = &mut project.timelines[t].tracks[r];
+    let transition = track.transitions.remove(at);
+    Ok(Op::AddTransition {
+        timeline: timeline_id.into(),
+        track: track.id.clone(),
+        transition,
+    })
+}
+
+fn set_transition(
+    project: &mut Project,
+    timeline_id: &str,
+    id: &str,
+    kind: Option<TransitionKind>,
+    length: Option<i64>,
+    align: Option<Alignment>,
+) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let timeline = &project.timelines[t];
+    let (r, at) = transition_at(timeline, id)?;
+    let old = &timeline.tracks[r].transitions[at];
+    let mut beside = timeline.tracks[r].clone();
+    let new = &mut beside.transitions[at];
+    swap(&mut new.kind, kind);
+    swap(&mut new.length, length);
+    swap(&mut new.align, align);
+    check_transitions(project, timeline.rate, &beside)?;
+    let inverse = Op::SetTransition {
+        timeline: timeline_id.into(),
+        id: id.into(),
+        kind: kind.map(|_| old.kind),
+        length: length.map(|_| old.length),
+        align: align.map(|_| old.align),
+    };
+    project.timelines[t].tracks[r].transitions = beside.transitions;
+    Ok(inverse)
+}
+
+fn add_cue(
+    project: &mut Project,
+    timeline_id: &str,
+    track_id: &str,
+    mut cue: Cue,
+) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let timeline = &project.timelines[t];
+    let r = track_at(timeline, track_id)?;
+    let track = &timeline.tracks[r];
+    let held = |id: &str| tracks_of(project).flat_map(|r| &r.cues).any(|q| q.id == id);
+    let mut counter = Counter::of(project);
+    if cue.id.is_empty() {
+        cue.id = counter.make('q', held)?;
+    } else if held(&cue.id) {
+        return Err(taken("cue", &cue.id));
+    } else {
+        counter.check(&cue.id)?;
+    }
+    if track.kind != TrackKind::Subtitle {
+        return Err(OpError::WrongTrack {
+            what: "cue",
+            kind: track.kind,
+        });
+    }
+    check_cue(&cue)?;
+    cue_room(&track.cues, &cue)?;
+    let id = cue.id.clone();
+    put_cue(&mut project.timelines[t].tracks[r].cues, cue);
+    project.next_id = counter.next;
+    Ok(Op::RemoveCue {
+        timeline: timeline_id.into(),
+        id,
+    })
+}
+
+fn remove_cue(project: &mut Project, timeline_id: &str, id: &str) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let (r, at) = cue_at(&project.timelines[t], id)?;
+    let track = &mut project.timelines[t].tracks[r];
+    let cue = track.cues.remove(at);
+    Ok(Op::AddCue {
+        timeline: timeline_id.into(),
+        track: track.id.clone(),
+        cue,
+    })
+}
+
+fn set_cue(
+    project: &mut Project,
+    timeline_id: &str,
+    id: &str,
+    start: Option<i64>,
+    length: Option<i64>,
+    text: Option<String>,
+) -> Result<Op, OpError> {
+    let t = timeline_at(project, timeline_id)?;
+    let (r, at) = cue_at(&project.timelines[t], id)?;
+    let cues = &project.timelines[t].tracks[r].cues;
+    let old = &cues[at];
+    let mut new = old.clone();
+    swap(&mut new.start, start);
+    swap(&mut new.length, length);
+    swap(&mut new.text, text.clone());
+    check_cue(&new)?;
+    cue_room(cues, &new)?;
+    let inverse = Op::SetCue {
+        timeline: timeline_id.into(),
+        id: id.into(),
+        start: start.map(|_| old.start),
+        length: length.map(|_| old.length),
+        text: text.map(|_| old.text.clone()),
+    };
+    let cues = &mut project.timelines[t].tracks[r].cues;
+    cues.remove(at);
+    put_cue(cues, new);
+    Ok(inverse)
+}
+
+/// Check that a subtitle is shown on no frame that one of `cues`, other than itself, is shown
+/// on.
+fn cue_room(cues: &[Cue], cue: &Cue) -> Result<(), OpError> {
+    let end = |q: &Cue| i128::from(q.start) + i128::from(q.length);
+    match cues.iter().find(|q| {
+        q.id != cue.id && i128::from(q.start) < end(cue) && i128::from(cue.start) < end(q)
+    }) {
+        Some(other) => Err(OpError::CueOverlap {
+            with: other.id.clone(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Put a subtitle among the subtitles of a track, in the order of their start.
+fn put_cue(cues: &mut Vec<Cue>, cue: Cue) {
+    let at = cues.partition_point(|q| q.start < cue.start);
+    cues.insert(at, cue);
+}
+
+/// Check that a language is one that a track of `kind` may have: none for a track of picture or
+/// sound, and a short tag of BCP 47 or none for one of subtitles.
+fn check_language(kind: TrackKind, language: &str) -> Result<(), OpError> {
+    if kind == TrackKind::Subtitle {
+        if is_language(language) {
+            Ok(())
+        } else {
+            Err(range("language"))
+        }
+    } else if language.is_empty() {
+        Ok(())
+    } else {
+        Err(OpError::WrongTrack {
+            what: "language",
+            kind,
+        })
+    }
+}
+
 /// Check that no transition of a track is at one of its clips.
 fn unattached(track: &Track, clip: &str) -> Result<(), OpError> {
     match track
@@ -1181,17 +2039,10 @@ fn check_track(project: &Project, rate: Rate, track: &Track) -> Result<(), OpErr
         if !track.transitions.is_empty() {
             return wrong("transition");
         }
-        if !is_language(&track.language) {
-            return Err(range("language"));
-        }
-    } else {
-        if !track.cues.is_empty() {
-            return wrong("cue");
-        }
-        if !track.language.is_empty() {
-            return wrong("language");
-        }
+    } else if !track.cues.is_empty() {
+        return wrong("cue");
     }
+    check_language(kind, &track.language)?;
     for clip in &track.clips {
         check_clip(project, rate, kind, clip)?;
     }
@@ -1740,6 +2591,32 @@ fn clip_at(timeline: &Timeline, id: &str) -> Result<(usize, usize), OpError> {
                 .map(|at| (r, at))
         })
         .ok_or_else(|| missing("clip", id))
+}
+
+/// Where a transition is in a timeline: its track, and its place on it.
+fn transition_at(timeline: &Timeline, id: &str) -> Result<(usize, usize), OpError> {
+    timeline
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(r, track)| {
+            track
+                .transitions
+                .iter()
+                .position(|x| x.id == id)
+                .map(|at| (r, at))
+        })
+        .ok_or_else(|| missing("transition", id))
+}
+
+/// Where a subtitle is in a timeline: its track, and its place on it.
+fn cue_at(timeline: &Timeline, id: &str) -> Result<(usize, usize), OpError> {
+    timeline
+        .tracks
+        .iter()
+        .enumerate()
+        .find_map(|(r, track)| track.cues.iter().position(|q| q.id == id).map(|at| (r, at)))
+        .ok_or_else(|| missing("cue", id))
 }
 
 /// Every track of a project.
@@ -4140,5 +5017,790 @@ mod tests {
             .and_then(|project| Project::from_value(serde_json::to_value(project).unwrap())),
         );
         assert_eq!(error, wrong("transition", "x5", taken("transition", "x5")));
+    }
+
+    // The operations that set what things are set to.
+
+    /// Apply `op` to `project`, check that its inverse takes it back to what it was but for
+    /// `next_id`, and that the inverse of that does it again; and give back the project after it.
+    fn round_trip(project: &Project, op: Op) -> Project {
+        let shown = format!("{op:?}");
+        let mut done = project.clone();
+        let inverse = apply(&mut done, op).unwrap_or_else(|e| panic!("{shown}: {e}"));
+        let mut undone = done.clone();
+        let again = apply(&mut undone, inverse.clone()).unwrap();
+        let mut before = project.clone();
+        before.next_id = done.next_id;
+        assert_eq!(undone, before, "{shown} then {inverse:?}");
+        apply(&mut undone, again).unwrap();
+        assert_eq!(undone, done, "{shown} done again");
+        done
+    }
+
+    fn set_clip(id: &str) -> Op {
+        Op::SetClip {
+            timeline: "t1".into(),
+            id: id.into(),
+            enabled: None,
+            speed: None,
+            reverse: None,
+            link: None,
+            transform: None,
+            gain_db: None,
+            pan: None,
+            fade_in: None,
+            fade_out: None,
+            source: None,
+        }
+    }
+
+    /// `set_clip` with its fields changed by `change`.
+    fn setting(id: &str, change: impl FnOnce(&mut Op)) -> Op {
+        let mut op = set_clip(id);
+        change(&mut op);
+        op
+    }
+
+    /// The sample with a track of subtitles S1, holding q3 on frames [0, 10) and q4 on [20, 30).
+    fn with_subtitles() -> Project {
+        let mut track = Track::new("", TrackKind::Subtitle);
+        track.language = "zh".into();
+        track.cues = vec![cue("", 0, 10, "你好"), cue("", 20, 10, "再见")];
+        sample_with(vec![Op::AddTrack {
+            timeline: "t1".into(),
+            track,
+            index: None,
+        }])
+    }
+
+    /// The sample with c3 on V1 right after c1, cut from 4 seconds into m1.
+    fn with_c3() -> Project {
+        with_transitions(|_| {}, vec![]).unwrap()
+    }
+
+    fn add_transition(left: &str, right: &str, length: i64) -> Op {
+        Op::AddTransition {
+            timeline: "t1".into(),
+            track: "V1".into(),
+            transition: dissolve("", left, right, length, Alignment::Center),
+        }
+    }
+
+    fn bin(id: &str, parent: Option<&str>) -> Op {
+        Op::AddBin {
+            bin: Bin {
+                id: id.into(),
+                name: "Bin".into(),
+                parent: parent.map(Into::into),
+            },
+            index: None,
+        }
+    }
+
+    #[test]
+    fn a_timeline_is_renamed_resized_and_put_at_another_rate() {
+        let set = |change: &dyn Fn(&mut Op)| {
+            let mut op = Op::SetTimeline {
+                id: "t1".into(),
+                name: None,
+                rate: None,
+                width: None,
+                height: None,
+                sample_rate: None,
+            };
+            change(&mut op);
+            op
+        };
+        let op = set(&|op| {
+            if let Op::SetTimeline {
+                name,
+                width,
+                height,
+                sample_rate,
+                ..
+            } = op
+            {
+                *name = Some("Final".into());
+                (*width, *height, *sample_rate) = (Some(1080), Some(1920), Some(96000));
+            }
+        });
+        let done = round_trip(&Project::sample(), op);
+        let timeline = &done.timelines[0];
+        assert_eq!(
+            (&*timeline.name, timeline.width, timeline.height),
+            ("Final", 1080, 1920)
+        );
+        // The clips keep their frames: at 10 a second, the 100 frames of c1 are 10 seconds.
+        let slower = |num| {
+            set(&move |op| {
+                if let Op::SetTimeline { rate, .. } = op {
+                    *rate = Some(Rate { num, den: 1 });
+                }
+            })
+        };
+        let done = round_trip(&Project::sample(), slower(10));
+        assert_eq!(done.timelines[0].tracks[0].clips[0].length, 100);
+        let past_end = OpError::OutOfSource {
+            media: "m1".into(),
+            why: "past_end",
+        };
+        assert_eq!(refused(slower(9)), past_end);
+        assert_eq!(refused(slower(0)), OpError::ZeroRate);
+        let odd = set(&|op| {
+            if let Op::SetTimeline { height, .. } = op {
+                *height = Some(1079);
+            }
+        });
+        assert_eq!(refused(odd), range("height"));
+        let elsewhere = set(&|op| {
+            if let Op::SetTimeline { id, .. } = op {
+                *id = "t9".into();
+            }
+        });
+        assert_eq!(refused(elsewhere), missing("timeline", "t9"));
+    }
+
+    #[test]
+    fn a_track_is_renamed_turned_off_locked_and_given_a_language() {
+        let set = |id: &str, name: Option<&str>, locked, language: Option<&str>| Op::SetTrack {
+            timeline: "t1".into(),
+            id: id.into(),
+            name: name.map(Into::into),
+            enabled: Some(false),
+            locked,
+            language: language.map(Into::into),
+        };
+        let done = round_trip(
+            &Project::sample(),
+            set("V1", Some("Picture"), Some(true), None),
+        );
+        let track = &done.timelines[0].tracks[0];
+        assert_eq!(
+            (&*track.name, track.enabled, track.locked),
+            ("Picture", false, true)
+        );
+        let done = round_trip(&with_subtitles(), set("S1", None, None, Some("en-GB")));
+        assert_eq!(done.timelines[0].tracks[2].language, "en-GB");
+        assert_eq!(
+            refused(set("V1", None, None, Some("zh"))),
+            wrong_track("language", TrackKind::Video)
+        );
+        round_trip(&Project::sample(), set("V1", None, None, Some("")));
+        assert_eq!(
+            refused_in(with_subtitles(), set("S1", None, None, Some("chinese"))),
+            range("language")
+        );
+        assert_eq!(refused(set("V9", None, None, None)), missing("track", "V9"));
+    }
+
+    #[test]
+    fn a_clip_is_set_to_play_otherwise_and_is_set_back_by_its_inverse() {
+        let op = setting("c1", |op| {
+            if let Op::SetClip {
+                enabled,
+                speed,
+                reverse,
+                transform,
+                gain_db,
+                pan,
+                fade_in,
+                fade_out,
+                ..
+            } = op
+            {
+                *enabled = Some(false);
+                *speed = Some(Speed { num: 5, den: 2 });
+                *reverse = Some(true);
+                *transform = Some(Transform {
+                    x: 0.25,
+                    y: -0.125,
+                    scale: 2.0,
+                    rotation: 90.0,
+                    opacity: 0.5,
+                });
+                *gain_db = Some(-6.0);
+                *pan = Some(0.5);
+                (*fade_in, *fade_out) = (Some(10), Some(20));
+            }
+        });
+        let done = round_trip(&Project::sample(), op);
+        let clip = &done.timelines[0].tracks[0].clips[0];
+        assert!(!clip.enabled && clip.reverse);
+        assert_eq!(clip.speed, Speed { num: 5, den: 2 });
+        assert_eq!(
+            (clip.gain_db, clip.pan, clip.fade_in, clip.fade_out),
+            (-6.0, 0.5, 10, 20)
+        );
+
+        let speed = |num, den| {
+            setting("c1", move |op| {
+                if let Op::SetClip { speed, .. } = op {
+                    *speed = Some(Speed { num, den });
+                }
+            })
+        };
+        // 100 frames at 25 a second and three times the speed are 12 seconds; m1 lasts 10.
+        let past_end = OpError::OutOfSource {
+            media: "m1".into(),
+            why: "past_end",
+        };
+        assert_eq!(refused(speed(3, 1)), past_end);
+        assert_eq!(refused(speed(1, 101)), range("speed"));
+        let fades = setting("c1", |op| {
+            if let Op::SetClip { fade_in, .. } = op {
+                *fade_in = Some(101);
+            }
+        });
+        assert_eq!(refused(fades), range("fade"));
+        let opaque = setting("c1", |op| {
+            if let Op::SetClip { transform, .. } = op {
+                *transform = Some(Transform {
+                    opacity: 2.0,
+                    ..Transform::NONE
+                });
+            }
+        });
+        assert_eq!(refused(opaque), range("transform"));
+        assert_eq!(refused(set_clip("c9")), missing("clip", "c9"));
+    }
+
+    #[test]
+    fn a_clip_is_put_in_a_group_and_taken_out_of_it() {
+        let link = |id: &str, group: Option<&str>| {
+            let group = group.map(Into::into);
+            setting(id, move |op| {
+                if let Op::SetClip { link, .. } = op {
+                    *link = Some(group);
+                }
+            })
+        };
+        let mut project = Project::sample();
+        let (done, inverse) = apply_done(&mut project, link("c1", Some(""))).unwrap();
+        assert_eq!(
+            project.timelines[0].tracks[0].clips[0].link.as_deref(),
+            Some("g3")
+        );
+        assert_eq!(project.next_id, 4);
+        // As it was done, it names the group that was made.
+        let Op::SetClip { link: given, .. } = &done else {
+            panic!("{done:?}")
+        };
+        assert_eq!(given, &Some(Some("g3".into())));
+        let Op::SetClip { link: back, .. } = &inverse else {
+            panic!("{inverse:?}")
+        };
+        assert_eq!(back, &Some(None));
+        let project = round_trip(&project, link("c2", Some("g3")));
+        let project = round_trip(&project, link("c1", None));
+        assert_eq!(project.timelines[0].tracks[0].clips[0].link, None);
+        assert_eq!(
+            refused_in(project, link("c1", Some("g7"))),
+            OpError::Reserved { id: "g7".into() }
+        );
+    }
+
+    #[test]
+    fn a_title_and_a_colour_are_set_anew_but_media_is_not() {
+        let mut project = Project::sample();
+        let titled = Clip::new("", title("Hello"), 150, 50);
+        apply(&mut project, insert("V1", titled)).unwrap();
+        let source = |id: &str, source: Source| {
+            setting(id, move |op| {
+                if let Op::SetClip { source: s, .. } = op {
+                    *s = Some(source);
+                }
+            })
+        };
+        let done = round_trip(&project, source("c3", title("Goodbye")));
+        assert_eq!(
+            done.timelines[0].tracks[0].clips[1].source,
+            title("Goodbye")
+        );
+        let changed = OpError::Source { clip: "c3".into() };
+        assert_eq!(refused_in(project.clone(), source("c3", colour())), changed);
+        let other = Source::Media {
+            media: "m1".into(),
+            source_in: Time {
+                ticks: 0,
+                scale: SCALE,
+            },
+        };
+        assert_eq!(
+            refused_in(project.clone(), source("c1", other)),
+            OpError::Source { clip: "c1".into() }
+        );
+        let long = title(&"x".repeat(1001));
+        assert_eq!(
+            refused_in(project.clone(), source("c3", long)),
+            range("text")
+        );
+        // Where a title begins in its media is not set either.
+        let trim = Op::TrimClip {
+            timeline: "t1".into(),
+            id: "c3".into(),
+            source_in: Some(Time {
+                ticks: 0,
+                scale: SCALE,
+            }),
+            start: 150,
+            length: 10,
+        };
+        assert_eq!(refused_in(project.clone(), trim), changed);
+        let trim = Op::TrimClip {
+            timeline: "t1".into(),
+            id: "c3".into(),
+            source_in: None,
+            start: 140,
+            length: 10,
+        };
+        round_trip(&project, trim);
+    }
+
+    #[test]
+    fn a_clip_that_a_transition_is_at_is_set_to_a_speed_that_its_media_has_handles_for() {
+        let mut project = with_c3();
+        apply(&mut project, add_transition("c1", "c3", 10)).unwrap();
+        // c1 plays [0, 4) seconds of m1, and the transition shows 5 frames after it.
+        let speed = |num, den| {
+            setting("c1", move |op| {
+                if let Op::SetClip { speed, .. } = op {
+                    *speed = Some(Speed { num, den });
+                }
+            })
+        };
+        round_trip(&project, speed(2, 1));
+        // At 249/100 the 100 frames are 9.96 seconds, and 5 more go past 10.
+        let handles = OpError::OutOfSource {
+            media: "m1".into(),
+            why: "handles",
+        };
+        assert_eq!(refused_in(project.clone(), speed(249, 100)), handles);
+        let backward = setting("c3", |op| {
+            if let Op::SetClip { reverse, .. } = op {
+                *reverse = Some(true);
+            }
+        });
+        round_trip(&project, backward);
+    }
+
+    #[test]
+    fn a_bin_is_added_set_and_taken_away_when_it_is_empty() {
+        let mut project = Project::sample();
+        let inverse = apply(&mut project, bin("", None)).unwrap();
+        assert_eq!(inverse, Op::RemoveBin { id: "b3".into() });
+        let project = round_trip(&project, bin("", Some("b3")));
+        assert_eq!(project.bins[1].parent.as_deref(), Some("b3"));
+        assert_eq!(
+            refused_in(project.clone(), bin("", Some("b9"))),
+            missing("bin", "b9")
+        );
+        assert_eq!(
+            refused_in(project.clone(), bin("b3", None)),
+            taken("bin", "b3")
+        );
+        let remove = |id: &str| Op::RemoveBin { id: id.into() };
+        assert_eq!(
+            refused_in(project.clone(), remove("b3")),
+            OpError::NotEmpty {
+                bin: "b3".into(),
+                holds: "b4".into()
+            }
+        );
+        let project = round_trip(&project, remove("b4"));
+        let set = |id: &str, parent: Option<Option<&str>>| Op::SetBin {
+            id: id.into(),
+            name: Some("Renamed".into()),
+            parent: parent.map(|parent| parent.map(Into::into)),
+        };
+        let project = round_trip(&project, set("b3", None));
+        assert_eq!(project.bins[0].name, "Renamed");
+        let mut nested = project.clone();
+        apply(&mut nested, bin("", Some("b3"))).unwrap();
+        assert_eq!(
+            refused_in(nested.clone(), set("b3", Some(Some("b5")))),
+            OpError::Cycle { bin: "b3".into() }
+        );
+        assert_eq!(
+            refused_in(nested.clone(), set("b3", Some(Some("b3")))),
+            OpError::Cycle { bin: "b3".into() }
+        );
+        let nested = round_trip(&nested, set("b5", Some(None)));
+        assert_eq!(nested.bins[1].parent, None);
+        // Media in a bin keeps it from being taken away.
+        let kept = Op::SetMedia {
+            id: "m1".into(),
+            name: None,
+            bin: Some(Some("b3".into())),
+            mark_in: None,
+            mark_out: None,
+        };
+        let project = round_trip(&project, kept);
+        assert_eq!(
+            refused_in(project, remove("b3")),
+            OpError::NotEmpty {
+                bin: "b3".into(),
+                holds: "m1".into()
+            }
+        );
+        assert_eq!(refused(remove("b9")), missing("bin", "b9"));
+    }
+
+    #[test]
+    fn media_is_renamed_put_in_a_bin_and_marked() {
+        let at = |ticks| {
+            Some(Some(Time {
+                ticks,
+                scale: SCALE,
+            }))
+        };
+        let set = |bin: Option<Option<Id>>, mark_in, mark_out| Op::SetMedia {
+            id: "m1".into(),
+            name: Some("Talk".into()),
+            bin,
+            mark_in,
+            mark_out,
+        };
+        let project = round_trip(&Project::sample(), set(None, at(100), at(200)));
+        let media = &project.media[0];
+        assert_eq!(media.name, "Talk");
+        assert_eq!(
+            (media.mark_in.unwrap().ticks, media.mark_out.unwrap().ticks),
+            (100, 200)
+        );
+        let marks = OpError::OutOfSource {
+            media: "m1".into(),
+            why: "marks",
+        };
+        // Set alone, the mark in is still before the mark out that is there.
+        assert_eq!(refused_in(project.clone(), set(None, at(300), None)), marks);
+        round_trip(&project, set(None, Some(None), None));
+        assert_eq!(refused(set(None, at(-1), None)), marks);
+        assert_eq!(refused(set(None, None, at(153_601))), marks);
+        let other_scale = Op::SetMedia {
+            id: "m1".into(),
+            name: None,
+            bin: None,
+            mark_in: Some(Some(Time {
+                ticks: 0,
+                scale: 1000,
+            })),
+            mark_out: None,
+        };
+        assert_eq!(
+            refused(other_scale),
+            OpError::Scale {
+                scale: 1000,
+                media_scale: SCALE
+            }
+        );
+        assert_eq!(
+            refused(set(Some(Some("b9".into())), None, None)),
+            missing("bin", "b9")
+        );
+        let elsewhere = Op::SetMedia {
+            id: "m9".into(),
+            name: None,
+            bin: None,
+            mark_in: None,
+            mark_out: None,
+        };
+        assert_eq!(refused(elsewhere), missing("media", "m9"));
+    }
+
+    #[test]
+    fn a_transition_is_added_between_clips_that_meet_set_and_taken_away() {
+        let project = with_c3();
+        let mut done = project.clone();
+        let inverse = apply(&mut done, add_transition("c1", "c3", 10)).unwrap();
+        assert_eq!(
+            inverse,
+            Op::RemoveTransition {
+                timeline: "t1".into(),
+                id: "x4".into()
+            }
+        );
+        let project = round_trip(&project, add_transition("c1", "c3", 10));
+        assert_eq!(
+            refused_in(project.clone(), add_transition("c1", "c3", 4)),
+            OpError::CutTaken { with: "x4".into() }
+        );
+        let mut far = with_c3();
+        apply(
+            &mut far,
+            Op::MoveClip {
+                timeline: "t1".into(),
+                id: "c3".into(),
+                track: "V1".into(),
+                start: 120,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            refused_in(far, add_transition("c1", "c3", 4)),
+            OpError::NotAdjacent {
+                left: "c1".into(),
+                right: "c3".into()
+            }
+        );
+        let on_subtitles = Op::AddTransition {
+            timeline: "t1".into(),
+            track: "S1".into(),
+            transition: dissolve("", "c1", "c3", 4, Alignment::Center),
+        };
+        assert_eq!(
+            refused_in(with_subtitles(), on_subtitles),
+            wrong_track("transition", TrackKind::Subtitle)
+        );
+
+        let set = |kind, length, align| Op::SetTransition {
+            timeline: "t1".into(),
+            id: "x4".into(),
+            kind,
+            length,
+            align,
+        };
+        let done = round_trip(
+            &project,
+            set(
+                Some(TransitionKind::DipBlack),
+                Some(20),
+                Some(Alignment::End),
+            ),
+        );
+        let transition = &done.timelines[0].tracks[0].transitions[0];
+        assert_eq!(
+            (transition.kind, transition.length, transition.align),
+            (TransitionKind::DipBlack, 20, Alignment::End)
+        );
+        assert_eq!(
+            refused_in(project.clone(), set(None, Some(300), None)),
+            OpError::TooLong {
+                transition: "x4".into(),
+                clip: "c1".into()
+            }
+        );
+        assert_eq!(
+            refused_in(
+                project.clone(),
+                set(Some(TransitionKind::Crossfade), None, None)
+            ),
+            wrong_track("crossfade", TrackKind::Video)
+        );
+        let remove = |id: &str| Op::RemoveTransition {
+            timeline: "t1".into(),
+            id: id.into(),
+        };
+        let done = round_trip(&project, remove("x4"));
+        assert_eq!(done.timelines[0].tracks[0].transitions, []);
+        assert_eq!(
+            refused_in(project, remove("x9")),
+            missing("transition", "x9")
+        );
+    }
+
+    #[test]
+    fn a_subtitle_is_added_set_and_taken_away() {
+        let project = with_subtitles();
+        let add = |track: &str, start, length, text: &str| Op::AddCue {
+            timeline: "t1".into(),
+            track: track.into(),
+            cue: cue("", start, length, text),
+        };
+        let done = round_trip(&project, add("S1", 10, 10, "中间"));
+        let starts: Vec<i64> = done.timelines[0].tracks[2]
+            .cues
+            .iter()
+            .map(|q| q.start)
+            .collect();
+        assert_eq!(starts, [0, 10, 20]);
+        assert_eq!(
+            refused_in(project.clone(), add("S1", 5, 10, "a")),
+            OpError::CueOverlap { with: "q3".into() }
+        );
+        assert_eq!(
+            refused_in(project.clone(), add("V1", 50, 10, "a")),
+            wrong_track("cue", TrackKind::Video)
+        );
+        assert_eq!(
+            refused_in(project.clone(), add("S1", 50, 10, "")),
+            range("text")
+        );
+
+        let set = |start, length, text: Option<&str>| Op::SetCue {
+            timeline: "t1".into(),
+            id: "q3".into(),
+            start,
+            length,
+            text: text.map(Into::into),
+        };
+        let done = round_trip(&project, set(Some(40), Some(5), Some("后来")));
+        let cues: Vec<(&str, i64)> = done.timelines[0].tracks[2]
+            .cues
+            .iter()
+            .map(|q| (&*q.id, q.start))
+            .collect();
+        assert_eq!(cues, [("q4", 20), ("q3", 40)]);
+        assert_eq!(
+            refused_in(project.clone(), set(Some(15), None, None)),
+            OpError::CueOverlap { with: "q4".into() }
+        );
+        assert_eq!(
+            refused_in(project.clone(), set(None, Some(0), None)),
+            range("length")
+        );
+        let remove = |id: &str| Op::RemoveCue {
+            timeline: "t1".into(),
+            id: id.into(),
+        };
+        let done = round_trip(&project, remove("q3"));
+        assert_eq!(done.timelines[0].tracks[2].cues.len(), 1);
+        assert_eq!(refused_in(project, remove("q9")), missing("cue", "q9"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines, reason = "an example of each operation")]
+    fn every_new_operation_is_written_with_the_names_that_other_languages_read() {
+        let ops = [
+            (
+                Op::SetTimeline {
+                    id: "t1".into(),
+                    name: Some("Cut".into()),
+                    rate: None,
+                    width: Some(1280),
+                    height: None,
+                    sample_rate: None,
+                },
+                serde_json::json!({ "op": "set_timeline", "id": "t1", "name": "Cut", "width": 1280 }),
+            ),
+            (
+                Op::SetTrack {
+                    timeline: "t1".into(),
+                    id: "V1".into(),
+                    name: None,
+                    enabled: None,
+                    locked: Some(true),
+                    language: None,
+                },
+                serde_json::json!({ "op": "set_track", "timeline": "t1", "id": "V1", "locked": true }),
+            ),
+            (
+                setting("c1", |op| {
+                    if let Op::SetClip { link, speed, .. } = op {
+                        *link = Some(None);
+                        *speed = Some(Speed { num: 2, den: 1 });
+                    }
+                }),
+                serde_json::json!({
+                    "op": "set_clip", "timeline": "t1", "id": "c1",
+                    "speed": { "num": 2, "den": 1 }, "link": null,
+                }),
+            ),
+            (
+                bin("", None),
+                serde_json::json!({
+                    "op": "add_bin", "bin": { "id": "", "name": "Bin", "parent": null }, "index": null,
+                }),
+            ),
+            (
+                Op::RemoveBin { id: "b3".into() },
+                serde_json::json!({ "op": "remove_bin", "id": "b3" }),
+            ),
+            (
+                Op::SetBin {
+                    id: "b3".into(),
+                    name: None,
+                    parent: Some(Some("b4".into())),
+                },
+                serde_json::json!({ "op": "set_bin", "id": "b3", "parent": "b4" }),
+            ),
+            (
+                Op::SetMedia {
+                    id: "m1".into(),
+                    name: None,
+                    bin: Some(None),
+                    mark_in: Some(Some(Time {
+                        ticks: 0,
+                        scale: SCALE,
+                    })),
+                    mark_out: None,
+                },
+                serde_json::json!({
+                    "op": "set_media", "id": "m1", "bin": null,
+                    "mark_in": { "ticks": 0, "scale": SCALE },
+                }),
+            ),
+            (
+                add_transition("c1", "c3", 10),
+                serde_json::json!({
+                    "op": "add_transition", "timeline": "t1", "track": "V1",
+                    "transition": {
+                        "id": "", "kind": "dissolve", "left": "c1", "right": "c3",
+                        "length": 10, "align": "center",
+                    },
+                }),
+            ),
+            (
+                Op::RemoveTransition {
+                    timeline: "t1".into(),
+                    id: "x4".into(),
+                },
+                serde_json::json!({ "op": "remove_transition", "timeline": "t1", "id": "x4" }),
+            ),
+            (
+                Op::SetTransition {
+                    timeline: "t1".into(),
+                    id: "x4".into(),
+                    kind: Some(TransitionKind::DipWhite),
+                    length: None,
+                    align: Some(Alignment::Start),
+                },
+                serde_json::json!({
+                    "op": "set_transition", "timeline": "t1", "id": "x4",
+                    "kind": "dip_white", "align": "start",
+                }),
+            ),
+            (
+                Op::AddCue {
+                    timeline: "t1".into(),
+                    track: "S1".into(),
+                    cue: cue("", 0, 10, "你好"),
+                },
+                serde_json::json!({
+                    "op": "add_cue", "timeline": "t1", "track": "S1",
+                    "cue": { "id": "", "start": 0, "length": 10, "text": "你好" },
+                }),
+            ),
+            (
+                Op::RemoveCue {
+                    timeline: "t1".into(),
+                    id: "q3".into(),
+                },
+                serde_json::json!({ "op": "remove_cue", "timeline": "t1", "id": "q3" }),
+            ),
+            (
+                Op::SetCue {
+                    timeline: "t1".into(),
+                    id: "q3".into(),
+                    start: None,
+                    length: None,
+                    text: Some("再见".into()),
+                },
+                serde_json::json!({ "op": "set_cue", "timeline": "t1", "id": "q3", "text": "再见" }),
+            ),
+        ];
+        for (op, expected) in ops {
+            let value = serde_json::to_value(&op).unwrap();
+            assert_eq!(value, expected);
+            assert_eq!(serde_json::from_value::<Op>(value).unwrap(), op);
+        }
+        // A field that is left out is left as it is, and one that is null is taken away.
+        let read: Op = serde_json::from_value(
+            serde_json::json!({ "op": "set_clip", "timeline": "t1", "id": "c1", "link": null }),
+        )
+        .unwrap();
+        let Op::SetClip { link, speed, .. } = read else {
+            panic!("{read:?}")
+        };
+        assert_eq!((link, speed), (Some(None), None));
     }
 }

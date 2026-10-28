@@ -231,10 +231,14 @@ fn id_at(op: &Op, place: Place) -> Option<&str> {
 
 /// Call `f` on each id of an operation, with what it is to the operation: first those that name
 /// things that are there, then those of the things that it adds.
+#[allow(clippy::too_many_lines, reason = "an arm for each operation")]
 fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> Result<(), E> {
     match op {
         Op::AddMedia { media, .. } => f(&mut media.id, Role::Gives(Place::Media)),
-        Op::RemoveMedia { id } | Op::RemoveTimeline { id } => f(id, Role::Names),
+        Op::RemoveMedia { id }
+        | Op::RemoveTimeline { id }
+        | Op::SetTimeline { id, .. }
+        | Op::RemoveBin { id } => f(id, Role::Names),
         Op::SetProxy { media, .. } => f(media, Role::Names),
         Op::AddTimeline { timeline, .. } => {
             for clip in timeline.tracks.iter_mut().flat_map(|r| &mut r.clips) {
@@ -274,12 +278,24 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             }
             Ok(())
         }
-        Op::RemoveTrack { timeline, id } => {
+        Op::RemoveTrack { timeline, id }
+        | Op::SetTrack { timeline, id, .. }
+        | Op::AddCue {
+            timeline,
+            track: id,
+            ..
+        } => {
             let of = timeline.clone();
             f(timeline, Role::Names)?;
             f(id, Role::NamesTrack(of))
         }
-        Op::RemoveClip { timeline, id } | Op::TrimClip { timeline, id, .. } => {
+        Op::RemoveClip { timeline, id }
+        | Op::TrimClip { timeline, id, .. }
+        | Op::SetClip { timeline, id, .. }
+        | Op::RemoveTransition { timeline, id }
+        | Op::SetTransition { timeline, id, .. }
+        | Op::RemoveCue { timeline, id }
+        | Op::SetCue { timeline, id, .. } => {
             f(timeline, Role::Names)?;
             f(id, Role::Names)
         }
@@ -307,6 +323,35 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             f(timeline, Role::Names)?;
             f(id, Role::Names)?;
             f(track, Role::NamesTrack(of))
+        }
+        Op::AddBin { bin, .. } => match &mut bin.parent {
+            Some(parent) => f(parent, Role::Names),
+            None => Ok(()),
+        },
+        Op::SetBin { id, parent, .. } => {
+            f(id, Role::Names)?;
+            match parent {
+                Some(Some(parent)) => f(parent, Role::Names),
+                _ => Ok(()),
+            }
+        }
+        Op::SetMedia { id, bin, .. } => {
+            f(id, Role::Names)?;
+            match bin {
+                Some(Some(bin)) => f(bin, Role::Names),
+                _ => Ok(()),
+            }
+        }
+        Op::AddTransition {
+            timeline,
+            track,
+            transition,
+        } => {
+            let of = timeline.clone();
+            f(timeline, Role::Names)?;
+            f(track, Role::NamesTrack(of))?;
+            f(&mut transition.left, Role::Names)?;
+            f(&mut transition.right, Role::Names)
         }
     }
 }

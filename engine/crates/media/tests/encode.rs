@@ -20,9 +20,14 @@ fn gpu_required() -> bool {
     std::env::var("COLUMBINA_REQUIRE_GPU").as_deref() == Ok("1")
 }
 
-/// A grey picture of `width` × `height` in 8 or 10 bits, its rows a little longer than they
-/// need be, to be numbered by [`stamp`].
-fn grey(width: u32, height: u32, bits: u8) -> Picture {
+/// Cb and Cr of the pictures written, in 8 bits: far from grey, and from each other, so that
+/// they cannot be read back swapped.
+const CB: u16 = 60;
+const CR: u16 = 200;
+
+/// A picture of `width` × `height` in 8 or 10 bits, of luma 128 and of Cb [`CB`] and Cr [`CR`],
+/// its rows a little longer than they need be, to be numbered by [`stamp`].
+fn coloured(width: u32, height: u32, bits: u8) -> Picture {
     let bytes = if bits > 8 { 2 } else { 1 };
     let (width_px, height_px) = (width as usize, height as usize);
     let stride = width_px.div_ceil(2) * 2 * bytes + 96;
@@ -43,7 +48,8 @@ fn grey(width: u32, height: u32, bits: u8) -> Picture {
     }
     for y in 0..height_px.div_ceil(2) {
         for x in 0..width_px.div_ceil(2) * 2 {
-            put(&mut picture.chroma, y * stride, x, bits, 128);
+            let value = if x % 2 == 0 { CB } else { CR };
+            put(&mut picture.chroma, y * stride, x, bits, value);
         }
     }
     picture
@@ -119,7 +125,7 @@ fn written_and_read(
     };
     let mut writer = Writer::create_on(file, encoder, settings, None).unwrap();
     assert_eq!(writer.encoder(), encoder);
-    let mut picture = grey(1920, 1080, bits_in);
+    let mut picture = coloured(1920, 1080, bits_in);
     let started = Instant::now();
     for frame in 0..60 {
         stamp(&mut picture, frame);
@@ -148,6 +154,16 @@ fn written_and_read(
     );
     assert!(facts.audio.is_none());
 
+    // As long as its 60 frames, within a frame.
+    #[allow(clippy::cast_precision_loss)]
+    let seconds = facts.duration.ticks as f64 / f64::from(facts.duration.scale);
+    let frame = f64::from(rate.den) / f64::from(rate.num);
+    assert!(
+        (seconds - 60.0 * frame).abs() <= frame,
+        "{}: {seconds} s",
+        file.display()
+    );
+
     let mut decoder = VideoDecoder::open(file, Hardware::Off).unwrap();
     let mut count = 0;
     while let Some(picture) = decoder.next().unwrap() {
@@ -158,8 +174,25 @@ fn written_and_read(
             "frame {count} of {}",
             file.display()
         );
+        // Cb and Cr where they were, away from the numbers, in 8 bits.
+        let at = 300 * picture.chroma_stride + 1000 * if picture.bits > 8 { 2 } else { 1 };
+        let sample = |at: usize| {
+            if picture.bits > 8 {
+                u16::from_le_bytes([picture.chroma[at], picture.chroma[at + 1]]) >> 8
+            } else {
+                u16::from(picture.chroma[at])
+            }
+        };
+        let step = if picture.bits > 8 { 2 } else { 1 };
+        let (cb, cr) = (sample(at), sample(at + step));
+        assert!(
+            cb.abs_diff(CB) <= 4 && cr.abs_diff(CR) <= 4,
+            "frame {count} of {}: Cb {cb} and Cr {cr}, not {CB} and {CR}",
+            file.display()
+        );
         count += 1;
     }
+    // The last frame is there, numbered 59.
     assert_eq!(count, 60);
 
     // The index of the file is before its data, so that it plays as it is downloaded.
@@ -271,7 +304,7 @@ fn a_tone_of_1_khz_is_read_back_at_1_khz() {
         quality: Quality::Medium,
     };
     let mut writer = Writer::create(&file, settings, Some(AudioSettings::default())).unwrap();
-    let mut picture = grey(640, 360, 8);
+    let mut picture = coloured(640, 360, 8);
     // 2 s of each, the sound in runs of a length that no frame of AAC has.
     let mut sent = 0;
     for frame in 0..50 {
@@ -335,7 +368,7 @@ fn a_file_named_part_is_written_as_the_container_named_before_it() {
         quality: Quality::Small,
     };
     let mut writer = Writer::create(&file, settings, None).unwrap();
-    let mut picture = grey(640, 360, 10);
+    let mut picture = coloured(640, 360, 10);
     for frame in 0..5 {
         stamp(&mut picture, frame);
         writer.video(&picture).unwrap();
@@ -379,10 +412,23 @@ fn what_cannot_be_written_is_refused() {
         .err()
         .unwrap();
     assert_eq!(error.reason(), "write", "{error}");
+    // Sound that AAC does not take: the sound is refused, not each encoder of the picture.
+    let error = Writer::create(
+        &directory.path().join("f.mov"),
+        settings,
+        Some(AudioSettings {
+            rate: 7,
+            channels: 2,
+        }),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(error.reason(), "encode", "{error}");
+    assert!(error.to_string().contains("aac"), "{error}");
 
     // A picture of another size than the file's.
     let mut writer = Writer::create(&directory.path().join("e.mov"), settings, None).unwrap();
-    let error = writer.video(&grey(320, 180, 10)).err().unwrap();
+    let error = writer.video(&coloured(320, 180, 10)).err().unwrap();
     assert_eq!(error.reason(), "encode", "{error}");
     // Sound, where the file has none.
     let error = writer.audio(&tone(0, 100)).err().unwrap();
@@ -410,7 +456,7 @@ fn measure_the_encoders() {
                     quality: Quality::Medium,
                 };
                 let mut writer = Writer::create_on(&file, encoder, settings, None).unwrap();
-                let mut picture = grey(width, height, bits);
+                let mut picture = coloured(width, height, bits);
                 let started = Instant::now();
                 for frame in 0..240 {
                     stamp(&mut picture, frame);

@@ -3,7 +3,7 @@
 
 use std::fmt;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Mutex, PoisonError};
 
 use columbina_model::Rate;
 use ff::format::Pixel;
@@ -159,35 +159,55 @@ const TRIED: &[EncoderPath] = if cfg!(target_os = "macos") {
 /// The encoders of `codec` that open on this machine, in the order that they are tried: NVENC,
 /// then QSV, then AMF (VideoToolbox on macOS) for H.264 and HEVC, and `prores_ks` for
 /// `ProRes`. Each is opened once, for a picture of 720p in 8 bits, the first time that its codec
-/// is asked for, and what was found is kept; one that opens may still refuse another size, or
+/// is asked for, and what opens is kept; one that opens may still refuse another size, or
 /// 10 bits, which [`Writer::create`] goes past. Empty for H.264 and HEVC where the graphics
-/// card has no encoder: then the picture is written as `ProRes`.
+/// card has no encoder: then the picture is written as `ProRes`. That none opens is not kept:
+/// they are tried again the next time (a driver may have been installed, or the card was busy),
+/// and so are they all once none of them could write a file.
 #[must_use]
 pub fn encoders_for(codec: Codec) -> Vec<EncoderPath> {
-    static FOUND: [OnceLock<Vec<EncoderPath>>; 3] = [const { OnceLock::new() }; 3];
-    let index = match codec {
+    let mut found = FOUND[codec_index(codec)]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(found) = found.as_ref() {
+        return found.clone();
+    }
+    crate::init();
+    let tried = VideoSettings {
+        codec,
+        width: 1280,
+        height: 720,
+        rate: Rate { num: 30, den: 1 },
+        bits: 8,
+        quality: Quality::Medium,
+    };
+    let opened: Vec<EncoderPath> = candidates(codec)
+        .iter()
+        .copied()
+        .filter(|&encoder| open_video(encoder, &tried).is_ok())
+        .collect();
+    if !opened.is_empty() {
+        *found = Some(opened.clone());
+    }
+    opened
+}
+
+/// The encoders of each codec that were found to open, once some were.
+static FOUND: [Mutex<Option<Vec<EncoderPath>>>; 3] = [const { Mutex::new(None) }; 3];
+
+fn codec_index(codec: Codec) -> usize {
+    match codec {
         Codec::H264 => 0,
         Codec::Hevc => 1,
         Codec::ProRes => 2,
-    };
-    FOUND[index]
-        .get_or_init(|| {
-            crate::init();
-            let tried = VideoSettings {
-                codec,
-                width: 1280,
-                height: 720,
-                rate: Rate { num: 30, den: 1 },
-                bits: 8,
-                quality: Quality::Medium,
-            };
-            candidates(codec)
-                .iter()
-                .copied()
-                .filter(|&encoder| open_video(encoder, &tried).is_ok())
-                .collect()
-        })
-        .clone()
+    }
+}
+
+/// Forget the encoders of `codec` that were found to open: none of them could write a file.
+fn forget_encoders(codec: Codec) {
+    *FOUND[codec_index(codec)]
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = None;
 }
 
 /// The encoders that may encode `codec`, in the order that they are tried.
@@ -475,6 +495,11 @@ impl Writer {
         audio: Option<AudioSettings>,
     ) -> Result<Self, MediaError> {
         check(&video, Container::of(path)?)?;
+        // The sound first: an encoder of sound that does not open is not one of the picture
+        // that fails, to be passed for the next.
+        if let Some(settings) = audio {
+            drop(open_audio(settings)?);
+        }
         let mut fallbacks = Vec::new();
         for encoder in encoders_for(video.codec) {
             match Self::create_on(path, encoder, video, audio) {
@@ -486,6 +511,8 @@ impl Writer {
                 Err(error) => return Err(error),
             }
         }
+        // Found to open, and none writes: they are looked for again the next time.
+        forget_encoders(video.codec);
         let why = if fallbacks.is_empty() {
             format!("{} opens on this machine", video.codec.name())
         } else {

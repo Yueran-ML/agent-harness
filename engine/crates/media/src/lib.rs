@@ -1,5 +1,6 @@
 //! Sources: what a file is and what it holds, and the pictures in it, read with libav
-//! (FFmpeg's libraries), on the graphics card where it can.
+//! (FFmpeg's libraries), on the graphics card where it can; and files written, their pictures
+//! encoded on the graphics card where it has an encoder.
 //!
 //! - [`identity`] tells a file from another one at the same path, as the editing of Python
 //!   does.
@@ -9,6 +10,9 @@
 //!   and the key frame at or before a frame, to be shown first while a frame is sought.
 //! - [`AudioDecoder`] gives the samples of its sound from any place, converted to the rate and
 //!   the channels that they are played with.
+//! - [`Writer`] writes a picture and its sound into a file of MP4 or `QuickTime`: the picture in
+//!   H.264 or HEVC by an encoder of the graphics card ([`encoders_for`]), or in `ProRes`, the
+//!   sound in AAC.
 //!
 //! # Times
 //!
@@ -62,6 +66,7 @@
 
 mod audio;
 mod decode;
+mod encode;
 mod error;
 #[allow(unsafe_code)]
 mod ffi;
@@ -72,6 +77,7 @@ mod timing;
 pub use audio::{AudioDecoder, AudioFormat, Samples};
 pub use columbina_model::{AudioFacts, Facts, Identity, Rate, Time, VideoFacts};
 pub use decode::{video_start, Converter, Decoded, Hardware, HardwarePath, Picture, VideoDecoder};
+pub use encode::{encoders_for, AudioSettings, Codec, EncoderPath, Quality, VideoSettings, Writer};
 pub use error::MediaError;
 pub use identity::identity;
 pub use probe::{frame_numbers, gop, probe, Gop, DEMUXERS};

@@ -1,24 +1,27 @@
 //! Every unsafe call of the crate: the devices of the graphics card and the decoders that use
 //! them, the copying of a frame from the card into memory of a picture, converting a frame into
-//! it, converting sound, references to frames, seeking, the index of a stream, and the fields of
-//! libav that `ffmpeg-next` has no safe way to reach.
+//! it and a picture into a frame, converting sound, references to frames, seeking, the index of
+//! a stream, and the fields of libav that `ffmpeg-next` has no safe way to reach.
 
 use std::ffi::{c_int, c_void, CStr, CString};
 
 use ff::ffi::{
     av_buffer_create, av_buffer_ref, av_buffer_unref, av_channel_layout_check,
     av_channel_layout_compare, av_channel_layout_copy, av_channel_layout_default,
-    av_channel_layout_uninit, av_frame_alloc, av_frame_free, av_frame_ref, av_frame_unref,
-    av_hwdevice_ctx_create, av_hwdevice_find_type_by_name, av_hwframe_transfer_data,
-    av_pix_fmt_desc_get, av_seek_frame, av_strerror, avcodec_default_get_format,
-    avcodec_get_hw_config, avformat_index_get_entries_count,
+    av_channel_layout_uninit, av_frame_alloc, av_frame_free, av_frame_make_writable, av_frame_ref,
+    av_frame_unref, av_hwdevice_ctx_create, av_hwdevice_find_type_by_name,
+    av_hwframe_transfer_data, av_pix_fmt_desc_get, av_seek_frame, av_strerror,
+    avcodec_default_get_format, avcodec_get_hw_config, avformat_index_get_entries_count,
     avformat_index_get_entry_from_timestamp, swr_alloc_set_opts2, swr_convert, swr_free,
     swr_get_out_samples, swr_init, sws_scale, AVBufferRef, AVChannelLayout, AVChannelOrder,
-    AVCodecContext, AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat, AVSampleFormat,
-    SwrContext, AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE, AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX,
+    AVCodecContext, AVColorPrimaries, AVColorRange, AVColorSpace, AVColorTransferCharacteristic,
+    AVDiscard, AVHWDeviceType, AVHWFramesContext, AVPixelFormat, AVSampleFormat, SwrContext,
+    AVSEEK_FLAG_BACKWARD, AVSEEK_FLAG_BYTE, AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX,
     AV_PIX_FMT_FLAG_HWACCEL, FF_THREAD_FRAME, FF_THREAD_SLICE,
 };
 use ffmpeg_next as ff;
+
+use crate::Picture;
 
 /// The text of an error code of libav.
 fn error_text(code: c_int) -> String {
@@ -720,4 +723,120 @@ impl Resampler {
         }
         Ok(())
     }
+}
+
+/// Make a frame that is about to be written into its own: where an encoder still holds its
+/// memory (as one that keeps frames to look ahead may), it is given new memory, so that what
+/// the encoder holds is not written over.
+pub(crate) fn writable(frame: &mut ff::Frame) -> Result<(), String> {
+    // SAFETY: the frame is a frame of libav whose buffers were made by av_frame_get_buffer;
+    // av_frame_make_writable copies it into buffers of its own where they are shared.
+    let code = unsafe { av_frame_make_writable(frame.as_mut_ptr()) };
+    if code < 0 {
+        return Err(format!("no memory for a frame: {}", error_text(code)));
+    }
+    Ok(())
+}
+
+/// Have an encoder that is not open yet say that its frames are BT.709 of limited range, as
+/// the pictures of the crate are taken to be.
+pub(crate) fn tag_bt709(context: &mut ff::codec::Context) {
+    // SAFETY: the context is not open, so these may be set.
+    unsafe {
+        let context = context.as_mut_ptr();
+        (*context).color_primaries = AVColorPrimaries::AVCOL_PRI_BT709;
+        (*context).color_trc = AVColorTransferCharacteristic::AVCOL_TRC_BT709;
+        (*context).colorspace = AVColorSpace::AVCOL_SPC_BT709;
+        (*context).color_range = AVColorRange::AVCOL_RANGE_MPEG;
+    }
+}
+
+/// Set the tag of the codec of a stream of a file whose header is not written yet, as `hvc1`
+/// for HEVC, which the players of Apple ask for.
+pub(crate) fn set_codec_tag(output: &mut ff::format::context::Output, stream: usize, tag: [u8; 4]) {
+    if stream >= output.nb_streams() as usize {
+        return;
+    }
+    // SAFETY: the context has `nb_streams` streams, each with parameters; the header is not
+    // written, so the tag may be set.
+    unsafe {
+        let stream = *(*output.as_mut_ptr()).streams.add(stream);
+        (*(*stream).codecpar).codec_tag = u32::from_le_bytes(tag);
+    }
+}
+
+/// The format of a picture: NV12 for 8 bits, P010 for 10.
+pub(crate) fn format_of(picture: &Picture) -> ff::format::Pixel {
+    if picture.bits > 8 {
+        ff::format::Pixel::P010LE
+    } else {
+        ff::format::Pixel::NV12
+    }
+}
+
+/// Convert a picture with a scaler made for its format and size into a frame of the format and
+/// size that the scaler makes, which has memory of its own to be written.
+pub(crate) fn scale_from(
+    scaler: &mut Scaler,
+    picture: &Picture,
+    into: &mut ff::frame::Video,
+) -> Result<(), String> {
+    let (input, output) = (scaler.0.input(), scaler.0.output());
+    let format = format_of(picture);
+    if (input.format, input.width, input.height) != (format, picture.width, picture.height)
+        || (output.format, output.width, output.height)
+            != (into.format(), into.width(), into.height())
+    {
+        return Err("the converter was made for pictures of another shape".to_owned());
+    }
+    let bytes = if picture.bits > 8 { 2 } else { 1 };
+    let row = (picture.width as usize).div_ceil(2) * 2 * bytes;
+    let rows = picture.height as usize;
+    if picture.luma_stride < row
+        || picture.chroma_stride < row
+        || picture.luma.len() < picture.luma_stride * rows
+        || picture.chroma.len() < picture.chroma_stride * rows.div_ceil(2)
+    {
+        return Err("the planes of the picture are shorter than its size".to_owned());
+    }
+    // SAFETY: the frame is a frame of libav; only whether it has memory is read.
+    if unsafe { into.is_empty() } {
+        return Err("the frame has no memory".to_owned());
+    }
+    let stride = |bytes: usize| c_int::try_from(bytes).map_err(|_| "a row too long".to_owned());
+    let strides = [
+        stride(picture.luma_stride)?,
+        stride(picture.chroma_stride)?,
+        0,
+        0,
+    ];
+    let data = [
+        picture.luma.as_ptr(),
+        picture.chroma.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null(),
+    ];
+    let height = c_int::try_from(picture.height).map_err(|_| "a picture too high".to_owned())?;
+    // SAFETY: the scaler was made for the format and size of the picture, whose two planes are
+    // as long as its rows at their strides (checked above); it writes the planes of `into`,
+    // which has memory of its format and size, at its strides.
+    let rows = unsafe {
+        let into = into.as_mut_ptr();
+        sws_scale(
+            scaler.0.as_mut_ptr(),
+            data.as_ptr(),
+            strides.as_ptr(),
+            0,
+            height,
+            (*into).data.as_ptr(),
+            (*into).linesize.as_ptr(),
+        )
+    };
+    if rows < 0 {
+        return Err(format!(
+            "the picture cannot be converted: {}",
+            error_text(rows)
+        ));
+    }
+    Ok(())
 }

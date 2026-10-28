@@ -1258,6 +1258,7 @@ struct Worker {
 
 impl Worker {
     fn run(mut self) {
+        crate::timer::prepare_thread();
         loop {
             if self.pipe.gone {
                 return;

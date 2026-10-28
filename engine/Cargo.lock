@@ -277,6 +277,7 @@ dependencies = [
  "columbina-view",
  "cpal",
  "interprocess",
+ "libc",
  "memchr",
  "rustix",
  "serde",

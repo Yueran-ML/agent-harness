@@ -21,4 +21,4 @@ pub use geometry::{quarter_turns, Transform};
 #[doc(hidden)]
 pub use gpu::gpu_for_tests;
 pub use gpu::{Gpu, GpuError, Preference, Watch};
-pub use text::Text;
+pub use text::{warm_up as warm_up_fonts, Text};

@@ -112,6 +112,127 @@ impl Affine {
     }
 }
 
+impl Affine {
+    /// The map that takes the points back where they were; none where it flattens the plane
+    /// (a layer made 0 times larger).
+    #[must_use]
+    pub fn inverse(&self) -> Option<Affine> {
+        let det = self.a * self.d - self.b * self.c;
+        if det.abs() < 1e-12 || !det.is_finite() {
+            return None;
+        }
+        let (a, b, c, d) = (self.d / det, -self.b / det, -self.c / det, self.a / det);
+        Some(Affine {
+            a,
+            b,
+            c,
+            d,
+            tx: -(a * self.tx + b * self.ty),
+            ty: -(c * self.tx + d * self.ty),
+        })
+    }
+}
+
+/// How many times smaller than its own pixels a picture of `shown` pixels is drawn, fitted into
+/// a frame of `frame` pixels of the canvas made `scale` times larger: the most of across and
+/// down; 1 or less where it is drawn as large or larger.
+#[must_use]
+pub fn minification(shown: (u32, u32), frame: (f64, f64), scale: f64) -> f64 {
+    let drawn = (frame.0 * scale, frame.1 * scale);
+    if drawn.0 <= 0.0 || drawn.1 <= 0.0 {
+        return 1.0;
+    }
+    (f64::from(shown.0) / drawn.0).max(f64::from(shown.1) / drawn.1)
+}
+
+/// The most points across and down that a pixel of a layer is made of.
+pub const MOST_SAMPLES: u32 = 8;
+
+/// How many points across and down a pixel of a picture drawn `minification` times smaller is
+/// made of, weighed as a tent over the pixel and as far again about it: one where it is drawn at
+/// least as large as it is; else so many that the points lie at most half a pixel of the picture
+/// apart, at most [`MOST_SAMPLES`]. So stripes of a pixel each, drawn three times smaller, are
+/// grey, not stripes again.
+#[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a count from 2 to 8"
+)]
+pub fn samples(minification: f64) -> u32 {
+    if minification.is_nan() || minification <= 1.0 + 1e-6 {
+        return 1;
+    }
+    (2.0 * minification)
+        .ceil()
+        .clamp(2.0, f64::from(MOST_SAMPLES)) as u32
+}
+
+/// The pixels of a text drawn for a pixel of its frame, for a layer made `scale` times larger:
+/// one, down to half as large; below that, as few as the scale needs, rounded up to a quarter
+/// of an octave (so that a scale that moves draws its text again only now and then), and never
+/// fewer than 1/64.
+#[must_use]
+pub fn raster_scale(scale: f64) -> f64 {
+    if scale.is_nan() || scale >= 0.5 {
+        return 1.0;
+    }
+    let octaves = (4.0 * scale.max(1.0 / 64.0).log2()).ceil() / 4.0;
+    2.0_f64.powf(octaves)
+}
+
+/// The grid that the part of a text drawn is taken outward to, in its pixels: so that a text
+/// that moves a little is not drawn again.
+pub const TEXT_GRID: u32 = 64;
+
+/// The part of the pixels of a text that is seen on a canvas of `canvas` pixels, where `place`
+/// puts the frame on it: the pixels start at `origin` of the frame, `per` of them to a pixel of
+/// the frame, and are `full` of them. As x0, y0, x1, y1 of its pixels, taken outward to
+/// [`TEXT_GRID`] and kept within them; none where none is seen.
+#[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "pixels kept within those of the text"
+)]
+pub fn text_window(
+    place: &Affine,
+    canvas: (f64, f64),
+    origin: (f64, f64),
+    per: f64,
+    full: (u32, u32),
+) -> Option<[u32; 4]> {
+    let back = place.inverse()?;
+    // The corners of the canvas, a pixel more about it, in pixels of the text.
+    let corners = [
+        (-1.0, -1.0),
+        (canvas.0 + 1.0, -1.0),
+        (-1.0, canvas.1 + 1.0),
+        (canvas.0 + 1.0, canvas.1 + 1.0),
+    ]
+    .map(|corner| {
+        let (x, y) = back.apply(corner);
+        ((x - origin.0) * per, (y - origin.1) * per)
+    });
+    let low = corners
+        .iter()
+        .fold((f64::INFINITY, f64::INFINITY), |(x, y), c| {
+            (x.min(c.0), y.min(c.1))
+        });
+    let high = corners
+        .iter()
+        .fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |(x, y), c| {
+            (x.max(c.0), y.max(c.1))
+        });
+    let grid = f64::from(TEXT_GRID);
+    let clip = |value: f64, most: u32| value.clamp(0.0, f64::from(most)) as u32;
+    let x0 = clip((low.0 / grid).floor() * grid, full.0);
+    let y0 = clip((low.1 / grid).floor() * grid, full.1);
+    let x1 = clip((high.0 / grid).ceil() * grid, full.0);
+    let y1 = clip((high.1 / grid).ceil() * grid, full.1);
+    (x0 < x1 && y0 < y1).then_some([x0, y0, x1, y1])
+}
+
 /// How the points of a frame of `frame` pixels, fitted into a canvas of `canvas` pixels, are
 /// put on the canvas by `transform`: the middle of the frame goes to the middle of the canvas
 /// moved by `x` and `y` shares of its width and height, and the frame is made `scale` times
@@ -144,19 +265,19 @@ pub fn placement(canvas: (f64, f64), frame: (f64, f64), transform: &Transform) -
 #[must_use]
 pub fn title_origin(
     canvas: (u32, u32),
-    block: (u32, u32),
+    block: (f64, f64),
     anchor: (f64, f64),
     align: TextAlign,
 ) -> (f64, f64) {
     let x = anchor.0 * f64::from(canvas.0);
     let y = anchor.1 * f64::from(canvas.1);
-    let width = f64::from(block.0);
+    let width = block.0;
     let left = match align {
         TextAlign::Left => x,
         TextAlign::Center => x - width / 2.0,
         TextAlign::Right => x - width,
     };
-    (left.round(), (y - f64::from(block.1) / 2.0).round())
+    (left.round(), (y - block.1 / 2.0).round())
 }
 
 /// The height of the letters of subtitles on a canvas `height` pixels high: a twentieth of it.
@@ -171,10 +292,10 @@ pub fn subtitle_size(height: u32) -> f32 {
 /// `canvas` pixels: in the middle across, its bottom a twentieth of the height above the bottom
 /// of the canvas, in whole pixels.
 #[must_use]
-pub fn subtitle_origin(canvas: (u32, u32), block: (u32, u32)) -> (f64, f64) {
+pub fn subtitle_origin(canvas: (u32, u32), block: (f64, f64)) -> (f64, f64) {
     let (width, height) = (f64::from(canvas.0), f64::from(canvas.1));
-    let x = ((width - f64::from(block.0)) / 2.0).round();
-    let y = (height - height / 20.0 - f64::from(block.1)).round();
+    let x = ((width - block.0) / 2.0).round();
+    let y = (height - height / 20.0 - block.1).round();
     (x, y)
 }
 
@@ -302,20 +423,20 @@ mod tests {
     fn a_title_is_put_by_its_anchor_on_the_side_that_its_alignment_says() {
         let canvas = (1920, 1080);
         assert_eq!(
-            title_origin(canvas, (400, 100), (0.5, 0.5), TextAlign::Center),
+            title_origin(canvas, (400.0, 100.0), (0.5, 0.5), TextAlign::Center),
             (760.0, 490.0)
         );
         assert_eq!(
-            title_origin(canvas, (400, 100), (0.1, 0.9), TextAlign::Left),
+            title_origin(canvas, (400.0, 100.0), (0.1, 0.9), TextAlign::Left),
             (192.0, 922.0)
         );
         assert_eq!(
-            title_origin(canvas, (400, 100), (0.9, 0.1), TextAlign::Right),
+            title_origin(canvas, (400.0, 100.0), (0.9, 0.1), TextAlign::Right),
             (1328.0, 58.0)
         );
         // Halves are rounded to whole pixels.
         assert_eq!(
-            title_origin((101, 51), (10, 11), (0.5, 0.5), TextAlign::Center),
+            title_origin((101, 51), (10.0, 11.0), (0.5, 0.5), TextAlign::Center),
             (46.0, 20.0)
         );
     }
@@ -324,8 +445,8 @@ mod tests {
     fn subtitles_are_a_twentieth_of_the_height_at_the_bottom_in_the_middle() {
         assert!((subtitle_size(1080) - 54.0).abs() < 1e-6);
         assert!((subtitle_size(2160) - 108.0).abs() < 1e-6);
-        assert_eq!(subtitle_origin((1920, 1080), (600, 70)), (660.0, 956.0));
-        assert_eq!(subtitle_origin((1001, 100), (100, 10)), (451.0, 85.0));
+        assert_eq!(subtitle_origin((1920, 1080), (600.0, 70.0)), (660.0, 956.0));
+        assert_eq!(subtitle_origin((1001, 100), (100.0, 10.0)), (451.0, 85.0));
     }
 
     #[test]
@@ -336,5 +457,97 @@ mod tests {
         assert_eq!(picture_stride(3, 8), 64);
         assert_eq!(picture_stride(33, 10), 128);
         assert_eq!(picture_stride(32, 10), 64);
+    }
+
+    #[test]
+    fn a_placement_is_undone_by_its_inverse() {
+        let transform = Transform {
+            x: 0.1,
+            y: -0.2,
+            scale: 0.3,
+            rotation: 33.0,
+        };
+        let place = placement((1920.0, 1080.0), (1440.0, 1080.0), &transform);
+        let back = place.inverse().unwrap();
+        for point in [(0.0, 0.0), (1440.0, 1080.0), (17.0, 900.0)] {
+            assert!(near(back.apply(place.apply(point)), point), "{point:?}");
+        }
+        let flat = Affine {
+            a: 1.0,
+            b: 2.0,
+            c: 2.0,
+            d: 4.0,
+            tx: 0.0,
+            ty: 0.0,
+        };
+        assert_eq!(flat.inverse(), None);
+    }
+
+    #[test]
+    fn a_picture_drawn_smaller_is_made_of_more_points_a_pixel() {
+        // 4K fitted to 1280 × 720: three times smaller; as large, and larger: not at all.
+        let third = minification((3840, 2160), (1280.0, 720.0), 1.0);
+        assert!((third - 3.0).abs() < 1e-9);
+        assert!((minification((3840, 2160), (1920.0, 1080.0), 0.5) - 4.0).abs() < 1e-9);
+        assert!((minification((1920, 1080), (1920.0, 1080.0), 1.0) - 1.0).abs() < 1e-9);
+        assert!(minification((640, 360), (1920.0, 1080.0), 1.0) < 1.0);
+        // The most of across and down.
+        assert!((minification((1000, 100), (500.0, 100.0), 1.0) - 2.0).abs() < 1e-9);
+        assert!((minification((10, 10), (0.0, 0.0), 1.0) - 1.0).abs() < 1e-9);
+        assert_eq!(
+            [0.5, 1.0, 1.01, 1.5, 2.0, 3.0, 3.2, 4.0, 10.0, f64::NAN].map(samples),
+            [1, 1, 3, 3, 4, 6, 7, 8, 8, 1]
+        );
+    }
+
+    #[test]
+    fn a_text_is_drawn_at_its_scale_below_a_half_in_quarters_of_an_octave() {
+        for scale in [0.5, 1.0, 3.0, f64::NAN] {
+            assert!((raster_scale(scale) - 1.0).abs() < 1e-12, "{scale}");
+        }
+        assert!((raster_scale(0.25) - 0.25).abs() < 1e-12);
+        // 0.3 is drawn at 2^(-1.5), the quarter of an octave above it.
+        assert!((raster_scale(0.3) - 2.0_f64.powf(-1.5)).abs() < 1e-12);
+        assert!(raster_scale(0.3) >= 0.3);
+        assert!((raster_scale(0.0) - 1.0 / 64.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn only_the_part_of_a_text_on_the_canvas_is_drawn() {
+        let canvas = (1920.0, 1080.0);
+        let place = placement(canvas, canvas, &Transform::NONE);
+        // A text of 10000 × 6000 of its pixels, a pixel each of the frame, from (-4000, -2000):
+        // the canvas, a pixel more, taken outward to the grid.
+        assert_eq!(
+            text_window(&place, canvas, (-4000.0, -2000.0), 1.0, (10000, 6000)),
+            Some([3968, 1984, 5952, 3136])
+        );
+        // Two of its pixels a pixel of the frame.
+        assert_eq!(
+            text_window(&place, canvas, (-4000.0, -2000.0), 2.0, (20000, 12000)),
+            Some([7936, 3968, 11904, 6208])
+        );
+        // Within the canvas: the whole of it.
+        assert_eq!(
+            text_window(&place, canvas, (100.0, 100.0), 1.0, (300, 50)),
+            Some([0, 0, 300, 50])
+        );
+        // Beyond it: nothing.
+        assert_eq!(
+            text_window(&place, canvas, (5000.0, 100.0), 1.0, (300, 50)),
+            None
+        );
+        // Turned, the part that the turned canvas covers.
+        let turned = placement(
+            canvas,
+            canvas,
+            &Transform {
+                rotation: 90.0,
+                ..Transform::NONE
+            },
+        );
+        let window = text_window(&turned, canvas, (0.0, 0.0), 1.0, (100_000, 100_000)).unwrap();
+        // 1080 across and 1920 down of the frame, about its middle.
+        assert_eq!(window, [384, 0, 1536, 1536]);
     }
 }

@@ -35,22 +35,45 @@ fn luma_of(rgb: vec3<f32>) -> f32 {
     return dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
-// A code of `bits`, black at 16 or 64, white at 235 or 940.
-fn luma_code(rgb: vec3<f32>) -> u32 {
-    if params.ten == 1u {
-        return u32(clamp(round(64.0 + 876.0 * luma_of(rgb)), 0.0, 1023.0));
+// How far a value of 8 bits is moved before it is rounded down, at a place: an ordered dither
+// of 4 × 4 (Bayer), from 1/32 to 31/32, so that a gradient of the canvas, finer than 8 bits, is
+// not banded. Codes of 10 bits are rounded as they are.
+fn dither(place: vec2<u32>) -> f32 {
+    var bayer = array<u32, 16>(0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u);
+    return (f32(bayer[(place.y % 4u) * 4u + place.x % 4u]) + 0.5) / 16.0;
+}
+
+// A value made a code of `most`: rounded in 10 bits, dithered in 8. A value within an eighth of
+// a code of a whole one is that code, undithered: the half floats of the canvas hold white and
+// the codes of a picture of 8 bits only so near (a tenth of a code at most), and they are given
+// back as they were.
+fn coded(value: f32, most: f32, place: vec2<u32>) -> u32 {
+    let nearest = round(value);
+    if params.ten == 1u || abs(value - nearest) < 0.125 {
+        return u32(clamp(nearest, 0.0, most));
     }
-    return u32(clamp(round(16.0 + 219.0 * luma_of(rgb)), 0.0, 255.0));
+    return u32(clamp(floor(value + dither(place)), 0.0, most));
+}
+
+// A code of luma: black at 16 or 64, white at 235 or 940.
+fn luma_code(rgb: vec3<f32>, place: vec2<u32>) -> u32 {
+    if params.ten == 1u {
+        return coded(64.0 + 876.0 * luma_of(rgb), 1023.0, place);
+    }
+    return coded(16.0 + 219.0 * luma_of(rgb), 255.0, place);
 }
 
 // The codes of Cb and Cr: no colour at 128 or 512.
-fn chroma_codes(rgb: vec3<f32>) -> vec2<u32> {
+fn chroma_codes(rgb: vec3<f32>, place: vec2<u32>) -> vec2<u32> {
     let y = luma_of(rgb);
     let c = vec2<f32>((rgb.b - y) / 1.8556, (rgb.r - y) / 1.5748);
     if params.ten == 1u {
-        return vec2<u32>(clamp(round(vec2<f32>(512.0) + 896.0 * c), vec2<f32>(0.0), vec2<f32>(1023.0)));
+        let v = vec2<f32>(512.0) + 896.0 * c;
+        return vec2<u32>(coded(v.x, 1023.0, place), coded(v.y, 1023.0, place));
     }
-    return vec2<u32>(clamp(round(vec2<f32>(128.0) + 224.0 * c), vec2<f32>(0.0), vec2<f32>(255.0)));
+    let v = vec2<f32>(128.0) + 224.0 * c;
+    // Cr dithered by another place of the pattern than Cb, so that their errors do not line up.
+    return vec2<u32>(coded(v.x, 255.0, place), coded(v.y, 255.0, place + vec2<u32>(2u, 1u)));
 }
 
 // A word of luma: four pixels of NV12, or two of P010, the first in the low bits (little-endian).
@@ -66,14 +89,14 @@ fn luma_main(@builtin(global_invocation_id) id: vec3<u32>) {
         for (var k = 0u; k < 2u; k++) {
             let x = word * 2u + k;
             if x < params.size.x {
-                packed |= (luma_code(pixel(i32(x), i32(row))) << 6u) << (16u * k);
+                packed |= (luma_code(pixel(i32(x), i32(row)), vec2<u32>(x, row)) << 6u) << (16u * k);
             }
         }
     } else {
         for (var k = 0u; k < 4u; k++) {
             let x = word * 4u + k;
             if x < params.size.x {
-                packed |= luma_code(pixel(i32(x), i32(row))) << (8u * k);
+                packed |= luma_code(pixel(i32(x), i32(row)), vec2<u32>(x, row)) << (8u * k);
             }
         }
     }
@@ -101,14 +124,14 @@ fn chroma_main(@builtin(global_invocation_id) id: vec3<u32>) {
     var packed = 0u;
     if params.ten == 1u {
         if word < samples {
-            let codes = chroma_codes(chroma_rgb(word, row));
+            let codes = chroma_codes(chroma_rgb(word, row), vec2<u32>(word, row));
             packed = (codes.x << 6u) | ((codes.y << 6u) << 16u);
         }
     } else {
         for (var k = 0u; k < 2u; k++) {
             let i = word * 2u + k;
             if i < samples {
-                let codes = chroma_codes(chroma_rgb(i, row));
+                let codes = chroma_codes(chroma_rgb(i, row), vec2<u32>(i, row));
                 packed |= (codes.x | (codes.y << 8u)) << (16u * k);
             }
         }

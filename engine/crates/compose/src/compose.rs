@@ -13,17 +13,18 @@
 //! middle at the bottom, letters a twentieth of the height of the canvas high.
 
 use std::collections::HashMap;
-use std::sync::{mpsc, Arc, Mutex, PoisonError};
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use columbina_media::Picture;
 use columbina_model::project::{Rgba, TextAlign};
 
 use crate::geometry::{
-    fit, picture_stride, placement, shown_size, subtitle_origin, subtitle_size, title_origin,
-    Affine, Transform,
+    fit, minification, picture_stride, placement, raster_scale, samples, shown_size,
+    subtitle_origin, subtitle_size, text_window, title_origin, Affine, Transform,
 };
 use crate::gpu::Gpu;
-use crate::text::{self, Raster, Text};
+use crate::text::{self, Laid, Raster, Spec, Text, MOST_PIXELS};
 use crate::yuv::{self, Texel};
 
 /// The shader of layers of R'G'B'A.
@@ -41,8 +42,18 @@ const CONVERT_PARAMS_SIZE: u64 = 32;
 /// The invocations of a group of the shaders of `convert.wgsl`, across.
 const CONVERT_GROUP: u32 = 64;
 
-/// How many texts drawn into pixels are kept, the last drawn.
+/// How many texts laid out are kept, the last drawn.
 const TEXTS_KEPT: usize = 64;
+
+/// How many parts of a text drawn into pixels are kept on the card, the last drawn.
+const PARTS_KEPT: usize = 2;
+
+/// How many bytes of texts drawn into pixels are kept on the card at most, beyond those of the
+/// last drawn.
+const TEXT_BYTES: u64 = 256 << 20;
+
+/// How many times a text that is too large is laid out again, smaller.
+const SHRINKS: usize = 8;
 
 /// How many frames the planes of a shape of picture are kept for while no picture of that shape
 /// is drawn.
@@ -50,14 +61,31 @@ const PLANES_KEPT_FOR: u64 = 300;
 
 /// What a frame shows: layers over a black canvas of `width` × `height`, and subtitles over
 /// them (in a preview only).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Scene {
     pub width: u32,
     pub height: u32,
+    /// The pixels of the canvas to a pixel of the timeline: 1 where the canvas is as large as
+    /// the timeline, 0.5 for a preview at half its size. The sizes of titles are in pixels of the
+    /// timeline, and are drawn so many times as large; subtitles are a share of the canvas.
+    pub units: f32,
     /// From the bottom up.
     pub layers: Vec<SceneLayer>,
     /// The texts of the subtitles shown, a line (or more) each, from the top down.
     pub subtitles: Vec<String>,
+}
+
+impl Default for Scene {
+    /// Nothing, on a canvas of no size, as large as its timeline.
+    fn default() -> Self {
+        Scene {
+            width: 0,
+            height: 0,
+            units: 1.0,
+            layers: Vec::new(),
+            subtitles: Vec::new(),
+        }
+    }
 }
 
 /// What a layer shows.
@@ -137,8 +165,6 @@ pub struct Target {
     height: u32,
     texture: Arc<wgpu::Texture>,
     export: Option<Export>,
-    /// The last submission that drew into it.
-    submitted: Mutex<Option<wgpu::SubmissionIndex>>,
 }
 
 /// The buffers that the planes of an export are written into and read back from.
@@ -198,7 +224,6 @@ impl Target {
             height,
             texture: Arc::new(texture),
             export: None,
-            submitted: Mutex::new(None),
         })
     }
 
@@ -287,7 +312,6 @@ impl Target {
             height,
             texture: Arc::new(texture),
             export: Some(export),
-            submitted: Mutex::new(None),
         })
     }
 
@@ -328,12 +352,7 @@ impl Target {
             ));
         };
         let buffers = [&export.luma_read, &export.chroma_read];
-        let submission = self
-            .submitted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        wait_mapped(&self.gpu, &buffers, submission)?;
+        wait_mapped(&self.gpu, &buffers)?;
         picture.width = self.width;
         picture.height = self.height;
         picture.bits = export.bits;
@@ -397,8 +416,8 @@ impl Target {
             },
             self.texture.size(),
         );
-        let submission = self.gpu.queue().submit([encoder.finish()]);
-        wait_mapped(&self.gpu, &[&buffer], Some(submission))?;
+        self.gpu.queue().submit([encoder.finish()]);
+        wait_mapped(&self.gpu, &[&buffer])?;
         let mapped = buffer
             .slice(..)
             .get_mapped_range()
@@ -440,12 +459,17 @@ fn canvas(
     })
 }
 
-/// Map `buffers` for reading, and wait until they are mapped.
-fn wait_mapped(
-    gpu: &Gpu,
-    buffers: &[&wgpu::Buffer],
-    submission: Option<wgpu::SubmissionIndex>,
-) -> Result<(), ComposeError> {
+/// How long the card is given to map buffers for reading before it is taken as hung.
+const READ_WITHIN: Duration = Duration::from_secs(20);
+
+/// How long to wait between asking the card whether buffers are mapped.
+const READ_POLL: Duration = Duration::from_micros(250);
+
+/// Map `buffers` for reading, and wait until they are mapped: asking the card again and again,
+/// a moment apart, without blocking in it, since a poll that waits holds a lock of the device
+/// that the views take to present (an export would stall the preview, and on WARP set off the
+/// watchdog of the view).
+fn wait_mapped(gpu: &Gpu, buffers: &[&wgpu::Buffer]) -> Result<(), ComposeError> {
     if let Some(why) = gpu.lost_reason() {
         return Err(ComposeError::Lost(why));
     }
@@ -459,19 +483,43 @@ fn wait_mapped(
             });
     }
     drop(mapped);
-    gpu.device()
-        .poll(wgpu::PollType::Wait {
-            submission_index: submission,
-            timeout: None,
-        })
-        .map_err(|error| ComposeError::Read(error.to_string()))?;
+    let deadline = Instant::now() + READ_WITHIN;
+    let mut answered = 0;
     let mut failed = None;
-    for _ in buffers {
-        match mapping.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => failed = Some(error.to_string()),
-            Err(_) => failed = Some("the card did not map the buffer".into()),
+    while answered < buffers.len() {
+        gpu.device()
+            .poll(wgpu::PollType::Poll)
+            .map_err(|error| ComposeError::Read(error.to_string()))?;
+        loop {
+            match mapping.try_recv() {
+                Ok(Ok(())) => answered += 1,
+                Ok(Err(error)) => {
+                    answered += 1;
+                    failed = Some(error.to_string());
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if answered < buffers.len() {
+                        answered = buffers.len();
+                        failed.get_or_insert_with(|| "the card did not map the buffer".into());
+                    }
+                    break;
+                }
+            }
         }
+        if answered >= buffers.len() {
+            break;
+        }
+        if gpu.is_lost() || Instant::now() >= deadline {
+            failed.get_or_insert_with(|| {
+                format!(
+                    "the card did not give it back within {} s",
+                    READ_WITHIN.as_secs()
+                )
+            });
+            break;
+        }
+        std::thread::sleep(READ_POLL);
     }
     if let Some(message) = failed {
         for buffer in buffers {
@@ -511,30 +559,52 @@ struct Planes {
     used: u64,
 }
 
-/// A text drawn into pixels, on the card.
-struct TextTexture {
-    view: wgpu::TextureView,
-    width: u32,
-    height: u32,
-    block: (u32, u32),
-    pad: u32,
+/// What a text laid out is known by: all that changes its pixels.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct TextKey {
+    text: String,
+    family: Option<String>,
+    size: u32,
+    color: [u8; 4],
+    align: TextAlign,
+    outline: u32,
+}
+
+impl TextKey {
+    fn of(spec: &Spec) -> TextKey {
+        TextKey {
+            text: spec.text.clone(),
+            family: spec.family.clone(),
+            size: spec.size.to_bits(),
+            color: spec.color,
+            align: spec.align,
+            outline: spec.outline,
+        }
+    }
+}
+
+/// A text laid out, and the parts of it drawn into pixels on the card, the last drawn first.
+struct LaidText {
+    laid: Laid,
+    parts: Vec<TextPart>,
     used: u64,
 }
 
-/// What a text drawn into pixels is known by: all that changes its pixels.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum TextKey {
-    Title {
-        text: String,
-        font: String,
-        size: u32,
-        color: [u8; 4],
-        align: TextAlign,
-    },
-    Subtitles {
-        lines: Vec<String>,
-        size: u32,
-    },
+/// A part of a text drawn into pixels: x0, y0, x1, y1 of its pixels, on the card.
+struct TextPart {
+    window: [u32; 4],
+    view: wgpu::TextureView,
+    bytes: u64,
+}
+
+/// Where a text is put.
+enum Put {
+    /// Over this quad of its frame, with this texture.
+    Drawn([f64; 4], wgpu::TextureView),
+    /// Nowhere on the canvas.
+    Unseen,
+    /// Too large to draw at once: to be laid out this many times smaller, at least.
+    TooLarge(f64),
 }
 
 /// What is drawn for a layer.
@@ -561,7 +631,7 @@ pub struct Compositor {
     /// Changed when the uniform is made anew, so that what binds it is made anew too.
     generation: u64,
     planes: HashMap<Shape, Vec<Planes>>,
-    texts: HashMap<TextKey, TextTexture>,
+    texts: HashMap<TextKey, LaidText>,
     /// The number of the frame being composed.
     frame: u64,
 }
@@ -584,6 +654,8 @@ impl Compositor {
         reason = "the layouts of the bindings, one after another"
     )]
     pub fn new(gpu: Arc<Gpu>) -> Self {
+        // The fonts of the system, read on a thread of their own before a title is drawn.
+        text::warm_up();
         let device = gpu.device();
         let uniform_entry = |size: u64| wgpu::BindGroupLayoutEntry {
             binding: 0,
@@ -767,26 +839,29 @@ impl Compositor {
         }
         if target.export.is_none() && !scene.subtitles.is_empty() {
             let size = subtitle_size(scene.height);
-            let key = TextKey::Subtitles {
-                lines: scene.subtitles.clone(),
-                size: size.to_bits(),
-            };
-            let subtitles = self.text(&key, || text::subtitles(&scene.subtitles, size));
-            match subtitles {
-                Ok(text) => {
-                    let origin = subtitle_origin((scene.width, scene.height), text.block);
-                    let quad = text_quad(origin, text);
-                    let view = text.view.clone();
+            let place = placement(canvas, canvas, &Transform::NONE);
+            #[allow(clippy::cast_possible_truncation, reason = "a size of letters")]
+            let put = self.put_fitted(
+                |per| Spec::subtitles(&scene.subtitles, (f64::from(size) * per) as f32),
+                1.0,
+                |block| subtitle_origin((scene.width, scene.height), block),
+                &place,
+                canvas,
+            );
+            match put {
+                Ok(Some((quad, view))) => {
                     uniforms.push(layer_uniform(
-                        &placement(canvas, canvas, &Transform::NONE),
+                        &place,
                         canvas,
                         quad,
                         1.0,
                         1.0,
+                        1,
                         Some([1.0; 4]),
                     ));
                     draws.push(Draw::Texture(view));
                 }
+                Ok(None) => {}
                 Err(message) => {
                     self.give_back(draws);
                     return Err(ComposeError::Layer {
@@ -865,11 +940,7 @@ impl Compositor {
         if let Some(export) = &target.export {
             self.convert(&mut encoder, &canvas_view, export, target.height);
         }
-        let submitted = self.gpu.queue().submit([encoder.finish()]);
-        *target
-            .submitted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(submitted);
+        self.gpu.queue().submit([encoder.finish()]);
         self.give_back(draws);
         self.forget_unused();
         Ok(())
@@ -966,6 +1037,7 @@ impl Compositor {
                         [0.0, 0.0, frame.0, frame.1],
                         opacity,
                         scale,
+                        samples(minification(shown, frame, scale)),
                         None,
                     ));
                     uniforms.push(values);
@@ -977,37 +1049,44 @@ impl Compositor {
                         whole,
                         opacity,
                         scale,
+                        1,
                         Some(rgba.map(|channel| channel.clamp(0.0, 1.0))),
                     ));
                     draws.push(Draw::Texture(self.white.clone()));
                 }
                 Source::Title(title) => {
                     let style = &title.style;
-                    let key = TextKey::Title {
-                        text: title.text.clone(),
-                        font: style.font.clone(),
-                        size: style.size,
-                        color: style.color.0,
-                        align: style.align,
+                    let place = placement(canvas, canvas, &layer.transform);
+                    #[allow(clippy::cast_possible_truncation, reason = "a size of letters")]
+                    let size = |per: f64| {
+                        (f64::from(style.size.min(4096)) * f64::from(scene.units) * per) as f32
                     };
-                    let text = self.text(&key, || text::title(title)).map_err(failed)?;
-                    let origin = title_origin(
-                        (scene.width, scene.height),
-                        text.block,
-                        (style.x, style.y),
-                        style.align,
-                    );
-                    let quad = text_quad(origin, text);
-                    let view = text.view.clone();
-                    uniforms.push(layer_uniform(
-                        &placement(canvas, canvas, &layer.transform),
+                    let put = self.put_fitted(
+                        |per| Spec::title(title, size(per).max(1.0)),
+                        raster_scale(scale),
+                        |block| {
+                            title_origin(
+                                (scene.width, scene.height),
+                                block,
+                                (style.x, style.y),
+                                style.align,
+                            )
+                        },
+                        &place,
                         canvas,
-                        quad,
-                        opacity,
-                        scale,
-                        Some([1.0; 4]),
-                    ));
-                    draws.push(Draw::Texture(view));
+                    );
+                    if let Some((quad, view)) = put.map_err(failed)? {
+                        uniforms.push(layer_uniform(
+                            &place,
+                            canvas,
+                            quad,
+                            opacity,
+                            scale,
+                            1,
+                            Some([1.0; 4]),
+                        ));
+                        draws.push(Draw::Texture(view));
+                    }
                 }
             }
         }
@@ -1054,74 +1133,135 @@ impl Compositor {
         self.planes.retain(|_, kept| !kept.is_empty());
     }
 
-    /// A text drawn into pixels and onto the card: the one kept for `key`, or one drawn with
-    /// `draw` and kept, in place of the one drawn longest ago if there are many.
-    fn text(
+    /// Put a text, `per` of its pixels to a pixel of its frame, laid out as `spec` says for that
+    /// many, and made smaller until it can be drawn at once: the quad of its frame that it
+    /// covers and its texture, or none where it is not seen.
+    fn put_fitted(
         &mut self,
-        key: &TextKey,
-        draw: impl FnOnce() -> Raster,
-    ) -> Result<&TextTexture, String> {
-        let frame = self.frame;
-        if !self.texts.contains_key(key) {
-            let raster = draw();
-            let most = self.gpu.device().limits().max_texture_dimension_2d;
-            if raster.width > most || raster.height > most {
-                return Err(format!(
-                    "a text of {}×{} pixels is larger than the {most}×{most} that the card takes",
-                    raster.width, raster.height
-                ));
-            }
-            if self.texts.len() >= TEXTS_KEPT {
-                let oldest = self
-                    .texts
-                    .iter()
-                    .min_by_key(|(_, text)| text.used)
-                    .map(|(key, _)| key.clone());
-                if let Some(oldest) = oldest {
-                    self.texts.remove(&oldest);
+        spec: impl Fn(f64) -> Spec,
+        per: f64,
+        origin: impl Fn((f64, f64)) -> (f64, f64),
+        place: &Affine,
+        canvas: (f64, f64),
+    ) -> Result<Option<([f64; 4], wgpu::TextureView)>, String> {
+        let mut per = per;
+        for _ in 0..SHRINKS {
+            match self.put_text(&spec(per), per, &origin, place, canvas) {
+                Put::Drawn(quad, view) => return Ok(Some((quad, view))),
+                Put::Unseen => return Ok(None),
+                // Smaller by a quarter of an octave at least, on quarters of an octave.
+                Put::TooLarge(by) => {
+                    per = 2.0_f64.powf(((4.0 * (per * by).log2()).floor() - 1.0) / 4.0);
                 }
             }
-            let texture = self.text_texture(&raster);
-            self.texts.insert(key.clone(), texture);
         }
-        let text = self.texts.get_mut(key).expect("kept above");
-        text.used = frame;
-        Ok(text)
+        Err("a text too large to be drawn".into())
     }
 
-    /// Put the pixels of a text on the card.
-    fn text_texture(&self, raster: &Raster) -> TextTexture {
-        let texture = self.gpu.device().create_texture(&wgpu::TextureDescriptor {
-            label: Some("columbina text"),
-            size: wgpu::Extent3d {
-                width: raster.width,
-                height: raster.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        self.gpu.queue().write_texture(
-            texture.as_image_copy(),
-            &raster.pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(raster.width * 4),
-                rows_per_image: Some(raster.height),
-            },
-            texture.size(),
-        );
-        TextTexture {
-            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            width: raster.width,
-            height: raster.height,
-            block: raster.block,
-            pad: raster.pad,
-            used: self.frame,
+    /// Put a text laid out as `spec` says, `per` of its pixels to a pixel of its frame (the
+    /// canvas, which `place` puts on the canvas), its block where `origin` says for its size in
+    /// the frame: the part of it that is seen, drawn into pixels and onto the card, or kept from
+    /// a frame before.
+    #[allow(clippy::cast_precision_loss, reason = "counts of pixels")]
+    fn put_text(
+        &mut self,
+        spec: &Spec,
+        per: f64,
+        origin: impl Fn((f64, f64)) -> (f64, f64),
+        place: &Affine,
+        canvas: (f64, f64),
+    ) -> Put {
+        let key = TextKey::of(spec);
+        let frame = self.frame;
+        if !self.texts.contains_key(&key) {
+            if self.texts.len() >= TEXTS_KEPT {
+                self.forget_oldest_text(&key);
+            }
+            let laid = text::lay_out(spec);
+            self.texts.insert(
+                key.clone(),
+                LaidText {
+                    laid,
+                    parts: Vec::new(),
+                    used: frame,
+                },
+            );
+        }
+        let most_side = self.gpu.device().limits().max_texture_dimension_2d;
+        let gpu = &self.gpu;
+        let Some(text) = self.texts.get_mut(&key) else {
+            return Put::Unseen;
+        };
+        text.used = frame;
+        let (block, pad, full) = (text.laid.block, text.laid.pad, text.laid.full());
+        let at = origin((f64::from(block.0) / per, f64::from(block.1) / per));
+        let start = (at.0 - f64::from(pad) / per, at.1 - f64::from(pad) / per);
+        let Some(window) = text_window(place, canvas, start, per, full) else {
+            return Put::Unseen;
+        };
+        let (width, height) = (window[2] - window[0], window[3] - window[1]);
+        let area = u64::from(width) * u64::from(height);
+        if area > MOST_PIXELS || width > most_side || height > most_side {
+            let by_area = (MOST_PIXELS as f64 / area as f64).sqrt();
+            let by_side = f64::from(most_side) / f64::from(width.max(height));
+            return Put::TooLarge(by_area.min(by_side));
+        }
+        let view = if let Some(index) = text.parts.iter().position(|part| part.window == window) {
+            let part = text.parts.remove(index);
+            let view = part.view.clone();
+            text.parts.insert(0, part);
+            view
+        } else {
+            let raster = text::draw(&mut text.laid, window);
+            let view = text_texture(gpu, &raster);
+            text.parts.insert(
+                0,
+                TextPart {
+                    window,
+                    view: view.clone(),
+                    bytes: area * 4,
+                },
+            );
+            text.parts.truncate(PARTS_KEPT);
+            self.keep_text_bytes(&key);
+            view
+        };
+        let quad = [
+            start.0 + f64::from(window[0]) / per,
+            start.1 + f64::from(window[1]) / per,
+            start.0 + f64::from(window[2]) / per,
+            start.1 + f64::from(window[3]) / per,
+        ];
+        Put::Drawn(quad, view)
+    }
+
+    /// Let go of the text drawn longest ago, other than `keep`.
+    fn forget_oldest_text(&mut self, keep: &TextKey) {
+        let oldest = self
+            .texts
+            .iter()
+            .filter(|(key, _)| *key != keep)
+            .min_by_key(|(_, text)| text.used)
+            .map(|(key, _)| key.clone());
+        if let Some(oldest) = oldest {
+            self.texts.remove(&oldest);
+        }
+    }
+
+    /// Let go of the texts drawn longest ago, other than `keep`, while those on the card take
+    /// more than [`TEXT_BYTES`].
+    fn keep_text_bytes(&mut self, keep: &TextKey) {
+        loop {
+            let bytes: u64 = self
+                .texts
+                .iter()
+                .filter(|(key, _)| *key != keep)
+                .flat_map(|(_, text)| text.parts.iter().map(|part| part.bytes))
+                .sum();
+            if bytes <= TEXT_BYTES || self.texts.len() <= 1 {
+                return;
+            }
+            self.forget_oldest_text(keep);
         }
     }
 
@@ -1314,17 +1454,42 @@ fn uniform_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
     })
 }
 
-/// The quad of the frame (the canvas) that a text drawn into pixels covers, its block at
-/// `origin`.
-fn text_quad(origin: (f64, f64), text: &TextTexture) -> [f64; 4] {
-    let pad = f64::from(text.pad);
-    let (x, y) = (origin.0 - pad, origin.1 - pad);
-    [x, y, x + f64::from(text.width), y + f64::from(text.height)]
+/// Put the pixels of a text on the card.
+fn text_texture(gpu: &Gpu, raster: &Raster) -> wgpu::TextureView {
+    let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
+        label: Some("columbina text"),
+        size: wgpu::Extent3d {
+            width: raster.width.max(1),
+            height: raster.height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    if raster.width > 0 && raster.height > 0 {
+        let bytes: &[u8] = raster.pixels.as_flattened();
+        gpu.queue().write_texture(
+            texture.as_image_copy(),
+            &bytes[raster.start * 4..],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(raster.row * 4),
+                rows_per_image: Some(raster.height),
+            },
+            texture.size(),
+        );
+    }
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// The uniform of a layer that puts the quad `quad` of its frame on a canvas by `place`, at
-/// `opacity`, the frame made `scale` times larger: the second half of the uniform of
-/// `yuv.wgsl`, or, with a `tint`, the uniform of `layer.wgsl`.
+/// `opacity`, the frame made `scale` times larger, each pixel made of `samples` × `samples`
+/// points of it: the second half of the uniform of `yuv.wgsl`, or, with a `tint`, the uniform of
+/// `layer.wgsl`.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "pixels and shares, as the card takes them"
@@ -1335,6 +1500,7 @@ fn layer_uniform(
     quad: [f64; 4],
     opacity: f32,
     scale: f64,
+    samples: u32,
     tint: Option<[f32; 4]>,
 ) -> Vec<f32> {
     let mut values: Vec<f32> = [
@@ -1344,7 +1510,8 @@ fn layer_uniform(
     .iter()
     .map(|value| *value as f32)
     .collect();
-    values.extend([opacity, scale as f32, 0.0, 0.0]);
+    #[allow(clippy::cast_precision_loss, reason = "a count from 1 to 8")]
+    values.extend([opacity, scale as f32, samples as f32, 0.0]);
     if let Some(tint) = tint {
         values.extend(tint);
     }
@@ -1364,16 +1531,25 @@ mod tests {
             [0.0, 0.0, 100.0, 100.0],
             0.5,
             1.0,
+            3,
             None,
         );
         assert_eq!(
             values,
             [
-                1.0, 0.0, 50.0, 200.0, 0.0, 1.0, 0.0, 100.0, 0.0, 0.0, 100.0, 100.0, 0.5, 1.0, 0.0,
+                1.0, 0.0, 50.0, 200.0, 0.0, 1.0, 0.0, 100.0, 0.0, 0.0, 100.0, 100.0, 0.5, 1.0, 3.0,
                 0.0
             ]
         );
-        let tinted = layer_uniform(&place, (200.0, 100.0), [0.0; 4], 1.0, 2.0, Some([0.1; 4]));
+        let tinted = layer_uniform(
+            &place,
+            (200.0, 100.0),
+            [0.0; 4],
+            1.0,
+            2.0,
+            1,
+            Some([0.1; 4]),
+        );
         assert_eq!(u64::try_from(tinted.len() * 4).unwrap(), LAYER_PARAMS_SIZE);
         assert_eq!(
             u64::try_from(values.len() * 4 + 64).unwrap(),

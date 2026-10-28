@@ -128,7 +128,7 @@ fn scene(width: u32, height: u32, layers: Vec<SceneLayer>) -> Scene {
         width,
         height,
         layers,
-        subtitles: vec![],
+        ..Scene::default()
     }
 }
 
@@ -723,7 +723,7 @@ fn how_long_frames_take() {
                     1.0,
                 ),
             ],
-            subtitles: vec![],
+            ..Scene::default()
         };
         let target = Target::preview(&gpu, width, height).unwrap();
         compositor.render(&scene, &target).unwrap();
@@ -793,4 +793,372 @@ fn the_software_adapter_composes_and_converts_alike() {
     let wanted = codes([0.8, 0.2, 0.1], true)[0];
     assert!(word(12 * read.luma_stride + 24 * 2).abs_diff(wanted) <= 2);
     assert_no_errors(&gpu);
+}
+
+/// Stripes a pixel wide, black and white, over a picture of 4K.
+fn stripes() -> Arc<Picture> {
+    let (white, black) = (codes([1.0; 3], false), codes([0.0; 3], false));
+    Arc::new(picture(3840, 2160, false, |x, _| {
+        if x % 2 == 0 {
+            white
+        } else {
+            black
+        }
+    }))
+}
+
+#[test]
+fn stripes_drawn_two_three_and_four_times_smaller_are_grey() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let stripes = stripes();
+    let layers = || {
+        vec![layer(
+            Source::Picture(Arc::clone(&stripes), 0),
+            Transform::NONE,
+            1.0,
+        )]
+    };
+    // Grey is 127.5; read as they were, the stripes would be 0 and 255.
+    for (width, height) in [(1920, 1080), (1280, 720), (960, 540)] {
+        let frame = preview(&gpu, &mut compositor, &scene(width, height, layers()));
+        // Away from the first and the last column, where the picture is taken to go on as its
+        // edge does.
+        for x in (1..width - 1).step_by(7) {
+            for y in [0, height / 2, height - 1] {
+                let pixel = frame.at(x, y);
+                assert!(
+                    pixel[0].abs_diff(128) <= 8,
+                    "{width}×{height} at ({x}, {y}): {pixel:?}"
+                );
+            }
+        }
+    }
+    // Made smaller by the transform, as by the canvas.
+    let half = Transform {
+        scale: 0.5,
+        ..Transform::NONE
+    };
+    let frame = preview(
+        &gpu,
+        &mut compositor,
+        &scene(
+            1920,
+            1080,
+            vec![layer(Source::Picture(Arc::clone(&stripes), 0), half, 1.0)],
+        ),
+    );
+    for x in (500..1400).step_by(5) {
+        assert!(frame.at(x, 540)[0].abs_diff(128) <= 8, "{x}");
+    }
+    // And into an export: codes of luma about 125.5, dithered.
+    let target = Target::export(&gpu, 1280, 720, 8).unwrap();
+    compositor
+        .render(&scene(1280, 720, layers()), &target)
+        .unwrap();
+    let mut read = Picture::default();
+    target.read_picture(&mut read).unwrap();
+    for x in 1..1279 {
+        let code = read.luma[360 * read.luma_stride + x];
+        assert!(code.abs_diff(126) <= 3, "{x}: {code}");
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn a_picture_made_nv12_or_p010_keeps_each_row_and_each_column() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    // Luma that says the row and the column of each pixel, and chroma that changes with them.
+    let (width, height) = (64, 48);
+    // Of colours that R'G'B' holds, so that they come back as they were.
+    let code = |x: u32, y: u32| 60 + u16::try_from((y * 4 + x % 4) % 120).unwrap();
+    let chroma = |x: u32, y: u32| {
+        [
+            124 + u16::try_from(x / 2 % 8).unwrap(),
+            124 + u16::try_from(y / 2 % 8).unwrap(),
+        ]
+    };
+    let source = Arc::new(picture(width, height, false, |x, y| {
+        let [cb, cr] = chroma(x, y);
+        [code(x, y), cb, cr]
+    }));
+    let composed = scene(
+        width,
+        height,
+        vec![layer(Source::Picture(source, 0), Transform::NONE, 1.0)],
+    );
+    for bits in [8, 10] {
+        let target = Target::export(&gpu, width, height, bits).unwrap();
+        compositor.render(&composed, &target).unwrap();
+        let mut read = Picture::default();
+        target.read_picture(&mut read).unwrap();
+        let sample = |plane: &[u8], at: usize| {
+            if bits > 8 {
+                u16::from_le_bytes([plane[2 * at], plane[2 * at + 1]]) >> 8
+            } else {
+                u16::from(plane[at])
+            }
+        };
+        let stride = read.luma_stride / if bits > 8 { 2 } else { 1 };
+        for y in 0..height {
+            for x in 0..width {
+                let luma = sample(&read.luma, y as usize * stride + x as usize);
+                assert!(
+                    luma.abs_diff(code(x, y)) <= 1,
+                    "{bits} bits, luma at ({x}, {y}): {luma}, not {}",
+                    code(x, y)
+                );
+            }
+        }
+        // Chroma, away from the columns and rows where it changes.
+        for j in 1..height / 2 - 1 {
+            for i in 1..width / 2 - 1 {
+                let [cb, cr] = chroma(2 * i, 2 * j);
+                if chroma(2 * i - 2, 2 * j - 2) != [cb, cr]
+                    || chroma(2 * i + 2, 2 * j + 2) != [cb, cr]
+                {
+                    continue;
+                }
+                let at = j as usize * stride + 2 * i as usize;
+                let (first, second) = (sample(&read.chroma, at), sample(&read.chroma, at + 1));
+                assert!(
+                    first.abs_diff(cb) <= 1 && second.abs_diff(cr) <= 1,
+                    "{bits} bits, chroma at ({i}, {j}): {first}, {second}, not {cb}, {cr}"
+                );
+            }
+        }
+    }
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn two_layers_that_meet_at_a_pixel_leave_no_seam_between_them() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let white = codes([1.0; 3], false);
+    let picture = Arc::new(picture(1920, 1080, false, |_, _| white));
+    // Split screen: each half as large, a quarter of the width to the left and to the right.
+    for (width, height) in [(1920, 1080), (1280, 720), (640, 360)] {
+        let half = |x: f64| Transform {
+            x,
+            scale: 0.5,
+            ..Transform::NONE
+        };
+        let layers = vec![
+            layer(Source::Picture(Arc::clone(&picture), 0), half(-0.25), 1.0),
+            layer(Source::Picture(Arc::clone(&picture), 0), half(0.25), 1.0),
+            layer(Source::Color([1.0; 4]), half(-0.25), 1.0),
+        ];
+        let frame = preview(&gpu, &mut compositor, &scene(width, height, layers));
+        let middle = width / 2;
+        for x in middle - 3..middle + 3 {
+            assert_eq!(
+                frame.at(x, height / 2),
+                [255, 255, 255, 255],
+                "{width}×{height} at {x}"
+            );
+        }
+        assert_eq!(frame.at(middle, height / 8), [0, 0, 0, 255]);
+    }
+    assert_no_errors(&gpu);
+}
+
+fn title(text: &str, style: TitleStyle, transform: Transform) -> SceneLayer {
+    layer(
+        Source::Title(Text {
+            text: text.into(),
+            style,
+        }),
+        transform,
+        1.0,
+    )
+}
+
+#[test]
+fn a_title_of_letters_4096_high_many_lines_long_is_drawn_without_running_out() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let text = "Columbina\nsecond line\nthird line\nfourth line\nfifth";
+    let started = Instant::now();
+    let huge = title(
+        text,
+        style(4096, 0.5, 0.5, TextAlign::Center),
+        Transform::NONE,
+    );
+    let frame = preview(&gpu, &mut compositor, &scene(1920, 1080, vec![huge]));
+    eprintln!("drawn in {:?}", started.elapsed());
+    // A part of a letter fills much of the canvas.
+    let (_, count) = lit(&frame, 1080, 128);
+    assert!(count > 1920 * 1080 / 20, "{count} pixels lit");
+    // Made smaller by its transform, the whole of it is seen, drawn at its scale.
+    let small = title(
+        text,
+        style(4096, 0.5, 0.5, TextAlign::Center),
+        Transform {
+            scale: 0.02,
+            ..Transform::NONE
+        },
+    );
+    let frame = preview(&gpu, &mut compositor, &scene(1920, 1080, vec![small]));
+    let ([x0, y0, x1, y1], count) = lit(&frame, 1080, 128);
+    assert!(count > 1000, "{count}");
+    assert!((x0 + x1).abs_diff(1920) <= 40, "{x0}..{x1}");
+    assert!((y0 + y1).abs_diff(1080) <= 40, "{y0}..{y1}");
+    // Five lines of 4096 × 1.25, a fiftieth as large: some 500 high.
+    assert!((300..600).contains(&(y1 - y0)), "{y0}..{y1}");
+    assert_no_errors(&gpu);
+}
+
+#[test]
+fn chinese_letters_are_drawn_from_a_font_that_has_them() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let drawn = |compositor: &mut Compositor, text: &str| {
+        let frame = preview(
+            &gpu,
+            compositor,
+            &scene(
+                128,
+                64,
+                vec![title(
+                    text,
+                    style(48, 0.5, 0.5, TextAlign::Center),
+                    Transform::NONE,
+                )],
+            ),
+        );
+        frame
+            .pixels
+            .chunks(4)
+            .map(|pixel| pixel[0] > 128)
+            .collect::<Vec<bool>>()
+    };
+    let differ = |a: &[bool], b: &[bool]| a.iter().zip(b).filter(|(a, b)| a != b).count();
+    let (ni, hao, square) = (
+        drawn(&mut compositor, "你"),
+        drawn(&mut compositor, "好"),
+        drawn(&mut compositor, "\u{25A1}"),
+    );
+    // Letters missing from every font would be drawn as the same box.
+    assert!(ni.iter().filter(|lit| **lit).count() > 100);
+    assert!(differ(&ni, &hao) > 100, "你 and 好 are drawn alike");
+    assert!(differ(&ni, &square) > 100, "你 is drawn as a box");
+    assert!(differ(&hao, &square) > 100, "好 is drawn as a box");
+}
+
+#[test]
+fn a_title_of_a_colour_half_opaque_is_laid_over_as_the_alpha_formula_says() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let mut red = style(64, 0.5, 0.5, TextAlign::Center);
+    red.color = Rgba([255, 0, 0, 128]);
+    let layers = vec![
+        layer(Source::Color([1.0; 4]), Transform::NONE, 1.0),
+        title("IIII", red, Transform::NONE),
+    ];
+    let frame = preview(&gpu, &mut compositor, &scene(256, 128, layers));
+    // Within the letters, red half over white: 255, 127, 127; nowhere darker, as it would be if
+    // the alpha were taken twice.
+    let alpha = 128.0 / 255.0;
+    let inside = 255.0 * (1.0 - alpha);
+    let mut full = 0;
+    for pixel in frame.pixels.chunks(4) {
+        assert_eq!(pixel[0], 255, "{pixel:?}");
+        assert!(f64::from(pixel[1]) >= inside - 2.0, "{pixel:?}");
+        if (f64::from(pixel[1]) - inside).abs() <= 2.0 && pixel[1] == pixel[2] {
+            full += 1;
+        }
+    }
+    assert!(full > 200, "{full} pixels of the letters");
+}
+
+#[test]
+fn titles_are_sized_in_pixels_of_the_timeline() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let layers = || {
+        vec![title(
+            "Columbina",
+            style(40, 0.5, 0.5, TextAlign::Center),
+            Transform::NONE,
+        )]
+    };
+    let full = preview(&gpu, &mut compositor, &scene(640, 360, layers()));
+    let mut half = scene(320, 180, layers());
+    half.units = 0.5;
+    let half = preview(&gpu, &mut compositor, &half);
+    let ([a0, b0, a1, b1], _) = lit(&full, 360, 128);
+    let ([c0, d0, c1, d1], _) = lit(&half, 180, 128);
+    assert!(
+        (a1 - a0).abs_diff(2 * (c1 - c0)) <= 4,
+        "{a0}..{a1}, {c0}..{c1}"
+    );
+    assert!(
+        (b1 - b0).abs_diff(2 * (d1 - d0)) <= 4,
+        "{b0}..{b1}, {d0}..{d1}"
+    );
+}
+
+/// How long a picture of 4K drawn three times smaller and subtitles of 4K take: run with
+/// `--ignored --nocapture`, in release.
+#[test]
+#[ignore = "a measurement, not a test"]
+fn how_long_smaller_pictures_and_subtitles_take() {
+    let Some(gpu) = gpu_for_tests() else { return };
+    let mut compositor = Compositor::new(Arc::clone(&gpu));
+    let wait = |gpu: &Gpu| {
+        gpu.device()
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+    };
+    let stripes = stripes();
+    let third = scene(
+        1280,
+        720,
+        vec![layer(Source::Picture(stripes, 0), Transform::NONE, 1.0)],
+    );
+    let frames = 30;
+    let target = Target::preview(&gpu, 1280, 720).unwrap();
+    compositor.render(&third, &target).unwrap();
+    wait(&gpu);
+    let started = Instant::now();
+    for _ in 0..frames {
+        compositor.render(&third, &target).unwrap();
+        wait(&gpu);
+    }
+    eprintln!(
+        "4K drawn a third as large into a preview of 1280×720: {:?} a frame",
+        started.elapsed() / frames
+    );
+    let export = Target::export(&gpu, 1280, 720, 8).unwrap();
+    let mut read = Picture::default();
+    let started = Instant::now();
+    for _ in 0..frames {
+        compositor.render(&third, &export).unwrap();
+        export.read_picture(&mut read).unwrap();
+    }
+    eprintln!(
+        "the same into an export of 8 bits, read back: {:?} a frame",
+        started.elapsed() / frames
+    );
+    // Subtitles of 4K, each of another text, so that each is laid out and drawn anew.
+    let target = Target::preview(&gpu, 3840, 2160).unwrap();
+    let mut subtitled = scene(3840, 2160, vec![]);
+    subtitled.subtitles = vec!["字幕 the first line of the subtitles".into(), "0".into()];
+    compositor.render(&subtitled, &target).unwrap();
+    wait(&gpu);
+    let mut worst = std::time::Duration::ZERO;
+    let started = Instant::now();
+    for frame in 0..frames {
+        subtitled.subtitles[1] = format!("and a second line, number {frame}");
+        let one = Instant::now();
+        compositor.render(&subtitled, &target).unwrap();
+        worst = worst.max(one.elapsed());
+    }
+    wait(&gpu);
+    eprintln!(
+        "subtitles of two lines on 3840×2160, new each frame: {:?} a frame, at most {worst:?}",
+        started.elapsed() / frames
+    );
 }

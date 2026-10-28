@@ -34,7 +34,8 @@ struct Params {
     row1: vec4<f32>,
     // The quad drawn, from (x0, y0) to (x1, y1) of the frame: the whole of it, for a picture.
     quad: vec4<f32>,
-    // The opacity of the layer, and the pixels of the canvas to a pixel of the frame.
+    // The opacity of the layer, the pixels of the canvas to a pixel of the frame, and how many
+    // points across and down each pixel is made of.
     extra: vec4<f32>,
 };
 
@@ -83,9 +84,9 @@ fn chroma(place: vec2<f32>) -> vec2<f32> {
     return mix(top, bottom, a.blend.y);
 }
 
-// R'G'B' of the picture at `shown`, a place in the picture as it is shown, from 0 to 1 across
-// and down.
-fn rgb_at(shown: vec2<f32>) -> vec3<f32> {
+// Y', Cb and Cr of the picture at `shown`, a place in the picture as it is shown, from 0 to 1
+// across and down: Y' from 0 to 1, Cb and Cr about 0.
+fn ycc_at(shown: vec2<f32>) -> vec3<f32> {
     // Where it is in the picture as it is stored, which is turned clockwise to be shown.
     var stored: vec2<f32>;
     switch u32(params.luma.w + 0.5) {
@@ -111,13 +112,23 @@ fn rgb_at(shown: vec2<f32>) -> vec3<f32> {
     let y = (luma(place) * scale - params.luma.y) / params.luma.z;
     let c = (chroma(chroma_place) * scale - vec2<f32>(params.chroma.x, params.chroma.x))
         / params.chroma.y;
-    let cb = c.x;
-    let cr = c.y;
-    // BT.709: Kr = 0.2126, Kb = 0.0722.
+    return vec3<f32>(y, c.x, c.y);
+}
+
+// R'G'B' of Y', Cb and Cr: BT.709, Kr = 0.2126, Kb = 0.0722.
+fn rgb_of(ycc: vec3<f32>) -> vec3<f32> {
+    let y = ycc.x;
+    let cb = ycc.y;
+    let cr = ycc.z;
     let r = y + 1.5748 * cr;
     let g = y - 0.187324 * cb - 0.468124 * cr;
     let b = y + 1.8556 * cb;
     return clamp(vec3<f32>(r, g, b), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// R'G'B' of the picture at `shown`.
+fn rgb_at(shown: vec2<f32>) -> vec3<f32> {
+    return rgb_of(ycc_at(shown));
 }
 
 // The view's: one triangle that covers the viewport.
@@ -177,10 +188,38 @@ fn coverage(local: vec2<f32>) -> f32 {
     return clamp(inside + 0.5, 0.0, 1.0);
 }
 
+// A picture drawn smaller than it is is not read at one point of each pixel, which would pick
+// some of its pixels and pass over the others (fine stripes would come out as stripes again, or
+// as one of their colours): each pixel is made of `extra.z` × `extra.z` points of it, over the
+// pixel and as far again about it, weighed as a tent, and Y'CbCr is averaged before it is made
+// R'G'B'. How far a pixel reaches in the picture is taken from the derivatives of where it is,
+// before anything is chosen, as they must be.
 @fragment
 fn fs_layer(layer: Layer) -> @location(0) vec4<f32> {
     let size = params.quad.zw - params.quad.xy;
-    let shown = clamp((layer.local - params.quad.xy) / size, vec2<f32>(0.0), vec2<f32>(1.0));
+    let shown = (layer.local - params.quad.xy) / size;
+    let across = dpdx(shown);
+    let down = dpdy(shown);
+    let points = u32(params.extra.z + 0.5);
+    var ycc: vec3<f32>;
+    if points <= 1u {
+        ycc = ycc_at(clamp(shown, vec2<f32>(0.0), vec2<f32>(1.0)));
+    } else {
+        var sum = vec3<f32>(0.0);
+        var weights = 0.0;
+        let count = f32(points);
+        for (var i = 0u; i < points; i++) {
+            let u = (f32(i) + 0.5) / count * 2.0 - 1.0;
+            for (var j = 0u; j < points; j++) {
+                let v = (f32(j) + 0.5) / count * 2.0 - 1.0;
+                let weight = (1.0 - abs(u)) * (1.0 - abs(v));
+                let at = clamp(shown + u * across + v * down, vec2<f32>(0.0), vec2<f32>(1.0));
+                sum += ycc_at(at) * weight;
+                weights += weight;
+            }
+        }
+        ycc = sum / weights;
+    }
     let alpha = coverage(layer.local) * params.extra.x;
-    return vec4<f32>(rgb_at(shown) * alpha, alpha);
+    return vec4<f32>(rgb_of(ycc) * alpha, alpha);
 }

@@ -2176,7 +2176,7 @@ async fn backward_from_the_middle_it_plays_to_frame_0_and_stops() {
 #[tokio::test]
 async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     let dir = project_dir();
-    let Some((_engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
+    let Some((engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
     else {
         return;
     };
@@ -2186,8 +2186,14 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     agent
         .result("transport.play", Some(json!({ "speed": 4 })))
         .await;
-    let rate = frames_a_second(&mut agent, 8, Duration::from_millis(500)).await;
-    assert!((85.0..=115.0).contains(&rate), "{rate} frames a second");
+    // The client may be descheduled while the engine keeps playing. Let notifications queue:
+    // their read times are not the times at which the frames were shown.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    agent
+        .until_state("playing at 4", |state| {
+            state["playing"] == true && state["speed"] == 4
+        })
+        .await;
     let (stopped, _) = agent
         .until_state("stopped", |state| state["playing"] == false)
         .await;
@@ -2195,6 +2201,18 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     assert_eq!(stopped["shown"], 99);
     assert_eq!(stopped["speed"], 4);
     assert_ne!(stopped["sound"], "on");
+    // Measure the whole playback on the engine's clock, independent of the observer's
+    // scheduling and of short bursts in which the decoder catches up.
+    let played = logged_at_least(&engine, "transport_played", 1)
+        .await
+        .pop()
+        .expect("the engine logged how it played");
+    assert_eq!(played["speed"], 4, "{played}");
+    let rate = 99.0 / played["seconds"].as_f64().unwrap();
+    assert!(
+        (85.0..=115.0).contains(&rate),
+        "{rate} frames a second: {played}"
+    );
     // Played from the end, it stays there.
     agent
         .result("transport.play", Some(json!({ "speed": 2 })))

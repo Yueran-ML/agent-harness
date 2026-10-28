@@ -3,6 +3,7 @@
 //! The JSON of a project is read by JavaScript too, which holds every number as a double: so
 //! every integer in it stays within 2^53.
 
+pub mod edit;
 pub mod history;
 pub mod ops;
 pub mod project;
@@ -11,7 +12,8 @@ pub mod span;
 pub mod time;
 pub mod upgrade;
 
-pub use history::{Applied, History, Step, TransactionError, HISTORY_MOST};
+pub use edit::{expand, Change, CueItem, Edit, EditError, Expansion};
+pub use history::{Applied, Changed, History, Step, TransactionError, HISTORY_MOST};
 pub use ops::{apply, apply_done, Invalid, Op, OpError, LARGEST};
 pub use project::{
     Alignment, AudioFacts, Bin, Clip, Cue, Facts, Id, Identity, Media, Project, Proxy, ReadError,

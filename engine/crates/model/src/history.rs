@@ -8,9 +8,11 @@
 //! made it.
 
 use std::collections::VecDeque;
+use std::ops::Range;
 
 use serde::{Serialize, Serializer};
 
+use crate::edit::{run_change, Change, ChangeError, Edit, EditError};
 use crate::ops::{apply_done, Op, OpError};
 use crate::project::Project;
 
@@ -94,6 +96,29 @@ pub enum TransactionError {
         /// Why it was refused.
         error: OpError,
     },
+    /// An edit was refused, and what was done before it was taken back. It is written as
+    /// `Refused` is, with the error of the edit (see [`EditError`]).
+    #[error("operation {index} of the transaction was refused: {error}")]
+    Edit {
+        /// The place of the edit in the list.
+        index: usize,
+        /// Why it was refused.
+        error: EditError,
+    },
+}
+
+/// What a transaction of operations and edits did.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Changed {
+    /// What was done, as for a transaction of operations: the operations that the edits were
+    /// worked out into are among those in `done`, in their place.
+    pub applied: Applied,
+    /// The places in the transaction of the edits that went less far than they were asked to,
+    /// as far as they could.
+    pub clamped: Vec<usize>,
+    /// For each change of the transaction, in order, the places in `applied.done` of the
+    /// operations that it was worked out into: one for an operation.
+    pub parts: Vec<Range<usize>>,
 }
 
 impl Serialize for TransactionError {
@@ -101,6 +126,13 @@ impl Serialize for TransactionError {
         let mut value = match self {
             Self::Empty => serde_json::json!({ "reason": "empty" }),
             Self::Refused { index, error } => {
+                let mut value = serde_json::to_value(error).map_err(serde::ser::Error::custom)?;
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("index".into(), (*index).into());
+                }
+                value
+            }
+            Self::Edit { index, error } => {
                 let mut value = serde_json::to_value(error).map_err(serde::ser::Error::custom)?;
                 if let Some(object) = value.as_object_mut() {
                     object.insert("index".into(), (*index).into());
@@ -207,6 +239,82 @@ impl History {
             self.undo.pop_front();
         }
         Ok(self.applied(done, by, by))
+    }
+
+    /// Apply a transaction of edits that `by` sent, as [`History::change`] does.
+    ///
+    /// # Errors
+    /// As [`History::change`].
+    pub fn edit(&mut self, edits: Vec<Edit>, by: &str) -> Result<Changed, TransactionError> {
+        let changes = edits.into_iter().map(Change::Edit).collect();
+        self.change(changes, by, |change, _| change)
+    }
+
+    /// Apply a transaction of operations and edits that `by` sent, in order, all of them or
+    /// none, each passed through `map` first as [`History::apply_mapped`] passes operations.
+    ///
+    /// Each edit is worked out into operations at the moment that it is applied, against the
+    /// project that the changes before it left. The step that is kept to be undone holds the
+    /// operations only, as they were done: the transaction is undone and redone as one of
+    /// operations is.
+    ///
+    /// # Errors
+    /// The transaction is empty or does nothing, as a transaction of edits each of which finds
+    /// nothing to do may; or one of its changes is refused, with its place in `changes`. Then
+    /// the project is exactly as it was, `next_id` too, and so is the revision.
+    pub fn change(
+        &mut self,
+        changes: Vec<Change>,
+        by: &str,
+        mut map: impl FnMut(Change, &[Op]) -> Change,
+    ) -> Result<Changed, TransactionError> {
+        if changes.is_empty() {
+            return Err(TransactionError::Empty);
+        }
+        let before = self.project.clone();
+        let mut done: Vec<Op> = vec![];
+        let mut inverse = vec![];
+        let mut clamped = vec![];
+        let mut parts = vec![];
+        for (index, change) in changes.into_iter().enumerate() {
+            let change = map(change, &done);
+            match run_change(&mut self.project, change) {
+                Ok(expansion) => {
+                    parts.push(done.len()..done.len() + expansion.done.len());
+                    if expansion.clamped {
+                        clamped.push(index);
+                    }
+                    done.extend(expansion.done);
+                    inverse.extend(expansion.inverse);
+                }
+                Err(error) => {
+                    self.project = before;
+                    return Err(match error {
+                        ChangeError::Op(error) => TransactionError::Refused { index, error },
+                        ChangeError::Edit(error) => TransactionError::Edit { index, error },
+                    });
+                }
+            }
+        }
+        if done.is_empty() {
+            self.project = before;
+            return Err(TransactionError::Empty);
+        }
+        self.revision += 1;
+        self.redo.clear();
+        self.undo.push_back(Step {
+            done: done.clone(),
+            inverse,
+            by: by.into(),
+        });
+        while self.undo.len() > self.most {
+            self.undo.pop_front();
+        }
+        Ok(Changed {
+            applied: self.applied(done, by, by),
+            clamped,
+            parts,
+        })
     }
 
     /// Apply a transaction that is no step of the history, as the engine does when it sets the
@@ -786,5 +894,123 @@ mod tests {
             history.apply_unrecorded(vec![], "engine"),
             Err(TransactionError::Empty)
         );
+    }
+
+    mod edits {
+        use super::super::*;
+        use super::with_next_id_of;
+        use crate::edit::fixture::{self, cues, lock};
+        use crate::edit::{Change, CueItem, Edit, EditError};
+        use crate::project::TrackKind;
+
+        fn add_cue(start: i64) -> Edit {
+            Edit::AddCue {
+                timeline: "t1".into(),
+                track: "S1".into(),
+                start,
+                length: 10,
+                text: "again".into(),
+            }
+        }
+
+        #[test]
+        fn a_transaction_of_edits_is_one_step_that_is_undone_and_redone() {
+            let start = fixture::project();
+            let mut history = History::new(start.clone());
+            let item = CueItem {
+                start: 0,
+                length: 5,
+                text: "one".into(),
+            };
+            let edits = vec![
+                Edit::CuesFrom {
+                    timeline: "t1".into(),
+                    track: "S1".into(),
+                    items: vec![item],
+                },
+                Edit::RemoveTrack {
+                    timeline: "t1".into(),
+                    track: "A2".into(),
+                },
+            ];
+            let changed = history.edit(edits, "agent").unwrap();
+            let after = history.project().clone();
+            assert_eq!(cues(&after, "S1"), [("q10".into(), 0, 5)]);
+            // Two subtitles taken away and one put on, then the track taken away.
+            assert_eq!(changed.parts, [0..3, 3..4]);
+            assert_eq!(changed.applied.done.len(), 4);
+            assert_eq!(history.revision(), 1);
+            history.undo("desktop").unwrap().unwrap();
+            assert_eq!(history.project(), &with_next_id_of(&start, &after));
+            assert!(!history.can_undo());
+            history.redo("desktop").unwrap().unwrap();
+            assert_eq!(history.project(), &after);
+        }
+
+        #[test]
+        fn a_later_edit_names_what_an_earlier_one_made() {
+            let mut history = History::new(fixture::project());
+            let set = Edit::SetCue {
+                timeline: "t1".into(),
+                id: "q10".into(),
+                start: Some(60),
+                length: None,
+                text: None,
+            };
+            history.edit(vec![add_cue(50), set], "agent").unwrap();
+            assert_eq!(cues(history.project(), "S1")[1], ("q10".into(), 60, 10));
+        }
+
+        #[test]
+        fn operations_and_edits_are_applied_in_one_transaction() {
+            let mut history = History::new(fixture::project());
+            let track = Edit::AddTrack {
+                timeline: "t1".into(),
+                kind: TrackKind::Subtitle,
+                index: None,
+                name: None,
+                language: None,
+            };
+            let both = vec![Change::Edit(track), Change::Op(lock("S2"))];
+            let changed = history
+                .change(both, "desktop", |change, done| {
+                    assert!(done.len() <= 1);
+                    change
+                })
+                .unwrap();
+            assert_eq!(changed.parts, [0..1, 1..2]);
+            assert!(matches!(changed.applied.done[1], Op::SetTrack { .. }));
+        }
+
+        #[test]
+        fn a_refused_edit_takes_back_the_whole_transaction_and_names_its_place() {
+            let start = fixture::project();
+            let mut history = History::new(start.clone());
+            let changes = vec![
+                Change::Edit(add_cue(50)),
+                Change::Op(lock("S1")),
+                Change::Edit(add_cue(70)),
+            ];
+            let error = history
+                .change(changes, "agent", |change, _| change)
+                .unwrap_err();
+            assert_eq!(
+                error,
+                TransactionError::Edit {
+                    index: 2,
+                    error: EditError::Locked { track: "S1".into() },
+                }
+            );
+            let written = serde_json::to_value(&error).unwrap();
+            assert_eq!(written["index"], 2);
+            assert_eq!(written["reason"], "locked");
+            assert_eq!(
+                written["message"],
+                "operation 2 of the transaction was refused: track S1 is locked"
+            );
+            assert_eq!(history.project(), &start);
+            assert_eq!(history.revision(), 0);
+            assert_eq!(history.edit(vec![], "agent"), Err(TransactionError::Empty));
+        }
     }
 }

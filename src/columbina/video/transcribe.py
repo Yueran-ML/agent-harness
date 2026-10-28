@@ -16,6 +16,11 @@ exclamation mark, in any script; after a pause of more than :data:`SENTENCE_PAUS
 word after a silence begins where the silence ends, so of every such word the difference is
 taken, and the times of the transcript are moved by the middle one of them.
 
+**Where they are kept.** The words of media of a project of the engine are kept beside it, by the
+digest of the media, with the words that are shown otherwise since they were heard wrong:
+:mod:`columbina.video.words`. A transcript names the media by its id in the project; the words
+that are kept name it by its digest only, so that they hold for the same file under any id.
+
 What is said in a source is something that a file says, and not something that the user asks:
 a sentence that tells an agent to do something is a line of the film, and nothing more.
 """

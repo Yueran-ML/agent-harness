@@ -1,4 +1,4 @@
-"""Words and the stretches that are cut from them: ``timeline`` and ``transcribe``."""
+"""Words and the stretches that are cut from them: ``timeline``, ``transcribe`` and ``words``."""
 
 import json
 from collections.abc import Sequence
@@ -31,6 +31,18 @@ from columbina.video.transcribe import (
     sentences_of,
     transcript_of,
 )
+from columbina.video.words import (
+    Words,
+    WordsError,
+    corrected,
+    keep_silences,
+    keep_words,
+    kept_silences,
+    silences_path,
+    transcripts_of,
+    words_path,
+)
+from columbina.video.words import kept_words as kept_words_of
 
 
 def word(start: float, end: float, text: str) -> Word:
@@ -377,3 +389,95 @@ def test_the_last_word_ends_with_its_source_where_no_silence_follows() -> None:
 )
 def test_a_time_falls_in_a_frame(us: int, rate: str, frame: int) -> None:
     assert frames(us, rate) == frame
+
+
+# What is kept of media beside a project of the engine
+
+DIGEST = "0123456789abcdef" + "0" * 48
+
+
+def test_the_words_of_media_are_kept_by_its_digest_and_read_back(tmp_path: Path) -> None:
+    said = transcript_of("m3", DIGEST, TALK, QUIET, 5_000_000, language="en")
+
+    path = keep_words(tmp_path, Words.of(said))
+    kept = kept_words_of(tmp_path, DIGEST)
+    other = kept_words_of(tmp_path, "f" * 64)
+
+    assert path == tmp_path / "analysis" / "words-0123456789abcdef.json"
+    assert words_path(tmp_path, DIGEST) == path
+    assert kept is not None
+    assert kept.transcript("m7") == said.model_copy(update={"asset": "m7"})
+    assert other is None
+
+
+def test_where_media_is_silent_is_kept_for_each_threshold(tmp_path: Path) -> None:
+    path = keep_silences(tmp_path, DIGEST, -35.0, 300_000, QUIET)
+
+    assert path.name == "silences-0123456789abcdef--35-300.json"
+    assert kept_silences(tmp_path, DIGEST, -35.0, 300_000) == QUIET
+    assert kept_silences(tmp_path, DIGEST, -30.0, 300_000) is None
+    assert silences_path(tmp_path, DIGEST, -42.5, 500_000).name.endswith("-42.5-500.json")
+
+
+def test_what_is_kept_wrongly_or_of_no_digest_is_said(tmp_path: Path) -> None:
+    keep_words(tmp_path, Words.of(transcript_of("m3", DIGEST, TALK, QUIET, 5_000_000)))
+    other = "1" * 16 + DIGEST[16:]
+    words_path(tmp_path, other).write_text(
+        words_path(tmp_path, DIGEST).read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    silences_path(tmp_path, DIGEST, -35.0, 300_000).write_text("[[1, 2, 3]]", encoding="utf-8")
+
+    for wrong in ("../x", "ABCDEF0123456789", "0123", ""):
+        with pytest.raises(WordsError, match="is no digest of media"):
+            words_path(tmp_path, wrong)
+    with pytest.raises(WordsError, match="holds the words of other media, 0123456789ab"):
+        kept_words_of(tmp_path, other)
+    words_path(tmp_path, other).write_text("{}", encoding="utf-8")
+    with pytest.raises(WordsError, match="is not what this program writes"):
+        kept_words_of(tmp_path, other)
+    with pytest.raises(WordsError, match="no list of pairs of times"):
+        kept_silences(tmp_path, DIGEST, -35.0, 300_000)
+    silences_path(tmp_path, DIGEST, -35.0, 300_000).write_text("[", encoding="utf-8")
+    with pytest.raises(WordsError, match="cannot be read"):
+        kept_silences(tmp_path, DIGEST, -35.0, 300_000)
+
+
+def test_the_transcripts_of_a_project_are_those_of_its_media_with_words(tmp_path: Path) -> None:
+    keep_words(tmp_path, Words.of(transcript_of("m3", DIGEST, TALK, QUIET, 5_000_000)))
+    project: dict[str, Any] = {
+        "media": [
+            {"id": "m3", "identity": {"digest": DIGEST}},
+            {"id": "m4", "identity": {"digest": "f" * 64}},
+            {"id": "m5", "identity": {"digest": "../../x"}},
+            {"id": "m6", "identity": {}},
+        ]
+    }
+
+    found = transcripts_of(tmp_path, project)
+
+    assert list(found) == ["m3"]
+    assert found["m3"].asset == "m3"
+    assert found["m3"].words == transcript().words
+
+
+def test_a_word_heard_wrong_is_shown_as_it_was_said_and_its_time_stays(tmp_path: Path) -> None:
+    keep_words(tmp_path, Words.of(transcript_of("m3", DIGEST, TALK, QUIET, 5_000_000)))
+
+    changed = corrected(tmp_path, DIGEST, 1, "TOOL", " Tools ")
+    again = kept_words_of(tmp_path, DIGEST)
+
+    assert changed.shown == {7: "Tools"}
+    assert again == changed
+    assert again is not None
+    assert again.transcript("m3").text(7) == "Tools"
+    assert again.words == transcript().words
+    for sentence, wrong, right, said in (
+        (1, "this", "x", "more than once"),
+        (1, "that", "x", '"that" is not a word of sentence 1, which says "This this Tools works."'),
+        (2, "this", "x", "there is no sentence 2"),
+        (0, "uh", " ", "is not corrected to nothing"),
+    ):
+        with pytest.raises(WordsError, match=said):
+            corrected(tmp_path, DIGEST, sentence, wrong, right)
+    with pytest.raises(WordsError, match="no words were written down of media ffffffffffff"):
+        corrected(tmp_path, "f" * 64, 0, "uh", "um")

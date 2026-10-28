@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from columbina.apps.launcher import main
-from columbina.video import engine
+from columbina.video import edits, engine
 from columbina.video.engine import Engine
 from support import fake_engine
 from support.media import made, real, real_engine
@@ -140,7 +140,7 @@ def test_the_engine_says_that_it_answers(
     answered = json.loads(said(capsys))
     gone(tmp_path / "film" / "engine.lock")
 
-    assert told.startswith("The engine 0.1.0-fake answers in protocol 1, as process ")
+    assert told.startswith("The engine 0.1.0-fake answers in protocol 2, as process ")
     assert told.endswith(f"for {tmp_path / 'film'}: revision 0, 0 media, 0 timelines.\n")
     assert answered["revision"] == answered["media"] == answered["timelines"] == 0
     assert answered["project"] == str(tmp_path / "film")
@@ -183,9 +183,7 @@ def test_the_engine_itself_says_how_a_project_stands(
     async def edited() -> int:
         async with await Engine.attach(talk / "film", program=program, idle_seconds=1) as one:
             await one.imported([talk / "raw" / "talk.mp4"])
-            rate = {"num": 25, "den": 1}
-            timeline: dict[str, object] = {"id": "", "name": "Cut", "rate": rate, "tracks": []}
-            await one.apply([{"op": "add_timeline", "timeline": timeline}])
+            await one.apply([edits.add_timeline("Cut", edits.Rate(num=25, den=1))])
             return int(one.hello["pid"])
 
     pid = asyncio.run(edited())

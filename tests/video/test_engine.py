@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from columbina.video import engine
+from columbina.video import edits, engine
 from columbina.video.engine import (
     NOT_FOUND,
     UNEXPECTED,
@@ -24,6 +24,7 @@ from columbina.video.engine import (
     Changes,
     Engine,
     EngineError,
+    Progress,
     not_found,
     program_of,
 )
@@ -32,8 +33,7 @@ from support.fake_engine import LIMIT, served
 from support.media import made, real_engine
 
 FAKE = Path(fake_engine.__file__)
-TIMELINE: dict[str, Any] = {"id": "$t", "name": "Cut", "rate": {"num": 25, "den": 1}, "tracks": []}
-ADD = {"op": "add_timeline", "timeline": TIMELINE}
+ADD = edits.add_timeline("Cut", edits.Rate(num=25, den=1), id="$t")
 
 
 def as_program(monkeypatch: pytest.MonkeyPatch, *mode: str) -> None:
@@ -210,6 +210,8 @@ async def test_answers_that_are_not_of_the_protocol_are_refused(tmp_path: Path) 
             "media.import": {"revision": 1, "added": [1]},
             "history.undo": {"revision": "x", "done": None},
             "history.redo": None,
+            "timeline.duration": {"frames": "x"},
+            "render.start": {"job": 7},
         }
 
         for call in (
@@ -218,6 +220,8 @@ async def test_answers_that_are_not_of_the_protocol_are_refused(tmp_path: Path) 
             connected.imported([FAKE]),
             connected.undo(),
             connected.redo(),
+            connected.duration("t1"),
+            connected.render("t1", tmp_path / "film.mp4"),
         ):
             with pytest.raises(EngineError) as refused:
                 await call
@@ -434,6 +438,191 @@ def test_a_line_too_long_is_not_read_and_nothing_is_heard_after_the_end(
     assert "the project is too large to be read here" in str(lost[0])
 
 
+# Edits, renders and durations
+
+
+async def timeline_with_a_clip(connected: Engine) -> str:
+    """A timeline with a track of picture and a clip of a colour on it, and its id."""
+    applied = await connected.apply(
+        [
+            ADD,
+            edits.add_track("$t", "video"),
+            edits.append("$t", edits.of_color("#000000ff", 50)),
+        ]
+    )
+    return applied.names["$t"]
+
+
+async def test_a_transaction_of_edits_is_answered_with_operations_and_what_was_clamped(
+    tmp_path: Path,
+) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        changes = connected.changes()
+        timeline = await timeline_with_a_clip(connected)
+        await next_of(changes)
+        fake.clamped = [1]
+
+        applied = await connected.apply(
+            [edits.blade(timeline, 10), edits.trim(timeline, "c2", "out", 100)]
+        )
+        told = await next_of(changes)
+        await connected.apply([edits.set_track(timeline, "V1", locked=True)])
+        with pytest.raises(EngineError) as locked:
+            await connected.apply([edits.ripple_delete(timeline, ["c2"])])
+        fake.results["transaction.apply"] = {
+            "revision": 9, "done": [], "next_id": 3, "names": {}, "clamped": ["1"],
+        }  # fmt: skip
+        with pytest.raises(EngineError) as odd:
+            await connected.apply([ADD])
+        undone = await connected.undo()
+        await connected.aclose()
+
+        assert applied.clamped == [1]
+        assert all("op" in one and "edit" not in one for one in applied.done)
+        assert told.params["done"] == applied.done
+        assert [one["edit"] for one in fake.edits[:3]] == ["add_track", "append", "blade"]
+        assert locked.value.code == -32001
+        assert locked.value.data == {
+            "index": 0, "reason": "locked", "track": "V1", "message": "track V1 is locked",
+        }  # fmt: skip
+        assert odd.value.code == UNEXPECTED
+        assert undone is not None
+        assert undone.clamped == []
+
+
+async def test_how_long_a_timeline_lasts_is_asked_of_the_engine(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+
+        frames = await connected.duration(timeline)
+        with pytest.raises(EngineError) as missing:
+            await connected.duration("t99")
+        await connected.aclose()
+
+        assert frames == 50
+        assert missing.value.code == -32602
+        assert fake.asked.count("timeline.duration") == 2
+
+
+async def test_a_render_is_followed_until_it_is_done(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+        film = tmp_path / "out" / "cut.mp4"
+        film.parent.mkdir()
+        heard: list[Progress] = []
+
+        rendering = await connected.render(
+            timeline, film, codec="hevc", quality="small", frames=(0, 50), subtitles=True
+        )
+        ended = await asyncio.wait_for(rendering.finished(heard.append), 5)
+        again = [one async for one in rendering.progress()]
+        await connected.aclose()
+
+        assert fake.rendered == [
+            {
+                "timeline": timeline,
+                "path": str(film),
+                "codec": "hevc",
+                "quality": "small",
+                "subtitles": True,
+                "replace": False,
+                "range": {"from": 0, "to": 50},
+            }
+        ]
+        assert [(one.state, one.frame) for one in heard] == [
+            ("running", 0),
+            ("running", 25),
+            ("done", 50),
+        ]
+        assert ended == heard[-1] == rendering.last
+        assert (ended.path, ended.encoder, ended.frames, ended.over) == (
+            str(film),
+            "h264_fake",
+            50,
+            True,
+        )
+        assert again == [ended]
+        assert film.read_bytes() == b"a film of the fake engine"
+        # What the render told was heard by a reader of its own, which is closed with it.
+        assert list(connected._readers) == []  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_render_that_fails_or_is_cancelled_says_so(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+        fake.render_end = "failed"
+
+        failed = await (await connected.render(timeline, tmp_path / "a.mp4")).finished()
+        fake.render_hold = True
+        held = await connected.render(timeline, tmp_path / "b.mp4")
+        first = await asyncio.wait_for(anext(held.progress()), 5)
+        await held.cancel()
+        cancelled = await asyncio.wait_for(held.finished(), 5)
+        with pytest.raises(EngineError) as unknown:
+            await connected._call("render.cancel", {"job": "r9"})  # pyright: ignore[reportPrivateUsage]
+        await connected.aclose()
+
+        assert (failed.state, failed.message, failed.path) == (
+            "failed",
+            "the encoder failed",
+            None,
+        )
+        assert (first.state, first.over) == ("running", False)
+        assert cancelled.state == "cancelled"
+        assert unknown.value.data is not None
+        assert unknown.value.data["reason"] == "missing"
+        assert not (tmp_path / "a.mp4").exists()
+        assert not (tmp_path / "b.mp4").exists()
+
+
+async def test_a_render_that_is_refused_is_followed_no_further(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        timeline = await timeline_with_a_clip(connected)
+        (tmp_path / "there.mp4").write_bytes(b"")
+
+        with pytest.raises(EngineError) as there:
+            await connected.render(timeline, tmp_path / "there.mp4")
+        with pytest.raises(EngineError) as relative:
+            await connected.render(timeline, Path("film.mp4"))
+        replaced = await connected.render(timeline, tmp_path / "there.mp4", replace=True)
+        done = await asyncio.wait_for(replaced.finished(), 5)
+        fake.render_hold = True
+        lost = await connected.render(timeline, tmp_path / "lost.mp4")
+        await asyncio.wait_for(anext(lost.progress()), 5)
+        fake.drop = "project.get"
+        with pytest.raises(EngineError):
+            await connected.project()
+        with pytest.raises(EngineError, match="closed the connection") as gone:
+            await asyncio.wait_for(lost.finished(), 5)
+        await lost.aclose()
+        await connected.aclose()
+
+        assert (there.value.code, there.value.data) == (
+            -32002,
+            {"path": str(tmp_path / "there.mp4"), "reason": "exists"},
+        )
+        assert relative.value.code == -32602
+        assert done.state == "done"
+        assert gone.value.code == UNREACHABLE
+        assert list(connected._readers) == []  # pyright: ignore[reportPrivateUsage]
+
+
+def test_what_a_render_tells_is_read_as_the_protocol_says_it() -> None:
+    said = {"job": "r1", "state": "running", "frame": 3, "frames": 9, "fps": 24}
+
+    assert Progress.of(said) == Progress("r1", "running", 3, 9, 24.0)
+    assert Progress.of({**said, "frame": "3", "fps": True, "path": 7}) == Progress(
+        "r1", "running", 0, 9, 0.0
+    )
+    assert Progress.of({**said, "state": "paused"}) is None
+    assert Progress.of({**said, "job": 1}) is None
+
+
 # Reaching the engine
 
 
@@ -541,7 +730,7 @@ async def test_an_engine_that_cannot_be_reached_is_given_up(
     [
         ("error", "project.json cannot be read", 2),
         ("exit", "ended with exit code 5 before it listened", 5),
-        ("babble", "did not say where it listens in protocol 1, at an add", None),
+        ("babble", "did not say where it listens in protocol 2, at an add", None),
         ("elsewhere", r"where an engine listens: b'{\"listening\"", None),
         ("silent", "did not say where it listens within 0.5 seconds", None),
     ],
@@ -617,13 +806,20 @@ async def test_an_engine_of_another_project_or_protocol_is_not_used(tmp_path: Pa
         with pytest.raises(EngineError, match="another project open") as other:
             await attached(tmp_path / "film")
         fake.project_dir = None
-        fake.refusals["hello"] = {"code": -32602, "message": "no", "data": {"protocol": 2}}
+        fake.refusals["hello"] = {
+            "code": -32600,
+            "message": "no",
+            "data": {"reason": "protocol", "supported": [3]},
+        }
         with pytest.raises(EngineError) as protocol:
             await attached(tmp_path / "film")
         await until(lambda: not fake.connections)
 
         assert other.value.code == UNEXPECTED
-        assert (protocol.value.code, protocol.value.data) == (-32602, {"protocol": 2})
+        assert (protocol.value.code, protocol.value.data) == (
+            -32600,
+            {"reason": "protocol", "supported": [3]},
+        )
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="named pipes are of Windows")
@@ -833,7 +1029,7 @@ def clip(tmp_path: Path) -> Path:
 
 
 async def test_the_engine_edits_a_project_for_two_clients_and_ends_by_itself(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clip: Path
+    tmp_path: Path, clip: Path
 ) -> None:
     program = real_engine()
     project = tmp_path / "film"
@@ -841,40 +1037,68 @@ async def test_the_engine_edits_a_project_for_two_clients_and_ends_by_itself(
     first = await Engine.attach(project, program=program, idle_seconds=1)
     assert (project / "engine.lock").exists()
     revision, added = await first.imported([clip])
-    _, imported = await first.project()
-    scale = imported["media"][0]["facts"]["duration"]["scale"]
+    timeline = (await first.apply([ADD, edits.add_track("$t", "video")])).names["$t"]
     applied = await first.apply(
         [
-            ADD,
-            {"op": "add_track", "timeline": "$t",
-             "track": {"id": "$v", "kind": "video", "clips": []}},
-            {"op": "insert_clip", "timeline": "$t", "track": "$v",
-             "clip": {"id": "$c", "media": added[0], "source_in": {"ticks": 0, "scale": scale},
-                      "start": 0, "length": 25}},
+            edits.insert(timeline, edits.of_media(added[0], length=25), 0, audio_track=None),
+            edits.blade(timeline, 10),
         ]
-    )  # fmt: skip
+    )
     _, edited = await first.project()
+    frames = await first.duration(timeline)
     second = await Engine.attach(project, program=program, client="cli")
     told = second.changes()
     undone = await first.undo()
     changed = await next_of(told)
     _, after = await second.project()
     with pytest.raises(EngineError) as refused:
-        await second.apply([{"op": "remove_media", "id": "m99"}])
+        await second.apply([edits.remove_media("m99")])
+    with pytest.raises(EngineError) as locked:
+        await second.apply(
+            [edits.set_track(timeline, "V1", locked=True), edits.blade(timeline, 5, tracks=["V1"])]
+        )
     pid = first.hello["pid"]
     await asyncio.gather(first.aclose(), second.aclose())
     await until(lambda: not (project / "engine.lock").exists(), 15)
 
     assert revision == 1
-    assert set(applied.names) == {"$t", "$v", "$c"}
-    assert edited["timelines"][0]["tracks"][0]["clips"][0]["media"] == added[0]
+    assert all("op" in one for one in applied.done)
+    assert applied.clamped == []
+    clips = edited["timelines"][0]["tracks"][0]["clips"]
+    assert [(one["start"], one["length"]) for one in clips] == [(0, 10), (10, 15)]
+    assert clips[0]["source"]["media"] == added[0]
+    assert frames == 25
     assert second.hello["pid"] == pid
+    assert second.hello["protocol"] == 2
     assert undone is not None
-    assert changed.revision == undone.revision == 3
+    assert changed.revision == undone.revision == 4
     assert (changed.params["by"], changed.params["made_by"]) == ("agent", "agent")
-    assert after["timelines"] == []
+    assert after["timelines"][0]["tracks"][0]["clips"] == []
     assert refused.value.code == -32001
     assert refused.value.data is not None
     assert refused.value.data["reason"] == "missing"
+    assert locked.value.data is not None
+    assert (locked.value.data["index"], locked.value.data["reason"]) == (1, "locked")
     assert (project / "project.json").exists()
     assert len(logs(project)) == 1
+
+
+async def test_the_engine_renders_a_timeline_and_tells_how_far_it_has_come(
+    tmp_path: Path, clip: Path
+) -> None:
+    program = real_engine()
+    film = tmp_path / "out" / "cut.mov"
+    film.parent.mkdir()
+
+    async with await Engine.attach(tmp_path / "film", program=program, idle_seconds=1) as one:
+        _, added = await one.imported([clip])
+        timeline = (await one.apply([ADD, edits.add_track("$t", "video")])).names["$t"]
+        await one.apply([edits.append(timeline, edits.of_media(added[0], length=25))])
+        heard: list[Progress] = []
+        rendering = await one.render(timeline, film, codec="prores", quality="small")
+        ended = await asyncio.wait_for(rendering.finished(heard.append), 120)
+
+    assert (ended.state, ended.frames, ended.path) == ("done", 25, str(film)), ended.message
+    assert ended.encoder
+    assert all(one.job == rendering.job for one in heard)
+    assert film.stat().st_size > 0

@@ -6,6 +6,11 @@ change in one order. Its protocol is ``engine/PROTOCOL.md`` of the repository, J
 a named pipe of Windows or a socket of Unix, one message a line. :class:`Engine` is one
 connection to it.
 
+**What it is asked.** A transaction holds operations and edits (:mod:`columbina.video.edits`),
+and is one step of the history of the project. A timeline is rendered by the engine too, in the
+background, :meth:`Engine.render`: what it tells of the render is followed by the
+:class:`Rendering` that is returned.
+
 **Reaching it.** The engine that has a project open says where it listens in ``engine.lock`` of
 the project. That address is tried first, and once more a moment later, since it may name an
 engine that has just ended. Where no engine answers, one is started with ``--headless``: it
@@ -44,7 +49,7 @@ import tempfile
 import threading
 import weakref
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,11 +68,14 @@ __all__ = [
     "Changes",
     "Engine",
     "EngineError",
+    "Progress",
+    "RenderState",
+    "Rendering",
     "not_found",
     "program_of",
 ]
 
-PROTOCOL = 1
+PROTOCOL = 2
 """The version of the protocol that is spoken."""
 
 UNREACHABLE = -1
@@ -159,12 +167,15 @@ class Applied:
         next_id: The ``next_id`` of the project after the change. A copy of the project that
             ``done`` is applied to is given it first, or it would refuse the new ids.
         names: The id that each ``$name`` of the transaction was given.
+        clamped: The places in the transaction of the edits that went only as far as they could,
+            as a trim that met the end of its media. An undo or a redo clamps nothing.
     """
 
     revision: int
     done: list[dict[str, Any]]
     next_id: int
     names: dict[str, str] = field(default_factory=dict[str, str])
+    clamped: list[int] = field(default_factory=list[int])
 
 
 @dataclass(frozen=True)
@@ -172,15 +183,15 @@ class Changed:
     """What the engine told every client, or what this side found out about the project.
 
     Attributes:
-        method: ``project.changed``, ``engine.error``, ``transport.state`` or ``media.proxy``, as
-            the engine sends them, or ``engine.yielding``, which an engine tells before it ends
-            for the desktop's to take the project over. Or ``project.fetched``: the whole project
-            was asked for anew, after a change was missed or the connection was made again, and
-            its params are the answer of ``project.get``; a copy of the project starts again from
-            it, and the changes after it follow. An engine that was started anew counts its
-            revisions from 0 again. Or ``changes.missed``: the reader left so much unread that
-            the oldest things told were dropped, ``missed`` of them; a copy starts again from
-            :meth:`Engine.project`.
+        method: ``project.changed``, ``engine.error``, ``transport.state``, ``media.proxy`` or
+            ``render.progress``, as the engine sends them, or ``engine.yielding``, which an
+            engine tells before it ends for the desktop's to take the project over. Or
+            ``project.fetched``: the whole project was asked for anew, after a change was missed
+            or the connection was made again, and its params are the answer of ``project.get``;
+            a copy of the project starts again from it, and the changes after it follow. An
+            engine that was started anew counts its revisions from 0 again. Or
+            ``changes.missed``: the reader left so much unread that the oldest things told were
+            dropped, ``missed`` of them; a copy starts again from :meth:`Engine.project`.
         params: What it said.
     """
 
@@ -192,6 +203,147 @@ class Changed:
         """The revision of the project that it tells of, if it tells of one."""
         said = self.params.get("revision")
         return said if isinstance(said, int) and not isinstance(said, bool) else None
+
+
+RenderState = Literal["running", "done", "failed", "cancelled"]
+"""Where a render stands: one that is not ``running`` is over."""
+
+_RENDER_STATES: tuple[RenderState, ...] = ("running", "done", "failed", "cancelled")
+
+
+@dataclass(frozen=True)
+class Progress:
+    """How far a render of the engine has come, as ``render.progress`` tells it.
+
+    Attributes:
+        job: The render that it tells of.
+        state: ``running``, or how it ended: ``done``, ``failed`` or ``cancelled``.
+        frame: How many frames are written.
+        frames: How many frames it writes in all.
+        fps: How many frames it writes a second, lately.
+        path: The file that it wrote, once it is done.
+        encoder: The encoder of FFmpeg that it wrote with (``h264_nvenc``, ``prores_ks``).
+        message: Why it failed.
+    """
+
+    job: str
+    state: RenderState
+    frame: int = 0
+    frames: int = 0
+    fps: float = 0.0
+    path: str | None = None
+    encoder: str | None = None
+    message: str | None = None
+
+    @property
+    def over(self) -> bool:
+        """Whether the render has ended, one way or another."""
+        return self.state != "running"
+
+    @classmethod
+    def of(cls, params: Mapping[str, Any]) -> "Progress | None":
+        """Read what ``render.progress`` says; ``None`` where it is not what the protocol says."""
+        job, state = params.get("job"), params.get("state")
+        if not isinstance(job, str) or state not in _RENDER_STATES:
+            return None
+
+        def whole(key: str) -> int:
+            said = params.get(key)
+            return said if type(said) is int else 0
+
+        def text(key: str) -> str | None:
+            said = params.get(key)
+            return said if isinstance(said, str) else None
+
+        fps = params.get("fps")
+        return cls(
+            job=job,
+            state=state,
+            frame=whole("frame"),
+            frames=whole("frames"),
+            fps=float(fps) if isinstance(fps, (int, float)) and not isinstance(fps, bool) else 0.0,
+            path=text("path"),
+            encoder=text("encoder"),
+            message=text("message"),
+        )
+
+
+class Rendering:
+    """A render that the engine does in the background, as :meth:`Engine.render` started it.
+
+    What the engine tells of it is heard from before it was started, so none of it is missed.
+    :meth:`progress` passes it on until the render is over, and :meth:`finished` waits for that.
+    The render goes on in the engine whether or not it is followed here: :meth:`cancel` stops it.
+
+    Attributes:
+        job: What the engine knows the render by.
+    """
+
+    def __init__(self, engine: "Engine", job: str, heard: "Changes") -> None:
+        self.job = job
+        self._engine = engine
+        self._heard = heard
+        self._last: Progress | None = None
+
+    @property
+    def last(self) -> Progress | None:
+        """What was told of the render last, if anything was."""
+        return self._last
+
+    async def progress(self) -> AsyncIterator[Progress]:
+        """Pass on what the engine tells of the render, up to and with how it ended.
+
+        Raises:
+            EngineError: The connection to the engine was lost, or it was closed. The render may
+                go on in the engine all the same.
+        """
+        if self._last is not None and self._last.over:
+            yield self._last
+            return
+        try:
+            async for told in self._heard:
+                if told.method != "render.progress":
+                    continue
+                progress = Progress.of(told.params)
+                if progress is None or progress.job != self.job:
+                    continue
+                self._last = progress
+                yield progress
+                if progress.over:
+                    return
+        finally:
+            if self._last is not None and self._last.over:
+                await self._heard.aclose()
+        raise EngineError(
+            f"the connection to the engine was closed before render {self.job} ended",
+            code=UNREACHABLE,
+        )
+
+    async def finished(self, told: Callable[[Progress], object] | None = None) -> Progress:
+        """Wait for the render to end, and return how it ended.
+
+        Args:
+            told: What is called with each thing told of it, as it comes, the last included.
+
+        Raises:
+            EngineError: The connection to the engine was lost, or it was closed.
+        """
+        async for progress in self.progress():
+            if told is not None:
+                told(progress)
+        return cast("Progress", self._last)
+
+    async def cancel(self) -> None:
+        """Ask the engine to stop the render. Its end is told as ``cancelled``, unless it ended.
+
+        Raises:
+            EngineError: The engine refused, as for a render that it does not know.
+        """
+        await self._engine._call("render.cancel", {"job": self.job})  # pyright: ignore[reportPrivateUsage]
+
+    async def aclose(self) -> None:
+        """Hear nothing more of the render. It goes on in the engine."""
+        await self._heard.aclose()
 
 
 def program_of(configured: str | None, search: str, outside: Sequence[Path]) -> str | None:
@@ -675,15 +827,18 @@ class Engine:
         return _whole(said, "revision"), cast("dict[str, Any]", project)
 
     async def apply(self, ops: Sequence[Mapping[str, Any]]) -> Applied:
-        """Apply operations to the project, all or none, as one step of its history.
+        """Apply operations and edits to the project, all or none, as one step of its history.
 
-        A thing that an operation adds may be given an id of the form ``$name``, which later
-        operations of the same call may name; the ids that the engine gave are in ``names``.
+        An operation names itself in ``op``, an edit, such as an insert or a ripple delete, in
+        ``edit`` (:mod:`columbina.video.edits` writes both). The engine works each edit out into
+        operations as it comes to it, and ``done`` holds those operations only. A thing that an
+        operation adds may be given an id of the form ``$name``, which later operations of the
+        same call may name; the ids that the engine gave are in ``names``.
 
         Raises:
             EngineError: The transaction was refused (``-32001``, with the ``index`` of the
-                operation and the ``reason`` in ``data``), or an operation or a name could not
-                be read (``-32602``).
+                operation or the edit and the ``reason`` in ``data``, as ``locked`` or
+                ``ripple_blocked``), or an operation or a name could not be read (``-32602``).
         """
         said = await self._call("transaction.apply", {"ops": [dict(op) for op in ops]})
         return _applied(said, said.get("names"))
@@ -710,6 +865,66 @@ class Engine:
         ):
             raise EngineError("the engine answered media.import with no ids", code=UNEXPECTED)
         return _whole(said, "revision"), cast("list[str]", added)
+
+    async def duration(self, timeline: str) -> int:
+        """Return how many frames a timeline lasts: to the end of the last thing on it.
+
+        Raises:
+            EngineError: There is no such timeline (``-32602``).
+        """
+        return _whole(await self._call("timeline.duration", {"timeline": timeline}), "frames")
+
+    async def render(
+        self,
+        timeline: str,
+        path: Path,
+        *,
+        codec: Literal["h264", "hevc", "prores"] = "h264",
+        quality: Literal["high", "medium", "small"] = "high",
+        frames: tuple[int, int] | None = None,
+        subtitles: bool = False,
+        replace: bool = False,
+    ) -> Rendering:
+        """Have the engine render a timeline into a file, in the background.
+
+        The engine encodes with the hardware of this machine where it can, and writes ProRes into
+        a ``.mov`` where it cannot. What it tells of the render is followed from before it is
+        asked for, by the :class:`Rendering` that is returned.
+
+        Args:
+            timeline: The timeline.
+            path: The file to write, an absolute path.
+            codec: The codec of the picture.
+            quality: How much is kept of the picture, against the size of the file.
+            frames: The frames to render, the first and the one after the last; all of them if
+                it is not given.
+            subtitles: Whether the subtitles of the timeline are written beside the film, as SRT.
+            replace: Whether a file that is there already is written over.
+
+        Raises:
+            EngineError: The engine refused: no such timeline, a relative path, a file that is
+                there already, or nothing to render.
+        """
+        params: dict[str, Any] = {
+            "timeline": timeline,
+            "path": str(path),
+            "codec": codec,
+            "quality": quality,
+            "subtitles": subtitles,
+            "replace": replace,
+        }
+        if frames is not None:
+            params["range"] = {"from": frames[0], "to": frames[1]}
+        heard = self.changes()
+        try:
+            said = await self._call("render.start", params)
+            job = said.get("job")
+            if not isinstance(job, str):
+                raise EngineError("the engine answered render.start with no job", code=UNEXPECTED)
+        except BaseException:
+            await heard.aclose()
+            raise
+        return Rendering(self, job, heard)
 
     def changes(self) -> Changes:
         """What the engine tells from now on: every change of the project, and its other news."""
@@ -1077,14 +1292,20 @@ def _applied(said: dict[str, Any], names: object) -> Applied:
     Raises:
         EngineError: It is not what the protocol says.
     """
-    done = said.get("done")
-    if not isinstance(done, list) or not isinstance(names, dict):
+    done, clamped = said.get("done"), said.get("clamped", [])
+    if (
+        not isinstance(done, list)
+        or not isinstance(names, dict)
+        or not isinstance(clamped, list)
+        or not all(type(one) is int for one in cast("list[object]", clamped))
+    ):
         raise EngineError("the engine answered with no change of the project", code=UNEXPECTED)
     return Applied(
         revision=_whole(said, "revision"),
         done=cast("list[dict[str, Any]]", done),
         next_id=_whole(said, "next_id"),
         names=cast("dict[str, str]", names),
+        clamped=cast("list[int]", clamped),
     )
 
 

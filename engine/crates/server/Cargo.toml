@@ -39,8 +39,9 @@ windows = { workspace = true, features = [
 rustix = { version = "1", features = ["process"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# The transport's QoS controls the latency of its frame timers on macOS.
-libc = "0.2"
+# Tell macOS that playback needs precise timers, only for as long as it plays.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo", "NSString"] }
 
 [dev-dependencies]
 # Project::sample, for the tests of the names of a transaction.

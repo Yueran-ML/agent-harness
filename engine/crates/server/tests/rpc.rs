@@ -3447,8 +3447,12 @@ async fn a_proxy_made_from_another_file_is_made_again() {
     let path = media["proxy"]["path"].as_str().unwrap();
     assert_ne!(Path::new(path), stale);
     assert!(Path::new(path).is_file());
-    // The one whose place it took is deleted.
-    assert!(!stale.exists());
+    // The one whose place it took is deleted, once the new one is set.
+    let deadline = Instant::now() + WAIT;
+    while stale.exists() {
+        assert!(Instant::now() < deadline, "{} is left", stale.display());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     // It is no step to undo: this engine has none.
     let undone = agent.result("history.undo", None).await;
     assert_eq!(undone["done"], Value::Null, "{undone}");

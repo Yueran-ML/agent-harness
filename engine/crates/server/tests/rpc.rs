@@ -4032,7 +4032,11 @@ async fn the_ffmpeg_of_an_engine_that_is_killed_ends_with_it() {
                 break pid;
             }
         }
-        assert!(Instant::now() < deadline, "no ffmpeg runs: {}", engine.stderr());
+        assert!(
+            Instant::now() < deadline,
+            "no ffmpeg runs: {}",
+            engine.stderr()
+        );
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
     // Killed, as by the task manager: it has no time to stop its ffmpeg.

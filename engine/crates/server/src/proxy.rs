@@ -1853,21 +1853,27 @@ mod tests {
     fn nvenc_that_cannot_start_is_named_as_why_ffmpeg_failed() {
         // What the ffmpeg of FFmpeg 8.1 says where there is no card of NVIDIA: its last line
         // does not name NVENC.
-        let said = "[hevc_nvenc @ 000001a8c99cb300] dl_fn->cuda_dl->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
-[vost#0:0/hevc_nvenc @ 000001a8c78df3c0] [enc:hevc_nvenc @ 000001a8c78f9980] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
-[vf#0:0 @ 000001a8c79c9380] Error sending frames to consumers: Unknown error occurred
-[vost#0:0/hevc_nvenc @ 000001a8c78df3c0] [enc:hevc_nvenc @ 000001a8c78f9980] Could not open encoder before EOF
-[out#0/mov @ 000001a8c99ca340] Nothing was written into output file, because at least one of its streams received no packets.
-";
-        assert!(cause(said).starts_with("[hevc_nvenc @ 000001a8c99cb300] dl_fn->cuda_dl->cuInit(0) failed"));
+        let said = [
+            "[hevc_nvenc @ 01] dl_fn->cuda_dl->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no \
+             CUDA-capable device is detected",
+            "[vost#0:0/hevc_nvenc @ 02] [enc:hevc_nvenc @ 03] Error while opening encoder - maybe \
+             incorrect parameters such as bit_rate, rate, width or height.",
+            "[vf#0:0 @ 04] Error sending frames to consumers: Unknown error occurred",
+            "[vost#0:0/hevc_nvenc @ 02] [enc:hevc_nvenc @ 03] Could not open encoder before EOF",
+            "[out#0/mov @ 05] Nothing was written into output file, because at least one of its \
+             streams received no packets.",
+            "",
+        ]
+        .join("\n");
+        assert!(
+            cause(&said).starts_with("[hevc_nvenc @ 01] dl_fn->cuda_dl->cuInit(0) failed"),
+            "{}",
+            cause(&said)
+        );
         // Otherwise the last line, which says why.
-        let said = "[in#0 @ 0] Error opening input: Invalid data found when processing input
-                    Error opening input file x.mp4.
-
-";
-        assert_eq!(cause(said), "Error opening input file x.mp4.");
-        assert_eq!(cause(" 
-"), "it said nothing");
+        let said = "[in#0 @ 0] Error opening input: Invalid data found\nError opening x.mp4.\n\n";
+        assert_eq!(cause(said), "Error opening x.mp4.");
+        assert_eq!(cause(" \n"), "it said nothing");
     }
 
     #[test]

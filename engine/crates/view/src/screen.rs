@@ -247,6 +247,11 @@ struct Screen {
 
 impl Screen {
     fn new(shared: &Arc<Shared>, handle: usize) -> Result<Screen, String> {
+        // wgpu panics at an instance made where it has none of the backends of the platform
+        // (on Linux, where the view is never made: `Native::open` refuses it first).
+        if !wgpu::Instance::enabled_backend_features().intersects(native::BACKENDS) {
+            return Err("wgpu has no backend to draw with on this platform".into());
+        }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: native::BACKENDS,
             ..wgpu::InstanceDescriptor::new_without_display_handle()

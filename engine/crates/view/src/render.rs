@@ -654,14 +654,29 @@ mod tests {
     }
 
     // What follows draws with the graphics card, into a texture that is read back. Without an
-    // adapter the tests are skipped, unless COLUMBINA_REQUIRE_GPU is 1.
+    // adapter, or without a backend of wgpu on this platform (on Linux the crate builds none),
+    // the tests are skipped, unless COLUMBINA_REQUIRE_GPU is 1.
 
     struct Gpu {
         device: wgpu::Device,
         queue: wgpu::Queue,
     }
 
+    /// Skip a test that draws, or fail it where the graphics card is required.
+    fn skip<T>(why: &str) -> Option<T> {
+        assert!(
+            std::env::var("COLUMBINA_REQUIRE_GPU").as_deref() != Ok("1"),
+            "COLUMBINA_REQUIRE_GPU is 1, and {why}"
+        );
+        eprintln!("skipped: {why}");
+        None
+    }
+
     fn gpu() -> Option<Gpu> {
+        // wgpu panics at an instance made where it has no backend.
+        if wgpu::Instance::enabled_backend_features().is_empty() {
+            return skip("wgpu has no backend on this platform");
+        }
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::all(),
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -670,14 +685,7 @@ mod tests {
             instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
         ) {
             Ok(adapter) => adapter,
-            Err(error) => {
-                assert!(
-                    std::env::var("COLUMBINA_REQUIRE_GPU").as_deref() != Ok("1"),
-                    "COLUMBINA_REQUIRE_GPU is 1, and there is no graphics adapter: {error}"
-                );
-                eprintln!("skipped: no graphics adapter: {error}");
-                return None;
-            }
+            Err(error) => return skip(&format!("there is no graphics adapter: {error}")),
         };
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: None,

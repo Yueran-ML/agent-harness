@@ -1440,17 +1440,23 @@ fn run_ffmpeg(
     }
     match status {
         Some(Ok(status)) if status.success() => Ran::Wrote(frames),
-        Some(Ok(status)) => {
-            let last = said
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("it said nothing");
-            Ran::Failed(format!("ffmpeg ended with {status}: {last}"))
-        }
+        Some(Ok(status)) => Ran::Failed(format!("ffmpeg ended with {status}: {}", cause(&said))),
         Some(Err(error)) => Ran::Failed(format!("ffmpeg cannot be waited for: {error}")),
         None => Ran::Failed("ffmpeg was lost".into()),
     }
+}
+
+/// The line of what `ffmpeg` said on stderr that says why it failed: the last, unless NVENC
+/// itself said why (its lines begin `[hevc_nvenc @`), as it does where there is no card or no
+/// driver of NVIDIA, and the last line then says only that nothing was written. That line names
+/// NVENC, so that it is not tried again.
+fn cause(said: &str) -> &str {
+    let mut lines = said.lines().map(str::trim).filter(|line| !line.is_empty());
+    lines
+        .clone()
+        .find(|line| line.starts_with("[hevc_nvenc @"))
+        .or_else(|| lines.next_back())
+        .unwrap_or("it said nothing")
 }
 
 /// Check a proxy that was made: its first and last frames are numbered as those of the media,
@@ -1841,6 +1847,27 @@ mod tests {
         std::fs::remove_file(&file).unwrap();
         assert_eq!(twin_of(&project, "m2"), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nvenc_that_cannot_start_is_named_as_why_ffmpeg_failed() {
+        // What the ffmpeg of FFmpeg 8.1 says where there is no card of NVIDIA: its last line
+        // does not name NVENC.
+        let said = "[hevc_nvenc @ 000001a8c99cb300] dl_fn->cuda_dl->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+[vost#0:0/hevc_nvenc @ 000001a8c78df3c0] [enc:hevc_nvenc @ 000001a8c78f9980] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+[vf#0:0 @ 000001a8c79c9380] Error sending frames to consumers: Unknown error occurred
+[vost#0:0/hevc_nvenc @ 000001a8c78df3c0] [enc:hevc_nvenc @ 000001a8c78f9980] Could not open encoder before EOF
+[out#0/mov @ 000001a8c99ca340] Nothing was written into output file, because at least one of its streams received no packets.
+";
+        assert!(cause(said).starts_with("[hevc_nvenc @ 000001a8c99cb300] dl_fn->cuda_dl->cuInit(0) failed"));
+        // Otherwise the last line, which says why.
+        let said = "[in#0 @ 0] Error opening input: Invalid data found when processing input
+                    Error opening input file x.mp4.
+
+";
+        assert_eq!(cause(said), "Error opening input file x.mp4.");
+        assert_eq!(cause(" 
+"), "it said nothing");
     }
 
     #[test]

@@ -1,8 +1,7 @@
 """The proxy that lets the commands of a container reach some hosts, and the config of it."""
 
 import asyncio
-import socket
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 
 import pytest
 from pydantic import ValidationError
@@ -57,26 +56,33 @@ async def through() -> AsyncIterator[int]:
 
 
 @pytest.fixture
-def closed() -> Iterator[int]:
-    """A port of this machine where nothing listens, nor will while the test runs.
+def closed(monkeypatch: pytest.MonkeyPatch) -> int:
+    """Refuse an upstream connection without depending on the host's closed-port policy.
 
-    No well-known port is taken to be one where nothing listens: on a runner of CI, something
-    answers at port 80 of localhost.
+    The client still reaches the real proxy over TCP. Only its connection to this upstream
+    fails: a bound socket that is not listening can leave connect waiting on macOS.
     """
-    with socket.socket() as held:
-        held.bind(("127.0.0.1", 0))
-        yield held.getsockname()[1]
+    connect = asyncio.open_connection
+
+    async def refused(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if host == "localhost" and port == 80:
+            raise ConnectionRefusedError("the test upstream refuses connections")
+        return await connect(host, port)
+
+    monkeypatch.setattr(asyncio, "open_connection", refused)
+    return 80
 
 
 async def asked(port: int, request: bytes) -> bytes:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    writer.write(request)
-    await writer.drain()
-    writer.write_eof()
-    # Windows takes 2 seconds to be refused at each address of localhost, ::1 and 127.0.0.1.
-    answer = await asyncio.wait_for(reader.read(), timeout=20)
-    writer.close()
-    return answer
+    try:
+        writer.write(request)
+        await writer.drain()
+        writer.write_eof()
+        return await asyncio.wait_for(reader.read(), timeout=20)
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 async def test_a_tunnel_to_an_allowed_host_is_made(

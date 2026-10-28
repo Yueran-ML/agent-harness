@@ -191,6 +191,16 @@ jobs:
       - name: FFmpeg 8.1
         run: bash .github/scripts/ffmpeg.sh
 
+      # The engine links to ffmpeg@8; the Python renderer also needs the libass filter.
+      - name: FFmpeg with subtitles for the Python video tests
+        if: runner.os == 'macOS'
+        run: |
+          HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 \
+            brew install --quiet ffmpeg-full
+          prefix="$(brew --prefix ffmpeg-full)"
+          "$prefix/bin/ffmpeg" -hide_banner -filters | grep -E '[[:space:]]subtitles[[:space:]]'
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
       - name: ALSA, which the engine is linked with
         if: runner.os == 'Linux'
         run: |

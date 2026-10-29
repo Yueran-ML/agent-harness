@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import given, reject, settings
 from hypothesis import strategies as st
 
 from columbina.video.edits import Rate, Speed, Time
@@ -22,9 +22,11 @@ from columbina.video.span import (
     ticks_of_scaled,
 )
 from columbina.video.story import (
+    Part,
     StaleStoryError,
     StoryError,
     line_of,
+    normal,
     of_track,
     telling,
 )
@@ -455,6 +457,46 @@ def test_a_trimmed_word_fragment_is_still_visible_and_cuttable() -> None:
     ]
 
 
+def test_words_without_letters_follow_the_nearest_word_of_their_line() -> None:
+    transcript = transcript_of(
+        "m1",
+        DIGEST,
+        [
+            word(0.2, 0.4, "—"),
+            word(0.5, 0.9, "Hello"),
+            word(1.0, 1.5, "world."),
+            word(3.0, 3.5, "Next."),
+            word(3.6, 4.0, "..."),
+        ],
+        [],
+        5_000_000,
+    )
+    timeline = spoken(clip_of("c1", 0, 125))
+    words = {"m1": transcript}
+    story = of_track(timeline, "A1", words, 1)
+    alone = "[c1 00:03.600] ..."
+    assert story.splitlines()[2:] == [
+        "[c1 00:00] — Hello world.",
+        "[pause 1.5s]",
+        "[c1 00:03.000] Next.",
+        alone,
+    ]
+
+    # A story that is not changed cuts nothing, the dash before the first word and the line
+    # of dots alone included.
+    assert cuts(story, timeline, words) == []
+    # The dash begins its line, and goes with the word after it.
+    assert cuts(struck(story, ("Hello", "~~Hello~~")), timeline, words) == [Range(0, 23)]
+    assert cuts(struck(story, ("world.", "~~world.~~")), timeline, words) == [Range(25, 72)]
+    # A line of dots alone goes when it is struck through or taken away, not otherwise.
+    assert cuts(struck(story, (alone, "[c1 00:03.600] ~~...~~")), timeline, words) == [
+        Range(90, 125)
+    ]
+    assert cuts(struck(story, (alone + "\n", "")), timeline, words) == [Range(90, 125)]
+    assert cuts(struck(story, (alone, "[c1 00:03.600]")), timeline, words) == [Range(90, 125)]
+    assert cuts(struck(story, (alone, "[c1 00:03.600] ..")), timeline, words) == []
+
+
 def test_cutting_one_repeated_clip_does_not_cut_the_same_word_in_another_take() -> None:
     transcript = transcript_of(
         "m1",
@@ -540,9 +582,12 @@ def stories(draw: st.DrawFn) -> Drawn:
             ).map(sorted)
         )
         for at in range(0, len(times) - 1, 2):
-            stop = "." if draw(st.booleans()) else ""
-            text = f"w{len(words)}{stop}"
-            words.append(Word(start_us=times[at], end_us=times[at + 1], text=text))
+            # Some words have no letters, as a dash, a note of music or dots, and some no length.
+            text = draw(st.sampled_from(["w", "w", "w", "w", "\u2014", "\u266a", "...", "\u2026"]))
+            if text == "w":
+                text = f"w{len(words)}{'.' if draw(st.booleans()) else ''}"
+            end = times[at] if draw(st.integers(0, 5)) == 0 else times[at + 1]
+            words.append(Word(start_us=times[at], end_us=end, text=text))
         frame, ticks = frame + length, ticks + span
     transcript = transcript_of("m1", DIGEST, words, [], ticks * 1_000_000 // SCALE)
     return Drawn(
@@ -555,6 +600,20 @@ def stories(draw: st.DrawFn) -> Drawn:
         ),
         most=draw(st.one_of(st.none(), st.integers(40, 1500))),
     )
+
+
+def _following(part: Part, transcript: Transcript, out: list[bool]) -> dict[int, bool]:
+    """Whether each word of a line is cut: a word without letters as the nearest word with them
+    in its line, the one before it or else the one after it, and as its line where none is."""
+    counted = [one.index for one in part.words if normal(transcript.text(one.index))]
+    if not counted:
+        gone = all(out[one.index] for one in part.words)
+        return {one.index: gone for one in part.words}
+    found: dict[int, bool] = {}
+    for one in part.words:
+        before = [index for index in counted if index <= one.index]
+        found[one.index] = out[before[-1] if before else counted[0]]
+    return found
 
 
 @given(stories())
@@ -581,7 +640,15 @@ def test_any_striking_cuts_the_frames_of_the_words_struck_out_and_no_other(drawn
             continue
         changed.append(f"{line[: line.index(']') + 1]} {line_of(marks)}")
 
-    found = cuts("\n".join(changed) + "\n", timeline, words, pause_most_ms=drawn.most)
+    # A story that is not changed cuts nothing.
+    assert cuts(story, timeline, words) == []
+    try:
+        found = cuts("\n".join(changed) + "\n", timeline, words, pause_most_ms=drawn.most)
+    except StoryError as error:
+        # Two lines of dots alone, at one frame of one clip, are told apart by nothing.
+        if "ambiguous" not in str(error):
+            raise
+        reject()
 
     clips = timeline["tracks"][0]["clips"]
     first, last = clips[0]["start"], clips[-1]["start"] + clips[-1]["length"]
@@ -590,9 +657,10 @@ def test_any_striking_cuts_the_frames_of_the_words_struck_out_and_no_other(drawn
     assert all(first <= one.start and one.end <= last for one in found)
     cut = {frame for one in found for frame in range(one.start, one.end)}
     for part in told.parts:
+        out = _following(part, transcript, drawn.out)
         for one in part.words:
             shown = set(range(one.first, one.end))
-            if drawn.out[one.index]:
+            if out[one.index]:
                 assert shown <= cut, (one, found)
             else:
                 assert not shown & cut, (one, found)

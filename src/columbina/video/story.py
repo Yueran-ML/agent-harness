@@ -26,7 +26,11 @@ named, in the order in which they are heard, a sentence a line:
   sentences. Lines within the same second use milliseconds. A clip that plays backward says
   its last sentence first.
 - A word that is taken away or struck through with ``~~`` is cut, and so is every word of a line
-  that is taken away; words and lines can be neither added, changed nor moved.
+  that is taken away; words and lines can be neither added, changed nor moved. A word without
+  letters or digits, as ``—``, ``♪`` or ``...``, goes with the nearest word of its line that has
+  them: the one before it, or the one after it where it begins the line. A line of such words
+  alone is cut where it is taken away, emptied or struck through, and kept otherwise. A story
+  that is not changed cuts nothing.
 - ``[pause 1.8s]`` is the pause after a line, where it is longer than :data:`PAUSE_SHOWN_US`. A
   smaller number makes it shorter; taking the line away makes it
   :data:`~columbina.video.transcript.PAUSE_LEAST_US`.
@@ -41,6 +45,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from bisect import bisect_left
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -128,15 +133,32 @@ def _marked(text: str) -> list[tuple[str, bool]]:
     return marked
 
 
+def _struck_out(text: str) -> bool:
+    """Whether nothing of a line is left: it is empty, or all that it says is struck through."""
+    struck = False
+    for piece in re.split(r"(~~)", text):
+        if piece == "~~":
+            struck = not struck
+        elif not struck and piece.strip():
+            return False
+    return True
+
+
 def _kept_of(shown: Sequence[str], text: str) -> set[int] | None:
     """Find which of some words, by their places, a line keeps; ``None`` if it cannot be them.
 
-    Each word is cut, struck through, or kept as it is. A word without letters is kept where the
-    word before it is. Where there is more than one way, the words said earlier are cut.
+    Each word is cut, struck through, or kept as it is. A word without letters or digits, as
+    ``—`` or ``♪``, follows the nearest word with them in its line: the one before it, or the
+    one after it where it begins the line. A line of such words alone is kept unless it is
+    emptied or struck through. Where there is more than one way, the words said earlier are cut.
     """
     words = [(place, normal(one)) for place, one in enumerate(shown)]
     counted = [(place, said) for place, said in words if said]
     line = _marked(text)
+    if not counted:
+        if line:
+            return None
+        return set() if _struck_out(text) else {place for place, _ in words}
     size = len(line)
     # able[i][j]: the words from i on can make the line from j on.
     able = [[False] * (size + 1) for _ in range(len(counted) + 1)]
@@ -164,8 +186,13 @@ def _kept_of(shown: Sequence[str], text: str) -> set[int] | None:
         if not line[j][1]:
             kept.add(place)
         j += len(said)
-    with_marks = [place for place, said in words if said == "" and place - 1 in kept]
-    return kept | set(with_marks)
+    places = [place for place, _ in counted]
+    for place, said in words:
+        if not said:
+            before = bisect_left(places, place)
+            if places[max(0, before - 1)] in kept:
+                kept.add(place)
+    return kept
 
 
 STORIES = "story"
@@ -552,12 +579,14 @@ def marked(
 
     A line is the words of a sentence that a clip plays. A word that is taken away from it, or
     struck through, is cut, and so is every word of a line that is taken away. The lines of a
-    clip are matched to its sentences in order; where a line could be either of two sentences,
-    the one said later is kept. Words can be neither added, changed nor moved, and neither can
-    lines. ``[pause 1.2s]`` after a line is how long the pause after it is to be: shorter than
-    it is, or it stays as it is. Taking away a pause that the story named when it was written
-    makes it :data:`PAUSE_LEAST_US` long. A pause that is left where a line before it was taken
-    away is the pause after the line before that; one before every line is passed over.
+    clip are matched to its sentences in order, by their words and the time markers that they
+    keep; where they could be matched in more than one way, as where a sentence said twice lost
+    its time marker, the story is refused. Words can be neither added, changed nor moved, and
+    neither can lines. ``[pause 1.2s]`` after a line is how long the pause after it is to be:
+    shorter than it is, or it stays as it is. Taking away a pause that the story named when it
+    was written makes it :data:`PAUSE_LEAST_US` long. A pause that is left where a line before
+    it was taken away is the pause after the line before that; one before every line is passed
+    over.
 
     Args:
         story: The story.

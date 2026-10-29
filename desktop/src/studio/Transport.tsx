@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { Layers, Pause, Play, StepBack, StepForward, Volume2, VolumeOff, VolumeX } from 'lucide-react';
 import { useWords } from '../app/locale';
-import type { Rate, SourceTransportState as TransportState } from './engine';
+import type { Rate, TransportState } from './engine';
+import { transportItem } from './useMonitor';
 import type { TransportCommand } from './keys';
 import { timecode } from './timecode';
 
@@ -159,12 +160,13 @@ export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
   onProxies: (on: boolean) => void;
 }) {
   const words = useWords();
-  const [held, setHeld] = useState<{ frame: number; dragging: boolean; media: string | null } | null>(null);
-  const loaded = state !== null && state.media !== null;
+  const [held, setHeld] = useState<{ frame: number; dragging: boolean; item: string | null } | null>(null);
+  const item = transportItem(state);
+  const loaded = state !== null && item !== null;
   // The frame let go at is shown until the transport is there, or has gone elsewhere.
   useEffect(() => {
     if (held === null || held.dragging) return;
-    if (!loaded || state.media !== held.media || state.frame === held.frame || state.playing) setHeld(null);
+    if (!loaded || item !== held.item || state.frame === held.frame || state.playing) setHeld(null);
   }, [held, state, loaded]);
   useEffect(() => {
     if (held === null || held.dragging) return undefined;
@@ -230,7 +232,8 @@ export function Transport({ state, rate, last, onCommand, onSeek, onProxies }: {
       disabled={!loaded || last === null}
       valueText={timecode(frame, rate)}
       onSeek={onSeek}
-      onDrag={(to, dragging) => setHeld(to === null ? null : { frame: to, dragging, media: state?.media ?? null })}
+      key={item}
+      onDrag={(to, dragging) => setHeld(to === null ? null : { frame: to, dragging, item })}
     />
   </div>;
 }

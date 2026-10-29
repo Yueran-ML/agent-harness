@@ -1,0 +1,85 @@
+import { useState, type FormEvent } from 'react';
+import { useWords } from '../../app/locale';
+import { Sheet } from '../../app/Sheet';
+import type { Media, Rate, Timeline, Track } from '../engine';
+import { rateText } from '../timecode';
+
+/** The settings of a timeline that has nothing to go by. */
+const FALLBACK = { width: 1920, height: 1080, rate: { num: 25, den: 1 } } as const;
+const SAMPLE_RATE = 48000;
+
+/** A size of picture that the engine takes: even, from 16 to 16384 pixels. */
+const even = (pixels: number) => Math.min(16384, Math.max(16, Math.floor(pixels / 2) * 2));
+
+/**
+ * The settings of a new timeline: the size and frame rate of the first video in the pool (as it is
+ * shown, so turned where the file says so; stills have no frame rate of their own), else 1920 × 1080
+ * at 25 fps. The sound is at 48 kHz.
+ */
+export function timelineDefaults(media: readonly Media[]): Pick<Timeline, 'width' | 'height' | 'rate' | 'sample_rate'> {
+  const video = media.map(each => each.facts.video).find(facts => facts && !facts.still && facts.rate.num > 0 && facts.rate.den > 0 && facts.width > 0 && facts.height > 0);
+  if (!video) return { ...FALLBACK, rate: { ...FALLBACK.rate }, sample_rate: SAMPLE_RATE };
+  const turned = Math.abs(video.rotation) % 180 === 90;
+  return {
+    width: even(turned ? video.height : video.width),
+    height: even(turned ? video.width : video.height),
+    rate: { num: video.rate.num, den: video.rate.den },
+    sample_rate: SAMPLE_RATE,
+  };
+}
+
+/** A new timeline with one video track and one audio track, its id and theirs given by the engine. */
+export function newTimeline(name: string, settings: Pick<Timeline, 'width' | 'height' | 'rate' | 'sample_rate'>): Timeline {
+  const track = (kind: 'video' | 'audio', label: string): Track => ({ id: '', kind, name: label, enabled: true, locked: false, clips: [], transitions: [] });
+  return { id: '$timeline', name, ...settings, tracks: [track('video', 'V1'), track('audio', 'A1')] };
+}
+
+const settingsText = (settings: { width: number; height: number; rate: Rate; sample_rate: number }, fps: (rate: string) => string) =>
+  `${settings.width} × ${settings.height} · ${fps(rateText(settings.rate))} · ${settings.sample_rate / 1000} kHz`;
+
+/**
+ * The dialog of a new timeline, as DaVinci Resolve asks for one: its name, with the settings that it
+ * will have. It lies over the page, so the views of both monitors are hidden while it is open.
+ */
+export function NewTimeline({ media, count, onCreate, onClose }: {
+  media: readonly Media[];
+  /** How many timelines there are: the new one is named after the next. */
+  count: number;
+  /** Create it; what failed is said in the dialog, which stays open. */
+  onCreate: (timeline: Timeline) => Promise<string | null>;
+  onClose: () => void;
+}) {
+  const words = useWords();
+  const labels = words.label.studio;
+  const [name, setName] = useState(`${labels.timeline.title} ${count + 1}`);
+  const [pending, setPending] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const settings = timelineDefaults(media);
+  const submit = async (event?: FormEvent) => {
+    event?.preventDefault();
+    const named = name.trim();
+    if (!named || pending) return;
+    setPending(true);
+    setProblem(null);
+    const failed = await onCreate(newTimeline(named, settings));
+    setPending(false);
+    if (failed !== null) setProblem(failed);
+  };
+  return <Sheet
+    title={labels.editPage.newTimeline}
+    onClose={onClose}
+    foot={<>
+      <button type="button" className="btn" onClick={onClose}>{words.label.cancel}</button>
+      <button type="button" className="btn btn-main" disabled={!name.trim() || pending} onClick={() => void submit()} data-test="create-timeline">{labels.editPage.create}</button>
+    </>}
+  >
+    <form className="new-timeline" onSubmit={event => void submit(event)}>
+      <label className="setting-name" htmlFor="new-timeline-name">{labels.media.name}</label>
+      <input id="new-timeline-name" className="field" value={name} data-first autoComplete="off" spellCheck={false}
+        onChange={event => setName(event.target.value)} />
+      <p className="mono new-timeline-settings" data-test="timeline-settings">{settingsText(settings, labels.fps)}</p>
+      <p className="caption">{words.hint.studio.newTimeline}</p>
+      {problem && <p className="new-timeline-problem" role="alert">{words.hint.studio.newTimelineFailed}<span className="caption" lang="en">{problem}</span></p>}
+    </form>
+  </Sheet>;
+}

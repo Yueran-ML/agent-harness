@@ -806,7 +806,12 @@ export const en = {
       open: 'Studio',
       close: 'Close the studio',
       pages: 'Pages of the studio',
-      page: { media: 'Media', edit: 'Edit' },
+      page: { media: 'Media', cut: 'Cut', edit: 'Edit' },
+      /** The two viewers of the Edit page, as DaVinci Resolve names them. */
+      monitor: {
+        source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
+      },
+      editPage: { inspector: 'Inspector', newTimeline: 'New timeline', create: 'Create', noTimeline: 'No timeline' },
       pool: 'Media pool',
       import: 'Import',
       /** A rate of frames as an editor writes it: 25, 29.97. */
@@ -832,7 +837,7 @@ export const en = {
       forward: 'Next frame',
       position: 'Position',
       useProxies: 'Use proxies',
-      source: { proxy: 'Proxy', original: 'Original' },
+      source: { proxy: 'Proxy', original: 'Original', mixed: 'Mixed' },
       sound: { on: 'Sound on', off: 'Sound off', unavailable: 'Sound unavailable', none: 'No sound' },
       retry: 'Try again',
     },
@@ -1385,6 +1390,11 @@ export const en = {
         not_empty: "The bin still contains items.",
       },
       timeline: { empty: 'Choose or create a timeline to begin editing.' },
+      loadSource: 'Double-click media in the media pool to see it here.',
+      newTimeline: 'The timeline takes the size and frame rate of the first video in the media pool, and starts with one video track and one audio track.',
+      newTimelineFailed: 'The timeline could not be created.',
+      inspectorEmpty: 'Select a clip on the timeline.',
+      cut: 'The Cut page is not ready yet. Edit timelines on the Edit page.',
       browser: 'The preview appears in the desktop app.',
       opening: 'The project is being opened in the studio.',
       takingOver: 'The project is being taken over from the agent.',
@@ -1406,6 +1416,7 @@ export const en = {
       source: {
         proxy: 'The picture is read from the proxy.',
         original: 'The picture is read from the media itself.',
+        mixed: 'The picture of some clips is read from their proxies, and of the others from the media itself.',
       },
       sound: {
         on: 'The sound plays.',

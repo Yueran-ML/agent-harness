@@ -143,6 +143,23 @@ describe('the studio in the page', () => {
     expect(engine.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
   });
 
+  it('hides both views of the Edit page while the settings lie over them, and as the studio is left', async () => {
+    page(task());
+    fireEvent.click(one('open-studio'));
+    await settle();
+    fireEvent.click(one('page-edit'));
+    await settle();
+    drawFrame();
+    const shown = () => Object.fromEntries((['source', 'timeline'] as const).map(monitor => [monitor, (engine.viewShow.mock.calls as unknown as [boolean, string][]).filter(([, which]) => which === monitor).at(-1)?.[0]]));
+    expect(shown()).toEqual({ source: true, timeline: true });
+    fireEvent.click(one('open-settings'));
+    expect(shown()).toEqual({ source: false, timeline: false });
+    fireEvent(document.querySelector('dialog')!, new Event('cancel'));
+    expect(shown()).toEqual({ source: true, timeline: true });
+    fireEvent.click(one('close-studio'));
+    expect(shown()).toEqual({ source: false, timeline: false });
+  });
+
   it('hides the view while the list of commands or a panel over the page is open', async () => {
     const hello = { protocol: 1, server: { name: 'columbina', version: '0.1.0' }, cwd: 'F:\\work', commands: [{ name: 'compact', summary: '' }] };
     page(task({ hello }));

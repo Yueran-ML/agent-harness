@@ -2,6 +2,7 @@ import { useRef } from 'react';
 import { RotateCw } from 'lucide-react';
 import { useWords } from '../app/locale';
 import { useViewerRect, type ViewBridge } from './useViewerRect';
+import type { Monitor } from './engine';
 
 /** What the viewer says in its place, where no picture can be shown there. */
 export type ViewerNotice =
@@ -18,19 +19,20 @@ export type ViewerNotice =
  * the desktop app. In a browser it is a grey box that says where the preview appears, and where
  * no view can be had it says why.
  */
-export function Viewer({ bridge, native, active, notice, onRetry }: {
+export function Viewer({ bridge, native, active, notice, onRetry, monitor = 'source' }: {
   bridge: ViewBridge;
   /** Whether the shell lays the engine's view over the viewer. */
   native: boolean;
   /** Whether the viewer is shown: the view is hidden once it is not. */
   active: boolean;
+  monitor?: Monitor;
   notice: ViewerNotice | null;
   /** Open the project in the studio again. */
   onRetry: () => void;
 }) {
   const words = useWords();
   const box = useRef<HTMLDivElement>(null);
-  useViewerRect(box, native ? bridge : null, active && native);
+  useViewerRect(box, native ? bridge : null, active && native, monitor);
   const said = words.hint.studio;
   const sentence = notice === null ? null
     : notice.kind === 'failed' ? (notice.missing ? said.missing : said.notOpened)

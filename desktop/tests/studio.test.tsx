@@ -279,16 +279,22 @@ describe('the media pool', () => {
     expect(marked('pool-none')).toEqual([]);
   });
 
-  it('is on the Media page only', async () => {
+  it('is beside the source monitor on the Media page, beside both monitors on the Edit page, and not on the Cut page', async () => {
     await studio(engineWith(projectOf(mediaOf('m1'))));
     expect(one('page-media').getAttribute('aria-selected')).toBe('true');
-    fireEvent.click(one('page-edit'));
-    expect(marked('pool')).toEqual([]);
-    // The monitor is the same on both.
+    expect(marked('pool')).toHaveLength(1);
     expect(marked('viewer')).toHaveLength(1);
     expect(marked('transport')).toHaveLength(1);
+    fireEvent.click(one('page-edit'));
+    // The Edit page has the same pool, and a timeline monitor beside the source monitor.
+    expect(marked('pool')).toHaveLength(1);
+    expect(marked('viewer')).toHaveLength(2);
+    expect(marked('transport')).toHaveLength(2);
+    fireEvent.click(one('page-cut'));
+    expect(marked('pool')).toEqual([]);
+    expect(marked('viewer')).toEqual([]);
     expect(marked('studio-pages')).toEqual([]);
-    expect([...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Edit']);
+    expect([...document.querySelectorAll('[role="tab"]')].map(tab => tab.textContent)).toEqual(['Media', 'Cut', 'Edit']);
   });
 });
 
@@ -772,12 +778,15 @@ describe('the studio as a keyboard and a reader know it', () => {
     const engine = engineWith(projectOf(mediaOf('m1')));
     await studio(engine);
     const tabs = () => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].map(tab => [tab.textContent, tab.tabIndex]);
-    expect(tabs()).toEqual([['Media', 0], ['Edit', -1]]);
+    expect(tabs()).toEqual([['Media', 0], ['Cut', -1], ['Edit', -1]]);
     one('page-media').focus();
     fireEvent.keyDown(one('page-media'), { key: 'ArrowRight' });
-    expect(tabs()).toEqual([['Media', -1], ['Edit', 0]]);
-    expect(document.activeElement).toBe(one('page-edit'));
+    expect(tabs()).toEqual([['Media', -1], ['Cut', 0], ['Edit', -1]]);
+    expect(document.activeElement).toBe(one('page-cut'));
     expect(marked('pool')).toEqual([]);
+    fireEvent.keyDown(one('page-cut'), { key: 'ArrowRight' });
+    expect(tabs()).toEqual([['Media', -1], ['Cut', -1], ['Edit', 0]]);
+    expect(document.activeElement).toBe(one('page-edit'));
     fireEvent.keyDown(one('page-edit'), { key: 'ArrowRight' });
     expect(document.activeElement).toBe(one('page-media'));
     fireEvent.keyDown(one('page-media'), { key: 'ArrowLeft' });

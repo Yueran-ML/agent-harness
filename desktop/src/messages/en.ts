@@ -1373,6 +1373,7 @@ export const en = {
         nothing_at: "There is no clip at this position.",
         no_track: "Choose a track for this media.",
         stale_revision: "The project changed during this edit; try again.",
+        pending: "The edit before is still being applied; try again in a moment.",
         missing: "An item used by this edit is no longer in the project.",
         taken: "Another item already uses this name.",
         out_of_list: "This position is outside the track list.",

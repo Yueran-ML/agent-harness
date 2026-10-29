@@ -11,7 +11,7 @@ import { Words } from '../src/app/locale';
 import { zhCN } from '../src/messages/zh-CN';
 import { Studio } from '../src/studio/Studio';
 import { TWO_MONITORS_PX } from '../src/studio/pages/EditPage';
-import { timelineDefaults } from '../src/studio/pages/NewTimeline';
+import { freshName, timelineDefaults } from '../src/studio/pages/NewTimeline';
 import { applyOp, ProjectCopy, type EngineEvent, type Media, type Op, type Project, type TransportState } from '../src/studio/engine';
 import type { EngineBridge } from '../src/bridge';
 import { clip, media, timeline } from './timeline-fixture';
@@ -319,6 +319,25 @@ describe('the Edit page', () => {
     expect(calls(bridge, 'transaction.apply').map(each => (each as { ops: { edit: string }[] }).ops[0].edit)).toEqual(['replace', 'place_on_top']);
     // Ctrl+0 is not the studio's: the page goes back to its own size.
     expect(taken('0', { ctrlKey: true })).toBe(false);
+  });
+
+  it('hands the keyboard from the list of timelines to the timeline once one is chosen', async () => {
+    const { bridge } = await mount(); bridge.call.mockClear();
+    const picker = screen.getByRole('combobox', { name: 'Timeline' });
+    picker.focus();
+    fireEvent.change(picker, { target: { value: 't2' } }); await settle();
+    // The list keeps the keyboard no longer: I marks the timeline, as it would with the timeline pressed.
+    expect(document.activeElement).toBe(document.querySelector('.timeline'));
+    fireEvent.keyDown(document.activeElement!, { key: 'i' });
+    expect(document.querySelector('.timeline-mark[data-edge="in"]')).not.toBeNull();
+    expect(calls(bridge, 'transaction.apply')).toEqual([]);
+  });
+
+  it('names a new timeline after a number that no timeline has', () => {
+    expect(freshName('Timeline', ['Main', 'Alternate'])).toBe('Timeline 3');
+    expect(freshName('Timeline', ['Timeline 2', 'Timeline 3'])).toBe('Timeline 4');
+    expect(freshName('时间线', ['时间线 1'])).toBe('时间线 2');
+    expect(freshName('Timeline', [])).toBe('Timeline 1');
   });
 
   it('takes no keys of editing from a field, nor of the transport where the focused monitor has nothing', async () => {

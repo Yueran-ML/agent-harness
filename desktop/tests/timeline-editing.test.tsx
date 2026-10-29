@@ -220,6 +220,29 @@ describe('timeline editing by pointer and keys', () => {
     click(); fireEvent.keyDown(root(), { key: 'Delete' }); fireEvent.keyDown(root(), { key: 'Delete' });
     expect(call).toHaveBeenCalledTimes(1);
   });
+  it('does an undo asked for during an edit after it, and says that another edit must wait', async () => {
+    const { call } = mount();
+    let finish!: (value: unknown) => void;
+    call.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    click(); fireEvent.keyDown(root(), { key: 'Backspace' });
+    fireEvent.keyDown(root(), { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(root(), { key: 'd' });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('alert').textContent).toContain('still being applied');
+    await act(async () => { finish({ ok: true, result: {} }); });
+    await settle();
+    expect(call.mock.calls.map(([method]) => method)).toEqual(['transaction.apply', 'history.undo']);
+  });
+  it('cuts with the blade at the playhead where it is near it, with snapping on', async () => {
+    const { call } = mount();
+    fireEvent.keyDown(root(), { key: 'b' });
+    // The playhead is at frame 20; frame 21 is within 8 pixels at 4 pixels a frame.
+    fireEvent.pointerDown(node(), pointer(21)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'blade', timeline: 't1', at: 20, tracks: ['v1'], linked: true }] });
+    fireEvent.keyDown(root(), { key: 'n' });
+    fireEvent.pointerDown(node(), pointer(21)); await settle();
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'blade', timeline: 't1', at: 21, tracks: ['v1'], linked: true }] });
+  });
   it('drops multiple media in pool order as one overwrite transaction, using source marks for their spacing', async () => {
     const { props, rerender, call } = mount();
     const items = [{ ...media, mark_in: { ticks: 25, scale: 25 }, mark_out: { ticks: 75, scale: 25 } }, { ...media, id: 'm2' }];

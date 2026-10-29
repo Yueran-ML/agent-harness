@@ -1189,6 +1189,7 @@ export const zhCN: Messages = {
         nothing_at: "当前位置没有片段。",
         no_track: "请为这份素材选择轨道。",
         stale_revision: "编辑期间工程发生了变化，请重试。",
+        pending: "上一个编辑还在应用中，请稍后再试。",
         missing: "这次编辑使用的项目内容已不存在。",
         taken: "其他内容已占用这个名称。",
         out_of_list: "该位置超出了轨道列表。",

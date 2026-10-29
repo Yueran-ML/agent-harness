@@ -158,7 +158,13 @@ export function EditPage({
       <button type="button" className="icon-btn" aria-label={words.label.studio.effects.title} title={words.label.studio.effects.title} aria-pressed={effectsOpen}
         onClick={() => setEffectsOpen(open => !open)} data-test="toggle-effects"><Sparkles size={15} /></button>
       <select className="field edit-timelines" aria-label={labels.timeline.title} value={selected?.id ?? ''} disabled={timelines.length === 0}
-        onChange={event => { if (event.target.value) { onSelect(event.target.value); onFocus('timeline'); } }} data-test="timeline-picker">
+        onChange={event => {
+          if (!event.target.value) return;
+          onSelect(event.target.value); onFocus('timeline');
+          // The list keeps the keyboard no longer: the keys of the transport and of editing go to the timeline.
+          event.currentTarget.blur();
+          page.current?.querySelector<HTMLElement>('.timeline')?.focus();
+        }} data-test="timeline-picker">
         {timelines.length === 0 && <option value="">{labels.editPage.noTimeline}</option>}
         {timelines.map(each => <option key={each.id} value={each.id}>{each.name}</option>)}
       </select>
@@ -202,6 +208,6 @@ export function EditPage({
     </div>
     {speedClips !== null && selected !== null && <SpeedDialog clips={speedClips} timeline={selected} bridge={bridge} session={session} revision={revision}
       onClose={() => setSpeedClips(null)} />}
-    {creating && <NewTimeline media={media} count={timelines.length} onCreate={create} onClose={() => setCreating(false)} />}
+    {creating && <NewTimeline media={media} names={timelines.map(each => each.name)} onCreate={create} onClose={() => setCreating(false)} />}
   </div>;
 }

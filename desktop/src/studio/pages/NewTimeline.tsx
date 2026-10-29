@@ -41,17 +41,25 @@ const settingsText = (settings: { width: number; height: number; rate: Rate; sam
  * The dialog of a new timeline, as DaVinci Resolve asks for one: its name, with the settings that it
  * will have. It lies over the page, so the views of both monitors are hidden while it is open.
  */
-export function NewTimeline({ media, count, onCreate, onClose }: {
+/** `Timeline N`, for the first N from `count + 1` that names no timeline that there is. */
+export function freshName(title: string, names: readonly string[]): string {
+  const taken = new Set(names.map(name => name.trim()));
+  let number = names.length + 1;
+  while (taken.has(`${title} ${number}`)) number++;
+  return `${title} ${number}`;
+}
+
+export function NewTimeline({ media, names, onCreate, onClose }: {
   media: readonly Media[];
-  /** How many timelines there are: the new one is named after the next. */
-  count: number;
+  /** The names of the timelines that there are: the new one is named after none of them. */
+  names: readonly string[];
   /** Create it; what failed is said in the dialog, which stays open. */
   onCreate: (timeline: Timeline) => Promise<string | null>;
   onClose: () => void;
 }) {
   const words = useWords();
   const labels = words.label.studio;
-  const [name, setName] = useState(`${labels.timeline.title} ${count + 1}`);
+  const [name, setName] = useState(() => freshName(labels.timeline.title, names));
   const [pending, setPending] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const settings = timelineDefaults(media);

@@ -54,6 +54,8 @@ export function useEditing(options: Options) {
   const [problem, setProblem] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const busy = useRef(false);
+  // Undo and redo asked for while an edit is under way, done after it in turn.
+  const queued = useRef<('history.undo' | 'history.redo')[]>([]);
   const active = useRef<PointerDrag | null>(null);
   const live = useRef(true);
   const now = useRef({ ...options, words, studioWords, titleText, tool, snapping, linked, selection, transition, targets, marks });
@@ -96,16 +98,26 @@ export function useEditing(options: Options) {
   useEffect(() => { if (selection.ids.length > 0) setTransition(null); }, [selection.ids]);
 
   const run = useCallback(async (method: 'transaction.apply' | 'history.undo' | 'history.redo', transaction?: Transaction): Promise<boolean> => {
-    if (busy.current) return false;
+    if (busy.current) {
+      // Ctrl+Z pressed again while an edit is applied: it is not lost, but done after it.
+      if (method !== 'transaction.apply') queued.current.push(method);
+      // Another edit was worked out from the project before the one under way: it says so, and is not sent.
+      else if (live.current) setProblem(now.current.words.pending);
+      return false;
+    }
     const context = now.current;
     busy.current = true; setPending(true); setProblem(null);
-    try { await callEngine(context.bridge, method, transaction ? { ...transaction } : undefined); return true; }
+    let done = false;
+    try { await callEngine(context.bridge, method, transaction ? { ...transaction } : undefined); done = true; }
     catch (error) {
+      queued.current = [];
       if (live.current && context.session === now.current.session && context.timeline?.id === now.current.timeline?.id) {
         setProblem(refusalText(error, now.current.studioWords));
       }
-      return false;
     } finally { busy.current = false; if (live.current) setPending(false); }
+    const next = queued.current.shift();
+    if (next && live.current && context.session === now.current.session) void run(next);
+    return done;
   }, []);
   const apply = useCallback((transaction: Transaction) => run('transaction.apply', transaction), [run]);
   const edit = useCallback((ops: Op[]) => apply({ revision: now.current.revision, ops }), [apply]);
@@ -172,7 +184,10 @@ export function useEditing(options: Options) {
     event.preventDefault(); context.root.current?.focus();
     const action = hit(element, event);
     if (action === 'blade') {
-      void apply({ revision: context.revision, ops: [{ edit: 'blade', timeline: context.timeline.id, at: at(event.clientX), ...(event.shiftKey ? {} : { tracks: [track.dataset.track!] }), linked: context.linked }] });
+      // With snapping on, the blade cuts at the playhead where it is near it, as in DaVinci Resolve.
+      const pointed = at(event.clientX);
+      const cut = context.snapping ? snap(pointed, [0], [context.frame], context.view.scale).delta : pointed;
+      void apply({ revision: context.revision, ops: [{ edit: 'blade', timeline: context.timeline.id, at: cut, ...(event.shiftKey ? {} : { tracks: [track.dataset.track!] }), linked: context.linked }] });
       return;
     }
     let selection = !event.ctrlKey && !event.metaKey && !event.shiftKey && context.selection.ids.includes(id) ? context.selection

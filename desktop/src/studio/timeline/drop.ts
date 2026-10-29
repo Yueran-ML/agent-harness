@@ -14,11 +14,16 @@ export function materialLength(media: Media, rate: Rate): number {
   return Number([marked, bounded, source, BigInt(Number.MAX_SAFE_INTEGER)].reduce((a, b) => a < b ? a : b));
 }
 
-/** Batch the pool's ordered selection so the whole drop is one shared undo step. */
+/**
+ * Batch the pool's ordered selection so the whole drop is one shared undo step. Dropped on a video
+ * track, the picture goes there and the sound to the targeted audio track; dropped on an audio
+ * track, the sound goes there and the picture to the targeted video track, so that media with both
+ * keeps both (none where the video target is off).
+ */
 export function dropMedia(timeline: Timeline, revision: number, media: readonly Media[], ids: readonly string[], track: string, targets: Targets, at: number, ripple: boolean): Transaction | null {
   const destination = timeline.tracks.find(item => item.id === track);
   if (!destination || destination.locked || destination.kind === 'subtitle' || !ids.length) return null;
-  const routing = destination.kind === 'video' ? { video_track: track, audio_track: targets.audio_track ?? null } : { video_track: null, audio_track: track };
+  const routing = destination.kind === 'video' ? { video_track: track, audio_track: targets.audio_track ?? null } : { video_track: targets.video_track ?? null, audio_track: track };
   const ops: Edit[] = [];
   for (const id of ids) {
     const item = media.find(item => item.id === id);

@@ -533,7 +533,9 @@ async fn requests_that_cannot_be_answered_are_refused_with_their_codes() {
     assert_eq!(error["code"], -32600, "hello once");
     let error = client.error("no.such.method", None).await;
     assert_eq!(error["code"], -32601);
-    let error = client.error("project.get", Some(json!({ "x": 1 }))).await;
+    let error = client
+        .error("project.get", Some(json!({ "monitor": "source", "x": 1 })))
+        .await;
     assert_eq!(error["code"], -32602);
     let error = client.error("history.undo", Some(json!([1]))).await;
     assert_eq!(error["code"], -32602);
@@ -2083,11 +2085,116 @@ async fn a_headless_engine_has_no_view() {
 }
 
 #[tokio::test]
+async fn view_methods_require_a_source_or_timeline_monitor() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let mut desktop = engine.client("desktop").await;
+    for monitor in ["source", "timeline"] {
+        assert_eq!(
+            desktop
+                .result("view.detach", Some(json!({"monitor":monitor})))
+                .await,
+            json!({"detached":false})
+        );
+        let error = desktop
+            .error("view.show", Some(json!({"monitor":monitor, "shown":true})))
+            .await;
+        assert_eq!(error["data"]["reason"], "no_view");
+    }
+    for params in [
+        None,
+        Some(json!({})),
+        Some(json!({"monitor":"program"})),
+        Some(json!({"monitor":null})),
+    ] {
+        assert_eq!(desktop.error("view.detach", params).await["code"], -32602);
+    }
+    for (method, params) in [
+        (
+            "view.attach",
+            json!({"parent":"1", "x":0, "y":0, "width":64, "height":36}),
+        ),
+        ("view.place", json!({"x":0, "y":0, "width":64, "height":36})),
+        ("view.show", json!({"shown":true})),
+    ] {
+        let error = desktop.error(method, Some(params)).await;
+        assert_eq!(error["code"], -32602);
+        assert!(
+            error["message"].as_str().unwrap().contains("monitor"),
+            "{error}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn view_monitors_attach_hide_replace_and_detach_independently() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &[]).await;
+    let parent = parent::Parent::open();
+    let mut desktop = engine.client("desktop").await;
+    let attach = |monitor: &str, x| json!({"monitor":monitor, "parent":parent.hwnd.to_string(), "x":x, "y":0, "width":64, "height":36});
+    desktop
+        .result("view.attach", Some(attach("source", 0)))
+        .await;
+    desktop
+        .result("view.attach", Some(attach("timeline", 100)))
+        .await;
+    let views = until_views(&parent, "both monitors", |views| views.len() == 2).await;
+    let source = views.iter().find(|view| view.2[0] == 0).unwrap().0;
+    let timeline = views.iter().find(|view| view.2[0] == 100).unwrap().0;
+    desktop
+        .result(
+            "view.show",
+            Some(json!({"monitor":"timeline", "shown":false})),
+        )
+        .await;
+    until_views(&parent, "only timeline hidden", |views| {
+        views.iter().any(|v| v.0 == source && v.3) && views.iter().any(|v| v.0 == timeline && !v.3)
+    })
+    .await;
+    desktop
+        .result("view.attach", Some(attach("source", 10)))
+        .await;
+    until_views(
+        &parent,
+        "source replaced without changing timeline",
+        |views| {
+            views.len() == 2
+                && views.iter().any(|v| v.2[0] == 10 && v.3)
+                && views.iter().any(|v| v.0 == timeline && !v.3)
+        },
+    )
+    .await;
+    assert_eq!(
+        desktop
+            .result("view.detach", Some(json!({"monitor":"source"})))
+            .await,
+        json!({"detached":true})
+    );
+    let views = until_views(&parent, "timeline remains", |views| views.len() == 1).await;
+    assert_eq!(views[0].0, timeline);
+    assert_eq!(
+        desktop
+            .result("view.detach", Some(json!({"monitor":"source"})))
+            .await,
+        json!({"detached":false})
+    );
+    assert_eq!(
+        desktop
+            .result("view.detach", Some(json!({"monitor":"timeline"})))
+            .await,
+        json!({"detached":true})
+    );
+}
+
+#[tokio::test]
 async fn the_view_is_the_desktops_and_its_params_are_checked() {
     let dir = project_dir();
     let engine = engine(dir.path(), &[]).await;
     let mut agent = engine.client("agent").await;
-    let rect = json!({ "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36 });
+    let rect =
+        json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36 });
     let error = agent.error("view.attach", Some(rect)).await;
     assert_eq!(error["code"], -32600, "{error}");
 
@@ -2095,45 +2202,55 @@ async fn the_view_is_the_desktops_and_its_params_are_checked() {
     let error = desktop
         .error(
             "view.place",
-            Some(json!({ "x": 0, "y": 0, "width": 64, "height": 36 })),
+            Some(json!({ "monitor": "source", "x": 0, "y": 0, "width": 64, "height": 36 })),
         )
         .await;
     assert_eq!(error["code"], -32003, "{error}");
     assert_eq!(error["data"]["reason"], "no_view");
     let error = desktop
-        .error("view.show", Some(json!({ "shown": true })))
+        .error(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": true })),
+        )
         .await;
     assert_eq!(error["data"]["reason"], "no_view", "{error}");
-    let detached = desktop.result("view.detach", None).await;
+    let detached = desktop
+        .result("view.detach", Some(json!({"monitor":"source"})))
+        .await;
     assert_eq!(detached, json!({ "detached": false }));
     for parent in ["", "abc", "0", "1.5"] {
-        let params = json!({ "parent": parent, "x": 0, "y": 0, "width": 64, "height": 36 });
+        let params = json!({ "monitor": "source", "parent": parent, "x": 0, "y": 0, "width": 64, "height": 36 });
         let error = desktop.error("view.attach", Some(params)).await;
         assert_eq!(error["code"], -32602, "{parent}: {error}");
         assert_eq!(error["data"]["reason"], "parent", "{parent}: {error}");
     }
     for params in [
-        json!({ "parent": 1, "x": 0, "y": 0, "width": 64, "height": 36 }),
-        json!({ "parent": "1", "x": 0, "y": 0, "width": -1, "height": 36 }),
-        json!({ "parent": "1", "x": 0, "y": 0, "width": 64 }),
-        json!({ "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36, "z": 1 }),
+        json!({ "monitor": "source", "parent": 1, "x": 0, "y": 0, "width": 64, "height": 36 }),
+        json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": -1, "height": 36 }),
+        json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": 64 }),
+        json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": 64, "height": 36, "z": 1 }),
     ] {
         let error = desktop.error("view.attach", Some(params.clone())).await;
         assert_eq!(error["code"], -32602, "{params}: {error}");
     }
     let error = desktop
-        .error("view.show", Some(json!({ "shown": "yes" })))
+        .error(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": "yes" })),
+        )
         .await;
     assert_eq!(error["code"], -32602, "{error}");
-    let error = desktop.error("view.detach", Some(json!({ "x": 1 }))).await;
+    let error = desktop
+        .error("view.detach", Some(json!({ "monitor": "source", "x": 1 })))
+        .await;
     assert_eq!(error["code"], -32602, "{error}");
     if cfg!(windows) {
         // A handle that is no window.
-        let params = json!({ "parent": "2147418113", "x": 0, "y": 0, "width": 64, "height": 36 });
+        let params = json!({ "monitor": "source", "parent": "2147418113", "x": 0, "y": 0, "width": 64, "height": 36 });
         let error = desktop.error("view.attach", Some(params)).await;
         assert_eq!(error["code"], -32602, "{error}");
         assert_eq!(error["data"]["reason"], "parent", "{error}");
-        let params = json!({ "parent": "1", "x": 0, "y": 0, "width": 20000, "height": 36 });
+        let params = json!({ "monitor": "source", "parent": "1", "x": 0, "y": 0, "width": 20000, "height": 36 });
         let error = desktop.error("view.attach", Some(params)).await;
         assert_eq!(error["data"]["reason"], "rect", "{error}");
     }
@@ -2377,7 +2494,7 @@ async fn the_desktop_attaches_one_view_to_its_window_and_moves_shows_and_detache
     let engine = engine(dir.path(), &[]).await;
     let parent = parent::Parent::open();
     let mut desktop = engine.client("desktop").await;
-    let rect = |x: i32, y: i32, width: u32, height: u32| json!({ "x": x, "y": y, "width": width, "height": height });
+    let rect = |x: i32, y: i32, width: u32, height: u32| json!({ "monitor": "source", "x": x, "y": y, "width": width, "height": height });
     let mut attach = rect(10, 20, 320, 180);
     attach["parent"] = json!(parent.hwnd.to_string());
     let attached = desktop.result("view.attach", Some(attach.clone())).await;
@@ -2401,11 +2518,17 @@ async fn the_desktop_attaches_one_view_to_its_window_and_moves_shows_and_detache
     })
     .await;
     desktop
-        .result("view.show", Some(json!({ "shown": false })))
+        .result(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": false })),
+        )
         .await;
     until_views(&parent, "hidden", |views| views.len() == 1 && !views[0].3).await;
     desktop
-        .result("view.show", Some(json!({ "shown": true })))
+        .result(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": true })),
+        )
         .await;
     until_views(&parent, "shown", |views| views.len() == 1 && views[0].3).await;
 
@@ -2423,7 +2546,9 @@ async fn the_desktop_attaches_one_view_to_its_window_and_moves_shows_and_detache
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(parent.views().len(), 1);
     let mut desktop = engine.client("desktop").await;
-    let detached = desktop.result("view.detach", None).await;
+    let detached = desktop
+        .result("view.detach", Some(json!({"monitor":"source"})))
+        .await;
     assert_eq!(detached, json!({ "detached": true }));
     assert_eq!(parent.views(), []);
     // The log is written by a thread of its own, and read here by a task: it comes soon.
@@ -2444,7 +2569,7 @@ async fn a_view_whose_window_is_closed_is_gone_and_then_there_is_none() {
     let engine = engine(dir.path(), &[]).await;
     let parent = parent::Parent::open();
     let mut desktop = engine.client("desktop").await;
-    let place = json!({ "x": 0, "y": 0, "width": 64, "height": 36 });
+    let place = json!({ "monitor": "source", "x": 0, "y": 0, "width": 64, "height": 36 });
     let mut attach = place.clone();
     attach["parent"] = json!(parent.hwnd.to_string());
     desktop.result("view.attach", Some(attach)).await;
@@ -2465,10 +2590,15 @@ async fn a_view_whose_window_is_closed_is_gone_and_then_there_is_none() {
     let error = desktop.error("view.place", Some(place)).await;
     assert_eq!(error["data"]["reason"], "no_view", "{error}");
     let error = desktop
-        .error("view.show", Some(json!({ "shown": true })))
+        .error(
+            "view.show",
+            Some(json!({ "monitor": "source", "shown": true })),
+        )
         .await;
     assert_eq!(error["data"]["reason"], "no_view", "{error}");
-    let detached = desktop.result("view.detach", None).await;
+    let detached = desktop
+        .result("view.detach", Some(json!({"monitor":"source"})))
+        .await;
     assert_eq!(detached, json!({ "detached": false }));
 }
 
@@ -3442,8 +3572,7 @@ async fn the_view_shows_the_frame_sought() {
     };
     let parent = parent::Parent::shown();
     let mut desktop = engine.client("desktop").await;
-    let attach =
-        json!({ "parent": parent.hwnd.to_string(), "x": 0, "y": 0, "width": 960, "height": 540 });
+    let attach = json!({ "monitor": "source", "parent": parent.hwnd.to_string(), "x": 0, "y": 0, "width": 960, "height": 540 });
     desktop.result("view.attach", Some(attach)).await;
     agent
         .result("transport.load", Some(json!({ "media": "m1" })))

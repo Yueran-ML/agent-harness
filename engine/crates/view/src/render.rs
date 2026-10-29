@@ -70,6 +70,13 @@ struct Planes {
     bind: wgpu::BindGroup,
 }
 
+/// An already composed frame, still on the shared graphics device.
+struct RgbFrame {
+    width: u32,
+    height: u32,
+    bind: wgpu::BindGroup,
+}
+
 /// What draws pictures into targets of one format, on one device.
 pub(crate) struct Painter {
     device: wgpu::Device,
@@ -82,6 +89,9 @@ pub(crate) struct Painter {
     /// Made when a picture of P010 is first drawn without 16-bit normalized formats.
     uint: Option<Pipeline>,
     planes: Option<Planes>,
+    rgb_pipeline: Option<Pipeline>,
+    rgb_frame: Option<RgbFrame>,
+    rgb_sampler: Option<wgpu::Sampler>,
 }
 
 impl Painter {
@@ -109,6 +119,9 @@ impl Painter {
             format,
             uniform,
             planes: None,
+            rgb_pipeline: None,
+            rgb_frame: None,
+            rgb_sampler: None,
         }
     }
 
@@ -136,7 +149,55 @@ impl Painter {
             self.planes = Some(self.planes_for(picture.width, picture.height, ten, texel));
         }
         let planes = self.planes.as_ref().expect("made above");
-        yuv::upload(&self.queue, &planes.luma, &planes.chroma, picture)
+        yuv::upload(&self.queue, &planes.luma, &planes.chroma, picture)?;
+        self.rgb_frame = None;
+        Ok(())
+    }
+
+    /// Bind a composed RGBA frame on this same device, without a CPU readback or YUV roundtrip.
+    pub(crate) fn use_texture(&mut self, texture: &wgpu::Texture) -> Result<(), String> {
+        if texture.format() != wgpu::TextureFormat::Rgba8Unorm
+            || texture.dimension() != wgpu::TextureDimension::D2
+            || texture.depth_or_array_layers() != 1
+            || texture.sample_count() != 1
+            || !texture
+                .usage()
+                .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+        {
+            return Err("a composed frame must be a sampleable 2D Rgba8Unorm texture".into());
+        }
+        let pipeline = self
+            .rgb_pipeline
+            .get_or_insert_with(|| rgb_pipeline(&self.device, self.format));
+        let sampler = self.rgb_sampler.get_or_insert_with(|| {
+            self.device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("columbina-view composed sampler"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            })
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("columbina-view composed frame"),
+            layout: &pipeline.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        self.rgb_frame = Some(RgbFrame {
+            width: texture.width(),
+            height: texture.height(),
+            bind,
+        });
+        Ok(())
     }
 
     /// Textures, and what binds them, for planes of a shape.
@@ -184,6 +245,7 @@ impl Painter {
     /// Forget the picture that was uploaded: what is drawn next is black, until another is.
     pub(crate) fn forget(&mut self) {
         self.planes = None;
+        self.rgb_frame = None;
     }
 
     /// Draw into `target`, of `size` pixels: black, and the picture that was uploaded last, if
@@ -200,14 +262,31 @@ impl Painter {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("columbina-view"),
             });
-        let drawn = self.planes.as_ref().and_then(|planes| {
-            letterbox(size, (planes.width, planes.height), rotation)
-                .map(|placement| (planes, placement))
-        });
-        if let Some((planes, placement)) = drawn {
-            self.queue
-                .write_buffer(&self.uniform, 0, &params(planes, placement, rotation));
-        }
+        let drawn = if let Some(rgb) = &self.rgb_frame {
+            letterbox(size, (rgb.width, rgb.height), 0).map(|placement| {
+                (
+                    &rgb.bind,
+                    &self
+                        .rgb_pipeline
+                        .as_ref()
+                        .expect("made with the frame")
+                        .pipeline,
+                    placement,
+                )
+            })
+        } else {
+            self.planes.as_ref().and_then(|planes| {
+                letterbox(size, (planes.width, planes.height), rotation).map(|placement| {
+                    self.queue
+                        .write_buffer(&self.uniform, 0, &params(planes, placement, rotation));
+                    let pipeline = match planes.texel {
+                        Texel::Float => &self.float,
+                        Texel::Uint => self.uint.as_ref().expect("made with the planes"),
+                    };
+                    (&planes.bind, &pipeline.pipeline, placement)
+                })
+            })
+        };
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("columbina-view"),
@@ -225,11 +304,7 @@ impl Painter {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if let Some((planes, placement)) = drawn {
-                let pipeline = match planes.texel {
-                    Texel::Float => &self.float,
-                    Texel::Uint => self.uint.as_ref().expect("made with the planes"),
-                };
+            if let Some((bind, pipeline, placement)) = drawn {
                 #[allow(clippy::cast_precision_loss, reason = "sizes of at most 16384")]
                 pass.set_viewport(
                     placement.x as f32,
@@ -239,8 +314,8 @@ impl Painter {
                     0.0,
                     1.0,
                 );
-                pass.set_pipeline(&pipeline.pipeline);
-                pass.set_bind_group(0, &planes.bind, &[]);
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, bind, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
@@ -321,6 +396,65 @@ fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat, texel: Texel) ->
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("columbina-view"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    Pipeline { layout, pipeline }
+}
+
+fn rgb_pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> Pipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("columbina-view composed frame"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("rgb.wgsl").into()),
+    });
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("columbina-view composed frame"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("columbina-view composed frame"),
+        bind_group_layouts: &[Some(&layout)],
+        immediate_size: 0,
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("columbina-view composed frame"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &module,
@@ -495,6 +629,62 @@ mod tests {
             device: gpu.device().clone(),
             queue: gpu.queue().clone(),
         })
+    }
+
+    #[test]
+    fn composed_rgb_is_letterboxed_without_another_colour_conversion() {
+        let Some(gpu) = gpu() else { return };
+        let mut painter = Painter::new(&gpu.device, &gpu.queue, wgpu::TextureFormat::Bgra8Unorm);
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: 2,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        gpu.queue.write_texture(
+            texture.as_image_copy(),
+            &[23, 81, 192, 255, 178, 45, 96, 255],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(8),
+                rows_per_image: Some(1),
+            },
+            texture.size(),
+        );
+        painter
+            .upload(&picture(2, 2, false, |_, _| [235, 128, 128]))
+            .unwrap();
+        painter.use_texture(&texture).unwrap();
+        let pixels = draw(&painter, &gpu, (2, 3), 0);
+        assert_eq!(
+            pixels,
+            [
+                [0, 0, 0],
+                [0, 0, 0],
+                [23, 81, 192],
+                [178, 45, 96],
+                [0, 0, 0],
+                [0, 0, 0]
+            ]
+        );
+        painter.forget();
+        assert!(draw(&painter, &gpu, (2, 3), 0)
+            .iter()
+            .all(|pixel| *pixel == [0, 0, 0]));
+        painter
+            .upload(&picture(2, 2, false, |_, _| [235, 128, 128]))
+            .unwrap();
+        assert!(draw(&painter, &gpu, (2, 2), 0)
+            .iter()
+            .all(|pixel| *pixel == [255, 255, 255]));
     }
 
     /// The pixels drawn into a target of `size`, as R'G'B', a row after another.

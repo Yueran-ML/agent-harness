@@ -1,9 +1,9 @@
 //! The methods `view.*`: the picture drawn by the engine in a window of its own inside the
 //! desktop's window (see `columbina-view`, and `PROTOCOL.md`).
 //!
-//! There is one view at a time, which belongs to the engine, not to the connection that made
-//! it: it stays when that connection closes, and goes when it is detached, when another is
-//! attached, or when the engine ends. A view is made and destroyed on threads where blocking is
+//! Each monitor has at most one view, belonging to the engine, not the connection that made
+//! it: it stays when that connection closes, and goes when detached or replaced on that monitor,
+//! or when the engine ends. A view is made and destroyed on threads where blocking is
 //! allowed: its own threads make and serve the window, and the card is made ready on one of them.
 //!
 //! The transport hands the view its pictures ([`ViewSlot`]): the slot is locked only for a
@@ -18,7 +18,7 @@
 use std::sync::{Arc, PoisonError};
 
 use columbina_view::{Event, Gpu, RawParent, Rect, View, ViewError};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::value::RawValue;
 use tokio::sync::Mutex;
@@ -32,11 +32,28 @@ use crate::session::Kind;
 /// it pictures.
 pub type ViewSlot = Arc<std::sync::Mutex<Option<View>>>;
 
+/// The source and the edited timeline have separate pictures, windows and playheads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Monitor {
+    Source,
+    Timeline,
+}
+
+impl Monitor {
+    fn index(self) -> usize {
+        match self {
+            Self::Source => 0,
+            Self::Timeline => 1,
+        }
+    }
+}
+
 /// The view of the engine, if one is attached.
 pub struct Viewer {
     /// Whether the engine is headless, and so draws in no window.
     headless: bool,
-    slot: ViewSlot,
+    slots: [ViewSlot; 2],
     /// The card that the view draws with.
     graphics: Arc<Graphics>,
     /// Gives the view each card made in place of one that was lost.
@@ -49,6 +66,7 @@ pub struct Viewer {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Attach {
+    monitor: Monitor,
     parent: String,
     x: i32,
     y: i32,
@@ -60,6 +78,7 @@ struct Attach {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Place {
+    monitor: Monitor,
     x: i32,
     y: i32,
     width: u32,
@@ -70,24 +89,35 @@ struct Place {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Show {
+    monitor: Monitor,
     shown: bool,
 }
 
-const ATTACH: &str =
-    r#"{"parent": "<handle in decimal>", "x": 0, "y": 0, "width": 640, "height": 360}"#;
-const PLACE: &str = r#"{"x": 0, "y": 0, "width": 640, "height": 360}"#;
-const SHOW: &str = r#"{"shown": true | false}"#;
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Detach {
+    monitor: Monitor,
+}
+
+const ATTACH: &str = r#"{"monitor":"source"|"timeline", "parent": "<handle in decimal>", "x": 0, "y": 0, "width": 640, "height": 360}"#;
+const PLACE: &str =
+    r#"{"monitor":"source"|"timeline", "x": 0, "y": 0, "width": 640, "height": 360}"#;
+const SHOW: &str = r#"{"monitor":"source"|"timeline", "shown": true | false}"#;
 
 impl Viewer {
     pub fn new(headless: bool, graphics: Arc<Graphics>) -> Self {
-        let slot: ViewSlot = Arc::new(std::sync::Mutex::new(None));
+        let slots: [ViewSlot; 2] = std::array::from_fn(|_| Arc::new(std::sync::Mutex::new(None)));
         let subscription = graphics.subscribe({
-            let slot = Arc::downgrade(&slot);
-            move |gpu| give(&slot, gpu)
+            let slots = slots.each_ref().map(Arc::downgrade);
+            move |gpu| {
+                for slot in &slots {
+                    give(slot, Arc::clone(&gpu));
+                }
+            }
         });
         Self {
             headless,
-            slot,
+            slots,
             graphics,
             _subscription: subscription,
             busy: Mutex::new(()),
@@ -95,13 +125,13 @@ impl Viewer {
     }
 
     /// Where the view is, for the transport.
-    pub fn slot(&self) -> ViewSlot {
-        Arc::clone(&self.slot)
+    pub fn slot(&self, monitor: Monitor) -> ViewSlot {
+        Arc::clone(&self.slots[monitor.index()])
     }
 
     /// Take the view out of its slot.
-    fn take(&self) -> Option<View> {
-        self.slot
+    fn take(&self, monitor: Monitor) -> Option<View> {
+        self.slots[monitor.index()]
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
@@ -136,20 +166,22 @@ impl Viewer {
                     width: place.width,
                     height: place.height,
                 };
-                self.with_view(|view| view.place(rect)).await
+                self.with_view(place.monitor, |view| view.place(rect)).await
             }
             "view.show" => {
                 let show: Show = rpc::params(method, SHOW, params)?;
-                self.with_view(|view| view.show(show.shown)).await
+                self.with_view(show.monitor, |view| view.show(show.shown))
+                    .await
             }
             "view.detach" => {
-                rpc::no_params(method, params)?;
+                let detach: Detach =
+                    rpc::params(method, r#"{"monitor":"source"|"timeline"}"#, params)?;
                 let _busy = self.busy.lock().await;
-                let old = self.take();
+                let old = self.take(detach.monitor);
                 let detached = old.is_some();
                 drop_view(old).await;
                 if detached {
-                    log("view_detached", &json!({}));
+                    log("view_detached", &json!({"monitor":detach.monitor}));
                 }
                 Ok(json!({ "detached": detached }))
             }
@@ -177,9 +209,10 @@ impl Viewer {
             height: attach.height,
         };
         let _busy = self.busy.lock().await;
-        let old = self.take();
+        let old = self.take(attach.monitor);
         let graphics = Arc::clone(&self.graphics);
-        let reporter = reporter(&graphics, &self.slot);
+        let slot = self.slot(attach.monitor);
+        let reporter = reporter(&graphics, &slot, attach.monitor);
         let made = tokio::task::spawn_blocking(move || {
             drop(old);
             let gpu = graphics
@@ -197,8 +230,11 @@ impl Viewer {
         })?;
         let view = made.map_err(|error| fault(&error))?;
         let result = json!({ "adapter": view.adapter(), "backend": view.backend() });
-        log("view_attached", &result);
-        *self.slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(view);
+        log(
+            "view_attached",
+            &json!({"monitor":attach.monitor, "adapter":view.adapter(), "backend":view.backend()}),
+        );
+        *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(view);
         Ok(result)
     }
 
@@ -206,14 +242,17 @@ impl Viewer {
     /// parent, is let go.
     async fn with_view(
         &self,
+        monitor: Monitor,
         work: impl FnOnce(&View) -> Result<(), ViewError>,
     ) -> Result<serde_json::Value, Fault> {
         let _busy = self.busy.lock().await;
         let done = {
-            let slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
+            let slot = self.slots[monitor.index()]
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             let Some(view) = slot.as_ref() else {
                 return Err(Fault::new(rpc::VIEW_FAILED, "no view is attached")
-                    .with_data(json!({ "reason": "no_view" })));
+                    .with_data(json!({ "reason": "no_view", "monitor":monitor })));
             };
             work(view)
         };
@@ -221,7 +260,7 @@ impl Viewer {
             Ok(()) => Ok(json!({})),
             Err(error) => {
                 if error == ViewError::Gone {
-                    drop_view(self.take()).await;
+                    drop_view(self.take(monitor)).await;
                 }
                 Err(fault(&error))
             }
@@ -257,12 +296,12 @@ fn give(slot: &std::sync::Weak<std::sync::Mutex<Option<View>>>, gpu: Arc<Gpu>) {
 /// What a view reports to: the log; and, once the card that it draws with is lost, the card of
 /// the engine, given to it on a thread of its own: the one made in its place already, if the
 /// view was given one that was lost, or else one made now (and given to every subscriber too).
-fn reporter(graphics: &Arc<Graphics>, slot: &ViewSlot) -> columbina_view::Report {
+fn reporter(graphics: &Arc<Graphics>, slot: &ViewSlot, monitor: Monitor) -> columbina_view::Report {
     let graphics = Arc::downgrade(graphics);
     let slot = Arc::downgrade(slot);
     Arc::new(move |event: Event| {
         let lost = matches!(event, Event::DeviceLost { .. });
-        report(event);
+        report(event, monitor);
         let (Some(graphics), true) = (graphics.upgrade(), lost) else {
             return;
         };
@@ -277,7 +316,7 @@ fn reporter(graphics: &Arc<Graphics>, slot: &ViewSlot) -> columbina_view::Report
 }
 
 /// Log what happens to the view.
-fn report(event: Event) {
+fn report(event: Event, monitor: Monitor) {
     match event {
         Event::Ready {
             adapter,
@@ -286,16 +325,25 @@ fn report(event: Event) {
         } => {
             log(
                 "view_ready",
-                &json!({ "adapter": adapter, "backend": backend, "dpi_awareness": dpi_awareness }),
+                &json!({ "monitor":monitor, "adapter": adapter, "backend": backend, "dpi_awareness": dpi_awareness }),
             );
         }
         Event::Stalled => log(
             "view_stalled",
-            &json!({ "seconds": columbina_view::STALL.as_secs() }),
+            &json!({ "monitor":monitor, "seconds": columbina_view::STALL.as_secs() }),
         ),
-        Event::Recovered { millis } => log("view_recovered", &json!({ "millis": millis })),
-        Event::DeviceLost { message } => log("view_device_lost", &json!({ "message": message })),
-        Event::SurfaceLost => log("view_surface_lost", &json!({})),
-        Event::Error { message } => log("view_error", &json!({ "message": message })),
+        Event::Recovered { millis } => log(
+            "view_recovered",
+            &json!({ "monitor":monitor, "millis": millis }),
+        ),
+        Event::DeviceLost { message } => log(
+            "view_device_lost",
+            &json!({ "monitor":monitor, "message": message }),
+        ),
+        Event::SurfaceLost => log("view_surface_lost", &json!({ "monitor":monitor })),
+        Event::Error { message } => log(
+            "view_error",
+            &json!({ "monitor":monitor, "message": message }),
+        ),
     }
 }

@@ -733,3 +733,86 @@ fn two_views_on_one_card_each_draw_their_own_picture() {
     );
     assert!(!gpu.is_lost());
 }
+
+#[test]
+#[ignore = "needs a desktop that can be seen: run with --ignored"]
+fn composed_textures_share_the_device_and_are_replaced_after_a_device_change() {
+    use columbina_compose::{Compositor, Scene, SceneLayer, Source, Target};
+    columbina_view::prepare_process();
+    let parent = Parent::open(160, 500, 600, 260);
+    let first_gpu = gpu();
+    let rect = |x| Rect {
+        x,
+        y: 20,
+        width: 240,
+        height: 180,
+    };
+    let source = View::attach(
+        RawParent::Windows(parent.hwnd),
+        rect(20),
+        Arc::clone(&first_gpu),
+    )
+    .unwrap();
+    let timeline = View::attach(
+        RawParent::Windows(parent.hwnd),
+        rect(320),
+        Arc::clone(&first_gpu),
+    )
+    .unwrap();
+    let (picture, source_color) = solid(64, 48, [120, 80, 190]);
+    source.present(picture, 0);
+    let compose = |gpu: &Arc<Gpu>, color| {
+        let target = Target::preview(gpu, 64, 36).unwrap();
+        Compositor::new(Arc::clone(gpu))
+            .render(
+                &Scene {
+                    width: 64,
+                    height: 36,
+                    layers: vec![SceneLayer {
+                        source: Source::Color(color),
+                        transform: columbina_compose::Transform::default(),
+                        opacity: 1.0,
+                    }],
+                    ..Default::default()
+                },
+                &target,
+            )
+            .unwrap();
+        target
+    };
+    let red = compose(&first_gpu, [1.0, 0.0, 0.0, 1.0]);
+    timeline
+        .present_texture(Arc::clone(red.texture()), Arc::clone(red.gpu()))
+        .unwrap();
+    parent.until(
+        "source and composed frame",
+        &[
+            ((140, 110), source_color),
+            ((440, 110), [255, 0, 0]),
+            ((440, 22), [0, 0, 0]),
+        ],
+    );
+    let replacement = gpu();
+    timeline.use_gpu(Arc::clone(&replacement));
+    parent.until(
+        "old texture cleared on a new device",
+        &[((140, 110), source_color), ((440, 110), [0, 0, 0])],
+    );
+    assert!(matches!(
+        timeline.present_texture(Arc::clone(red.texture()), Arc::clone(red.gpu())),
+        Err(ViewError::Gpu(_))
+    ));
+    let green = compose(&replacement, [0.0, 1.0, 0.0, 1.0]);
+    timeline
+        .present_texture(Arc::clone(green.texture()), Arc::clone(green.gpu()))
+        .unwrap();
+    parent.until(
+        "recomposed on the replacement device",
+        &[((140, 110), source_color), ((440, 110), [0, 255, 0])],
+    );
+    timeline.clear();
+    parent.until(
+        "composed frame cleared",
+        &[((140, 110), source_color), ((440, 110), [0, 0, 0])],
+    );
+}

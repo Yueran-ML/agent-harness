@@ -244,8 +244,17 @@ pub fn prepare_process() {
 /// A picture to draw, as the caller last asked.
 enum Pending {
     Nothing,
-    Picture(Arc<Picture>, i16),
+    Frame(Frame),
     Clear,
+}
+
+enum Frame {
+    Picture(Arc<Picture>, i16),
+    /// The device identity prevents recovery from binding an old texture to a new device.
+    Texture {
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+    },
 }
 
 /// What the threads of a view share.
@@ -541,7 +550,7 @@ impl View {
                 state.odd_rotation = Some(rotation);
                 odd = Some(rotation);
             }
-            state.pending = Pending::Picture(picture, rotation);
+            state.pending = Pending::Frame(Frame::Picture(picture, rotation));
             state.dirty = true;
         });
         if let Some(rotation) = odd {
@@ -551,6 +560,35 @@ impl View {
                 ),
             });
         }
+    }
+
+    /// Present an already composed, gamma-encoded RGBA frame from the engine's shared GPU,
+    /// fitted with black bars. Composition must be submitted before this call. Keep the
+    /// texture's contents unchanged while the view holds it; use another target for the next
+    /// frame. The view holds its own reference until replacement or clearing.
+    ///
+    /// # Errors
+    /// The window is gone, or `gpu` is not the view's current device (including recovery from
+    /// device loss). The caller must recompose on the replacement device before retrying.
+    pub fn present_texture(
+        &self,
+        texture: Arc<wgpu::Texture>,
+        gpu: Arc<Gpu>,
+    ) -> Result<(), ViewError> {
+        let mut state = self.shared.lock();
+        if state.gone {
+            return Err(ViewError::Gone);
+        }
+        if !Arc::ptr_eq(&state.gpu, &gpu) || gpu.is_lost() {
+            return Err(ViewError::Gpu(
+                "the composed frame is not on the view's current device".into(),
+            ));
+        }
+        state.pending = Pending::Frame(Frame::Texture { texture, gpu });
+        state.dirty = true;
+        drop(state);
+        self.shared.wake.notify_all();
+        Ok(())
     }
 
     /// Whether the window of the view was destroyed, with its parent: then nothing more is

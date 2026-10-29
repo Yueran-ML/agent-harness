@@ -29,7 +29,7 @@ use crate::proxy::{self, Made, Note, Proxies};
 use crate::queue::{self, Limits, Refused};
 use crate::rpc::{self, Fault, Line};
 use crate::transport::{self, Status, Transport};
-use crate::view::Viewer;
+use crate::view::{Monitor, Viewer};
 
 /// The version of the engine that `hello` answers with.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -226,7 +226,8 @@ impl Engine {
                 make_again(&state, media);
             })
         };
-        let transport = Transport::new(headless, setup, viewer.slot(), notify, again);
+        let transport =
+            Transport::new(headless, setup, viewer.slot(Monitor::Source), notify, again);
         let project_now = {
             let mut locked = state.try_lock().expect("no one has the state yet");
             locked.transport = Some(transport.clone());

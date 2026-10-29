@@ -5,11 +5,10 @@ use std::sync::{mpsc, Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 use columbina_compose::Gpu;
-use columbina_media::Picture;
 
 use crate::native::{self, Syncer};
 use crate::render::Painter;
-use crate::{frame_begun, frame_ended, Event, Pending, Shared};
+use crate::{frame_begun, frame_ended, Event, Frame, Pending, Shared};
 
 /// How long a frame that was not shown waits before it is tried again.
 const RETRY: Duration = Duration::from_millis(50);
@@ -126,7 +125,7 @@ pub(crate) fn run(
         }
     };
     // The picture shown, how it is turned, and its number among the pictures given.
-    let mut shown: Option<(Arc<Picture>, i16, u64)> = None;
+    let mut shown: Option<(Frame, u64)> = None;
     let mut given = 0_u64;
     let mut retries = 0;
     let mut again_at: Option<Instant> = None;
@@ -136,9 +135,9 @@ pub(crate) fn run(
         };
         match job.pending {
             Pending::Nothing => {}
-            Pending::Picture(picture, rotation) => {
+            Pending::Frame(frame) => {
                 given += 1;
-                shown = Some((picture, rotation, given));
+                shown = Some((frame, given));
             }
             Pending::Clear => shown = None,
         }
@@ -351,12 +350,21 @@ impl Screen {
 
     /// Draw `shown` into a window of `size`, and present it. A picture that cannot be uploaded
     /// is let go, and black is drawn.
-    fn frame(&mut self, shown: &mut Option<(Arc<Picture>, i16, u64)>, size: (u32, u32)) -> Outcome {
+    fn frame(&mut self, shown: &mut Option<(Frame, u64)>, size: (u32, u32)) -> Outcome {
+        // CPU pictures can be uploaded again after recovery. A composed texture belongs to
+        // its old device and must be replaced by the producer, never sampled on a new one.
+        if shown.as_ref().is_some_and(|(frame, _)| matches!(frame, Frame::Texture { gpu, .. } if !Arc::ptr_eq(gpu, &self.gpu))) {
+            *shown = None;
+        }
         match shown {
-            Some((picture, _, number)) => {
+            Some((frame, number)) => {
                 let number = *number;
                 if self.uploaded != Some(number) {
-                    if let Err(message) = self.painter.upload(picture) {
+                    let uploaded = match frame {
+                        Frame::Picture(picture, _) => self.painter.upload(picture),
+                        Frame::Texture { texture, .. } => self.painter.use_texture(texture),
+                    };
+                    if let Err(message) = uploaded {
                         self.shared.report(Event::Error { message });
                         self.painter.forget();
                         *shown = None;
@@ -372,7 +380,10 @@ impl Screen {
                 }
             }
         }
-        let rotation = shown.as_ref().map_or(0, |(_, rotation, _)| *rotation);
+        let rotation = match shown {
+            Some((Frame::Picture(_, rotation), _)) => *rotation,
+            _ => 0,
+        };
         if !self.configured || (self.config.width, self.config.height) != size {
             self.config.width = size.0;
             self.config.height = size.1;

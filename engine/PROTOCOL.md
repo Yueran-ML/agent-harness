@@ -125,10 +125,10 @@ Before `hello`, every other request is refused with `-32600`.
 | `media.make_proxy` | `{"media": "m1"}` | `{}` (see Proxies) |
 | `media.thumbnail` | `{"media": "m1", "frame": 50, "height": 90}` (`frame` optional) | `{"width": 160, "height": 90, "png": "<base64>"}` |
 | `media.waveform` | `{"media": "m1"}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
-| `view.attach` | `{"parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12"}` |
-| `view.place` | `{"x": x, "y": y, "width": w, "height": h}` | `{}` |
-| `view.show` | `{"shown": true \| false}` | `{}` |
-| `view.detach` | none | `{"detached": true \| false}` |
+| `view.attach` | `{"monitor":"source" \| "timeline", "parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12"}` |
+| `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
+| `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
+| `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
 | `transport.*` | see The transport | |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
@@ -378,6 +378,9 @@ window that it makes inside the desktop's window, over the rectangle that the pa
 the viewer (`crates/view`). No frame crosses between the processes; the page never sees the
 picture.
 
+- **Monitors.** Every `view.*` request must name `monitor: "source"` or `"timeline"`.
+  There is one independent native window for each monitor. Missing, null or other monitor
+  values are refused (`-32602`); protocol 2 does not default to the source monitor.
 - **Who sends them.** Only the desktop (`hello` with `"client": "desktop"`) may call `view.*`;
   another client is refused with `-32600`. Within the desktop, only the **Electron main
   process** sends them: it owns the window and its handle. The page (the renderer) never gets
@@ -401,8 +404,8 @@ picture.
 - **`view.attach`** makes the view in `parent` at the rectangle, shown and **black**, and makes
   the graphics card ready to draw in it; it is answered once both are done (about 100–300 ms;
   other connections are answered meanwhile). `adapter` and `backend` say what draws. There is
-  **one view at a time**: a second `view.attach` destroys the first and makes another, in the
-  same or another window. The view is the engine's, not the connection's: it stays when the
+  **one view per monitor**: another `view.attach` for that monitor replaces only its view,
+  in the same or another parent. Both share the engine's GPU. The view is the engine's, not the connection's: it stays when the
   connection that made it closes, until `view.detach`, another `view.attach`, or the end of the
   engine. A desktop that reconnects attaches again.
 - **A connection of its own.** `view.attach` takes about 100–300 ms, and up to some 20 s when
@@ -416,8 +419,9 @@ picture.
   viewer's rectangle changes, and after the parent's DPI changes.
 - **`view.show`** hides the view, and shows it again. A native window covers whatever of the
   page lies over its rectangle ("airspace"): an HTML menu, dialog or tooltip that opens over the
-  viewer is hidden under it. So the page hides the view (`{"shown": false}`) as such an overlay
-  opens and shows it again as the overlay closes; meanwhile the page beneath shows (it may draw
+  viewer is hidden under it. So the page hides each affected monitor (`{"monitor":"source",
+  "shown":false}` and likewise for `timeline`) as such an overlay opens and shows it again
+  as the overlay closes; meanwhile the page beneath shows (it may draw
   the last frame there, or nothing). A view that is hidden draws nothing. The view is put on
   top of the parent's other child windows each time it is moved, shown or hidden (`HWND_TOP`),
   so a native window of the app's own over the viewer (another view of Electron, a
@@ -426,12 +430,16 @@ picture.
 - **Input** goes to the page: the view is a disabled window that never takes the focus, so the
   clicks, wheel and keys of the user over the viewer go to the page's own element there, as if
   the view were not there.
-- **What is drawn.** Black, until a picture is given to the view: in phase 0 by the transport
-  (below), not by a method of the view. A picture is fitted into the view, its
+- **What is drawn.** Black, until a frame is given by a transport, not by a JSON view method.
+  A source picture is fitted into the view, its
   shape kept and centred, with black bars, turned as its media says, its colours taken as
   BT.709. The engine draws only when there is something new to draw (a picture, a new size, the
-  window shown or uncovered), never on a clock, and with v-sync.
-- **`view.detach`** destroys the view; `detached` says whether there was one.
+  window shown or uncovered), never on a clock, and with v-sync. A timeline frame already
+  composed as RGBA on the same GPU is sampled directly, fitted with black bars; it is neither
+  read back to CPU memory nor converted through YUV again. On device replacement old composed
+  textures are cleared and the producer must recompose on the new GPU. CPU source pictures
+  can be uploaded again. Window lifecycle logs include `monitor`.
+- **`view.detach`** destroys only that monitor's view; `detached` says whether there was one.
 - **Failures.** A view whose window was destroyed with its parent (the window closed) is let
   go: `view.place` and `view.show` are then answered `-32003` with `reason: "gone"`, and the
   desktop attaches again to its new window. If drawing a frame takes more than 1 s (the card

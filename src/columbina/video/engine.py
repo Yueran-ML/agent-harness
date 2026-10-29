@@ -775,6 +775,7 @@ class Engine:
         self._ids = itertools.count(1)
         self._readers: weakref.WeakSet[Changes] = weakref.WeakSet()
         self._revision = -1
+        self._session = 0
         self._next_id = 0
         self._fetching = False
         self._closed = False
@@ -817,6 +818,15 @@ class Engine:
         return self._next_id
 
     @property
+    def session(self) -> int:
+        """How many times this client has greeted an engine.
+
+        An engine that was started anew counts the revisions from 0 again, so a revision alone
+        does not say which project it is of: the revision and the session together do.
+        """
+        return self._session
+
+    @property
     def headless(self) -> bool | None:
         """Whether the engine is one without a window, as ``hello`` says; ``None`` if it does not.
 
@@ -835,7 +845,11 @@ class Engine:
         return _whole(said, "revision"), cast("dict[str, Any]", project)
 
     async def apply(
-        self, ops: Sequence[Mapping[str, Any]], *, revision: int | None = None
+        self,
+        ops: Sequence[Mapping[str, Any]],
+        *,
+        revision: int | None = None,
+        session: int | None = None,
     ) -> Applied:
         """Apply operations and edits to the project, all or none, as one step of its history.
 
@@ -848,6 +862,9 @@ class Engine:
         When ``revision`` is given, the engine applies only if that is still the project's
         revision. This prevents ranges computed from a snapshot cutting a concurrently edited
         timeline; a mismatch is refused with ``stale_revision``, without changing history.
+        ``session`` is the :attr:`session` that the revision was read in: where this client has
+        greeted another engine since, which counts its revisions from 0 again, the transaction
+        is refused in the same way without being sent.
 
         Raises:
             EngineError: The transaction was refused (``-32001``, with the ``index`` of the
@@ -857,7 +874,14 @@ class Engine:
         params: dict[str, Any] = {"ops": [dict(op) for op in ops]}
         if revision is not None:
             params["revision"] = revision
-        said = await self._call("transaction.apply", params)
+        wire = await self._ensure()
+        if session is not None and session != self._session:
+            raise EngineError(
+                "the engine was started again since the project was read; read it again",
+                code=-32001,
+                data={"reason": "stale_revision", "session": self._session},
+            )
+        said = await self._asked_on(wire, "transaction.apply", params)
         return _applied(said, said.get("names"))
 
     async def undo(self) -> Applied | None:
@@ -1147,6 +1171,7 @@ class Engine:
             )
         # An engine that was started anew counts from 0 again.
         self._revision = _whole(hello, "revision")
+        self._session += 1
         self.hello = hello
         await self._asked_on(wire, "project.get", None, fetching=True)
 

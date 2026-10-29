@@ -335,6 +335,27 @@ async def test_a_lost_connection_fails_what_waits_and_is_made_again(tmp_path: Pa
         await connected.aclose()
 
 
+async def test_a_revision_read_from_another_engine_is_refused_without_sending(
+    tmp_path: Path,
+) -> None:
+    async with served(tmp_path / "film") as fake:
+        connected = await attached(tmp_path / "film")
+        revision, _ = await connected.project()
+        session = connected.session
+        # An engine started anew counts its revisions from 0 again: the same number of another
+        # engine says nothing of the project that was read.
+        connected._drop()  # pyright: ignore[reportPrivateUsage]
+
+        with pytest.raises(EngineError) as refused:
+            await connected.apply([ADD], revision=revision, session=session)
+        done = await connected.apply([ADD], revision=revision, session=connected.session)
+
+        assert refused.value.data == {"reason": "stale_revision", "session": session + 1}
+        assert fake.asked.count("transaction.apply") == 1
+        assert done.revision == revision + 1
+        await connected.aclose()
+
+
 async def test_a_closed_engine_answers_nothing_more(tmp_path: Path) -> None:
     async with served(tmp_path / "film") as fake:
         connected = await attached(tmp_path / "film")

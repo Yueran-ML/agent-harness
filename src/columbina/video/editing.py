@@ -175,10 +175,13 @@ class Editor:
         if track is None:
             raise ProjectError("the timeline has no video or audio track for a story")
         path = story.story_path(self.directory, target["id"])
-        text = story.of_track(
-            target, track, words.transcripts_of(self.directory, project), revision
-        )
-        await asyncio.to_thread(written, path, text)
+
+        def write() -> None:
+            # Long transcripts take a while to tell; the connection is served meanwhile.
+            transcripts = words.transcripts_of(self.directory, project)
+            written(path, story.of_track(target, track, transcripts, revision))
+
+        await asyncio.to_thread(write)
         return receipt(
             {"path": str(path), "timeline": target["id"], "track": track, "revision": revision}
         )
@@ -186,14 +189,32 @@ class Editor:
     async def applied(
         self, timeline: str | None = None, *, dry: bool = False, pause_most_ms: int | None = None
     ) -> str:
-        """Turn the edited story into ripple ranges and submit them together."""
+        """Turn the edited story into ripple ranges and submit them together.
+
+        The story is good for the timeline as it is now where its digest is that of the
+        timeline, the track and the words now (:func:`columbina.video.story.marked`): the
+        revision that it names is not compared. The cuts are then applied only at the revision,
+        and in the session of the engine, that the timeline was read at, so that an edit made
+        meanwhile, or an engine started again and counting its revisions from 0, refuses them.
+        """
         revision, project = await self.engine.project()
+        session = self.engine.session
         target = _timeline(project, timeline)
         path = story.story_path(self.directory, target["id"])
-        text = await asyncio.to_thread(path.read_text, encoding="utf-8")
-        transcripts = words.transcripts_of(self.directory, project)
-        marked = story.marked(text, target, transcripts)
-        ranges = textcut.cuts(text, target, transcripts, pause_most_ms=pause_most_ms)
+
+        def work() -> tuple[story.Marked, list[textcut.Range]]:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                raise story.StoryError(
+                    f"there is no story of timeline {target['id']} yet: write it with "
+                    "video_story, change it, and apply it then"
+                ) from None
+            transcripts = words.transcripts_of(self.directory, project)
+            said = story.marked(text, target, transcripts)
+            return said, textcut.cut_by(said, transcripts, pause_most_ms=pause_most_ms)
+
+        marked, ranges = await asyncio.to_thread(work)
         report: dict[str, Any] = {
             "timeline": target["id"],
             "dry": dry,
@@ -204,7 +225,7 @@ class Editor:
             report.update(
                 _applied(
                     await self.engine.apply(
-                        textcut.edits_of(target["id"], ranges), revision=revision
+                        textcut.edits_of(target["id"], ranges), revision=revision, session=session
                     )
                 )
             )

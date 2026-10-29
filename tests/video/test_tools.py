@@ -450,3 +450,68 @@ async def test_render_failure_and_cancellation_do_not_change_timeline(
     assert "render.cancel" in fake.asked
     assert "cancelled" in fake.jobs.values()
     assert len(fake.steps) == 1
+
+
+async def test_a_long_talk_is_told_and_cut_within_the_time_of_a_call(
+    studio: tuple[Desk, Fake],
+) -> None:
+    import time
+
+    from columbina.video.transcribe import transcript_of
+    from columbina.video.transcript import Word
+    from columbina.video.words import Words, keep_words
+    from support.studio import clip_of, timeline_of, track_of
+
+    desk, fake = studio
+    (desk.work / "talk.wav").write_bytes(b"fake audio")
+    media_id = result(await desk.call("video_import", paths=["talk.wav"]))["added"][0]
+    each = 8000 * 300_000 * 25 // 1_000_000 // 200
+    fake.project["timelines"] = [
+        timeline_of(
+            track_of(
+                "A1",
+                [
+                    clip_of(f"c{at}", at * each, each - 1, ticks=at * each * 512, media=media_id)
+                    for at in range(200)
+                ],
+            )
+        )
+    ]
+    said = [
+        Word(
+            start_us=at * 300_000 + 10_000,
+            end_us=at * 300_000 + 250_000,
+            text=f"w{at}{'.' if at % 12 == 11 else ''}",
+        )
+        for at in range(8000)
+    ]
+    keep_words(
+        fake.directory,
+        Words.of(transcript_of(media_id, "0" * 64, said, [], 8000 * 300_000 + 1_000_000)),
+    )
+
+    began = time.perf_counter()
+    path = Path(result(await desk.call("video_story"))["path"])
+    text = path.read_text(encoding="utf-8")
+    for at in range(5, 8000, 400):
+        text = text.replace(f" w{at} ", f" ~~w{at}~~ ", 1)
+    path.write_text(text, encoding="utf-8")
+    applied = result(await desk.call("video_apply"))
+    took = time.perf_counter() - began
+
+    assert len(applied["ranges"]) == 20
+    assert "story_refresh_error" not in applied
+    # A second or so; a call has 30 seconds.
+    assert took < 15, took
+
+
+async def test_applying_before_a_story_is_written_says_to_write_it_first(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    failed = await desk.call("video_apply")
+    assert failed.error is not None
+    assert failed.error.code == "VIDEO_STORY"
+    assert "video_story" in failed.text
+    assert "Errno" not in failed.text

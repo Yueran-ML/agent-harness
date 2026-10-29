@@ -1,48 +1,20 @@
-import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type Ref } from 'react';
-import { LocateFixed, Maximize2, Minus, Plus, X, MousePointer2, Scissors, Magnet, Link, UnfoldHorizontal } from 'lucide-react';
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent, type Ref } from 'react';
+import { X } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import { keyOf, type Key } from '../../app/keys';
 import type { EngineBridge } from '../../bridge';
-import type { Media, Monitor, Op, Rate, Timeline as TimelineModel, Track } from '../engine';
+import type { Media, Monitor, Timeline as TimelineModel } from '../engine';
 import { editingAllowed } from '../keys';
 import { LET_GO_HOLD_MS } from '../Transport';
-import { ClipView } from './ClipView';
-import { duration, fitZoom, frameAt, HEADER_WIDTH, RULER_HEIGHT, transitionSpan, visible, zoomAt } from './geometry';
+import { duration, fitZoom, frameAt, HEADER_WIDTH, RULER_HEIGHT, scrollWindow, zoomAt } from './geometry';
 import { Ruler } from './Ruler';
 import { Scrub } from './scrub';
-import { TrackHeader } from './TrackHeader';
+import { Toolbar } from './Toolbar';
+import { TrackRow } from './TrackRow';
 import { Waveforms } from './waveforms';
 import { useEditing } from './useEditing';
 import type { EditContext } from './editKeys';
 import './timeline.css';
-
-const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null }: {
-  timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
-  height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
-  selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
-  /** The transition chosen, where it is on this track. */
-  chosen?: string | null;
-}) {
-  const words = useWords().label.studio.timeline;
-  const transitions = useMemo(() => {
-    if (track.kind === 'subtitle') return [];
-    const starts = new Map(track.clips.map(clip => [clip.id, clip.start]));
-    return track.transitions.map(transition => ({ transition, ...transitionSpan(transition, starts.get(transition.right)!) }));
-  }, [track]);
-  return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-enabled={track.enabled} data-locked={track.locked} style={{ height }}>
-    <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} targeted={targeted} onTarget={onTarget} />
-    <div className="timeline-lane" role={track.kind === 'subtitle' ? undefined : 'listbox'} aria-label={track.name} aria-multiselectable={track.kind === 'subtitle' ? undefined : true}>
-      {track.kind === 'subtitle' ? visible(track.cues, from, to).map(cue => <div key={cue.id} className="timeline-cue" data-cue={cue.id}
-        style={{ left: cue.start * scale, width: cue.length * scale }} title={cue.text}>{cue.text}</div>)
-        : visible(track.clips, from, to).map(clip => <ClipView key={clip.id} clip={clip} kind={track.kind} selected={selected.has(clip.id)}
-          media={clip.source.kind === 'media' ? media.get(clip.source.media) : undefined} rate={rate} scale={scale}
-          from={track.kind === 'audio' ? from : clip.start} to={track.kind === 'audio' ? to : clip.start + clip.length} waves={waves} />)}
-      {transitions.filter(span => span.start < to && span.start + span.length > from).map(({ transition, start, length }) => <div
-        key={transition.id} className="timeline-transition" data-transition={transition.id} data-kind={transition.kind} data-selected={chosen === transition.id}
-        style={{ left: start * scale, width: length * scale }} title={words[transition.kind]}><span>{words[transition.kind]}</span></div>)}
-    </div>
-  </div>;
-});
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
 export interface TimelineHandle { keyDown: (key: Key) => boolean }
@@ -115,7 +87,10 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     const next = zoomAt(old.scale, old.left, anchor ?? old.width / 2, factor);
     return { ...old, scale: next.scale, left: next.scroll };
   }), []);
-  const fit = () => setView(old => ({ ...old, scale: fitZoom(end, old.width), left: 0 }));
+  // Fitting reads the end when it is asked for, so that the bar is not drawn again as the timeline changes.
+  const ends = useRef(end);
+  ends.current = end;
+  const fit = useCallback(() => setView(old => ({ ...old, scale: fitZoom(ends.current, old.width), left: 0 })), []);
   const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition });
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown }));
   useEffect(() => {
@@ -156,8 +131,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     drag.current = null; setHeld({ frame, dragging: false }); scrub.finish(frame);
     root.current?.releasePointerCapture?.(event.pointerId);
   };
-  const from = Math.max(0, Math.floor(view.left / view.scale));
-  const to = Math.ceil((view.left + view.width) / view.scale);
+  // The tracks and the ruler draw a window that moves by half a view, not at every pixel of a scroll.
+  const { from, to } = scrollWindow(view.left, view.width, view.scale);
   const total = HEADER_WIDTH + Math.max(view.width, end * view.scale + view.width / 2);
   let rowTop = RULER_HEIGHT;
   const rows = new Map(tracks.map(track => { const height = heights[track.id] ?? 72; const row = { top: rowTop, height }; rowTop += height; return [track.id, row]; }));
@@ -171,21 +146,12 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave}
     onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } else editing.pointerMove(event); }}
     onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
-    <header className="timeline-toolbar">
-      <strong>{timeline?.name ?? labels.title}</strong>
-      {([['select', 'A', MousePointer2], ['trim', 'T', UnfoldHorizontal], ['blade', 'B', Scissors]] as const).map(([tool, key, Icon]) => <button key={tool} type="button" className="icon-btn"
-        aria-label={labels[tool]} title={`${labels[tool]} (${key})`} aria-pressed={editing.tool === tool} onClick={() => editing.chooseTool(tool)}><Icon size={14} /></button>)}
-      <button type="button" className="icon-btn" aria-label={labels.snap} title={`${labels.snap} (N)`} aria-pressed={editing.snapping} onClick={() => editing.setSnapping(value => !value)}><Magnet size={14} /></button>
-      <button type="button" className="icon-btn" aria-label={labels.linked} title={`${labels.linked} (Ctrl+Shift+L)`} aria-pressed={editing.linked} onClick={() => editing.setLinked(value => !value)}><Link size={14} /></button>
-      <button type="button" className="icon-btn" aria-label={labels.zoomOut} title={`${labels.zoomOut} (Ctrl+−)`} onClick={() => zoom(0.8)}><Minus size={14} /></button>
-      <button type="button" className="icon-btn" aria-label={labels.zoomIn} title={`${labels.zoomIn} (Ctrl++)`} onClick={() => zoom(1.25)}><Plus size={14} /></button>
-      <button type="button" className="icon-btn" aria-label={labels.fit} title={`${labels.fit} (Shift+Z)`} onClick={fit}><Maximize2 size={14} /></button>
-      <button type="button" className="icon-btn" aria-label={labels.follow} title={labels.follow} aria-pressed={follow} onClick={() => setFollow(value => !value)}><LocateFixed size={14} /></button>
-    </header>
+    <Toolbar name={timeline?.name ?? labels.title} tool={editing.tool} snapping={editing.snapping} linked={editing.linked} follow={follow}
+      onTool={editing.chooseTool} onSnapping={editing.setSnapping} onLinked={editing.setLinked} onZoom={zoom} onFit={fit} onFollow={setFollow} />
     {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}
     {!timeline ? <p className="caption timeline-empty">{words.hint.studio.timeline.empty}</p> : <div ref={scroll} className="timeline-scroll" onScroll={onScroll}>
-      <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? 72), 0) }}>
-        <div className="timeline-ruler-row"><Ruler rate={timeline.rate} scale={view.scale} from={view.left / view.scale} to={(view.left + view.width) / view.scale}
+      <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? 72), 0), '--scale': view.scale } as CSSProperties}>
+        <div className="timeline-ruler-row"><Ruler rate={timeline.rate} scale={view.scale} from={from} to={to}
           frame={shown} last={last} onDown={down} onSeek={onSeek} />
           {editing.marks.in !== null && <span className="timeline-mark" data-edge="in" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale }} />}
           {editing.marks.out !== null && <span className="timeline-mark" data-edge="out" style={{ left: HEADER_WIDTH + editing.marks.out * view.scale }} />}

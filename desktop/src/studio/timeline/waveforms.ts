@@ -29,20 +29,28 @@ export class PeakData {
     }
   }
   range(from: number, to: number, channel: number): [number, number] {
+    const out: [number, number] = [0, 0];
+    this.extent(from, to, channel, out);
+    return out;
+  }
+  /** The least and the greatest peak between two bins, written into `out`; [0, 0] where there are none. */
+  extent(from: number, to: number, channel: number, out: [number, number] | Int16Array): void {
     let first = Math.max(0, Math.floor(from));
     const end = Math.min(this.bins, Math.ceil(to));
-    if (first >= end) return [0, 0];
+    if (first >= end) { out[0] = 0; out[1] = 0; return; }
     let min = 127;
     let max = -128;
     while (first < end) {
-      let level = Math.floor(Math.log2(end - first));
-      while (level > 0 && first % 2 ** level !== 0) level--;
-      const offset = (first / 2 ** level * this.channels + channel) * 2;
-      min = Math.min(min, this.levels[level][offset]);
-      max = Math.max(max, this.levels[level][offset + 1]);
-      first += 2 ** level;
+      let level = 31 - Math.clz32(end - first);
+      while (level > 0 && (first & ((1 << level) - 1)) !== 0) level--;
+      const offset = ((first >> level) * this.channels + channel) * 2;
+      const values = this.levels[level];
+      if (values[offset] < min) min = values[offset];
+      if (values[offset + 1] > max) max = values[offset + 1];
+      first += 1 << level;
     }
-    return [min, max];
+    out[0] = min;
+    out[1] = max;
   }
 }
 

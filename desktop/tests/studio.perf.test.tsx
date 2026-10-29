@@ -2,7 +2,8 @@
 /**
  * The media pool is not drawn again as the playhead moves: the transport tells where it is up to
  * 30 times a second, and a project may hold a thousand media. A row is drawn again only when what
- * it shows changes. Observe actual pool DOM mutations and bound the work of 30 playback updates.
+ * it shows changes. How often each row is drawn is counted (each draws the standing of its proxy
+ * once), and what changes in the DOM of the pool is observed as well.
  */
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +11,13 @@ import type { EngineBridge } from '../src/bridge';
 import { ProjectCopy, type EngineAnswer, type EngineEvent, type Media, type SourceTransportState as TransportState } from '../src/studio/engine';
 import { Studio } from '../src/studio/Studio';
 import { likeABrowser } from './mounted';
+
+/** The media whose rows were drawn, in order: a row works out the standing of its proxy each time it is drawn. */
+const drawn = vi.hoisted(() => [] as string[]);
+vi.mock('../src/studio/media/facts', async original => {
+  const real = await original<typeof import('../src/studio/media/facts')>();
+  return { ...real, proxyStanding: (...given: Parameters<typeof real.proxyStanding>) => { drawn.push(given[0].id); return real.proxyStanding(...given); } };
+});
 
 beforeEach(() => {
   likeABrowser();
@@ -57,15 +65,21 @@ describe('the media pool of a large project', () => {
     const changes = new MutationObserver(() => {});
     changes.observe(pool, { childList: true, subtree: true, attributes: true, characterData: true });
     expect(document.querySelectorAll('[data-test="pool-item"]')).toHaveLength(COUNT);
+    // Each row was drawn as the pool was.
+    expect(new Set(drawn).size).toBe(COUNT);
+    drawn.length = 0;
     const began = performance.now();
     for (let frame = 1; frame <= 30; frame += 1) tell({ kind: 'notification', session: 1, method: 'transport.state', params: state(frame) });
     const took = performance.now() - began;
-    // Playback changes the transport, and no node or attribute in the media pool.
+    // Playback changes the transport: no row is drawn again, and no node or attribute in the media pool changes.
+    expect(drawn).toEqual([]);
     expect(changes.takeRecords()).toEqual([]);
     expect(document.querySelector('[data-test="timecode"]')!.textContent).toBe('00:00:01:05');
     // A second of playing, told 30 times, takes far less than a second to draw.
     expect(took).toBeLessThan(500);
     tell({ kind: 'notification', session: 1, method: 'media.proxy', params: { media: 'm7', state: 'running', progress: 0.5 } });
+    // Only the row of m7 is drawn again, once.
+    expect(drawn).toEqual(['m7']);
     const records = changes.takeRecords();
     expect(records.length).toBeGreaterThan(0);
     expect(records.length).toBeLessThanOrEqual(5);

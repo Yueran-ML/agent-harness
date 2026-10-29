@@ -54,8 +54,9 @@ describe('the timeline display', () => {
     expect(document.querySelector('[data-clip="title"]')?.getAttribute('data-kind')).toBe('title');
     expect(document.querySelector('[data-cue="q1"]')?.textContent).toContain('Hello world');
     const x = document.querySelector<HTMLElement>('[data-transition="x1"]')!;
-    expect(x.style.left).toBe('392px');
-    expect(x.style.width).toBe('20px');
+    // Frames 98 to 103: the style sheet places it at 4 px a frame, the scale that the content gives.
+    expect([x.style.getPropertyValue('--start'), x.style.getPropertyValue('--length')]).toEqual(['98', '5']);
+    expect(document.querySelector<HTMLElement>('.timeline-content')!.style.getPropertyValue('--scale')).toBe('4');
   });
   it('throttles scrubbing and always sends the exact release frame', async () => {
     vi.useFakeTimers();
@@ -137,7 +138,7 @@ describe('the timeline display', () => {
     await settle();
     const shapes = [...document.querySelectorAll('[data-waveform="m1"] path')];
     expect(shapes).toHaveLength(2);
-    expect(shapes.every(shape => shape.getAttribute('d')?.startsWith('M1.0,16.9V47.1'))).toBe(true);
+    expect(shapes.every(shape => shape.getAttribute('d')?.startsWith('M1,16.9V47.1'))).toBe(true);
     expect(call).toHaveBeenCalledTimes(2);
   });
 

@@ -3,9 +3,19 @@ import type { Clip, ClipTrack, Timeline } from '../engine';
 export interface Selection { ids: string[]; anchor: string | null }
 export const EMPTY_SELECTION: Selection = { ids: [], anchor: null };
 export interface Located { clip: Clip; track: ClipTrack; index: number }
-export function clipLocations(timeline: Timeline): Map<string, Located> {
-  const locations = new Map<string, Located>();
-  for (const track of timeline.tracks) if (track.kind !== 'subtitle') track.clips.forEach((clip, index) => locations.set(clip.id, { clip, track, index }));
+const located = new WeakMap<Timeline, ReadonlyMap<string, Located>>();
+/**
+ * Where each clip of a timeline is, by its id. A timeline from the engine is not changed in place
+ * (an edit makes a new one), so this is worked out once for each, not at every pointer move.
+ */
+export function clipLocations(timeline: Timeline): ReadonlyMap<string, Located> {
+  let locations = located.get(timeline);
+  if (!locations) {
+    const made = new Map<string, Located>();
+    for (const track of timeline.tracks) if (track.kind !== 'subtitle') track.clips.forEach((clip, index) => made.set(clip.id, { clip, track, index }));
+    located.set(timeline, made);
+    locations = made;
+  }
   return locations;
 }
 

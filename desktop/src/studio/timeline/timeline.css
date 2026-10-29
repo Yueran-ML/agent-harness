@@ -11,7 +11,9 @@
 .timeline-ruler-corner { position: sticky; left: 0; width: 156px; height: 30px; margin-top: -30px; background: var(--ink-2); border-right: 1px solid var(--line); }
 .timeline-tick { position: absolute; bottom: 0; height: 5px; border-left: 1px solid var(--moon-3); pointer-events: none; }
 .timeline-tick[data-major='true'] { height: 11px; }
-.timeline-tick > span { position: absolute; bottom: 10px; left: 4px; white-space: nowrap; font-size: 10px; color: var(--moon-2); }
+/* The small ticks: a line at the start of each step, the step given by background-size. */
+.timeline-ruler-minor { position: absolute; bottom: 0; height: 5px; pointer-events: none; background-image: linear-gradient(to right, var(--moon-3) 1px, transparent 1px); background-repeat: repeat-x; }
+.timeline-tick[data-label]::after { content: attr(data-label); position: absolute; bottom: 10px; left: 4px; white-space: nowrap; font-size: 10px; color: var(--moon-2); font-family: var(--font-mono, monospace); }
 .timeline-track { display: flex; position: relative; border-bottom: 1px solid var(--line); box-sizing: border-box; }
 .timeline-track-header { position: sticky; left: 0; width: 156px; flex: none; z-index: 3; background: var(--ink-2); border-right: 1px solid var(--line); padding: 5px 8px; box-sizing: border-box; }
 .timeline-track-name { display: block; width: 100%; text-align: left; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -21,6 +23,8 @@
 .timeline-track-resize { position: absolute; bottom: -3px; left: 0; right: 0; height: 7px; cursor: ns-resize; touch-action: none; z-index: 1; }
 .timeline-track-resize:focus-visible { background: var(--accent-soft); }
 .timeline-lane { position: relative; flex: 1; min-width: 0; }
+/* What lies on a lane is placed by its frames (--start, --length) and the pixels of a frame (--scale). */
+.timeline-clip, .timeline-cue, .timeline-transition { left: calc(var(--start) * var(--scale) * 1px); width: calc(var(--length) * var(--scale) * 1px); }
 .timeline-clip, .timeline-cue { position: absolute; top: 4px; bottom: 4px; border: 1px solid #608ab8; border-radius: 3px; background: #284e74; color: #e6effa; overflow: hidden; box-sizing: border-box; }
 .timeline-clip[data-kind='audio'] { border-color: #56937a; background: #214e3c; }
 .timeline-clip[data-kind='title'] { border-color: #9275b3; background: #514267; }
@@ -32,6 +36,7 @@
 .timeline-clip-speed { position: absolute; right: 4px; bottom: 3px; z-index: 1; font-size: 10px; background: #0007; padding: 0 2px; }
 .timeline-transition { position: absolute; top: 26px; height: 22px; border: 1px solid #ccc9; background: linear-gradient(135deg, #ccc5 49%, #eee 50%, #0005 51%); z-index: 2; overflow: hidden; box-sizing: border-box; }
 .timeline-transition span { font-size: 9px; white-space: nowrap; padding: 2px; }
+.timeline-wave-tiles { position: absolute; inset: 0; transform-origin: 0 0; pointer-events: none; }
 .timeline-waveform { position: absolute; top: 22px; bottom: 2px; height: calc(100% - 24px); stroke: #a5dbc2; stroke-width: 1; fill: none; pointer-events: none; }
 .timeline-wave-status { display: block; font-size: 9px; padding: 0 5px; color: #d1e7dc; }
 .timeline-playhead { position: absolute; top: 20px; bottom: 0; width: 1px; background: var(--accent); z-index: 4; touch-action: none; cursor: ew-resize; }

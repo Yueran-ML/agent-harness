@@ -8,7 +8,7 @@ export type Hit = 'move' | 'trim_in' | 'trim_out' | 'slip' | 'slide' | 'blade' |
 export interface Preview { id: string; track: string; start: number; length: number }
 export interface Gesture {
   timeline: Timeline; revision: number; ids: string[]; clip: string; action: Exclude<Hit, 'blade'>;
-  origin: number; linked: boolean; rippleTrim: boolean; locations: Map<string, Located>;
+  origin: number; linked: boolean; rippleTrim: boolean; locations: ReadonlyMap<string, Located>;
 }
 export interface Dragged {
   gesture: Gesture; delta: number; point: number | null; clamped: boolean; preview: Preview[]; command: Edit | null;

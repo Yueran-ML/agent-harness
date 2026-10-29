@@ -23,7 +23,11 @@ beforeEach(() => {
   vi.stubGlobal('DragEvent', MouseEvent);
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(956);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.clip) return rect(HEADER_WIDTH + parseFloat(this.style.left), 34, parseFloat(this.style.width), 64);
+    if (this.dataset.clip) {
+      // The style sheet places a clip by its frames and the pixels of a frame of the timeline.
+      const scale = Number(this.closest<HTMLElement>('.timeline')?.dataset.scale ?? 4);
+      return rect(HEADER_WIDTH + Number(this.style.getPropertyValue('--start')) * scale, 34, Number(this.style.getPropertyValue('--length')) * scale, 64);
+    }
     if (this.dataset.track) return rect(0, 30, 956, 72);
     return rect(0, 0, 956, 400);
   });

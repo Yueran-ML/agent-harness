@@ -17,7 +17,11 @@ beforeEach(() => {
   vi.stubGlobal('DragEvent', MouseEvent);
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(956);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
-    if (this.dataset.clip) return rect(HEADER_WIDTH + parseFloat(this.style.left), 34, parseFloat(this.style.width), 64);
+    if (this.dataset.clip) {
+      // The style sheet places a clip by its frames and the pixels of a frame of the timeline.
+      const scale = Number(this.closest<HTMLElement>('.timeline')?.dataset.scale ?? 4);
+      return rect(HEADER_WIDTH + Number(this.style.getPropertyValue('--start')) * scale, 34, Number(this.style.getPropertyValue('--length')) * scale, 64);
+    }
     if (this.dataset.track) return rect(0, 30, 956, 72);
     return rect(0, 0, 956, 400);
   });
@@ -60,7 +64,7 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.pointerMove(root(), pointer(59));
     expect(document.querySelector<HTMLElement>('[data-preview="c1"]')?.style.left).toBe(`${HEADER_WIDTH + 160}px`);
     expect(document.querySelector<HTMLElement>('.timeline-snap')?.style.left).toBe(`${HEADER_WIDTH + 400}px`);
-    expect(node().style.left).toBe('40px');
+    expect(node().style.getPropertyValue('--start')).toBe('10');
     expect(call).not.toHaveBeenCalled();
     fireEvent.pointerUp(root(), pointer(59)); await settle();
     fireEvent.pointerUp(root(), pointer(59));
@@ -195,7 +199,7 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(80)); fireEvent.pointerUp(root(), pointer(80)); await settle();
     expect(screen.getByRole('alert').textContent).toContain('not enough room');
     expect(screen.getByRole('alert').textContent).not.toContain('raw technical detail');
-    expect(node().style.left).toBe('40px');
+    expect(node().style.getPropertyValue('--start')).toBe('10');
   });
   it('exposes source mark and placement keys for the dual-monitor host, with explicit target suppression', async () => {
     const { props, ref, rerender, call } = mount();

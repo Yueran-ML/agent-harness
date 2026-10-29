@@ -25,7 +25,11 @@ interface Options {
   /** The transition chosen on the timeline, for the inspector; null where none is. */
   onTransition?: (transition: string | null) => void;
 }
-interface PointerDrag { gesture: Gesture; x: number; y: number; pointer: number; moved: boolean; clickSelection?: Selection }
+interface PointerDrag {
+  gesture: Gesture; x: number; y: number; pointer: number; moved: boolean; clickSelection?: Selection;
+  /** The points to snap to, worked out once for the gesture: what it moves does not change them. */
+  candidates?: number[];
+}
 const cursor = (hit: Hit) => typeof hit === 'object' ? 'col-resize' : ({ move: 'grab', trim_in: 'w-resize', trim_out: 'e-resize', slip: 'ew-resize', slide: 'move', blade: 'crosshair' })[hit];
 const defaultTargets = (timeline: Timeline | null): Targets => ({
   video_track: timeline?.tracks.find(track => track.kind === 'video')?.id ?? null,
@@ -192,7 +196,7 @@ export function useEditing(options: Options) {
       // As in DaVinci Resolve: a drag overwrites, Ctrl+Shift shuffles it in, Shift alone only changes tracks.
       media: context.media, track: track?.dataset.track, overwrite: true, ripple: (event.ctrlKey || event.metaKey) && event.shiftKey,
       vertical: event.shiftKey && !event.ctrlKey && !event.metaKey,
-      candidates: context.snapping ? snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
+      candidates: context.snapping ? pointer.candidates ??= snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
     });
   };
   const pointerMove = (event: PointerEvent) => {
@@ -219,10 +223,17 @@ export function useEditing(options: Options) {
     const track = lane?.closest<HTMLElement>('[data-track]');
     return track && track.dataset.kind !== 'subtitle' && track.dataset.locked !== 'true' ? track.dataset.track! : null;
   };
+  // The points that a drop snaps to, kept while the timeline, the playhead and the marks stay as they are.
+  const dropPoints = useRef<{ timeline: Timeline; frame: number; marks: Marks; points: number[] } | null>(null);
   const dropFrame = (event: DragEvent) => {
     const context = now.current;
     const frame = at(event.clientX);
-    return context.snapping ? snap(frame, [0], snapCandidates(context.timeline!, [], context.frame, context.marks), context.view.scale).delta : frame;
+    if (!context.snapping) return frame;
+    const kept = dropPoints.current;
+    const points = kept && kept.timeline === context.timeline && kept.frame === context.frame && kept.marks === context.marks ? kept.points
+      : snapCandidates(context.timeline!, [], context.frame, context.marks);
+    dropPoints.current = { timeline: context.timeline!, frame: context.frame, marks: context.marks, points };
+    return snap(frame, [0], points, context.view.scale).delta;
   };
   /** Where an effect from the library goes on the track under the pointer: at a cut, or in an empty place. */
   const effectAt = (event: DragEvent, track: string) => {

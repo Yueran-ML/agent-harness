@@ -182,21 +182,49 @@ impl<'a> Work<'a> {
     }
 
     /// Put back the transitions that were taken off, between clips that still meet on one
-    /// track, and give back what was done.
+    /// track, as long as they still fit, and give back what was done.
     pub fn finish(mut self) -> Result<Expansion, EditError> {
-        for transition in std::mem::take(&mut self.detached) {
+        for mut transition in std::mem::take(&mut self.detached) {
             let Some((track, left)) = find_clip(self.timeline(), &transition.left) else {
                 continue;
             };
-            let right = track.clips.iter().find(|c| c.id == transition.right);
+            let Some(right) = track
+                .clips
+                .iter()
+                .find(|c| c.id == transition.right && c.start == left.end())
+            else {
+                continue;
+            };
             let taken = track
                 .transitions
                 .iter()
                 .any(|x| x.left == transition.left || x.right == transition.right);
-            if right.is_none_or(|right| right.start != left.end()) || taken {
+            if taken {
                 continue;
             }
+            let length = match super::misc::check_fits(
+                &self,
+                track,
+                (left, right),
+                transition.length,
+                transition.align,
+                None,
+            ) {
+                Ok(()) => transition.length,
+                Err(EditError::NoHandles {
+                    longest: Some(length),
+                    ..
+                }) => length,
+                Err(error) => return Err(error),
+            };
             let track = track.id.clone();
+            if length != transition.length {
+                self.clamp();
+                transition.length = length;
+            }
+            if length == 0 {
+                continue;
+            }
             self.op(Op::AddTransition {
                 timeline: self.timeline_id(),
                 track,

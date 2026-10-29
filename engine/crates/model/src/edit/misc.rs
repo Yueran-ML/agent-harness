@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use super::work::{beyond, covered, fit_fades, most, set_fades, Work};
+use super::work::{fit_fades, most, set_fades, Work};
 use super::{CueItem, Edge, EditError};
 use crate::ops::{Op, OpError};
 use crate::project::{Alignment, Clip, Cue, Id, Track, TrackKind, Transition, TransitionKind};
@@ -13,7 +13,7 @@ use crate::time::Speed;
 /// a track, beside the other transitions at them, but for `replacing`: each clip has the frames
 /// of its media that it shows beyond the cut, and has room for what it covers. Refused with
 /// `no_handles` for the clip that has too little, with the longest that would fit.
-fn check_fits(
+pub(super) fn check_fits(
     work: &Work,
     track: &Track,
     (left, right): (&Clip, &Clip),
@@ -21,19 +21,22 @@ fn check_fits(
     align: Alignment,
     replacing: Option<&str>,
 ) -> Result<(), EditError> {
-    let others = Track {
-        transitions: track
-            .transitions
-            .iter()
-            .filter(|x| Some(x.id.as_str()) != replacing)
-            .cloned()
-            .collect(),
-        ..track.clone()
-    };
-    let (left_covered, _) = covered(&others, &left.id);
-    let (left_before, _) = beyond(&others, &left.id);
-    let (_, right_covered) = covered(&others, &right.id);
-    let (_, right_after) = beyond(&others, &right.id);
+    let mut left_covered = 0;
+    let mut left_before = 0;
+    let mut right_covered = 0;
+    let mut right_after = 0;
+    for other in track
+        .transitions
+        .iter()
+        .filter(|x| Some(x.id.as_str()) != replacing)
+    {
+        if other.right == left.id {
+            (left_covered, left_before) = other.handles();
+        }
+        if other.left == right.id {
+            (right_after, right_covered) = other.handles();
+        }
+    }
     let handles = |length| {
         Transition {
             id: String::new(),
@@ -639,6 +642,28 @@ mod tests {
             error,
             EditError::Op(crate::OpError::OutOfRange { what: "speed" })
         );
+    }
+
+    #[test]
+    fn reversing_a_clip_without_transition_handles_removes_the_transition() {
+        let mut project = with(
+            project(),
+            vec![transition("V1", "c1", "c3", 10, Alignment::Start)],
+        );
+        let done = edit(
+            &mut project,
+            Edit::SetSpeed {
+                timeline: "t1".into(),
+                clip: "c1".into(),
+                speed: Speed::ONE,
+                reverse: Some(true),
+                ripple: false,
+                linked: false,
+            },
+        );
+        assert!(done.clamped);
+        assert_eq!(transitions(&project, "V1"), []);
+        assert!(the(&project, "c1").reverse);
     }
 
     #[test]

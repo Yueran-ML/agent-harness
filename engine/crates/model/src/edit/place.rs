@@ -526,6 +526,20 @@ mod tests {
     }
 
     #[test]
+    fn an_insert_inside_a_transition_keeps_it_with_the_remaining_end() {
+        let mut project = with(
+            project(),
+            vec![transition("V1", "c1", "c3", 20, crate::Alignment::Center)],
+        );
+        let done = edit(&mut project, insert(colour(10), 95));
+        assert!(done.clamped);
+        let transition = &project.timelines[0].tracks[0].transitions[0];
+        assert_eq!(transition.length, 11);
+        assert_eq!(transition.right, "c3");
+        assert_eq!(the(&project, &transition.left).length, 5);
+    }
+
+    #[test]
     fn an_insert_onto_a_locked_track_is_refused() {
         let project = with(project(), vec![lock("A1")]);
         let error = refused(project, insert(m1(None, Some(10)), 0));

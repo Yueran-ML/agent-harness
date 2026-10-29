@@ -535,6 +535,47 @@ mod tests {
     }
 
     #[test]
+    fn a_blade_inside_a_transition_shortens_it_and_undo_restores_its_length() {
+        for (at, length) in [(95, 11), (105, 10)] {
+            let before = with(
+                project(),
+                vec![transition("V1", "c1", "c3", 20, Alignment::Center)],
+            );
+            let mut history = crate::History::new(before.clone());
+            let changed = history
+                .edit(vec![blade(at, Some(&["V1"]), false)], "desktop")
+                .unwrap();
+            assert_eq!(changed.clamped, [0]);
+            let after = history.project().clone();
+            let transition = &after.timelines[0].tracks[0].transitions[0];
+            assert_eq!((transition.id.as_str(), transition.length), ("x10", length));
+            let mut checked = after.clone();
+            checked.validate().unwrap();
+            history.undo("agent").unwrap().unwrap();
+            assert_eq!(
+                history.project(),
+                &crate::Project {
+                    next_id: after.next_id,
+                    ..before
+                }
+            );
+            history.redo("desktop").unwrap().unwrap();
+            assert_eq!(history.project(), &after);
+        }
+    }
+
+    #[test]
+    fn a_range_inside_a_transition_keeps_the_longest_transition_that_fits() {
+        let mut project = with(
+            project(),
+            vec![transition("V1", "c1", "c3", 20, Alignment::Center)],
+        );
+        let done = edit(&mut project, range(95, 98));
+        assert!(done.clamped);
+        assert_eq!(project.timelines[0].tracks[0].transitions[0].length, 5);
+    }
+
+    #[test]
     fn a_clip_played_backward_is_bladed_so_that_its_halves_meet_in_its_source() {
         let mut project = project();
         let mut reversed = the(&project, "c5");

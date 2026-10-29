@@ -834,7 +834,9 @@ class Engine:
             raise EngineError("the engine answered project.get with no project", code=UNEXPECTED)
         return _whole(said, "revision"), cast("dict[str, Any]", project)
 
-    async def apply(self, ops: Sequence[Mapping[str, Any]]) -> Applied:
+    async def apply(
+        self, ops: Sequence[Mapping[str, Any]], *, revision: int | None = None
+    ) -> Applied:
         """Apply operations and edits to the project, all or none, as one step of its history.
 
         An operation names itself in ``op``, an edit, such as an insert or a ripple delete, in
@@ -843,12 +845,19 @@ class Engine:
         operation adds may be given an id of the form ``$name``, which later operations of the
         same call may name; the ids that the engine gave are in ``names``.
 
+        When ``revision`` is given, the engine applies only if that is still the project's
+        revision. This prevents ranges computed from a snapshot cutting a concurrently edited
+        timeline; a mismatch is refused with ``stale_revision``, without changing history.
+
         Raises:
             EngineError: The transaction was refused (``-32001``, with the ``index`` of the
                 operation or the edit and the ``reason`` in ``data``, as ``locked`` or
                 ``ripple_blocked``), or an operation or a name could not be read (``-32602``).
         """
-        said = await self._call("transaction.apply", {"ops": [dict(op) for op in ops]})
+        params: dict[str, Any] = {"ops": [dict(op) for op in ops]}
+        if revision is not None:
+            params["revision"] = revision
+        said = await self._call("transaction.apply", params)
         return _applied(said, said.get("names"))
 
     async def undo(self) -> Applied | None:
@@ -859,14 +868,19 @@ class Engine:
         """Do again the step undone last; ``None`` if there is none."""
         return _stepped(await self._call("history.redo"))
 
-    async def imported(self, paths: Sequence[Path]) -> tuple[int, list[str]]:
+    async def imported(
+        self, paths: Sequence[Path], *, bin: str | None = None
+    ) -> tuple[int, list[str]]:
         """Take files in as media of the project, as one step, and return the revision and the ids.
 
         Every path is to be absolute: the engine refuses a relative one (``-32602``) and takes
         nothing in. Neither is anything taken in if one file cannot be read (``-32002``, with its
         ``path`` and ``reason``).
         """
-        said = await self._call("media.import", {"paths": [str(path) for path in paths]})
+        params: dict[str, Any] = {"paths": [str(path) for path in paths]}
+        if bin is not None:
+            params["bin"] = bin
+        said = await self._call("media.import", params)
         added = said.get("added")
         if not isinstance(added, list) or not all(
             isinstance(one, str) for one in cast("list[object]", added)

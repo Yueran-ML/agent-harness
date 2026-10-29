@@ -118,10 +118,10 @@ Before `hello`, every other request is refused with `-32600`.
 | `engine.yield` | none | `{}` (desktop only, to a `--headless` engine; see below) |
 | `project.get` | none | `{"revision": n, "next_id": k, "project": {...}}` |
 | `timeline.duration` | `{"timeline": "t1"}` | `{"frames": n}` |
-| `transaction.apply` | `{"ops": [op_or_edit, ...]}` | `{"revision": n, "done": [op, ...], "next_id": k, "names": {"$a": "c7", ...}, "clamped": [i, ...]}` |
+| `transaction.apply` | `{"ops": [op_or_edit, ...], "revision": n}` (`revision` optional) | `{"revision": n, "done": [op, ...], "next_id": k, "names": {"$a": "c7", ...}, "clamped": [i, ...]}` |
 | `history.undo` | none | `{"revision": n, "done": [op, ...], "next_id": k}`, or `{"revision": n, "done": null}` if there is nothing to undo |
 | `history.redo` | none | as `history.undo` |
-| `media.import` | `{"paths": ["<file>", ...]}` | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
+| `media.import` | `{"paths": ["<file>", ...], "bin": "<bin id>"}` (`bin` optional) | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
 | `media.make_proxy` | `{"media": "m1"}` | `{}` (see Proxies) |
 | `media.thumbnail` | `{"media": "m1", "frame": 50, "height": 90}` (`frame` optional) | `{"width": 160, "height": 90, "png": "<base64>"}` |
 | `media.waveform` | `{"media": "m1"}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
@@ -160,7 +160,13 @@ Before `hello`, every other request is refused with `-32600`.
   that went less far than requested, including repaired transitions that had to be shortened.
   `names` maps each `$name` of the
   transaction (see below) to the id the engine gave it; `{}` if there were none.
+  An optional `revision` binds the request to the snapshot used to prepare its ranges. The
+  engine checks it under the same lock as the change; a mismatch refuses the whole batch
+  with `-32001`, `data: {"reason":"stale_revision","expected":n,"actual":k}` and no history
+  change. Omit it for commands meant to operate on the current state.
 - `media.import` reads each file (its identity, and what it holds, as below) and adds it to the
+  optional `bin` (otherwise the root) in the same transaction; an unknown bin refuses the
+  whole import, without changing the project or its history. It adds the media to the
   end of the media as **one transaction** of `add_media` operations, one for each path in order,
   each given an id by the engine; `added` lists them in the same order. Every path must be
   **absolute** and UTF-8; a relative one is refused (`-32602`, `data: {"index": i, "path":

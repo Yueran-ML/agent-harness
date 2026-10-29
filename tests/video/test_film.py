@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from columbina.video.editing import STORY, Editor, Placing, Shape
+from columbina.video.legacy_editing import STORY, Editor, Placing, Shape
 from columbina.video.media import Tools, located, probed
 from columbina.video.project import ProjectError, StaleError
 from columbina.video.render import RenderError

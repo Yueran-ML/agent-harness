@@ -1540,6 +1540,37 @@ async fn files_are_taken_in_as_media_in_one_transaction() {
     agent.apply(clip).await;
 }
 
+#[tokio::test]
+async fn importing_into_a_bin_is_one_undo_and_an_unknown_bin_adds_nothing() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let added = agent
+        .apply(json!([{"op":"add_bin","bin":{"id":"$rushes","name":"Rushes","parent":null}}]))
+        .await;
+    let bin = &added["names"]["$rushes"];
+    agent
+        .result("media.import", Some(json!({"paths":[made.path],"bin":bin})))
+        .await;
+    let got = project(&mut agent).await;
+    assert_eq!(got["project"]["media"][0]["bin"], *bin);
+    agent.result("history.undo", None).await;
+    let before = project(&mut agent).await;
+    assert_eq!(before["project"]["media"], json!([]));
+    assert_eq!(before["project"]["bins"].as_array().unwrap().len(), 1);
+    let error = agent
+        .error(
+            "media.import",
+            Some(json!({"paths":[made.path],"bin":"missing"})),
+        )
+        .await;
+    assert_eq!(error["code"], -32001);
+    assert_eq!(project(&mut agent).await, before);
+}
+
 fn thumbnail_pixels(result: &Value) -> (u32, u32, Vec<u8>) {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -1555,6 +1586,32 @@ fn thumbnail_pixels(result: &Value) -> (u32, u32, Vec<u8>) {
     assert_eq!(result["height"], info.height);
     pixels.truncate(info.buffer_size());
     (info.width, info.height, pixels)
+}
+
+#[tokio::test]
+async fn an_edit_based_on_an_old_revision_cannot_cut_the_new_timeline() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let op = json!({"op":"add_bin","bin":{"id":"","name":"Rushes","parent":null}});
+    agent.apply(json!([op])).await;
+    let before = project(&mut agent).await;
+    let refused = agent
+        .error("transaction.apply", Some(json!({"ops":[op],"revision":0})))
+        .await;
+    assert_eq!(refused["code"], -32001);
+    assert_eq!(refused["data"]["reason"], "stale_revision");
+    assert_eq!(project(&mut agent).await, before);
+    agent
+        .result("transaction.apply", Some(json!({"ops":[op],"revision":1})))
+        .await;
+    assert_eq!(
+        project(&mut agent).await["project"]["bins"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[tokio::test]

@@ -24,8 +24,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
-from columbina.video.editing import Editor, Placing, Shape
 from columbina.video.engine import Engine, EngineError, not_found, program_of
+from columbina.video.legacy_editing import Editor, Placing, Shape
 from columbina.video.media import MediaUnavailableError, UnreadableMediaError, located
 from columbina.video.project import ProjectError
 from columbina.video.render import RenderError

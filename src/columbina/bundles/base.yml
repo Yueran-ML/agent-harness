@@ -153,3 +153,4 @@ patch:
         config:
           enabled: ${COLUMBINA_VIDEO:-0}
           whisper_model: ${COLUMBINA_WHISPER_MODEL:-}
+          engine: ${COLUMBINA_ENGINE:-}

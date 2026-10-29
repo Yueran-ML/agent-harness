@@ -107,8 +107,8 @@ class RefusedError(Exception):
             self.error["data"] = data
 
 
-_KINDS = {"add_media": "media", "add_timeline": "timeline", "add_track": "track"}
-_LETTERS = {"media": "m", "timeline": "t", "clip": "c"}
+_KINDS = {"add_media": "media", "add_timeline": "timeline", "add_track": "track", "add_bin": "bin"}
+_LETTERS = {"media": "m", "timeline": "t", "clip": "c", "bin": "b"}
 _TRACK_LETTERS = {"video": "V", "audio": "A", "subtitle": "S"}
 _PLACING = {
     "insert",
@@ -288,6 +288,8 @@ class Fake:
         }
 
     def transaction_apply(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("revision", self.revision) != self.revision:
+            raise RefusedError(-32001, "the project changed", {"reason": "stale_revision"})
         ops = cast("list[dict[str, Any]]", params.get("ops") or [])
         if not ops:
             message = "the transaction has no operations"
@@ -331,7 +333,14 @@ class Fake:
                     f"a file cannot be read: {path}: {message}",
                     {"path": path, "reason": "not_found", "message": message},
                 )
-        ops = [{"op": "add_media", "media": _media(Path(path))} for path in paths]
+        ops: list[dict[str, Any]] = [
+            {"op": "add_media", "media": _media(Path(path))} for path in paths
+        ]
+        bin = params.get("bin")
+        if bin is not None and not any(one["id"] == bin for one in self.project["bins"]):
+            raise RefusedError(-32001, "no such bin", {"reason": "missing"})
+        for op in ops:
+            op["media"]["bin"] = bin
         before = copy.deepcopy(self.project)
         done, _, _ = self._applied(ops)
         self.changed(str(asking.client), done, before)
@@ -605,7 +614,9 @@ class Fake:
         )
 
     def _added(self, op: dict[str, Any], kind: str, thing: dict[str, Any], index: int) -> None:
-        if kind == "media":
+        if kind == "bin":
+            places = self.project["bins"]
+        elif kind == "media":
             places = self.project["media"]
         elif kind == "timeline":
             places = self.project["timelines"]

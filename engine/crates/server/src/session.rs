@@ -935,6 +935,7 @@ async fn timeline_duration(
 struct Transaction<'a> {
     #[serde(borrow)]
     ops: Vec<&'a RawValue>,
+    revision: Option<u64>,
 }
 
 /// The answer to `transaction.apply`.
@@ -974,6 +975,18 @@ async fn transaction_apply(
     })?;
 
     let mut state = engine.state.lock().await;
+    if let Some(revision) = transaction
+        .revision
+        .filter(|revision| *revision != state.history.revision())
+    {
+        return Err(Fault::new(
+            rpc::REFUSED,
+            "the project changed since these edits were prepared",
+        )
+        .with_data(json!({"reason":"stale_revision", "expected":revision,
+                "actual":state.history.revision()}))
+        .into());
+    }
     let changed = state
         .history
         .change_with(
@@ -1175,6 +1188,7 @@ const READ_AT_ONCE: usize = 8;
 #[serde(deny_unknown_fields)]
 struct Import {
     paths: Vec<String>,
+    bin: Option<String>,
 }
 
 /// The answer to `media.import`.
@@ -1217,7 +1231,10 @@ async fn media_import(
     let media = read_all(&engine.reading, engine.read_gate.as_ref(), import.paths).await?;
     let ops = media
         .into_iter()
-        .map(|media| Op::AddMedia { media, index: None })
+        .map(|mut media| {
+            media.bin.clone_from(&import.bin);
+            Op::AddMedia { media, index: None }
+        })
         .collect();
     let mut state = engine.state.lock().await;
     let applied = state

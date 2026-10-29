@@ -11,7 +11,7 @@ import pytest
 import columbina.video
 from columbina.tools import ToolRun
 from columbina.video import Config, Videos, media, render, whisper_worker
-from columbina.video.editing import STORY, Editor, Placing
+from columbina.video.legacy_editing import STORY, Editor, Placing
 from columbina.video.media import AudioFacts, Facts, Silence, Tools, VideoFacts, located
 from columbina.video.project import Asset, Canvas, Identity, Manifest, ProjectError
 from columbina.video.render import Cue, Plan, RenderError, captions, rendered

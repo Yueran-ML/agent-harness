@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { PanelLeft, Plus, SlidersHorizontal } from 'lucide-react';
+import { PanelLeft, Plus, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { keyOf } from '../../app/keys';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
@@ -10,6 +10,9 @@ import { Timeline, type TimelineHandle } from '../timeline/Timeline';
 import type { MonitorControls } from '../useMonitor';
 import type { ViewerNotice } from '../Viewer';
 import { NewTimeline } from './NewTimeline';
+import { Inspector } from '../inspector/Inspector';
+import { SpeedDialog } from '../inspector/SpeedDialog';
+import { Library } from '../effects/Library';
 
 /**
  * How wide the Edit page has to be for the two monitors side by side. Narrower (a small window, or
@@ -22,6 +25,10 @@ export const TWO_MONITORS_PX = 1280;
  * The Edit page, laid out as DaVinci Resolve's: the media pool at the top left (it can be put away),
  * the source monitor beside the timeline monitor at the top, the inspector at the top right (it can
  * be put away), and the timeline beneath.
+ *
+ * The effects library shares the place of the pool (both may be open, one above the other), as the
+ * Effects button beside the Media Pool button in DaVinci Resolve. The inspector sets what is chosen
+ * on the timeline; R, or its button, opens the dialog of speed.
  *
  * Each monitor has its transport and its view of its own. The keys of the transport, and the marks
  * of I and O, go to the monitor that was pressed last, as they go to the viewer clicked last in
@@ -60,6 +67,9 @@ export function EditPage({
   const page = useRef<HTMLDivElement>(null);
   const timeline = useRef<TimelineHandle>(null);
   const [poolOpen, setPoolOpen] = useState(true);
+  const [effectsOpen, setEffectsOpen] = useState(false);
+  const [chosenTransition, setChosenTransition] = useState<string | null>(null);
+  const [speedClips, setSpeedClips] = useState<string[] | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [narrow, setNarrow] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -145,6 +155,8 @@ export function EditPage({
     <div className="edit-bar">
       <button type="button" className="icon-btn" aria-label={labels.pool} title={labels.pool} aria-pressed={poolOpen} onClick={() => setPoolOpen(open => !open)}
         data-test="toggle-pool"><PanelLeft size={15} /></button>
+      <button type="button" className="icon-btn" aria-label={words.label.studio.effects.title} title={words.label.studio.effects.title} aria-pressed={effectsOpen}
+        onClick={() => setEffectsOpen(open => !open)} data-test="toggle-effects"><Sparkles size={15} /></button>
       <select className="field edit-timelines" aria-label={labels.timeline.title} value={selected?.id ?? ''} disabled={timelines.length === 0}
         onChange={event => { if (event.target.value) { onSelect(event.target.value); onFocus('timeline'); } }} data-test="timeline-picker">
         {timelines.length === 0 && <option value="">{labels.editPage.noTimeline}</option>}
@@ -157,14 +169,18 @@ export function EditPage({
       <button type="button" className="icon-btn" aria-label={labels.editPage.inspector} title={labels.editPage.inspector} aria-pressed={inspectorOpen}
         onClick={() => setInspectorOpen(open => !open)} data-test="toggle-inspector"><SlidersHorizontal size={15} /></button>
     </div>
-    {poolOpen && pool}
+    {(poolOpen || effectsOpen) && <div className="edit-left">
+      {poolOpen && pool}
+      {effectsOpen && <Library session={session} />}
+    </div>}
     <div className="edit-monitors">
       {pane(source, sourceMedia?.name, words.hint.studio.loadSource)}
       {pane(timelineMonitor, selected?.name, words.hint.studio.timeline.empty)}
     </div>
     {inspectorOpen && <aside className="edit-inspector" aria-label={labels.editPage.inspector} data-test="inspector-slot">
       <h2 className="overline">{labels.editPage.inspector}</h2>
-      <p className="caption">{chosenClips.length > 0 ? labels.media.selected(chosenClips.length) : words.hint.studio.inspectorEmpty}</p>
+      <Inspector bridge={bridge} session={session} revision={revision} timeline={selected} media={media} clips={chosenClips} transition={chosenTransition}
+        onSpeed={setSpeedClips} />
     </aside>}
     <div className="edit-timeline" onPointerDownCapture={() => onFocus('timeline')} onFocusCapture={() => onFocus('timeline')}>
       <Timeline
@@ -180,8 +196,12 @@ export function EditPage({
         source={sourceContext}
         focus={focus}
         onSelection={setChosenClips}
+        onTransition={setChosenTransition}
+        onSpeed={setSpeedClips}
       />
     </div>
+    {speedClips !== null && selected !== null && <SpeedDialog clips={speedClips} timeline={selected} bridge={bridge} session={session} revision={revision}
+      onClose={() => setSpeedClips(null)} />}
     {creating && <NewTimeline media={media} count={timelines.length} onCreate={create} onClose={() => setCreating(false)} />}
   </div>;
 }

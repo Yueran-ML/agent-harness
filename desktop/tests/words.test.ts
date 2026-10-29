@@ -141,6 +141,8 @@ const samples: Record<string, unknown[][]> = {
   'label.studio.bits': [[8], [10]],
   'label.studio.proxy.making': [[0], [42], [100]],
   'label.studio.media.selected': [[1], [3], [1000]],
+  'label.studio.inspector.useLongest': [[1], [24]],
+  'hint.studio.inspector.longest': [[1], [24]],
 };
 
 type Said = { path: string; text: string };

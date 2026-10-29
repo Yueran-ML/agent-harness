@@ -812,6 +812,21 @@ export const en = {
         source: 'Source', timeline: 'Timeline', sourceTitle: 'Source viewer', timelineTitle: 'Timeline viewer', choose: 'Viewer shown',
       },
       editPage: { inspector: 'Inspector', newTimeline: 'New timeline', create: 'Create', noTimeline: 'No timeline' },
+      /** The fields of the inspector, as DaVinci Resolve names them. */
+      inspector: {
+        video: 'Video', audio: 'Audio', title: 'Title', generator: 'Generator', transition: 'Transition', settings: 'Timeline settings',
+        transform: 'Transform', composite: 'Composite', fades: 'Fades',
+        zoom: 'Zoom', positionX: 'Position X', positionY: 'Position Y', rotation: 'Rotation angle', opacity: 'Opacity',
+        fadeIn: 'Fade in (frames)', fadeOut: 'Fade out (frames)', volume: 'Volume', pan: 'Pan',
+        text: 'Text', size: 'Size', color: 'Color', align: 'Alignment', alignLeft: 'Align left', alignCenter: 'Align center', alignRight: 'Align right',
+        kind: 'Type', length: 'Duration (frames)', start: 'Start on edit', middle: 'Center on edit', end: 'End on edit', removeTransition: 'Delete transition',
+        name: 'Name', resolution: 'Resolution', width: 'Width', height: 'Height', custom: 'Custom', frameRate: 'Frame rate', sampleRate: 'Audio sample rate',
+        changeSpeed: 'Change clip speed', titleText: 'Title', useLongest: (frames: number) => `Use ${frames} frames`,
+      },
+      /** DaVinci Resolve's Change Clip Speed. */
+      speed: { title: 'Change clip speed', percent: 'Speed', reverse: 'Reverse speed', ripple: 'Ripple sequence', duration: 'Duration', apply: 'Change' },
+      /** The effects library, as DaVinci Resolve's toolbox. */
+      effects: { title: 'Effects library', videoTransitions: 'Video transitions', audioTransitions: 'Audio transitions', titles: 'Titles', generators: 'Generators', text: 'Text' },
       pool: 'Media pool',
       import: 'Import',
       /** A rate of frames as an editor writes it: 25, 29.97. */
@@ -1394,6 +1409,15 @@ export const en = {
       newTimeline: 'The timeline takes the size and frame rate of the first video in the media pool, and starts with one video track and one audio track.',
       newTimelineFailed: 'The timeline could not be created.',
       inspectorEmpty: 'Select a clip on the timeline.',
+      inspector: {
+        longest: (frames: number) => `The longest that fits is ${frames === 1 ? '1 frame' : `${frames} frames`}.`,
+        rate: 'A clip keeps its number of frames at another frame rate, so it lasts longer or shorter. A change that would take a clip past the end of its media is refused.',
+        rateRefused: 'At this frame rate, a clip would run past the end of its media.',
+        fadeAtTransition: 'A transition is at this edge, so a fade cannot be set here.',
+        speedMedia: 'Only clips of media can change speed.',
+        speedRange: 'The speed is from 1% to 10000%.',
+        library: 'Drag a transition onto a cut on the timeline, or a title or a solid color onto empty space on a video track.',
+      },
       cut: 'The Cut page is not ready yet. Edit timelines on the Edit page.',
       browser: 'The preview appears in the desktop app.',
       opening: 'The project is being opened in the studio.',

@@ -48,3 +48,5 @@
 .timeline-mark, .timeline-mark-range { position: absolute; pointer-events: none; bottom: 0; height: 5px; background: var(--accent); }
 .timeline-mark { width: 2px; height: 13px; }
 .timeline-mark-range { opacity: 0.5; }
+.timeline-transition { cursor: pointer; }
+.timeline-transition[data-selected='true'] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }

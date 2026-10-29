@@ -3,7 +3,7 @@ import type { Key } from '../../app/keys';
 import { overlayOpen } from '../../app/overlay';
 import { useWords } from '../../app/locale';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, EngineError, type Media, type Monitor, type Op, type Timeline } from '../engine';
+import { callEngine, type Media, type Monitor, type Op, type Timeline } from '../engine';
 import { editCommand, editKey, type EditContext } from './editKeys';
 import type { Targets, Transaction } from './commands';
 import { frameAt, HEADER_WIDTH } from './geometry';
@@ -12,6 +12,9 @@ import { clipLocations, EMPTY_SELECTION, selectClips, type Selection } from './s
 import { snap, snapCandidates, type Marks } from './snap';
 import { draggedMedia, MEDIA_DRAG } from '../media/drag';
 import { dropMedia } from './drop';
+import { droppedEffect, effectOfTypes } from '../effects/drag';
+import { effectTarget, effectTransaction } from '../effects/drop';
+import { refusalText } from '../inspector/refusal';
 
 interface Options {
   timeline: Timeline | null; revision: number; session: number; media: readonly Media[];
@@ -19,6 +22,8 @@ interface Options {
   root: RefObject<HTMLElement | null>; scroll: RefObject<HTMLDivElement | null>; view: { scale: number; left: number };
   onSeek: (frame: number, scrubbing: boolean) => void; fit: () => void;
   onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
+  /** The transition chosen on the timeline, for the inspector; null where none is. */
+  onTransition?: (transition: string | null) => void;
 }
 interface PointerDrag { gesture: Gesture; x: number; y: number; pointer: number; moved: boolean; clickSelection?: Selection }
 const cursor = (hit: Hit) => typeof hit === 'object' ? 'col-resize' : ({ move: 'grab', trim_in: 'w-resize', trim_out: 'e-resize', slip: 'ew-resize', slide: 'move', blade: 'crosshair' })[hit];
@@ -29,11 +34,15 @@ const defaultTargets = (timeline: Timeline | null): Targets => ({
 
 /** Owns transient gestures. Only an accepted engine notification changes the project on screen. */
 export function useEditing(options: Options) {
-  const words = useWords().hint.studio.edit;
+  const all = useWords();
+  const words = all.hint.studio.edit;
+  const studioWords = all.hint.studio;
+  const titleText = all.label.studio.inspector.titleText;
   const [tool, setTool] = useState<Tool>('select');
   const [snapping, setSnapping] = useState(true);
   const [linked, setLinked] = useState(true);
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [transition, setTransition] = useState<string | null>(null);
   const [targets, setTargets] = useState<Targets>(() => defaultTargets(options.timeline));
   const [marks, setMarks] = useState<Marks>({ in: null, out: null });
   const [preview, setPreview] = useState<Dragged | null>(null);
@@ -43,8 +52,8 @@ export function useEditing(options: Options) {
   const busy = useRef(false);
   const active = useRef<PointerDrag | null>(null);
   const live = useRef(true);
-  const now = useRef({ ...options, words, tool, snapping, linked, selection, targets, marks });
-  now.current = { ...options, words, tool, snapping, linked, selection, targets, marks };
+  const now = useRef({ ...options, words, studioWords, titleText, tool, snapping, linked, selection, transition, targets, marks });
+  now.current = { ...options, words, studioWords, titleText, tool, snapping, linked, selection, transition, targets, marks };
   const selected = useMemo(() => new Set(selection.ids), [selection]);
   const cancel = useCallback(() => {
     const pointer = active.current?.pointer;
@@ -59,7 +68,7 @@ export function useEditing(options: Options) {
     return () => { live.current = false; active.current = null; window.removeEventListener('blur', away); };
   }, [cancel]);
   useEffect(() => {
-    cancel(); setSelection(EMPTY_SELECTION); setMarks({ in: null, out: null });
+    cancel(); setSelection(EMPTY_SELECTION); setTransition(null); setMarks({ in: null, out: null });
     setTargets(defaultTargets(now.current.timeline)); setProblem(null);
   }, [options.timeline?.id, options.session, cancel]);
   useEffect(() => {
@@ -70,6 +79,7 @@ export function useEditing(options: Options) {
     if (!timeline) return;
     const locations = clipLocations(timeline);
     setSelection(old => old.ids.every(id => locations.has(id)) ? old : { ids: old.ids.filter(id => locations.has(id)), anchor: old.anchor && locations.has(old.anchor) ? old.anchor : null });
+    setTransition(old => old !== null && timeline.tracks.some(track => track.kind !== 'subtitle' && track.transitions.some(each => each.id === old)) ? old : null);
     setTargets(old => {
       const next = { ...old };
       for (const key of ['video_track', 'audio_track'] as const) if (old[key] && !timeline.tracks.some(t => t.id === old[key])) next[key] = null;
@@ -77,6 +87,9 @@ export function useEditing(options: Options) {
     });
   }, [options.timeline]);
   useEffect(() => { options.onSelection?.(selection.ids); }, [selection.ids, options.onSelection]);
+  useEffect(() => { options.onTransition?.(transition); }, [transition, options.onTransition]);
+  // A clip chosen leaves the transition, as only one kind of thing is chosen at a time.
+  useEffect(() => { if (selection.ids.length > 0) setTransition(null); }, [selection.ids]);
 
   const run = useCallback(async (method: 'transaction.apply' | 'history.undo' | 'history.redo', transaction?: Transaction): Promise<boolean> => {
     if (busy.current) return false;
@@ -85,11 +98,7 @@ export function useEditing(options: Options) {
     try { await callEngine(context.bridge, method, transaction ? { ...transaction } : undefined); return true; }
     catch (error) {
       if (live.current && context.session === now.current.session && context.timeline?.id === now.current.timeline?.id) {
-        const data = error instanceof EngineError && error.data && typeof error.data === 'object' ? error.data as { reason?: unknown } : null;
-        const reason = data?.reason;
-        const messages = now.current.words;
-        setProblem(typeof reason === 'string' && Object.hasOwn(messages, reason) ? messages[reason as keyof typeof messages]
-          : `${messages.failed}${error instanceof Error ? ` ${error.message}` : ''}`);
+        setProblem(refusalText(error, now.current.studioWords));
       }
       return false;
     } finally { busy.current = false; if (live.current) setPending(false); }
@@ -109,6 +118,11 @@ export function useEditing(options: Options) {
     if (!action) return false;
     if (active.current && action.kind !== 'cancel' && action.kind !== 'snap') return true;
     const context = now.current;
+    // Delete with a transition chosen, and no clip, takes the transition away, as in DaVinci Resolve.
+    if (action.kind === 'delete' && context.transition !== null && context.selection.ids.length === 0 && context.timeline) {
+      void apply({ revision: context.revision, ops: [{ edit: 'remove_transition', timeline: context.timeline.id, id: context.transition }] });
+      return true;
+    }
     const result = editCommand(action, { ...context, selected: context.selection.ids });
     if (!result) return true;
     switch (result.kind) {
@@ -136,9 +150,15 @@ export function useEditing(options: Options) {
   const pointerDown = (event: PointerEvent) => {
     const context = now.current;
     if (!context.timeline || event.button !== 0 || busy.current || active.current || overlayOpen()) return;
+    const chosen = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-transition]') : null;
+    if (chosen && context.tool !== 'blade' && chosen.closest<HTMLElement>('[data-track]')?.dataset.locked !== 'true') {
+      event.preventDefault(); context.root.current?.focus();
+      setSelection(EMPTY_SELECTION); setTransition(chosen.dataset.transition!);
+      return;
+    }
     const element = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-clip]') : null;
     if (!element) {
-      if (event.target instanceof Element && event.target.classList.contains('timeline-lane') && !event.ctrlKey && !event.metaKey && !event.shiftKey) setSelection(EMPTY_SELECTION);
+      if (event.target instanceof Element && event.target.classList.contains('timeline-lane') && !event.ctrlKey && !event.metaKey && !event.shiftKey) { setSelection(EMPTY_SELECTION); setTransition(null); }
       return;
     }
     const id = element.dataset.clip!;
@@ -191,7 +211,7 @@ export function useEditing(options: Options) {
     cancel(); if (transaction) void apply(transaction);
   };
   const dropTarget = (event: DragEvent) => {
-    if (busy.current || !event.dataTransfer.types.includes(MEDIA_DRAG) || !now.current.timeline) return null;
+    if (busy.current || !now.current.timeline || !(event.dataTransfer.types.includes(MEDIA_DRAG) || effectOfTypes([...event.dataTransfer.types]))) return null;
     const lane = event.target instanceof Element ? event.target.closest('.timeline-lane') : null;
     const track = lane?.closest<HTMLElement>('[data-track]');
     return track && track.dataset.kind !== 'subtitle' && track.dataset.locked !== 'true' ? track.dataset.track! : null;
@@ -201,16 +221,41 @@ export function useEditing(options: Options) {
     const frame = at(event.clientX);
     return context.snapping ? snap(frame, [0], snapCandidates(context.timeline!, [], context.frame, context.marks), context.view.scale).delta : frame;
   };
+  /** Where an effect from the library goes on the track under the pointer: at a cut, or in an empty place. */
+  const effectAt = (event: DragEvent, track: string) => {
+    const effect = effectOfTypes([...event.dataTransfer.types]);
+    if (!effect) return null;
+    const { scroll, view, timeline } = now.current;
+    const position = (event.clientX - (scroll.current?.getBoundingClientRect().left ?? 0) - HEADER_WIDTH + (scroll.current?.scrollLeft ?? view.left)) / view.scale;
+    const target = effectTarget(timeline!, effect, track, position, dropFrame(event), view.scale);
+    return target && { effect, target };
+  };
   const dragOver = (event: DragEvent) => {
-    if (!dropTarget(event)) { setDropAt(null); return; }
+    const track = dropTarget(event);
+    if (!track) { setDropAt(null); return; }
+    if (!event.dataTransfer.types.includes(MEDIA_DRAG)) {
+      const found = effectAt(event, track);
+      if (!found) { setDropAt(null); return; }
+      event.preventDefault(); event.dataTransfer.dropEffect = 'copy';
+      setDropAt(found.target.kind === 'cut' ? found.target.cut : found.target.at);
+      return;
+    }
     event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropAt(dropFrame(event));
   };
   const drop = (event: DragEvent) => {
     setDropAt(null);
     const track = dropTarget(event);
     if (!track) return;
-    event.preventDefault();
     const context = now.current;
+    if (!event.dataTransfer.types.includes(MEDIA_DRAG)) {
+      const found = effectAt(event, track);
+      if (!found) return;
+      event.preventDefault();
+      if (droppedEffect(event.dataTransfer, context.session) !== found.effect) return;
+      void apply(effectTransaction(context.timeline!, context.revision, found.effect, found.target, context.titleText));
+      return;
+    }
+    event.preventDefault();
     const ids = draggedMedia(event.dataTransfer, context.session);
     const transaction = dropMedia(context.timeline!, context.revision, context.media, ids, track, context.targets, dropFrame(event), event.shiftKey);
     if (transaction) void apply(transaction);
@@ -218,6 +263,6 @@ export function useEditing(options: Options) {
   const dragLeave = (event: DragEvent) => {
     if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropAt(null);
   };
-  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, targets, target, marks, preview, dropAt, problem, setProblem, pending,
+  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, transition, targets, target, marks, preview, dropAt, problem, setProblem, pending,
     edit, apply, keyDown, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
 }

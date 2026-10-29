@@ -16,10 +16,12 @@ import { useEditing } from './useEditing';
 import type { EditContext } from './editKeys';
 import './timeline.css';
 
-const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget }: {
+const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget, chosen = null }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
   height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
   selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
+  /** The transition chosen, where it is on this track. */
+  chosen?: string | null;
 }) {
   const words = useWords().label.studio.timeline;
   const transitions = useMemo(() => {
@@ -36,7 +38,7 @@ const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, f
           media={clip.source.kind === 'media' ? media.get(clip.source.media) : undefined} rate={rate} scale={scale}
           from={track.kind === 'audio' ? from : clip.start} to={track.kind === 'audio' ? to : clip.start + clip.length} waves={waves} />)}
       {transitions.filter(span => span.start < to && span.start + span.length > from).map(({ transition, start, length }) => <div
-        key={transition.id} className="timeline-transition" data-transition={transition.id} data-kind={transition.kind}
+        key={transition.id} className="timeline-transition" data-transition={transition.id} data-kind={transition.kind} data-selected={chosen === transition.id}
         style={{ left: start * scale, width: length * scale }} title={words[transition.kind]}><span>{words[transition.kind]}</span></div>)}
     </div>
   </div>;
@@ -44,10 +46,11 @@ const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, f
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
 export interface TimelineHandle { keyDown: (key: Key) => boolean }
-export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, ref }: {
+export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, onTransition, ref }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
   revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
-  source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void; ref?: Ref<TimelineHandle>;
+  source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
+  onTransition?: (transition: string | null) => void; ref?: Ref<TimelineHandle>;
 }) {
   const words = useWords();
   const labels = words.label.studio.timeline;
@@ -113,7 +116,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     return { ...old, scale: next.scale, left: next.scroll };
   }), []);
   const fit = () => setView(old => ({ ...old, scale: fitZoom(end, old.width), left: 0 }));
-  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, onSpeed, onSelection });
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, onSpeed, onSelection, onTransition });
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown }));
   useEffect(() => {
     const element = scroll.current;
@@ -191,7 +194,8 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
           <div className="timeline-ruler-corner" /></div>
         {tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
           from={from} to={to} height={heights[track.id] ?? 72} waves={waves} onEdit={editing.edit} onHeight={onHeight}
-          selected={editing.selected} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target} />)}
+          selected={editing.selected} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target}
+          chosen={editing.transition !== null && track.kind !== 'subtitle' && track.transitions.some(each => each.id === editing.transition) ? editing.transition : null} />)}
         {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
           style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
         {editing.preview?.point != null && <div className="timeline-snap" style={{ left: HEADER_WIDTH + editing.preview.point * view.scale }} />}

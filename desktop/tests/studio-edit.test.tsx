@@ -323,6 +323,30 @@ describe('the Edit page', () => {
     expect(document.querySelector('[data-monitor="timeline"]')).toBeNull();
   });
 
+  it('fills the inspector with what is chosen, opens the dialog of speed with R over both views, and puts the effects library beside the pool', async () => {
+    const { bridge } = await mount();
+    fireEvent.click(screen.getByRole('button', { name: 'Inspector' }));
+    const inspector = screen.getByRole('complementary', { name: 'Inspector' });
+    // Nothing chosen: the settings of the timeline.
+    expect(within(inspector).getByText('Timeline settings')).toBeDefined();
+    fireEvent.pointerDown(document.querySelector('[data-clip="c1"]')!, { button: 0, pointerId: 1, clientX: 400, clientY: 120 });
+    fireEvent.pointerUp(document.querySelector('[data-clip="c1"]')!, { button: 0, pointerId: 1, clientX: 400, clientY: 120 });
+    await settle();
+    expect(within(inspector).getByLabelText('Zoom', { selector: 'input[type="text"]' })).toBeDefined();
+    bridge.call.mockClear(); bridge.viewShow.mockClear();
+    key('r'); await settle();
+    const dialog = screen.getByRole('dialog', { name: 'Change clip speed' });
+    expect(bridge.viewShow).toHaveBeenCalledWith(false, 'source'); expect(bridge.viewShow).toHaveBeenCalledWith(false, 'timeline');
+    fireEvent.change(within(dialog).getByLabelText('Speed'), { target: { value: '200' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Change' }));
+    await settle();
+    expect(calls(bridge, 'transaction.apply')).toEqual([{ revision: 0, ops: [{ edit: 'set_speed', timeline: 't1', clip: 'c1', speed: { num: 2, den: 1 }, reverse: false, ripple: true, linked: false }] }]);
+    expect(screen.queryByRole('dialog', { name: 'Change clip speed' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Effects library' }));
+    expect(screen.getByRole('region', { name: 'Effects library' })).toBeDefined();
+    expect(screen.getByRole('region', { name: 'Media pool' })).toBeDefined();
+  });
+
   it('names the viewers as DaVinci Resolve does in Chinese', async () => {
     await mount(false, zhCN);
     expect(screen.getByRole('region', { name: '源检视器' })).toBeDefined();

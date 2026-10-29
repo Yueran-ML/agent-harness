@@ -2655,8 +2655,17 @@ async fn a_device_that_never_asks_for_sound_is_given_up() {
         .result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     // Nothing is heard: the playhead waits for the sound, then goes on without it.
+    let (waiting, _) = agent
+        .until_state("waiting for the sound", |state| {
+            state["playing"] == true && state["sound"] == "on"
+        })
+        .await;
+    assert_eq!(waiting["frame"], 0, "{waiting}");
     let (lost, _) = agent
         .until_state("the sound given up", |state| {
+            if state["playing"] == true && state["sound"] == "on" {
+                assert_eq!(state["frame"], 0, "the sound has not started: {state}");
+            }
             state["sound"] == "unavailable"
         })
         .await;
@@ -2665,9 +2674,15 @@ async fn a_device_that_never_asks_for_sound_is_given_up() {
         took >= Duration::from_millis(700) && took < Duration::from_millis(2000),
         "{took:?}"
     );
-    assert_eq!(
-        (&lost["frame"], &lost["playing"]),
-        (&json!(0), &json!(true))
+    assert_eq!(lost["playing"], true, "{lost}");
+    // The system clock starts before the sound feeder is stopped and this state is sent.
+    // The first notification may therefore be past frame 0. At 25 fps it must be no further
+    // than the time since the earliest allowed fallback, rather than an arbitrary frame cap.
+    let resumed = took.checked_sub(Duration::from_millis(700)).unwrap();
+    let latest = i64::try_from(resumed.as_millis() / 40).unwrap();
+    assert!(
+        (0..=latest).contains(&lost["frame"].as_i64().unwrap()),
+        "the picture jumped beyond the elapsed time ({took:?}): {lost}"
     );
     let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1500)).await;
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");

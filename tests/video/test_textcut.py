@@ -33,6 +33,7 @@ from columbina.video.timeline import Transcript, Word
 from columbina.video.transcribe import transcript_of
 from support import fake_engine
 from support.fake_engine import served
+from support.media import made, real_engine
 from support.studio import SCALE, clip_of, timeline_of, track_of
 
 PAL = Rate(num=25, den=1)
@@ -71,6 +72,58 @@ def struck(story: str, *changes: tuple[str, str]) -> str:
         assert before in story
         story = story.replace(before, after)
     return story
+
+
+async def test_a_blade_split_word_is_removed_and_restored_by_the_real_engine(
+    tmp_path: Path,
+) -> None:
+    source = made(
+        tmp_path / "raw",
+        "talk.wav",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=2",
+        "-c:a",
+        "pcm_s16le",
+    )
+    async with await Engine.attach(
+        tmp_path / "film", program=real_engine(), idle_seconds=1
+    ) as engine:
+        _, ids = await engine.imported([source])
+        _, project = await engine.project()
+        scale = project["media"][0]["facts"]["duration"]["scale"]
+        timeline = spoken(
+            clip_of("$first", 0, 30, media=ids[0], scale=scale),
+            clip_of("$second", 30, 20, media=ids[0], ticks=scale * 6 // 5, scale=scale),
+        )
+        timeline["id"] = "$timeline"
+        timeline["tracks"][0]["id"] = "$audio"
+        names = (await engine.apply([{"op": "add_timeline", "timeline": timeline}])).names
+        track = names["$audio"]
+        timeline_id = names["$timeline"]
+        revision, before = await engine.project()
+        transcript = transcript_of(
+            ids[0],
+            DIGEST,
+            [word(0.2, 0.5, "Before"), word(0.6, 1.4, "filler"), word(1.5, 1.8, "after.")],
+            [],
+            2_000_000,
+        )
+        words = {ids[0]: transcript}
+        story = of_track(before["timelines"][0], track, words, revision)
+        cut = cuts(story.replace("filler", "~~filler~~"), before["timelines"][0], words)
+        assert cut == [Range(15, 35)]
+        await engine.apply(edits_of(timeline_id, cut))
+        assert await engine.duration(timeline_id) == 30
+        revision, after = await engine.project()
+        rewritten = of_track(after["timelines"][0], track, words, revision)
+        assert "filler" not in rewritten
+        assert "Before" in rewritten
+        assert "after." in rewritten
+        await engine.undo()
+        _, undone = await engine.project()
+        assert undone["timelines"] == before["timelines"]
 
 
 # Where a clip reads its media, as span.rs counts it
@@ -286,6 +339,138 @@ def test_a_sentence_said_twice_keeps_the_one_said_later() -> None:
     assert found == paused == [Range(0, 37)]
 
 
+@pytest.mark.parametrize("change", ["times", "text", "sentences"])
+def test_transcription_changes_invalidate_a_story_even_when_media_and_word_count_match(
+    change: str,
+) -> None:
+    timeline = spoken(clip_of("c2", 0, 125))
+    transcript = talk()
+    story = of_track(timeline, "A1", {"m1": transcript}, 7)
+    if change == "times":
+        transcript = transcript.model_copy(
+            update={
+                "words": tuple(
+                    item.model_copy(
+                        update={
+                            "start_us": item.start_us + 200_000,
+                            "end_us": item.end_us + 200_000,
+                        }
+                    )
+                    for item in transcript.words
+                )
+            }
+        )
+    elif change == "text":
+        transcript = transcript.model_copy(
+            update={
+                "words": (
+                    transcript.words[0].model_copy(update={"text": "Welcome,"}),
+                    *transcript.words[1:],
+                )
+            }
+        )
+    else:
+        transcript = transcript.model_copy(update={"sentences": ((0, 2), (2, 5), (5, 8))})
+    with pytest.raises(StaleStoryError):
+        cuts(story, timeline, {"m1": transcript})
+
+
+@pytest.mark.parametrize("same_second", [False, True])
+def test_repeated_sentences_keep_the_occurrence_whose_time_marker_remains(
+    same_second: bool,
+) -> None:
+    second_start, second_end = (0.6, 0.9) if same_second else (1.6, 1.9)
+    transcript = transcript_of(
+        "m1",
+        DIGEST,
+        [word(0.2, 0.5, "Okay."), word(second_start, second_end, "Okay."), word(3.0, 3.4, "Done.")],
+        [],
+        4_000_000,
+    )
+    timeline = spoken(clip_of("c2", 0, 100))
+    story = of_track(timeline, "A1", {"m1": transcript}, 1)
+    repeats = [line for line in story.splitlines() if line.endswith("Okay.")]
+    assert repeats[0] != repeats[1], "the two occurrences need distinct time markers"
+    edited = story.replace(repeats[1] + "\n", "")
+    assert cuts(edited, timeline, {"m1": transcript}) == [Range(15 if same_second else 16, 72)]
+
+
+def test_an_ambiguous_repeated_sentence_without_its_time_marker_is_refused() -> None:
+    transcript = transcript_of(
+        "m1", DIGEST, [word(0.2, 0.5, "Okay."), word(1.6, 1.9, "Okay.")], [], 2_000_000
+    )
+    timeline = spoken(clip_of("c2", 0, 50))
+    story = of_track(timeline, "A1", {"m1": transcript}, 1).splitlines()[0] + "\n[c2] Okay.\n"
+    with pytest.raises(StoryError, match="ambiguous"):
+        cuts(story, timeline, {"m1": transcript})
+
+
+@pytest.mark.parametrize(
+    ("speed", "forward", "backward"),
+    [(1, (15, 35), (15, 35)), (2, (8, 18), (7, 17)), (Fraction(1, 2), (30, 70), (30, 70))],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_striking_a_word_split_by_a_blade_removes_both_continuous_fragments(
+    speed: Fraction | int,
+    forward: tuple[int, int],
+    backward: tuple[int, int],
+    reverse: bool,
+) -> None:
+    transcript = transcript_of(
+        "m1",
+        DIGEST,
+        [word(0.2, 0.5, "Before"), word(0.6, 1.4, "filler"), word(1.5, 1.8, "after.")],
+        [],
+        2_000_000,
+    )
+    left, right = int(30 / speed), int(20 / speed)
+    clips = (
+        [
+            clip_of("c2", 0, right, ticks=30 * 512, speed=speed, reverse=True),
+            clip_of("c3", right, left, speed=speed, reverse=True),
+        ]
+        if reverse
+        else [
+            clip_of("c2", 0, left, speed=speed),
+            clip_of("c3", left, right, ticks=30 * 512, speed=speed),
+        ]
+    )
+    timeline = spoken(*clips)
+    story = of_track(timeline, "A1", {"m1": transcript}, 1)
+    assert story.count("filler") == 1
+    assert cuts(story.replace("filler", "~~filler~~"), timeline, {"m1": transcript}) == [
+        Range(*(backward if reverse else forward))
+    ]
+
+
+def test_a_trimmed_word_fragment_is_still_visible_and_cuttable() -> None:
+    transcript = transcript_of(
+        "m1", DIGEST, [word(0.6, 1.4, "filler"), word(1.5, 1.8, "after.")], [], 2_000_000
+    )
+    timeline = spoken(clip_of("c2", 0, 20, ticks=30 * 512))
+    story = of_track(timeline, "A1", {"m1": transcript}, 1)
+    assert "filler" in story
+    assert cuts(story.replace("filler", "~~filler~~"), timeline, {"m1": transcript}) == [
+        Range(0, 5)
+    ]
+
+
+def test_cutting_one_repeated_clip_does_not_cut_the_same_word_in_another_take() -> None:
+    transcript = transcript_of(
+        "m1",
+        DIGEST,
+        [word(0.2, 0.5, "Before"), word(0.6, 1.4, "filler"), word(1.5, 1.8, "after.")],
+        [],
+        2_000_000,
+    )
+    timeline = spoken(clip_of("c2", 0, 50), clip_of("c3", 50, 50))
+    story = of_track(timeline, "A1", {"m1": transcript}, 1)
+    assert story.count("filler") == 2
+    assert cuts(story.replace("filler", "~~filler~~", 1), timeline, {"m1": transcript}) == [
+        Range(15, 35)
+    ]
+
+
 async def test_the_cuts_applied_by_an_engine_leave_the_words_that_were_kept(
     tmp_path: Path,
 ) -> None:
@@ -307,6 +492,8 @@ async def test_the_cuts_applied_by_an_engine_leave_the_words_that_were_kept(
         applied = await one.apply(edits_of("t1", cuts(story, timeline, words)))
         revision, project = await one.project()
 
+    clip_ids = [clip["id"] for clip in project["timelines"][0]["tracks"][0]["clips"]]
+    assert len(clip_ids) == len(set(clip_ids)), clip_ids
     after = of_track(project["timelines"][0], "A1", words, revision)
     said = [line.split("] ", 1)[1] for line in after.splitlines() if line.startswith("[c")]
     assert said == ["Hello,", "we cut.", "works."]

@@ -446,6 +446,16 @@ class Fake:
                 count = sum(1 for one in tracks if one["id"].startswith(letter))
                 thing["id"] = f"{letter}{count + 1}"
             else:
+                # Fixtures may supply ids inside a whole timeline. New ids must not reuse
+                # those explicit ids when the fake expands a later edit into inserted clips.
+                used = {str(one["id"]) for one in self.project["media"]}
+                for timeline in self.project["timelines"]:
+                    used.add(str(timeline["id"]))
+                    for track in timeline["tracks"]:
+                        used.add(str(track["id"]))
+                        used.update(str(clip["id"]) for clip in track.get("clips", []))
+                while f"{_LETTERS[kind]}{self.project['next_id']}" in used:
+                    self.project["next_id"] += 1
                 thing["id"] = f"{_LETTERS[kind]}{self.project['next_id']}"
                 self.project["next_id"] += 1
             if given:

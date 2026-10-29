@@ -23,10 +23,12 @@ named, in the order in which they are heard, a sentence a line:
   refused, :class:`StaleStoryError`: it is written again, and changed again. The revision is
   there to be read: the engine counts a revision for every change of the project, as for a proxy
   that it made, and a story is still good where its timeline is as it was.
-- A line is the words of a sentence that one clip plays: those whose middle is in the stretch of
-  its media that the clip shows. A sentence that a blade cut in two is two lines, one of each
-  clip. The time is where the line is heard on the timeline, and means nothing when it is
-  changed. A clip that plays backward says its last sentence first.
+- A line is the words of a sentence that one clip plays. A blade through a word displays it
+  once, on the clip containing its middle, and cutting it removes all its continuous pieces.
+  A trimmed word with only a head or tail remaining stays visible. A sentence cut between
+  words becomes two lines, one of each clip. Keep the time marker: it distinguishes repeated
+  sentences. Lines within the same second use milliseconds. A clip that plays backward says
+  its last sentence first.
 - A word that is taken away or struck through with ``~~`` is cut, and so is every word of a line
   that is taken away; words and lines can be neither added, changed nor moved.
 - ``[pause 1.8s]`` is the pause after a line, where it is longer than :data:`PAUSE_SHOWN_US`. A
@@ -77,6 +79,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -421,7 +424,7 @@ STORIES = "story"
 """The directory of a project of the engine that the stories of its timelines are kept in."""
 
 _TRACK_HEAD = re.compile(r"^<!--\s*columbina story:\s*(\S+)\s+(\d+)\s+([0-9a-f]{12})\s*-->$")
-_TRACK_LINE = re.compile(r"^\[([^\s\]]+)(?:\s+[\d:]+)?\]\s?(.*)$")
+_TRACK_LINE = re.compile(r"^\[([^\s\]]+)(?:\s+([\d:.]+))?\]\s?(.*)$")
 _TIMELINE_ID = re.compile(r"^[0-9A-Za-z_-]{1,64}$")
 
 
@@ -481,6 +484,8 @@ class Telling:
         locked: Whether the track is locked.
         clips: The clips of media of the track, in the order of their start.
         parts: The lines, in the order in which they are heard.
+        owners: For each audible (clip, word), the clip whose line displays that word.
+            A blade through a word retains one displayed word for the continuous fragments.
         silent: The clips whose media has no transcript, each with its media.
         digest: The digest of the timeline, the track and the words that the story tells of.
     """
@@ -491,6 +496,7 @@ class Telling:
     locked: bool
     clips: tuple[Placed, ...]
     parts: tuple[Part, ...]
+    owners: Mapping[tuple[str, int], str]
     silent: tuple[tuple[str, str], ...]
     digest: str
 
@@ -571,14 +577,17 @@ def _digest(
 ) -> str:
     """The digest of what the story of a track is written from.
 
-    That is the timeline, the track, and the words of its media, as they are shown.
+    That is the timeline, the track, and the words, their times and sentence boundaries.
+    The media digest alone cannot detect a new alignment of the same recording: accepting
+    an old story then would cut different frames from those the user edited.
     """
     media = sorted({clip.media for clip in clips if clip.media in transcripts})
     words = [
         [
             one,
             transcripts[one].digest,
-            len(transcripts[one].words),
+            [(word.start_us, word.end_us, word.text) for word in transcripts[one].words],
+            transcripts[one].sentences,
             sorted(transcripts[one].shown.items()),
         ]
         for one in media
@@ -604,6 +613,72 @@ def _owned(transcript: Transcript, clip: Placed, rate: Rate) -> list[int]:
     ]
 
 
+def _continuous(left: Placed, right: Placed, rate: Rate) -> bool:
+    """Whether the next clip continues the same source at the same speed and direction."""
+    earlier, later = (right, left) if left.reverse else (left, right)
+    return (
+        left.end == right.start
+        and left.media == right.media
+        and left.speed == right.speed
+        and left.reverse == right.reverse
+        and Fraction(earlier.begins.ticks + source_span(earlier, rate), earlier.begins.scale)
+        == Fraction(later.begins.ticks, later.begins.scale)
+    )
+
+
+def _speech(
+    clips: Sequence[Placed],
+    transcripts: Mapping[str, Transcript],
+    rate: Rate,
+) -> tuple[dict[tuple[str, int], str], dict[str, list[Spoken]]]:
+    """Keep every audible fragment, displaying each word once per continuous source run.
+
+    The midpoint chooses the displayed clip when it exists. If trimming left only a tail
+    or head, display it on the clip containing the largest remaining piece. Repeated takes
+    and nonadjacent excerpts are separate runs, so striking one never removes the other.
+    """
+    runs: list[list[Placed]] = []
+    for clip in clips:
+        if runs and _continuous(runs[-1][-1], clip, rate):
+            runs[-1].append(clip)
+        else:
+            runs.append([clip])
+    owners: dict[tuple[str, int], str] = {}
+    spoken: dict[str, list[Spoken]] = {clip.id: [] for clip in clips}
+    for run in runs:
+        transcript = transcripts.get(run[0].media)
+        if transcript is None:
+            continue
+        pieces: dict[int, list[tuple[Placed, Spoken]]] = {}
+        middles: dict[int, str] = {}
+        for clip in run:
+            middle = set(_owned(transcript, clip, rate))
+            for index, word in enumerate(transcript.words):
+                first, end = frames_showing(
+                    clip, word.start_us, max(word.start_us, word.end_us), rate
+                )
+                if end > first or index in middle:
+                    pieces.setdefault(index, []).append(
+                        (clip, Spoken(index, clip.start + first, clip.start + end))
+                    )
+                if index in middle:
+                    middles[index] = clip.id
+        for index, fragments in sorted(pieces.items()):
+            owner = middles.get(index)
+            if owner is None:
+                owner = max(fragments, key=lambda item: item[1].end - item[1].first)[0].id
+            for clip, _ in fragments:
+                owners[clip.id, index] = owner
+            spoken[owner].append(
+                Spoken(
+                    index,
+                    min(word.first for _, word in fragments),
+                    max(word.end for _, word in fragments),
+                )
+            )
+    return owners, spoken
+
+
 def telling(
     timeline: Mapping[str, Any], track: str, transcripts: Mapping[str, Transcript]
 ) -> Telling:
@@ -624,6 +699,7 @@ def telling(
     except (ValueError, ValidationError) as error:
         raise StoryError(f"timeline {timeline.get('id')} cannot be read: {error}") from None
     media = sorted((one for one in clips if one is not None), key=lambda one: one.start)
+    owners, said = _speech(media, transcripts, rate)
     parts: list[Part] = []
     silent: list[tuple[str, str]] = []
     for clip in media:
@@ -631,11 +707,7 @@ def telling(
         if transcript is None:
             silent.append((clip.id, clip.media))
             continue
-        spoken: list[Spoken] = []
-        for index in _owned(transcript, clip, rate):
-            word = transcript.words[index]
-            first, end = frames_showing(clip, word.start_us, max(word.start_us, word.end_us), rate)
-            spoken.append(Spoken(index, clip.start + first, clip.start + end))
+        spoken = said[clip.id]
         of_clip = [
             Part(clip, number, tuple(one for one in spoken if start <= one.index < end))
             for number, (start, end) in enumerate(transcript.sentences)
@@ -650,6 +722,7 @@ def telling(
         locked=bool(found.get("locked", False)),
         clips=tuple(media),
         parts=tuple(parts),
+        owners=owners,
         silent=tuple(silent),
         digest=_digest(timeline, track, media, transcripts),
     )
@@ -657,6 +730,18 @@ def telling(
 
 def _timed(frame: int, rate: Rate) -> str:
     return _clock(frame * rate.den * 1_000_000 // rate.num)
+
+
+def _line_times(told: Telling) -> list[str]:
+    """Time markers precise enough to distinguish lines of one clip in the same second."""
+    coarse = [_timed(part.first, told.rate) for part in told.parts]
+    counts = Counter((part.clip.id, time) for part, time in zip(told.parts, coarse, strict=True))
+    return [
+        f"{time}.{part.first * told.rate.den * 1000 // told.rate.num % 1000:03d}"
+        if counts[part.clip.id, time] > 1
+        else time
+        for part, time in zip(told.parts, coarse, strict=True)
+    ]
 
 
 def of_track(
@@ -681,10 +766,11 @@ def of_track(
     lines.extend(f"> {clip}: {media} has no transcript" for clip, media in told.silent)
     if told.silent:
         lines.append("")
+    times = _line_times(told)
     for place, part in enumerate(told.parts):
         transcript = transcripts[part.clip.media]
         shown = line_of([(transcript.text(one.index), False) for one in part.words])
-        lines.append(f"[{part.clip.id} {_timed(part.first, told.rate)}] {shown}")
+        lines.append(f"[{part.clip.id} {times[place]}] {shown}")
         pause = told.pause_after(place)
         if pause is not None and pause > PAUSE_SHOWN_US:
             lines.append(f"[pause {pause / 1_000_000:.1f}s]")
@@ -752,7 +838,7 @@ def marked(
             "from that"
         )
     order = {clip.id: place for place, clip in enumerate(told.clips)}
-    said: list[tuple[int, str, str]] = []
+    said: list[tuple[int, str, str, str | None]] = []
     paused: dict[int, int] = {}
     for where, raw in enumerate(lines[1:], start=2):
         line = raw.strip()
@@ -775,10 +861,10 @@ def marked(
                 f"line {where}: clip {clip} comes before clip {said[-1][1]} on the track. Lines "
                 "cannot be moved: move the clips themselves"
             )
-        said.append((where, clip, found[2]))
+        said.append((where, clip, found[3], found[2]))
     places = _placed_lines(told, transcripts, said)
     kept: set[tuple[str, int]] = set()
-    for (_, clip, _), (place, keeps) in zip(said, places, strict=True):
+    for (_, clip, _, _), (place, keeps) in zip(said, places, strict=True):
         part = told.parts[place]
         kept.update((clip, part.words[one].index) for one in keeps)
     named = {places[line][0]: us for line, us in paused.items()}
@@ -795,7 +881,9 @@ def marked(
 
 
 def _placed_lines(
-    told: Telling, transcripts: Mapping[str, Transcript], said: list[tuple[int, str, str]]
+    told: Telling,
+    transcripts: Mapping[str, Transcript],
+    said: list[tuple[int, str, str, str | None]],
 ) -> list[tuple[int, set[int]]]:
     """Match each line to a line of the story as it was written, and find the words it keeps.
 
@@ -822,27 +910,36 @@ def _placed_lines(
 def _matched_lines(
     told: Telling,
     transcripts: Mapping[str, Transcript],
-    lines: list[tuple[int, str, str]],
+    lines: list[tuple[int, str, str, str | None]],
     parts: list[int],
 ) -> list[tuple[int, set[int]]]:
-    """Match the lines of a clip to its parts, in order; the parts said earlier go first."""
+    """Match lines in order by their words and retained time markers; refuse ambiguity."""
     known: dict[tuple[int, int], set[int] | None] = {}
+    times = _line_times(told)
 
     def keeps(i: int, j: int) -> set[int] | None:
         if (i, j) not in known:
             part = told.parts[parts[j]]
             transcript = transcripts[part.clip.media]
-            known[i, j] = _kept_of([transcript.text(one.index) for one in part.words], lines[i][2])
+            anchor = lines[i][3]
+            known[i, j] = (
+                _kept_of([transcript.text(one.index) for one in part.words], lines[i][2])
+                if anchor is None or anchor == times[parts[j]]
+                else None
+            )
         return known[i, j]
 
     m, n = len(lines), len(parts)
-    # fits[i][j]: the lines from i on are some of the parts from j on, in order.
-    fits = [[False] * (n + 1) for _ in range(m + 1)]
+    # Count ordered matches, capped at two: guessing between repeated sentences can remove
+    # the wrong take. With no remaining lines, omitting the remaining parts is one match.
+    fits = [[0] * (n + 1) for _ in range(m + 1)]
     for j in range(n + 1):
-        fits[m][j] = True
+        fits[m][j] = 1
     for i in range(m - 1, -1, -1):
         for j in range(n - 1, -1, -1):
-            fits[i][j] = fits[i][j + 1] or (fits[i + 1][j + 1] and keeps(i, j) is not None)
+            fits[i][j] = min(
+                2, fits[i][j + 1] + (fits[i + 1][j + 1] if keeps(i, j) is not None else 0)
+            )
     if not fits[0][0]:
         wrong = next(
             (line for i, line in enumerate(lines) if all(keeps(i, j) is None for j in range(n))),
@@ -852,6 +949,11 @@ def _matched_lines(
             f"line {wrong[0]}: its words are not those of a sentence of clip {wrong[1]} in its "
             "place. Words can be taken away or struck through, and none can be added, changed "
             "or moved"
+        )
+    if fits[0][0] > 1:
+        raise StoryError(
+            "the remaining lines are ambiguous: keep their original time markers, "
+            "or write the story again before removing repeated sentences"
         )
     matched: list[tuple[int, set[int]]] = []
     i = j = 0

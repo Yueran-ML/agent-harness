@@ -117,13 +117,11 @@ def cuts(
 
 def _struck(marks: Marked, clip: Placed, transcript: Transcript, rate: Rate) -> list[Range]:
     """The ranges of a clip that its words struck out of the story take."""
-    owned = sorted(
-        one.index for part in marks.telling.parts if part.clip.id == clip.id for one in part.words
-    )
+    owned = sorted(index for owner_clip, index in marks.telling.owners if owner_clip == clip.id)
     mine = set(owned)
     runs: list[list[int]] = []
     for index in owned:
-        if (clip.id, index) in marks.kept:
+        if (marks.telling.owners[clip.id, index], index) in marks.kept:
             continue
         if runs and runs[-1][-1] + 1 == index:
             runs[-1].append(index)

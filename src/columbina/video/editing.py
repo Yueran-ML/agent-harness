@@ -75,19 +75,21 @@ def _applied(change: Applied) -> dict[str, Any]:
     return asdict(change)
 
 
-def _cues(
-    timeline: Mapping[str, Any], transcripts: Mapping[str, Transcript], media_id: str
-) -> list[CueItem]:
-    """Sentence chunks on their actual clips, including repeated, sped-up and reversed takes."""
+def _cues(timeline: Mapping[str, Any], transcripts: Mapping[str, Transcript]) -> list[CueItem]:
+    """The subtitles of what the dialogue track says, of every media of it that is transcribed.
+
+    Sentence chunks on their actual clips, including repeated, sped-up and reversed takes, in
+    the order in which they are shown; each ends where the next begins, if it would end later,
+    since the words that a transcriber times can overlap and the engine refuses overlapping
+    subtitles.
+    """
     track = story.dialogue_track(timeline)
     if track is None:
         raise ProjectError("the timeline has no dialogue track to make subtitles from")
     told = story.telling(timeline, track, transcripts)
     items: list[CueItem] = []
     for part in told.parts:
-        if part.clip.media != media_id:
-            continue
-        transcript = transcripts[media_id]
+        transcript = transcripts[part.clip.media]
         chunk: list[story.Spoken] = []
         for word in [*part.words, None]:
             if word is not None:
@@ -110,7 +112,7 @@ def _cues(
                         )
                     )
             chunk = [word] if word is not None else []
-    return sorted(items, key=lambda one: one.start)
+    return edits.untangled(items)
 
 
 class Editor:
@@ -286,14 +288,22 @@ class Editor:
             duration_us = duration["ticks"] * 1_000_000 // duration["scale"]
             cache = words.words_path(self.directory, digest).parent
             cache.mkdir(parents=True, exist_ok=True)
+            # The sound is taken out for the transcriber alone, and is as large as a film is
+            # long: it is not kept once the words are, nor when they could not be had.
             sound = cache / f"audio-{digest[:16]}.wav"
-            if not sound.exists():
-                await media.audio(tools, source, sound)
-            quiet = words.kept_silences(self.directory, digest, -35, 300_000)
-            if quiet is None:
-                quiet = await media.silences(tools, source, place=cache, duration_us=duration_us)
-                words.keep_silences(self.directory, digest, -35, 300_000, quiet)
-            heard = await self.transcriber.words(sound, language)
+            try:
+                if not sound.exists():
+                    await media.audio(tools, source, sound)
+                quiet = words.kept_silences(self.directory, digest, -35, 300_000)
+                if quiet is None:
+                    quiet = await media.silences(
+                        tools, source, place=cache, duration_us=duration_us
+                    )
+                    words.keep_silences(self.directory, digest, -35, 300_000, quiet)
+                heard = await self.transcriber.words(sound, language)
+            finally:
+                with contextlib.suppress(OSError):
+                    await asyncio.to_thread(sound.unlink, missing_ok=True)
             if not heard:
                 raise TranscriptionError(f"nothing was heard in {id}")
             known = words.Words.of(transcript_of(id, digest, heard, quiet, duration_us, language))
@@ -309,12 +319,20 @@ class Editor:
         if target is not None and subtitles is not None:
             # Transcription may take minutes: use the current timeline when placing the cues.
             revision, project = await self.engine.project()
+            session = self.engine.session
             target = _timeline(project, target["id"])
-            items = _cues(target, words.transcripts_of(self.directory, project), id)
+            now = target
+
+            def cued() -> list[CueItem]:
+                return _cues(now, words.transcripts_of(self.directory, project))
+
+            items = await asyncio.to_thread(cued)
             report.update(
                 _applied(
                     await self.engine.apply(
-                        [edits.cues_from(target["id"], subtitles, items)], revision=revision
+                        [edits.cues_from(target["id"], subtitles, items)],
+                        revision=revision,
+                        session=session,
                     )
                 )
             )

@@ -148,6 +148,18 @@ def test_transitions_speed_and_subtitles_are_written_with_what_is_given() -> Non
     }  # fmt: skip
 
 
+def test_subtitles_are_put_in_order_and_none_lasts_over_the_next() -> None:
+    def cue(start: int, length: int, text: str) -> edits.CueItem:
+        return edits.CueItem(start=start, length=length, text=text)
+
+    assert edits.untangled(
+        [cue(30, 10, "c"), cue(0, 12, "a"), cue(10, 5, "b"), cue(40, 0, "x"), cue(45, 5, "d")]
+    ) == [cue(0, 10, "a"), cue(10, 5, "b"), cue(30, 10, "c"), cue(45, 5, "d")]
+    # One that begins with the next is shown for no frame, and is left out.
+    assert edits.untangled([cue(5, 4, "a"), cue(5, 6, "b")]) == [cue(5, 6, "b")]
+    assert edits.untangled([]) == []
+
+
 def test_operations_set_what_is_given_and_tell_null_from_left_out() -> None:
     timeline = edits.add_timeline(
         "Cut",

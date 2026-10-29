@@ -23,7 +23,7 @@ as one transaction.
 """
 
 import enum
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from fractions import Fraction
 from typing import Any, Final, Literal
 
@@ -88,6 +88,7 @@ __all__ = [
     "smart_insert",
     "track",
     "trim",
+    "untangled",
 ]
 
 TrackKind = Literal["video", "audio", "subtitle"]
@@ -654,6 +655,23 @@ def cues_from(timeline: str, track: str, items: Sequence[CueItem]) -> dict[str, 
         "track": track,
         "items": [_json(item) for item in items],
     }
+
+
+def untangled(items: Iterable[CueItem]) -> list[CueItem]:
+    """Subtitles in the order in which they are shown, none of them over the next.
+
+    Each ends where the next begins, if it would end later, and one then shown for no frame is
+    left out: the engine refuses subtitles of a track that overlap.
+    """
+    shown = sorted(items, key=lambda one: one.start)
+    kept: list[CueItem] = []
+    for place, one in enumerate(shown):
+        end = one.start + one.length
+        if place + 1 < len(shown):
+            end = min(end, shown[place + 1].start)
+        if end > one.start:
+            kept.append(CueItem(start=one.start, length=end - one.start, text=one.text))
+    return kept
 
 
 def add_track(

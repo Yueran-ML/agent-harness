@@ -391,12 +391,15 @@ def _timeline(
     tracks = [*video_tracks, *audio_tracks]
     if old.timeline.captions:
         subtitles = edits.track("subtitle", id="$subtitles", name="Subtitles")
+        cues: list[edits.CueItem] = []
         for cue in legacy.captions(plan, old.timeline, old.transcripts):
             first, last = max(0, plan.frame(cue.start_us)), min(plan.frames, plan.frame(cue.end_us))
-            if last > first:
-                subtitles["cues"].append(
-                    {"id": "", "start": first, "length": last - first, "text": cue.text}
-                )
+            cues.append(edits.CueItem(start=first, length=last - first, text=cue.text))
+        # Words timed to overlap would make captions that overlap, which the engine refuses.
+        subtitles["cues"] = [
+            {"id": "", "start": one.start, "length": one.length, "text": one.text}
+            for one in edits.untangled(cues)
+        ]
         tracks.append(subtitles)
     if old.timeline.duck and any(layer.kind == "sound" for layer in old.timeline.layers):
         dropped.append(

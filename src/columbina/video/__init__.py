@@ -196,8 +196,8 @@ class _Transcribe(_Timeline):
     subtitles: str | None = Field(
         default=None,
         description=(
-            "Existing subtitle track id. Replaces its cues using this media's "
-            "dialogue occurrences on the timeline."
+            "Existing subtitle track id. Replaces all its cues with what the dialogue "
+            "track says, of every transcribed media on it, in order and never overlapping."
         ),
     )
 

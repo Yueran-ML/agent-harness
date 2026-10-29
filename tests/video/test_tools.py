@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import AsyncIterator
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -221,6 +222,74 @@ async def test_cached_transcript_subtitles_and_correction(studio: tuple[Desk, Fa
     await desk.call("video_story")
     text = (fake.directory / "story/t1.md").read_text(encoding="utf-8")
     assert "Hello filler WORLD" in text
+
+
+async def test_subtitles_tell_every_transcribed_media_of_the_dialogue_and_never_overlap(
+    studio: tuple[Desk, Fake],
+) -> None:
+    from columbina.video.transcribe import transcript_of
+    from columbina.video.transcript import Word
+    from columbina.video.words import Words, keep_words
+    from support.studio import clip_of, timeline_of, track_of
+
+    desk, fake = studio
+    for name in ("one.wav", "two.wav"):
+        (desk.work / name).write_bytes(name.encode())
+    first, second = result(await desk.call("video_import", paths=["one.wav", "two.wav"]))["added"]
+    fake.project["timelines"] = [
+        timeline_of(
+            track_of(
+                "A1",
+                [
+                    clip_of("c1", 0, 50, media=first),
+                    # The second media plays backward, from 1 s of it.
+                    clip_of("c2", 50, 25, media=second, ticks=12800, reverse=True),
+                ],
+            ),
+            edits.track("subtitle", id="S1"),
+        )
+    ]
+    # The fake engine gives every file one digest; the analysis of each is kept by its own.
+    fake.project["media"][1]["identity"]["digest"] = "1" * 64
+    digests = {item["id"]: item["identity"]["digest"] for item in fake.project["media"]}
+    # A transcriber times words that overlap: each long word here begins before the last ends.
+    overlapping = [
+        Word(start_us=at * 300_000, end_us=at * 300_000 + 360_000, text="abcdefghijkl")
+        for at in range(6)
+    ]
+    keep_words(
+        fake.directory,
+        Words.of(transcript_of(first, digests[first], overlapping, [], 2_000_000)),
+    )
+    keep_words(
+        fake.directory,
+        Words.of(
+            transcript_of(
+                second,
+                digests[second],
+                [Word(start_us=1_200_000, end_us=1_800_000, text="Other.")],
+                [],
+                3_000_000,
+            )
+        ),
+    )
+
+    told = result(await desk.call("video_transcribe", media=first, subtitles="S1"))
+
+    items = fake.edits[-1]["items"]
+    assert told["cues"] == len(items)
+    assert [one["text"] for one in items] == [
+        "abcdefghijkl abcdefghijkl abcdefghijkl",
+        "abcdefghijkl abcdefghijkl abcdefghijkl",
+        "Other.",
+    ]
+    assert all(one["length"] > 0 for one in items)
+    assert all(a["start"] + a["length"] <= b["start"] for a, b in pairwise(items))
+    # The first cue ends where the second begins, though its last word ends 60 ms later.
+    assert (items[0]["start"], items[0]["start"] + items[0]["length"]) == (0, 23)
+    # "Other." is said 1.2 s to 1.8 s into the second media, of which c2 plays 1 s to 2 s
+    # backward, from frame 50: frames 55 to 70.
+    assert (items[2]["start"], items[2]["length"]) == (55, 15)
 
 
 async def test_default_render_path_progress_and_no_history_step(studio: tuple[Desk, Fake]) -> None:
@@ -515,3 +584,56 @@ async def test_applying_before_a_story_is_written_says_to_write_it_first(
     assert failed.error.code == "VIDEO_STORY"
     assert "video_story" in failed.text
     assert "Errno" not in failed.text
+
+
+async def test_the_engine_takes_subtitles_of_words_timed_to_overlap(
+    ctx: Context, tmp_path: Path
+) -> None:
+    from columbina.video.transcribe import Scripted
+    from support.media import made, real_engine
+
+    desk = await desk_of(ctx, tmp_path, engine=real_engine())
+    source = made(
+        desk.work,
+        "talk.wav",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:sample_rate=48000:duration=3",
+        "-c:a",
+        "pcm_s16le",
+    )
+    words = desk.work / "words.json"
+    words.write_text(
+        json.dumps(
+            [
+                {"start_us": at * 300_000, "end_us": at * 300_000 + 360_000, "text": "abcdefghijkl"}
+                for at in range(6)
+            ]
+        ),
+        encoding="utf-8",
+    )
+    desk.ctx.use(VIDEOS).transcriber = Scripted(words)
+    media_id = result(await desk.call("video_import", paths=[str(source)]))["added"][0]
+    names = result(
+        await desk.call(
+            "video_edit",
+            edits=[
+                edits.add_timeline(
+                    "Cut",
+                    edits.Rate(num=25, den=1),
+                    id="$film",
+                    tracks=[edits.track("audio", id="$a"), edits.track("subtitle", id="$s")],
+                ),
+                edits.insert("$film", edits.of_media(media_id, length=60), 0),
+            ],
+        )
+    )["names"]
+
+    heard = result(await desk.call("video_transcribe", media=media_id, subtitles=names["$s"]))
+
+    assert heard["cues"] == 2
+    info = result(await desk.call("video_info", timeline=names["$film"]))
+    cues = info["timelines"][0]["tracks"][1]["cues"]
+    assert [(one["start"], one["length"]) for one in cues] == [(0, 23), (23, 24)]
+    assert not list((desk.work / ".columbina/studio/analysis").glob("audio-*.wav"))

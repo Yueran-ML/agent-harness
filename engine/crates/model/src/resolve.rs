@@ -93,6 +93,18 @@ pub fn video_at(t: &Timeline, project: &Project, frame: i64) -> Vec<Layer> {
     layers
 }
 
+/// What one track of picture of a timeline shows at a frame, as [`video_at`] has it for that
+/// track: one layer, two at a transition, or none. It reads no other track, so that a reader of
+/// one track need not copy the timeline to ask.
+#[must_use]
+pub fn video_of_track_at(t: &Timeline, project: &Project, track: &Track, frame: i64) -> Vec<Layer> {
+    let mut layers = vec![];
+    if track.kind == TrackKind::Video && track.enabled {
+        track_at(t, project, track, frame, &mut layers);
+    }
+    layers
+}
+
 /// The layers of a track at a frame.
 fn track_at(t: &Timeline, project: &Project, track: &Track, frame: i64, layers: &mut Vec<Layer>) {
     for transition in &track.transitions {
@@ -361,7 +373,8 @@ fn beyond(track: &Track, clip: &Clip) -> (i64, i64) {
 
 /// The sample of a timeline of `rate` and `sample_rate` that frame `frame` starts at, rounded
 /// down.
-fn samples_at(frame: i64, rate: Rate, sample_rate: u32) -> i64 {
+#[must_use]
+pub fn samples_at(frame: i64, rate: Rate, sample_rate: u32) -> i64 {
     let whole = i128::from(frame) * i128::from(sample_rate) * i128::from(rate.den);
     let samples = whole.div_euclid(i128::from(rate.num));
     i64::try_from(samples).unwrap_or(if samples < 0 { i64::MIN } else { i64::MAX })

@@ -3,7 +3,9 @@
 //! 1 times the gain of the clip; the pieces of sound of a track one after another, overlapping
 //! only at a crossfade, and covering the samples that the clips of the timeline sound on.
 
-use columbina_model::resolve::{audio_between, cues_at, duration, video_at, Content};
+use columbina_model::resolve::{
+    audio_between, cues_at, duration, video_at, video_of_track_at, Content,
+};
 use columbina_model::{
     apply, Alignment, Clip, Cue, Op, Project, Rate, Rgba, Source, Speed, Time, Timeline, Track,
     TrackKind, Transition, TransitionKind,
@@ -335,6 +337,13 @@ proptest! {
                     prop_assert!((0..duration.ticks).contains(tick), "{layer:?} of {}", duration.ticks);
                 }
             }
+            // One track asked alone shows what it shows among the others.
+            let alone: Vec<_> = timeline
+                .tracks
+                .iter()
+                .flat_map(|track| video_of_track_at(timeline, &project, track, frame))
+                .collect();
+            prop_assert_eq!(&alone, &layers);
             for track in &timeline.tracks {
                 let of_track = layers.iter().filter(|l| l.track == track.id).count();
                 prop_assert!(of_track <= 2, "{of_track} layers of {} at {frame}", track.id);

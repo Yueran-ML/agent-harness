@@ -86,11 +86,9 @@ fn plan(request: &Request) -> Vec<Want> {
     frames.retain(|&frame| ahead(frame));
     frames.sort_unstable_by_key(|frame| frame.abs_diff(request.frame));
     frames.dedup();
-    let mut one_track = timeline.clone();
-    one_track.tracks = vec![track.clone()];
     let mut wanted: Vec<Want> = Vec::new();
     for frame in frames {
-        for layer in resolve::video_at(&one_track, &request.project, frame) {
+        for layer in resolve::video_of_track_at(timeline, &request.project, track, frame) {
             if let Content::Media { media, tick } = layer.content {
                 let want = Want {
                     clip: layer.clip,
@@ -580,6 +578,67 @@ mod tests {
             Some(30)
         );
         assert!(reader.ready(2, &old_want, true).is_none());
+    }
+
+    #[test]
+    fn a_read_of_an_older_generation_is_not_published_into_a_newer_one() {
+        // Only the generation changes: the same clips, frames and proxy preference, as when
+        // the engine makes a proxy of the media. A frame read for the old generation (from the
+        // old proxy) must not be taken for the new one.
+        let Some(mut project) = project() else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let proxy = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"broken").unwrap();
+            columbina_model::Proxy {
+                path: path.to_string_lossy().into_owned(),
+                width: 1920,
+                height: 1080,
+                codec: "h264".into(),
+                digest_of_source: "0".repeat(64),
+            }
+        };
+        Arc::make_mut(&mut project).media[0].proxy = Some(proxy("old-proxy.mp4"));
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (resume, resumed) = std::sync::mpsc::channel::<()>();
+        let resumed = Mutex::new(resumed);
+        // Each broken proxy, the first time it fails, holds its reader until resumed.
+        let sources = Sources::new(
+            Hardware::Off,
+            Arc::new(move |_, _| {
+                let _ = entered.send(());
+                let _ = resumed.lock().unwrap().recv_timeout(Duration::from_secs(5));
+            }),
+        );
+        let reader = TrackReader::new(sources, 64 * 1024 * 1024).unwrap();
+        let mut old = request(project, 10);
+        old.proxies = true;
+        let want = plan(&old).remove(0);
+        reader.request(old.clone());
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        let mut newer = old;
+        newer.generation = 2;
+        Arc::make_mut(&mut newer.project).media[0].proxy = Some(proxy("new-proxy.mp4"));
+        assert_eq!(plan(&newer)[0], want);
+        reader.request(newer);
+        resume.send(()).unwrap();
+        // The new generation's first read now waits on its own broken proxy: nothing has been
+        // read for it yet, and the old read must not stand in for it.
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(reader.ready(2, &want, false).is_none());
+        resume.send(()).unwrap();
+        let read = reader
+            .wait(2, &want, true, Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            number_in(
+                &read.picture.luma,
+                read.picture.luma_stride,
+                read.picture.bits
+            ),
+            Some(10)
+        );
     }
 
     #[test]

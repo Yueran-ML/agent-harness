@@ -76,7 +76,9 @@ mod timing;
 
 pub use audio::{AudioDecoder, AudioFormat, Samples};
 pub use columbina_model::{AudioFacts, Facts, Identity, Rate, Time, VideoFacts};
-pub use decode::{video_start, Converter, Decoded, Hardware, HardwarePath, Picture, VideoDecoder};
+pub use decode::{
+    video_start, Converter, Decoded, Hardware, HardwarePath, Picture, Rgba, VideoDecoder,
+};
 pub use encode::{encoders_for, AudioSettings, Codec, EncoderPath, Quality, VideoSettings, Writer};
 pub use error::MediaError;
 pub use identity::identity;

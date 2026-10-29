@@ -54,6 +54,9 @@ pub enum Sample {
     MkvLongSound,
     /// Matroska: 4 s of picture (100 frames) from 1 s on, and 5 s of sound from 0.
     MkvLateStart,
+    /// As `MkvLateStart`, with PCM stereo whose levels change at 1 s: audio before and after
+    /// the first picture is distinguishable when testing waveform and mix alignment.
+    MkvOffsetAudio,
     /// MP4 of H.264 whose frames come at changing times: frame `n` at `(n ± 0.3) / 25` s,
     /// in a time base of milliseconds; 100 frames.
     Vfr,
@@ -107,6 +110,7 @@ impl Sample {
             | Sample::M2ts
             | Sample::MkvLongSound
             | Sample::MkvLateStart
+            | Sample::MkvOffsetAudio
             | Sample::Vfr
             | Sample::SameTimes => Some(100),
             Sample::Uhd => Some(180),
@@ -138,6 +142,7 @@ impl Sample {
             Sample::M2ts => "v1-avchd-h264.m2ts",
             Sample::MkvLongSound => "v1-mkv-sound-longer.mkv",
             Sample::MkvLateStart => "v1-mkv-picture-from-1s.mkv",
+            Sample::MkvOffsetAudio => "v1-mkv-waveform-from-1s.mkv",
             Sample::Vfr => "v1-vfr-jitter.mp4",
             Sample::SameTimes => "v1-same-timestamps.mkv",
             Sample::Evc => "v1-evc-aac.mp4",
@@ -582,6 +587,15 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
             &format!("{};{}", small(",setpts=PTS+1/TB"), sound(5)),
             true,
             &["-c:a", "aac"],
+        ),
+        Sample::MkvOffsetAudio => one_step(
+            h264(encoders, 25),
+            &format!(
+                "{};aevalsrc=exprs='if(lt(t,1),0.75,0.25)|if(lt(t,1),-0.25,-0.75)':s=48000:d=5[a]",
+                small(",setpts=PTS+1/TB")
+            ),
+            true,
+            &["-c:a", "pcm_f32le"],
         ),
         Sample::Vfr => one_step(
             h264(encoders, 25),

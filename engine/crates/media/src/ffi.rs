@@ -527,6 +527,33 @@ unsafe fn depth_of(descriptor: *const ff::ffi::AVPixFmtDescriptor) -> Option<u8>
 /// A converter of frames between formats, of swscale.
 pub(crate) struct Scaler(pub ff::software::scaling::Context);
 
+impl Scaler {
+    /// The same limited BT.709 YUV interpretation as the first-phase preview, to full-range
+    /// RGB. swscale otherwise defaults to BT.601, which makes thumbnails visibly disagree.
+    pub fn thumbnail_colors(&mut self) -> Result<(), String> {
+        // SAFETY: the context is live and exclusively borrowed; the four coefficients are
+        // a static libswscale table. Contrast and saturation are unity in 16.16 fixed point.
+        let code = unsafe {
+            let coefficients = ff::ffi::sws_getCoefficients(ff::ffi::SWS_CS_ITU709);
+            ff::ffi::sws_setColorspaceDetails(
+                self.0.as_mut_ptr(),
+                coefficients,
+                0,
+                coefficients,
+                1,
+                0,
+                1 << 16,
+                1 << 16,
+            )
+        };
+        if code < 0 {
+            Err(error_text(code))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 // SAFETY: a context of swscale is used by one thread at a time, which `&mut` sees to; it holds
 // nothing of the thread that made it.
 unsafe impl Send for Scaler {}

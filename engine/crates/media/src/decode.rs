@@ -209,6 +209,18 @@ pub struct Converter {
     /// A frame copied from the card in a format other than NV12 and P010, to be converted.
     copied: Option<ff::frame::Video>,
     scaler: Option<Scaler>,
+    thumbnail_scaler: Option<Scaler>,
+}
+
+/// A small, packed RGBA picture, in stored orientation, with no row padding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rgba {
+    /// Its width in pixels.
+    pub width: u32,
+    /// Its height in pixels.
+    pub height: u32,
+    /// Four bytes per pixel, red, green, blue, alpha; rows from top to bottom.
+    pub data: Vec<u8>,
 }
 
 impl Converter {
@@ -216,6 +228,79 @@ impl Converter {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Scale a decoded frame and convert it to packed RGBA for a thumbnail. Hardware frames
+    /// are transferred first; the full-resolution picture converter keeps its own context.
+    ///
+    /// # Errors
+    /// Device transfer or conversion fails, either dimension is outside 1–16384, or the result
+    /// would exceed 64 MiB. These bounds are checked before libav allocates an output frame.
+    pub fn rgba_scaled(
+        &mut self,
+        decoded: &Decoded,
+        width: u32,
+        height: u32,
+    ) -> Result<Rgba, MediaError> {
+        if !(1..=16384).contains(&width)
+            || !(1..=16384).contains(&height)
+            || u64::from(width) * u64::from(height) > 16 * 1024 * 1024
+        {
+            return Err(MediaError::Unsupported(
+                "RGBA output exceeds the supported size".into(),
+            ));
+        }
+        let source = if ffi::on_device(decoded.raw.format()) {
+            let copied = self.copied.get_or_insert_with(ff::frame::Video::empty);
+            ffi::transfer(copied, &decoded.raw).map_err(MediaError::Device)?;
+            &*copied
+        } else {
+            &decoded.raw
+        };
+        let input = (source.format(), source.width(), source.height());
+        let scaler = match &mut self.thumbnail_scaler {
+            Some(scaler)
+                if (
+                    scaler.0.input().format,
+                    scaler.0.input().width,
+                    scaler.0.input().height,
+                ) == input
+                    && (scaler.0.output().width, scaler.0.output().height) == (width, height) =>
+            {
+                scaler
+            }
+            slot => slot.insert(Scaler(
+                ff::software::scaling::Context::get(
+                    input.0,
+                    input.1,
+                    input.2,
+                    Pixel::RGBA,
+                    width,
+                    height,
+                    ff::software::scaling::Flags::AREA,
+                )
+                .map_err(|error| {
+                    MediaError::Decode(format!("cannot scale a thumbnail: {error}"))
+                })?,
+            )),
+        };
+        let mut output = ff::frame::Video::empty();
+        scaler.thumbnail_colors().map_err(MediaError::Decode)?;
+        scaler
+            .0
+            .run(source, &mut output)
+            .map_err(|error| MediaError::Decode(error.to_string()))?;
+        let row = width as usize * 4;
+        let mut data = Vec::with_capacity(row * height as usize);
+        for y in 0..height as usize {
+            let start = y * output.stride(0);
+            data.extend_from_slice(&output.data(0)[start..start + row]);
+        }
+        Ok(Rgba {
+            width,
+            height,
+            data,
+        })
     }
 
     /// Make a frame a picture.
@@ -1266,5 +1351,30 @@ impl Attempt {
 impl From<MediaError> for Attempt {
     fn from(error: MediaError) -> Self {
         Self::File(error)
+    }
+}
+
+#[cfg(test)]
+mod thumbnail_tests {
+    use super::*;
+
+    #[test]
+    fn rgba_uses_the_same_limited_bt709_matrix_as_the_preview() {
+        let mut raw = ff::frame::Video::new(Pixel::YUV444P, 16, 16);
+        for (plane, level) in [(0, 100), (1, 140), (2, 180)] {
+            raw.data_mut(plane).fill(level);
+        }
+        let frame = Decoded {
+            frame: 0,
+            raw,
+            repeat: false,
+        };
+        let result = Converter::new().rgba_scaled(&frame, 8, 8).unwrap();
+        // BT.709 limited-range Y=100, Cb=140, Cr=180; BT.601 gives a visibly different red.
+        for pixel in result.data.as_chunks::<4>().0 {
+            for (actual, expected) in pixel.iter().zip([191_u8, 68, 123, 255]) {
+                assert!(actual.abs_diff(expected) <= 2, "{pixel:?}");
+            }
+        }
     }
 }

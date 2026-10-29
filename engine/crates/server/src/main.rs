@@ -29,6 +29,7 @@
 //! listens.
 
 mod address;
+mod analysis;
 mod audio;
 mod conn;
 mod gpu;
@@ -457,8 +458,8 @@ async fn serve(
     let closed = presence.wait_for(|presence| presence.connected == 0);
     let _ = tokio::time::timeout(CLOSING, closed).await;
     // Before the state is locked for good: the maker of proxies tells what it did with it.
-    let proxies = Arc::clone(&engine);
-    let _ = tokio::task::spawn_blocking(move || proxies.stop_proxies()).await;
+    let background = Arc::clone(&engine);
+    let _ = tokio::task::spawn_blocking(move || background.stop_background()).await;
     let state = Arc::clone(&engine.state).lock_owned().await;
     Ending::Stopped { code, state }
 }

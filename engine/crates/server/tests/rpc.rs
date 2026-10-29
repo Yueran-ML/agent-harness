@@ -1523,6 +1523,452 @@ async fn files_are_taken_in_as_media_in_one_transaction() {
     agent.apply(clip).await;
 }
 
+fn thumbnail_pixels(result: &Value) -> (u32, u32, Vec<u8>) {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(result["png"].as_str().unwrap())
+        .unwrap();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    assert_eq!(result["width"], info.width);
+    assert_eq!(result["height"], info.height);
+    pixels.truncate(info.buffer_size());
+    (info.width, info.height, pixels)
+}
+
+#[tokio::test]
+async fn analysis_thumbnails_are_scaled_cached_and_do_not_edit_the_project() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths": [made.path]})))
+        .await;
+    let before = project(&mut client).await;
+    let first = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":180})),
+        )
+        .await;
+    let (width, height, pixels) = thumbnail_pixels(&first);
+    assert_eq!((width, height), (320, 180));
+    assert!(pixels[..3].iter().all(|byte| *byte < 8));
+    assert!(pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .all(|pixel| pixel[3] == 255));
+    let middle = client
+        .result("media.thumbnail", Some(json!({"media":"m1", "height":90})))
+        .await;
+    assert_eq!(thumbnail_pixels(&middle).0, 160);
+    assert_eq!(
+        middle,
+        client
+            .result(
+                "media.thumbnail",
+                Some(json!({"media":"m1", "frame":50, "height":90}))
+            )
+            .await
+    );
+    let cache = dir.path().join("cache/thumbs");
+    let files: Vec<_> = std::fs::read_dir(&cache)
+        .unwrap()
+        .map(|file| file.unwrap().path())
+        .collect();
+    assert_eq!(files.len(), 2);
+    // A truncated cache is regenerated, not returned as a successful PNG.
+    for file in &files {
+        std::fs::write(file, b"broken PNG").unwrap();
+    }
+    assert_eq!(
+        first,
+        client
+            .result(
+                "media.thumbnail",
+                Some(json!({"media":"m1", "frame":0, "height":180}))
+            )
+            .await
+    );
+    for params in [
+        json!({"media":"m1", "height":0}),
+        json!({"media":"m1", "height":271}),
+        json!({"media":"m1", "frame":-1, "height":90}),
+        json!({"media":"m1", "frame":100, "height":90}),
+        json!({"media":"m1", "height":90, "extra":true}),
+    ] {
+        assert_eq!(
+            client.error("media.thumbnail", Some(params)).await["code"],
+            -32602
+        );
+    }
+    assert_eq!(
+        client
+            .error(
+                "media.thumbnail",
+                Some(json!({"media":"gone", "height":90}))
+            )
+            .await["data"]["reason"],
+        "missing"
+    );
+    assert_eq!(project(&mut client).await, before);
+}
+
+#[tokio::test]
+async fn analysis_thumbnail_turns_portrait_media_upright() {
+    let Some(made) = support::media(support::Sample::Portrait) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths": [made.path]})))
+        .await;
+    let result = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":160})),
+        )
+        .await;
+    let (width, height, _) = thumbnail_pixels(&result);
+    assert_eq!((width, height), (90, 160));
+}
+
+async fn waveform(client: &mut Client, media: &str) -> Value {
+    let result = client
+        .result("media.waveform", Some(json!({"media":media})))
+        .await;
+    if result["pending"] == true {
+        let ready =
+            |note: &Value| note["method"] == "media.waveform" && note["params"]["media"] == media;
+        if !client.take_notifications().iter().any(ready) {
+            loop {
+                if ready(&client.message().await) {
+                    break;
+                }
+            }
+        }
+        client
+            .result("media.waveform", Some(json!({"media":media})))
+            .await
+    } else {
+        result
+    }
+}
+
+#[tokio::test]
+async fn analysis_waveform_is_100_peaks_per_second_per_channel_and_cached() {
+    use base64::Engine as _;
+    let Some(made) = support::media(support::Sample::Wav) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    client
+        .result("media.import", Some(json!({"paths":[made.path]})))
+        .await;
+    let before = project(&mut client).await;
+    let result = waveform(&mut client, "m1").await;
+    assert_eq!(result["rate"], 100);
+    assert_eq!(result["channels"], 2);
+    let peaks = base64::engine::general_purpose::STANDARD
+        .decode(result["peaks"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(peaks.len(), 200 * 2 * 2);
+    assert!(peaks
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .all(|pair| (pair[0].cast_signed()) < 0 && (pair[1].cast_signed()) > 0));
+    assert_eq!(waveform(&mut client, "m1").await, result);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("cache/waveforms"))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(project(&mut client).await, before);
+    assert_eq!(
+        client
+            .error("media.thumbnail", Some(json!({"media":"m1", "height":90})))
+            .await["data"]["reason"],
+        "no_video"
+    );
+}
+
+#[tokio::test]
+async fn analysis_uses_an_available_proxy_and_falls_back_when_it_is_unreadable() {
+    let Some(original) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let Some(copy) = support::media(support::Sample::Prores) else {
+        return;
+    };
+    let dir = project_dir();
+    let source = dir.path().join("source.mp4");
+    std::fs::copy(original.path, &source).unwrap();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    let imported = project(&mut client).await;
+    let digest = imported["project"]["media"][0]["identity"]["digest"]
+        .as_str()
+        .unwrap();
+    let proxy_dir = Path::new(&written(dir.path())).join("cache/proxies");
+    std::fs::create_dir_all(&proxy_dir).unwrap();
+    let proxy = proxy_dir.join(format!("m1-{}.mov", &digest[..12]));
+    std::fs::copy(copy.path, &proxy).unwrap();
+    client
+        .apply(json!([{"op":"set_proxy", "media":"m1", "proxy": {
+            "path":proxy, "width":1920, "height":1080, "codec":"prores", "digest_of_source":digest
+        }}]))
+        .await;
+    let offline = source.with_extension("offline");
+    std::fs::rename(&source, &offline).unwrap();
+    let result = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":89})),
+        )
+        .await;
+    assert_eq!(thumbnail_pixels(&result).1, 89);
+    std::fs::rename(&offline, &source).unwrap();
+    std::fs::write(&proxy, b"damaged proxy").unwrap();
+    let before = project(&mut client).await;
+    let result = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":90})),
+        )
+        .await;
+    assert_eq!(thumbnail_pixels(&result).1, 90);
+    assert_eq!(project(&mut client).await, before);
+}
+
+#[tokio::test]
+async fn analysis_cache_survives_a_restart_and_an_offline_source() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let source = dir.path().join("source.mp4");
+    std::fs::copy(made.path, &source).unwrap();
+    let first_engine = engine(dir.path(), &["--headless", "--idle-seconds", "1"]).await;
+    let mut client = first_engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    let thumb = client
+        .result(
+            "media.thumbnail",
+            Some(json!({"media":"m1", "frame":0, "height":90})),
+        )
+        .await;
+    let wave = waveform(&mut client, "m1").await;
+    let before = project(&mut client).await;
+    drop(client);
+    assert_eq!(first_engine.ended().await, 0);
+    std::fs::rename(&source, source.with_extension("offline")).unwrap();
+    let second_engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = second_engine.client("desktop").await;
+    assert_eq!(
+        client
+            .result(
+                "media.thumbnail",
+                Some(json!({"media":"m1", "frame":0, "height":90}))
+            )
+            .await,
+        thumb
+    );
+    assert_eq!(
+        client
+            .result("media.waveform", Some(json!({"media":"m1"})))
+            .await,
+        wave
+    );
+    // Opening the saved project resets its ephemeral revision, not the project itself.
+    assert_eq!(project(&mut client).await["project"], before["project"]);
+}
+
+#[tokio::test]
+async fn analysis_reports_failed_waveforms_and_can_retry_a_restored_source() {
+    let Some(made) = support::media(support::Sample::Wav) else {
+        return;
+    };
+    let dir = project_dir();
+    let source = dir.path().join("source.wav");
+    std::fs::copy(made.path, &source).unwrap();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    let mut observer = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths":[source]})))
+        .await;
+    observer.message().await; // Import notification.
+    let offline = source.with_extension("offline");
+    std::fs::rename(&source, &offline).unwrap();
+    assert_eq!(
+        client
+            .result("media.waveform", Some(json!({"media":"m1"})))
+            .await,
+        json!({"pending":true})
+    );
+    assert_eq!(
+        observer.message().await,
+        json!({"jsonrpc":"2.0", "method":"media.waveform", "params":{"media":"m1"}})
+    );
+    let failed = client
+        .error("media.waveform", Some(json!({"media":"m1"})))
+        .await;
+    assert_eq!(failed["code"], -32002);
+    assert_eq!(failed["data"]["reason"], "not_found");
+    std::fs::rename(&offline, &source).unwrap();
+    client.take_notifications();
+    assert_eq!(waveform(&mut client, "m1").await["channels"], 2);
+}
+
+#[tokio::test]
+async fn analysis_waveform_is_aligned_to_the_video_origin_not_audio_preroll() {
+    use base64::Engine as _;
+    let Some(made) = support::media(support::Sample::MkvOffsetAudio) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result("media.import", Some(json!({"paths":[made.path]})))
+        .await;
+    let result = waveform(&mut client, "m1").await;
+    let got = base64::engine::general_purpose::STANDARD
+        .decode(result["peaks"].as_str().unwrap())
+        .unwrap();
+    let snapshot = project(&mut client).await;
+    let duration: columbina_model::Time =
+        serde_json::from_value(snapshot["project"]["media"][0]["facts"]["duration"].clone())
+            .unwrap();
+    let mut decoder = columbina_media::AudioDecoder::open(&made.path, None).unwrap();
+    let format = decoder.format();
+    let origin = columbina_media::video_start(&made.path).unwrap();
+    assert!(origin.ticks > 0);
+    let start = origin.ticks * i64::from(format.rate) / i64::from(origin.scale);
+    let length = (duration.ticks * i64::from(format.rate) + i64::from(duration.scale) - 1)
+        / i64::from(duration.scale);
+    // Build the reference in float bins before quantization. Sound before the first picture
+    // is omitted, including the distinctive higher level before 1 s in this PCM fixture.
+    let bins = usize::try_from(
+        (duration.ticks * 100 + i64::from(duration.scale) - 1) / i64::from(duration.scale),
+    )
+    .unwrap();
+    let mut expected =
+        vec![[f32::INFINITY, f32::NEG_INFINITY]; bins * usize::from(format.channels)];
+    while let Some(samples) = decoder.next().unwrap() {
+        for (index, frame) in samples
+            .data
+            .chunks_exact(usize::from(format.channels))
+            .enumerate()
+        {
+            let at = samples.start + i64::try_from(index).unwrap() - start;
+            if at < 0 || at >= length {
+                continue;
+            }
+            let bin = usize::try_from(at * 100 / i64::from(format.rate)).unwrap();
+            for (channel, sample) in frame.iter().enumerate() {
+                let pair = &mut expected[bin * usize::from(format.channels) + channel];
+                pair[0] = pair[0].min(*sample);
+                pair[1] = pair[1].max(*sample);
+            }
+        }
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "reference quantization is clamped to -127..=127"
+    )]
+    let expected: Vec<u8> = expected
+        .iter()
+        .flat_map(|pair| {
+            pair.iter().map(|value| {
+                if value.is_finite() {
+                    ((value.clamp(-1.0, 1.0) * 127.0).round() as i8).cast_unsigned()
+                } else {
+                    0
+                }
+            })
+        })
+        .collect();
+    assert_eq!(got.len(), expected.len());
+    for (index, (actual, expected)) in got.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(actual, expected, "waveform byte {index}");
+    }
+    assert_eq!(&got[..4], &[32, 32, 161, 161]); // Left +0.25, right -0.75, from 1 s.
+}
+
+#[tokio::test]
+async fn analysis_can_answer_without_a_writable_cache_and_refuses_unsupported_requests() {
+    let Some(sound) = support::media(support::Sample::Wav) else {
+        return;
+    };
+    let Some(picture) = support::media(support::Sample::Prores) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("desktop").await;
+    client
+        .result(
+            "media.import",
+            Some(json!({"paths":[sound.path, picture.path]})),
+        )
+        .await;
+    std::fs::create_dir_all(dir.path().join("cache")).unwrap();
+    // These files prevent the engine creating its cache directories, on every platform.
+    std::fs::write(dir.path().join("cache/thumbs"), b"occupied").unwrap();
+    std::fs::write(dir.path().join("cache/waveforms"), b"occupied").unwrap();
+    assert_eq!(waveform(&mut client, "m1").await["channels"], 2);
+    let result = client
+        .result("media.thumbnail", Some(json!({"media":"m2", "height":90})))
+        .await;
+    assert_eq!(thumbnail_pixels(&result).1, 90);
+    assert_eq!(
+        client
+            .error("media.waveform", Some(json!({"media":"m2"})))
+            .await["data"]["reason"],
+        "no_audio"
+    );
+    for params in [
+        json!({"media":"m1", "rate":50}),
+        json!({}),
+        json!({"media":3}),
+    ] {
+        assert_eq!(
+            client.error("media.waveform", Some(params)).await["code"],
+            -32602
+        );
+    }
+    let mut large = media("huge", sound.path.to_str().unwrap());
+    large["facts"]["duration"]["ticks"] = json!(9_007_199_254_740_991_i64);
+    client
+        .apply(json!([{"op":"add_media", "media":large}]))
+        .await;
+    let error = client
+        .error("media.waveform", Some(json!({"media":"huge"})))
+        .await;
+    assert_eq!(error["code"], -32002);
+    assert_eq!(error["data"]["reason"], "too_large");
+}
+
 #[tokio::test]
 async fn files_that_cannot_be_read_are_none_of_them_taken_in() {
     let Some(made) = support::media(support::Sample::Wav) else {

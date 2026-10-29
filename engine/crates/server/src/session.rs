@@ -21,6 +21,7 @@ use serde_json::json;
 use serde_json::value::RawValue;
 use tokio::sync::{watch, Mutex, MutexGuard, Notify, Semaphore};
 
+use crate::analysis::{Analysis, ThumbnailRequest, WaveformRequest};
 use crate::gpu::Graphics;
 use crate::log::log;
 use crate::names;
@@ -89,6 +90,8 @@ pub struct Engine {
     transport: Transport,
     /// The maker of proxies.
     proxies: Proxies,
+    /// Background thumbnails and waveforms; they never write the project history.
+    analysis: Analysis,
     /// Whether the engine is headless, as `hello` answers it.
     headless: bool,
     /// Told when the engine is to end, having yielded the project to the desktop
@@ -202,6 +205,13 @@ impl Engine {
             proxies: proxies.clone(),
         }));
         let viewer = Viewer::new(headless, Graphics::new());
+        let analysis = Analysis::new(
+            Path::new(&project),
+            Box::new({
+                let state = Arc::clone(&state);
+                move |media: &Media| tell_waveform(&state, media, limits)
+            }),
+        );
         let notify = {
             let state = Arc::clone(&state);
             Arc::new(move |status: &Status| tell(&state, status, limits))
@@ -255,6 +265,7 @@ impl Engine {
             viewer,
             transport,
             proxies,
+            analysis,
             headless,
             yielded: Arc::new(Notify::new()),
         }
@@ -265,9 +276,10 @@ impl Engine {
         Arc::clone(&self.yielded)
     }
 
-    /// Stop the proxy being made, and delete what it wrote: the engine ends. This blocks for a
-    /// few seconds at most; the state must not be locked meanwhile.
-    pub fn stop_proxies(&self) {
+    /// Cancel analysis and stop the proxy being made, deleting its partial output. This
+    /// blocks for a few seconds at most; the state must not be locked meanwhile.
+    pub fn stop_background(&self) {
+        self.analysis.stop();
         self.proxies.stop();
     }
 
@@ -359,6 +371,30 @@ fn tell_proxy(state: &Mutex<State>, note: &Note, limits: Limits) {
     let line = rpc::notification_line("media.proxy", note);
     let mut state = state.blocking_lock();
     state.broadcast(&line);
+    let kicked = std::mem::take(&mut state.kicked);
+    drop(state);
+    for (id, kind) in kicked {
+        log_kicked(id, Some(kind), limits);
+    }
+}
+
+/// Analysis finishes on a blocking worker. A source removed or replaced meanwhile is not
+/// announced as ready for a different media snapshot.
+fn tell_waveform(state: &Mutex<State>, media: &Media, limits: Limits) {
+    let mut state = state.blocking_lock();
+    if !state
+        .history
+        .project()
+        .media
+        .iter()
+        .any(|found| found.id == media.id && found.identity == media.identity)
+    {
+        return;
+    }
+    state.broadcast(&rpc::notification_line(
+        "media.waveform",
+        &json!({"media":media.id}),
+    ));
     let kicked = std::mem::take(&mut state.kicked);
     drop(state);
     for (id, kind) in kicked {
@@ -588,6 +624,9 @@ async fn dispatch(
         }
         "media.import" => media_import(engine, connection, kind, id, params).await,
         "media.make_proxy" => make_proxy(engine, connection, id, params).await,
+        "media.thumbnail" | "media.waveform" => {
+            media_analysis(engine, connection, id, method, params).await
+        }
         "engine.yield" => engine_yield(engine, connection, kind, id, params).await,
         "view.attach" | "view.place" | "view.show" | "view.detach" => {
             let result = engine.viewer.call(kind, method, params).await?;
@@ -623,6 +662,49 @@ async fn dispatch(
         )
         .into()),
     }
+}
+
+async fn media_analysis(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    method: &str,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let (media_id, thumbnail) = if method == "media.thumbnail" {
+        let request: ThumbnailRequest =
+            rpc::params(method, r#"{"media":"m1","height":90}"#, params)?;
+        (request.media.clone(), Some(request))
+    } else {
+        let request: WaveformRequest = rpc::params(method, r#"{"media":"m1"}"#, params)?;
+        (request.media, None)
+    };
+    let media = {
+        let state = engine.state.lock().await;
+        state
+            .history
+            .project()
+            .media
+            .iter()
+            .find(|media| media.id == media_id)
+            .cloned()
+            .ok_or_else(|| {
+                Fault::params(format!("there is no media {media_id} in the project"))
+                    .with_data(json!({"reason":"missing", "media":media_id}))
+            })?
+    };
+    let (result, job) = match thumbnail {
+        Some(request) => (engine.analysis.thumbnail(media, request).await?, None),
+        None => engine.analysis.waveform(media).await?,
+    };
+    let reply = match connection.queue(rpc::result_line(id, &result)) {
+        Ok(()) => Reply::Queued,
+        Err(refused) => Reply::Refused(refused),
+    };
+    if let Some(job) = job {
+        job.start();
+    }
+    Ok(reply)
 }
 
 /// `transport.load`, of any client: the media is found in the project, and its load is sent

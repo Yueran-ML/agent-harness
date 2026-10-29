@@ -123,6 +123,8 @@ Before `hello`, every other request is refused with `-32600`.
 | `history.redo` | none | as `history.undo` |
 | `media.import` | `{"paths": ["<file>", ...]}` | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
 | `media.make_proxy` | `{"media": "m1"}` | `{}` (see Proxies) |
+| `media.thumbnail` | `{"media": "m1", "frame": 50, "height": 90}` (`frame` optional) | `{"width": 160, "height": 90, "png": "<base64>"}` |
+| `media.waveform` | `{"media": "m1"}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
 | `view.attach` | `{"parent": "<handle>", "x": x, "y": y, "width": w, "height": h}` | `{"adapter": "<name>", "backend": "Dx12"}` |
 | `view.place` | `{"x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.show` | `{"shown": true \| false}` | `{}` |
@@ -197,6 +199,48 @@ Before `hello`, every other request is refused with `-32600`.
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
 - `view.*`: the viewer, below; `transport.*`: playing a source, below.
+
+## Thumbnails and waveforms
+
+Both methods work in headless engines and change no project revision or undo history. They
+read a snapshot of the media without keeping the project locked. Unknown params are refused;
+a missing media id is `-32602`, `data: {"reason":"missing", "media":"..."}`. A file that
+cannot be opened or decoded is `-32002`, with `path`, `reason` and `message` as for import.
+
+- **Thumbnails.** `height` is an integer from 1 through 270, in display pixels. Width follows
+  the display aspect ratio (rounded to the nearest pixel, at least 1); the PNG is upright RGBA,
+  with media rotation applied. The first-phase limited BT.709 conversion matches the preview.
+  `frame` is a nonnegative frame number at the media's rate. If omitted it is
+  `floor(ceil(duration * rate) / 2)`. A number outside the duration is `-32602`; a source without
+  video is `-32002`, reason `no_video`. A usable proxy is preferred, with fallback to the
+  original if the proxy cannot open or decode. At most two thumbnails are decoded at once.
+- **Waveforms.** Bin `n` describes media time `[n/100, (n+1)/100)` seconds. The last partial
+  bin is included. For each bin, channel 0's minimum and maximum come first, then channel 1's,
+  and so on, in native channel order. Every native sample contributes: the service does not
+  resample to 100 Hz. Each extremum is clamped to `[-1,1]`, multiplied by 127, rounded to the
+  nearest integer (half away from zero), and stored as a signed i8 byte in two's complement.
+  Missing sound is zero. For video media time zero is the first video frame, so audio pre-roll
+  is omitted; for audio-only media it is the audio stream start. A source without audio is
+  `-32002`, reason `no_audio`. Audio is always read from the original, not the picture proxy.
+- **Background work.** An uncached waveform returns `{"pending":true}` and runs on a separate
+  single-worker queue, leaving the thumbnail queue available. Repeated requests for the same
+  pending source share the job. Completion sends `media.waveform` with `{"media":"m1"}` to
+  all clients that said hello, provided the same source is still in the project. Query again
+  after this notification to receive the data or a decode error; the notification does not
+  assert success. An error is consumed by the next query, and a further query can retry (for
+  example after an offline file is restored). Shutdown cancels queued jobs and stops decoding
+  at the next audio block.
+- **Caches.** PNG files live in `cache/thumbs/<media>-<digest12>-<frame>-<height>.png`;
+  waveforms in `cache/waveforms/<media>-<digest12>.bin`. The digest is the existing imported
+  identity, not a newly computed hash. Punctuation in media ids is percent-encoded in filenames.
+  Files are replaced atomically. Malformed caches are rebuilt; a cache that cannot be written
+  does not prevent a computed answer. Valid caches can be read while the source is offline,
+  including after restart. A redirected cache directory or a file symlink is not read through.
+  Waveform files start with `CWAV1`, a little-endian u16 channel count, then the peak bytes.
+- **Size limits.** Thumbnail width must not exceed 16384 pixels (`-32602`). Encoded answers
+  must fit the 16 MiB protocol line limit, leaving 1024 bytes for JSON; an oversized waveform
+  or PNG returns `-32002`, reason `too_large`. Waveform size is checked before allocation;
+  PNG size is checked before base64 response encoding.
 
 ## Proxies
 
@@ -756,6 +800,7 @@ real ids. For example:
 | `transport.state` | the state of the transport (see The transport) |
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
+| `media.waveform` | `{"media": "m1"}` (background analysis finished; query again for data or error) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,

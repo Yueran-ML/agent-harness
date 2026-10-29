@@ -12,6 +12,10 @@ name = "columbina-engine"
 path = "src/main.rs"
 
 [dependencies]
+# Thumbnails and waveform samples carried by the JSON protocol.
+base64 = "=0.22.1"
+png = "=0.18.1"
+tempfile.workspace = true
 columbina-compose = { path = "../compose" }
 columbina-media = { path = "../media" }
 columbina-model = { path = "../model" }
@@ -42,7 +46,6 @@ rustix = { version = "1", features = ["process"] }
 [dev-dependencies]
 # Project::sample, for the tests of the names of a transaction.
 columbina-model = { path = "../model", features = ["sample"] }
-tempfile.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 # A window of the test's own, for view.attach, and PrintWindow, to read what the view shows.

@@ -905,6 +905,7 @@ impl Worker {
             self.targets.push(Arc::clone(&target));
             target
         };
+        let _turn = self.graphics.draw_turn(true);
         self.compositor
             .as_mut()
             .expect("made above")

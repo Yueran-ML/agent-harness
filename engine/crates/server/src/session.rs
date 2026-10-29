@@ -28,6 +28,7 @@ use crate::names;
 use crate::play::Transport;
 use crate::proxy::{self, Made, Note, Proxies};
 use crate::queue::{self, Limits, Refused};
+use crate::render::Renders;
 use crate::rpc::{self, Fault, Line};
 use crate::transport;
 use crate::view::Viewer;
@@ -93,6 +94,8 @@ pub struct Engine {
     proxies: Proxies,
     /// Background thumbnails and waveforms; they never write the project history.
     analysis: Analysis,
+    /// One background export, independent of playback and project edits.
+    renders: Arc<Renders>,
     /// Whether the engine is headless, as `hello` answers it.
     headless: bool,
     /// Told when the engine is to end, having yielded the project to the desktop
@@ -232,6 +235,10 @@ impl Engine {
             let state = Arc::clone(&state);
             Arc::new(move |media: &str, _: Option<&Path>| make_again(&state, media, true))
         };
+        let renders = Arc::new(Renders::new(Path::new(&project), Arc::clone(&graphics), {
+            let state = Arc::clone(&state);
+            Arc::new(move |note| tell_render(&state, note, limits))
+        }));
         let transport = Transport::new(headless, setup, &viewer, graphics, notify, again, repair);
         let project_now = {
             let mut locked = state.try_lock().expect("no one has the state yet");
@@ -272,6 +279,7 @@ impl Engine {
             transport,
             proxies,
             analysis,
+            renders,
             headless,
             yielded: Arc::new(Notify::new()),
         }
@@ -285,6 +293,7 @@ impl Engine {
     /// Cancel analysis and stop the proxy being made, deleting its partial output. This
     /// blocks for a few seconds at most; the state must not be locked meanwhile.
     pub fn stop_background(&self) {
+        self.renders.stop();
         self.transport.stop();
         self.analysis.stop();
         self.proxies.stop();
@@ -511,6 +520,16 @@ fn tell(state: &Mutex<State>, status: &serde_json::Value, limits: Limits) {
     }
 }
 
+fn tell_render(state: &Mutex<State>, note: &serde_json::Value, limits: Limits) {
+    let mut state = state.blocking_lock();
+    state.broadcast(&rpc::notification_line("render.progress", note));
+    let kicked = std::mem::take(&mut state.kicked);
+    drop(state);
+    for (id, kind) in kicked {
+        log_kicked(id, Some(kind), limits);
+    }
+}
+
 impl State {
     /// Queue a line on every connection that said hello. A connection whose queue is full is
     /// closed, so that it never misses a single message and then goes on.
@@ -634,6 +653,37 @@ async fn dispatch(
             history_step(engine, connection, kind, id, method, params).await
         }
         "media.import" => media_import(engine, connection, kind, id, params).await,
+        "render.start" => {
+            let request: crate::render::Request = rpc::params(
+                method,
+                r#"{"timeline":"t1","path":"...","codec":"h264","quality":"high"}"#,
+                params,
+            )?;
+            let project = engine.state.lock().await.history.project().clone();
+            let renders = Arc::clone(&engine.renders);
+            let launch = tokio::task::spawn_blocking(move || renders.prepare(project, request))
+                .await
+                .map_err(|error| Fault::new(rpc::REFUSED, error.to_string()))??;
+            let reply = match connection.queue(rpc::result_line(id, &json!({"job":launch.job}))) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            };
+            launch.start();
+            Ok(reply)
+        }
+        "render.cancel" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Cancel {
+                job: String,
+            }
+            let request: Cancel = rpc::params(method, r#"{"job":"render-1"}"#, params)?;
+            engine.renders.cancel(&request.job)?;
+            Ok(match connection.queue(rpc::result_line(id, &json!({}))) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
         "media.make_proxy" => make_proxy(engine, connection, id, params).await,
         "media.thumbnail" | "media.waveform" => {
             media_analysis(engine, connection, id, method, params).await

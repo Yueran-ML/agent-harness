@@ -18,6 +18,9 @@ mod support;
 #[path = "rpc/timeline.rs"]
 mod timeline;
 
+#[path = "rpc/render.rs"]
+mod render;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 

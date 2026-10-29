@@ -10,6 +10,8 @@
 //! looked for every [`UPGRADE`], and taken as soon as there is one. A headless engine makes no
 //! card yet.
 
+mod schedule;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::{Duration, Instant};
@@ -36,6 +38,7 @@ type Subscriber = Arc<dyn Fn(Arc<Gpu>) + Send + Sync>;
 
 /// The card of the engine, and who is given the next.
 pub struct Graphics {
+    schedule: schedule::Schedule,
     state: Mutex<State>,
     /// Whether a thread is making the card again.
     remaking: AtomicBool,
@@ -85,6 +88,7 @@ fn preference(hardware_lost_at: Option<Instant>, now: Instant) -> Preference {
 impl Graphics {
     pub fn new() -> Arc<Graphics> {
         Arc::new_cyclic(|me| Graphics {
+            schedule: schedule::Schedule::default(),
             state: Mutex::new(State {
                 current: None,
                 hardware_lost_at: None,
@@ -100,6 +104,10 @@ impl Graphics {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn draw_turn(&self, preview: bool) -> schedule::Turn<'_> {
+        self.schedule.turn(preview)
     }
 
     /// Give `subscriber` each card made in place of another, from now on. It is called on the

@@ -1,0 +1,598 @@
+//! One background export of an immutable project snapshot, using original media and the
+//! same compositor and mixer as playback. Subtitles are sidecars, never burned in.
+
+mod output;
+
+use std::collections::VecDeque;
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+use columbina_compose::{Compositor, Scene, SceneLayer, Source, Target, Text};
+use columbina_media::{
+    AudioFormat, AudioSettings, Codec, Hardware, MediaError, Picture, Quality, VideoSettings,
+    Writer,
+};
+use columbina_model::{resolve, Project, TrackKind};
+use serde::Deserialize;
+use serde_json::json;
+
+use crate::gpu::Graphics;
+use crate::play::{mix::Mixer, sources::Sources, Notify};
+use crate::rpc::{self, Fault};
+use crate::srt;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    timeline: String,
+    path: PathBuf,
+    codec: VideoCodec,
+    quality: VideoQuality,
+    range: Option<FrameRange>,
+    #[serde(default)]
+    subtitles: bool,
+    #[serde(default)]
+    replace: bool,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum VideoCodec {
+    H264,
+    Hevc,
+    Prores,
+}
+
+impl From<VideoCodec> for Codec {
+    fn from(value: VideoCodec) -> Self {
+        match value {
+            VideoCodec::H264 => Self::H264,
+            VideoCodec::Hevc => Self::Hevc,
+            VideoCodec::Prores => Self::ProRes,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum VideoQuality {
+    High,
+    Medium,
+    Small,
+}
+
+impl From<VideoQuality> for Quality {
+    fn from(value: VideoQuality) -> Self {
+        match value {
+            VideoQuality::High => Self::High,
+            VideoQuality::Medium => Self::Medium,
+            VideoQuality::Small => Self::Small,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FrameRange {
+    from: i64,
+    to: i64,
+}
+
+pub struct Renders {
+    graphics: Arc<Graphics>,
+    notify: Notify,
+    project_dir: PathBuf,
+    state: Mutex<State>,
+}
+
+#[derive(Default)]
+struct State {
+    next: u64,
+    active: Option<Active>,
+    stopped: bool,
+}
+
+struct Active {
+    job: String,
+    cancel: Arc<AtomicBool>,
+    done: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+/// The caller queues the job id before releasing its first notification.
+pub struct Launch {
+    pub job: String,
+    go: mpsc::Sender<()>,
+}
+
+impl Launch {
+    pub fn start(self) {
+        let _ = self.go.send(());
+    }
+}
+
+impl Renders {
+    pub fn new(project_dir: &Path, graphics: Arc<Graphics>, notify: Notify) -> Self {
+        Self {
+            graphics,
+            notify,
+            project_dir: project_dir.to_owned(),
+            state: Mutex::default(),
+        }
+    }
+
+    pub fn prepare(&self, project: Project, request: Request) -> Result<Launch, Fault> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.stopped {
+            return Err(Fault::new(rpc::REFUSED, "the engine is stopping"));
+        }
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|job| !job.done.load(Ordering::Acquire))
+        {
+            return Err(Fault::new(rpc::REFUSED, "an export is already running")
+                .with_data(json!({"reason":"busy"})));
+        }
+        if let Some(old) = state.active.take() {
+            let _ = old.thread.join();
+        }
+        let plan = Plan::new(project, request, &self.project_dir)?;
+        state.next += 1;
+        let job = format!("render-{}", state.next);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
+        let mut worker = Worker {
+            plan,
+            graphics: Arc::clone(&self.graphics),
+            notify: Arc::clone(&self.notify),
+            cancel: Arc::clone(&cancel),
+            job: job.clone(),
+            frame: 0,
+            since: Instant::now(),
+            told: None,
+            encoder: None,
+            message: None,
+        };
+        let (go, ready) = mpsc::channel();
+        let completed = Arc::clone(&done);
+        let thread = std::thread::Builder::new()
+            .name("timeline-export".into())
+            .spawn(move || {
+                if ready.recv().is_ok() {
+                    worker.since = Instant::now();
+                    let result = worker.run();
+                    let status = if result.is_ok() {
+                        "done"
+                    } else if worker.cancel.load(Ordering::Acquire) {
+                        "cancelled"
+                    } else {
+                        "failed"
+                    };
+                    if let Err(error) = result {
+                        worker.message = Some(error);
+                    }
+                    completed.store(true, Ordering::Release);
+                    worker.tell(status);
+                }
+                completed.store(true, Ordering::Release);
+            })
+            .map_err(|error| Fault::new(rpc::REFUSED, error.to_string()))?;
+        state.active = Some(Active {
+            job: job.clone(),
+            cancel,
+            done,
+            thread,
+        });
+        Ok(Launch { job, go })
+    }
+
+    pub fn cancel(&self, job: &str) -> Result<(), Fault> {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let active = state
+            .active
+            .as_ref()
+            .filter(|active| active.job == job)
+            .ok_or_else(|| Fault::params(format!("there is no render job {job}")))?;
+        active.cancel.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    pub fn stop(&self) {
+        let active = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.stopped = true;
+            state.active.take()
+        };
+        if let Some(active) = active {
+            active.cancel.store(true, Ordering::Release);
+            let _ = active.thread.join();
+        }
+    }
+}
+
+struct Plan {
+    project: Arc<Project>,
+    timeline: usize,
+    path: PathBuf,
+    range: Range<i64>,
+    video: VideoSettings,
+    subtitles: bool,
+    replace: bool,
+    project_dir: PathBuf,
+}
+
+impl Plan {
+    fn new(project: Project, request: Request, dir: &Path) -> Result<Self, Fault> {
+        let index = project
+            .timelines
+            .iter()
+            .position(|timeline| timeline.id == request.timeline)
+            .ok_or_else(|| Fault::params(format!("there is no timeline {}", request.timeline)))?;
+        let timeline = &project.timelines[index];
+        let duration = resolve::duration(timeline);
+        let range = request
+            .range
+            .map_or(0..duration, |range| range.from..range.to);
+        if range.start < 0 || range.end > duration || range.start >= range.end {
+            return Err(Fault::params(
+                "the export range must be nonempty and inside the timeline",
+            ));
+        }
+        let codec = Codec::from(request.codec);
+        let extension = request
+            .path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default();
+        if !(extension.eq_ignore_ascii_case("mov")
+            || extension.eq_ignore_ascii_case("mp4") && codec != Codec::ProRes)
+        {
+            return Err(Fault::params("export to .mp4 (h264/hevc) or .mov"));
+        }
+        output::check(&request.path, dir, request.replace)?;
+        if request.subtitles {
+            for (path, _) in srt::files(timeline, &request.path, range.clone()) {
+                output::check(&path, dir, request.replace)?;
+            }
+        }
+        let bits = if codec == Codec::ProRes
+            || codec == Codec::Hevc
+                && project.media.iter().any(|media| {
+                    media
+                        .facts
+                        .video
+                        .as_ref()
+                        .is_some_and(|video| video.bits > 8)
+                }) {
+            10
+        } else {
+            8
+        };
+        let video = VideoSettings {
+            codec,
+            width: timeline.width,
+            height: timeline.height,
+            rate: timeline.rate,
+            quality: request.quality.into(),
+            bits,
+        };
+        Ok(Self {
+            project: Arc::new(project),
+            timeline: index,
+            path: request.path,
+            range,
+            video,
+            subtitles: request.subtitles,
+            replace: request.replace,
+            project_dir: dir.to_owned(),
+        })
+    }
+}
+
+struct Worker {
+    plan: Plan,
+    graphics: Arc<Graphics>,
+    notify: Notify,
+    cancel: Arc<AtomicBool>,
+    job: String,
+    frame: i64,
+    since: Instant,
+    told: Option<Instant>,
+    encoder: Option<String>,
+    message: Option<String>,
+}
+
+impl Worker {
+    fn cancelled(&self) -> Result<(), String> {
+        if self.cancel.load(Ordering::Acquire) {
+            Err("the export was cancelled".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[allow(clippy::cast_precision_loss, reason = "display-only export speed")]
+    fn tell(&mut self, state: &str) {
+        if state == "running"
+            && self
+                .told
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(250))
+        {
+            return;
+        }
+        let mut note = json!({"job":self.job, "state":state, "frame":self.frame,
+            "frames":self.plan.range.end - self.plan.range.start,
+            "fps":self.frame as f64 / self.since.elapsed().as_secs_f64().max(0.001), "path":self.plan.path});
+        if let Some(encoder) = &self.encoder {
+            note["encoder"] = json!(encoder);
+        }
+        if let Some(message) = &self.message {
+            note["message"] = json!(message);
+        }
+        (self.notify)(&note);
+        self.told = Some(Instant::now());
+    }
+
+    fn writer(&mut self, outputs: &mut output::Files, sound: bool) -> Result<Writer, String> {
+        self.writer_with(outputs, sound, Writer::create)
+    }
+
+    fn writer_with(
+        &mut self,
+        outputs: &mut output::Files,
+        sound: bool,
+        mut open: impl FnMut(&Path, VideoSettings, Option<AudioSettings>) -> Result<Writer, MediaError>,
+    ) -> Result<Writer, String> {
+        let mut movie = outputs
+            .add(&self.plan.path)
+            .map_err(|error| error.to_string())?;
+        let audio = sound.then_some(AudioSettings::default());
+        let writer = match open(&movie, self.plan.video, audio) {
+            Ok(writer) => writer,
+            Err(MediaError::NoEncoder(why)) if self.plan.video.codec != Codec::ProRes => {
+                // Recheck the actual destination before creating a fallback. A requested MP4
+                // does not authorize overwriting an unrelated existing MOV or subtitle file.
+                self.plan.path.set_extension("mov");
+                output::check(&self.plan.path, &self.plan.project_dir, self.plan.replace)
+                    .map_err(|error| error.message)?;
+                *outputs = output::Files::new(self.plan.replace);
+                movie = outputs
+                    .add(&self.plan.path)
+                    .map_err(|error| error.to_string())?;
+                self.plan.video.codec = Codec::ProRes;
+                self.plan.video.bits = 10;
+                self.message = Some(format!(
+                    "hardware encoding is unavailable ({why}); writing ProRes to {}",
+                    self.plan.path.display()
+                ));
+                open(&movie, self.plan.video, audio).map_err(|error| error.to_string())?
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        self.encoder = Some(writer.encoder().name().into());
+        Ok(writer)
+    }
+
+    fn run(&mut self) -> Result<(), String> {
+        self.cancelled()?;
+        let project = Arc::clone(&self.plan.project);
+        let timeline = &project.timelines[self.plan.timeline];
+        let sound = timeline.tracks.iter().any(|track| {
+            track.kind == TrackKind::Audio
+                && track.enabled
+                && track.clips.iter().any(|clip| clip.enabled)
+        });
+        let mut outputs = output::Files::new(self.plan.replace);
+        let mut writer = self.writer(&mut outputs, sound)?;
+        if self.plan.subtitles {
+            for (path, text) in srt::files(timeline, &self.plan.path, self.plan.range.clone()) {
+                output::check(&path, &self.plan.project_dir, self.plan.replace)
+                    .map_err(|error| error.message)?;
+                let part = outputs.add(&path).map_err(|error| error.to_string())?;
+                std::fs::write(part, text).map_err(|error| error.to_string())?;
+            }
+        }
+        let gpu = self.graphics.gpu().map_err(|error| error.to_string())?;
+        let mut compositor = Compositor::new(Arc::clone(&gpu));
+        let target = Target::export(&gpu, timeline.width, timeline.height, self.plan.video.bits)
+            .map_err(|error| error.to_string())?;
+        let sources = Sources::new(Hardware::Auto, Arc::new(|_, _| {}));
+        let sample_at = |frame: i64, rate: u32| {
+            i64::try_from(
+                i128::from(frame) * i128::from(rate) * i128::from(timeline.rate.den)
+                    / i128::from(timeline.rate.num),
+            )
+            .map_err(|_| "export exceeds audio sample time".to_owned())
+        };
+        let mut mix = Mixer::new(Arc::clone(&project), self.plan.timeline).source(
+            AudioFormat {
+                rate: 48000,
+                channels: 2,
+            },
+            sample_at(self.plan.range.start, timeline.sample_rate)?,
+        );
+        let mut pending = VecDeque::new();
+        let mut samples = 0;
+        let mut picture = Picture::default();
+        self.tell("running");
+        for frame in self.plan.range.clone() {
+            self.cancelled()?;
+            let scene = scene(&project, timeline, frame, &sources)?;
+            {
+                let _turn = self.graphics.draw_turn(false);
+                self.cancelled()?;
+                compositor
+                    .render(&scene, &target)
+                    .map_err(|error| error.to_string())?;
+                target
+                    .read_picture(&mut picture)
+                    .map_err(|error| error.to_string())?;
+            }
+            writer.video(&picture).map_err(|error| error.to_string())?;
+            self.frame += 1;
+            if sound {
+                let end = sample_at(self.frame, 48000)?;
+                let needed =
+                    usize::try_from((end - samples) * 2).map_err(|_| "invalid audio block")?;
+                while pending.len() < needed {
+                    if let Some(block) = mix.next()? {
+                        pending.extend(block);
+                    } else {
+                        pending.resize(needed, 0.0);
+                        break;
+                    }
+                }
+                writer
+                    .audio(&pending.drain(..needed).collect::<Vec<_>>())
+                    .map_err(|error| error.to_string())?;
+                samples = end;
+            }
+            self.tell("running");
+            // Keep at most one export frame submitted; never queue an entire job on the GPU.
+            std::thread::yield_now();
+        }
+        self.cancelled()?;
+        writer.finish().map_err(|error| error.to_string())?;
+        self.cancelled()?;
+        outputs.publish().map_err(|error| error.to_string())
+    }
+}
+
+fn scene(
+    project: &Project,
+    timeline: &columbina_model::Timeline,
+    frame: i64,
+    sources: &Sources,
+) -> Result<Scene, String> {
+    let mut scene = Scene {
+        width: timeline.width,
+        height: timeline.height,
+        ..Scene::default()
+    };
+    for layer in resolve::video_at(timeline, project, frame) {
+        let source = match layer.content {
+            resolve::Content::Color { rgba } => Source::color(rgba),
+            resolve::Content::Title { text, style } => Source::Title(Text { text, style }),
+            resolve::Content::Media { media, tick } => {
+                let media = project
+                    .media
+                    .iter()
+                    .find(|item| item.id == media)
+                    .ok_or("export media is missing")?;
+                let read = sources
+                    .picture(media, &layer.clip, tick, false, false)
+                    .map_err(|error| error.to_string())?
+                    .ok_or("the export decoder pool is busy")?;
+                Source::Picture(read.picture, read.rotation)
+            }
+        };
+        scene.layers.push(SceneLayer {
+            source,
+            transform: layer.transform.into(),
+            opacity: layer.opacity,
+        });
+    }
+    Ok(scene)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn worker(dir: &Path) -> Worker {
+        let mut project = Project::sample();
+        project.timelines[0].width = 64;
+        project.timelines[0].height = 36;
+        let request = Request {
+            timeline: project.timelines[0].id.clone(),
+            path: dir.join("film.mp4"),
+            codec: VideoCodec::H264,
+            quality: VideoQuality::Medium,
+            range: None,
+            subtitles: false,
+            replace: false,
+        };
+        Worker {
+            plan: Plan::new(project, request, dir).unwrap(),
+            graphics: Graphics::new(),
+            notify: Arc::new(|_| {}),
+            cancel: Arc::new(AtomicBool::new(false)),
+            job: "test".into(),
+            frame: 0,
+            since: Instant::now(),
+            told: None,
+            encoder: None,
+            message: None,
+        }
+    }
+
+    fn no_hardware(
+        path: &Path,
+        video: VideoSettings,
+        audio: Option<AudioSettings>,
+    ) -> Result<Writer, MediaError> {
+        if video.codec == Codec::ProRes {
+            Writer::create(path, video, audio)
+        } else {
+            Err(MediaError::NoEncoder("no hardware in this test".into()))
+        }
+    }
+
+    #[test]
+    fn unavailable_hardware_falls_back_to_a_real_prores_mov_with_an_explanation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut worker = worker(dir.path());
+        let mut outputs = output::Files::new(false);
+        let mut writer = worker
+            .writer_with(&mut outputs, false, no_hardware)
+            .unwrap();
+        assert_eq!(worker.plan.path, dir.path().join("film.mov"));
+        assert_eq!(worker.encoder.as_deref(), Some("prores_ks"));
+        assert!(worker.message.as_ref().unwrap().contains("ProRes"));
+        assert!(!dir.path().join("film.mp4.part").exists());
+        writer
+            .video(&Picture {
+                width: 64,
+                height: 36,
+                bits: 8,
+                luma: vec![16; 64 * 36],
+                chroma: vec![128; 64 * 18],
+                luma_stride: 64,
+                chroma_stride: 64,
+                ..Picture::default()
+            })
+            .unwrap();
+        writer.finish().unwrap();
+        outputs.publish().unwrap();
+        assert_eq!(
+            columbina_media::probe(&worker.plan.path)
+                .unwrap()
+                .video
+                .unwrap()
+                .codec,
+            "prores"
+        );
+        assert!(!dir.path().join("film.mp4").exists());
+    }
+
+    #[test]
+    fn fallback_does_not_overwrite_a_mov_that_was_not_the_requested_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("film.mov");
+        std::fs::write(&path, b"keep existing movie").unwrap();
+        let mut worker = worker(dir.path());
+        let mut outputs = output::Files::new(false);
+        assert!(worker
+            .writer_with(&mut outputs, false, no_hardware)
+            .is_err());
+        drop(outputs);
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep existing movie");
+        assert!(!dir.path().join("film.mp4.part").exists());
+        assert!(!dir.path().join("film.mov.part").exists());
+    }
+}

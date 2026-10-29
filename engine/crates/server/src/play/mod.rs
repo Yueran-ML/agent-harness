@@ -1,8 +1,8 @@
 //! Timeline playback: independent track readers, composition and the monitor transport.
 
 mod ahead;
-mod mix;
-mod sources;
+pub(crate) mod mix;
+pub(crate) mod sources;
 mod timeline;
 
 use std::path::PathBuf;

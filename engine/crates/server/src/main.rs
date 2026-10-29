@@ -6,7 +6,7 @@
 //!
 //! The engine takes the lock of the project, opens it, and listens on a local socket (see
 //! [`address`]). Its first line on stdout is `{"listening": "<address>", "pid": …,
-//! "protocol": 1}`, written once it listens; nothing else is ever written to stdout. What it
+//! "protocol": 2}`, written once it listens; nothing else is ever written to stdout. What it
 //! logs goes to stderr, a line of JSON at a time, from a thread of its own (see [`log`](mod@log)), so
 //! that the engine never waits for whoever reads stderr, or for no one to. The desktop and the
 //! agent connect to it and speak JSON-RPC 2.0 a line at a time, as `PROTOCOL.md` at the root of

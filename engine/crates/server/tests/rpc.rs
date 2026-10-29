@@ -125,7 +125,7 @@ async fn start_with(dir: &Path, args: &[&str], mode: Stderr) -> Started {
     let line: Value = serde_json::from_str(&first).unwrap();
     let keys: Vec<&String> = line.as_object().unwrap().keys().collect();
     assert_eq!(keys, ["listening", "pid", "protocol"], "{line}");
-    assert_eq!(line["protocol"], 1);
+    assert_eq!(line["protocol"], 2);
     let pid = u32::try_from(line["pid"].as_u64().unwrap()).unwrap();
     assert_eq!(Some(pid), child.id());
     let rest = tokio::spawn(async move {
@@ -298,7 +298,7 @@ impl Client {
     }
 
     async fn hello(&mut self, kind: &str) -> Value {
-        self.result("hello", Some(json!({ "client": kind, "protocol": 1 })))
+        self.result("hello", Some(json!({ "client": kind, "protocol": 2 })))
             .await
     }
 
@@ -409,7 +409,7 @@ async fn the_engine_says_where_it_listens_and_answers_hello() {
         hello,
         json!({
             "engine": "0.1.0",
-            "protocol": 1,
+            "protocol": 2,
             "revision": 0,
             "project": written(dir.path()),
             "pid": engine.pid,
@@ -514,12 +514,11 @@ async fn requests_that_cannot_be_answered_are_refused_with_their_codes() {
     );
 
     for params in [
-        json!({ "client": "robot", "protocol": 1 }),
+        json!({ "client": "robot", "protocol": 2 }),
         json!({ "client": "agent" }),
-        json!({ "client": "agent", "protocol": 2 }),
-        json!({ "client": "agent", "protocol": 1, "colour": "red" }),
+        json!({ "client": "agent", "protocol": 2, "colour": "red" }),
         json!([1]),
-        json!(["agent", 1]),
+        json!(["agent", 2]),
     ] {
         let error = client.error("hello", Some(params.clone())).await;
         assert_eq!(error["code"], -32602, "{params}: {error}");
@@ -529,7 +528,7 @@ async fn requests_that_cannot_be_answered_are_refused_with_their_codes() {
 
     client.hello("desktop").await;
     let error = client
-        .error("hello", Some(json!({ "client": "agent", "protocol": 1 })))
+        .error("hello", Some(json!({ "client": "agent", "protocol": 2 })))
         .await;
     assert_eq!(error["code"], -32600, "hello once");
     let error = client.error("no.such.method", None).await;
@@ -617,6 +616,152 @@ async fn a_line_over_16_mib_is_refused_and_the_connection_goes_on() {
     assert_eq!(notification["method"], "project.changed");
     let answer = client.message().await;
     assert_eq!(answer["result"]["revision"], 1);
+}
+
+#[tokio::test]
+async fn protocol_one_is_refused_with_the_supported_versions() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = Client::connect(&engine.address).await;
+    let error = client
+        .error("hello", Some(json!({"client": "agent", "protocol": 1})))
+        .await;
+    assert_eq!(error["code"], -32600);
+    assert_eq!(
+        error["data"],
+        json!({"reason": "protocol", "supported": [2]})
+    );
+    let error = client.error("project.get", None).await;
+    assert_eq!(error["code"], -32600);
+    client.hello("agent").await;
+}
+
+#[tokio::test]
+async fn mixed_edits_are_one_shared_undo_step_and_broadcast_only_basic_operations() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let added = agent.apply(json!([{"op": "add_timeline", "timeline": {
+        "id": "$t", "name": "Cut", "rate": {"num": 25, "den": 1}, "width": 1920, "height": 1080, "sample_rate": 48000,
+        "tracks": [{"id": "V1", "kind": "video", "name": "", "enabled": true, "locked": false, "clips": [], "transitions": []}]
+    }}])).await;
+    let timeline = added["names"]["$t"].clone();
+    agent.take_notifications();
+    let mut desktop = engine.client("desktop").await;
+    let before = project(&mut agent).await;
+    let applied = agent.apply(json!([
+        {"edit": "insert", "timeline": timeline, "at": 0, "source": {"kind": "color", "color": "#000000ff", "length": 30}},
+        {"edit": "blade", "timeline": timeline, "at": 10},
+        {"op": "set_track", "timeline": timeline, "id": "V1", "name": "Picture"},
+        {"edit": "ripple_delete_range", "timeline": timeline, "from": 10, "to": 20},
+    ])).await;
+    assert_eq!(applied["clamped"], json!([]));
+    assert!(applied["done"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|op| op.get("op").is_some() && op.get("edit").is_none()));
+    let seen = agent.take_notifications();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(desktop.message().await, seen[0]);
+    assert_eq!(seen[0]["params"]["done"], applied["done"]);
+    assert_eq!(
+        agent
+            .result("timeline.duration", Some(json!({"timeline": timeline})))
+            .await,
+        json!({"frames": 20})
+    );
+    let after = project(&mut agent).await;
+    let refused = agent
+        .error(
+            "transaction.apply",
+            Some(json!({"ops": [
+                {"op": "set_track", "timeline": timeline, "id": "V1", "locked": true},
+                {"edit": "blade", "timeline": timeline, "at": 5, "tracks": ["V1"]}
+            ]})),
+        )
+        .await;
+    assert_eq!(refused["data"]["reason"], "locked");
+    assert_eq!(refused["data"]["index"], 1);
+    assert_eq!(project(&mut agent).await, after);
+    let undone = desktop.result("history.undo", None).await;
+    assert_eq!(
+        undone["revision"],
+        applied["revision"].as_u64().unwrap() + 1
+    );
+    let mut expected = before["project"].clone();
+    expected["next_id"] = after["next_id"].clone();
+    assert_eq!(project(&mut agent).await["project"], expected);
+    desktop.result("history.redo", None).await;
+    assert_eq!(project(&mut agent).await["project"], after["project"]);
+}
+
+#[tokio::test]
+async fn named_edit_outputs_clamping_and_duration_cross_the_real_protocol() {
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut client = engine.client("agent").await;
+    let added = client
+        .apply(json!([{"op":"add_timeline", "timeline":{
+            "id":"$t", "name":"Names", "rate":{"num":25,"den":1}, "width":1920, "height":1080,
+            "sample_rate":48000, "tracks":[]
+        }}]))
+        .await;
+    let timeline = added["names"]["$t"].clone();
+    assert_eq!(
+        client
+            .result("timeline.duration", Some(json!({"timeline":timeline})))
+            .await,
+        json!({"frames":0})
+    );
+    let result = client.apply(json!([
+        {"edit":"add_track", "timeline":timeline, "kind":"video", "name":"$display"},
+        {"edit":"insert", "timeline":timeline, "at":0, "source":{"kind":"color","color":"#AbCdEfff","length":30},"name":"$c"},
+        {"edit":"trim", "timeline":timeline, "clip":"$c", "edge":"out", "delta":-100},
+        {"edit":"add_track", "timeline":timeline, "kind":"subtitle", "language":"en"},
+        {"edit":"add_cue", "timeline":timeline, "track":"S1", "start":20, "length":5, "text":"$literal", "name":"$q"},
+        {"op":"set_cue", "timeline":timeline, "id":"$q", "text":"Named subtitle"}
+    ])).await;
+    assert_eq!(result["clamped"], json!([2]));
+    assert!(result["names"]["$c"].as_str().unwrap().starts_with('c'));
+    assert!(result["names"]["$q"].as_str().unwrap().starts_with('q'));
+    let before = project(&mut client).await;
+    assert_eq!(
+        before["project"]["timelines"][0]["tracks"][0]["clips"][0]["source"]["color"],
+        "#abcdefff"
+    );
+    assert_eq!(
+        client
+            .result("timeline.duration", Some(json!({"timeline":timeline})))
+            .await,
+        json!({"frames":25})
+    );
+    client.take_notifications();
+    let refused = client.error("transaction.apply", Some(json!({"ops":[
+        {"op":"set_track", "timeline":timeline, "id":"V1", "name":"Changed"},
+        {"edit":"append", "timeline":timeline, "source":{"kind":"color","color":"#000000ff","length":5},"name":{"audio":"$a"}}
+    ]}))).await;
+    assert_eq!(refused["code"], -32001);
+    assert_eq!(refused["data"]["index"], 1);
+    assert_eq!(refused["data"]["what"], "named output");
+    assert_eq!(project(&mut client).await, before);
+    assert_eq!(client.take_notifications(), [] as [Value; 0]);
+    let missing = client
+        .error("timeline.duration", Some(json!({"timeline":"absent"})))
+        .await;
+    assert_eq!(missing["code"], -32602);
+    assert_eq!(
+        missing["data"],
+        json!({"reason":"missing","timeline":"absent"})
+    );
+    let extra = client
+        .error(
+            "timeline.duration",
+            Some(json!({"timeline":timeline,"extra":true})),
+        )
+        .await;
+    assert_eq!(extra["code"], -32602);
+    assert_eq!(project(&mut client).await, before);
 }
 
 #[tokio::test]
@@ -1056,7 +1201,7 @@ fn squat(address: &str, project: String) -> JoinHandle<()> {
         assert_eq!(hello["method"], "hello");
         let answer = json!({
             "jsonrpc": "2.0", "id": hello["id"],
-            "result": { "engine": "0.1.0", "protocol": 1, "revision": 0, "project": project, "pid": 4242 },
+            "result": { "engine": "0.1.0", "protocol": 2, "revision": 0, "project": project, "pid": 4242 },
         });
         let mut answer = serde_json::to_vec(&answer).unwrap();
         answer.push(b'\n');

@@ -151,9 +151,14 @@ pub async fn ask(address: &str) -> Option<(String, u32)> {
             }
         };
         let (read, mut write) = tokio::io::split(pipe);
-        let hello = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\",\
-                      \"params\":{\"client\":\"cli\",\"protocol\":1}}\n";
-        write.write_all(hello).await.ok()?;
+        let hello = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "hello",
+            "params": {"client": "cli", "protocol": crate::rpc::PROTOCOL},
+        });
+        write
+            .write_all(format!("{hello}\n").as_bytes())
+            .await
+            .ok()?;
         let mut line = String::new();
         BufReader::new(read).read_line(&mut line).await.ok()?;
         let answer: serde_json::Value = serde_json::from_str(&line).ok()?;

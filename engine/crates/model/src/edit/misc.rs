@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use super::work::{fit_fades, most, Work};
-use super::{CueItem, Edge, EditError};
+use super::{Created, CueItem, Edge, EditError};
 use crate::ops::{Op, OpError};
 use crate::project::{Alignment, Clip, Cue, Id, Track, TrackKind, Transition, TransitionKind};
 use crate::span::{frames_for_span, source_span};
@@ -127,7 +127,7 @@ pub(super) fn add_transition(
     });
     let track = track.id.clone();
     let timeline = work.timeline_id();
-    work.op(Op::AddTransition {
+    let done = work.op(Op::AddTransition {
         timeline,
         track,
         transition: Transition {
@@ -139,6 +139,9 @@ pub(super) fn add_transition(
             align,
         },
     })?;
+    if let Op::AddTransition { transition, .. } = done {
+        work.created(Created::Transition(transition.id));
+    }
     Ok(())
 }
 
@@ -347,7 +350,7 @@ pub(super) fn add_cue(
     text: String,
 ) -> Result<(), EditError> {
     subtitles(work, track)?;
-    work.op(Op::AddCue {
+    let done = work.op(Op::AddCue {
         timeline: work.timeline_id(),
         track: track.into(),
         cue: Cue {
@@ -357,6 +360,9 @@ pub(super) fn add_cue(
             text,
         },
     })?;
+    if let Op::AddCue { cue, .. } = done {
+        work.created(Created::Cue(cue.id));
+    }
     Ok(())
 }
 

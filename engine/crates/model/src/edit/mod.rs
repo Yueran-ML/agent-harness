@@ -672,6 +672,25 @@ impl Serialize for EditError {
     }
 }
 
+/// An output intentionally created by an edit, excluding fragments made to clear its way.
+/// This is transaction metadata, not a project operation or a saved part of history.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Created {
+    /// A source placed on a track; picture precedes sound when both are placed.
+    Clip {
+        /// Its id.
+        id: Id,
+        /// The kind of track it was placed on.
+        kind: TrackKind,
+        /// Its newly created link group, if picture and sound were placed together.
+        link: Option<Id>,
+    },
+    /// A transition added at a cut.
+    Transition(Id),
+    /// A subtitle added to a track.
+    Cue(Id),
+}
+
 /// An edit as it was worked out and applied.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Expansion {
@@ -681,6 +700,8 @@ pub struct Expansion {
     pub inverse: Vec<Op>,
     /// Whether the edit went less far than it was asked to, as far as it could.
     pub clamped: bool,
+    /// The edit's outputs, separate from incidental splits and repaired transitions.
+    pub created: Vec<Created>,
 }
 
 /// Work an edit out against a project as it is and apply it, all of it or none.
@@ -935,6 +956,7 @@ pub(crate) fn run_change(project: &mut Project, change: Change) -> Result<Expans
                 done: vec![done],
                 inverse: vec![inverse],
                 clamped: false,
+                created: vec![],
             })
         }
         Change::Edit(edit) => run(project, edit).map_err(ChangeError::Edit),

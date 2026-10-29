@@ -12,7 +12,7 @@ use serde_json::error::Category;
 use serde_json::value::RawValue;
 
 /// The version of the protocol that this engine speaks.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 /// The longest line that the engine reads, without its newline.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;

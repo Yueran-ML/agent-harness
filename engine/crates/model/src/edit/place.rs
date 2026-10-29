@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use super::misc::new_track;
 use super::work::{beyond, missing, set_source_in, Work};
-use super::{EditError, Material};
+use super::{Created, EditError, Material};
 use crate::ops::OpError;
 use crate::project::{Clip, Id, Source, TrackKind};
 use crate::span::{frames_for_span, source_tick};
@@ -183,8 +183,14 @@ fn put(work: &mut Work, tracks: &[Id], made: &Made, at: i64) -> Result<(), EditE
     let mut group = (tracks.len() > 1).then(String::new);
     for track in tracks {
         let mut clip = Clip::new("", made.source.clone(), at, made.length);
-        clip.link = group;
-        group = work.insert(track, clip)?.link;
+        clip.link = group.take();
+        let inserted = work.insert(track, clip)?;
+        group.clone_from(&inserted.link);
+        work.created(Created::Clip {
+            id: inserted.id,
+            kind: work.track(track)?.kind,
+            link: group.clone(),
+        });
     }
     Ok(())
 }

@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{EditError, Expansion};
+use super::{Created, EditError, Expansion};
 use crate::ops::{apply_done, in_source, Op, OpError, LARGEST};
 use crate::project::{Clip, Cue, Id, Project, Source, Timeline, Track, TrackKind, Transition};
 use crate::span::ticks_of_scaled;
@@ -20,6 +20,7 @@ pub(super) struct Work<'a> {
     done: Vec<Op>,
     inverse: Vec<Op>,
     clamped: bool,
+    created: Vec<Created>,
     /// The transitions taken off clips that change, to be put back where they still meet.
     detached: Vec<Transition>,
 }
@@ -35,6 +36,7 @@ impl<'a> Work<'a> {
             done: vec![],
             inverse: vec![],
             clamped: false,
+            created: vec![],
             detached: vec![],
         })
     }
@@ -62,6 +64,11 @@ impl<'a> Work<'a> {
     /// Say that the edit went less far than it was asked to.
     pub fn clamp(&mut self) {
         self.clamped = true;
+    }
+
+    /// Record the edit's intended output for a caller to bind a transaction name to.
+    pub fn created(&mut self, output: Created) {
+        self.created.push(output);
     }
 
     pub fn track(&self, id: &str) -> Result<&Track, EditError> {
@@ -235,6 +242,7 @@ impl<'a> Work<'a> {
             done: self.done,
             inverse: self.inverse,
             clamped: self.clamped,
+            created: self.created,
         })
     }
 

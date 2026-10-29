@@ -1,4 +1,4 @@
-# The engine protocol (version 1)
+# The engine protocol (version 2)
 
 `columbina-engine` is the only program that writes a project. The desktop app and the agent
 connect to the same running engine, send it changes, and are told of every change in one order.
@@ -24,7 +24,7 @@ columbina-engine --project <DIR> [--headless] [--idle-seconds <N>]
 - The directory is made if it is not there. The engine takes the lock of the project, opens
   `project.json` (a new, empty project if there is none), and listens.
 - Its first line on **stdout** is one JSON object, written once it listens:
-  `{"listening": "<address>", "pid": 1234, "protocol": 1}`. Nothing else is ever written to
+  `{"listening": "<address>", "pid": 1234, "protocol": 2}`. Nothing else is ever written to
   stdout.
 - **stderr** carries logs, one JSON object a line (`{"event": "kicked", ...}`), written by a
   thread of their own: the engine never waits for stderr. Its owner may read it, leave it
@@ -114,10 +114,11 @@ Before `hello`, every other request is refused with `-32600`.
 
 | method | params | result |
 |---|---|---|
-| `hello` | `{"client": "desktop" \| "agent" \| "cli", "protocol": 1}` | `{"engine": "0.1.0", "protocol": 1, "revision": n, "project": "<dir>", "pid": 1234, "headless": false}` |
+| `hello` | `{"client": "desktop" \| "agent" \| "cli", "protocol": 2}` | `{"engine": "0.1.0", "protocol": 2, "revision": n, "project": "<dir>", "pid": 1234, "headless": false}` |
 | `engine.yield` | none | `{}` (desktop only, to a `--headless` engine; see below) |
 | `project.get` | none | `{"revision": n, "next_id": k, "project": {...}}` |
-| `transaction.apply` | `{"ops": [op, ...]}` | `{"revision": n, "done": [op, ...], "next_id": k, "names": {"$a": "c7", ...}}` |
+| `timeline.duration` | `{"timeline": "t1"}` | `{"frames": n}` |
+| `transaction.apply` | `{"ops": [op_or_edit, ...]}` | `{"revision": n, "done": [op, ...], "next_id": k, "names": {"$a": "c7", ...}, "clamped": [i, ...]}` |
 | `history.undo` | none | `{"revision": n, "done": [op, ...], "next_id": k}`, or `{"revision": n, "done": null}` if there is nothing to undo |
 | `history.redo` | none | as `history.undo` |
 | `media.import` | `{"paths": ["<file>", ...]}` | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
@@ -129,8 +130,9 @@ Before `hello`, every other request is refused with `-32600`.
 | `transport.*` | see The transport | |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
-  From then on the connection is sent every notification. `protocol` other than 1 is refused
-  (`-32602`, `data: {"protocol": 1}`). `project` is the directory as the engine writes it (see
+  From then on the connection is sent every notification. `protocol` other than 2 is refused
+  (`-32600`, `data: {"reason": "protocol", "supported": [2]}`). A refused hello does not
+  register the connection: it may retry with version 2. `project` is the directory as the engine writes it (see
   Address); `pid` is the engine's; `headless` whether it was started `--headless` (an agent's or a
   command's engine, with no view, no transport and no proxies) or is the desktop's own.
 - `engine.yield` hands the project over from a headless engine to the desktop. When the desktop
@@ -146,8 +148,15 @@ Before `hello`, every other request is refused with `-32600`.
   starts one itself; so that it does not take the project in the moment before the desktop's
   engine writes `engine.lock`. Only the desktop may call it (`-32600` from another client); an engine that is
   not headless (the desktop's own) answers `-32601`: it ends when its stdin is closed.
-- `transaction.apply` applies its operations in order, all or none; an empty list is refused.
-  `done` is the operations as they were done (see below). `names` maps each `$name` of the
+- `timeline.duration` reads the greatest end frame of any clip or subtitle, including disabled
+  and locked tracks (0 when empty). It changes no revision or history. A missing timeline is
+  `-32602`, `data: {"reason": "missing", "timeline": "..."}`. Unknown params are refused.
+- `transaction.apply` applies basic operations and edits in order, all or none; an empty list or
+  a batch that does nothing is refused. Edits are expanded against the project left by earlier
+  entries. The whole batch makes one undo step. `done` contains only basic operations, as they
+  were done (see below), never edits. `clamped` contains the zero-based input indexes of edits
+  that went less far than requested, including repaired transitions that had to be shortened.
+  `names` maps each `$name` of the
   transaction (see below) to the id the engine gave it; `{}` if there were none.
 - `media.import` reads each file (its identity, and what it holds, as below) and adds it to the
   end of the media as **one transaction** of `add_media` operations, one for each path in order,
@@ -276,6 +285,47 @@ item may have `proxy`, which is left out when it has none:
 project written before proxies has none, and is read as it is. A proxy whose `path` is not of
 the engine's own is taken away as the project is read (logged `proxy_dropped`), and the rest of
 the project is read as it is.
+
+### Schema 2
+
+The top level is `{schema: 2, next_id, bins: [...], media: [...], timelines: [...]}`. A schema 1
+project is upgraded on open; its original bytes are kept once in `project.schema1.json`.
+Unknown fields are refused. `project.get` and `project.changed` are the source of truth for
+clients; a client must not write `project.json` itself.
+
+- A bin is `{id, name, parent}` (`parent: null` for the root). Bins cannot contain themselves,
+  and a nonempty bin cannot be removed. Media adds `name`, nullable `bin`, `mark_in` and
+  `mark_out`; marks use the media duration's time scale.
+- A timeline is `{id, name, rate: {num, den}, width, height, sample_rate, tracks}`. Width and
+  height are even integers, 16–16384; sample rate is 44100, 48000 or 96000. Frames are integers
+  at the timeline rate. Video tracks stack in list order, the first at the bottom.
+- Every track has `id`, `kind`, `name`, `enabled`, `locked`. Video/audio tracks additionally
+  have `clips` and `transitions`; subtitle tracks instead have `language` and `cues`. Fields of
+  another track kind are refused, even empty arrays. Track ids are unique within a timeline.
+- A clip is `{id, start, length, source, enabled, speed, reverse, link, transform, gain_db, pan,
+  fade_in, fade_out}`. `start >= 0`, `length > 0`; same-track clips cannot overlap.
+  `speed: {num, den}` is a positive rational in [1/8, 8]; direction is the separate `reverse`
+  flag. `link` is a group id or `null`. Time conversion uses integer ticks, rounded down, so a
+  cut need not be an exact sample boundary for arbitrary source time bases.
+- A stored `source` is `{kind:"media", media, in:{ticks,scale}}`,
+  `{kind:"color", color:"#rrggbbaa"}`, or `{kind:"title", text, style}`.
+  Title style is `{font, size, color, x, y, align}`: size 1–4096 in timeline pixels; x/y in
+  [0,1]; align `left|center|right`. Text is at most 1000 characters.
+- Colors accept exactly eight hexadecimal digits after `#`, with either letter case; returned
+  operations and saved projects normalize them to lowercase `#rrggbbaa` (alpha last).
+- `transform` is `{x,y,scale,rotation,opacity}`: offsets as shares of timeline width/height,
+  scale in (0,16], clockwise degrees, opacity in [0,1]. Gain is −96…24 dB; pan is −1…1.
+  Fades count timeline frames from the respective ends. A fade and transition at the same end
+  are refused; clear the fade explicitly to replace it with a transition.
+- A transition is `{id,kind,left,right,length,align}`. Kind is `dissolve|dip_black|dip_white`
+  on video or `crossfade` on audio; alignment is `start|center|end`. Its clips must be adjacent
+  on one track, have enough source handles and enough length beside their other transitions.
+- A subtitle cue is `{id,start,length,text}`, with a nonnegative start and positive length.
+  Cues cannot overlap on the same track. `language` is a short BCP 47 tag or an empty string.
+
+Integers written into the project and edit frame/tick inputs stay within ±(2^53−1), so clients
+using JavaScript preserve them exactly. See `crates/model/src/project.rs` for the complete
+serialized types and `crates/model/src/ops.rs` for validation.
 
 ## The view
 
@@ -545,11 +595,37 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `insert_clip` | `timeline`, `track`, `clip` |
 | `remove_clip` | `timeline`, `id` |
 | `move_clip` | `timeline`, `id`, `track`, `start` |
-| `trim_clip` | `timeline`, `id`, `source_in`, `start`, `length` |
+| `trim_clip` | `timeline`, `id`, `source_in?` (leave source in unchanged if absent), `start`, `length` |
+| `shift_clips` | `timeline`, `track`, `clips: [id, ...]`, `by` |
 | `set_proxy` | `media`, `proxy` (a proxy, or `null` to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
+| `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
+| `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?` |
+| `set_clip` | `timeline`, `id`, `enabled?`, `speed?`, `reverse?`, `link?`, `transform?`, `gain_db?`, `pan?`, `fade_in?`, `fade_out?`, `source?` |
+| `add_bin` | `bin`, `index?` |
+| `remove_bin` | `id` |
+| `set_bin` | `id`, `name?`, `parent?` |
+| `set_media` | `id`, `name?`, `bin?`, `mark_in?`, `mark_out?` |
+| `add_transition` | `timeline`, `track`, `transition` |
+| `remove_transition` | `timeline`, `id` |
+| `set_transition` | `timeline`, `id`, `kind?`, `length?`, `align?` |
+| `add_cue` | `timeline`, `track`, `cue` |
+| `remove_cue` | `timeline`, `id` |
+| `set_cue` | `timeline`, `id`, `start?`, `length?`, `text?` |
 
-A thing added with an empty `id` is given one by the engine (`m`/`t`/`c` + a number from
-`next_id`, never reused; tracks `V<n>`/`A<n>` by place). An id that starts with `$` is never
+Optional settings are unchanged when omitted. Nullable settings (`parent`, `bin`, marks and
+`link`) use explicit `null` to clear them. A `set_clip.source` may change title text/style or
+color, but not its source kind or media; use the `replace` edit for media replacement.
+
+`shift_clips` moves each distinct selected clip by `by` frames on one track, preserving its
+source, length and settings, and every transition whose two ends move together. A transition
+with only one end selected must be removed first. The operation refuses invalid positions,
+missing ids or overlap atomically. Its inverse moves the same ids by `-by`.
+
+Basic operations can change locked tracks, as undo/redo must. Interactive clients should send
+edits for clip manipulation; those implement locks, links, clamping and ripple rules.
+
+A thing added with an empty `id` is given one by the engine (`m`/`t`/`c`/`b`/`x`/`q`/`g` + a number from
+`next_id`, never reused; tracks `V<n>`/`A<n>`/`S<n>` within their timeline). An id that starts with `$` is never
 kept (see names below). The rules are in `crates/model/src/ops.rs`.
 
 **`done`** lists the operations as they were applied, each with every id the engine gave and the
@@ -558,6 +634,62 @@ copy of the project at revision `n - 1` whose `next_id` was first set to the `ne
 them, they give the project at revision `n`. Without that `next_id`, a copy would refuse the
 engine's new ids as `reserved`.
 
+## Edits
+
+An edit uses `edit` instead of `op`; sending both or an unknown field is refused. Every command
+below also requires `timeline`. `?` marks optional fields. Where present, `linked` defaults to
+true and includes unlocked members of the selected clips' link groups. Naming a locked track
+or clip directly is refused; implicitly linked members on locked tracks are left untouched.
+
+A placement `source` is `{kind:"media", media, from?, to?, length?}` (from/to are media ticks),
+`{kind:"color", color, length}`, or `{kind:"title", text, style, length}`. Media defaults to its
+marks or full duration; `length` overrides the span's timeline duration. `video_track` and
+`audio_track` omitted select the first track of that kind, explicit `null` suppresses it, and an
+id targets that track. Both picture and sound placed together get a new link group.
+
+| edit | fields besides timeline | behavior |
+|---|---|---|
+| `insert` | `source`, `at`, `video_track?`, `audio_track?` | Cut every unlocked track at the insertion point and ripple later content by the source length. |
+| `overwrite` | same | Replace the covered range on target tracks, without rippling other tracks. |
+| `replace` | same | Replace the source of the clips at `at`, keeping their positions, lengths and settings; explicit source `from` aligns to `at`. |
+| `place_on_top` | `source`, `at` | Use an unlocked track above occupied tracks, creating one when needed. |
+| `append` | `source`, `video_track?`, `audio_track?` | Place after the latest clip end on the target tracks. |
+| `smart_insert` | `source`, `at`, `video_track?`, `audio_track?` | Insert at the nearest unlocked audio/video cut; ties choose the earlier cut. |
+| `ripple_overwrite` | same | Replace the clip range at `at` and ripple by the difference in lengths. |
+| `lift` | `clips`, `linked?` | Remove selected clips and leave their gaps. |
+| `ripple_delete` | `clips`, `linked?` | Remove selected clips and close their occupied ranges on unlocked tracks. |
+| `ripple_delete_range` | `from`, `to`, `tracks?` | Cut out `[from,to)` and close it, on all unlocked tracks or the given tracks. |
+| `close_gap` | `track`, `at` | Close the gap at `at` and ripple unlocked tracks. |
+| `blade` | `at`, `tracks?`, `linked?` | Split crossing clips; original ids stay with first halves, second halves get new ids and link groups. |
+| `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. |
+| `insert_move` | `clips`, `at`, `linked?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. |
+| `trim` | `clip`, `edge:in|out`, `delta`, `ripple?`, `linked?` | Move one edge; ripple defaults false. |
+| `roll` | `left`, `right`, `delta`, `linked?` | Move a shared cut, keeping outer endpoints. |
+| `slip` | `clip`, `delta`, `linked?` | Change source in/out while keeping timeline position and length. |
+| `slide` | `clip`, `delta`, `linked?` | Move the clip while adjusting neighbors, keeping its source and length. A final clip may slide and change total duration. |
+| `add_transition` | `left`, `right`, `length`, `kind?`, `align?` | Default dissolve on video or crossfade on audio, centered. |
+| `remove_transition` | `id` | Remove the transition. |
+| `set_transition` | `id`, `kind?`, `length?`, `align?` | Change given transition settings. |
+| `set_speed` | `clip`, `speed`, `reverse?`, `ripple?`, `linked?` | Preserve source span; optional ripple uses the linked group's change in maximum end, including J/L cuts. |
+| `add_cue` | `track`, `start`, `length`, `text` | Add one subtitle. |
+| `set_cue` | `id`, `start?`, `length?`, `text?` | Change given subtitle settings. |
+| `remove_cue` | `id` | Remove one subtitle. |
+| `cues_from` | `track`, `items:[{start,length,text},...]` | Replace all subtitles on that track. |
+| `add_track` | `kind`, `index?`, `name?`, `language?` | Add an empty track; index is among tracks of its kind; name is its display label. |
+| `remove_track` | `track` | Remove the track and its contents, all restored by undo. |
+
+Ripples preserve later content's relative timing on unlocked tracks. An unselected clip inside
+a range to be closed causes `ripple_blocked`; it is not silently deleted. Subtitles inside a
+closed range are trimmed or removed, and later subtitles follow the picture. An insertion
+inside a subtitle splits it into two cues with the same text, with the new frames between them.
+Locked subtitle tracks remain unchanged.
+
+Trims, rolls, slips and slides clamp to available handles and space, reporting their input
+index in `clamped`; zero delta or an impossible movement is refused. Editing through a
+transition keeps it where its clips still meet, shortens it to available handles/coverage, or
+removes it if none fits. A repair shortened to zero removes the transition and is also reported as clamped. Transitions and same-end
+fades are not silently substituted. All changes are still one reversible transaction.
+
 ## Names of a transaction (`$name`)
 
 Within one `transaction.apply`, a thing that an operation adds may be given an id of the form
@@ -565,26 +697,42 @@ Within one `transaction.apply`, a thing that an operation adds may be given an i
 one by the engine. Every **later** operation of the **same** transaction that names `$name` where
 it names a thing (its `timeline`, `track` or `id`, the `media` of a clip, and the `media` of
 `set_proxy`) is made to name that
-id before it is applied. The ids are answered in `names`; `done` and `project.changed` carry only
+id before it is applied. Edit references use the same rules. The ids are answered in `names`; `done` and `project.changed` carry only
 real ids. For example:
 
 ```json
 {"ops": [
-  {"op": "add_media", "media": {"id": "$m", "path": "C:/media/a.mp4",
-    "identity": {"size": 1000, "modified_us": 1790000000000000, "digest": "0000000000000000000000000000000000000000000000000000000000000000"},
-    "facts": {"duration": {"ticks": 153600, "scale": 15360},
-      "video": {"width": 1920, "height": 1080, "rate": {"num": 25, "den": 1}, "codec": "h264", "bits": 8, "rotation": 0},
-      "audio": {"rate": 48000, "channels": 2, "codec": "aac"}}}},
-  {"op": "add_timeline", "timeline": {"id": "$t", "name": "Cut", "rate": {"num": 25, "den": 1}, "tracks": []}},
-  {"op": "add_track", "timeline": "$t", "track": {"id": "$v", "kind": "video", "clips": []}},
-  {"op": "insert_clip", "timeline": "$t", "track": "$v",
-    "clip": {"id": "$c", "media": "$m", "source_in": {"ticks": 0, "scale": 15360}, "start": 0, "length": 50}}
+  {"op": "add_timeline", "timeline": {"id": "$t", "name": "Cut",
+    "rate": {"num": 25, "den": 1}, "width": 1920, "height": 1080, "sample_rate": 48000, "tracks": []}},
+  {"op": "add_track", "timeline": "$t", "track": {"id": "$v", "kind": "video",
+    "name": "Picture", "enabled": true, "locked": false, "clips": [], "transitions": []}},
+  {"edit": "insert", "timeline": "$t", "at": 0, "video_track": "$v",
+    "source": {"kind": "color", "color": "#000000ff", "length": 50}, "name": "$c"},
+  {"edit": "trim", "timeline": "$t", "clip": "$c", "edge": "out", "delta": -10}
 ]}
 ```
-→ in a new project, `"names": {"$c": "c3", "$m": "m1", "$t": "t2", "$v": "V1"}`.
+→ in a new project, `"names": {"$c": "c2", "$t": "t1", "$v": "V1"}`.
 
-- Names may be given to media, timelines, tracks, and clips (also those inside an added timeline
-  or track). A name lives only for its transaction.
+- Names may bind media, bins, timelines, tracks, clips, transitions and cues, including those
+  inside an added timeline or track. A name can be referenced only by a **later input entry**,
+  not elsewhere inside the same added object.
+- A clip's `link` (including `set_clip.link`) may declare a new `$group` on its first use. Later
+  input entries use it to join that group. An empty link also creates a group but does not name
+  it; `null` unlinks. Media bin references, transition endpoints and all edit id fields support
+  names; display names, title text and subtitle text remain literal, even if they start with `$`.
+- Creating edits `insert`, `overwrite`, `append`, `smart_insert`, `ripple_overwrite`,
+  `place_on_top`, `add_transition` and `add_cue` accept `name:"$result"`. It binds the intended
+  new clip (picture first, otherwise sound), transition or cue; never a fragment split from
+  existing content or a restored transition.
+- To address several outputs, use `name:{"video":"$v","audio":"$a","link":"$g"}`.
+  Selectors are `primary`, `clip`, `video`, `audio`, `link`, `transition`, `cue`; every requested
+  output must exist. A missing output refuses the **whole** transaction with `-32001`,
+  `data:{reason:"missing",what:"named output",id:"$a",index:i,message:...}`, preserving the
+  project, revision, id counter and undo/redo. Empty name objects are refused.
+- `replace` retains ids; batch splits (`blade`, `cues_from`) expose their resulting basic
+  operations in `done` rather than a single named output. `add_track.name` remains its display
+  label; to name a new track within a transaction use basic `add_track` with `track.id:"$v"`.
+  Names live only for the current transaction and are never written into the project.
 - The id of a track is unique only within its timeline, so **a track's name is named only
   together with its timeline**, written as the operation that gave the name wrote it (the same
   `$name` or the same id). A track named in a timeline added without an id cannot be named
@@ -672,9 +820,9 @@ refused only through a bug of the engine. Each `reason` and its fields:
 
 | reason | fields | meaning |
 |---|---|---|
-| `missing` | `what` (`media`, `timeline`, `track`, `clip`), `id` | the thing named is not there |
+| `missing` | `what` (`media`, `bin`, `timeline`, `track`, `clip`, `transition`, `cue`, `named output`), `id` | the thing named is not there |
 | `taken` | `what`, `id` | the id of an added thing is held by another of its kind |
-| `reserved` | `id` | an id of the engine's own form (`m`/`t`/`c` + number) not made yet |
+| `reserved` | `id` | an id of the engine's own form (`m`/`t`/`c`/`b`/`x`/`q`/`g` + number) not made yet |
 | `dollar` | `id` | an id that starts with `$` (only names of a transaction do; the engine replaces or refuses them before this) |
 | `out_of_list` | `at`, `len` | an `index` past the end of its list |
 | `no_stream` | `media`, `kind` (`video`, `audio`) | the media has no stream for the track |
@@ -692,3 +840,29 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `not_absolute` | `path` | the `path` of a proxy is not absolute (`C:\…`, `\\server\…` or `/…`) |
 | `not_a_proxy_path` | `path` | the `path` of a proxy is not a file of the engine's own: `<id>-<12 hex digits>.mov` directly in `<project>/cache/proxies` (see Security) |
 | `empty` | | the transaction has no operations |
+
+### Additional schema 2 and edit refusals
+
+| reason | fields | meaning |
+|---|---|---|
+| `locked` | `track` | an edit directly names content on a locked track |
+| `ripple_blocked` | `track`, `clip` | an unselected clip occupies frames a ripple would close |
+| `no_room` | `track` | there is no usable space for the edit |
+| `no_handles` | `clip`, `need`, `have`, `longest?` | insufficient source/coverage; `longest` is the maximum possible transition length |
+| `empty_range` | | zero-length range/delta or an edit that cannot move |
+| `nothing_at` | `track` (nullable), `frame` | no target clip at the requested frame |
+| `no_track` | `kind` | no track for the requested source |
+| `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
+| `cue_overlap` | `with` | subtitles overlap on one track |
+| `out_of_range` | `what` | invalid setting such as speed, gain, transform or text length |
+| `has_transition` | `transition` | a basic operation would move just one transition endpoint |
+| `not_adjacent` | `left`, `right` | transition endpoints do not meet |
+| `cut_taken` | `with` | a transition is already at this cut |
+| `too_long` | `transition`, `clip` | transitions cover more than the available clip length |
+| `source` | `clip` | basic set_clip cannot change this source kind/media |
+| `cycle` | `bin` | cyclic bin parenting |
+| `fade_at_transition` | `clip`, `edge` | fade and transition at the same clip end |
+| `not_empty` | `bin`, `holds` | removing a bin that still holds content |
+
+As with basic operations, edit refusal indexes refer to the original mixed `ops` array, not
+the expanded operation list. Refusal emits no `project.changed` and adds no history step.

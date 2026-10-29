@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use columbina_media::MediaError;
-use columbina_model::{Applied, History, Media, Op, Project, Proxy};
+use columbina_model::{Applied, Change, History, Media, Op, Project, Proxy};
 use columbina_store::Saver;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -581,6 +581,7 @@ async fn dispatch(
     };
     match method {
         "project.get" => project_get(engine, connection, id, params).await,
+        "timeline.duration" => timeline_duration(engine, connection, id, params).await,
         "transaction.apply" => transaction_apply(engine, connection, kind, id, params).await,
         "history.undo" | "history.redo" => {
             history_step(engine, connection, kind, id, method, params).await
@@ -691,16 +692,19 @@ async fn hello(
     }
     let hello: Hello = rpc::params(
         "hello",
-        r#"{"client": "desktop" | "agent" | "cli", "protocol": 1}"#,
+        r#"{"client": "desktop" | "agent" | "cli", "protocol": 2}"#,
         params,
     )?;
     if hello.protocol != rpc::PROTOCOL {
-        let fault = Fault::params(format!(
-            "this engine speaks protocol {}, not {}",
-            rpc::PROTOCOL,
-            hello.protocol
-        ))
-        .with_data(json!({ "protocol": rpc::PROTOCOL }));
+        let fault = Fault::new(
+            rpc::INVALID_REQUEST,
+            format!(
+                "this engine speaks protocol {}, not {}",
+                rpc::PROTOCOL,
+                hello.protocol
+            ),
+        )
+        .with_data(json!({ "reason": "protocol", "supported": [rpc::PROTOCOL] }));
         return Err(fault.into());
     }
     let mut state = engine.state.lock().await;
@@ -756,6 +760,40 @@ async fn project_get(
     Ok(engine.finish(state, connection, line))
 }
 
+/// `timeline.duration`: the end of the last clip or subtitle, in timeline frames.
+async fn timeline_duration(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Duration {
+        timeline: String,
+    }
+    let request: Duration = rpc::params("timeline.duration", r#"{"timeline": "t1"}"#, params)?;
+    let state = engine.state.lock().await;
+    let timeline = state
+        .history
+        .project()
+        .timelines
+        .iter()
+        .find(|t| t.id == request.timeline)
+        .ok_or_else(|| {
+            Fault::params(format!(
+                "there is no timeline {} in the project",
+                request.timeline
+            ))
+            .with_data(json!({"reason": "missing", "timeline": request.timeline}))
+        })?;
+    let line = rpc::result_line(
+        id,
+        &json!({"frames": columbina_model::resolve::duration(timeline)}),
+    );
+    Ok(engine.finish(state, connection, line))
+}
+
 /// The params of `transaction.apply`.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -771,6 +809,7 @@ struct TransactionResult<'a> {
     done: &'a RawValue,
     next_id: u64,
     names: &'a BTreeMap<String, String>,
+    clamped: &'a [usize],
 }
 
 /// `transaction.apply`: apply operations, all of them or none.
@@ -784,7 +823,7 @@ async fn transaction_apply(
     let transaction: Transaction = rpc::params("transaction.apply", r#"{"ops": [...]}"#, params)?;
     let mut ops = Vec::with_capacity(transaction.ops.len());
     for (index, op) in transaction.ops.iter().enumerate() {
-        let op: Op = serde_json::from_str(op.get()).map_err(|error| {
+        let op: names::Input = serde_json::from_str(op.get()).map_err(|error| {
             Fault::params(format!("operation {index} is not an operation: {error}"))
                 .with_data(json!({ "index": index, "reason": "invalid_op" }))
         })?;
@@ -800,11 +839,16 @@ async fn transaction_apply(
     })?;
 
     let mut state = engine.state.lock().await;
-    let applied = state
+    let changed = state
         .history
-        .apply_mapped(ops, kind.as_str(), |op, done| names.map(op, done))
+        .change_with(
+            ops.into_iter().map(|input| input.change).collect(),
+            kind.as_str(),
+            &mut names,
+        )
         .map_err(|error| Fault::refused(&error))?;
-    let names = names.finish(&applied.done);
+    let applied = changed.applied;
+    let names = names.finish();
     let done = state.publish(&applied);
     let line = rpc::result_line(
         id,
@@ -813,6 +857,7 @@ async fn transaction_apply(
             done: &done,
             next_id: applied.next_id,
             names: &names,
+            clamped: &changed.clamped,
         },
     );
     Ok(engine.finish(state, connection, line))
@@ -822,8 +867,9 @@ async fn transaction_apply(
 /// one where the engine keeps proxies (`dir`): the engine reads the proxies of media, and deletes
 /// those that are damaged or that it makes anew, so that a proxy elsewhere would have it read,
 /// and delete, any file. Taking a proxy away is always taken.
-fn check_proxies(ops: &[Op], dir: &Path) -> Result<(), Fault> {
+fn check_proxies(ops: &[names::Input], dir: &Path) -> Result<(), Fault> {
     for (index, op) in ops.iter().enumerate() {
+        let Change::Op(op) = &op.change else { continue };
         let proxy = match op {
             Op::SetProxy { proxy, .. } => proxy.as_ref(),
             Op::AddMedia { media, .. } => media.proxy.as_ref(),

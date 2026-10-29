@@ -12,7 +12,7 @@ use std::ops::Range;
 
 use serde::{Serialize, Serializer};
 
-use crate::edit::{run_change, Change, ChangeError, Edit, EditError};
+use crate::edit::{run_change, Change, ChangeError, Edit, EditError, Expansion};
 use crate::ops::{apply_done, Op, OpError};
 use crate::project::Project;
 
@@ -119,6 +119,27 @@ pub struct Changed {
     /// For each change of the transaction, in order, the places in `applied.done` of the
     /// operations that it was worked out into: one for an operation.
     pub parts: Vec<Range<usize>>,
+}
+
+/// Resolve transaction-local references before each change and observe its actual outputs.
+/// Output checks run before the transaction is committed and can refuse it atomically.
+pub trait ChangeMapper {
+    /// Replace references using the changes already applied in this transaction.
+    fn map(&mut self, change: Change, done: &[Op]) -> Change;
+
+    /// Learn the change's outputs or refuse an output binding it could not fulfill.
+    ///
+    /// # Errors
+    /// A requested output is absent. The entire transaction is rolled back.
+    fn applied(&mut self, _expansion: &Expansion) -> Result<(), OpError> {
+        Ok(())
+    }
+}
+
+impl<F: FnMut(Change, &[Op]) -> Change> ChangeMapper for F {
+    fn map(&mut self, change: Change, done: &[Op]) -> Change {
+        self(change, done)
+    }
 }
 
 impl Serialize for TransactionError {
@@ -268,6 +289,20 @@ impl History {
         by: &str,
         mut map: impl FnMut(Change, &[Op]) -> Change,
     ) -> Result<Changed, TransactionError> {
+        self.change_with(changes, by, &mut map)
+    }
+
+    /// Apply changes as [`Self::change`], also checking their outputs before committing.
+    ///
+    /// # Errors
+    /// As [`Self::change`], or a mapper refuses a change's outputs. All project and history
+    /// state is preserved on refusal, including the id counter and redo steps.
+    pub fn change_with(
+        &mut self,
+        changes: Vec<Change>,
+        by: &str,
+        mapper: &mut impl ChangeMapper,
+    ) -> Result<Changed, TransactionError> {
         if changes.is_empty() {
             return Err(TransactionError::Empty);
         }
@@ -277,9 +312,13 @@ impl History {
         let mut clamped = vec![];
         let mut parts = vec![];
         for (index, change) in changes.into_iter().enumerate() {
-            let change = map(change, &done);
+            let change = mapper.map(change, &done);
             match run_change(&mut self.project, change) {
                 Ok(expansion) => {
+                    if let Err(error) = mapper.applied(&expansion) {
+                        self.project = before;
+                        return Err(TransactionError::Refused { index, error });
+                    }
                     parts.push(done.len()..done.len() + expansion.done.len());
                     if expansion.clamped {
                         clamped.push(index);

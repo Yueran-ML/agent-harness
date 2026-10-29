@@ -38,3 +38,13 @@
 .timeline-ruler-head { position: absolute; bottom: 0; margin-left: -5px; width: 11px; height: 12px; background: var(--accent); clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%); }
 .timeline-empty { padding: 16px; }
 .timeline-problem { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px; font-size: 12px; background: var(--warn-wash); }
+.timeline-clip { touch-action: none; user-select: none; cursor: grab; }
+.timeline-clip[aria-selected='true'] { border-color: #fff; box-shadow: inset 0 0 0 1px #fff; }
+.timeline[data-tool='blade'] .timeline-clip { cursor: crosshair; }
+.timeline[data-tool='trim'] .timeline-clip { cursor: ew-resize; }
+.timeline-preview { position: absolute; z-index: 2; border: 2px solid var(--accent); background: var(--accent-soft); pointer-events: none; box-sizing: border-box; }
+.timeline-preview[data-clamped='true'] { border-style: dashed; }
+.timeline-snap { position: absolute; top: 30px; bottom: 0; width: 1px; background: #f9d77b; pointer-events: none; z-index: 4; }
+.timeline-mark, .timeline-mark-range { position: absolute; pointer-events: none; bottom: 0; height: 5px; background: var(--accent); }
+.timeline-mark { width: 2px; height: 13px; }
+.timeline-mark-range { opacity: 0.5; }

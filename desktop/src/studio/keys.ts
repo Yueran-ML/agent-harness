@@ -13,7 +13,7 @@
  * list of the conversation does what it does there.
  */
 import { useEffect, useRef } from 'react';
-import { keyOf } from '../app/keys';
+import { keyOf, type Key } from '../app/keys';
 import { overlayOpen } from '../app/overlay';
 
 /** What a key asks of the transport: a method of the engine and its params. */
@@ -140,6 +140,11 @@ export function writing(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable || target.closest('[contenteditable=""], [contenteditable="true"]')) return true;
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+}
+
+/** Shared by the focused timeline and the Edit page's source/timeline keyboard dispatcher. */
+export function editingAllowed(target: EventTarget | null, key: Key): boolean {
+  return !key.composing && !writing(target) && !overlayOpen() && !document.querySelector('dialog[open]');
 }
 
 /**

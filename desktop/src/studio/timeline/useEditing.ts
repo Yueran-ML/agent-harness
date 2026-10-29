@@ -1,0 +1,223 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type PointerEvent, type RefObject } from 'react';
+import type { Key } from '../../app/keys';
+import { overlayOpen } from '../../app/overlay';
+import { useWords } from '../../app/locale';
+import type { EngineBridge } from '../../bridge';
+import { callEngine, EngineError, type Media, type Monitor, type Op, type Timeline } from '../engine';
+import { editCommand, editKey, type EditContext } from './editKeys';
+import type { Targets, Transaction } from './commands';
+import { frameAt, HEADER_WIDTH } from './geometry';
+import { beginDrag, dragTo, finishDrag, hitClip, type Dragged, type Gesture, type Hit, type Tool } from './interact';
+import { clipLocations, EMPTY_SELECTION, selectClips, type Selection } from './selection';
+import { snap, snapCandidates, type Marks } from './snap';
+import { draggedMedia, MEDIA_DRAG } from '../media/drag';
+import { dropMedia } from './drop';
+
+interface Options {
+  timeline: Timeline | null; revision: number; session: number; media: readonly Media[];
+  bridge: Pick<EngineBridge, 'call'>; frame: number; focus: Monitor; source: EditContext['source'];
+  root: RefObject<HTMLElement | null>; scroll: RefObject<HTMLDivElement | null>; view: { scale: number; left: number };
+  onSeek: (frame: number, scrubbing: boolean) => void; fit: () => void;
+  onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
+}
+interface PointerDrag { gesture: Gesture; x: number; y: number; pointer: number; moved: boolean; clickSelection?: Selection }
+const cursor = (hit: Hit) => typeof hit === 'object' ? 'col-resize' : ({ move: 'grab', trim_in: 'w-resize', trim_out: 'e-resize', slip: 'ew-resize', slide: 'move', blade: 'crosshair' })[hit];
+const defaultTargets = (timeline: Timeline | null): Targets => ({
+  video_track: timeline?.tracks.find(track => track.kind === 'video')?.id ?? null,
+  audio_track: timeline?.tracks.find(track => track.kind === 'audio')?.id ?? null,
+});
+
+/** Owns transient gestures. Only an accepted engine notification changes the project on screen. */
+export function useEditing(options: Options) {
+  const words = useWords().hint.studio.edit;
+  const [tool, setTool] = useState<Tool>('select');
+  const [snapping, setSnapping] = useState(true);
+  const [linked, setLinked] = useState(true);
+  const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
+  const [targets, setTargets] = useState<Targets>(() => defaultTargets(options.timeline));
+  const [marks, setMarks] = useState<Marks>({ in: null, out: null });
+  const [preview, setPreview] = useState<Dragged | null>(null);
+  const [dropAt, setDropAt] = useState<number | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const busy = useRef(false);
+  const active = useRef<PointerDrag | null>(null);
+  const live = useRef(true);
+  const now = useRef({ ...options, words, tool, snapping, linked, selection, targets, marks });
+  now.current = { ...options, words, tool, snapping, linked, selection, targets, marks };
+  const selected = useMemo(() => new Set(selection.ids), [selection]);
+  const cancel = useCallback(() => {
+    const pointer = active.current?.pointer;
+    active.current = null; setPreview(null); setDropAt(null);
+    const root = now.current.root.current;
+    if (pointer !== undefined && root?.hasPointerCapture?.(pointer)) root.releasePointerCapture(pointer);
+  }, []);
+  useEffect(() => {
+    live.current = true;
+    const away = () => cancel();
+    window.addEventListener('blur', away);
+    return () => { live.current = false; active.current = null; window.removeEventListener('blur', away); };
+  }, [cancel]);
+  useEffect(() => {
+    cancel(); setSelection(EMPTY_SELECTION); setMarks({ in: null, out: null });
+    setTargets(defaultTargets(now.current.timeline)); setProblem(null);
+  }, [options.timeline?.id, options.session, cancel]);
+  useEffect(() => {
+    if (active.current && active.current.gesture.revision !== options.revision) { cancel(); setProblem(now.current.words.stale_revision); }
+  }, [options.revision, cancel]);
+  useEffect(() => {
+    const timeline = options.timeline;
+    if (!timeline) return;
+    const locations = clipLocations(timeline);
+    setSelection(old => old.ids.every(id => locations.has(id)) ? old : { ids: old.ids.filter(id => locations.has(id)), anchor: old.anchor && locations.has(old.anchor) ? old.anchor : null });
+    setTargets(old => {
+      const next = { ...old };
+      for (const key of ['video_track', 'audio_track'] as const) if (old[key] && !timeline.tracks.some(t => t.id === old[key])) next[key] = null;
+      return next.video_track === old.video_track && next.audio_track === old.audio_track ? old : next;
+    });
+  }, [options.timeline]);
+  useEffect(() => { options.onSelection?.(selection.ids); }, [selection.ids, options.onSelection]);
+
+  const run = useCallback(async (method: 'transaction.apply' | 'history.undo' | 'history.redo', transaction?: Transaction): Promise<boolean> => {
+    if (busy.current) return false;
+    const context = now.current;
+    busy.current = true; setPending(true); setProblem(null);
+    try { await callEngine(context.bridge, method, transaction ? { ...transaction } : undefined); return true; }
+    catch (error) {
+      if (live.current && context.session === now.current.session && context.timeline?.id === now.current.timeline?.id) {
+        const data = error instanceof EngineError && error.data && typeof error.data === 'object' ? error.data as { reason?: unknown } : null;
+        const reason = data?.reason;
+        const messages = now.current.words;
+        setProblem(typeof reason === 'string' && Object.hasOwn(messages, reason) ? messages[reason as keyof typeof messages]
+          : `${messages.failed}${error instanceof Error ? ` ${error.message}` : ''}`);
+      }
+      return false;
+    } finally { busy.current = false; if (live.current) setPending(false); }
+  }, []);
+  const apply = useCallback((transaction: Transaction) => run('transaction.apply', transaction), [run]);
+  const edit = useCallback((ops: Op[]) => apply({ revision: now.current.revision, ops }), [apply]);
+  const target = useCallback((id: string) => {
+    const track = now.current.timeline?.tracks.find(track => track.id === id);
+    if (!track || track.kind === 'subtitle') return;
+    const key = track.kind === 'video' ? 'video_track' : 'audio_track';
+    setTargets(old => ({ ...old, [key]: old[key] === id ? null : id }));
+  }, []);
+  const chooseTool = useCallback((tool: Tool) => { cancel(); setTool(tool); }, [cancel]);
+  const keyDown = (key: Key): boolean => {
+    if (overlayOpen() || document.querySelector('dialog[open]')) return false;
+    const action = editKey(key);
+    if (!action) return false;
+    if (active.current && action.kind !== 'cancel' && action.kind !== 'snap') return true;
+    const context = now.current;
+    const result = editCommand(action, { ...context, selected: context.selection.ids });
+    if (!result) return true;
+    switch (result.kind) {
+      case 'transaction': void apply(result.transaction); break;
+      case 'history': void run(result.method); break;
+      case 'marks': setMarks(result.marks); break;
+      case 'seek': context.onSeek(result.frame, false); break;
+      case 'speed': context.onSpeed?.(result.clips); break;
+      case 'tool': chooseTool(result.tool); break;
+      case 'snap': setSnapping(value => !value); break;
+      case 'linked': setLinked(value => !value); break;
+      case 'fit': context.fit(); break;
+      case 'cancel': cancel(); setProblem(null); break;
+    }
+    return true;
+  };
+  const at = (clientX: number) => {
+    const { scroll, view } = now.current;
+    return frameAt(clientX - (scroll.current?.getBoundingClientRect().left ?? 0) - HEADER_WIDTH, view.scale, scroll.current?.scrollLeft ?? view.left);
+  };
+  const hit = (element: HTMLElement, event: PointerEvent): Hit => {
+    const box = element.getBoundingClientRect();
+    return hitClip(now.current.timeline!, element.dataset.clip!, now.current.tool, event.clientX - box.left, event.clientY - box.top, box.width, box.height);
+  };
+  const pointerDown = (event: PointerEvent) => {
+    const context = now.current;
+    if (!context.timeline || event.button !== 0 || busy.current || active.current || overlayOpen()) return;
+    const element = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-clip]') : null;
+    if (!element) {
+      if (event.target instanceof Element && event.target.classList.contains('timeline-lane') && !event.ctrlKey && !event.metaKey && !event.shiftKey) setSelection(EMPTY_SELECTION);
+      return;
+    }
+    const id = element.dataset.clip!;
+    const track = element.closest<HTMLElement>('[data-track]')!;
+    if (track.dataset.locked === 'true') return;
+    event.preventDefault(); context.root.current?.focus();
+    const action = hit(element, event);
+    if (action === 'blade') {
+      void apply({ revision: context.revision, ops: [{ edit: 'blade', timeline: context.timeline.id, at: at(event.clientX), ...(event.shiftKey ? {} : { tracks: [track.dataset.track!] }), linked: context.linked }] });
+      return;
+    }
+    let selection = !event.ctrlKey && !event.metaKey && !event.shiftKey && context.selection.ids.includes(id) ? context.selection
+      : selectClips(context.timeline, context.selection, id, { linked: context.linked, toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
+    // Ctrl-click toggles; Ctrl-drag overwrites. Decide whether to deselect only on release.
+    const clickSelection = !selection.ids.includes(id) ? selection : undefined;
+    if (clickSelection) selection = context.selection;
+    setSelection(selection);
+    if (!selection.ids.includes(id)) return;
+    const gesture = beginDrag(context.timeline, context.revision, selection.ids, id, action, at(event.clientX), context.linked, context.tool === 'trim');
+    if (!gesture) return;
+    active.current = { gesture, x: event.clientX, y: event.clientY, pointer: event.pointerId, moved: false, clickSelection };
+    context.root.current?.setPointerCapture?.(event.pointerId);
+  };
+  const calculate = (event: PointerEvent, pointer: PointerDrag) => {
+    const context = now.current;
+    const track = [...context.root.current!.querySelectorAll<HTMLElement>('[data-track]')].find(element => {
+      const box = element.getBoundingClientRect(); return event.clientY >= box.top && event.clientY < box.bottom;
+    });
+    return dragTo(pointer.gesture, at(event.clientX), {
+      media: context.media, track: track?.dataset.track, overwrite: event.ctrlKey || event.metaKey, ripple: event.shiftKey,
+      candidates: context.snapping ? snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
+    });
+  };
+  const pointerMove = (event: PointerEvent) => {
+    const pointer = active.current;
+    if (!pointer) {
+      const element = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-clip]') : null;
+      if (element && now.current.timeline) element.style.cursor = element.closest<HTMLElement>('[data-track]')?.dataset.locked === 'true' ? 'not-allowed' : cursor(hit(element, event));
+      return;
+    }
+    if (pointer.pointer !== event.pointerId) return;
+    if (!pointer.moved && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) < 3) return;
+    pointer.moved = true; setPreview(calculate(event, pointer));
+  };
+  const pointerUp = (event: PointerEvent) => {
+    const pointer = active.current;
+    if (!pointer || pointer.pointer !== event.pointerId) return;
+    const transaction = pointer.moved && pointer.gesture.revision === now.current.revision ? finishDrag(calculate(event, pointer)) : null;
+    if (!pointer.moved && pointer.clickSelection) setSelection(pointer.clickSelection);
+    cancel(); if (transaction) void apply(transaction);
+  };
+  const dropTarget = (event: DragEvent) => {
+    if (busy.current || !event.dataTransfer.types.includes(MEDIA_DRAG) || !now.current.timeline) return null;
+    const lane = event.target instanceof Element ? event.target.closest('.timeline-lane') : null;
+    const track = lane?.closest<HTMLElement>('[data-track]');
+    return track && track.dataset.kind !== 'subtitle' && track.dataset.locked !== 'true' ? track.dataset.track! : null;
+  };
+  const dropFrame = (event: DragEvent) => {
+    const context = now.current;
+    const frame = at(event.clientX);
+    return context.snapping ? snap(frame, [0], snapCandidates(context.timeline!, [], context.frame, context.marks), context.view.scale).delta : frame;
+  };
+  const dragOver = (event: DragEvent) => {
+    if (!dropTarget(event)) { setDropAt(null); return; }
+    event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDropAt(dropFrame(event));
+  };
+  const drop = (event: DragEvent) => {
+    setDropAt(null);
+    const track = dropTarget(event);
+    if (!track) return;
+    event.preventDefault();
+    const context = now.current;
+    const ids = draggedMedia(event.dataTransfer, context.session);
+    const transaction = dropMedia(context.timeline!, context.revision, context.media, ids, track, context.targets, dropFrame(event), event.shiftKey);
+    if (transaction) void apply(transaction);
+  };
+  const dragLeave = (event: DragEvent) => {
+    if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDropAt(null);
+  };
+  return { tool, chooseTool, snapping, setSnapping, linked, setLinked, selected, targets, target, marks, preview, dropAt, problem, setProblem, pending,
+    edit, apply, keyDown, pointerDown, pointerMove, pointerUp, cancel, dragOver, drop, dragLeave };
+}

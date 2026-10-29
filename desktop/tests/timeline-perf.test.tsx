@@ -21,7 +21,7 @@ describe('a thousand-clip timeline', () => {
       clips: Array.from({ length: 100 }, (_, i) => clip(`c${row}_${i}`, i * 200, 180)),
     }));
     const bridge = { call: vi.fn(), onEvent: () => () => {} } as Pick<EngineBridge, 'call' | 'onEvent'>;
-    const props = { timeline: t, media: [media], bridge, session: 1, frame: 0, playing: false, onSeek: vi.fn() };
+    const props = { timeline: t, media: [media], bridge, session: 1, revision: 0, frame: 0, playing: false, onSeek: vi.fn() };
     const durations: number[] = [];
     const tree = (frame = 0) => <Profiler id="timeline" onRender={(_id, phase, actual) => { if (phase !== 'mount') durations.push(actual); }}><Timeline {...props} frame={frame} /></Profiler>;
     const view = render(tree());

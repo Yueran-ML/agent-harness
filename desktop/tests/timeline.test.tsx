@@ -26,7 +26,7 @@ function mount(t = timeline()) {
   const call = vi.fn().mockResolvedValue({ ok: true, result: {} });
   const bridge = { call, onEvent: () => () => {} } as Pick<EngineBridge, 'call' | 'onEvent'>;
   const onSeek = vi.fn();
-  const props = { timeline: t, media: [media], bridge, session: 1, frame: 0, playing: false, onSeek };
+  const props = { timeline: t, media: [media], bridge, session: 1, revision: 0, frame: 0, playing: false, onSeek };
   const view = render(<Timeline {...props} />);
   return { ...view, props, call, onSeek };
 }
@@ -79,16 +79,16 @@ describe('the timeline display', () => {
     const { call } = mount(t);
     fireEvent.click(screen.getByRole('button', { name: 'Lock: V1' }));
     await settle();
-    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'set_track', timeline: 't1', id: 'v1', locked: true }] });
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'v1', locked: true }] });
     fireEvent.click(screen.getByRole('button', { name: 'Mute: Dialogue' }));
     await settle();
-    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'set_track', timeline: 't1', id: 'a1', enabled: false }] });
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'a1', enabled: false }] });
     fireEvent.doubleClick(screen.getByText('V1'));
     const name = screen.getByRole('textbox', { name: 'Name' });
     fireEvent.change(name, { target: { value: 'Wide shot' } });
     fireEvent.keyDown(name, { key: 'Enter' });
     await settle();
-    expect(call).toHaveBeenLastCalledWith('transaction.apply', { ops: [{ op: 'set_track', timeline: 't1', id: 'v1', name: 'Wide shot' }] });
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 0, ops: [{ op: 'set_track', timeline: 't1', id: 'v1', name: 'Wide shot' }] });
     const before = call.mock.calls.length;
     fireEvent.keyDown(screen.getByRole('separator', { name: 'Track height: V1' }), { key: 'ArrowDown' });
     expect(document.querySelector<HTMLElement>('[data-track="v1"]')?.style.height).toBe('80px');
@@ -113,7 +113,7 @@ describe('the timeline display', () => {
     call.mockResolvedValueOnce({ ok: false, error: { code: -32001, message: 'track is missing', data: { reason: 'missing' } } });
     fireEvent.click(screen.getByRole('button', { name: 'Lock: V1' }));
     await settle();
-    expect(screen.getByRole('alert').textContent).toContain('track is missing');
+    expect(screen.getByRole('alert').textContent).toContain('no longer in the project');
     expect(screen.getByRole('button', { name: 'Lock: V1' }).getAttribute('aria-pressed')).toBe('false');
   });
 
@@ -129,7 +129,7 @@ describe('the timeline display', () => {
     const peaks = Buffer.from(new Int8Array(Array.from({ length: 800 }, (_, i) => i % 2 ? 64 : -64)).buffer).toString('base64');
     const call = vi.fn().mockResolvedValueOnce({ ok: true, result: { pending: true } }).mockResolvedValue({ ok: true, result: { rate: 100, channels: 1, peaks } });
     const bridge = { call, onEvent: listener => { tell = listener; return () => {}; } } as Pick<EngineBridge, 'call' | 'onEvent'>;
-    render(<Timeline timeline={t} media={[media, { ...media, id: 'm2' }]} bridge={bridge} session={1} frame={0} playing={false} onSeek={() => {}} />);
+    render(<Timeline timeline={t} media={[media, { ...media, id: 'm2' }]} bridge={bridge} session={1} revision={0} frame={0} playing={false} onSeek={() => {}} />);
     await settle();
     expect(call.mock.calls).toEqual([['media.waveform', { media: 'm1' }]]);
     expect(screen.getAllByText('Preparing waveform…')).toHaveLength(2);

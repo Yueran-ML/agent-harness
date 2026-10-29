@@ -1,11 +1,12 @@
 import { memo, useRef, useState } from 'react';
-import { Eye, EyeOff, Lock, Unlock, Volume2, VolumeX } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Volume2, VolumeX, Crosshair } from 'lucide-react';
 import { useWords } from '../../app/locale';
 import type { Op, Track } from '../engine';
 import { NameField } from '../media/NameField';
 
-export const TrackHeader = memo(function TrackHeader({ timeline, track, height, onHeight, onEdit }: {
+export const TrackHeader = memo(function TrackHeader({ timeline, track, height, onHeight, onEdit, targeted = false, onTarget }: {
   timeline: string; track: Track; height: number; onHeight: (id: string, height: number) => void; onEdit: (ops: Op[]) => Promise<boolean>;
+  targeted?: boolean; onTarget?: (id: string) => void;
 }) {
   const words = useWords().label.studio.timeline;
   const [renaming, setRenaming] = useState(false);
@@ -19,6 +20,8 @@ export const TrackHeader = memo(function TrackHeader({ timeline, track, height, 
       : <button type="button" className="timeline-track-name" title={track.name} onDoubleClick={() => setRenaming(true)}
         onKeyDown={event => { if (event.key === 'F2') { event.preventDefault(); setRenaming(true); } }}>{track.name}</button>}
     <div className="timeline-track-switches">
+      {track.kind !== 'subtitle' && onTarget && <button type="button" className="icon-btn" aria-label={`${words.target}: ${track.name}`} title={words.target} aria-pressed={targeted}
+        onClick={() => onTarget(track.id)}><Crosshair size={13} /></button>}
       <button type="button" className="icon-btn" aria-label={`${lock}: ${track.name}`} title={lock} aria-pressed={track.locked}
         onClick={() => void onEdit([{ op: 'set_track', timeline, id: track.id, locked: !track.locked }])}>{track.locked ? <Lock size={13} /> : <Unlock size={13} />}</button>
       <button type="button" className="icon-btn" aria-label={`${enabled}: ${track.name}`} title={enabled} aria-pressed={track.enabled}

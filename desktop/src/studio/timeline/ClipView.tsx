@@ -5,14 +5,15 @@ import { timecode } from '../timecode';
 import { Waveform } from './Waveform';
 import type { Waveforms } from './waveforms';
 
-export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale, from, to, waves }: {
+export const ClipView = memo(function ClipView({ clip, kind, media, rate, scale, from, to, waves, selected = false }: {
   clip: Clip; kind: 'video' | 'audio'; media: Media | undefined; rate: Rate; scale: number; from: number; to: number; waves: Waveforms;
+  selected?: boolean;
 }) {
   const words = useWords().label.studio.timeline;
   const name = clip.source.kind === 'media' ? media?.name ?? clip.source.media : clip.source.kind === 'title' ? clip.source.text : words.color;
   const changedSpeed = clip.reverse || clip.speed.num !== clip.speed.den;
   const type = clip.source.kind === 'media' ? kind : clip.source.kind;
-  return <div className="timeline-clip" data-clip={clip.id} data-kind={type} data-enabled={clip.enabled}
+  return <div className="timeline-clip" data-clip={clip.id} data-kind={type} data-enabled={clip.enabled} role="option" aria-selected={selected}
     style={{ left: clip.start * scale, width: clip.length * scale }}
     title={`${name} · ${timecode(clip.start, rate)} – ${timecode(clip.start + clip.length, rate)}`}>
     <span className="timeline-clip-name">{name}</span>

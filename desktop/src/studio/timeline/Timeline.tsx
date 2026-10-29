@@ -1,9 +1,10 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
-import { LocateFixed, Maximize2, Minus, Plus, X } from 'lucide-react';
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type PointerEvent, type Ref } from 'react';
+import { LocateFixed, Maximize2, Minus, Plus, X, MousePointer2, Scissors, Magnet, Link, UnfoldHorizontal } from 'lucide-react';
 import { useWords } from '../../app/locale';
+import { keyOf, type Key } from '../../app/keys';
 import type { EngineBridge } from '../../bridge';
-import { callEngine, type Media, type Op, type Rate, type Timeline as TimelineModel, type Track } from '../engine';
-import { writing } from '../keys';
+import type { Media, Monitor, Op, Rate, Timeline as TimelineModel, Track } from '../engine';
+import { editingAllowed } from '../keys';
 import { LET_GO_HOLD_MS } from '../Transport';
 import { ClipView } from './ClipView';
 import { duration, fitZoom, frameAt, HEADER_WIDTH, RULER_HEIGHT, transitionSpan, visible, zoomAt } from './geometry';
@@ -11,11 +12,14 @@ import { Ruler } from './Ruler';
 import { Scrub } from './scrub';
 import { TrackHeader } from './TrackHeader';
 import { Waveforms } from './waveforms';
+import { useEditing } from './useEditing';
+import type { EditContext } from './editKeys';
 import './timeline.css';
 
-const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight }: {
+const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, from, to, height, waves, onEdit, onHeight, selected, targeted, onTarget }: {
   timeline: string; track: Track; media: ReadonlyMap<string, Media>; rate: Rate; scale: number; from: number; to: number;
   height: number; waves: Waveforms; onEdit: (ops: Op[]) => Promise<boolean>; onHeight: (id: string, height: number) => void;
+  selected: ReadonlySet<string>; targeted: boolean; onTarget: (id: string) => void;
 }) {
   const words = useWords().label.studio.timeline;
   const transitions = useMemo(() => {
@@ -24,12 +28,13 @@ const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, f
     return track.transitions.map(transition => ({ transition, ...transitionSpan(transition, starts.get(transition.right)!) }));
   }, [track]);
   return <div className="timeline-track" data-track={track.id} data-kind={track.kind} data-enabled={track.enabled} data-locked={track.locked} style={{ height }}>
-    <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} />
-    <div className="timeline-lane">
+    <TrackHeader timeline={timeline} track={track} height={height} onEdit={onEdit} onHeight={onHeight} targeted={targeted} onTarget={onTarget} />
+    <div className="timeline-lane" role={track.kind === 'subtitle' ? undefined : 'listbox'} aria-label={track.name} aria-multiselectable={track.kind === 'subtitle' ? undefined : true}>
       {track.kind === 'subtitle' ? visible(track.cues, from, to).map(cue => <div key={cue.id} className="timeline-cue" data-cue={cue.id}
         style={{ left: cue.start * scale, width: cue.length * scale }} title={cue.text}>{cue.text}</div>)
-        : visible(track.clips, from, to).map(clip => <ClipView key={clip.id} clip={clip} kind={track.kind}
-          media={clip.source.kind === 'media' ? media.get(clip.source.media) : undefined} rate={rate} scale={scale} from={from} to={to} waves={waves} />)}
+        : visible(track.clips, from, to).map(clip => <ClipView key={clip.id} clip={clip} kind={track.kind} selected={selected.has(clip.id)}
+          media={clip.source.kind === 'media' ? media.get(clip.source.media) : undefined} rate={rate} scale={scale}
+          from={track.kind === 'audio' ? from : clip.start} to={track.kind === 'audio' ? to : clip.start + clip.length} waves={waves} />)}
       {transitions.filter(span => span.start < to && span.start + span.length > from).map(({ transition, start, length }) => <div
         key={transition.id} className="timeline-transition" data-transition={transition.id} data-kind={transition.kind}
         style={{ left: start * scale, width: length * scale }} title={words[transition.kind]}><span>{words[transition.kind]}</span></div>)}
@@ -38,9 +43,11 @@ const TrackRow = memo(function TrackRow({ timeline, track, media, rate, scale, f
 });
 
 /** A view of the accepted engine project. Scrolling, zoom and track height do not add undo steps. */
-export function Timeline({ timeline, media, bridge, session, frame, playing, onSeek }: {
+export interface TimelineHandle { keyDown: (key: Key) => boolean }
+export function Timeline({ timeline, media, bridge, session, revision, frame, playing, onSeek, source = null, focus = 'timeline', onSpeed, onSelection, ref }: {
   timeline: TimelineModel | null; media: readonly Media[]; bridge: Pick<EngineBridge, 'call' | 'onEvent'>; session: number;
-  frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
+  revision: number; frame: number; playing: boolean; onSeek: (frame: number, scrubbing: boolean) => void;
+  source?: EditContext['source']; focus?: Monitor; onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void; ref?: Ref<TimelineHandle>;
 }) {
   const words = useWords();
   const labels = words.label.studio.timeline;
@@ -51,8 +58,6 @@ export function Timeline({ timeline, media, bridge, session, frame, playing, onS
   const [heights, setHeights] = useState<Record<string, number>>({});
   const [follow, setFollow] = useState(true);
   const [held, setHeld] = useState<{ frame: number; dragging: boolean } | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const changing = useRef(false);
   const drag = useRef<{ frame: number } | null>(null);
   const now = useRef({ view, onSeek });
   now.current = { view, onSeek };
@@ -84,7 +89,7 @@ export function Timeline({ timeline, media, bridge, session, frame, playing, onS
   }, [timeline?.id]);
   useLayoutEffect(() => { if (scroll.current && scroll.current.scrollLeft !== view.left) scroll.current.scrollLeft = view.left; }, [view.left, view.scale]);
   useEffect(() => {
-    scrub.cancel(); drag.current = null; setHeld(null); setProblem(null);
+    scrub.cancel(); drag.current = null; setHeld(null);
     setView(old => ({ ...old, left: 0 }));
   }, [timeline?.id, session, scrub]);
   useEffect(() => {
@@ -108,6 +113,8 @@ export function Timeline({ timeline, media, bridge, session, frame, playing, onS
     return { ...old, scale: next.scale, left: next.scroll };
   }), []);
   const fit = () => setView(old => ({ ...old, scale: fitZoom(end, old.width), left: 0 }));
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, onSpeed, onSelection });
+  useImperativeHandle(ref, () => ({ keyDown: editing.keyDown }));
   useEffect(() => {
     const element = scroll.current;
     if (!element) return;
@@ -132,18 +139,11 @@ export function Timeline({ timeline, media, bridge, session, frame, playing, onS
       if (scroll.current) { const left = scroll.current.scrollLeft; setView(old => old.left === left ? old : { ...old, left }); }
     });
   };
-  const edit = useCallback(async (ops: Op[]): Promise<boolean> => {
-    if (changing.current) return false;
-    changing.current = true; setProblem(null);
-    try { await callEngine(bridge, 'transaction.apply', { ops }); return true; }
-    catch (error) { setProblem(error instanceof Error ? error.message : String(error)); return false; }
-    finally { changing.current = false; }
-  }, [bridge]);
   const onHeight = useCallback((id: string, height: number) => setHeights(old => ({ ...old, [id]: height })), []);
   const at = (event: PointerEvent) => Math.min(last, frameAt(event.clientX - (scroll.current?.getBoundingClientRect().left ?? 0) - HEADER_WIDTH, view.scale, scroll.current?.scrollLeft ?? view.left));
   const down = (event: PointerEvent) => {
     if (!timeline || end === 0 || event.button !== 0) return;
-    event.preventDefault();
+    event.preventDefault(); editing.cancel();
     root.current?.setPointerCapture?.(event.pointerId);
     const frame = at(event); drag.current = { frame }; setHeld({ frame, dragging: true }); scrub.drag(frame);
   };
@@ -156,28 +156,46 @@ export function Timeline({ timeline, media, bridge, session, frame, playing, onS
   const from = Math.max(0, Math.floor(view.left / view.scale));
   const to = Math.ceil((view.left + view.width) / view.scale);
   const total = HEADER_WIDTH + Math.max(view.width, end * view.scale + view.width / 2);
-  return <section ref={root} className="timeline" role="region" aria-label={labels.title} tabIndex={0} data-timeline={timeline?.id} data-scale={view.scale}
+  let rowTop = RULER_HEIGHT;
+  const rows = new Map(tracks.map(track => { const height = heights[track.id] ?? 72; const row = { top: rowTop, height }; rowTop += height; return [track.id, row]; }));
+  return <section ref={root} className="timeline" role="region" aria-label={labels.title} aria-busy={editing.pending} tabIndex={0} data-timeline={timeline?.id} data-scale={view.scale} data-tool={editing.tool}
     onKeyDown={event => {
-      if (writing(event.target) || event.nativeEvent.isComposing) return;
-      if ((event.ctrlKey || event.metaKey) && ['=', '+', '-'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); zoom(event.key === '-' ? 0.8 : 1.25); }
-      else if (event.shiftKey && event.key.toLowerCase() === 'z') { event.preventDefault(); event.stopPropagation(); fit(); }
+      const key = keyOf(event);
+      if (!editingAllowed(event.target, key)) return;
+      if (editing.keyDown(key)) { event.preventDefault(); event.stopPropagation(); }
+      else if ((event.ctrlKey || event.metaKey) && !event.altKey && ['=', '+', '-'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); zoom(event.key === '-' ? 0.8 : 1.25); }
     }}
-    onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } }}
-    onPointerUp={event => release(event)} onPointerCancel={event => release(event, true)}>
+    onPointerDown={editing.pointerDown}
+    onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave}
+    onPointerMove={event => { if (drag.current) { const frame = at(event); drag.current.frame = frame; setHeld({ frame, dragging: true }); scrub.drag(frame); } else editing.pointerMove(event); }}
+    onPointerUp={event => { release(event); editing.pointerUp(event); }} onPointerCancel={event => { release(event, true); editing.cancel(); }} onLostPointerCapture={editing.cancel}>
     <header className="timeline-toolbar">
       <strong>{timeline?.name ?? labels.title}</strong>
+      {([['select', 'A', MousePointer2], ['trim', 'T', UnfoldHorizontal], ['blade', 'B', Scissors]] as const).map(([tool, key, Icon]) => <button key={tool} type="button" className="icon-btn"
+        aria-label={labels[tool]} title={`${labels[tool]} (${key})`} aria-pressed={editing.tool === tool} onClick={() => editing.chooseTool(tool)}><Icon size={14} /></button>)}
+      <button type="button" className="icon-btn" aria-label={labels.snap} title={`${labels.snap} (N)`} aria-pressed={editing.snapping} onClick={() => editing.setSnapping(value => !value)}><Magnet size={14} /></button>
+      <button type="button" className="icon-btn" aria-label={labels.linked} title={`${labels.linked} (Ctrl+Shift+L)`} aria-pressed={editing.linked} onClick={() => editing.setLinked(value => !value)}><Link size={14} /></button>
       <button type="button" className="icon-btn" aria-label={labels.zoomOut} title={`${labels.zoomOut} (Ctrl+−)`} onClick={() => zoom(0.8)}><Minus size={14} /></button>
       <button type="button" className="icon-btn" aria-label={labels.zoomIn} title={`${labels.zoomIn} (Ctrl++)`} onClick={() => zoom(1.25)}><Plus size={14} /></button>
       <button type="button" className="icon-btn" aria-label={labels.fit} title={`${labels.fit} (Shift+Z)`} onClick={fit}><Maximize2 size={14} /></button>
       <button type="button" className="icon-btn" aria-label={labels.follow} title={labels.follow} aria-pressed={follow} onClick={() => setFollow(value => !value)}><LocateFixed size={14} /></button>
     </header>
-    {problem && <div className="timeline-problem" role="alert"><span>{words.hint.studio.timeline.editFailed} {problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => setProblem(null)}><X size={14} /></button></div>}
+    {editing.problem && <div className="timeline-problem" role="alert"><span>{editing.problem}</span><button type="button" className="icon-btn" aria-label={words.label.close} onClick={() => editing.setProblem(null)}><X size={14} /></button></div>}
     {!timeline ? <p className="caption timeline-empty">{words.hint.studio.timeline.empty}</p> : <div ref={scroll} className="timeline-scroll" onScroll={onScroll}>
       <div className="timeline-content" style={{ width: total, minHeight: RULER_HEIGHT + tracks.reduce((sum, track) => sum + (heights[track.id] ?? 72), 0) }}>
         <div className="timeline-ruler-row"><Ruler rate={timeline.rate} scale={view.scale} from={view.left / view.scale} to={(view.left + view.width) / view.scale}
-          frame={shown} last={last} onDown={down} onSeek={onSeek} /><div className="timeline-ruler-corner" /></div>
+          frame={shown} last={last} onDown={down} onSeek={onSeek} />
+          {editing.marks.in !== null && <span className="timeline-mark" data-edge="in" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale }} />}
+          {editing.marks.out !== null && <span className="timeline-mark" data-edge="out" style={{ left: HEADER_WIDTH + editing.marks.out * view.scale }} />}
+          {editing.marks.in !== null && editing.marks.out !== null && <span className="timeline-mark-range" style={{ left: HEADER_WIDTH + editing.marks.in * view.scale, width: (editing.marks.out - editing.marks.in) * view.scale }} />}
+          <div className="timeline-ruler-corner" /></div>
         {tracks.map(track => <TrackRow key={track.id} timeline={timeline.id} track={track} media={byId} rate={timeline.rate} scale={view.scale}
-          from={from} to={to} height={heights[track.id] ?? 72} waves={waves} onEdit={edit} onHeight={onHeight} />)}
+          from={from} to={to} height={heights[track.id] ?? 72} waves={waves} onEdit={editing.edit} onHeight={onHeight}
+          selected={editing.selected} targeted={editing.targets.video_track === track.id || editing.targets.audio_track === track.id} onTarget={editing.target} />)}
+        {editing.preview?.preview.map(item => { const row = rows.get(item.track); return row && <div key={item.id} className="timeline-preview" data-preview={item.id} data-clamped={editing.preview!.clamped}
+          style={{ left: HEADER_WIDTH + item.start * view.scale, width: item.length * view.scale, top: row.top + 4, height: row.height - 8 }} />; })}
+        {editing.preview?.point != null && <div className="timeline-snap" style={{ left: HEADER_WIDTH + editing.preview.point * view.scale }} />}
+        {editing.dropAt !== null && <div className="timeline-snap" style={{ left: HEADER_WIDTH + editing.dropAt * view.scale }} />}
         <div className="timeline-playhead" style={{ left: HEADER_WIDTH + shown * view.scale }} aria-hidden="true" onPointerDown={down} />
       </div>
     </div>}

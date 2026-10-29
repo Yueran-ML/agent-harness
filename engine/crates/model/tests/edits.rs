@@ -1,7 +1,7 @@
 //! Random edits of random timelines: each is refused and changes nothing, or is applied whole and
 //! leaves a project that the operations could have made; it is undone and redone exactly; it
-//! leaves locked tracks alone; a ripple keeps what follows it in step; a roll and a slide keep
-//! how long the timeline lasts, and a slip where its clips are; and a blade leaves two halves
+//! leaves locked tracks alone; a ripple keeps what follows it in step; a roll and an interior
+//! slide keep how long the timeline lasts, and a slip where its clips are; and a blade leaves two halves
 //! that meet on the timeline and in their source.
 
 #[path = "common/edits.rs"]
@@ -236,11 +236,27 @@ proptest! {
         each_edit(&recipe, &makings, |before, edit, after| {
             let Ok(after) = after else { return Ok(()) };
             match edit {
-                Edit::Roll { .. } | Edit::Slide { .. } => {
+                Edit::Roll { .. } => {
                     prop_assert_eq!(
                         duration(&after.timelines[0]), duration(&before.timelines[0]),
                         "{:?}", edit
                     );
+                }
+                Edit::Slide { clip: id, linked, .. } => {
+                    let selected = group(before, std::slice::from_ref(id), *linked);
+                    let mut interior = true;
+                    for track in before.timelines[0].tracks.iter().filter(|r| !r.locked) {
+                        for c in track.clips.iter().filter(|c| selected.contains(&c.id)) {
+                            let now = clip(after, &c.id).unwrap();
+                            prop_assert_eq!((&now.source, now.length), (&c.source, c.length));
+                            if !track.clips.iter().any(|other| other.start >= c.end()) {
+                                interior = false;
+                            }
+                        }
+                    }
+                    if interior {
+                        prop_assert_eq!(duration(&after.timelines[0]), duration(&before.timelines[0]), "{:?}", edit);
+                    }
                 }
                 Edit::Slip { .. } => {
                     for c in clips_of(before) {
@@ -253,6 +269,33 @@ proptest! {
             }
             Ok(())
         })?;
+    }
+
+    #[test]
+    fn an_insert_on_open_tracks_always_moves_later_content_by_its_length(
+        recipe in recipe(), at in 0i64..500, length in 1i64..120,
+    ) {
+        let mut project = project_of(&recipe);
+        for track in &mut project.timelines[0].tracks { track.locked = false; }
+        let before = project.clone();
+        let at = at.min(duration(&project.timelines[0]));
+        let edit = Edit::Insert {
+            timeline: "t1".into(), at,
+            source: columbina_model::Material::Color { color: columbina_model::Rgba([0, 0, 0, 255]), length },
+            video_track: Some(Some("V1".into())), audio_track: None,
+        };
+        expand(&mut project, edit).unwrap();
+        check(&project);
+        for old in clips_of(&before).into_iter().filter(|c| c.start >= at) {
+            let new = clip(&project, &old.id).unwrap();
+            prop_assert_eq!(new.start, old.start + length);
+            prop_assert_eq!((&new.source, new.length), (&old.source, old.length));
+        }
+        for old in before.timelines[0].tracks.iter().flat_map(|r| &r.cues).filter(|q| q.start >= at) {
+            let new = project.timelines[0].tracks.iter().flat_map(|r| &r.cues).find(|q| q.id == old.id).unwrap();
+            prop_assert_eq!(new.start, old.start + length);
+            prop_assert_eq!((&new.text, new.length), (&old.text, old.length));
+        }
     }
 
     #[test]

@@ -242,26 +242,33 @@ pub(super) fn insert_move(
     if all.is_empty() {
         return Err(EditError::EmptyRange);
     }
-    let moved: Vec<(Id, Clip)> = all
+    let mut moved: Vec<(Id, Clip)> = all
         .iter()
         .map(|id| work.owned(id))
         .collect::<Result<_, _>>()?;
-    let spans = spans_of(work, &all)?;
-    let earliest = spans.iter().map(|s| s.0).min().unwrap_or(0);
-    let latest = spans.iter().map(|s| s.1).max().unwrap_or(0);
+    let spans = union(&spans_of(work, &all)?);
+    let length = spans.iter().map(|(from, to)| to - from).sum();
+    moved.sort_by_key(|(_, c)| c.start);
     for id in &all {
         work.remove(id)?;
     }
     work.close(&spans)?;
     // Where `at` is once the gaps are closed.
     let mut closed = 0;
-    for (from, to) in union(&spans) {
+    for &(from, to) in &spans {
         closed += (at.min(to) - from).max(0);
     }
     let at = at - closed;
-    work.make_room(at, latest - earliest)?;
+    work.make_room(at, length)?;
+    // Disjoint selections carry only their occupied spans. Gaps between them remain at the
+    // source rather than being inserted a second time at the destination.
+    let (mut span, mut offset) = (0, 0);
     for (track, clip) in moved {
-        let start = at + clip.start - earliest;
+        while spans[span].1 <= clip.start {
+            offset += spans[span].1 - spans[span].0;
+            span += 1;
+        }
+        let start = at + offset + clip.start - spans[span].0;
         work.insert(&track, Clip { start, ..clip })?;
     }
     Ok(())
@@ -645,6 +652,45 @@ mod tests {
             clips(&project, "A1"),
             rows(&[("c4", 0, 50, 150), ("c2", 50, 100, 0)])
         );
+    }
+
+    #[test]
+    fn an_insert_move_of_separate_clips_inserts_only_the_frames_taken_out() {
+        let mut before = project();
+        before.timelines[0].tracks.retain(|r| r.id == "V1");
+        before.timelines[0].tracks[0].clips = ["c1", "middle", "c3", "tail", "last"]
+            .into_iter()
+            .zip(0..)
+            .map(|(id, n)| clip(id, n * 25, 25, n * 25, None))
+            .collect();
+        before.validate().unwrap();
+        let mut history = crate::History::new(before.clone());
+        history
+            .edit(
+                vec![Edit::InsertMove {
+                    timeline: "t1".into(),
+                    clips: vec!["c3".into(), "c1".into()],
+                    at: 100,
+                    linked: false,
+                }],
+                "test",
+            )
+            .unwrap();
+        let after = history.project().clone();
+        assert_eq!(
+            clips(&after, "V1"),
+            rows(&[
+                ("middle", 0, 25, 25),
+                ("tail", 25, 25, 75),
+                ("c1", 50, 25, 0),
+                ("c3", 75, 25, 50),
+                ("last", 100, 25, 100),
+            ])
+        );
+        history.undo("test").unwrap().unwrap();
+        assert_eq!(history.project(), &before);
+        history.redo("test").unwrap().unwrap();
+        assert_eq!(history.project(), &after);
     }
 
     #[test]

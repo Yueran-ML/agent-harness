@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use super::work::{fit_fades, most, set_fades, Work};
+use super::work::{fit_fades, most, Work};
 use super::{CueItem, Edge, EditError};
 use crate::ops::{Op, OpError};
 use crate::project::{Alignment, Clip, Cue, Id, Track, TrackKind, Transition, TransitionKind};
@@ -125,15 +125,8 @@ pub(super) fn add_transition(
         TrackKind::Audio => TransitionKind::Crossfade,
         _ => TransitionKind::Dissolve,
     });
-    let (track, l, r) = (track.id.clone(), l.clone(), r.clone());
-    // The transition does what a fade at the cut would.
+    let track = track.id.clone();
     let timeline = work.timeline_id();
-    if l.fade_out != 0 {
-        work.op(set_fades(&timeline, left, l.fade_in, 0))?;
-    }
-    if r.fade_in != 0 {
-        work.op(set_fades(&timeline, right, 0, r.fade_out))?;
-    }
     work.op(Op::AddTransition {
         timeline,
         track,
@@ -582,16 +575,21 @@ mod tests {
     }
 
     #[test]
-    fn a_transition_takes_the_place_of_the_fades_at_its_cut() {
-        let mut project = with(
-            project(),
-            vec![super::super::work::set_fades("t1", "c1", 10, 20)],
-        );
-        edit(&mut project, add("c1", "c3", 10, Alignment::Start));
-        assert_eq!(
-            (the(&project, "c1").fade_in, the(&project, "c1").fade_out),
-            (10, 0)
-        );
+    fn a_transition_does_not_silently_replace_an_existing_fade() {
+        for (id, fade_in, fade_out, edge) in [("c1", 10, 20, "out"), ("c3", 10, 0, "in")] {
+            let project = with(
+                project(),
+                vec![super::super::work::set_fades("t1", id, fade_in, fade_out)],
+            );
+            let error = refused(project, add("c1", "c3", 10, Alignment::Start));
+            assert_eq!(
+                error,
+                EditError::Op(crate::OpError::FadeAtTransition {
+                    clip: id.into(),
+                    edge
+                })
+            );
+        }
     }
 
     #[test]

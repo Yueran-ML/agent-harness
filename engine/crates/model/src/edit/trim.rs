@@ -297,12 +297,6 @@ pub(super) fn slide(
     for id in work.group(&[clip.into()], linked)? {
         let (track, c) = work.clip(&id)?;
         let (before, after) = neighbours(track, c);
-        // A clip with nothing after it would change how long the timeline lasts.
-        let Some(after) = after else {
-            return Err(EditError::NoRoom {
-                track: track.id.clone(),
-            });
-        };
         let meeting = |at: i64, start: bool| {
             track
                 .clips
@@ -321,7 +315,10 @@ pub(super) fn slide(
             Some(r) => limit.at_most(r.length - least(track, &r.id, true, true), || {
                 EditError::EmptyRange
             }),
-            None => limit.at_most(after - c.end(), no_room(track)),
+            None => limit.at_most(
+                after.unwrap_or(crate::ops::LARGEST) - c.end(),
+                no_room(track),
+            ),
         }
         let changed = |n: &Clip| {
             let (before, after) = beyond(track, &n.id);
@@ -587,10 +584,32 @@ mod tests {
             clips(&project, "V2"),
             rows(&[("c5", 130, 50, 50), ("c8", 180, 20, 10)])
         );
-        // c3 slides back into c1, which gives 20 frames, and c4 into c2 likewise. They have
-        // nothing after them: so they cannot slide.
-        let error = refused(project, slide("c3", -20));
-        assert_eq!(error, EditError::NoRoom { track: "V1".into() });
+    }
+
+    #[test]
+    fn a_last_clip_slides_and_changes_its_neighbour_without_changing_its_source() {
+        for delta in [-20, 20] {
+            let mut before = project();
+            before.timelines[0]
+                .tracks
+                .retain(|r| r.id == "V1" || r.id == "A1");
+            let mut history = crate::History::new(before.clone());
+            history.edit(vec![slide("c3", delta)], "test").unwrap();
+            let after = history.project().clone();
+            assert_eq!(
+                clips(&after, "V1"),
+                rows(&[("c1", 0, 100 + delta, 0), ("c3", 100 + delta, 50, 150)])
+            );
+            assert_eq!(
+                clips(&after, "A1"),
+                rows(&[("c2", 0, 100 + delta, 0), ("c4", 100 + delta, 50, 150)])
+            );
+            assert_eq!(crate::resolve::duration(&after.timelines[0]), 150 + delta);
+            history.undo("test").unwrap().unwrap();
+            assert_eq!(history.project(), &before);
+            history.redo("test").unwrap().unwrap();
+            assert_eq!(history.project(), &after);
+        }
     }
 
     #[test]
@@ -620,6 +639,30 @@ mod tests {
         assert_eq!(
             clips(&project, "V1"),
             rows(&[("c1", 0, 1, 0), ("c3", 1, 50, 150), ("c8", 51, 149, 1)])
+        );
+    }
+
+    #[test]
+    fn a_ripple_trim_stops_where_the_transition_uses_the_remaining_media_handles() {
+        let mut project = with(
+            project(),
+            vec![
+                Op::InsertClip {
+                    timeline: "t1".into(),
+                    track: "V1".into(),
+                    clip: clip("c8", 150, 50, 100, None),
+                },
+                transition("V1", "c3", "c8", 20, Alignment::Start),
+            ],
+        );
+        let done = edit(&mut project, trim("c3", Edge::Out, 80, true));
+        assert!(done.clamped);
+        assert_eq!(the(&project, "c3").length, 80);
+        assert_eq!(the(&project, "c4").length, 80);
+        assert_eq!(the(&project, "c8").start, 180);
+        assert_eq!(
+            transitions(&project, "V1"),
+            [("c3".into(), "c8".into(), 20)]
         );
     }
 

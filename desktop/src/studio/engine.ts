@@ -29,6 +29,8 @@ export interface Identity {
 
 /** The picture of a file. */
 export interface VideoFacts {
+  /** A decoded still holds its frame for the entire clip. */
+  still?: boolean;
   width: number;
   height: number;
   rate: Rate;
@@ -64,59 +66,88 @@ export interface Proxy {
 /** A file that the project is cut from. `proxy` is left out where it has none. */
 export interface Media {
   id: string;
+  name: string;
+  bin: string | null;
+  mark_in: Time | null;
+  mark_out: Time | null;
   path: string;
   identity: Identity;
   facts: Facts;
   proxy?: Proxy;
 }
 
-export type TrackKind = 'video' | 'audio';
-
-/** A stretch of a source on a track: from `source_in` in the source, at frame `start`, for `length` frames. */
+export type TrackKind = 'video' | 'audio' | 'subtitle';
+export type Monitor = 'source' | 'timeline';
+export interface Bin { id: string; name: string; parent: string | null }
+export interface Speed { num: number; den: number }
+export interface Transform { x: number; y: number; scale: number; rotation: number; opacity: number }
+export interface TitleStyle { font: string; size: number; color: string; x: number; y: number; align: 'left' | 'center' | 'right' }
+export type ClipSource =
+  | { kind: 'media'; media: string; in: Time }
+  | { kind: 'title'; text: string; style: TitleStyle }
+  | { kind: 'color'; color: string };
 export interface Clip {
   id: string;
-  media: string;
-  source_in: Time;
   start: number;
   length: number;
+  source: ClipSource;
+  enabled: boolean;
+  speed: Speed;
+  reverse: boolean;
+  link: string | null;
+  transform: Transform;
+  gain_db: number;
+  pan: number;
+  fade_in: number;
+  fade_out: number;
 }
-
-/** A track of a timeline, and its clips in the order of their start. */
-export interface Track {
-  id: string;
-  kind: TrackKind;
-  clips: Clip[];
-}
-
-/** A timeline: tracks of clips, laid on frames of one rate. */
+export type TransitionKind = 'dissolve' | 'dip_black' | 'dip_white' | 'crossfade';
+export type Alignment = 'start' | 'center' | 'end';
+export interface Transition { id: string; kind: TransitionKind; left: string; right: string; length: number; align: Alignment }
+export interface Cue { id: string; start: number; length: number; text: string }
+interface TrackBase { id: string; name: string; enabled: boolean; locked: boolean }
+export interface ClipTrack extends TrackBase { kind: 'video' | 'audio'; clips: Clip[]; transitions: Transition[] }
+export interface SubtitleTrack extends TrackBase { kind: 'subtitle'; language: string; cues: Cue[] }
+export type Track = ClipTrack | SubtitleTrack;
 export interface Timeline {
   id: string;
   name: string;
   rate: Rate;
+  width: number;
+  height: number;
+  sample_rate: number;
   tracks: Track[];
 }
+export interface Project { schema: 2; next_id: number; bins: Bin[]; media: Media[]; timelines: Timeline[] }
 
-/** A project of the studio, as `project.json` and `project.get` have it. */
-export interface Project {
-  schema: number;
-  next_id: number;
-  media: Media[];
-  timelines: Timeline[];
-}
-
-/** A change to a project. A missing `index` means "at the end". */
+type Settings<T, K extends keyof T> = { [P in K]?: T[P] | null };
+/** Basic operations broadcast in `done`. Editing commands are expanded by the engine alone. */
 export type Op =
   | { op: 'add_media'; media: Media; index?: number | null }
   | { op: 'remove_media'; id: string }
+  | ({ op: 'set_media'; id: string; still?: boolean | null } & Settings<Media, 'name' | 'bin' | 'mark_in' | 'mark_out'>)
+  | { op: 'set_proxy'; media: string; proxy: Proxy | null }
+  | { op: 'add_bin'; bin: Bin; index?: number | null }
+  | { op: 'remove_bin'; id: string }
+  | ({ op: 'set_bin'; id: string } & Settings<Bin, 'name' | 'parent'>)
   | { op: 'add_timeline'; timeline: Timeline; index?: number | null }
   | { op: 'remove_timeline'; id: string }
+  | ({ op: 'set_timeline'; id: string } & Settings<Timeline, 'name' | 'rate' | 'width' | 'height' | 'sample_rate'>)
   | { op: 'add_track'; timeline: string; track: Track; index?: number | null }
   | { op: 'remove_track'; timeline: string; id: string }
+  | ({ op: 'set_track'; timeline: string; id: string; language?: string | null } & Settings<Track, 'name' | 'enabled' | 'locked'>)
   | { op: 'insert_clip'; timeline: string; track: string; clip: Clip }
   | { op: 'remove_clip'; timeline: string; id: string }
   | { op: 'move_clip'; timeline: string; id: string; track: string; start: number }
-  | { op: 'trim_clip'; timeline: string; id: string; source_in: Time; start: number; length: number }
-  | { op: 'set_proxy'; media: string; proxy: Proxy | null };
+  | { op: 'shift_clips'; timeline: string; track: string; clips: string[]; by: number }
+  | { op: 'trim_clip'; timeline: string; id: string; source_in?: Time | null; start: number; length: number }
+  | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'source'>)
+  | { op: 'add_transition'; timeline: string; track: string; transition: Transition }
+  | { op: 'remove_transition'; timeline: string; id: string }
+  | ({ op: 'set_transition'; timeline: string; id: string } & Settings<Transition, 'kind' | 'length' | 'align'>)
+  | { op: 'add_cue'; timeline: string; track: string; cue: Cue }
+  | { op: 'remove_cue'; timeline: string; id: string }
+  | ({ op: 'set_cue'; timeline: string; id: string } & Settings<Cue, 'start' | 'length' | 'text'>);
 
 /** Who asked for a change, or made the step that it takes back or does again. */
 export type ClientKind = 'desktop' | 'agent' | 'cli' | 'engine';
@@ -131,8 +162,7 @@ export interface ProjectChanged {
 }
 
 /** The state of the transport: the result of `transport.load` and `transport.state`, and the notification `transport.state`. */
-export interface TransportState {
-  media: string | null;
+interface TransportBase {
   frame: number | null;
   playing: boolean;
   speed: number;
@@ -140,9 +170,20 @@ export interface TransportState {
   shown: number | null;
   last: number | null;
   sound: 'none' | 'on' | 'off' | 'unavailable';
-  source: 'proxy' | 'original' | null;
   proxies: boolean;
 }
+export interface SourceTransportState extends TransportBase {
+  monitor: 'source';
+  media: string | null;
+  source: 'proxy' | 'original' | null;
+}
+export interface TimelineTransportState extends TransportBase {
+  monitor: 'timeline';
+  timeline: string | null;
+  source: 'proxy' | 'original' | 'mixed' | null;
+  late: number;
+}
+export type TransportState = SourceTransportState | TimelineTransportState;
 
 /** The notification `media.proxy`: how the proxy of media is being made. */
 export interface ProxyEvent {
@@ -171,6 +212,8 @@ export interface Applied {
   done: Op[];
   next_id: number;
   names: Record<string, string>;
+  /** Input edit indexes whose requested amount exceeded the available handles. */
+  clamped: number[];
 }
 
 /** The result of `history.undo` and `history.redo`: `done` is null where there was nothing to take back or do again. */
@@ -187,6 +230,17 @@ export interface Imported {
   next_id: number;
 }
 
+/** Export options from the page. Only the native Save As dialog supplies the output path. */
+export interface RenderOptions {
+  timeline: string;
+  codec: 'h264' | 'hevc' | 'prores';
+  quality: 'high' | 'medium' | 'small';
+  range?: { from: number; to: number };
+  subtitles: boolean;
+  language?: string;
+}
+export type RenderStarted = { job: string } | { cancelled: true };
+
 /** The methods of the engine that the page may call, and what each answers. */
 export interface PageMethods {
   'project.get': ProjectGot;
@@ -194,6 +248,10 @@ export interface PageMethods {
   'history.undo': Stepped;
   'history.redo': Stepped;
   'media.make_proxy': Record<string, never>;
+  'timeline.duration': { frames: number };
+  'media.thumbnail': { width: number; height: number; png: string };
+  'media.waveform': { rate: number; channels: number; peaks: string } | { pending: true };
+  'render.cancel': Record<string, never>;
   'transport.load': TransportState;
   'transport.play': Record<string, never>;
   'transport.pause': Record<string, never>;
@@ -232,8 +290,8 @@ export type EngineEvent =
   | { kind: 'notification'; session: number; method: string; params: unknown }
   | { kind: 'exited'; session: number; expected: boolean; code: number | null; signal: string | null }
   | { kind: 'error'; session: number; message: string; code?: number | null; data?: unknown }
-  | { kind: 'attached'; session: number; adapter: string | null; backend: string | null }
-  | { kind: 'unsupported'; session: number; reason: 'unsupported' | 'headless'; message: string }
+  | { kind: 'attached'; session: number; monitor: Monitor; adapter: string | null; backend: string | null }
+  | { kind: 'unsupported'; session: number; monitor: Monitor; reason: 'unsupported' | 'headless'; message: string }
   /** A headless engine (an agent's) had the project, and was asked to yield it; `opened` follows. */
   | { kind: 'taking-over'; session: number; pid: number | null }
   /**
@@ -320,16 +378,20 @@ function put(clips: readonly Clip[], clip: Clip): Clip[] {
   return inserted(clips, clip, at < 0 ? clips.length : at);
 }
 
-/** A track whose clips are in the order of their start, as the engine keeps them. */
+/** The engine sorts clips/cues by start, transitions by their right clip's cut. */
 function ordered(track: Track): Track {
-  return { ...track, clips: [...track.clips].sort((one, other) => one.start - other.start) };
+  if (track.kind === 'subtitle') return { ...track, cues: [...track.cues].sort((a, b) => a.start - b.start) };
+  const starts = new Map(track.clips.map(clip => [clip.id, clip.start]));
+  return { ...track, clips: [...track.clips].sort((a, b) => a.start - b.start),
+    transitions: [...track.transitions].sort((a, b) => (starts.get(a.right) ?? Infinity) - (starts.get(b.right) ?? Infinity)) };
 }
 
-/** Where a clip is in a timeline: its track, and its place on it. */
 function clipAt(timeline: Timeline, id: string): [number, number] {
-  for (let track = 0; track < timeline.tracks.length; track += 1) {
-    const at = timeline.tracks[track].clips.findIndex(clip => clip.id === id);
-    if (at >= 0) return [track, at];
+  for (let index = 0; index < timeline.tracks.length; index += 1) {
+    const track = timeline.tracks[index];
+    if (track.kind === 'subtitle') continue;
+    const at = track.clips.findIndex(clip => clip.id === id);
+    if (at >= 0) return [index, at];
   }
   throw new CopyMismatch(`there is no clip ${id} in the copy`);
 }
@@ -339,60 +401,124 @@ function inTimeline(project: Project, id: string, change: (timeline: Timeline) =
   return { ...project, timelines: replaced(project.timelines, at, change(project.timelines[at])) };
 }
 
-function inTrack(timeline: Timeline, at: number, change: (clips: Clip[]) => Clip[]): Timeline {
-  const track = timeline.tracks[at];
-  return { ...timeline, tracks: replaced(timeline.tracks, at, { ...track, clips: change(track.clips) }) };
+function inTrack(timeline: Timeline, at: number, change: (track: Track) => Track): Timeline {
+  return { ...timeline, tracks: replaced(timeline.tracks, at, change(timeline.tracks[at])) };
 }
 
-/**
- * Apply an operation as the engine did it (from `done`, with every id and place filled in) to a
- * copy of the project, as `crates/model/src/ops.rs` applies it. The project given is not changed:
- * what changed is new, and what did not is shared. Throws `CopyMismatch` where the copy does not
- * hold what the operation names.
- */
+function clipTrack(track: Track): ClipTrack {
+  if (track.kind === 'subtitle') throw new CopyMismatch(`track ${track.id} holds subtitles, not clips`);
+  return track;
+}
+
+function inClips(timeline: Timeline, at: number, change: (clips: Clip[]) => Clip[]): Timeline {
+  return inTrack(timeline, at, track => ordered({ ...clipTrack(track), clips: change(clipTrack(track).clips) }));
+}
+
+/** Only double-option fields distinguish null (clear it) from an absent field (keep it). */
+function patched<T>(item: T, op: object, keys: readonly string[], nullable: readonly string[] = []): T {
+  const fields = op as Record<string, unknown>;
+  const changed = Object.fromEntries(keys.filter(key => fields[key] !== undefined && (fields[key] !== null || nullable.includes(key))).map(key => [key, fields[key]]));
+  return { ...item, ...changed };
+}
+
+function inCue(timeline: Timeline, id: string, change: (cues: Cue[], at: number) => Cue[]): Timeline {
+  for (let i = 0; i < timeline.tracks.length; i += 1) {
+    const track = timeline.tracks[i];
+    if (track.kind !== 'subtitle') continue;
+    const at = track.cues.findIndex(cue => cue.id === id);
+    if (at >= 0) return inTrack(timeline, i, () => ordered({ ...track, cues: change(track.cues, at) }));
+  }
+  throw new CopyMismatch(`there is no subtitle ${id} in the copy`);
+}
+
+function inTransition(timeline: Timeline, id: string, change: (items: Transition[], at: number) => Transition[]): Timeline {
+  for (let i = 0; i < timeline.tracks.length; i += 1) {
+    const track = timeline.tracks[i];
+    if (track.kind === 'subtitle') continue;
+    const at = track.transitions.findIndex(item => item.id === id);
+    if (at >= 0) return inTrack(timeline, i, () => ordered({ ...track, transitions: change(track.transitions, at) }));
+  }
+  throw new CopyMismatch(`there is no transition ${id} in the copy`);
+}
+
+/** Mirror only accepted basic operations, preserving all objects outside the changed branch. */
 export function applyOp(project: Project, op: Op): Project {
   switch (op.op) {
-    case 'add_media':
-      return { ...project, media: inserted(project.media, op.media, op.index) };
-    case 'remove_media':
-      return { ...project, media: without(project.media, placeOf(project.media, op.id, 'media')) };
+    case 'add_media': return { ...project, media: inserted(project.media, op.media, op.index) };
+    case 'remove_media': return { ...project, media: without(project.media, placeOf(project.media, op.id, 'media')) };
+    case 'set_media': {
+      const at = placeOf(project.media, op.id, 'media');
+      let media = patched(project.media[at], op, ['name', 'bin', 'mark_in', 'mark_out'], ['bin', 'mark_in', 'mark_out']);
+      if (op.still != null) {
+        if (!media.facts.video) throw new CopyMismatch(`media ${op.id} has no picture`);
+        const { still: _old, ...picture } = media.facts.video;
+        media = { ...media, facts: { ...media.facts, video: op.still ? { ...picture, still: true } : picture } };
+      }
+      return { ...project, media: replaced(project.media, at, media) };
+    }
     case 'set_proxy': {
       const at = placeOf(project.media, op.media, 'media');
       const { proxy: _before, ...media } = project.media[at];
-      // A proxy taken away is left out, as the engine writes it; one left out of the operation is taken away.
       return { ...project, media: replaced(project.media, at, op.proxy == null ? media : { ...media, proxy: op.proxy }) };
     }
-    case 'add_timeline':
-      return { ...project, timelines: inserted(project.timelines, { ...op.timeline, tracks: op.timeline.tracks.map(ordered) }, op.index) };
-    case 'remove_timeline':
-      return { ...project, timelines: without(project.timelines, placeOf(project.timelines, op.id, 'timeline')) };
-    case 'add_track':
-      return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: inserted(timeline.tracks, ordered(op.track), op.index) }));
-    case 'remove_track':
-      return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: without(timeline.tracks, placeOf(timeline.tracks, op.id, 'track')) }));
-    case 'insert_clip':
-      return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), clips => put(clips, op.clip)));
-    case 'remove_clip':
-      return inTimeline(project, op.timeline, (timeline) => {
-        const [track, at] = clipAt(timeline, op.id);
-        return inTrack(timeline, track, clips => without(clips, at));
+    case 'add_bin': return { ...project, bins: inserted(project.bins, op.bin, op.index) };
+    case 'remove_bin': return { ...project, bins: without(project.bins, placeOf(project.bins, op.id, 'bin')) };
+    case 'set_bin': {
+      const at = placeOf(project.bins, op.id, 'bin');
+      return { ...project, bins: replaced(project.bins, at, patched(project.bins[at], op, ['name', 'parent'], ['parent'])) };
+    }
+    case 'add_timeline': return { ...project, timelines: inserted(project.timelines, { ...op.timeline, tracks: op.timeline.tracks.map(ordered) }, op.index) };
+    case 'remove_timeline': return { ...project, timelines: without(project.timelines, placeOf(project.timelines, op.id, 'timeline')) };
+    case 'set_timeline': return inTimeline(project, op.id, timeline => patched(timeline, op, ['name', 'rate', 'width', 'height', 'sample_rate']));
+    case 'add_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: inserted(timeline.tracks, ordered(op.track), op.index) }));
+    case 'remove_track': return inTimeline(project, op.timeline, timeline => ({ ...timeline, tracks: without(timeline.tracks, placeOf(timeline.tracks, op.id, 'track')) }));
+    case 'set_track': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.id, 'track'), track => patched(track, op, ['name', 'enabled', 'locked', ...(track.kind === 'subtitle' ? ['language'] : [])])));
+    case 'insert_clip': return inTimeline(project, op.timeline, timeline => inClips(timeline, placeOf(timeline.tracks, op.track, 'track'), clips => put(clips, op.clip)));
+    case 'remove_clip': return inTimeline(project, op.timeline, timeline => {
+      const [track, at] = clipAt(timeline, op.id);
+      return inClips(timeline, track, clips => without(clips, at));
+    });
+    case 'move_clip': return inTimeline(project, op.timeline, timeline => {
+      const [from, at] = clipAt(timeline, op.id);
+      const to = placeOf(timeline.tracks, op.track, 'track');
+      const moved = { ...clipTrack(timeline.tracks[from]).clips[at], start: op.start };
+      const taken = inClips(timeline, from, clips => without(clips, at));
+      return inClips(taken, to, clips => put(clips, moved));
+    });
+    case 'shift_clips': return inTimeline(project, op.timeline, timeline => {
+      const at = placeOf(timeline.tracks, op.track, 'track');
+      const ids = new Set(op.clips);
+      return inClips(timeline, at, clips => {
+        for (const id of ids) placeOf(clips, id, 'clip');
+        return clips.map(clip => ids.has(clip.id) ? { ...clip, start: clip.start + op.by } : clip);
       });
-    case 'move_clip':
-      return inTimeline(project, op.timeline, (timeline) => {
-        const [from, at] = clipAt(timeline, op.id);
-        const to = placeOf(timeline.tracks, op.track, 'track');
-        const moved = { ...timeline.tracks[from].clips[at], start: op.start };
-        const taken = inTrack(timeline, from, clips => without(clips, at));
-        return inTrack(taken, to, clips => put(clips, moved));
+    });
+    case 'trim_clip': return inTimeline(project, op.timeline, timeline => {
+      const [track, at] = clipAt(timeline, op.id);
+      return inClips(timeline, track, clips => {
+        const clip = clips[at];
+        const source = clip.source.kind === 'media' && op.source_in != null ? { ...clip.source, in: op.source_in } : clip.source;
+        return put(without(clips, at), { ...clip, source, start: op.start, length: op.length });
       });
-    case 'trim_clip':
-      return inTimeline(project, op.timeline, (timeline) => {
-        const [track, at] = clipAt(timeline, op.id);
-        const trimmed = { ...timeline.tracks[track].clips[at], source_in: op.source_in, start: op.start, length: op.length };
-        return inTrack(timeline, track, clips => put(without(clips, at), trimmed));
-      });
-    default:
-      throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);
+    });
+    case 'set_clip': return inTimeline(project, op.timeline, timeline => {
+      const [track, at] = clipAt(timeline, op.id);
+      return inClips(timeline, track, clips => replaced(clips, at, patched(clips[at], op,
+        ['enabled', 'speed', 'reverse', 'link', 'transform', 'gain_db', 'pan', 'fade_in', 'fade_out', 'source'], ['link'])));
+    });
+    case 'add_transition': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {
+      const to = clipTrack(track);
+      return ordered({ ...to, transitions: [...to.transitions, op.transition] });
+    }));
+    case 'remove_transition': return inTimeline(project, op.timeline, timeline => inTransition(timeline, op.id, (items, at) => without(items, at)));
+    case 'set_transition': return inTimeline(project, op.timeline, timeline => inTransition(timeline, op.id, (items, at) => replaced(items, at, patched(items[at], op, ['kind', 'length', 'align']))));
+    case 'add_cue': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {
+      if (track.kind !== 'subtitle') throw new CopyMismatch(`track ${track.id} holds no subtitles`);
+      return ordered({ ...track, cues: [...track.cues, op.cue] });
+    }));
+    case 'remove_cue': return inTimeline(project, op.timeline, timeline => inCue(timeline, op.id, (items, at) => without(items, at)));
+    case 'set_cue': return inTimeline(project, op.timeline, timeline => inCue(timeline, op.id, (items, at) => replaced(items, at, patched(items[at], op, ['start', 'length', 'text']))));
+    default: throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);
   }
 }
 
@@ -425,10 +551,10 @@ export interface StudioSnapshot {
    */
   project: Project | null;
   /** What the transport told last, or null before it told anything. */
-  transport: TransportState | null;
+  transports: { source: SourceTransportState | null; timeline: TimelineTransportState | null };
   /** How the proxy of each media item is being made, as the engine told last, by the media. */
   proxies: Readonly<Record<string, ProxyEvent>>;
-  view: ViewState;
+  views: Record<Monitor, ViewState>;
   /** What went wrong last: an error of the engine, or a fetch that failed. Null where nothing did. */
   error: string | null;
   /** Whether the headless engine of an agent is being asked to yield the project, until it is opened. */
@@ -436,7 +562,7 @@ export interface StudioSnapshot {
 }
 
 const NOTHING: StudioSnapshot = {
-  status: 'disconnected', session: null, revision: null, project: null, transport: null, proxies: {}, view: { state: 'none' },
+  status: 'disconnected', session: null, revision: null, project: null, transports: { source: null, timeline: null }, proxies: {}, views: { source: { state: 'none' }, timeline: { state: 'none' } },
   error: null, takingOver: false,
 };
 
@@ -573,8 +699,8 @@ export class ProjectCopy {
         if (event.session !== session) {
           // Another engine, maybe of another project: nothing of the one before is shown of it.
           this.set({
-            session: event.session, status: 'disconnected', revision: null, project: null, transport: null, proxies: {},
-            view: { state: 'none' }, error: null, takingOver: false,
+            session: event.session, status: 'disconnected', revision: null, project: null, transports: { source: null, timeline: null }, proxies: {},
+            views: { source: { state: 'none' }, timeline: { state: 'none' } }, error: null, takingOver: false,
           });
         } else if (this.snapshot.takingOver) this.set({ takingOver: false });
         void this.refetch();
@@ -584,7 +710,7 @@ export class ProjectCopy {
         this.open = false;
         this.fetchAgain = false;
         this.cancelRetry();
-        this.set({ status: 'disconnected', transport: null, view: { state: 'none' } });
+        this.set({ status: 'disconnected', transports: { source: null, timeline: null }, views: { source: { state: 'none' }, timeline: { state: 'none' } } });
         return;
       case 'taking-over':
         this.set({ takingOver: true });
@@ -594,10 +720,10 @@ export class ProjectCopy {
         this.set({ error: event.message, takingOver: false });
         return;
       case 'attached':
-        this.set({ view: { state: 'attached', adapter: event.adapter, backend: event.backend } });
+        this.set({ views: { ...this.snapshot.views, [event.monitor]: { state: 'attached', adapter: event.adapter, backend: event.backend } } });
         return;
       case 'unsupported':
-        this.set({ view: { state: 'unsupported', reason: event.reason } });
+        this.set({ views: { ...this.snapshot.views, [event.monitor]: { state: 'unsupported', reason: event.reason } } });
         return;
       case 'notification':
         this.told(event.method, event.params);
@@ -609,7 +735,12 @@ export class ProjectCopy {
   private told(method: string, params: unknown): void {
     if (params === null || typeof params !== 'object') return;
     if (method === 'project.changed') this.changed(params as ProjectChanged);
-    else if (method === 'transport.state') this.set({ transport: params as TransportState });
+    else if (method === 'transport.state') {
+      const state = params as TransportState;
+      if (state.monitor === 'source' || state.monitor === 'timeline') {
+        this.set({ transports: { ...this.snapshot.transports, [state.monitor]: state } });
+      }
+    }
     else if (method === 'media.proxy') {
       const told = params as ProxyEvent;
       this.set({ proxies: { ...this.snapshot.proxies, [told.media]: told } });

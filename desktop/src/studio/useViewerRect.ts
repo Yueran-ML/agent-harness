@@ -13,7 +13,7 @@
 import { useEffect, type RefObject } from 'react';
 import type { EngineBridge } from '../bridge';
 import { overlayOpen, subscribeOverlay } from '../app/overlay';
-import { deviceRect, type ViewRect } from './engine';
+import { deviceRect, type Monitor, type ViewRect } from './engine';
 
 /** What of the engine the viewer needs. */
 export type ViewBridge = Pick<EngineBridge, 'viewRect' | 'viewShow' | 'onEvent'>;
@@ -35,7 +35,7 @@ const ratio = () => (typeof window.devicePixelRatio === 'number' && window.devic
  * Keep the shell told where `viewer` lies while `active` holds, and the view shown while nothing
  * lies over it. Once it is no longer active, the view is hidden.
  */
-export function useViewerRect(viewer: RefObject<HTMLElement | null>, bridge: ViewBridge | null, active: boolean): void {
+export function useViewerRect(viewer: RefObject<HTMLElement | null>, bridge: ViewBridge | null, active: boolean, monitor: Monitor = 'source'): void {
   useEffect(() => {
     const element = viewer.current;
     if (!active || bridge === null || element === null) return undefined;
@@ -52,7 +52,7 @@ export function useViewerRect(viewer: RefObject<HTMLElement | null>, bridge: Vie
       const show = measured && !overlayOpen() && document.visibilityState !== 'hidden';
       if (show === shown) return;
       shown = show;
-      quietly(() => bridge.viewShow(show));
+      quietly(() => bridge.viewShow(show, monitor));
     };
 
     const measure = () => {
@@ -65,7 +65,7 @@ export function useViewerRect(viewer: RefObject<HTMLElement | null>, bridge: Vie
       watchMoves();
       if (!asked && told !== null && same(told, rect)) return;
       told = rect;
-      quietly(() => bridge.viewRect(rect));
+      quietly(() => bridge.viewRect(rect, monitor));
       if (!measured) {
         measured = true;
         showAsItIs();
@@ -140,7 +140,7 @@ export function useViewerRect(viewer: RefObject<HTMLElement | null>, bridge: Vie
       unheard();
       overlaid();
       document.removeEventListener('visibilitychange', showAsItIs);
-      if (shown !== false) quietly(() => bridge.viewShow(false));
+      if (shown !== false) quietly(() => bridge.viewShow(false, monitor));
     };
-  }, [active, bridge, viewer]);
+  }, [active, bridge, viewer, monitor]);
 }

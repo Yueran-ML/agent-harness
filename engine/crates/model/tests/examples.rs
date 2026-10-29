@@ -133,6 +133,10 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
     media.id = String::new();
     media.name = "b-roll.mov".into();
     media.path = "C:/media/b-roll.mov".into();
+    let mut still = media.clone();
+    still.name = "picture.png".into();
+    still.path = "C:/media/picture.png".into();
+    still.facts.audio = None;
     let mut fast = set_clip("c2");
     if let Op::SetClip {
         enabled,
@@ -393,6 +397,21 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
                 bin: Some(Some("b4".into())),
                 mark_in: Some(Some(at(1))),
                 mark_out: Some(Some(at(8))),
+            },
+        ),
+        (
+            "set_media still classification",
+            vec![Op::AddMedia {
+                media: still,
+                index: None,
+            }],
+            Op::SetMedia {
+                still: Some(true),
+                id: "m9".into(),
+                name: None,
+                bin: None,
+                mark_in: None,
+                mark_out: None,
             },
         ),
         (

@@ -86,7 +86,7 @@ export class FakeServer {
     let answer: Answer;
     if (message.method === 'hello') {
       this.clients.add(socket);
-      answer = { result: { engine: '0.1.0', protocol: 1, revision: this.revision, project: this.project, pid: this.pid, headless: this.headless } };
+      answer = { result: { engine: '0.1.0', protocol: 2, revision: this.revision, project: this.project, pid: this.pid, headless: this.headless } };
     } else {
       answer = this.answers.get(message.method!)?.(message.params, socket) ?? { result: {} };
     }
@@ -205,7 +205,7 @@ export class EngineWorld {
       if ('listen' in start) {
         server = this.serve(start.listen, project, child.pid);
         errors('{"event": "proxy_ffmpeg", "path": null}');
-        child.stdout.emit('data', Buffer.from(`{"listening": ${JSON.stringify(start.listen)}, "pid": ${child.pid}, "protocol": 1}\n`, 'utf8'));
+        child.stdout.emit('data', Buffer.from(`{"listening": ${JSON.stringify(start.listen)}, "pid": ${child.pid}, "protocol": 2}\n`, 'utf8'));
       } else if ('first' in start) {
         child.stdout.emit('data', Buffer.from(`${start.first}\n`, 'utf8'));
       } else if ('held' in start) {

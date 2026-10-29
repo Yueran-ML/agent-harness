@@ -1,4 +1,4 @@
-import type { EngineAnswer, EngineEvent, EngineOpened, Imported, PageMethod, ViewRect } from './studio/engine';
+import type { EngineAnswer, EngineEvent, EngineOpened, Imported, Monitor, PageMethod, RenderOptions, RenderStarted, ViewRect } from './studio/engine';
 
 export interface ColumbinaBridge {
   /** The system that the application runs on, as Node names it: `win32`, `darwin` or `linux`. */
@@ -282,13 +282,15 @@ export interface EngineBridge {
    * and import it into the project. The result is null where nothing was chosen.
    */
   importFiles(asked?: { language: string }): Promise<EngineAnswer<Imported | null>>;
+  /** Choose an export destination in Save As and start rendering. Existing outputs are not replaced. */
+  render(options: RenderOptions): Promise<EngineAnswer<RenderStarted>>;
   /**
    * Say where the viewer lies, in device pixels from the corner of the client area. The view is
    * made there once an engine is open, and moved there as it changes.
    */
-  viewRect(rect: ViewRect): Promise<void>;
+  viewRect(rect: ViewRect, monitor: Monitor): Promise<void>;
   /** Hide the view while something of the page lies over the viewer, and show it again after. */
-  viewShow(shown: boolean): Promise<void>;
+  viewShow(shown: boolean, monitor: Monitor): Promise<void>;
   /** Close the engine of the studio. One that this application started ends. */
   close(): Promise<void>;
   /** Hear what the engine tells, and how it stands, in order. */

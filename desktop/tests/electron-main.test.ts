@@ -98,7 +98,10 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
       return path.resolve(`/columbina-test/${name}`);
     }),
   });
-  const dialog = { showOpenDialog: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }) };
+  const dialog = {
+    showOpenDialog: vi.fn().mockResolvedValue({ canceled: true, filePaths: [] }),
+    showSaveDialog: vi.fn().mockResolvedValue({ canceled: true }),
+  };
   const sent: [string, unknown][] = [];
   // Every window that the shell opened, the main one first.
   const windows: any[] = [];
@@ -3834,6 +3837,88 @@ describe('the engine of the studio', () => {
   /** The connections that reached an engine: the main one, then the one of the view, of each engine in turn. */
   const connections = (shell: Shell) => shell.engines.sockets.filter(socket => socket.server !== null);
 
+  it('renders only to the file chosen in Save As, and never takes a path or overwrite permission from the page', async () => {
+    const shell = await shellHarness();
+    const options = { timeline: 't1', codec: 'hevc', quality: 'high', subtitles: true, range: { from: 10, to: 50 }, language: 'zh-CN' };
+    expect(await shell.invoke('engine-render', options)).toMatchObject({ ok: false });
+    expect(shell.dialog.showSaveDialog).not.toHaveBeenCalled();
+    await openIn(shell);
+    const [main] = connections(shell);
+    shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ result: { job: 'render-1' } }));
+    const chosen = path.resolve('/exports/chosen.mp4');
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    expect(await shell.invoke('engine-render', { ...options, path: '/unselected/precious.mp4', replace: true }))
+      .toEqual({ ok: true, result: { job: 'render-1' } });
+    expect(main.written.at(-1)).toMatchObject({ method: 'render.start', params: {
+      timeline: 't1', path: chosen, codec: 'hevc', quality: 'high', subtitles: true, range: { from: 10, to: 50 }, replace: false,
+    } });
+    expect(Object.keys(main.written.at(-1)!.params).sort()).toEqual(['codec', 'path', 'quality', 'range', 'replace', 'subtitles', 'timeline']);
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)).toEqual([shell.window, expect.objectContaining({
+      title: '导出时间线', filters: [{ name: 'MP4 / MOV', extensions: ['mp4', 'mov'] }],
+    })]);
+    const count = main.written.length;
+    expect(await shell.invoke('engine-render', options)).toEqual({ ok: true, result: { cancelled: true } });
+    expect(main.written.length).toBe(count);
+    await expect(shell.invoke('engine-call', { method: 'render.start', params: { path: chosen } })).rejects.toThrow('no method');
+    let choose!: (value: unknown) => void;
+    shell.dialog.showSaveDialog.mockReturnValueOnce(new Promise(resolve => { choose = resolve; }));
+    const pending = shell.invoke('engine-render', options);
+    await openIn(shell, '/another-film');
+    choose({ canceled: false, filePath: chosen });
+    expect(await pending).toMatchObject({ ok: false, error: { message: 'The project of the studio was closed meanwhile.' } });
+    expect(connections(shell)[2].methods()).not.toContain('render.start');
+  });
+
+  it('attaches and keeps both native monitors independently, including after a page reload', async () => {
+    const shell = await shellHarness();
+    const { cwd } = await openIn(shell);
+    const [, view] = connections(shell);
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 10, y: 20, width: 640, height: 360 });
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', x: 650, y: 20, width: 640, height: 360 });
+    await settledAll();
+    expect(view.written.filter(request => request.method === 'view.attach').map(request => request.params.monitor))
+      .toEqual(['source', 'timeline']);
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { monitor: 'source', shown: false } });
+    await shell.invoke('engine-view-rect', { monitor: 'timeline', x: 670, y: 30, width: 640, height: 360 });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { monitor: 'timeline', x: 670 } });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: true });
+    shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+    expect(view.written.slice(-2).map(request => request.params)).toEqual([
+      { monitor: 'source', shown: false }, { monitor: 'timeline', shown: false },
+    ]);
+    await shell.invoke('engine-open', { cwd });
+    expect(told(shell).slice(-2).map(event => [event.kind, event.monitor])).toEqual([['attached', 'source'], ['attached', 'timeline']]);
+    const count = view.written.length;
+    for (const monitor of [undefined, null, 'program', '__proto__']) {
+      expect(() => shell.invoke('engine-view-rect', { monitor, x: 0, y: 0, width: 1, height: 1 })).toThrow('monitor');
+      await expect(shell.invoke('engine-call', { method: 'transport.seek', params: { monitor, frame: 1 } })).rejects.toThrow('monitor');
+    }
+    expect(view.written.length).toBe(count);
+  });
+
+  it('validates export settings before the dialog and keeps a refusal from the engine intact', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const options = { timeline: 't1', codec: 'prores', quality: 'medium', subtitles: false };
+    for (const patch of [{ timeline: '' }, { codec: 'gif' }, { quality: 'lossless' }, { subtitles: 1 },
+      { range: null }, { range: { from: -1, to: 10 } }, { range: { from: 1, to: 1 } }, { range: { from: 0.5, to: 10 } }]) {
+      await expect(shell.invoke('engine-render', { ...options, ...patch })).rejects.toThrow();
+    }
+    expect(shell.dialog.showSaveDialog).not.toHaveBeenCalled();
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: 'relative.mov' });
+    await expect(shell.invoke('engine-render', options)).rejects.toThrow('whole output path');
+    const [main] = connections(shell);
+    expect(main.methods()).not.toContain('render.start');
+    const chosen = path.resolve('/exports/existing.mov');
+    const error = { code: -32001, message: 'An output already exists.', data: { reason: 'exists', path: chosen } };
+    shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ error }));
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+    expect(await shell.invoke('engine-render', options)).toEqual({ ok: false, error });
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].filters).toEqual([{ name: 'MOV', extensions: ['mov'] }]);
+    expect(main.written.at(-1)!.params).toEqual({ timeline: 't1', codec: 'prores', quality: 'medium', subtitles: false, path: chosen, replace: false });
+  });
+
   it('opens only a folder that was chosen, in a project of its own there, with an engine that it starts', async () => {
     const shell = await shellHarness();
     await expect(shell.invoke('engine-open', { cwd: path.resolve('/unchosen') })).rejects.toThrow('native folder dialog');
@@ -3855,7 +3940,7 @@ describe('the engine of the studio', () => {
     expect(child.stderr.listenerCount('data')).toBe(1);
     // Two connections, each of which said hello as the desktop.
     const [main, view] = connections(shell);
-    for (const socket of [main, view]) expect(socket.written[0]).toMatchObject({ method: 'hello', params: { client: 'desktop', protocol: 1 } });
+    for (const socket of [main, view]) expect(socket.written[0]).toMatchObject({ method: 'hello', params: { client: 'desktop', protocol: 2 } });
   });
 
   it('keeps the engine of a folder that is open, and closes it before it opens another', async () => {
@@ -3883,14 +3968,15 @@ describe('the engine of the studio', () => {
     const allowed = [
       'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'transport.load', 'transport.play',
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
+      'timeline.duration', 'media.thumbnail', 'media.waveform', 'render.cancel',
     ];
     for (const method of allowed) {
-      const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3 };
+      const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };
       expect(await shell.invoke('engine-call', { method, params })).toEqual({ ok: true, result: {} });
       expect(main.written.at(-1)).toMatchObject({ method, params });
     }
     const sent = main.written.length + view.written.length;
-    for (const method of ['view.attach', 'view.detach', 'media.import', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
+    for (const method of ['render.start', 'view.attach', 'view.detach', 'media.import', 'hello', 'project.changed', 'transport', '', 7, undefined, 'constructor']) {
       await expect(shell.invoke('engine-call', { method, params: {} })).rejects.toThrow('no method of the engine');
     }
     for (const params of [[1], 'ops', 3]) {
@@ -3980,23 +4066,23 @@ describe('the engine of the studio', () => {
   it('makes the view where the page keeps the viewer, in the window, on a connection of its own', async () => {
     const shell = await shellHarness();
     // Before an engine is open, the viewer is only remembered.
-    await shell.invoke('engine-view-rect', { x: 10, y: 20, width: 640, height: 360 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 10, y: 20, width: 640, height: 360 });
     await openIn(shell);
     const [main, view] = connections(shell);
     // The handle as the engine reads it: the 8 bytes of the window, in decimal, whole.
     expect(shell.window.getNativeWindowHandle).toHaveBeenCalled();
     expect(view.written.at(-1)).toMatchObject({ method: 'view.attach', params: { parent: '18446744069414588980', x: 10, y: 20, width: 640, height: 360 } });
-    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, adapter: null, backend: null });
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 800, height: 450 });
-    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { x: 0, y: 0, width: 800, height: 450 } });
-    await shell.invoke('engine-view-show', { shown: false });
+    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, monitor: 'source', adapter: null, backend: null });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 800, height: 450 });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { monitor: 'source', x: 0, y: 0, width: 800, height: 450 } });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     expect(view.written.at(-1)).toMatchObject({ method: 'view.show', params: { shown: false } });
     const sent = view.written.length;
-    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     expect(view.written.length).toBe(sent);
     // The page may move the view with a call too, which the shell remembers as well.
-    expect(await shell.invoke('engine-call', { method: 'view.place', params: { x: 1, y: 2, width: 3, height: 4 } })).toEqual({ ok: true, result: {} });
-    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { x: 1, y: 2, width: 3, height: 4 } });
+    expect(await shell.invoke('engine-call', { method: 'view.place', params: { monitor: 'source', x: 1, y: 2, width: 3, height: 4 } })).toEqual({ ok: true, result: {} });
+    expect(view.written.at(-1)).toMatchObject({ method: 'view.place', params: { monitor: 'source', x: 1, y: 2, width: 3, height: 4 } });
     // Nothing of the view goes on the main connection.
     expect(main.methods().filter(method => method?.startsWith('view.'))).toEqual([]);
     // Whole pixels of the screen, at or after the corner, and no larger than the engine draws.
@@ -4016,21 +4102,21 @@ describe('the engine of the studio', () => {
     const [, view] = connections(shell);
     const server = shell.engines.servers.get(view.address)!;
     server.answers.set('view.attach', () => 'hold');
-    await shell.invoke('engine-view-rect', { x: 1, y: 1, width: 100, height: 100 });
-    await shell.invoke('engine-view-rect', { x: 2, y: 2, width: 200, height: 200 });
-    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 1, y: 1, width: 100, height: 100 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 2, y: 2, width: 200, height: 200 });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     expect(view.methods().filter(method => method === 'view.attach')).toHaveLength(1);
     server.answerHeld('view.attach', { result: { adapter: 'NVIDIA GeForce RTX 4080', backend: 'Dx12' } });
     await settledAll();
     expect(view.methods().slice(-3)).toEqual(['view.attach', 'view.show', 'view.place']);
     expect(view.written.at(-1)).toMatchObject({ params: { x: 2, y: 2, width: 200, height: 200 } });
-    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, adapter: 'NVIDIA GeForce RTX 4080', backend: 'Dx12' });
+    expect(told(shell).at(-1)).toEqual({ kind: 'attached', session: 1, monitor: 'source', adapter: 'NVIDIA GeForce RTX 4080', backend: 'Dx12' });
   });
 
   it('makes no view while the page keeps it hidden, and hides one made meanwhile before it says so', async () => {
     const shell = await shellHarness();
-    await shell.invoke('engine-view-show', { shown: false });
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     await openIn(shell);
     const [, view] = connections(shell);
     await settledAll();
@@ -4038,21 +4124,21 @@ describe('the engine of the studio', () => {
     expect(view.methods().filter(method => method?.startsWith('view.'))).toEqual([]);
     const server = shell.engines.servers.get(view.address)!;
     server.answers.set('view.attach', () => 'hold');
-    await shell.invoke('engine-view-show', { shown: true });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: true });
     expect(view.methods().filter(method => method === 'view.attach')).toHaveLength(1);
     // Something comes to lie over it while it is made: it is hidden before the page is told of it.
-    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     const toldBefore = told(shell).length;
     server.answerHeld('view.attach', { result: { adapter: null, backend: null } });
     await settledAll();
     expect(view.methods().slice(-2)).toEqual(['view.attach', 'view.show']);
     expect(view.written.at(-1)).toMatchObject({ params: { shown: false } });
-    expect(told(shell).slice(toldBefore)).toEqual([{ kind: 'attached', session: 1, adapter: null, backend: null }]);
+    expect(told(shell).slice(toldBefore)).toEqual([{ kind: 'attached', session: 1, monitor: 'source', adapter: null, backend: null }]);
   });
 
   it('makes the view again for an engine that is opened anew, and where its window was let go', async () => {
     const shell = await shellHarness();
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     const { cwd } = await openIn(shell);
     await shell.invoke('engine-close');
     await shell.invoke('engine-open', { cwd });
@@ -4062,7 +4148,7 @@ describe('the engine of the studio', () => {
     // A view whose window is gone is made again where the page keeps the viewer.
     const [, view] = connections(shell).slice(2);
     shell.engines.servers.get(view.address)!.answers.set('view.place', () => ({ error: { code: -32003, message: 'the view is gone', data: { reason: 'gone' } } }));
-    await shell.invoke('engine-view-rect', { x: 5, y: 5, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 5, y: 5, width: 320, height: 180 });
     await settledAll();
     expect(view.methods().slice(-2)).toEqual(['view.place', 'view.attach']);
     expect(view.written.at(-1)).toMatchObject({ params: { x: 5, y: 5 } });
@@ -4081,12 +4167,12 @@ describe('the engine of the studio', () => {
     mac.engines.servers.get(socket)!.answers.set('view.attach', () => ({
       error: { code: -32003, message: 'views are not made on this system', data: { reason: 'unsupported' } },
     }));
-    await mac.invoke('engine-view-rect', { x: 0, y: 0, width: 400, height: 180 });
+    await mac.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 400, height: 180 });
     await settledAll();
-    expect(told(mac).at(-1)).toEqual({ kind: 'unsupported', session: 1, reason: 'unsupported', message: 'views are not made on this system' });
+    expect(told(mac).at(-1)).toEqual({ kind: 'unsupported', session: 1, monitor: 'source', reason: 'unsupported', message: 'views are not made on this system' });
     const sent = view.written.length;
-    await mac.invoke('engine-view-rect', { x: 0, y: 0, width: 500, height: 180 });
-    await mac.invoke('engine-view-show', { shown: false });
+    await mac.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 500, height: 180 });
+    await mac.invoke('engine-view-show', { monitor: 'source', shown: false });
     expect(view.written.length).toBe(sent);
     // On Windows the window has no menu, which would take the top of its client area.
     const windows = await shellHarness();
@@ -4099,7 +4185,7 @@ describe('the engine of the studio', () => {
     const agents = shell.engines.serve('\\\\.\\pipe\\columbina-engine-fedcba9876543210', studioOf(cwd), 31);
     agents.answers.set('view.attach', () => ({ error: { code: -32601, message: 'no such method' } }));
     shell.engines.starts.push({ held: agents.address });
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     await expect(shell.invoke('engine-open', { cwd })).resolves.toMatchObject({ owned: false, pid: 31 });
     await settledAll();
     expect(told(shell).at(-1)).toMatchObject({ kind: 'unsupported', reason: 'headless' });
@@ -4223,15 +4309,15 @@ describe('the engine of the studio', () => {
 
   it('tells a page that was loaded again how the view stands, and hides the view until it says where the viewer is', async () => {
     const shell = await shellHarness();
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     const { cwd } = await openIn(shell);
     const [, view] = connections(shell);
-    await shell.invoke('engine-view-show', { shown: false });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: false });
     // The page is loaded again: the native view would stay over it.
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
     // Hidden already; nothing more is sent.
     expect(view.methods().filter(method => method === 'view.show')).toHaveLength(1);
-    await shell.invoke('engine-view-show', { shown: true });
+    await shell.invoke('engine-view-show', { monitor: 'source', shown: true });
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
     shell.window.webContents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
@@ -4239,10 +4325,10 @@ describe('the engine of the studio', () => {
     // The new page opens its project again, and hears how the view stands.
     await shell.invoke('engine-open', { cwd });
     expect(told(shell).slice(-2)).toEqual([
-      expect.objectContaining({ kind: 'opened', session: 1 }), { kind: 'attached', session: 1, adapter: null, backend: null },
+      expect.objectContaining({ kind: 'opened', session: 1 }), { kind: 'attached', session: 1, monitor: 'source', adapter: null, backend: null },
     ]);
     // Shown again only once it says where the viewer is.
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 330, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 330, height: 180 });
     expect(view.methods().slice(-2)).toEqual(['view.place', 'view.show']);
     expect(view.written.at(-1)).toMatchObject({ params: { shown: true } });
     // A page that crashed is the same.
@@ -4252,14 +4338,14 @@ describe('the engine of the studio', () => {
 
   it('takes no late word of a view that was made before for the one there is', async () => {
     const shell = await shellHarness();
-    await shell.invoke('engine-view-rect', { x: 0, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 0, y: 0, width: 320, height: 180 });
     await openIn(shell);
     const [, view] = connections(shell);
     const server = shell.engines.servers.get(view.address)!;
     // Two moves go out; the first is answered that the view is gone, which makes it again.
     server.answers.set('view.place', () => 'hold');
-    await shell.invoke('engine-view-rect', { x: 1, y: 0, width: 320, height: 180 });
-    await shell.invoke('engine-view-rect', { x: 2, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 1, y: 0, width: 320, height: 180 });
+    await shell.invoke('engine-view-rect', { monitor: 'source', x: 2, y: 0, width: 320, height: 180 });
     const gone = { error: { code: -32003, message: 'the view is gone', data: { reason: 'gone' } } };
     server.answerHeld('view.place', gone);
     await settledAll();
@@ -4321,7 +4407,7 @@ describe('the engine of the studio', () => {
 
   it('answers only its own window', async () => {
     const shell = await shellHarness();
-    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
+    for (const name of ['engine-open', 'engine-call', 'engine-import', 'engine-render', 'engine-view-rect', 'engine-view-show', 'engine-close']) {
       await expect(Promise.resolve().then(() => shell.handlers.get(`columbina:${name}`)!(shell.unrelated, { cwd: path.resolve('/film') })))
         .rejects.toThrow('IPC sender');
     }

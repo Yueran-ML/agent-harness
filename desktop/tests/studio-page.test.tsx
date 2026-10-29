@@ -31,7 +31,7 @@ let frames: FrameRequestCallback[] = [];
 const drawFrame = () => act(() => { const now = frames; frames = []; for (const callback of now) callback(0); });
 
 const film = {
-  id: 'm1', path: 'F:/work/film.mp4', identity: { size: 1, modified_us: 0, digest: '0'.repeat(64) },
+  id: 'm1', name: 'film.mp4', bin: null, mark_in: null, mark_out: null, path: 'F:/work/film.mp4', identity: { size: 1, modified_us: 0, digest: '0'.repeat(64) },
   facts: { duration: { ticks: 10, scale: 1 }, video: { width: 1920, height: 1080, rate: { num: 25, den: 1 }, codec: 'h264', bits: 8, rotation: 0 }, audio: null },
 };
 /** What the page asked the transport, but for what it fetches by itself. */
@@ -47,9 +47,9 @@ function shellEngine() {
       return opened;
     }),
     call: vi.fn(async (method: string): Promise<EngineAnswer> => (method === 'project.get'
-      ? { ok: true, result: { revision: 0, next_id: 2, project: { schema: 1, next_id: 2, media: [film], timelines: [] } } }
+      ? { ok: true, result: { revision: 0, next_id: 2, project: { schema: 2, bins: [], next_id: 2, media: [film], timelines: [] } } }
       : method === 'transport.state'
-        ? { ok: true, result: { media: 'm1', frame: 0, playing: false, speed: 1, exact: true, shown: 0, last: 249, sound: 'off', source: 'original', proxies: true } }
+        ? { ok: true, result: { monitor: 'source', media: 'm1', frame: 0, playing: false, speed: 1, exact: true, shown: 0, last: 249, sound: 'off', source: 'original', proxies: true } }
         : { ok: true, result: {} })),
     importFiles: vi.fn(async () => ({ ok: true, result: null })),
     viewRect: vi.fn(async () => {}),
@@ -116,7 +116,7 @@ describe('the studio in the page', () => {
     expect(document.activeElement).toBe(one('studio'));
     drawFrame();
     expect(engine.viewRect).toHaveBeenCalledTimes(1);
-    expect(engine.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(engine.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
   });
 
   it('hides the view while the settings lie over it, and as it is left, and keeps the engine open', async () => {
@@ -125,22 +125,22 @@ describe('the studio in the page', () => {
     await settle();
     drawFrame();
     fireEvent.click(one('open-settings'));
-    expect(engine.viewShow.mock.calls.at(-1)).toEqual([false]);
+    expect(engine.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
     fireEvent(document.querySelector('dialog')!, new Event('cancel'));
     expect(marked('studio')).toHaveLength(1);
-    expect(engine.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(engine.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
     fireEvent.click(one('close-studio'));
     expect(marked('studio')).toEqual([]);
     expect(shell().dataset.studio).toBeUndefined();
-    expect(engine.viewShow.mock.calls.at(-1)).toEqual([false]);
+    expect(engine.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
     expect(engine.close).not.toHaveBeenCalled();
     // Opened again: the shell keeps the engine, and is told where the viewer lies before it shows.
     fireEvent.click(one('open-studio'));
     await settle();
     expect(engine.open).toHaveBeenCalledTimes(2);
-    expect(engine.viewShow.mock.calls.at(-1)).toEqual([false]);
+    expect(engine.viewShow.mock.calls.at(-1)).toEqual([false, 'source']);
     drawFrame();
-    expect(engine.viewShow.mock.calls.at(-1)).toEqual([true]);
+    expect(engine.viewShow.mock.calls.at(-1)).toEqual([true, 'source']);
   });
 
   it('hides the view while the list of commands or a panel over the page is open', async () => {
@@ -152,21 +152,21 @@ describe('the studio in the page', () => {
     const last = () => engine.viewShow.mock.calls.at(-1);
     fireEvent.change(one('composer'), { target: { value: '/' } });
     expect(marked('commands')).toHaveLength(1);
-    expect(last()).toEqual([false]);
+    expect(last()).toEqual([false, 'source']);
     fireEvent.change(one('composer'), { target: { value: '' } });
-    expect(last()).toEqual([true]);
+    expect(last()).toEqual([true, 'source']);
     // The panel beside the conversation lies over the page only in a narrow window.
     const closePanel = () => fireEvent.click(one('inspector').querySelector('[aria-label="Close"]')!);
     fireEvent.click(one('show-details'));
     expect(marked('inspector')).toHaveLength(1);
-    expect(last()).toEqual([true]);
+    expect(last()).toEqual([true, 'source']);
     closePanel();
     vi.stubGlobal('matchMedia', (media: string) => ({ matches: media === '(max-width: 1120px)', media, addEventListener() {}, removeEventListener() {} }));
     fireEvent.click(one('show-details'));
-    expect(last()).toEqual([false]);
+    expect(last()).toEqual([false, 'source']);
     closePanel();
     expect(marked('inspector')).toEqual([]);
-    expect(last()).toEqual([true]);
+    expect(last()).toEqual([true, 'source']);
   });
 
   it('is left, and its engine closed, as the app goes to another folder', async () => {

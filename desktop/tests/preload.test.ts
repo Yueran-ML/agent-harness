@@ -195,7 +195,7 @@ describe('the bridge of the main window', () => {
     const { exposed } = bridgeOf('electron/preload.cjs');
     const engine = exposed.columbina.engine as unknown as Record<string, Call>;
     expect(Object.keys(engine).sort()).toEqual(declared('src/bridge.d.ts', 'EngineBridge').sort());
-    expect(Object.keys(engine)).toHaveLength(7);
+    expect(Object.keys(engine)).toHaveLength(8);
   });
 
   it('hands the engine what a call names, and nothing else that came with it', () => {
@@ -211,11 +211,13 @@ describe('the bridge of the main window', () => {
       .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] } }]);
     expect(handed('importFiles', more)).toEqual(['columbina:engine-import', { language: 'ja' }]);
     expect(handed('importFiles')).toEqual(['columbina:engine-import', { language: undefined }]);
-    expect(handed('viewRect', { x: 1, y: 2, width: 3, height: 4, ...more }))
-      .toEqual(['columbina:engine-view-rect', { x: 1, y: 2, width: 3, height: 4 }]);
+    expect(handed('viewRect', { x: 1, y: 2, width: 3, height: 4, ...more }, 'timeline'))
+      .toEqual(['columbina:engine-view-rect', { monitor: 'timeline', x: 1, y: 2, width: 3, height: 4 }]);
     // Shown only where the page says so in so many words.
-    expect(handed('viewShow', true)).toEqual(['columbina:engine-view-show', { shown: true }]);
-    for (const asked of ['true', 1, {}, undefined]) expect(handed('viewShow', asked)).toEqual(['columbina:engine-view-show', { shown: false }]);
+    expect(handed('viewShow', true, 'source')).toEqual(['columbina:engine-view-show', { monitor: 'source', shown: true }]);
+    for (const asked of ['true', 1, {}, undefined]) expect(handed('viewShow', asked, 'timeline')).toEqual(['columbina:engine-view-show', { monitor: 'timeline', shown: false }]);
+    expect(handed('render', { timeline: 't1', codec: 'prores', quality: 'high', subtitles: true, range: { from: 0, to: 25, path: 'secret' }, path: 'secret', replace: true, ...more }))
+      .toEqual(['columbina:engine-render', { timeline: 't1', codec: 'prores', quality: 'high', subtitles: true, range: { from: 0, to: 25 }, language: 'ja' }]);
     expect(handed('close', more)).toEqual(['columbina:engine-close']);
   });
 

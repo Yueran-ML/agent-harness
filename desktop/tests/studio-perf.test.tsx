@@ -7,7 +7,7 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
-import { ProjectCopy, type EngineAnswer, type EngineEvent, type Media, type TransportState } from '../src/studio/engine';
+import { ProjectCopy, type EngineAnswer, type EngineEvent, type Media, type SourceTransportState as TransportState } from '../src/studio/engine';
 import { Studio } from '../src/studio/Studio';
 import { fileName } from '../src/studio/timecode';
 import { likeABrowser } from './mounted';
@@ -29,19 +29,19 @@ afterEach(() => {
 
 const COUNT = 1000;
 const media = (at: number): Media => ({
-  id: `m${at}`, path: `C:\\media\\clip-${at}.mp4`,
+  id: `m${at}`, name: `clip-${at}.mp4`, bin: null, mark_in: null, mark_out: null, path: `C:\\media\\clip-${at}.mp4`,
   identity: { size: 1000, modified_us: 0, digest: '0'.repeat(64) },
   facts: { duration: { ticks: 250, scale: 25 }, video: { width: 1920, height: 1080, rate: { num: 25, den: 1 }, codec: 'h264', bits: 8, rotation: 0 }, audio: null },
 });
 const state = (frame: number): TransportState => ({
-  media: 'm1', frame, playing: true, speed: 1, exact: true, shown: frame, last: 249, sound: 'none', source: 'original', proxies: true,
+  monitor: 'source', media: 'm1', frame, playing: true, speed: 1, exact: true, shown: frame, last: 249, sound: 'none', source: 'original', proxies: true,
 });
 
 describe('the media pool of a large project', () => {
   it('is not drawn again as the playhead moves, and draws again only the row whose proxy changed', async () => {
     const listeners = new Set<(event: EngineEvent) => void>();
     const tell = (event: EngineEvent) => act(() => { for (const listener of [...listeners]) listener(event); });
-    const project = { schema: 1, next_id: COUNT + 1, media: Array.from({ length: COUNT }, (_, at) => media(at + 1)), timelines: [] };
+    const project = { schema: 2, bins: [], next_id: COUNT + 1, media: Array.from({ length: COUNT }, (_, at) => media(at + 1)), timelines: [] };
     const bridge = {
       open: async () => {
         const opened = { session: 1, project: 'F:\\film\\.columbina\\studio', owned: true, pid: 1, revision: 0 };

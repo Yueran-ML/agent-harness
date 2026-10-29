@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent } from 'react';
 import { Layers, Pause, Play, StepBack, StepForward, Volume2, VolumeOff, VolumeX } from 'lucide-react';
 import { useWords } from '../app/locale';
-import type { Rate, TransportState } from './engine';
+import type { Rate, SourceTransportState as TransportState } from './engine';
 import type { TransportCommand } from './keys';
 import { timecode } from './timecode';
 

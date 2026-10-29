@@ -1,7 +1,7 @@
 import type { EngineBridge } from './bridge';
 import { createReplayService } from './replay.shared.js';
 import type { RpcMessage } from './protocol';
-import type { EngineAnswer, EngineEvent, Media, Project, ProxyEvent, TransportState } from './studio/engine';
+import type { EngineAnswer, EngineEvent, Media, Project, ProxyEvent, SourceTransportState as TransportState } from './studio/engine';
 import type { Transport } from './transport';
 
 export function createMockTransport(options: { cwd?: string; delayMs?: number } = {}): Transport {
@@ -33,7 +33,7 @@ const identity = (seed: string, size: number) => ({ size, modified_us: 1_790_000
 /** The media of the replay: a camera's film, an interview, a phone's film held upright, and music. */
 const replayMedia: Media[] = [
   {
-    id: 'm1', path: 'C:\\media\\harbour-4k.mp4', identity: identity('a', 418_000_000),
+    id: 'm1', name: 'harbour-4k.mp4', bin: null, mark_in: null, mark_out: null, path: 'C:\\media\\harbour-4k.mp4', identity: identity('a', 418_000_000),
     facts: {
       duration: { ticks: 375 * 1001, scale: 30000 },
       video: { width: 3840, height: 2160, rate: { num: 30000, den: 1001 }, codec: 'hevc', bits: 10, rotation: 0 },
@@ -41,7 +41,7 @@ const replayMedia: Media[] = [
     },
   },
   {
-    id: 'm2', path: 'C:\\media\\interview.mov', identity: identity('b', 2_100_000_000),
+    id: 'm2', name: 'interview.mov', bin: null, mark_in: null, mark_out: null, path: 'C:\\media\\interview.mov', identity: identity('b', 2_100_000_000),
     facts: {
       duration: { ticks: 95 * 25 * 512, scale: 12800 },
       video: { width: 1920, height: 1080, rate: { num: 25, den: 1 }, codec: 'prores', bits: 10, rotation: 0 },
@@ -49,7 +49,7 @@ const replayMedia: Media[] = [
     },
   },
   {
-    id: 'm3', path: 'C:\\media\\phone\\IMG_0412.MOV', identity: identity('c', 96_000_000),
+    id: 'm3', name: 'IMG_0412.MOV', bin: null, mark_in: null, mark_out: null, path: 'C:\\media\\phone\\IMG_0412.MOV', identity: identity('c', 96_000_000),
     facts: {
       duration: { ticks: 8 * 60000, scale: 60000 },
       video: { width: 1920, height: 1080, rate: { num: 60000, den: 1001 }, codec: 'hevc', bits: 8, rotation: 90 },
@@ -57,7 +57,7 @@ const replayMedia: Media[] = [
     },
   },
   {
-    id: 'm4', path: 'C:\\media\\theme.wav', identity: identity('d', 11_000_000),
+    id: 'm4', name: 'theme.wav', bin: null, mark_in: null, mark_out: null, path: 'C:\\media\\theme.wav', identity: identity('d', 11_000_000),
     facts: { duration: { ticks: 63 * 48000, scale: 48000 }, video: null, audio: { rate: 48000, channels: 2, codec: 'pcm_s16le' } },
   },
 ];
@@ -69,7 +69,7 @@ const replayMedia: Media[] = [
  */
 export function createMockEngine(): EngineBridge {
   const listeners = new Set<(event: EngineEvent) => void>();
-  const project: Project = { schema: 1, next_id: 5, media: replayMedia, timelines: [] };
+  const project: Project = { schema: 2, bins: [], next_id: 5, media: replayMedia, timelines: [] };
   const session = 1;
   const lastOf = (media: Media) => {
     const rate = media.facts.video?.rate ?? { num: 25, den: 1 };
@@ -77,7 +77,7 @@ export function createMockEngine(): EngineBridge {
     return Math.max(0, Math.round((ticks / scale) * (rate.num / rate.den)) - 1);
   };
   let state: TransportState = {
-    media: 'm1', frame: 37, playing: false, speed: 1, exact: true, shown: 37, last: lastOf(replayMedia[0]),
+    monitor: 'source', media: 'm1', frame: 37, playing: false, speed: 1, exact: true, shown: 37, last: lastOf(replayMedia[0]),
     sound: 'off', source: 'original', proxies: true,
   };
   const tell = (event: EngineEvent) => queueMicrotask(() => { for (const listener of [...listeners]) listener(event); });
@@ -137,6 +137,7 @@ export function createMockEngine(): EngineBridge {
       }
     },
     async importFiles() { return ok(null) as EngineAnswer<null>; },
+    async render() { return { ok: true, result: { cancelled: true } }; },
     async viewRect() {},
     async viewShow() {},
     async close() {},

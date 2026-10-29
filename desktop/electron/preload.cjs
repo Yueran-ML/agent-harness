@@ -107,10 +107,15 @@ contextBridge.exposeInMainWorld('columbina', {
     open: (cwd) => ipcRenderer.invoke('columbina:engine-open', { cwd }),
     call: (method, params) => ipcRenderer.invoke('columbina:engine-call', { method, params }),
     importFiles: (asked) => ipcRenderer.invoke('columbina:engine-import', { language: asked?.language }),
-    viewRect: (rect) => ipcRenderer.invoke('columbina:engine-view-rect', {
-      x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,
+    render: (options) => ipcRenderer.invoke('columbina:engine-render', {
+      timeline: options?.timeline, codec: options?.codec, quality: options?.quality, subtitles: options?.subtitles,
+      range: options?.range === undefined ? undefined : { from: options.range?.from, to: options.range?.to },
+      language: options?.language,
     }),
-    viewShow: (shown) => ipcRenderer.invoke('columbina:engine-view-show', { shown: shown === true }),
+    viewRect: (rect, monitor) => ipcRenderer.invoke('columbina:engine-view-rect', {
+      monitor, x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,
+    }),
+    viewShow: (shown, monitor) => ipcRenderer.invoke('columbina:engine-view-show', { monitor, shown: shown === true }),
     close: () => ipcRenderer.invoke('columbina:engine-close'),
     onEvent: (callback) => subscribe('columbina:engine-event', callback),
   },

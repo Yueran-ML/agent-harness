@@ -4,7 +4,7 @@ import { useWords } from '../app/locale';
 import { shortcut } from '../app/system';
 import { sentenceOf } from '../key/form';
 import type { StudioEngine } from './connection';
-import { callEngine, type PageMethod, type TransportState } from './engine';
+import { callEngine, type PageMethod, type SourceTransportState as TransportState } from './engine';
 import { Intent, useStudioKeys, type TransportCommand } from './keys';
 import { MediaPool } from './MediaPool';
 import { fileName, framesOf, nominalFps, rateOf } from './timecode';
@@ -81,8 +81,8 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     bridge.open(cwd).then((opened) => {
       if (gone) return;
       setOpening({ state: 'open', session: opened.session });
-      callEngine(bridge, 'transport.state').then((state) => {
-        if (!gone) setAsked({ session: opened.session, state });
+      callEngine(bridge, 'transport.state', { monitor: 'source' }).then((state) => {
+        if (!gone && state.monitor === 'source') setAsked({ session: opened.session, state });
       }, () => {});
     }, (failure: unknown) => {
       if (!gone) setOpening({ state: 'failed', message: failureOf(failure) });
@@ -97,7 +97,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
 
   const project = snapshot.project;
   const timelines = project?.timelines ?? NO_TIMELINES;
-  const transport = snapshot.transport ?? (asked !== null && asked.session === snapshot.session ? asked.state : null);
+  const transport = snapshot.transports.source ?? (asked !== null && asked.session === snapshot.session ? asked.state : null);
   const loaded = project?.media.find(media => media.id === transport?.media) ?? null;
   const rate = rateOf(loaded, timelines);
   const last = transport?.media == null ? null
@@ -105,7 +105,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
 
   const fail = (said: string) => (failure: unknown) => setProblem({ said, detail: sentenceOf(failureOf(failure)) });
   const ask = (method: PageMethod, params: Record<string, unknown> | undefined, said: string) => {
-    void callEngine(bridge, method, params).catch(fail(said));
+    void callEngine(bridge, method, method.startsWith('transport.') ? { ...params, monitor: 'source' } : params).catch(fail(said));
   };
 
   // What the transport does as the keys know it.
@@ -149,7 +149,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     : snapshot.takingOver ? { kind: 'takingOver' }
       : ended !== null && ended === snapshot.session ? { kind: 'stopped' }
         : opening.state === 'opening' ? { kind: 'opening' }
-          : snapshot.view.state === 'unsupported' ? { kind: snapshot.view.reason === 'headless' ? 'headless' : 'unsupported' }
+          : snapshot.views.source.state === 'unsupported' ? { kind: snapshot.views.source.reason === 'headless' ? 'headless' : 'unsupported' }
             : native ? null : { kind: 'browser' };
   const again = () => {
     setEnded(null);

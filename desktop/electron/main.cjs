@@ -127,13 +127,13 @@ function windowBar(theme) {
 const WORDS = {
   en: { chooseFolder: 'Choose a project folder', chooseFiles: 'Choose files to attach', open: 'Open Columbina', quit: 'Quit Columbina', hidePet: 'Hide the pet',
     petWaiting: (tool) => (tool ? `Waiting for your yes to ${tool}.` : 'Waiting for your yes.'), petDone: 'Done.', petFailed: 'Something went wrong.',
-    chooseMedia: 'Choose media to import', media: 'Video, audio and pictures', allFiles: 'All files' },
+    chooseExport: 'Export timeline', chooseMedia: 'Choose media to import', media: 'Video, audio and pictures', allFiles: 'All files' },
   ja: { chooseFolder: 'プロジェクトフォルダーを選択', chooseFiles: '添付するファイルを選択', open: 'Columbina を開く', quit: 'Columbina を終了', hidePet: 'ペットをしまう',
     petWaiting: (tool) => (tool ? `${tool} の承認を待っています。` : '承認を待っています。'), petDone: '終わりました。', petFailed: 'うまくいきませんでした。',
-    chooseMedia: '読み込むメディアを選択', media: '動画・音声・画像', allFiles: 'すべてのファイル' },
+    chooseExport: 'タイムラインを書き出す', chooseMedia: '読み込むメディアを選択', media: '動画・音声・画像', allFiles: 'すべてのファイル' },
   'zh-CN': { chooseFolder: '选择项目文件夹', chooseFiles: '选择要附上的文件', open: '打开 Columbina', quit: '退出 Columbina', hidePet: '收起桌宠',
     petWaiting: (tool) => (tool ? `等你点头：${tool}。` : '等你点头。'), petDone: '做完了。', petFailed: '遇到点难题。',
-    chooseMedia: '选择要导入的媒体', media: '视频、音频和图片', allFiles: '所有文件' },
+    chooseExport: '导出时间线', chooseMedia: '选择要导入的媒体', media: '视频、音频和图片', allFiles: '所有文件' },
 };
 /**
  * The methods of the engine that the page may call. The view is attached and detached by the
@@ -144,7 +144,7 @@ const WORDS = {
 const PAGE_METHODS = new Set([
   'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy',
   'transport.load', 'transport.play', 'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
-  'view.place', 'view.show',
+  'view.place', 'view.show', 'timeline.duration', 'media.thumbnail', 'media.waveform', 'render.cancel',
 ]);
 /** The endings of the files that the engine reads as media, offered first in the dialog. */
 const MEDIA_ENDINGS = [
@@ -236,7 +236,8 @@ let studioOperation = Promise.resolve();
 // the view of the engine stands there: `none`, `attaching`, `attached`, `unsupported` (macOS, or
 // an engine without a window) or `failed`; the number of the view that was made last, and what
 // the page was told of it last.
-const viewer = { rect: null, shown: true, blank: false, sent: true, state: 'none', generation: 0, told: null };
+const MONITORS = ['source', 'timeline'];
+const viewers = Object.fromEntries(MONITORS.map(monitor => [monitor, { rect: null, shown: true, blank: false, sent: true, state: 'none', generation: 0, told: null }]));
 
 app.setName('Columbina');
 if (process.platform === 'win32') app.setAppUserModelId('dev.columbina.desktop');
@@ -637,7 +638,7 @@ async function openStudio(cwd) {
     // A page that was loaded again finds its engine as it was, and fetches the project anew; it
     // is told how the view stands, which it knew before it was loaded again.
     tellStudio(studio.number, { kind: 'opened', ...studio.opened });
-    if (viewer.told) tellStudio(studio.number, viewer.told);
+    for (const viewer of Object.values(viewers)) if (viewer.told) tellStudio(studio.number, viewer.told);
     return studio.opened;
   }
   await closeStudio();
@@ -681,7 +682,7 @@ async function openStudio(cwd) {
   tellStudio(number, { kind: 'opened', ...opened });
   // A view is made anew for every engine, where the page has said where the viewer is.
   forgetView();
-  void attachView();
+  for (const monitor of MONITORS) void attachView(monitor);
   return opened;
 }
 /**
@@ -704,14 +705,18 @@ async function closeStudio() {
 }
 /** Forget the view of an engine that is gone: one is made anew for the next. */
 function forgetView() {
-  viewer.state = 'none';
-  viewer.told = null;
-  viewer.sent = true;
+  for (const viewer of Object.values(viewers)) {
+    viewer.state = 'none';
+    viewer.told = null;
+    viewer.sent = true;
+    viewer.generation += 1;
+  }
 }
 /** Tell the page how the view stands, and remember it for a page that is loaded again. */
-function tellView(open, what) {
-  viewer.told = what;
-  tellStudio(open.number, what);
+function tellView(open, monitor, what) {
+  const event = { ...what, monitor };
+  viewers[monitor].told = event;
+  tellStudio(open.number, event);
 }
 /** The handle of the window as the engine reads it: a number written in decimal. */
 function windowHandle() {
@@ -722,22 +727,23 @@ function windowHandle() {
  * What the page is told of a view that could not be made, or moved: none on this system, or why
  * not. `generation` is the number of the view that the request was about.
  */
-function viewRefused(open, error, generation) {
-  if (studio !== open) return;
+function viewRefused(open, monitor, error, generation) {
+  const viewer = viewers[monitor];
+  if (studio !== open || generation !== viewer.generation) return;
   const reason = error?.data?.reason;
   if ((error?.code === -32003 && reason === 'unsupported') || error?.code === -32601) {
     viewer.state = 'unsupported';
     // An engine without a window, such as an agent's that had the project open, has no view.
-    tellView(open, { kind: 'unsupported', reason: error.code === -32601 ? 'headless' : 'unsupported', message: error.message });
+    tellView(open, monitor, { kind: 'unsupported', reason: error.code === -32601 ? 'headless' : 'unsupported', message: error.message });
   } else if (error?.code === -32003 && (reason === 'gone' || reason === 'no_view')) {
     // The view was let go with the window it was in, or never made: it is made again. What is
     // said late of a view that was made before the last one is of no view that there is.
     if (generation !== viewer.generation || viewer.state !== 'attached') return;
     viewer.state = 'none';
-    void attachView();
+    void attachView(monitor);
   } else {
     viewer.state = 'failed';
-    tellView(open, { kind: 'error', message: error?.message ?? String(error), code: error?.code ?? null, data: error?.data });
+    tellView(open, monitor, { kind: 'error', message: error?.message ?? String(error), code: error?.code ?? null, data: error?.data });
   }
 }
 /**
@@ -746,7 +752,8 @@ function viewRefused(open, error, generation) {
  * made while the page wants it hidden (something lies over the viewer, or the studio is left):
  * it is made once the page wants it shown.
  */
-async function attachView() {
+async function attachView(monitor) {
+  const viewer = viewers[monitor];
   const open = studio;
   if (!open || viewer.rect === null || viewer.state !== 'none' || !viewer.shown || viewer.blank || !window || window.isDestroyed()) return;
   viewer.state = 'attaching';
@@ -755,9 +762,9 @@ async function attachView() {
   const rect = viewer.rect;
   let attached;
   try {
-    attached = await open.session.view('view.attach', { parent: windowHandle(), ...rect });
+    attached = await open.session.view('view.attach', { monitor, parent: windowHandle(), ...rect });
   } catch (error) {
-    viewRefused(open, error, generation);
+    viewRefused(open, monitor, error, generation);
     return;
   }
   if (studio !== open) return;
@@ -765,37 +772,45 @@ async function attachView() {
   // A view is made shown. What the page said while it was being made is done at once, before
   // anything else: hidden, if something came to lie over the viewer meanwhile.
   viewer.sent = true;
-  showView();
-  if (viewer.rect !== rect) placeView();
-  tellView(open, { kind: 'attached', adapter: attached?.adapter ?? null, backend: attached?.backend ?? null });
+  showView(monitor);
+  if (viewer.rect !== rect) placeView(monitor);
+  tellView(open, monitor, { kind: 'attached', adapter: attached?.adapter ?? null, backend: attached?.backend ?? null });
 }
 /** Move the view where the page keeps the viewer now. */
-function placeView() {
+function placeView(monitor) {
+  const viewer = viewers[monitor];
   const open = studio;
   if (!open || viewer.state !== 'attached') return;
   const { generation } = viewer;
-  open.session.view('view.place', viewer.rect).catch((error) => viewRefused(open, error, generation));
+  open.session.view('view.place', { monitor, ...viewer.rect }).catch((error) => viewRefused(open, monitor, error, generation));
 }
 /**
  * Show the view, or hide it: while something of the page lies over the viewer, and while the page
  * is loaded again, until it says where the viewer is.
  */
-function showView() {
+function showView(monitor) {
+  const viewer = viewers[monitor];
   const open = studio;
   const shown = viewer.shown && !viewer.blank;
   if (!open || viewer.state !== 'attached' || viewer.sent === shown) return;
   viewer.sent = shown;
   const { generation } = viewer;
-  open.session.view('view.show', { shown }).catch((error) => viewRefused(open, error, generation));
+  open.session.view('view.show', { monitor, shown }).catch((error) => viewRefused(open, monitor, error, generation));
 }
 /**
  * Hide the view while the page is gone or being loaded again: the native window would stay over
  * whatever the page shows meanwhile. The new page wants it shown once it says where the viewer is.
  */
 function blankView() {
-  viewer.blank = true;
-  viewer.shown = true;
-  showView();
+  for (const monitor of MONITORS) {
+    viewers[monitor].blank = true;
+    viewers[monitor].shown = true;
+    showView(monitor);
+  }
+}
+function monitorOf(monitor) {
+  if (!MONITORS.includes(monitor)) throw new Error('A monitor is source or timeline.');
+  return monitor;
 }
 /** A rectangle of the viewer as the page gives it: whole pixels of the screen, from the corner of the client area. */
 function viewRectOf(given) {
@@ -808,20 +823,39 @@ function viewRectOf(given) {
 }
 /** Take where the page keeps the viewer now: the view is made there, or moved there. */
 function takeViewRect(given) {
-  viewer.rect = viewRectOf(given);
+  const rect = viewRectOf(given);
+  const monitor = monitorOf(given?.monitor);
+  const viewer = viewers[monitor];
+  viewer.rect = rect;
   viewer.blank = false;
-  if (viewer.state === 'none') void attachView();
+  if (viewer.state === 'none') void attachView(monitor);
   else {
-    placeView();
-    showView();
+    placeView(monitor);
+    showView(monitor);
   }
 }
 /** Take whether the view is to be shown. */
-function takeViewShown(shown) {
+function takeViewShown(given) {
+  const shown = given?.shown;
   if (typeof shown !== 'boolean') throw new Error('The view is shown or not.');
+  const monitor = monitorOf(given?.monitor);
+  const viewer = viewers[monitor];
   viewer.shown = shown;
-  if (viewer.state === 'none') void attachView();
-  else showView();
+  if (viewer.state === 'none') void attachView(monitor);
+  else showView(monitor);
+}
+/** Export settings contain no paths. The engine validates timeline and range against its snapshot. */
+function renderOptionsOf(given) {
+  if (!given || typeof given.timeline !== 'string' || given.timeline.length === 0
+    || !['h264', 'hevc', 'prores'].includes(given.codec) || !['high', 'medium', 'small'].includes(given.quality)
+    || typeof given.subtitles !== 'boolean') throw new Error('Name a timeline, codec, quality and subtitle choice for export.');
+  const options = { timeline: given.timeline, codec: given.codec, quality: given.quality, subtitles: given.subtitles };
+  if (given.range !== undefined) {
+    const { from, to } = given.range ?? {};
+    if (!Number.isSafeInteger(from) || from < 0 || !Number.isSafeInteger(to) || to <= from) throw new Error('An export range is a nonempty interval of whole frames.');
+    options.range = { from, to };
+  }
+  return options;
 }
 /**
  * Look through a transaction of the page: it may name no file. Media is added only from files that
@@ -1712,11 +1746,12 @@ function installHandlers() {
     const params = asked?.params ?? null;
     if (params !== null && (typeof params !== 'object' || Array.isArray(params))) throw new Error('What a method of the engine is given is an object.');
     if (method === 'transaction.apply') transactionOfThePage(params);
+    if (method.startsWith('transport.')) monitorOf(params?.monitor);
     const open = studio;
     if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
     // The viewer goes through the shell, which remembers it for the next view that it makes.
     if (method === 'view.place') return answered(Promise.resolve().then(() => { takeViewRect(params); return {}; }));
-    if (method === 'view.show') return answered(Promise.resolve().then(() => { takeViewShown(params?.shown); return {}; }));
+    if (method === 'view.show') return answered(Promise.resolve().then(() => { takeViewShown(params); return {}; }));
     return answered(open.session.call(method, params));
   });
   ipcMain.handle('columbina:engine-import', async (event, asked) => {
@@ -1734,13 +1769,31 @@ function installHandlers() {
     if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
     return answered(open.session.call('media.import', { paths }));
   });
+  ipcMain.handle('columbina:engine-render', async (event, asked) => {
+    checkSender(event);
+    const open = studio;
+    if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    const options = renderOptionsOf(asked);
+    const mov = options.codec === 'prores';
+    const words = WORDS[spoken(asked?.language)];
+    const chosen = await dialog.showSaveDialog(window, {
+      title: words.chooseExport, defaultPath: mov ? 'export.mov' : 'export.mp4',
+      filters: [{ name: mov ? 'MOV' : 'MP4 / MOV', extensions: mov ? ['mov'] : ['mp4', 'mov'] }],
+    });
+    if (chosen.canceled) return { ok: true, result: { cancelled: true } };
+    if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
+    if (typeof chosen.filePath !== 'string' || !path.isAbsolute(chosen.filePath)) throw new Error('Choose a whole output path in Save As.');
+    // The engine checks its output paths (including fallback MOV and SRT) and refuses an existing
+    // one. A page cannot silently authorize replacing files alongside the one chosen in Save As.
+    return answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace: false }));
+  });
   ipcMain.handle('columbina:engine-view-rect', (event, rect) => {
     checkSender(event);
     takeViewRect(rect);
   });
   ipcMain.handle('columbina:engine-view-show', (event, asked) => {
     checkSender(event);
-    takeViewShown(asked?.shown);
+    takeViewShown(asked);
   });
   ipcMain.handle('columbina:engine-close', async (event) => {
     checkSender(event);

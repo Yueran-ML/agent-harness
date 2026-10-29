@@ -114,7 +114,7 @@ contextBridge.exposeInMainWorld('columbina', {
     render: (options) => ipcRenderer.invoke('columbina:engine-render', {
       timeline: options?.timeline, codec: options?.codec, quality: options?.quality, subtitles: options?.subtitles,
       range: options?.range === undefined ? undefined : { from: options.range?.from, to: options.range?.to },
-      language: options?.language,
+      language: options?.language, name: options?.name,
     }),
     viewRect: (rect, monitor) => ipcRenderer.invoke('columbina:engine-view-rect', {
       monitor, x: rect?.x, y: rect?.y, width: rect?.width, height: rect?.height,

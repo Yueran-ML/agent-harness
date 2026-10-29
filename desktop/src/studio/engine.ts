@@ -238,6 +238,8 @@ export interface RenderOptions {
   range?: { from: number; to: number };
   subtitles: boolean;
   language?: string;
+  /** The name of the timeline, which Save As suggests to name the file after. */
+  name?: string;
 }
 export type RenderStarted = { job: string } | { cancelled: true };
 

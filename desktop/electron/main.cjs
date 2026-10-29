@@ -2,7 +2,7 @@ const { app, BrowserWindow, Menu, Notification, Tray, dialog, ipcMain, nativeIma
 const { spawn } = require('node:child_process');
 const { createInterface } = require('node:readline');
 const {
-  constants, createWriteStream, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync,
+  constants, createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync,
 } = require('node:fs');
 const { copyFile, mkdir, open, realpath, stat, writeFile } = require('node:fs/promises');
 const path = require('node:path');
@@ -678,7 +678,8 @@ async function openStudio(cwd) {
     throw new Error('The application is closing.');
   }
   const opened = { session: number, project, owned: session.owned, pid: session.pid, revision: session.hello.revision };
-  studio = { number, project, session, opened };
+  // `jobs`: the exports that the window started; the page may cancel those, and no other (an agent's).
+  studio = { number, project, session, opened, jobs: new Set() };
   tellStudio(number, { kind: 'opened', ...opened });
   // A view is made anew for every engine, where the page has said where the viewer is.
   forgetView();
@@ -850,12 +851,38 @@ function renderOptionsOf(given) {
     || !['h264', 'hevc', 'prores'].includes(given.codec) || !['high', 'medium', 'small'].includes(given.quality)
     || typeof given.subtitles !== 'boolean') throw new Error('Name a timeline, codec, quality and subtitle choice for export.');
   const options = { timeline: given.timeline, codec: given.codec, quality: given.quality, subtitles: given.subtitles };
+  // The name of the timeline is only what the dialog suggests to name the file after.
   if (given.range !== undefined) {
     const { from, to } = given.range ?? {};
     if (!Number.isSafeInteger(from) || from < 0 || !Number.isSafeInteger(to) || to <= from) throw new Error('An export range is a nonempty interval of whole frames.');
     options.range = { from, to };
   }
   return options;
+}
+/** A name of a file made from the name of a timeline: without what Windows refuses in a name. */
+function fileNameOf(name) {
+  const cleaned = (typeof name === 'string' ? name : '').replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_').replace(/[. ]+$/, '').trim().slice(0, 120);
+  // A name that Windows keeps for a device is no name of a file.
+  return !cleaned ? 'export' : /^(con|prn|aux|nul|com\d|lpt\d)$/i.test(cleaned) ? `_${cleaned}` : cleaned;
+}
+/**
+ * Whether an export to `chosen` may replace what is there. Save As asked the user whether to
+ * replace the file that they chose (Windows asks it of a file that is there), so a file that is
+ * there was confirmed. What the export would write beside it was not asked of: an SRT, the .mov of
+ * a ProRes fallback, or a partial file. Where any of those is there, nothing is replaced, and the
+ * engine refuses as it would without the dialog.
+ */
+function replacing(chosen, options) {
+  if (!existsSync(chosen)) return false;
+  const { dir, name, ext } = path.parse(chosen);
+  const same = process.platform === 'win32' ? (text) => text.toLowerCase() : (text) => text;
+  let there;
+  try { there = readdirSync(dir).map((file) => same(String(file))); } catch { return false; }
+  const stem = same(name);
+  const beside = (file) => file === same(`${name}${ext}.part`)
+    || (options.subtitles && file.startsWith(`${stem}.`) && (file.endsWith('.srt') || file.endsWith('.srt.part')))
+    || (options.codec !== 'prores' && same(ext) === '.mp4' && (file === `${stem}.mov` || file === `${stem}.mov.part`));
+  return !there.some(beside);
 }
 /**
  * Look through a transaction of the page: it may name no file. Media is added only from files that
@@ -868,6 +895,9 @@ function transactionOfThePage(params) {
   for (const op of ops) {
     if (op === null || typeof op !== 'object' || Array.isArray(op)) throw new Error('An operation is an object.');
     if (op.op === 'add_media') throw new Error('The page adds no media itself: media is imported from files that are chosen in the dialog.');
+    // Whether media is a still picture is a fact of its file, which the engine found as it imported
+    // it (or a project made before told); the page does not change it.
+    if (op.op === 'set_media' && op.still !== undefined) throw new Error('The page does not say whether media is a still picture: the engine knows it from the file.');
     if (op.op === 'set_proxy' && op.proxy !== null && op.proxy !== undefined) {
       throw new Error('The page sets no proxy: the engine makes them. It may only take one away.');
     }
@@ -1746,6 +1776,10 @@ function installHandlers() {
     const params = asked?.params ?? null;
     if (params !== null && (typeof params !== 'object' || Array.isArray(params))) throw new Error('What a method of the engine is given is an object.');
     if (method === 'transaction.apply') transactionOfThePage(params);
+    // The page cancels the exports that it started, not those of an agent on the same engine.
+    if (method === 'render.cancel' && !(typeof params?.job === 'string' && studio?.jobs.has(params.job))) {
+      throw new Error('The page cancels only an export that it started.');
+    }
     if (method.startsWith('transport.')) monitorOf(params?.monitor);
     const open = studio;
     if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
@@ -1778,16 +1812,21 @@ function installHandlers() {
     const options = renderOptionsOf(asked);
     const mov = options.codec === 'prores';
     const words = WORDS[spoken(asked?.language)];
+    // The dialog opens in the folder of the project, with the file named after the timeline.
+    const folder = path.resolve(open.project, ...STUDIO_FOLDER.map(() => '..'));
     const chosen = await dialog.showSaveDialog(window, {
-      title: words.chooseExport, defaultPath: mov ? 'export.mov' : 'export.mp4',
+      title: words.chooseExport, defaultPath: path.join(folder, `${fileNameOf(asked?.name)}${mov ? '.mov' : '.mp4'}`),
       filters: [{ name: mov ? 'MOV' : 'MP4 / MOV', extensions: mov ? ['mov'] : ['mp4', 'mov'] }],
     });
     if (chosen.canceled) return { ok: true, result: { cancelled: true } };
     if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
     if (typeof chosen.filePath !== 'string' || !path.isAbsolute(chosen.filePath)) throw new Error('Choose a whole output path in Save As.');
     // The engine checks its output paths (including fallback MOV and SRT) and refuses an existing
-    // one. A page cannot silently authorize replacing files alongside the one chosen in Save As.
-    return answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace: false }));
+    // one, unless it may replace them. Only the shell decides that, from what the user confirmed
+    // in Save As (see `replacing`); the page never can.
+    const started = await answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace: replacing(chosen.filePath, options) }));
+    if (started.ok && typeof started.result?.job === 'string') open.jobs.add(started.result.job);
+    return started;
   });
   ipcMain.handle('columbina:left-key', (event, asked) => {
     checkSender(event);

@@ -82,6 +82,8 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
   const missing = (file: string) => Object.assign(new Error(`ENOENT: ${file}`), { code: 'ENOENT' });
   // The files that are not there, beside the folders that are gone. Every other file is.
   const absent = new Set<string>();
+  // What a folder lists, by its path, where a test says; any other lists nothing.
+  const listed = new Map<string, string[]>();
   // Whether the application starts with the system, as the system keeps it.
   const loginItem = { openAtLogin: false };
   const app = Object.assign(new EventEmitter(), {
@@ -351,6 +353,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     'node:fs': {
       constants: { COPYFILE_EXCL: 1 },
       existsSync: (file: string) => !absent.has(path.resolve(file)), mkdirSync, realpathSync,
+      readdirSync: (folder: string) => [...(listed.get(path.resolve(folder)) ?? [])],
       statSync: (value: string) => {
         if (gone.has(path.resolve(value))) throw missing(value);
         return { isDirectory: () => true };
@@ -418,7 +421,7 @@ async function shellHarness(kept?: string, env: Record<string, string> = {}, sys
     // Do once what the shell does again and again every so many milliseconds.
     again: (ms: number) => { for (const one of [...repeated.values()]) if (one.ms === ms) one.act(); },
     handlers, invoke, select, app, window, windows, event, unrelated, children, spawn, realpathSync, mkdirSync, disk, drive, file, sent,
-    dialog, files, gone, absent, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
+    dialog, files, gone, absent, listed, preferences, writeFileSync, notifications, Notification: TestNotification, system: world, net,
     partitions, trays, pictures,
     setups, setup, keyWindow, asKeyWindow, feishuWindow, asFeishuWindow, wecomWindow, asWecomWindow, menu, logins, signIns, bots,
     lineReaders, engines,
@@ -3846,6 +3849,8 @@ describe('the engine of the studio', () => {
     const [main] = connections(shell);
     shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ result: { job: 'render-1' } }));
     const chosen = path.resolve('/exports/chosen.mp4');
+    // Nothing is there yet: there is nothing to replace.
+    shell.absent.add(chosen);
     shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
     expect(await shell.invoke('engine-render', { ...options, path: '/unselected/precious.mp4', replace: true }))
       .toEqual({ ok: true, result: { job: 'render-1' } });
@@ -3913,10 +3918,69 @@ describe('the engine of the studio', () => {
     const chosen = path.resolve('/exports/existing.mov');
     const error = { code: -32001, message: 'An output already exists.', data: { reason: 'exists', path: chosen } };
     shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ error }));
+    // The file is there, and Save As asked to replace it: but a partial file beside it was not asked of.
+    shell.listed.set(path.resolve('/exports'), ['existing.mov', 'existing.mov.part']);
     shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
     expect(await shell.invoke('engine-render', options)).toEqual({ ok: false, error });
     expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].filters).toEqual([{ name: 'MOV', extensions: ['mov'] }]);
     expect(main.written.at(-1)!.params).toEqual({ timeline: 't1', codec: 'prores', quality: 'medium', subtitles: false, path: chosen, replace: false });
+  });
+
+  it('opens Save As in the project folder named after the timeline, and replaces only what Save As confirmed', async () => {
+    const shell = await shellHarness();
+    const { cwd } = await openIn(shell);
+    const [main] = connections(shell);
+    let jobs = 0;
+    shell.engines.servers.get(main.address)!.answers.set('render.start', () => ({ result: { job: `render-${++jobs}` } }));
+    const options = { timeline: 't1', codec: 'h264', quality: 'high', subtitles: true, name: 'Cut: "final"?' };
+    const exports = path.resolve('/exports');
+    const chosen = path.join(exports, 'film.mp4');
+    const render = async (listing: string[], patch = {}) => {
+      shell.listed.set(exports, listing);
+      shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: chosen });
+      expect(await shell.invoke('engine-render', { ...options, ...patch })).toMatchObject({ ok: true });
+      return main.written.at(-1)!.params.replace;
+    };
+    // The file chosen is there: Windows asked whether to replace it, and the user said so.
+    expect(await render(['film.mp4', 'notes.txt', 'other.srt'])).toBe(true);
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].defaultPath).toBe(path.join(cwd, 'Cut_ _final__.mp4'));
+    // An SRT, the .mov of a ProRes fallback or a partial file beside it was not asked of.
+    expect(await render(['film.mp4', 'FILM.srt'])).toBe(false);
+    expect(await render(['film.mp4', 'film.en.srt'])).toBe(false);
+    expect(await render(['film.mp4', 'film.mov'])).toBe(false);
+    expect(await render(['film.mp4', 'film.mp4.part'])).toBe(false);
+    // Without subtitles an SRT is not written, and ProRes has no fallback.
+    expect(await render(['film.mp4', 'film.srt'], { subtitles: false })).toBe(true);
+    expect(await render(['film.mp4', 'film.mov'], { codec: 'prores' })).toBe(true);
+    // A file that is not there replaces nothing.
+    shell.absent.add(chosen);
+    expect(await render([])).toBe(false);
+    // A name that is no name of a file is not suggested.
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true });
+    await shell.invoke('engine-render', { ...options, name: 'CON' });
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].defaultPath).toBe(path.join(cwd, '_CON.mp4'));
+    shell.dialog.showSaveDialog.mockResolvedValueOnce({ canceled: true });
+    await shell.invoke('engine-render', { ...options, name: undefined, codec: 'prores' });
+    expect(shell.dialog.showSaveDialog.mock.calls.at(-1)![1].defaultPath).toBe(path.join(cwd, 'export.mov'));
+    // The page cancels the exports that it started, and no other (such as an agent's).
+    shell.engines.servers.get(main.address)!.answers.set('render.cancel', () => ({ result: {} }));
+    expect(await shell.invoke('engine-call', { method: 'render.cancel', params: { job: 'render-2' } })).toEqual({ ok: true, result: {} });
+    for (const job of ['render-99', undefined, 7]) {
+      await expect(shell.invoke('engine-call', { method: 'render.cancel', params: { job } })).rejects.toThrow('only an export that it started');
+    }
+    expect(main.written.filter(request => request.method === 'render.cancel')).toHaveLength(1);
+  });
+
+  it('refuses a transaction of the page that says whether media is a still picture', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const count = main.written.length;
+    for (const still of [true, false, null]) {
+      await expect(shell.invoke('engine-call', { method: 'transaction.apply', params: { ops: [{ op: 'set_media', id: 'm1', still }] } }))
+        .rejects.toThrow('still picture');
+    }
+    expect(main.written.length).toBe(count);
   });
 
   it('opens only a folder that was chosen, in a project of its own there, with an engine that it starts', async () => {
@@ -3968,7 +4032,7 @@ describe('the engine of the studio', () => {
     const allowed = [
       'project.get', 'transaction.apply', 'history.undo', 'history.redo', 'media.make_proxy', 'transport.load', 'transport.play',
       'transport.pause', 'transport.seek', 'transport.step', 'transport.state', 'transport.proxies',
-      'timeline.duration', 'media.thumbnail', 'media.waveform', 'render.cancel',
+      'timeline.duration', 'media.thumbnail', 'media.waveform',
     ];
     for (const method of allowed) {
       const params = method === 'transaction.apply' ? { ops: [{ op: 'remove_clip', timeline: 't1', id: 'c1' }] } : { frame: 3, monitor: 'source' };

@@ -601,6 +601,87 @@ async fn timeline_picture_follows_the_mixed_audio_clock_and_pauses_it() {
 }
 
 #[tokio::test]
+async fn timeline_sound_plays_on_through_changes_that_it_does_not_hear() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", "null", "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    let got = project(&mut client).await;
+    let mut color = clip("$color", "unused", 0, 200);
+    color["source"] = json!({"kind":"color","color":"#ff0000ff"});
+    let names = add_timeline(&mut client, vec![color], vec![]).await;
+    let mut sound = clip("$sound", "m1", 0, 100);
+    sound["source"]["in"]["scale"] =
+        got["project"]["media"][0]["facts"]["duration"]["scale"].clone();
+    let sound = client
+        .apply(
+            json!([{"op":"add_track","timeline":names["$timeline"],"track":{
+        "id":"$audio","kind":"audio","name":"Dialogue","enabled":true,"locked":false,
+        "clips":[sound],"transitions":[]},"index":null}]),
+        )
+        .await["names"]["$sound"]
+        .clone();
+    load(&mut client, &names).await;
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    client
+        .until_state("timeline audio started", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "on"
+        })
+        .await;
+    let heard = async |client: &mut Client| {
+        let digest = action(client, "transport.frame_digest", json!({})).await;
+        (digest["audio_samples"].as_i64().unwrap(), digest)
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (before, _) = heard(&mut client).await;
+    // A bin, and the colour of the picture: the sound plays on, and the new colour is shown.
+    client
+        .apply(
+            json!([{"op":"add_bin","bin":{"id":"$bin","name":"Kept","parent":null}},
+            {"op":"set_clip","timeline":names["$timeline"],"id":names["$color"],
+            "source":{"kind":"color","color":"#00ff00ff"}}]),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let (after, digest) = heard(&mut client).await;
+    assert!(
+        after > before,
+        "the sound started again: {before} then {after}"
+    );
+    assert_eq!(digest["pixels"][0], json!([0, 255, 0, 255]), "{digest}");
+    // A change of what is heard starts the mix again at the playhead.
+    client
+        .apply(
+            json!([{"op":"set_clip","timeline":names["$timeline"],"id":sound,
+            "gain_db":-6.0}]),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (again, digest) = heard(&mut client).await;
+    assert!(
+        again < after,
+        "the sound did not start again: {after} then {again}"
+    );
+    assert!(
+        digest["audio_sample"]
+            .as_i64()
+            .unwrap()
+            .abs_diff(digest["frame"].as_i64().unwrap() * 1920)
+            <= 1920,
+        "{digest}"
+    );
+}
+
+#[tokio::test]
 async fn timeline_sound_survives_seek_and_is_handed_over_before_source_playback() {
     if columbina_compose::gpu_for_tests().is_none() {
         return;

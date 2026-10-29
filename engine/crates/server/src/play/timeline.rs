@@ -2,14 +2,14 @@
 //! compositor, and never holds the project/session lock while waiting for a picture or GPU.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use columbina_compose::{Compositor, Scene, SceneLayer, Source as LayerSource, Target, Text};
 use columbina_media::Hardware;
 use columbina_model::project::TrackKind;
-use columbina_model::{resolve, Project};
+use columbina_model::{resolve, Facts, Identity, Media, Project, Proxy};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::oneshot;
@@ -496,15 +496,15 @@ impl Worker {
                 if self.status.timeline.is_none() {
                     return;
                 }
-                self.replace(project);
-                if !self.status.playing {
+                let changed = self.replace(project);
+                if changed && !self.status.playing {
                     let _ = self.draw(true, false);
                 }
                 self.tell(true);
             }
             Command::Proxy(media) => {
                 self.sources.proxy_ready(&media);
-                if self.status.timeline.is_none() {
+                if self.status.timeline.is_none() || !self.status.proxies || !self.shows(&media) {
                     return;
                 }
                 self.invalidate();
@@ -573,9 +573,14 @@ impl Worker {
         self.request(self.status.frame.unwrap_or(0), false);
     }
 
-    fn replace(&mut self, project: Arc<Project>) {
+    /// Take a project in place of the one there was. What the change does not touch goes on as
+    /// it was: a change of another timeline, of bins or of media that the timeline does not
+    /// use keeps the pictures read ahead and the sound playing; one that changes only what is
+    /// seen keeps the sound, and one that changes only what is heard keeps the pictures. Gives
+    /// whether anything of the timeline loaded changed.
+    fn replace(&mut self, project: Arc<Project>) -> bool {
         let Some(id) = self.status.timeline.as_ref() else {
-            return;
+            return false;
         };
         let Some(index) = project
             .timelines
@@ -583,9 +588,25 @@ impl Worker {
             .position(|timeline| timeline.id == *id)
         else {
             self.unload();
-            return;
+            return true;
         };
         let timeline = &project.timelines[index];
+        let before = self
+            .project
+            .as_ref()
+            .zip(self.timeline)
+            .map(|(before, at)| (Arc::clone(before), at));
+        let (picture, sound) = before.as_ref().map_or((false, false), |(before, at)| {
+            let was = &before.timelines[*at];
+            let from = self.clock.map_or(0, |clock| {
+                let frame = clock.frame(self.clock_now()).saturating_sub(1).max(0);
+                resolve::samples_at(frame, was.rate, was.sample_rate)
+            });
+            (
+                same_picture(before, was, &project, timeline),
+                same_sound(before, was, &project, timeline, from),
+            )
+        });
         let last = (resolve::duration(timeline) - 1).max(0);
         let frame = clock::clamped(self.status.frame.unwrap_or(0), last);
         self.status.last = Some(last);
@@ -609,14 +630,17 @@ impl Worker {
             .collect();
         self.readers.retain(|id, _| tracks.contains(id));
         let budget = usize::try_from(POOL_BYTES).unwrap_or(usize::MAX) / tracks.len().max(1);
+        let mut fresh = false;
         if self.reader_budget != budget {
             // Track counts can change during an edit. Keeping the old per-track budgets
             // would multiply the total allowance when tracks are added.
             self.readers.clear();
             self.reader_budget = budget;
         }
+        self.sources.demand(&demand(&project, timeline));
         for track in tracks {
             if !self.readers.contains_key(&track) {
+                fresh = true;
                 match TrackReader::new(self.sources.clone(), budget) {
                     Ok(reader) => {
                         self.readers.insert(track, reader);
@@ -627,16 +651,29 @@ impl Worker {
         }
         self.project = Some(project);
         self.timeline = Some(index);
-        self.invalidate();
-        if self.status.playing {
-            self.restart_sound();
-        } else {
+        if !picture || fresh {
+            self.invalidate();
+        }
+        if !self.status.playing {
             self.status.sound = if self.has_sound() {
                 Sound::Off
             } else {
                 Sound::None
             };
+        } else if !sound {
+            self.restart_sound();
         }
+        !(picture && sound) || fresh
+    }
+
+    /// Whether a new proxy of `media` changes what the timeline loaded shows.
+    fn shows(&self, media: &str) -> bool {
+        self.project
+            .as_ref()
+            .zip(self.timeline)
+            .is_some_and(|(project, index)| {
+                demand(project, &project.timelines[index]).contains_key(media)
+            })
     }
 
     fn action(&mut self, action: Action) {
@@ -718,8 +755,8 @@ impl Worker {
             let frame = clock::clamped(target, self.status.last.unwrap_or(0));
             if self.status.frame != Some(frame) {
                 self.status.frame = Some(frame);
+                // Drawing asks the track readers for what follows this frame.
                 let _ = self.draw(false, false);
-                self.request(frame, false);
                 self.tell(false);
             }
             if (clock.speed() > 0 && target >= self.status.last.unwrap_or(0))
@@ -942,6 +979,271 @@ impl Worker {
     }
 }
 
+/// What of media the picture of a timeline depends on: its file, what it is and holds, and its
+/// proxy.
+fn seen(media: &Media) -> (&str, &Identity, &Facts, Option<&Proxy>) {
+    (
+        &media.path,
+        &media.identity,
+        &media.facts,
+        media.proxy.as_ref(),
+    )
+}
+
+/// What of media the sound depends on, which is always read from the file itself.
+fn heard(media: &Media) -> (&str, &Identity, &Facts) {
+    (&media.path, &media.identity, &media.facts)
+}
+
+fn media_of<'p>(project: &'p Project, id: &str) -> Option<&'p Media> {
+    project.media.iter().find(|media| media.id == id)
+}
+
+/// How many tracks of picture of a timeline use each media: how many decoders of it the
+/// track readers may want at once.
+fn demand(project: &Project, timeline: &columbina_model::Timeline) -> BTreeMap<String, usize> {
+    let mut demand = BTreeMap::new();
+    for track in &timeline.tracks {
+        if track.kind != TrackKind::Video || !track.enabled {
+            continue;
+        }
+        let used: BTreeSet<&str> = track
+            .clips
+            .iter()
+            .filter(|clip| clip.enabled)
+            .filter_map(|clip| clip.media().map(String::as_str))
+            .filter(|media| media_of(project, media).is_some())
+            .collect();
+        for media in used {
+            *demand.entry(media.to_owned()).or_insert(0) += 1;
+        }
+    }
+    demand
+}
+
+/// Whether a timeline shows the same pictures in `after` as it did in `before`: the same
+/// size and rate, tracks of picture, and media (with its proxies) under them. Subtitles and
+/// sound are not pictures that are read ahead.
+fn same_picture(
+    before: &Project,
+    was: &columbina_model::Timeline,
+    after: &Project,
+    now: &columbina_model::Timeline,
+) -> bool {
+    let video = |timeline: &columbina_model::Timeline| {
+        timeline
+            .tracks
+            .iter()
+            .filter(|track| track.kind == TrackKind::Video)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    (was.width, was.height, was.rate) == (now.width, now.height, now.rate)
+        && video(was) == video(now)
+        && demand(after, now)
+            .keys()
+            .all(|id| media_of(before, id).map(seen) == media_of(after, id).map(seen))
+}
+
+/// Whether a timeline sounds the same in `after` as in `before` from sample `from` to its end:
+/// the same pieces of the same clips, of the same media, at the same rates and length. Only
+/// then may a mixer of the old project play on.
+fn same_sound(
+    before: &Project,
+    was: &columbina_model::Timeline,
+    after: &Project,
+    now: &columbina_model::Timeline,
+    from: i64,
+) -> bool {
+    if (was.rate, was.sample_rate) != (now.rate, now.sample_rate)
+        || resolve::duration(was) != resolve::duration(now)
+    {
+        return false;
+    }
+    let end = resolve::samples_at(resolve::duration(now), now.rate, now.sample_rate);
+    let pieces = resolve::audio_between(now, after, from, end);
+    pieces == resolve::audio_between(was, before, from, end)
+        && pieces.iter().all(|piece| {
+            media_of(before, &piece.media).map(heard) == media_of(after, &piece.media).map(heard)
+        })
+}
+
 fn drawing(message: &str) -> Fault {
     Fault::new(rpc::TRANSPORT_FAILED, message).with_data(json!({"reason":"draw"}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use columbina_compose::Transform;
+    use columbina_model::Rgba;
+
+    fn worker() -> Worker {
+        let (_, inbox) = mpsc::channel();
+        Worker {
+            inbox,
+            shared: Arc::default(),
+            notify: Arc::new(|_| {}),
+            view: Arc::default(),
+            graphics: Graphics::new(),
+            sources: Sources::new(Hardware::Off, Arc::new(|_, _| {})),
+            status: Status::default(),
+            project: None,
+            timeline: None,
+            generation: 0,
+            readers: BTreeMap::new(),
+            reader_budget: 0,
+            previous: BTreeMap::new(),
+            compositor: None,
+            targets: Vec::new(),
+            current: None,
+            clock: None,
+            sound: SoundSlot::new(crate::audio::Kind::Null),
+            mixed_from: None,
+            heard: Cell::new(0),
+            fine: None,
+            epoch: Instant::now(),
+            settle: None,
+            told: None,
+        }
+    }
+
+    fn filled(rgba: [u8; 4]) -> Scene {
+        Scene {
+            width: 64,
+            height: 36,
+            layers: vec![SceneLayer {
+                source: LayerSource::color(Rgba(rgba)),
+                transform: Transform::NONE,
+                opacity: 1.0,
+            }],
+            ..Scene::default()
+        }
+    }
+
+    fn proxied(mut project: Project) -> Project {
+        project.media[0].proxy = Some(Proxy {
+            path: "C:/project/cache/proxies/m1-000000000000.mov".into(),
+            width: 960,
+            height: 540,
+            codec: "prores".into(),
+            digest_of_source: "0".repeat(64),
+        });
+        project
+    }
+
+    #[test]
+    fn a_change_that_the_timeline_does_not_show_keeps_what_was_read_ahead() {
+        let mut worker = worker();
+        worker.status.timeline = Some("t1".into());
+        let project = Project::sample();
+        assert!(worker.replace(Arc::new(project.clone())));
+        let read_ahead = worker.generation;
+        // Another timeline and the name of media change nothing that t1 shows.
+        let mut other = project.clone();
+        let mut second = other.timelines[0].clone();
+        second.id = "t2".into();
+        other.timelines.push(second);
+        other.media[0].name = "Renamed".into();
+        assert!(!worker.replace(Arc::new(other.clone())));
+        assert_eq!(worker.generation, read_ahead);
+        // What is heard only keeps the pictures that were read.
+        let mut louder = other.clone();
+        louder.timelines[0].tracks[1].clips[0].gain_db = -3.0;
+        assert!(worker.replace(Arc::new(louder.clone())));
+        assert_eq!(worker.generation, read_ahead);
+        // A proxy of the media under the picture changes what is read.
+        assert!(worker.replace(Arc::new(proxied(louder.clone()))));
+        assert_eq!(worker.generation, read_ahead + 1);
+        let mut moved = proxied(louder);
+        moved.timelines[0].tracks[0].clips[0].transform.x = 0.25;
+        assert!(worker.replace(Arc::new(moved)));
+        assert_eq!(worker.generation, read_ahead + 2);
+    }
+
+    #[test]
+    fn sound_plays_on_through_a_change_that_it_does_not_hear() {
+        let before = Project::sample();
+        let check = |after: &Project, from: i64| {
+            same_sound(
+                &before,
+                &before.timelines[0],
+                after,
+                &after.timelines[0],
+                from,
+            )
+        };
+        assert!(check(&before, 0));
+        let mut seen = before.clone();
+        seen.timelines[0].tracks[0].clips[0].transform.scale = 0.5;
+        assert!(check(&seen, 0), "only the picture changed");
+        assert!(
+            check(&proxied(before.clone()), 0),
+            "sound is never read from a proxy"
+        );
+        let mut louder = before.clone();
+        louder.timelines[0].tracks[1].clips[0].gain_db = -3.0;
+        assert!(!check(&louder, 0));
+        let mut faded = before.clone();
+        faded.timelines[0].tracks[1].clips[0].fade_in = 10;
+        assert!(!check(&faded, 0));
+        // What was heard before the playhead does not matter: a clip of sound that has ended.
+        let mut earlier = before.clone();
+        let sound = &mut earlier.timelines[0].tracks[1].clips;
+        sound[0].length = 40;
+        let mut later = sound[0].clone();
+        (later.id, later.start) = ("c9".into(), 40);
+        sound.push(later);
+        let mut quieter = earlier.clone();
+        quieter.timelines[0].tracks[1].clips[0].gain_db = -6.0;
+        let check_from = |from: i64| {
+            same_sound(
+                &earlier,
+                &earlier.timelines[0],
+                &quieter,
+                &quieter.timelines[0],
+                from,
+            )
+        };
+        assert!(!check_from(0));
+        assert!(check_from(48000 * 2));
+        // A timeline that ends elsewhere would end the old mixer elsewhere too.
+        let mut longer = before.clone();
+        longer.timelines[0].tracks[0].clips[0].length = 120;
+        assert!(!check(&longer, 48000));
+        assert!(same_picture(
+            &before,
+            &before.timelines[0],
+            &louder,
+            &louder.timelines[0]
+        ));
+        assert!(!same_picture(
+            &before,
+            &before.timelines[0],
+            &seen,
+            &seen.timelines[0]
+        ));
+    }
+
+    #[test]
+    fn a_picture_that_a_view_still_shows_is_never_drawn_over() {
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let mut worker = worker();
+        worker.present(&filled([255, 0, 0, 255])).unwrap();
+        let shown = Arc::downgrade(worker.current.as_ref().unwrap());
+        // A view holds the texture that it shows, as present_texture keeps it, until it shows
+        // another; the monitor no longer holds the target once it draws the next frame.
+        let held = Arc::clone(worker.current.as_ref().unwrap().texture());
+        worker.present(&filled([0, 255, 0, 255])).unwrap();
+        worker.present(&filled([0, 0, 255, 255])).unwrap();
+        let red = shown.upgrade().expect("the monitor keeps its targets");
+        assert_eq!(red.read_rgba().unwrap()[..4], [255, 0, 0, 255]);
+        assert_eq!(worker.targets.len(), 3);
+        // Once the view lets it go, the target is drawn on again.
+        drop((held, red));
+        worker.present(&filled([255, 255, 255, 255])).unwrap();
+        assert_eq!(worker.targets.len(), 3);
+    }
 }

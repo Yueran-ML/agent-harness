@@ -586,11 +586,18 @@ notification `transport.state`):
   is true only when every media layer is exact. `late` counts playback frames for which at
   least one layer was unavailable, once per frame, and resets when playback starts from pause.
 - `source` is `"original"`, `"proxy"`, or `"mixed"` when the composition contains both. A frame
-  of only titles/colours or black uses `"original"`. Proxy switches and repairs invalidate
-  read-ahead and take effect on the next composition, immediately when paused.
+  of only titles/colours or black uses `"original"`. Proxy switches and repairs of media that
+  the timeline shows invalidate read-ahead and take effect on the next composition,
+  immediately when paused; a proxy of other media changes nothing of the monitor.
 - Edits and undo/redo redraw the paused frame. During playback the next frame uses the new
   project without stopping; a shortened duration clamps the playhead. Old decode results
-  cannot be published into a new project generation.
+  cannot be published into a new project generation. Only what a change touches starts again:
+  a change of another timeline, of bins, of media that the timeline does not use (a proxy the
+  engine made of it too) keeps the read-ahead pictures and the sound; a change only of what is
+  seen (tracks of picture, the media and proxies under them, size, rate) starts the read-ahead
+  again and keeps the sound playing; and the sound starts again at the playhead only when what
+  is heard from the playhead to the end (the pieces of clips, their gains, fades, pans and
+  speeds, their media, the rates and the duration) is not as it was.
 - Each enabled video track reads ahead independently, including upcoming cut/transition
   handles. The shared decoder pool allows twelve decoders, and of one media and source kind
   two for each enabled track of picture that uses it (two at least), so that tracks reading one

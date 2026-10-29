@@ -1057,7 +1057,13 @@ With `subtitles: true`, each enabled subtitle track gets an SRT: one track uses 
 multiple tracks use `film.<language-or-track-name>.srt`. Unsafe filename characters are
 replaced and repeated names get numbered suffixes, without hashes. Cue times are clipped to
 the export range and rebased to zero; frame times use the exact rational frame rate, rounded
-down to milliseconds. Text is UTF-8, with normalized newlines and escaped `&`, `<`, and `>`.
+down to milliseconds. Text is UTF-8 with normalized newlines, written as it is: players do not
+decode entities, so `&`, `<` and `>` are not escaped. Only what a player would read as a tag is
+broken up: players (ffmpeg, mpv) read `<` up to the next `>` on a line as a tag (`<i>`, `</b>`,
+`<font color=…>`, and drop any other), so a word joiner (U+2060, invisible and zero-width) is
+written after each `<` that a `>` follows on its line, and `<i>x</i>` is shown as typed. A `<`
+with no `>` after it (`<3`, `a<b`) is written as it is. `{\…}` override codes are written as they
+are, so `{n8}` places a line at the top as players expect.
 Disabled tracks are omitted; an enabled track with no cue in the range produces an empty SRT.
 
 `render.cancel {job}` answers `{}` and requests cancellation; wait for the terminal progress

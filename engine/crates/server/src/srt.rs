@@ -52,12 +52,7 @@ pub fn files(timeline: &Timeline, path: &Path, range: Range<i64>) -> Vec<(PathBu
                     if line.trim().is_empty() {
                         text.push(' ');
                     } else {
-                        text.push_str(
-                            &line
-                                .replace('&', "&amp;")
-                                .replace('<', "&lt;")
-                                .replace('>', "&gt;"),
-                        );
+                        text.push_str(&untagged(line));
                     }
                     text.push('\n');
                 }
@@ -66,6 +61,25 @@ pub fn files(timeline: &Timeline, path: &Path, range: Range<i64>) -> Vec<(PathBu
             (path, text)
         })
         .collect()
+}
+
+/// A word joiner (U+2060): it has no width and does not break the line.
+const JOINER: char = '\u{2060}';
+
+/// A line of a subtitle as it is written to SRT: as it is, but that a player, which reads `<`
+/// up to the next `>` on the line as a tag (`<i>`, `</b>`, `<font color=…>`, and any other that
+/// it drops), sees no tag. A word joiner goes after each `<` that a `>` follows on the line, so
+/// the line is shown as it was written. `&` and a `<` that no `>` follows are left alone, as
+/// players show them as they are.
+fn untagged(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for (at, ch) in line.char_indices() {
+        out.push(ch);
+        if ch == '<' && line[at + 1..].contains('>') {
+            out.push(JOINER);
+        }
+    }
+    out
 }
 
 fn timestamp(frame: i64, rate: Rate) -> String {
@@ -164,7 +178,83 @@ mod tests {
         timeline.tracks = vec![track];
         let got = files(&timeline, Path::new("cut.mp4"), 25..100);
         assert_eq!(got, vec![(PathBuf::from("cut.srt"),
-            "1\n00:00:00,000 --> 00:00:01,000\n&lt;b&gt;&amp;\n第二行\n \n最后\n\n2\n00:00:01,400 --> 00:00:03,000\ntail\n\n".into())]);
+            "1\n00:00:00,000 --> 00:00:01,000\n<\u{2060}b>&\n第二行\n \n最后\n\n2\n00:00:01,400 --> 00:00:03,000\ntail\n\n".into())]);
+    }
+
+    #[test]
+    fn only_what_a_player_would_read_as_a_tag_is_broken_up() {
+        let j = JOINER;
+        for (line, written) in [
+            ("Tom & Jerry <3 a<b", "Tom & Jerry <3 a<b".to_owned()),
+            ("&amp; &lt; x>y", "&amp; &lt; x>y".to_owned()),
+            ("<i>it</i>", format!("<{j}i>it<{j}/i>")),
+            ("<FONT color=\"red\">r", format!("<{j}FONT color=\"red\">r")),
+            ("1<2 && 3>2", format!("1<{j}2 && 3>2")),
+            ("a<b<c>", format!("a<{j}b<{j}c>")),
+        ] {
+            assert_eq!(untagged(line), written, "{line}");
+        }
+    }
+
+    /// The text of each cue of an SRT as ffmpeg reads it and writes it as `extension`.
+    fn read_back(srt: &Path, extension: &str) -> Option<String> {
+        let program = std::env::var("COLUMBINA_FFMPEG").unwrap_or_else(|_| "ffmpeg".into());
+        let out = srt.with_extension(extension);
+        let ran = std::process::Command::new(program)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(srt)
+            .arg(&out)
+            .status();
+        if !ran.is_ok_and(|status| status.success()) {
+            assert!(
+                std::env::var("COLUMBINA_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+                "COLUMBINA_REQUIRE_FFMPEG is 1, and ffmpeg could not read {}",
+                srt.display()
+            );
+            return None;
+        }
+        Some(std::fs::read_to_string(out).unwrap().replace(JOINER, ""))
+    }
+
+    #[test]
+    fn ffmpeg_reads_the_text_of_a_subtitle_back_as_it_was_written() {
+        let mut timeline = Project::sample().timelines.remove(0);
+        let mut track = Track::new("S1", TrackKind::Subtitle);
+        let lines = [
+            "Tom & Jerry <3 a<b",
+            "<i>not italic</i> &amp; <font color=\"red\">x</font>",
+            "1<2 && 3>2",
+        ];
+        track.cues = vec![
+            cue(0, 25, lines[0]),
+            cue(25, 25, lines[1]),
+            cue(50, 25, lines[2]),
+        ];
+        timeline.tracks = vec![track];
+        let dir = tempfile::tempdir().unwrap();
+        let (path, text) = files(&timeline, &dir.path().join("cut.mp4"), 0..100).remove(0);
+        std::fs::write(&path, text).unwrap();
+        for extension in ["vtt", "ass"] {
+            let Some(read) = read_back(&path, extension) else {
+                return;
+            };
+            for line in lines {
+                assert!(read.contains(line), "{line} in the {extension}:\n{read}");
+            }
+        }
+    }
+
+    #[test]
+    fn frames_of_a_rate_of_29_97_are_rounded_down_to_the_millisecond() {
+        let rate = Rate {
+            num: 30000,
+            den: 1001,
+        };
+        // 2 frames are 66.733 ms, 5 are 166.833 ms and 299 are 9976.633 ms: never rounded up.
+        assert_eq!(timestamp(2, rate), "00:00:00,066");
+        assert_eq!(timestamp(5, rate), "00:00:00,166");
+        assert_eq!(timestamp(299, rate), "00:00:09,976");
+        assert_eq!(timestamp(107_892, rate), "00:59:59,996");
     }
 
     #[test]

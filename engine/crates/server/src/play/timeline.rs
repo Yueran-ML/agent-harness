@@ -162,6 +162,7 @@ impl Timeline {
                         current: None,
                         clock: None,
                         sound: SoundSlot::new(sound),
+                        mixed_from: None,
                         heard: Cell::new(0),
                         fine: None,
                         epoch: Instant::now(),
@@ -283,6 +284,9 @@ struct Worker {
     current: Option<Arc<Target>>,
     clock: Option<Clock>,
     sound: SoundSlot,
+    /// The sample of the timeline that the mixer that plays started at, and the timeline's
+    /// rate of samples: where the sound is, for the test hook to tell.
+    mixed_from: Option<(i64, u32)>,
     heard: Cell<i128>,
     fine: Option<crate::timer::Fine>,
     epoch: Instant,
@@ -342,6 +346,7 @@ impl Worker {
         let timeline = &project.timelines[index];
         let nanos = Clock::at(place, 1, clock.rate(), 0).media_nanos(0);
         let from = i64::try_from(nanos * i128::from(timeline.sample_rate) / clock::NANOS);
+        let started = from.as_ref().ok().copied();
         let result = from
             .map_err(|_| "timeline audio start is outside sample time".to_owned())
             .and_then(|from| {
@@ -354,6 +359,7 @@ impl Worker {
                 self.status.sound = Sound::On;
                 self.heard.set(0);
                 self.clock = Some(Clock::at(place, 1, clock.rate(), 0));
+                self.mixed_from = started.map(|from| (from, timeline.sample_rate));
             }
             Err(message) => {
                 self.status.sound = Sound::Unavailable;
@@ -522,15 +528,23 @@ impl Worker {
             Command::Digest(reply) => {
                 let sound = (self.status.sound == Sound::On)
                     .then(|| {
-                        self.sound
-                            .working()
-                            .and_then(|output| output.played(Instant::now()))
-                            .map(|samples| {
-                                (
-                                    samples,
-                                    self.clock.map(|clock| clock.frame(self.clock_now())),
+                        self.sound.working().and_then(|output| {
+                            let samples = output.played(Instant::now())?;
+                            // Where the mixer is in the timeline: the sample that it started
+                            // at, and as many more as have been heard, at the timeline's rate.
+                            let mixed = self.mixed_from.map(|(from, rate)| {
+                                from + i64::try_from(
+                                    i128::from(samples) * i128::from(rate)
+                                        / i128::from(output.format().rate),
                                 )
-                            })
+                                .unwrap_or(i64::MAX)
+                            });
+                            Some((
+                                samples,
+                                self.clock.map(|clock| clock.frame(self.clock_now())),
+                                mixed,
+                            ))
+                        })
                     })
                     .flatten();
                 let result = self
@@ -539,9 +553,10 @@ impl Worker {
                     .ok_or_else(not_loaded)
                     .and_then(|target| super::digest(target, self.status.shown, Monitor::Timeline))
                     .map(|mut digest| {
-                        if let Some((samples, frame)) = sound {
+                        if let Some((samples, frame, mixed)) = sound {
                             digest["audio_samples"] = json!(samples);
                             digest["audio_frame"] = json!(frame);
+                            digest["audio_sample"] = json!(mixed);
                         }
                         digest
                     });

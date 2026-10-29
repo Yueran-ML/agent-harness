@@ -78,6 +78,10 @@ pub enum Sample {
     /// B-frames) without coding it again (`-ss 1.3 -c copy`): an edit list starts it after its
     /// first key frame, whose frames before 1.3 s are decoded and dropped.
     EditList,
+    /// Sound only: WAV, 16 bits in stereo at 48 kHz, 4 s, silent but for a beep of 10 ms at
+    /// 1 kHz, half of full scale, starting at each whole second (0, 1, 2 and 3 s), at its
+    /// peak from its first sample: where a beep is heard tells where the sound is.
+    Clicks,
 }
 
 impl Sample {
@@ -118,7 +122,7 @@ impl Sample {
             Sample::Prores | Sample::Webm => Some(50),
             Sample::Portrait => Some(60),
             Sample::Fhd10 => Some(25),
-            Sample::Wav | Sample::Evc | Sample::Noise | Sample::EditList => None,
+            Sample::Wav | Sample::Evc | Sample::Noise | Sample::EditList | Sample::Clicks => None,
         }
     }
 
@@ -150,6 +154,7 @@ impl Sample {
             Sample::Noise => "v1-noise-aac.m4a",
             Sample::Collide => "v1-collide-h264.mp4",
             Sample::EditList => "v1-editlist-h264.mp4",
+            Sample::Clicks => "v1-clicks.wav",
         }
     }
 }
@@ -534,6 +539,20 @@ fn recipes(sample: Sample, encoders: &str) -> Vec<Recipe> {
                 }
             })
             .collect(),
+        Sample::Clicks => vec![Recipe {
+            encoder: "pcm_s16le".into(),
+            steps: vec![strings(&[
+                "-f",
+                "lavfi",
+                "-i",
+                "aevalsrc=exprs='if(lt(mod(t,1),0.01),0.5*cos(2*PI*1000*t),0)':s=48000:d=4",
+                "-ac",
+                "2",
+                "-c:a",
+                "pcm_s16le",
+                "{out}",
+            ])],
+        }],
         Sample::Wav => vec![Recipe {
             encoder: "pcm_s16le".into(),
             steps: vec![strings(&[

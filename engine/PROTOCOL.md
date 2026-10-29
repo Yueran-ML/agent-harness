@@ -613,7 +613,10 @@ the entire RGBA frame, for regression comparisons; `pixels` contains the four to
 pixels. It is not a playback operation or project identity. Without the flag, or headless,
 the method returns `-32601`; before a picture is loaded it returns `-32004` `not_loaded`.
 While timeline sound is playing, the hook also returns `audio_samples` (device-rate samples
-heard since that output started) and `audio_frame` (the corresponding timeline clock frame).
+heard since that output started), `audio_frame` (the corresponding timeline clock frame) and
+`audio_sample` (where the mixer is in the timeline, in timeline samples: the sample it started
+at plus those heard, at the timeline's `sample_rate`), so a test can tell the sound from the
+picture by the mixer itself rather than by the clock that the sound drives.
 These fields are absent after pause and are only for audio/picture regression checks.
 
 The media-specific details below describe the source monitor. Seek, pause, step, speed bounds,

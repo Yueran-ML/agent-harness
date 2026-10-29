@@ -451,6 +451,76 @@ async fn render_h264_matches_preview_original_frames_dissolve_titles_and_stereo_
     check_audio(&path);
 }
 
+/// The first sample, of the left channel of interleaved stereo, within `window` of `around`
+/// that is louder than half of the beeps of [`support::Sample::Clicks`].
+fn onset(sound: &[f32], around: usize, window: usize) -> Option<usize> {
+    let pairs = sound.as_chunks::<2>().0;
+    let from = around.saturating_sub(window);
+    let to = (around + window).min(pairs.len());
+    (from..to).find(|&at| pairs[at][0].abs() > 0.25)
+}
+
+#[tokio::test]
+async fn render_puts_each_sound_at_the_frame_of_its_picture() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let output = project_dir();
+    let Some((_engine, mut client)) =
+        transport_engine_with(dir.path(), &[support::Sample::Clicks], &["--headless"]).await
+    else {
+        return;
+    };
+    let state = project(&mut client).await;
+    let scale = state["project"]["media"][0]["facts"]["duration"]["scale"]
+        .as_i64()
+        .unwrap();
+    let mut color = clip("$color", "unused", 0, 100);
+    color["source"] = json!({"kind":"color", "color":"#202020ff"});
+    // The clicks from 0.2 s of their file on at frame 10: the beeps at 1, 2 and 3 s of the
+    // file are at frames 30, 55 and 80 of the timeline.
+    let mut sound = clip("$sound", "m1", 10, 85);
+    sound["source"]["in"] = json!({"ticks":scale / 5, "scale":scale});
+    let track = |id: &str, kind: &str, clips: Value| {
+        json!({"id":id,"kind":kind,"name":id,
+        "enabled":true,"locked":false,"clips":clips,"transitions":[]})
+    };
+    let names = client
+        .apply(json!([{"op":"add_timeline","timeline":{
+            "id":"$t", "name":"Clicks", "width":320,"height":180,
+            "rate":{"num":25,"den":1},"sample_rate":48000,
+            "tracks":[track("$v","video",json!([color])),track("$a","audio",json!([sound]))]
+        }}]))
+        .await["names"]
+        .clone();
+    let path = output.path().join("clicks.mov");
+    let mut params = request(&names["$t"], &path);
+    params["subtitles"] = json!(false);
+    params["range"] = json!({"from":5,"to":95});
+    let job = client.result("render.start", Some(params)).await["job"].clone();
+    let done = finished(&mut client, &job).await;
+    assert_eq!(done["state"], "done", "{done}");
+    let mut audio = AudioDecoder::open(&path, None).unwrap();
+    let mut sound = Vec::new();
+    while let Some(run) = audio.next().unwrap() {
+        sound.extend(run.data);
+    }
+    // Exported from frame 5: the beeps are at frames 25, 50 and 75 of the file, 1920 samples
+    // a frame. Each is heard within a millisecond (48 samples) of its frame.
+    for frame in [25, 50, 75] {
+        let expected = frame * 1920;
+        let heard = onset(&sound, expected, 4800)
+            .unwrap_or_else(|| panic!("no beep near frame {frame} of the export"));
+        assert!(
+            heard.abs_diff(expected) <= 48,
+            "the beep of frame {frame} is at sample {heard}, not {expected}"
+        );
+    }
+    // Nothing is heard between the beeps.
+    assert_eq!(onset(&sound, 37 * 1920, 9 * 1920), None);
+}
+
 #[tokio::test]
 async fn render_uses_originals_and_keeps_its_snapshot_when_the_timeline_is_deleted() {
     if columbina_compose::gpu_for_tests().is_none() {

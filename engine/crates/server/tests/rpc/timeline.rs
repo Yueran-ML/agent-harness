@@ -573,6 +573,16 @@ async fn timeline_picture_follows_the_mixed_audio_clock_and_pauses_it() {
                 <= 1,
             "sound/picture drift: {digest}"
         );
+        // Where the mixer is in the timeline, which the clock does not tell: at 25 frames a
+        // second and 48000 samples, 1920 samples a frame. Sound that started a frame or more
+        // away from the picture is caught here.
+        let mixed = digest["audio_sample"].as_i64().unwrap();
+        let shown = digest["frame"].as_i64().unwrap() * 1920;
+        assert!(
+            mixed.abs_diff(shown) <= 1920,
+            "the sound is {} samples from the picture: {digest}",
+            mixed - shown
+        );
     }
     client.take_notifications();
     action(&mut client, "transport.pause", json!({})).await;

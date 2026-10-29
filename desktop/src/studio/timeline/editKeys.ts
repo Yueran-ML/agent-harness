@@ -5,6 +5,7 @@ import type { Change, Edit, Material, Targets, Transaction } from './commands';
 import type { Tool } from './interact';
 import { clipLocations, linkedClips } from './selection';
 import type { Marks } from './snap';
+import { materialLength } from './drop';
 
 export type EditAction =
   | { kind: 'tool'; tool: Tool }
@@ -81,6 +82,54 @@ export type EditResult =
 export function sourceTime(frame: number, rate: Rate, scale: number): Time {
   return { ticks: Number(BigInt(Math.max(0, Math.floor(frame))) * BigInt(rate.den) * BigInt(scale) / BigInt(rate.num)), scale };
 }
+/** The source ticks that `frames` of a timeline at `rate` take, at speed 1, rounded up to a whole tick. */
+function sourceSpan(frames: number, rate: Rate, scale: number): number {
+  const product = BigInt(Math.max(0, frames)) * BigInt(rate.den) * BigInt(scale);
+  const num = BigInt(rate.num);
+  return Number((product + num - 1n) / num);
+}
+
+/**
+ * Where an edit puts the source and which part of it, by the rules of three-point editing of
+ * DaVinci Resolve (Reference Manual 20, "The Rules of Three-Point Editing"):
+ *
+ * - Without an In on the source, its first frame is the In; without an Out, its last frame. The
+ *   engine takes the marks of the media and these defaults itself, so they are not sent.
+ * - Timeline In and Out: they decide the length, and the source In goes to the timeline In. With
+ *   only an Out on the source, the edit is backtimed: the source Out goes to the timeline Out. With
+ *   all four marks, those of the timeline win and the source Out is passed over.
+ * - Only a timeline Out: the edit is backtimed, so that the source Out goes to the timeline Out.
+ *   Where the source is longer than the time before that Out, it begins at the start of the
+ *   timeline, and only its end that fits is used.
+ * - Neither: the playhead of the timeline is the timeline In.
+ *
+ * A replace edit lines up the frame of the source monitor with the playhead of the timeline.
+ */
+export function threePoint(timeline: Timeline, source: NonNullable<EditContext['source']>, marks: Marks, frame: number, replace = false): { at: number; material: Material } {
+  const { media } = source;
+  const scale = media.facts.duration.scale;
+  const material: Material = { kind: 'media', media: media.id };
+  const still = media.facts.video?.still === true;
+  if (replace) {
+    material.from = sourceTime(source.frame, source.rate, scale);
+    return { at: marks.in ?? frame, material };
+  }
+  const end = media.mark_out?.ticks ?? media.facts.duration.ticks;
+  if (marks.in !== null && marks.out !== null && marks.out > marks.in) {
+    material.length = marks.out - marks.in;
+    if (!media.mark_in && media.mark_out && !still) material.from = { ticks: Math.max(0, end - sourceSpan(material.length, timeline.rate, scale)), scale };
+    return { at: marks.in, material };
+  }
+  if (marks.in === null && marks.out !== null) {
+    const length = materialLength(media, timeline.rate);
+    if (length <= marks.out) return { at: marks.out - length, material };
+    material.length = marks.out;
+    if (!still) material.from = { ticks: Math.max(0, end - sourceSpan(marks.out, timeline.rate, scale)), scale };
+    return { at: 0, material };
+  }
+  return { at: marks.in ?? frame, material };
+}
+
 const compare = (a: Time, b: Time) => BigInt(a.ticks) * BigInt(b.scale) - BigInt(b.ticks) * BigInt(a.scale);
 
 export function editCommand(action: EditAction | null, context: EditContext): EditResult | null {
@@ -116,13 +165,10 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   const activeTracks = Object.values(targets).filter((id): id is string => typeof id === 'string');
   if (action.kind === 'place') {
     if (!source) return null;
-    const material: Material = { kind: 'media', media: source.media.id };
-    if (action.edit === 'append') return transaction([{ edit: 'append', timeline: timeline.id, source: material, ...targets }]);
-    const at = marks.in ?? frame;
-    if (action.edit === 'replace') material.from = sourceTime(source.frame, source.rate, source.media.facts.duration.scale);
-    else if (marks.out !== null && marks.out > at) material.length = marks.out - at;
-    const command: Edit = action.edit === 'place_on_top' ? { edit: action.edit, timeline: timeline.id, source: material, at }
-      : { edit: action.edit, timeline: timeline.id, source: material, at, ...targets };
+    if (action.edit === 'append') return transaction([{ edit: 'append', timeline: timeline.id, source: { kind: 'media', media: source.media.id }, ...targets }]);
+    const placed = threePoint(timeline, source, marks, frame, action.edit === 'replace');
+    const command: Edit = action.edit === 'place_on_top' ? { edit: action.edit, timeline: timeline.id, source: placed.material, at: placed.at }
+      : { edit: action.edit, timeline: timeline.id, source: placed.material, at: placed.at, ...targets };
     return transaction([command]);
   }
   if (action.kind === 'delete') {

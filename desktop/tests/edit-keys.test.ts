@@ -39,6 +39,49 @@ describe('DaVinci editing keys', () => {
     expect(command('o')).toEqual({ kind: 'marks', marks: { in: null, out: 101 } });
     expect(command('x', { alt: true }, ctx)).toEqual({ kind: 'marks', marks: { in: null, out: null } });
   });
+  it('follows the rules of three-point editing of DaVinci Resolve for every set of marks', () => {
+    // The media lasts 4000 s at a scale of 25 ticks a second; the timeline is at 25 fps, a tick a frame.
+    const at = (marks: { in: number | null; out: number | null }, source: Partial<typeof media> = {}, edit = 'F10') => {
+      const result = command(edit, {}, context({ marks, source: { media: { ...media, ...source }, frame: 30, rate: { num: 25, den: 1 } } }));
+      if (result?.kind !== 'transaction') throw new Error('No edit.');
+      const op = result.transaction.ops[0] as { at: number; source: Record<string, unknown> };
+      return { at: op.at, source: op.source };
+    };
+    const tick = (ticks: number) => ({ ticks, scale: 25 });
+    // No marks: the source from its first frame (not the frame of the source monitor) at the playhead of the timeline.
+    expect(at({ in: null, out: null })).toEqual({ at: 100, source: { kind: 'media', media: 'm1' } });
+    // A source In and Out at the playhead: the engine takes the marks of the media.
+    expect(at({ in: null, out: null }, { mark_in: tick(200), mark_out: tick(240) })).toEqual({ at: 100, source: { kind: 'media', media: 'm1' } });
+    // A timeline In alone is where it goes.
+    expect(at({ in: 50, out: null }, { mark_in: tick(200) })).toEqual({ at: 50, source: { kind: 'media', media: 'm1' } });
+    // Timeline In and Out decide the length; the source In goes to the timeline In (all four marks: the source Out is passed over).
+    expect(at({ in: 50, out: 90 })).toEqual({ at: 50, source: { kind: 'media', media: 'm1', length: 40 } });
+    expect(at({ in: 50, out: 90 }, { mark_in: tick(200), mark_out: tick(400) })).toEqual({ at: 50, source: { kind: 'media', media: 'm1', length: 40 } });
+    // Timeline In and Out with only a source Out: the source is backtimed from its Out.
+    expect(at({ in: 50, out: 90 }, { mark_out: tick(240) })).toEqual({ at: 50, source: { kind: 'media', media: 'm1', length: 40, from: tick(200) } });
+    // ... and a source Out nearer its start than the length begins at its first frame.
+    expect(at({ in: 50, out: 90 }, { mark_out: tick(10) })).toMatchObject({ source: { from: tick(0), length: 40 } });
+    // Only a timeline Out: backtimed, so that the source Out lands on it.
+    expect(at({ in: null, out: 500 }, { mark_in: tick(200), mark_out: tick(240) })).toEqual({ at: 460, source: { kind: 'media', media: 'm1' } });
+    // ... with a source In alone, its end lands on it; where it is longer than the time before, its end that fits is used from 0.
+    expect(at({ in: null, out: 500 }, { mark_in: tick(99_800) })).toEqual({ at: 300, source: { kind: 'media', media: 'm1' } });
+    expect(at({ in: null, out: 500 }, { mark_out: tick(240) })).toEqual({ at: 260, source: { kind: 'media', media: 'm1' } });
+    expect(at({ in: null, out: 50 }, { mark_out: tick(240) })).toEqual({ at: 0, source: { kind: 'media', media: 'm1', length: 50, from: tick(190) } });
+    // A still without marks lasts five seconds, backtimed too.
+    const still = { facts: { ...media.facts, video: { ...media.facts.video!, still: true } } };
+    expect(at({ in: null, out: 500 }, still)).toEqual({ at: 375, source: { kind: 'media', media: 'm1' } });
+    // Insert and place on top follow the same rules; replace lines the source monitor's frame up with the playhead.
+    expect(at({ in: null, out: 500 }, { mark_in: tick(200), mark_out: tick(240) }, 'F9')).toEqual({ at: 460, source: { kind: 'media', media: 'm1' } });
+    expect(at({ in: null, out: 500 }, { mark_in: tick(200), mark_out: tick(240) }, 'F12')).toEqual({ at: 460, source: { kind: 'media', media: 'm1' } });
+    expect(at({ in: null, out: null }, {}, 'F11')).toEqual({ at: 100, source: { kind: 'media', media: 'm1', from: tick(30) } });
+  });
+  it('backtimes in whole source ticks at fractional rates, ending at or before the source Out', () => {
+    const t = { ...timeline(), rate: { num: 30000, den: 1001 } };
+    const m = { ...media, facts: { ...media.facts, duration: { ticks: 48000 * 600, scale: 48000 } }, mark_out: { ticks: 48000 * 60, scale: 48000 } };
+    const result = command('F10', {}, context({ timeline: t, marks: { in: 0, out: 7 }, source: { media: m, frame: 0, rate: t.rate } }));
+    // 7 frames at 29.97 fps are 11211.2 ticks at 48 kHz: the clip begins 11212 ticks before the Out.
+    expect(result).toMatchObject({ transaction: { ops: [{ at: 0, source: { length: 7, from: { ticks: 48000 * 60 - 11212, scale: 48000 } } }] } });
+  });
   it('sets source marks in the source timebase and clears a now-invalid opposite mark', () => {
     const m = { ...media, mark_out: { ticks: 20, scale: 25 } };
     const ctx = context({ focus: 'source', source: { media: m, frame: 30, rate: { num: 25, den: 1 } } });

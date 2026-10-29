@@ -1027,20 +1027,25 @@ nonempty and inside the timeline. The first exported frame becomes frame zero in
 The path must be absolute, its parent directory must exist, and its extension must be `.mp4`
 (H.264/HEVC) or `.mov` (any codec). Export cannot write inside the project's cache, including
 through a directory link, or replace a directory or symbolic link. An existing destination or
-SRT with `replace: false` is refused with `-32001` and `{reason:"exists",path}`. Invalid path,
+SRT with `replace: false` is refused with `-32001` and `{reason:"exists",path}`. A destination
+(movie or SRT, or the `.mov` of a ProRes fallback) that is the file of any media of the project
+or of its proxy, compared as the system resolves the paths (case-insensitively on Windows), is
+refused before anything is written with `-32001` and `{reason:"source",path,media}`. Invalid path,
 codec, quality, timeline or range is `-32602`. One export runs at a time; a second start is
 refused with `-32001` and `{reason:"busy"}`.
 
 The answer is `{job:"render-1"}` and is queued before that job's first `render.progress`:
 
 ```json
-{"job":"render-1","state":"running","frame":36,"frames":250,"fps":48.2,"path":"C:/Exports/film.mp4","encoder":"nvenc"}
+{"job":"render-1","state":"running","frame":36,"frames":250,"fps":48.2,"path":"C:/Exports/film.mp4","encoder":"h264_nvenc"}
 ```
 
 `frame` counts frames completed, not absolute timeline frames; `frames` is the total. Running
 notifications are sent at most once per 250 ms. The terminal notification is always sent,
-with `state` equal to `done`, `failed`, or `cancelled`. `encoder` is present once opened;
-`message` explains failure or a codec fallback. `path` reports the actual destination.
+with `state` equal to `done`, `failed`, or `cancelled`. `encoder` is present once opened:
+the name of the libavcodec encoder (`h264_nvenc`, `hevc_amf`, `prores_ks`).
+`message` explains a failure, a codec fallback, or a graphics device that was lost and made
+again. `path` reports the actual destination.
 The project revision and undo history are not changed by an export.
 
 The export uses a snapshot taken at start, independent original-media decoders, the same
@@ -1048,7 +1053,13 @@ scene compositor as preview, and the same stereo timeline mixer. It never uses p
 Edits, undo, or deletion of that timeline after start do not change the export. Titles are
 composited into the picture. Subtitle tracks are **not burned into the picture**.
 The GPU is shared with preview: a waiting preview composition takes the next turn; export
-submits and reads back one frame at a time. Audio is AAC, 192 kb/s, 48 kHz stereo. H.264 uses
+submits and reads back one frame at a time. If the graphics device is lost during an export
+(a driver reset), the export waits up to 30 s for a new device, draws the frame it was at
+again and goes on: no frame was written for it yet, so the file is whole; the final `message`
+says the device was made again. If none can be made, or it is lost three times on one frame,
+the export fails, saying so. An encoder that fails after it opened (a frame, the sound or
+finishing the file) fails the export with a message naming the encoder and the frame; the
+ProRes fallback is only ever taken when no encoder opens, never in the middle of a file. Audio is AAC, 192 kb/s, 48 kHz stereo. H.264 uses
 8-bit picture; HEVC uses 10 bits when the project contains 10-bit media. If no hardware
 encoder can open H.264/HEVC, the engine tries ProRes in a `.mov`, reports that change, and
 checks the new destination against the same overwrite rules.
@@ -1072,7 +1083,12 @@ Cancellation of the most recently completed job is harmless. Engine shutdown can
 joins its export before releasing the project.
 
 The movie and SRTs are first written beside their destinations as `<path>.part`. Existing
-partial files are not overwritten. On cancellation or failure these owned partials are
+partial files are not overwritten: one that is there when an export starts (left by an engine
+that ended while it exported, or by another program) is refused before anything is written
+with `-32001` and `{reason:"part_exists",path}`, `path` naming the partial file. With
+`replace: true` it is deleted first, unless a program still has it open (as ffmpeg has the file
+it writes; Windows then refuses to delete it) or it is not a file: then it is refused so too.
+On cancellation or failure these owned partials are
 removed. At publication, sidecars are renamed first and the movie last; previous destinations
 are retained in temporary backups until all renames succeed, then removed. A publication
 failure rolls back previously renamed files. If the filesystem prevents restoring a backup,

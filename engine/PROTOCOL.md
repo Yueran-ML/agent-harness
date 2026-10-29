@@ -130,6 +130,9 @@ Before `hello`, every other request is refused with `-32600`.
 | `view.place` | `{"monitor":"source" \| "timeline", "x": x, "y": y, "width": w, "height": h}` | `{}` |
 | `view.show` | `{"monitor":"source" \| "timeline", "shown": true \| false}` | `{}` |
 | `view.detach` | `{"monitor":"source" \| "timeline"}` | `{"detached": true \| false}` |
+| `render.start` | `{"timeline":"t1", "path":"<file>", "codec":"h264", "quality":"high", "range"?:{"from":0,"to":250}, "subtitles"?:false, "replace"?:false}` | `{"job": "render-1"}` (see Rendering a timeline) |
+| `render.cancel` | `{"job": "render-1"}` | `{}` |
+| `transport.frame_digest` | `{"monitor": m}` | test hook only, with `--test-hooks` (see The transport); `-32601` otherwise |
 | `transport.*` | see The transport | |
 
 - `hello` says once per connection what the client is; a second `hello` is refused (`-32600`).
@@ -228,7 +231,8 @@ cannot be opened or decoded is `-32002`, with `path`, `reason` and `message` as 
   the display aspect ratio (rounded to the nearest pixel, at least 1); the PNG is upright RGBA,
   with media rotation applied. The first-phase limited BT.709 conversion matches the preview.
   `frame` is a nonnegative frame number at the media's rate. If omitted it is
-  `floor(ceil(duration * rate) / 2)`. A number outside the duration is `-32602`; a source without
+  `floor(ceil(duration * rate) / 2)`. A number outside the duration is `-32602`, `data:
+  {"reason":"out_of_range","frame":n}`; a source without
   video is `-32002`, reason `no_video`. A usable proxy is preferred, with fallback to the
   original if the proxy cannot open or decode. At most two thumbnails are decoded at once.
 - **Waveforms.** Bin `n` describes media time `[n/100, (n+1)/100)` seconds. The last partial
@@ -701,6 +705,7 @@ media is unloaded; while playing, as the playhead moves, **at most 30 times a se
 |---|---|
 | `not_loaded` | `transport.play`, `.pause`, `.seek` or `.step` with no media loaded, and none being loaded |
 | `failed` | the transport of the engine has stopped (a bug of the engine): it told the state with `media: null` as it stopped, and logged `transport_failed`; from then on every `transport.*` is refused so, but `transport.state`, which still answers with that state |
+| `draw` | `transport.frame_digest` (a test hook) could not draw or read back the frame it was asked for |
 
 ## Operations
 
@@ -900,6 +905,7 @@ real ids. For example:
 | `engine.yielding` | `{"to": "desktop"}`: the engine is about to end, to yield the project to the desktop's engine (see `engine.yield`) |
 | `media.proxy` | `{"media": "m1", "state": "queued" \| "running" \| "done" \| "failed", "progress": 0.5, "message"?: "..."}` (see Proxies) |
 | `media.waveform` | `{"media": "m1"}` (background analysis finished; query again for data or error) |
+| `render.progress` | `{"job", "state": "running" \| "done" \| "failed" \| "cancelled", "frame", "frames", "fps", "path", "encoder"?, "message"?}` (see Rendering a timeline) |
 
 - `by` is the kind of the client that asked (for an undo or a redo, the one that asked for
   that); `made_by` is the kind of the client that made the transaction (for an undo or a redo,
@@ -941,11 +947,11 @@ commits to it; and any client may send transactions. So:
 | `-32700` | the line is not JSON (id `null`) | |
 | `-32600` | not a request object, `jsonrpc` is not `"2.0"`, no `method`, a bad `id` (answered with id `null`), a request before `hello`, a second `hello`, a line over 16 MiB, `view.*` or `engine.yield` from a client that is not the desktop | |
 | `-32601` | no such method; `view.*` and `transport.*` in a `--headless` engine; `media.make_proxy` in an engine that makes no proxies; `engine.yield` in an engine that is not headless | |
-| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media not in the project | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"reason": "missing", "media": "..."}` |
-| `-32001` | a transaction, undo or redo was refused; the project is exactly as it was | the refusal, below |
+| `-32602` | params are not what the method takes (or not an object); an operation that cannot be read; a bad `$name`; a speed of `transport.play` out of −8…8 or 0; `transport.load` of media or a timeline not in the project; `timeline.duration` of a timeline not there; `media.thumbnail` of a frame outside the media; `render.start` with a bad path, codec, quality, timeline or range, and `render.cancel` of a job that is not there | `{"index": i, "reason": "invalid_op"}` for an operation that cannot be read; see names above; `{"reason": "speed"}`; `{"reason": "missing", "media": "..."}` or `{"reason": "missing", "timeline": "..."}`; `{"reason": "out_of_range", "frame": n}` |
+| `-32001` | a transaction, undo or redo was refused; the project is exactly as it was; or `render.start` was refused before anything was written | the refusal, below |
 | `-32002` | `media.import`: a file cannot be read; nothing was added. `transport.load`: the file of the media cannot be opened or decoded | `{"path": "<as sent>", "reason": "...", "message": "..."}`, below |
 | `-32003` | `view.*`: the view cannot be made, there is none, or its window is gone | `{"reason": "..."}`, see The view |
-| `-32004` | `transport.*`: no media is loaded | `{"reason": "..."}`, see The transport |
+| `-32004` | `transport.*`: no media is loaded, the transport has stopped, or the test hook could not draw | `{"reason": "..."}`, see The transport |
 
 The connection stays usable after every error.
 
@@ -984,6 +990,11 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `not_absolute` | `path` | the `path` of a proxy is not absolute (`C:\…`, `\\server\…` or `/…`) |
 | `not_a_proxy_path` | `path` | the `path` of a proxy is not a file of the engine's own: `<id>-<12 hex digits>.mov` directly in `<project>/cache/proxies` (see Security) |
 | `empty` | | the transaction has no operations |
+| `stale_revision` | `expected`, `actual` | `transaction.apply` with a `revision` that is not the project's (see Methods) |
+| `busy` | | `render.start` while an export is running |
+| `exists` | `path` | `render.start` without `replace` onto an existing movie or SRT |
+| `part_exists` | `path` | `render.start` where the partial file `<path>.part` of the movie or an SRT is there (see Rendering a timeline) |
+| `source` | `path`, `media` | `render.start` onto the file of media of the project, or of its proxy |
 
 ### Additional schema 2 and edit refusals
 
@@ -1074,7 +1085,7 @@ broken up: players (ffmpeg, mpv) read `<` up to the next `>` on a line as a tag 
 `<font color=…>`, and drop any other), so a word joiner (U+2060, invisible and zero-width) is
 written after each `<` that a `>` follows on its line, and `<i>x</i>` is shown as typed. A `<`
 with no `>` after it (`<3`, `a<b`) is written as it is. `{\…}` override codes are written as they
-are, so `{n8}` places a line at the top as players expect.
+are, so `{\an8}` places a line at the top as players expect.
 Disabled tracks are omitted; an enabled track with no cue in the range produces an empty SRT.
 
 `render.cancel {job}` answers `{}` and requests cancellation; wait for the terminal progress

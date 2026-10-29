@@ -52,7 +52,10 @@ export function editKey(key: Key): EditAction | null {
     case 'r': return { kind: 'speed' };
     case 'd': return { kind: 'enabled' };
     case 'Escape': return { kind: 'cancel' };
-    case 'Delete': case 'Backspace': return { kind: 'delete', ripple: false };
+    // As DaVinci Resolve has them: Backspace (Delete on a Mac) lifts and leaves a gap; Delete
+    // (Forward Delete on a Mac), like Shift with either, ripple deletes.
+    case 'Backspace': return { kind: 'delete', ripple: false };
+    case 'Delete': return { kind: 'delete', ripple: true };
     case 'F9': return { kind: 'place', edit: 'insert' };
     case 'F10': return { kind: 'place', edit: 'overwrite' };
     case 'F11': return { kind: 'place', edit: 'replace' };

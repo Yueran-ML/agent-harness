@@ -90,8 +90,12 @@ describe('DaVinci editing keys', () => {
     expect(command('x', { alt: true }, ctx)).toMatchObject({ transaction: { ops: [{ op: 'set_media', mark_in: null, mark_out: null }] } });
   });
   it('uses shared undo and keeps destructive keys from repeating', () => {
-    expect(command('Delete')).toMatchObject({ transaction: { ops: [{ edit: 'lift', clips: ['c1'], linked: true }] } });
+    // Backspace lifts; Delete, and Shift with either, ripple deletes, as DaVinci Resolve has them.
+    expect(command('Backspace')).toMatchObject({ transaction: { ops: [{ edit: 'lift', clips: ['c1'], linked: true }] } });
+    expect(command('Delete')).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete', clips: ['c1'], linked: true }] } });
     expect(command('Delete', { shift: true })).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete' }] } });
+    expect(command('Backspace', { shift: true })).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete' }] } });
+    expect(command('Delete', {}, context({ marks: { in: 20, out: 80 } }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 20, to: 80 }] } });
     expect(command('Delete', { shift: true }, context({ marks: { in: 20, out: 80 } }))).toMatchObject({ transaction: { ops: [{ edit: 'ripple_delete_range', from: 20, to: 80 }] } });
     expect(command('Delete', { repeat: true })).toBeNull();
     expect(command('Delete', {}, context({ selected: [] }))).toBeNull();

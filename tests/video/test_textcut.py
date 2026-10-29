@@ -446,6 +446,24 @@ def test_striking_a_word_split_by_a_blade_removes_both_continuous_fragments(
     ]
 
 
+def test_a_word_cut_through_its_middle_is_told_by_the_clip_that_plays_its_middle() -> None:
+    transcript = transcript_of(
+        "m1",
+        DIGEST,
+        [word(0.2, 0.5, "Before"), word(0.6, 1.4, "filler"), word(1.5, 1.8, "after.")],
+        [],
+        2_000_000,
+    )
+    # The blade is at 1.0 s, the middle of "filler": each clip plays 10 frames of it.
+    timeline = spoken(clip_of("c2", 0, 25), clip_of("c3", 25, 25, ticks=25 * 512))
+    story = of_track(timeline, "A1", {"m1": transcript}, 1)
+
+    assert story.splitlines()[2:] == ["[c2 00:00] Before", "[c3 00:00] filler after."]
+    assert cuts(story.replace("filler", "~~filler~~"), timeline, {"m1": transcript}) == [
+        Range(15, 35)
+    ]
+
+
 def test_a_trimmed_word_fragment_is_still_visible_and_cuttable() -> None:
     transcript = transcript_of(
         "m1", DIGEST, [word(0.6, 1.4, "filler"), word(1.5, 1.8, "after.")], [], 2_000_000

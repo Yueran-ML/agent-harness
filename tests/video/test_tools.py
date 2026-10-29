@@ -791,3 +791,71 @@ async def test_subtitles_written_beside_an_export_are_asked_for_as_the_film_is(
     assert all((name, "write") in asked for name in named)
     assert unasked.error is None
     assert not [name for name, _ in asked if name.startswith("other.") and name.endswith(".srt")]
+
+
+async def test_a_text_cut_read_before_the_engine_was_reached_again_is_refused(
+    studio: tuple[Desk, Fake],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    path = Path(result(await desk.call("video_story"))["path"])
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("filler", "~~filler~~"), encoding="utf-8"
+    )
+    steps = len(fake.steps)
+
+    def restarted() -> None:
+        # As an engine that ends once the project was read: the next is reached anew, and
+        # counts its revisions from 0 again, so the revision read says nothing of it.
+        for one in list(fake.connections):
+            assert one.transport is not None
+            one.transport.close()
+
+    fake.then["project.get"] = restarted
+    failed = await desk.call("video_apply")
+
+    assert failed.error is not None
+    assert failed.error.code == "VIDEO_STALE_REVISION"
+    assert len(fake.steps) == steps
+    assert "~~filler~~" in path.read_text(encoding="utf-8")
+
+
+async def test_a_migration_the_engine_refuses_leaves_nothing_to_find_later(
+    studio: tuple[Desk, Fake],
+) -> None:
+    from columbina.video.legacy import Manifest, Timeline
+
+    desk, fake = studio
+    old = desk.work / "Old Film"
+    old.mkdir()
+    (old / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (old / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+    fake.refusals["transaction.apply"] = {
+        "code": -32001,
+        "message": "refused",
+        "data": {"reason": "locked", "index": 0},
+    }
+
+    told = result(await desk.call("video_info"))
+
+    assert "refused" in told["migrations"][0]["error"]
+    assert not list((fake.directory / "analysis/migrations").glob("pending-*.json"))
+
+
+async def test_a_migration_that_fails_as_a_whole_is_reported_and_the_call_goes_on(
+    studio: tuple[Desk, Fake], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import columbina.video.migrate
+    from columbina.video.project import ProjectError
+
+    desk, _fake = studio
+
+    async def held(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        raise ProjectError("another client is migrating this Studio project; try again later")
+
+    monkeypatch.setattr(columbina.video.migrate, "migrate", held)
+
+    told = result(await desk.call("video_info"))
+
+    assert "another client is migrating" in told["migrations"][0]["error"]
+    assert told["timelines"] == []

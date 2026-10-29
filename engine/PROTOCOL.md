@@ -800,7 +800,7 @@ id targets that track. Both picture and sound placed together get a new link gro
 | `close_gap` | `track`, `at` | Close the gap at `at` and ripple unlocked tracks. |
 | `blade` | `at`, `tracks?`, `linked?` | Split crossing clips; original ids stay with first halves, second halves get new ids and link groups. |
 | `move` | `clips`, `delta`, `to_track?`, `overwrite?`, `linked?` | Move clips; default refuses occupied destinations, `overwrite:true` clears them. |
-| `insert_move` | `clips`, `at`, `linked?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. |
+| `insert_move` | `clips`, `at`, `linked?` | Lift and close original ranges, then insert at the original timeline coordinate. Noncontiguous selections pack their occupied interval union, not the gaps between it. Subtitles on unlocked tracks within a moved range go with it, keeping their ids and their place on the clips; one across an end of a range is cut there, and only its part inside goes along. |
 | `trim` | `clip`, `edge:in|out`, `delta`, `ripple?`, `linked?` | Move one edge; ripple defaults false. |
 | `roll` | `left`, `right`, `delta`, `linked?` | Move a shared cut, keeping outer endpoints. |
 | `slip` | `clip`, `delta`, `linked?` | Change source in/out while keeping timeline position and length. |

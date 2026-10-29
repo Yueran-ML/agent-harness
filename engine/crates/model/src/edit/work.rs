@@ -426,7 +426,7 @@ impl<'a> Work<'a> {
 
     /// Cut each subtitle of `tracks` that is shown across `at` in two there: the first part
     /// keeps its id, the second is a new subtitle with the same text.
-    fn split_cues(&mut self, tracks: &[Id], at: i64) -> Result<(), EditError> {
+    pub fn split_cues(&mut self, tracks: &[Id], at: i64) -> Result<(), EditError> {
         for track in tracks {
             let cues: Vec<Cue> = self
                 .track(track)?

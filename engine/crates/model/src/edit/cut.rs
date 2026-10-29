@@ -5,8 +5,8 @@ use std::collections::HashSet;
 
 use super::work::{union, Work};
 use super::EditError;
-use crate::ops::OpError;
-use crate::project::{Clip, Id, Track, TrackKind};
+use crate::ops::{Op, OpError};
+use crate::project::{Clip, Cue, Id, Track, TrackKind};
 
 pub(super) fn lift(work: &mut Work, clips: &[Id], linked: bool) -> Result<(), EditError> {
     let all = work.group(clips, linked)?;
@@ -249,6 +249,7 @@ pub(super) fn insert_move(
     let spans = union(&spans_of(work, &all)?);
     let length = spans.iter().map(|(from, to)| to - from).sum();
     moved.sort_by_key(|(_, c)| c.start);
+    let carried = lift_cues(work, &spans)?;
     for id in &all {
         work.remove(id)?;
     }
@@ -271,7 +272,54 @@ pub(super) fn insert_move(
         let start = at + offset + clip.start - spans[span].0;
         work.insert(&track, Clip { start, ..clip })?;
     }
+    // The subtitles go where their spans went, each with its id and text.
+    for (track, cue, by) in carried {
+        work.op(Op::AddCue {
+            timeline: work.timeline_id(),
+            track,
+            cue: Cue {
+                start: at + by,
+                ..cue
+            },
+        })?;
+    }
     Ok(())
+}
+
+/// Take the subtitles shown over the moved `spans` off the tracks of subtitles that are not
+/// locked, to go with them: a subtitle across an end of a span is cut there first, and only
+/// its part inside the span goes. Each is given with its track and where it starts from the
+/// start of the moved frames, as the spans are packed together one after another.
+fn lift_cues(work: &mut Work, spans: &[(i64, i64)]) -> Result<Vec<(Id, Cue, i64)>, EditError> {
+    let tracks = work.unlocked(&[TrackKind::Subtitle]);
+    for &(from, to) in spans {
+        work.split_cues(&tracks, from)?;
+        work.split_cues(&tracks, to)?;
+    }
+    let mut carried = vec![];
+    for track in &tracks {
+        let mut offset = 0;
+        for &(from, to) in spans {
+            let inside = work
+                .track(track)?
+                .cues
+                .iter()
+                .filter(|q| from <= q.start && q.start + q.length <= to)
+                .cloned();
+            carried.extend(inside.map(|q| {
+                let by = offset + q.start - from;
+                (track.clone(), q, by)
+            }));
+            offset += to - from;
+        }
+    }
+    for (_, cue, _) in &carried {
+        work.op(Op::RemoveCue {
+            timeline: work.timeline_id(),
+            id: cue.id.clone(),
+        })?;
+    }
+    Ok(carried)
 }
 
 #[cfg(test)]
@@ -691,6 +739,142 @@ mod tests {
         assert_eq!(history.project(), &before);
         history.redo("test").unwrap().unwrap();
         assert_eq!(history.project(), &after);
+    }
+
+    fn insert_move(clips: &[&str], at: i64, linked: bool) -> Edit {
+        Edit::InsertMove {
+            timeline: "t1".into(),
+            clips: clips.iter().map(|&id| id.into()).collect(),
+            at,
+            linked,
+        }
+    }
+
+    /// The subtitles of S1 as they read: where each starts, how long it lasts and what it says.
+    fn said(project: &crate::Project) -> Vec<(i64, i64, String)> {
+        let s1 = project.timelines[0].tracks.iter().find(|r| r.id == "S1");
+        s1.unwrap()
+            .cues
+            .iter()
+            .map(|q| (q.start, q.length, q.text.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn an_insert_move_takes_the_subtitles_of_its_clips_with_them_and_undo_puts_them_back() {
+        // Reordering two lines of dialogue: "world" under c3 goes before "hello" under c1.
+        let before = with(project(), vec![lock("V2")]);
+        let mut history = crate::History::new(before.clone());
+        history
+            .edit(vec![insert_move(&["c3"], 0, true)], "test")
+            .unwrap();
+        let after = history.project().clone();
+        assert_eq!(
+            clips(&after, "V1"),
+            rows(&[("c3", 0, 50, 150), ("c1", 50, 100, 0)])
+        );
+        assert_eq!(
+            cues(&after, "S1"),
+            [("q7".into(), 10, 30), ("q6".into(), 60, 30)]
+        );
+        assert_eq!(after.timelines[0].tracks[4].cues[0].text, "world");
+        history.undo("test").unwrap().unwrap();
+        assert_eq!(
+            history.project(),
+            &crate::Project {
+                next_id: after.next_id,
+                ..before
+            }
+        );
+        history.redo("test").unwrap().unwrap();
+        assert_eq!(history.project(), &after);
+    }
+
+    #[test]
+    fn a_subtitle_across_an_end_of_what_is_moved_is_cut_there_and_its_inside_goes_along() {
+        // "world" is shown on [90, 120), across the cut between c1 and c3 at 100.
+        let before = with(
+            project(),
+            vec![
+                lock("V2"),
+                crate::Op::SetCue {
+                    timeline: "t1".into(),
+                    id: "q7".into(),
+                    start: Some(90),
+                    length: Some(30),
+                    text: None,
+                },
+            ],
+        );
+        let mut history = crate::History::new(before.clone());
+        history
+            .edit(vec![insert_move(&["c3"], 0, true)], "test")
+            .unwrap();
+        let after = history.project().clone();
+        let world = |start, length| (start, length, "world".to_owned());
+        let hello = (60, 30, "hello".to_owned());
+        // The part over c3 is at the start with c3; the part over c1 moves on with c1.
+        assert_eq!(said(&after), [world(0, 20), hello, world(140, 10)]);
+        assert_eq!(cues(&after, "S1")[2].0, "q7");
+        history.undo("test").unwrap().unwrap();
+        assert_eq!(
+            history.project(),
+            &crate::Project {
+                next_id: after.next_id,
+                ..before
+            }
+        );
+    }
+
+    #[test]
+    fn separate_moved_clips_each_take_their_own_subtitles() {
+        let mut before = project();
+        before.timelines[0]
+            .tracks
+            .retain(|r| r.id == "V1" || r.id == "S1");
+        before.timelines[0].tracks[0].clips = ["c1", "middle", "c3", "tail", "last"]
+            .into_iter()
+            .zip(0..)
+            .map(|(id, n)| clip(id, n * 25, 25, n * 25, None))
+            .collect();
+        // One line over each clip, and one across the cut between c3 and tail.
+        before.timelines[0].tracks[1].cues = ["a", "b", "c", "d", "e"]
+            .into_iter()
+            .zip(0..)
+            .map(|(text, n)| crate::project::Cue {
+                id: format!("line-{text}"),
+                start: n * 25 + 5,
+                length: if text == "c" { 25 } else { 10 },
+                text: text.into(),
+            })
+            .collect();
+        before.validate().unwrap();
+        let mut history = crate::History::new(before.clone());
+        history
+            .edit(vec![insert_move(&["c3", "c1"], 100, false)], "test")
+            .unwrap();
+        let after = history.project().clone();
+        let line = |start, length, text: &str| (start, length, text.to_owned());
+        // middle, tail, c1, c3, last: "c" is cut at 75, and its part over tail stays with it.
+        assert_eq!(
+            said(&after),
+            [
+                line(5, 10, "b"),
+                line(25, 5, "c"),
+                line(30, 10, "d"),
+                line(55, 10, "a"),
+                line(80, 20, "c"),
+                line(105, 10, "e"),
+            ]
+        );
+        history.undo("test").unwrap().unwrap();
+        assert_eq!(
+            history.project(),
+            &crate::Project {
+                next_id: after.next_id,
+                ..before
+            }
+        );
     }
 
     #[test]

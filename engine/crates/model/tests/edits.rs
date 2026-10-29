@@ -7,7 +7,7 @@
 #[path = "common/edits.rs"]
 mod gen;
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use columbina_model::resolve::duration;
 use columbina_model::span::source_span;
@@ -421,6 +421,57 @@ proptest! {
             prop_assert_eq!(new.start, old.start + length);
             prop_assert_eq!((&new.text, new.length), (&old.text, old.length));
         }
+    }
+
+    #[test]
+    fn an_insert_move_keeps_every_subtitle_and_takes_those_over_its_clips_along(
+        recipe in recipe(),
+        makings in prop::collection::vec(
+            prop_oneof![3 => making_of(Just(13usize)), 1 => making()],
+            1..6,
+        )
+    ) {
+        each_edit(&recipe, &makings, |before, edit, after| {
+            let (Ok(after), Edit::InsertMove { clips, linked, .. }) = (after, edit) else {
+                return Ok(());
+            };
+            // What each subtitle says is shown for as many frames as before: one that is cut at
+            // an end of what moves, or where it goes in, is shown in two parts.
+            let shown = |track: &Track| {
+                let mut frames: BTreeMap<String, i64> = BTreeMap::new();
+                for q in &track.cues {
+                    *frames.entry(q.text.clone()).or_default() += q.length;
+                }
+                frames
+            };
+            for track in &before.timelines[0].tracks {
+                let now = track_in(after, &track.id).unwrap();
+                prop_assert_eq!(shown(track), shown(now), "{:?} on {}", edit, track.id);
+            }
+            // A subtitle over a clip that moves keeps its id and its place on the clip.
+            let open: HashSet<&String> = before.timelines[0].tracks.iter().filter(|r| !r.locked)
+                .flat_map(|r| r.clips.iter().map(|c| &c.id)).collect();
+            let mut moved = group(before, clips, *linked);
+            moved.retain(|id| open.contains(id));
+            for track in before.timelines[0].tracks.iter().filter(|r| !r.locked) {
+                let now = track_in(after, &track.id).unwrap();
+                for q in &track.cues {
+                    let under = moved.iter().filter_map(|id| clip(before, id)).find(|c| {
+                        c.start <= q.start && q.start + q.length <= c.end()
+                    });
+                    let Some(c) = under else { continue };
+                    let went = clip(after, &c.id).unwrap();
+                    let q_now = now.cues.iter().find(|n| n.id == q.id);
+                    let q_now = q_now.unwrap_or_else(|| panic!("{} went in {edit:?}", q.id));
+                    prop_assert_eq!(
+                        (q_now.start - went.start, q_now.length, &q_now.text),
+                        (q.start - c.start, q.length, &q.text),
+                        "{} over {} in {:?}", q.id, c.id, edit
+                    );
+                }
+            }
+            Ok(())
+        })?;
     }
 
     #[test]

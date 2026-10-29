@@ -580,7 +580,11 @@ fn stem(media: &Media) -> String {
         _ => {
             use sha2::{Digest as _, Sha256};
             let hash = Sha256::digest(digest.as_bytes());
-            let short: String = hash[..6].iter().map(|b| format!("{b:02x}")).collect();
+            let short = hash[..6].iter().fold(String::new(), |mut short, b| {
+                use std::fmt::Write as _;
+                let _ = write!(short, "{b:02x}");
+                short
+            });
             format!("{id}-{short}")
         }
     }

@@ -7,7 +7,7 @@ use super::{CueItem, Edge, EditError};
 use crate::ops::{Op, OpError};
 use crate::project::{Alignment, Clip, Cue, Id, Track, TrackKind, Transition, TransitionKind};
 use crate::span::{frames_for_span, source_span};
-use crate::time::Speed;
+use crate::time::{Rate, Speed};
 
 /// Check that a transition of `length` and `align` fits at the cut between `left` and `right` of
 /// a track, beside the other transitions at them, but for `replacing`: each clip has the frames
@@ -204,6 +204,17 @@ pub(super) fn set_transition(
     Ok(())
 }
 
+/// As many frames at the new speed as show the same source span, the last before its end.
+fn length_at_speed(clip: &Clip, speed: Speed, rate: Rate) -> i64 {
+    if clip.speed == speed {
+        return clip.length;
+    }
+    let scale = clip.source_in().map_or(1, |t| t.scale);
+    let span = source_span(clip, rate, scale);
+    let frames = |span| frames_for_span(span, speed, rate, scale);
+    frames(span).min(frames(span - 1) + 1).max(1)
+}
+
 pub(super) fn set_speed(
     work: &mut Work,
     clip: &str,
@@ -221,24 +232,25 @@ pub(super) fn set_speed(
         return Err(EditError::Op(OpError::Source { clip: clip.into() }));
     }
     let rate = work.rate();
-    // As many frames at the new speed as show the same stretch of the source, the last of them
-    // before its end.
-    let length_at = |c: &Clip| {
-        let scale = c.source_in().map_or(1, |t| t.scale);
-        let span = source_span(c, rate, scale);
-        let frames = |span| frames_for_span(span, speed, rate, scale);
-        frames(span).min(frames(span - 1) + 1).max(1)
-    };
-    let place = given.end();
-    let shift = length_at(&given) - given.length;
+    let mut group = vec![];
+    for id in work.group(&[clip.into()], linked)? {
+        let (track, c) = work.owned(&id)?;
+        if c.source_in().is_some() {
+            group.push((track, c));
+        }
+    }
+    // The audio and picture of a split edit can end at different frames. Everything after
+    // the group moves by the change in its overall end, whichever member was selected.
+    let place = group
+        .iter()
+        .map(|(_, c)| c.end())
+        .max()
+        .expect("the selected clip has media");
     let mut changed = vec![];
     let mut clamped = false;
-    for id in work.group(&[clip.into()], linked)? {
-        let (track, c) = work.clip(&id)?;
-        if c.source_in().is_none() {
-            continue;
-        }
-        let mut length = length_at(c);
+    for (track, c) in group {
+        let track = work.track(&track)?;
+        let mut length = length_at_speed(&c, speed, rate);
         let after = track
             .clips
             .iter()
@@ -259,8 +271,15 @@ pub(super) fn set_speed(
             ..c.clone()
         };
         fit_fades(&mut new, Edge::Out);
-        changed.push((c.clone(), new));
+        changed.push((c, new));
     }
+    let shift = changed
+        .iter()
+        .map(|(_, c)| c.end())
+        .max()
+        .expect("the selected clip has media")
+        - place;
+    changed.retain(|(old, new)| old != new);
     if clamped {
         work.clamp();
     }
@@ -633,6 +652,134 @@ mod tests {
         assert!(expansion.clamped);
         assert_eq!(clips(&project, "V1")[0], ("c1".into(), 0, 100, 0));
         assert_eq!(the(&project, "c1").speed, Speed { num: 1, den: 2 });
+    }
+
+    fn split_edit() -> crate::Project {
+        let mut project = project();
+        let tracks = &mut project.timelines[0].tracks;
+        tracks[0].clips = vec![
+            clip("c1", 20, 80, 20, Some("g1")),
+            clip("c3", 150, 50, 150, Some("g2")),
+        ];
+        tracks[1].clips[0].start = 150;
+        tracks[2].clips = vec![
+            clip("c2", 10, 120, 10, Some("g1")),
+            clip("c4", 150, 50, 150, Some("g2")),
+        ];
+        tracks[4].cues[1].start = 150;
+        project.validate().unwrap();
+        project
+    }
+
+    #[test]
+    fn a_split_edits_speed_ripples_from_the_whole_groups_end() {
+        for (num, den, video_length, audio_length, shift) in
+            [(2, 1, 40, 60, -60), (1, 2, 160, 240, 120)]
+        {
+            for selected in ["c1", "c2"] {
+                let before = split_edit();
+                let mut history = crate::History::new(before.clone());
+                let done = history
+                    .edit(vec![speed(selected, num, den, true)], "test")
+                    .unwrap();
+                assert_eq!(done.clamped, [] as [usize; 0]);
+                let after = history.project().clone();
+                assert_eq!(
+                    clips(&after, "V1"),
+                    rows(&[("c1", 20, video_length, 20), ("c3", 150 + shift, 50, 150),])
+                );
+                assert_eq!(
+                    clips(&after, "A1"),
+                    rows(&[("c2", 10, audio_length, 10), ("c4", 150 + shift, 50, 150),])
+                );
+                assert_eq!(the(&after, "c5").start, 150 + shift);
+                assert_eq!(cues(&after, "S1")[1], ("q7".into(), 150 + shift, 30));
+                assert_eq!(the(&after, "c1").link, Some("g1".into()));
+                assert_eq!(the(&after, "c2").link, Some("g1".into()));
+                history.undo("test").unwrap().unwrap();
+                assert_eq!(history.project(), &before);
+                history.redo("test").unwrap().unwrap();
+                assert_eq!(history.project(), &after);
+            }
+        }
+    }
+
+    #[test]
+    fn a_split_edits_speed_keeps_locked_linked_partners_and_tracks_in_place() {
+        let mut project = with(split_edit(), vec![lock("A1"), lock("V2")]);
+        let audio = project.timelines[0].tracks[2].clone();
+        edit(&mut project, speed("c1", 2, 1, true));
+        assert_eq!(project.timelines[0].tracks[2], audio);
+        assert_eq!(the(&project, "c5").start, 150);
+        assert_eq!(the(&project, "c3").start, 110);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(1000))]
+
+        #[test]
+        fn a_split_edits_ripple_moves_later_content_by_exactly_the_change_in_its_end(
+            video_start in 0i64..30, audio_start in 0i64..30,
+            video_half in 20i64..90, audio_half in 20i64..90,
+            gap in 0i64..40, faster in proptest::bool::ANY, select_audio in proptest::bool::ANY,
+        ) {
+            let mut project = split_edit();
+            let (video_length, audio_length) = (video_half * 2, audio_half * 2);
+            let end = (video_start + video_length).max(audio_start + audio_length);
+            let after = end + gap;
+            let tracks = &mut project.timelines[0].tracks;
+            tracks[0].clips[0] = clip("c1", video_start, video_length, 0, Some("g1"));
+            tracks[2].clips[0] = clip("c2", audio_start, audio_length, 0, Some("g1"));
+            tracks[0].clips[1].start = after;
+            tracks[1].clips[0].start = after;
+            tracks[2].clips[1].start = after;
+            tracks[4].cues[1].start = after;
+            project.validate().unwrap();
+            let (num, den, v, a) = if faster {
+                (2, 1, video_half, audio_half)
+            } else {
+                (1, 2, video_length * 2, audio_length * 2)
+            };
+            let delta = (video_start + v).max(audio_start + a) - end;
+            let selected = if select_audio { "c2" } else { "c1" };
+            edit(&mut project, speed(selected, num, den, true));
+            proptest::prop_assert_eq!(the(&project, "c1").length, v);
+            proptest::prop_assert_eq!(the(&project, "c2").length, a);
+            for id in ["c3", "c4", "c5"] {
+                proptest::prop_assert_eq!(the(&project, id).start, after + delta);
+            }
+            proptest::prop_assert_eq!(cues(&project, "S1").last().unwrap().1, after + delta);
+        }
+    }
+
+    #[test]
+    fn a_split_edits_speed_does_not_close_over_unselected_clips() {
+        let mut project = split_edit();
+        project.timelines[0].tracks[1].clips[0].start = 100;
+        let error = refused(project, speed("c1", 2, 1, true));
+        assert_eq!(
+            error,
+            EditError::RippleBlocked {
+                track: "V2".into(),
+                clip: "c5".into()
+            }
+        );
+    }
+
+    #[test]
+    fn setting_the_same_speed_leaves_no_history_entry_or_transition_operations() {
+        let before = with(
+            project(),
+            vec![transition("V1", "c1", "c3", 10, Alignment::Start)],
+        );
+        let mut history = crate::History::new(before.clone());
+        assert_eq!(
+            history.edit(vec![speed("c1", 1, 1, true)], "test"),
+            Err(crate::TransactionError::Empty)
+        );
+        assert_eq!(history.project(), &before);
+        assert_eq!(history.revision(), 0);
+        assert!(!history.can_undo());
     }
 
     #[test]

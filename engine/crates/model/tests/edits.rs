@@ -97,15 +97,18 @@ fn ripple_of(project: &Project, edit: &Edit) -> Option<(i64, HashSet<String>)> {
             ripple: true,
             linked,
             ..
+        } => {
+            let changed = group(project, std::slice::from_ref(id), *linked);
+            Some((clip(project, id)?.end(), changed))
         }
-        | Edit::SetSpeed {
+        Edit::SetSpeed {
             clip: id,
             ripple: true,
             linked,
             ..
         } => {
             let changed = group(project, std::slice::from_ref(id), *linked);
-            Some((clip(project, id)?.end(), changed))
+            Some((end_of(&changed)?, changed))
         }
         Edit::InsertMove {
             clips, at, linked, ..

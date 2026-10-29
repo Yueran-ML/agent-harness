@@ -222,33 +222,51 @@ fn lies_over(transition: &Transition, cut: i64) -> (i64, i64) {
     (cut - before_right, cut + after_left)
 }
 
-/// The gain of a piece of sound over its samples: straight lines between points, each a sample
-/// of the timeline and the gain there, in order. Before the first point the gain is that of the
-/// first, and after the last that of the last.
+/// The gain of a piece of sound over its samples. Points describe its shape for display;
+/// playback evaluates the curves at each sample, independent of the requested block size.
+/// Before the first point the gain is that of the first, and after the last that of the last.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Envelope {
-    /// The points.
+    /// Points for drawing the envelope; use [`Self::at`] for sample-accurate gain.
     pub points: Vec<(i64, f32)>,
+    loudness: f64,
+    curves: Vec<GainCurve>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct GainCurve {
+    from: i64,
+    to: i64,
+    falling: bool,
+    equal_power: bool,
 }
 
 impl Envelope {
     /// The gain at a sample of the timeline.
     #[must_use]
     pub fn at(&self, sample: i64) -> f32 {
-        let Some(&(first, gain)) = self.points.first() else {
-            return 1.0;
-        };
-        if sample <= first {
-            return gain;
+        match (self.points.first(), self.points.last()) {
+            (Some(&(first, _)), Some(&(last, _))) => self.value(sample.clamp(first, last)),
+            _ => self.value(sample),
         }
-        for pair in self.points.windows(2) {
-            let ((a, from), (b, to)) = (pair[0], pair[1]);
-            if sample <= b {
-                let along = ratio(apart(sample, a), apart(b, a));
-                return single(f64::from(from) + (f64::from(to) - f64::from(from)) * along);
-            }
+    }
+
+    fn value(&self, sample: i64) -> f32 {
+        let mut gain = self.loudness;
+        for curve in &self.curves {
+            let along = ratio(
+                apart(sample, curve.from),
+                apart(curve.to, curve.from).max(1),
+            )
+            .clamp(0.0, 1.0);
+            gain *= match (curve.equal_power, curve.falling) {
+                (true, true) => (along * FRAC_PI_2).cos(),
+                (true, false) => (along * FRAC_PI_2).sin(),
+                (false, true) => 1.0 - along,
+                (false, false) => along,
+            };
         }
-        self.points.last().map_or(1.0, |&(_, gain)| gain)
+        single(gain.max(0.0))
     }
 }
 
@@ -368,21 +386,31 @@ fn envelope(t: &Timeline, track: &Track, clip: &Clip, from: i64, to: i64) -> Env
             Some((samples(start), samples(end), x.left == clip.id))
         })
         .collect();
-    let gain = |sample: i64| {
-        let share = |part: i128, whole: i128| ratio(part, whole.max(1)).clamp(0.0, 1.0);
-        let mut gain = loudness;
-        if clip.fade_in > 0 {
-            gain *= share(apart(sample, first), apart(risen, first));
-        }
-        if clip.fade_out > 0 {
-            gain *= share(apart(end, sample), apart(end, falling));
-        }
-        for &(start, end, falls) in &crossfades {
-            let turn = share(apart(sample, start), apart(end, start)) * FRAC_PI_2;
-            gain *= if falls { turn.cos() } else { turn.sin() };
-        }
-        single(gain.max(0.0))
-    };
+    let mut curves: Vec<_> = crossfades
+        .iter()
+        .map(|&(from, to, falling)| GainCurve {
+            from,
+            to,
+            falling,
+            equal_power: true,
+        })
+        .collect();
+    if clip.fade_in > 0 {
+        curves.push(GainCurve {
+            from: first,
+            to: risen,
+            falling: false,
+            equal_power: false,
+        });
+    }
+    if clip.fade_out > 0 {
+        curves.push(GainCurve {
+            from: falling,
+            to: end,
+            falling: true,
+            equal_power: false,
+        });
+    }
     let mut at = vec![from, to, first, risen, falling, end];
     for &(start, end, _) in &crossfades {
         at.extend((0..=8).map(|eighth| {
@@ -394,12 +422,16 @@ fn envelope(t: &Timeline, track: &Track, clip: &Clip, from: i64, to: i64) -> Env
     at.retain(|sample| (from..=to).contains(sample));
     at.sort_unstable();
     at.dedup();
-    Envelope {
-        points: at
-            .into_iter()
-            .map(|sample| (sample, gain(sample)))
-            .collect(),
-    }
+    let mut envelope = Envelope {
+        points: Vec::new(),
+        loudness,
+        curves,
+    };
+    envelope.points = at
+        .into_iter()
+        .map(|sample| (sample, envelope.value(sample)))
+        .collect();
+    envelope
 }
 
 /// The subtitles shown at frame `frame` of a timeline: those of its tracks of subtitles that are
@@ -717,6 +749,30 @@ mod tests {
         assert_eq!(spans, [("c6", 100_000, 100_010), ("c7", 100_000, 100_010)]);
         assert_eq!(window[1].source_start, 100_000);
         assert_eq!(audio_between(timeline, &project, 192_000, 200_000), []);
+    }
+
+    #[test]
+    fn crossfade_gains_match_the_formula_between_knots_and_do_not_depend_on_block_size() {
+        let project = project();
+        let timeline = &project.timelines[0];
+        let whole = audio_between(timeline, &project, 86_400, 105_600);
+        for sample in (86_401..105_600).step_by(137) {
+            let turn = f64::from(i32::try_from(sample - 86_400).unwrap()) / 19_200.0
+                * std::f64::consts::FRAC_PI_2;
+            let expected = [10f64.powf(-6.0 / 20.0) * turn.cos(), turn.sin()];
+            let small = audio_between(timeline, &project, sample - 1, sample + 2);
+            for (i, gain) in expected.into_iter().enumerate() {
+                assert!(
+                    (f64::from(whole[i].gain.at(sample)) - gain).abs() < 1e-5,
+                    "sample {sample}, clip {i}: {} != {gain}",
+                    whole[i].gain.at(sample)
+                );
+                assert!(
+                    (whole[i].gain.at(sample) - small[i].gain.at(sample)).abs() < 1e-6,
+                    "block-dependent gain at {sample}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -35,6 +35,7 @@ mod conn;
 mod gpu;
 mod log;
 mod names;
+mod play;
 mod proxy;
 mod queue;
 mod rpc;
@@ -42,6 +43,10 @@ mod session;
 mod timer;
 mod transport;
 mod view;
+
+#[cfg(test)]
+#[path = "../../media/tests/support/mod.rs"]
+mod test_media;
 
 use std::ffi::OsString;
 use std::io::Write;

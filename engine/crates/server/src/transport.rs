@@ -84,8 +84,7 @@
 pub(crate) mod clock;
 
 #[cfg(test)]
-#[path = "../../media/tests/support/mod.rs"]
-mod test_media;
+use crate::test_media;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};

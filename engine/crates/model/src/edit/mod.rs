@@ -38,6 +38,7 @@
 //! and says that it was clamped. One that cannot go at all is refused, and so is a `delta` of 0.
 
 mod cut;
+mod input;
 mod misc;
 mod place;
 mod trim;
@@ -698,6 +699,7 @@ pub fn expand(project: &mut Project, edit: Edit) -> Result<Expansion, EditError>
 /// Work an edit out and apply it. A project that it is refused on may be left changed.
 #[allow(clippy::too_many_lines, reason = "an arm for each edit")]
 pub(crate) fn run(project: &mut Project, edit: Edit) -> Result<Expansion, EditError> {
+    input::check(&edit)?;
     let timeline = timeline_of(&edit).clone();
     let mut work = Work::new(project, &timeline)?;
     match edit {

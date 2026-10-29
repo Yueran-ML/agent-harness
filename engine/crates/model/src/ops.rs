@@ -2545,7 +2545,7 @@ fn check_settings(timeline: &Timeline) -> Result<(), OpError> {
 }
 
 /// Check that an integer to be written is one that JavaScript reads exactly.
-fn within(what: &'static str, value: i128) -> Result<(), OpError> {
+pub(crate) fn within(what: &'static str, value: i128) -> Result<(), OpError> {
     if value.unsigned_abs() > u128::from(LARGEST_COUNT) {
         Err(OpError::TooLarge { what })
     } else {

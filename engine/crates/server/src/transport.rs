@@ -49,10 +49,9 @@
 //! made fine ([`crate::timer`]), so that the transport wakes for each frame in time. Where the
 //! device fails or stops asking for sound ([`Output::failed`]), playing goes on from where it
 //! is by the monotonic clock, and the device is opened anew the next time it plays. Backward,
-//! the transport decodes the frame that the clock is at, seeking for each one: on media of long
-//! groups of frames only some are decoded in time, and those are shown (the all-intra proxies
-//! of Task 13b make it smooth). Playing stops at the last frame forward, and at frame 0
-//! backward.
+//! the transport prepares one frame ahead, seeking for each one, and shows it only when due.
+//! Where decoding falls behind, it catches up to the clock instead of decoding every missed
+//! frame. Playing stops at the last frame forward, and at frame 0 backward.
 //!
 //! # Sound alone
 //!
@@ -70,8 +69,8 @@
 //!
 //! # The source of the pictures
 //!
-//! Everything that decodes goes through [`Loaded::show`] (a frame sought, stepped to, played
-//! backward) and the forward loop of [`Worker::forward`], both on the one [`VideoDecoder`] of
+//! Everything that decodes goes through [`Loaded::show`] (a frame sought or stepped to) and
+//! the playback loops of [`Worker::forward`] and [`Worker::backward`], on the one [`VideoDecoder`] of
 //! [`Picture`]s of [`Loaded`] (`video`), while the sound is read from `sound_path`, the media
 //! itself. Where the media has a proxy ([`crate::proxy`]) and proxies are used
 //! (`transport.proxies`, on at first), the decoder is of the proxy: its frames are those of the
@@ -83,6 +82,10 @@
 //! the frame shown stays.
 
 pub(crate) mod clock;
+
+#[cfg(test)]
+#[path = "../../media/tests/support/mod.rs"]
+mod test_media;
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -1153,11 +1156,11 @@ struct Playing {
     latest: std::cell::Cell<i128>,
     /// Fine timers of the system, while it plays.
     _fine: crate::timer::Fine,
-    /// Forward: pictures ready to be shown, in order.
+    /// Pictures ready to be shown, in playback order; at most one while playing backward.
     ready: VecDeque<Arc<Picture>>,
-    /// Forward: how many frames are at the converter.
+    /// How many frames are at the converter; at most one while playing backward.
     in_flight: usize,
-    /// Forward: the decoder gave every frame up to the end.
+    /// Forward: the decoder gave every frame up to the end. Backward: conversion failed.
     decoded_all: bool,
     /// Forward: the frame the decoder gives next.
     next: i64,
@@ -1318,13 +1321,11 @@ impl Worker {
                 let wait = match &loaded.video {
                     None if backward => until(target - 1),
                     None => until(target + 1),
-                    Some(_) if backward => {
-                        if loaded.picture.as_ref().map(|picture| picture.frame) == Some(target) {
-                            until(target - 1)
-                        } else {
-                            Duration::ZERO
-                        }
-                    }
+                    Some(_) if backward => match playing.ready.front() {
+                        Some(front) => until(front.frame),
+                        None if playing.in_flight > 0 => most,
+                        None => Duration::ZERO,
+                    },
                     Some(video) => {
                         let limits = video.limits;
                         if !playing.decoded_all
@@ -1920,11 +1921,15 @@ impl Worker {
                         playing.in_flight = 1;
                         self.pipe.send(decoded);
                     }
-                    Err(error) => loaded.failed(&error),
+                    Err(error) => {
+                        playing.decoded_all |= playing.clock.speed() < 0;
+                        loaded.failed(&error);
+                    }
                 }
             }
             Err(error) => {
                 playing.stats.passed += 1;
+                playing.decoded_all |= playing.clock.speed() < 0;
                 loaded.failed(&error);
             }
         }
@@ -2119,29 +2124,79 @@ impl Worker {
         false
     }
 
-    /// Play backward a step: decode the frame that the clock is at, if it is not shown.
+    /// Show the prepared backward frame when due, then prepare one more without waiting
+    /// for its deadline. A late decoder catches up to the clock.
     /// Whether it reached frame 0.
     fn backward(&mut self) -> bool {
         let Some(loaded) = &mut self.loaded else {
             return true;
         };
-        let Mode::Playing(playing) = &mut loaded.mode else {
+        let (Mode::Playing(playing), Some(video)) = (&mut loaded.mode, &mut loaded.video) else {
             return true;
         };
+        if playing.decoded_all {
+            return !loaded.broken;
+        }
         let now = clock_time(playing, &self.world);
         let target = clock::clamped(playing.clock.frame(now), loaded.last);
-        let late = playing.clock.late(target, now);
-        let shown = loaded.picture.as_ref().map(|picture| picture.frame);
-        if shown != Some(target) {
-            playing.stats.shown(late, false);
-            if let Err(error) = loaded.show_exact(target, &mut self.pipe, &self.world) {
+        if let Some(picture) = playing
+            .ready
+            .pop_front_if(|front| front.frame >= target && (target > 0 || front.frame == 0))
+        {
+            playing.stats.shown(
+                playing.clock.late(picture.frame, now),
+                picture.frame > target,
+            );
+            playing.shown_at = Instant::now();
+            self.world.present(&picture, video.rotation);
+            loaded.exact = true;
+            loaded.playhead = picture.frame;
+            if let Some(old) = loaded.picture.replace(picture) {
+                loaded.recent.push_back(old);
+                while loaded.recent.len() > video.limits.recent_playing {
+                    loaded.recent.pop_front();
+                }
+            }
+        }
+        if target == 0 {
+            if loaded
+                .picture
+                .as_ref()
+                .is_some_and(|picture| picture.frame == 0)
+            {
+                return true;
+            }
+            if let Err(error) = loaded.show_exact(0, &mut self.pipe, &self.world) {
+                loaded.failed(&error);
+                return !loaded.broken;
+            }
+            loaded.playhead = 0;
+            if let Mode::Playing(playing) = &mut loaded.mode {
+                let now = clock_time(playing, &self.world);
+                playing.stats.shown(playing.clock.late(0, now), false);
+            }
+            return true;
+        }
+        if playing.in_flight > 0 || !playing.ready.is_empty() {
+            return false;
+        }
+        let shown = loaded
+            .picture
+            .as_ref()
+            .map_or(target, |picture| picture.frame);
+        let next = target.min(shown - 1).max(0);
+        match video.decoder.decoded_at(next) {
+            Ok(decoded) => {
+                playing.in_flight = 1;
+                self.pipe.send(decoded);
+            }
+            Err(error) => {
                 loaded.failed(&error);
                 // A proxy that failed is let go, and playing goes on from the media itself.
                 return !loaded.broken;
             }
-            loaded.playhead = target;
         }
-        target <= 0
+        false
     }
 }
 
@@ -2445,6 +2500,214 @@ impl Loaded {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A real decoder with a clock held ahead of wall time. Advancing `latest` moves it
+    /// exactly to a frame deadline, without sleeps or a converter thread's scheduling.
+    fn backward_worker() -> Option<(Worker, mpsc::Receiver<Work>, mpsc::Sender<Inbox>)> {
+        let made = test_media::media(test_media::Sample::Prores)?;
+        let mut decoder = VideoDecoder::open(&made.path, Hardware::Off).unwrap();
+        let picture = Arc::new(decoder.frame_at(10).unwrap());
+        let start = decoder.start();
+        let rate = Rate { num: 25, den: 1 };
+        let limits = Limits::of(Limits::picture_bytes(1920, 1080, 10));
+        let (inbox, received) = mpsc::channel();
+        let (work, taken) = mpsc::channel();
+        let shared = Arc::new(Mutex::new(Shared {
+            status: Status::unloaded(),
+            loading: Vec::new(),
+            stopped: false,
+            proxy_sent: None,
+            failed: HashSet::new(),
+        }));
+        Some((
+            Worker {
+                pipe: Pipe {
+                    inbox: received,
+                    work,
+                    generation: Arc::new(AtomicU64::new(0)),
+                    pool: Arc::new(AtomicUsize::new(limits.pool)),
+                    waiting: VecDeque::new(),
+                    gone: false,
+                },
+                world: World {
+                    shared,
+                    notify: Arc::new(|_| {}),
+                    view: Arc::new(Mutex::new(None)),
+                    epoch: Instant::now(),
+                    told: None,
+                },
+                sound: SoundSlot {
+                    kind: audio::Kind::Null,
+                    output: None,
+                },
+                loaded: Some(Loaded {
+                    media: "m1".into(),
+                    sound_path: made.path.clone(),
+                    proxy: None,
+                    facts_video: None,
+                    source: Source::Original,
+                    reading: made.path,
+                    broken: false,
+                    video: Some(Video {
+                        decoder,
+                        rotation: 0,
+                        limits,
+                    }),
+                    rate,
+                    start,
+                    last: 49,
+                    has_sound: false,
+                    picture: Some(picture),
+                    recent: VecDeque::new(),
+                    playhead: 10,
+                    exact: true,
+                    speed: -1,
+                    mode: Mode::Playing(Box::new(Playing::new(
+                        Clock::starting(10, -1, rate, 86_400 * NANOS),
+                        false,
+                        11,
+                    ))),
+                }),
+                proxies: true,
+                again: Arc::new(|_, _| {}),
+            },
+            taken,
+            inbox,
+        ))
+    }
+
+    fn converted_job(job: &Job) -> Converted {
+        Converted {
+            generation: job.generation,
+            frame: job.decoded.frame(),
+            picture: Converter::new().picture(&job.decoded).map(Arc::new),
+        }
+    }
+
+    #[test]
+    fn backward_prepares_the_next_frame_before_its_deadline_and_shows_it_only_when_due() {
+        let Some((mut worker, work, _inbox)) = backward_worker() else {
+            return;
+        };
+        assert!(!worker.backward());
+        let Ok(Work::Convert(job)) = work.try_recv() else {
+            panic!("the next backward frame was not prepared before its deadline");
+        };
+        assert_eq!(job.decoded.frame(), 9);
+        assert_eq!(worker.status().shown, Some(10));
+        assert!(worker.wait().unwrap() > Duration::ZERO);
+
+        worker.converted(converted_job(&job));
+        assert!(!worker.backward());
+        assert_eq!(worker.status().shown, Some(10), "a frame must not be early");
+        assert!(matches!(work.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(worker.wait().unwrap() > Duration::ZERO);
+
+        let Mode::Playing(playing) = &worker.loaded.as_ref().unwrap().mode else {
+            panic!("not playing");
+        };
+        playing.latest.set(playing.clock.when(9));
+        assert!(!worker.backward());
+        assert_eq!(worker.status().shown, Some(9));
+        let picture = worker.loaded.as_ref().unwrap().picture.as_ref().unwrap();
+        assert_eq!(
+            test_media::number_in(&picture.luma, picture.luma_stride, picture.bits),
+            Some(9)
+        );
+        let Ok(Work::Convert(job)) = work.try_recv() else {
+            panic!("the frame after the one shown was not prepared");
+        };
+        assert_eq!(job.decoded.frame(), 8);
+    }
+
+    #[test]
+    fn pausing_backward_playback_discards_the_pending_conversion() {
+        let Some((mut worker, work, _inbox)) = backward_worker() else {
+            return;
+        };
+        assert!(!worker.backward());
+        let Ok(Work::Convert(job)) = work.try_recv() else {
+            panic!("no pending backward frame");
+        };
+        worker.pause();
+        worker.converted(converted_job(&job));
+        assert_eq!(worker.status().shown, Some(10));
+        assert!(!worker.status().playing);
+        assert_eq!(worker.wait(), None);
+    }
+
+    #[test]
+    fn a_late_backward_frame_is_followed_by_the_clock_not_by_every_missed_frame() {
+        let Some((mut worker, work, _inbox)) = backward_worker() else {
+            return;
+        };
+        worker.backward();
+        let Ok(Work::Convert(job)) = work.try_recv() else {
+            panic!("no pending backward frame");
+        };
+        worker.converted(converted_job(&job));
+        let Mode::Playing(playing) = &worker.loaded.as_ref().unwrap().mode else {
+            panic!("not playing");
+        };
+        playing.latest.set(playing.clock.when(7));
+        assert!(!worker.backward());
+        assert_eq!(worker.status().shown, Some(9));
+        let Ok(Work::Convert(job)) = work.try_recv() else {
+            panic!("the late decoder did not catch up");
+        };
+        assert_eq!(job.decoded.frame(), 7, "do not decode missed frame 8");
+        assert!(matches!(work.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn backward_stops_on_its_prepared_frame_zero() {
+        let Some((mut worker, work, _inbox)) = backward_worker() else {
+            return;
+        };
+        let loaded = worker.loaded.as_mut().unwrap();
+        let Mode::Playing(playing) = &mut loaded.mode else {
+            panic!("not playing");
+        };
+        playing.latest.set(playing.clock.when(1));
+        loaded.picture.as_mut().map(Arc::make_mut).unwrap().frame = 1;
+        assert!(!worker.backward());
+        let Ok(Work::Convert(job)) = work.try_recv() else {
+            panic!("frame zero was not prepared");
+        };
+        assert_eq!(job.decoded.frame(), 0);
+        worker.converted(converted_job(&job));
+        let Mode::Playing(playing) = &worker.loaded.as_ref().unwrap().mode else {
+            panic!("not playing");
+        };
+        playing.latest.set(playing.clock.when(0));
+        assert!(worker.backward());
+        assert_eq!(worker.status().shown, Some(0));
+        assert!(matches!(work.try_recv(), Err(mpsc::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn failed_backward_conversion_stops_the_original_but_recovers_a_proxy() {
+        for source in [Source::Original, Source::Proxy] {
+            let Some((mut worker, work, _inbox)) = backward_worker() else {
+                return;
+            };
+            worker.loaded.as_mut().unwrap().source = source;
+            worker.backward();
+            let Ok(Work::Convert(job)) = work.try_recv() else {
+                panic!("no pending backward frame");
+            };
+            worker.converted(Converted {
+                generation: job.generation,
+                frame: job.decoded.frame(),
+                picture: Err(MediaError::Decode("a failed backward frame".into())),
+            });
+            assert_eq!(worker.backward(), source == Source::Original);
+            assert_eq!(
+                worker.loaded.as_ref().unwrap().broken,
+                source == Source::Proxy
+            );
+        }
+    }
 
     fn seek(frame: i64) -> Command {
         Command::Seek {

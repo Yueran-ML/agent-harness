@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, NoReturn
 
 import pytest
@@ -1148,12 +1149,27 @@ async def test_a_container_in_which_no_command_ran_for_a_while_is_let_go(
 async def test_a_container_in_which_commands_go_on_running_is_kept(
     engine: Engine, session: Session, work: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    now = 0.0
+    reads = 0
+
+    def monotonic() -> float:
+        nonlocal reads
+        reads += 1
+        return now
+
+    # The provider's monotonic clock advances here. Process cleanup and the event loop keep
+    # their real clocks, however long the runner takes to finish a command.
+    monkeypatch.setattr(docker, "time", SimpleNamespace(monotonic=monotonic))
     quick(monkeypatch, look=0.05)
     provider = Docker(DockerConfig(program=engine.program, idle_seconds=1.5))
 
     for _ in range(4):
         await ran(provider, session, work, "pass")
-        await asyncio.sleep(0.6)
+        now += 0.6
+        before = reads
+        # No command is running: the next clock read is the background idle check. Wait for
+        # it, so keeping the container cannot pass just because that task never got to run.
+        await until(lambda before=before: reads > before)
 
     # Longer than a container may be idle has gone by, but never without a command.
     assert engine.verbs().count("run") == 1

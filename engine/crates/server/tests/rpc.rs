@@ -2176,7 +2176,7 @@ async fn backward_from_the_middle_it_plays_to_frame_0_and_stops() {
 #[tokio::test]
 async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     let dir = project_dir();
-    let Some((_engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
+    let Some((engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
     else {
         return;
     };
@@ -2186,8 +2186,14 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     agent
         .result("transport.play", Some(json!({ "speed": 4 })))
         .await;
-    let rate = frames_a_second(&mut agent, 8, Duration::from_millis(500)).await;
-    assert!((85.0..=115.0).contains(&rate), "{rate} frames a second");
+    // The client may be descheduled while the engine keeps playing. Let notifications queue:
+    // their read times are not the times at which the frames were shown.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    agent
+        .until_state("playing at 4", |state| {
+            state["playing"] == true && state["speed"] == 4
+        })
+        .await;
     let (stopped, _) = agent
         .until_state("stopped", |state| state["playing"] == false)
         .await;
@@ -2195,6 +2201,18 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     assert_eq!(stopped["shown"], 99);
     assert_eq!(stopped["speed"], 4);
     assert_ne!(stopped["sound"], "on");
+    // Measure the whole playback on the engine's clock, independent of the observer's
+    // scheduling and of short bursts in which the decoder catches up.
+    let played = logged_at_least(&engine, "transport_played", 1)
+        .await
+        .pop()
+        .expect("the engine logged how it played");
+    assert_eq!(played["speed"], 4, "{played}");
+    let rate = 99.0 / played["seconds"].as_f64().unwrap();
+    assert!(
+        (85.0..=115.0).contains(&rate),
+        "{rate} frames a second: {played}"
+    );
     // Played from the end, it stays there.
     agent
         .result("transport.play", Some(json!({ "speed": 2 })))
@@ -2637,8 +2655,17 @@ async fn a_device_that_never_asks_for_sound_is_given_up() {
         .result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     // Nothing is heard: the playhead waits for the sound, then goes on without it.
+    let (waiting, _) = agent
+        .until_state("waiting for the sound", |state| {
+            state["playing"] == true && state["sound"] == "on"
+        })
+        .await;
+    assert_eq!(waiting["frame"], 0, "{waiting}");
     let (lost, _) = agent
         .until_state("the sound given up", |state| {
+            if state["playing"] == true && state["sound"] == "on" {
+                assert_eq!(state["frame"], 0, "the sound has not started: {state}");
+            }
             state["sound"] == "unavailable"
         })
         .await;
@@ -2647,9 +2674,15 @@ async fn a_device_that_never_asks_for_sound_is_given_up() {
         took >= Duration::from_millis(700) && took < Duration::from_millis(2000),
         "{took:?}"
     );
-    assert_eq!(
-        (&lost["frame"], &lost["playing"]),
-        (&json!(0), &json!(true))
+    assert_eq!(lost["playing"], true, "{lost}");
+    // The system clock starts before the sound feeder is stopped and this state is sent.
+    // The first notification may therefore be past frame 0. At 25 fps it must be no further
+    // than the time since the earliest allowed fallback, rather than an arbitrary frame cap.
+    let resumed = took.checked_sub(Duration::from_millis(700)).unwrap();
+    let latest = i64::try_from(resumed.as_millis() / 40).unwrap();
+    assert!(
+        (0..=latest).contains(&lost["frame"].as_i64().unwrap()),
+        "the picture jumped beyond the elapsed time ({took:?}): {lost}"
     );
     let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1500)).await;
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
@@ -3680,10 +3713,12 @@ fn logged(engine: &Engine, event: &str) -> Vec<Value> {
 #[allow(clippy::too_many_lines)]
 async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_media() {
     let dir = project_dir();
+    // Exercise the software-decoded proxy used on runners without NVIDIA hardware, even
+    // when this computer can make and decode a HEVC proxy on the card.
     let Some((engine, mut agent)) = proxy_engine(
         dir.path(),
         &[support::Sample::Uhd, support::Sample::Fhd],
-        &[],
+        &["--proxy-encoder", "prores"],
     )
     .await
     else {

@@ -563,7 +563,10 @@ impl VideoDecoder {
             ffi::set_threads(&mut context, 1, false);
             Some((made, format))
         } else {
-            ffi::set_threads(&mut context, 0, true);
+            // ProRes frames are independent. Frame threading queues future frames before
+            // returning the one sought, then throws that work away at the next backward
+            // seek. Decode slices of the requested frame in parallel instead.
+            ffi::set_threads(&mut context, 0, codec != ff::codec::Id::PRORES);
             None
         };
         let opened = context

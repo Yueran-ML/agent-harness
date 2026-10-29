@@ -71,7 +71,20 @@ fn ripple_of(project: &Project, edit: &Edit) -> Option<(i64, HashSet<String>)> {
             .max()
     };
     match edit {
-        Edit::Insert { at, .. } | Edit::CloseGap { at, .. } => Some((*at, HashSet::new())),
+        Edit::Insert { at, .. } => Some((*at, HashSet::new())),
+        Edit::CloseGap { track, at, .. } => {
+            let track = track_in(project, track)?;
+            // Subtitles on other tracks inside the gap are cut with it. Only what starts
+            // beyond the gap must keep its length and move by the same amount.
+            let end = track
+                .clips
+                .iter()
+                .map(|c| c.start)
+                .chain(track.cues.iter().map(|q| q.start))
+                .filter(|start| start > at)
+                .min()?;
+            Some((end, HashSet::new()))
+        }
         Edit::RippleDelete { clips, linked, .. } => {
             let changed = group(project, clips, *linked);
             Some((end_of(&changed)?, changed))

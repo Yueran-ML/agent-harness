@@ -73,7 +73,7 @@ pub(super) fn ripple_delete_range(
     }
     let all = [TrackKind::Video, TrackKind::Audio, TrackKind::Subtitle];
     let tracks = open_tracks(work, tracks, &all)?;
-    work.clear(&tracks, from, to)?;
+    work.clear_clips(&tracks, from, to)?;
     work.shift(&tracks, to, from - to, &HashSet::new())
 }
 
@@ -196,7 +196,7 @@ pub(super) fn move_clips(
     }
     for (track, clip) in &moved {
         if overwrite {
-            work.clear(std::slice::from_ref(track), clip.start, clip.end())?;
+            work.clear_clips(std::slice::from_ref(track), clip.start, clip.end())?;
         } else if work.track(track)?.clips.iter().any(|c| overlap(c, clip)) {
             return Err(EditError::NoRoom {
                 track: track.clone(),
@@ -395,6 +395,74 @@ mod tests {
             cues(&project, "S1"),
             [("q6".into(), 10, 30), ("q7".into(), 90, 10)]
         );
+    }
+
+    #[test]
+    fn a_range_inside_a_subtitle_shortens_it_once_and_moves_later_subtitles() {
+        let mut project = project();
+        edit(&mut project, range(20, 30));
+        assert_eq!(
+            cues(&project, "S1"),
+            [("q6".into(), 10, 20), ("q7".into(), 100, 30)]
+        );
+    }
+
+    #[test]
+    fn a_ripple_delete_cuts_subtitles_out_with_the_picture() {
+        let mut project = project();
+        edit(&mut project, ripple_delete(&["c1"]));
+        assert_eq!(cues(&project, "S1"), [("q7".into(), 10, 30)]);
+        assert_eq!(clips(&project, "V1"), rows(&[("c3", 0, 50, 150)]));
+    }
+
+    #[test]
+    fn a_gap_is_closed_through_subtitles_that_are_removed_or_trimmed() {
+        let mut project = with(project(), vec![lock("V1"), lock("A1")]);
+        edit(
+            &mut project,
+            Edit::CloseGap {
+                timeline: "t1".into(),
+                track: "V2".into(),
+                at: 30,
+            },
+        );
+        assert_eq!(cues(&project, "S1"), [("q7".into(), 0, 20)]);
+        assert_eq!(clips(&project, "V2"), rows(&[("c5", 0, 50, 50)]));
+    }
+
+    #[test]
+    fn a_range_on_named_tracks_leaves_other_subtitles_alone() {
+        let mut project = project();
+        let before = cues(&project, "S1");
+        edit(
+            &mut project,
+            Edit::RippleDeleteRange {
+                timeline: "t1".into(),
+                from: 20,
+                to: 30,
+                tracks: Some(vec!["V1".into(), "A1".into()]),
+            },
+        );
+        assert_eq!(cues(&project, "S1"), before);
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(1000))]
+
+        #[test]
+        fn every_range_inside_a_subtitle_is_cut_out_without_blocking(
+            start in 11i64..39,
+            width in 1i64..30,
+        ) {
+            let end = (start + width).min(39);
+            let mut project = project();
+            edit(&mut project, range(start, end));
+            proptest::prop_assert_eq!(
+                cues(&project, "S1"),
+                [("q6".into(), 10, 30 - (end - start)),
+                 ("q7".into(), 110 - (end - start), 30)]
+            );
+        }
     }
 
     #[test]
@@ -620,18 +688,27 @@ mod tests {
 
     #[test]
     fn an_insert_move_whose_gap_another_track_is_in_is_refused() {
+        let project = with(
+            project(),
+            vec![crate::Op::MoveClip {
+                timeline: "t1".into(),
+                id: "c5".into(),
+                track: "V2".into(),
+                start: 25,
+            }],
+        );
         let edit_ = Edit::InsertMove {
             timeline: "t1".into(),
             clips: vec!["c1".into()],
             at: 150,
             linked: true,
         };
-        let error = refused(project(), edit_);
+        let error = refused(project, edit_);
         assert_eq!(
             error,
             EditError::RippleBlocked {
-                track: "S1".into(),
-                clip: "q6".into()
+                track: "V2".into(),
+                clip: "c5".into()
             }
         );
     }

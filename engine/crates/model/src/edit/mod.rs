@@ -24,9 +24,12 @@
 //!
 //! An edit that ripples moves what comes after its place, on every track that is not locked, by
 //! the frames that it adds or takes away, so that what was in step stays in step. Where it takes
-//! frames away, and another track has something in them that the edit does not take away, the
+//! frames away, and another track has a clip in them that the edit does not take away, the
 //! edit is refused with `ripple_blocked`, naming the track and the thing: lock that track, or cut
 //! the frames out of every track with `ripple_delete_range`.
+//! Subtitles are cut with the frames taken away, and those after them move with the picture.
+//! An insert through a subtitle cuts it into two with the same text, leaving the new frames
+//! between them. Locked subtitle tracks stay as they were.
 //!
 //! # As far as it goes
 //!

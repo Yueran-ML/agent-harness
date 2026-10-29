@@ -217,7 +217,7 @@ pub(super) fn overwrite(
     let made = made(work, material)?;
     let tracks = tracks_for(work, &made, targets)?;
     not_before_start(at)?;
-    work.clear(&tracks, at, at + made.length)?;
+    work.clear_clips(&tracks, at, at + made.length)?;
     put(work, &tracks, &made, at)
 }
 
@@ -388,7 +388,7 @@ pub(super) fn ripple_overwrite(
             frame: at,
         });
     };
-    work.clear(&tracks, start, end)?;
+    work.clear_clips(&tracks, start, end)?;
     let all = work.all_unlocked();
     work.shift(&all, end, made.length - (end - start), &HashSet::new())?;
     put(work, &tracks, &made, start)
@@ -472,6 +472,57 @@ mod tests {
         assert_eq!(clips(&project, "V2"), rows(&[("c5", 120, 50, 50)]));
         assert_eq!(cues(&project, "S1")[1], ("q7".into(), 110, 30));
         assert_eq!(clips(&project, "V1")[2], ("c3".into(), 110, 50, 150));
+    }
+
+    #[test]
+    fn an_insert_splits_a_subtitle_and_undo_brings_back_the_whole_subtitle() {
+        let before = project();
+        let mut history = crate::History::new(before.clone());
+        history
+            .edit(vec![insert(m1(Some(0), Some(10)), 25)], "desktop")
+            .unwrap();
+        let after = history.project().clone();
+        let subtitles = &after.timelines[0].tracks[4].cues;
+        assert_eq!(
+            subtitles
+                .iter()
+                .map(|q| (q.start, q.length, q.text.as_str()))
+                .collect::<Vec<_>>(),
+            [(10, 15, "hello"), (35, 15, "hello"), (120, 30, "world")]
+        );
+        assert_eq!(subtitles[0].id, "q6");
+        assert_ne!(subtitles[1].id, subtitles[0].id);
+        assert_eq!(subtitles[2].id, "q7");
+        history.undo("agent").unwrap().unwrap();
+        assert_eq!(
+            history.project(),
+            &crate::Project {
+                next_id: after.next_id,
+                ..before
+            }
+        );
+        history.redo("desktop").unwrap().unwrap();
+        assert_eq!(history.project(), &after);
+    }
+
+    #[test]
+    fn an_insert_at_a_subtitle_edge_makes_no_empty_subtitle() {
+        for (at, start) in [(10, 20), (40, 10)] {
+            let mut project = project();
+            edit(&mut project, insert(m1(Some(0), Some(10)), at));
+            assert_eq!(
+                cues(&project, "S1"),
+                [("q6".into(), start, 30), ("q7".into(), 120, 30)]
+            );
+        }
+    }
+
+    #[test]
+    fn an_insert_inside_a_locked_subtitle_leaves_it_whole() {
+        let mut project = with(project(), vec![lock("S1")]);
+        let before = project.timelines[0].tracks[4].clone();
+        edit(&mut project, insert(m1(Some(0), Some(10)), 25));
+        assert_eq!(project.timelines[0].tracks[4], before);
     }
 
     #[test]
@@ -768,7 +819,15 @@ mod tests {
 
     #[test]
     fn a_ripple_overwrite_is_blocked_by_what_another_track_has_in_the_frames_it_takes_away() {
-        // S1 has q6 in [10, 40), inside the 80 frames that would be taken away.
+        let project = with(
+            project(),
+            vec![crate::Op::MoveClip {
+                timeline: "t1".into(),
+                id: "c5".into(),
+                track: "V2".into(),
+                start: 30,
+            }],
+        );
         let edit_ = Edit::RippleOverwrite {
             timeline: "t1".into(),
             source: m1(Some(0), Some(20)),
@@ -776,12 +835,12 @@ mod tests {
             video_track: None,
             audio_track: None,
         };
-        let error = refused(project(), edit_);
+        let error = refused(project, edit_);
         assert_eq!(
             error,
             EditError::RippleBlocked {
-                track: "S1".into(),
-                clip: "q6".into()
+                track: "V2".into(),
+                clip: "c5".into()
             }
         );
     }
@@ -867,7 +926,15 @@ mod tests {
         edit(&mut project, smart);
         assert_eq!(
             clips(&project, "V2"),
-            rows(&[("c10", 120, 5, -1), ("c5", 125, 50, 50)])
+            rows(&[("c11", 120, 5, -1), ("c5", 125, 50, 50)])
+        );
+        assert_eq!(
+            cues(&project, "S1"),
+            [
+                ("q6".into(), 10, 30),
+                ("q7".into(), 110, 10),
+                ("q10".into(), 125, 20)
+            ]
         );
     }
 

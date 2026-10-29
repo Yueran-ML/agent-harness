@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{EditError, Expansion};
 use crate::ops::{apply_done, in_source, Op, OpError, LARGEST};
-use crate::project::{Clip, Id, Project, Source, Timeline, Track, TrackKind, Transition};
+use crate::project::{Clip, Cue, Id, Project, Source, Timeline, Track, TrackKind, Transition};
 use crate::span::ticks_of_scaled;
 use crate::time::{Rate, Time};
 
@@ -308,10 +308,9 @@ impl<'a> Work<'a> {
             .collect())
     }
 
-    /// Clear frames `from` to `to` of tracks: what lies across either end is cut there, and what
-    /// is between them is taken away. A subtitle across an end is shortened to what is outside,
-    /// and one across both ends keeps what is before and after.
-    pub fn clear(&mut self, tracks: &[Id], from: i64, to: i64) -> Result<(), EditError> {
+    /// Clear clips from frames `from` to `to`: what lies across either end is cut there, and
+    /// what is between them is taken away. Subtitles are cut only when the gap is closed.
+    pub fn clear_clips(&mut self, tracks: &[Id], from: i64, to: i64) -> Result<(), EditError> {
         for at in [from, to] {
             let mut across = vec![];
             for track in tracks {
@@ -330,6 +329,14 @@ impl<'a> Work<'a> {
             for id in inside {
                 self.remove(&id)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Cut a gap out of subtitles before moving what follows it. A subtitle across both
+    /// ends keeps its two remaining parts together, at its original start.
+    fn cut_cues(&mut self, tracks: &[Id], from: i64, to: i64) -> Result<(), EditError> {
+        for track in tracks {
             let cues = self.track(track)?.cues.clone();
             for cue in cues {
                 let end = cue.start + cue.length;
@@ -361,8 +368,8 @@ impl<'a> Work<'a> {
     }
 
     /// Move what starts at `from` or later on `tracks` by `by` frames, but for `skip`. Where
-    /// `by` is below 0, the frames from `from + by` to `from` must be clear of what is not
-    /// moved, or the ripple is blocked.
+    /// `by` is below 0, the frames from `from + by` to `from` must be clear of clips that are
+    /// not moved, or the ripple is blocked. Subtitles in those frames are cut with the gap.
     pub fn shift(
         &mut self,
         tracks: &[Id],
@@ -382,6 +389,7 @@ impl<'a> Work<'a> {
                     });
                 }
             }
+            self.cut_cues(tracks, from + by, from)?;
         }
         for id in tracks {
             let track = self.track(id)?;
@@ -440,6 +448,34 @@ impl Work<'_> {
         }
         self.blade(&across, at)?;
         let tracks = self.all_unlocked();
+        for track in &tracks {
+            let cues: Vec<Cue> = self
+                .track(track)?
+                .cues
+                .iter()
+                .filter(|cue| cue.start < at && at < cue.start + cue.length)
+                .cloned()
+                .collect();
+            for cue in cues {
+                self.op(Op::SetCue {
+                    timeline: self.timeline_id(),
+                    id: cue.id.clone(),
+                    start: None,
+                    length: Some(at - cue.start),
+                    text: None,
+                })?;
+                self.op(Op::AddCue {
+                    timeline: self.timeline_id(),
+                    track: track.clone(),
+                    cue: Cue {
+                        id: String::new(),
+                        start: at,
+                        length: cue.start + cue.length - at,
+                        text: cue.text,
+                    },
+                })?;
+            }
+        }
         self.shift(&tracks, at, length, &HashSet::new())
     }
 
@@ -476,18 +512,13 @@ pub(super) fn find_clip<'t>(timeline: &'t Timeline, id: &str) -> Option<(&'t Tra
         .find_map(|r| r.clips.iter().find(|c| c.id == id).map(|c| (r, c)))
 }
 
-/// The first thing of a track, a clip or a subtitle, but for `skip`, that covers a frame from
-/// `from` to `to`.
+/// The first clip of a track, but for `skip`, that covers a frame from `from` to `to`.
 fn in_the_way(track: &Track, from: i64, to: i64, skip: &HashSet<Id>) -> Option<Id> {
-    let clips = track.clips.iter().map(|c| (&c.id, c.start, c.end()));
-    let cues = track
-        .cues
+    track
+        .clips
         .iter()
-        .map(|q| (&q.id, q.start, q.start + q.length));
-    clips
-        .chain(cues)
-        .find(|&(id, start, end)| start < to && from < end && !skip.contains(id))
-        .map(|(id, ..)| id.clone())
+        .find(|c| c.start < to && from < c.end() && !skip.contains(&c.id))
+        .map(|c| c.id.clone())
 }
 
 /// The transitions at the start and at the end of a clip of a track.

@@ -187,7 +187,8 @@ Before `hello`, every other request is refused with `-32600`.
   needs one (see Proxies).
   - `identity`: `size`, `modified_us` (microseconds since 1970, UTC) and `digest`: the SHA-256 of
     the size in decimal, the first 64 KiB, and the last 64 KiB from no earlier than byte 65536,
-    as the Python editing makes it.
+    as the Python editing makes it, in 64 lowercase hex digits (anything else is refused as
+    `out_of_range` `digest`).
   - A file is read as one of the formats MP4/MOV, Matroska/WebM, AVI, MPEG-TS (and M2TS),
     MPEG-PS, WAV, MP3, FLAC, Ogg, AAC, PNG, JPEG and WebP, and as a file only: a playlist (HLS)
     or a list of `concat` is not media.
@@ -743,6 +744,10 @@ color, but not its source kind or media; use the `replace` edit for media replac
 It requires picture without audio for `true`; changing it revalidates existing clips and
 transitions before committing. Its inverse restores the old classification. This lets old
 media-pool images gain unlimited still duration without new ids, together with migration.
+The settings of `set_media` are checked in a fixed order: `bin`, the marks, then `still`
+(`no_stream` without picture, `out_of_range` `still` with sound, then the clips of the media).
+A `set_media` that sets every given setting to the value it has already changes nothing: alone
+in a transaction it is refused as `empty` and makes no step.
 
 `shift_clips` moves each distinct selected clip by `by` frames on one track, preserving its
 source, length and settings, and every transition whose two ends move together. A transition
@@ -993,7 +998,7 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `no_track` | `kind` | no track for the requested source |
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
-| `out_of_range` | `what` | invalid setting such as speed, gain, transform or text length; `by`, `clips` or `cues` for a shift that would change nothing |
+| `out_of_range` | `what` | invalid setting such as speed, gain, transform or text length; `digest` for media whose `identity.digest` is not 64 lowercase hex digits; `by`, `clips` or `cues` for a shift that would change nothing |
 | `has_transition` | `transition` | a basic operation would move just one transition endpoint |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
 | `cut_taken` | `with` | a transition is already at this cut |

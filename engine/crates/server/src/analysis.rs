@@ -566,7 +566,24 @@ fn stem(media: &Media) -> String {
             let _ = write!(id, "%{byte:02X}");
         }
     }
-    format!("{id}-{}", &media.identity.digest[..12])
+    // The model refuses a digest that is not 64 lowercase hex digits; should one ever reach
+    // here, a digest of it still names one file without a panic or a path out of the cache.
+    let digest = &media.identity.digest;
+    match digest.get(..12) {
+        Some(short)
+            if short
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) =>
+        {
+            format!("{id}-{short}")
+        }
+        _ => {
+            use sha2::{Digest as _, Sha256};
+            let hash = Sha256::digest(digest.as_bytes());
+            let short: String = hash[..6].iter().map(|b| format!("{b:02x}")).collect();
+            format!("{id}-{short}")
+        }
+    }
 }
 
 /// Never follow a cache directory that a link or junction redirects outside the project.
@@ -690,6 +707,21 @@ mod tests {
                     .collect::<Vec<_>>(),
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn a_cache_name_takes_12_digits_of_the_digest_and_never_panics_on_a_bad_one() {
+        let mut media = columbina_model::Project::sample().media[0].clone();
+        media.id = "m/1".into();
+        media.identity.digest = "0123456789abcdef".repeat(4);
+        assert_eq!(stem(&media), "m%2F1-0123456789ab");
+        // Shorter than 12 bytes, cut inside a character, or not hex: still one file name.
+        for digest in ["", "abc", "ééééééééééé", "ABCDEFABCDEF00"] {
+            media.identity.digest = digest.into();
+            let name = stem(&media);
+            assert!(name.starts_with("m%2F1-") && name.len() == 18, "{name}");
+            assert!(name[6..].bytes().all(|b| b.is_ascii_hexdigit()), "{name}");
         }
     }
 

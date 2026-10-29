@@ -587,8 +587,8 @@ pub enum OpError {
     },
     /// A setting is not one that it may be. `what` is `width`, `height`, `sample_rate`,
     /// `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`,
-    /// `position`, `language`, `still`, `by` (a shift by 0), `clips` or `cues` (a shift of
-    /// none).
+    /// `position`, `language`, `still`, `digest` (of the identity of media: not 64 lowercase
+    /// hexadecimal digits), `by` (a shift by 0), `clips` or `cues` (a shift of none).
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -812,6 +812,7 @@ fn range_message(what: &str) -> String {
         "by" => "it moves by no frame".into(),
         "clips" => "it names no clip".into(),
         "cues" => "it names no subtitle".into(),
+        "digest" => "the digest is not 64 lowercase hexadecimal digits".into(),
         _ => format!("the {what} is out of its range"),
     }
 }
@@ -1755,20 +1756,28 @@ fn set_media(
     swap(&mut new.bin, bin.clone());
     swap(&mut new.mark_in, mark_in);
     swap(&mut new.mark_out, mark_out);
+    // The settings are checked in the order that they are written in, so that one that is wrong
+    // is told of whatever else is set with it.
+    if let Some(bin) = &new.bin {
+        bin_at(project, bin)?;
+    }
+    check_marks(&new)?;
     if let Some(still) = still {
         let video = new.facts.video.as_mut().ok_or_else(|| OpError::NoStream {
             media: id.into(),
             kind: TrackKind::Video,
         })?;
-        video.still = still;
-        let mut checked = project.clone();
-        checked.media[at] = new.clone();
-        checked.validate().map_err(|invalid| invalid.error)?;
+        if video.still != still {
+            video.still = still;
+            if still && new.facts.audio.is_some() {
+                return Err(range("still"));
+            }
+            // The clips and transitions of the media are checked again as they would be.
+            let mut checked = project.clone();
+            checked.media[at] = new.clone();
+            checked.validate().map_err(|invalid| invalid.error)?;
+        }
     }
-    if let Some(bin) = &new.bin {
-        bin_at(project, bin)?;
-    }
-    check_marks(&new)?;
     let inverse = Op::SetMedia {
         id: id.into(),
         still: still.and_then(|_| old.facts.video.as_ref().map(|video| video.still)),
@@ -2591,6 +2600,14 @@ fn put(clips: &mut Vec<Clip>, clip: Clip) {
 /// Check media as it would be in a project.
 fn check_media(project: &Project, media: &Media) -> Result<(), OpError> {
     within("size", media.identity.size.into())?;
+    let digest = &media.identity.digest;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(range("digest"));
+    }
     within("modified_us", media.identity.modified_us.into())?;
     let duration = media.facts.duration;
     within("duration", duration.ticks.into())?;
@@ -5806,6 +5823,87 @@ mod tests {
             mark_out: None,
         };
         assert_eq!(refused(elsewhere), missing("media", "m9"));
+    }
+
+    #[test]
+    fn a_still_is_checked_after_the_bin_and_marks_and_setting_it_as_it_is_makes_no_step() {
+        let still = |id: &str, bin: Option<Option<Id>>| Op::SetMedia {
+            still: Some(true),
+            id: id.into(),
+            name: None,
+            bin,
+            mark_in: None,
+            mark_out: None,
+        };
+        // m1 has sound, so it cannot be a still; a bin that is not there is told of first.
+        assert_eq!(
+            refused(still("m1", Some(Some("b9".into())))),
+            missing("bin", "b9")
+        );
+        assert_eq!(refused(still("m1", None)), range("still"));
+        let sound = sample_with(vec![Op::AddMedia {
+            media: media("sound", false, true),
+            index: None,
+        }]);
+        assert_eq!(
+            refused_in(sound, still("sound", None)),
+            OpError::NoStream {
+                media: "sound".into(),
+                kind: TrackKind::Video
+            }
+        );
+        let mut history = crate::History::new(Project::sample());
+        let same = Op::SetMedia {
+            still: Some(false),
+            id: "m1".into(),
+            name: None,
+            bin: None,
+            mark_in: None,
+            mark_out: None,
+        };
+        let changes = vec![crate::edit::Change::Op(same)];
+        assert_eq!(
+            history
+                .change(changes, "test", |change, _| change)
+                .unwrap_err(),
+            crate::TransactionError::Empty
+        );
+        assert_eq!(history.revision(), 0);
+        assert!(!history.can_undo());
+    }
+
+    #[test]
+    fn the_digest_of_media_is_64_lowercase_hexadecimal_digits() {
+        for digest in [
+            "",
+            "imported-identity",
+            &"A".repeat(64),
+            &"0".repeat(63),
+            &"g".repeat(64),
+        ] {
+            let mut bad = media("", true, true);
+            bad.identity.digest = digest.into();
+            assert_eq!(
+                refused(Op::AddMedia {
+                    media: bad,
+                    index: None
+                }),
+                range("digest"),
+                "{digest}"
+            );
+        }
+        let mut good = media("", true, true);
+        good.identity.digest = "0123456789abcdef".repeat(4);
+        apply(
+            &mut Project::sample(),
+            Op::AddMedia {
+                media: good,
+                index: None,
+            },
+        )
+        .unwrap();
+        let error = invalid(|v| v["media"][0]["identity"]["digest"] = "abc".into());
+        assert_eq!(error, wrong("media", "m1", range("digest")));
     }
 
     #[test]

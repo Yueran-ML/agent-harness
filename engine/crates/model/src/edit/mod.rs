@@ -952,6 +952,15 @@ pub(crate) fn run_change(project: &mut Project, change: Change) -> Result<Expans
     match change {
         Change::Op(op) => {
             let (done, inverse) = apply_done(project, op).map_err(ChangeError::Op)?;
+            // Setting media to what it is already changes nothing, and makes no step.
+            if matches!(done, Op::SetMedia { .. }) && done == inverse {
+                return Ok(Expansion {
+                    done: vec![],
+                    inverse: vec![],
+                    clamped: false,
+                    created: vec![],
+                });
+            }
             Ok(Expansion {
                 done: vec![done],
                 inverse: vec![inverse],

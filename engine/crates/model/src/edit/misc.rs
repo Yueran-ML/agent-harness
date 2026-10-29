@@ -211,6 +211,15 @@ fn length_at_speed(clip: &Clip, speed: Speed, rate: Rate) -> i64 {
     frames(span).min(frames(span - 1) + 1).max(1)
 }
 
+/// Where the last of a group of clips ends at a speed.
+fn ends_at(group: &[(Id, Clip)], speed: Speed, rate: Rate) -> i64 {
+    group
+        .iter()
+        .map(|(_, c)| c.start + length_at_speed(c, speed, rate))
+        .max()
+        .unwrap_or(0)
+}
+
 pub(super) fn set_speed(
     work: &mut Work,
     clip: &str,
@@ -242,6 +251,9 @@ pub(super) fn set_speed(
         .map(|(_, c)| c.end())
         .max()
         .expect("the selected clip has media");
+    if ripple && ends_at(&group, speed, rate) != place {
+        work.split_ripple(&group, place)?;
+    }
     let mut changed = vec![];
     let mut clamped = false;
     for (track, c) in group {
@@ -768,6 +780,66 @@ mod tests {
                 clip: "c5".into()
             }
         );
+    }
+
+    /// V1 c1 [0, 100) g1, c3 [100, 150) g2; A1 c2 [0, 130) g1, c4 [130, 180) g2: the sound of
+    /// g1 runs on under the picture of g2.
+    fn l_cut() -> crate::Project {
+        let mut project = project();
+        let tracks = &mut project.timelines[0].tracks;
+        tracks[0].clips = vec![
+            clip("c1", 0, 100, 0, Some("g1")),
+            clip("c3", 100, 50, 150, Some("g2")),
+        ];
+        tracks[1].clips.clear();
+        tracks[2].clips = vec![
+            clip("c2", 0, 130, 0, Some("g1")),
+            clip("c4", 130, 50, 180, Some("g2")),
+        ];
+        tracks[4].cues.clear();
+        project.validate().unwrap();
+        project
+    }
+
+    #[test]
+    fn a_ripple_of_an_l_cuts_speed_is_refused_either_way_rather_than_parting_the_next_group() {
+        for (num, den) in [(1, 2), (2, 1)] {
+            for selected in ["c1", "c2"] {
+                let error = refused(l_cut(), speed(selected, num, den, true));
+                assert_eq!(
+                    error,
+                    EditError::RippleBlocked {
+                        track: "V1".into(),
+                        clip: "c3".into()
+                    },
+                    "{num}/{den} of {selected}"
+                );
+            }
+        }
+        // Shortening the sound by a frame would move c4 and leave c3 just the same.
+        let trim = Edit::Trim {
+            timeline: "t1".into(),
+            clip: "c2".into(),
+            edge: super::super::Edge::Out,
+            delta: -1,
+            ripple: true,
+            linked: true,
+        };
+        assert_eq!(
+            refused(l_cut(), trim),
+            EditError::RippleBlocked {
+                track: "V1".into(),
+                clip: "c3".into()
+            }
+        );
+        // Without a ripple, the picture goes only as far as the next picture.
+        let mut project = l_cut();
+        assert!(edit(&mut project, speed("c1", 1, 2, false)).clamped);
+        assert_eq!(
+            clips(&project, "V1"),
+            rows(&[("c1", 0, 100, 0), ("c3", 100, 50, 150)])
+        );
+        assert_eq!(clips(&project, "A1")[1], ("c4".into(), 130, 50, 180));
     }
 
     #[test]

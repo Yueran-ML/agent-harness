@@ -333,6 +333,27 @@ impl<'a> Work<'a> {
         Ok(())
     }
 
+    /// Refuse a ripple from `place` that ends a split edit, of which `group` holds the clips that
+    /// change and their tracks, while something starts between the end of one of them and
+    /// `place` on its track. That would stay where it is while what follows `place` moves, and
+    /// so part the picture of an L or J cut that follows from its sound; and where the group
+    /// gets longer, its clip would run into it.
+    pub fn split_ripple(&self, group: &[(Id, Clip)], place: i64) -> Result<(), EditError> {
+        let members: HashSet<&str> = group.iter().map(|(_, c)| c.id.as_str()).collect();
+        for (track, c) in group {
+            let blocker = self.track(track)?.clips.iter().find(|o| {
+                !members.contains(o.id.as_str()) && c.end() <= o.start && o.start < place
+            });
+            if let Some(blocker) = blocker {
+                return Err(EditError::RippleBlocked {
+                    track: track.clone(),
+                    clip: blocker.id.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// The clips of a track that lie across `at`.
     pub fn across(&self, track: &str, at: i64) -> Result<Vec<Id>, EditError> {
         Ok(self

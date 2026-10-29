@@ -120,6 +120,104 @@ fn ripple_of(project: &Project, edit: &Edit) -> Option<(i64, HashSet<String>)> {
     }
 }
 
+/// For an edit that ripples, how far what follows it must move: by the length of what an insert
+/// puts in, by minus the frames that a ripple delete or a close takes out, by the change in the
+/// end of what a ripple trim or a change of speed changes, and not at all for an insert move,
+/// which takes out as many frames as it puts in.
+fn shift_of(before: &Project, edit: &Edit, after: &Project) -> Option<i64> {
+    // Clips on locked tracks are left where they are, linked or not.
+    let open: HashSet<&String> = before.timelines[0]
+        .tracks
+        .iter()
+        .filter(|r| !r.locked)
+        .flat_map(|r| r.clips.iter().map(|c| &c.id))
+        .collect();
+    let group = |clips: &[String], linked: bool| -> HashSet<String> {
+        let mut all = group(before, clips, linked);
+        all.retain(|id| open.contains(id));
+        all
+    };
+    let ends = |project: &Project, ids: &HashSet<String>| {
+        ids.iter()
+            .filter_map(|id| clip(project, id))
+            .map(Clip::end)
+            .max()
+    };
+    let taken = |spans: Vec<(i64, i64)>| -> i64 {
+        let mut spans = spans;
+        spans.sort_unstable();
+        let mut total = 0;
+        let mut reached = i64::MIN;
+        for (from, to) in spans {
+            let from = from.max(reached);
+            if to > from {
+                total += to - from;
+            }
+            reached = reached.max(to);
+        }
+        total
+    };
+    match edit {
+        Edit::Insert { at, .. } => clips_of(after)
+            .into_iter()
+            .filter(|c| c.start == *at && clip(before, &c.id).is_none())
+            .map(|c| c.length)
+            .max(),
+        Edit::CloseGap { track, at, .. } => {
+            let track = track_in(before, track)?;
+            let spans = track
+                .clips
+                .iter()
+                .map(|c| (c.start, c.end()))
+                .chain(track.cues.iter().map(|q| (q.start, q.start + q.length)));
+            let spans: Vec<(i64, i64)> = spans.collect();
+            let from = spans
+                .iter()
+                .map(|&(_, end)| end)
+                .filter(|end| end <= at)
+                .max()
+                .unwrap_or(0);
+            let to = spans
+                .iter()
+                .map(|&(start, _)| start)
+                .filter(|start| start > at)
+                .min()?;
+            Some(from - to)
+        }
+        Edit::RippleDelete { clips, linked, .. } => {
+            let changed = group(clips, *linked);
+            let spans = changed
+                .iter()
+                .filter_map(|id| clip(before, id))
+                .map(|c| (c.start, c.end()))
+                .collect();
+            Some(-taken(spans))
+        }
+        Edit::RippleDeleteRange {
+            from,
+            to,
+            tracks: None,
+            ..
+        } => Some(from - to),
+        Edit::Trim {
+            clip: id,
+            ripple: true,
+            ..
+        } => Some(clip(after, id)?.end() - clip(before, id)?.end()),
+        Edit::SetSpeed {
+            clip: id,
+            ripple: true,
+            linked,
+            ..
+        } => {
+            let changed = group(std::slice::from_ref(id), *linked);
+            Some(ends(after, &changed)? - ends(before, &changed)?)
+        }
+        Edit::InsertMove { .. } => Some(0),
+        _ => None,
+    }
+}
+
 /// The ripple kinds of edit, as `edit_of` numbers them: insert, ripple delete, ripple delete of a
 /// range, close gap, insert move, trim and set speed.
 const RIPPLES: [usize; 7] = [0, 8, 9, 10, 13, 14, 21];
@@ -221,6 +319,33 @@ proptest! {
                 }
             }
             prop_assert!(shifts.len() <= 1, "{:?} moved what follows by {:?}", edit, shifts);
+            // After a ripple trim or change of speed of a split edit, what starts under the end of
+            // the group, after a clip of the group on its own track, moves with its partners: an
+            // L or J cut that follows is not parted.
+            let ends_a_group = matches!(edit, Edit::SetSpeed { .. } | Edit::Trim { .. });
+            let open: Vec<&Clip> = before.timelines[0].tracks.iter().filter(|r| !r.locked)
+                .flat_map(|r| &r.clips).collect();
+            let all: Vec<&Clip> = clips_of(before);
+            let under = |c: &Clip| {
+                before.timelines[0].tracks.iter().any(|r| {
+                    r.clips.iter().any(|o| o.id == c.id)
+                        && r.clips.iter().any(|m| changed.contains(&m.id) && m.end() <= c.start && c.start < place)
+                })
+            };
+            for c in open.iter().filter(|c| ends_a_group && c.link.is_some() && !changed.contains(&c.id) && under(c)) {
+                let members: Vec<&&Clip> = all.iter().filter(|o| o.link == c.link).collect();
+                let whole = members.iter().all(|m| open.iter().any(|o| o.id == m.id) && !changed.contains(&m.id));
+                let kept = members.iter().map(|m| clip(after, &m.id).filter(|n| (n.length, n.source_in()) == (m.length, m.source_in())));
+                let kept: Option<Vec<&Clip>> = kept.collect();
+                if let (true, Some(kept)) = (whole, kept) {
+                    let moved: HashSet<i64> = members.iter().zip(&kept).map(|(m, n)| n.start - m.start).collect();
+                    let rows: Vec<(String, i64, i64)> = members.iter().map(|m| (m.id.clone(), m.start, m.end())).collect();
+                    prop_assert!(moved.len() == 1, "{:?} parted group {:?} {:?}: {:?}", edit, c.link, rows, moved);
+                }
+            }
+            if let (Some(&moved), Some(shift)) = (shifts.iter().next(), shift_of(before, edit, after)) {
+                prop_assert_eq!(moved, shift, "{:?} moved what follows by the wrong amount", edit);
+            }
             Ok(())
         })?;
     }

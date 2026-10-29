@@ -78,6 +78,13 @@ pub(super) fn trim(
     // Where the ripple is: the end of the clip, which is where what follows starts.
     let place = given.end();
     let rate = work.rate();
+    if ripple && delta != 0 {
+        let group: Vec<(Id, Clip)> = all
+            .iter()
+            .map(|id| work.owned(id))
+            .collect::<Result<_, _>>()?;
+        work.split_ripple(&group, place)?;
+    }
     let mut limit = Limit::new();
     let mut changed = vec![];
     for id in &all {

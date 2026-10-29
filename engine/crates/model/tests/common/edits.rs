@@ -96,6 +96,12 @@ pub struct Piece {
     speed: usize,
     reverse: bool,
     fades: (i64, i64),
+    /// For picture and sound linked, how many frames longer the sound is than the picture.
+    split: i64,
+    /// Whether each clip of the piece starts at the end of its own track, rather than all at the
+    /// end of the one that goes furthest: after a split, a picture that starts under the sound
+    /// of the piece before it.
+    stagger: bool,
 }
 
 /// A recipe of a timeline.
@@ -122,9 +128,21 @@ fn piece() -> impl Strategy<Value = Piece> {
         0i64..100,
         (0usize..SPEEDS.len(), prop::bool::weighted(0.2)),
         prop_oneof![3 => Just((0i64, 0i64)), 1 => (0i64..10, 0i64..10)],
+        (
+            prop_oneof![3 => Just(0i64), 1 => -30i64..40],
+            prop::bool::weighted(0.3),
+        ),
     )
         .prop_map(
-            |((kind, video, audio, media), gap, length, into, (speed, reverse), fades)| Piece {
+            |(
+                (kind, video, audio, media),
+                gap,
+                length,
+                into,
+                (speed, reverse),
+                fades,
+                (split, stagger),
+            )| Piece {
                 kind,
                 video,
                 audio,
@@ -135,6 +153,8 @@ fn piece() -> impl Strategy<Value = Piece> {
                 speed,
                 reverse,
                 fades,
+                split,
+                stagger,
             },
         )
 }
@@ -211,7 +231,17 @@ pub fn project_of(recipe: &Recipe) -> Project {
         let start = on.iter().map(|&r| ends[r]).max().unwrap_or(0) + piece.gap;
         let mut group = (on.len() > 1).then(String::new);
         for &r in &on {
-            let mut clip = Clip::new("", source.clone(), start, piece.length);
+            let start = if piece.stagger {
+                ends[r] + piece.gap
+            } else {
+                start
+            };
+            let length = if r >= 3 && on.len() > 1 {
+                (piece.length + piece.split).max(1)
+            } else {
+                piece.length
+            };
+            let mut clip = Clip::new("", source.clone(), start, length);
             clip.speed = SPEEDS[piece.speed];
             clip.reverse = piece.reverse;
             clip.fade_in = piece.fades.0;

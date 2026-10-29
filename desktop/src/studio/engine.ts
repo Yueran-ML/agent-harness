@@ -140,6 +140,7 @@ export type Op =
   | { op: 'remove_clip'; timeline: string; id: string }
   | { op: 'move_clip'; timeline: string; id: string; track: string; start: number }
   | { op: 'shift_clips'; timeline: string; track: string; clips: string[]; by: number }
+  | { op: 'shift_cues'; timeline: string; track: string; cues: string[]; by: number }
   | { op: 'trim_clip'; timeline: string; id: string; source_in?: Time | null; start: number; length: number }
   | ({ op: 'set_clip'; timeline: string; id: string } & Settings<Clip, 'enabled' | 'speed' | 'reverse' | 'link' | 'transform' | 'gain_db' | 'pan' | 'fade_in' | 'fade_out' | 'source'>)
   | { op: 'add_transition'; timeline: string; track: string; transition: Transition }
@@ -518,6 +519,12 @@ export function applyOp(project: Project, op: Op): Project {
       if (track.kind !== 'subtitle') throw new CopyMismatch(`track ${track.id} holds no subtitles`);
       return ordered({ ...track, cues: [...track.cues, op.cue] });
     }));
+    case 'shift_cues': return inTimeline(project, op.timeline, timeline => inTrack(timeline, placeOf(timeline.tracks, op.track, 'track'), track => {
+      if (track.kind !== 'subtitle') throw new CopyMismatch(`track ${track.id} holds no subtitles`);
+      const ids = new Set(op.cues);
+      for (const id of ids) placeOf(track.cues, id, 'cue');
+      return ordered({ ...track, cues: track.cues.map(cue => ids.has(cue.id) ? { ...cue, start: cue.start + op.by } : cue) });
+    }));
     case 'remove_cue': return inTimeline(project, op.timeline, timeline => inCue(timeline, op.id, (items, at) => without(items, at)));
     case 'set_cue': return inTimeline(project, op.timeline, timeline => inCue(timeline, op.id, (items, at) => replaced(items, at, patched(items[at], op, ['start', 'length', 'text']))));
     default: throw new CopyMismatch(`the operation ${(op as { op: unknown }).op} is not known to the copy`);
@@ -762,9 +769,15 @@ export class ProjectCopy {
       void this.refetch();
       return;
     }
+    let at = 0;
     try {
-      this.set({ revision: change.revision, project: applyChange(project, change) });
-    } catch {
+      let next: Project = { ...project, next_id: change.next_id };
+      for (const op of change.done) { next = applyOp(next, op); at++; }
+      this.set({ revision: change.revision, project: next });
+    } catch (error) {
+      // The copy and the engine disagree (or the page does not know an operation): it is fetched
+      // again whole. This should not happen, so it is said, with the operation that failed.
+      console.warn(`The copy of the project could not apply ${change.done[at]?.op ?? 'a change'} (operation ${at + 1} of revision ${change.revision}); it is fetched again.`, error);
       void this.refetch();
     }
   }

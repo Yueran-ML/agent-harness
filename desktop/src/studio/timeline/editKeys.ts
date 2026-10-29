@@ -152,7 +152,11 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
         if (action.edge === 'in') { op.mark_in = time; if (media.mark_out && compare(time, media.mark_out) >= 0n) op.mark_out = null; }
         else { op.mark_out = time; if (media.mark_in && compare(time, media.mark_in) <= 0n) op.mark_in = null; }
       }
-      return transaction([op]);
+      // A mark set where it is already is no change; the engine refuses a step that changes nothing.
+      const same = (a: Time | null | undefined, b: Time | null) => (a ?? null) === null ? b === null : b !== null && compare(a!, b) === 0n;
+      if (op.mark_in !== undefined && same(op.mark_in, media.mark_in)) delete op.mark_in;
+      if (op.mark_out !== undefined && same(op.mark_out, media.mark_out)) delete op.mark_out;
+      return op.mark_in === undefined && op.mark_out === undefined ? null : transaction([op]);
     }
     if (!timeline) return null;
     const next = { ...marks };

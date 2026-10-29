@@ -47,6 +47,8 @@ export const MediaPool = memo(function MediaPool({ media, bins, timelines, proxi
   const selectBin = (id: string | null) => { setBin(id); setSelection(EMPTY_SELECTION); };
   const move = (ids: string[], target: string | null) => {
     const moving = (media ?? []).filter(each => ids.includes(each.id) && each.bin !== target);
+    // Media already in that bin does not move; the engine refuses a step that changes nothing.
+    if (moving.length === 0) return;
     void edit(moving.map(each => ({ op: 'set_media', id: each.id, bin: target })));
   };
   return <section className="pool" aria-label={words.label.studio.pool} data-test="pool">

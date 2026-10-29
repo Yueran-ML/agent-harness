@@ -178,10 +178,15 @@ describe('the copy of the project', () => {
     engine.opened();
     await settle();
     engine.have(1, { ...empty(), next_id: 2 });
+    const warned = vi.spyOn(console, 'warn').mockImplementation(() => {});
     engine.changed(change(1, 2, { op: 'remove_media', id: 'm1' }));
     await settle();
     expect(engine.call).toHaveBeenCalledTimes(2);
     expect(copy.getSnapshot()).toMatchObject({ revision: 1, project: { next_id: 2 } });
+    // It is not silent: it says which operation of which revision it could not apply.
+    expect(warned).toHaveBeenCalledOnce();
+    expect(warned.mock.calls[0][0]).toContain('remove_media (operation 1 of revision 1)');
+    warned.mockRestore();
   });
 
   it('applies what it is told while it fetches after the fetch, from the revision that the fetch answered', async () => {

@@ -87,7 +87,11 @@ describe('DaVinci editing keys', () => {
     const ctx = context({ focus: 'source', source: { media: m, frame: 30, rate: { num: 25, den: 1 } } });
     expect(command('i', {}, ctx)).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_media', id: 'm1', mark_in: { ticks: 30, scale: 25 }, mark_out: null }] } });
     expect(command('o', {}, ctx)).toMatchObject({ transaction: { ops: [{ op: 'set_media', mark_out: { ticks: 31, scale: 25 } }] } });
-    expect(command('x', { alt: true }, ctx)).toMatchObject({ transaction: { ops: [{ op: 'set_media', mark_in: null, mark_out: null }] } });
+    expect(command('x', { alt: true }, ctx)).toEqual({ kind: 'transaction', transaction: { revision: 4, ops: [{ op: 'set_media', id: 'm1', mark_out: null }] } });
+    // A mark where it already is, or clearing marks that there are not, is no edit: the engine would refuse it.
+    const marked = { ...media, mark_in: { ticks: 30, scale: 25 } };
+    expect(command('i', {}, context({ focus: 'source', source: { media: marked, frame: 30, rate: { num: 25, den: 1 } } }))).toBeNull();
+    expect(command('x', { alt: true }, context({ focus: 'source', source: { media, frame: 30, rate: { num: 25, den: 1 } } }))).toBeNull();
   });
   it('uses shared undo and keeps destructive keys from repeating', () => {
     // Backspace lifts; Delete, and Shift with either, ripple deletes, as DaVinci Resolve has them.

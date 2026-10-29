@@ -674,6 +674,13 @@ export const zhCN: Messages = {
     },
 
     studio: {
+      timeline: {
+        title: '时间线', position: '时间线播放头',
+        zoomIn: '放大', zoomOut: '缩小', fit: '适应整条时间线', follow: '跟随播放头',
+        lock: '锁定', unlock: '解锁', mute: '静音', unmute: '取消静音', hide: '隐藏轨道', show: '显示轨道', height: '轨道高度',
+        color: '纯色', wavePending: '正在生成波形…', waveFailed: '波形不可用',
+        dissolve: '叠化', dip_black: '淡入淡出至黑场', dip_white: '淡入淡出至白场', crossfade: '音频交叉淡变',
+      },
       media: {
         bins: '素材箱', master: '主素材箱', newBin: '新建素材箱', name: '名称', rename: '重命名', remove: '从媒体池移除', removeBin: '移除空素材箱',
         list: '列表视图', thumbnails: '缩略图视图', details: '素材详情', path: '路径', videoCodec: '视频编码', audioCodec: '音频编码',
@@ -1155,6 +1162,7 @@ export const zhCN: Messages = {
 
     studio: {
       emptyBin: '这个素材箱是空的。', mediaUsed: '时间线正在使用这个素材，请先移除对应片段。', binUsed: '素材箱里还有素材或子素材箱，请先移出。', mediaEditFailed: '媒体池修改失败。', thumbnailFailed: '缩略图读取失败。',
+      timeline: { empty: '选择或创建一条时间线，开始剪辑。', editFailed: '轨道修改失败。' },
       browser: '预览窗只在桌面应用里显示。',
       opening: '正在工作室里打开这个项目。',
       takingOver: '正在从 Agent 那里接管这个项目。',

@@ -788,6 +788,13 @@ export const en = {
 
     /** The studio: a workspace for editing the media of the project. */
     studio: {
+      timeline: {
+        title: 'Timeline', position: 'Timeline position',
+        zoomIn: 'Zoom in', zoomOut: 'Zoom out', fit: 'Fit timeline', follow: 'Follow playhead',
+        lock: 'Lock', unlock: 'Unlock', mute: 'Mute', unmute: 'Unmute', hide: 'Hide track', show: 'Show track', height: 'Track height',
+        color: 'Solid color', wavePending: 'Preparing waveform…', waveFailed: 'Waveform unavailable',
+        dissolve: 'Dissolve', dip_black: 'Dip to black', dip_white: 'Dip to white', crossfade: 'Crossfade',
+      },
       media: {
         bins: 'Bins', master: 'Master', newBin: 'New bin', name: 'Name', rename: 'Rename', remove: 'Remove from pool', removeBin: 'Remove empty bin',
         list: 'List view', thumbnails: 'Thumbnail view', details: 'Media details', path: 'Path', videoCodec: 'Video codec', audioCodec: 'Audio codec',
@@ -1335,6 +1342,7 @@ export const en = {
     /** What the studio says: in its viewer, under its tools, and when something did not work. */
     studio: {
       emptyBin: 'This bin is empty.', mediaUsed: 'This media is used on a timeline. Remove its clips first.', binUsed: 'This bin contains media or other bins. Move them out first.', mediaEditFailed: 'The media pool could not be changed.', thumbnailFailed: 'The thumbnail could not be read.',
+      timeline: { empty: 'Choose or create a timeline to begin editing.', editFailed: 'The track could not be changed.' },
       browser: 'The preview appears in the desktop app.',
       opening: 'The project is being opened in the studio.',
       takingOver: 'The project is being taken over from the agent.',

@@ -723,6 +723,13 @@ export const ja: Messages = {
     },
 
     studio: {
+      timeline: {
+        title: 'タイムライン', position: 'タイムラインの再生ヘッド',
+        zoomIn: '拡大', zoomOut: '縮小', fit: 'タイムライン全体を表示', follow: '再生ヘッドを追従',
+        lock: 'ロック', unlock: 'ロック解除', mute: 'ミュート', unmute: 'ミュート解除', hide: 'トラックを非表示', show: 'トラックを表示', height: 'トラックの高さ',
+        color: '単色', wavePending: '波形を準備中…', waveFailed: '波形を表示できません',
+        dissolve: 'ディゾルブ', dip_black: '黒にディップ', dip_white: '白にディップ', crossfade: 'クロスフェード',
+      },
       media: {
         bins: 'ビン', master: 'マスター', newBin: '新規ビン', name: '名前', rename: '名前を変更', remove: 'メディアプールから削除', removeBin: '空のビンを削除',
         list: 'リスト表示', thumbnails: 'サムネイル表示', details: 'メディア情報', path: 'パス', videoCodec: '映像コーデック', audioCodec: '音声コーデック',
@@ -1232,6 +1239,7 @@ export const ja: Messages = {
 
     studio: {
       emptyBin: 'このビンは空です。', mediaUsed: 'このメディアはタイムラインで使用中です。先にクリップを削除してください。', binUsed: 'このビンにメディアまたは子ビンがあります。先に移動してください。', mediaEditFailed: 'メディアプールを変更できませんでした。', thumbnailFailed: 'サムネイルを読み込めませんでした。',
+      timeline: { empty: 'タイムラインを選択または作成して編集を始めます。', editFailed: 'トラックを変更できませんでした。' },
       browser: 'プレビューはデスクトップアプリで表示されます。',
       opening: 'プロジェクトをスタジオで開いています。',
       takingOver: 'エージェントからプロジェクトを引き継いでいます。',

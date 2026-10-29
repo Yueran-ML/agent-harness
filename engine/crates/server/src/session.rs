@@ -25,11 +25,12 @@ use crate::analysis::{Analysis, ThumbnailRequest, WaveformRequest};
 use crate::gpu::Graphics;
 use crate::log::log;
 use crate::names;
+use crate::play::Transport;
 use crate::proxy::{self, Made, Note, Proxies};
 use crate::queue::{self, Limits, Refused};
 use crate::rpc::{self, Fault, Line};
-use crate::transport::{self, Status, Transport};
-use crate::view::{Monitor, Viewer};
+use crate::transport;
+use crate::view::Viewer;
 
 /// The version of the engine that `hello` answers with.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -204,7 +205,8 @@ impl Engine {
             transport: None,
             proxies: proxies.clone(),
         }));
-        let viewer = Viewer::new(headless, Graphics::new());
+        let graphics = Graphics::new();
+        let viewer = Viewer::new(headless, Arc::clone(&graphics));
         let analysis = Analysis::new(
             Path::new(&project),
             Box::new({
@@ -214,7 +216,7 @@ impl Engine {
         );
         let notify = {
             let state = Arc::clone(&state);
-            Arc::new(move |status: &Status| tell(&state, status, limits))
+            Arc::new(move |status: &serde_json::Value| tell(&state, status, limits))
         };
         let again = {
             let state = Arc::clone(&state);
@@ -223,11 +225,14 @@ impl Engine {
                 if let Some(damaged) = damaged {
                     proxy::delete(&dir, damaged);
                 }
-                make_again(&state, media);
+                make_again(&state, media, false);
             })
         };
-        let transport =
-            Transport::new(headless, setup, viewer.slot(Monitor::Source), notify, again);
+        let repair = {
+            let state = Arc::clone(&state);
+            Arc::new(move |media: &str, _: Option<&Path>| make_again(&state, media, true))
+        };
+        let transport = Transport::new(headless, setup, &viewer, graphics, notify, again, repair);
         let project_now = {
             let mut locked = state.try_lock().expect("no one has the state yet");
             locked.transport = Some(transport.clone());
@@ -280,6 +285,7 @@ impl Engine {
     /// Cancel analysis and stop the proxy being made, deleting its partial output. This
     /// blocks for a few seconds at most; the state must not be locked meanwhile.
     pub fn stop_background(&self) {
+        self.transport.stop();
         self.analysis.stop();
         self.proxies.stop();
     }
@@ -479,18 +485,22 @@ fn proxy_made(
 
 /// Make the proxy of media again, as the transport asks when its file cannot be opened or
 /// decoded. This is called by the transport's own thread.
-fn make_again(state: &Mutex<State>, media: &str) {
+fn make_again(state: &Mutex<State>, media: &str, repair: bool) {
     let state = state.blocking_lock();
     let project = state.history.project();
     if let Some(found) = project.media.iter().find(|found| found.id == media) {
-        state.proxies.again(found);
+        if repair {
+            state.proxies.repair(found);
+        } else {
+            state.proxies.again(found);
+        }
     }
 }
 
 /// Tell every connection that said hello the state of the transport. This is called by the
 /// transport's own thread, never by a task of the runtime: it waits for the state of the
 /// engine, which is held only for moments.
-fn tell(state: &Mutex<State>, status: &Status, limits: Limits) {
+fn tell(state: &Mutex<State>, status: &serde_json::Value, limits: Limits) {
     let line = rpc::notification_line("transport.state", status);
     let mut state = state.blocking_lock();
     state.broadcast(&line);
@@ -632,7 +642,8 @@ async fn dispatch(
         "view.attach" | "view.place" | "view.show" | "view.detach" => {
             let result = engine.viewer.call(kind, method, params).await?;
             if method == "view.attach" {
-                engine.transport.redraw();
+                let (monitor, _) = crate::play::monitor_params(method, params)?;
+                engine.transport.redraw(monitor);
             }
             Ok(match connection.queue(rpc::result_line(id, &result)) {
                 Ok(()) => Reply::Queued,
@@ -646,6 +657,13 @@ async fn dispatch(
                 Err(refused) => Reply::Refused(refused),
             })
         }
+        "transport.frame_digest" => {
+            let result = engine.transport.frame_digest(params).await?;
+            Ok(match connection.queue(rpc::result_line(id, &result)) {
+                Ok(()) => Reply::Queued,
+                Err(refused) => Reply::Refused(refused),
+            })
+        }
         _ if method.starts_with("transport.") => {
             // The answer is queued before the command is sent, so that the state that it makes
             // is told after the answer.
@@ -654,7 +672,7 @@ async fn dispatch(
                 Ok(()) => Reply::Queued,
                 Err(refused) => Reply::Refused(refused),
             };
-            order.send();
+            order.send().await;
             Ok(reply)
         }
         _ => Err(Fault::new(
@@ -715,29 +733,13 @@ async fn transport_load(
     engine: &Engine,
     params: Option<&RawValue>,
 ) -> Result<serde_json::Value, Fault> {
-    let method = "transport.load";
-    engine.transport.check(method)?;
-    let load: transport::Load = rpc::params(method, r#"{"media": "m1"}"#, params)?;
     let loading = {
         let state = engine.state.lock().await;
-        let project = state.history.project();
-        let Some(media) = project.media.iter().find(|media| media.id == load.media) else {
-            return Err(
-                Fault::params(format!("there is no media {} in the project", load.media))
-                    .with_data(json!({ "reason": "missing", "media": load.media })),
-            );
-        };
-        let grid = project.timelines.first().map(|timeline| timeline.rate);
-        engine.transport.begin_load(
-            &load.media,
-            PathBuf::from(&media.path),
-            proxy::usable(media).map(|proxy| PathBuf::from(&proxy.path)),
-            media.facts.clone(),
-            grid,
-        )?
+        engine
+            .transport
+            .begin_load(state.history.project(), params)?
     };
-    let status = loading.done().await?;
-    Ok(serde_json::to_value(status).unwrap_or_default())
+    loading.done().await
 }
 
 /// The params of `hello`.

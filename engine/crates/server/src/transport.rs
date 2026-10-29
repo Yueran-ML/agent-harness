@@ -175,6 +175,7 @@ impl Limits {
 pub struct Setup {
     pub sound: audio::Kind,
     pub fail_card_at: Option<i64>,
+    pub test_hooks: bool,
 }
 
 /// The transport, as the engine's methods reach it. It is cheap to clone: the transport's own
@@ -249,6 +250,8 @@ pub enum Source {
     Original,
     /// Its proxy.
     Proxy,
+    /// A timeline contains both original pictures and proxies.
+    Mixed,
 }
 
 impl Source {
@@ -256,6 +259,7 @@ impl Source {
         match self {
             Source::Original => "original",
             Source::Proxy => "proxy",
+            Source::Mixed => "mixed",
         }
     }
 }
@@ -311,6 +315,9 @@ enum Command {
         speed: i32,
     },
     Pause,
+    PauseAndReply(oneshot::Sender<()>),
+    Snapshot(oneshot::Sender<Option<Snapshot>>),
+    Stop,
     Seek {
         frame: i64,
         scrubbing: bool,
@@ -352,11 +359,9 @@ struct Converted {
     picture: Result<Arc<Picture>, MediaError>,
 }
 
-/// The params of `transport.load`.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Load {
-    pub media: String,
+pub struct Snapshot {
+    pub picture: Arc<Picture>,
+    pub rotation: i16,
 }
 
 /// The params of `transport.play`.
@@ -558,6 +563,26 @@ impl Transport {
         lock(&self.shared).status.clone()
     }
 
+    /// A switch to the other monitor waits until the worker has stopped its audio output.
+    pub async fn pause_for_switch(&self) -> Result<(), Fault> {
+        let (reply, received) = oneshot::channel();
+        self.send(Command::PauseAndReply(reply))?;
+        received.await.map_err(|_| stopped())
+    }
+
+    pub async fn snapshot(&self) -> Result<Snapshot, Fault> {
+        let (reply, received) = oneshot::channel();
+        self.send(Command::Snapshot(reply))?;
+        received.await.map_err(|_| stopped())?.ok_or_else(|| {
+            Fault::new(rpc::TRANSPORT_FAILED, "the source monitor has no picture")
+                .with_data(json!({"reason":"not_loaded"}))
+        })
+    }
+
+    pub fn stop(&self) {
+        let _ = self.send(Command::Stop);
+    }
+
     fn send(&self, command: Command) -> Result<(), Fault> {
         if lock(&self.shared).stopped {
             return Err(stopped());
@@ -646,7 +671,7 @@ impl Transport {
         let command = match method {
             "transport.play" => {
                 let play: Play = rpc::params(method, r#"{"speed": 1}"#, params)?;
-                if play.speed == 0 || play.speed.abs() > FASTEST {
+                if play.speed == 0 || !(-FASTEST..=FASTEST).contains(&play.speed) {
                     return Err(Fault::params(format!(
                         "the speed of transport.play is a whole number from -{FASTEST} to \
                          {FASTEST}, not 0, and {} is not one",
@@ -1427,6 +1452,25 @@ impl Worker {
             Command::Pause => {
                 self.pause();
                 self.tell(true);
+            }
+            Command::PauseAndReply(reply) => {
+                self.pause();
+                self.tell(true);
+                let _ = reply.send(());
+            }
+            Command::Snapshot(reply) => {
+                let picture = self.loaded.as_ref().and_then(|loaded| {
+                    Some(Snapshot {
+                        picture: Arc::clone(loaded.picture.as_ref()?),
+                        rotation: loaded.video.as_ref()?.rotation,
+                    })
+                });
+                let _ = reply.send(picture);
+            }
+            Command::Stop => {
+                self.unload();
+                self.world.clear();
+                self.pipe.gone = true;
             }
             Command::Seek {
                 frame,
@@ -2725,6 +2769,9 @@ mod tests {
                 Command::Step { frames } => format!("step {frames}"),
                 Command::Play { speed } => format!("play {speed}"),
                 Command::Pause => "pause".into(),
+                Command::PauseAndReply(_) => "pause and reply".into(),
+                Command::Snapshot(_) => "snapshot".into(),
+                Command::Stop => "stop".into(),
                 Command::Unload { media } => format!("unload {media}"),
                 Command::Redraw => "redraw".into(),
                 Command::Load { media, .. } => format!("load {media}"),

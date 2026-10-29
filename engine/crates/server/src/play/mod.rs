@@ -1,8 +1,428 @@
 //! Timeline playback: independent track readers, composition and the monitor transport.
 
-// The decoder pool is introduced first; the timeline worker is connected in the next part
-// of Task 15. Keep it compiled in ordinary builds as well as in its real-media tests.
-#[allow(dead_code, reason = "Task 15 timeline worker is not connected yet")]
 mod ahead;
-#[allow(dead_code, reason = "Task 15 timeline worker is not connected yet")]
 mod sources;
+mod timeline;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use columbina_compose::{Compositor, Scene, SceneLayer, Source, Target, Transform};
+use columbina_model::Project;
+use serde::Deserialize;
+use serde_json::{json, value::RawValue, Value};
+use sha2::{Digest, Sha256};
+
+use crate::gpu::Graphics;
+use crate::log::log;
+use crate::rpc::{self, Fault};
+use crate::transport;
+use crate::view::{Monitor, Viewer};
+
+pub type Notify = Arc<dyn Fn(&Value) + Send + Sync>;
+
+#[derive(Clone, Copy, Debug)]
+pub enum Action {
+    Play { speed: i32 },
+    Pause,
+    Seek { frame: i64, scrubbing: bool },
+    Step { frames: i64 },
+    Proxies { on: bool },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "monitor", rename_all = "lowercase", deny_unknown_fields)]
+enum Load {
+    Source { media: String },
+    Timeline { timeline: String },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Play {
+    #[serde(default = "one")]
+    speed: i32,
+}
+fn one() -> i32 {
+    1
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Seek {
+    frame: i64,
+    #[serde(default)]
+    scrubbing: bool,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Step {
+    frames: i64,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Proxies {
+    on: bool,
+}
+
+/// Removing the required monitor leaves the strict method-specific parameter parser intact.
+pub fn monitor_params(
+    method: &str,
+    params: Option<&RawValue>,
+) -> Result<(Monitor, Box<RawValue>), Fault> {
+    let mut params: serde_json::Map<String, Value> =
+        rpc::params(method, r#"{"monitor":"source"|"timeline", ...}"#, params)?;
+    let monitor = params
+        .remove("monitor")
+        .ok_or_else(|| Fault::params("monitor is required"))?;
+    let monitor = serde_json::from_value(monitor)
+        .map_err(|_| Fault::params("monitor must be source or timeline"))?;
+    Ok((
+        monitor,
+        serde_json::value::to_raw_value(&params).expect("JSON parameters"),
+    ))
+}
+
+fn action(method: &str, params: &RawValue) -> Result<Option<Action>, Fault> {
+    let action = match method {
+        "transport.state" => {
+            rpc::no_params(method, Some(params))?;
+            return Ok(None);
+        }
+        "transport.pause" => {
+            rpc::no_params(method, Some(params))?;
+            Action::Pause
+        }
+        "transport.play" => {
+            let Play { speed } = rpc::params(method, r#"{"speed":1}"#, Some(params))?;
+            if speed == 0 || !(-transport::FASTEST..=transport::FASTEST).contains(&speed) {
+                return Err(Fault::params(
+                    "speed must be a whole number from -8 to 8, other than 0",
+                )
+                .with_data(json!({"reason":"speed"})));
+            }
+            Action::Play { speed }
+        }
+        "transport.seek" => {
+            let Seek { frame, scrubbing } =
+                rpc::params(method, r#"{"frame":0,"scrubbing":false}"#, Some(params))?;
+            Action::Seek { frame, scrubbing }
+        }
+        "transport.step" => {
+            let Step { frames } = rpc::params(method, r#"{"frames":1}"#, Some(params))?;
+            Action::Step { frames }
+        }
+        "transport.proxies" => {
+            let Proxies { on } = rpc::params(method, r#"{"on":true}"#, Some(params))?;
+            Action::Proxies { on }
+        }
+        _ => {
+            return Err(Fault::new(
+                rpc::METHOD_NOT_FOUND,
+                format!("there is no method {method}"),
+            ))
+        }
+    };
+    Ok(Some(action))
+}
+
+#[derive(Clone)]
+pub struct Transport {
+    source: transport::Transport,
+    timeline: Option<timeline::Timeline>,
+    graphics: Arc<Graphics>,
+    orders: Arc<tokio::sync::Mutex<()>>,
+    test_hooks: bool,
+}
+
+pub enum Loading {
+    Source(transport::Loading),
+    Timeline(timeline::Loading),
+}
+
+impl Loading {
+    pub async fn done(self) -> Result<Value, Fault> {
+        match self {
+            Self::Source(loading) => Ok(source_status(&loading.done().await?)),
+            Self::Timeline(loading) => loading.done().await,
+        }
+    }
+}
+
+fn source_status(status: &transport::Status) -> Value {
+    let mut value = json!(status);
+    value["monitor"] = json!("source");
+    value
+}
+
+impl Transport {
+    pub fn new(
+        headless: bool,
+        setup: transport::Setup,
+        viewer: &Viewer,
+        graphics: Arc<Graphics>,
+        notify: Notify,
+        again: transport::Again,
+        repair: transport::Again,
+    ) -> Self {
+        let source = transport::Transport::new(
+            headless,
+            setup,
+            viewer.slot(Monitor::Source),
+            {
+                let notify = Arc::clone(&notify);
+                Arc::new(move |status| notify(&source_status(status)))
+            },
+            again,
+        );
+        let timeline = (!headless).then(|| {
+            timeline::Timeline::new(
+                Arc::clone(&graphics),
+                viewer.slot(Monitor::Timeline),
+                notify,
+                repair,
+            )
+        });
+        Self {
+            source,
+            timeline,
+            graphics,
+            orders: Arc::default(),
+            test_hooks: setup.test_hooks,
+        }
+    }
+
+    pub fn check(&self, method: &str) -> Result<(), Fault> {
+        if method == "transport.frame_digest" && self.test_hooks && self.timeline.is_some() {
+            Ok(())
+        } else {
+            self.source.check(method)
+        }
+    }
+
+    pub fn begin_load(
+        &self,
+        project: &Project,
+        params: Option<&RawValue>,
+    ) -> Result<Loading, Fault> {
+        self.check("transport.load")?;
+        let load: Load = rpc::params(
+            "transport.load",
+            r#"{"monitor":"source","media":"m1"} or {"monitor":"timeline","timeline":"t1"}"#,
+            params,
+        )?;
+        match load {
+            Load::Source { media } => {
+                let found = project
+                    .media
+                    .iter()
+                    .find(|found| found.id == media)
+                    .ok_or_else(|| {
+                        Fault::params(format!("there is no media {media} in the project"))
+                            .with_data(json!({"reason":"missing","media":media}))
+                    })?;
+                self.source
+                    .begin_load(
+                        &media,
+                        PathBuf::from(&found.path),
+                        crate::proxy::usable(found).map(|proxy| PathBuf::from(&proxy.path)),
+                        found.facts.clone(),
+                        project.timelines.first().map(|timeline| timeline.rate),
+                    )
+                    .map(Loading::Source)
+            }
+            Load::Timeline { timeline } => {
+                if !project.timelines.iter().any(|found| found.id == timeline) {
+                    return Err(Fault::params(format!(
+                        "there is no timeline {timeline} in the project"
+                    ))
+                    .with_data(json!({"reason":"missing","timeline":timeline})));
+                }
+                self.timeline
+                    .as_ref()
+                    .expect("not headless")
+                    .begin_load(Arc::new(project.clone()), timeline)
+                    .map(Loading::Timeline)
+            }
+        }
+    }
+
+    pub fn prepare(
+        &self,
+        method: &str,
+        params: Option<&RawValue>,
+    ) -> Result<(Value, Order), Fault> {
+        self.check(method)?;
+        let (monitor, params) = monitor_params(method, params)?;
+        let action = action(method, &params)?;
+        let playing = matches!(action, Some(Action::Play { .. }));
+        let (result, target) = match monitor {
+            Monitor::Source => {
+                let (mut result, order) = self.source.prepare(method, Some(&params))?;
+                if method == "transport.state" {
+                    result["monitor"] = json!("source");
+                }
+                (result, TargetOrder::Source(Box::new(order)))
+            }
+            Monitor::Timeline => {
+                let timeline = self.timeline.as_ref().expect("not headless");
+                if action
+                    .as_ref()
+                    .is_some_and(|action| !matches!(action, Action::Proxies { .. }))
+                {
+                    timeline.check_loaded()?;
+                }
+                let result = if action.is_none() {
+                    timeline.status()
+                } else {
+                    json!({})
+                };
+                (result, TargetOrder::Timeline(action))
+            }
+        };
+        Ok((
+            result,
+            Order {
+                transport: self.clone(),
+                target,
+                playing,
+            },
+        ))
+    }
+
+    pub fn project_changed(&self, project: &Project) {
+        self.source.project_changed(project);
+        if let Some(timeline) = &self.timeline {
+            timeline.project_changed(project);
+        }
+    }
+    pub fn proxy_ready(&self, media: &str, path: PathBuf) {
+        self.source.proxy_ready(media, path);
+        if let Some(timeline) = &self.timeline {
+            timeline.proxy_ready(media);
+        }
+    }
+    pub fn redraw(&self, monitor: Monitor) {
+        match monitor {
+            Monitor::Source => self.source.redraw(),
+            Monitor::Timeline => {
+                if let Some(timeline) = &self.timeline {
+                    timeline.redraw();
+                }
+            }
+        }
+    }
+    pub fn stop(&self) {
+        self.source.stop();
+        if let Some(timeline) = &self.timeline {
+            timeline.stop();
+        }
+    }
+
+    pub async fn frame_digest(&self, params: Option<&RawValue>) -> Result<Value, Fault> {
+        let method = "transport.frame_digest";
+        self.check(method)?;
+        let (monitor, params) = monitor_params(method, params)?;
+        rpc::no_params(method, Some(&params))?;
+        match monitor {
+            Monitor::Timeline => self.timeline.as_ref().expect("not headless").digest().await,
+            Monitor::Source => {
+                let snapshot = self.source.snapshot().await?;
+                let graphics = Arc::clone(&self.graphics);
+                tokio::task::spawn_blocking(move || {
+                    let frame = snapshot.picture.frame;
+                    let (width, height) = columbina_compose::geometry::shown_size(
+                        (snapshot.picture.width, snapshot.picture.height),
+                        snapshot.rotation,
+                    );
+                    let gpu = graphics
+                        .gpu()
+                        .map_err(|error| drawing(&error.to_string()))?;
+                    let mut compositor = Compositor::new(Arc::clone(&gpu));
+                    let target = Target::preview(&gpu, width, height)
+                        .map_err(|error| drawing(&error.to_string()))?;
+                    let scene = Scene {
+                        width,
+                        height,
+                        layers: vec![SceneLayer {
+                            source: Source::Picture(snapshot.picture, snapshot.rotation),
+                            transform: Transform::NONE,
+                            opacity: 1.0,
+                        }],
+                        ..Scene::default()
+                    };
+                    compositor
+                        .render(&scene, &target)
+                        .map_err(|error| drawing(&error.to_string()))?;
+                    digest(&target, Some(frame), Monitor::Source)
+                })
+                .await
+                .map_err(|error| drawing(&error.to_string()))?
+            }
+        }
+    }
+}
+
+enum TargetOrder {
+    Source(Box<transport::Order>),
+    Timeline(Option<Action>),
+}
+pub struct Order {
+    transport: Transport,
+    target: TargetOrder,
+    playing: bool,
+}
+
+impl Order {
+    /// Serialized across connections. A play command is sent only after the other worker
+    /// confirms its pause, including stopping its audio output.
+    pub async fn send(self) {
+        let _one = self.transport.orders.lock().await;
+        if self.playing {
+            let paused = match &self.target {
+                TargetOrder::Source(_) => {
+                    self.transport
+                        .timeline
+                        .as_ref()
+                        .expect("not headless")
+                        .pause()
+                        .await
+                }
+                TargetOrder::Timeline(_) => self.transport.source.pause_for_switch().await,
+            };
+            if let Err(error) = paused {
+                log("transport_error", &json!({"message":error.message}));
+                return;
+            }
+        }
+        match self.target {
+            TargetOrder::Source(order) => order.send(),
+            TargetOrder::Timeline(action) => {
+                if let Some(action) = action {
+                    self.transport
+                        .timeline
+                        .as_ref()
+                        .expect("not headless")
+                        .act(action);
+                }
+            }
+        }
+    }
+}
+
+fn drawing(message: &str) -> Fault {
+    Fault::new(rpc::TRANSPORT_FAILED, message).with_data(json!({"reason":"draw"}))
+}
+
+/// Only called by --test-hooks: a digest compares whole rendered frames in regression tests.
+/// The four top-left RGBA pixels also make colour assertions independent of the digest.
+fn digest(target: &Target, frame: Option<i64>, monitor: Monitor) -> Result<Value, Fault> {
+    let pixels = target
+        .read_rgba()
+        .map_err(|error| drawing(&error.to_string()))?;
+    let hash = format!("{:x}", Sha256::digest(&pixels));
+    let corners: Vec<_> = pixels.as_chunks::<4>().0.iter().take(4).copied().collect();
+    let (width, height) = target.size();
+    Ok(
+        json!({"monitor":monitor,"frame":frame,"width":width,"height":height,"hash":hash,"pixels":corners}),
+    )
+}

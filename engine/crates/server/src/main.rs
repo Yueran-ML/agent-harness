@@ -127,6 +127,7 @@ impl Options {
         let mut setup = transport::Setup {
             sound: audio::Kind::Device { mute: false },
             fail_card_at: None,
+            test_hooks: false,
         };
         let mut proxies = proxy::Setup::default();
         while let Some(arg) = args.next() {
@@ -136,6 +137,7 @@ impl Options {
                     project = Some(PathBuf::from(dir));
                 }
                 Some("--headless") => headless = true,
+                Some("--test-hooks") => setup.test_hooks = true,
                 Some("--idle-seconds") => idle = number(args.next().as_ref(), "--idle-seconds")?,
                 Some("--queue-capacity") => {
                     limits.messages = above_0(args.next().as_ref(), "--queue-capacity")?;
@@ -620,6 +622,7 @@ mod tests {
                 setup: transport::Setup {
                     sound: audio::Kind::Device { mute: false },
                     fail_card_at: None,
+                    test_hooks: false,
                 },
                 proxies: proxy::Setup::default(),
             }
@@ -662,6 +665,7 @@ mod tests {
                 setup: transport::Setup {
                     sound: audio::Kind::Device { mute: true },
                     fail_card_at: Some(30),
+                    test_hooks: false,
                 },
                 // A headless engine makes none.
                 proxies: proxy::Setup {

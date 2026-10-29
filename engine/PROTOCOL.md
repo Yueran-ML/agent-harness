@@ -480,13 +480,15 @@ A `parent` that is not a window, or not a handle in decimal, is refused with `-3
 
 ## The transport
 
-The transport is the **source monitor** of phase 0: one media item of the project at a time is
-loaded, played forward and backward, sought, scrubbed and stepped a frame at a time. Its picture
-is drawn in the view (above), if one is attached, and its sound is played on the default output
-device of the system. Timelines are played in phase 1.
+There are two independent transports: the **source monitor** loads one media item, and the
+**timeline monitor** loads a timeline and composes its enabled video and subtitle tracks.
+Each has its own playhead, loaded item, speed and proxy preference. Every request and state
+notification names `monitor: "source" | "timeline"`; protocol 2 requires it. Each draws in its
+own view (above), when attached. Starting either monitor waits until the other has stopped
+playing, including stopping its sound, before starting the requested monitor.
 
-- **Who sends them.** Any client (`desktop`, `agent`, `cli`); there is one transport, which every
-  client sees and moves. A `--headless` engine has nothing to show and nowhere to play sound:
+- **Who sends them.** Any client (`desktop`, `agent`, `cli`); all clients see and move the same
+  pair of transports. A `--headless` engine has nothing to show and nowhere to play sound:
   every `transport.*` is answered `-32601`.
 - **Answers and what is told.** `transport.load` is answered once the media is open and its frame
   0 is shown (about 100–300 ms; other connections are answered meanwhile), with the state, which
@@ -498,19 +500,22 @@ device of the system. Timelines are played in phase 1.
 
 | method | params | result |
 |---|---|---|
-| `transport.load` | `{"media": "m1"}` | the state |
-| `transport.play` | `{"speed": s}`: a whole number from −8 to 8, not 0; 1 if left out | `{}` |
-| `transport.pause` | none | `{}` |
-| `transport.seek` | `{"frame": n, "scrubbing": false}` (`scrubbing` false if left out) | `{}` |
-| `transport.step` | `{"frames": n}` | `{}` |
-| `transport.state` | none | the state |
-| `transport.proxies` | `{"on": true \| false}` | `{}` |
+| `transport.load` | `{"monitor":"source", "media":"m1"}` or `{"monitor":"timeline", "timeline":"t1"}` | the state |
+| `transport.play` | `{"monitor":m, "speed":s}`: a whole number from −8 to 8, not 0; 1 if left out | `{}` |
+| `transport.pause` | `{"monitor":m}` | `{}` |
+| `transport.seek` | `{"monitor":m, "frame":n, "scrubbing":false}` (`scrubbing` false if left out) | `{}` |
+| `transport.step` | `{"monitor":m, "frames":n}` | `{}` |
+| `transport.state` | `{"monitor":m}` | the state |
+| `transport.proxies` | `{"monitor":m, "on":true \| false}` | `{}` |
+
+Here `m` is `"source"` or `"timeline"`. Missing, null or unknown monitors, unknown parameters,
+and fields for the wrong monitor are refused with `-32602`.
 
 **The state** (the result of `transport.load` and `transport.state`, and the params of the
 notification `transport.state`):
 
 ```json
-{"media": "m1", "frame": 37, "playing": false, "speed": 1, "exact": true,
+{"monitor":"source", "media": "m1", "frame": 37, "playing": false, "speed": 1, "exact": true,
  "shown": 37, "last": 99, "sound": "off", "source": "proxy", "proxies": true}
 ```
 
@@ -542,6 +547,42 @@ notification `transport.state`):
 - `source`: where the picture is read from: `"proxy"`, the proxy of the media (see Proxies), or
   `"original"`, the media itself (as is sound alone).
 - `proxies`: whether proxies are used (`transport.proxies`; `true` at first).
+
+**The timeline state** has `monitor:"timeline"` and `timeline` in place of `media`, plus `late`:
+
+```json
+{"monitor":"timeline", "timeline":"t1", "frame":37, "playing":false, "speed":1,
+ "exact":true, "shown":37, "last":249, "late":0, "sound":"off",
+ "source":"mixed", "proxies":true}
+```
+
+- Timeline positions use the timeline's frame rate; `last` is `max(duration - 1, 0)`.
+  An empty timeline shows black at frame 0. Removing the loaded timeline unloads it and clears
+  its view. A missing timeline is refused with `-32602 {reason:"missing", timeline:"..."}`.
+- `shown` identifies the last composed timeline frame; individual layers may stand in with a
+  key frame while scrubbing, or their track's previous picture when decoding is late. `exact`
+  is true only when every media layer is exact. `late` counts playback frames for which at
+  least one layer was unavailable, once per frame, and resets when playback starts from pause.
+- `source` is `"original"`, `"proxy"`, or `"mixed"` when the composition contains both. A frame
+  of only titles/colours or black uses `"original"`. Proxy switches and repairs invalidate
+  read-ahead and take effect on the next composition, immediately when paused.
+- Edits and undo/redo redraw the paused frame. During playback the next frame uses the new
+  project without stopping; a shortened duration clamps the playhead. Old decode results
+  cannot be published into a new project generation.
+- Each enabled video track reads ahead independently, including upcoming cut/transition
+  handles. The shared decoder pool allows two decoders per media/source kind and twelve total.
+  Only unheld composition targets are reused, so a view never samples a target being rewritten.
+- Timeline sound mixing is implemented in the next stage of this work. Until it is connected,
+  audio tracks report `"off"` (no enabled audio clips: `"none"`) and the monotonic clock is used.
+
+**Test hook.** Only with `--test-hooks`, `transport.frame_digest {"monitor":m}` reads the current
+rendered frame and returns `{monitor, frame, width, height, hash, pixels}`. `hash` is SHA-256 of
+the entire RGBA frame, for regression comparisons; `pixels` contains the four top-left RGBA
+pixels. It is not a playback operation or project identity. Without the flag, or headless,
+the method returns `-32601`; before a picture is loaded it returns `-32004` `not_loaded`.
+
+The media-specific details below describe the source monitor. Seek, pause, step, speed bounds,
+scrub settling and end-of-playback rules also apply to the timeline monitor.
 
 **When it is told.** The notification `transport.state` is sent to every connection that said
 hello: at once after each method that does something (even one that changes nothing, so that its

@@ -15,6 +15,9 @@ use tokio::task::JoinHandle;
 #[path = "../../media/tests/support/mod.rs"]
 mod support;
 
+#[path = "rpc/timeline.rs"]
+mod timeline;
+
 /// How long anything that should happen soon is waited for before the test fails.
 const WAIT: Duration = Duration::from_secs(30);
 
@@ -295,6 +298,15 @@ impl Client {
         let answer = self.call(method, params).await;
         assert!(answer.get("result").is_none(), "{answer}");
         answer["error"].clone()
+    }
+
+    /// The phase-0 source-monitor scenarios remain source scenarios in protocol 2.
+    async fn source_result(&mut self, method: &str, params: Option<Value>) -> Value {
+        self.result(method, Some(source_params(params))).await
+    }
+
+    async fn source_error(&mut self, method: &str, params: Option<Value>) -> Value {
+        self.error(method, Some(source_params(params))).await
     }
 
     async fn hello(&mut self, kind: &str) -> Value {
@@ -2604,6 +2616,84 @@ async fn a_view_whose_window_is_closed_is_gone_and_then_there_is_none() {
 
 // The transport.
 
+fn source_params(params: Option<Value>) -> Value {
+    let mut params = params.unwrap_or_else(|| json!({}));
+    if let Some(object) = params.as_object_mut() {
+        object.insert("monitor".into(), json!("source"));
+    }
+    params
+}
+
+#[tokio::test]
+async fn timeline_transport_has_its_own_playhead_and_redraws_after_an_edit() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--no-proxies", "--sound", "null"]).await;
+    let mut agent = engine.client("agent").await;
+    let mut red = clip("$red", "unused", 0, 100);
+    red["source"] = json!({"kind":"color", "color":"#ff0000ff"});
+    let added = agent
+        .apply(json!([{"op":"add_timeline", "timeline":{
+            "id":"$timeline", "name":"Cut", "width":64, "height":36,
+            "rate":{"num":25,"den":1}, "sample_rate":48000,
+            "tracks":[{"id":"$v", "kind":"video", "name":"Picture", "enabled":true,
+                "locked":false, "clips":[red], "transitions":[]}]
+        }}]))
+        .await;
+    let timeline = added["names"]["$timeline"].as_str().unwrap();
+    let loaded = agent
+        .result(
+            "transport.load",
+            Some(json!({"monitor":"timeline", "timeline":timeline})),
+        )
+        .await;
+    assert_eq!(loaded["monitor"], "timeline");
+    assert_eq!(loaded["frame"], 0);
+    assert_eq!(loaded["last"], 99);
+    let source = agent
+        .result("transport.state", Some(json!({"monitor":"source"})))
+        .await;
+    assert_eq!(source["monitor"], "source");
+    assert_eq!(source["media"], Value::Null);
+    agent
+        .result(
+            "transport.seek",
+            Some(json!({"monitor":"timeline", "frame":30})),
+        )
+        .await;
+    let (sought, _) = agent
+        .until_state("timeline at 30", |state| {
+            state["monitor"] == "timeline" && state["shown"] == 30
+        })
+        .await;
+    assert_eq!(sought["exact"], true);
+    agent
+        .result(
+            "transport.step",
+            Some(json!({"monitor":"timeline", "frames":-1})),
+        )
+        .await;
+    agent
+        .until_state("timeline at 29", |state| {
+            state["monitor"] == "timeline" && state["shown"] == 29
+        })
+        .await;
+    agent.take_notifications();
+    agent
+        .apply(json!([{"op":"trim_clip", "timeline":timeline,
+        "id":added["names"]["$red"], "start":0, "length":20}]))
+        .await;
+    let (changed, _) = agent
+        .until_state("clamped after edit", |state| {
+            state["monitor"] == "timeline" && state["last"] == 19
+        })
+        .await;
+    assert_eq!(changed["frame"], 19);
+    assert_eq!(changed["shown"], 19);
+}
+
 impl Client {
     /// The next `transport.state` that `wanted` takes, of those that came or come, and when it
     /// was read; the others before it are let go.
@@ -2703,7 +2793,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
         return;
     };
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["media"], "m1", "{loaded}");
     assert_eq!(loaded["frame"], 0);
@@ -2722,29 +2812,32 @@ async fn a_source_plays_pauses_seeks_and_steps() {
 
     // At speed 1, 25 frames a second, by the sound (of the output of no device).
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     let rate = frames_a_second(&mut agent, 5, Duration::from_millis(2000)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["sound"], "on", "{state}");
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
 
     // Paused, it stays.
-    agent.result("transport.pause", None).await;
+    agent.source_result("transport.pause", None).await;
     let (paused, _) = agent
         .until_state("paused", |state| state["playing"] == false)
         .await;
     assert_eq!(paused["exact"], true);
     assert_eq!(paused["sound"], "off");
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["frame"], paused["frame"]);
     assert_eq!(state["playing"], false);
 
     // A seek shows the frame sought, and what it did is told after the answer.
     agent.take_notifications();
     let id = agent
-        .request("transport.seek", Some(json!({ "frame": 37 })))
+        .request(
+            "transport.seek",
+            Some(json!({ "monitor":"source", "frame": 37 })),
+        )
         .await;
     agent.answer(id).await;
     let before: Vec<Value> = agent.take_notifications();
@@ -2761,7 +2854,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
     );
     // Beyond the media, the nearest end.
     agent
-        .result("transport.seek", Some(json!({ "frame": 500 })))
+        .source_result("transport.seek", Some(json!({ "frame": 500 })))
         .await;
     agent
         .until_state("the end", |state| {
@@ -2769,7 +2862,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
         })
         .await;
     agent
-        .result("transport.seek", Some(json!({ "frame": -5 })))
+        .source_result("transport.seek", Some(json!({ "frame": -5 })))
         .await;
     agent
         .until_state("the start", |state| {
@@ -2779,7 +2872,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
 
     // Steps of one and of ten, within the media.
     agent
-        .result("transport.seek", Some(json!({ "frame": 40 })))
+        .source_result("transport.seek", Some(json!({ "frame": 40 })))
         .await;
     agent.until_state("40", |state| state["shown"] == 40).await;
     for (frames, wanted) in [
@@ -2792,7 +2885,7 @@ async fn a_source_plays_pauses_seeks_and_steps() {
         (-1000, 0),
     ] {
         agent
-            .result("transport.step", Some(json!({ "frames": frames })))
+            .source_result("transport.step", Some(json!({ "frames": frames })))
             .await;
         let (stepped, _) = agent
             .until_state("stepped", |state| state["frame"] == wanted)
@@ -2812,7 +2905,7 @@ async fn a_scrub_shows_the_key_frame_first_and_the_frame_once_it_settles() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent.take_notifications();
     // 20 seeks within half a second, as a page sends them while the playhead is dragged. Key
@@ -2822,7 +2915,7 @@ async fn a_scrub_shows_the_key_frame_first_and_the_frame_once_it_settles() {
     for index in 0..20 {
         let frame = 5 * index + 3;
         agent
-            .result(
+            .source_result(
                 "transport.seek",
                 Some(json!({ "frame": frame, "scrubbing": true })),
             )
@@ -2874,15 +2967,15 @@ async fn backward_from_the_middle_it_plays_to_frame_0_and_stops() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.seek", Some(json!({ "frame": 50 })))
+        .source_result("transport.seek", Some(json!({ "frame": 50 })))
         .await;
     agent.until_state("50", |state| state["shown"] == 50).await;
     let started = Instant::now();
     agent
-        .result("transport.play", Some(json!({ "speed": -1 })))
+        .source_result("transport.play", Some(json!({ "speed": -1 })))
         .await;
     let (playing, _) = agent
         .until_state("playing backward", |state| state["playing"] == true)
@@ -2909,10 +3002,10 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 4 })))
+        .source_result("transport.play", Some(json!({ "speed": 4 })))
         .await;
     // The client may be descheduled while the engine keeps playing. Let notifications queue:
     // their read times are not the times at which the frames were shown.
@@ -2943,10 +3036,10 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     );
     // Played from the end, it stays there.
     agent
-        .result("transport.play", Some(json!({ "speed": 2 })))
+        .source_result("transport.play", Some(json!({ "speed": 2 })))
         .await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(
         (&state["frame"], &state["playing"]),
         (&json!(99), &json!(false))
@@ -2962,16 +3055,16 @@ async fn another_media_is_loaded_and_media_that_is_removed_is_unloaded() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     agent
         .until_state("playing", |state| state["frame"].as_i64() > Some(3))
         .await;
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m2" })))
+        .source_result("transport.load", Some(json!({ "media": "m2" })))
         .await;
     assert_eq!(loaded["media"], "m2");
     assert_eq!(loaded["frame"], 0);
@@ -2992,13 +3085,13 @@ async fn another_media_is_loaded_and_media_that_is_removed_is_unloaded() {
         assert_eq!(unloaded["playing"], false);
     }
     let error = agent
-        .error("transport.play", Some(json!({ "speed": 1 })))
+        .source_error("transport.play", Some(json!({ "speed": 1 })))
         .await;
     assert_eq!(error["code"], -32004, "{error}");
     assert_eq!(error["data"]["reason"], "not_loaded");
     // Removing media that is not loaded unloads nothing.
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
         .apply(json!([{ "op": "add_media", "media": media("", "C:/x.mp4") }]))
@@ -3006,7 +3099,7 @@ async fn another_media_is_loaded_and_media_that_is_removed_is_unloaded() {
     agent
         .apply(json!([{ "op": "remove_media", "id": "m3" }]))
         .await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["media"], "m1");
 }
 
@@ -3020,14 +3113,14 @@ async fn what_the_transport_cannot_do_is_refused() {
     };
     for method in ["transport.pause", "transport.step"] {
         let params = (method == "transport.step").then(|| json!({ "frames": 1 }));
-        let error = agent.error(method, params).await;
+        let error = agent.source_error(method, params).await;
         assert_eq!(error["code"], -32004, "{method}: {error}");
         assert_eq!(error["data"]["reason"], "not_loaded");
     }
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["media"], Value::Null);
     let error = agent
-        .error("transport.load", Some(json!({ "media": "m9" })))
+        .source_error("transport.load", Some(json!({ "media": "m9" })))
         .await;
     assert_eq!(error["code"], -32602, "{error}");
     assert_eq!(error["data"], json!({ "reason": "missing", "media": "m9" }));
@@ -3040,16 +3133,23 @@ async fn what_the_transport_cannot_do_is_refused() {
         .unwrap()
         .to_owned();
     let error = agent
-        .error("transport.load", Some(json!({ "media": id })))
+        .source_error("transport.load", Some(json!({ "media": id })))
         .await;
     assert_eq!(error["code"], -32002, "{error}");
     assert_eq!(error["data"]["reason"], "not_found");
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
-    for speed in [json!(0), json!(9), json!(-9), json!(1.5), json!("1")] {
+    for speed in [
+        json!(0),
+        json!(9),
+        json!(-9),
+        json!(i32::MIN),
+        json!(1.5),
+        json!("1"),
+    ] {
         let error = agent
-            .error("transport.play", Some(json!({ "speed": speed })))
+            .source_error("transport.play", Some(json!({ "speed": speed })))
             .await;
         assert_eq!(error["code"], -32602, "{speed}: {error}");
     }
@@ -3060,10 +3160,10 @@ async fn what_the_transport_cannot_do_is_refused() {
         ("transport.state", json!({ "x": 1 })),
         ("transport.load", json!({})),
     ] {
-        let error = agent.error(method, Some(params.clone())).await;
+        let error = agent.source_error(method, Some(params.clone())).await;
         assert_eq!(error["code"], -32602, "{method} {params}: {error}");
     }
-    let error = agent.error("transport.rewind", None).await;
+    let error = agent.source_error("transport.rewind", None).await;
     assert_eq!(error["code"], -32601, "{error}");
 }
 
@@ -3099,20 +3199,20 @@ async fn a_source_plays_with_its_sound_on_the_output_device() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     let rate = frames_a_second(&mut agent, 5, Duration::from_millis(2000)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     match state["sound"].as_str().unwrap() {
         "on" => eprintln!("played with sound: the device is the clock"),
         "unavailable" => eprintln!("no sound: there is no device to play it on"),
         other => panic!("the sound is {other} while it plays at speed 1"),
     }
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
-    agent.result("transport.pause", None).await;
+    agent.source_result("transport.pause", None).await;
     agent
         .until_state("paused", |state| state["playing"] == false)
         .await;
@@ -3130,11 +3230,11 @@ async fn played_again_and_again_from_the_start(args: &[&str]) {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     for round in 0..4 {
         agent
-            .result("transport.seek", Some(json!({ "frame": 0 })))
+            .source_result("transport.seek", Some(json!({ "frame": 0 })))
             .await;
         agent
             .until_state("at 0", |state| {
@@ -3142,7 +3242,7 @@ async fn played_again_and_again_from_the_start(args: &[&str]) {
             })
             .await;
         agent
-            .result("transport.step", Some(json!({ "frames": 1 })))
+            .source_result("transport.step", Some(json!({ "frames": 1 })))
             .await;
         agent
             .until_state("at 1", |state| {
@@ -3152,7 +3252,7 @@ async fn played_again_and_again_from_the_start(args: &[&str]) {
         agent.take_notifications();
         let played = Instant::now();
         agent
-            .result("transport.play", Some(json!({ "speed": 1 })))
+            .source_result("transport.play", Some(json!({ "speed": 1 })))
             .await;
         let states = agent.states_for(Duration::from_millis(500)).await;
         let mut moved = 1;
@@ -3171,7 +3271,7 @@ async fn played_again_and_again_from_the_start(args: &[&str]) {
         }
         assert!(moved >= 6, "round {round}: it did not play: {states:?}");
         let paused_at = Instant::now();
-        agent.result("transport.pause", None).await;
+        agent.source_result("transport.pause", None).await;
         let (paused, at) = agent
             .until_state("paused", |state| state["playing"] == false)
             .await;
@@ -3232,7 +3332,7 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
     };
     // 2 s on a grid of 25 frames a second.
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(
         (
@@ -3246,7 +3346,7 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
     );
     assert_eq!(loaded["sound"], "off");
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1000)).await;
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
@@ -3256,7 +3356,7 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
     assert_eq!(stopped["frame"], 49, "{stopped}");
     // Sought and stepped, as a picture is.
     agent
-        .result(
+        .source_result(
             "transport.seek",
             Some(json!({ "frame": 10, "scrubbing": true })),
         )
@@ -3267,14 +3367,14 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
         })
         .await;
     agent
-        .result("transport.step", Some(json!({ "frames": 5 })))
+        .source_result("transport.step", Some(json!({ "frames": 5 })))
         .await;
     agent
         .until_state("stepped", |state| state["frame"] == 15)
         .await;
     // At another speed, and backward, it moves in silence.
     agent
-        .result("transport.play", Some(json!({ "speed": -4 })))
+        .source_result("transport.play", Some(json!({ "speed": -4 })))
         .await;
     let (backward, _) = agent
         .until_state("backward", |state| state["playing"] == true)
@@ -3292,15 +3392,15 @@ async fn sound_alone_plays_on_a_grid_of_frames_by_its_sound() {
         } }]))
         .await;
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m2" })))
+        .source_result("transport.load", Some(json!({ "media": "m2" })))
         .await;
     assert_eq!(loaded["last"], 89, "{loaded}");
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1000)).await;
     assert!((25.5..=34.5).contains(&rate), "{rate} frames a second");
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["sound"], "on");
 }
 
@@ -3317,10 +3417,10 @@ async fn a_device_that_fails_is_left_for_the_clock_of_the_system_and_opened_agai
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     agent
         .until_state("playing with sound", |state| {
@@ -3346,12 +3446,12 @@ async fn a_device_that_fails_is_left_for_the_clock_of_the_system_and_opened_agai
     let moved = frames.last().unwrap() - at;
     assert!((10..=20).contains(&moved), "{frames:?}");
     // Played again, the device is opened anew.
-    agent.result("transport.pause", None).await;
+    agent.source_result("transport.pause", None).await;
     agent
-        .result("transport.seek", Some(json!({ "frame": 0 })))
+        .source_result("transport.seek", Some(json!({ "frame": 0 })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     agent
         .until_state("the sound again", |state| {
@@ -3376,11 +3476,11 @@ async fn a_device_that_never_asks_for_sound_is_given_up() {
         return;
     };
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     let started = Instant::now();
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     // Nothing is heard: the playhead waits for the sound, then goes on without it.
     let (waiting, _) = agent
@@ -3432,7 +3532,7 @@ async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
             return;
         };
         agent
-            .result("transport.load", Some(json!({ "media": "m1" })))
+            .source_result("transport.load", Some(json!({ "media": "m1" })))
             .await;
         let loaded = until_logged(&engine, "transport_loaded").await;
         if loaded.contains(r#""decoder":"software""#) {
@@ -3442,7 +3542,7 @@ async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
         agent.take_notifications();
         if play {
             agent
-                .result("transport.play", Some(json!({ "speed": 4 })))
+                .source_result("transport.play", Some(json!({ "speed": 4 })))
                 .await;
             agent
                 .until_state("playing", |state| state["playing"] == true)
@@ -3456,7 +3556,7 @@ async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
             );
         } else {
             agent
-                .result("transport.seek", Some(json!({ "frame": frame })))
+                .source_result("transport.seek", Some(json!({ "frame": frame })))
                 .await;
             let (sought, _) = agent
                 .until_state("sought", |state| state["frame"] == frame)
@@ -3470,7 +3570,7 @@ async fn a_card_that_fails_to_give_a_frame_is_left_for_the_processor() {
         assert!(!stderr.contains("transport_error"), "{stderr}");
         // On the processor from then on.
         agent
-            .result("transport.step", Some(json!({ "frames": -3 })))
+            .source_result("transport.step", Some(json!({ "frames": -3 })))
             .await;
         let wanted = if play { 96 } else { frame - 3 };
         let (stepped, _) = agent
@@ -3490,7 +3590,10 @@ async fn media_removed_while_it_is_loaded_is_unloaded_once_it_is() {
     let mut desktop = engine.client("desktop").await;
     // The load is sent, and the media removed by another client before it is done.
     let load = agent
-        .request("transport.load", Some(json!({ "media": "m1" })))
+        .request(
+            "transport.load",
+            Some(json!({ "monitor":"source", "media": "m1" })),
+        )
         .await;
     desktop
         .apply(json!([{ "op": "remove_media", "id": "m1" }]))
@@ -3507,7 +3610,7 @@ async fn media_removed_while_it_is_loaded_is_unloaded_once_it_is() {
         assert_eq!(unloaded["playing"], false);
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
-    let state = agent.result("transport.state", None).await;
+    let state = agent.source_result("transport.state", None).await;
     assert_eq!(state["media"], Value::Null, "{state}");
 }
 
@@ -3520,13 +3623,16 @@ async fn a_command_sent_while_another_client_loads_is_not_refused() {
     };
     let mut desktop = engine.client("desktop").await;
     let load = agent
-        .request("transport.load", Some(json!({ "media": "m1" })))
+        .request(
+            "transport.load",
+            Some(json!({ "monitor":"source", "media": "m1" })),
+        )
         .await;
     // Before the load is done (opening the decoder takes some 100 ms), once the engine has
     // read it: taken, and done after it.
     tokio::time::sleep(Duration::from_millis(20)).await;
     let played = desktop
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     assert_eq!(played, json!({}));
     let loaded = agent.answer(load).await;
@@ -3575,11 +3681,11 @@ async fn the_view_shows_the_frame_sought() {
     let attach = json!({ "monitor": "source", "parent": parent.hwnd.to_string(), "x": 0, "y": 0, "width": 960, "height": 540 });
     desktop.result("view.attach", Some(attach)).await;
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     for (frame, scrubbing) in [(37, false), (77, true), (5, false)] {
         agent
-            .result(
+            .source_result(
                 "transport.seek",
                 Some(json!({ "frame": frame, "scrubbing": scrubbing })),
             )
@@ -3605,7 +3711,7 @@ async fn the_view_shows_the_frame_sought() {
     }
     // Sound alone: the view is black.
     agent
-        .result("transport.load", Some(json!({ "media": "m2" })))
+        .source_result("transport.load", Some(json!({ "media": "m2" })))
         .await;
     let deadline = Instant::now() + WAIT;
     loop {
@@ -3663,14 +3769,14 @@ async fn measure_playing_and_scrubbing() {
         .await;
     for (media, path) in added["added"].as_array().unwrap().iter().zip(&files) {
         let loaded = agent
-            .result("transport.load", Some(json!({ "media": media })))
+            .source_result("transport.load", Some(json!({ "media": media })))
             .await;
         let last = loaded["last"].as_i64().unwrap();
         eprintln!("{}: {loaded}", path.display());
         // Played to its end, or for 12 s.
         agent.take_notifications();
         agent
-            .result("transport.play", Some(json!({ "speed": 1 })))
+            .source_result("transport.play", Some(json!({ "speed": 1 })))
             .await;
         agent
             .until_state("playing", |state| state["playing"] == true)
@@ -3684,7 +3790,7 @@ async fn measure_playing_and_scrubbing() {
                 break;
             }
         }
-        agent.result("transport.pause", None).await;
+        agent.source_result("transport.pause", None).await;
         // Scrubbing: a seek every 1/30 s, as a page sends them, then the time to the key frame
         // and to the frame itself, after a last seek.
         let mut keys = Vec::new();
@@ -3693,7 +3799,7 @@ async fn measure_playing_and_scrubbing() {
             for index in 0..10_i64 {
                 let frame = (round * 37 + index * 7 + 11) % (last + 1);
                 agent
-                    .result(
+                    .source_result(
                         "transport.seek",
                         Some(json!({ "frame": frame, "scrubbing": true })),
                     )
@@ -3707,7 +3813,7 @@ async fn measure_playing_and_scrubbing() {
             let target = (round * 53 + 97) % (last + 1);
             let sent = Instant::now();
             agent
-                .result(
+                .source_result(
                     "transport.seek",
                     Some(json!({ "frame": target, "scrubbing": true })),
                 )
@@ -3731,13 +3837,13 @@ async fn measure_playing_and_scrubbing() {
         // Fast forward and backward, for a while each, from the start and the middle.
         for (from, speed) in [(0, 8), (last / 2, -1), (last, -8)] {
             agent
-                .result("transport.seek", Some(json!({ "frame": from })))
+                .source_result("transport.seek", Some(json!({ "frame": from })))
                 .await;
             agent
-                .result("transport.play", Some(json!({ "speed": speed })))
+                .source_result("transport.play", Some(json!({ "speed": speed })))
                 .await;
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            agent.result("transport.pause", None).await;
+            agent.source_result("transport.pause", None).await;
         }
         eprintln!(
             "{}: scrubbing, the key frame shown after {keys:?}; the frame itself after {exacts:?} \
@@ -4062,7 +4168,7 @@ async fn a_proxy_made_in_prores_where_nvenc_is_not_is_numbered_as_the_media() {
     }
     // And the transport reads it, every frame at once.
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["source"], "proxy");
     for (_, state) in scrub(&mut agent, &numbers(8, 10, 180)).await {
@@ -4367,11 +4473,11 @@ async fn a_proxy_elsewhere_is_refused_and_taken_away_when_read_and_never_read_or
         None
     );
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["source"], "original", "{loaded}");
     agent
-        .result("transport.seek", Some(json!({ "frame": 90 })))
+        .source_result("transport.seek", Some(json!({ "frame": 90 })))
         .await;
     agent.until_state("90", |state| state["shown"] == 90).await;
     let dropped = logged_at_least(&engine, "proxy_dropped", 1).await;
@@ -4387,7 +4493,7 @@ async fn scrub(client: &mut Client, frames: &[i64]) -> Vec<(Duration, Value)> {
         client.take_notifications();
         let sent = Instant::now();
         client
-            .result(
+            .source_result(
                 "transport.seek",
                 Some(json!({ "frame": frame, "scrubbing": true })),
             )
@@ -4453,7 +4559,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     };
     agent.proxies_of(&["m1", "m2"]).await;
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(
         (&loaded["source"], &loaded["proxies"], &loaded["last"]),
@@ -4474,13 +4580,13 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     assert!(median < Duration::from_millis(100), "{median:?}");
     // Backward from the end, every frame (or nearly) is shown, at 60 a second.
     agent
-        .result("transport.seek", Some(json!({ "frame": 179 })))
+        .source_result("transport.seek", Some(json!({ "frame": 179 })))
         .await;
     agent
         .until_state("179", |state| state["shown"] == 179)
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": -1 })))
+        .source_result("transport.play", Some(json!({ "speed": -1 })))
         .await;
     let (stopped, _) = agent
         .until_state("at frame 0", |state| {
@@ -4503,14 +4609,14 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     assert!(presented >= 0.75 * 179.0, "{played}");
     // Proxies turned off: the media itself, at once while it does not play; and on again.
     agent
-        .result("transport.proxies", Some(json!({ "on": false })))
+        .source_result("transport.proxies", Some(json!({ "on": false })))
         .await;
     let (off, _) = agent
         .until_state("off", |state| state["source"] == "original")
         .await;
     assert_eq!((&off["proxies"], &off["shown"]), (&json!(false), &json!(0)));
     agent
-        .result(
+        .source_result(
             "transport.seek",
             Some(json!({ "frame": 61, "scrubbing": true })),
         )
@@ -4526,7 +4632,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
         .until_state("61 itself", |state| state["shown"] == 61)
         .await;
     agent
-        .result("transport.proxies", Some(json!({ "on": true })))
+        .source_result("transport.proxies", Some(json!({ "on": true })))
         .await;
     agent
         .until_state("on", |state| {
@@ -4535,7 +4641,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
         .await;
     // A proxy whose file is gone: the media itself is read, and the proxy is made again.
     agent
-        .result("transport.load", Some(json!({ "media": "m2" })))
+        .source_result("transport.load", Some(json!({ "media": "m2" })))
         .await;
     let got = project(&mut agent).await;
     let proxy = got["project"]["media"][0]["proxy"]["path"]
@@ -4545,7 +4651,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
     std::fs::remove_file(&proxy).unwrap();
     agent.take_notifications();
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["source"], "original", "{loaded}");
     let notes = agent.proxies_of(&["m1"]).await;
@@ -4556,7 +4662,7 @@ async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_medi
         .await;
     assert!(Path::new(&proxy).is_file());
     agent
-        .result(
+        .source_result(
             "transport.seek",
             Some(json!({ "frame": 97, "scrubbing": true })),
         )
@@ -4596,12 +4702,12 @@ async fn a_proxy_damaged_inside_is_let_go_for_the_media_and_made_again() {
     bytes[third..2 * third].fill(0);
     std::fs::write(&path, &bytes).unwrap();
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     assert_eq!(loaded["source"], "proxy", "{loaded}");
     agent.take_notifications();
     agent
-        .result("transport.seek", Some(json!({ "frame": 90 })))
+        .source_result("transport.seek", Some(json!({ "frame": 90 })))
         .await;
     // The media itself shows the frame, and the proxy is made again (slowly: as the media plays).
     let (sought, _) = agent
@@ -4638,7 +4744,7 @@ async fn a_proxy_damaged_inside_is_let_go_for_the_media_and_made_again() {
     assert_eq!(opened.len(), 2, "to the media, and back: {opened:?}");
     // The new one is whole.
     agent
-        .result(
+        .source_result(
             "transport.seek",
             Some(json!({ "frame": 100, "scrubbing": true })),
         )
@@ -4826,16 +4932,16 @@ async fn proxies_turned_off_while_playing_take_effect_at_the_next_seek() {
     };
     agent.proxies_of(&["m1"]).await;
     agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     agent
-        .result("transport.play", Some(json!({ "speed": 1 })))
+        .source_result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     agent
         .until_state("playing", |state| state["playing"] == true)
         .await;
     agent
-        .result("transport.proxies", Some(json!({ "on": false })))
+        .source_result("transport.proxies", Some(json!({ "on": false })))
         .await;
     let (told, _) = agent
         .until_state("told", |state| state["proxies"] == false)
@@ -4845,7 +4951,7 @@ async fn proxies_turned_off_while_playing_take_effect_at_the_next_seek() {
         (&json!(true), &json!("proxy"))
     );
     agent
-        .result("transport.seek", Some(json!({ "frame": 30 })))
+        .source_result("transport.seek", Some(json!({ "frame": 30 })))
         .await;
     // Told once it plays on from there, from the media itself: never paused meanwhile.
     let (sought, _) = agent
@@ -4857,9 +4963,9 @@ async fn proxies_turned_off_while_playing_take_effect_at_the_next_seek() {
             state["playing"] == true && state["frame"].as_i64().unwrap() > 35
         })
         .await;
-    agent.result("transport.pause", None).await;
+    agent.source_result("transport.pause", None).await;
     agent
-        .result("transport.proxies", Some(json!({ "on": true })))
+        .source_result("transport.proxies", Some(json!({ "on": true })))
         .await;
     let (on, _) = agent
         .until_state("the proxy", |state| state["source"] == "proxy")
@@ -4936,14 +5042,14 @@ async fn measure_proxies() {
         eprintln!("{made}");
     }
     let loaded = agent
-        .result("transport.load", Some(json!({ "media": "m1" })))
+        .source_result("transport.load", Some(json!({ "media": "m1" })))
         .await;
     eprintln!("{loaded}");
     let last = loaded["last"].as_i64().unwrap();
     most_memory = most_memory.max(memory_of(engine.pid).unwrap_or(0.0));
     for (source, on) in [("proxy", true), ("original", false)] {
         agent
-            .result("transport.proxies", Some(json!({ "on": on })))
+            .source_result("transport.proxies", Some(json!({ "on": on })))
             .await;
         agent
             .until_state(source, |state| state["source"] == source)
@@ -4965,20 +5071,20 @@ async fn measure_proxies() {
         );
         // Backward at -1 for 3 s, from the end.
         agent
-            .result("transport.seek", Some(json!({ "frame": last })))
+            .source_result("transport.seek", Some(json!({ "frame": last })))
             .await;
         agent
             .until_state("the end", |state| state["shown"] == last)
             .await;
         agent
-            .result("transport.play", Some(json!({ "speed": -1 })))
+            .source_result("transport.play", Some(json!({ "speed": -1 })))
             .await;
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(250)).await;
             most_memory = most_memory.max(memory_of(engine.pid).unwrap_or(0.0));
         }
-        agent.result("transport.pause", None).await;
+        agent.source_result("transport.pause", None).await;
         agent
             .until_state("paused", |state| state["playing"] == false)
             .await;
@@ -4993,17 +5099,17 @@ async fn measure_proxies() {
         }
         // Forward at 1, for 3 s, from the start.
         agent
-            .result("transport.seek", Some(json!({ "frame": 0 })))
+            .source_result("transport.seek", Some(json!({ "frame": 0 })))
             .await;
         agent
-            .result("transport.play", Some(json!({ "speed": 1 })))
+            .source_result("transport.play", Some(json!({ "speed": 1 })))
             .await;
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(250)).await;
             most_memory = most_memory.max(memory_of(engine.pid).unwrap_or(0.0));
         }
-        agent.result("transport.pause", None).await;
+        agent.source_result("transport.pause", None).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         if let Some(played) = logged(&engine, "transport_played").pop() {
             eprintln!("{source}: forward at 1: {played}");

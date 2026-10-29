@@ -430,6 +430,8 @@ struct Job {
     duration: Time,
     /// Whether it is known to need a proxy; if not, that is found first.
     checked: bool,
+    /// A failed proxy must be encoded again, not reused from another media item.
+    fresh: bool,
 }
 
 impl Job {
@@ -442,6 +444,7 @@ impl Job {
             video: media.facts.video.clone()?,
             duration: media.facts.duration,
             checked: false,
+            fresh: false,
         })
     }
 
@@ -454,6 +457,7 @@ impl Job {
 /// The job being done.
 struct Running {
     media: String,
+    fresh: bool,
     cancelled: Arc<AtomicBool>,
     /// The `ffmpeg` that makes it, while it runs, to be killed.
     child: Arc<Mutex<Option<Child>>>,
@@ -640,6 +644,30 @@ impl Proxies {
         }
     }
 
+    /// A timeline reader found a damaged proxy. Rebuild without deleting a path that other
+    /// tracks may still read, and without reusing the same broken file through a twin.
+    pub fn repair(&self, media: &Media) {
+        let Some(inner) = &self.inner else {
+            return;
+        };
+        let mut jobs = lock(&inner.jobs);
+        if let Some(job) = jobs.queue.iter_mut().find(|job| job.media == media.id) {
+            job.fresh = true;
+            job.checked = true;
+        } else if !jobs
+            .running
+            .as_ref()
+            .is_some_and(|running| running.media == media.id && running.fresh)
+        {
+            if let Some(mut job) = Job::of(media) {
+                job.fresh = true;
+                job.checked = true;
+                jobs.queue.push_back(job);
+            }
+        }
+        inner.wake.notify_all();
+    }
+
     /// Make the proxy of media again, at the asking of a client
     /// (`media.make_proxy`): what is remembered of a proxy of its file that could not be made is
     /// forgotten. Whether proxies are made at all.
@@ -740,6 +768,7 @@ fn run(inner: &Inner, hooks: &Hooks) {
                     let child = Arc::new(Mutex::new(None));
                     jobs.running = Some(Running {
                         media: job.media.clone(),
+                        fresh: job.fresh,
                         cancelled: Arc::clone(&cancelled),
                         child: Arc::clone(&child),
                     });
@@ -1026,7 +1055,12 @@ fn make(
     cancelled: &AtomicBool,
     child: &Arc<Mutex<Option<Child>>>,
 ) -> Note {
-    if let Some(proxy) = &(hooks.twin)(&job.media) {
+    let twin = if job.fresh {
+        None
+    } else {
+        (hooks.twin)(&job.media)
+    };
+    if let Some(proxy) = &twin {
         return match (hooks.made)(&job.media, proxy) {
             Made::Set => {
                 log(
@@ -1670,6 +1704,7 @@ mod tests {
                 scale: 1,
             },
             checked: true,
+            fresh: false,
         };
         let args = arguments(Recipe::Cuda, &job, 2, Path::new("/p/m1.mov.part"), None);
         let text = args.join(" ");

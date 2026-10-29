@@ -44,6 +44,8 @@
 .timeline[data-tool='trim'] .timeline-clip { cursor: ew-resize; }
 .timeline-preview { position: absolute; z-index: 2; border: 2px solid var(--accent); background: var(--accent-soft); pointer-events: none; box-sizing: border-box; }
 .timeline-preview[data-clamped='true'] { border-style: dashed; }
+/* What a move would overwrite of the clips that stay. */
+.timeline-covered { position: absolute; z-index: 2; background: repeating-linear-gradient(135deg, #e0606055, #e0606055 4px, transparent 4px, transparent 8px); border: 1px solid #e06060; pointer-events: none; box-sizing: border-box; }
 .timeline-snap { position: absolute; top: 30px; bottom: 0; width: 1px; background: #f9d77b; pointer-events: none; z-index: 4; }
 .timeline-mark, .timeline-mark-range { position: absolute; pointer-events: none; bottom: 0; height: 5px; background: var(--accent); }
 .timeline-mark { width: 2px; height: 13px; }

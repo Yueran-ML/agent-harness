@@ -51,7 +51,7 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.keyDown(root(), { key: 'l', ctrlKey: true, shiftKey: true });
     click('c2', { ctrlKey: true });
     expect(node('c2').getAttribute('aria-selected')).toBe('false');
-    fireEvent.keyDown(root(), { key: 'Delete' }); await settle();
+    fireEvent.keyDown(root(), { key: 'Backspace' }); await settle();
     expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'lift', timeline: 't1', clips: ['c1'], linked: false }] });
   });
   it('previews and snaps a move without changing clips or calling the engine, then commits once on release', async () => {
@@ -64,7 +64,7 @@ describe('timeline editing by pointer and keys', () => {
     expect(call).not.toHaveBeenCalled();
     fireEvent.pointerUp(root(), pointer(59)); await settle();
     fireEvent.pointerUp(root(), pointer(59));
-    expect(call.mock.calls).toEqual([['transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 30, linked: true, clips: ['c1'], overwrite: false }] }]]);
+    expect(call.mock.calls).toEqual([['transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 30, linked: true, clips: ['c1'], overwrite: true }] }]]);
     expect(document.querySelector('[data-preview]')).toBeNull();
   });
   it('can disable snapping with N during a drag', async () => {
@@ -73,7 +73,7 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.keyDown(root(), { key: 'n' });
     expect(screen.getByRole('button', { name: 'Snapping' }).getAttribute('aria-pressed')).toBe('false');
     fireEvent.pointerMove(root(), pointer(59)); fireEvent.pointerUp(root(), pointer(59)); await settle();
-    expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 29, linked: true, clips: ['c1'], overwrite: false }] });
+    expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', delta: 29, linked: true, clips: ['c1'], overwrite: true }] });
   });
   it.each(['Escape', 'pointerCancel', 'blur'])('cancels a drag with %s without editing', async how => {
     const { call } = mount();
@@ -102,7 +102,7 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.pointerUp(root(), pointer(16)); await settle();
     expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'trim', timeline: 't1', delta: 5, linked: true, clip: 'c1', edge: 'in', ripple: true }] });
   });
-  it('uses Ctrl-drag to overwrite an already selected clip without toggling it off', async () => {
+  it('moves an already selected clip with Ctrl held without toggling it off, overwriting as a plain drag does', async () => {
     const { call } = mount(); click();
     fireEvent.pointerDown(node(), pointer(30, { ctrlKey: true }));
     fireEvent.pointerMove(root(), pointer(80, { ctrlKey: true }));
@@ -119,14 +119,31 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.pointerMove(root(), pointer(40, { clientY })); fireEvent.pointerUp(root(), pointer(40, { clientY })); await settle();
     expect(call).toHaveBeenCalledWith('transaction.apply', { revision: 17, ops: [{ edit, timeline: 't1', delta: 10, linked: true, clip: 'c1' }] });
   });
-  it('rolls a shared cut and uses Shift-drag for an insert move', async () => {
+  it('rolls a shared cut, shuffles in with Ctrl+Shift-drag, shows what a drag overwrites, and changes only tracks with Shift', async () => {
     const { call } = mount(timeline([clip('c1', 10, 60), clip('c2', 70, 60)]));
     fireEvent.pointerDown(node(), pointer(69.75));
     fireEvent.pointerMove(root(), pointer(79.75)); fireEvent.pointerUp(root(), pointer(79.75)); await settle();
     expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'roll', timeline: 't1', left: 'c1', right: 'c2', delta: 10, linked: true }] });
-    fireEvent.pointerDown(node(), pointer(30, { shiftKey: true }));
-    fireEvent.pointerMove(root(), pointer(90, { shiftKey: true })); fireEvent.pointerUp(root(), pointer(90, { shiftKey: true })); await settle();
+    const shuffle = { shiftKey: true, ctrlKey: true };
+    fireEvent.pointerDown(node(), pointer(30, shuffle));
+    fireEvent.pointerMove(root(), pointer(90, shuffle));
+    expect(document.querySelector('[data-covered]')).toBeNull();
+    fireEvent.pointerUp(root(), pointer(90, shuffle)); await settle();
     expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'insert_move', timeline: 't1', clips: ['c1'], at: 70, linked: true }] });
+    // A plain drag onto c2 shows the part of it that it would overwrite.
+    fireEvent.pointerDown(node(), pointer(30));
+    fireEvent.pointerMove(root(), pointer(60));
+    const covered = document.querySelector<HTMLElement>('[data-covered="c2"]')!;
+    expect([covered.style.left, covered.style.width]).toEqual([`${HEADER_WIDTH + 70 * 4}px`, `${30 * 4}px`]);
+    fireEvent.keyDown(root(), { key: 'Escape' });
+    expect(document.querySelector('[data-covered]')).toBeNull();
+    // Shift alone keeps the clip where it is in time: there is no other track here, so nothing changes.
+    call.mockClear();
+    fireEvent.pointerDown(node(), pointer(30, { shiftKey: true }));
+    fireEvent.pointerMove(root(), pointer(90, { shiftKey: true }));
+    expect(document.querySelector<HTMLElement>('[data-preview="c1"]')?.style.left).toBe(`${HEADER_WIDTH + 40}px`);
+    fireEvent.pointerUp(root(), pointer(90, { shiftKey: true })); await settle();
+    expect(call).not.toHaveBeenCalled();
   });
   it('retains a multi-selection and routes a captured pointer to the track under its release position', async () => {
     const t = timeline(); t.tracks.push({ id: 'v2', kind: 'video', name: 'V2', enabled: true, locked: false, clips: [], transitions: [] });
@@ -138,7 +155,7 @@ describe('timeline editing by pointer and keys', () => {
     click(); click('c2', { ctrlKey: true });
     fireEvent.pointerDown(node(), pointer(30));
     fireEvent.pointerMove(root(), pointer(40)); fireEvent.pointerUp(root(), pointer(40)); await settle();
-    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', clips: ['c1', 'c2'], delta: 10, to_track: 'v2', overwrite: false, linked: true }] });
+    expect(call).toHaveBeenLastCalledWith('transaction.apply', { revision: 17, ops: [{ edit: 'move', timeline: 't1', clips: ['c1', 'c2'], delta: 10, to_track: 'v2', overwrite: true, linked: true }] });
   });
   it('blades the clicked track or all tracks with Shift without a drag', async () => {
     const { call } = mount();

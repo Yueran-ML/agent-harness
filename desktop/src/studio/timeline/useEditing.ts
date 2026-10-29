@@ -173,7 +173,7 @@ export function useEditing(options: Options) {
     }
     let selection = !event.ctrlKey && !event.metaKey && !event.shiftKey && context.selection.ids.includes(id) ? context.selection
       : selectClips(context.timeline, context.selection, id, { linked: context.linked, toggle: event.ctrlKey || event.metaKey, range: event.shiftKey });
-    // Ctrl-click toggles; Ctrl-drag overwrites. Decide whether to deselect only on release.
+    // Ctrl-click toggles; Ctrl+Shift-drag shuffles in. Decide whether to deselect only on release.
     const clickSelection = !selection.ids.includes(id) ? selection : undefined;
     if (clickSelection) selection = context.selection;
     setSelection(selection);
@@ -189,7 +189,9 @@ export function useEditing(options: Options) {
       const box = element.getBoundingClientRect(); return event.clientY >= box.top && event.clientY < box.bottom;
     });
     return dragTo(pointer.gesture, at(event.clientX), {
-      media: context.media, track: track?.dataset.track, overwrite: event.ctrlKey || event.metaKey, ripple: event.shiftKey,
+      // As in DaVinci Resolve: a drag overwrites, Ctrl+Shift shuffles it in, Shift alone only changes tracks.
+      media: context.media, track: track?.dataset.track, overwrite: true, ripple: (event.ctrlKey || event.metaKey) && event.shiftKey,
+      vertical: event.shiftKey && !event.ctrlKey && !event.metaKey,
       candidates: context.snapping ? snapCandidates(pointer.gesture.timeline, pointer.gesture.ids, context.frame, context.marks) : undefined, scale: context.view.scale,
     });
   };

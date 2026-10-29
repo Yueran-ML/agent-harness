@@ -53,18 +53,54 @@ describe('timeline gestures', () => {
     expect(finishDrag(dragTo(gesture, 120, { media: [media] }))).toBeNull();
     const moved = dragTo(gesture, 140, { media: [media], track: 'v2' });
     expect(moved.preview.find(p => p.id === 'c2')).toMatchObject({ start: 120, length: 100, track: 'v2' });
-    expect(finishDrag(moved)).toEqual({ revision: 7, ops: [{ edit: 'move', timeline: 't1', clips: ['c2', 'a2'], delta: 20, to_track: 'v2', overwrite: false, linked: true }] });
+    expect(finishDrag(moved)).toEqual({ revision: 7, ops: [{ edit: 'move', timeline: 't1', clips: ['c2', 'a2'], delta: 20, to_track: 'v2', overwrite: true, linked: true }] });
+    // Nothing stays where it goes: nothing is overwritten.
+    expect(moved.covered).toEqual([]);
     expect(t.tracks[0].kind !== 'subtitle' && t.tracks[0].clips[1].start).toBe(100);
   });
-  it('uses overwrite for Ctrl and insert_move for Shift; the insertion point belongs to the original timeline', () => {
+  it('overwrites by default, shuffles in with ripple, and with vertical only changes tracks, as DaVinci Resolve drags', () => {
     const g = beginDrag(scene(), 9, ['c2'], 'c2', 'move', 120, false)!;
-    expect(finishDrag(dragTo(g, 240, { media: [media], overwrite: true }))?.ops[0]).toMatchObject({ edit: 'move', delta: 120, overwrite: true });
-    expect(finishDrag(dragTo(g, 240, { media: [media], ripple: true }))?.ops[0]).toEqual({ edit: 'insert_move', timeline: 't1', clips: ['c2'], at: 220, linked: false });
+    const over = dragTo(g, 240, { media: [media] });
+    expect(finishDrag(over)?.ops[0]).toMatchObject({ edit: 'move', delta: 120, overwrite: true });
+    // The preview shows what of the third clip it would overwrite.
+    expect(over.covered).toEqual([{ id: 'c3', track: 'v1', start: 220, length: 80 }]);
+    // The insertion point of a shuffle insert belongs to the original timeline, and it overwrites nothing.
+    const shuffled = dragTo(g, 240, { media: [media], ripple: true });
+    expect(finishDrag(shuffled)?.ops[0]).toEqual({ edit: 'insert_move', timeline: 't1', clips: ['c2'], at: 220, linked: false });
+    expect(shuffled.covered).toEqual([]);
     expect(dragTo(g, 240, { media: [media], ripple: true, track: 'v2' }).preview[0].track).toBe('v1');
+    // Shift only changes tracks: the clip keeps its place in time, nor snaps.
+    const upright = dragTo(g, 240, { media: [media], vertical: true, track: 'v2', candidates: [0, 230], scale: 4 });
+    expect(upright.point).toBeNull();
+    expect(finishDrag(upright)?.ops[0]).toEqual({ edit: 'move', timeline: 't1', clips: ['c2'], delta: 0, to_track: 'v2', overwrite: true, linked: false });
+    expect(finishDrag(dragTo(g, 240, { media: [media], vertical: true }))).toBeNull();
+  });
+  it('stops an edge that is trimmed without ripple at the clip beside it, also on a linked track, and not with ripple', () => {
+    const t = scene();
+    // c1 ends where c2 begins, and c3 begins where c2 ends: neither edge of c2 can grow.
+    const out = beginDrag(t, 1, ['c2'], 'c2', 'trim_out', 200, false)!;
+    expect(dragTo(out, 230, { media: [media] })).toMatchObject({ delta: 0, clamped: true, command: null });
+    const into = beginDrag(t, 1, ['c2'], 'c2', 'trim_in', 100, false)!;
+    expect(dragTo(into, 80, { media: [media] })).toMatchObject({ delta: 0, clamped: true });
+    expect(dragTo(into, 130, { media: [media] }).delta).toBe(30);
+    // With a gap of 20 frames after it, the edge stops there.
+    const gap = scene();
+    if (gap.tracks[0].kind !== 'subtitle') gap.tracks[0].clips[2] = clip('c3', 220, 100);
+    expect(dragTo(beginDrag(gap, 1, ['c2'], 'c2', 'trim_out', 200, false)!, 260, { media: [media] }).delta).toBe(20);
+    // The sound linked to c2 has a neighbour 10 frames after it: the linked trim stops at the nearer.
+    const linked = scene();
+    const a1 = linked.tracks[1];
+    if (a1.kind !== 'subtitle') a1.clips.push(clip('a3', 210, 50));
+    if (linked.tracks[0].kind !== 'subtitle') linked.tracks[0].clips.pop();
+    expect(dragTo(beginDrag(linked, 1, ['c2'], 'c2', 'trim_out', 200, true)!, 260, { media: [media] }).delta).toBe(10);
+    // A ripple trim moves what follows instead.
+    expect(dragTo(beginDrag(t, 1, ['c2'], 'c2', 'trim_out', 200, false, true)!, 230, { media: [media] }).delta).toBe(30);
   });
   it('clamps rough trim previews to source handles and at least one frame, without editing the project', () => {
     const t = scene();
     const short = { ...media, facts: { ...media.facts, duration: { ticks: 210, scale: 25 } } };
+    // The clip after c2 is taken away, so that only the source limits its out edge.
+    if (t.tracks[0].kind !== 'subtitle') t.tracks[0].clips.pop();
     const g = beginDrag(t, 1, ['c2'], 'c2', 'trim_out', 200, false)!;
     const moved = dragTo(g, 250, { media: [short] });
     expect(moved.delta).toBe(10);

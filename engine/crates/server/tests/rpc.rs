@@ -2183,7 +2183,7 @@ async fn backward_from_the_middle_it_plays_to_frame_0_and_stops() {
 #[tokio::test]
 async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     let dir = project_dir();
-    let Some((_engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
+    let Some((engine, mut agent)) = transport_engine(dir.path(), &[support::Sample::Fhd]).await
     else {
         return;
     };
@@ -2193,8 +2193,14 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     agent
         .result("transport.play", Some(json!({ "speed": 4 })))
         .await;
-    let rate = frames_a_second(&mut agent, 8, Duration::from_millis(500)).await;
-    assert!((85.0..=115.0).contains(&rate), "{rate} frames a second");
+    // The client may be descheduled while the engine keeps playing. Let notifications queue:
+    // their read times are not the times at which the frames were shown.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    agent
+        .until_state("playing at 4", |state| {
+            state["playing"] == true && state["speed"] == 4
+        })
+        .await;
     let (stopped, _) = agent
         .until_state("stopped", |state| state["playing"] == false)
         .await;
@@ -2202,6 +2208,18 @@ async fn at_speed_4_it_moves_four_times_as_fast_and_stops_at_the_end() {
     assert_eq!(stopped["shown"], 99);
     assert_eq!(stopped["speed"], 4);
     assert_ne!(stopped["sound"], "on");
+    // Measure the whole playback on the engine's clock, independent of the observer's
+    // scheduling and of short bursts in which the decoder catches up.
+    let played = logged_at_least(&engine, "transport_played", 1)
+        .await
+        .pop()
+        .expect("the engine logged how it played");
+    assert_eq!(played["speed"], 4, "{played}");
+    let rate = 99.0 / played["seconds"].as_f64().unwrap();
+    assert!(
+        (85.0..=115.0).contains(&rate),
+        "{rate} frames a second: {played}"
+    );
     // Played from the end, it stays there.
     agent
         .result("transport.play", Some(json!({ "speed": 2 })))
@@ -2644,8 +2662,17 @@ async fn a_device_that_never_asks_for_sound_is_given_up() {
         .result("transport.play", Some(json!({ "speed": 1 })))
         .await;
     // Nothing is heard: the playhead waits for the sound, then goes on without it.
+    let (waiting, _) = agent
+        .until_state("waiting for the sound", |state| {
+            state["playing"] == true && state["sound"] == "on"
+        })
+        .await;
+    assert_eq!(waiting["frame"], 0, "{waiting}");
     let (lost, _) = agent
         .until_state("the sound given up", |state| {
+            if state["playing"] == true && state["sound"] == "on" {
+                assert_eq!(state["frame"], 0, "the sound has not started: {state}");
+            }
             state["sound"] == "unavailable"
         })
         .await;
@@ -2654,9 +2681,15 @@ async fn a_device_that_never_asks_for_sound_is_given_up() {
         took >= Duration::from_millis(700) && took < Duration::from_millis(2000),
         "{took:?}"
     );
-    assert_eq!(
-        (&lost["frame"], &lost["playing"]),
-        (&json!(0), &json!(true))
+    assert_eq!(lost["playing"], true, "{lost}");
+    // The system clock starts before the sound feeder is stopped and this state is sent.
+    // The first notification may therefore be past frame 0. At 25 fps it must be no further
+    // than the time since the earliest allowed fallback, rather than an arbitrary frame cap.
+    let resumed = took.checked_sub(Duration::from_millis(700)).unwrap();
+    let latest = i64::try_from(resumed.as_millis() / 40).unwrap();
+    assert!(
+        (0..=latest).contains(&lost["frame"].as_i64().unwrap()),
+        "the picture jumped beyond the elapsed time ({took:?}): {lost}"
     );
     let rate = frames_a_second(&mut agent, 3, Duration::from_millis(1500)).await;
     assert!((21.25..=28.75).contains(&rate), "{rate} frames a second");
@@ -2743,13 +2776,15 @@ async fn media_removed_while_it_is_loaded_is_unloaded_once_it_is() {
         .await;
     let answer = agent.answer(load).await;
     if let Some(error) = answer.get("error") {
-        // It was removed before the load found it.
+        // It was removed before the load found it: nothing was loaded, and nothing is unloaded
+        // (as happens where every core is busy, as on the CI).
         assert_eq!(error["data"]["reason"], "missing", "{answer}");
+    } else {
+        let (unloaded, _) = desktop
+            .until_state("unloaded", |state| state["media"].is_null())
+            .await;
+        assert_eq!(unloaded["playing"], false);
     }
-    let (unloaded, _) = desktop
-        .until_state("unloaded", |state| state["media"].is_null())
-        .await;
-    assert_eq!(unloaded["playing"], false);
     tokio::time::sleep(Duration::from_millis(200)).await;
     let state = agent.result("transport.state", None).await;
     assert_eq!(state["media"], Value::Null, "{state}");
@@ -3010,22 +3045,29 @@ async fn measure_playing_and_scrubbing() {
 
 impl Client {
     /// Every `media.proxy` that comes, of those that came or come, until `done` takes those
-    /// told so far; the other messages are let go.
+    /// told so far; the other messages are let go. The engine tells how far the proxy being
+    /// made has come every second: it fails if nothing is told of proxies for `2 * WAIT`, and
+    /// after `10 * WAIT` in all. A proxy made on the processor, in `ProRes`, by a computer whose
+    /// every core is busy with the other tests (as on the CI) takes a minute or more for the
+    /// media of a test, and NVENC a few seconds.
     async fn proxies_until(&mut self, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
-        let deadline = Instant::now() + 2 * WAIT;
+        let end = Instant::now() + 10 * WAIT;
+        let mut deadline = Instant::now() + 2 * WAIT;
         let mut notes = Vec::new();
         loop {
             if done(&notes) {
                 return notes;
             }
             let message = if self.notifications.is_empty() {
-                assert!(Instant::now() < deadline, "{notes:?}");
+                let now = Instant::now();
+                assert!(now < deadline && now < end, "{notes:?}");
                 self.message().await
             } else {
                 self.notifications.remove(0)
             };
             if message["method"] == "media.proxy" {
                 notes.push(message["params"].clone());
+                deadline = Instant::now() + 2 * WAIT;
             }
         }
     }
@@ -3203,6 +3245,40 @@ fn aligned(media: &Value, seed: u64) {
     }
 }
 
+/// The encoder that made the proxy of each of `media`, as the engine logs it: NVENC where it
+/// can use a card of NVIDIA, else ProRes, which is all that a computer without one (as those of
+/// the CI) has. The log is written on a thread of its own, and may come a little after the
+/// proxy is told done.
+async fn made_by(engine: &Engine, media: &[&str]) -> Vec<String> {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let made = logged(engine, "proxy_made");
+        let found: Option<Vec<String>> = media
+            .iter()
+            .map(|id| {
+                made.iter()
+                    .find(|line| line["media"] == *id)
+                    .and_then(|line| line["encoder"].as_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        if let Some(found) = found {
+            return found;
+        }
+        assert!(Instant::now() < deadline, "{made:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The codec of a proxy that an encoder of the engine makes.
+fn codec_of(encoder: &str) -> &'static str {
+    match encoder {
+        "hevc_nvenc" | "hevc_nvenc (cuda)" => "hevc",
+        "prores_ks" => "prores",
+        other => panic!("no proxy is made by {other}"),
+    }
+}
+
 #[tokio::test]
 async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as_the_media() {
     use support::Sample;
@@ -3218,7 +3294,7 @@ async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as
         Sample::Portrait,
         Sample::EditList,
     ];
-    let Some((_engine, mut agent)) = proxy_engine(dir.path(), &samples, &[]).await else {
+    let Some((engine, mut agent)) = proxy_engine(dir.path(), &samples, &[]).await else {
         return;
     };
     let ids: Vec<String> = (1..=samples.len()).map(|n| format!("m{n}")).collect();
@@ -3226,10 +3302,15 @@ async fn proxies_are_made_one_at_a_time_with_every_frame_a_key_frame_numbered_as
     let notes = agent.proxies_of(&ids).await;
     one_at_a_time(&notes, &ids);
     let got = project(&mut agent).await;
+    let encoders = made_by(&engine, &ids).await;
     for (index, sample) in samples.into_iter().enumerate() {
         let media = &got["project"]["media"][index];
-        eprintln!("{sample:?}: {}", media["proxy"]);
-        assert_eq!(media["proxy"]["codec"], "hevc", "{media}");
+        eprintln!("{sample:?}, by {}: {}", encoders[index], media["proxy"]);
+        assert_eq!(
+            media["proxy"]["codec"],
+            codec_of(&encoders[index]),
+            "{media}"
+        );
         aligned(media, 17 + index as u64);
     }
     // The 4K picture is made 1920 wide, the others kept as they are.
@@ -3408,8 +3489,12 @@ async fn a_proxy_made_from_another_file_is_made_again() {
     let path = media["proxy"]["path"].as_str().unwrap();
     assert_ne!(Path::new(path), stale);
     assert!(Path::new(path).is_file());
-    // The one whose place it took is deleted.
-    assert!(!stale.exists());
+    // The one whose place it took is deleted, once the new one is set.
+    let deadline = Instant::now() + WAIT;
+    while stale.exists() {
+        assert!(Instant::now() < deadline, "{} is left", stale.display());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     // It is no step to undo: this engine has none.
     let undone = agent.result("history.undo", None).await;
     assert_eq!(undone["done"], Value::Null, "{undone}");
@@ -3635,10 +3720,12 @@ fn logged(engine: &Engine, event: &str) -> Vec<Value> {
 #[allow(clippy::too_many_lines)]
 async fn the_transport_reads_the_proxy_scrubs_exactly_and_falls_back_to_the_media() {
     let dir = project_dir();
+    // Exercise the software-decoded proxy used on runners without NVIDIA hardware, even
+    // when this computer can make and decode a HEVC proxy on the card.
     let Some((engine, mut agent)) = proxy_engine(
         dir.path(),
         &[support::Sample::Uhd, support::Sample::Fhd],
-        &[],
+        &["--proxy-encoder", "prores"],
     )
     .await
     else {
@@ -3964,17 +4051,6 @@ async fn the_ffmpeg_of_an_engine_that_is_killed_ends_with_it() {
     else {
         return;
     };
-    agent
-        .proxies_until(|notes| notes.iter().any(|note| note["state"] == "running"))
-        .await;
-    let deadline = Instant::now() + WAIT;
-    let pid = loop {
-        if let Some(started) = logged(&engine, "proxy_encoding").pop() {
-            break started["pid"].as_u64().unwrap();
-        }
-        assert!(Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    };
     let running = |pid: u64| {
         let output = std::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
@@ -3982,13 +4058,41 @@ async fn the_ffmpeg_of_an_engine_that_is_killed_ends_with_it() {
             .unwrap();
         String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
     };
-    assert!(running(pid), "ffmpeg {pid} runs");
+    // The ffmpeg that makes the proxy, once it has made a frame. Others may have been started
+    // before it and have failed at once: those of NVENC, where there is no card of NVIDIA (as on
+    // the CI), whose pids are logged first.
+    agent
+        .proxies_until(|notes| {
+            notes
+                .iter()
+                .any(|note| note["state"] == "running" && note["progress"].as_f64() > Some(0.0))
+        })
+        .await;
+    let deadline = Instant::now() + WAIT;
+    let pid = loop {
+        if let Some(started) = logged(&engine, "proxy_encoding").pop() {
+            let pid = started["pid"].as_u64().unwrap();
+            if running(pid) {
+                break pid;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no ffmpeg runs: {}",
+            engine.stderr()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     // Killed, as by the task manager: it has no time to stop its ffmpeg.
     engine.child.start_kill().unwrap();
     let _ = engine.child.wait().await;
     let deadline = Instant::now() + Duration::from_secs(5);
     while running(pid) {
-        assert!(Instant::now() < deadline, "ffmpeg {pid} goes on");
+        assert!(
+            Instant::now() < deadline,
+            "ffmpeg {pid} goes on: {:?}",
+            logged(&engine, "proxy_job_object")
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

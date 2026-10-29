@@ -42,7 +42,9 @@ others: it then stands in a network of its own that has no way out, beside a
 container that is in that network and in the usual one and runs a proxy,
 :mod:`columbina.sandbox.proxy`. The commands are told of the proxy in the
 variables that programs look for. Both the network and the proxy are named
-after the container, are made before it and are removed with it.
+after the container, are made before it and are removed with it. The
+container is only started once the proxy says that it listens: a command
+that asked it for a host at once would otherwise be refused.
 
 **Who a command is.** What keeps a container alive runs in it as root, and
 commands run as another user, :func:`user_of_commands`. With every
@@ -156,6 +158,9 @@ _REMOVE_SECONDS = 30.0
 
 _KEEPER_SECONDS = 10.0
 """How long what kept a container is waited for once the container is let go."""
+
+_PROXY_LOOK_SECONDS = 0.1
+"""How long is waited between two looks at whether the proxy of a container listens."""
 
 _LOOK_SECONDS = 5.0
 """How often the containers are looked through for those that nobody needs."""
@@ -1317,6 +1322,11 @@ def proxy_started(program: str, config: DockerConfig, name: str) -> list[str]:
     ]
 
 
+def proxy_said(program: str, name: str) -> list[str]:
+    """Return the command that reads what the proxy of a container has said so far."""
+    return [program, "logs", f"{name}-proxy"]
+
+
 def proxy_joined(program: str, name: str) -> list[str]:
     """Return the command that puts the proxy of a container into the network of the container."""
     return [program, "network", "connect", "--alias", PROXY_ALIAS, f"{name}-net", f"{name}-proxy"]
@@ -1839,6 +1849,37 @@ class Docker:
                     f"{what} could not be made for the container: "
                     f"{_first(done.error_output or done.output)}"
                 )
+        await self._listening(container)
+
+    async def _listening(self, container: _Kept) -> None:
+        """Wait for the proxy of a container to say that it listens.
+
+        Docker has started it by now, but Python may not yet have begun to listen in it.
+
+        Raises:
+            SandboxUnavailableError: It ended first, or did not say so in time.
+        """
+        seconds = self._config.start_timeout_seconds
+        loop = asyncio.get_running_loop()
+        until = loop.time() + seconds
+        while True:
+            done = await self._docker(
+                proxy_said(container.program, container.name), max(until - loop.time(), 1.0)
+            )
+            if done.exit_code not in (0, None):
+                raise SandboxUnavailableError(
+                    "the proxy of the container ended before it listened: "
+                    f"{_first(done.error_output or done.output)}"
+                )
+            if proxy.LISTENING in done.output.splitlines():
+                return
+            if done.timed_out or loop.time() >= until:
+                said = done.error_output.strip() or done.output.strip()
+                raise SandboxUnavailableError(
+                    f"the proxy of the container did not listen within {seconds:g} seconds"
+                    + (f": {_first(said)}" if said else "")
+                )
+            await asyncio.sleep(_PROXY_LOOK_SECONDS)
 
     async def _ready(self, container: _Kept, token: str) -> None:
         """Wait for a container to say that commands can run in it.

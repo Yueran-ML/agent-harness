@@ -163,12 +163,9 @@ impl Gpu {
     /// blocking is allowed.
     ///
     /// # Errors
-    /// There is no adapter, not even in software, or no device can be made.
+    /// There is no backend or adapter, not even in software, or no device can be made.
     pub fn new(preference: Preference) -> Result<Arc<Gpu>, GpuError> {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: BACKENDS,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
-        });
+        let instance = instance(BACKENDS)?;
         let ask = |fallback: bool| {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -336,6 +333,21 @@ impl Gpu {
     }
 }
 
+/// Make an instance for the backends that the engine uses on this platform.
+fn instance(backends: wgpu::Backends) -> Result<wgpu::Instance, GpuError> {
+    // wgpu panics when no backend was compiled for this platform (as on Linux, where only
+    // the pure parts run). Nor can an instance draw if none of the requested backends exist.
+    if !wgpu::Instance::enabled_backend_features().intersects(backends) {
+        return Err(GpuError::NoAdapter(
+            "wgpu has no backend to draw with on this platform".into(),
+        ));
+    }
+    Ok(wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    }))
+}
+
 /// The features that are asked for where the adapter has them.
 fn wanted_features(adapter: &wgpu::Adapter) -> wgpu::Features {
     adapter.features() & wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
@@ -353,11 +365,11 @@ fn wanted_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     }
 }
 
-/// A [`Gpu`] for the tests that draw: none where there is no adapter, unless
+/// A [`Gpu`] for the tests that draw: none where there is no backend or adapter, unless
 /// `COLUMBINA_REQUIRE_GPU` is 1, when there must be one.
 ///
 /// # Panics
-/// `COLUMBINA_REQUIRE_GPU` is 1, and there is no adapter.
+/// `COLUMBINA_REQUIRE_GPU` is 1, and there is no backend or adapter.
 #[doc(hidden)]
 #[must_use]
 pub fn gpu_for_tests() -> Option<Arc<Gpu>> {
@@ -378,6 +390,18 @@ pub fn gpu_for_tests() -> Option<Arc<Gpu>> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn an_instance_without_a_usable_backend_is_refused_before_wgpu_is_called() {
+        // Exercise the boundary even on Windows and macOS, which normally have a backend.
+        let unavailable = wgpu::Backends::all() - wgpu::Instance::enabled_backend_features();
+        for backends in [wgpu::Backends::empty(), unavailable] {
+            assert_eq!(
+                instance(backends).unwrap_err(),
+                GpuError::NoAdapter("wgpu has no backend to draw with on this platform".into())
+            );
+        }
+    }
 
     #[test]
     fn a_device_lost_is_told_once_to_each_listener_and_at_once_to_those_who_come_after() {

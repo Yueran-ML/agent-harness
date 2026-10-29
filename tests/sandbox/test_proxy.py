@@ -55,14 +55,34 @@ async def through() -> AsyncIterator[int]:
         yield server.sockets[0].getsockname()[1]
 
 
+@pytest.fixture
+def closed(monkeypatch: pytest.MonkeyPatch) -> int:
+    """Refuse an upstream connection without depending on the host's closed-port policy.
+
+    The client still reaches the real proxy over TCP. Only its connection to this upstream
+    fails: a bound socket that is not listening can leave connect waiting on macOS.
+    """
+    connect = asyncio.open_connection
+
+    async def refused(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        if host == "localhost" and port == 80:
+            raise ConnectionRefusedError("the test upstream refuses connections")
+        return await connect(host, port)
+
+    monkeypatch.setattr(asyncio, "open_connection", refused)
+    return 80
+
+
 async def asked(port: int, request: bytes) -> bytes:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    writer.write(request)
-    await writer.drain()
-    writer.write_eof()
-    answer = await asyncio.wait_for(reader.read(), timeout=5)
-    writer.close()
-    return answer
+    try:
+        writer.write(request)
+        await writer.drain()
+        writer.write_eof()
+        return await asyncio.wait_for(reader.read(), timeout=20)
+    finally:
+        writer.close()
+        await writer.wait_closed()
 
 
 async def test_a_tunnel_to_an_allowed_host_is_made(
@@ -109,15 +129,15 @@ async def test_a_plain_request_to_an_allowed_host_is_passed_on(
             b"400",
             "The request is too long.",
         ),
-        (b"CONNECT localhost:1 HTTP/1.1\r\n\r\n", b"502", "localhost cannot be reached"),
-        (b"GET http://localhost HTTP/1.1\r\n\r\n", b"502", "localhost cannot be reached"),
+        (b"CONNECT localhost:{closed} HTTP/1.1\r\n\r\n", b"502", "localhost cannot be reached"),
+        (b"GET http://localhost:{closed}/ HTTP/1.1\r\n\r\n", b"502", "localhost cannot be reached"),
     ],
     ids=["elsewhere", "an-address", "no-proxy", "nonsense", "too-long", "unreachable", "plain"],
 )
 async def test_what_is_not_passed_on_is_refused_in_words(
-    through: int, request_line: bytes, status: bytes, said: str
+    through: int, closed: int, request_line: bytes, status: bytes, said: str
 ) -> None:
-    answer = await asked(through, request_line)
+    answer = await asked(through, request_line.replace(b"{closed}", str(closed).encode()))
 
     assert answer.split(b" ")[1] == status
     assert said in answer.decode()

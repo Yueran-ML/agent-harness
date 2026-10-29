@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use columbina_model::Project;
-use columbina_store::{Saver, Store, StoreError, PROJECT_TMP, SAVE_PERIOD};
+use columbina_store::{Saver, Store, StoreError, PROJECT_FILE, PROJECT_TMP, SAVE_PERIOD};
 
 /// The sample project, told apart by `n`.
 fn version(n: u64) -> Project {
@@ -16,11 +16,32 @@ fn version(n: u64) -> Project {
 
 /// What is saved in `dir`.
 fn saved(dir: &std::path::Path) -> Project {
-    Store::open(dir).unwrap().1
+    // Store::open removes a leftover temporary file. The saver may be writing that file
+    // now, so observing its completed saves must only read the committed project.
+    let bytes = match fs::read(dir.join(PROJECT_FILE)) {
+        Ok(bytes) => bytes,
+        // The first asynchronous save may not have committed a file yet.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Project::new(),
+        Err(error) => panic!("the saved project cannot be read: {error}"),
+    };
+    Project::from_value(serde_json::from_slice(&bytes).unwrap()).unwrap()
 }
 
 /// A saver that keeps none of the errors it is given.
 fn ignore(_: StoreError) {}
+
+#[test]
+fn reading_the_saved_project_leaves_a_save_in_progress_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, _) = Store::open(dir.path()).unwrap();
+    store.save(&version(0)).unwrap();
+    let pending = serde_json::to_vec(&version(1)).unwrap();
+    let temporary = dir.path().join(PROJECT_TMP);
+    fs::write(&temporary, &pending).unwrap();
+
+    assert_eq!(saved(dir.path()), version(0));
+    assert_eq!(fs::read(&temporary).unwrap(), pending);
+}
 
 #[test]
 fn many_changes_in_a_moment_are_saved_a_few_times_and_the_latest_is_saved_last() {

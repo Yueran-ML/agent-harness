@@ -544,22 +544,30 @@ async def _connected(
     heard: Callable[[_Wire, bytes], None],
     lost: Callable[[_Wire, EngineError], None],
 ) -> _Wire | None:
-    """Connect to an address, or return ``None`` where nothing answers there."""
+    """Connect to an address, or return ``None`` where nothing answers there.
+
+    The connection that is returned has its transport, whether or not its ``connection_made``
+    has run yet: a pipe of Windows is returned before it runs, a moment later. Nor is the
+    connection made in a task of its own, whose transport would be left open if this were
+    cancelled after it was made and before it was taken.
+    """
     loop = asyncio.get_running_loop()
     wire = _Wire(heard, lost)
     try:
-        if sys.platform == "win32":  # pragma: windows only
-            proactor = cast("asyncio.ProactorEventLoop", loop)
-            # Any protocol is taken, whatever the stubs of typeshed say.
-            connecting = proactor.create_pipe_connection(
-                lambda: wire,  # pyright: ignore[reportArgumentType]
-                address,
-            )
-        else:  # pragma: posix only
-            connecting = loop.create_unix_connection(lambda: wire, address)
-        await asyncio.wait_for(connecting, _CONNECT_SECONDS)
+        async with asyncio.timeout(_CONNECT_SECONDS):
+            if sys.platform == "win32":  # pragma: windows only
+                proactor = cast("asyncio.ProactorEventLoop", loop)
+                # Any protocol is taken, whatever the stubs of typeshed say.
+                pipe, _ = await proactor.create_pipe_connection(
+                    lambda: wire,  # pyright: ignore[reportArgumentType]
+                    address,
+                )
+                transport = cast("asyncio.Transport", pipe)
+            else:  # pragma: posix only
+                transport, _ = await loop.create_unix_connection(lambda: wire, address)
     except (OSError, TimeoutError):
         return None
+    wire.transport = transport
     return wire
 
 
@@ -998,6 +1006,8 @@ class Engine:
                 if error.code != UNREACHABLE or self._closed:
                     raise
                 why = str(error)
+                # Lost, or refused in the words of no engine and still open.
+                self._drop()
                 continue
             # It may have been closed while it was greeted.
             self._open()

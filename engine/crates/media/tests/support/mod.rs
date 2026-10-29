@@ -127,11 +127,11 @@ impl Sample {
     fn file_name(self) -> &'static str {
         match self {
             Sample::Fhd => "v1-fhd-h264-aac.mp4",
-            Sample::Uhd => "v1-uhd-hevc-main10.mp4",
+            Sample::Uhd => "v2-uhd-hevc-main10.mp4",
             Sample::Prores => "v1-fhd-prores-hq.mov",
             Sample::Portrait => "v1-portrait-h264-rotated.mp4",
             Sample::Wav => "v1-sound.wav",
-            Sample::Fhd10 => "v1-fhd-hevc-main10.mp4",
+            Sample::Fhd10 => "v2-fhd-hevc-main10.mp4",
             Sample::TsH264 => "v1-ts-h264.ts",
             Sample::TsMpeg2 => "v1-ts-mpeg2.ts",
             Sample::PsMpeg2 => "v1-ps-mpeg2.mpg",
@@ -228,7 +228,10 @@ fn skip<T>(sample: Sample, why: &str) -> Option<T> {
 
 /// `target/test-media`.
 fn directory() -> PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR"))
+    // Cargo defines this for integration tests, but not for the server's unit tests.
+    let temporary = option_env!("CARGO_TARGET_TMPDIR")
+        .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/tmp"));
+    Path::new(temporary)
         .parent()
         .expect("the target directory")
         .join("test-media")
@@ -366,8 +369,33 @@ fn h264(encoders: &str, gop: u32) -> Vec<(String, Vec<String>)> {
 }
 
 /// The encoders of HEVC Main 10 that ffmpeg has, best first, each with its arguments.
+///
+/// x265 comes first, as it does for H.264: its groups of frames are the same wherever it runs,
+/// while NVENC is on few machines and none of those of the CI. Its groups are closed
+/// (`open-gop=0`), as those of NVENC are: by default x265 makes open ones, whose key frame is
+/// decoded before the B-frames shown just before it, so that MP4 indexes it three frames
+/// earlier than it is shown, and the tests that know where the key frames are would not hold.
 fn hevc10(encoders: &str, gop: u32) -> Vec<(String, Vec<String>)> {
     let mut found = Vec::new();
+    if encoders.contains(" libx265 ") {
+        found.push((
+            "libx265".to_owned(),
+            strings(&[
+                "-c:v",
+                "libx265",
+                "-preset",
+                "ultrafast",
+                "-crf",
+                "20",
+                "-pix_fmt",
+                "yuv420p10le",
+                "-x265-params",
+                &format!(
+                    "keyint={gop}:min-keyint={gop}:scenecut=0:open-gop=0:bframes=3:log-level=error"
+                ),
+            ]),
+        ));
+    }
     if encoders.contains(" hevc_nvenc ") {
         found.push((
             "hevc_nvenc".to_owned(),
@@ -386,23 +414,6 @@ fn hevc10(encoders: &str, gop: u32) -> Vec<(String, Vec<String>)> {
                 "constqp",
                 "-qp",
                 "24",
-            ]),
-        ));
-    }
-    if encoders.contains(" libx265 ") {
-        found.push((
-            "libx265".to_owned(),
-            strings(&[
-                "-c:v",
-                "libx265",
-                "-preset",
-                "ultrafast",
-                "-crf",
-                "20",
-                "-pix_fmt",
-                "yuv420p10le",
-                "-x265-params",
-                &format!("keyint={gop}:min-keyint={gop}:scenecut=0:bframes=3:log-level=error"),
             ]),
         ));
     }

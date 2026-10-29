@@ -482,7 +482,7 @@ mod tests {
     }
 
     // What follows draws with the graphics card, into a texture that is read back. Without an
-    // adapter the tests are skipped, unless COLUMBINA_REQUIRE_GPU is 1.
+    // adapter or backend the tests are skipped, unless COLUMBINA_REQUIRE_GPU is 1.
 
     struct Gpu {
         device: wgpu::Device,

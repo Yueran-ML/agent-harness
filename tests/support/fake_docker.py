@@ -2,8 +2,9 @@
 
 It is run as a program, with the arguments that ``docker`` would get, and
 answers the few commands that the provider of the sandbox uses: ``info``,
-``image inspect``, ``run``, ``exec``, ``ps``, ``rm`` and ``network``. A container
-that is run detached, the proxy of a network that is allowed, is only noted.
+``image inspect``, ``run``, ``exec``, ``ps``, ``rm``, ``network`` and ``logs``. A
+container that is run detached, the proxy of a network that is allowed, is only
+noted, and ``logs`` says that it listens.
 A container is a process of this program that reads its input to the end, as
 the real one does. A command in a
 container is run on this machine, in the directory that was mounted where
@@ -44,6 +45,7 @@ from typing import Any
 # This is run as a program, from wherever. What it shares with the tests is found from here.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from columbina.sandbox.proxy import LISTENING
 from support.processes import alive
 
 HOME = Path(os.environ["COLUMBINA_FAKE_DOCKER"])
@@ -208,6 +210,19 @@ def detached(argv: list[str], how: dict[str, Any]) -> int:
     if how.get("proxy") == "fails":
         return fail(125, "docker: Error response from daemon: the proxy is out of sorts")
     print("c0ffee", flush=True)
+    return 0
+
+
+def logs(argv: list[str], how: dict[str, Any]) -> int:
+    """What the proxy said: that it listens, at once, at the third look (``late``) or never."""
+    if how.get("proxy") == "ended":
+        return fail(1, f"Error response from daemon: No such container: {argv[-1]}")
+    looks = HOME / "proxy-looks"
+    looked = len(looks.read_bytes()) if looks.exists() else 0
+    looks.write_bytes(b"x" * (looked + 1))
+    if how.get("proxy") == "silent" or (how.get("proxy") == "late" and looked < 2):
+        return 0
+    print(LISTENING, flush=True)
     return 0
 
 
@@ -416,6 +431,8 @@ def main(argv: list[str]) -> int:
         return remove(rest, how)
     if verb == "network":
         return network(rest, how)
+    if verb == "logs":
+        return logs(rest, how)
     return fail(2, f"the stand-in knows no command {verb!r}")
 
 

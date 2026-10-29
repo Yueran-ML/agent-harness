@@ -4,8 +4,7 @@
 //! the system next tick: every 15.6 ms on Windows unless a program asks for finer ones, which is
 //! as long as a frame at 60 frames a second. While it plays, the transport asks for timers of
 //! 1 ms (`timeBeginPeriod`), as every player of media on Windows does, and lets them go when it
-//! stops: since Windows 10 2004 this changes the timers of the engine alone. Elsewhere timers
-//! are fine already, and this does nothing.
+//! stops: since Windows 10 2004 this changes the timers of the engine alone.
 
 /// Fine timers, for as long as it is held.
 pub struct Fine(());

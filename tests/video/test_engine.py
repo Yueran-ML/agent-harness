@@ -389,6 +389,46 @@ async def test_an_engine_closed_while_it_connects_again_leaves_no_connection(
         await until(lambda: not fake.connections)
 
 
+async def test_a_connection_is_used_and_closed_before_it_is_told_that_it_was_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A pipe of Windows is handed over before its connection_made runs, from Python 3.12 on; here
+    # it never runs, on any system.
+    made: list[asyncio.BaseTransport] = []
+
+    def told_never(_: object, transport: asyncio.BaseTransport) -> None:
+        made.append(transport)
+
+    monkeypatch.setattr(engine._Wire, "connection_made", told_never)  # pyright: ignore[reportPrivateUsage]
+    async with served(tmp_path / "film") as fake:
+        fake.hold = 5
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(attached(tmp_path / "film"), 0.5)
+        await until(lambda: not fake.connections)
+        fake.hold = 0
+
+        connected = await attached(tmp_path / "film")
+        revision, _ = await connected.project()
+        await connected.aclose()
+
+        await until(lambda: not fake.connections)
+        assert revision == 0
+        assert len(made) == 2
+
+
+async def test_a_hello_that_is_refused_as_if_no_engine_answered_leaves_no_connection(
+    tmp_path: Path,
+) -> None:
+    async with served(tmp_path / "film") as fake:
+        fake.refusals["hello"] = {"code": UNREACHABLE, "message": "not now"}
+
+        with pytest.raises(EngineError, match="could be reached: not now"):
+            await attached(tmp_path / "film")
+
+        assert fake.asked.count("hello") > 1
+        await until(lambda: not fake.connections)
+
+
 async def test_a_line_too_long_to_read_says_the_project_is_too_large(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

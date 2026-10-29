@@ -97,9 +97,11 @@ impl crate::audio::Source for OutputSource {
             return Ok(None);
         }
         let (last, _) = at(self.played + i64::from(frames) - 1);
-        let from = i64::try_from(first - i128::from(RADIUS))
+        let cutoff = (f64::from(self.format.rate) / f64::from(rate)).min(1.0);
+        let radius = i128::from(radius(cutoff));
+        let from = i64::try_from(first - radius)
             .map_err(|_| "output time is outside audio sample time")?;
-        let to = i64::try_from(last + i128::from(RADIUS) + 1)
+        let to = i64::try_from(last + radius + 1)
             .map_err(|_| "output time is outside audio sample time")?;
         let pcm = self.mixer.block(
             from,
@@ -108,7 +110,6 @@ impl crate::audio::Source for OutputSource {
         let mut output = Vec::with_capacity(
             usize::try_from(frames).expect("device run") * usize::from(self.format.channels),
         );
-        let cutoff = (f64::from(self.format.rate) / f64::from(rate)).min(1.0);
         for offset in 0..frames {
             let (sample, remainder) = at(self.played + i64::from(offset));
             let index =
@@ -162,20 +163,21 @@ fn block(
         let mapping = Mapping::new(clip, timeline);
         let (first, _) = mapping.at(piece.from)?;
         let (last, _) = mapping.at(piece.to - 1)?;
+        let cutoff = (f64::from(clip.speed.den) / f64::from(clip.speed.num)).min(1.0);
+        let radius = radius(cutoff);
         let range = first
             .min(last)
-            .checked_sub(RADIUS)
+            .checked_sub(radius)
             .ok_or("audio source time is too small")?
             ..first
                 .max(last)
-                .checked_add(RADIUS + 1)
+                .checked_add(radius + 1)
                 .ok_or("audio source time is too large")?;
         let pcm = read(clip, media, range.clone())?;
         if i64::try_from(pcm.len()).ok() != range.end.checked_sub(range.start) {
             return Err("the audio reader returned the wrong number of samples".into());
         }
         let pan = pan(piece.pan);
-        let cutoff = (f64::from(clip.speed.den) / f64::from(clip.speed.num)).min(1.0);
         for sample in piece.from..piece.to {
             let (index, phase) = mapping.at(sample)?;
             let index =
@@ -241,7 +243,9 @@ impl Mapping {
     }
 }
 
-/// Equal-power pan, normalized so a centred stereo clip keeps its original level.
+/// Equal-power pan, normalized so a centred stereo clip keeps its original level. Each channel
+/// of the media is scaled by its own side's gain, so on stereo media pan is a balance: a hard
+/// pan keeps one channel, louder by 3 dB, and drops the other.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "audio coefficients are f32"
@@ -260,40 +264,81 @@ fn pan(value: f32) -> Stereo {
     }
 }
 
-const RADIUS: i64 = 16;
+/// How many zero crossings of the sinc lie on each side of its centre, at full bandwidth.
+const CROSSINGS: i64 = 16;
+
+/// The most source samples on each side of the centre that one output sample reads: 32 times
+/// the reach at full bandwidth, which keeps 16 zero crossings up to a speed of 32.
+const LONGEST: i64 = CROSSINGS * 32;
+
+/// How many source samples on each side of the centre the filter reads at `cutoff` (the new
+/// band as a part of the old). The sinc is stretched as the band narrows, so that a speed-up
+/// keeps as many zero crossings, and with them as deep a stopband, as playing at speed 1 does:
+/// a 32-tap filter at 16 times would have barely two lobes and let much of what is above the
+/// new Nyquist frequency fold back into what is heard.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    reason = "the reach is at most LONGEST"
+)]
+fn radius(cutoff: f64) -> i64 {
+    ((CROSSINGS as f64 / cutoff).ceil() as i64).clamp(CROSSINGS, LONGEST)
+}
 
 /// Windowed sinc resampling low-passes a speed-up before decimation. Unity speed at an
-/// integer position is exact, so the ordinary playback path does no filtering at all.
+/// integer position is exact, so the ordinary playback path does no filtering at all. The sine
+/// and cosine of each tap are stepped from the last by a rotation, which a filter of a
+/// thousand taps needs to be cheap.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "normalized audio samples are f32"
+)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "filter taps are at most LONGEST from the centre"
 )]
 #[allow(
     clippy::float_cmp,
     reason = "the exact unity-rate, integer-phase case must preserve PCM samples"
 )]
 fn resampled(pcm: &[Stereo], index: usize, phase: f64, cutoff: f64) -> Stereo {
+    use std::f64::consts::PI;
     if phase == 0.0 && cutoff == 1.0 {
         return pcm[index];
     }
+    let radius = radius(cutoff);
+    let reach = radius as f64;
+    let first = 1 - radius;
+    let distance = first as f64 - phase;
+    // The angle of the sinc and of the window at the first tap, each stepped by a rotation.
+    let (step_sin, step_cos) = (PI * cutoff).sin_cos();
+    let (mut sin, mut cos) = (PI * cutoff * distance).sin_cos();
+    let (window_step_sin, window_step_cos) = (PI / reach).sin_cos();
+    let (mut window_sin, mut window_cos) = (PI * distance / reach).sin_cos();
     let mut sum = [0.0; 2];
     let mut weights = 0.0;
-    for tap in -15_i32..=16 {
-        let distance = f64::from(tap) - phase;
-        let angle = std::f64::consts::PI * distance * cutoff;
+    for tap in first..=radius {
+        let angle = PI * cutoff * (tap as f64 - phase);
         let sinc = if angle.abs() < 1e-12 {
             1.0
         } else {
-            angle.sin() / angle
+            sin / angle
         };
-        let window = 1.0_f64.midpoint((std::f64::consts::PI * distance / 16.0).cos());
-        let weight = cutoff * sinc * window;
+        let weight = sinc * 0.5_f64.mul_add(window_cos, 0.5);
         let at = index
-            .checked_add_signed(isize::try_from(tap).expect("small filter tap"))
+            .checked_add_signed(isize::try_from(tap).expect("filter taps fit an isize"))
             .expect("the source window includes filter support");
         sum[0] += f64::from(pcm[at][0]) * weight;
         sum[1] += f64::from(pcm[at][1]) * weight;
         weights += weight;
+        (sin, cos) = (
+            sin.mul_add(step_cos, cos * step_sin),
+            cos.mul_add(step_cos, -sin * step_sin),
+        );
+        (window_sin, window_cos) = (
+            window_sin.mul_add(window_step_cos, window_cos * window_step_sin),
+            window_cos.mul_add(window_step_cos, -window_sin * window_step_sin),
+        );
     }
     [(sum[0] / weights) as f32, (sum[1] / weights) as f32]
 }
@@ -462,6 +507,97 @@ mod tests {
         assert!(
             got.iter().flatten().all(|value| value.abs() < 0.002),
             "aliased Nyquist tone: {got:?}"
+        );
+    }
+
+    #[test]
+    fn pan_is_equal_power_between_the_hard_pans_and_keeps_its_sides() {
+        let close = |got: Stereo, want: [f64; 2]| {
+            for (got, want) in got.into_iter().zip(want) {
+                assert!((f64::from(got) - want).abs() < 1e-6, "{got} != {want}");
+            }
+        };
+        let sqrt2 = std::f64::consts::SQRT_2;
+        let (sin, cos) = std::f64::consts::FRAC_PI_8.sin_cos();
+        close(pan(0.0), [1.0, 1.0]);
+        // Halfway to the left, the left side is the louder: cos and sin of an eighth of pi.
+        close(pan(-0.5), [sqrt2 * cos, sqrt2 * sin]);
+        close(pan(0.5), [sqrt2 * sin, sqrt2 * cos]);
+        close(pan(-1.0), [sqrt2, 0.0]);
+        close(pan(1.0), [0.0, sqrt2]);
+        for value in [-0.9_f32, -0.5, -0.2, 0.0, 0.3, 0.5, 0.8] {
+            let [left, right] = pan(value);
+            assert!((left * left + right * right - 2.0).abs() < 1e-5, "{value}");
+        }
+    }
+
+    #[test]
+    fn a_half_pan_of_a_stereo_clip_is_a_balance_of_its_two_channels() {
+        let mut project = Project::sample();
+        project.timelines[0].tracks[1].clips[0].pan = 0.5;
+        let read = |_: &Clip, _: &Media, range: Range<i64>| Ok(samples(range, |_| [0.2, 0.1]));
+        let got = block(&project.timelines[0], &project, 0, 100, read).unwrap();
+        let (sin, cos) = std::f64::consts::FRAC_PI_8.sin_cos();
+        let sqrt2 = std::f64::consts::SQRT_2;
+        let want = [0.2 * sqrt2 * sin, 0.1 * sqrt2 * cos];
+        for pair in got {
+            assert!((f64::from(pair[0]) - want[0]).abs() < 1e-6, "{pair:?}");
+            assert!((f64::from(pair[1]) - want[1]).abs() < 1e-6, "{pair:?}");
+        }
+    }
+
+    /// How loud a mix is: the root of its mean square, of the left channel.
+    fn loudness(mix: &[Stereo]) -> f64 {
+        let sum: f64 = mix.iter().map(|pair| f64::from(pair[0]).powi(2)).sum();
+        #[allow(clippy::cast_precision_loss)]
+        let count = mix.len() as f64;
+        (sum / count).sqrt()
+    }
+
+    /// A clip at `speed` of a tone of `hertz` at 48 kHz and amplitude 0.5, mixed for 4800
+    /// samples from sample 2400.
+    fn sped(speed: u32, hertz: f64) -> Vec<Stereo> {
+        let mut project = Project::sample();
+        project.timelines[0].tracks[1].clips[0].speed = Speed { num: speed, den: 1 };
+        block(
+            &project.timelines[0],
+            &project,
+            2400,
+            4800,
+            |_, _, range| {
+                Ok(samples(range, |n| {
+                    let phase =
+                        2.0 * std::f64::consts::PI * hertz * f64::from(i32::try_from(n).unwrap())
+                            / 48000.0;
+                    #[allow(clippy::cast_possible_truncation)]
+                    let value = (0.5 * phase.sin()) as f32;
+                    [value, value]
+                }))
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn at_16_times_tones_above_the_new_nyquist_frequency_do_not_fold_back() {
+        // At 16 times, what is above 1500 Hz in the media would be above 24 kHz when heard.
+        let mut hertz = 2000.0;
+        while hertz < 20000.0 {
+            let heard = loudness(&sped(16, hertz));
+            // A tone of amplitude 0.5 is 0.35 loud; folded back, it must be 40 dB quieter.
+            assert!(heard < 0.0035, "{hertz} Hz at 16 times is {heard} loud");
+            hertz *= 1.21;
+        }
+        // What is below the new Nyquist frequency is heard, as loud as it was.
+        let heard = loudness(&sped(16, 600.0));
+        assert!(
+            (heard - 0.3535).abs() < 0.01,
+            "600 Hz at 16 times is {heard} loud"
+        );
+        let heard = loudness(&sped(4, 3000.0));
+        assert!(
+            (heard - 0.3535).abs() < 0.01,
+            "3000 Hz at 4 times is {heard} loud"
         );
     }
 

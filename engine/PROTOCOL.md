@@ -596,10 +596,14 @@ notification `transport.state`):
   Only unheld composition targets are reused, so a view never samples a target being rewritten.
 - At playback speed 1, enabled audio tracks are mixed at the timeline sample rate in stereo,
   then converted to the device's rate and channel layout. Disabled tracks/clips are not decoded.
-  Each clip applies its gain, linear fades and equal-power crossfades sample by sample; centred
-  stereo pan preserves level, endpoints silence the opposite channel, and combined tracks are
-  limited to [-1, 1]. Clip speed resampling changes pitch, with a low-pass filter for speed-up;
-  reverse clips read backward. Pitch preservation belongs to a later audio phase.
+  Each clip applies its gain, linear fades and equal-power crossfades sample by sample. Pan is
+  equal power, `√2·cos θ` on the left and `√2·sin θ` on the right with `θ = (pan + 1)·π/4`, each
+  applied to its own channel: centred it preserves level, and on stereo media it is a
+  **balance**, not a re-panning of a mono sum, so a hard pan keeps one channel (3 dB louder) and
+  drops the other. Combined tracks are limited to [-1, 1]. Clip speed resampling changes pitch,
+  with a windowed-sinc low-pass filter for speed-up whose length grows with the speed (16 zero
+  crossings each side up to 32 times, 512 samples each side above that), so that what would be
+  above the new Nyquist frequency does not fold back; reverse clips read backward. Pitch preservation belongs to a later audio phase.
 - The device's played samples (including its latency) drive the picture clock. Pausing and
   monitor handover stop that output. Direct seek preserves playback and starts the mix at the
   new position; edits replace the queued old mix at the current playhead. A failed device falls

@@ -421,11 +421,20 @@ impl<'a> Work<'a> {
         }
         for id in tracks {
             let track = self.track(id)?;
-            let mut clips: Vec<(i64, Id)> = track
+            let clips: Vec<Id> = track
                 .clips
                 .iter()
                 .filter(|c| c.start >= from && !skip.contains(&c.id))
-                .map(|c| (c.start, c.id.clone()))
+                .map(|c| c.id.clone())
+                .collect();
+            let selected: HashSet<&str> = clips.iter().map(String::as_str).collect();
+            let boundaries: Vec<Transition> = track
+                .transitions
+                .iter()
+                .filter(|x| {
+                    selected.contains(x.left.as_str()) != selected.contains(x.right.as_str())
+                })
+                .cloned()
                 .collect();
             let mut cues: Vec<(i64, Id)> = track
                 .cues
@@ -435,18 +444,21 @@ impl<'a> Work<'a> {
                 .collect();
             // The one furthest along goes first, so that none is moved onto another.
             if by > 0 {
-                clips.reverse();
                 cues.reverse();
             }
-            for (_, clip) in &clips {
-                self.detach(clip)?;
-            }
-            for (start, clip) in clips {
-                self.op(Op::MoveClip {
+            for transition in boundaries {
+                self.op(Op::RemoveTransition {
                     timeline: self.timeline_id(),
-                    id: clip,
+                    id: transition.id.clone(),
+                })?;
+                self.detached.push(transition);
+            }
+            if !clips.is_empty() {
+                self.op(Op::ShiftClips {
+                    timeline: self.timeline_id(),
                     track: id.clone(),
-                    start: start + by,
+                    clips,
+                    by,
                 })?;
             }
             for (start, cue) in cues {

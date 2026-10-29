@@ -292,6 +292,16 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             },
         ),
         (
+            "shift_clips with an internal transition",
+            vec![],
+            Op::ShiftClips {
+                timeline: "t1".into(),
+                track: "V1".into(),
+                clips: vec!["c1".into(), "c5".into()],
+                by: 20,
+            },
+        ),
+        (
             "trim_clip of media",
             vec![],
             Op::TrimClip {
@@ -507,6 +517,7 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "insert_clip",
         "remove_clip",
         "move_clip",
+        "shift_clips",
         "trim_clip",
         "set_proxy",
         "set_timeline",

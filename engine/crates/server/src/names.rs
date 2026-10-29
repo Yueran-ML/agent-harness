@@ -324,6 +324,20 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             f(id, Role::Names)?;
             f(track, Role::NamesTrack(of))
         }
+        Op::ShiftClips {
+            timeline,
+            track,
+            clips,
+            ..
+        } => {
+            let of = timeline.clone();
+            f(timeline, Role::Names)?;
+            f(track, Role::NamesTrack(of))?;
+            for id in clips {
+                f(id, Role::Names)?;
+            }
+            Ok(())
+        }
         Op::AddBin { bin, .. } => match &mut bin.parent {
             Some(parent) => f(parent, Role::Names),
             None => Ok(()),
@@ -417,6 +431,7 @@ mod tests {
             {"op": "trim_clip", "timeline": "$t", "id": "$c", "source_in": {"ticks": 0, "scale": 15360},
              "start": 100, "length": 5},
             {"op": "remove_clip", "timeline": "$t", "id": "$early"},
+            {"op": "shift_clips", "timeline": "$t", "track": "$v", "clips": ["$late", "$c"], "by": 10},
         ]));
         let (done, ids) = apply(&mut history, transaction).unwrap();
         // next_id is 3: m3, then t4 and its clips in the order of the list, c5 and c6; the
@@ -452,6 +467,15 @@ mod tests {
             }
         );
         let text = serde_json::to_string(history.project()).unwrap();
+        assert_eq!(
+            done[7],
+            Op::ShiftClips {
+                timeline: "t4".into(),
+                track: "V1".into(),
+                clips: vec!["c5".into(), "c8".into()],
+                by: 10,
+            }
+        );
         assert!(!text.contains('$'), "{text}");
     }
 

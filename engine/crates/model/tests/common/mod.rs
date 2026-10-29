@@ -27,9 +27,10 @@ const RATES: [Rate; 3] = [
 
 /// The kinds of operation, as `op_of` numbers them, each as often as it is wanted: clips are
 /// put in, moved, trimmed and set most often, and timelines are taken away least.
-const KINDS: [u8; 52] = [
+const KINDS: [u8; 55] = [
     0, 0, 1, 2, 3, 4, 4, 5, 6, 6, 6, 6, 6, 6, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 11, 12, 12, 13,
-    13, 13, 13, 14, 15, 16, 17, 17, 18, 18, 18, 19, 20, 20, 21, 21, 22, 23, 24, 24, 24, 25,
+    13, 13, 13, 14, 15, 16, 17, 17, 18, 18, 18, 19, 20, 20, 21, 21, 22, 23, 24, 24, 24, 25, 26, 26,
+    26,
 ];
 
 /// The speeds that a clip is set to, the last of them too slow.
@@ -284,6 +285,7 @@ pub fn op_of(project: &Project, spec: &Spec) -> Op {
         21 => add_cue_of(project, spec),
         22 | 23 => cue_op_of(project, spec, kind),
         24 => insert_after_of(project, spec, chosen),
+        26 => shift_of(spec, chosen, clip_timeline, clip_id),
         _ => {
             let Op::InsertClip {
                 timeline,
@@ -800,6 +802,26 @@ fn insert_of(project: &Project, spec: &Spec, timeline_id: String) -> Op {
         timeline,
         track,
         clip: clip_of(project, rate, spec, &["c1", "c2", "c50", "y"]),
+    }
+}
+
+/// A suffix of one track moved together; now and then a missing clip or invalid offset.
+fn shift_of(spec: &Spec, chosen: Option<&Placed>, timeline: String, clip: String) -> Op {
+    Op::ShiftClips {
+        timeline,
+        track: chosen.map_or_else(|| "V99".into(), |p| p.track.id.clone()),
+        clips: chosen.map_or_else(
+            || vec![clip],
+            |p| {
+                p.track
+                    .clips
+                    .iter()
+                    .skip(spec.b % p.track.clips.len())
+                    .map(|c| c.id.clone())
+                    .collect()
+            },
+        ),
+        by: spec.start,
     }
 }
 

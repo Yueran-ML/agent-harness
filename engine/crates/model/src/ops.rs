@@ -83,6 +83,8 @@
 //! from the left or the right clip. A title and a colour go on as long as they are wanted. A clip
 //! that a transition is at is not moved, trimmed or taken away: the transition is taken away
 //! first, so that taking the operation back never loses it.
+//! Moving a set of clips together with `shift_clips` keeps the transitions whose two ends
+//! are in that set: their adjacency and media handles do not change.
 //!
 //! A subtitle lasts at least one frame, from a frame no earlier than 0, says something in at most
 //! 1000 characters, and on its track covers no frame that another one covers.
@@ -203,6 +205,18 @@ pub enum Op {
         track: Id,
         /// The frame that it starts at there.
         start: i64,
+    },
+    /// Move a set of clips together on their track. Transitions between them stay attached;
+    /// a transition with only one end in the set must be removed first.
+    ShiftClips {
+        /// The timeline.
+        timeline: Id,
+        /// The track containing every clip in the set.
+        track: Id,
+        /// The clips. Repeating an id still moves that clip only once.
+        clips: Vec<Id>,
+        /// How many frames later to move them (negative for earlier).
+        by: i64,
     },
     /// Set where a clip begins in its media, where it starts on its track, and how long it lasts.
     TrimClip {
@@ -832,6 +846,12 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             track,
             start,
         } => move_clip(project, &timeline, &id, &track, start),
+        Op::ShiftClips {
+            timeline,
+            track,
+            clips,
+            by,
+        } => shift_clips(project, &timeline, &track, clips, by),
         Op::TrimClip {
             timeline,
             id,
@@ -1288,6 +1308,64 @@ fn move_clip(
     tracks[from].clips.remove(at);
     put(&mut tracks[to].clips, moved);
     Ok(inverse)
+}
+
+fn shift_clips(
+    project: &mut Project,
+    timeline_id: &str,
+    track_id: &str,
+    clips: Vec<Id>,
+    by: i64,
+) -> Result<Op, OpError> {
+    within("by", by.into())?;
+    let t = timeline_at(project, timeline_id)?;
+    let r = track_at(&project.timelines[t], track_id)?;
+    let track = &project.timelines[t].tracks[r];
+    // Index the ids once, so checking a long set does not search the track for each clip.
+    let available: HashSet<&str> = track.clips.iter().map(|c| c.id.as_str()).collect();
+    for id in &clips {
+        if !available.contains(id.as_str()) {
+            return Err(missing("clip", id));
+        }
+    }
+    let selected: HashSet<&str> = clips.iter().map(String::as_str).collect();
+    for transition in &track.transitions {
+        if selected.contains(transition.left.as_str())
+            != selected.contains(transition.right.as_str())
+        {
+            return Err(OpError::HasTransition {
+                transition: transition.id.clone(),
+            });
+        }
+    }
+    let mut moved = track.clone();
+    for clip in &mut moved.clips {
+        if selected.contains(clip.id.as_str()) {
+            let start = i128::from(clip.start) + i128::from(by);
+            within("start", start)?;
+            within("end", start + i128::from(clip.length))?;
+            clip.start = i64::try_from(start).expect("the start is within LARGEST");
+            if clip.start < 0 {
+                return Err(OpError::OutOfTimeline { start: clip.start });
+            }
+        }
+    }
+    order(&mut moved);
+    if let Some(pair) = moved.clips.windows(2).find(|p| overlap(&p[0], &p[1])) {
+        return Err(OpError::Overlap {
+            with: pair[0].id.clone(),
+        });
+    }
+    // Both ends of each transition moved by the same amount (or neither moved). Their
+    // source handles, lengths, fades and adjacency have not changed.
+    project.timelines[t].tracks[r].clips = moved.clips;
+    project.timelines[t].tracks[r].transitions = moved.transitions;
+    Ok(Op::ShiftClips {
+        timeline: timeline_id.into(),
+        track: track_id.into(),
+        clips,
+        by: -by,
+    })
 }
 
 fn trim_clip(
@@ -2027,18 +2105,15 @@ fn check_tracks(project: &Project, rate: Rate, tracks: &mut [Track]) -> Result<(
 /// cuts, and its subtitles in the order of their start.
 fn order(track: &mut Track) {
     track.clips.sort_by_key(|c| c.start);
-    let clips = &track.clips;
-    track.transitions.sort_by_key(|x| cut_of(clips, x));
-    track.cues.sort_by_key(|q| q.start);
-}
-
-/// The frame of the cut that a transition is at: the start of its right clip, or the end of
-/// the timeline if there is none.
-fn cut_of(clips: &[Clip], transition: &Transition) -> i64 {
-    clips
+    let starts: HashMap<&str, i64> = track
+        .clips
         .iter()
-        .find(|c| c.id == transition.right)
-        .map_or(i64::MAX, |c| c.start)
+        .map(|c| (c.id.as_str(), c.start))
+        .collect();
+    track
+        .transitions
+        .sort_by_key(|x| starts.get(x.right.as_str()).copied().unwrap_or(i64::MAX));
+    track.cues.sort_by_key(|q| q.start);
 }
 
 /// Check a track whose things are in order, on a timeline of `rate`: what it holds, its clips,
@@ -2255,6 +2330,7 @@ pub(crate) fn in_source(
 /// Check the transitions of a track whose clips are in order and checked, on a timeline of
 /// `rate`.
 fn check_transitions(project: &Project, rate: Rate, track: &Track) -> Result<(), OpError> {
+    let clips: HashMap<&str, &Clip> = track.clips.iter().map(|c| (c.id.as_str(), c)).collect();
     // For each clip, the frames that the transitions at it need beyond its start and end, and
     // those that they cover of it there.
     let mut beyond: HashMap<&str, (i64, i64)> = HashMap::new();
@@ -2275,13 +2351,7 @@ fn check_transitions(project: &Project, rate: Rate, track: &Track) -> Result<(),
                 kind: track.kind,
             });
         }
-        let find = |id: &str| {
-            track
-                .clips
-                .iter()
-                .find(|c| c.id == id)
-                .ok_or_else(|| missing("clip", id))
-        };
+        let find = |id: &str| clips.get(id).copied().ok_or_else(|| missing("clip", id));
         let (left, right) = (find(&transition.left)?, find(&transition.right)?);
         if left.end() != right.start {
             return Err(OpError::NotAdjacent {
@@ -2311,8 +2381,8 @@ fn check_transitions(project: &Project, rate: Rate, track: &Track) -> Result<(),
     for transition in &track.transitions {
         for id in [&transition.left, &transition.right] {
             let (start, end) = covered[id.as_str()];
-            let clip = track.clips.iter().find(|c| c.id == *id);
-            if clip.is_some_and(|c| i128::from(start) + i128::from(end) > i128::from(c.length)) {
+            let clip = clips[id.as_str()];
+            if i128::from(start) + i128::from(end) > i128::from(clip.length) {
                 return Err(OpError::TooLong {
                     transition: transition.id.clone(),
                     clip: id.clone(),

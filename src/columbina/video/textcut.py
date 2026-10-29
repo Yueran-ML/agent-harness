@@ -36,7 +36,7 @@ from columbina.video.span import Placed, frames_showing, source_span
 from columbina.video.story import Marked, StoryError, Telling, marked
 from columbina.video.transcript import LEAD_US, PAUSE_LEAST_US, Transcript
 
-__all__ = ["LEAD_US", "Range", "cuts", "edits_of", "merged"]
+__all__ = ["LEAD_US", "Range", "cut_by", "cuts", "edits_of", "merged"]
 
 
 @dataclass(frozen=True, order=True)
@@ -99,25 +99,48 @@ def cuts(
         StoryError: The story is not understood, or its track is locked, so that nothing would
             be cut of it.
     """
-    said = marked(story, timeline, transcripts)
+    return cut_by(marked(story, timeline, transcripts), transcripts, pause_most_ms=pause_most_ms)
+
+
+def cut_by(
+    said: Marked, transcripts: Mapping[str, Transcript], *, pause_most_ms: int | None = None
+) -> list[Range]:
+    """Work out the frames that a story, read by :func:`~columbina.video.story.marked`, cuts.
+
+    Args:
+        said: What the story says should be cut.
+        transcripts: The transcript of each media that has one, by the id of the media.
+        pause_most_ms: As for :func:`cuts`.
+
+    Raises:
+        StoryError: Its track is locked, so that nothing would be cut of it.
+    """
     told = said.telling
     if told.locked:
         raise StoryError(
             f"track {told.track} is locked, and a range is cut out of the tracks that are not: "
             "unlock it first"
         )
+    of_clip: dict[str, list[int]] = {}
+    for clip, index in told.owners:
+        of_clip.setdefault(clip, []).append(index)
     found: list[Range] = []
     for clip in told.clips:
         transcript = transcripts.get(clip.media)
         if transcript is not None:
-            found.extend(_struck(said, clip, transcript, told.rate))
+            owned = sorted(of_clip.get(clip.id, []))
+            found.extend(_struck(said, clip, owned, transcript, told.rate))
     found.extend(_paused(said, pause_most_ms))
     return merged(found)
 
 
-def _struck(marks: Marked, clip: Placed, transcript: Transcript, rate: Rate) -> list[Range]:
-    """The ranges of a clip that its words struck out of the story take."""
-    owned = sorted(index for owner_clip, index in marks.telling.owners if owner_clip == clip.id)
+def _struck(
+    marks: Marked, clip: Placed, owned: Sequence[int], transcript: Transcript, rate: Rate
+) -> list[Range]:
+    """The ranges of a clip that its words struck out of the story take.
+
+    ``owned`` are the places of the words that it plays, in order.
+    """
     mine = set(owned)
     runs: list[list[int]] = []
     for index in owned:

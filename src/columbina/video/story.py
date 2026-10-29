@@ -45,7 +45,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -160,6 +160,11 @@ def _kept_of(shown: Sequence[str], text: str) -> set[int] | None:
             return None
         return set() if _struck_out(text) else {place for place, _ in words}
     size = len(line)
+    letters = "".join(character for character, _ in line)
+    # alike[j]: the end of the stretch of characters, from j on, that are all struck or all not.
+    alike = [size] * (size + 1)
+    for j in range(size - 2, -1, -1):
+        alike[j] = alike[j + 1] if line[j][1] == line[j + 1][1] else j + 1
     # able[i][j]: the words from i on can make the line from j on.
     able = [[False] * (size + 1) for _ in range(len(counted) + 1)]
     able[len(counted)][size] = True
@@ -169,10 +174,10 @@ def _kept_of(shown: Sequence[str], text: str) -> set[int] | None:
             if able[i + 1][j]:
                 able[i][j] = True
                 continue
-            piece = line[j : j + len(said)]
             if (
-                "".join(character for character, _ in piece) == said
-                and len({struck for _, struck in piece}) == 1
+                j < size
+                and letters.startswith(said, j)
+                and alike[j] >= j + len(said)
                 and able[i + 1][j + len(said)]
             ):
                 able[i][j] = True
@@ -376,16 +381,45 @@ def _digest(
     return hashlib.sha256(said.encode("utf-8")).hexdigest()[:_DIGEST]
 
 
-def _owned(transcript: Transcript, clip: Placed, rate: Rate) -> list[int]:
-    """The words that a clip plays: those whose middle is in the stretch of media that it shows."""
-    scale = clip.begins.scale
-    begins = Fraction(clip.begins.ticks * 1_000_000, scale)
-    ends = Fraction((clip.begins.ticks + source_span(clip, rate)) * 1_000_000, scale)
-    return [
-        index
-        for index, word in enumerate(transcript.words)
-        if begins <= Fraction(word.start_us + word.end_us, 2) < ends
-    ]
+@dataclass(frozen=True)
+class _Reach:
+    """The words of a transcript in the order in which they begin, to find those near a stretch.
+
+    Attributes:
+        order: The places of the words, by the earlier of their two times.
+        starts: Those times, in that order.
+        ends: The latest later time of a word up to each place of ``order``.
+    """
+
+    order: tuple[int, ...]
+    starts: tuple[int, ...]
+    ends: tuple[int, ...]
+
+
+def _reach(transcript: Transcript) -> _Reach:
+    words = transcript.words
+    order = sorted(range(len(words)), key=lambda one: min(words[one].start_us, words[one].end_us))
+    ends: list[int] = []
+    for one in order:
+        ends.append(max(ends[-1] if ends else words[one].end_us, *_times(transcript, one)))
+    return _Reach(tuple(order), tuple(min(_times(transcript, one)) for one in order), tuple(ends))
+
+
+def _times(transcript: Transcript, index: int) -> tuple[int, int]:
+    word = transcript.words[index]
+    return word.start_us, word.end_us
+
+
+def _near(transcript: Transcript, reach: _Reach, begins: Fraction, ends: Fraction) -> list[int]:
+    """The words, by their places, that a clip showing ``begins`` to ``ends`` of them can play.
+
+    Those are the words that end at ``begins`` or later and begin at ``ends`` or earlier: no
+    frame of the clip shows another, nor is the middle of another in what it shows. Finding them
+    takes the time of a search and of the words found, not of all the words of a transcript.
+    """
+    first = bisect_left(reach.ends, begins)
+    last = bisect_right(reach.starts, ends)
+    return sorted(one for one in reach.order[first:last] if max(_times(transcript, one)) >= begins)
 
 
 def _continuous(left: Placed, right: Placed, rate: Rate) -> bool:
@@ -420,23 +454,32 @@ def _speech(
             runs.append([clip])
     owners: dict[tuple[str, int], str] = {}
     spoken: dict[str, list[Spoken]] = {clip.id: [] for clip in clips}
+    reaches: dict[str, _Reach] = {}
     for run in runs:
         transcript = transcripts.get(run[0].media)
         if transcript is None:
             continue
+        reach = reaches.get(run[0].media)
+        if reach is None:
+            reach = reaches[run[0].media] = _reach(transcript)
         pieces: dict[int, list[tuple[Placed, Spoken]]] = {}
         middles: dict[int, str] = {}
         for clip in run:
-            middle = set(_owned(transcript, clip, rate))
-            for index, word in enumerate(transcript.words):
+            scale = clip.begins.scale
+            begins = Fraction(clip.begins.ticks * 1_000_000, scale)
+            ends = Fraction((clip.begins.ticks + source_span(clip, rate)) * 1_000_000, scale)
+            for index in _near(transcript, reach, begins, ends):
+                word = transcript.words[index]
+                # The words that a clip plays are those whose middle is in what it shows.
+                middle = begins <= Fraction(word.start_us + word.end_us, 2) < ends
                 first, end = frames_showing(
                     clip, word.start_us, max(word.start_us, word.end_us), rate
                 )
-                if end > first or index in middle:
+                if end > first or middle:
                     pieces.setdefault(index, []).append(
                         (clip, Spoken(index, clip.start + first, clip.start + end))
                     )
-                if index in middle:
+                if middle:
                     middles[index] = clip.id
         for index, fragments in sorted(pieces.items()):
             owner = middles.get(index)
@@ -467,13 +510,7 @@ def telling(
     Raises:
         StoryError: There is no such track, or it holds subtitles, or a clip of it cannot be read.
     """
-    found = _track(timeline, track)
-    try:
-        rate = Rate.model_validate(timeline.get("rate"))
-        clips = [placed(one) for one in found.get("clips", [])]
-    except (ValueError, ValidationError) as error:
-        raise StoryError(f"timeline {timeline.get('id')} cannot be read: {error}") from None
-    media = sorted((one for one in clips if one is not None), key=lambda one: one.start)
+    found, rate, media = _read(timeline, track)
     owners, said = _speech(media, transcripts, rate)
     parts: list[Part] = []
     silent: list[tuple[str, str]] = []
@@ -482,12 +519,7 @@ def telling(
         if transcript is None:
             silent.append((clip.id, clip.media))
             continue
-        spoken = said[clip.id]
-        of_clip = [
-            Part(clip, number, tuple(one for one in spoken if start <= one.index < end))
-            for number, (start, end) in enumerate(transcript.sentences)
-        ]
-        of_clip = [one for one in of_clip if one.words]
+        of_clip = _sentences(transcript, clip, said[clip.id])
         # A clip that plays backward says its last sentence first.
         parts.extend(reversed(of_clip) if clip.reverse else of_clip)
     return Telling(
@@ -501,6 +533,36 @@ def telling(
         silent=tuple(silent),
         digest=_digest(timeline, track, media, transcripts),
     )
+
+
+def _read(timeline: Mapping[str, Any], track: str) -> tuple[dict[str, Any], Rate, list[Placed]]:
+    """The track, the rate of the timeline, and the clips of media of the track by their start.
+
+    Raises:
+        StoryError: There is no such track, or it holds subtitles, or a clip of it cannot be read.
+    """
+    found = _track(timeline, track)
+    try:
+        rate = Rate.model_validate(timeline.get("rate"))
+        clips = [placed(one) for one in found.get("clips", [])]
+    except (ValueError, ValidationError) as error:
+        raise StoryError(f"timeline {timeline.get('id')} cannot be read: {error}") from None
+    return found, rate, sorted((one for one in clips if one is not None), key=lambda one: one.start)
+
+
+def _sentences(transcript: Transcript, clip: Placed, spoken: Sequence[Spoken]) -> list[Part]:
+    """The lines of a clip: the words that it plays, in the order of their places, by sentence."""
+    starts = [first for first, _ in transcript.sentences]
+    parts: list[Part] = []
+    for one in spoken:
+        number = bisect_right(starts, one.index) - 1
+        if number < 0 or one.index >= transcript.sentences[number][1]:
+            continue
+        if parts and parts[-1].sentence == number:
+            parts[-1] = Part(clip, number, (*parts[-1].words, one))
+        else:
+            parts.append(Part(clip, number, (one,)))
+    return parts
 
 
 def _timed(frame: int, rate: Rate) -> str:
@@ -563,12 +625,16 @@ def _shown_pause(told: Telling, place: int) -> int | None:
 def _told_by_digest(
     timeline: Mapping[str, Any], digest: str, transcripts: Mapping[str, Transcript]
 ) -> Telling | None:
-    """What the track whose story has a digest tells, if a track of the timeline has it."""
+    """What the track whose story has a digest tells, if a track of the timeline has it.
+
+    The digest of each track is worked out from the timeline and the words alone: what the
+    track tells is worked out for the track that has it only.
+    """
     for one in _tracks(timeline):
         if one.get("kind") in ("audio", "video"):
-            told = telling(timeline, str(one.get("id")), transcripts)
-            if told.digest == digest:
-                return told
+            track = str(one.get("id"))
+            if _digest(timeline, track, _read(timeline, track)[2], transcripts) == digest:
+                return telling(timeline, track, transcripts)
     return None
 
 
@@ -672,14 +738,19 @@ def _placed_lines(
         StoryError: The lines of a clip are no way of cutting its sentences.
     """
     placed_lines: list[tuple[int, set[int]]] = []
+    times = _line_times(told)
+    of_clip: dict[str, list[int]] = {}
+    for place, part in enumerate(told.parts):
+        of_clip.setdefault(part.clip.id, []).append(place)
     at = 0
     while at < len(said):
         clip = said[at][1]
         ends = at
         while ends < len(said) and said[ends][1] == clip:
             ends += 1
-        parts = [place for place, part in enumerate(told.parts) if part.clip.id == clip]
-        placed_lines.extend(_matched_lines(told, transcripts, said[at:ends], parts))
+        placed_lines.extend(
+            _matched_lines(told, transcripts, said[at:ends], of_clip.get(clip, []), times)
+        )
         at = ends
     return placed_lines
 
@@ -689,10 +760,10 @@ def _matched_lines(
     transcripts: Mapping[str, Transcript],
     lines: list[tuple[int, str, str, str | None]],
     parts: list[int],
+    times: Sequence[str],
 ) -> list[tuple[int, set[int]]]:
     """Match lines in order by their words and retained time markers; refuse ambiguity."""
     known: dict[tuple[int, int], set[int] | None] = {}
-    times = _line_times(told)
 
     def keeps(i: int, j: int) -> set[int] | None:
         if (i, j) not in known:

@@ -21,7 +21,6 @@ clip show a stretch of its media.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
-from math import ceil
 from typing import Any
 
 from columbina.video.edits import Rate, Speed, Time
@@ -120,12 +119,20 @@ def first_frame_at(clip: Placed, ticks: Fraction | int, rate: Rate) -> int:
 
     It is the length of the clip where none does, and 0 where all do.
     """
-    after = Fraction(ticks) - clip.begins.ticks
+    ticks = Fraction(ticks)
+    return _first_frame(clip, ticks.numerator, ticks.denominator, rate)
+
+
+def _first_frame(clip: Placed, num: int, den: int, rate: Rate) -> int:
+    """:func:`first_frame_at` of ``num / den`` ticks, in whole numbers alone, which is quicker."""
+    after = num - clip.begins.ticks * den
     if after <= 0:
         return 0
-    # floor(k * per) >= ceil(after) where k * per >= ceil(after).
-    per = Fraction(clip.speed.num * rate.den * clip.begins.scale, clip.speed.den * rate.num)
-    return min(clip.length, ceil(ceil(after) / per))
+    # floor(k * per) >= ceil(after) where k * per >= ceil(after), and per is ticks a frame.
+    per_num = clip.speed.num * rate.den * clip.begins.scale
+    per_den = clip.speed.den * rate.num
+    whole = -(-after // den)
+    return min(clip.length, -(-whole * per_den // per_num))
 
 
 def frames_showing(
@@ -138,8 +145,9 @@ def frames_showing(
     A clip that plays backward shows them last first, so they are counted from its end.
     """
     scale = clip.begins.scale
-    first = first_frame_at(clip, Fraction(start_us) * scale / 1_000_000, rate)
-    after = first_frame_at(clip, Fraction(end_us) * scale / 1_000_000, rate)
+    start, end = Fraction(start_us), Fraction(end_us)
+    first = _first_frame(clip, start.numerator * scale, start.denominator * 1_000_000, rate)
+    after = _first_frame(clip, end.numerator * scale, end.denominator * 1_000_000, rate)
     after = max(first, after)
     if clip.reverse:
         return clip.length - after, clip.length - first

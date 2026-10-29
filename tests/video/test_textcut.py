@@ -1,5 +1,6 @@
 """Cutting by the words: what is struck out of the story of a track, as ranges of frames."""
 
+import time
 from dataclasses import dataclass
 from fractions import Fraction
 from itertools import pairwise
@@ -664,3 +665,33 @@ def test_any_striking_cuts_the_frames_of_the_words_struck_out_and_no_other(drawn
                 assert shown <= cut, (one, found)
             else:
                 assert not shown & cut, (one, found)
+
+
+def test_a_long_talk_in_many_clips_is_told_and_cut_quickly() -> None:
+    # 8000 words, a sentence of every twelve, in 200 clips: once a minute or more of work.
+    said = [
+        Word(
+            start_us=at * 300_000 + 10_000,
+            end_us=at * 300_000 + 250_000,
+            text=f"w{at}{'.' if at % 12 == 11 else ''}",
+        )
+        for at in range(8000)
+    ]
+    transcript = transcript_of("m1", DIGEST, said, [], 8000 * 300_000 + 1_000_000)
+    each = 8000 * 300_000 * 25 // 1_000_000 // 200
+    timeline = spoken(
+        *(clip_of(f"c{at + 1}", at * each, each - 1, ticks=at * each * 512) for at in range(200))
+    )
+    words = {"m1": transcript}
+
+    began = time.perf_counter()
+    story = of_track(timeline, "A1", words, 1)
+    struck_out = story
+    for at in range(5, 8000, 400):
+        struck_out = struck_out.replace(f" w{at} ", f" ~~w{at}~~ ", 1)
+    found = cuts(struck_out, timeline, words)
+    took = time.perf_counter() - began
+
+    assert len(found) == 20
+    # About a third of a second on a laptop; the bound is for a slow machine under load.
+    assert took < 8, took

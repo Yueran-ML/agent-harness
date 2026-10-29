@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from itertools import pairwise
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -718,3 +719,75 @@ async def test_the_engine_takes_subtitles_of_words_timed_to_overlap(
     cues = info["timelines"][0]["tracks"][1]["cues"]
     assert [(one["start"], one["length"]) for one in cues] == [(0, 23), (23, 24)]
     assert not list((desk.work / ".columbina/studio/analysis").glob("audio-*.wav"))
+
+
+async def test_media_added_by_an_edit_is_read_only_where_allowed_and_by_its_whole_path(
+    studio: tuple[Desk, Fake], tmp_path: Path
+) -> None:
+    desk, fake = studio
+    (desk.work / "take.wav").write_bytes(b"sound")
+    outside = tmp_path / "elsewhere.wav"
+    outside.write_bytes(b"sound")
+
+    refused = await desk.call(
+        "video_edit", edits=[{"op": "add_media", "media": {"id": "$m", "path": str(outside)}}]
+    )
+    wrong = await desk.call("video_edit", edits=[{"op": "add_media", "media": "take.wav"}])
+    added = result(
+        await desk.call(
+            "video_edit", edits=[{"op": "add_media", "media": {"id": "$m", "path": "take.wav"}}]
+        )
+    )
+
+    assert refused.error is not None
+    assert refused.error.code == "OUTSIDE_WORKING_DIRECTORY"
+    assert wrong.error is not None
+    assert wrong.error.code == "VIDEO_INVALID"
+    assert added["names"]["$m"]
+    # The engine reads a path from where it runs, so it is given the whole one.
+    assert [item["path"] for item in fake.project["media"]] == [
+        str((desk.work / "take.wav").resolve())
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tracks", "named"),
+    [
+        ([("en", "S1")], ["cut.srt"]),
+        (
+            [("en", "S1"), ("", "中文 字幕"), ("EN", "S3")],
+            ["cut.en.srt", "cut.中文 字幕.srt", "cut.EN-2.srt"],
+        ),
+    ],
+)
+async def test_subtitles_written_beside_an_export_are_asked_for_as_the_film_is(
+    studio: tuple[Desk, Fake],
+    monkeypatch: pytest.MonkeyPatch,
+    tracks: list[tuple[str, str]],
+    named: list[str],
+) -> None:
+    desk, fake = studio
+    await seed_story(desk, fake)
+    timeline = fake.project["timelines"][0]
+    timeline["tracks"] = [
+        timeline["tracks"][0],
+        *(
+            {**edits.track("subtitle", id=f"S{at}", name=name), "language": language}
+            for at, (language, name) in enumerate(tracks)
+        ),
+    ]
+    videos = desk.ctx.use(VIDEOS)
+    asked: list[tuple[str, str]] = []
+    checking = videos.checked
+
+    def checked(run: object, tool: str, path: str, kind: Literal["read", "write"]) -> Path:
+        asked.append((Path(path).name, kind))
+        return checking(run, tool, path, kind)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(videos, "checked", checked)
+    result(await desk.call("video_render", path="out/cut.mp4"))
+    unasked = await desk.call("video_render", path="out/other.mp4", subtitles=False)
+
+    assert all((name, "write") in asked for name in named)
+    assert unasked.error is None
+    assert not [name for name, _ in asked if name.startswith("other.") and name.endswith(".srt")]

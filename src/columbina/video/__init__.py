@@ -11,14 +11,14 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, Field, field_validator
 
 from columbina.fs import FS, Access, Fs
 from columbina.kernel import Context, EmitEvent, ServiceKey
 from columbina.tools import TOOLS, Tool, ToolFailure, ToolRun
-from columbina.video.editing import Editor, safe_name
+from columbina.video.editing import Editor, safe_name, sidecars
 from columbina.video.engine import Engine, EngineError, Progress, not_found, program_of
 from columbina.video.media import MediaUnavailableError, Tools, UnreadableMediaError, located
 from columbina.video.project import ProjectError
@@ -233,7 +233,8 @@ class _Story(_Timeline):
     track: str | None = Field(
         default=None,
         description=(
-            "Dialogue track id; defaults to the first audio track, otherwise the first video track."
+            "Dialogue track id; defaults to A1, otherwise the first audio track, otherwise "
+            "the first video track."
         ),
     )
 
@@ -281,6 +282,33 @@ class _Undo(_Project):
     redo: bool = False
 
 
+def _media_checked(
+    operations: list[dict[str, Any]], videos: Videos, run: ToolRun, tool: str
+) -> list[dict[str, Any]]:
+    """The edits, each media that ``add_media`` adds at the whole path that may be read.
+
+    The engine reads a path from where it runs, which is not where the session works.
+
+    Raises:
+        ToolFailure: A media is no object with a path, or its path may not be read.
+    """
+    checked: list[dict[str, Any]] = []
+    for operation in operations:
+        if operation.get("op") == "add_media":
+            item: object = operation.get("media")
+            path = cast("dict[str, Any]", item).get("path") if isinstance(item, dict) else None
+            if not isinstance(path, str) or not path:
+                raise ToolFailure(
+                    "add_media takes media: an object with the path of the file, as "
+                    "video_info lists media; or import the file with video_import",
+                    code="VIDEO_INVALID",
+                )
+            where = videos.checked(run, tool, path, "read")
+            operation = {**operation, "media": {**cast("dict[str, Any]", item), "path": str(where)}}
+        checked.append(operation)
+    return checked
+
+
 def _failing(error: Exception) -> ToolFailure:
     if isinstance(error, EngineError):
         reason = str((error.data or {}).get("reason", "engine"))
@@ -305,18 +333,13 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                 if isinstance(args, _Render) and args.path is not None
                 else None
             )
-            if isinstance(args, _Edit):
-                for operation in args.edits:
-                    if operation.get("op") == "add_media":
-                        videos.checked(
-                            run, tool, str(operation.get("media", {}).get("path", "")), "read"
-                        )
+            batch = _media_checked(args.edits, videos, run, tool) if isinstance(args, _Edit) else []
             editor = await videos.editor(run, tool, args.project)
             async with editor.lock:
                 if isinstance(args, _Import):
                     return await editor.imported(paths, args.bin)
                 if isinstance(args, _Edit):
-                    return await editor.edited(args.edits, args.timeline)
+                    return await editor.edited(batch, args.timeline)
                 if isinstance(args, _Story):
                     return await editor.told(args.timeline, args.track)
                 if isinstance(args, _Apply):
@@ -360,8 +383,12 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
                             str(Path("out") / (safe_name(target["name"]) + extension)),
                             "write",
                         )
-                    # The hardware fallback can publish a MOV beside the requested MP4.
+                    # The hardware fallback can publish a MOV beside the requested MP4, and
+                    # subtitles are written beside the film as SRT files.
                     videos.checked(run, tool, str(path.with_suffix(".mov")), "write")
+                    if args.subtitles:
+                        for sidecar in sidecars(target, path):
+                            videos.checked(run, tool, str(sidecar), "write")
                     _, project = await editor.engine.project()
                     used = {
                         clip["source"]["media"]
@@ -507,8 +534,10 @@ _EDIT = """Edit the shared timeline with DaVinci-style commands, one atomic batc
 Each item is {edit: command, timeline: id, ...} or a basic {op: command, ...}; omitted edit
 timeline uses the tool's timeline. Times on timelines are integer frames; media times are
 {ticks, scale}. insert opens space; overwrite replaces a range without shifting later clips;
-replace retains the target clip's timeline slot; append adds at the end; place_on_top adds an
-upper picture track; smart_insert uses the nearest cut; ripple_overwrite replaces and closes
+replace retains the target clip's timeline slot; append adds at the end; place_on_top puts
+picture (and sound) on the first unlocked track of its kind above the highest one occupied in
+that range, adding a track only where there is none; smart_insert uses the nearest cut;
+ripple_overwrite replaces and closes
 or opens the length difference. lift leaves a gap; ripple_delete closes selected clip ranges;
 ripple_delete_range removes [from,to) on unlocked tracks; close_gap closes empty space (it is
 not DaVinci Close Up, which reframes a shot). blade splits at a frame; move does not ripple others;

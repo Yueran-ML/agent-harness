@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -21,7 +22,7 @@ from columbina.video.span import placed, source_span
 from columbina.video.transcribe import Transcriber, TranscriptionError, transcript_of
 from columbina.video.transcript import Transcript
 
-__all__ = ["Editor", "receipt", "safe_name"]
+__all__ = ["Editor", "receipt", "safe_name", "sidecars"]
 
 
 def receipt(value: object) -> str:
@@ -42,6 +43,40 @@ def safe_name(name: str) -> str:
     }:
         name = "_" + name
     return name or "Timeline"
+
+
+def sidecars(timeline: Mapping[str, Any], path: Path) -> list[Path]:
+    """The SRT files that an export of a timeline to ``path`` writes beside it.
+
+    As the engine names them: one enabled track of subtitles is ``<stem>.srt``; more are
+    ``<stem>.<language or name>.srt``, the name made safe and numbered where two are alike.
+    """
+    tracks = [
+        one
+        for one in timeline.get("tracks", [])
+        if one.get("kind") == "subtitle" and one.get("enabled", True)
+    ]
+    if len(tracks) == 1:
+        return [path.with_suffix(".srt")]
+    taken: set[str] = set()
+    found: list[Path] = []
+    for track in tracks:
+        label = _label(str(track.get("language") or track.get("name") or ""))
+        name, suffix = label, 2
+        while name.lower() in taken:
+            name, suffix = f"{label}-{suffix}", suffix + 1
+        taken.add(name.lower())
+        found.append(path.with_name(f"{path.stem}.{name}.srt"))
+    return found
+
+
+def _label(text: str) -> str:
+    """A language or a name made safe for a file, as ``safe_name`` of the engine's ``srt.rs``."""
+    name = "".join(
+        "_" if unicodedata.category(one) == "Cc" or one in '<>:"/\\|?*' else one
+        for one in text[:80]
+    ).strip(". ")
+    return name or "subtitles"
 
 
 def _missing(message: str) -> EngineError:

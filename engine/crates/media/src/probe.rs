@@ -41,7 +41,13 @@ pub fn probe(path: &Path) -> Result<Facts, MediaError> {
         .map(|stream| stream.index());
     let timed = video.or(audio).ok_or(MediaError::NoStreams)?;
     let stream_of = |index: usize| input.stream(index).ok_or(MediaError::NoStreams);
-    let video = video.map(|index| picture(&stream_of(index)?)).transpose()?;
+    let mut video = video.map(|index| picture(&stream_of(index)?)).transpose()?;
+    if let Some(video) = &mut video {
+        video.still = matches!(
+            input.format().name(),
+            "png_pipe" | "jpeg_pipe" | "webp_pipe"
+        );
+    }
     let audio = audio.map(|index| sound(&stream_of(index)?)).transpose()?;
     let duration = duration(&mut input, timed, video.as_ref().map(|video| video.rate))?;
     Ok(Facts {
@@ -380,6 +386,7 @@ fn picture(stream: &Stream) -> Result<VideoFacts, MediaError> {
         })
         .unwrap_or(8);
     Ok(VideoFacts {
+        still: false,
         width,
         height,
         rate,

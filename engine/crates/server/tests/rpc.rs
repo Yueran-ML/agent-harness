@@ -1615,6 +1615,36 @@ async fn an_edit_based_on_an_old_revision_cannot_cut_the_new_timeline() {
 }
 
 #[tokio::test]
+async fn inspecting_media_prepares_a_single_migration_transaction_without_importing() {
+    let Some(made) = support::media(support::Sample::Fhd) else {
+        return;
+    };
+    let dir = project_dir();
+    let engine = engine(dir.path(), &["--headless"]).await;
+    let mut agent = engine.client("agent").await;
+    let before = project(&mut agent).await;
+    let inspected = agent
+        .result("media.inspect", Some(json!({"paths":[made.path]})))
+        .await;
+    assert_eq!(project(&mut agent).await, before);
+    assert_eq!(inspected["media"][0]["id"], "");
+    assert_eq!(inspected["media"][0]["facts"]["video"]["width"], 1920);
+    let mut media = inspected["media"][0].clone();
+    media["id"] = json!("$source");
+    agent.apply(json!([
+        {"op":"add_media","media":media},
+        {"op":"add_timeline","timeline":{"id":"$film","name":"Migrated","rate":{"num":25,"den":1},"width":1920,"height":1080,"sample_rate":48000,"tracks":[]}},
+        {"edit":"add_track","timeline":"$film","kind":"video"},
+        {"edit":"insert","timeline":"$film","source":{"kind":"media","media":"$source","length":25},"at":0,"audio_track":null}
+    ])).await;
+    agent.result("history.undo", None).await;
+    let undone = project(&mut agent).await;
+    assert_eq!(undone["project"]["media"], json!([]));
+    assert_eq!(undone["project"]["timelines"], json!([]));
+    assert!(agent.result("history.undo", None).await["done"].is_null());
+}
+
+#[tokio::test]
 async fn analysis_thumbnails_are_scaled_cached_and_do_not_edit_the_project() {
     let Some(made) = support::media(support::Sample::Fhd) else {
         return;

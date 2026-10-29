@@ -41,6 +41,7 @@ fn media(id: &str, frames: i64, video: bool) -> Media {
         facts: Facts {
             duration: at(frames),
             video: video.then(|| VideoFacts {
+                still: false,
                 width: 1920,
                 height: 1080,
                 rate: RATE,

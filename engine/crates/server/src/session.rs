@@ -572,6 +572,17 @@ impl State {
         for note in self.proxies.project_changed(self.history.project()) {
             self.broadcast(&rpc::notification_line("media.proxy", &note));
         }
+        let added = applied
+            .done
+            .iter()
+            .filter_map(|op| match op {
+                Op::AddMedia { media, .. } => Some(media.id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !added.is_empty() {
+            self.proxies.imported(self.history.project(), &added);
+        }
         done
     }
 }
@@ -653,6 +664,7 @@ async fn dispatch(
             history_step(engine, connection, kind, id, method, params).await
         }
         "media.import" => media_import(engine, connection, kind, id, params).await,
+        "media.inspect" => media_inspect(engine, connection, id, params).await,
         "render.start" => {
             let request: crate::render::Request = rpc::params(
                 method,
@@ -1191,6 +1203,43 @@ struct Import {
     bin: Option<String>,
 }
 
+/// Media metadata prepared for a larger transaction, without importing it yet.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Inspect {
+    paths: Vec<String>,
+}
+
+async fn media_inspect(
+    engine: &Engine,
+    connection: &Connection,
+    id: &RawValue,
+    params: Option<&RawValue>,
+) -> Result<Reply, Reply> {
+    let inspect: Inspect = rpc::params("media.inspect", r#"{"paths": ["<file>", ...]}"#, params)?;
+    check_paths("media.inspect", &inspect.paths)?;
+    let media = read_all(&engine.reading, engine.read_gate.as_ref(), inspect.paths).await?;
+    let line = rpc::result_line(id, &json!({"media":media}));
+    Ok(engine.finish(engine.state.lock().await, connection, line))
+}
+
+fn check_paths(method: &str, paths: &[String]) -> Result<(), Fault> {
+    if paths.is_empty() {
+        return Err(Fault::params(format!("{method} takes at least one path")));
+    }
+    if let Some((index, path)) = paths
+        .iter()
+        .enumerate()
+        .find(|(_, path)| !Path::new(path).is_absolute())
+    {
+        return Err(Fault::params(format!(
+            "{method} takes absolute paths, and {path} is not one"
+        ))
+        .with_data(json!({"index":index,"path":path,"reason":"relative"})));
+    }
+    Ok(())
+}
+
 /// The answer to `media.import`.
 #[derive(Serialize)]
 struct Imported<'a> {
@@ -1213,21 +1262,7 @@ async fn media_import(
     params: Option<&RawValue>,
 ) -> Result<Reply, Reply> {
     let import: Import = rpc::params("media.import", r#"{"paths": ["<file>", ...]}"#, params)?;
-    if import.paths.is_empty() {
-        return Err(Fault::params("media.import takes at least one path").into());
-    }
-    if let Some((index, path)) = import
-        .paths
-        .iter()
-        .enumerate()
-        .find(|(_, path)| !Path::new(path).is_absolute())
-    {
-        let fault = Fault::params(format!(
-            "media.import takes absolute paths, and {path} is not one"
-        ))
-        .with_data(json!({ "index": index, "path": path, "reason": "relative" }));
-        return Err(fault.into());
-    }
+    check_paths("media.import", &import.paths)?;
     let media = read_all(&engine.reading, engine.read_gate.as_ref(), import.paths).await?;
     let ops = media
         .into_iter()
@@ -1250,7 +1285,6 @@ async fn media_import(
         })
         .collect();
     state.publish(&applied);
-    state.proxies.imported(state.history.project(), &added);
     let line = rpc::result_line(
         id,
         &Imported {

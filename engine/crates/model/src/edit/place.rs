@@ -66,6 +66,9 @@ fn made(work: &Work, material: &Material) -> Result<Made, EditError> {
         .ok_or_else(|| missing("media", media_id))?;
     let duration = media.facts.duration;
     let scale = duration.scale;
+    let unmarked_still = media.facts.video.as_ref().is_some_and(|video| video.still)
+        && to.is_none()
+        && media.mark_out.is_none();
     let from = from.or(media.mark_in).unwrap_or(Time { ticks: 0, scale });
     let to = to.or(media.mark_out).unwrap_or(duration);
     for time in [from, to] {
@@ -100,6 +103,7 @@ fn made(work: &Work, material: &Material) -> Result<Made, EditError> {
             })
         }
         Some(length) => length,
+        None if unmarked_still => i64::from(work.rate().num) * 5 / i64::from(work.rate().den),
         None => frames_for_span(to.ticks - from.ticks, Speed::ONE, work.rate(), scale).min(have),
     };
     if length < 1 {
@@ -121,6 +125,9 @@ pub(super) fn longest(work: &Work, probe: &Clip) -> i64 {
     let Some(media) = work.project().media.iter().find(|m| m.id == *media) else {
         return 0;
     };
+    if media.facts.video.as_ref().is_some_and(|video| video.still) {
+        return crate::ops::LARGEST;
+    }
     let span = media.facts.duration.ticks - begins.ticks;
     let frames = |span| frames_for_span(span, probe.speed, work.rate(), begins.scale);
     // Its last frame shows a place before the end.
@@ -557,6 +564,7 @@ mod tests {
         let mut project = with(
             project(),
             vec![Op::SetMedia {
+                still: None,
                 id: "m1".into(),
                 name: None,
                 bin: None,
@@ -579,6 +587,41 @@ mod tests {
         assert_eq!(the(&project, "c11").source_in(), Some(at(200)));
         assert_eq!(the(&project, "c11").link, None);
         assert_eq!(clips(&project, "A1").len(), 2);
+    }
+
+    #[test]
+    fn a_still_image_can_be_inserted_and_trimmed_beyond_its_single_packet() {
+        let mut project = project();
+        for track in &mut project.timelines[0].tracks {
+            track.clips.clear();
+            track.cues.clear();
+        }
+        project.media[0].facts.duration = at(1);
+        project.media[0].facts.audio = None;
+        project.media[0].facts.video.as_mut().unwrap().still = true;
+        edit(&mut project, insert(m1(None, None), 0));
+        assert_eq!(clips(&project, "V1")[0].2, 125);
+        let id = clips(&project, "V1")[0].0.clone();
+        edit(
+            &mut project,
+            Edit::Trim {
+                timeline: "t1".into(),
+                clip: id.clone(),
+                edge: super::super::Edge::Out,
+                delta: 200,
+                ripple: false,
+                linked: true,
+            },
+        );
+        assert_eq!(the(&project, &id).length, 325);
+        let source = Material::Media {
+            media: "m1".into(),
+            from: None,
+            to: None,
+            length: Some(600),
+        };
+        edit(&mut project, insert(source, 325));
+        assert_eq!(clips(&project, "V1")[1].2, 600);
     }
 
     #[test]

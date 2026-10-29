@@ -356,6 +356,9 @@ pub enum Op {
     SetMedia {
         /// The media.
         id: Id,
+        /// Refresh the still-image classification after inspecting an older import.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        still: Option<bool>,
         /// Its name.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
@@ -931,11 +934,12 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
         Op::SetBin { id, name, parent } => set_bin(project, &id, name, parent),
         Op::SetMedia {
             id,
+            still,
             name,
             bin,
             mark_in,
             mark_out,
-        } => set_media(project, &id, name, bin, (mark_in, mark_out)),
+        } => set_media(project, &id, name, bin, (mark_in, mark_out), still),
         Op::AddTransition {
             timeline,
             track,
@@ -1649,6 +1653,7 @@ fn set_media(
     name: Option<String>,
     bin: Option<Option<Id>>,
     (mark_in, mark_out): (Option<Option<Time>>, Option<Option<Time>>),
+    still: Option<bool>,
 ) -> Result<Op, OpError> {
     let at = project
         .media
@@ -1661,12 +1666,23 @@ fn set_media(
     swap(&mut new.bin, bin.clone());
     swap(&mut new.mark_in, mark_in);
     swap(&mut new.mark_out, mark_out);
+    if let Some(still) = still {
+        let video = new.facts.video.as_mut().ok_or_else(|| OpError::NoStream {
+            media: id.into(),
+            kind: TrackKind::Video,
+        })?;
+        video.still = still;
+        let mut checked = project.clone();
+        checked.media[at] = new.clone();
+        checked.validate().map_err(|invalid| invalid.error)?;
+    }
     if let Some(bin) = &new.bin {
         bin_at(project, bin)?;
     }
     check_marks(&new)?;
     let inverse = Op::SetMedia {
         id: id.into(),
+        still: still.and_then(|_| old.facts.video.as_ref().map(|video| video.still)),
         name: name.map(|_| old.name.clone()),
         bin: bin.map(|_| old.bin.clone()),
         mark_in: mark_in.map(|_| old.mark_in),
@@ -2296,6 +2312,9 @@ pub(crate) fn in_source(
     before: i64,
     after: i64,
 ) -> Result<(), &'static str> {
+    if media.facts.video.as_ref().is_some_and(|video| video.still) {
+        return Ok(());
+    }
     let Some(source_in) = clip.source_in() else {
         return Ok(());
     };
@@ -2498,6 +2517,9 @@ fn check_media(project: &Project, media: &Media) -> Result<(), OpError> {
         });
     }
     if let Some(video) = &media.facts.video {
+        if video.still && media.facts.audio.is_some() {
+            return Err(range("still"));
+        }
         check_rate(video.rate)?;
     }
     if let Some(proxy) = &media.proxy {
@@ -5614,6 +5636,7 @@ mod tests {
         assert_eq!(nested.bins[1].parent, None);
         // Media in a bin keeps it from being taken away.
         let kept = Op::SetMedia {
+            still: None,
             id: "m1".into(),
             name: None,
             bin: Some(Some("b3".into())),
@@ -5640,6 +5663,7 @@ mod tests {
             }))
         };
         let set = |bin: Option<Option<Id>>, mark_in, mark_out| Op::SetMedia {
+            still: None,
             id: "m1".into(),
             name: Some("Talk".into()),
             bin,
@@ -5663,6 +5687,7 @@ mod tests {
         assert_eq!(refused(set(None, at(-1), None)), marks);
         assert_eq!(refused(set(None, None, at(153_601))), marks);
         let other_scale = Op::SetMedia {
+            still: None,
             id: "m1".into(),
             name: None,
             bin: None,
@@ -5684,6 +5709,7 @@ mod tests {
             missing("bin", "b9")
         );
         let elsewhere = Op::SetMedia {
+            still: None,
             id: "m9".into(),
             name: None,
             bin: None,
@@ -5901,6 +5927,7 @@ mod tests {
             ),
             (
                 Op::SetMedia {
+                    still: None,
                     id: "m1".into(),
                     name: None,
                     bin: Some(None),

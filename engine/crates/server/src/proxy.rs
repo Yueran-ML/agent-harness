@@ -1585,6 +1585,7 @@ mod tests {
 
     fn video(width: u32, height: u32, bits: u8, codec: &str) -> VideoFacts {
         VideoFacts {
+            still: false,
             width,
             height,
             rate: Rate { num: 25, den: 1 },

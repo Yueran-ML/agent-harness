@@ -896,6 +896,20 @@ class Engine:
         """
         return _whole(await self._call("timeline.duration", {"timeline": timeline}), "frames")
 
+    async def inspected(self, paths: Sequence[Path]) -> list[dict[str, Any]]:
+        """Read source identities and facts without changing the project or history.
+
+        The returned media have empty ids and can be added alongside a timeline in one
+        transaction. This allows a whole legacy migration to be undone in one step.
+        """
+        said = await self._call("media.inspect", {"paths": [str(path) for path in paths]})
+        items = said.get("media")
+        if not isinstance(items, list) or not all(
+            isinstance(item, dict) for item in cast("list[object]", items)
+        ):
+            raise EngineError("the engine answered media.inspect with no media", code=UNEXPECTED)
+        return cast("list[dict[str, Any]]", items)
+
     async def render(
         self,
         timeline: str,

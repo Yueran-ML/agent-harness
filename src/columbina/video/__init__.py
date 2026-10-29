@@ -5,6 +5,7 @@ that project. Media paths and export destinations go through the file seam.
 """
 
 import asyncio
+import json
 import os
 import sys
 from collections.abc import Callable
@@ -88,6 +89,8 @@ class Videos:
         self._program = config.engine
         self._editors: dict[Path, Editor] = {}
         self._opening = asyncio.Lock()
+        self._migrated: set[Path] = set()
+        self._migration_reports: dict[Path, list[dict[str, Any]]] = {}
         self._tools: Tools | None = None
         self.progress: Callable[[RenderProgress], object] | None = None
         self.transcriber: Transcriber | None = None
@@ -110,6 +113,19 @@ class Videos:
                     raise ToolFailure(not_found(self._program), code="NO_ENGINE")
                 known = Editor(await Engine.attach(directory, program=program), self.transcriber)
                 self._editors[directory] = known
+            default = await asyncio.to_thread((run.cwd / _DEFAULT_PROJECT).resolve)
+            if directory == default and directory not in self._migrated:
+                from columbina.video.migrate import migrate
+
+                reports = await migrate(
+                    run.cwd,
+                    known.engine,
+                    tools=self._tools,
+                    check=lambda path, kind: self.checked(run, tool, str(path), kind),
+                )
+                if reports:
+                    self._migration_reports[directory] = reports
+                self._migrated.add(directory)
         known.transcriber = self.transcriber
         return known
 
@@ -119,11 +135,17 @@ class Videos:
             self._tools = await located(os.environ.get("PATH", ""), [run.cwd], cwd=run.cwd)
         return self._tools
 
+    def migrations(self, directory: Path) -> list[dict[str, Any]]:
+        """Take the migration notices once the first successful tool result can show them."""
+        return self._migration_reports.pop(directory, [])
+
     async def close(self) -> None:
         """Release connections so a headless engine can exit when idle."""
         for editor in self._editors.values():
             await editor.engine.aclose()
         self._editors.clear()
+        self._migrated.clear()
+        self._migration_reports.clear()
 
     def checked(self, run: ToolRun, tool: str, path: str, kind: Literal["read", "write"]) -> Path:
         """Resolve a path only after the session's file access rules allow it."""
@@ -352,7 +374,13 @@ def tools_of(videos: Videos) -> list[Tool[Any, str]]:
         long: bool = False,
     ) -> Tool[Any, str]:
         async def called(args: _Project, run: ToolRun) -> str:
-            return await execute(args, run, name)
+            said = await execute(args, run, name)
+            directory = await asyncio.to_thread((run.cwd / args.project).resolve)
+            if reports := videos.migrations(directory):
+                result = json.loads(said)
+                result["migrations"] = reports
+                return json.dumps(result, ensure_ascii=False)
+            return said
 
         return Tool(
             name=name,

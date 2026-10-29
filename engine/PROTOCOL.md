@@ -122,6 +122,7 @@ Before `hello`, every other request is refused with `-32600`.
 | `history.undo` | none | `{"revision": n, "done": [op, ...], "next_id": k}`, or `{"revision": n, "done": null}` if there is nothing to undo |
 | `history.redo` | none | as `history.undo` |
 | `media.import` | `{"paths": ["<file>", ...], "bin": "<bin id>"}` (`bin` optional) | `{"revision": n, "added": ["m3", ...], "next_id": k}` |
+| `media.inspect` | `{"paths": ["<file>", ...]}` | `{"media": [media, ...]}` (empty ids; no project change) |
 | `media.make_proxy` | `{"media": "m1"}` | `{}` (see Proxies) |
 | `media.thumbnail` | `{"media": "m1", "frame": 50, "height": 90}` (`frame` optional) | `{"width": 160, "height": 90, "png": "<base64>"}` |
 | `media.waveform` | `{"media": "m1"}` | `{"rate": 100, "channels": 2, "peaks": "<base64>"}`, or `{"pending": true}` |
@@ -164,6 +165,10 @@ Before `hello`, every other request is refused with `-32600`.
   engine checks it under the same lock as the change; a mismatch refuses the whole batch
   with `-32001`, `data: {"reason":"stale_revision","expected":n,"actual":k}` and no history
   change. Omit it for commands meant to operate on the current state.
+- `media.inspect` reads identities and facts under the same path and read limits as
+  `media.import`, returning media in input order with empty ids. It does not change the
+  project, revision or undo history, and starts no proxies. Clients may name these media and
+  add them alongside a timeline in one `transaction.apply`, so a whole migration is one undo.
 - `media.import` reads each file (its identity, and what it holds, as below) and adds it to the
   optional `bin` (otherwise the root) in the same transaction; an unknown bin refuses the
   whole import, without changing the project or its history. It adds the media to the
@@ -201,6 +206,11 @@ Before `hello`, every other request is refused with `-32600`.
     mirrored picture keeps its turn, and its mirror is not told. No `video` for sound only, no
     `audio` for a picture only; a file with neither cannot be read, and neither can one whose
     picture libav cannot decode.
+  - `facts.video.still` is `true` for the PNG/JPEG/WebP image demuxers; it is optional and
+    defaults to `false` (omitted when false). A still clip holds image frame zero for its
+    chosen timeline length; the single-packet duration does not limit trims or transitions.
+    Insertion without a length or mark out uses five seconds, rounded down to timeline frames.
+    Normal video, including a one-frame movie, keeps its source-range limits.
 - `history.undo` takes back the latest step **whoever made it** (desktop and agent share one
   line of undo); `history.redo` does again the step undone last, with the same ids. A new
   transaction clears what could be redone. 1000 steps are kept.
@@ -260,7 +270,8 @@ itself; a client only sees them, and may turn their use off (`transport.proxies`
   phones record. Not media whose every frame is a key frame (ProRes, DNxHR, MJPEG, H.264 or HEVC
   of intra frames only), and not H.264 of 8 bits up to 1080p without B-frames. The engine tells
   from the first 64 packets of the picture.
-- **When.** After each `media.import`, for the media it added, and when the engine starts, for
+- **When.** After any transaction that adds media (including `media.import` and redo),
+  for the media it added, and when the engine starts, for
   every media item of the project that has no proxy, has one made from another file
   (`digest_of_source` is not the digest of its `identity`), or has one whose file is gone (so a
   proxy that a client took away with `set_proxy` comes back at the next start). One is made at a
@@ -716,7 +727,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `add_bin` | `bin`, `index?` |
 | `remove_bin` | `id` |
 | `set_bin` | `id`, `name?`, `parent?` |
-| `set_media` | `id`, `name?`, `bin?`, `mark_in?`, `mark_out?` |
+| `set_media` | `id`, `name?`, `bin?`, `mark_in?`, `mark_out?`, `still?` |
 | `add_transition` | `timeline`, `track`, `transition` |
 | `remove_transition` | `timeline`, `id` |
 | `set_transition` | `timeline`, `id`, `kind?`, `length?`, `align?` |
@@ -727,6 +738,10 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 Optional settings are unchanged when omitted. Nullable settings (`parent`, `bin`, marks and
 `link`) use explicit `null` to clear them. A `set_clip.source` may change title text/style or
 color, but not its source kind or media; use the `replace` edit for media replacement.
+`set_media.still` refreshes an existing import's image classification from `media.inspect`.
+It requires picture without audio for `true`; changing it revalidates existing clips and
+transitions before committing. Its inverse restores the old classification. This lets old
+media-pool images gain unlimited still duration without new ids, together with migration.
 
 `shift_clips` moves each distinct selected clip by `by` frames on one track, preserving its
 source, length and settings, and every transition whose two ends move together. A transition

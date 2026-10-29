@@ -191,6 +191,9 @@ pub struct Facts {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VideoFacts {
+    /// A single still image, held for the length of its timeline clip.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub still: bool,
     /// Its width in pixels, as it is stored.
     pub width: u32,
     /// Its height in pixels, as it is stored.
@@ -832,6 +835,7 @@ impl Project {
                         scale: SCALE,
                     },
                     video: Some(VideoFacts {
+                        still: false,
                         width: 1920,
                         height: 1080,
                         rate: Rate { num: 25, den: 1 },

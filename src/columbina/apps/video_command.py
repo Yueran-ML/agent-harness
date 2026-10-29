@@ -113,6 +113,9 @@ def arguments(video: argparse.ArgumentParser) -> None:
     engine.add_argument(
         "--json", action="store_true", help="answer in one document of JSON, for another program"
     )
+    migrating = whats.add_parser("migrate", help="convert old films to Studio timelines")
+    migrating.add_argument("--workspace", metavar="DIR", required=True)
+    migrating.add_argument("--json", action="store_true", help="answer in one document of JSON")
 
 
 def _transcriber(args: argparse.Namespace) -> Transcriber | None:
@@ -216,10 +219,51 @@ def _engine(args: argparse.Namespace, say: Callable[[str], None]) -> int:
     return 0
 
 
+async def _migrated(workspace: Path, program: str) -> list[dict[str, object]]:
+    from columbina.video.migrate import migrate
+
+    async with await Engine.attach(
+        workspace / ".columbina/studio", program=program, client="cli"
+    ) as engine:
+        return await migrate(workspace, engine)
+
+
+def _migrate(args: argparse.Namespace, say: Callable[[str], None]) -> int:
+    workspace = Path(args.workspace).resolve()
+    program = program_of(None, os.environ.get("PATH", ""), [Path.cwd(), workspace])
+    try:
+        if not workspace.is_dir():
+            raise ProjectError(f"workspace does not exist: {workspace}")
+        if program is None:
+            raise ProjectError(not_found(None))
+        reports = asyncio.run(_migrated(workspace, program))
+    except (*_FAILURES, EngineError, OSError) as error:
+        if args.json:
+            say(json.dumps({"error": str(error)}, ensure_ascii=False))
+        else:
+            say(f"columbina: {error}")
+        return 2
+    if args.json:
+        say(json.dumps({"migrations": reports}, ensure_ascii=False))
+    elif not reports:
+        say("No legacy projects to migrate.")
+    else:
+        for report in reports:
+            say(f"{report['source']} -> {report['timeline']}; original files retained.")
+            for issue in [
+                *cast("list[str]", report["dropped"]),
+                *cast("list[str]", report.get("warnings", [])),
+            ]:
+                say(f"  {issue}")
+    return 0
+
+
 def run(args: argparse.Namespace, say: Callable[[str], None]) -> int:
     """Carry out ``columbina video``, and return its exit code."""
     if args.what == ENGINE:
         return _engine(args, say)
+    if args.what == "migrate":
+        return _migrate(args, say)
     try:
         said = asyncio.run(_done(args, Path.cwd(), Path(args.project).resolve()))
     except _FAILURES as error:

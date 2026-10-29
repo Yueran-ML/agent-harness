@@ -53,6 +53,7 @@ fn media() -> Vec<Media> {
         facts: Facts {
             duration: Time { ticks, scale },
             video: video.then(|| VideoFacts {
+                still: false,
                 width: 1920,
                 height: 1080,
                 rate: Rate { num: 25, den: 1 },

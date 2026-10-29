@@ -515,6 +515,7 @@ fn bin_or_media_of(project: &Project, spec: &Spec, kind: u8) -> Op {
                 }),
             };
             Op::SetMedia {
+                still: None,
                 id,
                 name: bit(spec, 0).then(|| "Renamed".into()),
                 bin: bit(spec, 1).then(|| some_bin(spec.c)),

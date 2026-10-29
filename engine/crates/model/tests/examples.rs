@@ -387,6 +387,7 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             "set_media",
             vec![],
             Op::SetMedia {
+                still: None,
                 id: "m1".into(),
                 name: Some("Talk".into()),
                 bin: Some(Some("b4".into())),

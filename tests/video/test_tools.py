@@ -68,6 +68,29 @@ async def test_edit_batch_and_human_undo_share_one_project(studio: tuple[Desk, F
     assert fake.project["timelines"][0]["name"] == "Cut"
 
 
+async def test_first_default_studio_call_migrates_once_and_returns_its_report(
+    studio: tuple[Desk, Fake],
+) -> None:
+    from columbina.video.project import Manifest
+    from columbina.video.timeline import Timeline
+
+    desk, fake = studio
+    old = desk.work / "Old Film"
+    old.mkdir()
+    (old / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (old / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+    info = result(await desk.call("video_info"))
+    assert len(info["migrations"]) == 1
+    assert info["timelines"][0]["name"] == "Old Film"
+    assert len(fake.steps) == 1
+    again = result(await desk.call("video_info"))
+    assert "migrations" not in again
+    assert len(fake.steps) == 1
+    result(await desk.call("video_undo"))
+    assert fake.project["timelines"] == []
+    assert result(await desk.call("video_info"))["timelines"] == []
+
+
 async def test_import_bin_is_one_step_and_invalid_bin_has_no_partial_import(
     studio: tuple[Desk, Fake],
 ) -> None:

@@ -135,6 +135,19 @@ async def test_every_client_is_told_of_every_change(tmp_path: Path) -> None:
         assert other.revision == 3
 
 
+async def test_inspection_does_not_import_or_change_history(tmp_path: Path) -> None:
+    async with served(tmp_path / "film") as fake, await attached(tmp_path / "film") as connected:
+        items = await connected.inspected([FAKE])
+        assert len(items) == 1
+        assert items[0]["id"] == ""
+        assert items[0]["path"] == str(FAKE)
+        assert fake.project["media"] == []
+        assert fake.steps == []
+        fake.results["media.inspect"] = {"media": [None]}
+        with pytest.raises(EngineError, match="no media"):
+            await connected.inspected([FAKE])
+
+
 async def test_a_refusal_keeps_what_the_engine_said_of_it(tmp_path: Path) -> None:
     async with served(tmp_path / "film") as fake:
         connected = await attached(tmp_path / "film")

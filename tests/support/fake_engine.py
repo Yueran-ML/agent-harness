@@ -317,6 +317,23 @@ class Fake:
         return self._stepped(asking, self.undone, self.steps, back=False)
 
     def media_import(self, asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
+        items = self.media_inspect(asking, params)["media"]
+        ops: list[dict[str, Any]] = [{"op": "add_media", "media": item} for item in items]
+        bin = params.get("bin")
+        if bin is not None and not any(one["id"] == bin for one in self.project["bins"]):
+            raise RefusedError(-32001, "no such bin", {"reason": "missing"})
+        for op in ops:
+            op["media"]["bin"] = bin
+        before = copy.deepcopy(self.project)
+        done, _, _ = self._applied(ops)
+        self.changed(str(asking.client), done, before)
+        return {
+            "revision": self.revision,
+            "added": [one["media"]["id"] for one in done],
+            "next_id": self.project["next_id"],
+        }
+
+    def media_inspect(self, _asking: "Connection", params: dict[str, Any]) -> dict[str, Any]:
         paths = cast("list[str]", params.get("paths") or [])
         for index, path in enumerate(paths):
             if not Path(path).is_absolute():
@@ -333,22 +350,7 @@ class Fake:
                     f"a file cannot be read: {path}: {message}",
                     {"path": path, "reason": "not_found", "message": message},
                 )
-        ops: list[dict[str, Any]] = [
-            {"op": "add_media", "media": _media(Path(path))} for path in paths
-        ]
-        bin = params.get("bin")
-        if bin is not None and not any(one["id"] == bin for one in self.project["bins"]):
-            raise RefusedError(-32001, "no such bin", {"reason": "missing"})
-        for op in ops:
-            op["media"]["bin"] = bin
-        before = copy.deepcopy(self.project)
-        done, _, _ = self._applied(ops)
-        self.changed(str(asking.client), done, before)
-        return {
-            "revision": self.revision,
-            "added": [one["media"]["id"] for one in done],
-            "next_id": self.project["next_id"],
-        }
+        return {"media": [_media(Path(path)) for path in paths]}
 
     def _stepped(
         self, asking: "Connection", taken: list["Step"], given: list["Step"], *, back: bool

@@ -15,6 +15,7 @@ struct Input {
     identity: Identity,
     proxy: bool,
     rate: Rate,
+    still: bool,
     duration: Time,
     rotation: i16,
     proxy_version: u64,
@@ -34,6 +35,7 @@ impl Input {
             identity: media.identity.clone(),
             proxy,
             rate: video.rate,
+            still: video.still,
             duration: media.facts.duration,
             rotation: video.rotation,
             proxy_version: 0,
@@ -45,6 +47,9 @@ impl Input {
     }
 
     fn frame(&self, tick: i64) -> i64 {
+        if self.still {
+            return 0;
+        }
         let tick = tick.clamp(0, (self.duration.ticks - 1).max(0));
         // Source frame n starts at floor(n * scale * den / num), as Rate::ticks_of and
         // span::source_tick do. Invert those integer boundaries: ceil((tick+1)*num/per)-1.

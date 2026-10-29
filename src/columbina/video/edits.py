@@ -821,13 +821,17 @@ def set_media(
     id: str,
     *,
     name: str | None = None,
+    still: bool | None = None,
     bin: str | _Kept | None = LEFT_OUT,
     mark_in: Time | _Kept | None = LEFT_OUT,
     mark_out: Time | _Kept | None = LEFT_OUT,
 ) -> dict[str, Any]:
     """The settings of media that are given: ``None`` is the root for ``bin``, none for a mark."""
     return _given(
-        _set({"op": "set_media", "id": id}, name=name), bin=bin, mark_in=mark_in, mark_out=mark_out
+        _set({"op": "set_media", "id": id}, name=name, still=still),
+        bin=bin,
+        mark_in=mark_in,
+        mark_out=mark_out,
     )
 
 

@@ -516,3 +516,189 @@ async fn timeline_rebuilds_a_broken_shared_proxy_instead_of_reusing_its_twin() {
         })
         .await;
 }
+
+async fn load_audio_timeline(client: &mut Client) {
+    let got = project(client).await;
+    let mut color = clip("$color", "unused", 0, 100);
+    color["source"] = json!({"kind":"color","color":"#ff0000ff"});
+    let names = add_timeline(client, vec![color], vec![]).await;
+    let mut sound = clip("$sound", "m1", 0, 100);
+    sound["source"]["in"]["scale"] =
+        got["project"]["media"][0]["facts"]["duration"]["scale"].clone();
+    client
+        .apply(
+            json!([{"op":"add_track","timeline":names["$timeline"],"track":{
+        "id":"$audio","kind":"audio","name":"Dialogue","enabled":true,"locked":false,
+        "clips":[sound],"transitions":[]},"index":null}]),
+        )
+        .await;
+    load(client, &names).await;
+}
+
+#[tokio::test]
+async fn timeline_picture_follows_the_mixed_audio_clock_and_pauses_it() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", "null", "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    load_audio_timeline(&mut client).await;
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    let (playing, _) = client
+        .until_state("timeline playing", |s| {
+            s["monitor"] == "timeline" && s["playing"] == true
+        })
+        .await;
+    assert_eq!(playing["sound"], "on", "{playing}");
+    let mut before = 0;
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let digest = action(&mut client, "transport.frame_digest", json!({})).await;
+        let samples = digest["audio_samples"].as_i64().unwrap();
+        assert!(samples > before, "sound clock did not advance: {digest}");
+        before = samples;
+        assert!(
+            digest["audio_frame"]
+                .as_i64()
+                .unwrap()
+                .abs_diff(digest["frame"].as_i64().unwrap())
+                <= 1,
+            "sound/picture drift: {digest}"
+        );
+    }
+    client.take_notifications();
+    action(&mut client, "transport.pause", json!({})).await;
+    let (paused, _) = client
+        .until_state("timeline paused", |s| {
+            s["monitor"] == "timeline" && s["playing"] == false
+        })
+        .await;
+    assert_eq!(paused["sound"], "off");
+    assert_eq!(
+        action(&mut client, "transport.frame_digest", json!({}))
+            .await
+            .get("audio_samples"),
+        None
+    );
+}
+
+#[tokio::test]
+async fn timeline_sound_survives_seek_and_is_handed_over_before_source_playback() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", "null", "--test-hooks"],
+    )
+    .await
+    else {
+        return;
+    };
+    load_audio_timeline(&mut client).await;
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    client
+        .until_state("timeline audio started", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "on"
+        })
+        .await;
+    client.take_notifications();
+    action(&mut client, "transport.seek", json!({"frame":30})).await;
+    let (sought, _) = client
+        .until_state("timeline sought with sound", |s| {
+            s["monitor"] == "timeline" && s["frame"] == 30
+        })
+        .await;
+    assert_eq!(sought["sound"], "on");
+    assert_eq!(sought["playing"], true);
+    client
+        .until_state("sound continued after seek", |s| {
+            s["monitor"] == "timeline" && s["frame"].as_i64() > Some(33)
+        })
+        .await;
+    client
+        .source_result("transport.load", Some(json!({"media":"m1"})))
+        .await;
+    client.take_notifications();
+    client.source_result("transport.play", None).await;
+    let (paused, _) = client
+        .until_state("timeline stopped before source", |s| {
+            s["monitor"] == "timeline" && s["playing"] == false
+        })
+        .await;
+    assert_eq!(paused["sound"], "off");
+    client
+        .until_state("source owns sound", |s| {
+            s["monitor"] == "source" && s["sound"] == "on"
+        })
+        .await;
+    action(&mut client, "transport.play", json!({"speed":2})).await;
+    let (source, _) = client
+        .until_state("source stopped before timeline", |s| {
+            s["monitor"] == "source" && s["playing"] == false
+        })
+        .await;
+    assert_eq!(source["sound"], "off");
+    let (fast, _) = client
+        .until_state("timeline shuttles silently", |s| {
+            s["monitor"] == "timeline" && s["playing"] == true && s["speed"] == 2
+        })
+        .await;
+    assert_eq!(fast["sound"], "off");
+}
+
+#[tokio::test]
+async fn timeline_falls_back_to_system_time_after_audio_device_failure() {
+    if columbina_compose::gpu_for_tests().is_none() {
+        return;
+    }
+    let dir = project_dir();
+    let Some((_engine, mut client)) = transport_engine_with(
+        dir.path(),
+        &[support::Sample::Fhd],
+        &["--sound", "fail-after=250"],
+    )
+    .await
+    else {
+        return;
+    };
+    load_audio_timeline(&mut client).await;
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    client
+        .until_state("timeline sound", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "on"
+        })
+        .await;
+    let (lost, _) = client
+        .until_state("failed timeline device", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "unavailable"
+        })
+        .await;
+    assert_eq!(lost["playing"], true);
+    let at = lost["frame"].as_i64().unwrap();
+    assert!((0..=12).contains(&at), "{lost}");
+    let (continued, _) = client
+        .until_state("system clock advances", |s| {
+            s["monitor"] == "timeline" && s["frame"].as_i64() > Some(at + 4)
+        })
+        .await;
+    assert_eq!(continued["playing"], true);
+    assert_eq!(continued["sound"], "unavailable");
+    action(&mut client, "transport.pause", json!({})).await;
+    action(&mut client, "transport.play", json!({"speed":1})).await;
+    client
+        .until_state("next play retries the device", |s| {
+            s["monitor"] == "timeline" && s["sound"] == "on"
+        })
+        .await;
+}

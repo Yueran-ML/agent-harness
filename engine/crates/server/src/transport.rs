@@ -1067,16 +1067,19 @@ impl World {
 }
 
 /// The output of the sound, opened when it is first needed and again after it failed.
-struct SoundSlot {
+pub(crate) struct SoundSlot {
     kind: audio::Kind,
     /// The output, or why there is none.
     output: Option<Result<Output, String>>,
 }
 
 impl SoundSlot {
+    pub fn new(kind: audio::Kind) -> Self {
+        Self { kind, output: None }
+    }
     /// The output to play on: the one opened, unless it failed or the default device of the
     /// system is another now; then it is opened anew (and told in the log).
-    fn ready(&mut self) -> Option<&mut Output> {
+    pub fn ready(&mut self) -> Option<&mut Output> {
         let again = match &self.output {
             None | Some(Err(_)) => true,
             Some(Ok(output)) => output.failed().is_some() || !output.current(),
@@ -1102,7 +1105,7 @@ impl SoundSlot {
     }
 
     /// The output, if one is open and has not failed.
-    fn working(&self) -> Option<&Output> {
+    pub fn working(&self) -> Option<&Output> {
         match &self.output {
             Some(Ok(output)) if output.failed().is_none() => Some(output),
             _ => None,
@@ -1110,7 +1113,7 @@ impl SoundSlot {
     }
 
     /// Stop what plays, and end its feeder.
-    fn stop(&mut self) {
+    pub fn stop(&mut self) {
         if let Some(Ok(output)) = &mut self.output {
             output.stop();
         }
@@ -1455,7 +1458,9 @@ impl Worker {
             }
             Command::PauseAndReply(reply) => {
                 self.pause();
-                self.tell(true);
+                if self.loaded.is_some() {
+                    self.tell(true);
+                }
                 let _ = reply.send(());
             }
             Command::Snapshot(reply) => {
@@ -2340,7 +2345,7 @@ fn start_sound(
     };
     let media = Clock::at(place, 1, rate, 0).media_nanos(0);
     let from = clock::sample_at(start, media, output.format().rate);
-    match output.start(path, from) {
+    match output.start(audio::file(path, output.format(), from)) {
         Ok(()) => true,
         Err(message) => {
             log("sound_failed", &json!({ "message": message }));

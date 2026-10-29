@@ -572,14 +572,27 @@ notification `transport.state`):
 - Each enabled video track reads ahead independently, including upcoming cut/transition
   handles. The shared decoder pool allows two decoders per media/source kind and twelve total.
   Only unheld composition targets are reused, so a view never samples a target being rewritten.
-- Timeline sound mixing is implemented in the next stage of this work. Until it is connected,
-  audio tracks report `"off"` (no enabled audio clips: `"none"`) and the monotonic clock is used.
+- At playback speed 1, enabled audio tracks are mixed at the timeline sample rate in stereo,
+  then converted to the device's rate and channel layout. Disabled tracks/clips are not decoded.
+  Each clip applies its gain, linear fades and equal-power crossfades sample by sample; centred
+  stereo pan preserves level, endpoints silence the opposite channel, and combined tracks are
+  limited to [-1, 1]. Clip speed resampling changes pitch, with a low-pass filter for speed-up;
+  reverse clips read backward. Pitch preservation belongs to a later audio phase.
+- The device's played samples (including its latency) drive the picture clock. Pausing and
+  monitor handover stop that output. Direct seek preserves playback and starts the mix at the
+  new position; edits replace the queued old mix at the current playhead. A failed device falls
+  back to the monotonic clock from the last heard position and is retried on the next play.
+  Shuttle playback speeds other than 1 are silent, as in the source monitor. No enabled audio
+  clips reports `"none"`; paused/shuttling audio reports `"off"`.
 
 **Test hook.** Only with `--test-hooks`, `transport.frame_digest {"monitor":m}` reads the current
 rendered frame and returns `{monitor, frame, width, height, hash, pixels}`. `hash` is SHA-256 of
 the entire RGBA frame, for regression comparisons; `pixels` contains the four top-left RGBA
 pixels. It is not a playback operation or project identity. Without the flag, or headless,
 the method returns `-32601`; before a picture is loaded it returns `-32004` `not_loaded`.
+While timeline sound is playing, the hook also returns `audio_samples` (device-rate samples
+heard since that output started) and `audio_frame` (the corresponding timeline clock frame).
+These fields are absent after pause and are only for audio/picture regression checks.
 
 The media-specific details below describe the source monitor. Seek, pause, step, speed bounds,
 scrub settling and end-of-playback rules also apply to the timeline monitor.

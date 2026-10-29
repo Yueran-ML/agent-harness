@@ -1,6 +1,7 @@
 //! The timeline monitor. Decode workers prepare pictures; this thread owns the clock and
 //! compositor, and never holds the project/session lock while waiting for a picture or GPU.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -20,7 +21,7 @@ use crate::gpu::{Graphics, Subscription};
 use crate::log::log;
 use crate::rpc::{self, Fault};
 use crate::transport::clock::{self, Clock};
-use crate::transport::{Again, Sound, Source, POOL_BYTES, SETTLE, TOLD_EVERY};
+use crate::transport::{Again, Sound, SoundSlot, Source, POOL_BYTES, SETTLE, TOLD_EVERY};
 use crate::view::{Monitor, ViewSlot};
 
 const SEEK_WAIT: Duration = Duration::from_secs(5);
@@ -118,7 +119,13 @@ impl Loading {
 }
 
 impl Timeline {
-    pub fn new(graphics: Arc<Graphics>, view: ViewSlot, notify: Notify, again: Again) -> Self {
+    pub fn new(
+        graphics: Arc<Graphics>,
+        view: ViewSlot,
+        notify: Notify,
+        again: Again,
+        sound: crate::audio::Kind,
+    ) -> Self {
         let (inbox, received) = mpsc::channel();
         let shared = Arc::new(Mutex::new(Shared::default()));
         let subscription = graphics.subscribe({
@@ -154,6 +161,8 @@ impl Timeline {
                         targets: Vec::new(),
                         current: None,
                         clock: None,
+                        sound: SoundSlot::new(sound),
+                        heard: Cell::new(0),
                         fine: None,
                         epoch: Instant::now(),
                         settle: None,
@@ -273,6 +282,8 @@ struct Worker {
     targets: Vec<Arc<Target>>,
     current: Option<Arc<Target>>,
     clock: Option<Clock>,
+    sound: SoundSlot,
+    heard: Cell<i128>,
     fine: Option<crate::timer::Fine>,
     epoch: Instant,
     settle: Option<Instant>,
@@ -284,9 +295,95 @@ impl Worker {
         i128::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(i128::MAX)
     }
 
+    fn clock_now(&self) -> i128 {
+        if self.status.sound != Sound::On {
+            return self.now();
+        }
+        if let Some(output) = self.sound.working() {
+            if let Some(samples) = output.played(Instant::now()) {
+                let heard = i128::from(samples) * clock::NANOS / i128::from(output.format().rate);
+                self.heard.set(self.heard.get().max(heard));
+            }
+        }
+        self.heard.get()
+    }
+
+    fn has_sound(&self) -> bool {
+        self.project
+            .as_ref()
+            .zip(self.timeline)
+            .is_some_and(|(project, index)| {
+                project.timelines[index].tracks.iter().any(|track| {
+                    track.enabled
+                        && track.kind == TrackKind::Audio
+                        && track.clips.iter().any(|clip| clip.enabled)
+                })
+            })
+    }
+
+    fn restart_sound(&mut self) {
+        let Some(clock) = self.clock else {
+            return;
+        };
+        let place = clock.place(self.clock_now());
+        self.sound.stop();
+        self.status.sound = if self.has_sound() {
+            Sound::Off
+        } else {
+            Sound::None
+        };
+        self.clock = Some(Clock::at(place, clock.speed(), clock.rate(), self.now()));
+        if clock.speed() != 1 || !self.has_sound() {
+            return;
+        }
+        let (Some(project), Some(index)) = (&self.project, self.timeline) else {
+            return;
+        };
+        let timeline = &project.timelines[index];
+        let nanos = Clock::at(place, 1, clock.rate(), 0).media_nanos(0);
+        let from = i64::try_from(nanos * i128::from(timeline.sample_rate) / clock::NANOS);
+        let result = from
+            .map_err(|_| "timeline audio start is outside sample time".to_owned())
+            .and_then(|from| {
+                let output = self.sound.ready().ok_or("audio output is unavailable")?;
+                let mixer = super::mix::Mixer::new(Arc::clone(project), index);
+                output.start(mixer.source(output.format(), from))
+            });
+        match result {
+            Ok(()) => {
+                self.status.sound = Sound::On;
+                self.heard.set(0);
+                self.clock = Some(Clock::at(place, 1, clock.rate(), 0));
+            }
+            Err(message) => {
+                self.status.sound = Sound::Unavailable;
+                log(
+                    "sound_unavailable",
+                    &json!({"monitor":"timeline","message":message}),
+                );
+            }
+        }
+    }
+
+    fn check_sound(&mut self) {
+        if self.status.sound == Sound::On && self.sound.working().is_none() {
+            if let Some(clock) = self.clock {
+                let place = clock.place(self.heard.get());
+                self.clock = Some(Clock::at(place, clock.speed(), clock.rate(), self.now()));
+            }
+            self.sound.stop();
+            self.status.sound = Sound::Unavailable;
+            log(
+                "transport_sound_lost",
+                &json!({"monitor":"timeline","message":"the sound failed; playback uses the system clock"}),
+            );
+            self.tell(true);
+        }
+    }
+
     fn wait(&self) -> Option<Duration> {
         if let Some(clock) = self.clock {
-            let now = self.now();
+            let now = self.clock_now();
             let next = clock
                 .frame(now)
                 .saturating_add(i64::from(clock.speed().signum()));
@@ -348,6 +445,12 @@ impl Worker {
     }
 
     fn pause(&mut self) {
+        self.sound.stop();
+        self.status.sound = if self.has_sound() {
+            Sound::Off
+        } else {
+            Sound::None
+        };
         self.clock = None;
         self.fine = None;
         self.status.playing = false;
@@ -384,6 +487,9 @@ impl Worker {
                 let _ = reply.send(drawn.map(|()| self.status.clone()));
             }
             Command::Project(project) => {
+                if self.status.timeline.is_none() {
+                    return;
+                }
                 self.replace(project);
                 if !self.status.playing {
                     let _ = self.draw(true, false);
@@ -392,6 +498,9 @@ impl Worker {
             }
             Command::Proxy(media) => {
                 self.sources.proxy_ready(&media);
+                if self.status.timeline.is_none() {
+                    return;
+                }
                 self.invalidate();
                 if !self.status.playing {
                     let _ = self.draw(true, false);
@@ -411,11 +520,31 @@ impl Worker {
                 let _ = reply.send(());
             }
             Command::Digest(reply) => {
+                let sound = (self.status.sound == Sound::On)
+                    .then(|| {
+                        self.sound
+                            .working()
+                            .and_then(|output| output.played(Instant::now()))
+                            .map(|samples| {
+                                (
+                                    samples,
+                                    self.clock.map(|clock| clock.frame(self.clock_now())),
+                                )
+                            })
+                    })
+                    .flatten();
                 let result = self
                     .current
                     .as_ref()
                     .ok_or_else(not_loaded)
-                    .and_then(|target| super::digest(target, self.status.shown, Monitor::Timeline));
+                    .and_then(|target| super::digest(target, self.status.shown, Monitor::Timeline))
+                    .map(|mut digest| {
+                        if let Some((samples, frame)) = sound {
+                            digest["audio_samples"] = json!(samples);
+                            digest["audio_frame"] = json!(frame);
+                        }
+                        digest
+                    });
                 let _ = reply.send(result);
             }
             Command::Act(action) => self.action(action),
@@ -446,22 +575,14 @@ impl Worker {
         let frame = clock::clamped(self.status.frame.unwrap_or(0), last);
         self.status.last = Some(last);
         self.status.frame = Some(frame);
-        self.status.sound =
-            if timeline.tracks.iter().any(|track| {
-                track.enabled && track.kind == TrackKind::Audio && !track.clips.is_empty()
-            }) {
-                Sound::Off
-            } else {
-                Sound::None
-            };
         if let Some(clock) = self.clock {
             // A changed duration/rate cannot leave the clock outside the new project.
-            if clock.rate() != timeline.rate || clock.frame(self.now()) > last {
+            if clock.rate() != timeline.rate || clock.frame(self.clock_now()) > last {
                 self.clock = Some(Clock::starting(
                     frame,
                     self.status.speed,
                     timeline.rate,
-                    self.now(),
+                    self.clock_now(),
                 ));
             }
         }
@@ -492,6 +613,15 @@ impl Worker {
         self.project = Some(project);
         self.timeline = Some(index);
         self.invalidate();
+        if self.status.playing {
+            self.restart_sound();
+        } else {
+            self.status.sound = if self.has_sound() {
+                Sound::Off
+            } else {
+                Sound::None
+            };
+        }
     }
 
     fn action(&mut self, action: Action) {
@@ -499,6 +629,10 @@ impl Worker {
         let last = self.status.last.unwrap_or(0);
         match action {
             Action::Play { speed } => {
+                if self.status.playing && self.status.speed == speed {
+                    self.tell(true);
+                    return;
+                }
                 let Some(project) = &self.project else {
                     return;
                 };
@@ -508,7 +642,7 @@ impl Worker {
                 let rate = project.timelines[index].rate;
                 self.settle = None;
                 if let Some(clock) = self.clock {
-                    self.clock = Some(clock.with_speed(speed, self.now()));
+                    self.clock = Some(clock.with_speed(speed, self.clock_now()));
                 } else {
                     self.status.speed = speed;
                     let _ = self.draw(true, false);
@@ -521,6 +655,7 @@ impl Worker {
                 }
                 self.status.speed = speed;
                 self.status.playing = true;
+                self.restart_sound();
                 self.request(frame, false);
             }
             Action::Pause => self.pause(),
@@ -541,6 +676,7 @@ impl Worker {
                     ));
                     self.fine = Some(crate::timer::Fine::new());
                     self.status.playing = true;
+                    self.restart_sound();
                 }
             }
             Action::Step { frames } => {
@@ -561,8 +697,9 @@ impl Worker {
     }
 
     fn tick(&mut self) {
+        self.check_sound();
         if let Some(clock) = self.clock {
-            let target = clock.frame(self.now());
+            let target = clock.frame(self.clock_now());
             let frame = clock::clamped(target, self.status.last.unwrap_or(0));
             if self.status.frame != Some(frame) {
                 self.status.frame = Some(frame);

@@ -1,6 +1,7 @@
 //! Timeline playback: independent track readers, composition and the monitor transport.
 
 mod ahead;
+mod mix;
 mod sources;
 mod timeline;
 
@@ -180,6 +181,7 @@ impl Transport {
                 viewer.slot(Monitor::Timeline),
                 notify,
                 repair,
+                setup.sound,
             )
         });
         Self {

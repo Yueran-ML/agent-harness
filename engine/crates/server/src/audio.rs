@@ -1,10 +1,8 @@
-//! The sound of the transport: the sound of a media item, decoded from a place, converted to
-//! what the output device of the system takes, and played on it with cpal.
+//! The sound of either monitor, supplied in the output device's format and played with cpal.
 //!
 //! The device is the default output of the system, opened in its own format (its mix format on
-//! Windows, mostly 48 kHz in floats), and the sound is converted to its rate and channels by
-//! [`AudioDecoder`] (swresample: stereo is mixed down to mono, or laid on the front left and
-//! right of more channels). A **feeder** thread decodes ahead of the device, up to
+//! Windows, mostly 48 kHz in floats). A file uses [`AudioDecoder`] to convert its sound; the
+//! timeline mixer supplies its own converted stereo mix. A **feeder** thread reads ahead, up to
 //! [`AHEAD_SECONDS`], into a queue that the device's own thread takes from as it plays.
 //!
 //! The device is the clock of playing with sound: [`Output::played`] says how much of the sound
@@ -32,7 +30,7 @@
 //! for sound; and one like the first that fails once it has played so long.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -47,6 +45,46 @@ use crate::log::log;
 
 /// How far the feeder decodes ahead of the device.
 pub const AHEAD_SECONDS: f64 = 0.25;
+
+/// Interleaved samples in the output device's format. Opening and decoding happen on the
+/// feeder thread. None marks the end; the output continues with silence after it.
+pub trait Source: Send {
+    fn next(&mut self) -> Result<Option<Vec<f32>>, String>;
+}
+
+/// A single-file source keeps the phase-0 source monitor's decoder and seek behaviour.
+pub fn file(path: &Path, format: AudioFormat, from: i64) -> Box<dyn Source> {
+    Box::new(File {
+        path: path.to_owned(),
+        format,
+        from,
+        decoder: None,
+    })
+}
+
+struct File {
+    path: PathBuf,
+    format: AudioFormat,
+    from: i64,
+    decoder: Option<AudioDecoder>,
+}
+
+impl Source for File {
+    fn next(&mut self) -> Result<Option<Vec<f32>>, String> {
+        if self.decoder.is_none() {
+            let mut decoder = AudioDecoder::open(&self.path, Some(self.format))
+                .map_err(|error| error.to_string())?;
+            decoder.seek(self.from).map_err(|error| error.to_string())?;
+            self.decoder = Some(decoder);
+        }
+        self.decoder
+            .as_mut()
+            .expect("opened above")
+            .next()
+            .map(|samples| samples.map(|samples| samples.data))
+            .map_err(|error| error.to_string())
+    }
+}
 
 /// How far the time of the sound is reckoned on past the last run given to the device.
 const RUN_AHEAD: Duration = Duration::from_millis(100);
@@ -350,14 +388,13 @@ impl Output {
         }
     }
 
-    /// Play the sound of the file at `path` from sample `from` (at the device's rate, from time
-    /// 0 of the file, as [`AudioDecoder`] numbers them), in the place of what played before.
-    /// It returns at once: the feeder opens the file, and the device plays silence, which is
+    /// Play a source in this device's format in place of what played before.
+    /// It returns at once: the feeder opens the source, and the device plays silence, which is
     /// not counted as played, until the first samples come.
     ///
     /// # Errors
     /// The device cannot be started, or a thread cannot be started; then nothing plays.
-    pub fn start(&mut self, path: &Path, from: i64) -> Result<(), String> {
+    pub fn start(&mut self, source: Box<dyn Source>) -> Result<(), String> {
         self.stop();
         let generation = {
             let mut queue = lock(&self.shared.queue);
@@ -376,9 +413,8 @@ impl Output {
             .spawn({
                 let shared = Arc::clone(&self.shared);
                 let stop = Arc::clone(&stop);
-                let path = path.to_owned();
                 let format = self.format;
-                move || feed(&shared, &stop, generation, &path, format, from)
+                move || feed(&shared, &stop, generation, source, format)
             })
             .map_err(|error| format!("the feeder of the sound cannot be started: {error}"))?;
         self.feeder = Some(Feeder { stop, thread });
@@ -638,28 +674,16 @@ fn fake(shared: &Shared, playing: &AtomicBool, quit: &AtomicBool, fail_after: Op
     }
 }
 
-/// Decode the sound of a file from `from` into the queue, ahead of the device, until it is
+/// Read a source into the queue, ahead of the device, until it is
 /// stopped; after its end, or if it cannot be decoded, silence.
 fn feed(
     shared: &Shared,
     stop: &AtomicBool,
     generation: u64,
-    path: &Path,
+    source: Box<dyn Source>,
     format: AudioFormat,
-    from: i64,
 ) {
-    let mut decoder = match AudioDecoder::open(path, Some(format))
-        .and_then(|mut decoder| decoder.seek(from).map(|()| decoder))
-    {
-        Ok(decoder) => Some(decoder),
-        Err(error) => {
-            log(
-                "sound_failed",
-                &json!({ "message": format!("the sound cannot be decoded: {error}") }),
-            );
-            None
-        }
-    };
+    let mut source = Some(source);
     let channels = usize::from(format.channels);
     #[allow(
         clippy::cast_possible_truncation,
@@ -674,15 +698,15 @@ fn feed(
             std::thread::sleep(FEEDER_NAP);
             continue;
         }
-        let run = match decoder.as_mut().map(AudioDecoder::next) {
-            Some(Ok(Some(samples))) => samples.data,
+        let run = match source.as_mut().map(|source| source.next()) {
+            Some(Ok(Some(samples))) => samples,
             Some(Ok(None)) | None => silence.clone(),
             Some(Err(error)) => {
                 log(
                     "sound_failed",
                     &json!({ "message": format!("the sound cannot be decoded on: {error}") }),
                 );
-                decoder = None;
+                source = None;
                 silence.clone()
             }
         };
@@ -717,7 +741,9 @@ mod tests {
         let mut output = Output::open(Kind::Null).unwrap();
         assert!(output.current());
         // A file that is not there plays silence, as a sound that cannot be decoded does.
-        output.start(Path::new("not there.wav"), 0).unwrap();
+        output
+            .start(file(Path::new("not there.wav"), output.format(), 0))
+            .unwrap();
         let started = Instant::now();
         std::thread::sleep(Duration::from_millis(300));
         let played = output.played(Instant::now()).unwrap();
@@ -739,14 +765,18 @@ mod tests {
     #[test]
     fn an_output_that_stalls_or_fails_has_failed() {
         let mut stalled = Output::open(Kind::Stall).unwrap();
-        stalled.start(Path::new("not there.wav"), 0).unwrap();
+        stalled
+            .start(file(Path::new("not there.wav"), stalled.format(), 0))
+            .unwrap();
         assert!(stalled.failed().is_none());
         std::thread::sleep(FIRST_RUN + Duration::from_millis(50));
         assert!(stalled.failed().unwrap().contains("asked for no sound"));
         assert!(stalled.played(Instant::now()).is_none());
 
         let mut failing = Output::open(Kind::FailAfter(Duration::from_millis(100))).unwrap();
-        failing.start(Path::new("not there.wav"), 0).unwrap();
+        failing
+            .start(file(Path::new("not there.wav"), failing.format(), 0))
+            .unwrap();
         std::thread::sleep(Duration::from_millis(250));
         assert_eq!(
             failing.failed().as_deref(),

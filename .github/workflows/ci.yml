@@ -21,9 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Windows first. Linux stays for the tests of the container sandbox with a real Docker
-        # engine, which can be run again here in Docker; macOS is not tested for now.
-        os: [ubuntu-latest, windows-latest]
+        # The agent runs on all three. The studio of video, whose engine is built for Windows
+        # only for now, is tested by the jobs below.
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v7

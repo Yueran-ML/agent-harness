@@ -18,6 +18,12 @@ export interface ColumbinaBridge {
   onShutdown(listener: () => void): () => void;
   /** Hear when the window goes into full screen, and out of it. Told of on macOS only. */
   onFullScreen(listener: (full: boolean) => void): () => void;
+  /**
+   * A key that the page did not take, of those that the menu of the window had (Ctrl with plus,
+   * minus or 0, F11, and from source F12): the shell does what the menu did. Not on macOS, where
+   * the menu keeps its keys. Whether it did anything.
+   */
+  leftKey(key: { key: string; code: string; control: boolean; shift: boolean; alt: boolean; meta: boolean }): Promise<boolean>;
   stop(): Promise<void>;
   setTheme(theme: 'moonveil' | 'moonwhite'): Promise<void>;
   /** Tell the shell the language of the page, in which the menu of the tray speaks. */

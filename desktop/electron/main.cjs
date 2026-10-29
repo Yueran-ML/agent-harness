@@ -1789,6 +1789,12 @@ function installHandlers() {
     // one. A page cannot silently authorize replacing files alongside the one chosen in Save As.
     return answered(open.session.call('render.start', { ...options, path: chosen.filePath, replace: false }));
   });
+  ipcMain.handle('columbina:left-key', (event, asked) => {
+    checkSender(event);
+    // macOS keeps its menu, whose keys never come to the page.
+    if (process.platform === 'darwin') return false;
+    return pageLeftKey(asked);
+  });
   ipcMain.handle('columbina:engine-view-rect', (event, rect) => {
     checkSender(event);
     takeViewRect(rect);
@@ -2123,38 +2129,70 @@ function quitFromTray() {
 /** How far one step of zoom goes, as the menu of Electron zooms. */
 const ZOOM_STEP = 0.5;
 /**
- * Do what a key did through the menu that the window no longer has, where it is such a key:
- * Ctrl with plus, minus or 0 zooms the page, F11 puts the window in full screen and out of it;
- * and from source, Ctrl+R loads the page again and Ctrl+Shift+I or F12 shows its tools. Whether it was.
+ * What a key did through the menu that the window no longer has, where it is such a key: Ctrl with
+ * plus, minus or 0 zooms the page, F11 puts the window in full screen and out of it; and from source,
+ * Ctrl+R loads the page again and Ctrl+Shift+I or F12 shows its tools. Null for any other key.
+ * F10, which brings a menu to a window of Windows that has one, is no such key: this window has
+ * none, and F10 comes to the page with the keys after it, as a real key pressed on Windows showed.
  */
-function pressed(input) {
-  if (input?.type !== 'keyDown' || input.alt || input.meta) return false;
-  const page = window.webContents;
+function menuAction(input) {
+  if (input?.type !== 'keyDown' || input.alt || input.meta) return null;
   const key = input.key;
   const code = input.code;
+  if (input.control && !input.shift && (key === '0' || code === 'Numpad0')) return 'zoom-reset';
+  if (input.control && (key === '+' || key === '=' || code === 'NumpadAdd')) return 'zoom-in';
+  if (input.control && !input.shift && (key === '-' || code === 'NumpadSubtract')) return 'zoom-out';
+  if (!input.control && !input.shift && key === 'F11') return 'full-screen';
+  if (app.isPackaged) return null;
+  if (input.control && !input.shift && (key === 'r' || key === 'R')) return 'reload';
+  if (input.control && input.shift && (key === 'i' || key === 'I')) return 'tools';
+  if (!input.control && !input.shift && key === 'F12') return 'tools';
+  return null;
+}
+/**
+ * The keys that the page may want for itself: the studio zooms its timeline with Ctrl and plus or
+ * minus, and F11 and F12 replace and place on top, as DaVinci Resolve has them. These are left to
+ * the page, which asks for what the menu did only where it did not take the key (`pageLeftKey`).
+ * Ctrl+R and Ctrl+Shift+I are taken here at once: the page has no use for them, and they must work
+ * where the page itself does not.
+ */
+const PAGE_FIRST = new Set(['zoom-reset', 'zoom-in', 'zoom-out', 'full-screen']);
+const pageFirst = (action, input) => PAGE_FIRST.has(action) || (action === 'tools' && input.key === 'F12');
+/** Do what the menu did for a key. */
+function doMenuAction(action) {
+  const page = window.webContents;
   const zoom = (level) => {
     page.setZoomLevel(level);
     // The pixels of the screen that the viewer covers change with the zoom: the page measures it again.
     tell('columbina:engine-event', { kind: 'measure', session: studio?.number ?? null });
-    return true;
   };
-  if (input.control && !input.shift && (key === '0' || code === 'Numpad0')) return zoom(0);
-  if (input.control && (key === '+' || key === '=' || code === 'NumpadAdd')) return zoom(page.getZoomLevel() + ZOOM_STEP);
-  if (input.control && !input.shift && (key === '-' || code === 'NumpadSubtract')) return zoom(page.getZoomLevel() - ZOOM_STEP);
-  if (!input.control && !input.shift && key === 'F11') {
-    window.setFullScreen(!window.isFullScreen());
-    return true;
-  }
-  if (app.isPackaged) return false;
-  if (input.control && !input.shift && (key === 'r' || key === 'R')) {
-    page.reload();
-    return true;
-  }
-  if ((input.control && input.shift && (key === 'i' || key === 'I')) || (!input.control && !input.shift && key === 'F12')) {
-    page.toggleDevTools();
-    return true;
-  }
-  return false;
+  if (action === 'zoom-reset') zoom(0);
+  else if (action === 'zoom-in') zoom(page.getZoomLevel() + ZOOM_STEP);
+  else if (action === 'zoom-out') zoom(page.getZoomLevel() - ZOOM_STEP);
+  else if (action === 'full-screen') window.setFullScreen(!window.isFullScreen());
+  else if (action === 'reload') page.reload();
+  else if (action === 'tools') page.toggleDevTools();
+}
+/** A key that comes to the window: whether it was taken here, before the page. */
+function pressed(input) {
+  const action = menuAction(input);
+  if (action === null || pageFirst(action, input)) return false;
+  doMenuAction(action);
+  return true;
+}
+/**
+ * The page did not take a key that it was left: what the menu did for it is done now. Only such a
+ * key is taken, described as `before-input-event` describes it.
+ */
+function pageLeftKey(asked) {
+  const input = {
+    type: 'keyDown', key: typeof asked?.key === 'string' ? asked.key : '', code: typeof asked?.code === 'string' ? asked.code : '',
+    control: asked?.control === true, shift: asked?.shift === true, alt: asked?.alt === true, meta: asked?.meta === true,
+  };
+  const action = menuAction(input);
+  if (action === null || !pageFirst(action, input)) return false;
+  doMenuAction(action);
+  return true;
 }
 /** Stop what runs and quit, without the page: the window has gone, or the system ends the session. */
 function endAll() {

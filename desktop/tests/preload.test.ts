@@ -164,6 +164,8 @@ describe('the bridge of the main window', () => {
     expect(handed('feishuThinking')).toEqual(['columbina:feishu-thinking', { model: null, effort: null }]);
     expect(handed('wecomThinking', { effort: 'low' })).toEqual(['columbina:wecom-thinking', { model: null, effort: 'low' }]);
     expect(handed('setLoginItem', true)).toEqual(['columbina:set-login-item', true]);
+    expect(handed('leftKey', { key: 'F11', code: 'F11', control: 1, shift: false, alt: 'yes', meta: true, more: 1 }))
+      .toEqual(['columbina:left-key', { key: 'F11', code: 'F11', control: false, shift: false, alt: false, meta: true }]);
     expect(handed('setPet', { on: true, chosen: 'builtin/cat', share: false, more: 1 }))
       .toEqual(['columbina:set-pet', { on: true, chosen: 'builtin/cat' }]);
     expect(handed('setPet')).toEqual(['columbina:set-pet', { on: undefined, chosen: undefined }]);

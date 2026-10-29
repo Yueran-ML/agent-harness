@@ -116,7 +116,7 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
     return { ...old, scale: next.scale, left: next.scroll };
   }), []);
   const fit = () => setView(old => ({ ...old, scale: fitZoom(end, old.width), left: 0 }));
-  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, onSpeed, onSelection, onTransition });
+  const editing = useEditing({ timeline, media, bridge, session, revision, frame, focus, source, root, scroll, view, onSeek, fit, zoom, onSpeed, onSelection, onTransition });
   useImperativeHandle(ref, () => ({ keyDown: editing.keyDown }));
   useEffect(() => {
     const element = scroll.current;
@@ -166,7 +166,6 @@ export function Timeline({ timeline, media, bridge, session, revision, frame, pl
       const key = keyOf(event);
       if (!editingAllowed(event.target, key)) return;
       if (editing.keyDown(key)) { event.preventDefault(); event.stopPropagation(); }
-      else if ((event.ctrlKey || event.metaKey) && !event.altKey && ['=', '+', '-'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); zoom(event.key === '-' ? 0.8 : 1.25); }
     }}
     onPointerDown={editing.pointerDown}
     onDragOver={editing.dragOver} onDrop={editing.drop} onDragLeave={editing.dragLeave}

@@ -21,6 +21,7 @@ import { useWorkspace, type Workspace } from '../useWorkspace';
 import { studioEngine } from '../studio/connection';
 import { Studio } from '../studio/Studio';
 import { ApprovalCard } from './ApprovalCard';
+import { useLeftKeys } from './leftKeys';
 import { Composer } from './Composer';
 import { Conversation } from './Conversation';
 import { changesOf, Inspector, type InspectorTab } from './Inspector';
@@ -134,6 +135,8 @@ export default function App() {
   // On macOS the buttons of the window are hidden in full screen, and the bar gives their room back.
   const [fullScreen, setFullScreen] = useState(false);
   useEffect(() => (onMac() ? window.columbina!.onFullScreen(setFullScreen) : undefined), []);
+  // The keys that the menu of the window had, where the page leaves them.
+  useLeftKeys();
   const [inspector, setInspector] = useState<InspectorTab | null>(null);
   const [settings, setSettings] = useState<SettingsPart | null>(null);
   // What each task was last looked at as, by its id: its conversation, or its trace. A task

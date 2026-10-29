@@ -20,7 +20,7 @@ interface Options {
   timeline: Timeline | null; revision: number; session: number; media: readonly Media[];
   bridge: Pick<EngineBridge, 'call'>; frame: number; focus: Monitor; source: EditContext['source'];
   root: RefObject<HTMLElement | null>; scroll: RefObject<HTMLDivElement | null>; view: { scale: number; left: number };
-  onSeek: (frame: number, scrubbing: boolean) => void; fit: () => void;
+  onSeek: (frame: number, scrubbing: boolean) => void; fit: () => void; zoom: (factor: number) => void;
   onSpeed?: (clips: string[]) => void; onSelection?: (clips: string[]) => void;
   /** The transition chosen on the timeline, for the inspector; null where none is. */
   onTransition?: (transition: string | null) => void;
@@ -135,6 +135,7 @@ export function useEditing(options: Options) {
       case 'snap': setSnapping(value => !value); break;
       case 'linked': setLinked(value => !value); break;
       case 'fit': context.fit(); break;
+      case 'zoom': context.zoom(result.direction > 0 ? 1.25 : 0.8); break;
       case 'cancel': cancel(); setProblem(null); break;
     }
     return true;

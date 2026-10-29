@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('columbina', {
   onClose: (callback) => subscribe('columbina:closed', callback),
   onShutdown: (callback) => subscribe('columbina:shutdown', callback),
   onFullScreen: (callback) => subscribe('columbina:full-screen', callback),
+  // A key that the page left, of those that the menu had: the shell does what the menu did.
+  leftKey: (key) => ipcRenderer.invoke('columbina:left-key', {
+    key: key?.key, code: key?.code, control: key?.control === true, shift: key?.shift === true, alt: key?.alt === true, meta: key?.meta === true,
+  }),
   stop: () => ipcRenderer.invoke('columbina:stop'),
   setTheme: (theme) => ipcRenderer.invoke('columbina:set-theme', theme),
   setLanguage: (language) => ipcRenderer.invoke('columbina:set-language', language),

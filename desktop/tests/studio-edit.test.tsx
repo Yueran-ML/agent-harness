@@ -297,6 +297,30 @@ describe('the Edit page', () => {
     expect(calls(bridge, 'transaction.apply').at(-1)).toEqual({ revision: 2, ops: [{ edit: 'overwrite', timeline: 't1', at: 150, source: { kind: 'media', media: 'm1' }, video_track: 'v1', audio_track: null }] });
   });
 
+  it('keeps F11, F12 and Ctrl with plus or minus from the shell, zooming the timeline with them, and leaves Ctrl+0', async () => {
+    const { bridge } = await mount(); bridge.call.mockClear();
+    const taken = (value: string, fields = {}) => !fireEvent.keyDown(document.body, { key: value, ...fields });
+    const scale = () => Number(document.querySelector<HTMLElement>('.timeline')!.dataset.scale);
+    const before = scale();
+    expect(taken('=', { ctrlKey: true })).toBe(true);
+    expect(scale()).toBeCloseTo(before * 1.25);
+    expect(taken('+', { ctrlKey: true, shiftKey: true })).toBe(true);
+    expect(taken('-', { ctrlKey: true })).toBe(true);
+    expect(scale()).toBeCloseTo(before * 1.25);
+    // The timeline itself takes them as well where it has the keyboard.
+    const timeline = document.querySelector<HTMLElement>('.timeline')!;
+    expect(!fireEvent.keyDown(timeline, { key: '-', ctrlKey: true })).toBe(true);
+    expect(scale()).toBeCloseTo(before);
+    // F11 replaces and F12 places on top, as in DaVinci Resolve: neither goes to full screen or the tools.
+    expect(taken('F11')).toBe(true);
+    await settle();
+    expect(taken('F12')).toBe(true);
+    await settle();
+    expect(calls(bridge, 'transaction.apply').map(each => (each as { ops: { edit: string }[] }).ops[0].edit)).toEqual(['replace', 'place_on_top']);
+    // Ctrl+0 is not the studio's: the page goes back to its own size.
+    expect(taken('0', { ctrlKey: true })).toBe(false);
+  });
+
   it('takes no keys of editing from a field, nor of the transport where the focused monitor has nothing', async () => {
     const { bridge } = await mount(true); bridge.call.mockClear();
     key('l'); key('F9');

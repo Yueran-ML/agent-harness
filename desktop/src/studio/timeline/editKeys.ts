@@ -13,7 +13,8 @@ export type EditAction =
   | { kind: 'mark'; edge: 'in' | 'out' | 'clear' }
   | { kind: 'place'; edit: 'insert' | 'overwrite' | 'replace' | 'place_on_top' | 'append' }
   | { kind: 'delete'; ripple: boolean }
-  | { kind: 'cut'; direction: -1 | 1 };
+  | { kind: 'cut'; direction: -1 | 1 }
+  | { kind: 'zoom'; direction: -1 | 1 };
 
 /** Classify first so modified shortcuts cannot fall through to their unmodified tool or fit key. */
 export function editKey(key: Key): EditAction | null {
@@ -23,6 +24,9 @@ export function editKey(key: Key): EditAction | null {
   if (control) {
     if (value === 'l' && key.alt && !key.shift) return { kind: 'lock' };
     if (key.alt) return null;
+    // Ctrl with plus or minus zooms the timeline, as in DaVinci Resolve; plus is often typed with Shift.
+    if (value === '=' || value === '+') return { kind: 'zoom', direction: 1 };
+    if (value === '-' && !key.shift) return { kind: 'zoom', direction: -1 };
     if (value === 'z') return { kind: 'history', method: key.shift ? 'history.redo' : 'history.undo' };
     if (value === 'l' && key.shift) return { kind: 'linked' };
     if (key.shift) return null;
@@ -70,7 +74,8 @@ export type EditResult =
   | { kind: 'marks'; marks: Marks }
   | { kind: 'speed'; clips: string[] }
   | { kind: 'tool'; tool: Tool }
-  | { kind: 'snap' | 'linked' | 'fit' | 'cancel' };
+  | { kind: 'snap' | 'linked' | 'fit' | 'cancel' }
+  | { kind: 'zoom'; direction: -1 | 1 };
 
 /** Integer rational conversion prevents a frame boundary from rounding one source tick too early. */
 export function sourceTime(frame: number, rate: Rate, scale: number): Time {
@@ -82,7 +87,7 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
   if (!action) return null;
   const { timeline, source, revision, linked, marks, frame, targets } = context;
   const transaction = (ops: Change[]): EditResult | null => ops.length ? { kind: 'transaction', transaction: { revision, ops } } : null;
-  if (action.kind === 'history' || action.kind === 'tool' || ['snap', 'linked', 'fit', 'cancel'].includes(action.kind)) return action as EditResult;
+  if (action.kind === 'history' || action.kind === 'tool' || action.kind === 'zoom' || ['snap', 'linked', 'fit', 'cancel'].includes(action.kind)) return action as EditResult;
   if (action.kind === 'mark') {
     if (context.focus === 'source') {
       if (!source) return null;

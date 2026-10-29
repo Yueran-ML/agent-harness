@@ -4394,35 +4394,58 @@ describe('the engine of the studio', () => {
       shell.window.webContents.emit('before-input-event', event, { type: 'keyDown', control: false, shift: false, alt: false, meta: false, ...input });
       return event.preventDefault.mock.calls.length === 1;
     };
+    // The page did not take the key: it hands it back, as the shell describes keys.
+    const left = (shell: Shell, input: Record<string, unknown>) => shell.invoke('left-key', { control: false, shift: false, alt: false, meta: false, code: '', ...input });
     const shell = await shellHarness();
     const page = shell.window.webContents;
-    expect(press(shell, { control: true, key: '=' })).toBe(true);
-    expect(press(shell, { control: true, shift: true, key: '+' })).toBe(true);
+    // The keys that the studio uses go to the page first: the shell does nothing with them as they come.
+    for (const input of [{ control: true, key: '=' }, { control: true, shift: true, key: '+' }, { control: true, key: '-' }, { control: true, key: '0' },
+      { control: true, code: 'Numpad0', key: 'Insert' }, { key: 'F11' }, { key: 'F12' }]) {
+      expect(press(shell, input)).toBe(false);
+    }
+    expect(page.setZoomLevel).not.toHaveBeenCalled();
+    expect(shell.window.setFullScreen).not.toHaveBeenCalled();
+    expect(page.toggleDevTools).not.toHaveBeenCalled();
+    // Where the page left them, the shell does what the menu did.
+    expect(left(shell, { control: true, key: '=' })).toBe(true);
+    expect(left(shell, { control: true, shift: true, key: '+' })).toBe(true);
     expect(page.setZoomLevel.mock.calls).toEqual([[0.5], [1]]);
     // The page measures the viewer again: the pixels of the screen that it covers changed.
     expect(told(shell).at(-1)).toEqual({ kind: 'measure', session: null });
-    expect(press(shell, { control: true, key: '-' })).toBe(true);
-    expect(press(shell, { control: true, code: 'Numpad0', key: 'Insert' })).toBe(true);
+    expect(left(shell, { control: true, key: '-' })).toBe(true);
+    expect(left(shell, { control: true, code: 'Numpad0', key: 'Insert' })).toBe(true);
     expect(page.setZoomLevel.mock.calls.slice(2)).toEqual([[0.5], [0]]);
-    expect(press(shell, { key: 'F11' })).toBe(true);
+    expect(left(shell, { key: 'F11' })).toBe(true);
     expect(shell.window.setFullScreen).toHaveBeenCalledWith(true);
+    expect(left(shell, { key: 'F12' })).toBe(true);
+    expect(page.toggleDevTools).toHaveBeenCalledTimes(1);
+    // Loading again and the tools by Ctrl+Shift+I are the shell's at once, also where the page does not answer.
     expect(press(shell, { control: true, key: 'r' })).toBe(true);
     expect(page.reload).toHaveBeenCalledOnce();
     expect(press(shell, { control: true, shift: true, key: 'I' })).toBe(true);
-    expect(press(shell, { key: 'F12' })).toBe(true);
+    expect(page.toggleDevTools).toHaveBeenCalledTimes(2);
+    // A page cannot have those done by handing them back, nor anything that the menu did not do.
+    for (const input of [{ control: true, key: 'r' }, { control: true, shift: true, key: 'I' }, { key: 'a', control: true }, { key: '=', control: true, alt: true }, { key: '0' }, { key: 'F10' }]) {
+      expect(left(shell, input)).toBe(false);
+    }
+    expect(page.reload).toHaveBeenCalledOnce();
     expect(page.toggleDevTools).toHaveBeenCalledTimes(2);
     // Other keys are the page's, and so is a key let go.
-    for (const input of [{ key: 'a', control: true }, { key: '=', control: true, alt: true }, { key: 'F11', type: 'keyUp' }, { key: '0' }]) {
+    for (const input of [{ key: 'a', control: true }, { key: '=', control: true, alt: true }, { key: 'F11', type: 'keyUp' }, { key: '0' }, { key: 'F10' }]) {
       expect(press(shell, input)).toBe(false);
     }
+    // Only the window of the application hands keys back.
+    await expect(Promise.resolve().then(() => shell.handlers.get('columbina:left-key')!(shell.unrelated, { key: 'F11' }))).rejects.toThrow('IPC sender');
     // A package does not load its page again, nor show its tools.
     const packaged = await shellHarness(undefined, {}, { packaged: true });
     expect(press(packaged, { control: true, key: 'r' })).toBe(false);
-    expect(press(packaged, { key: 'F12' })).toBe(false);
-    expect(press(packaged, { control: true, key: '=' })).toBe(true);
+    expect(left(packaged, { key: 'F12' })).toBe(false);
+    expect(packaged.window.webContents.toggleDevTools).not.toHaveBeenCalled();
+    expect(left(packaged, { control: true, key: '=' })).toBe(true);
     // macOS keeps its menu, and the keys are its own.
     const mac = await shellHarness(undefined, {}, { platform: 'darwin' });
     expect(mac.window.webContents.listenerCount('before-input-event')).toBe(0);
+    expect(left(mac, { key: 'F11' })).toBe(false);
   });
 
   it('answers only its own window', async () => {

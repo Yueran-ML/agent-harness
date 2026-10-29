@@ -9,6 +9,52 @@ use tempfile::TempPath;
 
 use crate::rpc::{self, Fault};
 
+/// The partial file that an output is written to until it is published: `<path>.part`.
+pub(super) fn part_of(path: &Path) -> PathBuf {
+    let mut partial = path.as_os_str().to_owned();
+    partial.push(".part");
+    PathBuf::from(partial)
+}
+
+/// A path as the file system names it, to tell whether two paths are one file: the canonical
+/// path of the file, or of its directory with its name where it is not there yet; and on
+/// Windows, whose file systems ignore case, in lower case.
+fn identity(path: &Path) -> PathBuf {
+    let whole = fs::canonicalize(path).ok().or_else(|| {
+        let parent = fs::canonicalize(path.parent()?).ok()?;
+        Some(parent.join(path.file_name()?))
+    });
+    let path = whole.unwrap_or_else(|| path.to_owned());
+    if cfg!(windows) {
+        PathBuf::from(path.to_string_lossy().to_lowercase())
+    } else {
+        path
+    }
+}
+
+/// Refuse an output that is a file the export reads: the media of the snapshot, or a proxy of
+/// it. Writing over a source while it is decoded would lose the source and the export alike.
+pub(super) fn not_a_source(path: &Path, project: &columbina_model::Project) -> Result<(), Fault> {
+    let output = identity(path);
+    for media in &project.media {
+        let proxy = media.proxy.as_ref().map(|proxy| Path::new(&proxy.path));
+        for source in std::iter::once(Path::new(&media.path)).chain(proxy) {
+            if identity(source) == output {
+                return Err(Fault::new(
+                    rpc::REFUSED,
+                    format!(
+                        "the export would write over {}, which media {} reads",
+                        path.display(),
+                        media.id
+                    ),
+                )
+                .with_data(json!({"reason":"source", "path":path, "media":media.id})));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn check(path: &Path, project: &Path, replace: bool) -> Result<(), Fault> {
     if !path.is_absolute() || path.file_name().is_none() {
         return Err(Fault::params("the export path must name an absolute file"));
@@ -38,7 +84,30 @@ pub(super) fn check(path: &Path, project: &Path, replace: bool) -> Result<(), Fa
         }
         _ => {}
     }
-    Ok(())
+    stale_part(path, replace)
+}
+
+/// A partial file at `<path>.part`, left by an export that did not finish (the engine ended
+/// while it ran) or by another program, is never written over silently. Without `replace` the
+/// export is refused as `part_exists`; with it, the partial file is taken away first, unless a
+/// program still has it open (Windows refuses to delete it then) or it is not a file.
+fn stale_part(path: &Path, replace: bool) -> Result<(), Fault> {
+    let part = part_of(path);
+    let refused = || {
+        Fault::new(
+            rpc::REFUSED,
+            format!("a partial file {} is in the way", part.display()),
+        )
+        .with_data(json!({"reason":"part_exists", "path":part}))
+    };
+    match fs::symlink_metadata(&part) {
+        Ok(meta) if replace && meta.file_type().is_file() => {
+            fs::remove_file(&part).map_err(|_| refused())
+        }
+        Ok(_) => Err(refused()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Fault::params(error.to_string())),
+    }
 }
 
 pub(super) struct Files {
@@ -62,9 +131,7 @@ impl Files {
     }
 
     pub(super) fn add(&mut self, path: &Path) -> io::Result<PathBuf> {
-        let mut partial = path.as_os_str().to_owned();
-        partial.push(".part");
-        let partial = PathBuf::from(partial);
+        let partial = part_of(path);
         // A leftover or another writer's partial is never silently truncated or deleted.
         fs::OpenOptions::new()
             .write(true)
@@ -184,6 +251,73 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .starts_with(".columbina-export-previous-")));
+    }
+
+    #[test]
+    fn a_stale_partial_file_is_refused_by_name_or_replaced_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let path = dir.path().join("movie.mov");
+        let part = dir.path().join("movie.mov.part");
+        fs::write(&part, b"left by a crash").unwrap();
+        let error = check(&path, project.path(), false).unwrap_err();
+        assert_eq!(error.code, rpc::REFUSED);
+        assert_eq!(
+            error.data,
+            Some(json!({"reason":"part_exists", "path":part}))
+        );
+        assert_eq!(fs::read(&part).unwrap(), b"left by a crash");
+        check(&path, project.path(), true).unwrap();
+        assert!(!part.exists());
+        let mut files = Files::new(false);
+        fs::write(files.add(&path).unwrap(), b"movie").unwrap();
+        files.publish().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"movie");
+        // A partial file that a program holds open, as ffmpeg holds what it writes (sharing
+        // reading and writing but not deleting), is not taken away.
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let held = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .share_mode(1 | 2)
+                .open(&part)
+                .unwrap();
+            let error = check(&path, project.path(), true).unwrap_err();
+            assert_eq!(error.data.unwrap()["reason"], "part_exists");
+            drop(held);
+            assert!(part.exists());
+        }
+    }
+
+    #[test]
+    fn an_export_over_its_own_media_or_proxy_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = columbina_model::Project::sample();
+        let source = dir.path().join("Source.MP4");
+        fs::write(&source, b"media").unwrap();
+        project.media[0].path = source.to_string_lossy().into_owned();
+        project.media[0].proxy = Some(columbina_model::Proxy {
+            path: dir.path().join("proxy.mov").to_string_lossy().into_owned(),
+            width: 64,
+            height: 36,
+            codec: "prores".into(),
+            digest_of_source: "0".repeat(64),
+        });
+        let same = |name: &str| not_a_source(&dir.path().join(name), &project);
+        let error = same("Source.MP4").unwrap_err();
+        assert_eq!(
+            error.data,
+            Some(json!({"reason":"source", "path":dir.path().join("Source.MP4"), "media":"m1"}))
+        );
+        // By another spelling of the same directory, and of the name where case is ignored.
+        let dotted = dir.path().join(".").join("Source.MP4");
+        assert!(not_a_source(&dotted, &project).is_err());
+        assert_eq!(same("source.mp4").is_err(), cfg!(windows));
+        assert!(same("proxy.mov").is_err());
+        same("other.mp4").unwrap();
     }
 
     #[test]

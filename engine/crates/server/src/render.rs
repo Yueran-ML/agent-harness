@@ -157,6 +157,9 @@ impl Renders {
             told: None,
             encoder: None,
             message: None,
+            restored: 0,
+            #[cfg(test)]
+            lose_at: None,
         };
         let (go, ready) = mpsc::channel();
         let completed = Arc::clone(&done);
@@ -255,9 +258,11 @@ impl Plan {
             return Err(Fault::params("export to .mp4 (h264/hevc) or .mov"));
         }
         output::check(&request.path, dir, request.replace)?;
+        output::not_a_source(&request.path, &project)?;
         if request.subtitles {
             for (path, _) in srt::files(timeline, &request.path, range.clone()) {
                 output::check(&path, dir, request.replace)?;
+                output::not_a_source(&path, &project)?;
             }
         }
         let bits = if codec == Codec::ProRes
@@ -305,6 +310,11 @@ struct Worker {
     told: Option<Instant>,
     encoder: Option<String>,
     message: Option<String>,
+    /// How many times a card was made again for the export after one was lost.
+    restored: u32,
+    /// The frame, counted from the start of the export, at which a test loses the card.
+    #[cfg(test)]
+    lose_at: Option<i64>,
 }
 
 impl Worker {
@@ -360,6 +370,8 @@ impl Worker {
                 self.plan.path.set_extension("mov");
                 output::check(&self.plan.path, &self.plan.project_dir, self.plan.replace)
                     .map_err(|error| error.message)?;
+                output::not_a_source(&self.plan.path, &self.plan.project)
+                    .map_err(|error| error.message)?;
                 *outputs = output::Files::new(self.plan.replace);
                 movie = outputs
                     .add(&self.plan.path)
@@ -397,10 +409,7 @@ impl Worker {
                 std::fs::write(part, text).map_err(|error| error.to_string())?;
             }
         }
-        let gpu = self.graphics.gpu().map_err(|error| error.to_string())?;
-        let mut compositor = Compositor::new(Arc::clone(&gpu));
-        let target = Target::export(&gpu, timeline.width, timeline.height, self.plan.video.bits)
-            .map_err(|error| error.to_string())?;
+        let mut drawing = self.drawing(timeline)?;
         let sources = Sources::new(Hardware::Auto, Arc::new(|_, _| {}));
         let sample_at = |frame: i64, rate: u32| {
             i64::try_from(
@@ -423,17 +432,14 @@ impl Worker {
         for frame in self.plan.range.clone() {
             self.cancelled()?;
             let scene = scene(&project, timeline, frame, &sources)?;
-            {
-                let _turn = self.graphics.draw_turn(false);
-                self.cancelled()?;
-                compositor
-                    .render(&scene, &target)
-                    .map_err(|error| error.to_string())?;
-                target
-                    .read_picture(&mut picture)
-                    .map_err(|error| error.to_string())?;
-            }
-            writer.video(&picture).map_err(|error| error.to_string())?;
+            self.draw(&mut drawing, timeline, &scene, &mut picture)?;
+            let encoder = self.encoder.clone().unwrap_or_default();
+            writer.video(&picture).map_err(|error| {
+                format!(
+                    "the encoder {encoder} failed at frame {} of the export: {error}",
+                    self.frame
+                )
+            })?;
             self.frame += 1;
             if sound {
                 let end = sample_at(self.frame, 48000)?;
@@ -449,18 +455,137 @@ impl Worker {
                 }
                 writer
                     .audio(&pending.drain(..needed).collect::<Vec<_>>())
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| format!("the sound encoder failed: {error}"))?;
                 samples = end;
             }
             self.tell("running");
             // Keep at most one export frame submitted; never queue an entire job on the GPU.
             std::thread::yield_now();
         }
+        if self.restored > 0 {
+            let restored = format!(
+                "the graphics device was lost and made again {} time(s); the export went on",
+                self.restored
+            );
+            self.message = Some(match self.message.take() {
+                Some(earlier) => format!("{earlier}; {restored}"),
+                None => restored,
+            });
+        }
         self.cancelled()?;
-        writer.finish().map_err(|error| error.to_string())?;
+        writer
+            .finish()
+            .map_err(|error| format!("the movie could not be finished: {error}"))?;
         self.cancelled()?;
         outputs.publish().map_err(|error| error.to_string())
     }
+
+    /// The card, a compositor and a picture of the size of the timeline to draw on with them.
+    fn drawing(&self, timeline: &columbina_model::Timeline) -> Result<Drawing, String> {
+        let gpu = self.graphics.gpu().map_err(|error| error.to_string())?;
+        let compositor = Compositor::new(Arc::clone(&gpu));
+        let target = Target::export(&gpu, timeline.width, timeline.height, self.plan.video.bits)
+            .map_err(|error| error.to_string())?;
+        Ok(Drawing {
+            gpu,
+            compositor,
+            target,
+        })
+    }
+
+    /// Draw a frame and read it back. Where the card is lost, before or while it draws, a new
+    /// card is made and the frame is drawn again with it: nothing of the frame was written yet,
+    /// so the export goes on from the last frame that it wrote. The export fails, saying so,
+    /// where no card can be made again within [`RESTORE`].
+    fn draw(
+        &mut self,
+        drawing: &mut Drawing,
+        timeline: &columbina_model::Timeline,
+        scene: &Scene,
+        picture: &mut Picture,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if self.lose_at == Some(self.frame) {
+            drawing.gpu.mark_lost("lost by a test of the export");
+        }
+        let mut restored = 0;
+        loop {
+            if drawing.gpu.is_lost() {
+                if restored == 3 {
+                    return Err(format!(
+                        "the graphics device was lost again and again at frame {} of the export",
+                        self.frame
+                    ));
+                }
+                *drawing = self.restore(timeline)?;
+                restored += 1;
+                self.restored += 1;
+            }
+            let drawn = {
+                let _turn = self.graphics.draw_turn(false);
+                self.cancelled()?;
+                drawing
+                    .compositor
+                    .render(scene, &drawing.target)
+                    .map_err(|error| error.to_string())
+                    .and_then(|()| {
+                        drawing
+                            .target
+                            .read_picture(picture)
+                            .map_err(|error| error.to_string())
+                    })
+            };
+            match drawn {
+                Ok(()) => return Ok(()),
+                Err(_) if drawing.gpu.is_lost() => {}
+                Err(error) => {
+                    return Err(format!(
+                        "frame {} of the export could not be drawn: {error}",
+                        self.frame
+                    ))
+                }
+            }
+        }
+    }
+
+    /// A drawing on a card made in place of one that was lost, waited for until one can be made
+    /// or the export is cancelled.
+    fn restore(&mut self, timeline: &columbina_model::Timeline) -> Result<Drawing, String> {
+        let since = Instant::now();
+        let mut why = String::from("every card made was lost at once");
+        loop {
+            self.cancelled()?;
+            match self.drawing(timeline) {
+                Ok(drawing) if !drawing.gpu.is_lost() => {
+                    crate::log::log(
+                        "render_gpu_restored",
+                        &json!({"job":self.job, "frame":self.frame, "adapter":drawing.gpu.name()}),
+                    );
+                    return Ok(drawing);
+                }
+                Ok(_) => {}
+                Err(error) => why = error,
+            }
+            if since.elapsed() >= RESTORE {
+                return Err(format!(
+                    "the graphics device was lost at frame {} of the export and could not be \
+                     made again: {why}",
+                    self.frame
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+/// How long an export waits for a card to be made again after one was lost.
+const RESTORE: Duration = Duration::from_secs(30);
+
+/// What an export draws its frames with.
+struct Drawing {
+    gpu: Arc<columbina_compose::Gpu>,
+    compositor: Compositor,
+    target: Target,
 }
 
 fn scene(
@@ -528,7 +653,55 @@ mod tests {
             told: None,
             encoder: None,
             message: None,
+            restored: 0,
+            lose_at: None,
         }
+    }
+
+    #[test]
+    fn an_export_goes_on_from_the_frame_it_was_at_with_a_new_card_when_the_card_is_lost() {
+        if columbina_compose::gpu_for_tests().is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::sample();
+        let timeline = &mut project.timelines[0];
+        (timeline.width, timeline.height) = (64, 36);
+        timeline
+            .tracks
+            .retain(|track| track.kind == TrackKind::Video);
+        let picture = &mut timeline.tracks[0].clips[0];
+        picture.source = columbina_model::Source::Color {
+            color: columbina_model::Rgba([255, 0, 0, 255]),
+        };
+        picture.length = 12;
+        let request = Request {
+            timeline: timeline.id.clone(),
+            path: dir.path().join("film.mov"),
+            codec: VideoCodec::Prores,
+            quality: VideoQuality::Medium,
+            range: None,
+            subtitles: false,
+            replace: false,
+        };
+        let mut worker = worker(dir.path());
+        worker.plan = Plan::new(project, request, dir.path()).unwrap();
+        worker.lose_at = Some(5);
+        worker.run().unwrap();
+        assert_eq!(worker.restored, 1);
+        assert_eq!(worker.frame, 12);
+        assert!(worker.message.unwrap().contains("made again 1 time(s)"));
+        let mut decoder =
+            columbina_media::VideoDecoder::open(&worker.plan.path, Hardware::Off).unwrap();
+        for frame in 0..12 {
+            let raw = decoder.decoded_at(frame).unwrap();
+            let rgba = columbina_media::Converter::new()
+                .rgba_scaled(&raw, 64, 36)
+                .unwrap();
+            let pixel = rgba.data.as_chunks::<4>().0[64 * 18 + 32];
+            assert!(pixel[0] > 240 && pixel[1] < 12, "frame {frame}: {pixel:?}");
+        }
+        assert!(decoder.frame_at(12).is_err());
     }
 
     fn no_hardware(

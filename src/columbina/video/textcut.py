@@ -16,7 +16,7 @@ left whole. A run at the start of a clip is cut from the start of the clip, and 
 to its end, unless a word that another clip plays lies there.
 
 **Pauses.** Where the story names a pause shorter than the one between two lines, or a pause
-that it named is taken away (:data:`~columbina.video.timeline.PAUSE_LEAST_US`), the middle of
+that it named is taken away (:data:`~columbina.video.transcript.PAUSE_LEAST_US`), the middle of
 the pause is cut, so that the pause lasts that long. ``pause_most_ms`` makes every other pause
 between two words that are left no longer than it.
 
@@ -34,7 +34,7 @@ from columbina.video import edits
 from columbina.video.edits import Rate
 from columbina.video.span import Placed, frames_showing, source_span
 from columbina.video.story import Marked, StoryError, Telling, marked
-from columbina.video.timeline import LEAD_US, PAUSE_LEAST_US, Transcript
+from columbina.video.transcript import LEAD_US, PAUSE_LEAST_US, Transcript
 
 __all__ = ["LEAD_US", "Range", "cuts", "edits_of", "merged"]
 

@@ -11,11 +11,10 @@ import pytest
 
 from columbina.video import edits
 from columbina.video.engine import Engine, EngineError
-from columbina.video.legacy_editing import Editor, Placing, Shape
 from columbina.video.media import Tools, located
 from columbina.video.migrate import discover, migrate
 from columbina.video.project import ProjectError, written
-from columbina.video.transcribe import Scripted
+from support.legacy import installed
 from support.media import made, real, real_engine
 
 
@@ -58,28 +57,7 @@ async def old_project(tmp_path: Path) -> tuple[Path, Tools]:
         encoding="utf-8",
     )
     tools = await located(str(Path(real()).parent), [], cwd=tmp_path)
-    editor = Editor(workspace / "Old Film", tools, Scripted(raw / "words.json"))
-    await editor.imported([raw / "talk.mp4", raw / "yellow.png", raw / "song.wav"])
-    await editor.transcribed("talk")
-    await editor.styled(crossfade=("talk.0", 5))
-    await editor.layered(
-        "add",
-        kind="picture",
-        asset="yellow",
-        placing=Placing(at_frame=10, frames=30),
-        shape=Shape(position="top-right", scale=0.25, opacity=0.6, fade_ms=120),
-    )
-    await editor.layered(
-        "add",
-        kind="sound",
-        asset="song",
-        placing=Placing(at_frame=0, frames=50),
-        shape=Shape(volume=0.5, speed=1.25, fade_ms=120),
-    )
-    await editor.layered("add", kind="title", text="Welcome", placing=Placing(sentence="talk.1"))
-    await editor.project.cached_silences(
-        editor.project.asset("talk"), tools, noise_db=-40, shortest_us=200_000
-    )
+    installed(workspace, "Old Film")
     return workspace, tools
 
 
@@ -360,8 +338,7 @@ async def test_audio_only_legacy_frame_positions_keep_their_millisecond_timebase
     old_project: tuple[Path, Tools],
 ) -> None:
     workspace, tools = old_project
-    editor = Editor(workspace / "Audio", tools, Scripted(workspace / "raw/words.json"))
-    voice = made(
+    made(
         workspace / "raw",
         "voice.wav",
         "-i",
@@ -370,13 +347,7 @@ async def test_audio_only_legacy_frame_positions_keep_their_millisecond_timebase
         "-c:a",
         "pcm_s16le",
     )
-    await editor.imported([voice, workspace / "raw/song.wav"])
-    await editor.transcribed("voice")
-    await editor.styled(crossfade=("voice.0", 200))
-    await editor.layered(
-        "add", kind="sound", asset="song", placing=Placing(at_frame=480, frames=1000)
-    )
-    assert editor.project.manifest().canvas is None
+    installed(workspace, "Audio")
     async with await Engine.attach(
         workspace / ".columbina/studio", program=real_engine()
     ) as engine:

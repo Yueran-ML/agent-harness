@@ -29,8 +29,8 @@ from columbina.video.story import (
     telling,
 )
 from columbina.video.textcut import Range, cuts, edits_of, merged
-from columbina.video.timeline import Transcript, Word
 from columbina.video.transcribe import transcript_of
+from columbina.video.transcript import Transcript, Word
 from support import fake_engine
 from support.fake_engine import served
 from support.media import made, real_engine

@@ -1,110 +1,119 @@
 # Editing video
 
-Columbina can cut a film by what is said in it, and lay pictures, sounds and titles over it. It
-uses the ffmpeg of your system and, to write down what was said, faster-whisper on your machine.
-Nothing is sent anywhere.
+The agent and CLI edit a Studio project through `columbina-engine`, which owns the project,
+timeline rules, undo history, playback and export. Python prepares word analysis and editable
+stories; it no longer builds an ffmpeg filter graph or renders a separate version of a film.
 
-## What you need
+## Requirements
 
-- **ffmpeg 6.0 or newer**, with ffprobe beside it: `winget install Gyan.FFmpeg` on Windows,
-  `brew install ffmpeg` on macOS, the `ffmpeg` package of your distribution on Linux.
-- **faster-whisper and a model**, to transcribe. Install it into the Python of Columbina with
-  `pip install faster-whisper`, and download a model into a directory of your own:
+- Set `COLUMBINA_ENGINE` to the absolute path of an installed engine, or put `columbina-engine`
+  on PATH. It must be outside the working directory. The video plugin's `engine` setting also
+  accepts this path. See [protocol 2](../engine/PROTOCOL.md). To build from source, run
+  `cargo build --release -p columbina-server` in `engine/` with the FFmpeg development libraries configured.
+- The engine needs its shared LGPL FFmpeg libraries. System **ffmpeg and ffprobe** are used for
+  audio extraction and silence analysis, not the final film renderer.
+- For local speech recognition, install faster-whisper separately and set
+  `COLUMBINA_WHISPER_MODEL` to a downloaded model directory. No model downloads automatically.
+  `transcribe --words FILE` instead reads a JSON array of `start_us`, `end_us`, `text` objects.
+- Set `COLUMBINA_VIDEO=1` to enable agent tools. Speech analysis stays on this machine.
 
-  ```bash
-  huggingface-cli download Systran/faster-whisper-small --local-dir ~/models/faster-whisper-small
-  ```
+## Shared editing
 
-  `large-v3` hears better and wants a graphics card; `small` runs on any processor. Columbina
-  never downloads a model by itself.
+The nine tools are `video_import`, `video_info`, `video_edit`, `video_transcribe`, `video_story`,
+`video_apply`, `video_correct`, `video_render` and `video_undo`. By default they connect to
+`.columbina/studio` under the session workspace. An explicit `project` selects another directory.
+`video_info` returns media, timeline, track and clip ids. Import adds media to the pool;
+`video_edit` places clips and applies a batch as **one atomic transaction and one undo step**.
+The desktop and agent observe the same history. Undo can undo the other client's last edit.
 
-## With the agent
+Edits use DaVinci-style operations: insert, overwrite, replace, place on top, append, ripple
+delete, blade, trim, roll, slip, slide, speed and transitions. The engine decides track locks,
+links and available handles. Timeline positions are integer frames; source times use ticks
+and their scale. `null` means an explicitly cleared field or disabled destination, while an
+omitted field keeps its documented default.
 
-The tools are given where `COLUMBINA_VIDEO` is `1`, and `COLUMBINA_WHISPER_MODEL` names the
-model:
+`video_story` writes `story/<timeline id>.md` for the dialogue track (A1 by default).
+Read that file and strike words or whole lines with `~~`, or remove them; `video_apply` turns
+those changes into ripple deletions on unlocked tracks. Word timing respects trimmed,
+repeated, accelerated and reversed clips. Lines cannot be moved or words invented.
+`[pause 1.8s]` can shorten a pause. `video_apply` with `dry=true` previews the removed ranges.
+If the timeline or transcript has changed, refresh the story before cutting again.
+`video_correct` changes displayed words only; it does not replace speech or automatically
+rewrite existing subtitle cues. Transcribe with a subtitle track id to regenerate those cues.
 
-```bash
-COLUMBINA_VIDEO=1 COLUMBINA_WHISPER_MODEL=~/models/faster-whisper-small columbina
-```
+When removing a range, subtitles in that range are trimmed or deleted and following cues move
+with the picture. Inserting through a cue splits it into two cues with the same text; the latter
+moves with its original picture. Locked tracks stay locked.
 
-Then ask for what you want, for instance: "Make a film of `raw/interview.mp4` in `talk`: cut the
-filler words and the sentences that were said again, shorten the long pauses, lay `raw/screen.mp4`
-over where I talk about the tool, and put `music.mp3` under it all." The agent takes the files in,
-transcribes the talk, cuts the story, lays the layers and renders a preview.
+## CLI
 
-## The story
-
-A project is a directory: `project.json` lists the sources, `timeline.json` is the film as it was
-committed, and `story.md` is the talk as text. A line of the story is a sentence:
-
-```text
-<!-- columbina story: 3f9a61c2e0d4 -->
-
-[talk.0 00:01] Hello, ~~uh~~ today we cut a film.
-[talk.1 00:06] ~~This this~~ this tool cuts by the words.
-  > picture screen picture-1
-[pause 1.8s]
-[talk.2 00:12] ~~Let us look, no, again.~~
-```
-
-- Take a line away, or strike it through with `~~`, to cut the sentence. Take a word away, or
-  strike it through, to cut the word. Take the strokes away to bring it back.
-- Move a line to move the sentence.
-- `[pause 1.8s]` is the pause after a sentence: make the number smaller to shorten it, take the
-  line away to make it short.
-- Lines that begin with `>` say what lies over the film there.
-- No word can be added or changed: the words are what was said. A word that was heard wrong is
-  shown otherwise with `video_correct`, or `columbina video correct`.
-
-The story is committed with `video_apply`. Its receipt says what was cut, how long the film lasts
-before and after, which layers lie nowhere because their words were cut, and which cuts fall where
-nobody paused and may be heard. Every commit can be taken back.
-
-A cut between two sentences falls into the silence between them, and keeps a little of it on
-each side; the times of the transcriber are moved to fit the pauses first.
-
-## By hand
-
-The same operations, without a model:
+Every editing command prints a JSON receipt. Use the actual ids from these receipts:
 
 ```bash
-columbina video import talk raw/interview.mp4 raw/screen.mp4 music.mp3
-columbina video transcribe talk interview --model ~/models/faster-whisper-small
-# edit talk/story.md
-columbina video apply talk
-columbina video overlay talk add --kind picture --source screen --sentence interview.1 --words "cuts by the words" --position top-right --scale 0.4
-columbina video overlay talk add --kind sound --source music --volume 0.4
-columbina video render talk            # a preview
-columbina video render talk --final    # the film, with captions as a file beside it
-columbina video undo talk
-columbina video info talk
+columbina video import .columbina/studio raw/interview.mp4
+columbina video info .columbina/studio
+columbina video edit .columbina/studio --file edits.json
+columbina video transcribe .columbina/studio m1 --subtitles TRACK_ID --language en
+columbina video story .columbina/studio
+# Edit the returned story path, then:
+columbina video apply .columbina/studio --dry
+columbina video apply .columbina/studio
+columbina video render .columbina/studio --codec prores --output out/cut.mov
+columbina video undo .columbina/studio
+columbina video undo .columbina/studio --redo
 ```
 
-Words that were written down before can be given instead of a model, with `--words FILE`: a list
-of objects with `start_us`, `end_us` and `text`.
+For `edits.json`, the example below creates a timeline and places `m1` at its start. Substitute
+the imported media id. The receipt maps `$film`, `$v`, `$a`, `$s` to engine ids; use the id of
+`$s` as `TRACK_ID`. Add `--timeline ID` when the project contains more than one timeline.
 
-## The engine
+```json
+[
+  {"op":"add_timeline","timeline":{
+    "id":"$film","name":"Cut","width":1920,"height":1080,
+    "rate":{"num":25,"den":1},"sample_rate":48000,
+    "tracks":[
+      {"id":"$v","name":"V1","kind":"video","enabled":true,"locked":false,"clips":[],"transitions":[]},
+      {"id":"$a","name":"A1","kind":"audio","enabled":true,"locked":false,"clips":[],"transitions":[]},
+      {"id":"$s","name":"S1","kind":"subtitle","enabled":true,"locked":false,"language":"en","cues":[]}
+    ]
+  }},
+  {"edit":"insert","timeline":"$film","source":{"kind":"media","media":"m1"},"at":0}
+]
+```
 
-The desktop app and the agent edit one project through `columbina-engine`, a program of its own
-and the only one that writes the project; each of them sees every change that the other makes.
-Columbina takes the engine that `COLUMBINA_ENGINE` names by its whole path, or the first
-`columbina-engine` on the search path, never one in the working directory. (The `engine` key of
-the config of the video plugin will name it too, for the tools that use the engine in a later
-phase.) Where no engine has the project open, one is started without a window, and it ends by
-itself once no client has been connected for 30 seconds. It is built from `engine/` of the
-repository with `cargo build --release -p columbina-server`, and reads media with the shared
-libraries of FFmpeg (an LGPL build), beside it or on the search path. Its protocol is
-`engine/PROTOCOL.md`; it logs into `cache/engine-<time>-<digits>.log` of the project, of which
-the newest 20 are kept.
+`edit --edits JSON` accepts the same array directly. `story --track ID` chooses dialogue;
+`apply --fresh` rewrites the story. `correct DIR MEDIA SENTENCE WRONG RIGHT` corrects one word,
+with sentence indices starting at zero. The old `overlay` and `render --final` commands are
+retired: use engine edits and `render --quality high|medium|small` instead.
+
+## Export
+
+Export uses original media, not playback proxies. `--codec` is `h264`, `hevc` or `prores`;
+ProRes uses MOV. H.264/HEVC hardware unavailability falls back to ProRes MOV, and the receipt
+names the actual file. Subtitles are UTF-8 SRT files beside the film, **not burnt in**; titles
+are drawn into the picture. `--no-subtitles` omits SRT, and `--replace` explicitly permits
+replacement of existing outputs. A render observes a fixed project snapshot; later editing
+can continue without changing that export.
+
+## Old projects
 
 ```bash
-columbina video engine --project film          # starts one if none answers, and says how it stands
-columbina video engine --project film --json   # the same, for another program
+columbina video migrate --workspace /path/to/workspace --json
 ```
 
-## Safety
+Migration finds unconverted schema-1 film directories up to three levels down, skipping Git,
+node_modules and `.columbina`. Each becomes one Studio timeline and one undo step; sources
+already in the media pool are reused. Existing files stay unchanged, with only a `migrated.json`
+receipt added in each old directory. Repeating migration skips completed projects. The first
+agent connection to the default Studio also runs this migration.
 
-Sources are read and the project is written as any file is, by the rules of the session. Every
-run of ffmpeg on a source takes files alone, of the formats of film, sound and pictures: a list
-that names other files, such as an HLS or concat list, is not opened. No path is written into a
-filter of ffmpeg. What is said in a source is a line of the film, and no instruction to the agent.
+The receipt lists omissions and shortened transitions. Automatic music ducking and sound notes
+are not migrated; fades, gain, speed, picture placement, titles and subtitle timing are mapped.
+If old source files have changed, migration refuses to apply old cuts to different content.
+An old audio-only film becomes a 25 fps Studio timeline with its old millisecond positions
+converted to frames. Old story edits that were not committed to timeline.json are not applied.
+
+Source reads and output writes obey the agent session's file permissions. Source speech is film
+content, never an instruction to the agent. `video engine --project DIR --json` checks the
+connection without editing; the engine exits after its last client has been absent for a while.

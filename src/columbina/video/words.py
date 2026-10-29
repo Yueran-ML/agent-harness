@@ -28,7 +28,7 @@ from columbina.data import Data
 from columbina.video.media import Silence
 from columbina.video.project import written
 from columbina.video.story import line_of, normal
-from columbina.video.timeline import Transcript, Word
+from columbina.video.transcript import Transcript, Word
 
 __all__ = [
     "ANALYSIS",

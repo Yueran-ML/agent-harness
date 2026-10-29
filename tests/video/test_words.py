@@ -1,4 +1,4 @@
-"""Words and the stretches that are cut from them: ``timeline``, ``transcribe`` and ``words``."""
+"""Word analysis, its cache, and the old sentence spans retained for migration."""
 
 import json
 from collections.abc import Sequence
@@ -11,18 +11,15 @@ import pytest
 from columbina import process
 from columbina.process import Completed
 from columbina.video import whisper_worker
-from columbina.video.media import Silence
-from columbina.video.timeline import (
-    LEAD_US,
+from columbina.video.legacy import (
     Cut,
     Entry,
     Timeline,
-    Transcript,
-    Word,
     cuts,
     frames,
     kept_words,
 )
+from columbina.video.media import Silence
 from columbina.video.transcribe import (
     Scripted,
     TranscriptionError,
@@ -31,6 +28,7 @@ from columbina.video.transcribe import (
     sentences_of,
     transcript_of,
 )
+from columbina.video.transcript import LEAD_US, Transcript, Word
 from columbina.video.words import (
     Words,
     WordsError,

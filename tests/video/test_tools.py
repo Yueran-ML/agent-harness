@@ -1,42 +1,20 @@
 """Agent tools and the desktop share the engine project and its undo history."""
 
 import json
-import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-import columbina.fs
-import columbina.sandbox
-import columbina.session
 import columbina.tools
 import columbina.video
-from columbina.builtin_tools import edit, read
-from columbina.fs import FS
 from columbina.kernel import Context
-from columbina.sandbox import SANDBOX
-from columbina.session import SESSIONS
 from columbina.tools import TOOLS
 from columbina.video import VIDEOS, Config, Videos, edits
 from columbina.video.transcribe import Whisper
 from support.desk import Desk
 from support.fake_engine import Fake, served
-
-
-async def desk_of(ctx: Context, tmp_path: Path, **config: object) -> Desk:
-    work = tmp_path / "work"
-    work.mkdir()
-    await ctx.plugin(columbina.session, {"root": tmp_path / "sessions"})
-    await ctx.plugin(columbina.tools)
-    await ctx.plugin(columbina.fs)
-    await ctx.plugin(columbina.sandbox)
-    await ctx.plugin(read)
-    await ctx.plugin(edit)
-    await ctx.plugin(columbina.video, {"enabled": True, "engine": sys.executable, **config})
-    session = ctx.use(SESSIONS).create(ctx, work)
-    return Desk(ctx, ctx.use(TOOLS), ctx.use(FS), ctx.use(SANDBOX), session, work)
+from support.studio_tools import desk_of, result
 
 
 @pytest.fixture
@@ -44,11 +22,6 @@ async def studio(ctx: Context, tmp_path: Path) -> AsyncIterator[tuple[Desk, Fake
     desk = await desk_of(ctx, tmp_path)
     async with served(desk.work / ".columbina" / "studio") as fake:
         yield desk, fake
-
-
-def result(outcome: Any) -> dict[str, Any]:
-    assert outcome.error is None, outcome.text
-    return json.loads(outcome.text)
 
 
 async def test_edit_batch_and_human_undo_share_one_project(studio: tuple[Desk, Fake]) -> None:
@@ -71,8 +44,7 @@ async def test_edit_batch_and_human_undo_share_one_project(studio: tuple[Desk, F
 async def test_first_default_studio_call_migrates_once_and_returns_its_report(
     studio: tuple[Desk, Fake],
 ) -> None:
-    from columbina.video.project import Manifest
-    from columbina.video.timeline import Timeline
+    from columbina.video.legacy import Manifest, Timeline
 
     desk, fake = studio
     old = desk.work / "Old Film"
@@ -179,8 +151,8 @@ def test_a_model_of_faster_whisper_is_what_transcribes() -> None:
 
 
 async def seed_story(desk: Desk, fake: Fake) -> str:
-    from columbina.video.timeline import Word
     from columbina.video.transcribe import transcript_of
+    from columbina.video.transcript import Word
     from columbina.video.words import Words, keep_words
     from support.studio import clip_of, timeline_of, track_of
 

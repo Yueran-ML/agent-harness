@@ -36,7 +36,7 @@ from typing import Protocol, cast
 
 from columbina import process
 from columbina.video.media import Silence
-from columbina.video.timeline import Transcript, Word
+from columbina.video.transcript import Transcript, Word
 
 __all__ = [
     "SENTENCE_PAUSE_US",

@@ -4,10 +4,13 @@ from mutation.mutants import MutantSet, mutant
 
 MEDIA = "src/columbina/video/media.py"
 PROJECT = "src/columbina/video/project.py"
-TIMELINE = "src/columbina/video/timeline.py"
+TIMELINE = "src/columbina/video/legacy.py"
 TRANSCRIBE = "src/columbina/video/transcribe.py"
 STORY = "src/columbina/video/story.py"
-RENDER = "src/columbina/video/render.py"
+EDITS = "src/columbina/video/edits.py"
+TEXTCUT = "src/columbina/video/textcut.py"
+MIGRATE = "src/columbina/video/migrate.py"
+WORDS = "src/columbina/video/words.py"
 EDITING = "src/columbina/video/editing.py"
 VIDEO_PLUGIN = "src/columbina/video/__init__.py"
 WORKTREES = "src/columbina/worktrees.py"
@@ -65,50 +68,16 @@ _MEDIA = (
     ),
 )
 
+
 _PROJECT = (
     mutant(
-        "a source that was taken in is probed again",
-        PROJECT,
-        "            if known is not None and assets[known].identity.digest == identity.digest:",
-        "            if False:",
-    ),
-    mutant(
-        "the frame of the film follows every source",
-        PROJECT,
-        "        if canvas is None:",
-        "        if True:",
-    ),
-    mutant(
-        "a source that was replaced is used",
-        PROJECT,
-        "        if identity.digest != asset.identity.digest:",
-        "        if False:",
-    ),
-    mutant(
-        "a change that was made from another timeline is taken",
-        PROJECT,
-        "        if digest != base:",
-        "        if False:",
-    ),
-    mutant(
-        "the history keeps every timeline",
-        PROJECT,
-        "            for old in _stack(place)[:-HISTORY_MOST]:",
-        "            for old in ():",
-    ),
-    mutant(
-        "two sources get one id",
-        PROJECT,
-        "    while found in taken:",
-        "    while False:",
-    ),
-    mutant(
-        "the end of a large file is not in its digest",
+        "the end of a large source is omitted from its identity",
         PROJECT,
         "        if size > _EDGE:",
         "        if False:",
     ),
 )
+
 
 _TIMELINE = (
     mutant(
@@ -149,6 +118,7 @@ _TIMELINE = (
     ),
 )
 
+
 _TRANSCRIBE = (
     mutant(
         "a stop does not end a sentence",
@@ -176,9 +146,10 @@ _TRANSCRIBE = (
     ),
 )
 
+
 _STORY = (
     mutant(
-        "of a word said twice, the later one is cut",
+        "of a word said twice the earlier one is kept",
         STORY,
         "        if able[i + 1][j]:\n            continue\n        if not line[j][1]:",
         "        if False:\n            continue\n        if not line[j][1]:",
@@ -186,8 +157,8 @@ _STORY = (
     mutant(
         "a struck word is kept",
         STORY,
-        "        if not line[j][1]:\n            kept.add(index)",
-        "        if True:\n            kept.add(index)",
+        "        if not line[j][1]:\n            kept.add(place)",
+        "        if True:\n            kept.add(place)",
     ),
     mutant(
         "a word half struck through is taken",
@@ -196,16 +167,10 @@ _STORY = (
         "                and True",
     ),
     mutant(
-        "a sentence is taken twice",
+        "word timing changes do not stale the story",
         STORY,
-        "        if (asset, number) in seen:",
-        "        if False:",
-    ),
-    mutant(
-        "a pause line that was taken away keeps the long pause",
-        STORY,
-        "        elif natural is not None and natural > PAUSE_SHOWN_US:",
-        "        elif False:",
+        "            [(word.start_us, word.end_us, word.text) for word in transcripts[one].words],",
+        "            [],",
     ),
     mutant(
         "words of Chinese are written apart",
@@ -213,97 +178,102 @@ _STORY = (
         '        gap = " " if previous and (_latin(previous[-1]) or _latin(text[:1])) else ""',
         '        gap = " " if previous else ""',
     ),
-    mutant(
-        "cut sentences are left out of the story",
-        STORY,
-        "        lines.extend(cut_after(entry.asset, entry.sentence))",
-        "        cut_after(entry.asset, entry.sentence)",
-    ),
 )
 
-_RENDER = (
-    mutant(
-        "a crossfade takes no frames from the film",
-        RENDER,
-        "        at += sizes[place] - fade",
-        "        at += sizes[place]",
-    ),
-    mutant(
-        "a stretch that goes back is read from where the source is",
-        RENDER,
-        "        if known is not None and start >= known[2]:",
-        "        if known is not None:",
-    ),
-    mutant(
-        "a layer whose word was cut lies at the beginning",
-        RENDER,
-        "    if start is None or start >= plan.length_us:\n        return None\n",
-        "    if start is None:\n        start = 0\n",
-    ),
-    mutant(
-        "music is not made quieter while somebody speaks",
-        RENDER,
-        "    if duck:\n        graph.append",
-        "    if False:\n        graph.append",
-    ),
-    mutant(
-        "a caption holds a whole sentence however long",
-        RENDER,
-        "                if not chunk or _wide(text) <= _CAPTION_CHARACTERS:",
-        "                if True:",
-    ),
-    mutant(
-        "a film that is shorter than its plan is kept",
-        RENDER,
-        "        if abs(facts.duration_us - plan.length_us) > slack:",
-        "        if False:",
-    ),
-    mutant(
-        "a preview is as large as the film",
-        RENDER,
-        '        if quality == "preview" and canvas.height > _PREVIEW_HEIGHT:',
-        "        if False:",
-    ),
-)
 
 _EDITING = (
     mutant(
-        "a story of another timeline is committed",
-        EDITING,
-        "            if not digest.startswith(story.base):",
-        "            if False:",
+        "a dry text cut commits", EDITING, "        if not dry and ranges:", "        if ranges:"
     ),
     mutant(
-        "a dry run commits",
+        "a concurrent desktop edit is not checked before a text cut",
         EDITING,
-        "            if dry:\n                return",
-        "            if False:\n                return",
+        '                        textcut.edits_of(target["id"], ranges), revision=revision',
+        '                        textcut.edits_of(target["id"], ranges)',
     ),
     mutant(
-        "a change of the layers drops what was changed in the story",
+        "cached transcription is redone without asking",
         EDITING,
-        "        elif before.main == after.main:",
-        "        elif False:",
+        "        reused = known is not None and not again",
+        "        reused = False",
     ),
     mutant(
-        "a source is transcribed again without being asked",
+        "render cancellation leaves the export running",
         EDITING,
-        "            if known is not None and known.digest == asset.identity.digest and not again:",
-        "            if False:",
+        "                await job.cancel()",
+        "                pass",
+    ),
+)
+_EDITS = (
+    mutant(
+        "ripple delete is a lift",
+        EDITS,
+        '{"edit": "ripple_delete", "timeline": timeline, "clips": list(clips), "linked": linked}',
+        '{"edit": "lift", "timeline": timeline, "clips": list(clips), "linked": linked}',
     ),
     mutant(
-        "a word that is in a sentence twice is corrected",
-        EDITING,
-        "            if len(found) != 1:",
-        "            if not found:",
+        "explicit null media marks are omitted",
+        EDITS,
+        "        if value is LEFT_OUT:",
+        "        if value is LEFT_OUT or value is None:",
+    ),
+)
+_TEXTCUT = (
+    mutant(
+        "text cuts run from first to last and shift later cuts",
+        TEXTCUT,
+        "for one in reversed(merged(ranges))",
+        "for one in merged(ranges)",
+    ),
+    mutant("a locked dialogue track is cut", TEXTCUT, "    if told.locked:", "    if False:"),
+    mutant(
+        "adjacent cut ranges remain separate",
+        TEXTCUT,
+        "        if joined and one.start <= joined[-1].end:",
+        "        if joined and one.start < joined[-1].end:",
+    ),
+)
+_MIGRATE = (
+    mutant(
+        "a marked legacy project is migrated again",
+        MIGRATE,
+        '            and not (directory / "migrated.json").exists()',
+        "            and True",
     ),
     mutant(
-        "a receipt does not say what lies nowhere",
-        EDITING,
-        "            if lost:",
+        "legacy cuts use a changed source",
+        MIGRATE,
+        '        if media_by_asset[asset.id]["identity"]["digest"] != asset.identity.digest:',
+        "        if False:",
+    ),
+    mutant(
+        "migration ignores an existing source in the pool",
+        MIGRATE,
+        "        known = existing.get(path)",
+        "        known = None",
+    ),
+    mutant(
+        "old still facts are left unchanged",
+        MIGRATE,
+        '            if picture.get("still") and not known_picture.get("still"):',
         "            if False:",
     ),
 )
+_WORDS = (
+    mutant(
+        "a word occurring twice is corrected without a choice",
+        WORDS,
+        "    if len(found) != 1:",
+        "    if not found:",
+    ),
+    mutant(
+        "words of other media are accepted",
+        WORDS,
+        "    if words.digest[:_DIGITS] != _digits(digest):",
+        "    if False:",
+    ),
+)
+
 
 _VIDEO_PLUGIN = (
     mutant(
@@ -315,9 +285,8 @@ _VIDEO_PLUGIN = (
     mutant(
         "a source is read without asking the file seam",
         VIDEO_PLUGIN,
-        '        paths = [videos.checked(run, "video_import", path, "read") '
-        "for path in args.paths]",
-        "        paths = [run.cwd / path for path in args.paths]",
+        '[videos.checked(run, tool, path, "read") for path in args.paths]',
+        "[run.cwd / path for path in args.paths]",
     ),
     mutant(
         "a name of nothing is a model in the working directory",
@@ -326,6 +295,7 @@ _VIDEO_PLUGIN = (
         "        return value",
     ),
 )
+
 
 _WORKTREES = (
     mutant(
@@ -450,7 +420,10 @@ VIDEO_SETS: dict[str, MutantSet] = {
             *_TIMELINE,
             *_TRANSCRIBE,
             *_STORY,
-            *_RENDER,
+            *_EDITS,
+            *_TEXTCUT,
+            *_MIGRATE,
+            *_WORDS,
             *_EDITING,
             *_VIDEO_PLUGIN,
         ),

@@ -17,10 +17,11 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from columbina.session import lock
-from columbina.video import edits, media, render, story, words
+from columbina.video import edits, legacy, media, story, words
 from columbina.video.engine import Engine, EngineError
-from columbina.video.project import Asset, Canvas, Manifest, ProjectError, written
-from columbina.video.timeline import Layer, Timeline, Transcript
+from columbina.video.legacy import Asset, Canvas, Layer, Manifest, Timeline
+from columbina.video.project import ProjectError, written
+from columbina.video.transcript import Transcript
 
 __all__ = ["discover", "migrate"]
 
@@ -71,7 +72,7 @@ class _Legacy:
     transcripts: dict[str, Transcript]
     silences: dict[str, tuple[media.Silence, ...]]
     cached: dict[tuple[str, float, int], tuple[media.Silence, ...]]
-    plan: render.Plan
+    plan: legacy.Plan
 
 
 async def _read(
@@ -138,7 +139,7 @@ async def _read(
                 },
             }
         )
-    plan = render.planned(
+    plan = legacy.planned(
         timeline, transcripts, quiet, {a.id: a.duration_us for a in manifest.assets}, canvas
     )
     return _Legacy(directory, manifest, timeline, transcripts, quiet, cached, plan)
@@ -179,14 +180,14 @@ def _span(old: _Legacy, layer: Layer) -> tuple[int, int] | None:
         return plan.us(frame) if old.manifest.canvas is not None else frame * 1000
 
     start = (
-        render.timed(plan, old.transcripts, layer.anchor)
+        legacy.timed(plan, old.transcripts, layer.anchor)
         if layer.anchor is not None
         else frame_us(layer.at_frame or 0)
     )
     if start is None or start >= plan.length_us:
         return None
     if layer.until is not None:
-        end = render.timed(plan, old.transcripts, layer.until, end=True)
+        end = legacy.timed(plan, old.transcripts, layer.until, end=True)
         if end is None:
             return None
     elif layer.frames is not None:
@@ -390,7 +391,7 @@ def _timeline(
     tracks = [*video_tracks, *audio_tracks]
     if old.timeline.captions:
         subtitles = edits.track("subtitle", id="$subtitles", name="Subtitles")
-        for cue in render.captions(plan, old.timeline, old.transcripts):
+        for cue in legacy.captions(plan, old.timeline, old.transcripts):
             first, last = max(0, plan.frame(cue.start_us)), min(plan.frames, plan.frame(cue.end_us))
             if last > first:
                 subtitles["cues"].append(

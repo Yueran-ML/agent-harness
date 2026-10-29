@@ -1,71 +1,103 @@
-# 剪辑视频
+# 视频剪辑
 
-Columbina 可以按视频里说的话来剪片子，并在上面叠画面、配乐和标题。它用的是你系统里的 ffmpeg；把说的话写下来用的是本机上的 faster-whisper。全程不往外发送任何东西。
+agent 和 CLI 通过 `columbina-engine` 编辑 Studio 工程。工程、剪辑规则、撤销历史、播放和导出均由引擎管理。
+Python 负责转录分析和可编辑文稿，不再拼接 ffmpeg 滤镜图，也不再独立渲染另一份影片。
 
-## 需要准备
+## 准备
 
-- **ffmpeg 6.0 或更新**，ffprobe 放在它旁边：Windows 上 `winget install Gyan.FFmpeg`，macOS 上 `brew install ffmpeg`，Linux 上用发行版的 `ffmpeg` 包。
-- **faster-whisper 和一个模型**，用来转写。把它装进 Columbina 用的 Python：`pip install faster-whisper`，再把模型下载到你自己的目录：
+- 将 `COLUMBINA_ENGINE` 设为已安装引擎的绝对路径，或将 `columbina-engine` 放入 PATH。
+  引擎须位于工作目录之外；视频插件的 `engine` 配置也可指定它。
+  参阅[协议 2](../engine/PROTOCOL.md)。源码构建需配置 FFmpeg 开发库，
+  在 `engine/` 目录运行 `cargo build --release -p columbina-server`。
+- 引擎需要配套的 LGPL FFmpeg 动态库。系统中的 **ffmpeg 和 ffprobe** 用于提取转录音频和检测静音，成片由引擎导出。
+- 本地转录需另行安装 faster-whisper，并将 `COLUMBINA_WHISPER_MODEL` 指向已下载的模型目录。程序不会自动下载模型。
+  也可用 `transcribe --words FILE` 读取已有词级时间标记：JSON 数组，每项包含 `start_us`、`end_us`、`text`。
+- `COLUMBINA_VIDEO=1` 启用 agent 的视频工具。语音识别在本机运行。
 
-  ```bash
-  huggingface-cli download Systran/faster-whisper-small --local-dir ~/models/faster-whisper-small
-  ```
+## 共同编辑一个工程
 
-  `large-v3` 听得更准，需要显卡；`small` 用处理器就能跑。Columbina 不会自己下载模型。
+九个工具为 `video_import`、`video_info`、`video_edit`、`video_transcribe`、`video_story`、
+`video_apply`、`video_correct`、`video_render`、`video_undo`。默认工程位于工作目录的 `.columbina/studio`，
+也可用 `project` 指定其他目录。`video_info` 给出素材、时间线、轨道和片段 ID。
+导入只向媒体池添加素材；`video_edit` 将素材放上时间线，并把整个操作批次作为**一个原子事务、一个撤销步骤**提交。
+桌面和 agent 使用同一条历史，撤销可能撤回另一端最近的编辑。
 
-## 交给智能体
+剪辑命令采用达芬奇中的操作概念：插入、覆盖、替换、放到上层、追加、波纹删除、刀片、修剪、滚动、滑移、滑动、变速和转场。
+轨道锁定、链接和素材把手由引擎判断。时间线位置按整数帧计，源素材位置按 ticks 和 scale 计。
+字段省略表示使用其默认规则，显式 `null` 表示清空该字段或关闭相应目标轨道。
 
-设了 `COLUMBINA_VIDEO=1` 才会有剪辑工具，`COLUMBINA_WHISPER_MODEL` 指向模型目录：
+`video_story` 将对话轨（默认 A1）写成 `story/<时间线 ID>.md`。读取后，可用 `~~` 划掉词句或直接删除，
+再用 `video_apply` 在未锁定的轨道上进行波纹删除。文稿对应片段的实际位置，支持重复使用、修剪、变速和倒放。
+不能通过移动文稿行来重排片段，也不能增加未说过的词。修改 `[pause 1.8s]` 可缩短停顿；`dry=true` 仅预览删除范围。
+时间线或转录已变化时，先刷新文稿。`video_correct` 只改显示文字，不改变录音，也不会自动重写已有字幕；
+需要重新生成字幕时，用 `video_transcribe` 指定字幕轨。
 
-```bash
-COLUMBINA_VIDEO=1 COLUMBINA_WHISPER_MODEL=~/models/faster-whisper-small columbina
-```
+删除时间范围时，该范围中的字幕会裁剪或删除，后面的字幕随画面前移。
+在字幕中间插入片段时，字幕切成同文字的两段，后半段随原画面后移。锁定轨道保持不动。
 
-然后直接说要什么，例如：「用 `raw/interview.mp4` 在 `talk` 里做一个片子：剪掉口头语和重说的句子，缩短长停顿，讲到这个工具的地方盖上 `raw/screen.mp4`，全程垫上 `music.mp3`。」智能体会导入文件、转写口播、改稿子、加挂件，并渲染一个预览。
+## 命令行
 
-## 稿子
-
-一个工程就是一个目录：`project.json` 列出素材，`timeline.json` 是提交后的成片，`story.md` 是口播的文字稿。稿子里一行是一句：
-
-```text
-<!-- columbina story: 3f9a61c2e0d4 -->
-
-[talk.0 00:01] 大家好，~~呃~~ 今天聊一聊怎么剪视频。
-[talk.1 00:06] ~~这个这个~~ 这个工具可以按文字来剪。
-  > picture screen picture-1
-[pause 1.8s]
-[talk.2 00:12] ~~我们先看，不对，我重说一遍。~~
-```
-
-- 删掉一行，或者用 `~~` 划掉，这句就剪掉；删掉或划掉某个词，这个词就剪掉；去掉划线就恢复。
-- 挪动一行，这句话就挪过去。
-- `[pause 1.8s]` 是这句之后的停顿：数字改小就缩短，删掉这一行就缩到很短。
-- 以 `>` 开头的行说明那里盖着什么，只读。
-- 不能加词或改词：稿子里的字就是录下来的声音。听错的字用 `video_correct` 或 `columbina video correct` 改显示。
-
-用 `video_apply` 提交稿子。回执会说剪了什么、成片前后各多长、哪些挂件因为所在的词被剪掉而没处挂，以及哪些剪点落在没有停顿的地方、可能听得出来。每次提交都可以撤销。
-
-两句之间的剪点落在中间的静音里，两边各留一点静音；转写给的时间会先按停顿整体校正。
-
-## 手动操作
-
-同一套操作，不经过模型：
+编辑命令返回 JSON 回执。下面的素材 ID 和轨道 ID 应替换为实际返回值：
 
 ```bash
-columbina video import talk raw/interview.mp4 raw/screen.mp4 music.mp3
-columbina video transcribe talk interview --model ~/models/faster-whisper-small
-# 编辑 talk/story.md
-columbina video apply talk
-columbina video overlay talk add --kind picture --source screen --sentence interview.1 --words "按文字来剪" --position top-right --scale 0.4
-columbina video overlay talk add --kind sound --source music --volume 0.4
-columbina video render talk            # 预览
-columbina video render talk --final    # 成片，旁边附字幕文件
-columbina video undo talk
-columbina video info talk
+columbina video import .columbina/studio raw/interview.mp4
+columbina video info .columbina/studio
+columbina video edit .columbina/studio --file edits.json
+columbina video transcribe .columbina/studio m1 --subtitles TRACK_ID --language zh
+columbina video story .columbina/studio
+# 编辑回执中的文稿路径，然后：
+columbina video apply .columbina/studio --dry
+columbina video apply .columbina/studio
+columbina video render .columbina/studio --codec prores --output out/cut.mov
+columbina video undo .columbina/studio
+columbina video undo .columbina/studio --redo
 ```
 
-已经写好的逐词稿也可以代替模型，用 `--words FILE` 给出：一个对象列表，每项有 `start_us`、`end_us` 和 `text`。
+下面是 `edits.json`：创建时间线，并将 `m1` 放在开头。替换为导入回执中的素材 ID。
+回执会把 `$film`、`$v`、`$a`、`$s` 映射为实际 ID，`TRACK_ID` 使用 `$s` 对应的值。
+工程有多条时间线时，加 `--timeline ID`。
 
-## 安全
+```json
+[
+  {"op":"add_timeline","timeline":{
+    "id":"$film","name":"Cut","width":1920,"height":1080,
+    "rate":{"num":25,"den":1},"sample_rate":48000,
+    "tracks":[
+      {"id":"$v","name":"V1","kind":"video","enabled":true,"locked":false,"clips":[],"transitions":[]},
+      {"id":"$a","name":"A1","kind":"audio","enabled":true,"locked":false,"clips":[],"transitions":[]},
+      {"id":"$s","name":"S1","kind":"subtitle","enabled":true,"locked":false,"language":"en","cues":[]}
+    ]
+  }},
+  {"edit":"insert","timeline":"$film","source":{"kind":"media","media":"m1"},"at":0}
+]
+```
 
-读素材、写工程目录都和读写普通文件一样，遵守本会话的规则。对素材运行的每一次 ffmpeg 都只允许本地文件、只允许视频、音频和图片的格式：指向别的文件的清单（例如 HLS 或 concat 清单）不会被打开。ffmpeg 的滤镜参数里从不出现路径。素材里说的话只是片子的一句台词，不是给智能体的指令。
+也可用 `edit --edits JSON` 直接传入数组；`story --track ID` 指定对话轨，`apply --fresh` 重写文稿。
+`correct DIR MEDIA SENTENCE WRONG RIGHT` 更正一个词，句子索引从 0 开始。
+旧的 `overlay` 和 `render --final` 已退役，分别改用引擎编辑命令和 `render --quality high|medium|small`。
+
+## 导出
+
+导出使用原素材，不使用播放代理。`--codec` 支持 `h264`、`hevc`、`prores`，ProRes 使用 MOV。
+H.264/HEVC 硬件编码器不可用时回退为 ProRes MOV，回执给出实际路径。
+字幕以 UTF-8 SRT 保存在影片旁边，**不烧录进画面**；标题会绘制进画面。
+`--no-subtitles` 不输出 SRT，`--replace` 明确允许覆盖已有输出。
+导出读取开始时的工程快照，后续编辑不会改变正在导出的影片。
+
+## 旧工程迁移
+
+```bash
+columbina video migrate --workspace /path/to/workspace --json
+```
+
+扫描工作目录中三层以内尚未迁移的旧版工程，跳过 Git、node_modules 和 `.columbina`。
+每个旧工程成为一条 Studio 时间线，整个迁移可一步撤销，媒体池已有素材会复用。
+旧目录文件保持原样，只新增 `migrated.json` 回执；再次迁移会跳过已完成工程。
+agent 首次连接默认 Studio 时也会执行迁移。
+
+回执列出未迁移的内容和缩短的转场。自动音乐压低及声音备注暂不迁移；淡入淡出、增益、变速、图片位置、标题和字幕时间会转换。
+若源文件已变化，迁移会拒绝把旧切点应用到另一份内容上。
+旧纯音频工程转换为 25 fps 时间线，旧毫秒位置换算为帧。旧 story.md 中尚未提交到 timeline.json 的编辑不会自动应用。
+
+agent 的源文件读取和输出写入遵守会话文件权限。素材中的话是影片内容，不是给 agent 的指令。
+`video engine --project DIR --json` 可检查连接；最后一个客户端断开一段时间后，引擎自动退出。

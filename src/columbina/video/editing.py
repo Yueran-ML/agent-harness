@@ -1,7 +1,7 @@
 """Agent editing through the engine, sharing the desktop's timelines and undo history.
 
 Analysis and editable stories are derived files. Timeline edits are submitted once, as one
-engine transaction. The old editor lives in legacy_editing until migration's film gates pass.
+engine transaction. All films are rendered by the engine.
 """
 
 import asyncio
@@ -18,8 +18,8 @@ from columbina.video.edits import CueItem
 from columbina.video.engine import Applied, Engine, EngineError, Progress
 from columbina.video.project import ProjectError, identity_of, written
 from columbina.video.span import placed, source_span
-from columbina.video.timeline import Transcript
 from columbina.video.transcribe import Transcriber, TranscriptionError, transcript_of
+from columbina.video.transcript import Transcript
 
 __all__ = ["Editor", "receipt", "safe_name"]
 

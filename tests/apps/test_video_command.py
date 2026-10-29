@@ -37,87 +37,98 @@ def said(capsys: pytest.CaptureFixture[str]) -> str:
     return capsys.readouterr().out
 
 
-def test_a_film_is_cut_by_hand(home: Path, talk: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_film_is_cut_by_hand(
+    home: Path, talk: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("COLUMBINA_ENGINE", real_engine())
     assert main(["video", "import", "film", "raw/talk.mp4"]) == 0
-    assert "Taken in: talk" in said(capsys)
+    media = json.loads(said(capsys))["added"][0]
+    batch = [
+        edits.add_timeline(
+            "Cut",
+            edits.Rate(num=25, den=1),
+            id="$t",
+            width=160,
+            height=120,
+            tracks=[edits.track("video"), edits.track("audio"), edits.track("subtitle", id="$s")],
+        ),
+        edits.insert("$t", edits.of_media(media, length=80), 0),
+    ]
+    (talk / "edits.json").write_text(json.dumps(batch), encoding="utf-8")
+    assert main(["video", "edit", "film", "--file", "edits.json"]) == 0
+    names = json.loads(said(capsys))["names"]
     assert (
-        main(["video", "transcribe", "film", "talk", "--words", "words.json", "--language", "en"])
+        main(
+            [
+                "video",
+                "transcribe",
+                "film",
+                media,
+                "--words",
+                "words.json",
+                "--language",
+                "en",
+                "--subtitles",
+                names["$s"],
+            ]
+        )
         == 0
     )
-    assert said(capsys).startswith("talk was transcribed: 2 sentences and 3 words")
-    story = talk / "film" / "story.md"
+    assert json.loads(said(capsys))["cues"] == 2
+    assert main(["video", "story", "film"]) == 0
+    story = Path(json.loads(said(capsys))["path"])
     story.write_text(
         story.read_text(encoding="utf-8").replace("three.", "~~three.~~"), encoding="utf-8"
     )
     assert main(["video", "apply", "film", "--dry"]) == 0
-    assert said(capsys).startswith("Not committed.")
-    assert main(["video", "apply", "film", "--pause-most-ms", "400"]) == 0
-    assert "Sentences cut: 1." in said(capsys)
-    assert main(["video", "correct", "film", "talk.0", "two", "2"]) == 0
-    assert 'is shown as "2"' in said(capsys)
-    overlay = ["video", "overlay", "film"]
-    assert (
-        main(
-            [
-                *overlay,
-                "add",
-                "--kind",
-                "title",
-                "--text",
-                "Hi",
-                "--at-frame",
-                "0",
-                "--frames",
-                "10",
-            ]
-        )
-        == 0
-    )
-    assert (
-        main(
-            [
-                *overlay,
-                "change",
-                "--layer",
-                "title-1",
-                "--position",
-                "top-right",
-                "--opacity",
-                "0.5",
-            ]
-        )
-        == 0
-    )
-    assert main([*overlay, "style", "--captions", "off", "--duck", "on"]) == 0
-    assert main([*overlay, "style", "--sentence", "talk.0", "--crossfade", "2"]) == 0
-    assert "Changed: talk.0 crosses 2 frames" in said(capsys).splitlines()[-1]
-    assert main(["video", "render", "film"]) == 0
-    assert "The preview is" in said(capsys)
+    planned = json.loads(said(capsys))
+    assert planned["dry"] is True
+    assert main(["video", "apply", "film"]) == 0
+    applied = json.loads(said(capsys))
+    assert applied["removed_frames"] == planned["removed_frames"] > 0
+    assert main(["video", "correct", "film", media, "0", "two", "2"]) == 0
+    assert json.loads(said(capsys))["shown"] == {"1": "2"}
+    title = [edits.place_on_top(names["$t"], edits.of_title("Hi", 10), 0)]
+    assert main(["video", "edit", "film", "--edits", json.dumps(title)]) == 0
+    assert json.loads(said(capsys))["done"]
+    assert main(["video", "render", "film", "--codec", "prores"]) == 0
+    assert Path(json.loads(said(capsys))["path"]).is_file()
     assert main(["video", "undo", "film"]) == 0
+    assert json.loads(said(capsys))["changed"] is True
     assert main(["video", "undo", "film", "--redo"]) == 0
-    assert said(capsys).splitlines()[-1].startswith("Done again.")
+    assert json.loads(said(capsys))["redo"] is True
     assert main(["video", "info", "film"]) == 0
-    assert "layer title-1: title Hi" in said(capsys)
+    info = json.loads(said(capsys))
+    assert any(
+        c["source"].get("text") == "Hi"
+        for t in info["timelines"][0]["tracks"]
+        for c in t.get("clips", [])
+    )
+    assert not (talk / "film/timeline.json").exists()
 
 
 def test_what_cannot_be_done_by_hand_is_said(
     home: Path, talk: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("COLUMBINA_ENGINE", real_engine())
     assert main(["video", "import", "film", "raw/nothing.mp4"]) == 2
     assert "columbina: " in said(capsys)
     assert main(["video", "import", "film", "raw/talk.mp4"]) == 0
-    said(capsys)
+    media = json.loads(said(capsys))["added"][0]
     monkeypatch.delenv("COLUMBINA_WHISPER_MODEL", raising=False)
-    assert main(["video", "transcribe", "film", "talk"]) == 2
-    assert "no transcriber is set up" in said(capsys)
+    assert main(["video", "transcribe", "film", media]) == 2
+    assert "set COLUMBINA_WHISPER_MODEL" in said(capsys)
     monkeypatch.setenv("COLUMBINA_WHISPER_MODEL", str(talk / "model"))
-    assert main(["video", "transcribe", "film", "talk"]) == 2
+    assert main(["video", "transcribe", "film", media]) == 2
     assert "there is no model of faster-whisper" in said(capsys)
-    assert (
-        main(["video", "overlay", "film", "add", "--kind", "picture", "--sentence", "talk.0"]) == 2
-    )
-    assert main(["video", "render", "film", "--final"]) == 2
-    assert "the main line is empty" in said(capsys).splitlines()[-1]
+    for value in ("[1]", "{}", "[]", "not json"):
+        assert main(["video", "edit", "film", "--edits", value]) == 2
+        assert "columbina: " in said(capsys)
+    assert main(["video", "render", "film"]) == 2
+    assert "there is no timeline" in said(capsys)
+    with pytest.raises(SystemExit):
+        main(["video", "apply", "film", "--pause-most-ms", "-1"])
+    assert "must be zero or greater" in capsys.readouterr().err
 
 
 def gone(lock: Path) -> None:

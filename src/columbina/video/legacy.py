@@ -1,28 +1,8 @@
-"""The timeline of a film, and the stretches of the sources that it is cut from.
+"""Read-only schema-1 records and timing, used only to migrate old films into Studio.
 
-**Words.** A transcript is a list of words of one source, each with where it begins and ends
-in the source, and the sentences that the words make. A word is known by its place in the list.
-
-**The main line** is the talk: a list of sentences in the order in which they are heard, each
-with the words of it that are kept. It holds no times. The stretches that are played are worked
-out of the words every time, :func:`cuts`, so the story and the timeline never say different
-things.
-
-**Where a cut falls.** A transcriber puts the end of a word early, by up to half a second: a cut
-there would take the end of the word with it. So a cut between two words falls into the silence
-between them where there is one, and keeps a little of it on either side. Where the two are
-spoken without a pause, the cut falls where the second begins, and is said to be tight: it may
-be heard.
-
-**Pauses.** Between two sentences that follow each other in the source, the pause is the silence
-between them, no longer than the longest pause of the timeline. A sentence may name its own pause.
-Between two sentences that do not follow each other, the pause is what is left of the silence
-on both sides of the cuts.
-
-**What lies over the main line** is in the layers, laid by :mod:`columbina.video.layers`.
-
-Every time here is in microseconds. The stretches are put on frames at the end, by the rate of
-the film.
+These types interpret old project.json, timeline.json and transcripts. The plan reproduces
+old sentence trims, overlaps and caption positions so migrate.py can convert them into engine
+operations. There is no project writer, undo stack, ffmpeg filter graph or renderer here.
 """
 
 from dataclasses import dataclass
@@ -32,73 +12,65 @@ from typing import Literal
 from pydantic import Field
 
 from columbina.data import Data
-from columbina.video.media import Silence
-
-__all__ = [
-    "LEAD_US",
-    "PAUSE_LEAST_US",
-    "PAUSE_MOST_US",
-    "Cut",
-    "Entry",
-    "Layer",
-    "Timeline",
-    "Transcript",
-    "Word",
-    "cuts",
-    "frames",
-    "kept_words",
-]
-
-LEAD_US = 120_000
-"""How much of a silence is kept before a word that a cut leads into, and after one it leaves."""
-
-PAUSE_LEAST_US = 300_000
-"""How long a pause is that was taken out of the story."""
+from columbina.video.media import AudioFacts, Silence, VideoFacts
+from columbina.video.project import Identity
+from columbina.video.story import line_of
+from columbina.video.transcript import LEAD_US, Transcript
 
 PAUSE_MOST_US = 1_000_000
-"""How long a pause is at most, unless the timeline says otherwise."""
+_CAPTION_CHARACTERS = 42
 
 
-class Word(Data):
-    """A word that was said.
-
-    Attributes:
-        start_us: Where it begins in the source.
-        end_us: Where it ends.
-        text: The word, as it is shown.
-        confidence: How sure the transcriber was of it, from 0 to 1.
-    """
-
-    start_us: int
-    end_us: int
-    text: str
-    confidence: float = 1.0
-
-
-class Transcript(Data):
-    """What was said in a source.
+class Asset(Data):
+    """A source of the project.
 
     Attributes:
-        asset: The source.
-        digest: The digest of the source that it was made of.
-        language: The language, as the transcriber found it.
-        offset_us: How far the times of the transcriber were moved to fit the pauses.
-        words: The words, in the order in which they were said.
-        sentences: Where each sentence begins and ends in the words, the end not included.
-        shown: Words whose text was corrected, by their place: what is shown instead.
+        id: Its id, from its name.
+        path: Where it is, whole, as it was named.
+        kind: ``video``, ``audio`` or ``image``.
+        format: Its format, as ffprobe names it.
+        duration_us: How long it lasts; 0 for a picture.
+        video: Its picture.
+        audio: Its sound.
+        identity: What tells it from another file.
     """
 
-    asset: str
-    digest: str
-    language: str | None = None
-    offset_us: int = 0
-    words: tuple[Word, ...]
-    sentences: tuple[tuple[int, int], ...]
-    shown: dict[int, str] = Field(default_factory=dict[int, str])
+    id: str
+    path: str
+    kind: Literal["video", "audio", "image"]
+    format: str
+    duration_us: int
+    video: VideoFacts | None = None
+    audio: AudioFacts | None = None
+    identity: Identity
 
-    def text(self, index: int) -> str:
-        """Return the text of a word as it is shown."""
-        return self.shown.get(index, self.words[index].text)
+
+class Canvas(Data):
+    """The frame of the film.
+
+    Attributes:
+        width: Its width.
+        height: Its height.
+        rate: Its rate of frames, as a fraction.
+    """
+
+    width: int
+    height: int
+    rate: str
+
+
+class Manifest(Data):
+    """What a project knows of its sources.
+
+    Attributes:
+        version: The version of this file.
+        canvas: The frame of the film, once a source with a picture was taken in.
+        assets: The sources, in the order in which they were taken in.
+    """
+
+    version: Literal[1] = 1
+    canvas: Canvas | None = None
+    assets: tuple[Asset, ...] = ()
 
 
 class Entry(Data):
@@ -338,3 +310,141 @@ def frames(us: int, rate: str) -> int:
     """Turn a time into the number of the frame it falls in, at a rate such as ``30000/1001``."""
     top, _, bottom = rate.partition("/")
     return round(Fraction(us, 1_000_000) * Fraction(int(top), int(bottom)))
+
+
+@dataclass(frozen=True)
+class Plan:
+    """The stretches of the main line on the frames of the film.
+
+    Attributes:
+        rate: The rate of the frames.
+        cuts: The stretches, in order.
+        starts: Where each begins in the film, in frames.
+        lengths: How many frames each lasts.
+        fades: How many frames each crosses into the one after it.
+        frames: How many frames the film lasts.
+    """
+
+    rate: Fraction
+    cuts: tuple[Cut, ...]
+    starts: tuple[int, ...]
+    lengths: tuple[int, ...]
+    fades: tuple[int, ...]
+    frames: int
+
+    def us(self, frame: int) -> int:
+        """The time of a frame, in microseconds."""
+        return round(Fraction(frame) / self.rate * 1_000_000)
+
+    def frame(self, us: int) -> int:
+        """The frame that a time falls in."""
+        return round(Fraction(us, 1_000_000) * self.rate)
+
+    @property
+    def length_us(self) -> int:
+        """How long the film lasts."""
+        return self.us(self.frames)
+
+
+@dataclass(frozen=True)
+class Cue:
+    """A line of words that is shown for a while: a caption or a title.
+
+    Attributes:
+        start_us: When it is shown, in the film.
+        end_us: When it is gone.
+        text: The words.
+        style: ``caption``, or the position of a title.
+    """
+
+    start_us: int
+    end_us: int
+    text: str
+    style: str = "caption"
+
+
+def _rate(canvas: Canvas | None) -> Fraction:
+    if canvas is None:
+        return Fraction(1000)
+    top, _, bottom = canvas.rate.partition("/")
+    return Fraction(int(top), int(bottom))
+
+
+def planned(
+    timeline: Timeline,
+    transcripts: dict[str, Transcript],
+    silences: dict[str, tuple[Silence, ...]],
+    lengths: dict[str, int],
+    canvas: Canvas | None,
+) -> Plan:
+    """Put the stretches of the main line on the frames of the film."""
+    rate = _rate(canvas)
+    played = cuts(timeline, transcripts, silences, lengths)
+    sizes = [
+        max(
+            1,
+            round(Fraction(cut.end_us, 1_000_000) * rate)
+            - round(Fraction(cut.start_us, 1_000_000) * rate),
+        )
+        for cut in played
+    ]
+    starts: list[int] = []
+    fades: list[int] = []
+    at = 0
+    for place, cut in enumerate(played):
+        fade = 0
+        # A sentence crosses into the next one, and no stretch into more than the whole of either.
+        if place + 1 < len(played) and played[place + 1].entry != cut.entry:
+            fade = max(
+                0,
+                min(timeline.crossfades.get(cut.entry, 0), sizes[place] - 1, sizes[place + 1] - 1),
+            )
+        starts.append(at)
+        fades.append(fade)
+        at += sizes[place] - fade
+    return Plan(rate, tuple(played), tuple(starts), tuple(sizes), tuple(fades), at)
+
+
+def timed(
+    plan: Plan, transcripts: dict[str, Transcript], word: tuple[str, int], end: bool = False
+) -> int | None:
+    """When a word of the main line begins in the film, or ends; ``None`` if it was cut."""
+    asset, index = word
+    transcript = transcripts.get(asset)
+    if transcript is None or index >= len(transcript.words):
+        return None
+    said = transcript.words[index]
+    at = said.end_us if end else said.start_us
+    for cut, start in zip(plan.cuts, plan.starts, strict=True):
+        if cut.asset == asset and cut.start_us <= at <= cut.end_us:
+            return plan.us(start) + (at - plan.us(plan.frame(cut.start_us)))
+    return None
+
+
+def _wide(text: str) -> int:
+    """How wide a text is, counting a character of Chinese or Japanese as two."""
+    return sum(2 if ord(character) > 0x2E80 else 1 for character in text)
+
+
+def captions(plan: Plan, timeline: Timeline, transcripts: dict[str, Transcript]) -> list[Cue]:
+    """The captions of the main line: the words that are kept, a few at a time, as they are said."""
+    shown: list[Cue] = []
+    for entry in timeline.main:
+        transcript = transcripts[entry.asset]
+        chunk: list[int] = []
+        for index in [*entry.kept, None]:
+            if index is not None:
+                trying = [*chunk, index]
+                text = line_of([(transcript.text(one), False) for one in trying])
+                if not chunk or _wide(text) <= _CAPTION_CHARACTERS:
+                    chunk = trying
+                    continue
+            if not chunk:
+                continue
+            start = timed(plan, transcripts, (entry.asset, chunk[0]))
+            end = timed(plan, transcripts, (entry.asset, chunk[-1]), end=True)
+            text = line_of([(transcript.text(one), False) for one in chunk])
+            if start is not None and end is not None and end > start:
+                shown.append(Cue(start, end, text))
+            chunk = [index] if index is not None else []
+    return shown

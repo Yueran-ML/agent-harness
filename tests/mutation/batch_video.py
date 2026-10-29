@@ -13,6 +13,7 @@ MIGRATE = "src/columbina/video/migrate.py"
 WORDS = "src/columbina/video/words.py"
 EDITING = "src/columbina/video/editing.py"
 VIDEO_PLUGIN = "src/columbina/video/__init__.py"
+ENGINE = "src/columbina/video/engine.py"
 WORKTREES = "src/columbina/worktrees.py"
 WALK = "src/columbina/fs/walk.py"
 ACP = "src/columbina/apps/acp.py"
@@ -163,8 +164,38 @@ _STORY = (
     mutant(
         "a word half struck through is taken",
         STORY,
-        "                and len({struck for _, struck in piece}) == 1",
+        "                and alike[j] >= j + len(said)",
         "                and True",
+    ),
+    mutant(
+        "a word without letters at the start of a line is cut from an unchanged story",
+        STORY,
+        "            if places[max(0, before - 1)] in kept:",
+        "            if before and places[before - 1] in kept:",
+    ),
+    mutant(
+        "a line of words without letters alone is cut though it is kept",
+        STORY,
+        "        return set() if _struck_out(text) else {place for place, _ in words}",
+        "        return set()",
+    ),
+    mutant(
+        "a line of words without letters alone that is struck through is kept",
+        STORY,
+        "        elif not struck and piece.strip():",
+        "        elif piece.strip():",
+    ),
+    mutant(
+        "the clip that plays the middle of a word does not tell it",
+        STORY,
+        "            owner = middles.get(index)\n",
+        "            owner = None\n",
+    ),
+    mutant(
+        "a word whose head a clip trims is not found near the clip",
+        STORY,
+        "    first = bisect_left(reach.ends, begins)",
+        "    first = bisect_left(reach.starts, begins)",
     ),
     mutant(
         "word timing changes do not stale the story",
@@ -203,6 +234,38 @@ _EDITING = (
         "                await job.cancel()",
         "                pass",
     ),
+    mutant(
+        "a text cut read before the engine was reached again is applied",
+        EDITING,
+        "ranges), revision=revision, session=session",
+        "ranges), revision=revision",
+    ),
+    mutant(
+        "subtitles of words timed to overlap overlap",
+        EDITING,
+        "    return edits.untangled(items)",
+        "    return sorted(items, key=lambda one: one.start)",
+    ),
+    mutant(
+        "the sound taken out for the transcriber is kept",
+        EDITING,
+        "                    await asyncio.to_thread(sound.unlink, missing_ok=True)",
+        "                    await asyncio.sleep(0)",
+    ),
+    mutant(
+        "a story that is not there is told of as a file that is not found",
+        EDITING,
+        "            except FileNotFoundError:\n                raise story.StoryError(",
+        "            except IsADirectoryError:\n                raise story.StoryError(",
+    ),
+)
+_ENGINE = (
+    mutant(
+        "a revision read from another engine is taken",
+        ENGINE,
+        "        if session is not None and session != self._session:",
+        "        if False:",
+    ),
 )
 _EDITS = (
     mutant(
@@ -232,13 +295,19 @@ _TEXTCUT = (
         "        if joined and one.start <= joined[-1].end:",
         "        if joined and one.start < joined[-1].end:",
     ),
+    mutant(
+        "a clip cuts as if it played the words of every clip",
+        TEXTCUT,
+        "            owned = sorted(of_clip.get(clip.id, []))",
+        "            owned = sorted({index for _, index in told.owners})",
+    ),
 )
 _MIGRATE = (
     mutant(
         "a marked legacy project is migrated again",
         MIGRATE,
-        '            and not (directory / "migrated.json").exists()',
-        "            and True",
+        '        or (not marked and (directory / "migrated.json").exists())',
+        "        or False",
     ),
     mutant(
         "legacy cuts use a changed source",
@@ -257,6 +326,54 @@ _MIGRATE = (
         MIGRATE,
         '            if picture.get("still") and not known_picture.get("still"):',
         "            if False:",
+    ),
+    mutant(
+        "one old project that cannot be migrated stops the others",
+        MIGRATE,
+        '                report = {"source": str(directory), "error": _why(directory, error)}',
+        "                raise",
+    ),
+    mutant(
+        "a migration given up after the engine took it is made again",
+        MIGRATE,
+        "    found = await _found(directory, engine)\n",
+        "    found = None\n",
+    ),
+    mutant(
+        "a migration that was undone is not made again",
+        MIGRATE,
+        "        for directory in sorted({*found, *undone}):",
+        "        for directory in sorted(found):",
+    ),
+    mutant(
+        "a refused migration leaves a note that a later timeline is taken for",
+        MIGRATE,
+        "                if error.code != UNREACHABLE:\n                    pending.unlink(",
+        "                if False:\n                    pending.unlink(",
+    ),
+    mutant(
+        "a transition that could be shorter is taken away",
+        MIGRATE,
+        '            if longest:\n                operation["length"] = longest',
+        '            if False:\n                operation["length"] = longest',
+    ),
+    mutant(
+        "old relative sources are looked for where this runs",
+        MIGRATE,
+        "    return (beside if beside.exists() else workspace / named).resolve()",
+        "    return named.resolve()",
+    ),
+    mutant(
+        "silences not found in time stop the migration",
+        MIGRATE,
+        "            except (media.MediaUnavailableError, media.UnreadableMediaError) as error:",
+        "            except ZeroDivisionError as error:",
+    ),
+    mutant(
+        "a directory that cannot be read stops the search for old projects",
+        MIGRATE,
+        "        except OSError:\n            continue\n    return sorted(found)",
+        "        except ZeroDivisionError:\n            continue\n    return sorted(found)",
     ),
 )
 _WORDS = (
@@ -293,6 +410,42 @@ _VIDEO_PLUGIN = (
         VIDEO_PLUGIN,
         '        return None if value == "" else value',
         "        return value",
+    ),
+    mutant(
+        "media that an edit adds is read without asking the file seam",
+        VIDEO_PLUGIN,
+        '            where = videos.checked(run, tool, path, "read")',
+        "            where = Path(path)",
+    ),
+    mutant(
+        "media that an edit adds is given to the engine as the path was written",
+        VIDEO_PLUGIN,
+        '"path": str(where)}',
+        '"path": path}',
+    ),
+    mutant(
+        "subtitles beside an export are written without asking the file seam",
+        VIDEO_PLUGIN,
+        "                        for sidecar in sidecars(target, path):",
+        "                        for sidecar in []:",
+    ),
+    mutant(
+        "every call migrates again",
+        VIDEO_PLUGIN,
+        "                self._migrated.add(directory)\n",
+        "",
+    ),
+    mutant(
+        "a migration that fails as a whole fails the call",
+        VIDEO_PLUGIN,
+        "        except Exception as error:  # A migration that fails never stops the call.",
+        "        except ZeroDivisionError as error:",
+    ),
+    mutant(
+        "a call waits for a migration however long it takes",
+        VIDEO_PLUGIN,
+        "            async with asyncio.timeout(_MIGRATION_SECONDS):",
+        "            async with asyncio.timeout(None):",
     ),
 )
 
@@ -425,6 +578,7 @@ VIDEO_SETS: dict[str, MutantSet] = {
             *_MIGRATE,
             *_WORDS,
             *_EDITING,
+            *_ENGINE,
             *_VIDEO_PLUGIN,
         ),
     ),

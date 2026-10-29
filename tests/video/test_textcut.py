@@ -713,3 +713,11 @@ def test_a_long_talk_in_many_clips_is_told_and_cut_quickly() -> None:
     assert len(found) == 20
     # About a third of a second on a laptop; the bound is for a slow machine under load.
     assert took < 8, took
+
+
+def test_a_word_struck_through_in_part_is_not_understood() -> None:
+    timeline = spoken(clip_of("c2", 0, 125))
+    story = of_track(timeline, "A1", {"m1": talk()}, 7)
+
+    with pytest.raises(StoryError, match="its words are not those of a sentence"):
+        cuts(struck(story, ("today", "to~~day~~")), timeline, {"m1": talk()})

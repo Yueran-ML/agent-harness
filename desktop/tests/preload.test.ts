@@ -210,6 +210,8 @@ describe('the bridge of the main window', () => {
     expect(handed('call', 'transaction.apply', { ops: [] }, more))
       .toEqual(['columbina:engine-call', { method: 'transaction.apply', params: { ops: [] } }]);
     expect(handed('importFiles', more)).toEqual(['columbina:engine-import', { language: 'ja' }]);
+    expect(handed('importFiles', { ...more, bin: 'b3', paths: ['secret.mp4'] }))
+      .toEqual(['columbina:engine-import', { language: 'ja', bin: 'b3' }]);
     expect(handed('importFiles')).toEqual(['columbina:engine-import', { language: undefined }]);
     expect(handed('viewRect', { x: 1, y: 2, width: 3, height: 4, ...more }, 'timeline'))
       .toEqual(['columbina:engine-view-rect', { monitor: 'timeline', x: 1, y: 2, width: 3, height: 4 }]);

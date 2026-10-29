@@ -7,7 +7,7 @@ import type { StudioEngine } from './connection';
 import { callEngine, type PageMethod, type SourceTransportState as TransportState } from './engine';
 import { Intent, useStudioKeys, type TransportCommand } from './keys';
 import { MediaPool } from './MediaPool';
-import { fileName, framesOf, nominalFps, rateOf } from './timecode';
+import { framesOf, nominalFps, rateOf } from './timecode';
 import { Transport } from './Transport';
 import { Viewer, type ViewerNotice } from './Viewer';
 
@@ -17,6 +17,7 @@ const pages: readonly StudioPage[] = ['media', 'edit'];
 
 /** The timelines of a project that is not there yet: the same list each time, so that the pool is not drawn again for it. */
 const NO_TIMELINES: readonly never[] = [];
+const NO_BINS: readonly never[] = [];
 
 /** What failed, in the words of whatever failed, without what Electron says of the call that carried it. */
 export function failureOf(problem: unknown): string {
@@ -123,16 +124,16 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
 
   // What the pool is given stays the same from one moment to the next, so that it is drawn
   // again only when the project or the proxies change, not at every move of the playhead.
-  const now = useRef({ load: (_media: string) => {}, importMedia: async () => {}, makeAgain: (_media: string) => {} });
+  const now = useRef({ load: (_media: string) => {}, importMedia: async (_bin: string | null) => {}, makeAgain: (_media: string) => {} });
   now.current = {
     load: (media) => {
       setProblem(null);
       ask('transport.load', { media }, words.hint.studio.loadFailed);
     },
-    importMedia: async () => {
+    importMedia: async (bin: string | null) => {
       setProblem(null);
       try {
-        const answer = await bridge.importFiles({ language });
+        const answer = await bridge.importFiles({ language, ...(bin === null ? {} : { bin }) });
         if (!answer.ok) fail(words.hint.studio.importFailed)(new Error(answer.error.message));
       } catch (failure) {
         fail(words.hint.studio.importFailed)(failure);
@@ -141,7 +142,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     makeAgain: media => ask('media.make_proxy', { media }, words.hint.studio.failed),
   };
   const onLoad = useCallback((media: string) => now.current.load(media), []);
-  const onImport = useCallback(() => void now.current.importMedia(), []);
+  const onImport = useCallback((bin: string | null) => void now.current.importMedia(bin), []);
   const onMakeAgain = useCallback((media: string) => now.current.makeAgain(media), []);
 
   const notice: ViewerNotice | null = opening.state === 'failed'
@@ -180,7 +181,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     <header className="studio-head">
       <h1 className="studio-title">{words.label.studio.open}</h1>
       <span className="studio-media" title={loaded?.path} data-test="loaded">
-        {loaded ? fileName(loaded.path) : words.label.studio.nothingLoaded}
+        {loaded ? loaded.name : words.label.studio.nothingLoaded}
       </span>
       {onToggleConversation && <button
         type="button"
@@ -208,6 +209,10 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     </div>}
     <div className="studio-body">
       {page === 'media' && <MediaPool
+        key={snapshot.session}
+        bridge={bridge}
+        session={snapshot.session ?? 0}
+        bins={project?.bins ?? NO_BINS}
         media={project?.media ?? null}
         timelines={timelines}
         proxies={snapshot.proxies}

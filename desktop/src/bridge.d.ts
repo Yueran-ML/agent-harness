@@ -281,7 +281,7 @@ export interface EngineBridge {
    * Let the user choose media in the dialog of the system, titled in the language that is named,
    * and import it into the project. The result is null where nothing was chosen.
    */
-  importFiles(asked?: { language: string }): Promise<EngineAnswer<Imported | null>>;
+  importFiles(asked?: { language: string; bin?: string }): Promise<EngineAnswer<Imported | null>>;
   /** Choose an export destination in Save As and start rendering. Existing outputs are not replaced. */
   render(options: RenderOptions): Promise<EngineAnswer<RenderStarted>>;
   /**

@@ -723,6 +723,12 @@ export const ja: Messages = {
     },
 
     studio: {
+      media: {
+        bins: 'ビン', master: 'マスター', newBin: '新規ビン', name: '名前', rename: '名前を変更', remove: 'メディアプールから削除', removeBin: '空のビンを削除',
+        list: 'リスト表示', thumbnails: 'サムネイル表示', details: 'メディア情報', path: 'パス', videoCodec: '映像コーデック', audioCodec: '音声コーデック',
+        dimensions: '解像度', duration: '長さ', frameRate: 'フレームレート', depth: 'ビット深度', sampleRate: 'サンプルレート', channels: 'チャンネル',
+        markIn: 'イン', markOut: 'アウト', noProxy: 'プロキシなし', selected: (count: number) => `${count} 件選択`,
+      },
       open: 'スタジオ',
       close: 'スタジオを閉じる',
       pages: 'スタジオのページ',
@@ -1225,6 +1231,7 @@ export const ja: Messages = {
     },
 
     studio: {
+      emptyBin: 'このビンは空です。', mediaUsed: 'このメディアはタイムラインで使用中です。先にクリップを削除してください。', binUsed: 'このビンにメディアまたは子ビンがあります。先に移動してください。', mediaEditFailed: 'メディアプールを変更できませんでした。', thumbnailFailed: 'サムネイルを読み込めませんでした。',
       browser: 'プレビューはデスクトップアプリで表示されます。',
       opening: 'プロジェクトをスタジオで開いています。',
       takingOver: 'エージェントからプロジェクトを引き継いでいます。',

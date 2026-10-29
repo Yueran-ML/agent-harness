@@ -4063,6 +4063,26 @@ describe('the engine of the studio', () => {
     expect(main.written.length).toBe(asked);
   });
 
+  it('imports the chosen files into a bin and passes an engine refusal back without retrying in Master', async () => {
+    const shell = await shellHarness();
+    await openIn(shell);
+    const [main] = connections(shell);
+    const chosen = [path.resolve('/media/selected.mov')];
+    const refused = { code: -32001, message: 'bin b3 no longer exists', data: { reason: 'not_found' } };
+    shell.engines.servers.get(main.address)!.answers.set('media.import', () => ({ error: refused }));
+    shell.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: chosen });
+    expect(await shell.invoke('engine-import', { language: 'en', bin: 'b3', paths: ['secret.mp4'] }))
+      .toEqual({ ok: false, error: refused });
+    expect(main.written.filter(message => message.method === 'media.import')).toEqual([
+      expect.objectContaining({ method: 'media.import', params: { paths: chosen, bin: 'b3' } }),
+    ]);
+    const asked = shell.dialog.showOpenDialog.mock.calls.length;
+    for (const bin of ['', null, 3, {}, []]) {
+      await expect(shell.invoke('engine-import', { bin })).rejects.toThrow('Name a bin by its id.');
+    }
+    expect(shell.dialog.showOpenDialog).toHaveBeenCalledTimes(asked);
+  });
+
   it('makes the view where the page keeps the viewer, in the window, on a connection of its own', async () => {
     const shell = await shellHarness();
     // Before an engine is open, the viewer is only remembered.

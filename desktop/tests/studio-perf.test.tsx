@@ -2,20 +2,14 @@
 /**
  * The media pool is not drawn again as the playhead moves: the transport tells where it is up to
  * 30 times a second, and a project may hold a thousand media. A row is drawn again only when what
- * it shows changes. How often the rows are drawn is counted by the names they write.
+ * it shows changes. Observe actual pool DOM mutations and bound the work of 30 playback updates.
  */
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineBridge } from '../src/bridge';
 import { ProjectCopy, type EngineAnswer, type EngineEvent, type Media, type SourceTransportState as TransportState } from '../src/studio/engine';
 import { Studio } from '../src/studio/Studio';
-import { fileName } from '../src/studio/timecode';
 import { likeABrowser } from './mounted';
-
-vi.mock('../src/studio/timecode', async (original) => {
-  const real = await original<typeof import('../src/studio/timecode')>();
-  return { ...real, fileName: vi.fn(real.fileName) };
-});
 
 beforeEach(() => {
   likeABrowser();
@@ -59,21 +53,27 @@ describe('the media pool of a large project', () => {
     } as unknown as EngineBridge;
     render(<Studio cwd={'F:\\film'} engine={{ bridge, copy: new ProjectCopy(bridge), native: true }} language="en" onClose={() => {}} />);
     await act(async () => { for (let at = 0; at < 10; at += 1) await new Promise(resolve => setTimeout(resolve, 0)); });
-    const named = vi.mocked(fileName);
+    const pool = document.querySelector('[data-test=pool]')!;
+    const changes = new MutationObserver(() => {});
+    changes.observe(pool, { childList: true, subtree: true, attributes: true, characterData: true });
     expect(document.querySelectorAll('[data-test="pool-item"]')).toHaveLength(COUNT);
-    named.mockClear();
     const began = performance.now();
     for (let frame = 1; frame <= 30; frame += 1) tell({ kind: 'notification', session: 1, method: 'transport.state', params: state(frame) });
     const took = performance.now() - began;
-    // Only the name of the media loaded, over the viewer, is written again: once a state.
-    expect(named.mock.calls.length).toBeLessThanOrEqual(30);
+    // Playback changes the transport, and no node or attribute in the media pool.
+    expect(changes.takeRecords()).toEqual([]);
     expect(document.querySelector('[data-test="timecode"]')!.textContent).toBe('00:00:01:05');
     // A second of playing, told 30 times, takes far less than a second to draw.
     expect(took).toBeLessThan(500);
-    named.mockClear();
     tell({ kind: 'notification', session: 1, method: 'media.proxy', params: { media: 'm7', state: 'running', progress: 0.5 } });
-    // The row of m7, and the name over the viewer.
-    expect(named.mock.calls.map(([path]) => path)).toEqual(expect.arrayContaining(['C:\\media\\clip-7.mp4']));
-    expect(named.mock.calls.length).toBeLessThanOrEqual(2);
+    const records = changes.takeRecords();
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.length).toBeLessThanOrEqual(5);
+    for (const change of records) {
+      const element = change.target instanceof Element ? change.target : change.target.parentElement;
+      expect(element?.closest('[data-media]')?.getAttribute('data-media')).toBe('m7');
+    }
+    expect(pool.querySelector('[data-media=m7]')?.textContent).toContain('Making proxy 50%');
+    changes.disconnect();
   });
 });

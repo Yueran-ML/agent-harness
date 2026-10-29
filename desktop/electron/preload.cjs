@@ -106,7 +106,7 @@ contextBridge.exposeInMainWorld('columbina', {
   engine: {
     open: (cwd) => ipcRenderer.invoke('columbina:engine-open', { cwd }),
     call: (method, params) => ipcRenderer.invoke('columbina:engine-call', { method, params }),
-    importFiles: (asked) => ipcRenderer.invoke('columbina:engine-import', { language: asked?.language }),
+    importFiles: (asked) => ipcRenderer.invoke('columbina:engine-import', { language: asked?.language, ...(asked?.bin === undefined ? {} : { bin: asked.bin }) }),
     render: (options) => ipcRenderer.invoke('columbina:engine-render', {
       timeline: options?.timeline, codec: options?.codec, quality: options?.quality, subtitles: options?.subtitles,
       range: options?.range === undefined ? undefined : { from: options.range?.from, to: options.range?.to },

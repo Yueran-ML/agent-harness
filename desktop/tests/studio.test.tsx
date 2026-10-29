@@ -20,7 +20,7 @@ import {
 } from '../src/studio/engine';
 import { AWAIT_MS, commandOf, faster, Intent } from '../src/studio/keys';
 import { Studio } from '../src/studio/Studio';
-import { nominalFps, rateText, timecode } from '../src/studio/timecode';
+import { fileName, nominalFps, rateText, timecode } from '../src/studio/timecode';
 import { SCRUB_EVERY_MS } from '../src/studio/Transport';
 import { useViewerRect } from '../src/studio/useViewerRect';
 import { likeABrowser } from './mounted';
@@ -50,7 +50,7 @@ afterEach(() => {
 
 const SCALE = 15360;
 const mediaOf = (id: string, given: { path?: string; video?: Partial<NonNullable<Media['facts']['video']>> | null; seconds?: number } = {}): Media => ({
-  id, name: `${id}.mp4`, bin: null, mark_in: null, mark_out: null,
+  id, name: given.path ? fileName(given.path) : `${id}.mp4`, bin: null, mark_in: null, mark_out: null,
   path: given.path ?? `C:\\media\\${id}.mp4`,
   identity: { size: 1000, modified_us: 1_790_000_000_000_000, digest: '0'.repeat(64) },
   facts: {

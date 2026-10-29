@@ -140,6 +140,7 @@ const samples: Record<string, unknown[][]> = {
   'label.studio.fps': [['25'], ['29.97'], ['23.976']],
   'label.studio.bits': [[8], [10]],
   'label.studio.proxy.making': [[0], [42], [100]],
+  'label.studio.media.selected': [[1], [3], [1000]],
 };
 
 type Said = { path: string; text: string };

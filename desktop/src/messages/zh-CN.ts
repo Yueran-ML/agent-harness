@@ -674,6 +674,12 @@ export const zhCN: Messages = {
     },
 
     studio: {
+      media: {
+        bins: '素材箱', master: '主素材箱', newBin: '新建素材箱', name: '名称', rename: '重命名', remove: '从媒体池移除', removeBin: '移除空素材箱',
+        list: '列表视图', thumbnails: '缩略图视图', details: '素材详情', path: '路径', videoCodec: '视频编码', audioCodec: '音频编码',
+        dimensions: '尺寸', duration: '时长', frameRate: '帧率', depth: '位深', sampleRate: '采样率', channels: '声道',
+        markIn: '入点', markOut: '出点', noProxy: '无代理', selected: (count: number) => `已选择 ${count} 项`,
+      },
       open: '工作室',
       close: '关闭工作室',
       pages: '工作室的页面',
@@ -1148,6 +1154,7 @@ export const zhCN: Messages = {
     },
 
     studio: {
+      emptyBin: '这个素材箱是空的。', mediaUsed: '时间线正在使用这个素材，请先移除对应片段。', binUsed: '素材箱里还有素材或子素材箱，请先移出。', mediaEditFailed: '媒体池修改失败。', thumbnailFailed: '缩略图读取失败。',
       browser: '预览窗只在桌面应用里显示。',
       opening: '正在工作室里打开这个项目。',
       takingOver: '正在从 Agent 那里接管这个项目。',

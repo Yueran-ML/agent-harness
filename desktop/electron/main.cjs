@@ -1758,6 +1758,8 @@ function installHandlers() {
     checkSender(event);
     const open = studio;
     if (!open) return { ok: false, error: { code: null, message: 'No project is open in the studio.', data: null } };
+    const bin = asked?.bin;
+    if (bin !== undefined && (typeof bin !== 'string' || !bin)) throw new Error('Name a bin by its id.');
     // The engine is given only files that the user chose in the dialog of the system.
     const words = WORDS[spoken(asked?.language)];
     const result = await dialog.showOpenDialog(window, {
@@ -1767,7 +1769,7 @@ function installHandlers() {
     const paths = result.canceled ? [] : result.filePaths.filter((chosen) => typeof chosen === 'string' && path.isAbsolute(chosen));
     if (paths.length === 0) return { ok: true, result: null };
     if (studio !== open) return { ok: false, error: { code: null, message: 'The project of the studio was closed meanwhile.', data: null } };
-    return answered(open.session.call('media.import', { paths }));
+    return answered(open.session.call('media.import', { paths, ...(bin === undefined ? {} : { bin }) }));
   });
   ipcMain.handle('columbina:engine-render', async (event, asked) => {
     checkSender(event);

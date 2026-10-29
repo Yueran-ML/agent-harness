@@ -592,7 +592,10 @@ notification `transport.state`):
   project without stopping; a shortened duration clamps the playhead. Old decode results
   cannot be published into a new project generation.
 - Each enabled video track reads ahead independently, including upcoming cut/transition
-  handles. The shared decoder pool allows two decoders per media/source kind and twelve total.
+  handles. The shared decoder pool allows twelve decoders, and of one media and source kind
+  two for each enabled track of picture that uses it (two at least), so that tracks reading one
+  media at once do not take turns with its decoders. At most twelve decoders of the monitor and
+  an export together use the graphics card; any more decode on the processor.
   Only unheld composition targets are reused, so a view never samples a target being rewritten.
 - At playback speed 1, enabled audio tracks are mixed at the timeline sample rate in stereo,
   then converted to the device's rate and channel layout. Disabled tracks/clips are not decoded.

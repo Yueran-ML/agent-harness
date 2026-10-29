@@ -68,6 +68,61 @@ struct Reader {
     // A single idle picture is enough: track queues own the read-ahead pictures. Reuse only
     // when no queue, compositor or view still holds it.
     picture: Arc<Picture>,
+    /// The session of the graphics card that the decoder may use, if it was given one.
+    _session: Option<Session>,
+}
+
+/// The decoders that may use the graphics card at once, of every pool of the engine together:
+/// those of the timeline monitor and those of an export. A card decodes a few streams at once
+/// well, and fails or slows every one of them past that; a decoder opened beyond the limit
+/// decodes on the processor.
+pub struct Sessions {
+    most: usize,
+    open: std::sync::atomic::AtomicUsize,
+}
+
+/// The most decoders of all pools together that use the graphics card at once.
+const MAX_HARDWARE: usize = 12;
+
+impl Sessions {
+    pub fn new(most: usize) -> Self {
+        Self {
+            most,
+            open: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// The sessions shared by every pool of the engine.
+    pub fn shared() -> Arc<Sessions> {
+        static SHARED: std::sync::OnceLock<Arc<Sessions>> = std::sync::OnceLock::new();
+        Arc::clone(SHARED.get_or_init(|| Arc::new(Sessions::new(MAX_HARDWARE))))
+    }
+
+    fn take(self: &Arc<Self>) -> Option<Session> {
+        use std::sync::atomic::Ordering;
+        self.open
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |open| {
+                (open < self.most).then_some(open + 1)
+            })
+            .ok()?;
+        Some(Session(Arc::clone(self)))
+    }
+
+    #[cfg(test)]
+    fn open(&self) -> usize {
+        self.open.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// A decoder's leave to use the graphics card, given back when it is closed.
+struct Session(Arc<Sessions>);
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.0
+            .open
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
 }
 
 struct Slot {
@@ -87,9 +142,20 @@ struct Pool {
     clock: u64,
     failed: Vec<Input>,
     proxy_versions: Vec<(String, u64)>,
+    /// How many tracks read each media at once, as the monitor tells.
+    demand: std::collections::BTreeMap<String, usize>,
 }
 
 impl Pool {
+    /// How many decoders one media may have: two for each track that reads it (a transition
+    /// reads two places of a track at once), two at least, and never more than the pool. Three
+    /// tracks of one media at one frame would otherwise take turns with two decoders, each
+    /// turn opening a decoder and seeking again.
+    fn per_key(&self, media: &str) -> usize {
+        let tracks = self.demand.get(media).copied().unwrap_or(1);
+        (2 * tracks).clamp(MAX_PER_KEY, MAX_DECODERS)
+    }
+
     fn proxy_version(&self, media: &str) -> u64 {
         self.proxy_versions
             .iter()
@@ -103,6 +169,7 @@ pub struct Sources {
     shared: Arc<Mutex<Pool>>,
     hardware: Hardware,
     again: Again,
+    sessions: Arc<Sessions>,
 }
 
 #[derive(Clone)]
@@ -137,15 +204,24 @@ impl Drop for Lease {
 impl Lease {
     fn read(&mut self, input: &Input, tick: i64, scrubbing: bool) -> Result<Read, MediaError> {
         if self.reader.is_none() {
-            let decoder = if input.proxy {
-                VideoDecoder::open_at_rate(&input.path, self.sources.hardware, input.rate)?
+            let session = (self.sources.hardware == Hardware::Auto)
+                .then(|| self.sources.sessions.take())
+                .flatten();
+            let hardware = if session.is_some() {
+                Hardware::Auto
             } else {
-                VideoDecoder::open(&input.path, self.sources.hardware)?
+                Hardware::Off
+            };
+            let decoder = if input.proxy {
+                VideoDecoder::open_at_rate(&input.path, hardware, input.rate)?
+            } else {
+                VideoDecoder::open(&input.path, hardware)?
             };
             self.reader = Some(Reader {
                 decoder,
                 converter: Converter::new(),
                 picture: Arc::default(),
+                _session: session,
             });
         }
         let reader = self.reader.as_mut().expect("opened above");
@@ -191,11 +267,21 @@ const MAX_PER_KEY: usize = 2;
 
 impl Sources {
     pub fn new(hardware: Hardware, again: Again) -> Self {
+        Self::with_sessions(hardware, again, Sessions::shared())
+    }
+
+    pub fn with_sessions(hardware: Hardware, again: Again, sessions: Arc<Sessions>) -> Self {
         Self {
             shared: Arc::default(),
             hardware,
             again,
+            sessions,
         }
+    }
+
+    /// Tell how many tracks read each media now, so that each may keep a decoder.
+    pub fn demand(&self, demand: &std::collections::BTreeMap<String, usize>) {
+        self.lock().demand.clone_from(demand);
     }
 
     fn lock(&self) -> MutexGuard<'_, Pool> {
@@ -220,7 +306,7 @@ impl Sources {
         let index = if let Some(index) = matching {
             index
         } else {
-            let replace = if same.len() >= MAX_PER_KEY {
+            let replace = if same.len() >= pool.per_key(&input.media) {
                 same.iter()
                     .copied()
                     .filter(|&i| !pool.slots[i].busy)
@@ -377,7 +463,7 @@ pub(super) mod tests {
             identity: Identity {
                 size: 1,
                 modified_us: 0,
-                digest: "imported-identity".into(),
+                digest: "0".repeat(64),
             },
             facts,
             proxy: None,
@@ -522,6 +608,68 @@ pub(super) mod tests {
             .slots
             .iter()
             .all(|slot| slot.reader.as_ref().unwrap().decoder.seeks() <= 1));
+    }
+
+    #[test]
+    fn three_tracks_of_one_media_keep_a_decoder_each_instead_of_taking_turns() {
+        let Some(media) = sample() else { return };
+        let sources = Sources::new(Hardware::Off, Arc::new(|_, _| {}));
+        sources.demand(&[("m1".to_owned(), 3)].into_iter().collect());
+        for offset in 0..6 {
+            for (clip, frame) in [
+                ("v1", 10 + offset),
+                ("v2", 40 + offset),
+                ("v3", 70 + offset),
+            ] {
+                assert_frame(
+                    &sources
+                        .picture(&media, clip, ticks(&media, frame), false, false)
+                        .unwrap()
+                        .unwrap(),
+                    frame,
+                );
+            }
+        }
+        let pool = sources.lock();
+        assert_eq!(pool.slots.len(), 3);
+        // Each decoder sought once, to its clip; none was closed and opened again.
+        assert!(pool
+            .slots
+            .iter()
+            .all(|slot| slot.reader.as_ref().unwrap().decoder.seeks() <= 1));
+    }
+
+    #[test]
+    fn decoders_past_the_cards_sessions_decode_on_the_processor() {
+        let Some(mut media) = sample() else { return };
+        let sessions = Arc::new(Sessions::new(1));
+        let sources =
+            Sources::with_sessions(Hardware::Auto, Arc::new(|_, _| {}), Arc::clone(&sessions));
+        // An export's pool shares the sessions of the monitor's.
+        let export =
+            Sources::with_sessions(Hardware::Auto, Arc::new(|_, _| {}), Arc::clone(&sessions));
+        let first = sources
+            .picture(&media, "a", 0, false, false)
+            .unwrap()
+            .unwrap();
+        assert_frame(&first, 0);
+        assert_eq!(sessions.open(), 1);
+        media.id = "m2".into();
+        let second = export.picture(&media, "b", ticks(&media, 3), false, false);
+        assert_frame(&second.unwrap().unwrap(), 3);
+        assert_eq!(sessions.open(), 1);
+        let pool = export.lock();
+        assert_eq!(
+            pool.slots[0].reader.as_ref().unwrap().decoder.path_used(),
+            columbina_media::HardwarePath::Software
+        );
+        drop(pool);
+        drop(sources);
+        assert_eq!(
+            sessions.open(),
+            0,
+            "a closed decoder gives its session back"
+        );
     }
 
     #[test]

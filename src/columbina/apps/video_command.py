@@ -245,19 +245,24 @@ def _migrate(args: argparse.Namespace, say: Callable[[str], None]) -> int:
         else:
             say(f"columbina: {error}")
         return 2
+    failed = any("error" in report for report in reports)
     if args.json:
         say(json.dumps({"migrations": reports}, ensure_ascii=False))
     elif not reports:
         say("No legacy projects to migrate.")
     else:
         for report in reports:
+            if "error" in report:
+                say(f"{report['source']}: not migrated: {report['error']}")
+                continue
             say(f"{report['source']} -> {report['timeline']}; original files retained.")
             for issue in [
                 *cast("list[str]", report["dropped"]),
                 *cast("list[str]", report.get("warnings", [])),
             ]:
                 say(f"  {issue}")
-    return 0
+    # The projects that could be migrated were; one that could not is told of, and not passed.
+    return 1 if failed else 0
 
 
 def run(args: argparse.Namespace, say: Callable[[str], None]) -> int:

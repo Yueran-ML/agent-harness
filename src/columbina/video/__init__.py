@@ -41,6 +41,10 @@ __all__ = [
 name = "video"
 inject = (TOOLS,)
 _LONG_SECONDS = 6 * 60 * 60.0
+_MIGRATION_SECONDS = 20.0
+"""How long a call migrates old projects at most: a call has 30 seconds."""
+_ANALYSIS_SECONDS = 8.0
+"""How long finding the silences of an old source, or waiting for another client, may take."""
 _DEFAULT_PROJECT = ".columbina/studio"
 _FAILURES = (
     EngineError,
@@ -115,19 +119,42 @@ class Videos:
                 self._editors[directory] = known
             default = await asyncio.to_thread((run.cwd / _DEFAULT_PROJECT).resolve)
             if directory == default and directory not in self._migrated:
-                from columbina.video.migrate import migrate
-
-                reports = await migrate(
-                    run.cwd,
-                    known.engine,
-                    tools=self._tools,
-                    check=lambda path, kind: self.checked(run, tool, str(path), kind),
-                )
-                if reports:
-                    self._migration_reports[directory] = reports
+                # Once a session, whatever comes of it: a migration that fails, or does not
+                # finish in its time, is reported and never stands in the way of the call.
                 self._migrated.add(directory)
+                await self._migrate(run, tool, known.engine, directory)
         known.transcriber = self.transcriber
         return known
+
+    async def _migrate(self, run: ToolRun, tool: str, engine: Engine, directory: Path) -> None:
+        from columbina.video.migrate import migrate
+
+        reports: list[dict[str, Any]] = []
+        try:
+            async with asyncio.timeout(_MIGRATION_SECONDS):
+                await migrate(
+                    run.cwd,
+                    engine,
+                    tools=self._tools,
+                    check=lambda path, kind: self.checked(run, tool, str(path), kind),
+                    analysis_seconds=_ANALYSIS_SECONDS,
+                    wait_seconds=_ANALYSIS_SECONDS,
+                    told=reports.append,
+                )
+        except TimeoutError:
+            reports.append(
+                {
+                    "source": str(run.cwd),
+                    "error": (
+                        f"migration did not finish in {_MIGRATION_SECONDS:g} seconds; run "
+                        f"columbina video migrate --workspace {run.cwd}"
+                    ),
+                }
+            )
+        except Exception as error:  # A migration that fails never stops the call.
+            reports.append({"source": str(run.cwd), "error": str(error) or type(error).__name__})
+        if reports:
+            self._migration_reports[directory] = reports
 
     async def media_tools(self, run: ToolRun) -> Tools:
         """Locate trusted ffmpeg only when transcription needs it."""

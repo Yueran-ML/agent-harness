@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -254,12 +255,196 @@ async def test_a_changed_source_refuses_migration_without_a_partial_project(
     async with await Engine.attach(
         workspace / ".columbina/studio", program=real_engine()
     ) as engine:
-        with pytest.raises(ProjectError, match="changed since import"):
-            await migrate(workspace, engine, tools=tools)
+        (report,) = await migrate(workspace, engine, tools=tools)
+        assert "changed since import" in report["error"]
+        assert report["source"] == str(workspace / "Old Film")
         _, project = await engine.project()
         assert project["media"] == project["timelines"] == []
         assert await engine.undo() is None
+        assert not list((engine.directory / "analysis/migrations").glob("pending-*.json"))
     assert not (workspace / "Old Film/migrated.json").exists()
+
+
+async def test_a_project_that_cannot_be_migrated_is_reported_and_the_others_are_migrated(
+    old_project: tuple[Path, Tools],
+) -> None:
+    workspace, tools = old_project
+    broken = workspace / "Broken"
+    broken.mkdir()
+    (broken / "project.json").write_text(
+        '{"version":1,"canvas":null,"assets":[]}', encoding="utf-8"
+    )
+    (broken / "timeline.json").write_text("{not json", encoding="utf-8")
+    missing = workspace / "Missing"
+    shutil.copytree(workspace / "Old Film", missing)
+    (missing / "transcripts/talk.json").unlink()
+    told: list[dict[str, Any]] = []
+    async with await Engine.attach(
+        workspace / ".columbina/studio", program=real_engine()
+    ) as engine:
+        reports = await migrate(workspace, engine, tools=tools, told=told.append)
+        again = await migrate(workspace, engine, tools=tools)
+        _, project = await engine.project()
+
+    assert told == reports
+    by = {Path(one["source"]).name: one for one in reports}
+    assert set(by) == {"Broken", "Missing", "Old Film"}
+    assert "Broken" in by["Broken"]["error"]
+    assert "no transcript for talk" in by["Missing"]["error"]
+    assert by["Old Film"]["timeline"] == project["timelines"][0]["id"]
+    assert len(project["timelines"]) == 1
+    # Those that could not be migrated are tried again; the one that was is not.
+    assert sorted(Path(one["source"]).name for one in again) == ["Broken", "Missing"]
+
+
+async def test_a_migration_given_up_after_the_engine_took_it_is_not_made_twice(
+    old_project: tuple[Path, Tools],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace, tools = old_project
+    async with await Engine.attach(
+        workspace / ".columbina/studio", program=real_engine()
+    ) as engine:
+        applying = engine.apply
+
+        async def taken_then_given_up(*args: Any, **kwargs: Any) -> Any:
+            await applying(*args, **kwargs)
+            raise asyncio.CancelledError
+
+        with monkeypatch.context() as patch:
+            patch.setattr(engine, "apply", taken_then_given_up)
+            with pytest.raises(asyncio.CancelledError):
+                await migrate(workspace, engine, tools=tools)
+        assert not (workspace / "Old Film/migrated.json").exists()
+        revision, project = await engine.project()
+        (report,) = await migrate(workspace, engine, tools=tools)
+        marker = json.loads((workspace / "Old Film/migrated.json").read_text(encoding="utf-8"))
+
+        assert (await engine.project())[0] == revision
+        assert report["timeline"] == marker["timeline"] == project["timelines"][0]["id"]
+        assert set(marker["media"]) == {"talk", "yellow", "song"}
+        assert set(marker["media"].values()) == {item["id"] for item in project["media"]}
+        assert any("given up" in warning for warning in report["warnings"])
+        assert len(project["timelines"]) == 1
+        assert not list((engine.directory / "analysis/migrations").glob("*.json"))
+        assert await migrate(workspace, engine, tools=tools) == []
+
+
+async def test_a_migration_that_was_undone_is_made_again_and_says_so(
+    old_project: tuple[Path, Tools],
+) -> None:
+    workspace, tools = old_project
+    async with await Engine.attach(
+        workspace / ".columbina/studio", program=real_engine()
+    ) as engine:
+        (first,) = await migrate(workspace, engine, tools=tools)
+        await engine.undo()
+        (second,) = await migrate(workspace, engine, tools=tools)
+        _, project = await engine.project()
+        marker = json.loads((workspace / "Old Film/migrated.json").read_text(encoding="utf-8"))
+
+        assert [timeline["id"] for timeline in project["timelines"]] == [second["timeline"]]
+        assert marker["timeline"] == second["timeline"]
+        assert any(
+            f"timeline {first['timeline']}" in warning and "no longer" in warning
+            for warning in second["warnings"]
+        )
+        assert await migrate(workspace, engine, tools=tools) == []
+
+
+async def test_old_relative_sources_are_found_beside_the_old_project_wherever_this_runs(
+    old_project: tuple[Path, Tools],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workspace, tools = old_project
+    manifest = workspace / "Old Film/project.json"
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    for asset in value["assets"]:
+        asset["path"] = "../raw/" + Path(asset["path"]).name
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    async with await Engine.attach(
+        workspace / ".columbina/studio", program=real_engine()
+    ) as engine:
+        (report,) = await migrate(workspace, engine, tools=tools)
+        _, project = await engine.project()
+
+    assert "error" not in report
+    assert {Path(item["path"]) for item in project["media"]} == {
+        (workspace / "raw" / name).resolve() for name in ("talk.mp4", "yellow.png", "song.wav")
+    }
+
+
+async def test_silences_that_cannot_be_found_in_time_leave_the_cuts_at_the_words(
+    old_project: tuple[Path, Tools],
+) -> None:
+    workspace, tools = old_project
+    for cached in (workspace / "Old Film/cache").glob("talk-*-silences-*.json"):
+        cached.unlink()
+    async with await Engine.attach(
+        workspace / ".columbina/studio", program=real_engine()
+    ) as engine:
+        (report,) = await migrate(workspace, engine, tools=tools, analysis_seconds=0.001)
+
+    assert report["timeline"]
+    assert any(item.startswith("talk: silences not found") for item in report["dropped"]), report[
+        "dropped"
+    ]
+
+
+def test_a_directory_that_cannot_be_read_is_passed_over(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("closed/film", "open/film"):
+        (tmp_path / name).mkdir(parents=True)
+        (tmp_path / name / "project.json").write_text(
+            '{"version":1,"canvas":null,"assets":[]}', encoding="utf-8"
+        )
+        (tmp_path / name / "timeline.json").write_text('{"version":1}', encoding="utf-8")
+    listed = Path.iterdir
+
+    def iterdir(self: Path) -> Any:
+        if self.name == "closed":
+            raise PermissionError(13, "Access is denied", str(self))
+        return listed(self)
+
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    assert discover(tmp_path) == [tmp_path / "open/film"]
+
+
+async def test_short_clips_shorten_legacy_transitions_to_the_longest_the_engine_allows(
+    old_project: tuple[Path, Tools],
+) -> None:
+    workspace, tools = old_project
+    path = workspace / "Old Film/timeline.json"
+    old = json.loads(path.read_text(encoding="utf-8"))
+    old["main"].append(old["main"][0])
+    old["crossfades"] = {"0": 1000, "1": 1000}
+    old["captions"] = False
+    path.write_text(json.dumps(old), encoding="utf-8")
+    async with await Engine.attach(
+        workspace / ".columbina/studio", program=real_engine()
+    ) as engine:
+        (report,) = await migrate(workspace, engine, tools=tools)
+        _, project = await engine.project()
+
+    shortened = [
+        int(item.rsplit(" shortened to ", 1)[1].split()[0])
+        for item in report["dropped"]
+        if "available handles" in item
+    ]
+    lengths = sorted(
+        transition["length"]
+        for track in project["timelines"][0]["tracks"]
+        for transition in track.get("transitions", [])
+    )
+    assert shortened
+    assert all(one > 0 for one in shortened)
+    # A transition that can be shorter is kept as long as the engine allows, not taken away.
+    assert all(one in lengths for one in shortened)
 
 
 async def test_concurrent_migration_clients_only_create_one_timeline(

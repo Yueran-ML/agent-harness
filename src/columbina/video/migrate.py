@@ -2,14 +2,23 @@
 
 Media are inspected first; their add operations and the entire timeline are committed in one
 transaction. The only file written in a legacy directory is its migrated.json receipt.
+
+Each project is migrated on its own: one that cannot be is reported with the reason, as
+``{"source", "error"}``, and the others are migrated still. Before its transaction is sent, a
+note of what it will make is kept in the Studio project (``analysis/migrations/pending-*.json``):
+a migration given up after the engine took the transaction, but before its receipt was written,
+is then found by its timeline, of the name of the old directory and not there before, rather
+than made twice. A receipt whose timeline is no longer in the project, as after the migration
+was undone, is migrated again, and the report says so.
 """
 
 import asyncio
+import hashlib
 import json
 import math
 import os
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from fractions import Fraction
@@ -18,7 +27,7 @@ from typing import Any, Literal, cast
 
 from columbina.session import lock
 from columbina.video import edits, legacy, media, story, words
-from columbina.video.engine import Engine, EngineError
+from columbina.video.engine import UNREACHABLE, Engine, EngineError
 from columbina.video.legacy import Asset, Canvas, Layer, Manifest, Timeline
 from columbina.video.project import ProjectError, written
 from columbina.video.transcript import Transcript
@@ -29,39 +38,51 @@ _EXCLUDED = {".git", "node_modules", ".columbina"}
 Check = Callable[[Path, Literal["read", "write"]], object]
 
 
-def discover(workspace: Path) -> list[Path]:
-    """Find unconverted schema-1 project directories, at most three levels down."""
+def discover(workspace: Path, *, marked: bool = False) -> list[Path]:
+    """Find unconverted schema-1 project directories, at most three levels down.
+
+    With ``marked``, those that have a ``migrated.json`` receipt are found too. A directory that
+    cannot be read is passed over.
+    """
     found: list[Path] = []
     pending = [(workspace.resolve(), 0)]
     while pending:
         directory, depth = pending.pop()
-        manifest = directory / "project.json"
-        if (
-            manifest.is_file()
-            and (directory / "timeline.json").is_file()
-            and not (directory / "migrated.json").exists()
-        ):
-            try:
-                value = json.loads(manifest.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                value = None
-            if (
-                isinstance(value, dict)
-                and cast("dict[str, Any]", value).get("version") == 1
-                and {"canvas", "assets"} <= value.keys()
-            ):
+        try:
+            if _old(directory, marked=marked):
                 found.append(directory)
-        if depth == 3:
+            children = [] if depth == 3 else list(directory.iterdir())
+            for child in children:
+                if (
+                    child.name.casefold() in _EXCLUDED
+                    or not child.is_dir()
+                    or child.resolve() != child.absolute()
+                ):
+                    continue
+                pending.append((child, depth + 1))
+        except OSError:
             continue
-        for child in directory.iterdir():
-            if (
-                child.name.casefold() in _EXCLUDED
-                or not child.is_dir()
-                or child.resolve() != child.absolute()
-            ):
-                continue
-            pending.append((child, depth + 1))
     return sorted(found)
+
+
+def _old(directory: Path, *, marked: bool) -> bool:
+    """Whether a directory is an old project, and one not migrated unless ``marked``."""
+    manifest = directory / "project.json"
+    if (
+        not manifest.is_file()
+        or not (directory / "timeline.json").is_file()
+        or (not marked and (directory / "migrated.json").exists())
+    ):
+        return False
+    try:
+        value = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(value, dict)
+        and cast("dict[str, Any]", value).get("version") == 1
+        and {"canvas", "assets"} <= value.keys()
+    )
 
 
 @dataclass
@@ -73,10 +94,31 @@ class _Legacy:
     silences: dict[str, tuple[media.Silence, ...]]
     cached: dict[tuple[str, float, int], tuple[media.Silence, ...]]
     plan: legacy.Plan
+    paths: dict[str, Path]
+
+
+def _where(path: str, directory: Path, workspace: Path) -> Path:
+    """Where a source of an old project is.
+
+    That is the path as it was named, where it is whole; else the file beside the old project,
+    where there is one; else the file in the workspace. This blocks.
+    """
+    named = Path(path)
+    if named.is_absolute():
+        return named.resolve()
+    beside = directory / named
+    return (beside if beside.exists() else workspace / named).resolve()
 
 
 async def _read(
-    directory: Path, destination: Path, tools: media.Tools | None, check: Check, workspace: Path
+    directory: Path,
+    destination: Path,
+    tools: media.Tools | None,
+    check: Check,
+    workspace: Path,
+    *,
+    analysis_seconds: float | None,
+    dropped: list[str],
 ) -> _Legacy:
     for name in ("project.json", "timeline.json"):
         check(directory / name, "read")
@@ -86,8 +128,10 @@ async def _read(
     quiet: dict[str, tuple[media.Silence, ...]] = {}
     cached: dict[tuple[str, float, int], tuple[media.Silence, ...]] = {}
     main = {entry.asset for entry in timeline.main}
+    paths: dict[str, Path] = {}
     for asset in manifest.assets:
-        check(Path(asset.path), "read")
+        paths[asset.id] = await asyncio.to_thread(_where, asset.path, directory, workspace)
+        check(paths[asset.id], "read")
         path = directory / "transcripts" / f"{asset.id}.json"
         if path.parent != directory / "transcripts":
             raise ProjectError(f"invalid legacy media id: {asset.id}")
@@ -113,16 +157,22 @@ async def _read(
             if noise == -35 and shortest == 300_000:
                 quiet[asset.id] = silences
         if asset.id in main and asset.id not in quiet:
-            if tools is None:
-                tools = await media.located(
-                    os.environ.get("PATH", ""), [workspace], cwd=destination
+            try:
+                if tools is None:
+                    tools = await media.located(
+                        os.environ.get("PATH", ""), [workspace], cwd=destination
+                    )
+                quiet[asset.id] = await media.silences(
+                    tools,
+                    paths[asset.id],
+                    place=destination / "analysis",
+                    duration_us=asset.duration_us,
+                    seconds=analysis_seconds,
                 )
-            quiet[asset.id] = await media.silences(
-                tools,
-                Path(asset.path),
-                place=destination / "analysis",
-                duration_us=asset.duration_us,
-            )
+            except (media.MediaUnavailableError, media.UnreadableMediaError) as error:
+                # Its cuts then lie at the words, and its pauses are kept as they are.
+                dropped.append(f"{asset.id}: silences not found ({error}); cuts are at the words")
+                continue
             cached[asset.identity.digest, -35, 300_000] = quiet[asset.id]
     missing = main - transcripts.keys()
     if missing:
@@ -142,7 +192,7 @@ async def _read(
     plan = legacy.planned(
         timeline, transcripts, quiet, {a.id: a.duration_us for a in manifest.assets}, canvas
     )
-    return _Legacy(directory, manifest, timeline, transcripts, quiet, cached, plan)
+    return _Legacy(directory, manifest, timeline, transcripts, quiet, cached, plan, paths)
 
 
 def _clip(
@@ -417,26 +467,42 @@ def _timeline(
     return [add, *links, *transitions]
 
 
-def _asset_paths(old: _Legacy) -> dict[str, Path]:
-    return {asset.id: Path(asset.path).resolve() for asset in old.manifest.assets}
-
-
 def _existing(project: Mapping[str, Any]) -> dict[Path, dict[str, Any]]:
     return {Path(item["path"]).resolve(): item for item in project["media"]}
 
 
 async def _one(
-    directory: Path, engine: Engine, tools: media.Tools | None, check: Check, workspace: Path
+    directory: Path,
+    engine: Engine,
+    tools: media.Tools | None,
+    check: Check,
+    workspace: Path,
+    *,
+    analysis_seconds: float | None = None,
+    again: str | None = None,
 ) -> dict[str, Any]:
     check(directory / "migrated.json", "write")
     recovered = await asyncio.to_thread(_recovered, directory, engine.directory)
     if recovered is not None:
         return recovered
-    old = await _read(directory, engine.directory, tools, check, workspace)
-    asset_paths = await asyncio.to_thread(_asset_paths, old)
+    found = await _found(directory, engine)
+    if found is not None:
+        return found
+    dropped: list[str] = []
+    old = await _read(
+        directory,
+        engine.directory,
+        tools,
+        check,
+        workspace,
+        analysis_seconds=analysis_seconds,
+        dropped=dropped,
+    )
+    asset_paths = old.paths
     paths = list(dict.fromkeys(asset_paths.values()))
     inspected = await engine.inspected(paths) if paths else []
     revision, project = await engine.project()
+    session = engine.session
     existing = await asyncio.to_thread(_existing, project)
     prepared: dict[Path, dict[str, Any]] = {}
     ops: list[dict[str, Any]] = []
@@ -465,26 +531,36 @@ async def _one(
                 f"legacy source {asset.id} changed since import; "
                 "its cuts cannot be migrated against another file"
             )
-    dropped: list[str] = []
     ops += _timeline(old, media_by_asset, dropped)
     _analysis(old, engine.directory, dropped)
+    # Should this be given up once the engine has the transaction, the timeline is found again
+    # by this note rather than made twice.
+    pending = _pending(engine.directory, directory)
+    written(
+        pending,
+        _json(
+            {
+                "source": str(directory),
+                "name": directory.name,
+                "before": [timeline["id"] for timeline in project["timelines"]],
+                "media": {key: str(path) for key, path in asset_paths.items()},
+                "dropped": dropped,
+            }
+        ),
+    )
     while True:
         try:
-            applied = await engine.apply(ops, revision=revision)
+            applied = await engine.apply(ops, revision=revision, session=session)
             break
         except EngineError as error:
-            data = error.data or {}
-            index, longest = data.get("index"), data.get("longest")
-            if (
-                data.get("reason") != "no_handles"
-                or type(index) is not int
-                or type(longest) is not int
-                or not 0 <= index < len(ops)
-            ):
+            shorter = _shorter(error, ops)
+            if shorter is None:
+                # A refusal leaves nothing to find; a lost connection may have left the timeline.
+                if error.code != UNREACHABLE:
+                    pending.unlink(missing_ok=True)
                 raise
+            index, longest = shorter
             operation = ops[index]
-            if operation.get("edit") != "add_transition" or not 0 <= longest < operation["length"]:
-                raise
             dropped.append(
                 f"{operation['kind']} at {operation['left']}/{operation['right']}: "
                 f"{operation['length']} frames shortened to {longest} for available handles"
@@ -493,6 +569,7 @@ async def _one(
                 operation["length"] = longest
             else:
                 ops.pop(index)
+            written(pending, _json({**json.loads(pending.read_text("utf-8")), "dropped": dropped}))
     mapping = {
         key: applied.names.get(item["id"], item["id"]) for key, item in media_by_asset.items()
     }
@@ -503,35 +580,81 @@ async def _one(
         "dropped": dropped,
     }
     result = {"source": str(directory), **report}
-    # A committed project must not be reported as a failed edit: retrying would duplicate it.
-    # Keep a second receipt in Studio so a failed legacy marker can be repaired on the next run.
-    warnings: list[str] = []
-    try:
-        written(_receipts(engine.directory) / f"{report['timeline']}.json", _json(result))
-    except ProjectError as error:
-        warnings.append(str(error))
-    try:
-        written(directory / "migrated.json", _json(report))
-        (_receipts(engine.directory) / f"{report['timeline']}.json").unlink(missing_ok=True)
-    except (ProjectError, OSError) as error:
-        warnings.append(f"migration committed as {report['timeline']}; marker: {error}")
+    warnings = _marked(directory, engine.directory, result, pending)
+    if again is not None:
+        warnings.append(
+            f"migrated again: timeline {again}, which migrated.json named, is no longer in "
+            "the project, as after the migration was undone"
+        )
     try:
         revision, project = await engine.project()
         timeline = next((t for t in project["timelines"] if t["id"] == report["timeline"]), None)
         if timeline is not None:
-            track = story.dialogue_track(timeline)
-            if track is not None:
-                written(
-                    story.story_path(engine.directory, timeline["id"]),
-                    story.of_track(
-                        timeline, track, words.transcripts_of(engine.directory, project), revision
-                    ),
-                )
+            await asyncio.to_thread(_told, engine.directory, project, timeline, revision)
     except (ProjectError, words.WordsError, story.StoryError, EngineError, OSError) as error:
         warnings.append(f"migration committed; analysis/story: {error}")
     if warnings:
         result["warnings"] = warnings
     return result
+
+
+def _shorter(error: EngineError, ops: Sequence[Mapping[str, Any]]) -> tuple[int, int] | None:
+    """The transition that the engine refused for want of handles, and the longest it can be.
+
+    That is its place in ``ops`` and its frames; ``None`` for any other refusal.
+    """
+    data = error.data or {}
+    index, longest = data.get("index"), data.get("longest")
+    if (
+        data.get("reason") != "no_handles"
+        or type(index) is not int
+        or type(longest) is not int
+        or not 0 <= index < len(ops)
+    ):
+        return None
+    operation = ops[index]
+    if operation.get("edit") != "add_transition" or not 0 <= longest < operation["length"]:
+        return None
+    return index, longest
+
+
+def _marked(directory: Path, studio: Path, result: dict[str, Any], pending: Path) -> list[str]:
+    """Write the receipts of a migration that the engine took, and the warnings of doing so.
+
+    A committed project must not be reported as a failed edit: retrying would duplicate it.
+    A second receipt is kept in Studio, so that a failed legacy marker can be repaired on the
+    next run; the note of the pending migration goes once a receipt is written.
+    """
+    report = {key: result[key] for key in ("timeline", "at", "media", "dropped")}
+    warnings: list[str] = []
+    receipt = _receipts(studio) / f"{report['timeline']}.json"
+    kept = False
+    try:
+        written(receipt, _json(result))
+        kept = True
+    except ProjectError as error:
+        warnings.append(str(error))
+    try:
+        written(directory / "migrated.json", _json(report))
+        receipt.unlink(missing_ok=True)
+        kept = True
+    except (ProjectError, OSError) as error:
+        warnings.append(f"migration committed as {report['timeline']}; marker: {error}")
+    if kept:
+        pending.unlink(missing_ok=True)
+    return warnings
+
+
+def _told(
+    studio: Path, project: Mapping[str, Any], timeline: Mapping[str, Any], revision: int
+) -> None:
+    """Write the story of the dialogue of a migrated timeline. This blocks."""
+    track = story.dialogue_track(timeline)
+    if track is not None:
+        written(
+            story.story_path(studio, timeline["id"]),
+            story.of_track(timeline, track, words.transcripts_of(studio, project), revision),
+        )
 
 
 def _json(value: Mapping[str, Any]) -> str:
@@ -542,15 +665,69 @@ def _receipts(studio: Path) -> Path:
     return studio / "analysis" / "migrations"
 
 
+def _pending(studio: Path, directory: Path) -> Path:
+    key = hashlib.sha256(str(directory).encode("utf-8")).hexdigest()[:16]
+    return _receipts(studio) / f"pending-{key}.json"
+
+
 def _recovered(directory: Path, studio: Path) -> dict[str, Any] | None:
     for receipt in _receipts(studio).glob("t[0-9]*.json"):
-        value: dict[str, Any] = json.loads(receipt.read_text(encoding="utf-8"))
+        try:
+            value: dict[str, Any] = json.loads(receipt.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
         if value.get("source") == str(directory):
             report = {key: value[key] for key in ("timeline", "at", "media", "dropped")}
             written(directory / "migrated.json", _json(report))
             receipt.unlink()
+            _pending(studio, directory).unlink(missing_ok=True)
             return value
     return None
+
+
+async def _found(directory: Path, engine: Engine) -> dict[str, Any] | None:
+    """The report of a migration that the engine took before it was given up, if one was.
+
+    Its timeline is one of the name of the old directory that was not in the project before.
+    Where there is none, the note of it goes, and it is migrated as if it never began.
+    """
+    pending = _pending(engine.directory, directory)
+    try:
+        note: dict[str, Any] = json.loads(await asyncio.to_thread(pending.read_text, "utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        note = {}
+    _, project = await engine.project()
+    before = set(cast("Sequence[str]", note.get("before", [])))
+    made = [
+        timeline
+        for timeline in project["timelines"]
+        if timeline["id"] not in before and timeline["name"] == note.get("name")
+    ]
+    if note.get("source") != str(directory) or not made:
+        await asyncio.to_thread(pending.unlink, missing_ok=True)
+        return None
+    existing = await asyncio.to_thread(_existing, project)
+    sources = cast("dict[str, str]", note.get("media", {}))
+    result: dict[str, Any] = {
+        "source": str(directory),
+        "timeline": made[-1]["id"],
+        "at": datetime.now(UTC).isoformat(),
+        "media": {
+            key: existing[Path(path)]["id"]
+            for key, path in sources.items()
+            if Path(path) in existing
+        },
+        "dropped": list(cast("Sequence[str]", note.get("dropped", []))),
+    }
+    warnings = await asyncio.to_thread(_marked, directory, engine.directory, result, pending)
+    result["warnings"] = [
+        f"the migration to {result['timeline']} was given up after the engine took it; its "
+        "receipt is written now",
+        *warnings,
+    ]
+    return result
 
 
 def _analysis(old: _Legacy, studio: Path, dropped: list[str]) -> None:
@@ -565,27 +742,96 @@ def _analysis(old: _Legacy, studio: Path, dropped: list[str]) -> None:
         words.keep_silences(studio, digest, noise, shortest, silences)
 
 
+async def _undone(workspace: Path, engine: Engine) -> dict[Path, str]:
+    """The old projects whose receipt names a timeline that is no longer in the project."""
+    marked = [
+        directory
+        for directory in await asyncio.to_thread(discover, workspace, marked=True)
+        if (directory / "migrated.json").exists()
+    ]
+    if not marked:
+        return {}
+    _, project = await engine.project()
+    there = {timeline["id"] for timeline in project["timelines"]}
+    gone: dict[Path, str] = {}
+    for directory in marked:
+        try:
+            said: object = json.loads(
+                await asyncio.to_thread((directory / "migrated.json").read_text, "utf-8")
+            )
+        except (OSError, ValueError):
+            continue
+        timeline = cast("dict[str, Any]", said).get("timeline") if isinstance(said, dict) else None
+        if isinstance(timeline, str) and timeline not in there:
+            gone[directory] = timeline
+    return gone
+
+
 async def migrate(
-    workspace: Path, engine: Engine, *, tools: media.Tools | None = None, check: Check | None = None
+    workspace: Path,
+    engine: Engine,
+    *,
+    tools: media.Tools | None = None,
+    check: Check | None = None,
+    analysis_seconds: float | None = None,
+    wait_seconds: float = 30,
+    told: Callable[[dict[str, Any]], object] | None = None,
 ) -> list[dict[str, Any]]:
-    """Migrate each discovered old project as one transaction, and return its receipt."""
+    """Migrate each old project as a transaction of its own, and return the reports.
+
+    A project that cannot be migrated is reported as ``{"source", "error"}``, and the others
+    are migrated still; each report is also given to ``told`` as soon as it is made.
+
+    Args:
+        workspace: Where old projects are looked for.
+        engine: The engine of the Studio project that they become timelines of.
+        tools: ffmpeg and ffprobe, where they were found already.
+        check: Asks whether a path may be read or written; it raises where not.
+        analysis_seconds: How long finding the silences of a source may take, where none were
+            kept; a source whose silences are not found in time is cut at its words, and the
+            report says so. No bound unless given.
+        wait_seconds: How long to wait for another client that is migrating.
+        told: Given each report as soon as it is made.
+
+    Raises:
+        ProjectError: Another client is migrating, and did not finish in time.
+    """
     check = check or (lambda path, kind: None)
-    if not await asyncio.to_thread(discover, workspace):
+    if not await asyncio.to_thread(discover, workspace) and not await _undone(workspace, engine):
         return []
     # Desktop startup and the first agent call may arrive together. Only migration takes this
     # lock; ordinary edits still use the engine's revision check and remain available.
-    deadline = asyncio.get_running_loop().time() + 30
+    deadline = asyncio.get_running_loop().time() + wait_seconds
     while (held := lock.acquire(engine.directory / "migration.lock")) is None:
         if asyncio.get_running_loop().time() >= deadline:
             raise ProjectError("another client is migrating this Studio project; try again later")
         await asyncio.sleep(0.1)
     reports: list[dict[str, Any]] = []
     try:
-        for directory in await asyncio.to_thread(discover, workspace):
+        undone = await _undone(workspace, engine)
+        found = await asyncio.to_thread(discover, workspace)
+        for directory in sorted({*found, *undone}):
             try:
-                reports.append(await _one(directory, engine, tools, check, workspace))
-            except (OSError, ValueError) as error:
-                raise ProjectError(f"cannot migrate {directory}: {error}") from None
+                report = await _one(
+                    directory,
+                    engine,
+                    tools,
+                    check,
+                    workspace,
+                    analysis_seconds=analysis_seconds,
+                    again=undone.get(directory),
+                )
+            except Exception as error:  # One project never stops the others.
+                report = {"source": str(directory), "error": _why(directory, error)}
+            reports.append(report)
+            if told is not None:
+                told(report)
     finally:
         held.release()
     return reports
+
+
+def _why(directory: Path, error: Exception) -> str:
+    said = str(error) or type(error).__name__
+    code = getattr(error, "code", None)
+    return f"cannot migrate {directory}: {said}" + (f" ({code})" if isinstance(code, str) else "")

@@ -64,6 +64,87 @@ async def test_first_default_studio_call_migrates_once_and_returns_its_report(
     assert result(await desk.call("video_info"))["timelines"] == []
 
 
+async def test_an_old_project_that_cannot_be_migrated_stands_in_the_way_of_no_call(
+    studio: tuple[Desk, Fake], tmp_path: Path
+) -> None:
+    from columbina.video.legacy import Asset, Manifest, Timeline
+    from columbina.video.project import Identity
+
+    desk, fake = studio
+    broken = desk.work / "Broken"
+    broken.mkdir()
+    (broken / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (broken / "timeline.json").write_text("{not json", encoding="utf-8")
+    # A source outside the workspace is not read without asking, and the session may not.
+    outside = desk.work / "Outside"
+    outside.mkdir()
+    elsewhere = tmp_path / "elsewhere.wav"
+    elsewhere.write_bytes(b"sound")
+    asset = Asset(
+        id="talk",
+        path=str(elsewhere),
+        kind="audio",
+        format="wav",
+        duration_us=1_000_000,
+        identity=Identity(size=5, modified_ns=0, digest="0" * 64),
+    )
+    (outside / "project.json").write_text(
+        Manifest(assets=(asset,)).model_dump_json(), encoding="utf-8"
+    )
+    (outside / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+    good = desk.work / "Good"
+    good.mkdir()
+    (good / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (good / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+
+    first = result(await desk.call("video_info"))
+    second = result(await desk.call("video_info"))
+    edited = result(
+        await desk.call(
+            "video_edit", edits=[edits.add_timeline("Cut", edits.Rate(num=25, den=1), id="$f")]
+        )
+    )
+
+    told = {Path(one["source"]).name: one for one in first["migrations"]}
+    assert set(told) == {"Broken", "Good", "Outside"}
+    assert "Broken" in told["Broken"]["error"]
+    assert "OUTSIDE_WORKING_DIRECTORY" in told["Outside"]["error"]
+    assert "error" not in told["Good"]
+    assert [one["name"] for one in first["timelines"]] == ["Good"]
+    assert "migrations" not in second
+    assert edited["names"]["$f"]
+    assert not (broken / "migrated.json").exists()
+    assert (good / "migrated.json").exists()
+    assert len(fake.steps) == 2
+
+
+async def test_a_migration_that_takes_too_long_is_left_for_the_command(
+    studio: tuple[Desk, Fake], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    import columbina.video.migrate
+    from columbina.video.legacy import Manifest, Timeline
+
+    desk, _fake = studio
+    old = desk.work / "Old Film"
+    old.mkdir()
+    (old / "project.json").write_text(Manifest().model_dump_json(), encoding="utf-8")
+    (old / "timeline.json").write_text(Timeline().model_dump_json(), encoding="utf-8")
+
+    async def slow(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        await asyncio.sleep(30)
+        return []
+
+    monkeypatch.setattr(columbina.video.migrate, "migrate", slow)
+    monkeypatch.setattr(columbina.video, "_MIGRATION_SECONDS", 0.2)
+
+    told = result(await desk.call("video_info"))
+
+    assert "columbina video migrate" in told["migrations"][0]["error"]
+    assert told["timelines"] == []
+
+
 async def test_import_bin_is_one_step_and_invalid_bin_has_no_partial_import(
     studio: tuple[Desk, Fake],
 ) -> None:

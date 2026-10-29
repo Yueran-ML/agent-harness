@@ -476,6 +476,25 @@ fn examples() -> Vec<(&'static str, Vec<Op>, Op)> {
             },
         ),
         (
+            "shift_cues",
+            vec![Op::AddCue {
+                timeline: "t1".into(),
+                track: "S1".into(),
+                cue: Cue {
+                    id: "late".into(),
+                    start: 120,
+                    length: 20,
+                    text: "later".into(),
+                },
+            }],
+            Op::ShiftCues {
+                timeline: "t1".into(),
+                track: "S1".into(),
+                cues: vec!["late".into(), "q3".into()],
+                by: 30,
+            },
+        ),
+        (
             "set_cue",
             vec![],
             Op::SetCue {
@@ -553,6 +572,7 @@ fn the_examples_of_the_operations_are_as_the_engine_applies_them() {
         "add_cue",
         "remove_cue",
         "set_cue",
+        "shift_cues",
     ] {
         assert!(names.iter().any(|name| name == op), "no example of {op}");
     }

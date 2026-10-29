@@ -207,7 +207,8 @@ pub enum Op {
         start: i64,
     },
     /// Move a set of clips together on their track. Transitions between them stay attached;
-    /// a transition with only one end in the set must be removed first.
+    /// a transition with only one end in the set must be removed first. An empty set, or a
+    /// `by` of 0, is refused: it would make a step that changes nothing.
     ShiftClips {
         /// The timeline.
         timeline: Id,
@@ -215,6 +216,18 @@ pub enum Op {
         track: Id,
         /// The clips. Repeating an id still moves that clip only once.
         clips: Vec<Id>,
+        /// How many frames later to move them (negative for earlier).
+        by: i64,
+    },
+    /// Move a set of subtitles together on their track of subtitles, as one operation however
+    /// many there are. An empty set, or a `by` of 0, is refused.
+    ShiftCues {
+        /// The timeline.
+        timeline: Id,
+        /// The track of subtitles holding every subtitle in the set.
+        track: Id,
+        /// The subtitles. Repeating an id still moves that subtitle only once.
+        cues: Vec<Id>,
         /// How many frames later to move them (negative for earlier).
         by: i64,
     },
@@ -573,8 +586,9 @@ pub enum OpError {
         what: &'static str,
     },
     /// A setting is not one that it may be. `what` is `width`, `height`, `sample_rate`,
-    /// `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`, `position` or
-    /// `language`.
+    /// `start`, `length`, `speed`, `transform`, `gain_db`, `pan`, `fade`, `text`, `size`,
+    /// `position`, `language`, `still`, `by` (a shift by 0), `clips` or `cues` (a shift of
+    /// none).
     #[error("{}", range_message(.what))]
     OutOfRange {
         /// The setting.
@@ -795,6 +809,9 @@ fn range_message(what: &str) -> String {
         "size" => "the size of the title is not from 1 to 4096".into(),
         "position" => "the place of the title is not of finite numbers".into(),
         "language" => "the language is not a short tag of BCP 47".into(),
+        "by" => "it moves by no frame".into(),
+        "clips" => "it names no clip".into(),
+        "cues" => "it names no subtitle".into(),
         _ => format!("the {what} is out of its range"),
     }
 }
@@ -855,6 +872,12 @@ pub fn apply(project: &mut Project, op: Op) -> Result<Op, OpError> {
             clips,
             by,
         } => shift_clips(project, &timeline, &track, clips, by),
+        Op::ShiftCues {
+            timeline,
+            track,
+            cues,
+            by,
+        } => shift_cues(project, &timeline, &track, cues, by),
         Op::TrimClip {
             timeline,
             id,
@@ -1322,6 +1345,12 @@ fn shift_clips(
     by: i64,
 ) -> Result<Op, OpError> {
     within("by", by.into())?;
+    if by == 0 {
+        return Err(range("by"));
+    }
+    if clips.is_empty() {
+        return Err(range("clips"));
+    }
     let t = timeline_at(project, timeline_id)?;
     let r = track_at(&project.timelines[t], track_id)?;
     let track = &project.timelines[t].tracks[r];
@@ -1368,6 +1397,66 @@ fn shift_clips(
         timeline: timeline_id.into(),
         track: track_id.into(),
         clips,
+        by: -by,
+    })
+}
+
+fn shift_cues(
+    project: &mut Project,
+    timeline_id: &str,
+    track_id: &str,
+    cues: Vec<Id>,
+    by: i64,
+) -> Result<Op, OpError> {
+    within("by", by.into())?;
+    if by == 0 {
+        return Err(range("by"));
+    }
+    if cues.is_empty() {
+        return Err(range("cues"));
+    }
+    let t = timeline_at(project, timeline_id)?;
+    let r = track_at(&project.timelines[t], track_id)?;
+    let track = &project.timelines[t].tracks[r];
+    if track.kind != TrackKind::Subtitle {
+        return Err(OpError::WrongTrack {
+            what: "cue",
+            kind: track.kind,
+        });
+    }
+    let available: HashSet<&str> = track.cues.iter().map(|q| q.id.as_str()).collect();
+    for id in &cues {
+        if !available.contains(id.as_str()) {
+            return Err(missing("cue", id));
+        }
+    }
+    let selected: HashSet<&str> = cues.iter().map(String::as_str).collect();
+    let mut moved = track.cues.clone();
+    for cue in &mut moved {
+        if selected.contains(cue.id.as_str()) {
+            let start = i128::from(cue.start) + i128::from(by);
+            within("start", start)?;
+            within("end", start + i128::from(cue.length))?;
+            cue.start = i64::try_from(start).expect("the start is within LARGEST");
+            if cue.start < 0 {
+                return Err(range("start"));
+            }
+        }
+    }
+    moved.sort_by_key(|q| q.start);
+    if let Some(pair) = moved
+        .windows(2)
+        .find(|p| p[1].start < p[0].start + p[0].length)
+    {
+        return Err(OpError::CueOverlap {
+            with: pair[0].id.clone(),
+        });
+    }
+    project.timelines[t].tracks[r].cues = moved;
+    Ok(Op::ShiftCues {
+        timeline: timeline_id.into(),
+        track: track_id.into(),
+        cues,
         by: -by,
     })
 }

@@ -720,6 +720,7 @@ An operation is an object that names itself in `op` (unknown fields are refused,
 | `move_clip` | `timeline`, `id`, `track`, `start` |
 | `trim_clip` | `timeline`, `id`, `source_in?` (leave source in unchanged if absent), `start`, `length` |
 | `shift_clips` | `timeline`, `track`, `clips: [id, ...]`, `by` |
+| `shift_cues` | `timeline`, `track`, `cues: [id, ...]`, `by` |
 | `set_proxy` | `media`, `proxy` (a proxy, or `null` to take it away; its inverse sets the one before). A proxy must be a file of the engine's own (see Security), else it is refused as `not_a_proxy_path`; so must one on media that `add_media` adds |
 | `set_timeline` | `id`, `name?`, `rate?`, `width?`, `height?`, `sample_rate?` |
 | `set_track` | `timeline`, `id`, `name?`, `enabled?`, `locked?`, `language?` |
@@ -746,7 +747,12 @@ media-pool images gain unlimited still duration without new ids, together with m
 `shift_clips` moves each distinct selected clip by `by` frames on one track, preserving its
 source, length and settings, and every transition whose two ends move together. A transition
 with only one end selected must be removed first. The operation refuses invalid positions,
-missing ids or overlap atomically. Its inverse moves the same ids by `-by`.
+missing ids or overlap atomically. Its inverse moves the same ids by `-by`. `shift_cues` does
+the same for subtitles of one subtitle track, refusing `cue_overlap`, `out_of_range` `start`
+(before frame 0) or `wrong_track` for a track of picture or sound; the edits move every later
+subtitle of a track with one `shift_cues`, however many there are. Both refuse an empty list
+(`out_of_range` `clips` / `cues`) and `by: 0` (`out_of_range` `by`), which would make a step that
+changes nothing.
 
 Basic operations can change locked tracks, as undo/redo must. Interactive clients should send
 edits for clip manipulation; those implement locks, links, clamping and ripple rules.
@@ -807,9 +813,14 @@ id targets that track. Both picture and sound placed together get a new link gro
 
 Ripples preserve later content's relative timing on unlocked tracks. An unselected clip inside
 a range to be closed causes `ripple_blocked`; it is not silently deleted. Subtitles inside a
-closed range are trimmed or removed, and later subtitles follow the picture. An insertion
-inside a subtitle splits it into two cues with the same text, with the new frames between them.
-Locked subtitle tracks remain unchanged.
+closed range are trimmed or removed, and later subtitles follow the picture. A ripple that
+moves later content later (an insertion, a ripple overwrite with a longer source, a ripple trim
+or a change of speed that lengthens) splits a subtitle across its point into two cues with the
+same text, with the new frames between them; the first keeps the id. Locked subtitle tracks
+remain unchanged. A ripple trim or `set_speed` ripple of a split edit (J/L cut) is refused as
+`ripple_blocked` when a clip starts between the end of one of the group's clips and the end of
+the whole group on that clip's track: it would stay while what follows moves, parting the
+picture of the next group from its sound.
 
 Trims, rolls, slips and slides clamp to available handles and space, reporting their input
 index in `clamped`; zero delta or an impossible movement is refused. Editing through a
@@ -982,7 +993,7 @@ refused only through a bug of the engine. Each `reason` and its fields:
 | `no_track` | `kind` | no track for the requested source |
 | `wrong_track` | `what`, `kind` | content or settings on an incompatible track kind |
 | `cue_overlap` | `with` | subtitles overlap on one track |
-| `out_of_range` | `what` | invalid setting such as speed, gain, transform or text length |
+| `out_of_range` | `what` | invalid setting such as speed, gain, transform or text length; `by`, `clips` or `cues` for a shift that would change nothing |
 | `has_transition` | `transition` | a basic operation would move just one transition endpoint |
 | `not_adjacent` | `left`, `right` | transition endpoints do not meet |
 | `cut_taken` | `with` | a transition is already at this cut |

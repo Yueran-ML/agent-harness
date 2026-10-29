@@ -424,100 +424,10 @@ impl<'a> Work<'a> {
         Ok(())
     }
 
-    /// Move what starts at `from` or later on `tracks` by `by` frames, but for `skip`. Where
-    /// `by` is below 0, the frames from `from + by` to `from` must be clear of clips that are
-    /// not moved, or the ripple is blocked. Subtitles in those frames are cut with the gap.
-    pub fn shift(
-        &mut self,
-        tracks: &[Id],
-        from: i64,
-        by: i64,
-        skip: &HashSet<Id>,
-    ) -> Result<(), EditError> {
-        if by == 0 {
-            return Ok(());
-        }
-        if by < 0 {
-            for id in tracks {
-                if let Some(clip) = in_the_way(self.track(id)?, from + by, from, skip) {
-                    return Err(EditError::RippleBlocked {
-                        track: id.clone(),
-                        clip,
-                    });
-                }
-            }
-            self.cut_cues(tracks, from + by, from)?;
-        }
-        for id in tracks {
-            let track = self.track(id)?;
-            let clips: Vec<Id> = track
-                .clips
-                .iter()
-                .filter(|c| c.start >= from && !skip.contains(&c.id))
-                .map(|c| c.id.clone())
-                .collect();
-            let selected: HashSet<&str> = clips.iter().map(String::as_str).collect();
-            let boundaries: Vec<Transition> = track
-                .transitions
-                .iter()
-                .filter(|x| {
-                    selected.contains(x.left.as_str()) != selected.contains(x.right.as_str())
-                })
-                .cloned()
-                .collect();
-            let mut cues: Vec<(i64, Id)> = track
-                .cues
-                .iter()
-                .filter(|q| q.start >= from && !skip.contains(&q.id))
-                .map(|q| (q.start, q.id.clone()))
-                .collect();
-            // The one furthest along goes first, so that none is moved onto another.
-            if by > 0 {
-                cues.reverse();
-            }
-            for transition in boundaries {
-                self.op(Op::RemoveTransition {
-                    timeline: self.timeline_id(),
-                    id: transition.id.clone(),
-                })?;
-                self.detached.push(transition);
-            }
-            if !clips.is_empty() {
-                self.op(Op::ShiftClips {
-                    timeline: self.timeline_id(),
-                    track: id.clone(),
-                    clips,
-                    by,
-                })?;
-            }
-            for (start, cue) in cues {
-                self.op(Op::SetCue {
-                    timeline: self.timeline_id(),
-                    id: cue,
-                    start: Some(start + by),
-                    length: None,
-                    text: None,
-                })?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl Work<'_> {
-    /// Make room for `length` frames at `at` on every track that is not locked: cut the clips
-    /// that lie across it there, and move what starts there or later on.
-    pub fn make_room(&mut self, at: i64, length: i64) -> Result<(), EditError> {
-        if at < 0 {
-            return Err(EditError::Op(OpError::OutOfTimeline { start: at }));
-        }
-        let mut across = vec![];
-        for track in self.unlocked(&[TrackKind::Video, TrackKind::Audio]) {
-            across.extend(self.across(&track, at)?);
-        }
-        self.blade(&across, at)?;
-        let tracks = self.all_unlocked();
-        for track in &tracks {
+    /// Cut each subtitle of `tracks` that is shown across `at` in two there: the first part
+    /// keeps its id, the second is a new subtitle with the same text.
+    fn split_cues(&mut self, tracks: &[Id], at: i64) -> Result<(), EditError> {
+        for track in tracks {
             let cues: Vec<Cue> = self
                 .track(track)?
                 .cues
@@ -545,6 +455,101 @@ impl Work<'_> {
                 })?;
             }
         }
+        Ok(())
+    }
+
+    /// Move what starts at `from` or later on `tracks` by `by` frames, but for `skip`. Where
+    /// `by` is below 0, the frames from `from + by` to `from` must be clear of clips that are
+    /// not moved, or the ripple is blocked. Subtitles in those frames are cut with the gap.
+    /// Where `by` is above 0, a subtitle shown across `from` is cut in two there, and its
+    /// second part moves with what follows.
+    pub fn shift(
+        &mut self,
+        tracks: &[Id],
+        from: i64,
+        by: i64,
+        skip: &HashSet<Id>,
+    ) -> Result<(), EditError> {
+        if by == 0 {
+            return Ok(());
+        }
+        if by < 0 {
+            for id in tracks {
+                if let Some(clip) = in_the_way(self.track(id)?, from + by, from, skip) {
+                    return Err(EditError::RippleBlocked {
+                        track: id.clone(),
+                        clip,
+                    });
+                }
+            }
+            self.cut_cues(tracks, from + by, from)?;
+        } else {
+            self.split_cues(tracks, from)?;
+        }
+        for id in tracks {
+            let track = self.track(id)?;
+            let clips: Vec<Id> = track
+                .clips
+                .iter()
+                .filter(|c| c.start >= from && !skip.contains(&c.id))
+                .map(|c| c.id.clone())
+                .collect();
+            let selected: HashSet<&str> = clips.iter().map(String::as_str).collect();
+            let boundaries: Vec<Transition> = track
+                .transitions
+                .iter()
+                .filter(|x| {
+                    selected.contains(x.left.as_str()) != selected.contains(x.right.as_str())
+                })
+                .cloned()
+                .collect();
+            let cues: Vec<Id> = track
+                .cues
+                .iter()
+                .filter(|q| q.start >= from && !skip.contains(&q.id))
+                .map(|q| q.id.clone())
+                .collect();
+            for transition in boundaries {
+                self.op(Op::RemoveTransition {
+                    timeline: self.timeline_id(),
+                    id: transition.id.clone(),
+                })?;
+                self.detached.push(transition);
+            }
+            if !clips.is_empty() {
+                self.op(Op::ShiftClips {
+                    timeline: self.timeline_id(),
+                    track: id.clone(),
+                    clips,
+                    by,
+                })?;
+            }
+            if !cues.is_empty() {
+                self.op(Op::ShiftCues {
+                    timeline: self.timeline_id(),
+                    track: id.clone(),
+                    cues,
+                    by,
+                })?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Work<'_> {
+    /// Make room for `length` frames at `at` on every track that is not locked: cut the clips
+    /// that lie across it there, and move what starts there or later on.
+    pub fn make_room(&mut self, at: i64, length: i64) -> Result<(), EditError> {
+        if at < 0 {
+            return Err(EditError::Op(OpError::OutOfTimeline { start: at }));
+        }
+        let mut across = vec![];
+        for track in self.unlocked(&[TrackKind::Video, TrackKind::Audio]) {
+            across.extend(self.across(&track, at)?);
+        }
+        self.blade(&across, at)?;
+        let tracks = self.all_unlocked();
         self.shift(&tracks, at, length, &HashSet::new())
     }
 

@@ -648,6 +648,12 @@ fn visit<E>(op: &mut Op, f: &mut impl FnMut(&mut Id, Role) -> Result<(), E>) -> 
             track,
             clips,
             ..
+        }
+        | Op::ShiftCues {
+            timeline,
+            track,
+            cues: clips,
+            ..
         } => {
             let of = timeline.clone();
             f(timeline, Role::Names)?;

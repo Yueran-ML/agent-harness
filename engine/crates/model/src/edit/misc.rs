@@ -843,6 +843,68 @@ mod tests {
     }
 
     #[test]
+    fn a_ripple_that_lengthens_cuts_the_subtitle_across_its_place_as_an_insert_does() {
+        let at_cue = |start: i64, length: i64| {
+            with(
+                project(),
+                vec![Op::SetCue {
+                    timeline: "t1".into(),
+                    id: "q7".into(),
+                    start: Some(start),
+                    length: Some(length),
+                    text: None,
+                }],
+            )
+        };
+        let trim = Edit::Trim {
+            timeline: "t1".into(),
+            clip: "c1".into(),
+            edge: super::super::Edge::Out,
+            delta: 10,
+            ripple: true,
+            linked: true,
+        };
+        let overwrite = Edit::RippleOverwrite {
+            timeline: "t1".into(),
+            source: m1(Some(0), Some(80)),
+            at: 120,
+            video_track: None,
+            audio_track: None,
+        };
+        // q7 lies across the place of each ripple: 100 for the trim and the speed of c1, and
+        // the end of c3 (150) for the ripple overwrite, which makes c3's 50 frames 80.
+        for (edit, (start, length), first, second) in [
+            (trim, (90, 30), (90, 10), (110, 20)),
+            (speed("c1", 1, 2, true), (90, 30), (90, 10), (200, 20)),
+            (overwrite, (140, 20), (140, 10), (180, 10)),
+        ] {
+            let before = at_cue(start, length);
+            let mut history = crate::History::new(before.clone());
+            history.edit(vec![edit.clone()], "test").unwrap();
+            let after = history.project();
+            let parts: Vec<(i64, i64)> = cues(after, "S1")[1..]
+                .iter()
+                .map(|(_, start, length)| (*start, *length))
+                .collect();
+            assert_eq!(parts, [first, second], "{edit:?}");
+            assert_eq!(cues(after, "S1")[1].0, "q7");
+            let texts: Vec<&str> = after.timelines[0].tracks[4].cues[1..]
+                .iter()
+                .map(|q| q.text.as_str())
+                .collect();
+            assert_eq!(texts, ["world", "world"]);
+            history.undo("test").unwrap().unwrap();
+            assert_eq!(
+                history.project(),
+                &crate::Project {
+                    next_id: history.project().next_id,
+                    ..before
+                }
+            );
+        }
+    }
+
+    #[test]
     fn setting_the_same_speed_leaves_no_history_entry_or_transition_operations() {
         let before = with(
             project(),

@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use columbina_model::{
-    apply, Alignment, Clip, Edit, History, Material, Op, OpError, Project, Rate, Rgba, Source,
+    apply, Alignment, Clip, Cue, Edit, History, Material, Op, OpError, Project, Rate, Rgba, Source,
     Timeline, Track, TrackKind, Transition, TransitionKind, LARGEST,
 };
 
@@ -119,6 +119,9 @@ fn a_shift_refuses_missing_clips_partial_transitions_and_invalid_positions_atomi
         ),
         (shift(&[], i64::MIN), OpError::TooLarge { what: "by" }),
         (shift(&[], i64::MAX), OpError::TooLarge { what: "by" }),
+        // Neither would change anything, and would make a step that undoes nothing.
+        (shift(&[], 10), OpError::OutOfRange { what: "clips" }),
+        (shift(&["clip-0"], 0), OpError::OutOfRange { what: "by" }),
     ] {
         let mut project = before.clone();
         assert_eq!(apply(&mut project, op), Err(error));
@@ -132,6 +135,118 @@ fn a_shift_refuses_missing_clips_partial_transitions_and_invalid_positions_atomi
         Err(OpError::Overlap { .. })
     ));
     assert_eq!(project, before);
+}
+
+fn with_cues(count: i64) -> Project {
+    let mut project = sequence(count);
+    let mut track = Track::new("S1", TrackKind::Subtitle);
+    for i in 0..count {
+        track.cues.push(Cue {
+            id: format!("cue-{i}"),
+            start: i * 50 + 5,
+            length: 40,
+            text: format!("line {i}"),
+        });
+    }
+    project.timelines[0].tracks.push(track);
+    project.validate().unwrap();
+    project
+}
+
+fn shift_cues(ids: &[&str], by: i64) -> Op {
+    Op::ShiftCues {
+        timeline: "t1".into(),
+        track: "S1".into(),
+        cues: ids.iter().map(|id| (*id).into()).collect(),
+        by,
+    }
+}
+
+#[test]
+fn subtitles_shift_together_in_one_operation_that_undo_takes_back() {
+    let before = with_cues(4);
+    let mut project = before.clone();
+    let op = shift_cues(&["cue-0", "cue-1", "cue-0"], 250);
+    let inverse = apply(&mut project, op.clone()).unwrap();
+    project.validate().unwrap();
+    let cues = &project.timelines[0].tracks[1].cues;
+    let starts: Vec<(&str, i64)> = cues.iter().map(|q| (q.id.as_str(), q.start)).collect();
+    assert_eq!(
+        starts,
+        [
+            ("cue-2", 105),
+            ("cue-3", 155),
+            ("cue-0", 255),
+            ("cue-1", 305)
+        ]
+    );
+    let redo = apply(&mut project, inverse).unwrap();
+    assert_eq!(project, before);
+    assert_eq!(redo, op);
+}
+
+#[test]
+fn a_shift_of_subtitles_refuses_what_a_shift_of_clips_does_atomically() {
+    let before = with_cues(4);
+    let wrong_track = Op::ShiftCues {
+        timeline: "t1".into(),
+        track: "V1".into(),
+        cues: vec!["cue-0".into()],
+        by: 10,
+    };
+    for (op, error) in [
+        (
+            shift_cues(&["cue-0", "absent"], 10),
+            OpError::Missing {
+                what: "cue",
+                id: "absent".into(),
+            },
+        ),
+        (
+            shift_cues(&["cue-0"], 20),
+            OpError::CueOverlap {
+                with: "cue-0".into(),
+            },
+        ),
+        (
+            shift_cues(&["cue-0"], -6),
+            OpError::OutOfRange { what: "start" },
+        ),
+        (shift_cues(&[], 10), OpError::OutOfRange { what: "cues" }),
+        (
+            shift_cues(&["cue-0"], 0),
+            OpError::OutOfRange { what: "by" },
+        ),
+        (
+            shift_cues(&["cue-0"], i64::MAX),
+            OpError::TooLarge { what: "by" },
+        ),
+        (
+            wrong_track,
+            OpError::WrongTrack {
+                what: "cue",
+                kind: TrackKind::Video,
+            },
+        ),
+    ] {
+        let mut project = before.clone();
+        assert_eq!(apply(&mut project, op.clone()), Err(error), "{op:?}");
+        assert_eq!(project, before);
+    }
+}
+
+#[test]
+fn rippling_many_subtitles_is_one_operation_per_track() {
+    // One operation for each of thousands of subtitles made every ripple take time of the
+    // square of their number.
+    let before = with_cues(6000);
+    let mut history = History::new(before);
+    let started = Instant::now();
+    let done = history.edit(vec![insert()], "agent").unwrap().applied.done;
+    assert_eq!(done.len(), 3, "{:?}", &done[..done.len().min(4)]);
+    assert!(matches!(&done[1], Op::ShiftCues { cues, by: 10, .. } if cues.len() == 6000));
+    history.undo("agent").unwrap().unwrap();
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
 }
 
 #[test]

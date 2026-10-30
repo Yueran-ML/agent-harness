@@ -550,4 +550,62 @@ mod tests {
         // 1080 across and 1920 down of the frame, about its middle.
         assert_eq!(window, [384, 0, 1536, 1536]);
     }
+
+    #[test]
+    fn a_map_that_keeps_the_least_area_that_is_not_flat_is_undone() {
+        let thin = Affine {
+            a: 1e-12,
+            b: 0.0,
+            c: 0.0,
+            d: 1.0,
+            tx: 0.0,
+            ty: 0.0,
+        };
+        let back = thin.inverse().unwrap();
+        assert!(near(back.apply(thin.apply((3.0, 4.0))), (3.0, 4.0)));
+    }
+
+    #[test]
+    fn a_picture_is_drawn_as_many_times_smaller_as_the_more_of_its_sides_is() {
+        assert!((minification((1920, 1080), (960.0, 540.0), 1.0) - 2.0).abs() < 1e-12);
+        assert!((minification((1920, 1080), (960.0, 540.0), 0.5) - 4.0).abs() < 1e-12);
+        assert!((minification((1920, 1080), (960.0, 540.0), 2.0) - 1.0).abs() < 1e-12);
+        // Across it is 4 times smaller, and down 2.
+        assert!((minification((1920, 1080), (480.0, 540.0), 1.0) - 4.0).abs() < 1e-12);
+        assert!((minification((1920, 1080), (960.0, 270.0), 1.0) - 4.0).abs() < 1e-12);
+        // A frame of no width or no height is drawn as nothing.
+        assert!((minification((1920, 1080), (0.0, 540.0), 1.0) - 1.0).abs() < 1e-12);
+        assert!((minification((1920, 1080), (960.0, 0.0), 1.0) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_part_of_a_text_drawn_reaches_a_pixel_beyond_each_corner_of_the_canvas() {
+        // Turned a third of a right angle, each corner of the canvas is the furthest in one
+        // direction; at 128 pixels of the text to one of the canvas, a pixel more is more than
+        // the grid.
+        let transform = Transform {
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+            rotation: 30.0,
+        };
+        let canvas = (100.0, 100.0);
+        let place = placement(canvas, canvas, &transform);
+        let (origin, per) = ((-200.0, -200.0), 128.0);
+        let window = text_window(&place, canvas, origin, per, (100_000, 100_000)).unwrap();
+        let back = place.inverse().unwrap();
+        for corner in [(-1.0, -1.0), (101.0, -1.0), (-1.0, 101.0), (101.0, 101.0)] {
+            let (x, y) = back.apply(corner);
+            let (x, y) = ((x - origin.0) * per, (y - origin.1) * per);
+            let [x0, y0, x1, y1] = window.map(f64::from);
+            assert!(
+                x0 <= x && x <= x1 && y0 <= y && y <= y1,
+                "{corner:?} at {x}, {y}"
+            );
+        }
+        // A text far beyond the canvas is not seen.
+        for origin in [(-10_000.0, 0.0), (0.0, -10_000.0)] {
+            assert_eq!(text_window(&place, canvas, origin, 1.0, (100, 100)), None);
+        }
+    }
 }

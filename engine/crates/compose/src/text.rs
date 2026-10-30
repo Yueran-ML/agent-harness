@@ -564,4 +564,87 @@ mod tests {
         assert_eq!(Spec::subtitles(&lines, 5.0).outline, 1);
         assert_eq!(spec.align, TextAlign::Center);
     }
+
+    #[test]
+    fn a_row_covered_whole_is_outlined_as_it_is() {
+        let (columns, rows) = (4, 3);
+        let mut cover = vec![0; columns * rows];
+        cover[columns..2 * columns].fill(255);
+        let out = dilate(&cover, columns, rows, 1);
+        assert!(out.iter().all(|value| *value == 255), "{out:?}");
+    }
+
+    #[test]
+    fn a_title_is_drawn_in_its_font_or_in_the_one_of_the_engine() {
+        let title = |font: &str| Text {
+            text: "Hello".into(),
+            style: TitleStyle {
+                font: font.into(),
+                size: 96,
+                color: columbina_model::project::Rgba([255, 255, 255, 255]),
+                x: 0.5,
+                y: 0.5,
+                align: TextAlign::Center,
+            },
+        };
+        assert_eq!(Spec::title(&title(""), 96.0).family, None);
+        let spec = Spec::title(&title("Arial"), 48.0);
+        assert_eq!(spec.family.as_deref(), Some("Arial"));
+        assert!((spec.size - 48.0).abs() < f32::EPSILON);
+        assert_eq!(spec.outline, 0);
+    }
+
+    #[test]
+    fn a_text_is_laid_out_a_line_high_for_each_of_its_lines_with_a_pad_about_it() {
+        let lines = ["one".to_owned(), "two".to_owned()];
+        let spec = Spec::subtitles(&lines, 48.0);
+        let laid = lay_out(&spec);
+        // Two lines of 60 pixels; a pad of a quarter of the size and the outline of 4.
+        assert_eq!(laid.block.1, 120);
+        assert!(laid.block.0 > 0);
+        assert_eq!(laid.pad, 12 + 4);
+        assert_eq!(laid.full(), (laid.block.0 + 32, 152));
+        let one = lay_out(&Spec::subtitles(&lines[..1], 48.0));
+        assert_eq!(one.block.1, 60);
+    }
+
+    #[test]
+    fn subtitles_are_outlined_as_far_on_every_side_of_their_letters() {
+        // Letters of 56 pixels, outlined by 4.
+        let spec = Spec::subtitles(&["I".to_owned()], 56.0);
+        let mut laid = lay_out(&spec);
+        let (width, height) = laid.full();
+        let raster = draw(&mut laid, [0, 0, width, height]);
+        let bounds = |keep: &dyn Fn([u8; 4]) -> bool| {
+            let mut found = [u32::MAX, u32::MAX, 0, 0];
+            for y in 0..raster.height {
+                for x in 0..raster.width {
+                    let at = raster.start + (y * raster.row + x) as usize;
+                    if keep(raster.pixels[at]) {
+                        found = [
+                            found[0].min(x),
+                            found[1].min(y),
+                            found[2].max(x + 1),
+                            found[3].max(y + 1),
+                        ];
+                    }
+                }
+            }
+            found
+        };
+        let letter = bounds(&|pixel| pixel[0] > 128);
+        let outlined = bounds(&|pixel| pixel[3] > 0);
+        let reach = [
+            letter[0] - outlined[0],
+            letter[1] - outlined[1],
+            outlined[2] - letter[2],
+            outlined[3] - letter[3],
+        ];
+        for side in reach {
+            assert!(
+                (4..=6).contains(&side),
+                "{reach:?}: {letter:?} in {outlined:?}"
+            );
+        }
+    }
 }

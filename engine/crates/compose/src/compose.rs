@@ -1576,6 +1576,27 @@ mod tests {
     }
 
     #[test]
+    fn a_title_of_a_few_hundred_thousand_pixels_is_drawn_at_its_own_scale() {
+        let Some(gpu) = crate::gpu_for_tests() else {
+            return;
+        };
+        let mut compositor = Compositor::new(gpu);
+        // Some 512 × 256 pixels, well within 4096 × 2048.
+        let spec = Spec {
+            text: "Columbina".into(),
+            family: None,
+            size: 96.0,
+            align: TextAlign::Center,
+            color: [255; 4],
+            outline: 0,
+        };
+        let canvas = (1920.0, 1080.0);
+        let place = placement(canvas, canvas, &Transform::NONE);
+        let put = compositor.put_text(&spec, 1.0, |_| (100.0, 100.0), &place, canvas);
+        assert!(matches!(put, Put::Drawn(..)), "drawn smaller");
+    }
+
+    #[test]
     fn errors_have_a_word_each() {
         assert_eq!(ComposeError::Lost(String::new()).reason(), "lost");
         assert_eq!(ComposeError::Target(String::new()).reason(), "target");

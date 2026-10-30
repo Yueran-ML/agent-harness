@@ -2675,6 +2675,10 @@ fn check_media(project: &Project, media: &Media) -> Result<(), OpError> {
         if video.still && media.facts.audio.is_some() {
             return Err(range("still"));
         }
+        // How far the picture is turned to be shown: a quarter turn, or none.
+        if !matches!(video.rotation, 0 | 90 | 180 | 270) {
+            return Err(range("rotation"));
+        }
         check_rate(video.rate)?;
     }
     if let Some(proxy) = &media.proxy {
@@ -5877,6 +5881,27 @@ mod tests {
             mark_out: None,
         };
         assert_eq!(refused(elsewhere), missing("media", "m9"));
+    }
+
+    #[test]
+    fn media_is_turned_by_a_quarter_turn_or_none() {
+        for turn in [0, 90, 180, 270] {
+            let mut media = media("m2", true, true);
+            media.facts.video.as_mut().unwrap().rotation = turn;
+            apply(&mut Project::sample(), Op::AddMedia { media, index: None }).unwrap();
+        }
+        for turn in [45, -90, 360] {
+            let mut media = media("m2", true, true);
+            media.facts.video.as_mut().unwrap().rotation = turn;
+            assert_eq!(
+                refused(Op::AddMedia { media, index: None }),
+                range("rotation")
+            );
+            // A project read with it is refused too.
+            let error =
+                invalid(|value| value["media"][0]["facts"]["video"]["rotation"] = turn.into());
+            assert_eq!(error, wrong("media", "m1", range("rotation")));
+        }
     }
 
     #[test]

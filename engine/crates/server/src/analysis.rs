@@ -285,7 +285,7 @@ fn picture(media: &Media, spec: &ThumbSpec) -> Result<Rgba, Fault> {
         let mut converter = Converter::new();
         converter
             .rgba_scaled(&frame, w, h)
-            .map(|rgba| upright(rgba, spec.rotation))
+            .and_then(|rgba| upright(rgba, spec.rotation))
     };
     if let Some(proxy) = proxy::usable(media) {
         if let Ok(picture) = decode(Path::new(&proxy.path), true) {
@@ -296,9 +296,16 @@ fn picture(media: &Media, spec: &ThumbSpec) -> Result<Rgba, Fault> {
         .map_err(|error| cannot_read(&media.path, error.reason(), &error.to_string()))
 }
 
-fn upright(source: Rgba, rotation: i16) -> Rgba {
+/// A picture turned clockwise by `rotation`, a quarter turn or more, to be shown upright. The
+/// model holds no other rotation; one that is not a quarter turn is refused, not drawn.
+fn upright(source: Rgba, rotation: i16) -> Result<Rgba, MediaError> {
     if rotation == 0 {
-        return source;
+        return Ok(source);
+    }
+    if !matches!(rotation, 90 | 180 | 270) {
+        return Err(MediaError::Unsupported(format!(
+            "a picture turned by {rotation} degrees, not a quarter turn"
+        )));
     }
     let (width, height) = if rotation % 180 != 0 {
         (source.height, source.width)
@@ -315,15 +322,14 @@ fn upright(source: Rgba, rotation: i16) -> Rgba {
             let (dx, dy) = match rotation {
                 90 => (source.height - 1 - y, x),
                 180 => (source.width - 1 - x, source.height - 1 - y),
-                270 => (y, source.width - 1 - x),
-                _ => unreachable!("project rotations are quarter turns"),
+                _ => (y, source.width - 1 - x),
             };
             let from = ((y * source.width + x) * 4) as usize;
             let to = ((dy * width + dx) * 4) as usize;
             result.data[to..to + 4].copy_from_slice(&source.data[from..from + 4]);
         }
     }
-    result
+    Ok(result)
 }
 
 fn encode_png(rgba: &Rgba) -> Result<Vec<u8>, String> {
@@ -699,7 +705,7 @@ mod tests {
             (180, (3, 2), vec![6, 5, 4, 3, 2, 1]),
             (270, (2, 3), vec![3, 6, 2, 5, 1, 4]),
         ] {
-            let result = upright(source.clone(), turn);
+            let result = upright(source.clone(), turn).unwrap();
             assert_eq!((result.width, result.height), shape);
             assert_eq!(
                 result
@@ -711,6 +717,19 @@ mod tests {
                     .collect::<Vec<_>>(),
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn a_turn_that_is_not_a_quarter_turn_is_refused_not_drawn() {
+        let source = Rgba {
+            width: 3,
+            height: 2,
+            data: vec![0; 24],
+        };
+        for turn in [45, -90, 360] {
+            let error = upright(source.clone(), turn).unwrap_err();
+            assert!(matches!(error, MediaError::Unsupported(_)), "{error}");
         }
     }
 

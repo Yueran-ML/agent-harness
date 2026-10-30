@@ -1217,6 +1217,8 @@ export const zhCN: Messages = {
         scale: "无法转换源素材的时间单位。",
         overlap: "这些帧已被其他片段占用。",
         cue_overlap: "这些帧已被其他字幕占用。",
+        copy_locked: "有拷贝会落到锁定的轨道上，所以没有复制。",
+        copy_no_track: "那里没有能放下全部拷贝的轨道，所以没有复制。",
         subtitle_shown: "另一条字幕轨正在显示。一条时间线同一时间只显示一条字幕轨。",
         out_of_timeline: "片段不能从时间线起点之前开始。",
         in_use: "工程仍在使用这项内容。",

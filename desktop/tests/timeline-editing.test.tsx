@@ -112,6 +112,15 @@ describe('timeline editing by pointer and keys', () => {
     fireEvent.pointerUp(root(), pointer(80)); await settle();
     expect(call.mock.calls[0][1].ops[0]).toMatchObject({ edit: 'move', clips: ['c1'], delta: 50 });
   });
+  it('says why a clip dragged with Alt is not copied where its sound would go on a locked track', async () => {
+    const t = timeline([clip('c1', 10, 60, { link: 'g1' }), clip('c2', 100, 60)]);
+    t.tracks.push({ id: 'a1', kind: 'audio', name: 'A1', enabled: true, locked: true, clips: [clip('a1c', 10, 60, { link: 'g1' })], transitions: [] });
+    const { call } = mount(t);
+    fireEvent.pointerDown(node(), pointer(30, { altKey: true })); fireEvent.pointerMove(root(), pointer(200, { altKey: true }));
+    fireEvent.pointerUp(root(), pointer(200, { altKey: true })); await settle();
+    expect(call.mock.calls.filter(([method]) => method === 'transaction.apply')).toEqual([]);
+    expect(screen.getByRole('alert').textContent).toBe('A copy would go on a locked track, so nothing was copied.');
+  });
   it.each(['Escape', 'pointerCancel', 'blur'])('cancels a drag with %s without editing', async how => {
     const { call } = mount();
     fireEvent.pointerDown(node(), pointer(30)); fireEvent.pointerMove(root(), pointer(50));

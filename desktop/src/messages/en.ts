@@ -1404,6 +1404,8 @@ export const en = {
         scale: "The source time could not be converted.",
         overlap: "Another clip occupies these frames.",
         cue_overlap: "Another subtitle occupies these frames.",
+        copy_locked: "A copy would go on a locked track, so nothing was copied.",
+        copy_no_track: "There is no track there for every copy, so nothing was copied.",
         subtitle_shown: "Another subtitle track is shown. A timeline shows one subtitle track at a time.",
         out_of_timeline: "A clip cannot start before the timeline.",
         in_use: "This item is still used by the project.",

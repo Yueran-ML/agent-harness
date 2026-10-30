@@ -64,7 +64,15 @@ describe('clips copied with Alt', () => {
       { edit: 'trim', timeline: 't1', clip: 'x', edge: 'out', delta: -10, ripple: false, linked: false },
     ]);
     t.tracks[1] = { ...t.tracks[1], locked: true } as typeof t.tracks[1];
-    expect(finishDrag(dragTo(beginDrag(t, 3, ['c2'], 'c2', 'move', 150, true)!, 450, { media: [media], scale: 1, duplicate: true }))).toBeNull();
+    const locked = dragTo(beginDrag(t, 3, ['c2'], 'c2', 'move', 150, true)!, 450, { media: [media], scale: 1, duplicate: true });
+    expect(finishDrag(locked)).toBeNull();
+    expect(locked.refused).toBe('copy_locked');
+    // c1 on V1 and a title on V2 copied a track up: there is no V3 for the copy of the title.
+    const u = scene();
+    u.tracks[2] = { ...u.tracks[2], clips: [clip('t9', 0, 50)] } as typeof u.tracks[2];
+    const above = dragTo(beginDrag(u, 3, ['c1', 't9'], 'c1', 'move', 50, false)!, 50, { media: [media], scale: 1, duplicate: true, track: 'v2' });
+    expect(finishDrag(above)).toBeNull();
+    expect(above.refused).toBe('copy_no_track');
   });
 });
 describe('timeline selection and snapping', () => {

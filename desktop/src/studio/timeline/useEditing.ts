@@ -419,9 +419,13 @@ export function useEditing(options: Options) {
     }
     const pointer = active.current;
     if (!pointer || pointer.pointer !== event.pointerId) return;
-    const transaction = pointer.moved && pointer.gesture.revision === now.current.revision ? finishDrag(calculate(event, pointer)) : null;
+    const dragged = pointer.moved && pointer.gesture.revision === now.current.revision ? calculate(event, pointer) : null;
+    const transaction = dragged ? finishDrag(dragged) : null;
     if (!pointer.moved && pointer.clickSelection) setSelection(pointer.clickSelection);
-    cancel(); if (transaction) void apply(transaction);
+    cancel();
+    if (transaction) void apply(transaction);
+    // A copy with Alt that cannot be made says why, rather than doing nothing.
+    else if (dragged?.refused) setProblem(now.current.words[dragged.refused]);
   };
   const dropTarget = (event: DragEvent) => {
     if (busy.current || !now.current.timeline || !(event.dataTransfer.types.includes(MEDIA_DRAG) || effectOfTypes([...event.dataTransfer.types]))) return null;

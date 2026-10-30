@@ -18,6 +18,8 @@ export interface Dragged {
   then?: Edit[];
   /** A move with Alt held: copies put where the clips would go, the clips staying (instead of the command). */
   duplicate?: Change[];
+  /** Why a move with Alt held copies nothing: a copy would go on a locked track, or where there is no track for it. */
+  refused?: 'copy_locked' | 'copy_no_track';
 }
 
 /** A two-pixel seam rolls; the adjoining six-pixel edge trims. Body halves select slip or slide. */
@@ -150,6 +152,8 @@ export function dragTo(gesture: Gesture, frame: number, options: {
   if (delta !== requested) point = null;
   if (delta === 0) delta = 0;
   const preview: Preview[] = moving.map(({ clip, track }) => ({ id: clip.id, track: track.id, start: clip.start, length: clip.length }));
+  // Whether a clip moved to another track would go past the last track of its kind.
+  let trackless = false;
   let command: Edit;
   const common = { timeline: timeline.id, delta, linked };
   if (action === 'move') {
@@ -159,7 +163,9 @@ export function dragTo(gesture: Gesture, frame: number, options: {
     for (const item of preview) {
       item.start += delta;
       const original = locations.get(item.id)!;
-      if (original.track.kind === here.track.kind) item.track = peers[peers.findIndex(track => track.id === original.track.id) + shift]?.id ?? item.track;
+      if (original.track.kind !== here.track.kind) continue;
+      const to = peers[peers.findIndex(track => track.id === original.track.id) + shift];
+      if (to) item.track = to.id; else trackless = true;
     }
     command = options.ripple ? { edit: 'insert_move', timeline: timeline.id, clips: ids, at: Math.max(0, Math.min(...moving.map(({ clip }) => clip.start)) + delta), linked }
       : { edit: 'move', ...common, clips: ids, ...(destination && destination.id !== here.track.id ? { to_track: destination.id } : {}), overwrite: options.overwrite ?? true };
@@ -183,8 +189,10 @@ export function dragTo(gesture: Gesture, frame: number, options: {
   const changedTrack = command.edit === 'move' && command.to_track !== undefined;
   if (copying) {
     // The copies overwrite what they cover, the clips they are copied from too.
-    const ops = delta !== 0 || changedTrack ? duplicated(timeline, locations, preview) : null;
-    return { gesture, delta, point, clamped: delta !== requested, preview, covered: ops ? overwritten(timeline, preview, new Set()) : [], command: null, ...(ops ? { duplicate: ops } : {}) };
+    const copied = delta !== 0 || changedTrack ? trackless ? 'copy_no_track' as const : duplicated(timeline, locations, preview) : null;
+    const ops = Array.isArray(copied) ? copied : null;
+    return { gesture, delta, point, clamped: delta !== requested, preview, covered: ops ? overwritten(timeline, preview, new Set()) : [], command: null,
+      ...(ops ? { duplicate: ops } : typeof copied === 'string' ? { refused: copied } : {}) };
   }
   const covered = command.edit === 'move' && command.overwrite ? overwritten(timeline, preview, together) : [];
   let done = delta !== 0 || changedTrack ? command : null;
@@ -285,16 +293,16 @@ function overwritten(timeline: Timeline, preview: readonly Preview[], moving: Re
  * are Option-dragged (Reference Manual 20, p. 811), in one transaction: what lies where the copies go
  * is cleared as an overwrite clears it (see `clearing`), and each copy is put there with all the
  * settings of its clip (speed, reverse, transform, gain, pan, fades, whether it is enabled); copies
- * of clips linked together are linked together, in a new group. Transitions are not copied. Null
- * where a copy would go on a track that is locked.
+ * of clips linked together are linked together, in a new group. Transitions are not copied. Where a
+ * copy would go on a track that is locked (or one of subtitles), why nothing is copied.
  */
-function duplicated(timeline: Timeline, locations: ReadonlyMap<string, Located>, preview: readonly Preview[]): Change[] | null {
+function duplicated(timeline: Timeline, locations: ReadonlyMap<string, Located>, preview: readonly Preview[]): Change[] | 'copy_locked' {
   const byTrack = new Map<string, [number, number][]>();
   for (const item of preview) byTrack.set(item.track, [...byTrack.get(item.track) ?? [], [item.start, item.start + item.length]]);
   const ops: Change[] = [];
   for (const [track, spans] of byTrack) {
     const lane = timeline.tracks.find(each => each.id === track);
-    if (!lane || lane.kind === 'subtitle' || lane.locked) return null;
+    if (!lane || lane.kind === 'subtitle' || lane.locked) return 'copy_locked';
     ops.push(...clearing(timeline.id, lane.clips, spans, track));
   }
   // A group of which two or more clips are copied is copied as a new group; a copy alone is in none.

@@ -295,6 +295,18 @@ describe('the progress of the export', () => {
     expect((one('export-to') as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('draws the strip again as the engine tells of the export, and not the studio', async () => {
+    const { progress, copy } = await started();
+    // The studio reads the copy of the project each time it is drawn: it is not drawn again.
+    const drawn = vi.spyOn(copy, 'getSnapshot');
+    for (const frame of [10, 20, 30]) progress({ frame });
+    expect(one('render-bar')!.getAttribute('aria-valuenow')).toBe('30');
+    expect(drawn).not.toHaveBeenCalled();
+    // Its end is told to the studio: the dialog may start another.
+    progress({ state: 'done', frame: 200 });
+    expect(drawn).toHaveBeenCalled();
+  });
+
   it('is cancelled, and says so once the engine has cleaned its files away', async () => {
     const { progress, bridge } = await started();
     progress({ frame: 20 });

@@ -14,7 +14,7 @@ import { CutPage } from './pages/CutPage';
 import { EditPage } from './pages/EditPage';
 import { MediaPage } from './pages/MediaPage';
 import { RenderDialog } from './render/RenderDialog';
-import { RenderProgress } from './render/RenderProgress';
+import { ExportProgress } from './render/RenderProgress';
 import { rendersOf } from './render/renders';
 import { duration } from './timeline/geometry';
 import type { Marks } from './timeline/snap';
@@ -104,7 +104,9 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
   // The export of the window, and what became of the old projects of the folder: both are kept
   // while the page lives, also while the studio is left.
   const renders = rendersOf(bridge);
-  const rendered = useSyncExternalStore(renders.subscribe, renders.getSnapshot, renders.getSnapshot);
+  // Only whether one is going on: the progress, told several times a second, is followed by the strip alone.
+  const exportGoing = () => { const state = renders.getSnapshot().job?.state; return state === 'running' || state === 'cancelling'; };
+  const exportRunning = useSyncExternalStore(renders.subscribe, exportGoing, exportGoing);
   const migrations = migrationsOf(bridge);
   const migrated = useSyncExternalStore(migrations.subscribe, migrations.getSnapshot, migrations.getSnapshot);
   const root = useRef<HTMLElement>(null);
@@ -274,8 +276,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
     </div>}
     {migrated !== null && migrated.session === snapshot.session && <MigrationBanner migrated={migrated} timelines={timelines}
       onDismiss={() => migrations.dismiss()} />}
-    {rendered.job !== null && <RenderProgress job={rendered.job} onCancel={() => void renders.cancel()} onReveal={() => renders.reveal()}
-      onDismiss={() => renders.dismiss()} />}
+    <ExportProgress renders={renders} />
     {page === 'media' && <MediaPage pool={pool} monitor={<MonitorPane controls={source} bridge={bridge} native={native} active
       notice={noticeOf('source')} onRetry={again} hint={words.hint.studio.load} />} />}
     {page === 'cut' && <CutPage
@@ -325,7 +326,7 @@ export function Studio({ cwd, engine, language, conversationHidden = false, onTo
       timelines={timelines}
       chosen={selected?.id ?? null}
       marks={exporting.marks}
-      running={rendered.job?.state === 'running' || rendered.job?.state === 'cancelling'}
+      running={exportRunning}
       onStart={options => renders.start({ ...options, language }, snapshot.session ?? 0)}
       onClose={() => setExporting(null)}
     />}

@@ -1,9 +1,19 @@
 import { FolderOpen, X } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import { useWords } from '../../app/locale';
 import { sentenceOf } from '../../key/form';
 import { fileName } from '../timecode';
-import { fellBack, type RenderJob } from './renders';
+import { fellBack, type RenderJob, type Renders } from './renders';
+
+/**
+ * The strip of the export of the window, where there is one: it alone follows the progress, so
+ * that what the engine tells several times a second draws the strip again, and not the studio.
+ */
+export function ExportProgress({ renders }: { renders: Renders }) {
+  const { job } = useSyncExternalStore(renders.subscribe, renders.getSnapshot, renders.getSnapshot);
+  return job === null ? null
+    : <RenderProgress job={job} onCancel={() => void renders.cancel()} onReveal={() => renders.reveal()} onDismiss={() => renders.dismiss()} />;
+}
 
 /**
  * How the export of the window goes, in a strip at the top of the studio: it lies over nothing, so

@@ -61,16 +61,20 @@ export function effectTarget(timeline: Timeline, effect: Effect, trackId: string
 /**
  * The transaction of a drop: a transition added at the cut (or the kind of the one there changed,
  * as a transition dropped on another replaces it), or a title or a solid colour overwritten onto
- * the track. One transaction, so one step to undo.
+ * the track. One transaction, so one step to undo. A transition dropped on one of its own kind
+ * puts it back to the standard length; where it has that already there is nothing to do, and no
+ * operation (the engine refuses a change that changes nothing).
  */
 export function effectTransaction(timeline: Timeline, revision: number, effect: Effect, target: EffectTarget, titleText: string): Transaction {
   if (target.kind === 'cut') {
     if (!isTransition(effect)) throw new Error(`${effect} is not a transition`);
     return {
       revision,
-      ops: [target.existing
-        ? { edit: 'set_transition', timeline: timeline.id, id: target.existing.id, kind: effect }
-        : { edit: 'add_transition', timeline: timeline.id, left: target.left, right: target.right, kind: effect, length: framesIn(TRANSITION_SECONDS, timeline), align: target.align }],
+      ops: !target.existing
+        ? [{ edit: 'add_transition', timeline: timeline.id, left: target.left, right: target.right, kind: effect, length: framesIn(TRANSITION_SECONDS, timeline), align: target.align }]
+        : target.existing.kind !== effect ? [{ edit: 'set_transition', timeline: timeline.id, id: target.existing.id, kind: effect }]
+          : target.existing.length !== framesIn(TRANSITION_SECONDS, timeline) ? [{ edit: 'set_transition', timeline: timeline.id, id: target.existing.id, length: framesIn(TRANSITION_SECONDS, timeline) }]
+            : [],
     };
   }
   const source: Material = effect === 'title'

@@ -263,6 +263,7 @@ export function useEditing(options: Options) {
       case 'fit': context.fit(); break;
       case 'zoom': context.zoom(result.direction > 0 ? 1.25 : 0.8); break;
       case 'cancel': cancel(); setProblem(null); break;
+      case 'none': break;
     }
     return true;
   };
@@ -476,7 +477,8 @@ export function useEditing(options: Options) {
       if (!found) return;
       event.preventDefault();
       if (droppedEffect(event.dataTransfer, context.session) !== found.effect) return;
-      void apply(effectTransaction(context.timeline!, context.revision, found.effect, found.target, context.titleText));
+      const transaction = effectTransaction(context.timeline!, context.revision, found.effect, found.target, context.titleText);
+      if (transaction.ops.length > 0) void apply(transaction);
       return;
     }
     event.preventDefault();

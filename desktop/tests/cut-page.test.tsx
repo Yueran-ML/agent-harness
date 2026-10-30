@@ -523,9 +523,12 @@ describe('the Cut page', () => {
     // At a cut that has a transition, it becomes of the kind asked for.
     notify('timeline', { frame: 190 }); await settle();
     expect(await press('Dip to black')).toEqual([[{ edit: 'set_transition', timeline: 't1', id: 'x1', kind: 'dip_black' }]]);
-    // Ctrl+T on the Cut page is a dissolve there too.
+    // Ctrl+T on the Cut page is a dissolve there too: at x1, a dissolve of the standard length already,
+    // there is nothing to do, and nothing is sent (the engine refuses a change that changes nothing) or said.
     bridge.call.mockClear(); key('t', { ctrlKey: true }); await settle();
-    expect(sent(bridge).map(each => each.ops)).toEqual([[{ edit: 'set_transition', timeline: 't1', id: 'x1', kind: 'dissolve' }]]);
+    expect(sent(bridge)).toEqual([]);
+    expect(await press('Dissolve')).toEqual([]);
+    expect(document.querySelector('[data-test="studio-problem"]')).toBeNull();
   });
 
   it('says so where no two clips meet on a track of picture, and sends nothing', async () => {

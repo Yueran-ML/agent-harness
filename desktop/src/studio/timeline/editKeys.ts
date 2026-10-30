@@ -108,7 +108,9 @@ export type EditResult =
   | { kind: 'speed'; clips: string[] }
   | { kind: 'tool'; tool: Tool }
   | { kind: 'snap' | 'linked' | 'fit' | 'cancel' }
-  | { kind: 'zoom'; direction: -1 | 1 };
+  | { kind: 'zoom'; direction: -1 | 1 }
+  /** The key was for this page, and there is nothing to do: a transition of that kind and length is there already. */
+  | { kind: 'none' };
 
 /** Integer rational conversion prevents a frame boundary from rounding one source tick too early. */
 export function sourceTime(frame: number, rate: Rate, scale: number): Time {
@@ -264,7 +266,7 @@ export function editCommand(action: EditAction | null, context: EditContext): Ed
     const point = nearestEditPoint(timeline, frame);
     if (!point) return null;
     return transaction(point.meetings.flatMap(meeting => effectTransaction(timeline, revision, action.transition,
-      { kind: 'cut', track: meeting.track, left: meeting.left, right: meeting.right, cut: point.at, align: 'center', existing: meeting.existing }, '').ops));
+      { kind: 'cut', track: meeting.track, left: meeting.left, right: meeting.right, cut: point.at, align: 'center', existing: meeting.existing }, '').ops)) ?? { kind: 'none' };
   }
   if (action.kind === 'place') {
     if (!source) return null;

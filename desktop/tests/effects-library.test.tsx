@@ -100,6 +100,14 @@ describe('an effect dropped on the timeline', () => {
     expect((await drop(call, 'dip_white', 70)).sent).toEqual([{ revision: 17, ops: [{ edit: 'set_transition', timeline: 't1', id: 'x1', kind: 'dip_white' }] }]);
   });
 
+  it('puts a transition dropped on one of its own kind back to the standard length, and sends nothing where it has that', async () => {
+    const short = mount(make([{ id: 'x1', kind: 'dissolve', left: 'c1', right: 'c2', length: 10, align: 'center' }]));
+    expect((await drop(short.call, 'dissolve', 70)).sent).toEqual([{ revision: 17, ops: [{ edit: 'set_transition', timeline: 't1', id: 'x1', length: 25 }] }]);
+    cleanup();
+    const standard = mount(make([{ id: 'x1', kind: 'dissolve', left: 'c1', right: 'c2', length: 25, align: 'center' }]));
+    expect((await drop(standard.call, 'dissolve', 70)).sent).toEqual([]);
+  });
+
   it('takes no transition away from a cut, on a track of the other kind, on a locked track, or from another session', async () => {
     const { call } = mount();
     expect(await drop(call, 'dissolve', 90)).toEqual({ taken: false, sent: [] });
